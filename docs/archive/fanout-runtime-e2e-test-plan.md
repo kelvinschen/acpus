@@ -1,5 +1,7 @@
 # ACPX Orchestrator Fanout Runtime E2E Test Plan
 
+> Historical archive: this document is preserved for context and is not current implementation truth.
+
 ## Summary
 
 This test plan validates the completed fanout runtime stability optimization end to end. It covers the path from source validation and build, through CLI-driven fake workflows, lightweight real Trae ACP fanout probes, report/diagnose/resume behavior, and finally the card-refactor workflow scenario that originally exposed the runtime issues.

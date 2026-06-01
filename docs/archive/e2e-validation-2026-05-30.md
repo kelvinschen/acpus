@@ -1,5 +1,7 @@
 # End-to-End Validation 2026-05-30
 
+> Historical archive: this document is preserved for context and is not current implementation truth.
+
 This note records the business-repo validation pass for `acpx-workflow-orchestrator`
 against:
 

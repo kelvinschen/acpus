@@ -1,5 +1,7 @@
 # ACPX Orchestrator Fanout Runtime Stability Optimization Plan
 
+> Historical archive: this document is preserved for context and is not current implementation truth.
+
 ## Summary
 
 This plan targets the high-concurrency fanout failure observed in the Trae ACP probe:
