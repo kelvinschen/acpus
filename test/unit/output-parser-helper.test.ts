@@ -119,15 +119,15 @@ describe("runtime output parser", () => {
     expect(parsed.diagnostics.candidates[0]?.schemaErrors.map((error) => error.path)).toEqual(expect.arrayContaining(["/status"]));
   });
 
-  it("normalizes only checks[].result to checks[].status", () => {
+  it("rejects checks[].result instead of normalizing it to checks[].status", () => {
     const parsed = parseWorkflowOutput(trailing(implementationOutput({
       checks: [{ name: "unit", result: "pass" }]
     })), "implementation");
 
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    expect(parsed.value.checks).toEqual([{ name: "unit", status: "pass" }]);
-    expect(parsed.outputParse.outputNormalizedAliases).toEqual(["checks[].result->checks[].status"]);
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) return;
+    expect(parsed.errorCode).toBe("OUTPUT_SCHEMA_FAILED");
+    expect(parsed.diagnostics.candidates[0]?.schemaErrors.map((error) => error.path)).toContain("/checks/0/status");
   });
 
   it("accepts valid gate pass and blocked outputs", () => {
@@ -290,11 +290,15 @@ describe("runtime output parser", () => {
     if (parsed.ok) return;
     const prompt = formatRepairPrompt({ contractName: "implementation", failure: parsed });
     expect(prompt).toContain("Blocked reason: OUTPUT_SCHEMA_FAILED");
+    expect(prompt).toContain("**Contract: implementation**");
     expect(prompt).toContain("Canonical schema");
-    expect(prompt).toContain("Minimal valid example");
     expect(prompt).toContain("/status");
-    expect(prompt).toContain("checks[].result");
+    expect(prompt).toContain("Candidate count: 1");
+    expect(prompt).toContain("Best candidate or raw body:");
     expect(prompt).toContain("End with exactly one valid, parseable JSON object that satisfies the schema.");
     expect(prompt).toContain("Do not wrap the final JSON object in Markdown code fences. Do not use ```json.");
+    expect(prompt).not.toContain("Minimal valid example");
+    expect(prompt).not.toContain("Allowed deterministic aliases");
+    expect(prompt).not.toContain("checks[].result");
   });
 });

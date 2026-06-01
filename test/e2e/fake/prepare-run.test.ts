@@ -130,12 +130,13 @@ describe("runtime-driven fake e2e", () => {
     await expect(fs.stat(path.join(prepared.dir, "attempts", "implement", "repair-1", "prompt.md"))).resolves.toBeTruthy();
   });
 
-  it("normalizes checks[].result aliases without a repair turn", async () => {
+  it("repairs checks[].result instead of accepting it as an alias", async () => {
     const temp = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-workflow-orchestrator-alias-"));
     const spec = WorkflowSpecSchema.parse(JSON.parse(await fs.readFile(path.resolve(__dirname, "..", "..", "..", "workflows/examples/simple-feature.workflow.spec.json"), "utf8")));
     const fake = fakeRuntimeFactory([
       { text: plainJsonOutput({ status: "completed", summary: "plan", artifacts: [], nextFocus: "implement" }) },
       { text: plainJsonOutput(implementationOutput({ checks: [{ name: "unit", result: "pass" }] })) },
+      { text: plainJsonOutput(implementationOutput({ checks: [{ name: "unit", status: "pass" }] })) },
       { text: plainJsonOutput(validationOutput()) },
       { text: plainJsonOutput(gateOutput()) }
     ]);
@@ -144,11 +145,11 @@ describe("runtime-driven fake e2e", () => {
 
     let index = await startPreparedRun(temp, prepared);
     while (index.status === "running" || index.status === "pending") index = await syncRun(temp, prepared.logicalRunId);
-    const output = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "implement.json"), "utf8")) as { checks: unknown[]; metadata: { outputParse: { outputNormalizedAliases: string[] } } };
+    const output = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "implement.json"), "utf8")) as { checks: unknown[]; metadata: { outputParse: Record<string, unknown> } };
 
-    expect(index.agentUsage.repairCalls).toBe(0);
+    expect(index.agentUsage.repairCalls).toBe(1);
     expect(output.checks).toEqual([{ name: "unit", status: "pass" }]);
-    expect(output.metadata.outputParse.outputNormalizedAliases).toEqual(["checks[].result->checks[].status"]);
+    expect(output.metadata.outputParse).not.toHaveProperty("outputNormalizedAliases");
   });
 
   it("blocks when repair also fails schema validation", async () => {

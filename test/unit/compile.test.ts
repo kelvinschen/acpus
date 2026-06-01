@@ -14,8 +14,14 @@ describe("compileExecutionPlan", () => {
     expect(plan.stages.map((stage) => stage.id)).toEqual(["plan", "implement", "validate", "gate"]);
     expect(JSON.stringify(plan)).not.toContain("defineFlow");
     expect(JSON.stringify(plan)).not.toContain("workflow.flow.ts");
-    expect(plan.prompts.plan.footer).toContain("End the response with exactly one valid, parseable JSON object that satisfies the schema.");
-    expect(plan.prompts.plan.footer).toContain("Do not wrap the final JSON object in Markdown code fences. Do not use ```json.");
+    expect(plan.prompts.plan.footer).toContain("**Workflow Stage Contract**");
+    expect(plan.prompts.plan.footer).toContain("Stage contract:");
+    expect(plan.prompts.plan.footer).toContain("- Do not edit production files in this stage.");
+    expect(plan.prompts.plan.footer).toContain("Output contract:");
+    expect(plan.prompts.plan.footer).toContain("**Response with exactly one valid, parseable JSON object that satisfies the schema**.");
+    expect(plan.prompts.plan.footer).toContain("Do not wrap the final JSON object in Markdown code fences, especially ```json.");
+    expect(plan.prompts.plan.footer).not.toContain("Minimal valid example");
+    expect(plan.prompts.plan.footer).not.toContain("Allowed deterministic alias");
     expect(plan.prompts.plan.footer).not.toContain("fenced JSON block tagged workflow-output");
     expect(plan.contracts.implement).toMatchObject({ name: "implementation" });
     expect(plan.contracts.validate).toMatchObject({ name: "validation" });
@@ -87,7 +93,9 @@ describe("compileExecutionPlan", () => {
       validator: { roleName: "validator", promptId: "quality_loop__validate", contract: { name: "validation" } },
       fixer: { roleName: "implementer", promptId: "quality_loop__fix", contract: { name: "implementation" } }
     });
-    expect(plan.prompts.quality_loop__validate.footer).toContain("Minimal valid example");
+    expect(plan.prompts.quality_loop__validate.footer).toContain("Output contract:");
+    expect(plan.prompts.quality_loop__validate.footer).not.toContain("Minimal valid example");
+    expect(plan.prompts.quality_loop__validate.footer).not.toContain("Allowed deterministic alias");
     expect(JSON.stringify(plan)).not.toContain("__blocked_stop");
   });
 

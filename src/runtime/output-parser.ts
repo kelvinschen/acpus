@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { jsonrepair } from "jsonrepair";
-import { getOutputContract, normalizeDeterministicAliases, type AliasNormalization, type OutputContractName } from "../contracts/output-contracts.js";
+import { getOutputContract, type OutputContractName } from "../contracts/output-contracts.js";
 
 export type OutputParseErrorCode =
   | "OK"
@@ -21,7 +21,6 @@ export type OutputCandidateDiagnostic = {
   repairedPreview?: string;
   parseError?: string;
   schemaErrors: Array<{ path: string; message: string }>;
-  aliasNormalizations: AliasNormalization[];
   valid: boolean;
   value?: unknown;
 };
@@ -44,7 +43,6 @@ export type OutputParseSuccess = {
     repaired: boolean;
     candidateCount: number;
     warnings: string[];
-    outputNormalizedAliases: string[];
   };
   diagnostics: OutputParseDiagnostics;
 };
@@ -136,7 +134,6 @@ function evaluateCandidate(rawCandidate: RawCandidate, contract: ReturnType<type
     rawHash: hashText(rawCandidate.raw),
     rawPreview: preview(rawCandidate.raw),
     schemaErrors: [],
-    aliasNormalizations: [],
     valid: false
   };
 
@@ -149,15 +146,14 @@ function evaluateCandidate(rawCandidate: RawCandidate, contract: ReturnType<type
     };
   }
 
-  const normalized = normalizeDeterministicAliases(parsed.value);
-  const validation = contract.schema.safeParse(normalized.value);
+  const validation = contract.schema.safeParse(parsed.value);
   const schemaErrors = validation.success
     ? []
     : validation.error.issues.map((issue) => ({
         path: issue.path.length > 0 ? `/${issue.path.map(String).join("/")}` : "/",
         message: issue.message
       }));
-  const selectedValue = validation.success ? validation.data : normalized.value;
+  const selectedValue = validation.success ? validation.data : parsed.value;
 
   return {
     ...base,
@@ -165,7 +161,6 @@ function evaluateCandidate(rawCandidate: RawCandidate, contract: ReturnType<type
     normalizedPreview: preview(JSON.stringify(selectedValue, null, 2)),
     repairedPreview: parsed.repairedText ? preview(parsed.repairedText) : undefined,
     schemaErrors,
-    aliasNormalizations: normalized.normalizations,
     value: selectedValue,
     valid: validation.success
   };
@@ -196,7 +191,6 @@ function parseJsonWithRepair(raw: string): {
 }
 
 function successResult(candidate: OutputCandidateDiagnostic, evaluated: OutputCandidateDiagnostic[], warnings: string[] = []): OutputParseSuccess {
-  const aliases = candidate.aliasNormalizations.map((entry) => `${entry.from}->${entry.to}`);
   return {
     ok: true,
     value: candidate.value as Record<string, unknown>,
@@ -204,8 +198,7 @@ function successResult(candidate: OutputCandidateDiagnostic, evaluated: OutputCa
       mode: candidate.mode,
       repaired: candidate.syntax === "repairedJson",
       candidateCount: evaluated.length,
-      warnings,
-      outputNormalizedAliases: aliases
+      warnings
     },
     diagnostics: createDiagnostics({
       errorCode: "OK",
