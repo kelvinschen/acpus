@@ -54,7 +54,7 @@ export async function syncRun(cwd: string, logicalRunId: string, options: SyncRu
   if (selected.length === 0) {
     const budgetBlocked = blockReadyWorkIfAgentBudgetExhausted(index, snapshot.plan, readyUnits);
     const next = updateRunStatus(budgetBlocked ?? index, snapshot.spec);
-    if (changed || next.status !== index.status || next.blockedReason !== index.blockedReason || next.finalVerdict !== index.finalVerdict) {
+    if (changed || next.status !== index.status || next.blockedReason !== index.blockedReason || next.gateVerdict !== index.gateVerdict) {
       await writeRunIndex(cwd, next);
       await appendEvent(cwd, logicalRunId, { type: "run_synced", status: next.status });
       return readRunIndex(cwd, logicalRunId);
@@ -431,6 +431,7 @@ async function advanceDeterministicStages(snapshot: RuntimeSnapshot): Promise<{ 
       const outputPath = path.join(snapshot.runDir, "outputs", `${stage.id}.json`);
       await fs.mkdir(path.dirname(outputPath), { recursive: true });
       await fs.writeFile(outputPath, `${JSON.stringify(programOutput, null, 2)}\n`, "utf8");
+      outputs[stage.id] = programOutput;
       index = updateStage(index, stage.id, {
         status: programOutput.status === "blocked" ? "blocked" : "completed",
         outputPath: path.relative(snapshot.runDir, outputPath),
@@ -441,6 +442,7 @@ async function advanceDeterministicStages(snapshot: RuntimeSnapshot): Promise<{ 
       changed = true;
       progressed = true;
       if (stage.kind === "decisionGate") index = markUnselectedDecisionRoutes(index, snapshot.spec, stage, String(programOutput.route ?? "blocked"));
+      if (stage.kind === "gate") index = { ...index, gateVerdict: gateVerdictFromOutput(programOutput) ?? index.gateVerdict };
     }
     const fanout = await completeReadyFanoutAggregates({ ...snapshot, index });
     index = fanout.index;
@@ -556,7 +558,7 @@ async function collectFanoutUnits(snapshot: RuntimeSnapshot, stage: Extract<Stag
 function agentUnitForStage(snapshot: RuntimeSnapshot, stage: Stage, planStage: ExecutionPlanStage): AgentWorkUnit | undefined {
   const needsAgent =
     stage.kind === "agentTask"
-    || stage.kind === "summarize"
+    || (stage.kind === "gate" && stage.mode === "agent")
     || (stage.kind === "discover" && stage.method === "agent")
     || (stage.kind === "reduce" && stage.mode === "agent")
     || (stage.kind === "decisionGate" && stage.mode === "agent")
@@ -757,10 +759,10 @@ function mergeAgentResult(index: RunIndex, result: AgentWorkResult, runDir: stri
     const stageSpec = Object.values(next.stages).find((entry) => entry.stageId === result.stageId);
     void stageSpec;
   }
-  const finalVerdict = finalVerdictFromOutput(result.output) ?? next.finalVerdict;
+  const gateVerdict = gateVerdictFromOutput(result.output) ?? next.gateVerdict;
   return {
     ...next,
-    finalVerdict,
+    gateVerdict,
     agentUsage: {
       ...next.agentUsage,
       actual: next.agentUsage.actual + result.agentCalls,
@@ -1249,50 +1251,44 @@ function errorMessage(error: unknown): string {
 
 function updateRunStatus(index: RunIndex, spec: WorkflowSpec): RunIndex {
   const statuses = Object.values(index.stages).map((stage) => stage.status);
-  const summarize = spec.stages.find((stage) => stage.kind === "summarize");
-  let finalVerdict = index.finalVerdict;
-  if (summarize && index.stages[summarize.id]?.status === "completed") {
-    finalVerdict = readFinalVerdictFromOutput(index, summarize.id) ?? finalVerdict;
-  }
+  const gate = spec.stages.find((stage) => stage.kind === "gate");
+  const gateState = gate ? index.stages[gate.id] : undefined;
+  let gateVerdict = index.gateVerdict;
   let status = index.status;
   if (index.status === "diagnosed_blocked" && (statuses.includes("blocked") || statuses.includes("failed"))) {
     status = "diagnosed_blocked";
   } else if (statuses.includes("failed")) status = "failed";
   else if (statuses.includes("blocked")) status = "blocked";
-  else if (summarize && index.stages[summarize.id]?.status === "completed") {
-    status = finalVerdict && finalVerdict !== "success" && finalVerdict !== "success_with_warnings" ? "blocked" : "completed";
+  else if (gateState?.status === "completed") {
+    status = gateVerdict && gateVerdict !== "pass" && gateVerdict !== "pass_with_warnings" ? "blocked" : "completed";
   } else if (statuses.length > 0 && statuses.every((stageStatus) => stageStatus === "completed" || stageStatus === "skipped")) {
     status = "completed";
   } else if (statuses.includes("running") || statuses.includes("ready") || statuses.includes("pending")) {
     status = "running";
   }
   const blocked = Object.values(index.stages).find((stage) => stage.status === "blocked");
-  const finalVerdictBlockedReason = blockedReasonFromFinalVerdict(finalVerdict);
+  const gateVerdictBlockedReason = blockedReasonFromGateVerdict(gateVerdict);
   const blockedReason = status === "blocked" || status === "diagnosed_blocked"
-    ? blocked?.blockedReason ?? finalVerdictBlockedReason ?? index.blockedReason
+    ? blocked?.blockedReason ?? gateVerdictBlockedReason ?? index.blockedReason
     : undefined;
   return {
     ...index,
     status,
-    finalVerdict,
+    gateVerdict,
     blockedReason
   };
 }
 
-function readFinalVerdictFromOutput(_index: RunIndex, _stageId: string): RunIndex["finalVerdict"] | undefined {
+function gateVerdictFromOutput(output: Record<string, unknown> | undefined): RunIndex["gateVerdict"] | undefined {
+  const value = output?.verdict;
+  if (value === "pass" || value === "pass_with_warnings" || value === "blocked" || value === "failed" || value === "unknown") return value;
   return undefined;
 }
 
-function finalVerdictFromOutput(output: Record<string, unknown> | undefined): RunIndex["finalVerdict"] | undefined {
-  const value = output?.finalVerdict;
-  if (value === "success" || value === "success_with_warnings" || value === "blocked" || value === "failed" || value === "unknown") return value;
-  return undefined;
-}
-
-function blockedReasonFromFinalVerdict(finalVerdict: RunIndex["finalVerdict"] | undefined): string | undefined {
-  if (finalVerdict === "blocked") return RuntimeErrorCodes.FINAL_VERDICT_BLOCKED;
-  if (finalVerdict === "failed") return RuntimeErrorCodes.FINAL_VERDICT_FAILED;
-  if (finalVerdict === "unknown") return RuntimeErrorCodes.FINAL_VERDICT_UNKNOWN;
+function blockedReasonFromGateVerdict(gateVerdict: RunIndex["gateVerdict"] | undefined): string | undefined {
+  if (gateVerdict === "blocked") return RuntimeErrorCodes.GATE_VERDICT_BLOCKED;
+  if (gateVerdict === "failed") return RuntimeErrorCodes.GATE_VERDICT_FAILED;
+  if (gateVerdict === "unknown") return RuntimeErrorCodes.GATE_VERDICT_UNKNOWN;
   return undefined;
 }
 
@@ -1312,7 +1308,10 @@ async function readAuthorOutputs(runDir: string): Promise<Record<string, unknown
 }
 
 function dependenciesCompleted(stage: Stage, index: RunIndex): boolean {
-  return (stage.dependsOn ?? []).every((dep) => index.stages[dep]?.status === "completed");
+  return (stage.dependsOn ?? []).every((dep) => {
+    const status = index.stages[dep]?.status;
+    return status === "completed" || (stage.kind === "gate" && status === "skipped");
+  });
 }
 
 function markUnselectedDecisionRoutes(index: RunIndex, spec: WorkflowSpec, stage: Extract<Stage, { kind: "decisionGate" }>, selectedRoute: string): RunIndex {

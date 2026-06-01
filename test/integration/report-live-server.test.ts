@@ -49,7 +49,7 @@ describe("live report server", () => {
       stages: Object.fromEntries(Object.entries(fixture.index.stages).map(([stageId, stage]) => [stageId, { ...stage, status: "pending" as const }])),
       attempts: {},
       agentUsage: { planned: fixture.index.agentUsage.planned, actual: 0, repairCalls: 0, recoveryCalls: 0 },
-      finalVerdict: undefined
+      gateVerdict: undefined
     };
     await writeRunIndex(fixture.cwd, pending);
 

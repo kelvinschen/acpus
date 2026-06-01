@@ -90,6 +90,10 @@ export type ExecutionPlanStage = {
     defaultRoute: string;
     routes: string[];
   };
+  gate?: {
+    mode: "agent" | "program";
+    condition?: Extract<Stage, { kind: "gate" }>["condition"];
+  };
   fixLoop?: {
     maxRounds: number;
     validator: {

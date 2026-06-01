@@ -119,8 +119,8 @@ export const ImplementationOutputSchema = BaseOutputSchema.extend({
   checks: z.array(CheckSchema).default([])
 });
 
-export const SummarizeOutputSchema = BaseOutputSchema.extend({
-  finalVerdict: z.enum(["success", "success_with_warnings", "blocked", "failed", "unknown"]),
+export const GateOutputSchema = BaseOutputSchema.extend({
+  verdict: z.enum(["pass", "pass_with_warnings", "blocked", "failed", "unknown"]),
   deliverables: z.array(z.string()).default([]),
   changedFiles: z.array(z.string()).default([]),
   checks: z.array(CheckSchema).default([]),
@@ -236,6 +236,14 @@ export const DecisionGateStageSchema = StageBaseSchema.extend({
   routes: z.array(z.string()).optional()
 });
 
+export const GateStageSchema = StageBaseSchema.extend({
+  kind: z.literal("gate"),
+  mode: z.enum(["program", "agent"]).default("program"),
+  condition: ConditionSchema.optional(),
+  role: IdentifierSchema.optional(),
+  prompt: z.string().optional()
+});
+
 export const SummarizeStageSchema = StageBaseSchema.extend({
   kind: z.literal("summarize"),
   role: z.literal("summarizer"),
@@ -249,6 +257,7 @@ export const StageSchema = z.discriminatedUnion("kind", [
   ReduceStageSchema,
   FixLoopStageSchema,
   DecisionGateStageSchema,
+  GateStageSchema,
   SummarizeStageSchema
 ]);
 

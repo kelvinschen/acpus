@@ -35,28 +35,19 @@ describe.skipIf(!runReal)("real acpx agents e2e", () => {
       inputs: {
         cwd: { type: "path", default: cwd }
       },
-      roles: {
-        summarizer: { category: "summarization", agent: realReadAgent(), mode: "readOnly" }
-      },
+      roles: {},
       limits: { maxAgents: 2, maxConcurrency: 1, maxFanoutItems: 1, maxFixRounds: 0, stageTimeoutMinutes: 1 },
       stages: [
         { id: "discover", kind: "discover", method: "glob", args: { scope: ["**/*.txt"] }, output: "files" },
         {
-          id: "gate",
+          id: "decide",
           kind: "decisionGate",
           mode: "program",
           dependsOn: ["discover"],
           rules: [{ when: { source: "outputs.discover.files", op: "exists" }, to: "blocked" }],
           default: "blocked"
         },
-        {
-          id: "summarize",
-          kind: "summarize",
-          role: "summarizer",
-          dependsOn: ["gate"],
-          variables: [{ name: "summary", source: "outputs.gate.summary" }],
-          prompt: "Summarize ${summary}"
-        }
+        { id: "gate", kind: "gate", dependsOn: ["decide"] }
       ]
     }, null, 2), "utf8");
 
@@ -84,8 +75,7 @@ describe.skipIf(!runReal)("real acpx agents e2e", () => {
         cwd: { type: "path", default: cwd }
       },
       roles: {
-        implementer: { category: "implementation", agent: realEditAgent(), mode: "edit" },
-        summarizer: { category: "summarization", agent: realReadAgent(), mode: "readOnly" }
+        implementer: { category: "implementation", agent: realEditAgent(), mode: "edit" }
       },
       limits: { maxAgents: 4, maxConcurrency: 1, maxFanoutItems: 1, maxFixRounds: 0, stageTimeoutMinutes: 10 },
       stages: [
@@ -102,12 +92,9 @@ describe.skipIf(!runReal)("real acpx agents e2e", () => {
           ].join("\n")
         },
         {
-          id: "summarize",
-          kind: "summarize",
-          role: "summarizer",
-          dependsOn: ["implement"],
-          variables: [{ name: "implementation", source: "outputs.implement.summary" }],
-          prompt: "Summarize the run outcome.\n\nImplementation:\n${implementation}"
+          id: "gate",
+          kind: "gate",
+          dependsOn: ["implement"]
         }
       ]
     }, null, 2), "utf8");
@@ -121,7 +108,7 @@ describe.skipIf(!runReal)("real acpx agents e2e", () => {
     expect(result.status).toBe("completed");
     expect((await fs.readFile(path.join(cwd, "src", "status.txt"), "utf8")).trim()).toBe("done");
     await expect(fs.stat(path.join(result.runDir, "attempts", "implement", "attempt-1", "raw.txt"))).resolves.toBeTruthy();
-    await expect(fs.stat(path.join(result.runDir, "outputs", "summarize.json"))).resolves.toBeTruthy();
+    await expect(fs.stat(path.join(result.runDir, "outputs", "gate.json"))).resolves.toBeTruthy();
   }, 25 * 60 * 1000);
 });
 

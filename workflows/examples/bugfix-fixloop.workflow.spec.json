@@ -10,8 +10,7 @@
   "roles": {
     "planner": { "category": "planning", "agent": "claude", "mode": "readOnly" },
     "implementer": { "category": "implementation", "agent": "trae", "mode": "edit" },
-    "validator": { "category": "validation", "agent": "aiden", "mode": "readOnly" },
-    "summarizer": { "category": "summarization", "agent": "claude", "mode": "readOnly" }
+    "validator": { "category": "validation", "agent": "aiden", "mode": "readOnly" }
   },
   "limits": {
     "maxAgents": 12,
@@ -70,15 +69,9 @@
       "onExhausted": "blocked"
     },
     {
-      "id": "summarize",
-      "kind": "summarize",
-      "role": "summarizer",
-      "dependsOn": ["quality_loop"],
-      "variables": [
-        { "name": "task", "source": "input.task" },
-        { "name": "quality", "source": "outputs.quality_loop.summary" }
-      ],
-      "prompt": "Summarize the bugfix workflow outcome.\n\nTask:\n${task}\n\nQuality loop:\n${quality}"
+      "id": "gate",
+      "kind": "gate",
+      "dependsOn": ["quality_loop"]
     }
   ]
 }

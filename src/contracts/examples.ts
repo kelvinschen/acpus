@@ -35,10 +35,11 @@ export function minimalExampleForContract(name: OutputContractName, options: { o
       [options.outputKey ?? "items"]: []
     };
   }
-  if (name === "summarize") {
+  if (name === "gate") {
     return {
       ...base,
-      finalVerdict: "success",
+      nextFocus: "",
+      verdict: "pass",
       deliverables: [],
       changedFiles: [],
       checks: [],

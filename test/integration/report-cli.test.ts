@@ -19,7 +19,7 @@ describe("report CLI", () => {
     const view = JSON.parse(result.stdout) as { version: string; graph: { nodes: Array<{ id: string }> } };
 
     expect(view.version).toBe("acpx-workflow-orchestrator.report/v1");
-    expect(view.graph.nodes.map((node) => node.id)).toEqual(["plan", "implement", "summarize"]);
+    expect(view.graph.nodes.map((node) => node.id)).toEqual(["plan", "implement", "gate"]);
   });
 
   it("writes a self-contained HTML report", async () => {

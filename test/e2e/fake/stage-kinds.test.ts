@@ -6,7 +6,7 @@ import { setAgentRuntimeFactoryForTests } from "../../../src/runtime/agent-runti
 import { prepareRun } from "../../../src/runtime/run-workflow.js";
 import { syncRun } from "../../../src/runtime/sync.js";
 import { WorkflowSpecSchema, type WorkflowSpec } from "../../../src/schema/workflow-spec.js";
-import { baseOutput, fakeRuntimeFactory, implementationOutput, summarizeOutput, validationOutput, plainJsonOutput } from "../../helpers/fake-runtime.js";
+import { baseOutput, fakeRuntimeFactory, implementationOutput, gateOutput, validationOutput, plainJsonOutput } from "../../helpers/fake-runtime.js";
 
 describe("stage kind fake runtime e2e", () => {
   afterEach(() => setAgentRuntimeFactoryForTests(undefined));
@@ -15,7 +15,7 @@ describe("stage kind fake runtime e2e", () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-stage-agent-discover-"));
     const fake = fakeRuntimeFactory([
       { text: plainJsonOutput({ ...baseOutput({ nextFocus: "reduce" }), items: [{ findings: [{ severity: "P1", summary: "one" }] }, { findings: [{ severity: "P3", summary: "two" }] }] }) },
-      { text: plainJsonOutput(summarizeOutput({ summary: "done" })) }
+      { text: plainJsonOutput(gateOutput({ summary: "done" })) }
     ]);
     setAgentRuntimeFactoryForTests(fake.factory);
     const prepared = await prepareRun(agentDiscoverProgramReduceSpec(cwd), { cwd, input: { cwd } });
@@ -33,7 +33,7 @@ describe("stage kind fake runtime e2e", () => {
       { text: plainJsonOutput({ ...baseOutput({ nextFocus: "left" }), route: "left" }) },
       { text: plainJsonOutput(baseOutput({ summary: "left ran" })) },
       { text: plainJsonOutput(baseOutput({ summary: "left ran" })) },
-      { text: plainJsonOutput(summarizeOutput({ summary: "done" })) }
+      { text: plainJsonOutput(gateOutput({ summary: "done" })) }
     ]);
     setAgentRuntimeFactoryForTests(fake.factory);
     const prepared = await prepareRun(agentDecisionSpec(cwd), { cwd, input: { cwd } });
@@ -54,7 +54,7 @@ describe("stage kind fake runtime e2e", () => {
       { text: plainJsonOutput(validationOutput({ verdict: "fix", findings: [{ severity: "P1", summary: "fix it" }] })) },
       { text: plainJsonOutput(implementationOutput({ summary: "fixed" })) },
       { text: plainJsonOutput(validationOutput({ verdict: "pass", summary: "passed" })) },
-      { text: plainJsonOutput(summarizeOutput({ summary: "done" })) }
+      { text: plainJsonOutput(gateOutput({ summary: "done" })) }
     ]);
     setAgentRuntimeFactoryForTests(fake.factory);
     const prepared = await prepareRun(fixLoopSpec(cwd), { cwd, input: { cwd } });
@@ -66,8 +66,7 @@ describe("stage kind fake runtime e2e", () => {
     expect(attemptIds).toEqual([
       "quality_loop:attempt-1",
       "quality_loop:attempt-2",
-      "quality_loop:attempt-3",
-      "summarize:attempt-1"
+      "quality_loop:attempt-3"
     ]);
     await expect(fs.stat(path.join(prepared.dir, "attempts", "quality_loop", "attempt-1", "raw.txt"))).resolves.toBeTruthy();
     await expect(fs.stat(path.join(prepared.dir, "attempts", "quality_loop", "attempt-2", "raw.txt"))).resolves.toBeTruthy();
@@ -88,14 +87,13 @@ function agentDiscoverProgramReduceSpec(cwd: string): WorkflowSpec {
     root: "discover",
     inputs: { cwd: { type: "path", default: cwd } },
     roles: {
-      discoverer: { category: "coordination", agent: "fake", mode: "readOnly" },
-      summarizer: { category: "summarization", agent: "fake", mode: "readOnly" }
+      discoverer: { category: "coordination", agent: "fake", mode: "readOnly" }
     },
     limits: { maxAgents: 2, maxConcurrency: 1, maxFanoutItems: 4, maxFixRounds: 0, stageTimeoutMinutes: 1 },
     stages: [
       { id: "discover", kind: "discover", method: "agent", role: "discoverer", output: "items", prompt: "Discover items" },
       { id: "reduce", kind: "reduce", mode: "program", from: "discover", operation: "severitySummary", dependsOn: ["discover"] },
-      { id: "summarize", kind: "summarize", role: "summarizer", dependsOn: ["reduce"], prompt: "Summarize" }
+      { id: "gate", kind: "gate", dependsOn: ["reduce"] }
     ]
   });
 }
@@ -108,15 +106,14 @@ function agentDecisionSpec(cwd: string): WorkflowSpec {
     inputs: { cwd: { type: "path", default: cwd } },
     roles: {
       decider: { category: "validation", agent: "fake", mode: "readOnly" },
-      worker: { category: "coordination", agent: "fake", mode: "readOnly" },
-      summarizer: { category: "summarization", agent: "fake", mode: "readOnly" }
+      worker: { category: "coordination", agent: "fake", mode: "readOnly" }
     },
     limits: { maxAgents: 4, maxConcurrency: 1, maxFanoutItems: 1, maxFixRounds: 0, stageTimeoutMinutes: 1 },
     stages: [
       { id: "decide", kind: "decisionGate", mode: "agent", role: "decider", prompt: "Pick a route", rules: [{ when: { source: "input.cwd", op: "exists" }, to: "left" }], default: "right", routes: ["left", "right"] },
       { id: "left", kind: "agentTask", role: "worker", dependsOn: ["decide"], prompt: "Left" },
       { id: "right", kind: "agentTask", role: "worker", dependsOn: ["decide"], prompt: "Right" },
-      { id: "summarize", kind: "summarize", role: "summarizer", dependsOn: ["left"], prompt: "Summarize" }
+      { id: "gate", kind: "gate", dependsOn: ["left", "right"], condition: { any: [{ source: "outputs.left", op: "exists" }, { source: "outputs.right", op: "exists" }] } }
     ]
   });
 }
@@ -129,8 +126,7 @@ function fixLoopSpec(cwd: string): WorkflowSpec {
     inputs: { cwd: { type: "path", default: cwd } },
     roles: {
       validator: { category: "validation", agent: "fake", mode: "readOnly" },
-      implementer: { category: "implementation", agent: "fake", mode: "edit" },
-      summarizer: { category: "summarization", agent: "fake", mode: "readOnly" }
+      implementer: { category: "implementation", agent: "fake", mode: "edit" }
     },
     limits: { maxAgents: 4, maxConcurrency: 1, maxFanoutItems: 1, maxFixRounds: 2, stageTimeoutMinutes: 1 },
     stages: [
@@ -144,7 +140,7 @@ function fixLoopSpec(cwd: string): WorkflowSpec {
         onUnknown: "blocked",
         onExhausted: "blocked"
       },
-      { id: "summarize", kind: "summarize", role: "summarizer", dependsOn: ["quality_loop"], prompt: "Summarize" }
+      { id: "gate", kind: "gate", dependsOn: ["quality_loop"] }
     ]
   });
 }

@@ -83,8 +83,8 @@ export function topologicalOrder(spec: WorkflowSpec): string[] {
 }
 
 export function stageRoleName(stage: Stage): string | undefined {
-  if (stage.kind === "agentTask" || stage.kind === "fanout" || stage.kind === "summarize") return stage.role;
-  if (stage.kind === "discover" || stage.kind === "reduce" || stage.kind === "decisionGate") return stage.role;
+  if (stage.kind === "agentTask" || stage.kind === "fanout") return stage.role;
+  if (stage.kind === "discover" || stage.kind === "reduce" || stage.kind === "decisionGate" || stage.kind === "gate") return stage.role;
   return undefined;
 }
 
@@ -159,6 +159,15 @@ function executionPlanStage(
         rules: stage.rules,
         defaultRoute: stage.default,
         routes: stage.routes ?? [...stage.rules.map((rule) => rule.to), stage.default]
+      }
+    };
+  }
+  if (stage.kind === "gate") {
+    return {
+      ...base,
+      gate: {
+        mode: stage.mode,
+        condition: stage.condition
       }
     };
   }

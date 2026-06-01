@@ -11,9 +11,10 @@ export const RuntimeErrorCodes = {
   FANOUT_ITEM_UNSTARTED_TIMEOUT: "FANOUT_ITEM_UNSTARTED_TIMEOUT",
   FANOUT_STAGE_STUCK_PENDING_BATCH: "FANOUT_STAGE_STUCK_PENDING_BATCH",
   RUN_INDEX_OUTPUT_MISMATCH: "RUN_INDEX_OUTPUT_MISMATCH",
-  FINAL_VERDICT_BLOCKED: "FINAL_VERDICT_BLOCKED",
-  FINAL_VERDICT_FAILED: "FINAL_VERDICT_FAILED",
-  FINAL_VERDICT_UNKNOWN: "FINAL_VERDICT_UNKNOWN",
+  GATE_CONDITION_FAILED: "GATE_CONDITION_FAILED",
+  GATE_VERDICT_BLOCKED: "GATE_VERDICT_BLOCKED",
+  GATE_VERDICT_FAILED: "GATE_VERDICT_FAILED",
+  GATE_VERDICT_UNKNOWN: "GATE_VERDICT_UNKNOWN",
   LIMIT_AGENT_BUDGET_EXHAUSTED: "LIMIT_AGENT_BUDGET_EXHAUSTED"
 } as const;
 
@@ -141,7 +142,7 @@ export type RunIndex = {
     repairCalls: number;
     recoveryCalls: number;
   };
-  finalVerdict?: "success" | "success_with_warnings" | "blocked" | "failed" | "unknown";
+  gateVerdict?: "pass" | "pass_with_warnings" | "blocked" | "failed" | "unknown";
   blockedReason?: string;
   resumePolicy?: {
     fanout?: Record<string, {

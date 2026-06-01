@@ -28,6 +28,7 @@ export function lintWorkflowSpec(spec: WorkflowSpec): OrchestratorIssue[] {
   issues.push(...lintVariables(spec, stages));
   issues.push(...lintLimits(spec));
   issues.push(...lintDecisionGates(spec, stages));
+  issues.push(...lintGates(spec));
   issues.push(...lintDiscover(spec));
   issues.push(...lintFanout(spec, stages));
   issues.push(...validateInputDefaults(spec));
@@ -73,27 +74,37 @@ function lintGraph(spec: WorkflowSpec, stages: Map<string, Stage>): Orchestrator
     }));
   }
 
-  const summarize = spec.stages.filter((stage) => stage.kind === "summarize");
-  if (summarize.length !== 1) {
+  const gate = spec.stages.filter((stage) => stage.kind === "gate");
+  if (gate.length !== 1) {
     issues.push(issue({
-      code: "GRAPH_SUMMARIZE_COUNT_INVALID",
+      code: "GRAPH_GATE_COUNT_INVALID",
       severity: "error",
       path: "/stages",
-      message: `Workflow must have exactly one summarize stage; found ${summarize.length}.`,
-      suggestions: ["Add exactly one final summarize stage with role summarizer."]
+      message: `Workflow must have exactly one gate stage; found ${gate.length}.`,
+      suggestions: ["Add exactly one final gate stage as the terminal completion signal."]
     }));
   }
-  if (summarize.length === 1) {
-    const summarizerDependents = spec.stages.filter((stage) => (stage.dependsOn ?? []).includes(summarize[0].id));
-    if (summarizerDependents.length > 0) {
+  if (gate.length === 1) {
+    const gateDependents = spec.stages.filter((stage) => (stage.dependsOn ?? []).includes(gate[0].id));
+    if (gateDependents.length > 0) {
       issues.push(issue({
-        code: "GRAPH_SUMMARIZE_NOT_TERMINAL",
+        code: "GRAPH_GATE_NOT_TERMINAL",
         severity: "error",
         path: "/stages",
-        message: `Summarize stage ${summarize[0].id} must be terminal, but ${summarizerDependents.length} stage(s) depend on it.`,
-        suggestions: ["Move all downstream work before summarize; summarize is the final normal-completion stage."]
+        message: `Gate stage ${gate[0].id} must be terminal, but ${gateDependents.length} stage(s) depend on it.`,
+        suggestions: ["Move all downstream work before the terminal gate."]
       }));
     }
+  }
+  const summarize = spec.stages.filter((stage) => stage.kind === "summarize");
+  for (const summarizeStage of summarize) {
+    issues.push(issue({
+      code: "GRAPH_SUMMARIZE_DEPRECATED",
+      severity: "error",
+      path: "/stages",
+      message: `Summarize stage ${summarizeStage.id} is no longer a supported terminal stage.`,
+      suggestions: ["Replace summarize with a terminal gate stage. Use mode program for mechanical completion checks or mode agent for semantic gating."]
+    }));
   }
 
   for (let index = 0; index < spec.stages.length; index += 1) {
@@ -152,6 +163,15 @@ function lintGraph(spec: WorkflowSpec, stages: Map<string, Stage>): Orchestrator
         suggestions: ["Insert an explicit decisionGate before branching, or restructure the workflow as a linear sequence/reduce."]
       }));
     }
+    if (next.length === 0 && stage.kind !== "gate") {
+      issues.push(issue({
+        code: "GRAPH_NON_GATE_TERMINAL",
+        severity: "error",
+        path: "/stages",
+        message: `Stage ${stage.id} is terminal, but only gate may be the terminal workflow stage.`,
+        suggestions: ["Add a terminal gate depending on this stage, or move downstream work before the existing gate."]
+      }));
+    }
   }
   return issues;
 }
@@ -172,15 +192,32 @@ function lintRoles(spec: WorkflowSpec, stages: Map<string, Stage>): Orchestrator
         }));
       }
     }
-    if (stage.kind === "summarize") {
-      const role = spec.roles.summarizer;
-      if (!role || role.category !== "summarization" || role.mode !== "readOnly") {
+    if (stage.kind === "gate" && stage.mode === "agent") {
+      if (!stage.role) {
         issues.push(issue({
-          code: "ROLE_SUMMARIZER_INVALID",
+          code: "ROLE_GATE_REQUIRED",
           severity: "error",
-          path: "/roles/summarizer",
-          message: "Summarize stage requires /roles/summarizer with category summarization and mode readOnly.",
-          suggestions: ["Add roles.summarizer with category summarization, agent claude, and mode readOnly."]
+          path: `/stages/${index}/role`,
+          message: `Agent gate stage ${stage.id} requires a role.`,
+          suggestions: ["Add a readOnly validation, review, coordination, or summarization role."]
+        }));
+      }
+      if (!stage.prompt) {
+        issues.push(issue({
+          code: "GATE_AGENT_PROMPT_REQUIRED",
+          severity: "error",
+          path: `/stages/${index}/prompt`,
+          message: `Agent gate stage ${stage.id} requires a prompt.`,
+          suggestions: ["Add a prompt that instructs the agent to return a gate verdict."]
+        }));
+      }
+      if (stage.role && spec.roles[stage.role]?.mode === "edit") {
+        issues.push(issue({
+          code: "ROLE_MODE_CONFLICT",
+          severity: "error",
+          path: `/stages/${index}/role`,
+          message: `Agent gate stage ${stage.id} must not use an edit role.`,
+          suggestions: ["Use a readOnly or denyAll role for terminal gate decisions."]
         }));
       }
     }
@@ -455,6 +492,24 @@ function lintDecisionGates(spec: WorkflowSpec, stages: Map<string, Stage>): Orch
   return issues;
 }
 
+function lintGates(spec: WorkflowSpec): OrchestratorIssue[] {
+  const issues: OrchestratorIssue[] = [];
+  for (let index = 0; index < spec.stages.length; index += 1) {
+    const stage = spec.stages[index];
+    if (stage.kind !== "gate") continue;
+    if (stage.mode === "program" && !stage.condition && (stage.dependsOn ?? []).length !== 1) {
+      issues.push(issue({
+        code: "GATE_PROGRAM_CONDITION_REQUIRED",
+        severity: "error",
+        path: `/stages/${index}`,
+        message: `Program gate ${stage.id} without an explicit condition must have exactly one upstream dependency.`,
+        suggestions: ["Add a condition, or make the gate depend on exactly one upstream stage."]
+      }));
+    }
+  }
+  return issues;
+}
+
 function lintFanout(spec: WorkflowSpec, stages: Map<string, Stage>): OrchestratorIssue[] {
   const issues: OrchestratorIssue[] = [];
   for (let index = 0; index < spec.stages.length; index += 1) {
@@ -480,7 +535,7 @@ function lintFanout(spec: WorkflowSpec, stages: Map<string, Stage>): Orchestrato
           severity: "error",
           path: `/stages/${index}`,
           message: `Edit fanout ${stage.id} must be followed by a readOnly reduce/reconcile stage.`,
-          suggestions: [`Add a reduce stage with from "${stage.id}" and a readOnly role before summarize.`]
+          suggestions: [`Add a reduce stage with from "${stage.id}" and a readOnly role before gate.`]
         }));
       }
     }
@@ -548,6 +603,8 @@ function stageRoles(stage: Stage): string[] {
     case "reduce":
       return stage.role ? [stage.role] : [];
     case "decisionGate":
+      return stage.role ? [stage.role] : [];
+    case "gate":
       return stage.role ? [stage.role] : [];
     case "fixLoop":
       return [stage.validator.role, stage.fixer.role];

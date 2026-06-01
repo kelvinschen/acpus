@@ -10,7 +10,7 @@ describe("RunView", () => {
     const view = previewRunView(spec);
     expect(view.workflowName).toBe("simple-feature");
     expect(view.status).toBe("pending");
-    expect(view.stages.map((stage) => stage.id)).toContain("summarize");
-    expect(view.agentUsage.planned).toBe(4);
+    expect(view.stages.map((stage) => stage.id)).toContain("gate");
+    expect(view.agentUsage.planned).toBe(3);
   });
 });

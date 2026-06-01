@@ -33,18 +33,20 @@ Supported role-category contracts include:
 - validation or review output: verdict, severity counts, findings, and checks;
 - decision output: selected route and routing rationale for decision gates;
 - discover output: discovered items under the stage output key, bounded by discover options when configured;
-- summarize output: `finalVerdict`, deliverables, changed files, checks, warnings, risks, and next actions.
+- gate output: `verdict`, deliverables, changed files, checks, warnings, risks, and next actions;
 - diagnostic output: read-only recovery guidance, diagnostics, and next actions for diagnose flows.
 
 Stage kinds select output contract names as follows:
 
 - `decisionGate` selects `decision`;
 - `discover` selects `discover`;
-- `summarize` selects `summarization`;
+- `gate` selects `gate`;
 - implementation roles select `implementation`;
 - validation and review roles select `validation`;
 - diagnostic runtime units select `diagnostic`;
 - other stages select `base`.
+
+Gate output verdicts MUST be one of `pass`, `pass_with_warnings`, `blocked`, `failed`, or `unknown`. Gate outputs MUST use `status: "completed"` with pass verdicts and `status: "blocked"` with blocked, failed, or unknown verdicts.
 
 Output parser diagnostics include parse failure, schema failure, candidate information, and repair failure codes suitable for report surfaces and Main Agent repair loops.
 

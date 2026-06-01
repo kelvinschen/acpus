@@ -58,7 +58,7 @@ stage id, and authoring stage kinds:
 - `reduce`
 - `fixLoop`
 - `decisionGate`
-- `summarize`
+- `gate`
 
 Prompt text is freeform, but variables are explicit and interpolated as
 `${variableName}`. Agent outputs should end with one plain JSON object; the

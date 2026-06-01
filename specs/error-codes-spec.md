@@ -38,7 +38,7 @@ Repair-oriented JSON output uses this shape:
 Stable code families:
 
 - `SCHEMA_*`: JSON shape, version, file read, declared input, or runtime input errors.
-- `GRAPH_*`: root, dependency, cycle, branching, or summarize-terminal errors.
+- `GRAPH_*`: root, dependency, cycle, branching, deprecated summarize, or terminal gate errors.
 - `VARIABLE_*`: prompt placeholder and variable source errors.
 - `ROLE_*`: unknown role or role/mode conflict.
 - `LIMIT_*`: global hard limit or stage-limit errors.
@@ -66,9 +66,10 @@ Stable runtime run-level codes:
 - `RUN_INDEX_OUTPUT_MISMATCH`
 - `AGENT_RUNTIME_ERROR`
 - `FANOUT_ITEM_RUNTIME_ERROR`
-- `FINAL_VERDICT_BLOCKED`
-- `FINAL_VERDICT_FAILED`
-- `FINAL_VERDICT_UNKNOWN`
+- `GATE_CONDITION_FAILED`
+- `GATE_VERDICT_BLOCKED`
+- `GATE_VERDICT_FAILED`
+- `GATE_VERDICT_UNKNOWN`
 - `LIMIT_AGENT_BUDGET_EXHAUSTED`
 
 Stable command and turn diagnostics:
@@ -83,7 +84,7 @@ Error data includes stable code, severity, JSON Pointer path, human-readable mes
 
 ## Runtime Behavior
 
-Validation and compiler errors reject invalid specs before execution. Output parser errors block the affected attempt/stage/run and remain repair-oriented. ACPX runtime errors receive the runtime retry behavior defined by the runtime SPEC. Persistence lock timeouts and run-index/output mismatches are surfaced as stable runtime diagnostics. Final verdict codes convert completed summarizer outputs into run-level blocked outcomes when the summarizer returns blocked, failed, or unknown verdicts.
+Validation and compiler errors reject invalid specs before execution. Output parser errors block the affected attempt/stage/run and remain repair-oriented. ACPX runtime errors receive the runtime retry behavior defined by the runtime SPEC. Persistence lock timeouts and run-index/output mismatches are surfaced as stable runtime diagnostics. Gate verdict codes convert terminal gate outputs into run-level blocked outcomes when the gate returns blocked, failed, or unknown verdicts. `GATE_CONDITION_FAILED` blocks a run when a program gate condition evaluates false.
 
 ## Extension Points
 

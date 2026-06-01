@@ -27,6 +27,9 @@ The runtime orchestrator is the authoritative workflow driver. It executes compi
 - Blocked fanout stages MUST be re-aggregated from existing item outputs when partial fanout is allowed, without rerunning completed items.
 - Blocked or failed non-fanout stages MAY be reset to pending for retry by the next scheduler tick.
 - The scheduler MUST terminalize ready agent work as blocked when `agentUsage.actual` has reached `limits.maxAgents`.
+- Program gate stages MUST advance deterministically, and agent gate stages MUST run through the normal agent attempt pipeline.
+- Terminal gate dependencies MAY treat skipped upstream decision branches as satisfied; other stage dependencies MUST require completed upstream stages.
+- Gate verdicts `pass` and `pass_with_warnings` MUST complete a run, while `blocked`, `failed`, and `unknown` MUST block a run without using runtime `failed`.
 - `fixLoop` stages MUST run validator and fixer turns through the same ACPX runtime attempt pipeline used by other agent work.
 - `fixLoop` validator attempts MUST use the validator role/session key, and fixer attempts MUST use the fixer role/session key.
 - `fixLoop` MUST stop when validation passes, when validator output is unknown, or when `maxRounds` is exhausted.
@@ -52,7 +55,7 @@ Runtime commands are exposed through `run`, `follow`, `resume`, and `diagnose` C
 
 ## Data Model
 
-The runtime data model includes a logical run, compiled execution plan, stage states, attempts, fanout item attempts, fix-loop validator/fixer attempts, output artifacts, event stream, role/session bindings, ACPX session state, usage accounting, final verdict, blocked reason, and diagnostics.
+The runtime data model includes a logical run, compiled execution plan, stage states, attempts, fanout item attempts, fix-loop validator/fixer attempts, output artifacts, event stream, role/session bindings, ACPX session state, usage accounting, gate verdict, blocked reason, and diagnostics.
 
 Terminal workflow outcomes are represented in the run index. Output-contract failures block attempts, stages, and runs; infrastructure or unrecoverable runtime errors fail attempts, stages, or runs.
 
@@ -63,6 +66,8 @@ The scheduler determines ready stages from persisted state and dependency comple
 Fanout executes independent item work under concurrency limits. Item failures are localized and represented as item-level results when possible. Aggregation occurs before downstream stages run.
 
 Fix-loop execution is round-based. Each round starts with a validator attempt using the validation output contract. A fix-triggering validator result starts a fixer attempt using the implementation output contract when another round is available. Passing validation completes the stage. Unknown validation or exhausted rounds block the stage.
+
+Gate execution is terminal. Program gates evaluate their condition or default upstream-exists check and write a gate output without an agent turn. Agent gates use the gate output contract. The scheduler promotes the gate output verdict into `run.json.gateVerdict` and derives the terminal run status from it.
 
 Observation-only surfaces, including `follow` and report serving, sync existing artifacts with `startPending: false` semantics and do not launch new workflow work unless the command is explicitly a run/resume path.
 

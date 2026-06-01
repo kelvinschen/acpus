@@ -18,6 +18,6 @@ export function registerFollow(program: Command): void {
       const spec = WorkflowSpecSchema.parse(JSON.parse(await fs.readFile(path.join(runDir(locator.runId, locator.cwd), "workflow.spec.json"), "utf8")));
       const view = await runViewFromIndex(locator.cwd, spec, index);
       if (options.json) printJson(view);
-      else process.stdout.write(`run ${locator.runId} status=${view.status} workflow=${view.workflowName}${view.finalVerdict ? ` verdict=${view.finalVerdict}` : ""}\n`);
+      else process.stdout.write(`run ${locator.runId} status=${view.status} workflow=${view.workflowName}${view.gateVerdict ? ` verdict=${view.gateVerdict}` : ""}\n`);
     });
 }

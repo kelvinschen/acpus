@@ -65,10 +65,10 @@ describe("compiler lint", () => {
     expect(issues.map((entry) => entry.code)).toContain("LIMIT_MAX_AGENTS_EXCEEDED");
   });
 
-  it("requires decision targets to be downstream of the gate", () => {
+  it("requires decision targets to be downstream of the decision gate", () => {
     const spec = example("simple-feature.workflow.spec.json");
     spec.stages.splice(2, 0, {
-      id: "gate",
+      id: "decide",
       kind: "decisionGate",
       mode: "program",
       dependsOn: ["implement"],
@@ -77,6 +77,30 @@ describe("compiler lint", () => {
     });
     const issues = lintWorkflowSpec(spec);
     expect(issues.map((entry) => entry.code)).toContain("DECISION_TARGET_DEPENDENCY_UNSATISFIED");
+  });
+
+  it("requires exactly one terminal gate", () => {
+    const spec = example("simple-feature.workflow.spec.json");
+    spec.stages = spec.stages.filter((stage) => stage.kind !== "gate");
+    const issues = lintWorkflowSpec(spec);
+    expect(issues.map((entry) => entry.code)).toContain("GRAPH_GATE_COUNT_INVALID");
+    expect(issues.map((entry) => entry.code)).toContain("GRAPH_NON_GATE_TERMINAL");
+  });
+
+  it("rejects deprecated summarize stages with migration guidance", () => {
+    const spec = example("simple-feature.workflow.spec.json");
+    spec.stages.push({ id: "legacy_summary", kind: "summarize", role: "summarizer", dependsOn: ["gate"], prompt: "legacy" });
+    const issues = lintWorkflowSpec(spec);
+    expect(issues.map((entry) => entry.code)).toContain("GRAPH_SUMMARIZE_DEPRECATED");
+  });
+
+  it("requires explicit conditions for ambiguous program gates", () => {
+    const spec = example("simple-feature.workflow.spec.json");
+    const gate = spec.stages.find((stage) => stage.kind === "gate");
+    if (gate?.kind !== "gate") throw new Error("missing gate");
+    gate.dependsOn = ["plan", "implement"];
+    const issues = lintWorkflowSpec(spec);
+    expect(issues.map((entry) => entry.code)).toContain("GATE_PROGRAM_CONDITION_REQUIRED");
   });
 
   it("validates fixLoop validator and fixer prompt variables", () => {

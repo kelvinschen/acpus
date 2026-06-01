@@ -24,7 +24,7 @@ export type RunView = {
   logicalRunId?: string;
   workflowName: string;
   status: RunViewStatus;
-  finalVerdict?: "success" | "success_with_warnings" | "blocked" | "failed" | "unknown";
+  gateVerdict?: "pass" | "pass_with_warnings" | "blocked" | "failed" | "unknown";
   blockedReason?: string;
   summary: string;
   checks: Array<{ command?: string; name?: string; status?: string; summary?: string }>;
@@ -86,8 +86,8 @@ export function previewRunView(spec: WorkflowSpec, issues: OrchestratorIssue[] =
 
 export async function runViewFromIndex(cwd: string, spec: WorkflowSpec, index: RunIndex, issues: OrchestratorIssue[] = []): Promise<RunView> {
   const stageOutputs = await readStageOutputs(cwd, index.logicalRunId, spec);
-  const summarizeStage = spec.stages.find((stage) => stage.kind === "summarize")?.id;
-  const finalOutput = summarizeStage ? stageOutputs[summarizeStage] : undefined;
+  const gateStage = spec.stages.find((stage) => stage.kind === "gate")?.id;
+  const finalOutput = gateStage ? stageOutputs[gateStage] : undefined;
   const final = objectRecord(finalOutput);
   const artifacts = Object.values(stageOutputs)
     .flatMap((output) => Array.isArray(objectRecord(output)?.artifacts) ? objectRecord(output)?.artifacts as Array<{ kind?: string; path?: string; label?: string }> : []);
@@ -100,7 +100,7 @@ export async function runViewFromIndex(cwd: string, spec: WorkflowSpec, index: R
     logicalRunId: index.logicalRunId,
     workflowName: index.workflowName,
     status: index.status,
-    finalVerdict: index.finalVerdict ?? finalVerdict(final),
+    gateVerdict: index.gateVerdict ?? gateVerdict(final),
     blockedReason: index.blockedReason,
     summary: typeof final?.summary === "string" ? final.summary : (index.blockedReason ?? spec.description ?? ""),
     checks,
@@ -142,7 +142,8 @@ export async function runViewFromIndex(cwd: string, spec: WorkflowSpec, index: R
 export function estimateAgentCalls(spec: WorkflowSpec): number {
   let baseCalls = 0;
   for (const stage of spec.stages) {
-    if (stage.kind === "agentTask" || stage.kind === "summarize") baseCalls += 1;
+    if (stage.kind === "agentTask") baseCalls += 1;
+    if (stage.kind === "gate" && stage.mode === "agent") baseCalls += 1;
     if (stage.kind === "discover" && stage.method === "agent") baseCalls += 1;
     if (stage.kind === "reduce" && stage.mode === "agent") baseCalls += 1;
     if (stage.kind === "decisionGate" && stage.mode === "agent") baseCalls += 1;
@@ -215,9 +216,9 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
-function finalVerdict(output?: Record<string, unknown>): RunView["finalVerdict"] | undefined {
-  const value = output?.finalVerdict;
-  if (value === "success" || value === "success_with_warnings" || value === "blocked" || value === "failed" || value === "unknown") return value;
+function gateVerdict(output?: Record<string, unknown>): RunView["gateVerdict"] | undefined {
+  const value = output?.verdict;
+  if (value === "pass" || value === "pass_with_warnings" || value === "blocked" || value === "failed" || value === "unknown") return value;
   return undefined;
 }
 

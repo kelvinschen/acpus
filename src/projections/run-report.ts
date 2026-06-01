@@ -38,7 +38,7 @@ export type RunReportView = {
     logicalRunId: string;
     workflowName: string;
     status: RunViewStatus;
-    finalVerdict?: RunIndex["finalVerdict"];
+    gateVerdict?: RunIndex["gateVerdict"];
     blockedReason?: string;
     createdAt: string;
     updatedAt: string;
@@ -114,7 +114,6 @@ export type ReportStageDetail = {
     keys: string[];
     status?: string;
     verdict?: string;
-    finalVerdict?: string;
     findingsCount?: number;
     checksCount?: number;
     artifactsCount?: number;
@@ -248,7 +247,7 @@ export async function buildRunReportView(
       logicalRunId: index.logicalRunId,
       workflowName: index.workflowName,
       status: index.status,
-      finalVerdict: index.finalVerdict,
+      gateVerdict: index.gateVerdict,
       blockedReason: index.blockedReason,
       createdAt: index.createdAt,
       updatedAt: index.updatedAt,
@@ -633,7 +632,7 @@ function buildRecoverySucceededWithBlockedVerdictDiagnostic(
   index: RunIndex,
   limits: typeof DEFAULT_LIMITS
 ): ReportDiagnostic | undefined {
-  if (!isBlockedFinalVerdictCode(index.blockedReason) || !index.finalVerdict) return undefined;
+  if (!isBlockedGateVerdictCode(index.blockedReason) || !index.gateVerdict) return undefined;
   const recoveredFanoutStages = Object.values(index.stages).filter((stage) => {
     if (!stage.fanout) return false;
     if (stage.fanout.items.some((item) => item.status === "running" || item.status === "pending" || item.status === "ready")) return false;
@@ -645,10 +644,10 @@ function buildRecoverySucceededWithBlockedVerdictDiagnostic(
   });
   if (recoveredFanoutStages.length === 0) return undefined;
   const stageIds = recoveredFanoutStages.map((stage) => stage.stageId);
-  const summary = `Scheduler recovery completed for fanout stage(s) ${stageIds.join(", ")}, but workflow verdict remains ${index.finalVerdict}.`;
+  const summary = `Scheduler recovery completed for fanout stage(s) ${stageIds.join(", ")}, but workflow gate verdict remains ${index.gateVerdict}.`;
   const raw = {
     code: ReportDiagnosticCodes.SCHEDULER_RECOVERY_SUCCEEDED_WITH_BLOCKED_VERDICT,
-    finalVerdict: index.finalVerdict,
+    gateVerdict: index.gateVerdict,
     blockedReason: index.blockedReason,
     recoveredFanoutStages: stageIds
   };
@@ -676,17 +675,18 @@ async function readTextLengthIfExists(filePath: string): Promise<number | undefi
 }
 
 function isRunLevelRuntimeCode(value: string): boolean {
-  return value === RuntimeErrorCodes.FINAL_VERDICT_BLOCKED
-    || value === RuntimeErrorCodes.FINAL_VERDICT_FAILED
-    || value === RuntimeErrorCodes.FINAL_VERDICT_UNKNOWN
+  return value === RuntimeErrorCodes.GATE_CONDITION_FAILED
+    || value === RuntimeErrorCodes.GATE_VERDICT_BLOCKED
+    || value === RuntimeErrorCodes.GATE_VERDICT_FAILED
+    || value === RuntimeErrorCodes.GATE_VERDICT_UNKNOWN
     || value === RuntimeErrorCodes.LIMIT_AGENT_BUDGET_EXHAUSTED
     || value === RuntimeErrorCodes.AGENT_RUNTIME_ERROR;
 }
 
-function isBlockedFinalVerdictCode(value: string | undefined): boolean {
-  return value === RuntimeErrorCodes.FINAL_VERDICT_BLOCKED
-    || value === RuntimeErrorCodes.FINAL_VERDICT_FAILED
-    || value === RuntimeErrorCodes.FINAL_VERDICT_UNKNOWN;
+function isBlockedGateVerdictCode(value: string | undefined): boolean {
+  return value === RuntimeErrorCodes.GATE_VERDICT_BLOCKED
+    || value === RuntimeErrorCodes.GATE_VERDICT_FAILED
+    || value === RuntimeErrorCodes.GATE_VERDICT_UNKNOWN;
 }
 
 function runLevelBlockedSummary(index: RunIndex): string {
@@ -694,9 +694,10 @@ function runLevelBlockedSummary(index: RunIndex): string {
     return `Ready agent work could not start because actual agent calls reached limits.maxAgents (${index.agentUsage.actual}/${index.agentUsage.planned}).`;
   }
   if (index.blockedReason === RuntimeErrorCodes.AGENT_RUNTIME_ERROR) return "Agent runtime failed after one retry.";
-  if (index.finalVerdict === "blocked") return "Summarizer returned finalVerdict=blocked.";
-  if (index.finalVerdict === "failed") return "Summarizer returned finalVerdict=failed.";
-  return "Summarizer returned finalVerdict=unknown.";
+  if (index.blockedReason === RuntimeErrorCodes.GATE_CONDITION_FAILED) return "Program gate condition failed.";
+  if (index.gateVerdict === "blocked") return "Gate returned verdict=blocked.";
+  if (index.gateVerdict === "failed") return "Gate returned verdict=failed.";
+  return "Gate returned verdict=unknown.";
 }
 
 function runtimeDiagnostic(input: {
@@ -765,8 +766,8 @@ async function readJsonIfExists(filePath: string): Promise<Record<string, unknow
 }
 
 function stageRoleName(stage: Stage): string | undefined {
-  if (stage.kind === "agentTask" || stage.kind === "fanout" || stage.kind === "summarize") return stage.role;
-  if (stage.kind === "discover" || stage.kind === "reduce" || stage.kind === "decisionGate") return stage.role;
+  if (stage.kind === "agentTask" || stage.kind === "fanout") return stage.role;
+  if (stage.kind === "discover" || stage.kind === "reduce" || stage.kind === "decisionGate" || stage.kind === "gate") return stage.role;
   if (stage.kind === "fixLoop") return stage.validator.role;
   return undefined;
 }
@@ -783,7 +784,6 @@ function outputShape(output: Record<string, unknown> | undefined): ReportStageDe
     keys: Object.keys(output),
     status: stringField(output, "status"),
     verdict: stringField(output, "verdict"),
-    finalVerdict: stringField(output, "finalVerdict"),
     findingsCount: Array.isArray(output.findings) ? output.findings.length : undefined,
     checksCount: Array.isArray(output.checks) ? output.checks.length : undefined,
     artifactsCount: Array.isArray(output.artifacts) ? output.artifacts.length : undefined

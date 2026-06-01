@@ -97,10 +97,10 @@ export function schemaDescriptor(name: OutputContractName, options: OutputContra
       [options.outputKey ?? "items"]: "array"
     };
   }
-  if (name === "summarize") {
+  if (name === "gate") {
     return {
       ...base,
-      finalVerdict: '"success" | "success_with_warnings" | "blocked" | "failed" | "unknown"',
+      verdict: '"pass" | "pass_with_warnings" | "blocked" | "failed" | "unknown"',
       deliverables: "string[]",
       changedFiles: "string[]",
       checks: 'Array<{ command?: string; name?: string; status: "pass" | "fail" | "skipped" | "unknown"; summary?: string }>',
