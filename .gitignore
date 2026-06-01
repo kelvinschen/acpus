@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+**/node_modules/
+.pnpm-store/
+
+# Package manager and tool caches
+.cache/
+.turbo/
+.vite/
+.eslintcache
+*.tsbuildinfo
+
+# Logs and local process output
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment and machine-local config
+.env
+.env.*
+!.env.example
+.DS_Store
+.idea/
+.vscode/
+
+# Local ACPX runtime state and generated reports
+**/.acpx/
+**/.acpx-workflow-orchestrator/runs/
+**/.acpx-workflow-orchestrator/drafts/
+**/.acpx-workflow-orchestrator/review-html-report/
+dist/
+test-results/
+playwright-report/

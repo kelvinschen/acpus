@@ -1,0 +1,70 @@
+{
+  "schemaVersion": "acpx-workflow-orchestrator.workflow/v1",
+  "name": "review-only-fanout",
+  "description": "Discover changed files, fan out read-only review, reduce findings, and summarize.",
+  "root": "discover_changed_files",
+  "inputs": {
+    "task": { "type": "string", "default": "Review changed TypeScript files." },
+    "cwd": { "type": "path", "default": "." }
+  },
+  "roles": {
+    "validator": { "category": "validation", "agent": "aiden", "mode": "readOnly" },
+    "reviewer": { "category": "review", "agent": "aiden", "mode": "readOnly" },
+    "summarizer": { "category": "summarization", "agent": "claude", "mode": "readOnly" }
+  },
+  "limits": {
+    "maxAgents": 28,
+    "maxConcurrency": 4,
+    "maxFanoutItems": 12,
+    "maxFixRounds": 0,
+    "stageTimeoutMinutes": 45
+  },
+  "stages": [
+    {
+      "id": "discover_changed_files",
+      "kind": "discover",
+      "method": "gitChangedFiles",
+      "args": {
+        "scope": ["**/*.ts"],
+        "exclude": ["**/node_modules/**"]
+      },
+      "output": "files"
+    },
+    {
+      "id": "review_files",
+      "kind": "fanout",
+      "role": "validator",
+      "dependsOn": ["discover_changed_files"],
+      "items": { "source": "outputs.discover_changed_files.files" },
+      "limits": { "maxConcurrency": 4 },
+      "fanoutPolicy": { "allowPartial": true, "minCompletedRatio": 0.8, "maxBlockedItems": 2 },
+      "variables": [
+        { "name": "task", "source": "input.task" },
+        { "name": "file", "source": "item.path", "transform": [{ "fn": "default", "args": { "value": "(unknown item)" } }] }
+      ],
+      "prompt": "Review this file for task-relevant issues.\n\nTask:\n${task}\n\nFile:\n${file}"
+    },
+    {
+      "id": "reduce_findings",
+      "kind": "reduce",
+      "mode": "agent",
+      "role": "reviewer",
+      "from": "review_files",
+      "dependsOn": ["review_files"],
+      "variables": [
+        { "name": "results", "source": "outputs.review_files.summary" }
+      ],
+      "prompt": "Merge and deduplicate these review results:\n\n${results}"
+    },
+    {
+      "id": "summarize",
+      "kind": "summarize",
+      "role": "summarizer",
+      "dependsOn": ["reduce_findings"],
+      "variables": [
+        { "name": "summary", "source": "outputs.reduce_findings.summary" }
+      ],
+      "prompt": "Summarize the review-only fanout result:\n\n${summary}"
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "schemaVersion": "acpx-workflow-orchestrator.workflow/v1",
+  "name": "edit-fanout-reconcile",
+  "description": "High-risk example that edits multiple independent items, then reconciles with a read-only reducer.",
+  "root": "edit_items",
+  "inputs": {
+    "task": { "type": "string", "default": "" },
+    "cwd": { "type": "path", "default": "." },
+    "items": { "type": "array<json>", "default": [] }
+  },
+  "roles": {
+    "implementer": { "category": "implementation", "agent": "trae", "mode": "edit" },
+    "reviewer": { "category": "review", "agent": "aiden", "mode": "readOnly" },
+    "summarizer": { "category": "summarization", "agent": "claude", "mode": "readOnly" }
+  },
+  "limits": {
+    "maxAgents": 20,
+    "maxConcurrency": 3,
+    "maxFanoutItems": 8,
+    "maxFixRounds": 0,
+    "stageTimeoutMinutes": 60
+  },
+  "stages": [
+    {
+      "id": "edit_items",
+      "kind": "fanout",
+      "role": "implementer",
+      "items": { "source": "input.items" },
+      "limits": { "maxConcurrency": 3 },
+      "fanoutPolicy": { "allowPartial": false },
+      "variables": [
+        { "name": "task", "source": "input.task" },
+        { "name": "item", "source": "item", "transform": [{ "fn": "json" }] }
+      ],
+      "prompt": "Apply the requested scoped edit for this item only.\n\nTask:\n${task}\n\nItem:\n${item}"
+    },
+    {
+      "id": "reconcile",
+      "kind": "reduce",
+      "mode": "agent",
+      "role": "reviewer",
+      "from": "edit_items",
+      "dependsOn": ["edit_items"],
+      "variables": [
+        { "name": "edits", "source": "outputs.edit_items.summary" }
+      ],
+      "prompt": "Reconcile these parallel edit results. Identify conflicts, blocked items, changed files, and consistency verdict.\n\n${edits}"
+    },
+    {
+      "id": "summarize",
+      "kind": "summarize",
+      "role": "summarizer",
+      "dependsOn": ["reconcile"],
+      "variables": [
+        { "name": "reconcile", "source": "outputs.reconcile.summary" }
+      ],
+      "prompt": "Summarize the edit fanout outcome and highlight any residual risk.\n\n${reconcile}"
+    }
+  ]
+}

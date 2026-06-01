@@ -1,0 +1,56 @@
+{
+  "name": "@kelvinschen/acpx-workflow-orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "acpx-workflow-orchestrator": "dist/cli.mjs"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build": "tsdown && npm run build:web-report",
+    "build:web-report": "vite build --config web-report/vite.config.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run test/unit",
+    "test:integration": "vitest run test/integration",
+    "test:e2e:fake": "vitest run test/e2e/fake",
+    "test:e2e:real": "RUN_REAL_ACPX_E2E=1 vitest run test/e2e/real",
+    "test:report:browser": "playwright test -c test/report-browser/playwright.config.ts",
+    "install:report-browser": "playwright install chromium",
+    "generate:schema": "tsx src/schema/generate-json-schema.ts",
+    "validate": "npm run typecheck && npm run test && npm run generate:schema && npm run build"
+  },
+  "dependencies": {
+    "@xyflow/react": "^12.10.2",
+    "acpx": "^0.10.0",
+    "commander": "^14.0.3",
+    "elkjs": "^0.11.1",
+    "execa": "^9.6.1",
+    "fast-glob": "^3.3.3",
+    "jsonrepair": "^3.14.0",
+    "kleur": "^4.1.5",
+    "lucide-react": "^1.17.0",
+    "proper-lockfile": "^4.1.2",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/node": "^20.19.39",
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.2",
+    "jsdom": "^29.1.1",
+    "tsdown": "^0.22.1",
+    "tsx": "^4.22.3",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.14",
+    "vitest": "^4.1.7"
+  }
+}

@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PACKAGE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+
+if [[ -f "$PACKAGE_ROOT/dist/cli.mjs" ]]; then
+  exec node "$PACKAGE_ROOT/dist/cli.mjs" "$@"
+fi
+
+if [[ -f "$PACKAGE_ROOT/dist/cli.js" ]]; then
+  exec node "$PACKAGE_ROOT/dist/cli.js" "$@"
+fi
+
+if [[ -x "$PACKAGE_ROOT/node_modules/.bin/tsx" ]]; then
+  exec "$PACKAGE_ROOT/node_modules/.bin/tsx" "$PACKAGE_ROOT/src/cli.ts" "$@"
+fi
+
+echo >&2 <<EOM
+acpx-workflow-orchestrator is not built and local dependencies are missing.
+Run:
+  cd "$PACKAGE_ROOT"
+  npm install
+  npm run build
+EOM
+exit 1
