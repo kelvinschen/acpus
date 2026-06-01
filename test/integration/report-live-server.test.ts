@@ -55,7 +55,7 @@ describe("live report server", () => {
 
     const synced = await syncRun(fixture.cwd, fixture.runId, { startPending: false });
 
-    expect(synced.status).toBe("running");
+    expect(synced.status).toBe("pending");
     expect(synced.stages.plan).toMatchObject({ status: "pending" });
     expect(Object.keys(synced.attempts)).toHaveLength(0);
     await expect(fs.stat(path.join(fixture.dir, "events.ndjson"))).resolves.toBeTruthy();

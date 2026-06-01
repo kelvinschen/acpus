@@ -7,8 +7,7 @@ import { runViewFromIndex, type RunView, type RunViewStatus } from "./run-view.j
 
 export const REPORT_VIEW_VERSION = "acpx-workflow-orchestrator.report/v1";
 export const ReportDiagnosticCodes = {
-  SCHEDULER_RECOVERY_SUCCEEDED_WITH_BLOCKED_VERDICT: "SCHEDULER_RECOVERY_SUCCEEDED_WITH_BLOCKED_VERDICT",
-  OUTPUT_MAX_CHARS_EXCEEDED: "OUTPUT_MAX_CHARS_EXCEEDED"
+  SCHEDULER_RECOVERY_SUCCEEDED_WITH_BLOCKED_VERDICT: "SCHEDULER_RECOVERY_SUCCEEDED_WITH_BLOCKED_VERDICT"
 } as const;
 
 const DEFAULT_LIMITS = {
@@ -234,7 +233,6 @@ export async function buildRunReportView(
   const graph = buildGraph(spec, stages);
   const diagnostics = [
     ...await readDiagnostics(dir, limits),
-    ...await buildOutputSizeDiagnostics(dir, spec, attempts, limits),
     ...await buildRuntimeDiagnostics(dir, index, events, limits)
   ];
 
@@ -509,13 +507,14 @@ async function buildRuntimeDiagnostics(dir: string, index: RunIndex, events: Rep
     }));
   }
   for (const stage of Object.values(index.stages)) {
-    if (!stage.fanout && stage.blockedReason === RuntimeErrorCodes.AGENT_RUNTIME_ERROR) {
+    if (!stage.fanout && (stage.blockedReason === RuntimeErrorCodes.AGENT_RUNTIME_ERROR || stage.blockedReason === RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY)) {
       const outputPath = stage.outputPath ? path.join(dir, stage.outputPath) : path.join(dir, "outputs", `${stage.stageId}.json`);
+      const code = stage.blockedReason;
       diagnostics.push(runtimeDiagnostic({
-        code: RuntimeErrorCodes.AGENT_RUNTIME_ERROR,
+        code,
         stageId: stage.stageId,
         path: outputPath,
-        summary: "Agent runtime failed after one retry.",
+        summary: code === RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY ? "Agent stage stale recovery exhausted runtime retry." : "Agent runtime failed after one retry.",
         limits
       }));
     }
@@ -583,50 +582,6 @@ async function buildRuntimeDiagnostics(dir: string, index: RunIndex, events: Rep
   return diagnostics;
 }
 
-async function buildOutputSizeDiagnostics(
-  dir: string,
-  spec: WorkflowSpec,
-  attempts: ReportAttemptDetail[],
-  limits: typeof DEFAULT_LIMITS
-): Promise<ReportDiagnostic[]> {
-  const stageById = new Map(spec.stages.map((stage) => [stage.id, stage]));
-  const byStage = new Map<string, Array<{ id: string; kind: string; rawChars: number; rawPath: string }>>();
-  const stageLimits = new Map<string, number>();
-  for (const attempt of attempts) {
-    if (attempt.parseErrorCode !== "OUTPUT_PARSE_FAILED") continue;
-    const stage = stageById.get(attempt.stageId);
-    const effectiveMaxOutputChars = effectiveMaxOutputCharsForStage(spec, stage);
-    if (effectiveMaxOutputChars === undefined) continue;
-    const rawPath = path.join(dir, attempt.path, "raw.txt");
-    const rawChars = await readTextLengthIfExists(rawPath);
-    if (rawChars === undefined || rawChars <= effectiveMaxOutputChars) continue;
-    const entries = byStage.get(attempt.stageId) ?? [];
-    entries.push({ id: attempt.id, kind: attempt.kind, rawChars, rawPath });
-    byStage.set(attempt.stageId, entries);
-    stageLimits.set(attempt.stageId, effectiveMaxOutputChars);
-  }
-  return [...byStage.entries()].map(([stageId, attemptEntries]) => {
-    const effectiveMaxOutputChars = stageLimits.get(stageId);
-    const summary = `Stage ${stageId} output exceeded effective maxOutputChars (${effectiveMaxOutputChars}).`;
-    const raw = {
-      code: ReportDiagnosticCodes.OUTPUT_MAX_CHARS_EXCEEDED,
-      stageId,
-      effectiveMaxOutputChars,
-      attempts: attemptEntries
-    };
-    return {
-      id: `runtime-${ReportDiagnosticCodes.OUTPUT_MAX_CHARS_EXCEEDED}-${stageId}`,
-      path: attemptEntries[0]?.rawPath ?? path.join(dir, "attempts", stageId),
-      code: ReportDiagnosticCodes.OUTPUT_MAX_CHARS_EXCEEDED,
-      stageId,
-      status: "blocked",
-      summary,
-      raw,
-      preview: makePreview(JSON.stringify(raw, null, 2), limits.outputPreviewChars, attemptEntries[0]?.rawPath)
-    };
-  });
-}
-
 function buildRecoverySucceededWithBlockedVerdictDiagnostic(
   dir: string,
   index: RunIndex,
@@ -638,6 +593,7 @@ function buildRecoverySucceededWithBlockedVerdictDiagnostic(
     if (stage.fanout.items.some((item) => item.status === "running" || item.status === "pending" || item.status === "ready")) return false;
     return stage.fanout.items.some((item) =>
       item.errorCode === RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR
+      || item.errorCode === RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY
       || item.errorCode === RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED
       || item.errorCode === RuntimeErrorCodes.FANOUT_ITEM_UNSTARTED_TIMEOUT
       || item.errorCode === RuntimeErrorCodes.RUN_INDEX_OUTPUT_MISMATCH
@@ -663,25 +619,13 @@ function buildRecoverySucceededWithBlockedVerdictDiagnostic(
   };
 }
 
-function effectiveMaxOutputCharsForStage(spec: WorkflowSpec, stage: Stage | undefined): number | undefined {
-  void stage;
-  return spec.limits.maxOutputChars;
-}
-
-async function readTextLengthIfExists(filePath: string): Promise<number | undefined> {
-  try {
-    return (await fs.readFile(filePath, "utf8")).length;
-  } catch {
-    return undefined;
-  }
-}
-
 function isRunLevelRuntimeCode(value: string): boolean {
   return value === RuntimeErrorCodes.GATE_CONDITION_FAILED
     || value === RuntimeErrorCodes.GATE_VERDICT_BLOCKED
     || value === RuntimeErrorCodes.GATE_VERDICT_FAILED
     || value === RuntimeErrorCodes.GATE_VERDICT_UNKNOWN
     || value === RuntimeErrorCodes.AGENT_RUNTIME_ERROR
+    || value === RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY
     || value === RuntimeErrorCodes.FANOUT_ITEM_BLOCKED;
 }
 
@@ -693,6 +637,7 @@ function isBlockedGateVerdictCode(value: string | undefined): boolean {
 
 function runLevelBlockedSummary(index: RunIndex): string {
   if (index.blockedReason === RuntimeErrorCodes.AGENT_RUNTIME_ERROR) return "Agent runtime failed after one retry.";
+  if (index.blockedReason === RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY) return "Agent stage stale recovery exhausted runtime retry.";
   if (index.blockedReason === RuntimeErrorCodes.FANOUT_ITEM_BLOCKED) return "Fanout stage blocked because one or more items did not complete.";
   if (index.blockedReason === RuntimeErrorCodes.GATE_CONDITION_FAILED) return "Program gate condition failed.";
   if (index.gateVerdict === "blocked") return "Gate returned verdict=blocked.";

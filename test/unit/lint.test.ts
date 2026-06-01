@@ -73,13 +73,10 @@ describe("compiler lint", () => {
     expect(() => WorkflowSpecSchema.parse({ ...spec, limits: { ...spec.limits, maxConcurrency: 2 } })).toThrow();
     expect(() => WorkflowSpecSchema.parse({ ...spec, limits: { ...spec.limits, maxFanoutItems: 2 } })).toThrow();
     expect(() => WorkflowSpecSchema.parse({ ...spec, limits: { ...spec.limits, maxFixRounds: 1 } })).toThrow();
+    expect(() => WorkflowSpecSchema.parse({ ...spec, limits: { ...spec.limits, maxOutputChars: 1000 } })).toThrow();
     expect(() => WorkflowSpecSchema.parse({
       ...spec,
       stages: spec.stages.map((stage) => stage.id === "plan" ? { ...stage, limits: { maxAgents: 1 } } : stage)
-    })).toThrow();
-    expect(() => WorkflowSpecSchema.parse({
-      ...spec,
-      stages: spec.stages.map((stage) => stage.id === "plan" ? { ...stage, limits: { maxOutputChars: 1000 } } : stage)
     })).toThrow();
   });
 

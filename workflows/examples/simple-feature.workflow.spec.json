@@ -14,8 +14,7 @@
     "validator": { "category": "validation", "agent": "aiden", "mode": "readOnly" }
   },
   "limits": {
-    "stageTimeoutMinutes": 60,
-    "maxOutputChars": 12000
+    "stageTimeoutMinutes": 60
   },
   "stages": [
     {

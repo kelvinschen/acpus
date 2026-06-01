@@ -63,8 +63,7 @@ export const VariableSchema = z.object({
 });
 
 export const WorkflowLimitsSchema = z.strictObject({
-  stageTimeoutMinutes: z.number().int().positive().optional(),
-  maxOutputChars: z.number().int().positive().optional()
+  stageTimeoutMinutes: z.number().int().positive().optional()
 });
 
 export const StageLimitsSchema = z.strictObject({

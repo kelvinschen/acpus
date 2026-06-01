@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { getOutputContract } from "../contracts/output-contracts.js";
-import { buildRunReportView, ReportDiagnosticCodes, type ReportDiagnostic, type ReportEvent } from "../projections/run-report.js";
+import { buildRunReportView, type ReportDiagnostic, type ReportEvent } from "../projections/run-report.js";
 import { runDir } from "../run-index/paths.js";
 import { appendEvent, readRunIndex, writeRunIndex, type RunIndex } from "../run-index/read-write.js";
 import { WorkflowSpecSchema, type Role } from "../schema/workflow-spec.js";
@@ -83,9 +83,6 @@ ${JSON.stringify(input.outputs, null, 2)}
 \`\`\`
 
 Runtime diagnostics:
-${outputSizeDiagnosticsSection(input.diagnostics)}
-
-General diagnostics:
 \`\`\`json
 ${JSON.stringify(input.diagnostics, null, 2)}
 \`\`\`
@@ -98,29 +95,4 @@ ${JSON.stringify(input.events, null, 2)}
 Diagnose why the run is blocked and recommend the smallest safe recovery plan. Do not edit files. Do not rerun prior edit work.
 
 End the response with exactly one valid, parseable JSON object matching the diagnostic contract. Do not wrap the final JSON object in Markdown code fences. Do not use \`\`\`json.`;
-}
-
-function outputSizeDiagnosticsSection(diagnostics: ReportDiagnostic[]): string {
-  const outputSize = diagnostics.filter((diagnostic) => diagnostic.code === ReportDiagnosticCodes.OUTPUT_MAX_CHARS_EXCEEDED);
-  if (outputSize.length === 0) return "(none)";
-  const lines = ["Output size diagnostics:"];
-  for (const diagnostic of outputSize) {
-    const raw = diagnostic.raw ?? {};
-    const maxOutputChars = raw.effectiveMaxOutputChars;
-    lines.push(`- stage=${diagnostic.stageId ?? "unknown"} maxOutputChars=${typeof maxOutputChars === "number" ? maxOutputChars : "unknown"} summary=${diagnostic.summary ?? ""}`);
-    const attempts = Array.isArray(raw.attempts) ? raw.attempts : [];
-    for (const attempt of attempts) {
-      const entry = attempt && typeof attempt === "object" ? attempt as Record<string, unknown> : {};
-      lines.push(`  - attempt=${stringValue(entry.id)} kind=${stringValue(entry.kind)} rawChars=${numberValue(entry.rawChars)} rawPath=${stringValue(entry.rawPath)}`);
-    }
-  }
-  return lines.join("\n");
-}
-
-function stringValue(value: unknown): string {
-  return typeof value === "string" ? value : "unknown";
-}
-
-function numberValue(value: unknown): string {
-  return typeof value === "number" ? String(value) : "unknown";
 }

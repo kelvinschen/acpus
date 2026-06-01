@@ -44,7 +44,10 @@ describe("fanout runtime stability", () => {
     const index = await startPreparedRun(cwd, prepared);
     const stage = index.stages.fanout;
     const itemStatuses = stage?.fanout?.items.map((item) => [item.id, item.status, item.errorCode]);
-    const failedOutput = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "fanout", "item-2.json"), "utf8")) as { blockedReason: string };
+    const failedOutput = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "fanout", "item-2.json"), "utf8")) as {
+      blockedReason: string;
+      runtimeDiagnostics?: { errorCode?: string };
+    };
     const events = await fs.readFile(path.join(prepared.dir, "events.ndjson"), "utf8");
 
     expect(index.status).toBe("blocked");
@@ -54,6 +57,7 @@ describe("fanout runtime stability", () => {
       ["item-3", "completed", undefined]
     ]);
     expect(failedOutput.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR);
+    expect(failedOutput.runtimeDiagnostics?.errorCode).toBe(RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR);
     expect(stage?.fanout?.completedItems).toBe(2);
     expect(stage?.fanout?.blockedItems).toBe(1);
     expect(events).toContain("fanout_pool_completed");
@@ -171,7 +175,7 @@ describe("fanout runtime stability", () => {
       ["item-3", "blocked", RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED],
       ["item-4", "blocked", RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED]
     ]);
-    expect(requested).toEqual(["item-1", "item-2", "item-2"]);
+    expect(requested.sort()).toEqual(["item-1", "item-2", "item-2"]);
     expect(events).toContainEqual(expect.objectContaining({
       type: "fanout_pool_item_settled",
       itemId: "item-3",
@@ -196,7 +200,7 @@ describe("fanout runtime stability", () => {
       cwd,
       input: { cwd, items: [{ id: "item-1" }] }
     });
-    const staleStartedAt = new Date(Date.now() - 60_000).toISOString();
+    const staleStartedAt = staleRecoveryStartedAt();
     const outputPath = path.join(prepared.dir, "outputs", "fanout", "item-1.json");
     await fs.mkdir(path.dirname(outputPath), { recursive: true });
     await fs.writeFile(outputPath, `${JSON.stringify(baseOutput({ summary: "already done" }), null, 2)}\n`, "utf8");
@@ -232,7 +236,7 @@ describe("fanout runtime stability", () => {
       }
     });
 
-    const recovered = await syncRun(cwd, prepared.logicalRunId, { startPending: false });
+    const recovered = await syncRun(cwd, prepared.logicalRunId);
     const item = recovered.stages.fanout?.fanout?.items[0];
 
     expect(recovered.status).toBe("completed");
@@ -254,7 +258,7 @@ describe("fanout runtime stability", () => {
       cwd,
       input: { cwd, items: [{ id: "item-1" }] }
     });
-    const staleStartedAt = new Date(Date.now() - 60_000).toISOString();
+    const staleStartedAt = staleRecoveryStartedAt();
     const outputPath = path.join(prepared.dir, "outputs", "fanout", "item-1.json");
     await fs.mkdir(path.dirname(outputPath), { recursive: true });
     await fs.writeFile(outputPath, `${JSON.stringify({
@@ -297,7 +301,7 @@ describe("fanout runtime stability", () => {
       }
     });
 
-    const recovered = await syncRun(cwd, prepared.logicalRunId, { startPending: false });
+    const recovered = await syncRun(cwd, prepared.logicalRunId);
     const report = await buildRunReportView(cwd, spec, recovered, { mode: "snapshot" });
 
     expect(recovered.stages.fanout?.fanout?.items[0]).toMatchObject({
@@ -321,7 +325,7 @@ describe("fanout runtime stability", () => {
       cwd,
       input: { cwd, items: fanoutInputItems(2) }
     });
-    const staleStartedAt = new Date(Date.now() - 60_000).toISOString();
+    const staleStartedAt = staleRecoveryStartedAt();
     await writeRunIndex(cwd, {
       ...prepared.index,
       status: "running",
@@ -367,7 +371,7 @@ describe("fanout runtime stability", () => {
     });
     expect(recovered.attempts["fanout:item-1:attempt-1"]).toMatchObject({
       status: "failed",
-      runtimeErrorCode: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR
+      runtimeErrorCode: RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY
     });
     expect(recovered.attempts["fanout:item-1:attempt-1-runtime-retry-1"]).toMatchObject({
       status: "completed",
@@ -375,6 +379,215 @@ describe("fanout runtime stability", () => {
       runtimeRetryOrdinal: 1
     });
     expect(hasStuckFanoutPendingBatch(recovered)).toBe(false);
+  });
+
+  it("keeps observation-only sync read-only for stale running fanout items", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fanout-observe-readonly-"));
+    const spec = fanoutSpec(1, { allowPartial: true });
+    const prepared = await prepareRun(spec, {
+      cwd,
+      input: { cwd, items: [{ id: "item-1" }] }
+    });
+    const staleStartedAt = staleRecoveryStartedAt();
+    const runningIndex: RunIndex = {
+      ...prepared.index,
+      status: "running",
+      stages: {
+        ...prepared.index.stages,
+        fanout: {
+          stageId: "fanout",
+          status: "running",
+          attempts: ["fanout:item-1:attempt-1"],
+          startedAt: staleStartedAt,
+          fanout: {
+            totalItems: 1,
+            completedItems: 0,
+            blockedItems: 0,
+            allowPartial: true,
+            items: [{ id: "item-1", index: 0, status: "running", startedAt: staleStartedAt, attemptId: "fanout:item-1:attempt-1" }]
+          }
+        }
+      },
+      attempts: {
+        "fanout:item-1:attempt-1": {
+          id: "fanout:item-1:attempt-1",
+          stageId: "fanout",
+          itemId: "item-1",
+          kind: "attempt",
+          status: "running",
+          path: path.join("attempts", "fanout", "item-item-1", "attempt-1"),
+          startedAt: staleStartedAt
+        }
+      }
+    };
+    await writeRunIndex(cwd, runningIndex);
+    const beforeIndex = await readRunIndex(cwd, prepared.logicalRunId);
+    const beforeEvents = await fs.readFile(path.join(prepared.dir, "events.ndjson"), "utf8");
+
+    const observed = await syncRun(cwd, prepared.logicalRunId, { startPending: false });
+    const persisted = await readRunIndex(cwd, prepared.logicalRunId);
+    const afterEvents = await fs.readFile(path.join(prepared.dir, "events.ndjson"), "utf8");
+
+    expect(observed).toEqual(beforeIndex);
+    expect(persisted).toEqual(beforeIndex);
+    expect(afterEvents).toBe(beforeEvents);
+    expect(observed.stages.fanout?.fanout?.items[0]).toMatchObject({
+      status: "running",
+      attemptId: "fanout:item-1:attempt-1"
+    });
+    await expect(fs.stat(path.join(prepared.dir, "outputs", "fanout", "item-1.json"))).rejects.toThrow();
+  });
+
+  it("does not recover a stale-started fanout item with a recent same-attempt heartbeat", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fanout-heartbeat-"));
+    const spec = fanoutSpec(1, { allowPartial: true });
+    const prepared = await prepareRun(spec, {
+      cwd,
+      input: { cwd, items: [{ id: "item-1" }] }
+    });
+    const staleStartedAt = staleRecoveryStartedAt();
+    await writeRunIndex(cwd, {
+      ...prepared.index,
+      status: "running",
+      stages: {
+        ...prepared.index.stages,
+        fanout: {
+          stageId: "fanout",
+          status: "running",
+          attempts: ["fanout:item-1:attempt-1"],
+          startedAt: staleStartedAt,
+          fanout: {
+            totalItems: 1,
+            completedItems: 0,
+            blockedItems: 0,
+            allowPartial: true,
+            items: [{ id: "item-1", index: 0, status: "running", startedAt: staleStartedAt, attemptId: "fanout:item-1:attempt-1" }]
+          }
+        }
+      },
+      attempts: {
+        "fanout:item-1:attempt-1": {
+          id: "fanout:item-1:attempt-1",
+          stageId: "fanout",
+          itemId: "item-1",
+          kind: "attempt",
+          status: "running",
+          path: path.join("attempts", "fanout", "item-item-1", "attempt-1"),
+          startedAt: staleStartedAt
+        }
+      }
+    });
+    await appendEvent(cwd, prepared.logicalRunId, {
+      type: "agent_event",
+      stageId: "fanout",
+      itemId: "item-1",
+      attemptId: "fanout:item-1:attempt-1",
+      event: { type: "text_delta", stream: "output", text: "still running" }
+    });
+
+    const observed = await syncRun(cwd, prepared.logicalRunId);
+
+    expect(observed.status).toBe("running");
+    expect(observed.stages.fanout?.fanout?.items[0]).toMatchObject({
+      status: "running",
+      attemptId: "fanout:item-1:attempt-1"
+    });
+    expect(observed.attempts["fanout:item-1:attempt-1"]).toMatchObject({ status: "running" });
+    expect(observed.attempts["fanout:item-1:attempt-1-runtime-retry-1"]).toBeUndefined();
+    await expect(fs.stat(path.join(prepared.dir, "outputs", "fanout", "item-1.json"))).rejects.toThrow();
+  });
+
+  it("blocks exhausted stale fanout retries with a stale recovery code", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fanout-stale-exhausted-"));
+    const spec = fanoutSpec(1, { allowPartial: true });
+    const prepared = await prepareRun(spec, {
+      cwd,
+      input: { cwd, items: [{ id: "item-1" }] }
+    });
+    const staleStartedAt = staleRecoveryStartedAt();
+    await writeRunIndex(cwd, {
+      ...prepared.index,
+      status: "running",
+      stages: {
+        ...prepared.index.stages,
+        fanout: {
+          stageId: "fanout",
+          status: "running",
+          attempts: ["fanout:item-1:attempt-1", "fanout:item-1:attempt-1-runtime-retry-1"],
+          startedAt: staleStartedAt,
+          fanout: {
+            totalItems: 1,
+            completedItems: 0,
+            blockedItems: 0,
+            allowPartial: true,
+            items: [{
+              id: "item-1",
+              index: 0,
+              status: "running",
+              startedAt: staleStartedAt,
+              attemptId: "fanout:item-1:attempt-1-runtime-retry-1",
+              runtimeRetryOf: "fanout:item-1:attempt-1",
+              runtimeRetryOrdinal: 1
+            }]
+          }
+        }
+      },
+      attempts: {
+        "fanout:item-1:attempt-1": {
+          id: "fanout:item-1:attempt-1",
+          stageId: "fanout",
+          itemId: "item-1",
+          kind: "attempt",
+          status: "failed",
+          path: path.join("attempts", "fanout", "item-item-1", "attempt-1"),
+          startedAt: staleStartedAt,
+          endedAt: staleStartedAt,
+          runtimeErrorCode: RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY
+        },
+        "fanout:item-1:attempt-1-runtime-retry-1": {
+          id: "fanout:item-1:attempt-1-runtime-retry-1",
+          stageId: "fanout",
+          itemId: "item-1",
+          kind: "attempt",
+          status: "running",
+          path: path.join("attempts", "fanout", "item-item-1", "attempt-1-runtime-retry-1"),
+          startedAt: staleStartedAt,
+          runtimeRetryOf: "fanout:item-1:attempt-1",
+          runtimeRetryOrdinal: 1
+        }
+      }
+    });
+
+    const recovered = await syncRun(cwd, prepared.logicalRunId);
+    const item = recovered.stages.fanout?.fanout?.items[0];
+    const output = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "fanout", "item-1.json"), "utf8")) as {
+      blockedReason: string;
+      runtimeDiagnostics?: { errorCode?: string };
+    };
+
+    expect(recovered.status).toBe("completed");
+    expect(item).toMatchObject({
+      status: "blocked",
+      blockedReason: RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY,
+      errorCode: RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY
+    });
+    expect(recovered.attempts["fanout:item-1:attempt-1-runtime-retry-1"]).toMatchObject({
+      status: "failed",
+      runtimeErrorCode: RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY
+    });
+    expect(output.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY);
+    expect(output.runtimeDiagnostics?.errorCode).toBe(RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY);
+    const events = await readEvents(prepared.dir);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "runtime_retry_exhausted",
+      itemId: "item-1",
+      errorCode: RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY
+    }));
+    expect(events).not.toContainEqual(expect.objectContaining({
+      type: "fanout_item_recovered",
+      itemId: "item-1",
+      errorCode: RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY
+    }));
   });
 
   it("continues a legacy fanout stage stuck running with queued items", async () => {
@@ -591,7 +804,7 @@ describe("fanout runtime stability", () => {
     setAgentRuntimeFactoryForTests(() => new StaticRuntime());
     const spec = simpleTaskSpec(cwd);
     const prepared = await prepareRun(spec, { cwd, input: { cwd } });
-    const staleStartedAt = new Date(Date.now() - 60_000).toISOString();
+    const staleStartedAt = staleRecoveryStartedAt();
     await writeRunIndex(cwd, {
       ...prepared.index,
       status: "running",
@@ -622,7 +835,7 @@ describe("fanout runtime stability", () => {
     expect(recovered.status).toBe("completed");
     expect(recovered.attempts["task:attempt-1"]).toMatchObject({
       status: "failed",
-      runtimeErrorCode: RuntimeErrorCodes.AGENT_RUNTIME_ERROR
+      runtimeErrorCode: RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY
     });
     expect(recovered.attempts["task:attempt-1-runtime-retry-1"]).toMatchObject({
       status: "completed",
@@ -654,7 +867,7 @@ describe("fanout runtime stability", () => {
           path: path.join("attempts", "task", "attempt-1"),
           startedAt: staleStartedAt,
           endedAt: staleStartedAt,
-          runtimeErrorCode: RuntimeErrorCodes.AGENT_RUNTIME_ERROR
+          runtimeErrorCode: RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY
         },
         "task:attempt-1-runtime-retry-1": {
           id: "task:attempt-1-runtime-retry-1",
@@ -670,13 +883,13 @@ describe("fanout runtime stability", () => {
       }
     });
 
-    const exhausted = await syncRun(exhaustedCwd, exhaustedPrepared.logicalRunId, { startPending: false });
+    const exhausted = await syncRun(exhaustedCwd, exhaustedPrepared.logicalRunId);
 
     expect(exhausted.status).toBe("blocked");
-    expect(exhausted.stages.task?.blockedReason).toBe(RuntimeErrorCodes.AGENT_RUNTIME_ERROR);
+    expect(exhausted.stages.task?.blockedReason).toBe(RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY);
     expect(exhausted.attempts["task:attempt-1-runtime-retry-1"]).toMatchObject({
       status: "failed",
-      runtimeErrorCode: RuntimeErrorCodes.AGENT_RUNTIME_ERROR
+      runtimeErrorCode: RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY
     });
   });
 
@@ -810,76 +1023,49 @@ describe("fanout runtime stability", () => {
       cwd,
       input: { cwd, items: [{ id: "item-1" }] }
     });
-    const index: RunIndex = {
-      ...prepared.index,
-      status: "blocked",
-      gateVerdict: "blocked",
-      blockedReason: RuntimeErrorCodes.GATE_VERDICT_BLOCKED,
-      stages: {
-        ...prepared.index.stages,
-        fanout: {
-          stageId: "fanout",
-          status: "completed",
-          attempts: [],
+    for (const itemCode of [RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR, RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY]) {
+      const index: RunIndex = {
+        ...prepared.index,
+        status: "blocked",
+        gateVerdict: "blocked",
+        blockedReason: RuntimeErrorCodes.GATE_VERDICT_BLOCKED,
+        stages: {
+          ...prepared.index.stages,
           fanout: {
-            totalItems: 1,
-            completedItems: 0,
-            blockedItems: 1,
-            allowPartial: true,
-            items: [{
-              id: "item-1",
-              index: 0,
-              status: "blocked",
-              blockedReason: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
-              errorCode: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
-              completedAt: new Date().toISOString()
-            }]
+            stageId: "fanout",
+            status: "completed",
+            attempts: [],
+            fanout: {
+              totalItems: 1,
+              completedItems: 0,
+              blockedItems: 1,
+              allowPartial: true,
+              items: [{
+                id: "item-1",
+                index: 0,
+                status: "blocked",
+                blockedReason: itemCode,
+                errorCode: itemCode,
+                completedAt: new Date().toISOString()
+              }]
+            }
           }
         }
-      }
-    };
+      };
 
-    const report = await buildRunReportView(cwd, spec, index, { mode: "snapshot" });
+      const report = await buildRunReportView(cwd, spec, index, { mode: "snapshot" });
 
-    expect(report.run.status).toBe("blocked");
-    expect(report.run.blockedReason).toBe(RuntimeErrorCodes.GATE_VERDICT_BLOCKED);
-    expect(report.diagnostics).toContainEqual(expect.objectContaining({
-      code: ReportDiagnosticCodes.SCHEDULER_RECOVERY_SUCCEEDED_WITH_BLOCKED_VERDICT,
-      status: "completed",
-      summary: expect.stringContaining("Scheduler recovery completed")
-    }));
-  });
-
-  it("reports output maxOutputChars diagnostics and includes them in diagnose prompts", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-output-size-diagnostics-"));
-    const oversized = `${"x".repeat(32)} ${plainJsonOutput(baseOutput({ summary: "too long" }))}`;
-    setAgentRuntimeFactoryForTests(() => new ScriptedRuntime([
-      { kind: "text", text: oversized },
-      { kind: "text", text: plainJsonOutput(baseOutput({ summary: "repair still too long" })) }
-    ]));
-    const spec = maxOutputSpec(cwd, 10);
-    const prepared = await prepareRun(spec, { cwd, input: { cwd } });
-
-    const index = await startPreparedRun(cwd, prepared);
-    const report = await buildRunReportView(cwd, spec, index, { mode: "snapshot" });
-    await startDiagnosticRun(cwd, prepared.logicalRunId);
-    const prompt = await fs.readFile(path.join(prepared.dir, "prompts", "diagnostic-1.md"), "utf8");
-
-    const diagnostic = report.diagnostics.find((entry) => entry.code === ReportDiagnosticCodes.OUTPUT_MAX_CHARS_EXCEEDED);
-    expect(index.status).toBe("blocked");
-    expect(diagnostic).toMatchObject({
-      stageId: "task",
-      code: ReportDiagnosticCodes.OUTPUT_MAX_CHARS_EXCEEDED,
-      raw: {
-        effectiveMaxOutputChars: 10,
-        attempts: expect.arrayContaining([
-          expect.objectContaining({ id: "task:attempt-1", kind: "attempt", rawChars: oversized.length })
-        ])
-      }
-    });
-    expect(prompt).toContain("Output size diagnostics:");
-    expect(prompt).toContain("maxOutputChars=10");
-    expect(prompt).toContain(`rawChars=${oversized.length}`);
+      expect(report.run.status).toBe("blocked");
+      expect(report.run.blockedReason).toBe(RuntimeErrorCodes.GATE_VERDICT_BLOCKED);
+      expect(report.diagnostics).toContainEqual(expect.objectContaining({
+        code: ReportDiagnosticCodes.SCHEDULER_RECOVERY_SUCCEEDED_WITH_BLOCKED_VERDICT,
+        status: "completed",
+        summary: expect.stringContaining("Scheduler recovery completed"),
+        raw: expect.objectContaining({
+          recoveredFanoutStages: ["fanout"]
+        })
+      }));
+    }
   });
 
   it("applies persisted resume policy when re-aggregating blocked fanout", async () => {
@@ -991,7 +1177,7 @@ describe("fanout runtime stability", () => {
       }
     });
 
-    const aggregated = await syncRun(cwd, prepared.logicalRunId, { startPending: false });
+    const aggregated = await syncRun(cwd, prepared.logicalRunId);
     const aggregate = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "fanout.json"), "utf8")) as {
       blockedItems: Array<{ blockedReason?: string }>;
     };
@@ -1042,7 +1228,7 @@ describe("fanout runtime stability", () => {
       }
     });
 
-    const observed = await syncRun(cwd, prepared.logicalRunId, { startPending: false });
+    const observed = await syncRun(cwd, prepared.logicalRunId);
 
     expect(observed.stages.fanout?.fanout?.items.map((item) => [item.id, item.status])).toEqual([
       ["item-1", "pending"],
@@ -1159,6 +1345,10 @@ function hasStuckFanoutPendingBatch(index: RunIndex): boolean {
   });
 }
 
+function staleRecoveryStartedAt(): string {
+  return new Date(Date.now() - 130_000).toISOString();
+}
+
 async function fanoutPoolStartedCount(dir: string): Promise<number> {
   return (await readEvents(dir)).filter((event) => event.type === "fanout_pool_started").length;
 }
@@ -1209,20 +1399,6 @@ function simpleTaskSpec(cwd: string): WorkflowSpec {
       worker: { category: "coordination", agent: "fake", mode: "readOnly" }
     },
     limits: { stageTimeoutMinutes: 1 },
-    stages: [{ id: "task", kind: "agentTask", role: "worker", prompt: "Do work" }]
-  });
-}
-
-function maxOutputSpec(cwd: string, maxOutputChars: number): WorkflowSpec {
-  return WorkflowSpecSchema.parse({
-    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
-    name: "max-output",
-    root: "task",
-    inputs: { cwd: { type: "path", default: cwd } },
-    roles: {
-      worker: { category: "coordination", agent: "fake", mode: "readOnly" }
-    },
-    limits: { stageTimeoutMinutes: 1, maxOutputChars },
     stages: [{ id: "task", kind: "agentTask", role: "worker", prompt: "Do work" }]
   });
 }

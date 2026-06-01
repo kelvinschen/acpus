@@ -22,7 +22,6 @@ export type ExecutionPlanRole = Role & {
 
 export type ExecutionPlanLimits = {
   stageTimeoutMinutes: number;
-  maxOutputChars?: number;
 };
 
 export type ExecutionPlanStageLimits = {

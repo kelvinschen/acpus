@@ -239,8 +239,7 @@ function promptIdForStage(stage: Stage): string | undefined {
 
 function effectiveLimits(spec: WorkflowSpec): ExecutionPlanLimits {
   return {
-    stageTimeoutMinutes: spec.limits.stageTimeoutMinutes ?? 60,
-    maxOutputChars: spec.limits.maxOutputChars
+    stageTimeoutMinutes: spec.limits.stageTimeoutMinutes ?? 60
   };
 }
 

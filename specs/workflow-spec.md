@@ -47,7 +47,6 @@
 - Fanout stage `limits.maxFanoutItems` MUST default to `1` when omitted.
 - Stage `limits.maxConcurrency` and `limits.maxFanoutItems` MUST be accepted only on `fanout` stages.
 - `limits.stageTimeoutMinutes` MAY bound stage runtime duration where enforced by runtime execution.
-- `limits.maxOutputChars` MAY bound report/projection output size and diagnostics.
 - Stage `limits.stageTimeoutMinutes` MAY override the workflow timeout, but MUST NOT exceed top-level `limits.stageTimeoutMinutes` when the top-level value is declared.
 
 ## Interfaces and Contracts
@@ -74,7 +73,7 @@ Stage output contracts are inferred from role category:
 
 A workflow spec contains schema metadata, optional typed inputs, roles, limits, stages, explicit dependencies, variables, and stage-specific configuration. Role categories are `planning`, `implementation`, `validation`, `review`, `research`, `summarization`, and `coordination`. Role modes are `denyAll`, `readOnly`, and `edit`.
 
-Top-level limits include `stageTimeoutMinutes` and `maxOutputChars`. Stage limits include `stageTimeoutMinutes`; fanout stages additionally support `maxConcurrency` and `maxFanoutItems`.
+Top-level limits include `stageTimeoutMinutes`. Stage limits include `stageTimeoutMinutes`; fanout stages additionally support `maxConcurrency` and `maxFanoutItems`.
 
 `fixLoop` stages contain a validator turn definition, fixer turn definition, routing policy, maximum round count, and explicit blocked behavior for unknown or exhausted outcomes. The compiled execution plan is the runtime-derived snapshot of the validated authoring model.
 

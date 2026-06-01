@@ -9,7 +9,7 @@ import { createOrchestratorAgentRuntime } from "./agent-runtime.js";
 import { attemptDir, attemptId, safeFileName, upsertAttemptIndex, writeAttemptFile } from "./attempts.js";
 import { resolveSource, runAgentWork, runProgramStage, stableItemId, type AgentWorkResult, type AgentWorkUnit } from "./stage-runner.js";
 
-const STALE_FANOUT_ITEM_RECOVERY_MS = 30_000;
+const STALE_RECOVERY_GRACE_MS = 60_000;
 const MAX_RUNTIME_RETRIES = 1;
 
 export type SyncRunOptions = {
@@ -29,6 +29,8 @@ type RuntimeSnapshot = {
 
 export async function syncRun(cwd: string, logicalRunId: string, options: SyncRunOptions = {}): Promise<RunIndex> {
   const snapshot = await loadSnapshot(cwd, logicalRunId);
+  if (options.startPending === false) return snapshot.index;
+
   let index = ensureStageEntries(snapshot.index, snapshot.spec);
   let changed = index !== snapshot.index;
   const reconciled = await reconcileFanoutRuntimeState({ ...snapshot, index });
@@ -37,15 +39,6 @@ export async function syncRun(cwd: string, logicalRunId: string, options: SyncRu
   const stagesReconciled = await reconcileStageRuntimeState({ ...snapshot, index });
   index = stagesReconciled.index;
   changed ||= stagesReconciled.changed;
-  if (options.startPending === false) {
-    const afterFanout = await completeReadyFanoutAggregates({ ...snapshot, index });
-    index = afterFanout.index;
-    changed ||= afterFanout.changed;
-    index = updateRunStatus(index, snapshot.spec);
-    await writeRunIndex(cwd, index);
-    await appendEvent(cwd, logicalRunId, { type: "run_synced", status: index.status, startPending: false });
-    return readRunIndex(cwd, logicalRunId);
-  }
 
   const deterministic = await advanceDeterministicStages({ ...snapshot, index });
   index = deterministic.index;
@@ -132,9 +125,12 @@ async function loadSnapshot(cwd: string, runId: string): Promise<RuntimeSnapshot
 async function reconcileFanoutRuntimeState(snapshot: RuntimeSnapshot): Promise<{ index: RunIndex; changed: boolean }> {
   let index = snapshot.index;
   let changed = false;
+  const activityByAttempt = await readAttemptActivity(snapshot.runDir);
   for (const stage of snapshot.spec.stages.filter((candidate): candidate is Extract<Stage, { kind: "fanout" }> => candidate.kind === "fanout")) {
     const state = index.stages[stage.id];
     if (!state?.fanout) continue;
+    const planStage = snapshot.plan.stages.find((candidate) => candidate.id === stage.id);
+    const staleAfterMs = planStage ? timeoutMs(snapshot.plan, planStage) + STALE_RECOVERY_GRACE_MS : snapshot.plan.limits.stageTimeoutMinutes * 60 * 1000 + STALE_RECOVERY_GRACE_MS;
     let stageChanged = false;
     const items = [...state.fanout.items];
     const attempts: AttemptIndexEntry[] = [];
@@ -184,17 +180,22 @@ async function reconcileFanoutRuntimeState(snapshot: RuntimeSnapshot): Promise<{
       }
 
       if (state.status === "completed" || state.status === "blocked" || state.status === "failed") continue;
-      if (item.status === "running" && isStaleFanoutItem(item.startedAt ?? state.startedAt)) {
+      if (item.status === "running" && isStaleAttempt({
+        attemptId: item.attemptId,
+        fallbackStartedAt: item.startedAt ?? state.startedAt,
+        activityByAttempt,
+        staleAfterMs
+      })) {
         if (item.attemptId && canScheduleRuntimeRetry(item.runtimeRetryOrdinal)) {
           const retryOrdinal = (item.runtimeRetryOrdinal ?? 0) + 1;
           const retryAttemptId = attemptId({ stageId: stage.id, itemId: item.id, kind: "attempt", ordinal: 1, runtimeRetryOrdinal: retryOrdinal });
-          const message = "Fanout item attempt did not produce a terminal output before scheduler recovery; scheduling one runtime retry.";
+          const message = "Fanout item attempt had no terminal output and no recent activity before scheduler stale recovery; scheduling one runtime retry.";
           attempts.push(recoveredRuntimeAttempt(index, snapshot.runDir, {
             stageId: stage.id,
             itemId: item.id,
             attemptId: item.attemptId,
             startedAt: item.startedAt ?? state.startedAt,
-            code: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
+            code: RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY,
             message,
             runtimeRetryOrdinal: item.runtimeRetryOrdinal
           }));
@@ -218,14 +219,14 @@ async function reconcileFanoutRuntimeState(snapshot: RuntimeSnapshot): Promise<{
             attemptId: item.attemptId,
             retryAttemptId,
             runtimeRetryOrdinal: retryOrdinal,
-            errorCode: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
+            errorCode: RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY,
             errorMessage: message
           });
           continue;
         }
-        const code = item.attemptId ? RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR : RuntimeErrorCodes.FANOUT_ITEM_UNSTARTED_TIMEOUT;
+        const code = item.attemptId ? RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY : RuntimeErrorCodes.FANOUT_ITEM_UNSTARTED_TIMEOUT;
         const message = item.attemptId
-          ? "Fanout item attempt did not produce a terminal output before scheduler recovery."
+          ? "Fanout item attempt had no terminal output and no recent activity before scheduler stale recovery."
           : "Fanout item was selected but no attempt was started before scheduler recovery.";
         const result = await writeRecoveredFanoutItemFailure({
           cwd: snapshot.cwd,
@@ -251,14 +252,27 @@ async function reconcileFanoutRuntimeState(snapshot: RuntimeSnapshot): Promise<{
         };
         attempts.push(result.attempt);
         stageChanged = true;
-        await appendEvent(snapshot.cwd, snapshot.runId, {
-          type: "fanout_item_recovered",
-          stageId: stage.id,
-          itemId: item.id,
-          attemptId: result.attempt.id,
-          errorCode: code,
-          outputPath: path.relative(snapshot.runDir, result.outputPath)
-        });
+        if (item.attemptId && item.runtimeRetryOrdinal !== undefined) {
+          await appendEvent(snapshot.cwd, snapshot.runId, {
+            type: "runtime_retry_exhausted",
+            stageId: stage.id,
+            itemId: item.id,
+            attemptId: result.attempt.id,
+            runtimeRetryOf: item.runtimeRetryOf,
+            runtimeRetryOrdinal: item.runtimeRetryOrdinal,
+            errorCode: code,
+            errorMessage: message
+          });
+        } else {
+          await appendEvent(snapshot.cwd, snapshot.runId, {
+            type: "fanout_item_recovered",
+            stageId: stage.id,
+            itemId: item.id,
+            attemptId: result.attempt.id,
+            errorCode: code,
+            outputPath: path.relative(snapshot.runDir, result.outputPath)
+          });
+        }
       }
     }
     if (!stageChanged) continue;
@@ -281,6 +295,7 @@ async function reconcileFanoutRuntimeState(snapshot: RuntimeSnapshot): Promise<{
 async function reconcileStageRuntimeState(snapshot: RuntimeSnapshot): Promise<{ index: RunIndex; changed: boolean }> {
   let index = snapshot.index;
   let changed = false;
+  const activityByAttempt = await readAttemptActivity(snapshot.runDir);
   for (const stage of snapshot.spec.stages) {
     if (stage.kind === "fanout") continue;
     let state = index.stages[stage.id];
@@ -311,17 +326,22 @@ async function reconcileStageRuntimeState(snapshot: RuntimeSnapshot): Promise<{ 
       continue;
     }
 
-    if (!isStaleFanoutItem(state.startedAt)) continue;
     const currentAttemptId = runningStageAttemptId(index, state, stage.id);
+    if (!isStaleAttempt({
+      attemptId: currentAttemptId,
+      fallbackStartedAt: state.startedAt,
+      activityByAttempt,
+      staleAfterMs: timeoutMs(snapshot.plan, planStage) + STALE_RECOVERY_GRACE_MS
+    })) continue;
     if (canScheduleRuntimeRetry(state.runtimeRetryOrdinal)) {
       const retryOrdinal = (state.runtimeRetryOrdinal ?? 0) + 1;
       const retryAttemptId = attemptId({ stageId: stage.id, kind: "attempt", ordinal: 1, runtimeRetryOrdinal: retryOrdinal });
-      const message = "Agent stage attempt did not produce a terminal output before scheduler recovery; scheduling one runtime retry.";
+      const message = "Agent stage attempt had no terminal output and no recent activity before scheduler stale recovery; scheduling one runtime retry.";
       index = upsertAttemptIndex(index, recoveredRuntimeAttempt(index, snapshot.runDir, {
         stageId: stage.id,
         attemptId: currentAttemptId,
         startedAt: state.startedAt,
-        code: RuntimeErrorCodes.AGENT_RUNTIME_ERROR,
+        code: RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY,
         message,
         runtimeRetryOrdinal: state.runtimeRetryOrdinal
       }));
@@ -341,14 +361,14 @@ async function reconcileStageRuntimeState(snapshot: RuntimeSnapshot): Promise<{ 
         attemptId: currentAttemptId,
         retryAttemptId,
         runtimeRetryOrdinal: retryOrdinal,
-        errorCode: RuntimeErrorCodes.AGENT_RUNTIME_ERROR,
+        errorCode: RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY,
         errorMessage: message
       });
       changed = true;
       continue;
     }
 
-    const message = "Agent stage attempt did not produce a terminal output before scheduler recovery.";
+    const message = "Agent stage attempt had no terminal output and no recent activity before scheduler stale recovery.";
     const result = await writeRecoveredStageFailure({
       index,
       cwd: snapshot.cwd,
@@ -357,7 +377,7 @@ async function reconcileStageRuntimeState(snapshot: RuntimeSnapshot): Promise<{ 
       stageId: stage.id,
       attemptId: currentAttemptId,
       startedAt: state.startedAt,
-      code: RuntimeErrorCodes.AGENT_RUNTIME_ERROR,
+      code: RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY,
       message,
       outputPath
     });
@@ -366,7 +386,7 @@ async function reconcileStageRuntimeState(snapshot: RuntimeSnapshot): Promise<{ 
       ...state,
       status: "blocked",
       outputPath: path.relative(snapshot.runDir, result.outputPath),
-      blockedReason: RuntimeErrorCodes.AGENT_RUNTIME_ERROR,
+      blockedReason: RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY,
       completedAt: new Date().toISOString()
     });
     await appendEvent(snapshot.cwd, snapshot.runId, {
@@ -375,7 +395,7 @@ async function reconcileStageRuntimeState(snapshot: RuntimeSnapshot): Promise<{ 
       attemptId: currentAttemptId,
       runtimeRetryOf: state.runtimeRetryOf,
       runtimeRetryOrdinal: state.runtimeRetryOrdinal,
-      errorCode: RuntimeErrorCodes.AGENT_RUNTIME_ERROR,
+      errorCode: RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY,
       errorMessage: message
     });
     changed = true;
@@ -1364,10 +1384,57 @@ function statusFromItemOutput(output: Record<string, unknown>): StageStatus {
   return "blocked";
 }
 
-function isStaleFanoutItem(startedAt: string | undefined): boolean {
-  if (!startedAt) return false;
-  const start = Date.parse(startedAt);
-  return Number.isFinite(start) && Date.now() - start >= STALE_FANOUT_ITEM_RECOVERY_MS;
+function isStaleAttempt(input: {
+  attemptId: string | undefined;
+  fallbackStartedAt: string | undefined;
+  activityByAttempt: Map<string, number>;
+  staleAfterMs: number;
+}): boolean {
+  const activity = input.attemptId ? input.activityByAttempt.get(input.attemptId) : undefined;
+  const fallback = input.fallbackStartedAt ? Date.parse(input.fallbackStartedAt) : NaN;
+  const lastActivity = activity ?? fallback;
+  return Number.isFinite(lastActivity) && Date.now() - lastActivity >= input.staleAfterMs;
+}
+
+async function readAttemptActivity(runDir: string): Promise<Map<string, number>> {
+  const activity = new Map<string, number>();
+  let raw: string;
+  try {
+    raw = await fs.readFile(path.join(runDir, "events.ndjson"), "utf8");
+  } catch {
+    return activity;
+  }
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    const event = parseEventLine(line);
+    if (!event) continue;
+    const attemptIdValue = stringField(event, "attemptId");
+    const type = stringField(event, "type");
+    const at = stringField(event, "at");
+    if (!attemptIdValue || !type || !at || !isAttemptActivityEvent(type)) continue;
+    const timestamp = Date.parse(at);
+    if (!Number.isFinite(timestamp)) continue;
+    const previous = activity.get(attemptIdValue);
+    if (previous === undefined || timestamp > previous) activity.set(attemptIdValue, timestamp);
+  }
+  return activity;
+}
+
+function parseEventLine(line: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(line) as unknown;
+    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isAttemptActivityEvent(type: string): boolean {
+  return type === "attempt_started"
+    || type === "turn_started"
+    || type === "agent_event"
+    || type === "turn_finished"
+    || type === "runtime_retry_started";
 }
 
 function stringField(value: Record<string, unknown> | undefined, key: string): string | undefined {
