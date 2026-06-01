@@ -264,13 +264,15 @@ function stageSafetyFooter(stage: Stage, role: Role | undefined, contractName: O
   const contract = getOutputContract(contractName, contractOptions);
   const lines = [
     "",
-    "Workflow stage contract:",
+    "",
+    "**Workflow Stage Contract**",
+    "",
+    "Stage contract:",
     `- Stage id: ${stage.id}`,
     `- Role mode: ${mode}`,
     "- Keep work scoped to the provided cwd and workflow task.",
     "- Do not leak secrets or sensitive data in output.",
-    "- Preserve unrelated user changes.",
-    contract.footerText()
+    "- Preserve unrelated user changes."
   ];
   if (mode === "readOnly" || mode === "denyAll") {
     lines.push("- Do not edit production files in this stage.");
@@ -278,5 +280,6 @@ function stageSafetyFooter(stage: Stage, role: Role | undefined, contractName: O
   if (mode === "edit") {
     lines.push("- Only edit files required by this stage. Avoid unrelated refactors.");
   }
+  lines.push("", contract.footerText());
   return lines.join("\n");
 }

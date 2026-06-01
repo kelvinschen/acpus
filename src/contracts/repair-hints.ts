@@ -14,7 +14,3 @@ export function describeZodIssue(issue: z.core.$ZodIssue): FixHint {
     instruction: `Fix ${path}: ${issue.message}`
   };
 }
-
-export function aliasHintText(): string {
-  return "Allowed deterministic alias: inside checks[] only, convert result to status when result is pass, fail, skipped, or unknown and status is missing.";
-}

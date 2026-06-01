@@ -60,7 +60,7 @@ Agents and maintainers MUST update the affected SPEC in the same change when mod
 
 - workflow schema, validation, linting, compilation, execution-plan shape, `fixLoop` shape, or role categories;
 - runtime scheduling, resume, diagnose, status, session, attempt, fanout, or run-index behavior;
-- output contracts, output contract names, parser behavior, repair behavior, deterministic aliases, or contract examples;
+- output contracts, output contract names, parser behavior, repair behavior, schema field normalization policy, or contract examples;
 - CLI commands, flags, list/show kinds, output modes, lifecycle behavior, or saved workflow layout;
 - report projections, markdown/JSON/HTML output, live report server behavior, or report data sources;
 - error severity, error code families, stable error codes, run-index runtime error codes, command diagnostics, turn diagnostics, or repair suggestions;

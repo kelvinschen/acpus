@@ -1,20 +1,13 @@
 import { z } from "zod";
 import { minimalExampleForContract } from "./examples.js";
-import { aliasHintText, describeZodIssue, type FixHint } from "./repair-hints.js";
+import { describeZodIssue, type FixHint } from "./repair-hints.js";
 import { schemaForContract, type OutputContractName } from "./schemas.js";
-
-export type AliasHint = {
-  from: string;
-  to: string;
-  description: string;
-};
 
 export type OutputContract = {
   name: OutputContractName;
   schema: z.ZodType;
   schemaForPrompt: unknown;
   minimalExample: unknown;
-  aliases: AliasHint[];
   describeIssue(issue: z.core.$ZodIssue): FixHint;
   footerText(): string;
 };
@@ -24,12 +17,6 @@ export type OutputContractOptions = {
   maxItems?: number;
 };
 
-const ALIASES: AliasHint[] = [{
-  from: "checks[].result",
-  to: "checks[].status",
-  description: aliasHintText()
-}];
-
 export function getOutputContract(name: OutputContractName, options: OutputContractOptions = {}): OutputContract {
   const schemaForPrompt = schemaDescriptor(name, options);
   return {
@@ -37,26 +24,22 @@ export function getOutputContract(name: OutputContractName, options: OutputContr
     schema: schemaForContract(name, options),
     schemaForPrompt,
     minimalExample: minimalExampleForContract(name, options),
-    aliases: ALIASES,
     describeIssue: describeZodIssue,
     footerText: () => contractFooterText(name, schemaForPrompt, options)
   };
 }
 
 export function contractFooterText(name: OutputContractName, schemaForPrompt = schemaDescriptor(name), options: OutputContractOptions = {}): string {
+  void name;
+  void options;
   return [
-    "Workflow stage output contract:",
-    "- End the response with exactly one valid, parseable JSON object that satisfies the schema.",
-    "- Do not wrap the final JSON object in Markdown code fences. Do not use ```json.",
+    "Output contract:",
+    "- **Response with exactly one valid, parseable JSON object that satisfies the schema**.",
+    "- Do not wrap the final JSON object in Markdown code fences, especially ```json.",
     "- Required schema:",
     "```json",
     JSON.stringify(schemaForPrompt, null, 2),
-    "```",
-    "- Minimal valid example:",
-    "```json",
-    JSON.stringify(minimalExampleForContract(name, options), null, 2),
-    "```",
-    `- ${aliasHintText()}`
+    "```"
   ].join("\n");
 }
 
