@@ -1,7 +1,7 @@
 {
   "schemaVersion": "acpx-workflow-orchestrator.workflow/v1",
   "name": "review-only-fanout",
-  "description": "Discover changed files, fan out read-only review, reduce findings, and summarize.",
+  "description": "Discover changed files, fan out read-only review, reduce findings, and gate completion.",
   "root": "discover_changed_files",
   "inputs": {
     "task": { "type": "string", "default": "Review changed TypeScript files." },
@@ -9,8 +9,7 @@
   },
   "roles": {
     "validator": { "category": "validation", "agent": "aiden", "mode": "readOnly" },
-    "reviewer": { "category": "review", "agent": "aiden", "mode": "readOnly" },
-    "summarizer": { "category": "summarization", "agent": "claude", "mode": "readOnly" }
+    "reviewer": { "category": "review", "agent": "aiden", "mode": "readOnly" }
   },
   "limits": {
     "maxAgents": 28,
@@ -57,14 +56,9 @@
       "prompt": "Merge and deduplicate these review results:\n\n${results}"
     },
     {
-      "id": "summarize",
-      "kind": "summarize",
-      "role": "summarizer",
-      "dependsOn": ["reduce_findings"],
-      "variables": [
-        { "name": "summary", "source": "outputs.reduce_findings.summary" }
-      ],
-      "prompt": "Summarize the review-only fanout result:\n\n${summary}"
+      "id": "gate",
+      "kind": "gate",
+      "dependsOn": ["reduce_findings"]
     }
   ]
 }

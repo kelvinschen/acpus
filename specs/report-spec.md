@@ -8,7 +8,7 @@
 
 ## Purpose
 
-Reports expose persisted run state, outputs, attempts, diagnostics, and final verdicts for humans and automation. Report generation is observation-only and follows the runtime orchestrator data model.
+Reports expose persisted run state, outputs, attempts, diagnostics, and gate verdicts for humans and automation. Report generation is observation-only and follows the runtime orchestrator data model.
 
 ## Normative Requirements
 
@@ -38,7 +38,7 @@ skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator report serv
 
 Reports are generated from:
 
-- `run.json` for status, stages, attempts, usage, and final verdict;
+- `run.json` for status, stages, attempts, usage, and gate verdict;
 - `workflow.spec.json` for author-stage graph metadata;
 - `execution-plan.json` for compiled stage/runtime metadata;
 - `outputs/*.json` for parsed stage outputs;
@@ -46,7 +46,7 @@ Reports are generated from:
 - `sessions/role-bindings.json` for role/session identity;
 - `events.ndjson` for event history when projected.
 
-The detailed report model includes run summary, final verdict, graph view, per-stage status, attempts, role, agent, session key, prompt path, output path, parse diagnostics, contract outputs, warnings, risks, checks, changed files, and diagnostics.
+The detailed report model includes run summary, gate verdict, graph view, per-stage status, attempts, role, agent, session key, prompt path, output path, parse diagnostics, contract outputs, warnings, risks, checks, changed files, and diagnostics.
 
 ## Runtime Behavior
 

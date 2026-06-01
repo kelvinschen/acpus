@@ -73,7 +73,7 @@ export function registerRun(program: Command): void {
       if (options.json) printJson(output);
       else {
         process.stdout.write(`${options.prepareOnly ? "run prepared" : "run advanced"}: ${prepared.logicalRunId}\n`);
-        process.stdout.write(`status: ${runView.status}${runView.finalVerdict ? ` verdict=${runView.finalVerdict}` : ""}\n`);
+        process.stdout.write(`status: ${runView.status}${runView.gateVerdict ? ` verdict=${runView.gateVerdict}` : ""}\n`);
         process.stdout.write(`${prepared.dir}\n`);
       }
     });

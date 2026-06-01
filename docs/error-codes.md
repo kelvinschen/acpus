@@ -23,7 +23,7 @@ Code families are stable and should not be renamed casually:
 
 - `SCHEMA_*`: JSON shape, version, file read, declared input, or runtime input
   errors.
-- `GRAPH_*`: root, dependency, cycle, branching, or summarize-terminal errors.
+- `GRAPH_*`: root, dependency, cycle, branching, deprecated summarize, or terminal gate errors.
 - `VARIABLE_*`: prompt placeholder and variable source errors.
 - `ROLE_*`: unknown role or role/mode conflict.
 - `LIMIT_*`: global hard limit or stage-limit errors.
@@ -67,15 +67,14 @@ Runtime run-level codes emitted in reports:
   contract failures.
 - `FANOUT_ITEM_RUNTIME_ERROR`: a fanout item runtime turn failed after one
   transient retry, or stale recovery exhausted its retry for that item.
-- `FINAL_VERDICT_BLOCKED`: the terminal summarizer completed but explicitly
-  returned `finalVerdict: "blocked"`, so the run is blocked at run level even
-  if author stages are otherwise terminal.
-- `FINAL_VERDICT_FAILED`: the terminal summarizer completed but explicitly
-  returned `finalVerdict: "failed"`. The run records a blocked workflow outcome;
-  runtime `failed` remains reserved for infrastructure failures.
-- `FINAL_VERDICT_UNKNOWN`: the terminal summarizer completed but could not
-  determine a pass/fail outcome. Inspect the summarizer output and any upstream
-  fanout item outputs before treating the workflow as verified.
+- `GATE_CONDITION_FAILED`: a program gate condition evaluated false.
+- `GATE_VERDICT_BLOCKED`: the terminal gate returned `verdict: "blocked"`.
+- `GATE_VERDICT_FAILED`: the terminal gate returned `verdict: "failed"`. The
+  run records a blocked workflow outcome; runtime `failed` remains reserved for
+  infrastructure failures.
+- `GATE_VERDICT_UNKNOWN`: the terminal gate returned `verdict: "unknown"`.
+  Inspect the gate output and any upstream fanout item outputs before treating
+  the workflow as verified.
 - `LIMIT_AGENT_BUDGET_EXHAUSTED`: a run had ready agent work but
   `agentUsage.actual` had already reached `limits.maxAgents`. The scheduler
   terminalizes the ready stage as blocked instead of leaving the run in

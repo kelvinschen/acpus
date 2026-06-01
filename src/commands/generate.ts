@@ -22,13 +22,12 @@ export function registerGenerate(program: Command): void {
           cwd: { type: "path", default: "." }
         },
         roles: {
-          planner: { category: "planning", agent: "claude", mode: "readOnly" },
-          summarizer: { category: "summarization", agent: "claude", mode: "readOnly" }
+          planner: { category: "planning", agent: "claude", mode: "readOnly" }
         },
         limits: { maxAgents: 8, maxConcurrency: 2, maxFanoutItems: 4, maxFixRounds: 1, stageTimeoutMinutes: 30 },
         stages: [
           { id: "plan", kind: "agentTask", role: "planner", prompt: "Plan the requested workflow task: ${task}", variables: [{ name: "task", source: "input.task" }] },
-          { id: "summarize", kind: "summarize", role: "summarizer", dependsOn: ["plan"], prompt: "Summarize the plan: ${plan}", variables: [{ name: "plan", source: "outputs.plan.summary" }] }
+          { id: "gate", kind: "gate", dependsOn: ["plan"] }
         ]
       };
       await fs.writeFile(file, `${JSON.stringify(spec, null, 2)}\n`, "utf8");

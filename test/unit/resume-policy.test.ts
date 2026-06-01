@@ -8,8 +8,7 @@ const spec = WorkflowSpecSchema.parse({
   root: "review_files",
   roles: {
     reviewer: { category: "review", agent: "aiden", mode: "readOnly" },
-    editor: { category: "implementation", agent: "trae", mode: "edit" },
-    summarizer: { category: "summarization", agent: "aiden", mode: "readOnly" }
+    editor: { category: "implementation", agent: "trae", mode: "edit" }
   },
   limits: { maxAgents: 10, maxFanoutItems: 4 },
   stages: [
@@ -29,11 +28,9 @@ const spec = WorkflowSpecSchema.parse({
       prompt: "Edit one file"
     },
     {
-      id: "summarize",
-      kind: "summarize",
-      role: "summarizer",
-      dependsOn: ["review_files"],
-      prompt: "Summarize results"
+      id: "gate",
+      kind: "gate",
+      dependsOn: ["review_files"]
     }
   ]
 });
@@ -81,7 +78,7 @@ describe("resume policy", () => {
     const issues = validateResumePolicy(spec, {
       fanout: {
         missing: { maxItems: 1 },
-        summarize: { allowPartial: true },
+        gate: { allowPartial: true },
         review_files: { maxItems: 5, skipItemIndexes: [4] }
       }
     });

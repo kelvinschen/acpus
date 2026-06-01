@@ -10,8 +10,7 @@
   },
   "roles": {
     "implementer": { "category": "implementation", "agent": "trae", "mode": "edit" },
-    "reviewer": { "category": "review", "agent": "aiden", "mode": "readOnly" },
-    "summarizer": { "category": "summarization", "agent": "claude", "mode": "readOnly" }
+    "reviewer": { "category": "review", "agent": "aiden", "mode": "readOnly" }
   },
   "limits": {
     "maxAgents": 20,
@@ -47,14 +46,9 @@
       "prompt": "Reconcile these parallel edit results. Identify conflicts, blocked items, changed files, and consistency verdict.\n\n${edits}"
     },
     {
-      "id": "summarize",
-      "kind": "summarize",
-      "role": "summarizer",
-      "dependsOn": ["reconcile"],
-      "variables": [
-        { "name": "reconcile", "source": "outputs.reconcile.summary" }
-      ],
-      "prompt": "Summarize the edit fanout outcome and highlight any residual risk.\n\n${reconcile}"
+      "id": "gate",
+      "kind": "gate",
+      "dependsOn": ["reconcile"]
     }
   ]
 }

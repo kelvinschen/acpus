@@ -59,6 +59,6 @@ describe("ReportApp", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Stages" }));
     expect(screen.getByRole("columnheader", { name: "Stage" })).toBeInTheDocument();
-    expect(screen.getAllByRole("cell", { name: "summarize" }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("cell", { name: "gate" }).length).toBeGreaterThan(0);
   });
 });

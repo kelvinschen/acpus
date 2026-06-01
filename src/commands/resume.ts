@@ -69,7 +69,7 @@ function resetRecoverableStages(index: Awaited<ReturnType<typeof readRunIndex>>)
         }
       : stage
   ]));
-  return { ...index, status: "running" as const, stages, blockedReason: undefined, finalVerdict: undefined };
+  return { ...index, status: "running" as const, stages, blockedReason: undefined, gateVerdict: undefined };
 }
 
 function printResumeIssues(json: boolean | undefined, issues: OrchestratorIssue[]): void {

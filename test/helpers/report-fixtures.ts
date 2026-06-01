@@ -7,7 +7,7 @@ import { runDir } from "../../src/run-index/paths.js";
 import { writeRunIndex, type RunIndex } from "../../src/run-index/read-write.js";
 import { SCHEMA_VERSION, WorkflowSpecSchema, type WorkflowSpec } from "../../src/schema/workflow-spec.js";
 
-export type ReportFixtureKind = "completed-success" | "blocked-before-summarize" | "fanout-partial" | "long-content";
+export type ReportFixtureKind = "completed-success" | "blocked-before-gate" | "fanout-partial" | "long-content";
 
 export type ReportFixture = {
   cwd: string;
@@ -50,7 +50,7 @@ export function minimalReportView(runId = "fixture-run"): RunReportView {
       logicalRunId: runId,
       workflowName: "fixture",
       status: "completed",
-      finalVerdict: "success",
+      gateVerdict: "pass",
       summary: "Fixture summary",
       checks: [],
       finalWarnings: [],
@@ -68,7 +68,7 @@ export function minimalReportView(runId = "fixture-run"): RunReportView {
       logicalRunId: runId,
       workflowName: "fixture",
       status: "completed",
-      finalVerdict: "success",
+      gateVerdict: "pass",
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:01.000Z",
       durationMs: 1000,
@@ -93,32 +93,32 @@ export function minimalReportView(runId = "fixture-run"): RunReportView {
     },
     graph: {
       nodes: [{
-        id: "summarize",
-        label: "summarize",
-        kind: "summarize",
+        id: "gate",
+        label: "gate",
+        kind: "gate",
         status: "completed",
-        detailRef: "summarize",
-        badges: ["summarize"],
+        detailRef: "gate",
+        badges: ["gate"],
         metrics: {}
       }],
       edges: []
     },
     stages: [{
-      id: "summarize",
-      kind: "summarize",
+      id: "gate",
+      kind: "gate",
       dependsOn: [],
       status: "completed",
       summary: "Fixture summary",
-      relatedAttemptIds: ["summarize:attempt-1"],
+      relatedAttemptIds: ["gate:attempt-1"],
       relatedEventIds: [],
       output: { text: "{\"status\":\"completed\"}", truncated: false, path: "/tmp/fixture/output.json" }
     }],
     attempts: [{
-      id: "summarize:attempt-1",
-      stageId: "summarize",
+      id: "gate:attempt-1",
+      stageId: "gate",
       kind: "attempt",
       status: "completed",
-      path: "attempts/summarize/attempt-1"
+      path: "attempts/gate/attempt-1"
     }],
     events: [],
     artifacts: [],
@@ -135,20 +135,19 @@ async function writeLinearFixture(cwd: string, runId: string, dir: string, kind:
     inputs: { task: { type: "string" } },
     roles: {
       planner: { category: "planning", agent: "aiden", mode: "readOnly" },
-      worker: { category: "implementation", agent: "trae", mode: "edit" },
-      summarizer: { category: "summarization", agent: "aiden", mode: "readOnly" }
+      worker: { category: "implementation", agent: "trae", mode: "edit" }
     },
     limits: { maxAgents: 6, maxConcurrency: 1 },
     stages: [
       { id: "plan", kind: "agentTask", role: "planner", prompt: "Plan" },
       { id: "implement", kind: "agentTask", dependsOn: ["plan"], role: "worker", prompt: "Implement" },
-      { id: "summarize", kind: "summarize", dependsOn: ["implement"], role: "summarizer", prompt: "Summarize" }
+      { id: "gate", kind: "gate", dependsOn: ["implement"] }
     ]
   });
   const long = "Long report content. ".repeat(700);
   const outputs: Record<string, Record<string, unknown>> = {
     plan: { status: "completed", summary: "Plan created", artifacts: [], nextFocus: "implement" },
-    implement: kind === "blocked-before-summarize"
+    implement: kind === "blocked-before-gate"
       ? {
           status: "blocked",
           summary: "Implementation blocked",
@@ -168,18 +167,18 @@ async function writeLinearFixture(cwd: string, runId: string, dir: string, kind:
           status: "completed",
           summary: kind === "long-content" ? long : "Implementation complete",
           artifacts: [{ kind: "file", path: "src/app.ts", label: "Changed app file" }],
-          nextFocus: "summarize",
+          nextFocus: "gate",
           metadata: { outputParse: { mode: "lastBalancedJson", repaired: false, candidateCount: 1, warnings: [] } },
           changedFiles: ["src/app.ts"],
           checks: [{ command: "npm test", status: "pass", summary: "Tests passed" }],
           data: kind === "long-content" ? { body: long } : undefined
         },
-    summarize: {
+    gate: {
       status: "completed",
       summary: "Workflow completed",
       artifacts: [],
       nextFocus: "",
-      finalVerdict: kind === "long-content" ? "success_with_warnings" : "success",
+      verdict: kind === "long-content" ? "pass_with_warnings" : "pass",
       deliverables: ["Implementation complete"],
       changedFiles: ["src/app.ts"],
       checks: [{ command: "npm test", status: "pass", summary: "Tests passed" }],
@@ -188,23 +187,23 @@ async function writeLinearFixture(cwd: string, runId: string, dir: string, kind:
       nextActions: []
     }
   };
-  if (kind === "blocked-before-summarize") delete outputs.summarize;
-  const attempts = kind === "blocked-before-summarize"
+  if (kind === "blocked-before-gate") delete outputs.gate;
+  const attempts = kind === "blocked-before-gate"
     ? ["plan", "implement"]
-    : ["plan", "implement", "summarize"];
+    : ["plan", "implement", "gate"];
   await writeRunFiles({ dir, spec, outputs, attempts, promptText: kind === "long-content" ? long : undefined });
   const index = await writeIndex({
     cwd,
     logicalRunId: runId,
     workflowName: spec.name,
-    status: kind === "blocked-before-summarize" ? "blocked" : "completed",
-    finalVerdict: kind === "blocked-before-summarize" ? undefined : (kind === "long-content" ? "success_with_warnings" : "success"),
-    blockedReason: kind === "blocked-before-summarize" ? "Required file is outside the allowed path scope." : undefined,
+    status: kind === "blocked-before-gate" ? "blocked" : "completed",
+    gateVerdict: kind === "blocked-before-gate" ? undefined : (kind === "long-content" ? "pass_with_warnings" : "pass"),
+    blockedReason: kind === "blocked-before-gate" ? "Required file is outside the allowed path scope." : undefined,
     stageIds: spec.stages.map((stage) => stage.id),
     completedStageIds: Object.keys(outputs).filter((stage) => outputs[stage]?.status === "completed"),
     blockedStageIds: Object.keys(outputs).filter((stage) => outputs[stage]?.status === "blocked"),
     attempts,
-    agentUsage: { planned: 3, actual: attempts.length, repairCalls: kind === "blocked-before-summarize" ? 1 : 0, recoveryCalls: 0 }
+    agentUsage: { planned: 3, actual: attempts.length, repairCalls: kind === "blocked-before-gate" ? 1 : 0, recoveryCalls: 0 }
   });
   return { cwd, runId, dir, spec, index };
 }
@@ -217,24 +216,23 @@ async function writeFanoutPartialFixture(cwd: string, runId: string, dir: string
     root: "discover_files",
     inputs: { task: { type: "string" }, files: { type: "array<json>", default: [] } },
     roles: {
-      reviewer: { category: "review", agent: "aiden", mode: "readOnly" },
-      summarizer: { category: "summarization", agent: "aiden", mode: "readOnly" }
+      reviewer: { category: "review", agent: "aiden", mode: "readOnly" }
     },
     limits: { maxAgents: 10, maxConcurrency: 2, maxFanoutItems: 5 },
     stages: [
       { id: "discover_files", kind: "discover", method: "glob", args: { pattern: "src/**/*.ts" }, output: "files" },
       { id: "review_files", kind: "fanout", dependsOn: ["discover_files"], role: "reviewer", items: { source: "outputs.discover_files.files" }, prompt: "Review", fanoutPolicy: { allowPartial: true, minCompletedRatio: 0.5, maxBlockedItems: 2 } },
       { id: "reconcile", kind: "reduce", mode: "agent", role: "reviewer", from: "review_files", dependsOn: ["review_files"], prompt: "Reconcile" },
-      { id: "summarize", kind: "summarize", role: "summarizer", dependsOn: ["reconcile"], prompt: "Summarize" }
+      { id: "gate", kind: "gate", dependsOn: ["reconcile"] }
     ]
   });
   const outputs = {
     discover_files: { status: "completed", summary: "Discovered files", artifacts: [], nextFocus: "review", files: [{ path: "a.ts" }, { path: "b.ts" }, { path: "c.ts" }] },
     review_files: { status: "completed", summary: "Fanout completed", artifacts: [], nextFocus: "reconcile", items: [validation("a"), validation("b"), { ...validation("c"), status: "blocked", blockedReason: "item blocked" }], blockedItems: [{ ...validation("c"), status: "blocked", blockedReason: "item blocked" }] },
     reconcile: validation("Reconciled"),
-    summarize: { status: "completed", summary: "Done", artifacts: [], nextFocus: "", finalVerdict: "success_with_warnings", deliverables: [], changedFiles: [], checks: [], warnings: ["One item blocked."], risks: [], nextActions: [] }
+    gate: { status: "completed", summary: "Done", artifacts: [], nextFocus: "", verdict: "pass_with_warnings", deliverables: [], changedFiles: [], checks: [], warnings: ["One item blocked."], risks: [], nextActions: [] }
   };
-  await writeRunFiles({ dir, spec, outputs, attempts: ["review_files:item-a", "review_files:item-b", "review_files:item-c", "reconcile", "summarize"] });
+  await writeRunFiles({ dir, spec, outputs, attempts: ["review_files:item-a", "review_files:item-b", "review_files:item-c", "reconcile", "gate"] });
   await fs.mkdir(path.join(dir, "outputs", "review_files"), { recursive: true });
   await fs.writeFile(path.join(dir, "outputs", "review_files", "item-a.json"), `${JSON.stringify(validation("a"), null, 2)}\n`, "utf8");
   await fs.writeFile(path.join(dir, "outputs", "review_files", "item-b.json"), `${JSON.stringify(validation("b"), null, 2)}\n`, "utf8");
@@ -244,11 +242,11 @@ async function writeFanoutPartialFixture(cwd: string, runId: string, dir: string
     logicalRunId: runId,
     workflowName: spec.name,
     status: "completed",
-    finalVerdict: "success_with_warnings",
+    gateVerdict: "pass_with_warnings",
     stageIds: spec.stages.map((stage) => stage.id),
     completedStageIds: spec.stages.map((stage) => stage.id),
     blockedStageIds: [],
-    attempts: ["review_files:item-a", "review_files:item-b", "review_files:item-c", "reconcile", "summarize"],
+    attempts: ["review_files:item-a", "review_files:item-b", "review_files:item-c", "reconcile", "gate"],
     fanout: {
       stageId: "review_files",
       totalItems: 3,
@@ -294,7 +292,7 @@ async function writeIndex(options: {
   logicalRunId: string;
   workflowName: string;
   status: RunIndex["status"];
-  finalVerdict?: RunIndex["finalVerdict"];
+  gateVerdict?: RunIndex["gateVerdict"];
   blockedReason?: string;
   stageIds: string[];
   completedStageIds: string[];
@@ -345,7 +343,7 @@ async function writeIndex(options: {
       }];
     })),
     agentUsage: options.agentUsage,
-    finalVerdict: options.finalVerdict,
+    gateVerdict: options.gateVerdict,
     blockedReason: options.blockedReason
   };
   await writeRunIndex(options.cwd, index);
@@ -359,5 +357,5 @@ function attemptIdFromFixture(value: string): string {
 }
 
 function validation(summary: string): Record<string, unknown> {
-  return { status: "completed", summary, artifacts: [], nextFocus: "summarize", verdict: "pass", severityCounts: { P0: 0, P1: 0, P2: 0, P3: 0 }, findings: [], checks: [] };
+  return { status: "completed", summary, artifacts: [], nextFocus: "gate", verdict: "pass", severityCounts: { P0: 0, P1: 0, P2: 0, P3: 0 }, findings: [], checks: [] };
 }

@@ -1,7 +1,7 @@
 {
   "schemaVersion": "acpx-workflow-orchestrator.workflow/v1",
   "name": "simple-feature",
-  "description": "Plan, implement, validate, and summarize a scoped feature change.",
+  "description": "Plan, implement, validate, and gate a scoped feature change.",
   "root": "plan",
   "inputs": {
     "task": { "type": "string", "default": "" },
@@ -11,8 +11,7 @@
   "roles": {
     "planner": { "category": "planning", "agent": "claude", "mode": "readOnly" },
     "implementer": { "category": "implementation", "agent": "trae", "mode": "edit" },
-    "validator": { "category": "validation", "agent": "aiden", "mode": "readOnly" },
-    "summarizer": { "category": "summarization", "agent": "claude", "mode": "readOnly" }
+    "validator": { "category": "validation", "agent": "aiden", "mode": "readOnly" }
   },
   "limits": {
     "maxAgents": 8,
@@ -57,15 +56,9 @@
       "prompt": "Validate the implementation for task relevance and correctness.\n\nTask:\n${task}\n\nImplementation summary:\n${implementation}\n\nTest hints:\n${testHints}"
     },
     {
-      "id": "summarize",
-      "kind": "summarize",
-      "role": "summarizer",
-      "dependsOn": ["validate"],
-      "variables": [
-        { "name": "task", "source": "input.task" },
-        { "name": "validation", "source": "outputs.validate.summary" }
-      ],
-      "prompt": "Summarize the workflow outcome for the user.\n\nTask:\n${task}\n\nValidation:\n${validation}"
+      "id": "gate",
+      "kind": "gate",
+      "dependsOn": ["validate"]
     }
   ]
 }

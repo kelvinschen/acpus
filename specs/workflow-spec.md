@@ -15,8 +15,13 @@
 - Workflow specs MUST use schema version `acpx-workflow-orchestrator.workflow/v1`.
 - A workflow spec MUST explicitly name `root`.
 - A workflow graph MUST have exactly one dependency-free root stage, and `root` MUST name that stage.
-- A workflow graph MUST have exactly one `summarize` stage.
-- The `summarize` stage MUST be terminal and MUST run only on the normal completion path.
+- A workflow graph MUST have exactly one `gate` stage.
+- The `gate` stage MUST be terminal and MUST be the only terminal workflow stage.
+- `summarize` stages are deprecated authoring input and MUST be rejected by lint with migration guidance.
+- Program `gate` stages MUST use `mode: "program"` by default and MAY declare `condition` using the condition DSL.
+- A program `gate` without `condition` MUST have exactly one upstream dependency and MUST pass when `outputs.<upstream>` exists.
+- Agent `gate` stages MUST declare a role and prompt, and the role MUST NOT use edit mode.
+- Terminal `gate` dependencies MAY treat skipped upstream decision branches as satisfied.
 - Stage dependencies MUST be expressed with explicit `dependsOn` fields.
 - Workflow specs MUST NOT use global `edges`.
 - Workflow graphs MUST NOT contain arbitrary cycles; bounded retry behavior MUST use the supported `fixLoop` model.
@@ -59,7 +64,7 @@ Stage output contracts are inferred from role category:
 - planning, research, and coordination roles use the base output contract unless selected by a more specific stage kind;
 - implementation roles produce changed files and checks;
 - validation and review roles produce verdicts, severity counts, findings, and checks;
-- summarize produces `finalVerdict`, deliverables, changed files, checks, warnings, risks, and next actions.
+- gate produces `verdict`, deliverables, changed files, checks, warnings, risks, and next actions.
 
 ## Data Model
 
@@ -76,6 +81,8 @@ Validation first performs Zod shape validation, then compiler lint checks. Compi
 At runtime, actual agent attempts and repair attempts are recorded in `run.json`. Transient agent runtime failures get one automatic retry; the retry counts in `agentUsage.actual`, and repair-turn retries count in `repairCalls`.
 
 For `fixLoop`, each round runs the validator first. If validator output matches `routingPolicy.fixOn`, the fixer runs and the loop continues to the next round. If validator output does not require fixing, the stage completes. If validator output is unknown, or if all rounds are exhausted without a passing validation outcome, the stage blocks according to `onUnknown` or `onExhausted`.
+
+At terminal completion, the `gate` stage writes the workflow `gateVerdict`. Verdicts `pass` and `pass_with_warnings` complete the run. Verdicts `blocked`, `failed`, and `unknown` block the run with gate-specific runtime blocked reasons. Runtime `failed` remains reserved for infrastructure failures.
 
 ## Extension Points
 
@@ -99,5 +106,6 @@ Supported extension points are new validated stage fields, built-in transforms, 
 - Variable interpolation and sources -> `src/variables/interpolate.ts`, `src/variables/paths.ts`
 - Built-in transforms -> `src/transformers/builtins.ts`
 - `fixLoop` schema, linting, and planning -> `src/schema/workflow-spec.ts`, `src/compiler/lint.ts`, `src/compiler/compile-execution-plan.ts`, `src/compiler/execution-plan.ts`
+- `gate` schema, linting, planning, and runtime verdict handling -> `src/schema/workflow-spec.ts`, `src/compiler/lint.ts`, `src/compiler/compile-execution-plan.ts`, `src/runtime/stage-runner.ts`, `src/runtime/scheduler.ts`
 - JSON schema generation -> `src/schema/generate-json-schema.ts`, `schemas/workflow-spec.schema.json`
 - Example authoring contracts -> `workflows/examples/*.workflow.spec.json`

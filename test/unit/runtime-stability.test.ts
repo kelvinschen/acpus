@@ -11,7 +11,7 @@ import { startDiagnosticRun } from "../../src/runtime/diagnose-run.js";
 import { prepareRun, startPreparedRun } from "../../src/runtime/run-workflow.js";
 import { syncRun } from "../../src/runtime/sync.js";
 import { WorkflowSpecSchema, type WorkflowSpec } from "../../src/schema/workflow-spec.js";
-import { baseOutput, summarizeOutput, validationOutput, plainJsonOutput } from "../helpers/fake-runtime.js";
+import { baseOutput, gateOutput, validationOutput, plainJsonOutput } from "../helpers/fake-runtime.js";
 
 describe("fanout runtime stability", () => {
   afterEach(() => setAgentRuntimeFactoryForTests(undefined));
@@ -702,20 +702,22 @@ describe("fanout runtime stability", () => {
     }));
   });
 
-  it("records a run-level blocked reason when the final verdict is unknown", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-final-verdict-"));
-    setAgentRuntimeFactoryForTests(() => new FinalVerdictRuntime("unknown"));
-    const spec = summarizeSpec(cwd);
+  it("records a run-level blocked reason when the gate verdict is unknown", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-gate-verdict-"));
+    setAgentRuntimeFactoryForTests(() => new GateVerdictRuntime("unknown"));
+    const spec = gateSpec(cwd);
     const prepared = await prepareRun(spec, { cwd, input: { cwd } });
 
     const index = await startPreparedRun(cwd, prepared);
     const report = await buildRunReportView(cwd, spec, index, { mode: "snapshot" });
 
     expect(index.status).toBe("blocked");
-    expect(index.blockedReason).toBe(RuntimeErrorCodes.FINAL_VERDICT_UNKNOWN);
-    expect(report.run.blockedReason).toBe(RuntimeErrorCodes.FINAL_VERDICT_UNKNOWN);
+    expect(index.agentUsage.actual).toBe(1);
+    expect(index.gateVerdict).toBe("unknown");
+    expect(index.blockedReason).toBe(RuntimeErrorCodes.GATE_VERDICT_UNKNOWN);
+    expect(report.run.blockedReason).toBe(RuntimeErrorCodes.GATE_VERDICT_UNKNOWN);
     expect(report.diagnostics).toContainEqual(expect.objectContaining({
-      code: RuntimeErrorCodes.FINAL_VERDICT_UNKNOWN,
+      code: RuntimeErrorCodes.GATE_VERDICT_UNKNOWN,
       stageId: undefined,
       itemId: undefined
     }));
@@ -731,8 +733,8 @@ describe("fanout runtime stability", () => {
     const index: RunIndex = {
       ...prepared.index,
       status: "blocked",
-      finalVerdict: "blocked",
-      blockedReason: RuntimeErrorCodes.FINAL_VERDICT_BLOCKED,
+      gateVerdict: "blocked",
+      blockedReason: RuntimeErrorCodes.GATE_VERDICT_BLOCKED,
       stages: {
         ...prepared.index.stages,
         fanout: {
@@ -760,7 +762,7 @@ describe("fanout runtime stability", () => {
     const report = await buildRunReportView(cwd, spec, index, { mode: "snapshot" });
 
     expect(report.run.status).toBe("blocked");
-    expect(report.run.blockedReason).toBe(RuntimeErrorCodes.FINAL_VERDICT_BLOCKED);
+    expect(report.run.blockedReason).toBe(RuntimeErrorCodes.GATE_VERDICT_BLOCKED);
     expect(report.diagnostics).toContainEqual(expect.objectContaining({
       code: ReportDiagnosticCodes.SCHEDULER_RECOVERY_SUCCEEDED_WITH_BLOCKED_VERDICT,
       status: "completed",
@@ -938,15 +940,17 @@ async function schedulerBatchStartedCount(dir: string): Promise<number> {
   }).length;
 }
 
-function summarizeSpec(cwd: string): WorkflowSpec {
+function gateSpec(cwd: string): WorkflowSpec {
   return WorkflowSpecSchema.parse({
     schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
-    name: "final-verdict",
-    root: "summarize",
+    name: "gate-verdict",
+    root: "gate",
     inputs: { cwd: { type: "path", default: cwd } },
-    roles: { summarizer: { category: "summarization", agent: "fake", mode: "readOnly" } },
+    roles: {
+      gater: { category: "validation", agent: "fake", mode: "readOnly" }
+    },
     limits: { maxAgents: 1, maxConcurrency: 1, maxFanoutItems: 1, maxFixRounds: 0, stageTimeoutMinutes: 1 },
-    stages: [{ id: "summarize", kind: "summarize", role: "summarizer", prompt: "Summarize" }]
+    stages: [{ id: "gate", kind: "gate", mode: "agent", role: "gater", prompt: "Gate" }]
   });
 }
 
@@ -1120,11 +1124,11 @@ class CancelledRuntime implements OrchestratorAgentRuntime {
   }
 }
 
-class FinalVerdictRuntime implements OrchestratorAgentRuntime {
+class GateVerdictRuntime implements OrchestratorAgentRuntime {
   constructor(private readonly verdict: "blocked" | "failed" | "unknown") {}
 
   async runTurn(input: AgentTurnRequest, onEvent?: (event: AcpRuntimeEvent) => Promise<void> | void): Promise<AgentTurnResult> {
-    const rawText = plainJsonOutput(summarizeOutput({ finalVerdict: this.verdict }));
+    const rawText = plainJsonOutput(gateOutput({ status: "blocked", verdict: this.verdict }));
     const event: AcpRuntimeEvent = { type: "text_delta", text: rawText, stream: "output" };
     await onEvent?.(event);
     return {

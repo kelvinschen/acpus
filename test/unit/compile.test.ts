@@ -11,7 +11,7 @@ describe("compileExecutionPlan", () => {
 
     expect(plan.version).toBe("acpx-workflow-orchestrator.execution-plan/v1");
     expect(plan.workflowName).toBe("simple-feature");
-    expect(plan.stages.map((stage) => stage.id)).toEqual(["plan", "implement", "validate", "summarize"]);
+    expect(plan.stages.map((stage) => stage.id)).toEqual(["plan", "implement", "validate", "gate"]);
     expect(JSON.stringify(plan)).not.toContain("defineFlow");
     expect(JSON.stringify(plan)).not.toContain("workflow.flow.ts");
     expect(plan.prompts.plan.footer).toContain("End the response with exactly one valid, parseable JSON object that satisfies the schema.");
@@ -19,7 +19,7 @@ describe("compileExecutionPlan", () => {
     expect(plan.prompts.plan.footer).not.toContain("fenced JSON block tagged workflow-output");
     expect(plan.contracts.implement).toMatchObject({ name: "implementation" });
     expect(plan.contracts.validate).toMatchObject({ name: "validation" });
-    expect(plan.contracts.summarize).toMatchObject({ name: "summarize" });
+    expect(plan.contracts.gate).toMatchObject({ name: "gate" });
   });
 
   it("plans fanout item sessions independently", () => {
@@ -69,5 +69,24 @@ describe("compileExecutionPlan", () => {
     });
     expect(plan.prompts.quality_loop__validate.footer).toContain("Minimal valid example");
     expect(JSON.stringify(plan)).not.toContain("__blocked_stop");
+  });
+
+  it("fails fast if a deprecated summarize stage reaches compile", () => {
+    const spec = WorkflowSpecSchema.parse({
+      schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+      name: "legacy-summarize",
+      root: "work",
+      roles: {
+        implementer: { category: "implementation", agent: "codex", mode: "edit" },
+        summarizer: { category: "summarization", agent: "codex", mode: "readOnly" }
+      },
+      limits: { maxAgents: 1 },
+      stages: [
+        { id: "work", kind: "agentTask", role: "implementer", prompt: "Do work" },
+        { id: "legacy_summary", kind: "summarize", role: "summarizer", dependsOn: ["work"], prompt: "Legacy summary" }
+      ]
+    });
+
+    expect(() => compileExecutionPlan(spec)).toThrow(/Summarize stage legacy_summary is deprecated/);
   });
 });

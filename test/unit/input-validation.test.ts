@@ -6,22 +6,22 @@ describe("input validation", () => {
   const spec = WorkflowSpecSchema.parse({
     schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
     name: "input-contract",
-    root: "summarize",
+    root: "gate",
     inputs: {
       task: { type: "string", default: "" },
       paths: { type: "array<path>", default: [] }
     },
     roles: {
-      summarizer: { category: "summarization", agent: "claude", mode: "readOnly" }
+      gater: { category: "summarization", agent: "claude", mode: "readOnly" }
     },
     limits: { maxAgents: 2 },
     stages: [
       {
-        id: "summarize",
-        kind: "summarize",
-        role: "summarizer",
+        id: "gate",
+        kind: "gate",
+        role: "gater",
         variables: [{ name: "task", source: "input.task" }],
-        prompt: "Summarize ${task}"
+        prompt: "Gate ${task}"
       }
     ]
   });

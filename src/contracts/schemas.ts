@@ -6,7 +6,7 @@ export const OutputContractNameSchema = z.enum([
   "validation",
   "decision",
   "discover",
-  "summarize",
+  "gate",
   "diagnostic"
 ]);
 
@@ -66,15 +66,31 @@ export const DecisionOutputSchema = BaseOutputSchema.extend({
   route: z.string()
 }).passthrough();
 
-export const SummarizeOutputSchema = BaseOutputSchema.extend({
-  finalVerdict: z.enum(["success", "success_with_warnings", "blocked", "failed", "unknown"]),
+export const GateOutputSchema = BaseOutputSchema.extend({
+  verdict: z.enum(["pass", "pass_with_warnings", "blocked", "failed", "unknown"]),
   deliverables: z.array(z.string()),
   changedFiles: z.array(z.string()),
   checks: z.array(CheckSchema),
   warnings: z.array(z.string()),
   risks: z.array(z.string()),
   nextActions: z.array(z.string())
-}).passthrough();
+}).passthrough().superRefine((value, ctx) => {
+  const passing = value.verdict === "pass" || value.verdict === "pass_with_warnings";
+  if (passing && value.status !== "completed") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["status"],
+      message: "gate verdict pass/pass_with_warnings requires status completed."
+    });
+  }
+  if (!passing && value.status !== "blocked") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["status"],
+      message: "gate verdict blocked/failed/unknown requires status blocked."
+    });
+  }
+});
 
 export const DiagnosticOutputSchema = BaseOutputSchema.extend({
   data: z.record(z.string(), z.unknown())
@@ -108,8 +124,8 @@ export function schemaForContract(name: OutputContractName, options: { outputKey
       return DecisionOutputSchema;
     case "discover":
       return discoverOutputSchema(options.outputKey, options.maxItems);
-    case "summarize":
-      return SummarizeOutputSchema;
+    case "gate":
+      return GateOutputSchema;
     case "diagnostic":
       return DiagnosticOutputSchema;
     case "base":

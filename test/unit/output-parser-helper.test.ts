@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { OutputContractNameSchema } from "../../src/contracts/output-contracts.js";
 import { formatRepairPrompt } from "../../src/runtime/repair.js";
 import { parseWorkflowOutput } from "../../src/runtime/output-parser.js";
 
@@ -7,7 +8,7 @@ function implementationOutput(extra: Record<string, unknown> = {}): Record<strin
     status: "completed",
     summary: "Implemented safely.",
     artifacts: [],
-    nextFocus: "summarize",
+    nextFocus: "gate",
     changedFiles: ["src/app.ts"],
     checks: [{ command: "npm test", status: "pass", summary: "ok" }],
     ...extra
@@ -19,11 +20,28 @@ function validationOutput(extra: Record<string, unknown> = {}): Record<string, u
     status: "completed",
     summary: "Reviewed safely.",
     artifacts: [],
-    nextFocus: "summarize",
+    nextFocus: "gate",
     verdict: "pass",
     severityCounts: { P0: 0, P1: 0, P2: 0, P3: 0 },
     findings: [],
     checks: [],
+    ...extra
+  };
+}
+
+function gateOutput(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    status: "completed",
+    summary: "Gate passed.",
+    artifacts: [],
+    nextFocus: "",
+    verdict: "pass",
+    deliverables: [],
+    changedFiles: [],
+    checks: [],
+    warnings: [],
+    risks: [],
+    nextActions: [],
     ...extra
   };
 }
@@ -110,6 +128,23 @@ describe("runtime output parser", () => {
     if (!parsed.ok) return;
     expect(parsed.value.checks).toEqual([{ name: "unit", status: "pass" }]);
     expect(parsed.outputParse.outputNormalizedAliases).toEqual(["checks[].result->checks[].status"]);
+  });
+
+  it("accepts valid gate pass and blocked outputs", () => {
+    expect(parseWorkflowOutput(trailing(gateOutput()), "gate").ok).toBe(true);
+    expect(parseWorkflowOutput(trailing(gateOutput({ status: "blocked", verdict: "unknown", blockedReason: "GATE_VERDICT_UNKNOWN" })), "gate").ok).toBe(true);
+  });
+
+  it("rejects inconsistent gate status and verdict pairs", () => {
+    const parsed = parseWorkflowOutput(trailing(gateOutput({ status: "completed", verdict: "unknown" })), "gate");
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) return;
+    expect(parsed.errorCode).toBe("OUTPUT_SCHEMA_FAILED");
+    expect(parsed.diagnostics.candidates[0]?.schemaErrors.map((error) => error.path)).toContain("/status");
+  });
+
+  it("does not expose summarize as a current output contract", () => {
+    expect(OutputContractNameSchema.safeParse("summarize").success).toBe(false);
   });
 
   it("uses only the final parseable JSON object when earlier valid JSON appears in prose", () => {

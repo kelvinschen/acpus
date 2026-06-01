@@ -111,7 +111,7 @@ export function ReportApp(): React.ReactElement {
             <Metric label="Stages" value={`${view.metrics.stagesCompleted}/${view.metrics.stagesTotal}`} hint={`${view.metrics.stagesBlocked} blocked`} />
             <Metric label="Attempts" value={`${view.metrics.attemptsCompleted}/${view.metrics.attemptsTotal}`} hint={`${view.metrics.attemptsBlocked} blocked`} />
             <Metric label="Agent Calls" value={`${view.metrics.agentCallsActual ?? 0}/${view.metrics.agentCallsPlanned}`} hint={`${view.metrics.repairCalls ?? 0} repairs`} />
-            <Metric label="Verdict" value={view.run.finalVerdict ?? "n/a"} hint={view.run.blockedReason ?? view.run.status} />
+            <Metric label="Verdict" value={view.run.gateVerdict ?? "n/a"} hint={view.run.blockedReason ?? view.run.status} />
           </section>
 
           <section className="workspace">
@@ -368,7 +368,7 @@ function readLiveConfig(): { runId: string } | undefined {
 function initialSelection(view: RunReportView | undefined): Selection | undefined {
   if (!view) return undefined;
   const stage = view.stages.find((candidate) => candidate.status === "blocked" || candidate.status === "running")
-    ?? view.stages.find((candidate) => candidate.kind === "summarize")
+    ?? view.stages.find((candidate) => candidate.kind === "gate")
     ?? view.stages[0];
   return stage ? { kind: "stage", id: stage.id } : undefined;
 }
@@ -388,7 +388,7 @@ function stageIcon(kind: string): React.ReactElement {
   const props = { size: 15 };
   if (kind === "discover") return <Search {...props} />;
   if (kind === "decisionGate") return <Route {...props} />;
-  if (kind === "summarize") return <Sparkles {...props} />;
+  if (kind === "gate") return <Sparkles {...props} />;
   return <Server {...props} />;
 }
 

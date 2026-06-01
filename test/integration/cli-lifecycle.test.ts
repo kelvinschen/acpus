@@ -68,21 +68,19 @@ function deterministicSpec(cwd: string) {
     inputs: {
       cwd: { type: "path", default: cwd }
     },
-    roles: {
-      summarizer: { category: "summarization", agent: "aiden", mode: "readOnly" }
-    },
+    roles: {},
     limits: { maxAgents: 1, maxConcurrency: 1, maxFanoutItems: 1, maxFixRounds: 0, stageTimeoutMinutes: 1 },
     stages: [
       { id: "discover", kind: "discover", method: "glob", args: { scope: ["*.txt"] }, output: "files" },
       {
-        id: "gate",
+        id: "decide",
         kind: "decisionGate",
         mode: "program",
         dependsOn: ["discover"],
         rules: [{ when: { source: "outputs.discover.files", op: "exists" }, to: "blocked" }],
         default: "blocked"
       },
-      { id: "summarize", kind: "summarize", role: "summarizer", dependsOn: ["gate"], prompt: "Summarize" }
+      { id: "gate", kind: "gate", dependsOn: ["decide"] }
     ]
   };
 }

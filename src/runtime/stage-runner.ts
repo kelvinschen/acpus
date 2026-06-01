@@ -109,6 +109,9 @@ export async function runProgramStage(input: {
       blockedReason: route === "blocked" ? "BLOCKED_ROUTE" : undefined
     };
   }
+  if (stage.kind === "gate" && stage.mode === "program") {
+    return programGate(stage, input.outputs, input.workflowInput);
+  }
   return undefined;
 }
 
@@ -904,10 +907,45 @@ function programReduce(stage: Extract<Stage, { kind: "reduce" }>, outputs: Recor
     status: "completed",
     summary: `Program reduce ${operation} completed.`,
     artifacts: [],
-    nextFocus: "summarize",
+    nextFocus: "gate",
     items: data,
     data: { operation, sourceStage: stage.from }
   };
+}
+
+function programGate(stage: Extract<Stage, { kind: "gate" }>, outputs: Record<string, unknown>, workflowInput: Record<string, unknown>): Record<string, unknown> {
+  const dependencies = stage.dependsOn ?? [];
+  const upstream = dependencies.length === 1 ? objectRecord(outputs[dependencies[0]]) : undefined;
+  const passed = stage.condition
+    ? evaluateCondition(stage.condition, outputs, workflowInput)
+    : dependencies.length === 1 && outputs[dependencies[0]] != null;
+  const passthrough = passed ? finalFieldPassthrough(upstream) : {};
+  return {
+    status: passed ? "completed" : "blocked",
+    summary: passed && typeof upstream?.summary === "string" ? upstream.summary : (passed ? "Gate condition passed." : "Gate condition failed."),
+    artifacts: Array.isArray(upstream?.artifacts) ? upstream.artifacts : [],
+    nextFocus: "",
+    verdict: passed ? "pass" : "blocked",
+    blockedReason: passed ? undefined : RuntimeErrorCodes.GATE_CONDITION_FAILED,
+    ...passthrough
+  };
+}
+
+function finalFieldPassthrough(output: Record<string, unknown> | undefined): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    deliverables: [],
+    changedFiles: [],
+    checks: [],
+    warnings: [],
+    risks: [],
+    nextActions: []
+  };
+  if (!output) return result;
+  for (const key of Object.keys(result)) {
+    const value = output[key];
+    if (Array.isArray(value)) result[key] = value;
+  }
+  return result;
 }
 
 function evaluateDecision(stage: Extract<Stage, { kind: "decisionGate" }>, outputs: Record<string, unknown>, workflowInput: Record<string, unknown>): string {
@@ -934,6 +972,10 @@ function evaluateCondition(condition: ConditionNode, outputs: Record<string, unk
     case "empty": return value == null || value === "" || (Array.isArray(value) && value.length === 0);
     default: return false;
   }
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" ? value as Record<string, unknown> : undefined;
 }
 
 function workflowCwd(workflowInput: Record<string, unknown>): string {

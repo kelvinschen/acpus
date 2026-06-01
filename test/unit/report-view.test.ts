@@ -10,8 +10,8 @@ describe("RunReportView", () => {
     expect(view.version).toBe("acpx-workflow-orchestrator.report/v1");
     expect(view.run.status).toBe("completed");
     expect(view.metrics.stagesCompleted).toBe(3);
-    expect(view.graph.nodes.map((node) => node.id)).toEqual(["plan", "implement", "summarize"]);
-    expect(view.graph.edges.map((edge) => `${edge.source}->${edge.target}`)).toEqual(["plan->implement", "implement->summarize"]);
+    expect(view.graph.nodes.map((node) => node.id)).toEqual(["plan", "implement", "gate"]);
+    expect(view.graph.edges.map((edge) => `${edge.source}->${edge.target}`)).toEqual(["plan->implement", "implement->gate"]);
     expect(view.stages.find((stage) => stage.id === "implement")).toMatchObject({
       roleName: "worker",
       agent: "trae",
@@ -27,8 +27,8 @@ describe("RunReportView", () => {
     expect(JSON.stringify(view.metrics)).not.toMatch(/token|cost/i);
   });
 
-  it("keeps blocked runs inspectable without running the summarizer", async () => {
-    const fixture = await createReportFixture("blocked-before-summarize");
+  it("keeps blocked runs inspectable without running the gater", async () => {
+    const fixture = await createReportFixture("blocked-before-gate");
     const view = await buildRunReportView(fixture.cwd, fixture.spec, fixture.index, { mode: "snapshot" });
 
     expect(view.run.status).toBe("blocked");
@@ -42,15 +42,15 @@ describe("RunReportView", () => {
         schemaErrors: [{ path: "/status", message: "Invalid option: expected one of \"completed\"|\"blocked\"" }]
       }
     });
-    expect(view.stages.find((stage) => stage.id === "summarize")).toMatchObject({ status: "skipped", output: undefined });
+    expect(view.stages.find((stage) => stage.id === "gate")).toMatchObject({ status: "skipped", output: undefined });
   });
 
-  it("summarizes explicit partial fanout without exposing internal item nodes", async () => {
+  it("gates explicit partial fanout without exposing internal item nodes", async () => {
     const fixture = await createReportFixture("fanout-partial");
     const view = await buildRunReportView(fixture.cwd, fixture.spec, fixture.index, { mode: "snapshot" });
     const fanout = view.stages.find((stage) => stage.id === "review_files")?.fanout;
 
-    expect(view.graph.nodes.map((node) => node.id)).toEqual(["discover_files", "review_files", "reconcile", "summarize"]);
+    expect(view.graph.nodes.map((node) => node.id)).toEqual(["discover_files", "review_files", "reconcile", "gate"]);
     expect(view.graph.nodes.some((node) => node.id.includes("__item_"))).toBe(false);
     expect(view.metrics.attemptsTotal).toBe(5);
     expect(fanout).toMatchObject({

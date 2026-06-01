@@ -15,29 +15,29 @@ describe("deterministic runtime program stages", () => {
       name: "compute-contract",
       root: "discover",
       inputs: { cwd: { type: "path", default: cwd } },
-      roles: { summarizer: { category: "summarization", agent: "claude", mode: "readOnly" } },
+      roles: {},
       limits: { maxAgents: 2, maxConcurrency: 1, maxFanoutItems: 1, maxFixRounds: 0, stageTimeoutMinutes: 1 },
       stages: [
         { id: "discover", kind: "discover", method: "glob", args: { scope: ["**/*.txt"] }, output: "files" },
         {
-          id: "gate",
+          id: "decide",
           kind: "decisionGate",
           mode: "program",
           dependsOn: ["discover"],
           rules: [{ when: { source: "outputs.discover.files", op: "exists" }, to: "blocked" }],
           default: "blocked"
         },
-        { id: "summarize", kind: "summarize", role: "summarizer", dependsOn: ["gate"], prompt: "Summarize" }
+        { id: "gate", kind: "gate", dependsOn: ["decide"] }
       ]
     });
     const prepared = await prepareRun(spec, { cwd, input: { cwd } });
     const index = await syncRun(cwd, prepared.logicalRunId, { startPending: false });
     const discover = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "discover.json"), "utf8")) as { files: unknown[] };
-    const gate = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "gate.json"), "utf8")) as { status: string };
+    const decision = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "decide.json"), "utf8")) as { status: string };
 
     expect(index.status).toBe("blocked");
     expect(discover.files).toHaveLength(1);
-    expect(gate.status).toBe("blocked");
+    expect(decision.status).toBe("blocked");
     await expect(fs.stat(path.join(prepared.dir, "workflow.flow.ts"))).rejects.toBeTruthy();
   });
 });

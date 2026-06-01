@@ -57,7 +57,7 @@ export function implementationOutput(extra: Record<string, unknown> = {}): Recor
 
 export function validationOutput(extra: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    ...baseOutput({ nextFocus: "summarize" }),
+    ...baseOutput({ nextFocus: "gate" }),
     verdict: "pass",
     severityCounts: { P0: 0, P1: 0, P2: 0, P3: 0 },
     findings: [],
@@ -66,10 +66,10 @@ export function validationOutput(extra: Record<string, unknown> = {}): Record<st
   };
 }
 
-export function summarizeOutput(extra: Record<string, unknown> = {}): Record<string, unknown> {
+export function gateOutput(extra: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     ...baseOutput({ nextFocus: "" }),
-    finalVerdict: "success",
+    verdict: "pass",
     deliverables: [],
     changedFiles: [],
     checks: [],

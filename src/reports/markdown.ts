@@ -5,7 +5,7 @@ export function renderMarkdownReport(view: RunView): string {
     `# ${view.workflowName}`,
     "",
     `- Status: ${view.status}`,
-    view.finalVerdict ? `- Final verdict: ${view.finalVerdict}` : undefined,
+    view.gateVerdict ? `- Gate verdict: ${view.gateVerdict}` : undefined,
     view.blockedReason ? `- Blocked reason: ${view.blockedReason}` : undefined,
     `- Planned agent calls: ${view.agentUsage.planned}`,
     view.agentUsage.actual !== undefined ? `- Actual agent calls: ${view.agentUsage.actual}` : undefined,

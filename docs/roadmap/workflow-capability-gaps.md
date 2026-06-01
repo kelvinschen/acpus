@@ -11,12 +11,12 @@
 当前 workflow 模型是有意收敛的：
 
 - 只能有一个无依赖 root stage；
-- 只能有一个 terminal `summarize` stage；
+- 只能有一个 terminal `gate` stage；
 - 依赖通过显式 `dependsOn` 表达；
 - 不支持任意图环；
 - 分支路由只能通过 `decisionGate`；
 - 并发主要通过 `fanout` item 表达；
-- 纯程序节点只支持内置 `discover`、`reduce`、`decisionGate` program mode。
+- 纯程序节点只支持内置 `discover`、`reduce`、`decisionGate` program mode 和 terminal `gate`。
 
 下面把能力缺口拆成较小的原子能力，方便后续逐步优化框架，而不是一次性把 workflow spec 扩成无约束的通用编排器。
 
@@ -456,4 +456,3 @@ deep research 和设计迁移常常在运行中发现更多工作。
 - 不要在没有 limits 和 output contract 的情况下支持任意 shell 执行。
 - 不要从图形结构隐式推断 branch/join 语义；应使用显式 policy。
 - 当 workflow 需要可复现执行元数据时，不要把 connector/tool 依赖藏在 prompt 里。
-
