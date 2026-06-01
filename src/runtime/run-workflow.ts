@@ -60,7 +60,7 @@ export async function prepareRun(spec: WorkflowSpec, options: {
   return { logicalRunId, dir, index };
 }
 
-export async function startPreparedRun(cwd: string, prepared: PreparedRun): Promise<RunIndex> {
+export async function startPreparedRun(cwd: string, prepared: PreparedRun, options: { drainFanoutPool?: boolean } = {}): Promise<RunIndex> {
   await appendEvent(cwd, prepared.logicalRunId, { type: "run_started" });
-  return syncRun(cwd, prepared.logicalRunId);
+  return syncRun(cwd, prepared.logicalRunId, { drainFanoutPool: options.drainFanoutPool });
 }

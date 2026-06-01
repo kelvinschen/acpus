@@ -60,7 +60,7 @@ describe("runtime-driven fake e2e", () => {
       root: "discover",
       inputs: { cwd: { type: "path", default: temp } },
       roles: {},
-      limits: { maxAgents: 1, maxConcurrency: 1, maxFanoutItems: 1, maxFixRounds: 0, stageTimeoutMinutes: 1 },
+      limits: { stageTimeoutMinutes: 1 },
       stages: [
         { id: "discover", kind: "discover", method: "glob", args: { scope: ["*.txt"] }, output: "files" },
         {
@@ -95,7 +95,7 @@ describe("runtime-driven fake e2e", () => {
       root: "gate",
       inputs: { cwd: { type: "path", default: temp } },
       roles: {},
-      limits: { maxAgents: 1, maxConcurrency: 1, maxFanoutItems: 1, maxFixRounds: 0, stageTimeoutMinutes: 1 },
+      limits: { stageTimeoutMinutes: 1 },
       stages: [{ id: "gate", kind: "gate", condition: { source: "input.missing", op: "exists" } }]
     });
     const prepared = await prepareRun(spec, { cwd: temp, input: { cwd: temp } });

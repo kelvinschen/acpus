@@ -62,13 +62,15 @@ export const VariableSchema = z.object({
   transform: z.array(TransformSchema).optional()
 });
 
-export const LimitsSchema = z.object({
-  maxAgents: z.number().int().positive().optional(),
-  maxConcurrency: z.number().int().positive().optional(),
-  maxFanoutItems: z.number().int().positive().optional(),
-  maxFixRounds: z.number().int().nonnegative().optional(),
+export const WorkflowLimitsSchema = z.strictObject({
   stageTimeoutMinutes: z.number().int().positive().optional(),
   maxOutputChars: z.number().int().positive().optional()
+});
+
+export const StageLimitsSchema = z.strictObject({
+  maxConcurrency: z.number().int().positive().optional(),
+  maxFanoutItems: z.number().int().positive().optional(),
+  stageTimeoutMinutes: z.number().int().positive().optional()
 });
 
 export const ArtifactSchema = z.object({
@@ -134,7 +136,7 @@ const StageBaseSchema = z.object({
   dependsOn: z.array(IdentifierSchema).optional(),
   variables: z.array(VariableSchema).optional(),
   prompt: z.string().optional(),
-  limits: LimitsSchema.optional()
+  limits: StageLimitsSchema.optional()
 });
 
 const SourceRefSchema = z.object({
@@ -268,7 +270,7 @@ export const WorkflowSpecSchema = z.object({
   root: IdentifierSchema,
   inputs: z.record(z.string(), InputDeclarationSchema).default({}),
   roles: z.record(z.string(), RoleSchema),
-  limits: LimitsSchema.default({}),
+  limits: WorkflowLimitsSchema.default({}),
   stages: z.array(StageSchema).min(1)
 });
 

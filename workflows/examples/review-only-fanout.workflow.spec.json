@@ -12,10 +12,6 @@
     "reviewer": { "category": "review", "agent": "aiden", "mode": "readOnly" }
   },
   "limits": {
-    "maxAgents": 28,
-    "maxConcurrency": 4,
-    "maxFanoutItems": 12,
-    "maxFixRounds": 0,
     "stageTimeoutMinutes": 45
   },
   "stages": [
@@ -35,7 +31,7 @@
       "role": "validator",
       "dependsOn": ["discover_changed_files"],
       "items": { "source": "outputs.discover_changed_files.files" },
-      "limits": { "maxConcurrency": 4 },
+      "limits": { "maxConcurrency": 4, "maxFanoutItems": 12 },
       "fanoutPolicy": { "allowPartial": true, "minCompletedRatio": 0.8, "maxBlockedItems": 2 },
       "variables": [
         { "name": "task", "source": "input.task" },

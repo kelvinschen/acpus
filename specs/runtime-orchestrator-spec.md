@@ -20,13 +20,18 @@ The runtime orchestrator is the authoritative workflow driver. It executes compi
 - Runtime state on disk MUST be authoritative for recovery after process interruption.
 - `run` MUST prepare the logical run, write runtime artifacts, and advance at least one scheduler tick.
 - `run --wait` MUST continue advancing until the run reaches a terminal state.
+- `run --wait` MUST enable fanout-stage-local draining for ready fanout stages.
+- `run` without `--wait` MUST remain a bounded scheduler advancement and MUST NOT drain an entire fanout stage solely because queued items remain.
 - `follow` MUST observe and sync an existing run; it MUST NOT create a new workflow run.
 - `resume` MUST continue from persisted `run.json` and `execution-plan.json`.
+- `resume --wait` MUST enable the same fanout-stage-local draining behavior as `run --wait`.
 - Resume policy flags MUST only tighten fanout handling.
 - Resume policy overrides MUST be persisted into `run.json` before advancing the scheduler.
+- Resume fanout item filtering MUST NOT remove running fanout items from `run.json`; running items MUST settle before tightening or skip policy can remove them from the active fanout set.
+- Resume MUST preserve completed pass or pass-with-warnings gate verdicts when it only resets non-gate stages. A blocked, failed, or unknown gate verdict MAY reset the gate stage for recomputation.
 - Blocked fanout stages MUST be re-aggregated from existing item outputs when partial fanout is allowed, without rerunning completed items.
 - Blocked or failed non-fanout stages MAY be reset to pending for retry by the next scheduler tick.
-- The scheduler MUST terminalize ready agent work as blocked when `agentUsage.actual` has reached `limits.maxAgents`.
+- The scheduler MUST treat `agentUsage.actual` and `agentUsage.repairCalls` as usage accounting only; agent call counts MUST NOT control whether ready work can start.
 - Program gate stages MUST advance deterministically, and agent gate stages MUST run through the normal agent attempt pipeline.
 - Terminal gate dependencies MAY treat skipped upstream decision branches as satisfied; other stage dependencies MUST require completed upstream stages.
 - Gate verdicts `pass` and `pass_with_warnings` MUST complete a run, while `blocked`, `failed`, and `unknown` MUST block a run without using runtime `failed`.
@@ -53,9 +58,24 @@ Run directories contain:
 
 Runtime commands are exposed through `run`, `follow`, `resume`, and `diagnose` CLI commands.
 
+Execution event types include:
+
+- `run_prepared`, `run_started`, `run_synced`, and `runtime_fatal` for run lifecycle.
+- `work_started` and `work_settled` for ordinary single agent work.
+- `fanout_pool_started`, `fanout_pool_item_started`, `fanout_pool_item_settled`, and `fanout_pool_completed` for fanout pool execution.
+- `fanout_aggregated`, `fanout_item_recovered`, `fanout_item_runtime_error`, and `run_index_output_mismatch` for fanout aggregation and recovery.
+- `attempt_created`, `attempt_started`, `turn_started`, `turn_finished`, `agent_event`, `output_written`, and `repair_started` for attempt, turn, output, and repair lifecycle.
+- `runtime_retry_scheduled`, `runtime_retry_started`, and `runtime_retry_exhausted` for transient runtime retry handling.
+- `program_stage_completed` for deterministic program stage completion.
+- `diagnostic_prepared` for diagnose artifact preparation.
+
+The scheduler MUST NOT emit `scheduler_batch_started` or `scheduler_batch_completed`.
+
 ## Data Model
 
 The runtime data model includes a logical run, compiled execution plan, stage states, attempts, fanout item attempts, fix-loop validator/fixer attempts, output artifacts, event stream, role/session bindings, ACPX session state, usage accounting, gate verdict, blocked reason, and diagnostics.
+
+Fanout pool state MUST be derived from fanout item status, attempts, and output artifacts. The run index MUST NOT persist a separate pool object.
 
 Terminal workflow outcomes are represented in the run index. Output-contract failures block attempts, stages, and runs; infrastructure or unrecoverable runtime errors fail attempts, stages, or runs.
 
@@ -63,7 +83,13 @@ Terminal workflow outcomes are represented in the run index. Output-contract fai
 
 The scheduler determines ready stages from persisted state and dependency completion. Agent stages start ACPX runtime turns, persist prompts and raw outputs, parse outputs, optionally perform one schema-aware repair turn, write parsed outputs, and update stage/run status.
 
-Fanout executes independent item work under concurrency limits. Item failures are localized and represented as item-level results when possible. Aggregation occurs before downstream stages run.
+Fanout executes independent item work under the fanout stage `maxConcurrency` limit. A fanout stage with no declared `maxConcurrency` executes serially. Item failures are localized and represented as item-level results when possible. Aggregation occurs before downstream stages run.
+
+When fanout draining is enabled, the scheduler MUST run at most one ready fanout stage at a time, keep up to the stage `maxConcurrency` active, merge each item result into `run.json` immediately when it settles, and then refill from that same stage when queued items and policy allow.
+
+When fanout draining is not enabled, the scheduler MAY start up to the stage `maxConcurrency` fanout items in one bounded advancement, but MUST return after those active items settle rather than refilling the pool.
+
+When a fanout item blocks or fails and partial fanout is not allowed, the scheduler MUST stop launching additional items for that fanout stage, MUST allow already running items to settle, MUST terminalize queued items as blocked with `FANOUT_ITEM_CASCADE_BLOCKED`, and MUST aggregate the fanout stage as blocked.
 
 Fix-loop execution is round-based. Each round starts with a validator attempt using the validation output contract. A fix-triggering validator result starts a fixer attempt using the implementation output contract when another round is available. Passing validation completes the stage. Unknown validation or exhausted rounds block the stage.
 

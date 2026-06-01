@@ -53,7 +53,7 @@ export type RunView = {
     parseErrorCode?: string;
     path: string;
   }>;
-  agentUsage: { planned: number; actual?: number; repairCalls?: number };
+  agentUsage: { planned: number; actual?: number; repairCalls?: number; recoveryCalls?: number };
   artifacts: Array<{ kind?: string; path?: string; label?: string }>;
   commands: Record<string, string>;
 };
@@ -133,7 +133,8 @@ export async function runViewFromIndex(cwd: string, spec: WorkflowSpec, index: R
     agentUsage: {
       planned: index.agentUsage.planned,
       actual: index.agentUsage.actual,
-      repairCalls: index.agentUsage.repairCalls
+      repairCalls: index.agentUsage.repairCalls,
+      recoveryCalls: index.agentUsage.recoveryCalls
     },
     artifacts: artifacts.filter((artifact) => artifact && typeof artifact === "object")
   };
@@ -147,7 +148,7 @@ export function estimateAgentCalls(spec: WorkflowSpec): number {
     if (stage.kind === "discover" && stage.method === "agent") baseCalls += 1;
     if (stage.kind === "reduce" && stage.mode === "agent") baseCalls += 1;
     if (stage.kind === "decisionGate" && stage.mode === "agent") baseCalls += 1;
-    if (stage.kind === "fanout") baseCalls += stage.limits?.maxFanoutItems ?? spec.limits.maxFanoutItems ?? 1;
+    if (stage.kind === "fanout") baseCalls += stage.limits?.maxFanoutItems ?? 1;
     if (stage.kind === "fixLoop") baseCalls += stage.maxRounds + Math.max(0, stage.maxRounds - 1);
   }
   return baseCalls;
@@ -231,9 +232,8 @@ function previewRisks(spec: WorkflowSpec): string[] {
   const editRoles = Object.entries(spec.roles).filter(([, role]) => role.mode === "edit").map(([name]) => name);
   if (editRoles.length > 0) risks.push(`Edit-capable roles may modify files: ${editRoles.join(", ")}.`);
   const editFanout = spec.stages.filter((stage) => stage.kind === "fanout" && spec.roles[stage.role]?.mode === "edit").map((stage) => stage.id);
-  if (editFanout.length > 0) risks.push(`Edit fanout is high risk; independent item sessions run under the global concurrency pool: ${editFanout.join(", ")}.`);
+  if (editFanout.length > 0) risks.push(`Edit fanout is high risk; independent item sessions run under stage-local fanout concurrency: ${editFanout.join(", ")}.`);
   const allowPartial = spec.stages.filter((stage) => stage.kind === "fanout" && stage.fanoutPolicy?.allowPartial).map((stage) => stage.id);
   if (allowPartial.length > 0) risks.push(`Partial fanout results are explicitly allowed for: ${allowPartial.join(", ")}.`);
-  if ((spec.limits.maxConcurrency ?? 1) > 1) risks.push(`Global maxConcurrency is ${spec.limits.maxConcurrency}; stage limits may only reduce it.`);
   return risks;
 }

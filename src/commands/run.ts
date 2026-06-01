@@ -53,7 +53,7 @@ export function registerRun(program: Command): void {
       });
       let index;
       try {
-        index = options.prepareOnly ? prepared.index : await startPreparedRun(process.cwd(), prepared);
+        index = options.prepareOnly ? prepared.index : await startPreparedRun(process.cwd(), prepared, { drainFanoutPool: options.wait === true });
         if (!options.prepareOnly && options.wait) {
           index = await waitForLogicalRun(process.cwd(), prepared.logicalRunId);
         }
@@ -81,7 +81,7 @@ export function registerRun(program: Command): void {
 
 async function waitForLogicalRun(cwd: string, runId: string) {
   while (true) {
-    const index = await syncRun(cwd, runId);
+    const index = await syncRun(cwd, runId, { drainFanoutPool: true });
     if (index.status !== "pending" && index.status !== "running") return index;
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }

@@ -23,3 +23,11 @@ _Avoid_: specification, historical archive
 **Agent Instruction**:
 Repository-level rules that constrain AI agents working on code changes. Agent instructions define required maintenance behavior for specifications and documentation.
 _Avoid_: agent spec, contributor guide
+
+**Agent Concurrency**:
+The number of agent work units that may be active at the same time. Agent concurrency is not a count of internal agent calls made by repair or retry behavior inside one active work unit.
+_Avoid_: agent call budget, total agent calls
+
+**Agent Call**:
+A runtime interaction with an agent used for usage reporting and attempt accounting. Agent calls are distinct from agent concurrency.
+_Avoid_: active agent, concurrency slot

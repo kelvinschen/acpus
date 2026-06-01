@@ -14,6 +14,7 @@ const MAX_RUNTIME_RETRIES = 1;
 
 export type SyncRunOptions = {
   startPending?: boolean;
+  drainFanoutPool?: boolean;
 };
 
 type RuntimeSnapshot = {
@@ -36,24 +37,30 @@ export async function syncRun(cwd: string, logicalRunId: string, options: SyncRu
   const stagesReconciled = await reconcileStageRuntimeState({ ...snapshot, index });
   index = stagesReconciled.index;
   changed ||= stagesReconciled.changed;
-  const deterministic = await advanceDeterministicStages({ ...snapshot, index });
-  index = deterministic.index;
-  changed ||= deterministic.changed;
-  if (changed) await writeRunIndex(cwd, index);
-
   if (options.startPending === false) {
+    const afterFanout = await completeReadyFanoutAggregates({ ...snapshot, index });
+    index = afterFanout.index;
+    changed ||= afterFanout.changed;
     index = updateRunStatus(index, snapshot.spec);
     await writeRunIndex(cwd, index);
     await appendEvent(cwd, logicalRunId, { type: "run_synced", status: index.status, startPending: false });
     return readRunIndex(cwd, logicalRunId);
   }
 
+  const deterministic = await advanceDeterministicStages({ ...snapshot, index });
+  index = deterministic.index;
+  changed ||= deterministic.changed;
+  if (changed) await writeRunIndex(cwd, index);
+
   const readyUnits = await collectReadyAgentWork({ ...snapshot, index });
   index = await readRunIndex(cwd, logicalRunId);
+  const readyFanoutStageId = firstReadyFanoutStageId(readyUnits);
+  if (readyFanoutStageId) {
+    return runFanoutPool({ ...snapshot, index }, readyFanoutStageId, { drain: options.drainFanoutPool === true });
+  }
   const selected = selectRunnableUnits(index, snapshot.plan, readyUnits);
   if (selected.length === 0) {
-    const budgetBlocked = blockReadyWorkIfAgentBudgetExhausted(index, snapshot.plan, readyUnits);
-    const next = updateRunStatus(budgetBlocked ?? index, snapshot.spec);
+    const next = updateRunStatus(index, snapshot.spec);
     if (changed || next.status !== index.status || next.blockedReason !== index.blockedReason || next.gateVerdict !== index.gateVerdict) {
       await writeRunIndex(cwd, next);
       await appendEvent(cwd, logicalRunId, { type: "run_synced", status: next.status });
@@ -62,65 +69,43 @@ export async function syncRun(cwd: string, logicalRunId: string, options: SyncRu
     return index;
   }
 
-  index = markUnitsRunning(index, selected, snapshot.runDir);
+  const unit = selected[0];
+  index = markUnitsRunning(index, [unit], snapshot.runDir);
   index = { ...index, status: "running" };
   await writeRunIndex(cwd, index);
-  await appendEvent(cwd, logicalRunId, { type: "scheduler_batch_started", count: selected.length, stages: selected.map((unit) => unit.itemId ? `${unit.stageId}/${unit.itemId}` : unit.stageId) });
+  await appendEvent(cwd, logicalRunId, { type: "work_started", stageId: unit.stageId });
 
   const runtime = createOrchestratorAgentRuntime({ cwd, runDir: snapshot.runDir });
-  const batchOutputs = await readAuthorOutputs(snapshot.runDir);
-  let results: AgentWorkResult[];
+  const outputs = await readAuthorOutputs(snapshot.runDir);
+  let result: AgentWorkResult;
   try {
-    const settled = await Promise.allSettled(selected.map((unit) => runAgentWork({
+    result = await runAgentWork({
       cwd,
       runDir: snapshot.runDir,
       runId: logicalRunId,
       workflowInput: snapshot.input,
-      outputs: batchOutputs,
+      outputs,
       plan: snapshot.plan,
       unit,
       runtime
-    }).catch(async (error: unknown) => {
-      if (unit.type !== "fanoutItem") throw error;
-      await appendEvent(cwd, logicalRunId, {
-        type: "fanout_item_runtime_error",
-        stageId: unit.stageId,
-        itemId: unit.itemId,
-        errorCode: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
-        errorMessage: errorMessage(error)
-      });
-      return fanoutItemRuntimeErrorResult({
-        cwd,
-        runDir: snapshot.runDir,
-        runId: logicalRunId,
-        unit,
-        error
-      });
-    })));
-    const fatal = settled.find((result): result is PromiseRejectedResult => result.status === "rejected");
-    if (fatal) throw fatal.reason;
-    results = settled.map((result) => (result as PromiseFulfilledResult<AgentWorkResult>).value);
+    });
   } finally {
     await runtime.dispose?.();
   }
 
-  // Refresh outputs after each batch; fanout item prompts already received their item local context.
   let merged = await readRunIndex(cwd, logicalRunId);
   merged = { ...merged, stages: index.stages, attempts: index.attempts, agentUsage: index.agentUsage };
-  for (const result of results) {
-    merged = mergeAgentResult(merged, result, snapshot.runDir);
-    const stage = snapshot.spec.stages.find((candidate) => candidate.id === result.stageId);
-    if (stage?.kind === "decisionGate" && result.output) {
-      merged = markUnselectedDecisionRoutes(merged, snapshot.spec, stage, String(result.output.route ?? "blocked"));
-    }
-    await appendEvent(cwd, logicalRunId, { type: "agent_result_merged", stageId: result.stageId, itemId: result.itemId, status: result.status, errorCode: result.errorCode, outputPath: result.outputPath ? path.relative(snapshot.runDir, result.outputPath) : undefined });
+  merged = mergeAgentResult(merged, result, snapshot.runDir);
+  const stage = snapshot.spec.stages.find((candidate) => candidate.id === result.stageId);
+  if (stage?.kind === "decisionGate" && result.output) {
+    merged = markUnselectedDecisionRoutes(merged, snapshot.spec, stage, String(result.output.route ?? "blocked"));
   }
+  await appendEvent(cwd, logicalRunId, { type: "work_settled", stageId: result.stageId, status: result.status, errorCode: result.errorCode, outputPath: result.outputPath ? path.relative(snapshot.runDir, result.outputPath) : undefined });
   const afterFanout = await completeReadyFanoutAggregates({ ...snapshot, index: merged });
   merged = afterFanout.index;
   const afterDeterministic = await advanceDeterministicStages({ ...snapshot, index: merged });
   merged = updateRunStatus(afterDeterministic.index, snapshot.spec);
   await writeRunIndex(cwd, merged);
-  await appendEvent(cwd, logicalRunId, { type: "scheduler_batch_completed", status: merged.status });
   return readRunIndex(cwd, logicalRunId);
 
 }
@@ -586,68 +571,213 @@ function agentUnitForStage(snapshot: RuntimeSnapshot, stage: Stage, planStage: E
   };
 }
 
-function selectRunnableUnits(index: RunIndex, plan: ExecutionPlan, units: AgentWorkUnit[]): AgentWorkUnit[] {
-  const remainingAgents = Math.max(0, plan.limits.maxAgents - index.agentUsage.actual);
-  if (remainingAgents <= 0) return [];
-  const selected: AgentWorkUnit[] = [];
-  const sessionKeys = new Set<string>();
-  for (const unit of units) {
-    const stagePlan = plan.stages.find((stage) => stage.id === unit.stageId);
-    const stageMax = stagePlan?.fanout?.maxConcurrency ?? plan.limits.maxConcurrency;
-    if (selected.length >= Math.min(plan.limits.maxConcurrency, remainingAgents, stageMax)) break;
-    if (sessionKeys.has(unit.sessionKey)) continue;
-    sessionKeys.add(unit.sessionKey);
-    selected.push(unit);
+async function runFanoutPool(snapshot: RuntimeSnapshot, stageId: string, options: { drain: boolean }): Promise<RunIndex> {
+  const planStage = snapshot.plan.stages.find((stage) => stage.id === stageId);
+  const maxConcurrency = planStage?.fanout?.maxConcurrency ?? 1;
+  const runtime = createOrchestratorAgentRuntime({ cwd: snapshot.cwd, runDir: snapshot.runDir });
+  const active = new Map<string, Promise<AgentWorkResult>>();
+  let index = snapshot.index;
+  let fastStop = false;
+  await appendEvent(snapshot.cwd, snapshot.runId, {
+    type: "fanout_pool_started",
+    stageId,
+    maxConcurrency,
+    drain: options.drain
+  });
+
+  const startMore = async (): Promise<void> => {
+    if (fastStop) return;
+    const refreshed = await readRunIndex(snapshot.cwd, snapshot.runId);
+    const stage = snapshot.spec.stages.find((candidate): candidate is Extract<Stage, { kind: "fanout" }> => candidate.id === stageId && candidate.kind === "fanout");
+    if (!stage || !planStage) return;
+    const outputsForCollection = await readAuthorOutputs(snapshot.runDir);
+    const readyUnits = await collectFanoutUnits({ ...snapshot, index: refreshed }, stage, planStage, outputsForCollection);
+    index = await readRunIndex(snapshot.cwd, snapshot.runId);
+    const selected = selectFanoutRunnableUnits(index, snapshot.plan, readyUnits, stageId, active);
+    if (selected.length === 0) return;
+    index = markUnitsRunning(index, selected, snapshot.runDir);
+    index = { ...index, status: "running" };
+    await writeRunIndex(snapshot.cwd, index);
+    const outputs = await readAuthorOutputs(snapshot.runDir);
+    for (const unit of selected) {
+      await appendEvent(snapshot.cwd, snapshot.runId, {
+        type: "fanout_pool_item_started",
+        stageId: unit.stageId,
+        itemId: unit.itemId,
+        itemIndex: unit.itemIndex
+      });
+      active.set(unit.itemId ?? unit.sessionKey, runFanoutUnitSafely(snapshot, unit, runtime, outputs));
+    }
+  };
+
+  try {
+    await startMore();
+    while (active.size > 0) {
+      const settled = await Promise.race([...active.entries()].map(([key, promise]) => promise.then((result) => ({ key, result }))));
+      active.delete(settled.key);
+      index = await readRunIndex(snapshot.cwd, snapshot.runId);
+      index = mergeAgentResult(index, settled.result, snapshot.runDir);
+      await writeRunIndex(snapshot.cwd, index);
+      await appendEvent(snapshot.cwd, snapshot.runId, {
+        type: "fanout_pool_item_settled",
+        stageId: settled.result.stageId,
+        itemId: settled.result.itemId,
+        status: settled.result.status,
+        errorCode: settled.result.errorCode,
+        outputPath: settled.result.outputPath ? path.relative(snapshot.runDir, settled.result.outputPath) : undefined
+      });
+      if (!fastStop && shouldFastStopFanoutPool(index, stageId, settled.result)) {
+        fastStop = true;
+        index = await terminalizeQueuedFanoutItems(snapshot, index, stageId);
+        await writeRunIndex(snapshot.cwd, index);
+      }
+      if (options.drain && !fastStop) await startMore();
+    }
+  } finally {
+    await runtime.dispose?.();
   }
-  return selected;
+
+  let merged = await readRunIndex(snapshot.cwd, snapshot.runId);
+  const afterFanout = await completeReadyFanoutAggregates({ ...snapshot, index: merged });
+  merged = afterFanout.index;
+  const afterDeterministic = await advanceDeterministicStages({ ...snapshot, index: merged });
+  merged = updateRunStatus(afterDeterministic.index, snapshot.spec);
+  await writeRunIndex(snapshot.cwd, merged);
+  await appendEvent(snapshot.cwd, snapshot.runId, {
+    type: "fanout_pool_completed",
+    stageId,
+    status: merged.stages[stageId]?.status,
+    runStatus: merged.status,
+    drain: options.drain,
+    fastStop
+  });
+  return readRunIndex(snapshot.cwd, snapshot.runId);
 }
 
-function blockReadyWorkIfAgentBudgetExhausted(index: RunIndex, plan: ExecutionPlan, units: AgentWorkUnit[]): RunIndex | undefined {
-  if (units.length === 0) return undefined;
-  const remainingAgents = Math.max(0, plan.limits.maxAgents - index.agentUsage.actual);
-  if (remainingAgents > 0) return undefined;
-  const now = new Date().toISOString();
-  let next = index;
-  const stageIds = new Set(units.map((unit) => unit.stageId));
-  for (const stageId of stageIds) {
-    const stage = next.stages[stageId];
-    if (!stage || stage.status === "completed" || stage.status === "blocked" || stage.status === "failed" || stage.status === "skipped") continue;
-    if (stage.fanout) {
-      const blockedItemIds = new Set(units.filter((unit) => unit.stageId === stageId).map((unit) => unit.itemId));
-      const items = stage.fanout.items.map((item) => blockedItemIds.has(item.id)
-        ? {
-            ...item,
-            status: "blocked" as StageStatus,
-            blockedReason: RuntimeErrorCodes.LIMIT_AGENT_BUDGET_EXHAUSTED,
-            errorCode: RuntimeErrorCodes.LIMIT_AGENT_BUDGET_EXHAUSTED,
-            completedAt: now
-          }
-        : item);
-      next = updateStage(next, stageId, {
-        ...stage,
-        status: "blocked",
-        blockedReason: RuntimeErrorCodes.LIMIT_AGENT_BUDGET_EXHAUSTED,
-        completedAt: now,
-        fanout: {
-          ...stage.fanout,
-          items,
-          blockedItems: items.filter((item) => item.status === "blocked").length,
-          failedItems: items.filter((item) => item.status === "failed").length,
-          completedItems: items.filter((item) => item.status === "completed").length
-        }
-      });
-      continue;
-    }
-    next = updateStage(next, stageId, {
-      status: "blocked",
-      blockedReason: RuntimeErrorCodes.LIMIT_AGENT_BUDGET_EXHAUSTED,
-      completedAt: now
+function selectFanoutRunnableUnits(
+  index: RunIndex,
+  plan: ExecutionPlan,
+  units: AgentWorkUnit[],
+  stageId: string,
+  active: Map<string, Promise<AgentWorkResult>>
+): AgentWorkUnit[] {
+  void index;
+  const stagePlan = plan.stages.find((stage) => stage.id === stageId);
+  const maxConcurrency = stagePlan?.fanout?.maxConcurrency ?? 1;
+  const capacity = Math.max(0, maxConcurrency - active.size);
+  if (capacity === 0) return [];
+  const sessionKeys = new Set<string>();
+  return units
+    .filter((unit) => unit.type === "fanoutItem" && unit.stageId === stageId && !active.has(unit.itemId ?? unit.sessionKey))
+    .filter((unit) => {
+      if (sessionKeys.has(unit.sessionKey)) return false;
+      sessionKeys.add(unit.sessionKey);
+      return true;
+    })
+    .slice(0, capacity);
+}
+
+async function runFanoutUnitSafely(
+  snapshot: RuntimeSnapshot,
+  unit: AgentWorkUnit,
+  runtime: ReturnType<typeof createOrchestratorAgentRuntime>,
+  outputs: Record<string, unknown>
+): Promise<AgentWorkResult> {
+  try {
+    return await runAgentWork({
+      cwd: snapshot.cwd,
+      runDir: snapshot.runDir,
+      runId: snapshot.runId,
+      workflowInput: snapshot.input,
+      outputs,
+      plan: snapshot.plan,
+      unit,
+      runtime
+    });
+  } catch (error) {
+    await appendEvent(snapshot.cwd, snapshot.runId, {
+      type: "fanout_item_runtime_error",
+      stageId: unit.stageId,
+      itemId: unit.itemId,
+      errorCode: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
+      errorMessage: errorMessage(error)
+    });
+    return fanoutItemRuntimeErrorResult({
+      cwd: snapshot.cwd,
+      runDir: snapshot.runDir,
+      runId: snapshot.runId,
+      unit,
+      error
     });
   }
-  return {
-    ...next,
-    blockedReason: RuntimeErrorCodes.LIMIT_AGENT_BUDGET_EXHAUSTED
-  };
+}
+
+function shouldFastStopFanoutPool(index: RunIndex, stageId: string, result: AgentWorkResult): boolean {
+  if (result.status === "completed") return false;
+  const stage = index.stages[stageId];
+  return stage?.fanout?.allowPartial === false;
+}
+
+async function terminalizeQueuedFanoutItems(snapshot: RuntimeSnapshot, index: RunIndex, stageId: string): Promise<RunIndex> {
+  const stage = index.stages[stageId];
+  if (!stage?.fanout) return index;
+  const now = new Date().toISOString();
+  const items: FanoutItemIndexEntry[] = [];
+  for (const item of stage.fanout.items) {
+    if (item.status !== "pending" && item.status !== "ready") {
+      items.push(item);
+      continue;
+    }
+    const outputPath = path.join(snapshot.runDir, "outputs", stageId, `${safeFileName(item.id)}.json`);
+    const output = {
+      status: "blocked",
+      summary: `Fanout item ${item.id} was not started because an earlier item blocked and partial fanout is disabled.`,
+      artifacts: [],
+      nextFocus: "diagnose",
+      blockedReason: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED
+    };
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    await fs.writeFile(outputPath, `${JSON.stringify(output, null, 2)}\n`, "utf8");
+    const relativeOutputPath = path.relative(snapshot.runDir, outputPath);
+    items.push({
+      ...item,
+      status: "blocked",
+      outputPath: relativeOutputPath,
+      blockedReason: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
+      errorCode: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
+      completedAt: now
+    });
+    await appendEvent(snapshot.cwd, snapshot.runId, {
+      type: "fanout_pool_item_settled",
+      stageId,
+      itemId: item.id,
+      itemIndex: item.index,
+      status: "blocked",
+      errorCode: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
+      outputPath: relativeOutputPath,
+      cascade: true
+    });
+  }
+  const counts = fanoutItemCounts(items);
+  return updateStage(index, stageId, {
+    ...stage,
+    status: fanoutTransientStatus(items),
+    fanout: {
+      ...stage.fanout,
+      items,
+      ...counts
+    }
+  });
+}
+
+function firstReadyFanoutStageId(units: AgentWorkUnit[]): string | undefined {
+  return units.find((unit) => unit.type === "fanoutItem")?.stageId;
+}
+
+function selectRunnableUnits(index: RunIndex, plan: ExecutionPlan, units: AgentWorkUnit[]): AgentWorkUnit[] {
+  void index;
+  void plan;
+  return units.slice(0, 1);
 }
 
 function markUnitsRunning(index: RunIndex, units: AgentWorkUnit[], runDir: string): RunIndex {
@@ -805,20 +935,22 @@ async function completeReadyFanoutAggregates(snapshot: RuntimeSnapshot): Promise
           summary: `Missing fanout item output ${item.id}.`,
           artifacts: [],
           nextFocus: "diagnose",
-          blockedReason: "MISSING_FANOUT_ITEM_OUTPUT"
+          blockedReason: RuntimeErrorCodes.MISSING_FANOUT_ITEM_OUTPUT
         };
       }
     }));
     const blockedItems = outputs.filter((output) => output.status === "blocked");
     const completed = outputs.filter((output) => output.status === "completed").length;
     const failed = activeItems.filter((item) => item.status === "failed").length;
+    const nonCompletedItems = outputs.filter((output) => output.status !== "completed");
     const ratio = outputs.length === 0 ? 1 : completed / outputs.length;
     const policy = stage.fanoutPolicy;
     const resumePolicy = fanoutResumePolicy(index, stage.id);
-    const partialAllowed = resumePolicy?.allowPartial === true || (policy?.allowPartial ?? false)
+    const allowsPartialMode = resumePolicy?.allowPartial === true || (policy?.allowPartial ?? false);
+    const partialAllowed = allowsPartialMode
       && (policy?.minCompletedRatio == null || ratio >= policy.minCompletedRatio)
-      && (policy?.maxBlockedItems == null || blockedItems.length <= policy.maxBlockedItems);
-    const status = blockedItems.length > 0 && !partialAllowed ? "blocked" : "completed";
+      && (policy?.maxBlockedItems == null || nonCompletedItems.length <= policy.maxBlockedItems);
+    const status = nonCompletedItems.length > 0 && !partialAllowed ? "blocked" : "completed";
     const aggregate = {
       status,
       summary: `Fanout completed with ${outputs.length} item output(s).`,
@@ -826,7 +958,7 @@ async function completeReadyFanoutAggregates(snapshot: RuntimeSnapshot): Promise
       blockedItems,
       artifacts: [],
       nextFocus: "reduce",
-      blockedReason: status === "blocked" ? "FANOUT_ITEM_BLOCKED" : undefined
+      blockedReason: status === "blocked" ? RuntimeErrorCodes.FANOUT_ITEM_BLOCKED : undefined
     };
     const outputPath = path.join(snapshot.runDir, "outputs", `${stage.id}.json`);
     await fs.mkdir(path.dirname(outputPath), { recursive: true });
@@ -862,7 +994,9 @@ function applyFanoutResumePolicy(
   if (!stage?.fanout || !policy) return { stage, changed: false };
   const maxItems = policy.maxItems ?? Number.POSITIVE_INFINITY;
   const skippedIndexes = new Set(policy.skipItemIndexes ?? []);
-  const items = stage.fanout.items.filter((item) => item.index < maxItems && !skippedIndexes.has(item.index));
+  const items = stage.fanout.items.filter((item) =>
+    item.status === "running" || (item.index < maxItems && !skippedIndexes.has(item.index))
+  );
   const allowPartial = stage.fanout.allowPartial || policy.allowPartial === true;
   const changed = items.length !== stage.fanout.items.length || allowPartial !== stage.fanout.allowPartial;
   if (!changed) return { stage, changed: false };

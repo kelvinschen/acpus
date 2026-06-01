@@ -37,9 +37,8 @@ export function readSourceStageId(source: string): string | undefined {
 }
 
 function effectiveConcurrency(spec: WorkflowSpec, stage: Stage): number {
-  const global = spec.limits.maxConcurrency ?? 1;
-  const local = stage.limits?.maxConcurrency ?? global;
-  return Math.max(1, Math.min(global, local));
+  void spec;
+  return Math.max(1, stage.limits?.maxConcurrency ?? 1);
 }
 
 function computeDependents(spec: WorkflowSpec): Map<string, string[]> {

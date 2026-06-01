@@ -13,10 +13,6 @@
     "reviewer": { "category": "review", "agent": "aiden", "mode": "readOnly" }
   },
   "limits": {
-    "maxAgents": 20,
-    "maxConcurrency": 3,
-    "maxFanoutItems": 8,
-    "maxFixRounds": 0,
     "stageTimeoutMinutes": 60
   },
   "stages": [
@@ -25,7 +21,7 @@
       "kind": "fanout",
       "role": "implementer",
       "items": { "source": "input.items" },
-      "limits": { "maxConcurrency": 3 },
+      "limits": { "maxConcurrency": 3, "maxFanoutItems": 8 },
       "fanoutPolicy": { "allowPartial": false },
       "variables": [
         { "name": "task", "source": "input.task" },

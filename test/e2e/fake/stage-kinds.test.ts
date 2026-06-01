@@ -89,7 +89,7 @@ function agentDiscoverProgramReduceSpec(cwd: string): WorkflowSpec {
     roles: {
       discoverer: { category: "coordination", agent: "fake", mode: "readOnly" }
     },
-    limits: { maxAgents: 2, maxConcurrency: 1, maxFanoutItems: 4, maxFixRounds: 0, stageTimeoutMinutes: 1 },
+    limits: { stageTimeoutMinutes: 1 },
     stages: [
       { id: "discover", kind: "discover", method: "agent", role: "discoverer", output: "items", prompt: "Discover items" },
       { id: "reduce", kind: "reduce", mode: "program", from: "discover", operation: "severitySummary", dependsOn: ["discover"] },
@@ -108,7 +108,7 @@ function agentDecisionSpec(cwd: string): WorkflowSpec {
       decider: { category: "validation", agent: "fake", mode: "readOnly" },
       worker: { category: "coordination", agent: "fake", mode: "readOnly" }
     },
-    limits: { maxAgents: 4, maxConcurrency: 1, maxFanoutItems: 1, maxFixRounds: 0, stageTimeoutMinutes: 1 },
+    limits: { stageTimeoutMinutes: 1 },
     stages: [
       { id: "decide", kind: "decisionGate", mode: "agent", role: "decider", prompt: "Pick a route", rules: [{ when: { source: "input.cwd", op: "exists" }, to: "left" }], default: "right", routes: ["left", "right"] },
       { id: "left", kind: "agentTask", role: "worker", dependsOn: ["decide"], prompt: "Left" },
@@ -128,7 +128,7 @@ function fixLoopSpec(cwd: string): WorkflowSpec {
       validator: { category: "validation", agent: "fake", mode: "readOnly" },
       implementer: { category: "implementation", agent: "fake", mode: "edit" }
     },
-    limits: { maxAgents: 4, maxConcurrency: 1, maxFanoutItems: 1, maxFixRounds: 2, stageTimeoutMinutes: 1 },
+    limits: { stageTimeoutMinutes: 1 },
     stages: [
       {
         id: "quality_loop",

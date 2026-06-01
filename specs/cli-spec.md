@@ -19,15 +19,17 @@ The CLI is the developer and Main Agent entry point for validating, previewing, 
 - `run` MUST validate automatically.
 - `run` without `--yes` MUST print a preview and exit with approval required.
 - `run --yes` MUST prepare a logical run, write `execution-plan.json`, advance one scheduler tick, and return unless `--wait` is set.
-- `run --yes --wait` MUST advance until terminal status.
+- `run --yes --wait` MUST advance until terminal status and MUST enable fanout-stage-local draining.
 - `run --prepare-only` MUST prepare the logical run and write runtime artifacts without starting runtime turns.
-- `follow` MUST observe and sync an existing logical run and MUST NOT create a new workflow.
+- `follow` MUST observe and sync existing artifacts for an existing logical run and MUST NOT create a new workflow or start pending workflow work.
 - `diagnose` MUST prepare read-only recovery diagnostic prompt/artifacts and MUST NOT rerun edit work or change the saved workflow spec.
 - `resume` MUST advance an existing run from persisted `run.json` and `execution-plan.json`.
+- `resume --wait` MUST advance until terminal status or current scheduler quiescence and MUST enable fanout-stage-local draining.
 - Resume fanout policy flags MUST only tighten fanout handling.
 - `save` MUST write a saved workflow directory only when explicitly requested.
 - Approval to run MUST NOT imply approval to save.
 - `report --html --output <file>` MUST write a self-contained HTML snapshot.
+- `report` commands MUST sync existing artifacts with observation-only semantics and MUST NOT start pending workflow work.
 - `report serve` MUST start an observation-only local server.
 - `report serve --open` MAY open the local report URL in a browser.
 - `report serve --interval-ms <ms>` MUST configure live report sync interval.
@@ -79,7 +81,7 @@ Saved workflow directories contain `workflow.spec.json`, `execution-plan.json`, 
 
 ## Runtime Behavior
 
-Lifecycle commands route through the same schema, compiler, run-index, runtime, and projection modules used by non-CLI entry points. Commands that observe existing runs sync persisted artifacts before rendering output. Commands that mutate workflow execution are limited to explicit run/resume paths.
+Lifecycle commands route through the same schema, compiler, run-index, runtime, and projection modules used by non-CLI entry points. Commands that observe existing runs sync persisted artifacts before rendering output. Commands that mutate workflow execution are limited to explicit run/resume paths. Wait-style run and resume commands pass the scheduler option that enables fanout draining; bounded run/resume commands do not.
 
 ## Extension Points
 

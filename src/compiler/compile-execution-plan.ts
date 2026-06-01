@@ -29,7 +29,9 @@ export function compileExecutionPlan(spec: WorkflowSpec, options: CompileExecuti
         sessionKeyTemplate: `role:${planStage.roleName}:fanout:${stage.id}:item:{itemId}`,
         maxItems: planStage.fanout.maxItems,
         maxConcurrency: planStage.fanout.maxConcurrency,
-        allowPartial: planStage.fanout.allowPartial
+        allowPartial: planStage.fanout.allowPartial,
+        minCompletedRatio: planStage.fanout.minCompletedRatio,
+        maxBlockedItems: planStage.fanout.maxBlockedItems
       });
     }
   }
@@ -127,7 +129,7 @@ function executionPlanStage(
     };
   }
   if (stage.kind === "fanout") {
-    const maxConcurrency = Math.max(1, Math.min(limits.maxConcurrency, stage.limits?.maxConcurrency ?? limits.maxConcurrency));
+    const maxConcurrency = stage.limits?.maxConcurrency ?? 1;
     return {
       ...base,
       session: { kind: "fanoutItem", template: `role:${stage.role}:fanout:${stage.id}:item:{itemId}` },
@@ -136,7 +138,7 @@ function executionPlanStage(
         allowPartial: stage.fanoutPolicy?.allowPartial ?? false,
         minCompletedRatio: stage.fanoutPolicy?.minCompletedRatio,
         maxBlockedItems: stage.fanoutPolicy?.maxBlockedItems,
-        maxItems: stage.limits?.maxFanoutItems ?? limits.maxFanoutItems,
+        maxItems: stage.limits?.maxFanoutItems ?? 1,
         maxConcurrency
       }
     };
@@ -237,10 +239,6 @@ function promptIdForStage(stage: Stage): string | undefined {
 
 function effectiveLimits(spec: WorkflowSpec): ExecutionPlanLimits {
   return {
-    maxAgents: spec.limits.maxAgents ?? 1,
-    maxConcurrency: spec.limits.maxConcurrency ?? 1,
-    maxFanoutItems: spec.limits.maxFanoutItems ?? 1,
-    maxFixRounds: spec.limits.maxFixRounds ?? 0,
     stageTimeoutMinutes: spec.limits.stageTimeoutMinutes ?? 60,
     maxOutputChars: spec.limits.maxOutputChars
   };
@@ -257,8 +255,7 @@ function contractPlan(name: OutputContractName, options?: ContractPlan["options"
 function contractOptionsForStage(spec: WorkflowSpec, stage: Stage, name: OutputContractName): ContractPlan["options"] | undefined {
   if (name !== "discover" || stage.kind !== "discover") return undefined;
   return {
-    outputKey: stage.output,
-    maxItems: stage.limits?.maxFanoutItems ?? spec.limits.maxFanoutItems
+    outputKey: stage.output
   };
 }
 

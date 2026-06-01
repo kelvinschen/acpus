@@ -58,11 +58,29 @@ describe("compiler lint", () => {
     expect(issues.map((entry) => entry.code)).toContain("ROLE_MODE_CONFLICT");
   });
 
-  it("rejects workflows whose planned worst-case agent calls exceed maxAgents", () => {
+  it("rejects stage concurrency on non-fanout stages", () => {
     const spec = example("review-only-fanout.workflow.spec.json");
-    spec.limits.maxAgents = 1;
+    const reduce = spec.stages.find((stage) => stage.id === "reduce_findings");
+    if (!reduce) throw new Error("missing reduce");
+    reduce.limits = { maxConcurrency: 2 };
     const issues = lintWorkflowSpec(spec);
-    expect(issues.map((entry) => entry.code)).toContain("LIMIT_MAX_AGENTS_EXCEEDED");
+    expect(issues.map((entry) => entry.code)).toContain("LIMIT_STAGE_CONCURRENCY_UNSUPPORTED");
+  });
+
+  it("rejects removed limit fields during schema validation", () => {
+    const spec = example("simple-feature.workflow.spec.json");
+    expect(() => WorkflowSpecSchema.parse({ ...spec, limits: { ...spec.limits, maxAgents: 1 } })).toThrow();
+    expect(() => WorkflowSpecSchema.parse({ ...spec, limits: { ...spec.limits, maxConcurrency: 2 } })).toThrow();
+    expect(() => WorkflowSpecSchema.parse({ ...spec, limits: { ...spec.limits, maxFanoutItems: 2 } })).toThrow();
+    expect(() => WorkflowSpecSchema.parse({ ...spec, limits: { ...spec.limits, maxFixRounds: 1 } })).toThrow();
+    expect(() => WorkflowSpecSchema.parse({
+      ...spec,
+      stages: spec.stages.map((stage) => stage.id === "plan" ? { ...stage, limits: { maxAgents: 1 } } : stage)
+    })).toThrow();
+    expect(() => WorkflowSpecSchema.parse({
+      ...spec,
+      stages: spec.stages.map((stage) => stage.id === "plan" ? { ...stage, limits: { maxOutputChars: 1000 } } : stage)
+    })).toThrow();
   });
 
   it("requires decision targets to be downstream of the decision gate", () => {

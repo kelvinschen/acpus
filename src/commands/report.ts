@@ -23,7 +23,7 @@ export function registerReport(program: Command): void {
       if (!options.run) throw new Error("report requires --run <id-or-dir>.");
       const locator = await resolveRunLocator(options.run);
       const dir = runDir(locator.runId, locator.cwd);
-      const run = await syncRun(locator.cwd, locator.runId);
+      const run = await syncRun(locator.cwd, locator.runId, { startPending: false });
       const spec = WorkflowSpecSchema.parse(JSON.parse(await fs.readFile(path.join(dir, "workflow.spec.json"), "utf8")));
       const view = await runViewFromIndex(locator.cwd, spec, run);
       if (options.html) {

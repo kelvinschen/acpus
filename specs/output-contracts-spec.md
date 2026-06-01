@@ -32,7 +32,7 @@ Supported role-category contracts include:
 - implementation output: changed files and checks;
 - validation or review output: verdict, severity counts, findings, and checks;
 - decision output: selected route and routing rationale for decision gates;
-- discover output: discovered items under the stage output key, bounded by discover options when configured;
+- discover output: discovered items under the stage output key; agent discover output is not intrinsically capped by the contract, and downstream fanout stages MUST apply their own `limits.maxFanoutItems` cap;
 - gate output: `verdict`, deliverables, changed files, checks, warnings, risks, and next actions;
 - diagnostic output: read-only recovery guidance, diagnostics, and next actions for diagnose flows.
 

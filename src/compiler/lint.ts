@@ -1,5 +1,4 @@
 import { issue, type OrchestratorIssue } from "../errors.js";
-import { estimateAgentCalls } from "../projections/run-view.js";
 import { validateInputDefaults } from "../schema/input-validation.js";
 import type { Stage, WorkflowSpec } from "../schema/workflow-spec.js";
 import { findVariableIssues } from "../variables/interpolate.js";
@@ -374,44 +373,25 @@ function pushVariablePromptIssues(
 
 function lintLimits(spec: WorkflowSpec): OrchestratorIssue[] {
   const issues: OrchestratorIssue[] = [];
-  const plannedAgentCalls = estimateAgentCalls(spec);
-  if (spec.limits.maxAgents && plannedAgentCalls > spec.limits.maxAgents) {
-    issues.push(issue({
-      code: "LIMIT_MAX_AGENTS_EXCEEDED",
-      severity: "error",
-      path: "/limits/maxAgents",
-      message: `Planned worst-case agent calls (${plannedAgentCalls}) exceed workflow maxAgents (${spec.limits.maxAgents}).`,
-      suggestions: ["Raise /limits/maxAgents intentionally, lower fanout/fixLoop limits, or split the workflow."]
-    }));
-  }
   for (let index = 0; index < spec.stages.length; index += 1) {
     const stage = spec.stages[index];
     if (!stage.limits) continue;
-    if (spec.limits.maxAgents && stage.limits.maxAgents && stage.limits.maxAgents > spec.limits.maxAgents) {
+    if (stage.limits.maxConcurrency !== undefined && stage.kind !== "fanout") {
       issues.push(issue({
-        code: "LIMIT_STAGE_EXCEEDS_GLOBAL",
-        severity: "error",
-        path: `/stages/${index}/limits/maxAgents`,
-        message: `Stage ${stage.id} maxAgents exceeds workflow maxAgents.`,
-        suggestions: ["Lower the stage agent limit or raise the top-level limit intentionally."]
-      }));
-    }
-    if (spec.limits.maxConcurrency && stage.limits.maxConcurrency && stage.limits.maxConcurrency > spec.limits.maxConcurrency) {
-      issues.push(issue({
-        code: "LIMIT_STAGE_EXCEEDS_GLOBAL",
+        code: "LIMIT_STAGE_CONCURRENCY_UNSUPPORTED",
         severity: "error",
         path: `/stages/${index}/limits/maxConcurrency`,
-        message: `Stage ${stage.id} maxConcurrency exceeds workflow maxConcurrency.`,
-        suggestions: ["Lower the stage limit or raise the top-level limit intentionally."]
+        message: `Stage ${stage.id} is ${stage.kind}, so it cannot declare maxConcurrency.`,
+        suggestions: ["Move maxConcurrency onto a fanout stage that introduces concurrent item work."]
       }));
     }
-    if (spec.limits.maxFanoutItems && stage.limits.maxFanoutItems && stage.limits.maxFanoutItems > spec.limits.maxFanoutItems) {
+    if (stage.limits.maxFanoutItems !== undefined && stage.kind !== "fanout") {
       issues.push(issue({
-        code: "LIMIT_STAGE_EXCEEDS_GLOBAL",
+        code: "LIMIT_STAGE_FANOUT_ITEMS_UNSUPPORTED",
         severity: "error",
         path: `/stages/${index}/limits/maxFanoutItems`,
-        message: `Stage ${stage.id} maxFanoutItems exceeds workflow maxFanoutItems.`,
-        suggestions: ["Lower the stage limit or raise the top-level limit intentionally."]
+        message: `Stage ${stage.id} is ${stage.kind}, so it cannot declare maxFanoutItems.`,
+        suggestions: ["Move maxFanoutItems onto the fanout stage that consumes the item source."]
       }));
     }
     if (spec.limits.stageTimeoutMinutes && stage.limits.stageTimeoutMinutes && stage.limits.stageTimeoutMinutes > spec.limits.stageTimeoutMinutes) {
@@ -421,15 +401,6 @@ function lintLimits(spec: WorkflowSpec): OrchestratorIssue[] {
         path: `/stages/${index}/limits/stageTimeoutMinutes`,
         message: `Stage ${stage.id} stageTimeoutMinutes exceeds workflow stageTimeoutMinutes.`,
         suggestions: ["Lower the stage timeout or raise the top-level timeout intentionally."]
-      }));
-    }
-    if (spec.limits.maxOutputChars && stage.limits.maxOutputChars && stage.limits.maxOutputChars > spec.limits.maxOutputChars) {
-      issues.push(issue({
-        code: "LIMIT_STAGE_EXCEEDS_GLOBAL",
-        severity: "error",
-        path: `/stages/${index}/limits/maxOutputChars`,
-        message: `Stage ${stage.id} maxOutputChars exceeds workflow maxOutputChars.`,
-        suggestions: ["Lower the stage output limit or raise the top-level limit intentionally."]
       }));
     }
   }
@@ -566,15 +537,6 @@ function lintDiscover(spec: WorkflowSpec): OrchestratorIssue[] {
           path: `/stages/${index}/prompt`,
           message: `Agent discover stage ${stage.id} requires a prompt.`,
           suggestions: ["Add a prompt that instructs the agent to end with a final JSON object containing discovered items."]
-        }));
-      }
-      if (!stage.limits?.maxFanoutItems && !spec.limits.maxFanoutItems) {
-        issues.push(issue({
-          code: "DISCOVER_AGENT_MAX_ITEMS_REQUIRED",
-          severity: "error",
-          path: `/stages/${index}/limits/maxFanoutItems`,
-          message: `Agent discover stage ${stage.id} must have a declared item limit.`,
-          suggestions: ["Set /limits/maxFanoutItems or /stages/<index>/limits/maxFanoutItems."]
         }));
       }
       const role = stage.role ? spec.roles[stage.role] : undefined;

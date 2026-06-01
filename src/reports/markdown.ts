@@ -9,6 +9,8 @@ export function renderMarkdownReport(view: RunView): string {
     view.blockedReason ? `- Blocked reason: ${view.blockedReason}` : undefined,
     `- Planned agent calls: ${view.agentUsage.planned}`,
     view.agentUsage.actual !== undefined ? `- Actual agent calls: ${view.agentUsage.actual}` : undefined,
+    view.agentUsage.repairCalls !== undefined ? `- Repair calls: ${view.agentUsage.repairCalls}` : undefined,
+    view.agentUsage.recoveryCalls !== undefined ? `- Recovery calls: ${view.agentUsage.recoveryCalls}` : undefined,
     "",
     "## Summary",
     "",

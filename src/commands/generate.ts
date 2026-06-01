@@ -24,7 +24,7 @@ export function registerGenerate(program: Command): void {
         roles: {
           planner: { category: "planning", agent: "claude", mode: "readOnly" }
         },
-        limits: { maxAgents: 8, maxConcurrency: 2, maxFanoutItems: 4, maxFixRounds: 1, stageTimeoutMinutes: 30 },
+        limits: { stageTimeoutMinutes: 30 },
         stages: [
           { id: "plan", kind: "agentTask", role: "planner", prompt: "Plan the requested workflow task: ${task}", variables: [{ name: "task", source: "input.task" }] },
           { id: "gate", kind: "gate", dependsOn: ["plan"] }

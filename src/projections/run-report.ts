@@ -638,6 +638,7 @@ function buildRecoverySucceededWithBlockedVerdictDiagnostic(
     if (stage.fanout.items.some((item) => item.status === "running" || item.status === "pending" || item.status === "ready")) return false;
     return stage.fanout.items.some((item) =>
       item.errorCode === RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR
+      || item.errorCode === RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED
       || item.errorCode === RuntimeErrorCodes.FANOUT_ITEM_UNSTARTED_TIMEOUT
       || item.errorCode === RuntimeErrorCodes.RUN_INDEX_OUTPUT_MISMATCH
     );
@@ -663,7 +664,8 @@ function buildRecoverySucceededWithBlockedVerdictDiagnostic(
 }
 
 function effectiveMaxOutputCharsForStage(spec: WorkflowSpec, stage: Stage | undefined): number | undefined {
-  return stage?.limits?.maxOutputChars ?? spec.limits.maxOutputChars;
+  void stage;
+  return spec.limits.maxOutputChars;
 }
 
 async function readTextLengthIfExists(filePath: string): Promise<number | undefined> {
@@ -679,8 +681,8 @@ function isRunLevelRuntimeCode(value: string): boolean {
     || value === RuntimeErrorCodes.GATE_VERDICT_BLOCKED
     || value === RuntimeErrorCodes.GATE_VERDICT_FAILED
     || value === RuntimeErrorCodes.GATE_VERDICT_UNKNOWN
-    || value === RuntimeErrorCodes.LIMIT_AGENT_BUDGET_EXHAUSTED
-    || value === RuntimeErrorCodes.AGENT_RUNTIME_ERROR;
+    || value === RuntimeErrorCodes.AGENT_RUNTIME_ERROR
+    || value === RuntimeErrorCodes.FANOUT_ITEM_BLOCKED;
 }
 
 function isBlockedGateVerdictCode(value: string | undefined): boolean {
@@ -690,10 +692,8 @@ function isBlockedGateVerdictCode(value: string | undefined): boolean {
 }
 
 function runLevelBlockedSummary(index: RunIndex): string {
-  if (index.blockedReason === RuntimeErrorCodes.LIMIT_AGENT_BUDGET_EXHAUSTED) {
-    return `Ready agent work could not start because actual agent calls reached limits.maxAgents (${index.agentUsage.actual}/${index.agentUsage.planned}).`;
-  }
   if (index.blockedReason === RuntimeErrorCodes.AGENT_RUNTIME_ERROR) return "Agent runtime failed after one retry.";
+  if (index.blockedReason === RuntimeErrorCodes.FANOUT_ITEM_BLOCKED) return "Fanout stage blocked because one or more items did not complete.";
   if (index.blockedReason === RuntimeErrorCodes.GATE_CONDITION_FAILED) return "Program gate condition failed.";
   if (index.gateVerdict === "blocked") return "Gate returned verdict=blocked.";
   if (index.gateVerdict === "failed") return "Gate returned verdict=failed.";

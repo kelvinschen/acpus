@@ -56,13 +56,14 @@ describe("fanout runtime stability", () => {
     expect(failedOutput.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR);
     expect(stage?.fanout?.completedItems).toBe(2);
     expect(stage?.fanout?.blockedItems).toBe(1);
-    expect(events).toContain("scheduler_batch_completed");
+    expect(events).toContain("fanout_pool_completed");
+    expect(events).not.toContain("scheduler_batch_completed");
   });
 
   it("continues batched fanout after the first concurrency window completes", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fanout-batches-"));
     setAgentRuntimeFactoryForTests(() => new StaticRuntime());
-    const spec = fanoutSpec(20, { allowPartial: false }, { maxAgents: 20, maxConcurrency: 10 });
+    const spec = fanoutSpec(20, { allowPartial: false }, { maxConcurrency: 10 });
     const prepared = await prepareRun(spec, {
       cwd,
       input: { cwd, items: fanoutInputItems(20) }
@@ -78,14 +79,14 @@ describe("fanout runtime stability", () => {
     expect(secondTick.status).toBe("completed");
     expect(secondTick.stages.fanout?.status).toBe("completed");
     expect(secondTick.stages.fanout?.fanout?.completedItems).toBe(20);
-    expect(await schedulerBatchStartedCount(prepared.dir)).toBeGreaterThanOrEqual(2);
+    expect(await fanoutPoolStartedCount(prepared.dir)).toBeGreaterThanOrEqual(2);
     expect(hasStuckFanoutPendingBatch(secondTick)).toBe(false);
   });
 
   it("continues queued fanout items after a partial item runtime error", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fanout-partial-batches-"));
     setAgentRuntimeFactoryForTests(() => new SelectiveFanoutRuntime("item-2"));
-    const spec = fanoutSpec(20, { allowPartial: true }, { maxAgents: 21, maxConcurrency: 10 });
+    const spec = fanoutSpec(20, { allowPartial: true }, { maxConcurrency: 10 });
     const prepared = await prepareRun(spec, {
       cwd,
       input: { cwd, items: fanoutInputItems(20) }
@@ -105,8 +106,87 @@ describe("fanout runtime stability", () => {
       completedItems: 19,
       blockedItems: 1
     });
-    expect(await schedulerBatchStartedCount(prepared.dir)).toBeGreaterThanOrEqual(2);
+    expect(await fanoutPoolStartedCount(prepared.dir)).toBeGreaterThanOrEqual(2);
     expect(hasStuckFanoutPendingBatch(secondTick)).toBe(false);
+  });
+
+  it("drains a fanout pool by refilling slots as items settle", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fanout-drain-"));
+    const runtime = new DelayedFanoutRuntime({ "item-1": 200, "item-2": 1, "item-3": 1 });
+    const spec = fanoutSpec(3, { allowPartial: false }, { maxConcurrency: 2 });
+    const prepared = await prepareRun(spec, {
+      cwd,
+      input: { cwd, items: fanoutInputItems(3) }
+    });
+    let item2StatusBeforeItem3: string | undefined;
+    let actualCallsBeforeItem3: number | undefined;
+    runtime.onStart = async (itemId) => {
+      if (itemId !== "item-3") return;
+      const runIndex = JSON.parse(await fs.readFile(path.join(prepared.dir, "run.json"), "utf8")) as RunIndex;
+      item2StatusBeforeItem3 = runIndex.stages.fanout?.fanout?.items.find((item) => item.id === "item-2")?.status;
+      actualCallsBeforeItem3 = runIndex.agentUsage.actual;
+    };
+    setAgentRuntimeFactoryForTests(() => runtime);
+
+    const index = await syncRun(cwd, prepared.logicalRunId, { drainFanoutPool: true });
+    const events = await readEvents(prepared.dir);
+    const item2Settled = events.findIndex((event) => event.type === "fanout_pool_item_settled" && event.itemId === "item-2");
+    const item3Started = events.findIndex((event) => event.type === "fanout_pool_item_started" && event.itemId === "item-3");
+    const item1Settled = events.findIndex((event) => event.type === "fanout_pool_item_settled" && event.itemId === "item-1");
+
+    expect(index.status).toBe("completed");
+    expect(index.stages.fanout?.fanout?.completedItems).toBe(3);
+    expect(runtime.maxActive).toBe(2);
+    expect(item2StatusBeforeItem3).toBe("completed");
+    expect(actualCallsBeforeItem3).toBeGreaterThanOrEqual(1);
+    expect(item2Settled).toBeGreaterThanOrEqual(0);
+    expect(item3Started).toBeGreaterThan(item2Settled);
+    expect(item3Started).toBeLessThan(item1Settled);
+    expect(events.map((event) => event.type)).not.toContain("scheduler_batch_started");
+    expect(events.map((event) => event.type)).not.toContain("scheduler_batch_completed");
+  });
+
+  it("cascade-blocks pending fanout items after an allowPartial=false item failure", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fanout-cascade-block-"));
+    const runtime = new DelayedFanoutRuntime({ "item-1": 40, "item-2": 1 }, ["item-2"]);
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const spec = fanoutSpec(4, { allowPartial: false }, { maxConcurrency: 2 });
+    const prepared = await prepareRun(spec, {
+      cwd,
+      input: { cwd, items: fanoutInputItems(4) }
+    });
+
+    const index = await syncRun(cwd, prepared.logicalRunId, { drainFanoutPool: true });
+    const items = index.stages.fanout?.fanout?.items ?? [];
+    const requested = runtime.requests.map((request) => itemIdFromSessionKey(request.sessionKey));
+    const events = await readEvents(prepared.dir);
+    const report = await buildRunReportView(cwd, spec, index, { mode: "snapshot" });
+
+    expect(index.status).toBe("blocked");
+    expect(index.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_BLOCKED);
+    expect(index.stages.fanout?.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_BLOCKED);
+    expect(items.map((item) => [item.id, item.status, item.errorCode])).toEqual([
+      ["item-1", "completed", undefined],
+      ["item-2", "blocked", RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR],
+      ["item-3", "blocked", RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED],
+      ["item-4", "blocked", RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED]
+    ]);
+    expect(requested).toEqual(["item-1", "item-2", "item-2"]);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "fanout_pool_item_settled",
+      itemId: "item-3",
+      cascade: true
+    }));
+    expect(report.diagnostics).toContainEqual(expect.objectContaining({
+      code: RuntimeErrorCodes.FANOUT_ITEM_BLOCKED,
+      stageId: undefined,
+      itemId: undefined
+    }));
+    expect(report.diagnostics).toContainEqual(expect.objectContaining({
+      code: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
+      stageId: "fanout",
+      itemId: "item-3"
+    }));
   });
 
   it("recovers a running fanout item when its output file already exists", async () => {
@@ -236,7 +316,7 @@ describe("fanout runtime stability", () => {
   it("recovers a stale running fanout item and continues queued work", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fanout-stale-queued-"));
     setAgentRuntimeFactoryForTests(() => new StaticRuntime());
-    const spec = fanoutSpec(2, { allowPartial: true }, { maxAgents: 2, maxConcurrency: 1 });
+    const spec = fanoutSpec(2, { allowPartial: true }, { maxConcurrency: 1 });
     const prepared = await prepareRun(spec, {
       cwd,
       input: { cwd, items: fanoutInputItems(2) }
@@ -300,7 +380,7 @@ describe("fanout runtime stability", () => {
   it("continues a legacy fanout stage stuck running with queued items", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fanout-legacy-stuck-"));
     setAgentRuntimeFactoryForTests(() => new StaticRuntime());
-    const spec = fanoutSpec(2, { allowPartial: false }, { maxAgents: 2, maxConcurrency: 1 });
+    const spec = fanoutSpec(2, { allowPartial: false }, { maxConcurrency: 1 });
     const prepared = await prepareRun(spec, {
       cwd,
       input: { cwd, items: fanoutInputItems(2) }
@@ -336,7 +416,7 @@ describe("fanout runtime stability", () => {
     expect(synced.status).toBe("completed");
     expect(synced.stages.fanout?.status).toBe("completed");
     expect(synced.stages.fanout?.fanout?.completedItems).toBe(2);
-    expect(await schedulerBatchStartedCount(prepared.dir)).toBe(1);
+    expect(await fanoutPoolStartedCount(prepared.dir)).toBe(1);
     expect(hasStuckFanoutPendingBatch(synced)).toBe(false);
   });
 
@@ -347,7 +427,7 @@ describe("fanout runtime stability", () => {
       { kind: "text", text: plainJsonOutput(baseOutput({ summary: "retried" })) }
     ]);
     setAgentRuntimeFactoryForTests(() => runtime);
-    const spec = simpleTaskSpec(cwd, { maxAgents: 2 });
+    const spec = simpleTaskSpec(cwd);
     const prepared = await prepareRun(spec, { cwd, input: { cwd } });
 
     const index = await startPreparedRun(cwd, prepared);
@@ -370,7 +450,7 @@ describe("fanout runtime stability", () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-runtime-retry-fanout-"));
     const runtime = new TransientFanoutRuntime("item-2");
     setAgentRuntimeFactoryForTests(() => runtime);
-    const spec = fanoutSpec(2, { allowPartial: false }, { maxAgents: 3, maxConcurrency: 2 });
+    const spec = fanoutSpec(2, { allowPartial: false }, { maxConcurrency: 2 });
     const prepared = await prepareRun(spec, {
       cwd,
       input: { cwd, items: [{ id: "item-1" }, { id: "item-2" }] }
@@ -407,7 +487,7 @@ describe("fanout runtime stability", () => {
       { kind: "text", text: plainJsonOutput(validationOutput({ verdict: "pass", summary: "passed" })) }
     ]);
     setAgentRuntimeFactoryForTests(() => runtime);
-    const spec = fixLoopOnlySpec(cwd, { maxAgents: 3 });
+    const spec = fixLoopOnlySpec(cwd);
     const prepared = await prepareRun(spec, { cwd, input: { cwd } });
 
     const index = await startPreparedRun(cwd, prepared);
@@ -431,7 +511,7 @@ describe("fanout runtime stability", () => {
       { kind: "text", text: plainJsonOutput(baseOutput({ summary: "repaired" })) }
     ]);
     setAgentRuntimeFactoryForTests(() => runtime);
-    const spec = simpleTaskSpec(cwd, { maxAgents: 3 });
+    const spec = simpleTaskSpec(cwd);
     const prepared = await prepareRun(spec, { cwd, input: { cwd } });
 
     const index = await startPreparedRun(cwd, prepared);
@@ -456,7 +536,7 @@ describe("fanout runtime stability", () => {
       { kind: "text", text: plainJsonOutput(baseOutput({ summary: "retried failed status" })) }
     ]);
     setAgentRuntimeFactoryForTests(() => retryRuntime);
-    const retrySpec = simpleTaskSpec(retryCwd, { maxAgents: 2 });
+    const retrySpec = simpleTaskSpec(retryCwd);
     const retryPrepared = await prepareRun(retrySpec, { cwd: retryCwd, input: { cwd: retryCwd } });
 
     const retried = await startPreparedRun(retryCwd, retryPrepared);
@@ -470,7 +550,7 @@ describe("fanout runtime stability", () => {
       { kind: "text", text: plainJsonOutput(baseOutput({ summary: "should not run" })) }
     ]);
     setAgentRuntimeFactoryForTests(() => blockedRuntime);
-    const blockedSpec = simpleTaskSpec(blockedCwd, { maxAgents: 2 });
+    const blockedSpec = simpleTaskSpec(blockedCwd);
     const blockedPrepared = await prepareRun(blockedSpec, { cwd: blockedCwd, input: { cwd: blockedCwd } });
 
     const blocked = await startPreparedRun(blockedCwd, blockedPrepared);
@@ -487,7 +567,7 @@ describe("fanout runtime stability", () => {
       { kind: "throw", message: "transport reset again" }
     ]);
     setAgentRuntimeFactoryForTests(() => runtime);
-    const spec = simpleTaskSpec(cwd, { maxAgents: 2 });
+    const spec = simpleTaskSpec(cwd);
     const prepared = await prepareRun(spec, { cwd, input: { cwd } });
 
     const index = await startPreparedRun(cwd, prepared);
@@ -509,7 +589,7 @@ describe("fanout runtime stability", () => {
   it("retries stale non-fanout running stages and blocks after stale retry exhaustion", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-runtime-stale-stage-"));
     setAgentRuntimeFactoryForTests(() => new StaticRuntime());
-    const spec = simpleTaskSpec(cwd, { maxAgents: 2 });
+    const spec = simpleTaskSpec(cwd);
     const prepared = await prepareRun(spec, { cwd, input: { cwd } });
     const staleStartedAt = new Date(Date.now() - 60_000).toISOString();
     await writeRunIndex(cwd, {
@@ -609,7 +689,7 @@ describe("fanout runtime stability", () => {
       root: "task",
       inputs: { cwd: { type: "path", default: cwd } },
       roles: { worker: { category: "coordination", agent: "fake", mode: "readOnly" } },
-      limits: { maxAgents: 1, maxConcurrency: 1, maxFanoutItems: 1, maxFixRounds: 0, stageTimeoutMinutes: 1 },
+      limits: { stageTimeoutMinutes: 1 },
       stages: [{ id: "task", kind: "agentTask", role: "worker", prompt: "Do work" }]
     });
     const prepared = await prepareRun(spec, { cwd, input: { cwd } });
@@ -664,7 +744,7 @@ describe("fanout runtime stability", () => {
 
   it("diagnoses a fanout stage stuck running with queued items", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fanout-stuck-report-"));
-    const spec = fanoutSpec(2, { allowPartial: false }, { maxAgents: 2, maxConcurrency: 1 });
+    const spec = fanoutSpec(2, { allowPartial: false }, { maxConcurrency: 1 });
     const prepared = await prepareRun(spec, {
       cwd,
       input: { cwd, items: fanoutInputItems(2) }
@@ -840,6 +920,155 @@ describe("fanout runtime stability", () => {
     });
   });
 
+  it("does not let resume allowPartial bypass fanout completion constraints", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-resume-partial-constraints-"));
+    setAgentRuntimeFactoryForTests(() => new SelectiveFanoutRuntime("item-2"));
+    const spec = fanoutSpec(3, { allowPartial: false, minCompletedRatio: 1, maxBlockedItems: 0 });
+    const prepared = await prepareRun(spec, {
+      cwd,
+      input: { cwd, items: fanoutInputItems(3) }
+    });
+    const blocked = await startPreparedRun(cwd, prepared);
+
+    await writeRunIndex(cwd, {
+      ...blocked,
+      status: "running",
+      blockedReason: undefined,
+      resumePolicy: { fanout: { fanout: { allowPartial: true } } },
+      stages: {
+        ...blocked.stages,
+        fanout: {
+          ...blocked.stages.fanout,
+          status: "running",
+          blockedReason: undefined,
+          completedAt: undefined
+        }
+      }
+    });
+
+    const resumed = await syncRun(cwd, prepared.logicalRunId);
+
+    expect(resumed.status).toBe("blocked");
+    expect(resumed.stages.fanout?.status).toBe("blocked");
+    expect(resumed.stages.fanout?.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_BLOCKED);
+    expect(resumed.stages.fanout?.fanout).toMatchObject({
+      completedItems: 2,
+      blockedItems: 1,
+      allowPartial: true
+    });
+  });
+
+  it("blocks fanout aggregation when a failed item has no output artifact", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fanout-missing-output-"));
+    const spec = fanoutSpec(2, { allowPartial: false });
+    const prepared = await prepareRun(spec, {
+      cwd,
+      input: { cwd, items: fanoutInputItems(2) }
+    });
+    const firstOutputPath = path.join(prepared.dir, "outputs", "fanout", "item-1.json");
+    await fs.mkdir(path.dirname(firstOutputPath), { recursive: true });
+    await fs.writeFile(firstOutputPath, `${JSON.stringify(baseOutput({ summary: "done" }), null, 2)}\n`, "utf8");
+    await writeRunIndex(cwd, {
+      ...prepared.index,
+      status: "running",
+      stages: {
+        ...prepared.index.stages,
+        fanout: {
+          stageId: "fanout",
+          status: "running",
+          attempts: [],
+          fanout: {
+            totalItems: 2,
+            completedItems: 1,
+            blockedItems: 0,
+            allowPartial: false,
+            items: [
+              { id: "item-1", index: 0, status: "completed", outputPath: path.join("outputs", "fanout", "item-1.json"), completedAt: new Date().toISOString() },
+              { id: "item-2", index: 1, status: "failed", completedAt: new Date().toISOString(), errorCode: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR }
+            ]
+          }
+        }
+      }
+    });
+
+    const aggregated = await syncRun(cwd, prepared.logicalRunId, { startPending: false });
+    const aggregate = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "fanout.json"), "utf8")) as {
+      blockedItems: Array<{ blockedReason?: string }>;
+    };
+    const report = await buildRunReportView(cwd, spec, aggregated, { mode: "snapshot" });
+
+    expect(aggregated.status).toBe("blocked");
+    expect(aggregated.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_BLOCKED);
+    expect(aggregated.stages.fanout?.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_BLOCKED);
+    expect(aggregate.blockedItems).toContainEqual(expect.objectContaining({
+      blockedReason: RuntimeErrorCodes.MISSING_FANOUT_ITEM_OUTPUT
+    }));
+    expect(report.diagnostics).toContainEqual(expect.objectContaining({
+      code: RuntimeErrorCodes.FANOUT_ITEM_BLOCKED
+    }));
+  });
+
+  it("does not remove running fanout items when applying resume maxItems or skip policy", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-resume-keeps-running-"));
+    const spec = fanoutSpec(3, { allowPartial: true });
+    const prepared = await prepareRun(spec, {
+      cwd,
+      input: { cwd, items: fanoutInputItems(3) }
+    });
+    const startedAt = new Date().toISOString();
+    await writeRunIndex(cwd, {
+      ...prepared.index,
+      status: "running",
+      resumePolicy: { fanout: { fanout: { maxItems: 1, skipItemIndexes: [1] } } },
+      stages: {
+        ...prepared.index.stages,
+        fanout: {
+          stageId: "fanout",
+          status: "running",
+          attempts: [],
+          startedAt,
+          fanout: {
+            totalItems: 3,
+            completedItems: 0,
+            blockedItems: 0,
+            allowPartial: true,
+            items: [
+              { id: "item-1", index: 0, status: "pending" },
+              { id: "item-2", index: 1, status: "running", startedAt, attemptId: "fanout:item-2:attempt-1" },
+              { id: "item-3", index: 2, status: "pending" }
+            ]
+          }
+        }
+      }
+    });
+
+    const observed = await syncRun(cwd, prepared.logicalRunId, { startPending: false });
+
+    expect(observed.stages.fanout?.fanout?.items.map((item) => [item.id, item.status])).toEqual([
+      ["item-1", "pending"],
+      ["item-2", "running"]
+    ]);
+  });
+
+  it("projects recovery call usage in RunView summaries", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-runview-recovery-"));
+    setAgentRuntimeFactoryForTests(() => new StaticRuntime());
+    const spec = simpleTaskSpec(cwd);
+    const prepared = await prepareRun(spec, { cwd, input: { cwd } });
+    const index = await startPreparedRun(cwd, prepared);
+    await writeRunIndex(cwd, {
+      ...index,
+      agentUsage: {
+        ...index.agentUsage,
+        recoveryCalls: 2
+      }
+    });
+
+    const report = await buildRunReportView(cwd, spec, await readRunIndex(cwd, prepared.logicalRunId), { mode: "snapshot" });
+
+    expect(report.summary.agentUsage.recoveryCalls).toBe(2);
+  });
+
   it("preserves diagnosed_blocked status during observation-only sync", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-diagnosed-sync-"));
     setAgentRuntimeFactoryForTests(() => new SelectiveFanoutRuntime("item-2"));
@@ -857,35 +1086,36 @@ describe("fanout runtime stability", () => {
     expect(observed.status).toBe("diagnosed_blocked");
   });
 
-  it("terminates ready work as blocked when the agent budget is exhausted", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-agent-budget-"));
+  it("does not use agent call accounting as a scheduler budget", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-agent-usage-not-budget-"));
     setAgentRuntimeFactoryForTests(() => new StaticRuntime());
-    const spec = budgetSpec(cwd);
+    const spec = usageAccountingSpec(cwd);
     const prepared = await prepareRun(spec, { cwd, input: { cwd } });
 
     const firstTick = await startPreparedRun(cwd, prepared);
+    await writeRunIndex(cwd, {
+      ...firstTick,
+      agentUsage: {
+        ...firstTick.agentUsage,
+        actual: firstTick.agentUsage.planned + 10
+      }
+    });
     const secondTick = await syncRun(cwd, prepared.logicalRunId);
     const report = await buildRunReportView(cwd, spec, secondTick, { mode: "snapshot" });
 
     expect(firstTick.status).toBe("running");
-    expect(secondTick.status).toBe("blocked");
-    expect(secondTick.blockedReason).toBe(RuntimeErrorCodes.LIMIT_AGENT_BUDGET_EXHAUSTED);
+    expect(secondTick.status).toBe("completed");
     expect(secondTick.stages.validate).toMatchObject({
-      status: "blocked",
-      blockedReason: RuntimeErrorCodes.LIMIT_AGENT_BUDGET_EXHAUSTED
+      status: "completed"
     });
-    expect(report.diagnostics).toContainEqual(expect.objectContaining({
-      code: RuntimeErrorCodes.LIMIT_AGENT_BUDGET_EXHAUSTED,
-      stageId: undefined,
-      itemId: undefined
-    }));
+    expect(report.diagnostics.map((entry) => entry.code)).not.toContain("LIMIT_AGENT_BUDGET_EXHAUSTED");
   });
 });
 
 function fanoutSpec(
   count: number,
-  policy: { allowPartial: boolean },
-  limits: { maxAgents?: number; maxConcurrency?: number; maxFanoutItems?: number } = {}
+  policy: { allowPartial: boolean; minCompletedRatio?: number; maxBlockedItems?: number },
+  limits: { maxConcurrency?: number; maxFanoutItems?: number } = {}
 ): WorkflowSpec {
   return WorkflowSpecSchema.parse({
     schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
@@ -896,18 +1126,16 @@ function fanoutSpec(
       items: { type: "array<json>" }
     },
     roles: { worker: { category: "coordination", agent: "fake", mode: "readOnly" } },
-    limits: {
-      maxAgents: limits.maxAgents ?? count,
-      maxConcurrency: limits.maxConcurrency ?? count,
-      maxFanoutItems: limits.maxFanoutItems ?? count,
-      maxFixRounds: 0,
-      stageTimeoutMinutes: 1
-    },
+    limits: { stageTimeoutMinutes: 1 },
     stages: [{
       id: "fanout",
       kind: "fanout",
       items: { source: "input.items" },
       role: "worker",
+      limits: {
+        maxConcurrency: limits.maxConcurrency ?? count,
+        maxFanoutItems: limits.maxFanoutItems ?? count
+      },
       prompt: "Handle one item",
       fanoutPolicy: policy
     }]
@@ -931,13 +1159,13 @@ function hasStuckFanoutPendingBatch(index: RunIndex): boolean {
   });
 }
 
-async function schedulerBatchStartedCount(dir: string): Promise<number> {
+async function fanoutPoolStartedCount(dir: string): Promise<number> {
+  return (await readEvents(dir)).filter((event) => event.type === "fanout_pool_started").length;
+}
+
+async function readEvents(dir: string): Promise<Array<{ type?: string; itemId?: string; cascade?: boolean }>> {
   const text = await fs.readFile(path.join(dir, "events.ndjson"), "utf8");
-  return text.trim().split("\n").filter((line) => {
-    if (!line) return false;
-    const event = JSON.parse(line) as { type?: string };
-    return event.type === "scheduler_batch_started";
-  }).length;
+  return text.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as { type?: string; itemId?: string; cascade?: boolean });
 }
 
 function gateSpec(cwd: string): WorkflowSpec {
@@ -949,21 +1177,21 @@ function gateSpec(cwd: string): WorkflowSpec {
     roles: {
       gater: { category: "validation", agent: "fake", mode: "readOnly" }
     },
-    limits: { maxAgents: 1, maxConcurrency: 1, maxFanoutItems: 1, maxFixRounds: 0, stageTimeoutMinutes: 1 },
+    limits: { stageTimeoutMinutes: 1 },
     stages: [{ id: "gate", kind: "gate", mode: "agent", role: "gater", prompt: "Gate" }]
   });
 }
 
-function budgetSpec(cwd: string): WorkflowSpec {
+function usageAccountingSpec(cwd: string): WorkflowSpec {
   return WorkflowSpecSchema.parse({
     schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
-    name: "agent-budget",
+    name: "agent-usage-not-budget",
     root: "plan",
     inputs: { cwd: { type: "path", default: cwd } },
     roles: {
       worker: { category: "coordination", agent: "fake", mode: "readOnly" }
     },
-    limits: { maxAgents: 1, maxConcurrency: 1, maxFanoutItems: 1, maxFixRounds: 0, stageTimeoutMinutes: 1 },
+    limits: { stageTimeoutMinutes: 1 },
     stages: [
       { id: "plan", kind: "agentTask", role: "worker", prompt: "Plan" },
       { id: "validate", kind: "agentTask", role: "worker", dependsOn: ["plan"], prompt: "Validate" }
@@ -971,7 +1199,7 @@ function budgetSpec(cwd: string): WorkflowSpec {
   });
 }
 
-function simpleTaskSpec(cwd: string, limits: { maxAgents?: number } = {}): WorkflowSpec {
+function simpleTaskSpec(cwd: string): WorkflowSpec {
   return WorkflowSpecSchema.parse({
     schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
     name: "simple-task",
@@ -980,7 +1208,7 @@ function simpleTaskSpec(cwd: string, limits: { maxAgents?: number } = {}): Workf
     roles: {
       worker: { category: "coordination", agent: "fake", mode: "readOnly" }
     },
-    limits: { maxAgents: limits.maxAgents ?? 1, maxConcurrency: 1, maxFanoutItems: 1, maxFixRounds: 0, stageTimeoutMinutes: 1 },
+    limits: { stageTimeoutMinutes: 1 },
     stages: [{ id: "task", kind: "agentTask", role: "worker", prompt: "Do work" }]
   });
 }
@@ -994,12 +1222,12 @@ function maxOutputSpec(cwd: string, maxOutputChars: number): WorkflowSpec {
     roles: {
       worker: { category: "coordination", agent: "fake", mode: "readOnly" }
     },
-    limits: { maxAgents: 2, maxConcurrency: 1, maxFanoutItems: 1, maxFixRounds: 0, stageTimeoutMinutes: 1, maxOutputChars },
+    limits: { stageTimeoutMinutes: 1, maxOutputChars },
     stages: [{ id: "task", kind: "agentTask", role: "worker", prompt: "Do work" }]
   });
 }
 
-function fixLoopOnlySpec(cwd: string, limits: { maxAgents?: number } = {}): WorkflowSpec {
+function fixLoopOnlySpec(cwd: string): WorkflowSpec {
   return WorkflowSpecSchema.parse({
     schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
     name: "fix-loop-only",
@@ -1009,7 +1237,7 @@ function fixLoopOnlySpec(cwd: string, limits: { maxAgents?: number } = {}): Work
       validator: { category: "validation", agent: "fake", mode: "readOnly" },
       implementer: { category: "implementation", agent: "fake", mode: "edit" }
     },
-    limits: { maxAgents: limits.maxAgents ?? 2, maxConcurrency: 1, maxFanoutItems: 1, maxFixRounds: 2, stageTimeoutMinutes: 1 },
+    limits: { stageTimeoutMinutes: 1 },
     stages: [{
       id: "quality_loop",
       kind: "fixLoop",
@@ -1152,6 +1380,49 @@ class StaticRuntime implements OrchestratorAgentRuntime {
       status: "completed"
     };
   }
+}
+
+class DelayedFanoutRuntime implements OrchestratorAgentRuntime {
+  readonly requests: AgentTurnRequest[] = [];
+  onStart?: (itemId: string) => Promise<void> | void;
+  private active = 0;
+  maxActive = 0;
+  private readonly failingItems: Set<string>;
+
+  constructor(private readonly delays: Record<string, number>, failingItems: string[] = []) {
+    this.failingItems = new Set(failingItems);
+  }
+
+  async runTurn(input: AgentTurnRequest, onEvent?: (event: AcpRuntimeEvent) => Promise<void> | void): Promise<AgentTurnResult> {
+    this.requests.push(input);
+    const itemId = itemIdFromSessionKey(input.sessionKey);
+    await this.onStart?.(itemId);
+    this.active += 1;
+    this.maxActive = Math.max(this.maxActive, this.active);
+    try {
+      await sleep(this.delays[itemId] ?? 1);
+      if (this.failingItems.has(itemId)) throw new Error(`failed ${itemId}`);
+      const rawText = plainJsonOutput(baseOutput({ summary: input.sessionKey }));
+      const event: AcpRuntimeEvent = { type: "text_delta", text: rawText, stream: "output" };
+      await onEvent?.(event);
+      return {
+        handle: fakeHandle(input),
+        rawText,
+        events: [event],
+        status: "completed"
+      };
+    } finally {
+      this.active -= 1;
+    }
+  }
+}
+
+function itemIdFromSessionKey(sessionKey: string): string {
+  return sessionKey.split(":item:").at(-1) ?? sessionKey;
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function fakeHandle(input: AgentTurnRequest): AcpRuntimeHandle {

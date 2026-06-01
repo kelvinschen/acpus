@@ -16,7 +16,7 @@ describe("deterministic runtime program stages", () => {
       root: "discover",
       inputs: { cwd: { type: "path", default: cwd } },
       roles: {},
-      limits: { maxAgents: 2, maxConcurrency: 1, maxFanoutItems: 1, maxFixRounds: 0, stageTimeoutMinutes: 1 },
+      limits: { stageTimeoutMinutes: 1 },
       stages: [
         { id: "discover", kind: "discover", method: "glob", args: { scope: ["**/*.txt"] }, output: "files" },
         {
@@ -31,7 +31,7 @@ describe("deterministic runtime program stages", () => {
       ]
     });
     const prepared = await prepareRun(spec, { cwd, input: { cwd } });
-    const index = await syncRun(cwd, prepared.logicalRunId, { startPending: false });
+    const index = await syncRun(cwd, prepared.logicalRunId);
     const discover = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "discover.json"), "utf8")) as { files: unknown[] };
     const decision = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "decide.json"), "utf8")) as { status: string };
 

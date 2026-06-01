@@ -12,6 +12,7 @@ export {
   type ExecutionPlan,
   type ExecutionPlanLimits,
   type ExecutionPlanRole,
+  type ExecutionPlanStageLimits,
   type ExecutionPlanStage,
   type FanoutPlan,
   type PromptPlan,

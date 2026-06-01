@@ -97,26 +97,6 @@
       "default": {},
       "type": "object",
       "properties": {
-        "maxAgents": {
-          "type": "integer",
-          "exclusiveMinimum": 0,
-          "maximum": 9007199254740991
-        },
-        "maxConcurrency": {
-          "type": "integer",
-          "exclusiveMinimum": 0,
-          "maximum": 9007199254740991
-        },
-        "maxFanoutItems": {
-          "type": "integer",
-          "exclusiveMinimum": 0,
-          "maximum": 9007199254740991
-        },
-        "maxFixRounds": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 9007199254740991
-        },
         "stageTimeoutMinutes": {
           "type": "integer",
           "exclusiveMinimum": 0,
@@ -210,11 +190,6 @@
               "limits": {
                 "type": "object",
                 "properties": {
-                  "maxAgents": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
                   "maxConcurrency": {
                     "type": "integer",
                     "exclusiveMinimum": 0,
@@ -225,17 +200,7 @@
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
                   },
-                  "maxFixRounds": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
                   "stageTimeoutMinutes": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "maxOutputChars": {
                     "type": "integer",
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
@@ -334,11 +299,6 @@
               "limits": {
                 "type": "object",
                 "properties": {
-                  "maxAgents": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
                   "maxConcurrency": {
                     "type": "integer",
                     "exclusiveMinimum": 0,
@@ -349,17 +309,7 @@
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
                   },
-                  "maxFixRounds": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
                   "stageTimeoutMinutes": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "maxOutputChars": {
                     "type": "integer",
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
@@ -398,8 +348,7 @@
             "required": [
               "id",
               "kind",
-              "method",
-              "output"
+              "method"
             ],
             "additionalProperties": false
           },
@@ -478,11 +427,6 @@
               "limits": {
                 "type": "object",
                 "properties": {
-                  "maxAgents": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
                   "maxConcurrency": {
                     "type": "integer",
                     "exclusiveMinimum": 0,
@@ -493,17 +437,7 @@
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
                   },
-                  "maxFixRounds": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
                   "stageTimeoutMinutes": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "maxOutputChars": {
                     "type": "integer",
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
@@ -550,9 +484,6 @@
                     "maximum": 9007199254740991
                   }
                 },
-                "required": [
-                  "allowPartial"
-                ],
                 "additionalProperties": false
               }
             },
@@ -639,11 +570,6 @@
               "limits": {
                 "type": "object",
                 "properties": {
-                  "maxAgents": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
                   "maxConcurrency": {
                     "type": "integer",
                     "exclusiveMinimum": 0,
@@ -654,17 +580,7 @@
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
                   },
-                  "maxFixRounds": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
                   "stageTimeoutMinutes": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "maxOutputChars": {
                     "type": "integer",
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
@@ -705,7 +621,6 @@
             "required": [
               "id",
               "kind",
-              "mode",
               "from"
             ],
             "additionalProperties": false
@@ -784,11 +699,6 @@
               "limits": {
                 "type": "object",
                 "properties": {
-                  "maxAgents": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
                   "maxConcurrency": {
                     "type": "integer",
                     "exclusiveMinimum": 0,
@@ -799,17 +709,7 @@
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
                   },
-                  "maxFixRounds": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
                   "stageTimeoutMinutes": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "maxOutputChars": {
                     "type": "integer",
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
@@ -1000,8 +900,6 @@
                   }
                 },
                 "required": [
-                  "fixOn",
-                  "ignoreForRouting",
                   "unknown"
                 ],
                 "additionalProperties": false
@@ -1101,11 +999,6 @@
               "limits": {
                 "type": "object",
                 "properties": {
-                  "maxAgents": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
                   "maxConcurrency": {
                     "type": "integer",
                     "exclusiveMinimum": 0,
@@ -1116,17 +1009,7 @@
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
                   },
-                  "maxFixRounds": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
                   "stageTimeoutMinutes": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "maxOutputChars": {
                     "type": "integer",
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
@@ -1185,7 +1068,6 @@
             "required": [
               "id",
               "kind",
-              "mode",
               "rules",
               "default"
             ],
@@ -1265,11 +1147,6 @@
               "limits": {
                 "type": "object",
                 "properties": {
-                  "maxAgents": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
                   "maxConcurrency": {
                     "type": "integer",
                     "exclusiveMinimum": 0,
@@ -1280,17 +1157,7 @@
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
                   },
-                  "maxFixRounds": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
                   "stageTimeoutMinutes": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "maxOutputChars": {
                     "type": "integer",
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
@@ -1320,8 +1187,7 @@
             },
             "required": [
               "id",
-              "kind",
-              "mode"
+              "kind"
             ],
             "additionalProperties": false
           },
@@ -1400,11 +1266,6 @@
               "limits": {
                 "type": "object",
                 "properties": {
-                  "maxAgents": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
                   "maxConcurrency": {
                     "type": "integer",
                     "exclusiveMinimum": 0,
@@ -1415,17 +1276,7 @@
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
                   },
-                  "maxFixRounds": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
                   "stageTimeoutMinutes": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "maxOutputChars": {
                     "type": "integer",
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
@@ -1457,11 +1308,8 @@
   "required": [
     "schemaVersion",
     "name",
-    "description",
     "root",
-    "inputs",
     "roles",
-    "limits",
     "stages"
   ],
   "additionalProperties": false,

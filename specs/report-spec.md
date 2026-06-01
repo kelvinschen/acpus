@@ -21,6 +21,8 @@ Reports expose persisted run state, outputs, attempts, diagnostics, and gate ver
 - `report serve --run <run-id-or-dir>` MUST start a read-only local report server.
 - The live report server MUST serve report data and attempt artifacts only; it MUST NOT expose workflow control endpoints.
 - Reports MUST surface run-level blocked reasons and stable runtime diagnostics when present.
+- Reports MUST treat `agentUsage` as usage accounting and MUST NOT present agent call counts as a scheduler budget.
+- Reports MUST surface fanout item cascade blocking through persisted item status, `blockedReason`, `errorCode`, and event history when present.
 
 ## Interfaces and Contracts
 
@@ -46,7 +48,7 @@ Reports are generated from:
 - `sessions/role-bindings.json` for role/session identity;
 - `events.ndjson` for event history when projected.
 
-The detailed report model includes run summary, gate verdict, graph view, per-stage status, attempts, role, agent, session key, prompt path, output path, parse diagnostics, contract outputs, warnings, risks, checks, changed files, and diagnostics.
+The detailed report model includes run summary, gate verdict, graph view, per-stage status, attempts, role, agent, session key, prompt path, output path, parse diagnostics, contract outputs, warnings, risks, checks, changed files, usage accounting including recovery calls, and diagnostics.
 
 ## Runtime Behavior
 

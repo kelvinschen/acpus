@@ -13,10 +13,6 @@
     "validator": { "category": "validation", "agent": "aiden", "mode": "readOnly" }
   },
   "limits": {
-    "maxAgents": 12,
-    "maxConcurrency": 2,
-    "maxFanoutItems": 4,
-    "maxFixRounds": 2,
     "stageTimeoutMinutes": 60
   },
   "stages": [

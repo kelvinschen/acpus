@@ -33,7 +33,7 @@ export function registerResume(program: Command): void {
       const reset = resetRecoverableStages({
         ...index,
         resumePolicy: mergeResumePolicy(index.resumePolicy, parsedPolicy.policy)
-      });
+      }, spec);
       await writeRunIndex(locator.cwd, reset);
       let finalIndex;
       try {
@@ -57,19 +57,35 @@ async function readRunSpec(cwd: string, runId: string): Promise<WorkflowSpec> {
   return WorkflowSpecSchema.parse(JSON.parse(await fs.readFile(path.join(runDir(runId, cwd), "workflow.spec.json"), "utf8")));
 }
 
-function resetRecoverableStages(index: Awaited<ReturnType<typeof readRunIndex>>) {
-  const stages = Object.fromEntries(Object.entries(index.stages).map(([id, stage]) => [
-    id,
-    stage.status === "failed" || stage.status === "blocked"
-      ? {
-          ...stage,
-          status: stage.fanout ? "running" as const : "pending" as const,
-          blockedReason: undefined,
-          completedAt: undefined
-        }
-      : stage
-  ]));
-  return { ...index, status: "running" as const, stages, blockedReason: undefined, gateVerdict: undefined };
+function resetRecoverableStages(index: Awaited<ReturnType<typeof readRunIndex>>, spec: WorkflowSpec) {
+  const kindByStage = new Map(spec.stages.map((stage) => [stage.id, stage.kind]));
+  const shouldRecomputeGate = index.gateVerdict === "blocked" || index.gateVerdict === "failed" || index.gateVerdict === "unknown";
+  let gateVerdict = index.gateVerdict;
+  let resetGate = false;
+  const stages = Object.fromEntries(Object.entries(index.stages).map(([id, stage]) => {
+    const stageKind = kindByStage.get(id);
+    const shouldResetBlockedStage = stage.status === "failed" || stage.status === "blocked";
+    const shouldResetBlockedVerdictGate = stageKind === "gate" && shouldRecomputeGate;
+    if (!shouldResetBlockedStage && !shouldResetBlockedVerdictGate) return [id, stage];
+    if (stageKind === "gate") {
+      gateVerdict = undefined;
+      resetGate = true;
+    }
+    return [id, {
+      ...stage,
+      status: stage.fanout ? "running" as const : "pending" as const,
+      blockedReason: undefined,
+      completedAt: undefined,
+      outputPath: stageKind === "gate" ? undefined : stage.outputPath
+    }];
+  }));
+  return {
+    ...index,
+    status: "running" as const,
+    stages,
+    blockedReason: undefined,
+    gateVerdict: resetGate ? gateVerdict : index.gateVerdict
+  };
 }
 
 function printResumeIssues(json: boolean | undefined, issues: OrchestratorIssue[]): void {
@@ -80,7 +96,7 @@ function printResumeIssues(json: boolean | undefined, issues: OrchestratorIssue[
 
 async function waitForResume(cwd: string, runId: string) {
   while (true) {
-    const index = await syncRun(cwd, runId);
+    const index = await syncRun(cwd, runId, { drainFanoutPool: true });
     if (index.status !== "pending" && index.status !== "running") return index;
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }

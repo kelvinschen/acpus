@@ -105,7 +105,7 @@ export function validateResumePolicy(spec: WorkflowSpec, policy: ResumePolicy): 
       }));
     }
 
-    const compiledMaxItems = stage.limits?.maxFanoutItems ?? spec.limits.maxFanoutItems ?? 1;
+    const compiledMaxItems = stage.limits?.maxFanoutItems ?? 1;
     if (fanoutPolicy.maxItems !== undefined && fanoutPolicy.maxItems > compiledMaxItems) {
       issues.push(issue({
         code: "RESUME_POLICY_MAX_ITEMS_NOT_TIGHTENING",

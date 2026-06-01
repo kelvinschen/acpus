@@ -137,7 +137,7 @@ async function writeLinearFixture(cwd: string, runId: string, dir: string, kind:
       planner: { category: "planning", agent: "aiden", mode: "readOnly" },
       worker: { category: "implementation", agent: "trae", mode: "edit" }
     },
-    limits: { maxAgents: 6, maxConcurrency: 1 },
+    limits: { stageTimeoutMinutes: 60 },
     stages: [
       { id: "plan", kind: "agentTask", role: "planner", prompt: "Plan" },
       { id: "implement", kind: "agentTask", dependsOn: ["plan"], role: "worker", prompt: "Implement" },
@@ -218,10 +218,10 @@ async function writeFanoutPartialFixture(cwd: string, runId: string, dir: string
     roles: {
       reviewer: { category: "review", agent: "aiden", mode: "readOnly" }
     },
-    limits: { maxAgents: 10, maxConcurrency: 2, maxFanoutItems: 5 },
+    limits: { stageTimeoutMinutes: 60 },
     stages: [
       { id: "discover_files", kind: "discover", method: "glob", args: { pattern: "src/**/*.ts" }, output: "files" },
-      { id: "review_files", kind: "fanout", dependsOn: ["discover_files"], role: "reviewer", items: { source: "outputs.discover_files.files" }, prompt: "Review", fanoutPolicy: { allowPartial: true, minCompletedRatio: 0.5, maxBlockedItems: 2 } },
+      { id: "review_files", kind: "fanout", dependsOn: ["discover_files"], role: "reviewer", items: { source: "outputs.discover_files.files" }, limits: { maxConcurrency: 2, maxFanoutItems: 5 }, prompt: "Review", fanoutPolicy: { allowPartial: true, minCompletedRatio: 0.5, maxBlockedItems: 2 } },
       { id: "reconcile", kind: "reduce", mode: "agent", role: "reviewer", from: "review_files", dependsOn: ["review_files"], prompt: "Reconcile" },
       { id: "gate", kind: "gate", dependsOn: ["reconcile"] }
     ]

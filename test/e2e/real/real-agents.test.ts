@@ -36,7 +36,7 @@ describe.skipIf(!runReal)("real acpx agents e2e", () => {
         cwd: { type: "path", default: cwd }
       },
       roles: {},
-      limits: { maxAgents: 2, maxConcurrency: 1, maxFanoutItems: 1, maxFixRounds: 0, stageTimeoutMinutes: 1 },
+      limits: { stageTimeoutMinutes: 1 },
       stages: [
         { id: "discover", kind: "discover", method: "glob", args: { scope: ["**/*.txt"] }, output: "files" },
         {
@@ -77,7 +77,7 @@ describe.skipIf(!runReal)("real acpx agents e2e", () => {
       roles: {
         implementer: { category: "implementation", agent: realEditAgent(), mode: "edit" }
       },
-      limits: { maxAgents: 4, maxConcurrency: 1, maxFanoutItems: 1, maxFixRounds: 0, stageTimeoutMinutes: 10 },
+      limits: { stageTimeoutMinutes: 10 },
       stages: [
         {
           id: "implement",

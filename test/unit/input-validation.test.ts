@@ -14,7 +14,7 @@ describe("input validation", () => {
     roles: {
       gater: { category: "summarization", agent: "claude", mode: "readOnly" }
     },
-    limits: { maxAgents: 2 },
+    limits: { stageTimeoutMinutes: 2 },
     stages: [
       {
         id: "gate",

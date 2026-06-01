@@ -21,12 +21,14 @@ export type ExecutionPlanRole = Role & {
 };
 
 export type ExecutionPlanLimits = {
-  maxAgents: number;
-  maxConcurrency: number;
-  maxFanoutItems: number;
-  maxFixRounds: number;
   stageTimeoutMinutes: number;
   maxOutputChars?: number;
+};
+
+export type ExecutionPlanStageLimits = {
+  maxConcurrency?: number;
+  maxFanoutItems?: number;
+  stageTimeoutMinutes?: number;
 };
 
 export type PromptPlan = {
@@ -65,7 +67,7 @@ export type ExecutionPlanStage = {
   contract?: ContractPlan;
   promptId?: string;
   session: SessionKeyStrategy;
-  limits: Partial<ExecutionPlanLimits>;
+  limits: ExecutionPlanStageLimits;
   fanout?: {
     itemsSource: string;
     allowPartial: boolean;
@@ -122,4 +124,6 @@ export type FanoutPlan = {
   maxItems: number;
   maxConcurrency: number;
   allowPartial: boolean;
+  minCompletedRatio?: number;
+  maxBlockedItems?: number;
 };

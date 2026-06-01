@@ -10,13 +10,14 @@ const spec = WorkflowSpecSchema.parse({
     reviewer: { category: "review", agent: "aiden", mode: "readOnly" },
     editor: { category: "implementation", agent: "trae", mode: "edit" }
   },
-  limits: { maxAgents: 10, maxFanoutItems: 4 },
+  limits: { stageTimeoutMinutes: 10 },
   stages: [
     {
       id: "review_files",
       kind: "fanout",
       items: { source: "input.files" },
       role: "reviewer",
+      limits: { maxFanoutItems: 4 },
       prompt: "Review one file"
     },
     {

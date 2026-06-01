@@ -4,6 +4,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execa } from "execa";
 import { beforeAll, describe, expect, it } from "vitest";
+import { readRunIndex } from "../../src/run-index/read-write.js";
+import { prepareRun } from "../../src/runtime/run-workflow.js";
+import { WorkflowSpecSchema } from "../../src/schema/workflow-spec.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const tsxBin = path.join(root, "node_modules", ".bin", "tsx");
@@ -53,6 +56,23 @@ describe("CLI lifecycle", () => {
     expect(shownRun.logicalRunId).toBe(runResult.logicalRunId);
     expect(runs.entries).toContain(runResult.logicalRunId);
   }, 60_000);
+
+  it("keeps follow and report observation-only for pending prepared runs", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-cli-observe-"));
+    await fs.writeFile(path.join(cwd, "sample.txt"), "hello\n", "utf8");
+    const spec = observationOnlySpec(cwd);
+    const prepared = await prepareRun(spec, { cwd, input: { cwd } });
+
+    const follow = JSON.parse((await run(cwd, "follow", prepared.logicalRunId, "--json")).stdout) as { status: string };
+    const afterFollow = await readRunIndex(cwd, prepared.logicalRunId);
+    const report = JSON.parse((await run(cwd, "report", "--run", prepared.logicalRunId, "--json")).stdout) as { status: string };
+    const afterReport = await readRunIndex(cwd, prepared.logicalRunId);
+
+    expect(follow.status).toBe("running");
+    expect(report.status).toBe("running");
+    expect(afterFollow.stages.discover.status).toBe("pending");
+    expect(afterReport.stages.discover.status).toBe("pending");
+  }, 60_000);
 });
 
 async function run(cwd: string, ...args: string[]) {
@@ -69,7 +89,7 @@ function deterministicSpec(cwd: string) {
       cwd: { type: "path", default: cwd }
     },
     roles: {},
-    limits: { maxAgents: 1, maxConcurrency: 1, maxFanoutItems: 1, maxFixRounds: 0, stageTimeoutMinutes: 1 },
+    limits: { stageTimeoutMinutes: 1 },
     stages: [
       { id: "discover", kind: "discover", method: "glob", args: { scope: ["*.txt"] }, output: "files" },
       {
@@ -83,4 +103,21 @@ function deterministicSpec(cwd: string) {
       { id: "gate", kind: "gate", dependsOn: ["decide"] }
     ]
   };
+}
+
+function observationOnlySpec(cwd: string) {
+  return WorkflowSpecSchema.parse({
+    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    name: "observation-only-cli",
+    root: "discover",
+    inputs: {
+      cwd: { type: "path", default: cwd }
+    },
+    roles: {},
+    limits: { stageTimeoutMinutes: 1 },
+    stages: [
+      { id: "discover", kind: "discover", method: "glob", args: { scope: ["*.txt"] }, output: "files" },
+      { id: "gate", kind: "gate", dependsOn: ["discover"] }
+    ]
+  });
 }

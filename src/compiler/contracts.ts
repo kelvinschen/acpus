@@ -6,5 +6,5 @@ export { contractNameForStage, contractText, getOutputContract, type OutputContr
 
 export function safetyFooter(stage: Stage, role?: Role): string {
   const contractName = contractNameForStage(stage, role);
-  return getOutputContract(contractName, stage.kind === "discover" ? { outputKey: stage.output, maxItems: stage.limits?.maxFanoutItems } : undefined).footerText();
+  return getOutputContract(contractName, stage.kind === "discover" ? { outputKey: stage.output } : undefined).footerText();
 }

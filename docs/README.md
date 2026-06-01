@@ -11,5 +11,6 @@ Current normative design and implementation truth lives in [../specs/INDEX.md](.
 
 ## Non-Normative Material
 
+- [adr/](adr/) contains decision records and rationale. ADRs explain why a direction was chosen; they do not replace specifications as current implementation truth.
 - [archive/](archive/) contains historical plans, validation notes, handoffs, and superseded design records. Do not treat archived material as current implementation truth.
 - [roadmap/](roadmap/) contains future capabilities, backlog, and known gaps. Do not treat roadmap material as current implementation truth.

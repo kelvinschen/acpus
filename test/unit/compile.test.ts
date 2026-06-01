@@ -39,11 +39,31 @@ describe("compileExecutionPlan", () => {
     });
   });
 
+  it("defaults fanout concurrency and item caps to one when omitted", () => {
+    const base = WorkflowSpecSchema.parse(JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "..", "workflows/examples/review-only-fanout.workflow.spec.json"), "utf8")));
+    const spec = WorkflowSpecSchema.parse({
+      ...base,
+      stages: base.stages.map((stage) => stage.id === "review_files" ? { ...stage, limits: undefined } : stage)
+    });
+    const plan = compileExecutionPlan(spec);
+    const fanout = plan.stages.find((stage) => stage.id === "review_files");
+
+    expect(fanout?.fanout).toMatchObject({
+      maxConcurrency: 1,
+      maxItems: 1
+    });
+    expect(plan.limits.stageTimeoutMinutes).toBe(45);
+    expect(plan.limits).not.toHaveProperty("maxAgents");
+    expect(plan.limits).not.toHaveProperty("maxConcurrency");
+    expect(plan.limits).not.toHaveProperty("maxFanoutItems");
+    expect(plan.limits).not.toHaveProperty("maxFixRounds");
+  });
+
   it("keeps program decisions and reducers as runtime metadata", () => {
     const base = WorkflowSpecSchema.parse(JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "..", "workflows/examples/review-only-fanout.workflow.spec.json"), "utf8")));
     const spec = WorkflowSpecSchema.parse({
       ...base,
-      limits: { ...base.limits, maxAgents: 26 },
+      limits: { ...base.limits },
       stages: base.stages.map((stage) => stage.id === "reduce_findings"
         ? { id: "reduce_findings", kind: "reduce", mode: "program", from: "review_files", dependsOn: ["review_files"], operation: "dedupeFindings" }
         : stage)
@@ -80,7 +100,7 @@ describe("compileExecutionPlan", () => {
         implementer: { category: "implementation", agent: "codex", mode: "edit" },
         summarizer: { category: "summarization", agent: "codex", mode: "readOnly" }
       },
-      limits: { maxAgents: 1 },
+      limits: { stageTimeoutMinutes: 1 },
       stages: [
         { id: "work", kind: "agentTask", role: "implementer", prompt: "Do work" },
         { id: "legacy_summary", kind: "summarize", role: "summarizer", dependsOn: ["work"], prompt: "Legacy summary" }

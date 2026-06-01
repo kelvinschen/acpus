@@ -58,7 +58,11 @@ Runtime run-level codes emitted in reports:
   `run.json` write lock before timeout.
 - `FANOUT_ITEM_UNSTARTED_TIMEOUT`: a fanout item remained unstarted after the
   scheduler determined it could not safely continue that item.
-- `FANOUT_STAGE_STUCK_PENDING_BATCH`: a fanout stage had pending batch state
+- `FANOUT_ITEM_BLOCKED`: fanout aggregation blocked because one or more active
+  items did not complete and partial fanout was not allowed by policy.
+- `MISSING_FANOUT_ITEM_OUTPUT`: a terminal fanout item did not have a readable
+  output artifact when the scheduler aggregated fanout results.
+- `FANOUT_STAGE_STUCK_PENDING_BATCH`: a fanout stage had queued item state
   that could not progress to terminal item results.
 - `RUN_INDEX_OUTPUT_MISMATCH`: persisted run-index state and output artifacts
   disagree about a stage or item result.
@@ -67,6 +71,10 @@ Runtime run-level codes emitted in reports:
   contract failures.
 - `FANOUT_ITEM_RUNTIME_ERROR`: a fanout item runtime turn failed after one
   transient retry, or stale recovery exhausted its retry for that item.
+- `FANOUT_ITEM_CASCADE_BLOCKED`: a queued fanout item was not launched because
+  an earlier item blocked or failed while partial fanout was disabled. The
+  scheduler lets already-running items settle, then aggregates the fanout stage
+  as blocked.
 - `GATE_CONDITION_FAILED`: a program gate condition evaluated false.
 - `GATE_VERDICT_BLOCKED`: the terminal gate returned `verdict: "blocked"`.
 - `GATE_VERDICT_FAILED`: the terminal gate returned `verdict: "failed"`. The
@@ -75,11 +83,6 @@ Runtime run-level codes emitted in reports:
 - `GATE_VERDICT_UNKNOWN`: the terminal gate returned `verdict: "unknown"`.
   Inspect the gate output and any upstream fanout item outputs before treating
   the workflow as verified.
-- `LIMIT_AGENT_BUDGET_EXHAUSTED`: a run had ready agent work but
-  `agentUsage.actual` had already reached `limits.maxAgents`. The scheduler
-  terminalizes the ready stage as blocked instead of leaving the run in
-  `running`.
-
 Command and turn diagnostics:
 
 - `RUNTIME_COMMAND_ERROR`: a CLI command caught an unrecoverable runtime command

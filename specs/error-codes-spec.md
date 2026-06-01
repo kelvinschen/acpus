@@ -41,7 +41,7 @@ Stable code families:
 - `GRAPH_*`: root, dependency, cycle, branching, deprecated summarize, or terminal gate errors.
 - `VARIABLE_*`: prompt placeholder and variable source errors.
 - `ROLE_*`: unknown role or role/mode conflict.
-- `LIMIT_*`: global hard limit or stage-limit errors.
+- `LIMIT_*`: stage-limit validation errors.
 - `DECISION_*`: invalid decision target/default routing.
 - `DISCOVER_*`: invalid agent discover declaration.
 - `FANOUT_*`: edit fanout risk or missing reconcile stage.
@@ -62,6 +62,9 @@ Stable runtime run-level codes:
 - `EVENT_APPEND_LOCK_TIMEOUT`
 - `RUN_INDEX_LOCK_TIMEOUT`
 - `FANOUT_ITEM_UNSTARTED_TIMEOUT`
+- `FANOUT_ITEM_BLOCKED`
+- `FANOUT_ITEM_CASCADE_BLOCKED`
+- `MISSING_FANOUT_ITEM_OUTPUT`
 - `FANOUT_STAGE_STUCK_PENDING_BATCH`
 - `RUN_INDEX_OUTPUT_MISMATCH`
 - `AGENT_RUNTIME_ERROR`
@@ -70,7 +73,6 @@ Stable runtime run-level codes:
 - `GATE_VERDICT_BLOCKED`
 - `GATE_VERDICT_FAILED`
 - `GATE_VERDICT_UNKNOWN`
-- `LIMIT_AGENT_BUDGET_EXHAUSTED`
 
 Stable command and turn diagnostics:
 
@@ -84,7 +86,7 @@ Error data includes stable code, severity, JSON Pointer path, human-readable mes
 
 ## Runtime Behavior
 
-Validation and compiler errors reject invalid specs before execution. Output parser errors block the affected attempt/stage/run and remain repair-oriented. ACPX runtime errors receive the runtime retry behavior defined by the runtime SPEC. Persistence lock timeouts and run-index/output mismatches are surfaced as stable runtime diagnostics. Gate verdict codes convert terminal gate outputs into run-level blocked outcomes when the gate returns blocked, failed, or unknown verdicts. `GATE_CONDITION_FAILED` blocks a run when a program gate condition evaluates false.
+Validation and compiler errors reject invalid specs before execution. Output parser errors block the affected attempt/stage/run and remain repair-oriented. ACPX runtime errors receive the runtime retry behavior defined by the runtime SPEC. Persistence lock timeouts and run-index/output mismatches are surfaced as stable runtime diagnostics. `FANOUT_ITEM_BLOCKED` marks fanout aggregation blocked because one or more active items did not complete. `MISSING_FANOUT_ITEM_OUTPUT` marks a terminal fanout item whose expected output artifact could not be read during aggregation. `FANOUT_ITEM_CASCADE_BLOCKED` marks queued fanout items that were not launched after an `allowPartial: false` item failure. Gate verdict codes convert terminal gate outputs into run-level blocked outcomes when the gate returns blocked, failed, or unknown verdicts. `GATE_CONDITION_FAILED` blocks a run when a program gate condition evaluates false.
 
 ## Extension Points
 
