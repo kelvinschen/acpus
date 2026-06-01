@@ -1,0 +1,107 @@
+# Error Codes Specification
+
+## Status
+
+- Current implementation: current
+- Source modules: `src/errors.ts`, `src/schema/`, `src/compiler/`, `src/contracts/`, `src/runtime/`, `src/reports/`, `src/commands/`
+- Maintenance trigger: update this spec when changing error shape, severity semantics, code families, stable runtime codes, output-contract codes, repair suggestions, or report diagnostics
+
+## Purpose
+
+Error codes provide a stable repair-oriented surface for Main Agent loops, CLI users, reports, and diagnostics. They identify validation, compiler, runtime, output-contract, resume, ACPX, and internal failures.
+
+## Normative Requirements
+
+- Structured errors MUST include `code`, `severity`, `path`, `message`, and `suggestions` when emitted through the repair-oriented JSON surface.
+- Severity `warning` MUST mean the spec is runnable, but preview/report surfaces should expose the risk.
+- Severity `error` MUST mean the spec is rejected until corrected.
+- Severity `fatal` MUST mean tooling or runtime could not safely continue.
+- Error code families MUST remain stable and MUST NOT be renamed casually.
+- Output contract failures MUST map to blocked attempt/stage/run state, not failed infrastructure state.
+- Runtime `failed` MUST remain reserved for compiler, scheduler, ACPX runtime, or other unrecoverable runtime errors.
+- Reports MUST surface run-level runtime diagnostic codes when present.
+
+## Interfaces and Contracts
+
+Repair-oriented JSON output uses this shape:
+
+```json
+{
+  "code": "VARIABLE_UNDECLARED",
+  "severity": "error",
+  "path": "/stages/0/prompt",
+  "message": "Prompt references ${task}, but no variable named task is declared.",
+  "suggestions": ["Add a variable named task to /stages/0/variables."]
+}
+```
+
+Stable code families:
+
+- `SCHEMA_*`: JSON shape, version, file read, declared input, or runtime input errors.
+- `GRAPH_*`: root, dependency, cycle, branching, or summarize-terminal errors.
+- `VARIABLE_*`: prompt placeholder and variable source errors.
+- `ROLE_*`: unknown role or role/mode conflict.
+- `LIMIT_*`: global hard limit or stage-limit errors.
+- `DECISION_*`: invalid decision target/default routing.
+- `DISCOVER_*`: invalid agent discover declaration.
+- `FANOUT_*`: edit fanout risk or missing reconcile stage.
+- `OUTPUT_*`: runtime output parse, schema, ambiguity, or repair errors.
+- `RUNTIME_*`: logical run index, scheduler, session, or command errors.
+- `RESUME_*`: resume policy errors.
+- `ACPX_*`: `acpx/runtime` startup, session, or turn errors.
+- `INTERNAL_*`: unexpected compiler/runtime invariant failure.
+
+Stable output contract codes:
+
+- `OUTPUT_PARSE_FAILED`
+- `OUTPUT_SCHEMA_FAILED`
+- `OUTPUT_REPAIR_FAILED`
+
+Stable runtime run-level codes:
+
+- `EVENT_APPEND_LOCK_TIMEOUT`
+- `RUN_INDEX_LOCK_TIMEOUT`
+- `FANOUT_ITEM_UNSTARTED_TIMEOUT`
+- `FANOUT_STAGE_STUCK_PENDING_BATCH`
+- `RUN_INDEX_OUTPUT_MISMATCH`
+- `AGENT_RUNTIME_ERROR`
+- `FANOUT_ITEM_RUNTIME_ERROR`
+- `FINAL_VERDICT_BLOCKED`
+- `FINAL_VERDICT_FAILED`
+- `FINAL_VERDICT_UNKNOWN`
+- `LIMIT_AGENT_BUDGET_EXHAUSTED`
+
+Stable command and turn diagnostics:
+
+- `RUNTIME_COMMAND_ERROR`
+- `AGENT_TURN_FAILED`
+- `AGENT_TURN_CANCELLED`
+
+## Data Model
+
+Error data includes stable code, severity, JSON Pointer path, human-readable message, repair suggestions, run-level blocked reason, attempt diagnostics, output parser diagnostics, runtime diagnostics, persistence diagnostics, command diagnostics, turn diagnostics, and report diagnostic projection.
+
+## Runtime Behavior
+
+Validation and compiler errors reject invalid specs before execution. Output parser errors block the affected attempt/stage/run and remain repair-oriented. ACPX runtime errors receive the runtime retry behavior defined by the runtime SPEC. Persistence lock timeouts and run-index/output mismatches are surfaced as stable runtime diagnostics. Final verdict codes convert completed summarizer outputs into run-level blocked outcomes when the summarizer returns blocked, failed, or unknown verdicts.
+
+## Extension Points
+
+New error codes MAY be added under an existing family when the family semantics match. New families require updating this SPEC and developer documentation. New stable report diagnostics MUST be documented here.
+
+## Non-Goals
+
+- Error codes are not a substitute for full logs or attempt artifacts.
+- Error code names are not localized.
+- Runtime `failed` is not used for agent output contract failures.
+
+## Implementation Map
+
+- Error model and helpers -> `src/errors.ts`
+- Schema/input errors -> `src/schema/`
+- Compiler/lint errors -> `src/compiler/`
+- Output contract diagnostics -> `src/contracts/`, `src/runtime/output-parser.ts`, `src/runtime/repair.ts`
+- Runtime diagnostics -> `src/runtime/`
+- Run-index and persistence diagnostics -> `src/run-index/read-write.ts`
+- Report diagnostics -> `src/projections/run-report.ts`, `src/projections/run-view.ts`, `src/reports/`
+- Command JSON surfaces -> `src/commands/`

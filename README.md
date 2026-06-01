@@ -26,8 +26,7 @@ final `outputs/`, raw `attempts/`, run-local `acpx-state/`, `sessions/`, and
 
 Docs:
 
-- [docs/workflow-spec.md](docs/workflow-spec.md)
-- [docs/cli.md](docs/cli.md)
-- [docs/html-report-design.md](docs/html-report-design.md)
-- [docs/error-codes.md](docs/error-codes.md)
-- [docs/runtime-orchestrator-refactor-implementation.md](docs/runtime-orchestrator-refactor-implementation.md)
+- [Developer documentation](docs/README.md)
+- [Current design and implementation specifications](specs/INDEX.md)
+- [CLI guide](docs/cli.md)
+- [Error code guide](docs/error-codes.md)

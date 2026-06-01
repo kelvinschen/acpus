@@ -1,5 +1,7 @@
 # Runtime orchestrator refactor decisions
 
+> Historical archive: this document is preserved for context and is not current implementation truth.
+
 Date: 2026-05-30
 
 Status: active decision record

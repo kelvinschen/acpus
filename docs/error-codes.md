@@ -52,6 +52,16 @@ unrecoverable runtime errors.
 
 Runtime run-level codes emitted in reports:
 
+- `EVENT_APPEND_LOCK_TIMEOUT`: event append persistence could not acquire the
+  event write lock before timeout.
+- `RUN_INDEX_LOCK_TIMEOUT`: run-index persistence could not acquire the
+  `run.json` write lock before timeout.
+- `FANOUT_ITEM_UNSTARTED_TIMEOUT`: a fanout item remained unstarted after the
+  scheduler determined it could not safely continue that item.
+- `FANOUT_STAGE_STUCK_PENDING_BATCH`: a fanout stage had pending batch state
+  that could not progress to terminal item results.
+- `RUN_INDEX_OUTPUT_MISMATCH`: persisted run-index state and output artifacts
+  disagree about a stage or item result.
 - `AGENT_RUNTIME_ERROR`: a non-fanout agent runtime turn failed after one
   transient retry. This covers backend/process/transport failures, not output
   contract failures.
@@ -70,3 +80,12 @@ Runtime run-level codes emitted in reports:
   `agentUsage.actual` had already reached `limits.maxAgents`. The scheduler
   terminalizes the ready stage as blocked instead of leaving the run in
   `running`.
+
+Command and turn diagnostics:
+
+- `RUNTIME_COMMAND_ERROR`: a CLI command caught an unrecoverable runtime command
+  error and returned a fatal structured error.
+- `AGENT_TURN_FAILED`: an ACPX turn ended as failed or did not produce a usable
+  runtime result.
+- `AGENT_TURN_CANCELLED`: an ACPX turn ended as cancelled and the cancellation
+  is preserved for diagnostics.

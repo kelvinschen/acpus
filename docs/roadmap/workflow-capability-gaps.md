@@ -1,5 +1,7 @@
 # Workflow 能力缺口梳理
 
+> Roadmap: this document records future capabilities and known gaps. It is not current implementation truth.
+
 这份文档整理了几个目标场景暴露出的 workflow 原子能力缺口：
 
 - 条件路由汇合，例如 `A -> (B1, B2) -> C -> D/E/F -> G`；

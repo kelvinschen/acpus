@@ -13,11 +13,16 @@ skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator validate --
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator preview --spec workflows/examples/simple-feature.workflow.spec.json --json
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator run --spec workflows/examples/simple-feature.workflow.spec.json --yes
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator run --spec workflows/examples/simple-feature.workflow.spec.json --yes --wait
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator run --spec workflows/examples/simple-feature.workflow.spec.json --yes --prepare-only
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator save simple-feature --spec workflows/examples/simple-feature.workflow.spec.json
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator save simple-feature --spec workflows/examples/simple-feature.workflow.spec.json --overwrite
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator run --workflow simple-feature --yes
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator list workflows
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator list runs
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator list drafts
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator show workflow simple-feature
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator show run <logical-run-id>
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator show draft <draft-name>
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator follow <logical-run-id>
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator diagnose <logical-run-id> --wait
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator resume <logical-run-id> --wait
@@ -25,7 +30,7 @@ skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator resume <log
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator report --run <logical-run-id>
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator report --run <logical-run-id> --html --output report.html
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator report --run <logical-run-id> --json --detailed
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator report serve --run <logical-run-id> --port 0
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator report serve --run <logical-run-id> --port 0 --interval-ms 1000 --open
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator generate --name draft-workflow
 ```
 
@@ -34,7 +39,8 @@ All commands support `--json` where structured output is useful.
 `run` validates automatically. Without `--yes`, it prints a preview and exits
 with approval required. With `--yes`, it prepares a logical run, writes
 `execution-plan.json`, advances one scheduler tick, and returns. Use `--wait` to
-advance until terminal status.
+advance until terminal status. Use `--prepare-only` to prepare the logical run
+and write runtime artifacts without starting runtime turns.
 
 `follow` observes and syncs the selected logical run. It does not create a new
 workflow.
@@ -62,8 +68,11 @@ pending so the next scheduler tick can retry them.
 the current package build. Approval to run is not save approval; saving is
 always explicit.
 
+`list` and `show` support `workflows`, `runs`, and `drafts`.
+
 `report --html --output <file>` writes a self-contained HTML snapshot based on
 the run index, final outputs, attempts, events, and diagnostics. `report serve`
 starts an observation-only local server that streams RunReportView snapshots
 over SSE after syncing existing artifacts with `startPending: false`; it does
-not expose workflow control endpoints.
+not expose workflow control endpoints. `--interval-ms` controls live sync
+interval, and `--open` opens the served report URL in a browser.

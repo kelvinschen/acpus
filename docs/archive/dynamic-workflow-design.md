@@ -1,5 +1,7 @@
 # Dynamic Workflow Design
 
+> Historical archive: this document is preserved for context and is not current implementation truth.
+
 This design snapshot has been superseded by the runtime orchestrator refactor.
 
 Current behavior is documented in:

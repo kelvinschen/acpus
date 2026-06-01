@@ -1,5 +1,7 @@
 # Output Contract Hardening
 
+> Historical archive: this document is preserved for context and is not current implementation truth.
+
 This implementation note has been superseded by the runtime orchestrator
 refactor.
 
