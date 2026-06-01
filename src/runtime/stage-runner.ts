@@ -361,8 +361,7 @@ async function executeAttemptWithRepair(input: {
   }
 
   const parsed = parseWorkflowOutput(turn.rawText, input.contractName, {
-    contractOptions: input.contractOptions,
-    maxOutputChars: input.plan.limits.maxOutputChars
+    contractOptions: input.contractOptions
   });
   await writeAttemptFile(dir, "parse.json", parsed.diagnostics);
   if (parsed.ok) {
@@ -458,8 +457,7 @@ async function executeRepairAttempt(input: {
   const { turn, attemptBase: entryBase, attemptDir: dir, attemptId: id } = execution;
   const parsed = turn.status === "completed"
     ? parseWorkflowOutput(turn.rawText, input.contractName, {
-        contractOptions: input.contractOptions,
-        maxOutputChars: input.plan.limits.maxOutputChars
+        contractOptions: input.contractOptions
       })
     : undefined;
   await writeAttemptFile(dir, "parse.json", parsed?.diagnostics ?? { errorCode: "AGENT_TURN_FAILED", summary: turn.error ?? turn.status });
@@ -774,7 +772,7 @@ async function runtimeFailureAgentWorkResult(input: {
       agent: unit.role.agent,
       roleMode: unit.role.mode,
       runtimeDisposeInvoked: false,
-      errorCode: input.failure.code,
+      errorCode: code,
       errorMessage: input.failure.message,
       retryable: input.failure.retryable,
       runtimeRetryOf: attempt.runtimeRetryOf,

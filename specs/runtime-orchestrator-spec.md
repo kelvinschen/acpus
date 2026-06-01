@@ -95,7 +95,11 @@ Fix-loop execution is round-based. Each round starts with a validator attempt us
 
 Gate execution is terminal. Program gates evaluate their condition or default upstream-exists check and write a gate output without an agent turn. Agent gates use the gate output contract. The scheduler promotes the gate output verdict into `run.json.gateVerdict` and derives the terminal run status from it.
 
-Observation-only surfaces, including `follow` and report serving, sync existing artifacts with `startPending: false` semantics and do not launch new workflow work unless the command is explicitly a run/resume path.
+Observation-only surfaces, including `follow`, report snapshots, report serving, and diagnose wait polling, MUST call `syncRun` with `startPending: false`. `syncRun` with `startPending: false` MUST be read-only: it MUST return the persisted `run.json` state as-is, MUST NOT start pending work, MUST NOT reconcile stale running attempts, MUST NOT aggregate fanout outputs, MUST NOT write `run.json`, and MUST NOT append `run_synced` events.
+
+Run and resume advancement paths MAY perform scheduler stale recovery for running agent attempts that have no terminal output. Stale recovery MUST use attempt-scoped activity from `events.ndjson` as a heartbeat. The scheduler MUST consider only activity events for the same `attemptId`, including `attempt_started`, `turn_started`, `agent_event`, `turn_finished`, and `runtime_retry_started`. When no heartbeat exists for an attempt, the scheduler MUST fall back to the stage or fanout item `startedAt` timestamp.
+
+Stale recovery MUST NOT trigger until the latest same-attempt heartbeat or fallback start timestamp is older than the effective stage timeout plus a 60 second grace interval. Scheduler stale recovery MUST be distinct from true agent runtime failures: fanout item stale recovery MUST use `FANOUT_ITEM_STALE_RECOVERY`, ordinary stage stale recovery MUST use `AGENT_STAGE_STALE_RECOVERY`, and runtime throws or failed turns MUST continue to use their runtime failure codes. Stale recovery MAY schedule the existing single runtime retry before writing a terminal blocked recovery output. When that stale retry is exhausted, both fanout item and ordinary stage paths MUST append `runtime_retry_exhausted`.
 
 ## Extension Points
 

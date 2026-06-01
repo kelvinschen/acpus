@@ -64,7 +64,6 @@ export type ParseWorkflowOutputOptions = {
     outputKey?: string;
     maxItems?: number;
   };
-  maxOutputChars?: number;
 };
 
 type RawCandidate = {
@@ -79,16 +78,6 @@ const PREVIEW_CHARS = 2000;
 
 export function parseWorkflowOutput(text: string, contractName: OutputContractName, options: ParseWorkflowOutputOptions = {}): OutputParseResult {
   const source = String(text ?? "");
-  if (typeof options.maxOutputChars === "number" && source.length > options.maxOutputChars) {
-    const diagnostics = createDiagnostics({
-      errorCode: "OUTPUT_PARSE_FAILED",
-      summary: `Agent output exceeded maxOutputChars (${options.maxOutputChars}).`,
-      candidates: [],
-      recoverability: "not_repairable"
-    });
-    return { ok: false, errorCode: "OUTPUT_PARSE_FAILED", summary: diagnostics.summary, diagnostics };
-  }
-
   const contract = getOutputContract(contractName, options.contractOptions);
   const rawCandidates = collectWorkflowOutputCandidates(source);
   const evaluated = rawCandidates.map((candidate) => evaluateCandidate(candidate, contract));

@@ -67,6 +67,21 @@ describe("runtime output parser", () => {
     });
   });
 
+  it("accepts long prose containing a valid final contract JSON object", () => {
+    const raw = trailing(implementationOutput({ summary: "long output parsed" }), `${"Progress update.\n".repeat(2500)}\n`);
+    expect(raw.length).toBeGreaterThan(32000);
+
+    const parsed = parseWorkflowOutput(raw, "implementation");
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.summary).toBe("long output parsed");
+    expect(parsed.outputParse).toMatchObject({
+      mode: "lastBalancedJson",
+      candidateCount: 1
+    });
+  });
+
   it("accepts trailing symbols and text after the final JSON object", () => {
     const parsed = parseWorkflowOutput(`${JSON.stringify(implementationOutput({ summary: "with tail" }), null, 2)}\n✅ Done. ###`, "implementation");
 

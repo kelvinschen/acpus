@@ -68,8 +68,8 @@ describe("CLI lifecycle", () => {
     const report = JSON.parse((await run(cwd, "report", "--run", prepared.logicalRunId, "--json")).stdout) as { status: string };
     const afterReport = await readRunIndex(cwd, prepared.logicalRunId);
 
-    expect(follow.status).toBe("running");
-    expect(report.status).toBe("running");
+    expect(follow.status).toBe("pending");
+    expect(report.status).toBe("pending");
     expect(afterFollow.stages.discover.status).toBe("pending");
     expect(afterReport.stages.discover.status).toBe("pending");
   }, 60_000);
