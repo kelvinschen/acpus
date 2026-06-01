@@ -6,6 +6,10 @@ import type { Stage, WorkflowSpec } from "../schema/workflow-spec.js";
 import { runViewFromIndex, type RunView, type RunViewStatus } from "./run-view.js";
 
 export const REPORT_VIEW_VERSION = "acpx-workflow-orchestrator.report/v1";
+export const ReportDiagnosticCodes = {
+  SCHEDULER_RECOVERY_SUCCEEDED_WITH_BLOCKED_VERDICT: "SCHEDULER_RECOVERY_SUCCEEDED_WITH_BLOCKED_VERDICT",
+  OUTPUT_MAX_CHARS_EXCEEDED: "OUTPUT_MAX_CHARS_EXCEEDED"
+} as const;
 
 const DEFAULT_LIMITS = {
   promptPreviewChars: 2048,
@@ -206,6 +210,7 @@ export type ReportDiagnostic = {
   itemId?: string;
   status?: string;
   summary?: string;
+  raw?: Record<string, unknown>;
   preview: ReportPreview;
 };
 
@@ -228,7 +233,11 @@ export async function buildRunReportView(
   const stages = await buildStageDetails(dir, spec, index, events, attempts, limits);
   const artifacts = await collectArtifacts(stages);
   const graph = buildGraph(spec, stages);
-  const diagnostics = [...await readDiagnostics(dir, limits), ...await buildRuntimeDiagnostics(dir, index, events, limits)];
+  const diagnostics = [
+    ...await readDiagnostics(dir, limits),
+    ...await buildOutputSizeDiagnostics(dir, spec, attempts, limits),
+    ...await buildRuntimeDiagnostics(dir, index, events, limits)
+  ];
 
   return {
     version: REPORT_VIEW_VERSION,
@@ -549,6 +558,9 @@ async function buildRuntimeDiagnostics(dir: string, index: RunIndex, events: Rep
     }
   }
 
+  const recoveryVerdictDiagnostic = buildRecoverySucceededWithBlockedVerdictDiagnostic(dir, index, limits);
+  if (recoveryVerdictDiagnostic) diagnostics.push(recoveryVerdictDiagnostic);
+
   for (const event of events) {
     const text = event.preview.text;
     const rawCode = typeof event.raw.code === "string" ? event.raw.code : undefined;
@@ -572,12 +584,109 @@ async function buildRuntimeDiagnostics(dir: string, index: RunIndex, events: Rep
   return diagnostics;
 }
 
+async function buildOutputSizeDiagnostics(
+  dir: string,
+  spec: WorkflowSpec,
+  attempts: ReportAttemptDetail[],
+  limits: typeof DEFAULT_LIMITS
+): Promise<ReportDiagnostic[]> {
+  const stageById = new Map(spec.stages.map((stage) => [stage.id, stage]));
+  const byStage = new Map<string, Array<{ id: string; kind: string; rawChars: number; rawPath: string }>>();
+  const stageLimits = new Map<string, number>();
+  for (const attempt of attempts) {
+    if (attempt.parseErrorCode !== "OUTPUT_PARSE_FAILED") continue;
+    const stage = stageById.get(attempt.stageId);
+    const effectiveMaxOutputChars = effectiveMaxOutputCharsForStage(spec, stage);
+    if (effectiveMaxOutputChars === undefined) continue;
+    const rawPath = path.join(dir, attempt.path, "raw.txt");
+    const rawChars = await readTextLengthIfExists(rawPath);
+    if (rawChars === undefined || rawChars <= effectiveMaxOutputChars) continue;
+    const entries = byStage.get(attempt.stageId) ?? [];
+    entries.push({ id: attempt.id, kind: attempt.kind, rawChars, rawPath });
+    byStage.set(attempt.stageId, entries);
+    stageLimits.set(attempt.stageId, effectiveMaxOutputChars);
+  }
+  return [...byStage.entries()].map(([stageId, attemptEntries]) => {
+    const effectiveMaxOutputChars = stageLimits.get(stageId);
+    const summary = `Stage ${stageId} output exceeded effective maxOutputChars (${effectiveMaxOutputChars}).`;
+    const raw = {
+      code: ReportDiagnosticCodes.OUTPUT_MAX_CHARS_EXCEEDED,
+      stageId,
+      effectiveMaxOutputChars,
+      attempts: attemptEntries
+    };
+    return {
+      id: `runtime-${ReportDiagnosticCodes.OUTPUT_MAX_CHARS_EXCEEDED}-${stageId}`,
+      path: attemptEntries[0]?.rawPath ?? path.join(dir, "attempts", stageId),
+      code: ReportDiagnosticCodes.OUTPUT_MAX_CHARS_EXCEEDED,
+      stageId,
+      status: "blocked",
+      summary,
+      raw,
+      preview: makePreview(JSON.stringify(raw, null, 2), limits.outputPreviewChars, attemptEntries[0]?.rawPath)
+    };
+  });
+}
+
+function buildRecoverySucceededWithBlockedVerdictDiagnostic(
+  dir: string,
+  index: RunIndex,
+  limits: typeof DEFAULT_LIMITS
+): ReportDiagnostic | undefined {
+  if (!isBlockedFinalVerdictCode(index.blockedReason) || !index.finalVerdict) return undefined;
+  const recoveredFanoutStages = Object.values(index.stages).filter((stage) => {
+    if (!stage.fanout) return false;
+    if (stage.fanout.items.some((item) => item.status === "running" || item.status === "pending" || item.status === "ready")) return false;
+    return stage.fanout.items.some((item) =>
+      item.errorCode === RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR
+      || item.errorCode === RuntimeErrorCodes.FANOUT_ITEM_UNSTARTED_TIMEOUT
+      || item.errorCode === RuntimeErrorCodes.RUN_INDEX_OUTPUT_MISMATCH
+    );
+  });
+  if (recoveredFanoutStages.length === 0) return undefined;
+  const stageIds = recoveredFanoutStages.map((stage) => stage.stageId);
+  const summary = `Scheduler recovery completed for fanout stage(s) ${stageIds.join(", ")}, but workflow verdict remains ${index.finalVerdict}.`;
+  const raw = {
+    code: ReportDiagnosticCodes.SCHEDULER_RECOVERY_SUCCEEDED_WITH_BLOCKED_VERDICT,
+    finalVerdict: index.finalVerdict,
+    blockedReason: index.blockedReason,
+    recoveredFanoutStages: stageIds
+  };
+  return {
+    id: `runtime-${ReportDiagnosticCodes.SCHEDULER_RECOVERY_SUCCEEDED_WITH_BLOCKED_VERDICT}-run-all`,
+    path: path.join(dir, "run.json"),
+    code: ReportDiagnosticCodes.SCHEDULER_RECOVERY_SUCCEEDED_WITH_BLOCKED_VERDICT,
+    status: "completed",
+    summary,
+    raw,
+    preview: makePreview(JSON.stringify(raw, null, 2), limits.outputPreviewChars, path.join(dir, "run.json"))
+  };
+}
+
+function effectiveMaxOutputCharsForStage(spec: WorkflowSpec, stage: Stage | undefined): number | undefined {
+  return stage?.limits?.maxOutputChars ?? spec.limits.maxOutputChars;
+}
+
+async function readTextLengthIfExists(filePath: string): Promise<number | undefined> {
+  try {
+    return (await fs.readFile(filePath, "utf8")).length;
+  } catch {
+    return undefined;
+  }
+}
+
 function isRunLevelRuntimeCode(value: string): boolean {
   return value === RuntimeErrorCodes.FINAL_VERDICT_BLOCKED
     || value === RuntimeErrorCodes.FINAL_VERDICT_FAILED
     || value === RuntimeErrorCodes.FINAL_VERDICT_UNKNOWN
     || value === RuntimeErrorCodes.LIMIT_AGENT_BUDGET_EXHAUSTED
     || value === RuntimeErrorCodes.AGENT_RUNTIME_ERROR;
+}
+
+function isBlockedFinalVerdictCode(value: string | undefined): boolean {
+  return value === RuntimeErrorCodes.FINAL_VERDICT_BLOCKED
+    || value === RuntimeErrorCodes.FINAL_VERDICT_FAILED
+    || value === RuntimeErrorCodes.FINAL_VERDICT_UNKNOWN;
 }
 
 function runLevelBlockedSummary(index: RunIndex): string {
@@ -614,6 +723,7 @@ function runtimeDiagnostic(input: {
     itemId: input.itemId,
     status: "blocked",
     summary: input.summary,
+    raw: body,
     preview: makePreview(JSON.stringify(body, null, 2), input.limits.outputPreviewChars, input.path)
   };
 }

@@ -3,7 +3,7 @@ import path from "node:path";
 import type { ExecutionPlan, ExecutionPlanStage } from "../compiler/execution-plan.js";
 import { stageRoleName } from "../compiler/compile-execution-plan.js";
 import { runDir as resolveRunDir } from "../run-index/paths.js";
-import { appendEvent, readRunIndex, RuntimeErrorCodes, writeRunIndex, type AttemptIndexEntry, type RunIndex, type StageIndexEntry, type StageStatus } from "../run-index/read-write.js";
+import { appendEvent, readRunIndex, RuntimeErrorCodes, writeRunIndex, type AttemptIndexEntry, type AttemptStatus, type RunIndex, type StageIndexEntry, type StageStatus } from "../run-index/read-write.js";
 import { WorkflowSpecSchema, type Stage, type WorkflowSpec } from "../schema/workflow-spec.js";
 import { createOrchestratorAgentRuntime } from "./agent-runtime.js";
 import { attemptDir, attemptId, safeFileName, upsertAttemptIndex, writeAttemptFile } from "./attempts.js";
@@ -149,7 +149,7 @@ async function reconcileFanoutRuntimeState(snapshot: RuntimeSnapshot): Promise<{
   let changed = false;
   for (const stage of snapshot.spec.stages.filter((candidate): candidate is Extract<Stage, { kind: "fanout" }> => candidate.kind === "fanout")) {
     const state = index.stages[stage.id];
-    if (!state?.fanout || state.status === "completed" || state.status === "blocked" || state.status === "failed") continue;
+    if (!state?.fanout) continue;
     let stageChanged = false;
     const items = [...state.fanout.items];
     const attempts: AttemptIndexEntry[] = [];
@@ -159,6 +159,20 @@ async function reconcileFanoutRuntimeState(snapshot: RuntimeSnapshot): Promise<{
       if (output) {
         const status = statusFromItemOutput(output);
         const relativeOutputPath = path.relative(snapshot.runDir, outputPath);
+        if (item.attemptId) {
+          const attempt = terminalAttemptFromFanoutOutput(index, snapshot.runDir, {
+            stageId: stage.id,
+            itemId: item.id,
+            attemptId: item.attemptId,
+            output,
+            outputStatus: status,
+            startedAt: item.startedAt ?? state.startedAt
+          });
+          if (attempt && index.attempts[attempt.id]?.status !== attempt.status) {
+            attempts.push(attempt);
+            stageChanged = true;
+          }
+        }
         if (item.status !== status || item.outputPath !== relativeOutputPath || item.completedAt === undefined) {
           if (item.status === "running") {
             await appendEvent(snapshot.cwd, snapshot.runId, {
@@ -184,6 +198,7 @@ async function reconcileFanoutRuntimeState(snapshot: RuntimeSnapshot): Promise<{
         continue;
       }
 
+      if (state.status === "completed" || state.status === "blocked" || state.status === "failed") continue;
       if (item.status === "running" && isStaleFanoutItem(item.startedAt ?? state.startedAt)) {
         if (item.attemptId && canScheduleRuntimeRetry(item.runtimeRetryOrdinal)) {
           const retryOrdinal = (item.runtimeRetryOrdinal ?? 0) + 1;
@@ -265,7 +280,7 @@ async function reconcileFanoutRuntimeState(snapshot: RuntimeSnapshot): Promise<{
     const counts = fanoutItemCounts(items);
     index = updateStage(index, stage.id, {
       ...state,
-      status: fanoutTransientStatus(items),
+      status: isTerminalStageStatus(state.status) ? state.status : fanoutTransientStatus(items),
       fanout: {
         ...state.fanout,
         items,
@@ -1103,6 +1118,54 @@ function recoveredRuntimeAttempt(index: RunIndex, runDir: string, input: {
   };
 }
 
+function terminalAttemptFromFanoutOutput(index: RunIndex, runDir: string, input: {
+  stageId: string;
+  itemId: string;
+  attemptId: string;
+  output: Record<string, unknown>;
+  outputStatus: StageStatus;
+  startedAt?: string;
+}): AttemptIndexEntry | undefined {
+  const existing = index.attempts[input.attemptId];
+  if (existing && existing.status !== "running" && existing.status !== "pending") return undefined;
+  const runtimeDiagnostics = objectRecord(input.output.runtimeDiagnostics);
+  const parseDiagnostics = objectRecord(input.output.parseDiagnostics);
+  const blockedReason = stringField(input.output, "blockedReason");
+  const runtimeErrorCode = stringField(runtimeDiagnostics, "errorCode");
+  const parseErrorCode = stringField(parseDiagnostics, "errorCode");
+  const runtimeRetryOrdinal = existing?.runtimeRetryOrdinal ?? runtimeRetryOrdinalFromAttemptId(input.attemptId);
+  return {
+    id: input.attemptId,
+    stageId: input.stageId,
+    itemId: input.itemId,
+    kind: existing?.kind ?? "attempt",
+    status: attemptStatusFromStageStatus(input.outputStatus),
+    path: existing?.path ?? path.relative(runDir, attemptDir(runDir, { stageId: input.stageId, itemId: input.itemId, kind: "attempt", ordinal: 1, runtimeRetryOrdinal })),
+    startedAt: existing?.startedAt ?? input.startedAt,
+    endedAt: existing?.endedAt ?? new Date().toISOString(),
+    blockedReason: blockedReason ?? existing?.blockedReason,
+    parseErrorCode: parseErrorCode ?? existing?.parseErrorCode,
+    rawPreview: existing?.rawPreview,
+    promptPreview: existing?.promptPreview,
+    sessionKey: existing?.sessionKey,
+    requestId: existing?.requestId ?? input.attemptId,
+    stopReason: existing?.stopReason,
+    runtimeErrorCode: runtimeErrorCode ?? existing?.runtimeErrorCode,
+    runtimeRetryOf: existing?.runtimeRetryOf,
+    runtimeRetryOrdinal: existing?.runtimeRetryOrdinal ?? runtimeRetryOrdinal,
+    runtimeRetryReason: existing?.runtimeRetryReason,
+    agent: existing?.agent,
+    roleMode: existing?.roleMode,
+    runtimeDisposeInvoked: existing?.runtimeDisposeInvoked
+  };
+}
+
+function attemptStatusFromStageStatus(status: StageStatus): AttemptStatus {
+  if (status === "completed") return "completed";
+  if (status === "failed") return "failed";
+  return "blocked";
+}
+
 function canScheduleRuntimeRetry(runtimeRetryOrdinal: number | undefined): boolean {
   return (runtimeRetryOrdinal ?? 0) < MAX_RUNTIME_RETRIES;
 }
@@ -1174,6 +1237,10 @@ function isStaleFanoutItem(startedAt: string | undefined): boolean {
 function stringField(value: Record<string, unknown> | undefined, key: string): string | undefined {
   const field = value?.[key];
   return typeof field === "string" ? field : undefined;
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" ? value as Record<string, unknown> : undefined;
 }
 
 function errorMessage(error: unknown): string {

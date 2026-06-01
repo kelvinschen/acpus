@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AcpRuntimeEvent, AcpRuntimeHandle } from "acpx/runtime";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildRunReportView } from "../../src/projections/run-report.js";
+import { buildRunReportView, ReportDiagnosticCodes } from "../../src/projections/run-report.js";
 import { runDir } from "../../src/run-index/paths.js";
 import { appendEvent, readRunIndex, RuntimeErrorCodes, writeRunIndex, type RunIndex } from "../../src/run-index/read-write.js";
 import { setAgentRuntimeFactoryForTests, type AgentTurnRequest, type AgentTurnResult, type OrchestratorAgentRuntime } from "../../src/runtime/agent-runtime.js";
@@ -123,12 +123,23 @@ describe("fanout runtime stability", () => {
     await writeRunIndex(cwd, {
       ...prepared.index,
       status: "running",
+      attempts: {
+        "fanout:item-1:attempt-1": {
+          id: "fanout:item-1:attempt-1",
+          stageId: "fanout",
+          itemId: "item-1",
+          kind: "attempt",
+          status: "running",
+          path: path.join("attempts", "fanout", "item-item-1", "attempt-1"),
+          startedAt: staleStartedAt
+        }
+      },
       stages: {
         ...prepared.index.stages,
         fanout: {
           stageId: "fanout",
           status: "running",
-          attempts: [],
+          attempts: ["fanout:item-1:attempt-1"],
           startedAt: staleStartedAt,
           fanout: {
             totalItems: 1,
@@ -150,7 +161,76 @@ describe("fanout runtime stability", () => {
       status: "completed",
       outputPath: path.join("outputs", "fanout", "item-1.json")
     });
+    expect(recovered.attempts["fanout:item-1:attempt-1"]).toMatchObject({ status: "completed" });
+    const report = await buildRunReportView(cwd, spec, recovered, { mode: "snapshot" });
+    expect(report.metrics.attemptsRunning).toBe(0);
     await expect(fs.stat(path.join(prepared.dir, "outputs", "fanout.json"))).resolves.toBeTruthy();
+  });
+
+  it("cleans up a running fanout attempt when recovered output is blocked", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fanout-recover-blocked-"));
+    const spec = fanoutSpec(1, { allowPartial: true });
+    const prepared = await prepareRun(spec, {
+      cwd,
+      input: { cwd, items: [{ id: "item-1" }] }
+    });
+    const staleStartedAt = new Date(Date.now() - 60_000).toISOString();
+    const outputPath = path.join(prepared.dir, "outputs", "fanout", "item-1.json");
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    await fs.writeFile(outputPath, `${JSON.stringify({
+      status: "blocked",
+      summary: "Recovered blocked item",
+      artifacts: [],
+      nextFocus: "diagnose",
+      blockedReason: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
+      runtimeDiagnostics: { errorCode: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR }
+    }, null, 2)}\n`, "utf8");
+    await writeRunIndex(cwd, {
+      ...prepared.index,
+      status: "running",
+      attempts: {
+        "fanout:item-1:attempt-1": {
+          id: "fanout:item-1:attempt-1",
+          stageId: "fanout",
+          itemId: "item-1",
+          kind: "attempt",
+          status: "running",
+          path: path.join("attempts", "fanout", "item-item-1", "attempt-1"),
+          startedAt: staleStartedAt
+        }
+      },
+      stages: {
+        ...prepared.index.stages,
+        fanout: {
+          stageId: "fanout",
+          status: "running",
+          attempts: ["fanout:item-1:attempt-1"],
+          startedAt: staleStartedAt,
+          fanout: {
+            totalItems: 1,
+            completedItems: 0,
+            blockedItems: 0,
+            allowPartial: true,
+            items: [{ id: "item-1", index: 0, status: "running", startedAt: staleStartedAt, attemptId: "fanout:item-1:attempt-1" }]
+          }
+        }
+      }
+    });
+
+    const recovered = await syncRun(cwd, prepared.logicalRunId, { startPending: false });
+    const report = await buildRunReportView(cwd, spec, recovered, { mode: "snapshot" });
+
+    expect(recovered.stages.fanout?.fanout?.items[0]).toMatchObject({
+      status: "blocked",
+      blockedReason: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
+      errorCode: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR
+    });
+    expect(recovered.attempts["fanout:item-1:attempt-1"]).toMatchObject({
+      status: "blocked",
+      blockedReason: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
+      runtimeErrorCode: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR
+    });
+    expect(report.metrics.attemptsRunning).toBe(0);
   });
 
   it("recovers a stale running fanout item and continues queued work", async () => {
@@ -641,6 +721,85 @@ describe("fanout runtime stability", () => {
     }));
   });
 
+  it("distinguishes completed scheduler recovery from a blocked workflow verdict", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-recovery-verdict-"));
+    const spec = fanoutSpec(1, { allowPartial: true });
+    const prepared = await prepareRun(spec, {
+      cwd,
+      input: { cwd, items: [{ id: "item-1" }] }
+    });
+    const index: RunIndex = {
+      ...prepared.index,
+      status: "blocked",
+      finalVerdict: "blocked",
+      blockedReason: RuntimeErrorCodes.FINAL_VERDICT_BLOCKED,
+      stages: {
+        ...prepared.index.stages,
+        fanout: {
+          stageId: "fanout",
+          status: "completed",
+          attempts: [],
+          fanout: {
+            totalItems: 1,
+            completedItems: 0,
+            blockedItems: 1,
+            allowPartial: true,
+            items: [{
+              id: "item-1",
+              index: 0,
+              status: "blocked",
+              blockedReason: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
+              errorCode: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
+              completedAt: new Date().toISOString()
+            }]
+          }
+        }
+      }
+    };
+
+    const report = await buildRunReportView(cwd, spec, index, { mode: "snapshot" });
+
+    expect(report.run.status).toBe("blocked");
+    expect(report.run.blockedReason).toBe(RuntimeErrorCodes.FINAL_VERDICT_BLOCKED);
+    expect(report.diagnostics).toContainEqual(expect.objectContaining({
+      code: ReportDiagnosticCodes.SCHEDULER_RECOVERY_SUCCEEDED_WITH_BLOCKED_VERDICT,
+      status: "completed",
+      summary: expect.stringContaining("Scheduler recovery completed")
+    }));
+  });
+
+  it("reports output maxOutputChars diagnostics and includes them in diagnose prompts", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-output-size-diagnostics-"));
+    const oversized = `${"x".repeat(32)} ${plainJsonOutput(baseOutput({ summary: "too long" }))}`;
+    setAgentRuntimeFactoryForTests(() => new ScriptedRuntime([
+      { kind: "text", text: oversized },
+      { kind: "text", text: plainJsonOutput(baseOutput({ summary: "repair still too long" })) }
+    ]));
+    const spec = maxOutputSpec(cwd, 10);
+    const prepared = await prepareRun(spec, { cwd, input: { cwd } });
+
+    const index = await startPreparedRun(cwd, prepared);
+    const report = await buildRunReportView(cwd, spec, index, { mode: "snapshot" });
+    await startDiagnosticRun(cwd, prepared.logicalRunId);
+    const prompt = await fs.readFile(path.join(prepared.dir, "prompts", "diagnostic-1.md"), "utf8");
+
+    const diagnostic = report.diagnostics.find((entry) => entry.code === ReportDiagnosticCodes.OUTPUT_MAX_CHARS_EXCEEDED);
+    expect(index.status).toBe("blocked");
+    expect(diagnostic).toMatchObject({
+      stageId: "task",
+      code: ReportDiagnosticCodes.OUTPUT_MAX_CHARS_EXCEEDED,
+      raw: {
+        effectiveMaxOutputChars: 10,
+        attempts: expect.arrayContaining([
+          expect.objectContaining({ id: "task:attempt-1", kind: "attempt", rawChars: oversized.length })
+        ])
+      }
+    });
+    expect(prompt).toContain("Output size diagnostics:");
+    expect(prompt).toContain("maxOutputChars=10");
+    expect(prompt).toContain(`rawChars=${oversized.length}`);
+  });
+
   it("applies persisted resume policy when re-aggregating blocked fanout", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-resume-policy-"));
     setAgentRuntimeFactoryForTests(() => new SelectiveFanoutRuntime("item-2"));
@@ -818,6 +977,20 @@ function simpleTaskSpec(cwd: string, limits: { maxAgents?: number } = {}): Workf
       worker: { category: "coordination", agent: "fake", mode: "readOnly" }
     },
     limits: { maxAgents: limits.maxAgents ?? 1, maxConcurrency: 1, maxFanoutItems: 1, maxFixRounds: 0, stageTimeoutMinutes: 1 },
+    stages: [{ id: "task", kind: "agentTask", role: "worker", prompt: "Do work" }]
+  });
+}
+
+function maxOutputSpec(cwd: string, maxOutputChars: number): WorkflowSpec {
+  return WorkflowSpecSchema.parse({
+    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    name: "max-output",
+    root: "task",
+    inputs: { cwd: { type: "path", default: cwd } },
+    roles: {
+      worker: { category: "coordination", agent: "fake", mode: "readOnly" }
+    },
+    limits: { maxAgents: 2, maxConcurrency: 1, maxFanoutItems: 1, maxFixRounds: 0, stageTimeoutMinutes: 1, maxOutputChars },
     stages: [{ id: "task", kind: "agentTask", role: "worker", prompt: "Do work" }]
   });
 }
