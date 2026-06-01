@@ -1,4 +1,4 @@
-# ACPX Agent Orchestrator
+# ACPX Workflow Orchestrator
 
 Runtime-driven workflow orchestration for ACP agents.
 

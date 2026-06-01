@@ -3,7 +3,7 @@ name: acpx-workflow-orchestrator
 description: Use when the user explicitly wants dynamic acpx workflow orchestration, reusable agent workflows, or multi-agent coding workflows backed by the acpx runtime. The Main Agent generates structured workflow specs; the skill CLI validates, previews, saves, runs, follows, resumes, diagnoses, and reports logical workflow runs.
 ---
 
-# ACPX Agent Orchestrator
+# ACPX Workflow Orchestrator
 
 This skill implements runtime-driven dynamic workflow orchestration over
 `acpx/runtime`.
