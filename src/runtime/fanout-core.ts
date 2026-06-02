@@ -329,9 +329,11 @@ export function buildFanoutStageOutput(input: {
 }): FanoutCoreAggregate {
   const laneOutputs = input.itemOutputs.flatMap((item) => Array.isArray(item.laneOutputs) ? item.laneOutputs as FanoutCoreLaneResult[] : []);
   const blockedItems = input.itemOutputs.filter((output) => output.status === "blocked" || output.partial === true);
-  const completed = input.itemOutputs.filter((output) => output.status === "completed" && output.partial !== true).length;
   const nonCompletedItems = input.itemOutputs.filter((output) => output.status !== "completed" || output.partial === true);
-  const ratio = input.itemOutputs.length === 0 ? 1 : completed / input.itemOutputs.length;
+  const completedForRatio = input.plan.allowPartial
+    ? input.itemOutputs.filter((output) => output.status === "completed").length
+    : input.itemOutputs.filter((output) => output.status === "completed" && output.partial !== true).length;
+  const ratio = input.itemOutputs.length === 0 ? 1 : completedForRatio / input.itemOutputs.length;
   const partialAllowed = input.plan.allowPartial
     && (input.plan.minCompletedRatio == null || ratio >= input.plan.minCompletedRatio)
     && (input.plan.maxBlockedItems == null || nonCompletedItems.length <= input.plan.maxBlockedItems);

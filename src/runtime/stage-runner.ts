@@ -417,6 +417,7 @@ async function runLoopRound(input: {
         fanout: fanout.fanout
       };
     } else {
+      const bodyStartedAt = new Date().toISOString();
       const programOutput = await runProgramStage({
         cwd: input.cwd,
         runDir: input.runDir,
@@ -437,6 +438,7 @@ async function runLoopRound(input: {
           status: output.status === "blocked" ? "blocked" : "completed",
           attempts: [],
           outputPath: path.relative(input.runDir, bodyOutputPath),
+          startedAt: bodyStartedAt,
           blockedReason: typeof output.blockedReason === "string" ? output.blockedReason : undefined,
           completedAt: new Date().toISOString()
         };

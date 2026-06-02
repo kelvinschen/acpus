@@ -44,9 +44,13 @@ _Avoid_: report view, dashboard state, web UI model
 A lightweight observation surface for runtime diagnostics used by recovery and troubleshooting workflows. A Run Diagnostics View is separate from report generation and does not define a user-facing report surface.
 _Avoid_: report view, detailed report, diagnostic report
 
-**Work Unit Detail View**:
-A focused observation surface for one selected Agent Work Unit, including lightweight metadata and bounded previews of related artifacts. A Work Unit Detail View is loaded on demand and is separate from the Run Monitor View.
-_Avoid_: report detail, full artifact view, expanded monitor view
+**Stage Task**:
+A selectable unit of work shown under a stage in the Run Monitor View. A Stage Task represents one executable workflow node or fanout lane and may be agent-backed or deterministic program-backed.
+_Avoid_: agent, Agent Work Unit, active agent
+
+**Task Detail View**:
+A focused observation surface for one selected Stage Task, including lightweight metadata and bounded previews of related artifacts. A Task Detail View is loaded on demand and is separate from the Run Monitor View.
+_Avoid_: Work Unit Detail View, report detail, full artifact view, expanded monitor view
 
 **Heterogeneous Fanout**:
 A fanout pattern where work items, or lanes for the same work item, may be assigned to different roles or agents within one fanout stage.

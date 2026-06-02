@@ -2,15 +2,19 @@ import React from "react";
 import { describe, expect, it } from "vitest";
 import { render } from "ink-testing-library";
 import { MonitorApp } from "../../src/tui/monitor-app.js";
-import type { RunMonitorView, WorkUnitDetailView } from "../../src/projections/run-monitor.js";
+import type { RunMonitorView, TaskDetailView } from "../../src/projections/run-monitor.js";
 import type { MonitorSnapshot } from "../../src/tui/monitor-data.js";
 
 describe("MonitorApp", () => {
-  it("renders stages and work units without token or tool-call counts", () => {
+  it("renders the three monitor panels without token or tool-call counts", () => {
     const { lastFrame } = render(<MonitorApp runArg="run-1" initialView={monitorView()} initialLocator={{ cwd: "/tmp", runId: "run-1", dir: "/tmp/run-1" }} pollMs={60_000} />);
     const frame = lastFrame() ?? "";
     expect(frame).toContain("monitor-workflow");
-    expect(frame).toContain("Stages");
+    expect(frame).toContain("Stage List");
+    expect(frame).toContain("Stage Info");
+    expect(frame).toContain("Task Detail");
+    expect(frame).toContain("Current: task");
+    expect(frame).toContain("Finished: 0/1");
     expect(frame).toContain("task");
     expect(frame).toContain("gpt-test");
     expect(frame).not.toMatch(/tok|tools/i);
@@ -22,18 +26,45 @@ describe("MonitorApp", () => {
         stage("plan", "completed"),
         stage("review", "running")
       ],
-      workUnits: [
-        workUnit("stage:plan", "plan", "plan"),
-        workUnit("stage:review", "review", "review")
+      tasks: [
+        task("task:plan", "plan", "plan"),
+        task("task:review", "review", "review")
       ]
     }))} />);
     await flushPromises();
 
     const frame = lastFrame() ?? "";
-    expect(frame).toContain("  [x] plan 1/1");
-    expect(frame).toContain("> [>] review 0/1");
-    expect(frame).toContain("review - 1 agents");
+    expect(frame).toContain("Current: review");
+    expect(frame).toContain("Finished: 1/2");
+    expect(frame).toContain("✔ plan 1/1");
+    expect(frame).toContain("▶ ● review 0/1");
+    expect(frame).toContain("1 tasks");
     unmount();
+  });
+
+  it("shows the running stage as current even when the selected stage differs", async () => {
+    const { lastFrame, stdin } = render(<MonitorApp
+      runArg="run-1"
+      initialView={monitorView({
+        stages: [
+          stage("plan", "completed"),
+          stage("review", "running")
+        ],
+        tasks: [
+          task("task:plan", "plan", "plan"),
+          task("task:review", "review", "review")
+        ]
+      })}
+      initialLocator={{ cwd: "/tmp", runId: "run-1", dir: "/tmp/run-1" }}
+      pollMs={60_000}
+    />);
+
+    stdin.write("\u001b[A");
+    await flushPromises();
+
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("Current: review");
+    expect(frame).toContain("✔ plan 1/1");
   });
 
   it("ignores stale monitor snapshots that resolve after a newer refresh", async () => {
@@ -61,38 +92,37 @@ describe("MonitorApp", () => {
     unmount();
   });
 
-  it("ignores stale work-unit details after selection changes", async () => {
-    const first = deferred<WorkUnitDetailView>();
-    const second = deferred<WorkUnitDetailView>();
+  it("loads detail for the selected task and ignores stale details after selection changes", async () => {
+    const first = deferred<TaskDetailView>();
+    const second = deferred<TaskDetailView>();
     let calls = 0;
     const initial = monitorView({
-      workUnits: [
-        workUnit("stage:task-a", "task", "task-a")
-      ]
-    });
-    const refreshed = monitorView({
-      workUnits: [
-        workUnit("stage:task-b", "task", "task-b")
+      tasks: [
+        task("task:task-a", "task", "task-a"),
+        task("task:task-b", "task", "task-b")
       ]
     });
     const { frames, stdin, unmount } = render(<MonitorApp
       runArg="run-1"
       initialView={initial}
       initialLocator={{ cwd: "/tmp", runId: "run-1", dir: "/tmp/run-1" }}
-      initialFocus="detail"
       pollMs={60_000}
-      loadSnapshot={async () => snapshot(refreshed)}
-      loadDetail={async (_locator, workUnitId) => {
+      loadSnapshot={async () => snapshot(initial)}
+      loadDetail={async (_locator, taskId) => {
         calls += 1;
         return calls === 1 ? first.promise : second.promise;
       }}
     />);
 
-    stdin.write("r");
+    expect(frames.join("\n")).toContain("No task");
+    expect(frames.join("\n")).toContain("selected");
+    stdin.write("\u001b[C");
     await flushPromises();
-    second.resolve(detail(refreshed, "stage:task-b", "current detail"));
+    stdin.write("\u001b[B");
     await flushPromises();
-    first.resolve(detail(initial, "stage:task-a", "stale detail"));
+    second.resolve(detail(initial, "task:task-b", "current detail"));
+    await flushPromises();
+    first.resolve(detail(initial, "task:task-a", "stale detail"));
     await flushPromises();
 
     const frame = frames.join("\n");
@@ -104,7 +134,7 @@ describe("MonitorApp", () => {
 
 function monitorView(overrides: Partial<RunMonitorView> & { workflowName?: string } = {}): RunMonitorView {
   const stages = overrides.stages ?? [stage("task", "running")];
-  const workUnits = overrides.workUnits ?? [workUnit("stage:task", "task", "task")];
+  const tasks = overrides.tasks ?? [task("task:task", "task", "task")];
   return {
     version: "acpx-workflow-orchestrator.monitor/v1",
     generatedAt: "2026-06-02T00:00:00.000Z",
@@ -117,8 +147,8 @@ function monitorView(overrides: Partial<RunMonitorView> & { workflowName?: strin
       updatedAt: "2026-06-02T00:00:01.000Z"
     },
     stages,
-    workUnits,
-    progress: { knownWorkUnits: 1, completedWorkUnits: 0, estimatedWorkUnits: 1 }
+    tasks,
+    progress: { knownTasks: tasks.length, completedTasks: tasks.filter((candidate) => candidate.status === "completed").length }
   };
 }
 
@@ -128,7 +158,7 @@ function stage(id: string, status: RunMonitorView["stages"][number]["status"]): 
     kind: "agentTask",
     status,
     dependsOn: [],
-    workUnitCounts: {
+    taskCounts: {
       total: 1,
       pending: status === "pending" ? 1 : 0,
       running: status === "running" ? 1 : 0,
@@ -140,10 +170,11 @@ function stage(id: string, status: RunMonitorView["stages"][number]["status"]): 
   };
 }
 
-function workUnit(id: string, stageId: string, label: string): RunMonitorView["workUnits"][number] {
+function task(id: string, stageId: string, label: string): RunMonitorView["tasks"][number] {
   return {
     id,
     kind: "stage",
+    execution: "agent",
     stageId,
     label,
     status: "running",
@@ -156,14 +187,14 @@ function snapshot(view: RunMonitorView): MonitorSnapshot {
   return { locator: { cwd: "/tmp", runId: "run-1", dir: "/tmp/run-1" }, view };
 }
 
-function detail(view: RunMonitorView, workUnitId: string, summary: string): WorkUnitDetailView {
-  const workUnit = view.workUnits.find((unit) => unit.id === workUnitId);
-  if (!workUnit) throw new Error(`Missing test work unit ${workUnitId}`);
+function detail(view: RunMonitorView, taskId: string, summary: string): TaskDetailView {
+  const selectedTask = view.tasks.find((candidate) => candidate.id === taskId);
+  if (!selectedTask) throw new Error(`Missing test task ${taskId}`);
   return {
-    version: "acpx-workflow-orchestrator.work-unit-detail/v1",
+    version: "acpx-workflow-orchestrator.task-detail/v1",
     generatedAt: "2026-06-02T00:00:00.000Z",
     run: view.run,
-    workUnit,
+    task: selectedTask,
     outcome: { status: "completed", summary, artifacts: [] },
     activity: { totalAttempts: 0, attempts: [] }
   };

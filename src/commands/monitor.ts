@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import React from "react";
 import { render } from "ink";
-import { buildRunMonitorView, buildWorkUnitDetailView } from "../projections/run-monitor.js";
+import { buildRunMonitorView, buildTaskDetailView } from "../projections/run-monitor.js";
 import { resolveRunLocator } from "../run-index/locator.js";
 import { runDir } from "../run-index/paths.js";
 import { syncRun } from "../runtime/sync.js";
@@ -27,12 +27,12 @@ export function registerMonitor(program: Command): void {
 
   monitor.command("detail")
     .argument("<run>", "logical run id or run directory")
-    .argument("<work-unit-id>", "Agent Work Unit id")
+    .argument("<task-id>", "Stage Task id")
     .option("--json", "print JSON")
-    .action(async (runArg: string, workUnitId: string, options: Command | { json?: boolean }) => {
-      if (!optionJson(options)) throw new Error("Usage: monitor detail <run> <work-unit-id> --json");
+    .action(async (runArg: string, taskId: string, options: Command | { json?: boolean }) => {
+      if (!optionJson(options)) throw new Error("Usage: monitor detail <run> <task-id> --json");
       const { locator, spec, index } = await loadObservedRun(runArg);
-      printJson(await buildWorkUnitDetailView(locator.cwd, spec, index, workUnitId));
+      printJson(await buildTaskDetailView(locator.cwd, spec, index, taskId));
     });
 }
 

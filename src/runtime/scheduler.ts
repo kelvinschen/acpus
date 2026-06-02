@@ -465,6 +465,7 @@ async function advanceDeterministicStages(snapshot: RuntimeSnapshot): Promise<{ 
       if (!dependenciesCompleted(stage, index)) continue;
       const planStage = snapshot.plan.stages.find((candidate) => candidate.id === stage.id);
       if (!planStage) continue;
+      const startedAt = state.startedAt ?? new Date().toISOString();
       const programOutput = await runProgramStage({ ...snapshot, workflowInput: snapshot.input, stage, planStage, outputs });
       if (!programOutput) continue;
       const outputPath = path.join(snapshot.runDir, "outputs", `${stage.id}.json`);
@@ -474,6 +475,7 @@ async function advanceDeterministicStages(snapshot: RuntimeSnapshot): Promise<{ 
       index = updateStage(index, stage.id, {
         status: programOutput.status === "blocked" ? "blocked" : "completed",
         outputPath: path.relative(snapshot.runDir, outputPath),
+        startedAt,
         completedAt: new Date().toISOString(),
         blockedReason: typeof programOutput.blockedReason === "string" ? programOutput.blockedReason : undefined
       });

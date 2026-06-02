@@ -2,13 +2,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildRunMonitorView, buildWorkUnitDetailView } from "../../src/projections/run-monitor.js";
+import { buildRunMonitorView, buildTaskDetailView } from "../../src/projections/run-monitor.js";
 import { runDir } from "../../src/run-index/paths.js";
 import type { RunIndex } from "../../src/run-index/read-write.js";
 import { WorkflowSpecSchema, type WorkflowSpec } from "../../src/schema/workflow-spec.js";
 
 describe("RunMonitorView", () => {
-  it("projects stages and known Agent Work Units without reading events", async () => {
+  it("projects stages and known Stage Tasks without reading events", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-run-monitor-"));
     const spec = monitorSpec();
     const index = monitorIndex();
@@ -22,23 +22,35 @@ describe("RunMonitorView", () => {
     expect(view.run).toMatchObject({ logicalRunId: "monitor-run", workflowName: "monitor-workflow", status: "running" });
     expect(view.run.worker).toMatchObject({ pid: 1234, status: "running" });
     expect(view).not.toHaveProperty("eventTail");
-    expect(view.stages.find((stage) => stage.id === "review")?.workUnitCounts).toMatchObject({ total: 1, running: 1 });
-    expect(view.workUnits.map((unit) => unit.id)).toEqual(expect.arrayContaining([
-      "stage:task",
-      "fanout:review:item:item-1:group:g:lane:a",
-      "loop:quality_loop:round:1:stage:body",
-      "loop:quality_loop:round:1:fanout:body_fanout:item:item-2:group:g:lane:a"
+    expect(view.progress).toEqual({ knownTasks: 6, completedTasks: 4 });
+    expect(view.stages.find((stage) => stage.id === "review")?.taskCounts).toMatchObject({ total: 1, running: 1 });
+    expect(view.stages.find((stage) => stage.id === "final_gate")?.taskCounts).toMatchObject({ total: 1, completed: 1 });
+    expect(view.tasks.map((task) => task.id)).toEqual(expect.arrayContaining([
+      "task:task",
+      "task:review:item:item-1:group:g:lane:a",
+      "task:quality_loop:round:1:stage:body",
+      "task:quality_loop:round:1:stage:body_gate",
+      "task:quality_loop:round:1:fanout:body_fanout:item:item-2:group:g:lane:a",
+      "task:final_gate"
     ]));
-    expect(view.workUnits.find((unit) => unit.id === "stage:task")).toMatchObject({
+    expect(view.tasks.find((task) => task.id === "task:task")).toMatchObject({
       status: "completed",
+      execution: "agent",
       roleName: "implementer",
       agent: "gpt-test",
       roleMode: "readOnly",
-      attemptId: "task:attempt-1"
+      attemptId: "task:attempt-1",
+      durationMs: 10_000
+    });
+    expect(view.tasks.find((task) => task.id === "task:final_gate")).toMatchObject({
+      status: "completed",
+      execution: "deterministic",
+      attemptIds: [],
+      durationMs: 1_000
     });
   });
 
-  it("returns bounded work-unit details from run-index attempts and output files", async () => {
+  it("returns bounded task details from run-index attempts and output files", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-run-monitor-detail-"));
     const spec = monitorSpec();
     const index = monitorIndex();
@@ -51,10 +63,10 @@ describe("RunMonitorView", () => {
       data: { text: "x".repeat(4096) }
     }, null, 2)}\n`, "utf8");
 
-    const detail = await buildWorkUnitDetailView(cwd, spec, index, "stage:task");
+    const detail = await buildTaskDetailView(cwd, spec, index, "task:task");
 
-    expect(detail.version).toBe("acpx-workflow-orchestrator.work-unit-detail/v1");
-    expect(detail.workUnit).toMatchObject({ id: "stage:task", status: "completed" });
+    expect(detail.version).toBe("acpx-workflow-orchestrator.task-detail/v1");
+    expect(detail.task).toMatchObject({ id: "task:task", status: "completed" });
     expect(detail.prompt).toMatchObject({ lines: 1, preview: "Implement task." });
     expect(detail.activity).toMatchObject({ totalAttempts: 1 });
     expect(detail.outcome).toMatchObject({
@@ -65,9 +77,30 @@ describe("RunMonitorView", () => {
     expect(detail.outcome?.preview?.length).toBeLessThanOrEqual(2100);
   });
 
-  it("rejects unknown work-unit ids", async () => {
+  it("returns deterministic task details without attempts", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-run-monitor-deterministic-detail-"));
+    const spec = monitorSpec();
+    const index = monitorIndex();
+    const dir = runDir(index.logicalRunId, cwd);
+    await fs.mkdir(path.join(dir, "outputs"), { recursive: true });
+    await fs.writeFile(path.join(dir, "outputs", "final_gate.json"), `${JSON.stringify({
+      status: "completed",
+      summary: "Gate passed.",
+      verdict: "pass",
+      artifacts: []
+    }, null, 2)}\n`, "utf8");
+
+    const detail = await buildTaskDetailView(cwd, spec, index, "task:final_gate");
+
+    expect(detail.task).toMatchObject({ execution: "deterministic", id: "task:final_gate" });
+    expect(detail.activity.totalAttempts).toBe(0);
+    expect(detail.prompt).toBeUndefined();
+    expect(detail.outcome).toMatchObject({ status: "completed", summary: "Gate passed." });
+  });
+
+  it("rejects unknown task ids", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-run-monitor-missing-"));
-    await expect(buildWorkUnitDetailView(cwd, monitorSpec(), monitorIndex(), "missing")).rejects.toThrow("Unknown work unit: missing");
+    await expect(buildTaskDetailView(cwd, monitorSpec(), monitorIndex(), "missing")).rejects.toThrow("Unknown task: missing");
   });
 });
 
@@ -102,10 +135,11 @@ function monitorSpec(): WorkflowSpec {
           output: "body",
           stages: [
             { id: "body", kind: "agentTask", role: "implementer", prompt: "Review loop." },
+            { id: "body_gate", kind: "decisionGate", dependsOn: ["body"], rules: [{ when: { source: "outputs.body.status", op: "eq", value: "completed" }, to: "body_fanout" }], default: "body_fanout" },
             {
               id: "body_fanout",
               kind: "fanout",
-              dependsOn: ["body"],
+              dependsOn: ["body_gate"],
               items: { source: "inputs.items" },
               laneGroups: [{ id: "g", mode: "all", lanes: [{ id: "a", role: "reviewer", prompt: "Loop fanout." }] }]
             }
@@ -113,7 +147,8 @@ function monitorSpec(): WorkflowSpec {
         },
         continueWhen: { source: "loop.current.output.status", op: "eq", value: "again" },
         onExhausted: "blocked"
-      }
+      },
+      { id: "final_gate", kind: "gate", dependsOn: ["quality_loop"], mode: "program" }
     ]
   });
 }
@@ -160,6 +195,7 @@ function monitorIndex(): RunIndex {
             bodyOutputStageId: "body",
             stages: {
               body: { stageId: "body", status: "completed", attempts: ["loop:round-1__stage-body:attempt-1"], outputPath: "outputs/quality_loop/round-1/body.json" },
+              body_gate: { stageId: "body_gate", status: "completed", attempts: [], outputPath: "outputs/quality_loop/round-1/body_gate.json", startedAt: "2026-06-02T00:00:45.000Z", completedAt: "2026-06-02T00:00:46.000Z" },
               body_fanout: {
                 stageId: "body_fanout",
                 status: "running",
@@ -180,7 +216,8 @@ function monitorIndex(): RunIndex {
             }
           }]
         }
-      }
+      },
+      final_gate: { stageId: "final_gate", status: "completed", attempts: [], outputPath: "outputs/final_gate.json", startedAt: "2026-06-02T00:00:58.000Z", completedAt: "2026-06-02T00:00:59.000Z" }
     },
     attempts: {
       "task:attempt-1": { id: "task:attempt-1", stageId: "task", kind: "attempt", status: "completed", path: "attempts/task/attempt-1", startedAt: "2026-06-02T00:00:00.000Z", endedAt: "2026-06-02T00:00:10.000Z", promptPreview: "Implement task.", agent: "gpt-test", roleMode: "readOnly" },

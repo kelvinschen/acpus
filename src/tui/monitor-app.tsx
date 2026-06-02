@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Box, Text, useApp, useInput } from "ink";
-import type { RunMonitorView, WorkUnitDetailView } from "../projections/run-monitor.js";
+import { Box, Text, useApp, useInput, useStdout } from "ink";
+import type { RunMonitorView, RunMonitorTask, TaskDetailView } from "../projections/run-monitor.js";
 import type { RunLocator } from "../run-index/locator.js";
-import { loadMonitorSnapshot as defaultLoadMonitorSnapshot, loadWorkUnitDetail as defaultLoadWorkUnitDetail } from "./monitor-data.js";
-import { clampIndex, defaultStageIndex, detailSummary, nextIndex, runProgressLabel, shorten, stageProgressLabel, statusMark, type MonitorFocus, workUnitsForStage } from "./monitor-rendering.js";
+import { loadMonitorSnapshot as defaultLoadMonitorSnapshot, loadTaskDetail as defaultLoadTaskDetail } from "./monitor-data.js";
+import { clampIndex, defaultStageIndex, detailSummary, formatDuration, nextIndex, runProgressLabel, shorten, stageProgressLabel, statusMark, type MonitorFocus, tasksForStage } from "./monitor-rendering.js";
 
 export type MonitorAppProps = {
   runArg: string;
@@ -12,18 +12,20 @@ export type MonitorAppProps = {
   initialLocator?: RunLocator;
   initialFocus?: MonitorFocus;
   loadSnapshot?: typeof defaultLoadMonitorSnapshot;
-  loadDetail?: typeof defaultLoadWorkUnitDetail;
+  loadDetail?: typeof defaultLoadTaskDetail;
 };
 
-export function MonitorApp({ runArg, pollMs = 1000, initialView, initialLocator, initialFocus = "stages", loadSnapshot = defaultLoadMonitorSnapshot, loadDetail = defaultLoadWorkUnitDetail }: MonitorAppProps) {
+export function MonitorApp({ runArg, pollMs = 1000, initialView, initialLocator, initialFocus = "stages", loadSnapshot = defaultLoadMonitorSnapshot, loadDetail = defaultLoadTaskDetail }: MonitorAppProps) {
   const { exit } = useApp();
+  const { stdout } = useStdout();
   const [locator, setLocator] = useState<RunLocator | undefined>(initialLocator);
   const [view, setView] = useState<RunMonitorView | undefined>(initialView);
   const [error, setError] = useState<string | undefined>();
   const [focus, setFocus] = useState<MonitorFocus>(initialFocus);
   const [stageIndex, setStageIndex] = useState(() => initialView ? defaultStageIndex(initialView.stages) : 0);
-  const [workUnitIndex, setWorkUnitIndex] = useState(0);
-  const [detail, setDetail] = useState<WorkUnitDetailView | undefined>();
+  const [taskIndex, setTaskIndex] = useState<number | undefined>(undefined);
+  const [detailTaskId, setDetailTaskId] = useState<string | undefined>();
+  const [detail, setDetail] = useState<TaskDetailView | undefined>();
   const refreshRequest = useRef(0);
   const detailRequest = useRef(0);
   const hasLoadedView = useRef(Boolean(initialView));
@@ -56,25 +58,32 @@ export function MonitorApp({ runArg, pollMs = 1000, initialView, initialLocator,
   }, [runArg, pollMs, loadSnapshot]);
 
   const selectedStage = view?.stages[stageIndex];
-  const stageUnits = useMemo(() => workUnitsForStage(view, selectedStage?.id), [view, selectedStage?.id]);
-  const selectedUnit = stageUnits[workUnitIndex];
+  const stageTasks = useMemo(() => tasksForStage(view, selectedStage?.id), [view, selectedStage?.id]);
+  const selectedTask = taskIndex === undefined ? undefined : stageTasks[taskIndex];
+  const panelWidths = useMemo(() => monitorPanelWidths(stdout.columns), [stdout.columns]);
 
   useEffect(() => {
-    setWorkUnitIndex(0);
+    setTaskIndex(undefined);
+    setDetailTaskId(undefined);
+    setDetail(undefined);
   }, [selectedStage?.id]);
 
   useEffect(() => {
-    setWorkUnitIndex((current) => clampIndex(current, stageUnits.length));
-  }, [stageUnits.length]);
+    setTaskIndex((current) => current === undefined ? undefined : clampIndex(current, stageTasks.length));
+  }, [stageTasks.length]);
+
+  useEffect(() => {
+    setDetailTaskId(selectedTask?.id);
+  }, [selectedTask?.id]);
 
   useEffect(() => {
     const requestId = ++detailRequest.current;
-    if (focus !== "detail" || !locator || !selectedUnit) {
+    if (!locator || !detailTaskId) {
       setDetail(undefined);
       return;
     }
     setDetail(undefined);
-    loadDetail(locator, selectedUnit.id)
+    loadDetail(locator, detailTaskId)
       .then((nextDetail) => {
         if (requestId !== detailRequest.current) return;
         setDetail(nextDetail);
@@ -85,33 +94,44 @@ export function MonitorApp({ runArg, pollMs = 1000, initialView, initialLocator,
         setDetail(undefined);
         setError(detailError instanceof Error ? detailError.message : String(detailError));
       });
-  }, [focus, locator?.runId, selectedUnit?.id, loadDetail]);
+  }, [locator?.runId, detailTaskId, loadDetail]);
 
   useInput((input, key) => {
     if (input === "q" || (key.ctrl && input === "c")) exit();
     if (input === "r") void refresh();
     if (key.escape && focus === "detail") {
-      setFocus("workUnits");
+      setFocus("tasks");
       return;
     }
-    if (focus === "detail") return;
-    if (key.leftArrow) setFocus("stages");
-    if (key.rightArrow && stageUnits.length > 0) setFocus("workUnits");
+    if (key.leftArrow) {
+      if (focus === "detail") setFocus("tasks");
+      else if (focus === "tasks") setFocus("stages");
+      return;
+    }
+    if (key.rightArrow) {
+      if (focus === "stages" && stageTasks.length > 0) {
+        setTaskIndex((current) => current ?? 0);
+        setFocus("tasks");
+      } else if (focus === "tasks" && selectedTask) {
+        setFocus("detail");
+      }
+      return;
+    }
     if (key.upArrow) {
-      if (focus === "workUnits") setWorkUnitIndex((current) => nextIndex(current, -1, stageUnits.length));
-      else {
+      if (focus === "tasks") setTaskIndex((current) => nextIndex(current ?? 0, -1, stageTasks.length));
+      else if (focus === "stages") {
         userSelectedStage.current = true;
         setStageIndex((current) => nextIndex(current, -1, view?.stages.length ?? 0));
       }
     }
     if (key.downArrow) {
-      if (focus === "workUnits") setWorkUnitIndex((current) => nextIndex(current, 1, stageUnits.length));
-      else {
+      if (focus === "tasks") setTaskIndex((current) => nextIndex(current ?? 0, 1, stageTasks.length));
+      else if (focus === "stages") {
         userSelectedStage.current = true;
         setStageIndex((current) => nextIndex(current, 1, view?.stages.length ?? 0));
       }
     }
-    if (key.return && focus === "workUnits" && selectedUnit) setFocus("detail");
+    if (key.return && focus === "tasks" && selectedTask) setFocus("detail");
   });
 
   if (!view) {
@@ -123,10 +143,9 @@ export function MonitorApp({ runArg, pollMs = 1000, initialView, initialLocator,
       <Header view={view} />
       {error ? <Text color="red">Error: {error}</Text> : null}
       <Box marginTop={1}>
-        <StageList view={view} selectedIndex={stageIndex} focused={focus === "stages"} />
-        {focus === "detail"
-          ? <DetailPanel detail={detail} />
-          : <WorkUnitList stageName={selectedStage?.id ?? ""} units={stageUnits} selectedIndex={workUnitIndex} focused={focus === "workUnits"} />}
+        <StageList view={view} selectedIndex={stageIndex} focused={focus === "stages"} width={panelWidths.stages} />
+        <StageTaskPanel view={view} stage={selectedStage} tasks={stageTasks} selectedIndex={taskIndex} focused={focus === "tasks"} width={panelWidths.tasks} />
+        <DetailPanel detail={detail} focused={focus === "detail"} width={panelWidths.detail} />
       </Box>
       <Text dimColor>up/down move - left/right panel - enter detail - esc back - r refresh - q quit</Text>
     </Box>
@@ -136,7 +155,8 @@ export function MonitorApp({ runArg, pollMs = 1000, initialView, initialLocator,
 function Header({ view }: { view: RunMonitorView }) {
   const title = `${view.run.workflowName}`;
   const worker = view.run.worker ? ` - worker ${view.run.worker.status}` : "";
-  const meta = `${runProgressLabel(view)} - ${view.run.status}${worker}`;
+  const runTime = formatDuration(view.run.durationMs ?? view.run.elapsedMs);
+  const meta = `${runProgressLabel(view)} - ${view.run.status}${runTime ? ` - ${runTime}` : ""}${worker}`;
   return (
     <Box flexDirection="column">
       <Text color="blue" bold>{title}</Text>
@@ -145,43 +165,82 @@ function Header({ view }: { view: RunMonitorView }) {
   );
 }
 
-function StageList({ view, selectedIndex, focused }: { view: RunMonitorView; selectedIndex: number; focused: boolean }) {
+function StageList({ view, selectedIndex, focused, width }: { view: RunMonitorView; selectedIndex: number; focused: boolean; width: number }) {
+  const currentStage = view.stages.find((stage) => stage.status === "running")
+    ?? view.stages.find((stage) => stage.status === "blocked" || stage.status === "failed")
+    ?? view.stages[selectedIndex];
+  const finished = view.stages.filter((stage) => stage.status === "completed" || stage.status === "skipped").length;
   return (
-    <Box flexDirection="column" width={34} borderStyle="single" paddingX={1}>
-      <Text bold>{focused ? "> " : "  "}Stages</Text>
+    <Box flexDirection="column" width={width} borderStyle="single" paddingX={1}>
+      <Text bold>{focused ? "🟢 " : "  "}Stage List</Text>
+      <Text dimColor>Current: {shorten(currentStage?.id ?? "-", Math.max(6, width - 13))}</Text>
+      <Text dimColor>Finished: {finished}/{view.stages.length}</Text>
       {view.stages.map((stage, index) => (
-        <Text key={stage.id} color={index === selectedIndex ? "blue" : undefined}>
-          {index === selectedIndex ? ">" : " "} {statusMark(stage.status)} {shorten(stage.id, 18)} {stageProgressLabel(stage)}
-        </Text>
-      ))}
-    </Box>
-  );
-}
-
-function WorkUnitList({ stageName, units, selectedIndex, focused }: { stageName: string; units: RunMonitorView["workUnits"]; selectedIndex: number; focused: boolean }) {
-  return (
-    <Box flexDirection="column" flexGrow={1} borderStyle="single" paddingX={1}>
-      <Text bold>{focused ? "> " : "  "}{stageName || "Stage"} - {units.length} agents</Text>
-      {units.length === 0 ? <Text dimColor>No known Agent Work Units</Text> : null}
-      {units.map((unit, index) => (
-        <Box key={unit.id}>
-          <Text color={index === selectedIndex ? "blue" : undefined}>
-            {index === selectedIndex ? ">" : " "} {statusMark(unit.status)} {shorten(unit.label, 32)}
-          </Text>
-          <Text dimColor> {shorten(unit.agent ?? "", 18)} {shorten(unit.blockedReason ?? unit.errorCode ?? "", 26)}</Text>
+        <Box key={stage.id}>
+          <Text>{focused && index === selectedIndex ? "▶" : " "} </Text>
+          <StatusMark status={stage.status} />
+          <Text> {shorten(stage.id, 22)} {stageProgressLabel(stage)}</Text>
         </Box>
       ))}
     </Box>
   );
 }
 
-function DetailPanel({ detail }: { detail: WorkUnitDetailView | undefined }) {
+function StageTaskPanel({ view, stage, tasks, selectedIndex, focused, width }: { view: RunMonitorView; stage: RunMonitorView["stages"][number] | undefined; tasks: RunMonitorTask[]; selectedIndex: number | undefined; focused: boolean; width: number }) {
+  const counts = stage?.taskCounts;
+  const stageTime = formatDuration(stage?.durationMs ?? stage?.elapsedMs);
   return (
-    <Box flexDirection="column" flexGrow={1} borderStyle="single" paddingX={1}>
-      <Text bold>{detail?.workUnit.label ?? "Work Unit Detail"}</Text>
+    <Box flexDirection="column" width={width} borderStyle="single" paddingX={1}>
+      <Text bold>{focused ? "🟢 " : "  "}Stage Info</Text>
+      {stage ? (
+        <>
+          <Text>{shorten(stage.id, 28)} <Text dimColor>{stage.kind}</Text></Text>
+          <Text>Status: {stage.status}{counts ? ` - ${counts.completed}/${counts.total} tasks` : ""}{stageTime ? ` - ${stageTime}` : ""}</Text>
+          {stage.dependsOn.length > 0 ? <Text dimColor>Depends: {shorten(stage.dependsOn.join(", "), 34)}</Text> : null}
+          {stage.blockedReason ? <Text color="red">Reason: {shorten(stage.blockedReason, 34)}</Text> : null}
+          {stage.outputPath ? <Text dimColor>Output: {shorten(stage.outputPath, 34)}</Text> : null}
+          {stage.kind === "gate" && view.run.gateVerdict ? <Text dimColor>Gate: {view.run.gateVerdict}</Text> : null}
+        </>
+      ) : <Text dimColor>No stage selected</Text>}
+      <Text bold>Tasks</Text>
+      {tasks.length === 0 ? <Text dimColor>No known Stage Tasks</Text> : null}
+      {tasks.map((task, index) => (
+        <Box key={task.id}>
+          <Text>{focused && index === selectedIndex ? "▶" : " "} </Text>
+          <StatusMark status={task.status} />
+          <Text> {shorten(task.label, Math.max(16, width - 24))}</Text>
+          <Text dimColor> {shorten(task.agent ?? task.execution, 10)} {shorten(formatDuration(task.durationMs ?? task.elapsedMs), 7)} {shorten(task.blockedReason ?? task.errorCode ?? "", 10)}</Text>
+        </Box>
+      ))}
+    </Box>
+  );
+}
+
+function DetailPanel({ detail, focused, width }: { detail: TaskDetailView | undefined; focused: boolean; width: number }) {
+  return (
+    <Box flexDirection="column" width={width} borderStyle="single" paddingX={1}>
+      <Text bold>{focused ? "🟢 " : "  "}Task Detail</Text>
+      {detail ? <Text>{shorten(detail.task.label, 60)}</Text> : null}
       {detailSummary(detail).slice(0, 16).map((line, index) => (
         <Text key={`${index}-${line}`} dimColor={index > 0}>{shorten(line, 100)}</Text>
       ))}
     </Box>
   );
+}
+
+function monitorPanelWidths(columns: number | undefined): { stages: number; tasks: number; detail: number } {
+  const total = Math.max(80, columns ?? 120);
+  const stages = Math.max(16, Math.floor(total * 0.2));
+  const tasks = Math.max(40, Math.floor(total * 0.5));
+  const detail = Math.max(32, total - stages - tasks);
+  return { stages, tasks, detail };
+}
+
+function StatusMark({ status }: { status: string | undefined }) {
+  const mark = statusMark(status);
+  if (status === "completed") return <Text color="green">{mark}</Text>;
+  if (status === "running" || status === "raw_received" || status === "parsing" || status === "repairing") return <Text color="yellow">{mark}</Text>;
+  if (status === "blocked" || status === "failed" || status === "cancelled" || status === "timed_out") return <Text color="red">{mark}</Text>;
+  if (status === "skipped") return <Text dimColor>{mark}</Text>;
+  return <Text dimColor>{mark}</Text>;
 }

@@ -95,12 +95,12 @@ describe("fanout core", () => {
     const partialOutput = buildFanoutItemOutput({ item: completedItem("item-2", 1), allowPartial: true, laneResults: [blockedLane("item-2", 1)], missingLaneOutput });
 
     expect(buildFanoutStageOutput({
-      plan: { allowPartial: true, minCompletedRatio: 0.5, maxBlockedItems: 1 },
+      plan: { allowPartial: true, minCompletedRatio: 1, maxBlockedItems: 1 },
       itemOutputs: [completeOutput, partialOutput],
       skippedItems: []
     }).status).toBe("completed");
     expect(buildFanoutStageOutput({
-      plan: { allowPartial: true, minCompletedRatio: 0.75, maxBlockedItems: 1 },
+      plan: { allowPartial: true, minCompletedRatio: 1, maxBlockedItems: 0 },
       itemOutputs: [completeOutput, partialOutput],
       skippedItems: []
     }).status).toBe("blocked");

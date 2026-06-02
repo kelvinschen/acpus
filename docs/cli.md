@@ -26,7 +26,7 @@ skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator follow <log
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator follow <logical-run-id> --json
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator monitor <logical-run-id>
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator monitor <logical-run-id> --json
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator monitor detail <logical-run-id> <work-unit-id> --json
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator monitor detail <logical-run-id> <task-id> --json
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator diagnose <logical-run-id> --wait
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator diagnose <logical-run-id> --wait --json
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator recover <logical-run-id>
@@ -47,10 +47,10 @@ creating or starting a run.
 workflow. `follow --json` returns the Run Monitor View.
 
 `monitor <run>` opens the observation-only Ink TUI. Use up/down to move,
-left/right to switch panels, enter for work-unit detail, esc to return, r to
+left/right to switch panels, enter for task detail, esc to return, r to
 refresh, and q to quit. `monitor <run> --json` returns the same Run Monitor View
-as `follow --json`. `monitor detail <run> <work-unit-id> --json` returns bounded
-detail for one Agent Work Unit from the monitor output.
+as `follow --json`. `monitor detail <run> <task-id> --json` returns bounded
+detail for one Stage Task from the monitor output.
 
 `generate` writes a starter workflow draft under `.acpx-workflow-orchestrator/drafts/`.
 Generated drafts are templates only; validate and preview them before running.

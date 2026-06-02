@@ -227,7 +227,7 @@ describe("fanout runtime stability", () => {
 
     const index = await syncRun(cwd, prepared.logicalRunId, { drainFanoutPool: true });
     const finalView = await buildRunMonitorView(cwd, spec, index);
-    const finalLane = finalView.workUnits.find((unit) => unit.kind === "loopFanoutLane" && unit.itemId === "item-1");
+    const finalLane = finalView.tasks.find((task) => task.kind === "loopFanoutLane" && task.itemId === "item-1");
 
     expect(runningLaneStatus).toBe("running");
     expect(finalLane).toMatchObject({
@@ -1869,13 +1869,13 @@ async function waitForLoopFanoutLane(
   runId: string,
   spec: WorkflowSpec,
   itemId: string,
-  predicate: (unit: Awaited<ReturnType<typeof buildRunMonitorView>>["workUnits"][number]) => boolean
-): Promise<Awaited<ReturnType<typeof buildRunMonitorView>>["workUnits"][number] | undefined> {
+  predicate: (task: Awaited<ReturnType<typeof buildRunMonitorView>>["tasks"][number]) => boolean
+): Promise<Awaited<ReturnType<typeof buildRunMonitorView>>["tasks"][number] | undefined> {
   const deadline = Date.now() + 1_000;
   while (Date.now() < deadline) {
     const snapshot = await readRunIndex(cwd, runId);
     const view = await buildRunMonitorView(cwd, spec, snapshot);
-    const lane = view.workUnits.find((unit) => unit.kind === "loopFanoutLane" && unit.itemId === itemId);
+    const lane = view.tasks.find((task) => task.kind === "loopFanoutLane" && task.itemId === itemId);
     if (lane && predicate(lane)) return lane;
     await sleep(10);
   }

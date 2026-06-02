@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { detailSummary, defaultStageIndex, shorten, statusMark, workUnitsForStage } from "../../src/tui/monitor-rendering.js";
-import type { RunMonitorView, WorkUnitDetailView } from "../../src/projections/run-monitor.js";
+import { detailSummary, defaultStageIndex, shorten, statusMark, tasksForStage } from "../../src/tui/monitor-rendering.js";
+import type { RunMonitorView, TaskDetailView } from "../../src/projections/run-monitor.js";
 
 describe("monitor TUI rendering helpers", () => {
   it("selects running, then blocked, then first non-completed stage", () => {
@@ -19,20 +19,20 @@ describe("monitor TUI rendering helpers", () => {
     ])).toBe(1);
   });
 
-  it("filters work units by selected stage and truncates text", () => {
+  it("filters tasks by selected stage and truncates text", () => {
     const view = monitorView();
-    expect(workUnitsForStage(view, "task").map((unit) => unit.id)).toEqual(["stage:task"]);
+    expect(tasksForStage(view, "task").map((task) => task.id)).toEqual(["task:task"]);
     expect(shorten("abcdefgh", 5)).toBe("ab...");
-    expect(statusMark("running")).toBe("[>]");
-    expect(statusMark("completed")).toBe("[x]");
+    expect(statusMark("running")).toBe("●");
+    expect(statusMark("completed")).toBe("✔");
   });
 
   it("builds bounded detail summary without token or tool-call labels", () => {
-    const detail: WorkUnitDetailView = {
-      version: "acpx-workflow-orchestrator.work-unit-detail/v1",
+    const detail: TaskDetailView = {
+      version: "acpx-workflow-orchestrator.task-detail/v1",
       generatedAt: "2026-06-02T00:00:00.000Z",
       run: monitorView().run,
-      workUnit: monitorView().workUnits[0]!,
+      task: monitorView().tasks[0]!,
       prompt: { preview: "Prompt preview", lines: 1 },
       activity: {
         totalAttempts: 1,
@@ -58,7 +58,7 @@ function stage(id: string, status: RunMonitorView["stages"][number]["status"]): 
     kind: "agentTask",
     status,
     dependsOn: [],
-    workUnitCounts: { total: 1, pending: 0, running: status === "running" ? 1 : 0, completed: status === "completed" ? 1 : 0, blocked: status === "blocked" ? 1 : 0, failed: 0, skipped: 0 }
+    taskCounts: { total: 1, pending: 0, running: status === "running" ? 1 : 0, completed: status === "completed" ? 1 : 0, blocked: status === "blocked" ? 1 : 0, failed: 0, skipped: 0 }
   };
 }
 
@@ -75,15 +75,16 @@ function monitorView(): RunMonitorView {
       updatedAt: "2026-06-02T00:00:01.000Z"
     },
     stages: [stage("task", "running")],
-    workUnits: [{
-      id: "stage:task",
+    tasks: [{
+      id: "task:task",
       kind: "stage",
+      execution: "agent",
       stageId: "task",
       label: "task",
       status: "running",
       agent: "gpt-test",
       attemptIds: ["task:attempt-1"]
     }],
-    progress: { knownWorkUnits: 1, completedWorkUnits: 0, estimatedWorkUnits: 1 }
+    progress: { knownTasks: 1, completedTasks: 0 }
   };
 }

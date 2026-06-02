@@ -34,8 +34,8 @@ describe("CLI lifecycle", () => {
     const draft = JSON.parse((await run(cwd, "show", "draft", path.basename(generated.path), "--json")).stdout) as { name: string };
     const runEvents = parseNdjson((await run(cwd, "run", "--workflow", "deterministic", "--wait", "--json")).stdout);
     const runResult = runEvents.at(-1) as { type: string; ok: boolean; logicalRunId: string; runDir: string; status: string; blockedReason?: string; gateVerdict?: string };
-    const follow = JSON.parse((await run(cwd, "follow", runResult.logicalRunId, "--json")).stdout) as { version: string; run: { status: string }; workUnits: unknown[] };
-    const monitor = JSON.parse((await run(cwd, "monitor", runResult.logicalRunId, "--json")).stdout) as { version: string; run: { status: string }; workUnits: unknown[] };
+    const follow = JSON.parse((await run(cwd, "follow", runResult.logicalRunId, "--json")).stdout) as { version: string; run: { status: string }; tasks: unknown[] };
+    const monitor = JSON.parse((await run(cwd, "monitor", runResult.logicalRunId, "--json")).stdout) as { version: string; run: { status: string }; tasks: unknown[] };
     const diagnose = JSON.parse((await run(cwd, "diagnose", runResult.logicalRunId, "--wait", "--json")).stdout) as { status: string; diagnosticId: string; diagnostics: { version: string; run: { status: string }; diagnostics: unknown[] } };
     const resume = JSON.parse((await run(cwd, "resume", runResult.logicalRunId, "--wait", "--json")).stdout) as { status: string };
     const shownRun = JSON.parse((await run(cwd, "show", "run", runResult.logicalRunId, "--json")).stdout) as { logicalRunId: string };
@@ -62,7 +62,7 @@ describe("CLI lifecycle", () => {
     expect(follow.run.status).toBe("blocked");
     expect(monitor.version).toBe("acpx-workflow-orchestrator.monitor/v1");
     expect(monitor.run.status).toBe("blocked");
-    expect(monitor.workUnits).toEqual(follow.workUnits);
+    expect(monitor.tasks).toEqual(follow.tasks);
     expect(diagnose.status).toBe("diagnosed_blocked");
     expect(diagnose.diagnosticId).toBe("diagnostic-1");
     expect(diagnose.diagnostics.version).toBe("acpx-workflow-orchestrator.diagnostics/v1");
@@ -77,18 +77,18 @@ describe("CLI lifecycle", () => {
     const spec = observationOnlySpec();
     const prepared = await prepareRun(spec, { cwd, input: { cwd } });
 
-    const follow = JSON.parse((await run(cwd, "follow", prepared.logicalRunId, "--json")).stdout) as { version: string; run: { status: string }; workUnits: Array<{ id: string }> };
-    const monitor = JSON.parse((await run(cwd, "monitor", prepared.logicalRunId, "--json")).stdout) as { version: string; run: { status: string }; workUnits: Array<{ id: string }> };
-    const detail = JSON.parse((await run(cwd, "monitor", "detail", prepared.logicalRunId, follow.workUnits[0]?.id ?? "", "--json")).stdout) as { version: string; workUnit: { id: string } };
+    const follow = JSON.parse((await run(cwd, "follow", prepared.logicalRunId, "--json")).stdout) as { version: string; run: { status: string }; tasks: Array<{ id: string }> };
+    const monitor = JSON.parse((await run(cwd, "monitor", prepared.logicalRunId, "--json")).stdout) as { version: string; run: { status: string }; tasks: Array<{ id: string }> };
+    const detail = JSON.parse((await run(cwd, "monitor", "detail", prepared.logicalRunId, follow.tasks[0]?.id ?? "", "--json")).stdout) as { version: string; task: { id: string } };
     const afterFollow = await readRunIndex(cwd, prepared.logicalRunId);
 
     expect(follow.version).toBe("acpx-workflow-orchestrator.monitor/v1");
     expect(follow.run.status).toBe("pending");
     expect(monitor.version).toBe("acpx-workflow-orchestrator.monitor/v1");
     expect(monitor.run.status).toBe("pending");
-    expect(follow.workUnits[0]?.id).toBe("stage:task");
-    expect(detail.version).toBe("acpx-workflow-orchestrator.work-unit-detail/v1");
-    expect(detail.workUnit.id).toBe("stage:task");
+    expect(follow.tasks[0]?.id).toBe("task:task");
+    expect(detail.version).toBe("acpx-workflow-orchestrator.task-detail/v1");
+    expect(detail.task.id).toBe("task:task");
     expect(afterFollow.stages.task.status).toBe("pending");
   }, 60_000);
 

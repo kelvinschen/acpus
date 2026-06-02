@@ -28,9 +28,9 @@ The CLI is the developer and Main Agent entry point for validating, previewing, 
 - `follow --json` MUST output the Run Monitor View.
 - `monitor <run>` MUST observe the selected run and render the Ink monitor TUI.
 - `monitor <run> --json` MUST observe the selected run and output the Run Monitor View.
-- `monitor detail <run> <work-unit-id> --json` MUST observe the selected run and output the Work Unit Detail View for the selected Agent Work Unit.
+- `monitor detail <run> <task-id> --json` MUST observe the selected run and output the Task Detail View for the selected Stage Task.
 - `monitor detail` MUST be registered as a real CLI subcommand, not parsed by treating the first positional `monitor` argument as a sentinel.
-- `monitor detail` without `--json` MAY fail because work-unit detail is reached through the TUI.
+- `monitor detail` without `--json` MAY fail because task detail is reached through the TUI.
 - `diagnose` MUST prepare read-only recovery diagnostic prompt/artifacts and MUST NOT rerun edit work or change the saved workflow spec.
 - `diagnose --json` MUST include the post-diagnose Run Diagnostics View.
 - `recover <run>` MUST restart a stale or dead workflow worker for a non-terminal run and MUST NOT recover half-complete in-memory agent turns.
@@ -67,7 +67,7 @@ skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator follow <log
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator follow <logical-run-id> --json
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator monitor <logical-run-id>
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator monitor <logical-run-id> --json
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator monitor detail <logical-run-id> <work-unit-id> --json
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator monitor detail <logical-run-id> <task-id> --json
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator diagnose <logical-run-id> --wait
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator diagnose <logical-run-id> --wait --json
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator recover <logical-run-id>
@@ -92,7 +92,7 @@ JSON output envelopes:
 
 ## Data Model
 
-CLI commands operate on workflow specs, saved workflow directories, logical run IDs or run directories, execution plans, run indexes, monitor projections, work-unit detail projections, diagnostics projections, generated drafts, and JSON command output envelopes.
+CLI commands operate on workflow specs, saved workflow directories, logical run IDs or run directories, execution plans, run indexes, monitor projections, task detail projections, diagnostics projections, generated drafts, and JSON command output envelopes.
 
 Saved workflow directories contain `workflow.spec.json`, `execution-plan.json`, README, schema/docs references, wrapper, and built helper files from the current package build.
 
