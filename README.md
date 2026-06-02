@@ -29,7 +29,7 @@ acpus follow <logical-run-id>
 ## Skill
 
 ```bash
-npx skills add @kelvinschen/acpus --skill acpus
+npx skills add kelvinschen/acpus --skill acpus
 ```
 
 ## Commands
