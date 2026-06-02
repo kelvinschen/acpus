@@ -29,7 +29,7 @@ describe("monitor TUI rendering helpers", () => {
 
   it("builds bounded detail summary without token or tool-call labels", () => {
     const detail: TaskDetailView = {
-      version: "acpx-workflow-orchestrator.task-detail/v1",
+      version: "acpus.task-detail/v1",
       generatedAt: "2026-06-02T00:00:00.000Z",
       run: monitorView().run,
       task: monitorView().tasks[0]!,
@@ -64,7 +64,7 @@ function stage(id: string, status: RunMonitorView["stages"][number]["status"]): 
 
 function monitorView(): RunMonitorView {
   return {
-    version: "acpx-workflow-orchestrator.monitor/v1",
+    version: "acpus.monitor/v1",
     generatedAt: "2026-06-02T00:00:00.000Z",
     run: {
       logicalRunId: "run-1",

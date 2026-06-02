@@ -35,7 +35,7 @@ export async function prepareRun(spec: WorkflowSpec, options: {
 
   const now = new Date().toISOString();
   const index: RunIndex = {
-    schemaVersion: "acpx-workflow-orchestrator.run/v2",
+    schemaVersion: "acpus.run/v2",
     logicalRunId,
     workflowName: spec.name,
     status: "pending",

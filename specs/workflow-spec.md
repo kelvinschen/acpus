@@ -8,11 +8,11 @@
 
 ## Purpose
 
-`workflow.spec.json` is the stable, hand-editable authoring interface for the ACPX workflow orchestrator. The compiler validates it, lints graph semantics, and compiles it into `execution-plan.json` for the runtime scheduler.
+`workflow.spec.json` is the stable, hand-editable authoring interface for the Acpus workflow orchestrator. The compiler validates it, lints graph semantics, and compiles it into `execution-plan.json` for the runtime scheduler.
 
 ## Normative Requirements
 
-- Workflow specs MUST use schema version `acpx-workflow-orchestrator.workflow/v1`.
+- Workflow specs MUST use schema version `acpus.workflow/v1`.
 - A workflow spec MUST explicitly name `root`.
 - A workflow graph MUST have exactly one dependency-free root stage, and `root` MUST name that stage.
 - A workflow graph MUST have exactly one `gate` stage.
@@ -74,7 +74,7 @@ The canonical minimal shape is:
 
 ```json
 {
-  "schemaVersion": "acpx-workflow-orchestrator.workflow/v1",
+  "schemaVersion": "acpus.workflow/v1",
   "root": "plan"
 }
 ```

@@ -29,7 +29,7 @@ export function registerSave(program: Command): void {
       await fs.writeFile(path.join(target, "workflow.spec.json"), `${JSON.stringify(spec, null, 2)}\n`, "utf8");
       await fs.writeFile(path.join(target, "execution-plan.json"), `${JSON.stringify(plan, null, 2)}\n`, "utf8");
       await writeHelperSnapshot(target);
-      await fs.writeFile(path.join(target, "README.md"), `# ${name}\n\n${spec.description || "Saved acpx-workflow-orchestrator workflow."}\n\nThis directory is a saved runtime-driven workflow snapshot. The stable authoring interface is workflow.spec.json; execution-plan.json is the derived runtime plan and should normally be regenerated from the spec.\n\nRun with acpx-workflow-orchestrator using workflow.spec.json.\n`, "utf8");
+      await fs.writeFile(path.join(target, "README.md"), `# ${name}\n\n${spec.description || "Saved acpus workflow."}\n\nThis directory is a saved runtime-driven workflow snapshot. The stable authoring interface is workflow.spec.json; execution-plan.json is the derived runtime plan and should normally be regenerated from the spec.\n\nRun with acpus using workflow.spec.json.\n`, "utf8");
       const output = { ok: true, workflow: name, path: target };
       if (options.json) printJson(output);
       else process.stdout.write(`saved ${name} -> ${target}\n`);
@@ -47,8 +47,8 @@ async function writeHelperSnapshot(target: string): Promise<void> {
   await copyIfExists(path.join(root, "docs", "workflow-spec.md"), path.join(helperDir, "docs", "workflow-spec.md"));
   await copyIfExists(path.join(root, "docs", "cli.md"), path.join(helperDir, "docs", "cli.md"));
   await copyIfExists(path.join(root, "docs", "error-codes.md"), path.join(helperDir, "docs", "error-codes.md"));
-  await copyIfExists(path.join(root, "scripts", "acpx-workflow-orchestrator"), path.join(helperDir, "scripts", "acpx-workflow-orchestrator"));
-  await fs.chmod(path.join(helperDir, "scripts", "acpx-workflow-orchestrator"), 0o755).catch(() => undefined);
+  await copyIfExists(path.join(root, "scripts", "acpus"), path.join(helperDir, "scripts", "acpus"));
+  await fs.chmod(path.join(helperDir, "scripts", "acpus"), 0o755).catch(() => undefined);
   await copyIfExists(path.join(root, "dist"), path.join(helperDir, "dist"));
 }
 
@@ -102,7 +102,7 @@ async function ascendToPackageRoot(start: string): Promise<string | undefined> {
   while (true) {
     try {
       const pkg = JSON.parse(await fs.readFile(path.join(current, "package.json"), "utf8")) as { name?: string };
-      if (pkg.name === "@kelvinschen/acpx-workflow-orchestrator") return current;
+      if (pkg.name === "acpus") return current;
     } catch {
       // Keep walking.
     }

@@ -18,23 +18,30 @@ import { issue, resultFromIssues } from "./errors.js";
 const program = new Command();
 
 program
-  .name("acpx-workflow-orchestrator")
-  .description("Dynamic workflow orchestrator for acpx agents")
+  .name("acpus")
+  .description("Acpus — compose, conduct, recover, catalogue.")
   .version("0.1.0");
 
+// ── Compose ─────────────────────────────────────────────────
 registerValidate(program);
 registerPreview(program);
-registerRun(program);
-registerRunWorker(program);
 registerSave(program);
-registerList(program);
-registerShow(program);
+registerGenerate(program);
+
+// ── Conduct ──────────────────────────────────────────────────
+registerRun(program);
 registerFollow(program);
 registerMonitor(program);
-registerRecover(program);
 registerResume(program);
+registerRunWorker(program);
+
+// ── Recover ──────────────────────────────────────────────────
+registerRecover(program);
 registerDiagnose(program);
-registerGenerate(program);
+
+// ── Catalogue ────────────────────────────────────────────────
+registerList(program);
+registerShow(program);
 
 program.parseAsync(process.argv).catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
@@ -43,7 +50,7 @@ program.parseAsync(process.argv).catch((error: unknown) => {
     severity: "fatal",
     path: "/",
     message,
-    suggestions: ["Check the command arguments with acpx-workflow-orchestrator --help."]
+    suggestions: ["Check the command arguments with acpus --help."]
   })]);
   if (process.argv.includes("--json")) {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

@@ -8,10 +8,10 @@ import { WorkflowSpecSchema } from "../../../src/schema/workflow-spec.js";
 
 describe("deterministic runtime program stages", () => {
   it("executes compute-only discovery and decision without acpx flow artifacts", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-workflow-orchestrator-contract-"));
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpus-contract-"));
     await fs.writeFile(path.join(cwd, "sample.txt"), "hello\n", "utf8");
     const spec = WorkflowSpecSchema.parse({
-      schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+      schemaVersion: "acpus.workflow/v1",
       name: "compute-contract",
       root: "discover",
       inputs: { cwd: { type: "path", default: cwd } },

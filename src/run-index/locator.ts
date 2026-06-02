@@ -24,7 +24,7 @@ export async function resolveRunLocator(locator: string, cwd = process.cwd()): P
     return {
       cwd,
       runId: locator,
-      dir: path.join(cwd, ".acpx-workflow-orchestrator", "runs", locator)
+      dir: path.join(cwd, ".acpus", "runs", locator)
     };
   }
 }

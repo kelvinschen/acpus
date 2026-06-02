@@ -27,9 +27,9 @@ pnpm-debug.log*
 
 # Local ACPX runtime state and generated reports
 **/.acpx/
-**/.acpx-workflow-orchestrator/runs/
-**/.acpx-workflow-orchestrator/drafts/
-**/.acpx-workflow-orchestrator/review-html-report/
+**/.acpus/runs/
+**/.acpus/drafts/
+**/.acpus/review-html-report/
 dist/
 test-results/
 playwright-report/

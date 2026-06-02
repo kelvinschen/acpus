@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "acpx-workflow-orchestrator.workflow/v1",
+  "schemaVersion": "acpus.workflow/v1",
   "name": "bugfix-loop",
   "description": "Bugfix workflow with a bounded workflow-level loop.",
   "root": "plan",

@@ -252,7 +252,7 @@ function gateVerdict(output?: Record<string, unknown>): RunView["gateVerdict"] |
 function previewRisks(spec: WorkflowSpec): string[] {
   const risks: string[] = [
     "Running this workflow does not save it for reuse; saving requires an explicit save command.",
-    "Audit artifacts are written under .acpx-workflow-orchestrator/runs/<logicalRunId>/ with spec, execution plan, prompts, outputs, attempts, sessions, and events.",
+    "Audit artifacts are written under .acpus/runs/<logicalRunId>/ with spec, execution plan, prompts, outputs, attempts, sessions, and events.",
     "Agent turns run through run-local ACPX runtime sessions; repair turns count toward actual usage."
   ];
   const editRoles = Object.entries(spec.roles).filter(([, role]) => role.mode === "edit").map(([name]) => name);

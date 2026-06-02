@@ -58,14 +58,14 @@ describe("CLI lifecycle", () => {
       status: "blocked"
     });
     expect(runResult.status).toBe("blocked");
-    expect(follow.version).toBe("acpx-workflow-orchestrator.monitor/v1");
+    expect(follow.version).toBe("acpus.monitor/v1");
     expect(follow.run.status).toBe("blocked");
-    expect(monitor.version).toBe("acpx-workflow-orchestrator.monitor/v1");
+    expect(monitor.version).toBe("acpus.monitor/v1");
     expect(monitor.run.status).toBe("blocked");
     expect(monitor.tasks).toEqual(follow.tasks);
     expect(diagnose.status).toBe("diagnosed_blocked");
     expect(diagnose.diagnosticId).toBe("diagnostic-1");
-    expect(diagnose.diagnostics.version).toBe("acpx-workflow-orchestrator.diagnostics/v1");
+    expect(diagnose.diagnostics.version).toBe("acpus.diagnostics/v1");
     expect(diagnose.diagnostics.run.status).toBe("diagnosed_blocked");
     expect(resume.status).toBe("blocked");
     expect(shownRun.logicalRunId).toBe(runResult.logicalRunId);
@@ -82,12 +82,12 @@ describe("CLI lifecycle", () => {
     const detail = JSON.parse((await run(cwd, "monitor", "detail", prepared.logicalRunId, follow.tasks[0]?.id ?? "", "--json")).stdout) as { version: string; task: { id: string } };
     const afterFollow = await readRunIndex(cwd, prepared.logicalRunId);
 
-    expect(follow.version).toBe("acpx-workflow-orchestrator.monitor/v1");
+    expect(follow.version).toBe("acpus.monitor/v1");
     expect(follow.run.status).toBe("pending");
-    expect(monitor.version).toBe("acpx-workflow-orchestrator.monitor/v1");
+    expect(monitor.version).toBe("acpus.monitor/v1");
     expect(monitor.run.status).toBe("pending");
     expect(follow.tasks[0]?.id).toBe("task:task");
-    expect(detail.version).toBe("acpx-workflow-orchestrator.task-detail/v1");
+    expect(detail.version).toBe("acpus.task-detail/v1");
     expect(detail.task.id).toBe("task:task");
     expect(afterFollow.stages.task.status).toBe("pending");
   }, 60_000);
@@ -236,7 +236,7 @@ async function waitForTerminal(cwd: string, logicalRunId: string) {
 
 function deterministicSpec(cwd: string) {
   return {
-    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    schemaVersion: "acpus.workflow/v1",
     name: "deterministic-cli",
     description: "No-agent CLI lifecycle workflow.",
     root: "discover",
@@ -262,7 +262,7 @@ function deterministicSpec(cwd: string) {
 
 function observationOnlySpec() {
   return WorkflowSpecSchema.parse({
-    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    schemaVersion: "acpus.workflow/v1",
     name: "observation-only-cli",
     root: "task",
     roles: {

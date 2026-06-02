@@ -3,7 +3,7 @@
 ## Status
 
 - Current implementation: current
-- Source modules: `src/cli.ts`, `src/commands/`, `skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator`
+- Source modules: `src/cli.ts`, `src/commands/`, `skills/acpus/scripts/acpus`
 - Maintenance trigger: update this spec when changing commands, flags, JSON output behavior, lifecycle semantics, saved workflow layout, generated drafts, or command error behavior
 
 ## Purpose
@@ -41,7 +41,7 @@ The CLI is the developer and Main Agent entry point for validating, previewing, 
 - Resume `--max-fanout-items` and `--skip-fanout-item` policy flags MUST tighten fanout handling. Resume `--allow-partial-fanout` MAY allow partial results only for read-only fanout stages.
 - `save` MUST write a saved workflow directory only when explicitly requested.
 - Running a workflow MUST NOT save it as a reusable workflow.
-- `generate` MUST write starter workflow drafts under `.acpx-workflow-orchestrator/drafts/`.
+- `generate` MUST write starter workflow drafts under `.acpus/drafts/`.
 - `list` MUST support `workflows`, `runs`, and `drafts` kinds.
 - `show` MUST support `workflow`, `run`, and `draft` kinds.
 
@@ -50,30 +50,30 @@ The CLI is the developer and Main Agent entry point for validating, previewing, 
 Primary commands:
 
 ```bash
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator validate --spec workflows/examples/simple-feature.workflow.spec.json
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator preview --spec workflows/examples/simple-feature.workflow.spec.json --json
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator run --spec workflows/examples/simple-feature.workflow.spec.json
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator run --spec workflows/examples/simple-feature.workflow.spec.json --wait
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator save simple-feature --spec workflows/examples/simple-feature.workflow.spec.json
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator save simple-feature --spec workflows/examples/simple-feature.workflow.spec.json --overwrite
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator run --workflow simple-feature
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator list workflows
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator list runs
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator list drafts
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator show workflow simple-feature
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator show run <logical-run-id>
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator show draft <draft-name>
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator follow <logical-run-id>
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator follow <logical-run-id> --json
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator monitor <logical-run-id>
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator monitor <logical-run-id> --json
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator monitor detail <logical-run-id> <task-id> --json
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator diagnose <logical-run-id> --wait
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator diagnose <logical-run-id> --wait --json
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator recover <logical-run-id>
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator resume <logical-run-id> --wait
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator resume <logical-run-id> --max-fanout-items review_files=4 --allow-partial-fanout review_files
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator generate --name draft-workflow
+skills/acpus/scripts/acpus validate --spec workflows/examples/simple-feature.workflow.spec.json
+skills/acpus/scripts/acpus preview --spec workflows/examples/simple-feature.workflow.spec.json --json
+skills/acpus/scripts/acpus run --spec workflows/examples/simple-feature.workflow.spec.json
+skills/acpus/scripts/acpus run --spec workflows/examples/simple-feature.workflow.spec.json --wait
+skills/acpus/scripts/acpus save simple-feature --spec workflows/examples/simple-feature.workflow.spec.json
+skills/acpus/scripts/acpus save simple-feature --spec workflows/examples/simple-feature.workflow.spec.json --overwrite
+skills/acpus/scripts/acpus run --workflow simple-feature
+skills/acpus/scripts/acpus list workflows
+skills/acpus/scripts/acpus list runs
+skills/acpus/scripts/acpus list drafts
+skills/acpus/scripts/acpus show workflow simple-feature
+skills/acpus/scripts/acpus show run <logical-run-id>
+skills/acpus/scripts/acpus show draft <draft-name>
+skills/acpus/scripts/acpus follow <logical-run-id>
+skills/acpus/scripts/acpus follow <logical-run-id> --json
+skills/acpus/scripts/acpus monitor <logical-run-id>
+skills/acpus/scripts/acpus monitor <logical-run-id> --json
+skills/acpus/scripts/acpus monitor detail <logical-run-id> <task-id> --json
+skills/acpus/scripts/acpus diagnose <logical-run-id> --wait
+skills/acpus/scripts/acpus diagnose <logical-run-id> --wait --json
+skills/acpus/scripts/acpus recover <logical-run-id>
+skills/acpus/scripts/acpus resume <logical-run-id> --wait
+skills/acpus/scripts/acpus resume <logical-run-id> --max-fanout-items review_files=4 --allow-partial-fanout review_files
+skills/acpus/scripts/acpus generate --name draft-workflow
 ```
 
 Resume policy flags:
@@ -119,4 +119,4 @@ New commands and flags MAY be added through `src/commands/` and `src/cli.ts`. Pu
 - Common command helpers -> `src/commands/common.ts`
 - Lifecycle commands -> `src/commands/validate.ts`, `src/commands/preview.ts`, `src/commands/run.ts`, `src/commands/run-worker.ts`, `src/commands/recover.ts`, `src/commands/follow.ts`, `src/commands/monitor.ts`, `src/commands/resume.ts`, `src/commands/diagnose.ts`
 - Workflow library commands -> `src/commands/save.ts`, `src/commands/list.ts`, `src/commands/show.ts`, `src/commands/generate.ts`
-- Skill wrapper -> `skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator`
+- Skill wrapper -> `skills/acpus/scripts/acpus`

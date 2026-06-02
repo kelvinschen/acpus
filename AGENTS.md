@@ -1,8 +1,10 @@
-# Agent Instructions
+# Agent Instructions — Acpus
+
+This document defines the maintenance rules for AI agents working on the **Acpus** codebase (`acpus`, CLI binary `acpus`, state directory `.acpus/`). Agents must follow these rules alongside the terminology defined in `CONTEXT.md`.
 
 ## Specification Maintenance
 
-- Code changes that alter behavior, public contracts, schemas, CLI flags, CLI list/show kinds, runtime state, run-index error codes, report output, error codes, output contract names, `fixLoop` behavior, or module boundaries MUST update the relevant file under `specs/` in the same change.
+- Code changes that alter behavior, public contracts, schemas, CLI flags, CLI list/show kinds, runtime state, run-index error codes, monitor view, error codes, output contract names, `fixLoop` behavior, or module boundaries MUST update the relevant file under `specs/` in the same change.
 - If a code change does not require a SPEC update, the final response MUST state why.
 - Current design truth MUST live in `specs/`, not `docs/`.
 - After a breaking change, such as CLI command/flag removal, feature removal, or public contract replacement, SPECs and tests MUST describe and validate the new current behavior. They MUST NOT add reverse assertions that constrain removed behavior, such as tests that only prove a removed flag is rejected or SPEC text that says an old command/flag no longer exists.

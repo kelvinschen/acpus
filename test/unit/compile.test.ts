@@ -9,7 +9,7 @@ describe("compileExecutionPlan", () => {
     const spec = WorkflowSpecSchema.parse(JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "..", "workflows/examples/simple-feature.workflow.spec.json"), "utf8")));
     const plan = compileExecutionPlan(spec);
 
-    expect(plan.version).toBe("acpx-workflow-orchestrator.execution-plan/v1");
+    expect(plan.version).toBe("acpus.execution-plan/v1");
     expect(plan.workflowName).toBe("simple-feature");
     expect(plan.stages.map((stage) => stage.id)).toEqual(["plan", "implement", "validate", "gate"]);
     expect(JSON.stringify(plan)).not.toContain("defineFlow");
@@ -50,7 +50,7 @@ describe("compileExecutionPlan", () => {
 
   it("plans heterogeneous fanout lane groups with inherited and overridden prompts", () => {
     const spec = WorkflowSpecSchema.parse({
-      schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+      schemaVersion: "acpus.workflow/v1",
       name: "heterogeneous",
       root: "review",
       inputs: { items: { type: "array<json>", default: [] } },
@@ -130,7 +130,7 @@ describe("compileExecutionPlan", () => {
 
   it("plans loop body prompts without old flow routes", () => {
     const spec = WorkflowSpecSchema.parse({
-      schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+      schemaVersion: "acpus.workflow/v1",
       name: "loop-plan",
       root: "quality_loop",
       roles: {
@@ -165,7 +165,7 @@ describe("compileExecutionPlan", () => {
 
   it("fails fast if a deprecated summarize stage reaches compile", () => {
     const spec = WorkflowSpecSchema.parse({
-      schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+      schemaVersion: "acpus.workflow/v1",
       name: "legacy-summarize",
       root: "work",
       roles: {

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "acpx-workflow-orchestrator.workflow/v1",
+  "schemaVersion": "acpus.workflow/v1",
   "name": "read-only-single-lane",
   "description": "Discover changed files, fan out read-only review, reduce findings, and gate completion.",
   "root": "discover_changed_files",

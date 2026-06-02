@@ -70,7 +70,7 @@ describe("fanout runtime stability", () => {
     const runtime = new StaticRuntime();
     setAgentRuntimeFactoryForTests(() => runtime);
     const spec = WorkflowSpecSchema.parse({
-      schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+      schemaVersion: "acpus.workflow/v1",
       name: "heterogeneous-fanout",
       root: "review",
       inputs: {
@@ -1385,7 +1385,7 @@ describe("fanout runtime stability", () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-cancelled-turn-"));
     setAgentRuntimeFactoryForTests(() => new CancelledRuntime());
     const spec = WorkflowSpecSchema.parse({
-      schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+      schemaVersion: "acpus.workflow/v1",
       name: "cancelled-turn",
       root: "task",
       inputs: { cwd: { type: "path", default: cwd } },
@@ -1772,7 +1772,7 @@ function fanoutSpec(
   limits: { maxConcurrency?: number; maxFanoutItems?: number } = {}
 ): WorkflowSpec {
   return WorkflowSpecSchema.parse({
-    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    schemaVersion: "acpus.workflow/v1",
     name: "fanout-stability",
     root: "fanout",
     inputs: {
@@ -1802,7 +1802,7 @@ function fanoutInputItems(count: number): Array<{ id: string }> {
 
 function loopFanoutRealtimeSpec(): WorkflowSpec {
   return WorkflowSpecSchema.parse({
-    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    schemaVersion: "acpus.workflow/v1",
     name: "loop-fanout-realtime",
     root: "review_loop",
     inputs: {
@@ -1901,7 +1901,7 @@ async function waitForLoopBodyStage(
 
 function gateSpec(cwd: string): WorkflowSpec {
   return WorkflowSpecSchema.parse({
-    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    schemaVersion: "acpus.workflow/v1",
     name: "gate-verdict",
     root: "gate",
     inputs: { cwd: { type: "path", default: cwd } },
@@ -1915,7 +1915,7 @@ function gateSpec(cwd: string): WorkflowSpec {
 
 function usageAccountingSpec(cwd: string): WorkflowSpec {
   return WorkflowSpecSchema.parse({
-    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    schemaVersion: "acpus.workflow/v1",
     name: "agent-usage-not-budget",
     root: "plan",
     inputs: { cwd: { type: "path", default: cwd } },
@@ -1932,7 +1932,7 @@ function usageAccountingSpec(cwd: string): WorkflowSpec {
 
 function simpleTaskSpec(cwd: string): WorkflowSpec {
   return WorkflowSpecSchema.parse({
-    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    schemaVersion: "acpus.workflow/v1",
     name: "simple-task",
     root: "task",
     inputs: { cwd: { type: "path", default: cwd } },
@@ -1946,7 +1946,7 @@ function simpleTaskSpec(cwd: string): WorkflowSpec {
 
 function loopOnlySpec(cwd: string): WorkflowSpec {
   return WorkflowSpecSchema.parse({
-    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    schemaVersion: "acpus.workflow/v1",
     name: "loop-only",
     root: "quality_loop",
     inputs: { cwd: { type: "path", default: cwd } },
@@ -1976,7 +1976,7 @@ function loopOnlySpec(cwd: string): WorkflowSpec {
 
 function loopContinueWithPreviousSpec(cwd: string): WorkflowSpec {
   return WorkflowSpecSchema.parse({
-    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    schemaVersion: "acpus.workflow/v1",
     name: "loop-previous-continue",
     root: "quality_loop",
     inputs: { cwd: { type: "path", default: cwd } },
@@ -2011,7 +2011,7 @@ function loopContinueWithPreviousSpec(cwd: string): WorkflowSpec {
 
 function missingVariableSpec(cwd: string): WorkflowSpec {
   return WorkflowSpecSchema.parse({
-    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    schemaVersion: "acpus.workflow/v1",
     name: "missing-variable",
     root: "task",
     inputs: { cwd: { type: "path", default: cwd } },
@@ -2031,7 +2031,7 @@ function missingVariableSpec(cwd: string): WorkflowSpec {
 
 function loopMissingVariableSpec(cwd: string): WorkflowSpec {
   return WorkflowSpecSchema.parse({
-    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    schemaVersion: "acpus.workflow/v1",
     name: "loop-missing-variable",
     root: "quality_loop",
     inputs: { cwd: { type: "path", default: cwd } },
@@ -2062,7 +2062,7 @@ function loopMissingVariableSpec(cwd: string): WorkflowSpec {
 
 function loopFanoutMissingVariableSpec(cwd: string): WorkflowSpec {
   return WorkflowSpecSchema.parse({
-    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    schemaVersion: "acpus.workflow/v1",
     name: "loop-fanout-missing-variable",
     root: "quality_loop",
     inputs: {
@@ -2112,7 +2112,7 @@ function loopFanoutSpec(cwd: string, options: {
   allowPartial?: boolean;
 }): WorkflowSpec {
   return WorkflowSpecSchema.parse({
-    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    schemaVersion: "acpus.workflow/v1",
     name: "loop-fanout",
     root: "quality_loop",
     inputs: {
@@ -2148,7 +2148,7 @@ function loopFanoutSpec(cwd: string, options: {
 
 function loopCurrentOutputSpec(cwd: string): WorkflowSpec {
   return WorkflowSpecSchema.parse({
-    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    schemaVersion: "acpus.workflow/v1",
     name: "loop-current-output",
     root: "quality_loop",
     inputs: { cwd: { type: "path", default: cwd } },

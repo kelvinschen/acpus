@@ -1,26 +1,28 @@
-# ACPX Workflow Orchestrator
+# Acpus — Terminology Reference
 
-This context defines the repository language used to separate normative design specifications, developer-facing documentation, historical records, and agent-facing maintenance rules.
+This document defines the repository language used to separate normative design specifications, developer-facing documentation, historical records, and agent-facing maintenance rules. All terminology below reflects current usage in **Acpus** (`acpus`, CLI binary `acpus`, state directory `.acpus/`), built on the upstream `acpx` agent runtime.
 
-## Language
+## Document Kinds
 
-**Specification**:
+**Specification** (`specs/`):
 A normative, up-to-date design and implementation contract for a project module. Specifications use structured language and define current behavior, interfaces, invariants, and implementation responsibilities.
 _Avoid_: design doc, plan, proposal
 
-**Developer Documentation**:
+**Developer Documentation** (`docs/`):
 Readable explanatory material intended to help developers understand, use, or troubleshoot the project. Developer documentation may reference specifications but is not itself normative.
 _Avoid_: spec, implementation contract
 
-**Historical Archive**:
+**Historical Archive** (`docs/archive/`):
 Non-normative records of past plans, validation runs, handoffs, investigations, or decisions that are preserved for context. Archived material must not be treated as current implementation truth.
 _Avoid_: current docs, active plan
 
-**Roadmap**:
+**Roadmap** (`docs/roadmap/`):
 Non-normative future work, accepted direction that is not yet implemented, or known capability gaps. Roadmap material must not be treated as current implementation truth.
 _Avoid_: specification, historical archive
 
-**Agent Instruction**:
+## Agent Terms
+
+**Agent Instruction** (`AGENTS.md`):
 Repository-level rules that constrain AI agents working on code changes. Agent instructions define required maintenance behavior for specifications and documentation.
 _Avoid_: agent spec, contributor guide
 
@@ -35,6 +37,12 @@ _Avoid_: active agent, concurrency slot
 **Agent Work Unit**:
 A schedulable unit of agent-backed workflow work, such as a stage attempt, fanout lane attempt, or Loop Body stage attempt. Agent work units are the entities whose runtime state is tracked for concurrency and progress.
 _Avoid_: agent, task, active agent
+
+## Runtime & Observation Surfaces
+
+**Run** (brand annotation: *opus*):
+One complete execution of a workflow spec under `acpus`. Each run is assigned a numbered identifier and produces replayable state within `.acpus/`.
+_Avoid_: execution instance, job, pipeline run
 
 **Run Monitor View**:
 A lightweight observation surface for current run, stage, and Agent Work Unit progress. A Run Monitor View is not a runtime report, audit timeline, or scheduler state source.
@@ -52,6 +60,16 @@ _Avoid_: agent, Agent Work Unit, active agent
 A focused observation surface for one selected Stage Task, including lightweight metadata and bounded previews of related artifacts. A Task Detail View is loaded on demand and is separate from the Run Monitor View.
 _Avoid_: Work Unit Detail View, report detail, full artifact view, expanded monitor view
 
+## Workflow Structure
+
+**Workflow Spec** (brand annotation: *score*):
+The declarative definition of a workflow consumed by `acpus compose` and executed by `acpus run`. A score defines stages, lanes, loop boundaries, and inter-stage hooks.
+_Avoid_: pipeline config, job definition, workflow YAML
+
+**Stage** (brand annotation: *movement*):
+A named phase within a workflow spec that groups related tasks and defines execution order relative to other stages.
+_Avoid_: step, phase, section
+
 **Heterogeneous Fanout**:
 A fanout pattern where work items, or lanes for the same work item, may be assigned to different roles or agents within one fanout stage.
 _Avoid_: multi-agent fanout, mixed-agent fanout, agent selection fanout
@@ -59,6 +77,24 @@ _Avoid_: multi-agent fanout, mixed-agent fanout, agent selection fanout
 **Fanout Core**:
 The shared fanout semantics for expanding items into lane work, deriving fanout statuses, and constructing aggregate fanout results across top-level and Loop Body fanout usage.
 _Avoid_: fanout runner, fanout scheduler, generic workflow executor
+
+**Lane**:
+A named execution channel within heterogeneous fanout that binds selected work items to a role and prompt.
+_Avoid_: agent option, branch
+
+**Lane Group**:
+A named set of lanes evaluated together for each fanout item under one selection mode.
+_Avoid_: lane selector, lane collection
+
+**Cadenza** (brand annotation: *cadenza*):
+An agent-backed block within a stage where the agent operates with broad discretion over approach and output format, constrained only by the surrounding stage contract.
+_Avoid_: free-form task, open-ended agent call
+
+**Intermezzo** (brand annotation: *intermezzo*):
+A hook that executes between stages, used for cross-stage validation, state propagation, or conditional branching before the next movement begins.
+_Avoid_: pre/post hook, middleware, interceptor
+
+## Loop Constructs
 
 **Workflow-Level Bounded Loop**:
 A workflow control pattern that repeats a bounded set of workflow stages until an explicit exit condition is met or a configured round limit is exhausted.
@@ -80,10 +116,12 @@ _Avoid_: iteration step, partial round, mid-loop break
 The top-level stage output emitted by a Workflow-Level Bounded Loop. A Loop Output summarizes the latest round and preserves round history without promoting Loop Body stage outputs to top-level workflow outputs.
 _Avoid_: flattened body outputs, final body stage output
 
-**Lane**:
-A named execution channel within heterogeneous fanout that binds selected work items to a role and prompt.
-_Avoid_: agent option, branch
+## Reporting & Catalogue
 
-**Lane Group**:
-A named set of lanes evaluated together for each fanout item under one selection mode.
-_Avoid_: lane selector, lane collection
+**Coda** (brand annotation: *coda*):
+The final report produced at the conclusion of a run, summarising outcomes across all stages, loop rounds, and fanout lanes.
+_Avoid_: final report, summary, post-run output
+
+**Catalogue** (brand annotation: *catalogue*):
+The template and archival system accessible via `acpus list` and `acpus show`, storing reusable workflow specs and completed run records.
+_Avoid_: template library, registry, run history

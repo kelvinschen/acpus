@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const SCHEMA_VERSION = "acpx-workflow-orchestrator.workflow/v1";
+export const SCHEMA_VERSION = "acpus.workflow/v1";
 
 const IdentifierSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_-]*$/);
 const VariableNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/);

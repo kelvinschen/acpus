@@ -146,7 +146,7 @@ async function runToTerminal(cwd: string, runId: string) {
 
 function agentDiscoverProgramReduceSpec(cwd: string): WorkflowSpec {
   return WorkflowSpecSchema.parse({
-    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    schemaVersion: "acpus.workflow/v1",
     name: "agent-discover-program-reduce",
     root: "discover",
     inputs: { cwd: { type: "path", default: cwd } },
@@ -164,7 +164,7 @@ function agentDiscoverProgramReduceSpec(cwd: string): WorkflowSpec {
 
 function agentDecisionSpec(cwd: string): WorkflowSpec {
   return WorkflowSpecSchema.parse({
-    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    schemaVersion: "acpus.workflow/v1",
     name: "agent-decision",
     root: "decide",
     inputs: { cwd: { type: "path", default: cwd } },
@@ -184,7 +184,7 @@ function agentDecisionSpec(cwd: string): WorkflowSpec {
 
 function loopSpec(cwd: string): WorkflowSpec {
   return WorkflowSpecSchema.parse({
-    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    schemaVersion: "acpus.workflow/v1",
     name: "loop",
     root: "quality_loop",
     inputs: { cwd: { type: "path", default: cwd } },
@@ -212,7 +212,7 @@ function loopSpec(cwd: string): WorkflowSpec {
 
 function loopBodyFanoutSpec(cwd: string): WorkflowSpec {
   return WorkflowSpecSchema.parse({
-    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    schemaVersion: "acpus.workflow/v1",
     name: "loop-body-fanout",
     root: "review_loop",
     inputs: {

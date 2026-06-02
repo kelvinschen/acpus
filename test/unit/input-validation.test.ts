@@ -4,7 +4,7 @@ import { WorkflowSpecSchema } from "../../src/schema/workflow-spec.js";
 
 describe("input validation", () => {
   const spec = WorkflowSpecSchema.parse({
-    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    schemaVersion: "acpus.workflow/v1",
     name: "input-contract",
     root: "gate",
     inputs: {

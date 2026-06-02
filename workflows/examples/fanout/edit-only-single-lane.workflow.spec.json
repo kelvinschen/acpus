@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "acpx-workflow-orchestrator.workflow/v1",
+  "schemaVersion": "acpus.workflow/v1",
   "name": "edit-only-single-lane",
   "description": "High-risk example that edits multiple independent items, then reconciles with a read-only reducer.",
   "root": "edit_items",

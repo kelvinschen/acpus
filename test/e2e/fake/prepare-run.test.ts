@@ -13,7 +13,7 @@ describe("runtime-driven fake e2e", () => {
   afterEach(() => setAgentRuntimeFactoryForTests(undefined));
 
   it("creates a logical run snapshot with execution-plan.json and no flow artifacts", async () => {
-    const temp = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-workflow-orchestrator-test-"));
+    const temp = await fs.mkdtemp(path.join(os.tmpdir(), "acpus-test-"));
     const spec = WorkflowSpecSchema.parse(JSON.parse(await fs.readFile(path.resolve(__dirname, "..", "..", "..", "workflows/examples/simple-feature.workflow.spec.json"), "utf8")));
     const prepared = await prepareRun(spec, {
       cwd: temp,
@@ -28,7 +28,7 @@ describe("runtime-driven fake e2e", () => {
   });
 
   it("runs a linear workflow through fake runtime turns", async () => {
-    const temp = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-workflow-orchestrator-linear-"));
+    const temp = await fs.mkdtemp(path.join(os.tmpdir(), "acpus-linear-"));
     const spec = WorkflowSpecSchema.parse(JSON.parse(await fs.readFile(path.resolve(__dirname, "..", "..", "..", "workflows/examples/simple-feature.workflow.spec.json"), "utf8")));
     const fake = fakeRuntimeFactory([
       { text: plainJsonOutput({ status: "completed", summary: "plan", artifacts: [], nextFocus: "implement" }) },
@@ -53,10 +53,10 @@ describe("runtime-driven fake e2e", () => {
   });
 
   it("persists deterministic blocked stages before wait polling", async () => {
-    const temp = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-workflow-orchestrator-blocked-"));
+    const temp = await fs.mkdtemp(path.join(os.tmpdir(), "acpus-blocked-"));
     await fs.writeFile(path.join(temp, "sample.txt"), "hello\n", "utf8");
     const spec = WorkflowSpecSchema.parse({
-      schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+      schemaVersion: "acpus.workflow/v1",
       name: "deterministic-blocked",
       root: "discover",
       inputs: { cwd: { type: "path", default: temp } },
@@ -89,9 +89,9 @@ describe("runtime-driven fake e2e", () => {
   });
 
   it("blocks when a program gate condition is false", async () => {
-    const temp = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-workflow-orchestrator-gate-blocked-"));
+    const temp = await fs.mkdtemp(path.join(os.tmpdir(), "acpus-gate-blocked-"));
     const spec = WorkflowSpecSchema.parse({
-      schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+      schemaVersion: "acpus.workflow/v1",
       name: "program-gate-blocked",
       root: "gate",
       inputs: { cwd: { type: "path", default: temp } },
@@ -110,7 +110,7 @@ describe("runtime-driven fake e2e", () => {
   });
 
   it("repairs schema-invalid output and records repair accounting", async () => {
-    const temp = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-workflow-orchestrator-repair-"));
+    const temp = await fs.mkdtemp(path.join(os.tmpdir(), "acpus-repair-"));
     const spec = WorkflowSpecSchema.parse(JSON.parse(await fs.readFile(path.resolve(__dirname, "..", "..", "..", "workflows/examples/simple-feature.workflow.spec.json"), "utf8")));
     const fake = fakeRuntimeFactory([
       { text: plainJsonOutput({ status: "completed", summary: "plan", artifacts: [], nextFocus: "implement" }) },
@@ -132,7 +132,7 @@ describe("runtime-driven fake e2e", () => {
   });
 
   it("repairs checks[].result instead of accepting it as an alias", async () => {
-    const temp = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-workflow-orchestrator-alias-"));
+    const temp = await fs.mkdtemp(path.join(os.tmpdir(), "acpus-alias-"));
     const spec = WorkflowSpecSchema.parse(JSON.parse(await fs.readFile(path.resolve(__dirname, "..", "..", "..", "workflows/examples/simple-feature.workflow.spec.json"), "utf8")));
     const fake = fakeRuntimeFactory([
       { text: plainJsonOutput({ status: "completed", summary: "plan", artifacts: [], nextFocus: "implement" }) },
@@ -154,7 +154,7 @@ describe("runtime-driven fake e2e", () => {
   });
 
   it("blocks when repair also fails schema validation", async () => {
-    const temp = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-workflow-orchestrator-repair-fail-"));
+    const temp = await fs.mkdtemp(path.join(os.tmpdir(), "acpus-repair-fail-"));
     const spec = WorkflowSpecSchema.parse(JSON.parse(await fs.readFile(path.resolve(__dirname, "..", "..", "..", "workflows/examples/simple-feature.workflow.spec.json"), "utf8")));
     const fake = fakeRuntimeFactory([
       { text: plainJsonOutput({ status: "completed", summary: "plan", artifacts: [], nextFocus: "implement" }) },
@@ -173,7 +173,7 @@ describe("runtime-driven fake e2e", () => {
   });
 
   it("runs fanout items with independent session keys", async () => {
-    const temp = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-workflow-orchestrator-fanout-"));
+    const temp = await fs.mkdtemp(path.join(os.tmpdir(), "acpus-fanout-"));
     const spec = WorkflowSpecSchema.parse(JSON.parse(await fs.readFile(path.resolve(__dirname, "..", "..", "..", "workflows/examples/fanout/edit-only-single-lane.workflow.spec.json"), "utf8")));
     const fake = fakeRuntimeFactory([
       { text: plainJsonOutput(implementationOutput({ summary: "item 1" })) },

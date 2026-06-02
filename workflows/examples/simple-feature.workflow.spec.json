@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "acpx-workflow-orchestrator.workflow/v1",
+  "schemaVersion": "acpus.workflow/v1",
   "name": "simple-feature",
   "description": "Plan, implement, validate, and gate a scoped feature change.",
   "root": "plan",

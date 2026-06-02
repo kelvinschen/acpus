@@ -3,7 +3,7 @@ import path from "node:path";
 import { runDir } from "../run-index/paths.js";
 import { RuntimeErrorCodes, type RunIndex } from "../run-index/read-write.js";
 
-export const RUN_DIAGNOSTICS_VIEW_VERSION = "acpx-workflow-orchestrator.diagnostics/v1";
+export const RUN_DIAGNOSTICS_VIEW_VERSION = "acpus.diagnostics/v1";
 
 const RUN_LEVEL_RUNTIME_CODES = new Set<string>([
   RuntimeErrorCodes.EVENT_APPEND_LOCK_TIMEOUT,

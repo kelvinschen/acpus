@@ -35,7 +35,7 @@ export class OrchestratorError extends Error {
   readonly result: IssueResult;
 
   constructor(result: IssueResult) {
-    super(result.errors[0]?.message ?? "acpx-workflow-orchestrator command failed");
+    super(result.errors[0]?.message ?? "acpus command failed");
     this.result = result;
   }
 }

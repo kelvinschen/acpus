@@ -16,7 +16,7 @@ if [[ -x "$PACKAGE_ROOT/node_modules/.bin/tsx" ]]; then
 fi
 
 echo >&2 <<EOM
-acpx-workflow-orchestrator is not built and local dependencies are missing.
+acpus is not built and local dependencies are missing.
 Run:
   cd "$PACKAGE_ROOT"
   npm install

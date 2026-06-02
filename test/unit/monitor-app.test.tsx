@@ -136,7 +136,7 @@ function monitorView(overrides: Partial<RunMonitorView> & { workflowName?: strin
   const stages = overrides.stages ?? [stage("task", "running")];
   const tasks = overrides.tasks ?? [task("task:task", "task", "task")];
   return {
-    version: "acpx-workflow-orchestrator.monitor/v1",
+    version: "acpus.monitor/v1",
     generatedAt: "2026-06-02T00:00:00.000Z",
     run: {
       logicalRunId: "run-1",
@@ -191,7 +191,7 @@ function detail(view: RunMonitorView, taskId: string, summary: string): TaskDeta
   const selectedTask = view.tasks.find((candidate) => candidate.id === taskId);
   if (!selectedTask) throw new Error(`Missing test task ${taskId}`);
   return {
-    version: "acpx-workflow-orchestrator.task-detail/v1",
+    version: "acpus.task-detail/v1",
     generatedAt: "2026-06-02T00:00:00.000Z",
     run: view.run,
     task: selectedTask,

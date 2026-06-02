@@ -68,7 +68,7 @@ async function readExistingOutputs(dir: string): Promise<Record<string, unknown>
 }
 
 function diagnosticPrompt(input: { workflowName: string; runSnapshot: RunIndex; outputs: Record<string, unknown>; diagnostics: RunDiagnostic[]; eventTail: RunDiagnosticEvent[] }): string {
-  return `You are the recovery reviewer for a blocked acpx-workflow-orchestrator workflow.
+  return `You are the recovery reviewer for a blocked acpus workflow.
 
 Workflow: ${input.workflowName}
 

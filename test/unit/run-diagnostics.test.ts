@@ -20,7 +20,7 @@ describe("RunDiagnosticsView", () => {
 
     const view = await buildRunDiagnosticsView(cwd, index, { eventTailLimit: 2 });
 
-    expect(view.version).toBe("acpx-workflow-orchestrator.diagnostics/v1");
+    expect(view.version).toBe("acpus.diagnostics/v1");
     expect(view.run).toMatchObject({
       logicalRunId: "diagnostics-run",
       status: "blocked",
@@ -75,7 +75,7 @@ describe("RunDiagnosticsView", () => {
 function runIndex(input: Partial<RunIndex>): RunIndex {
   const now = new Date().toISOString();
   return {
-    schemaVersion: "acpx-workflow-orchestrator.run/v2",
+    schemaVersion: "acpus.run/v2",
     logicalRunId: input.logicalRunId ?? "run",
     workflowName: "diagnostics-workflow",
     status: input.status ?? "pending",

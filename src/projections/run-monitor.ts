@@ -5,8 +5,8 @@ import type { AttemptIndexEntry, AttemptStatus, RunIndex, StageIndexEntry, Stage
 import { workerSummary } from "../runtime/worker.js";
 import type { Stage, WorkflowSpec } from "../schema/workflow-spec.js";
 
-export const RUN_MONITOR_VIEW_VERSION = "acpx-workflow-orchestrator.monitor/v1";
-export const TASK_DETAIL_VIEW_VERSION = "acpx-workflow-orchestrator.task-detail/v1";
+export const RUN_MONITOR_VIEW_VERSION = "acpus.monitor/v1";
+export const TASK_DETAIL_VIEW_VERSION = "acpus.task-detail/v1";
 
 export type TaskStatus = StageStatus | AttemptStatus;
 export type TaskKind = "stage" | "fanoutLane" | "loopStage" | "loopFanoutLane";

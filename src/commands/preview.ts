@@ -18,8 +18,8 @@ export function registerPreview(program: Command): void {
         return;
       }
       const view = previewRunView(spec, [...result.warnings, ...result.errors], {
-        validate: `acpx-workflow-orchestrator validate --spec ${specPath}`,
-        run: `acpx-workflow-orchestrator run --spec ${specPath}`
+        validate: `acpus validate --spec ${specPath}`,
+        run: `acpus run --spec ${specPath}`
       });
       if (options.json) printJson(view);
       else {
@@ -34,8 +34,8 @@ export function registerPreview(program: Command): void {
         process.stdout.write("Stages:\n");
         for (const stage of view.stages) process.stdout.write(`- ${stage.id} (${stage.kind})\n`);
         process.stdout.write("Audit:\n");
-        process.stdout.write("- Run snapshot: .acpx-workflow-orchestrator/runs/<logicalRunId>/\n");
-        process.stdout.write("- Saved workflow snapshot: .acpx-workflow-orchestrator/workflows/<name>/ after explicit save\n");
+        process.stdout.write("- Run snapshot: .acpus/runs/<logicalRunId>/\n");
+        process.stdout.write("- Saved workflow snapshot: .acpus/workflows/<name>/ after explicit save\n");
         printIssues(result);
       }
       if (!result.ok) process.exitCode = 1;

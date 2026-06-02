@@ -51,7 +51,7 @@ export async function loadWorkflowSpec(filePath: string): Promise<{ spec?: Workf
           severity: "error",
           path: toJsonPointer(entry.path),
           message: entry.message,
-          suggestions: ["Update the spec to match acpx-workflow-orchestrator.workflow/v1."]
+          suggestions: ["Update the spec to match acpus.workflow/v1."]
         })
       )
     };

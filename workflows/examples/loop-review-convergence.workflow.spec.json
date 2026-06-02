@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "acpx-workflow-orchestrator.workflow/v1",
+  "schemaVersion": "acpus.workflow/v1",
   "name": "loop-review-convergence",
   "description": "Loop review workflow that converges dual static and semantic review findings before final summary.",
   "root": "review_loop",

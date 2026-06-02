@@ -5,7 +5,7 @@ export function repoOrCwd(cwd = process.cwd()): string {
 }
 
 export function orchestratorDir(cwd = process.cwd()): string {
-  return path.join(repoOrCwd(cwd), ".acpx-workflow-orchestrator");
+  return path.join(repoOrCwd(cwd), ".acpus");
 }
 
 export function draftsDir(cwd = process.cwd()): string {
@@ -17,7 +17,7 @@ export function projectWorkflowsDir(cwd = process.cwd()): string {
 }
 
 export function globalWorkflowsDir(home = process.env.HOME ?? process.cwd()): string {
-  return path.join(home, ".acpx-workflow-orchestrator", "workflows");
+  return path.join(home, ".acpus", "workflows");
 }
 
 export function runsDir(cwd = process.cwd()): string {

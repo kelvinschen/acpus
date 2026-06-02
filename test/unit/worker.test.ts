@@ -58,7 +58,7 @@ describe("run worker metadata", () => {
 
 function workerSpec() {
   return WorkflowSpecSchema.parse({
-    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    schemaVersion: "acpus.workflow/v1",
     name: "worker-state",
     root: "task",
     roles: {

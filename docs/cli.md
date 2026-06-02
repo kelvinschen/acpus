@@ -1,87 +1,113 @@
-# CLI
+# CLI Reference
 
-Use the skill-local wrapper:
-
-```bash
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator <command>
-```
-
-Primary commands:
+Acpus exposes its interface through the `acpus` binary. Invoke commands directly:
 
 ```bash
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator validate --spec workflows/examples/simple-feature.workflow.spec.json
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator preview --spec workflows/examples/simple-feature.workflow.spec.json --json
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator run --spec workflows/examples/simple-feature.workflow.spec.json
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator run --spec workflows/examples/simple-feature.workflow.spec.json --wait
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator save simple-feature --spec workflows/examples/simple-feature.workflow.spec.json
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator save simple-feature --spec workflows/examples/simple-feature.workflow.spec.json --overwrite
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator run --workflow simple-feature
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator list workflows
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator list runs
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator list drafts
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator show workflow simple-feature
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator show run <logical-run-id>
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator show draft <draft-name>
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator follow <logical-run-id>
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator follow <logical-run-id> --json
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator monitor <logical-run-id>
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator monitor <logical-run-id> --json
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator monitor detail <logical-run-id> <task-id> --json
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator diagnose <logical-run-id> --wait
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator diagnose <logical-run-id> --wait --json
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator recover <logical-run-id>
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator resume <logical-run-id> --wait
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator resume <logical-run-id> --max-fanout-items review_files=4 --allow-partial-fanout review_files
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator generate --name draft-workflow
+acpus <command>
 ```
 
-All commands support `--json` where structured output is useful.
+## Command Groups
 
-`run` validates automatically, prepares a logical run, writes
-`execution-plan.json`, starts a background worker, and returns the run id. Use
-`--wait` to run in the foreground until terminal status with progress output.
-Use `preview` before `run` when you want to inspect the compiled plan without
-creating or starting a run.
+Acpus groups commands under four verbs: **Compose**, **Conduct**, **Recover**, and **Catalogue**.
 
-`follow` observes and syncs the selected logical run. It does not create a new
-workflow. `follow --json` returns the Run Monitor View.
+### Compose -- Prepare and author workflows
 
-`monitor <run>` opens the observation-only Ink TUI. Use up/down to move,
-left/right to switch panels, enter for task detail, esc to return, r to
-refresh, and q to quit. `monitor <run> --json` returns the same Run Monitor View
-as `follow --json`. `monitor detail <run> <task-id> --json` returns bounded
-detail for one Stage Task from the monitor output.
+```bash
+# Validate a workflow spec without running it.
+acpus validate --spec workflows/examples/simple-feature.workflow.spec.json
 
-`generate` writes a starter workflow draft under `.acpx-workflow-orchestrator/drafts/`.
-Generated drafts are templates only; validate and preview them before running.
+# Inspect the compiled execution plan as structured output.
+acpus preview --spec workflows/examples/simple-feature.workflow.spec.json --json
 
-`diagnose` prepares a read-only recovery diagnostic prompt/artifact. It does not
-rerun edit work and does not change the saved workflow spec. `diagnose --json`
-returns the post-diagnose Run Diagnostics View.
+# Save a workflow to the catalogue for reuse.
+acpus save simple-feature --spec workflows/examples/simple-feature.workflow.spec.json
+acpus save simple-feature --spec workflows/examples/simple-feature.workflow.spec.json --overwrite
 
-`recover` restarts a stale or dead workflow worker for a non-terminal run. It
-does not restore arbitrary in-memory agent runtime state; running attempts still
-use the scheduler's stale recovery rules.
+# Generate a starter workflow draft under .acpus/drafts/.
+acpus generate --name draft-workflow
+```
 
-`resume` advances an existing run from its persisted run snapshot and
-`execution-plan.json` only when the run is blocked, failed, or diagnosed
-blocked. Without `--wait`, resume resets recoverable persisted state, starts a
-background worker, and returns immediately. With `--wait`, resume runs in the
-foreground until terminal status. Resume refuses to take ownership while a
-non-stale worker is active. Resume policy flags have these effects:
+`validate` checks schema correctness, graph structure, variable binding, and output contracts. It reports errors in a structured format suitable for automated repair loops.
 
-- `--max-fanout-items <stage=count>` lowers the effective fanout item cap.
-- `--skip-fanout-item <stage=index>` skips a zero-based item index.
-- `--allow-partial-fanout <stage>` allows partial results for read-only fanout stages.
+`preview` compiles the spec into an execution plan and returns it without creating or starting a run. Use `preview` before `run` when you need to inspect the plan first.
 
-Resume persists these policy overrides into `run.json` before advancing the
-scheduler. Blocked fanout stages are re-aggregated from existing item outputs
-without rerunning completed items; blocked/failed non-fanout stages are reset to
-pending so the next scheduler tick can retry them.
+`save` writes a saved workflow directory containing `workflow.spec.json`, `execution-plan.json`, README, schema documentation, wrapper scripts, and helper files from the current package build. Saving is always explicit; running a workflow does not save it.
 
-`save` writes a saved workflow directory with `workflow.spec.json`,
-`execution-plan.json`, README, schema/docs, wrapper, and built helper files from
-the current package build. Running a workflow does not save it; saving is always
-explicit.
+`generate` writes a starter workflow draft to `.acpus/drafts/`. Generated drafts are templates only; validate and preview them before running.
 
-`list` and `show` support `workflows`, `runs`, and `drafts`.
+### Conduct -- Execute and observe runs
+
+```bash
+# Run a workflow from a spec file.
+acpus run --spec workflows/examples/simple-feature.workflow.spec.json
+acpus run --spec workflows/examples/simple-feature.workflow.spec.json --wait
+
+# Run a saved workflow by name.
+acpus run --workflow simple-feature
+
+# Follow a run with streaming output.
+acpus follow <logical-run-id>
+acpus follow <logical-run-id> --json
+
+# Open the observation-only TUI monitor.
+acpus monitor <logical-run-id>
+acpus monitor <logical-run-id> --json
+acpus monitor detail <logical-run-id> <task-id> --json
+
+# Resume a blocked or failed run.
+acpus resume <logical-run-id> --wait
+acpus resume <logical-run-id> --max-fanout-items review_files=4 --allow-partial-fanout review_files
+```
+
+`run` validates the spec automatically, prepares a logical run, writes `execution-plan.json`, starts a background worker, and returns the run identifier. With `--wait`, the command runs in the foreground until terminal status and prints progress output.
+
+`follow` observes and syncs the selected logical run. It does not create a new workflow. `follow --json` returns the Run Monitor View as structured output.
+
+`monitor <run>` opens the observation-only Ink TUI. Navigate with up/down (move), left/right (switch panels), enter (task detail), esc (return), r (refresh), q (quit). `monitor <run> --json` returns the same Run Monitor View as `follow --json`. `monitor detail <run> <task-id> --json` returns bounded detail for one stage task from the monitor output.
+
+`resume` advances an existing run from its persisted snapshot and `execution-plan.json` when the run is blocked, failed, or diagnosed blocked. Without `--wait`, resume resets recoverable state, starts a background worker, and returns immediately. With `--wait`, it runs in the foreground until terminal status. Resume refuses ownership while a non-stale worker is active.
+
+Resume policy flags:
+
+- `--max-fanout-items <stage=count>` lowers the effective fanout item cap for the named stage.
+- `--skip-fanout-item <stage=index>` skips a zero-based item index by position.
+- `--allow-partial-fanout <stage>` permits partial results for read-only fanout stages.
+
+Resume persists policy overrides into `run.json` before advancing the scheduler. Blocked fanout stages re-aggregate from existing item outputs without rerunning completed items. Blocked or failed non-fanout stages reset to pending so the next scheduler tick retries them.
+
+### Recover -- Diagnose and repair runs
+
+```bash
+# Produce a read-only diagnostic artifact for troubleshooting.
+acpus diagnose <logical-run-id> --wait
+acpus diagnose <logical-run-id> --wait --json
+
+# Restart a stale or dead worker for a non-terminal run.
+acpus recover <logical-run-id>
+```
+
+`diagnose` produces a recovery diagnostic prompt and artifact. It does not rerun edit work and does not change the saved workflow spec. `diagnose --json` returns the post-diagnose Run Diagnostics View.
+
+`recover` restarts a stale or dead workflow worker for a non-terminal run. It does not restore arbitrary in-memory agent runtime state; recovery attempts use the scheduler's stale recovery rules.
+
+### Catalogue -- List and inspect saved artifacts
+
+```bash
+# List saved workflows, completed runs, or draft files.
+acpus list workflows
+acpus list runs
+acpus list drafts
+
+# Show details of a saved workflow, run, or draft.
+acpus show workflow simple-feature
+acpus show run <logical-run-id>
+acpus show draft <draft-name>
+```
+
+`list` and `show` operate on three namespaces: `workflows`, `runs`, and `drafts`.
+
+## General Conventions
+
+All commands accept `--json` where structured output is useful. JSON output follows stable schemas documented in the error-codes reference and specification files.
+
+State produced by Acpus lives under `.acpus/` in the working directory. This includes run records, drafts, execution plans, and event logs.

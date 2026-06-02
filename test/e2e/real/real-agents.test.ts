@@ -25,11 +25,11 @@ function findAcpxOrThrow(): string {
 describe.skipIf(!runReal)("real acpx agents e2e", () => {
   it("reaches a blocked terminal state through the CLI without invoking an agent", async () => {
     const acpx = findAcpxOrThrow();
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-workflow-orchestrator-real-contract-"));
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpus-real-contract-"));
     await fs.writeFile(path.join(cwd, "sample.txt"), "hello\n", "utf8");
     const specPath = path.join(cwd, "workflow.spec.json");
     await fs.writeFile(specPath, JSON.stringify({
-      schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+      schemaVersion: "acpus.workflow/v1",
       name: "real-deterministic-contract",
       root: "discover",
       inputs: {
@@ -59,13 +59,13 @@ describe.skipIf(!runReal)("real acpx agents e2e", () => {
 
   it("runs a small code task through a configured real ACP agent", async () => {
     const acpx = findAcpxOrThrow();
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-workflow-orchestrator-real-"));
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpus-real-"));
     await fs.mkdir(path.join(cwd, "src"));
     await fs.writeFile(path.join(cwd, "src", "status.txt"), "initial\n", "utf8");
     const specPath = path.join(cwd, "workflow.spec.json");
     const inputPath = path.join(cwd, "input.json");
     await fs.writeFile(specPath, JSON.stringify({
-      schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+      schemaVersion: "acpus.workflow/v1",
       name: "real-small-code-task",
       root: "implement",
       inputs: {

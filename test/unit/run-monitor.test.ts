@@ -18,7 +18,7 @@ describe("RunMonitorView", () => {
 
     const view = await buildRunMonitorView(cwd, spec, index);
 
-    expect(view.version).toBe("acpx-workflow-orchestrator.monitor/v1");
+    expect(view.version).toBe("acpus.monitor/v1");
     expect(view.run).toMatchObject({ logicalRunId: "monitor-run", workflowName: "monitor-workflow", status: "running" });
     expect(view.run.worker).toMatchObject({ pid: 1234, status: "running" });
     expect(view).not.toHaveProperty("eventTail");
@@ -65,7 +65,7 @@ describe("RunMonitorView", () => {
 
     const detail = await buildTaskDetailView(cwd, spec, index, "task:task");
 
-    expect(detail.version).toBe("acpx-workflow-orchestrator.task-detail/v1");
+    expect(detail.version).toBe("acpus.task-detail/v1");
     expect(detail.task).toMatchObject({ id: "task:task", status: "completed" });
     expect(detail.prompt).toMatchObject({ lines: 1, preview: "Implement task." });
     expect(detail.activity).toMatchObject({ totalAttempts: 1 });
@@ -106,7 +106,7 @@ describe("RunMonitorView", () => {
 
 function monitorSpec(): WorkflowSpec {
   return WorkflowSpecSchema.parse({
-    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    schemaVersion: "acpus.workflow/v1",
     name: "monitor-workflow",
     root: "task",
     inputs: {
@@ -155,7 +155,7 @@ function monitorSpec(): WorkflowSpec {
 
 function monitorIndex(): RunIndex {
   return {
-    schemaVersion: "acpx-workflow-orchestrator.run/v2",
+    schemaVersion: "acpus.run/v2",
     logicalRunId: "monitor-run",
     workflowName: "monitor-workflow",
     status: "running",

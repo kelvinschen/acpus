@@ -1,10 +1,10 @@
 {
-  "name": "@kelvinschen/acpx-workflow-orchestrator",
+  "name": "acpus",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "bin": {
-    "acpx-workflow-orchestrator": "dist/cli.mjs"
+    "acpus": "dist/cli.mjs"
   },
   "engines": {
     "node": ">=22.13.0"

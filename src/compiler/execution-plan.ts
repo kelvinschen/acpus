@@ -1,7 +1,7 @@
 import type { Role, Stage, Variable, WorkflowSpec } from "../schema/workflow-spec.js";
 import type { OutputContractName } from "../contracts/output-contracts.js";
 
-export const EXECUTION_PLAN_VERSION = "acpx-workflow-orchestrator.execution-plan/v1";
+export const EXECUTION_PLAN_VERSION = "acpus.execution-plan/v1";
 
 export type ExecutionPlan = {
   version: typeof EXECUTION_PLAN_VERSION;

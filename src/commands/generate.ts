@@ -13,7 +13,7 @@ export function registerGenerate(program: Command): void {
       await fs.mkdir(dir, { recursive: true });
       const file = path.join(dir, `${new Date().toISOString().replace(/[:.]/g, "-")}-${options.name}.workflow.spec.json`);
       const spec = {
-        schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+        schemaVersion: "acpus.workflow/v1",
         name: options.name,
         description: "Draft workflow scaffold. Main Agent should edit before running.",
         root: "plan",

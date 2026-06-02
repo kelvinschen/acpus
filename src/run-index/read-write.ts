@@ -199,7 +199,7 @@ export type StageIndexEntry = {
 };
 
 export type RunIndex = {
-  schemaVersion: "acpx-workflow-orchestrator.run/v2";
+  schemaVersion: "acpus.run/v2";
   logicalRunId: string;
   workflowName: string;
   status: RunStatus;
@@ -281,7 +281,7 @@ export async function readRunIndex(cwd: string, logicalRunId: string): Promise<R
 function normalizeRunIndex(parsed: RunIndex): RunIndex {
   return {
     ...parsed,
-    schemaVersion: parsed.schemaVersion ?? "acpx-workflow-orchestrator.run/v2",
+    schemaVersion: parsed.schemaVersion ?? "acpus.run/v2",
     stages: parsed.stages ?? {},
     attempts: parsed.attempts ?? {}
   };
