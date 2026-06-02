@@ -1,6 +1,6 @@
 {
   "name": "acpus",
-  "version": "0.0.1",
+  "version": "0.0.0",
   "private": false,
   "description": "Runtime-driven workflow orchestrator for ACP agents",
   "keywords": [
