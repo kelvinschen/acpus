@@ -36,6 +36,10 @@ _Avoid_: active agent, concurrency slot
 A fanout pattern where work items, or lanes for the same work item, may be assigned to different roles or agents within one fanout stage.
 _Avoid_: multi-agent fanout, mixed-agent fanout, agent selection fanout
 
+**Fanout Core**:
+The shared fanout semantics for expanding items into lane work, deriving fanout statuses, and constructing aggregate fanout results across top-level and Loop Body fanout usage.
+_Avoid_: fanout runner, fanout scheduler, generic workflow executor
+
 **Workflow-Level Bounded Loop**:
 A workflow control pattern that repeats a bounded set of workflow stages until an explicit exit condition is met or a configured round limit is exhausted.
 _Avoid_: generalized fixLoop, arbitrary cycle, workflow recursion

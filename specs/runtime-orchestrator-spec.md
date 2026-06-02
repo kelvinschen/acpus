@@ -41,6 +41,7 @@ The runtime orchestrator is the authoritative workflow driver. It executes compi
 - `loop` body program stages MUST execute deterministically inside the round.
 - `loop` body fanout stages MUST use the same stage-local `limits.maxConcurrency` lane work semantics as top-level fanout stages.
 - `loop` body fanout stages MUST select and aggregate lane work before downstream body stages run in the same round.
+- Reusable fanout semantics MUST be centralized in a pure in-memory Fanout Core used by both top-level fanout and Loop Body fanout adapters.
 - `loop` MUST evaluate `continueWhen` after each completed round and MUST complete when the condition is false.
 - `loop` body blocked, missing body output, or exhausted outcomes MUST block the stage rather than silently completing.
 - `diagnose` MUST prepare read-only diagnostic artifacts and MUST NOT rerun edit work or mutate the saved workflow spec.
@@ -91,6 +92,8 @@ Loop stage state MUST persist parent loop metadata in `run.json`, including `max
 The scheduler determines ready stages from persisted state and dependency completion. Agent stages start ACPX runtime turns, persist prompts and raw outputs, parse outputs, optionally perform one schema-aware repair turn, write parsed outputs, and update stage/run status.
 
 Fanout executes independent selected lane work under the fanout stage `maxConcurrency` limit. A fanout stage with no declared `maxConcurrency` executes serially. Item failures are localized and represented as item-level results when possible. Aggregation occurs before downstream stages run.
+
+Fanout Core MUST own reusable fanout semantics over compiled fanout plan data, including item and lane expansion, Lane Group selection, skipped and blocked item semantics, partial-policy evaluation, item aggregate output construction, stage aggregate output construction, blocked lane diagnostics, and fanout summary counts. Fanout Core MUST be pure in-memory and MUST NOT own `maxConcurrency`, scheduler pool behavior, loop round sequencing, output path layout, artifact writes, run-index writes, event emission, runtime lifecycle, or retry and stale-recovery policy.
 
 For each candidate fanout item, the scheduler MUST independently expand every lane group. `all` groups MAY produce zero lane work units. `oneOf` groups MUST block the item with `FANOUT_LANE_SELECTION_FAILED` when multiple lanes match or no lane matches and no default exists. If no lane work unit is produced across all groups, the item MUST be marked skipped with `NO_MATCHING_LANES`.
 

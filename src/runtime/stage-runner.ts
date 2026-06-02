@@ -16,6 +16,16 @@ import type { AgentTurnResult, OrchestratorAgentRuntime } from "./agent-runtime.
 import { formatRepairPrompt, isRepairableOutputFailure, repairFailedEnvelope } from "./repair.js";
 import { parseWorkflowOutput } from "./output-parser.js";
 import { recordSessionBinding } from "./session-bindings.js";
+import {
+  buildFanoutItemOutput,
+  buildFanoutStageOutput,
+  deriveFanoutSummary,
+  expandFanoutItems,
+  fanoutGroupStatus,
+  type FanoutCoreItem,
+  type FanoutCoreLaneResult,
+  type FanoutCoreWorkUnit
+} from "./fanout-core.js";
 
 const execFileAsync = promisify(execFile);
 const MAX_RUNTIME_RETRIES = 1;
@@ -477,99 +487,33 @@ async function runLoopFanoutStage(input: {
   const attempts: AttemptIndexEntry[] = [];
   let agentCalls = 0;
   let repairCalls = 0;
-  const itemOutputsByIndex = new Map<number, Record<string, unknown>>();
-  const fanoutItems: NonNullable<StageIndexEntry["fanout"]>["items"] = [];
-  type FanoutItemGroups = NonNullable<NonNullable<StageIndexEntry["fanout"]>["items"][number]["groups"]>;
-  type FanoutLaneEntry = FanoutItemGroups[number]["lanes"][number];
-  type LoopFanoutTask = {
-    item: unknown;
-    itemIndex: number;
-    itemId: string;
-    groupId: string;
-    laneId: string;
-    roleName: string;
-    promptId: string;
-    contract: ContractPlan;
+  const expanded = expandFanoutItems({
+    plan,
+    items,
+    workflowInput: input.workflowInput,
+    outputs: input.outputs,
+    localForItem: (item) => ({ item, ...loopLocalContext(input.round, input.outputs, input.previous, objectRecord(input.outputs[input.bodyStage.id])) }),
+    itemIdFor: stableItemId,
+    evaluate: evaluateCondition
+  });
+  const fanoutItems = expanded.items;
+  const laneResultsByItemIndex = new Map<number, FanoutCoreLaneResult[]>();
+  type LoopFanoutTask = FanoutCoreWorkUnit & {
     laneOutputPath: string;
-    laneOutputs: Record<string, unknown>[];
-    laneEntry: FanoutLaneEntry;
+    laneEntry: NonNullable<NonNullable<StageIndexEntry["fanout"]>["items"][number]["groups"]>[number]["lanes"][number];
   };
-  const tasks: LoopFanoutTask[] = [];
-
-  for (let itemIndex = 0; itemIndex < items.length; itemIndex += 1) {
-    const item = items[itemIndex];
-    const itemId = stableItemId(item, itemIndex);
-    const groups: FanoutItemGroups = [];
-    const laneOutputs: Record<string, unknown>[] = [];
-    const selectionErrors: string[] = [];
-    const itemTasks: LoopFanoutTask[] = [];
-    for (const group of plan.laneGroups) {
-      const local = { item, ...loopLocalContext(input.round, input.outputs, input.previous, objectRecord(input.outputs[input.bodyStage.id])) };
-      const matched = group.lanes.filter((lane) => lane.default !== true && (!lane.when || evaluateCondition(lane.when, input.outputs, input.workflowInput, local)));
-      const defaultLane = group.lanes.find((lane) => lane.default === true);
-      const selected = group.mode === "all" ? matched : matched.length === 1 ? matched : matched.length === 0 && defaultLane ? [defaultLane] : [];
-      if (group.mode === "oneOf" && matched.length > 1) {
-        selectionErrors.push(`oneOf group ${group.id} matched multiple lanes: ${matched.map((lane) => lane.id).join(", ")}`);
-      } else if (group.mode === "oneOf" && selected.length === 0) {
-        selectionErrors.push(`oneOf group ${group.id} matched no lane and has no default.`);
-      }
-      if (selected.length === 0) continue;
-      const lanes: FanoutLaneEntry[] = [];
-      for (const lane of selected) {
-        const laneOutputPath = loopFanoutLaneOutputPath(input.runDir, input.planStage.id, input.round, input.bodyStage.id, itemId, group.id, lane.id);
-        const laneEntry: FanoutLaneEntry = { id: lane.id, roleName: lane.roleName, status: "pending" };
-        lanes.push(laneEntry);
-        itemTasks.push({
-          item,
-          itemIndex,
-          itemId,
-          groupId: group.id,
-          laneId: lane.id,
-          roleName: lane.roleName,
-          promptId: lane.promptId,
-          contract: lane.contract,
-          laneOutputPath,
-          laneOutputs,
-          laneEntry
-        });
-      }
-      groups.push({ id: group.id, mode: group.mode, status: fanoutGroupStatusLocal(lanes), lanes });
-    }
-    if (selectionErrors.length > 0) {
-      const itemOutput = {
-        status: "blocked",
-        summary: `Loop fanout item ${itemId} lane selection failed.`,
-        artifacts: [],
-        nextFocus: "diagnose",
-        itemId,
-        itemIndex,
-        groups,
-        laneOutputs,
-        blockedReason: RuntimeErrorCodes.FANOUT_LANE_SELECTION_FAILED,
-        errorCode: RuntimeErrorCodes.FANOUT_LANE_SELECTION_FAILED,
-        errorMessage: selectionErrors.join(" ")
-      };
-      itemOutputsByIndex.set(itemIndex, itemOutput);
-      fanoutItems.push({ id: itemId, index: itemIndex, status: "blocked", blockedReason: RuntimeErrorCodes.FANOUT_LANE_SELECTION_FAILED, errorCode: RuntimeErrorCodes.FANOUT_LANE_SELECTION_FAILED, errorMessage: selectionErrors.join(" "), completedAt: new Date().toISOString(), groups });
-    } else if (groups.length === 0) {
-      const itemOutput = {
-        status: "skipped",
-        summary: `Loop fanout item ${itemId} produced no matching lanes.`,
-        artifacts: [],
-        nextFocus: "reduce",
-        itemId,
-        itemIndex,
-        groups: [],
-        laneOutputs,
-        skippedReason: RuntimeErrorCodes.NO_MATCHING_LANES
-      };
-      itemOutputsByIndex.set(itemIndex, itemOutput);
-      fanoutItems.push({ id: itemId, index: itemIndex, status: "skipped", skippedReason: RuntimeErrorCodes.NO_MATCHING_LANES, completedAt: new Date().toISOString(), groups: [] });
-    } else {
-      tasks.push(...itemTasks);
-      fanoutItems.push({ id: itemId, index: itemIndex, status: "pending", groups });
-    }
-  }
+  const tasks: LoopFanoutTask[] = expanded.workUnits.flatMap((workUnit) => {
+    const laneEntry = fanoutItems
+      .find((item) => item.index === workUnit.itemIndex)
+      ?.groups?.find((group) => group.id === workUnit.groupId)
+      ?.lanes.find((lane) => lane.id === workUnit.laneId);
+    if (!laneEntry) return [];
+    return [{
+      ...workUnit,
+      laneOutputPath: loopFanoutLaneOutputPath(input.runDir, input.planStage.id, input.round, input.bodyStage.id, workUnit.itemId, workUnit.groupId, workUnit.laneId),
+      laneEntry
+    }];
+  });
 
   let nextTask = 0;
   const workerCount = Math.min(Math.max(1, plan.maxConcurrency), tasks.length);
@@ -581,70 +525,78 @@ async function runLoopFanoutStage(input: {
       attempts.push(...result.attempts);
       agentCalls += result.agentCalls;
       repairCalls += result.repairCalls;
+      const existing = laneResultsByItemIndex.get(task.itemIndex) ?? [];
+      if (result.outputPath && result.output) {
+        existing.push({
+          itemId: task.itemId,
+          itemIndex: task.itemIndex,
+          groupId: task.groupId,
+          laneId: task.laneId,
+          roleName: task.roleName,
+          status: result.status,
+          output: result.output,
+          outputPath: path.relative(input.runDir, result.outputPath),
+          blockedReason: result.blockedReason,
+          errorCode: result.errorCode
+        });
+      }
+      laneResultsByItemIndex.set(task.itemIndex, existing);
     }
   }));
 
+  const itemOutputsByIndex = new Map<number, Record<string, unknown>>(expanded.preExecutionItemOutputs);
   for (const item of fanoutItems) {
     if (itemOutputsByIndex.has(item.index)) continue;
-    const itemTasks = tasks.filter((task) => task.itemIndex === item.index);
-    const laneOutputs = itemTasks.flatMap((task) => task.laneOutputs.filter((lane) => lane.groupId === task.groupId && lane.laneId === task.laneId));
-    for (const group of item.groups ?? []) group.status = fanoutGroupStatusLocal(group.lanes);
-    const blocked = laneOutputs.some((lane) => lane.status !== "completed");
-    const itemOutput = {
-      status: blocked ? "blocked" : "completed",
-      summary: `Loop fanout item ${item.id} completed ${laneOutputs.filter((lane) => lane.status === "completed").length}/${laneOutputs.length} lane(s).`,
-      artifacts: [],
-      nextFocus: "reduce",
-      itemId: item.id,
-      itemIndex: item.index,
-      groups: item.groups ?? [],
-      laneOutputs,
-      blockedReason: blocked ? RuntimeErrorCodes.FANOUT_ITEM_BLOCKED : undefined
-    };
+    const itemOutput = buildFanoutItemOutput({
+      item,
+      laneResults: laneResultsByItemIndex.get(item.index) ?? [],
+      allowPartial: plan.allowPartial,
+      missingLaneOutput: (_item, group, lane) => ({
+        itemId: item.id,
+        itemIndex: item.index,
+        groupId: group.id,
+        laneId: lane.id,
+        roleName: lane.roleName,
+        status: "blocked",
+        output: missingLoopFanoutLaneOutput(item.id, group.id, lane.id),
+        outputPath: path.relative(input.runDir, loopFanoutLaneOutputPath(input.runDir, input.planStage.id, input.round, input.bodyStage.id, item.id, group.id, lane.id)),
+        blockedReason: RuntimeErrorCodes.MISSING_FANOUT_ITEM_OUTPUT,
+        errorCode: RuntimeErrorCodes.MISSING_FANOUT_ITEM_OUTPUT
+      })
+    });
     itemOutputsByIndex.set(item.index, itemOutput);
-    item.status = blocked ? "blocked" : "completed";
-    item.blockedReason = blocked ? RuntimeErrorCodes.FANOUT_ITEM_BLOCKED : undefined;
+    item.status = itemOutput.status === "blocked" ? "blocked" : "completed";
+    item.groups = Array.isArray(itemOutput.groups) ? itemOutput.groups as FanoutCoreItem["groups"] : item.groups;
+    item.blockedReason = typeof itemOutput.blockedReason === "string" ? itemOutput.blockedReason : undefined;
     item.outputPath = path.relative(input.runDir, loopFanoutItemOutputPath(input.runDir, input.planStage.id, input.round, input.bodyStage.id, item.id));
     item.completedAt = new Date().toISOString();
   }
 
   const itemOutputs = Array.from(itemOutputsByIndex.entries()).sort(([left], [right]) => left - right).map(([, output]) => output);
-  for (const itemOutput of itemOutputs) {
+  for (const itemOutput of itemOutputs.filter((output) => output.status !== "skipped")) {
     const itemId = String(itemOutput.itemId);
     const itemOutputPath = loopFanoutItemOutputPath(input.runDir, input.planStage.id, input.round, input.bodyStage.id, itemId);
     await fs.mkdir(path.dirname(itemOutputPath), { recursive: true });
     await fs.writeFile(itemOutputPath, `${JSON.stringify(itemOutput, null, 2)}\n`, "utf8");
     const item = fanoutItems.find((candidate) => candidate.id === itemId);
-    if (item) item.outputPath = path.relative(input.runDir, itemOutputPath);
+    if (item) {
+      item.outputPath = path.relative(input.runDir, itemOutputPath);
+      item.completedAt = item.completedAt ?? new Date().toISOString();
+    }
   }
 
-  const laneOutputs = itemOutputs.flatMap((item) => Array.isArray(item.laneOutputs) ? item.laneOutputs as Record<string, unknown>[] : []);
-  const blockedItems = itemOutputs.filter((item) => item.status === "blocked");
-  const skippedItems = itemOutputs.filter((item) => item.status === "skipped");
-  const output = {
-    status: blockedItems.length > 0 && !plan.allowPartial ? "blocked" : "completed",
-    summary: `Loop fanout completed with ${itemOutputs.length} item output(s).`,
-    items: itemOutputs,
-    laneOutputs,
-    blockedItems,
-    skippedItems,
-    artifacts: [],
-    nextFocus: "reduce",
-    blockedReason: blockedItems.length > 0 && !plan.allowPartial ? RuntimeErrorCodes.FANOUT_ITEM_BLOCKED : undefined
-  };
+  const activeItemOutputs = itemOutputs.filter((item) => item.status !== "skipped");
+  const skippedItems = fanoutItems.filter((item) => item.status === "skipped").map((item) => ({
+    id: item.id,
+    index: item.index,
+    status: "skipped" as const,
+    skippedReason: item.skippedReason
+  }));
+  const output = buildFanoutStageOutput({ plan, itemOutputs: activeItemOutputs, skippedItems });
   const outputPath = loopBodyOutputPath(input.runDir, input.planStage.id, input.round, input.bodyStage.id);
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
   await fs.writeFile(outputPath, `${JSON.stringify(output, null, 2)}\n`, "utf8");
-  const fanout = {
-    totalItems: items.length,
-    completedItems: fanoutItems.filter((item) => item.status === "completed").length,
-    blockedItems: fanoutItems.filter((item) => item.status === "blocked").length,
-    skippedItems: fanoutItems.filter((item) => item.status === "skipped").length,
-    failedItems: 0,
-    workUnits: tasks.length,
-    allowPartial: plan.allowPartial,
-    items: fanoutItems
-  };
+  const fanout = deriveFanoutSummary({ candidateItemCount: items.length, items: fanoutItems, allowPartial: plan.allowPartial });
   return { output, attempts, agentCalls, repairCalls, fanout };
 }
 
@@ -674,7 +626,6 @@ async function runLoopFanoutLaneTask(
     promptId: string;
     contract: ContractPlan;
     laneOutputPath: string;
-    laneOutputs: Record<string, unknown>[];
     laneEntry: NonNullable<NonNullable<StageIndexEntry["fanout"]>["items"][number]["groups"]>[number]["lanes"][number];
   }
 ): Promise<AgentWorkResult> {
@@ -721,7 +672,6 @@ async function runLoopFanoutLaneTask(
     contractOptions: task.contract.options
   });
   const outputPath = path.relative(input.runDir, task.laneOutputPath);
-  task.laneOutputs.push({ itemId: task.itemId, itemIndex: task.itemIndex, groupId: task.groupId, laneId: task.laneId, roleName: task.roleName, status: result.status, output: result.output, outputPath });
   task.laneEntry.status = result.status;
   task.laneEntry.outputPath = outputPath;
   task.laneEntry.blockedReason = result.blockedReason;
@@ -730,6 +680,16 @@ async function runLoopFanoutLaneTask(
   task.laneEntry.errorCode = result.errorCode;
   task.laneEntry.errorMessage = result.errorMessage;
   return result;
+}
+
+function missingLoopFanoutLaneOutput(itemId: string, groupId: string, laneId: string): Record<string, unknown> {
+  return {
+    status: "blocked",
+    summary: `Missing fanout lane output ${itemId}/${groupId}/${laneId}.`,
+    artifacts: [],
+    nextFocus: "diagnose",
+    blockedReason: RuntimeErrorCodes.MISSING_FANOUT_ITEM_OUTPUT
+  };
 }
 
 function loopBodyDependenciesCompleted(stage: Stage, stageStates: Record<string, Record<string, unknown>>): boolean {
@@ -794,12 +754,6 @@ function stageRoleNameFromBody(stage: Stage): string | undefined {
   if (stage.kind === "agentTask") return stage.role;
   if (stage.kind === "discover" || stage.kind === "reduce" || stage.kind === "decisionGate") return stage.role;
   return undefined;
-}
-
-function fanoutGroupStatusLocal(lanes: Array<{ status: StageStatus }>): StageStatus {
-  if (lanes.some((lane) => lane.status === "blocked")) return "blocked";
-  if (lanes.some((lane) => lane.status === "failed")) return "failed";
-  return "completed";
 }
 
 function blockedOutput(code: string, summary: string): Record<string, unknown> {
