@@ -37,8 +37,9 @@ The runtime orchestrator is the authoritative workflow driver. It executes compi
 - Gate verdicts `pass` and `pass_with_warnings` MUST complete a run, while `blocked`, `failed`, and `unknown` MUST block a run without using runtime `failed`.
 - `fixLoop` stages MUST run validator and fixer turns through the same ACPX runtime attempt pipeline used by other agent work.
 - `fixLoop` validator attempts MUST use the validator role/session key, and fixer attempts MUST use the fixer role/session key.
-- `fixLoop` MUST stop when validation passes, when validator output is unknown, or when `maxRounds` is exhausted.
-- `fixLoop` unknown or exhausted outcomes MUST block the stage rather than silently completing.
+- `fixLoop` MUST run a fixer turn when validator output matches `routingPolicy.fixOn`.
+- `fixLoop` MUST complete when validator output does not match `routingPolicy.fixOn`.
+- `fixLoop` unknown, blocked, or exhausted outcomes MUST block the stage rather than silently completing.
 - `diagnose` MUST prepare read-only diagnostic artifacts and MUST NOT rerun edit work or mutate the saved workflow spec.
 - `diagnose --wait` MUST preserve `diagnosed_blocked` while underlying stages remain blocked or failed.
 
@@ -73,9 +74,9 @@ The scheduler MUST NOT emit `scheduler_batch_started` or `scheduler_batch_comple
 
 ## Data Model
 
-The runtime data model includes a logical run, compiled execution plan, stage states, attempts, fanout item attempts, fix-loop validator/fixer attempts, output artifacts, event stream, role/session bindings, ACPX session state, usage accounting, gate verdict, blocked reason, and diagnostics.
+The runtime data model includes a logical run, compiled execution plan, stage states, attempts, fanout item/group/lane attempts, fix-loop validator/fixer attempts, output artifacts, event stream, role/session bindings, ACPX session state, usage accounting, gate verdict, blocked reason, and diagnostics.
 
-Fanout pool state MUST be derived from fanout item status, attempts, and output artifacts. The run index MUST NOT persist a separate pool object.
+Fanout pool state MUST be derived from fanout item/group/lane status, attempts, and output artifacts. The run index MUST remain item-centric with nested lane group and lane records, and MUST NOT persist a separate pool object.
 
 Terminal workflow outcomes are represented in the run index. Output-contract failures block attempts, stages, and runs; infrastructure or unrecoverable runtime errors fail attempts, stages, or runs.
 
@@ -83,11 +84,15 @@ Terminal workflow outcomes are represented in the run index. Output-contract fai
 
 The scheduler determines ready stages from persisted state and dependency completion. Agent stages start ACPX runtime turns, persist prompts and raw outputs, parse outputs, optionally perform one schema-aware repair turn, write parsed outputs, and update stage/run status.
 
-Fanout executes independent item work under the fanout stage `maxConcurrency` limit. A fanout stage with no declared `maxConcurrency` executes serially. Item failures are localized and represented as item-level results when possible. Aggregation occurs before downstream stages run.
+Fanout executes independent selected lane work under the fanout stage `maxConcurrency` limit. A fanout stage with no declared `maxConcurrency` executes serially. Item failures are localized and represented as item-level results when possible. Aggregation occurs before downstream stages run.
 
-When fanout draining is enabled, the scheduler MUST run at most one ready fanout stage at a time, keep up to the stage `maxConcurrency` active, merge each item result into `run.json` immediately when it settles, and then refill from that same stage when queued items and policy allow.
+For each candidate fanout item, the scheduler MUST independently expand every lane group. `all` groups MAY produce zero lane work units. `oneOf` groups MUST block the item with `FANOUT_LANE_SELECTION_FAILED` when multiple lanes match or no lane matches and no default exists. If no lane work unit is produced across all groups, the item MUST be marked skipped with `NO_MATCHING_LANES`.
 
-When fanout draining is not enabled, the scheduler MAY start up to the stage `maxConcurrency` fanout items in one bounded advancement, but MUST return after those active items settle rather than refilling the pool.
+Skipped fanout items MUST be excluded from partial-policy completion ratio calculations and MUST be reported separately. Partial lane results MAY enter the aggregate only when stage-level fanout partial policy allows them; partial item outputs MUST include metadata naming blocked or failed lanes.
+
+When fanout draining is enabled, the scheduler MUST run at most one ready fanout stage at a time, keep up to the stage `maxConcurrency` active across all item/group/lane work units, merge each lane result into `run.json` immediately when it settles, and then refill from that same stage when queued work and policy allow.
+
+When fanout draining is not enabled, the scheduler MAY start up to the stage `maxConcurrency` fanout lane work units in one bounded advancement, but MUST return after those active units settle rather than refilling the pool.
 
 When a fanout item blocks or fails and partial fanout is not allowed, the scheduler MUST stop launching additional items for that fanout stage, MUST allow already running items to settle, MUST terminalize queued items as blocked with `FANOUT_ITEM_CASCADE_BLOCKED`, and MUST aggregate the fanout stage as blocked.
 

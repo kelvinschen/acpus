@@ -3,7 +3,7 @@
 ## Status
 
 - Current implementation: current
-- Source modules: `src/schema/workflow-spec.ts`, `src/schema/input-validation.ts`, `src/schema/load.ts`, `src/compiler/compile.ts`, `src/compiler/lint.ts`, `src/compiler/compile-execution-plan.ts`, `src/compiler/execution-plan.ts`, `schemas/workflow-spec.schema.json`, `workflows/examples/*.workflow.spec.json`
+- Source modules: `src/schema/workflow-spec.ts`, `src/schema/input-validation.ts`, `src/schema/load.ts`, `src/compiler/compile.ts`, `src/compiler/lint.ts`, `src/compiler/compile-execution-plan.ts`, `src/compiler/execution-plan.ts`, `schemas/workflow-spec.schema.json`, `workflows/examples/**/*.workflow.spec.json`
 - Maintenance trigger: update this spec when changing workflow schema, validation, linting, compilation, execution-plan shape, stage kinds, variable semantics, limits, or example workflow contracts
 
 ## Purpose
@@ -19,6 +19,7 @@
 - The `gate` stage MUST be terminal and MUST be the only terminal workflow stage.
 - `summarize` stages are deprecated authoring input and MUST be rejected by lint with migration guidance.
 - Program `gate` stages MUST use `mode: "program"` by default and MAY declare `condition` using the condition DSL.
+- Condition DSL `in` predicates MUST declare an array `value`; `exists` and `empty` predicates MUST NOT require `value`.
 - A program `gate` without `condition` MUST have exactly one upstream dependency and MUST pass when `outputs.<upstream>` exists.
 - Agent `gate` stages MUST declare a role and prompt, and the role MUST NOT use edit mode.
 - Terminal `gate` dependencies MAY treat skipped upstream decision branches as satisfied.
@@ -28,14 +29,26 @@
 - Route branching MUST be expressed with `decisionGate`.
 - File or glob discovery MUST be expressed as an explicit `discover` stage.
 - Agent discovery MUST declare an explicit role and prompt.
-- `fanout` MUST schedule one independent runtime item per selected item while respecting the fanout stage `limits.maxConcurrency` value.
-- Fanout items MUST use deterministic item session keys.
+- `fanout` stages MUST declare non-empty `laneGroups`; the legacy single `role` fanout shape MUST be rejected.
+- Homogeneous fanout MUST be represented as one lane group with one lane.
+- A fanout lane group MUST declare `id`, `mode`, and non-empty `lanes`.
+- Fanout lane group `mode` MUST be either `all` or `oneOf`.
+- `all` groups MUST run every matching lane for an item; a lane without `when` MUST match in `all`.
+- `oneOf` groups MUST select exactly one lane per item; non-default lanes MUST declare `when`.
+- `oneOf` groups MUST allow at most one `default` lane, and a default lane MUST NOT declare `when`.
+- `default` MUST be invalid outside `oneOf` groups.
+- Fanout stage `prompt` MAY provide the default prompt for lanes; every lane MUST either declare `prompt` or inherit the stage prompt.
+- Fanout lane predicates MUST reuse the condition DSL.
+- All fanout lanes in one stage MUST infer the same output contract from their roles.
+- `fanout` MUST schedule independent lane work units for selected item/group/lane combinations while respecting the fanout stage `limits.maxConcurrency` value.
+- Fanout lane work units MUST use deterministic session keys that include item id, group id, and lane id.
 - Fanout item outputs MUST be aggregated by the orchestrator before downstream stages run.
 - `fixLoop` MUST be the only supported workflow-level bounded retry stage kind.
 - `fixLoop` MUST declare `maxRounds`, `validator`, `fixer`, `routingPolicy`, `onUnknown`, and `onExhausted`.
 - `fixLoop` validator roles MUST NOT use edit mode.
 - `fixLoop` fixer roles MUST use edit mode.
 - `fixLoop` routing policy MUST declare severities or check outcomes that trigger a fix turn, severities ignored for routing, and `unknown: "blocked"`.
+- `fixLoop` runtime routing MUST match `routingPolicy.fixOn` against validator verdict, `findings[].severity`, positive `severityCounts` keys, and validation check `status` or `name`.
 - Edit fanout MAY be used, but it MUST be followed by a read-only reconcile or reduce stage.
 - Prompt placeholders MUST use `${variableName}` syntax only.
 - Variables MUST declare a `source` and MAY declare fixed built-in transforms.
@@ -60,7 +73,7 @@ The canonical minimal shape is:
 }
 ```
 
-Authoring examples live under `workflows/examples/*.workflow.spec.json`. The generated JSON schema lives at `schemas/workflow-spec.schema.json`.
+Authoring examples live under `workflows/examples/**/*.workflow.spec.json`. The generated JSON schema lives at `schemas/workflow-spec.schema.json`.
 
 Stage output contracts are inferred from role category:
 
@@ -69,11 +82,13 @@ Stage output contracts are inferred from role category:
 - validation and review roles produce verdicts, severity counts, findings, and checks;
 - gate produces `verdict`, deliverables, changed files, checks, warnings, risks, and next actions.
 
+Fanout aggregate output includes nested `items[].groups[].lanes[]` and flat `laneOutputs[]`. `skippedItems` MUST be reported separately from completed and blocked active items.
+
 ## Data Model
 
 A workflow spec contains schema metadata, optional typed inputs, roles, limits, stages, explicit dependencies, variables, and stage-specific configuration. Role categories are `planning`, `implementation`, `validation`, `review`, `research`, `summarization`, and `coordination`. Role modes are `denyAll`, `readOnly`, and `edit`.
 
-Top-level limits include `stageTimeoutMinutes`. Stage limits include `stageTimeoutMinutes`; fanout stages additionally support `maxConcurrency` and `maxFanoutItems`.
+Top-level limits include `stageTimeoutMinutes`. Stage limits include `stageTimeoutMinutes`; fanout stages additionally support `maxConcurrency` and `maxFanoutItems`. `maxFanoutItems` caps candidate items before lane expansion and MUST NOT cap expanded lane work units.
 
 `fixLoop` stages contain a validator turn definition, fixer turn definition, routing policy, maximum round count, and explicit blocked behavior for unknown or exhausted outcomes. The compiled execution plan is the runtime-derived snapshot of the validated authoring model.
 
@@ -83,7 +98,7 @@ Validation first performs Zod shape validation, then compiler lint checks. Compi
 
 At runtime, actual agent attempts and repair attempts are recorded in `run.json`. Transient agent runtime failures get one automatic retry; the retry counts in `agentUsage.actual`, and repair-turn retries count in `repairCalls`. Agent call accounting is usage data and MUST NOT control scheduler capacity.
 
-For `fixLoop`, each round runs the validator first. If validator output matches `routingPolicy.fixOn`, the fixer runs and the loop continues to the next round. If validator output does not require fixing, the stage completes. If validator output is unknown, or if all rounds are exhausted without a passing validation outcome, the stage blocks according to `onUnknown` or `onExhausted`.
+For `fixLoop`, each round runs the validator first. If validator output matches `routingPolicy.fixOn`, the fixer runs and the loop continues to the next round. If validator output does not match `routingPolicy.fixOn`, the stage completes. If validator output is unknown or blocked, or if all rounds are exhausted while fixes are still required, the stage blocks according to `onUnknown` or `onExhausted`.
 
 At terminal completion, the `gate` stage writes the workflow `gateVerdict`. Verdicts `pass` and `pass_with_warnings` complete the run. Verdicts `blocked`, `failed`, and `unknown` block the run with gate-specific runtime blocked reasons. Runtime `failed` remains reserved for infrastructure failures.
 
@@ -96,7 +111,7 @@ Supported extension points are new validated stage fields, built-in transforms, 
 - The workflow spec is not a general-purpose workflow engine.
 - The workflow spec does not support arbitrary graph cycles.
 - The workflow spec does not use generated ACPX flow files as an execution contract.
-- Roadmap capabilities such as ordinary parallel split/join, workflow-level loops, heterogeneous fanout, and native tool tasks are not current behavior unless separately implemented and reflected in this SPEC.
+- Roadmap capabilities such as ordinary parallel split/join, workflow-level loops, fanout lane group dependencies, and native tool tasks are not current behavior unless separately implemented and reflected in this SPEC.
 
 ## Implementation Map
 
@@ -111,4 +126,4 @@ Supported extension points are new validated stage fields, built-in transforms, 
 - `fixLoop` schema, linting, and planning -> `src/schema/workflow-spec.ts`, `src/compiler/lint.ts`, `src/compiler/compile-execution-plan.ts`, `src/compiler/execution-plan.ts`
 - `gate` schema, linting, planning, and runtime verdict handling -> `src/schema/workflow-spec.ts`, `src/compiler/lint.ts`, `src/compiler/compile-execution-plan.ts`, `src/runtime/stage-runner.ts`, `src/runtime/scheduler.ts`
 - JSON schema generation -> `src/schema/generate-json-schema.ts`, `schemas/workflow-spec.schema.json`
-- Example authoring contracts -> `workflows/examples/*.workflow.spec.json`
+- Example authoring contracts -> `workflows/examples/**/*.workflow.spec.json`

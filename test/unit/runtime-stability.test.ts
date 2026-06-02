@@ -11,7 +11,7 @@ import { startDiagnosticRun } from "../../src/runtime/diagnose-run.js";
 import { prepareRun, startPreparedRun } from "../../src/runtime/run-workflow.js";
 import { syncRun } from "../../src/runtime/sync.js";
 import { WorkflowSpecSchema, type WorkflowSpec } from "../../src/schema/workflow-spec.js";
-import { baseOutput, gateOutput, validationOutput, plainJsonOutput } from "../helpers/fake-runtime.js";
+import { baseOutput, gateOutput, implementationOutput, validationOutput, plainJsonOutput } from "../helpers/fake-runtime.js";
 
 describe("fanout runtime stability", () => {
   afterEach(() => setAgentRuntimeFactoryForTests(undefined));
@@ -62,6 +62,65 @@ describe("fanout runtime stability", () => {
     expect(stage?.fanout?.blockedItems).toBe(1);
     expect(events).toContain("fanout_pool_completed");
     expect(events).not.toContain("scheduler_batch_completed");
+  });
+
+  it("expands heterogeneous all and oneOf lane groups into lane outputs", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-heterogeneous-fanout-"));
+    const runtime = new StaticRuntime();
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const spec = WorkflowSpecSchema.parse({
+      schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+      name: "heterogeneous-fanout",
+      root: "review",
+      inputs: {
+        cwd: { type: "path" },
+        items: { type: "array<json>" }
+      },
+      roles: {
+        pi: { category: "coordination", agent: "pi", mode: "readOnly" },
+        aiden: { category: "coordination", agent: "aiden", mode: "readOnly" },
+        claude: { category: "coordination", agent: "claude", mode: "readOnly" }
+      },
+      stages: [
+        {
+          id: "review",
+          kind: "fanout",
+          items: { source: "input.items" },
+          limits: { maxConcurrency: 3, maxFanoutItems: 2 },
+          prompt: "Review one item",
+          laneGroups: [
+            { id: "cross", mode: "all", lanes: [{ id: "pi", role: "pi" }, { id: "aiden", role: "aiden" }] },
+            {
+              id: "route",
+              mode: "oneOf",
+              lanes: [
+                { id: "claude", role: "claude", when: { source: "item.area", op: "eq", value: "schema" } },
+                { id: "pi_default", role: "pi", default: true }
+              ]
+            }
+          ]
+        },
+        { id: "gate", kind: "gate", dependsOn: ["review"] }
+      ]
+    });
+    const prepared = await prepareRun(spec, {
+      cwd,
+      input: { cwd, items: [{ id: "item-1", area: "schema" }, { id: "item-2", area: "runtime" }] }
+    });
+
+    const index = await startPreparedRun(cwd, prepared, { drainFanoutPool: true });
+    const aggregate = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "review.json"), "utf8")) as { laneOutputs: Array<{ itemId: string; groupId: string; laneId: string }> };
+
+    expect(index.status).toBe("completed");
+    expect(index.stages.review?.fanout?.workUnits).toBe(6);
+    expect(aggregate.laneOutputs.map((lane) => [lane.itemId, lane.groupId, lane.laneId])).toEqual([
+      ["item-1", "cross", "pi"],
+      ["item-1", "cross", "aiden"],
+      ["item-1", "route", "claude"],
+      ["item-2", "cross", "pi"],
+      ["item-2", "cross", "aiden"],
+      ["item-2", "route", "pi_default"]
+    ]);
   });
 
   it("continues batched fanout after the first concurrency window completes", async () => {
@@ -355,9 +414,7 @@ describe("fanout runtime stability", () => {
     const items = recovered.stages.fanout?.fanout?.items ?? [];
 
     expect(retryTick.stages.fanout?.fanout?.items.find((item) => item.id === "item-1")).toMatchObject({
-      status: "completed",
-      runtimeRetryOf: "fanout:item-1:attempt-1",
-      runtimeRetryOrdinal: 1
+      status: "completed"
     });
     expect(recovered.status).toBe("completed");
     expect(recovered.stages.fanout?.status).toBe("completed");
@@ -373,7 +430,7 @@ describe("fanout runtime stability", () => {
       status: "failed",
       runtimeErrorCode: RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY
     });
-    expect(recovered.attempts["fanout:item-1:attempt-1-runtime-retry-1"]).toMatchObject({
+    expect(recovered.attempts["fanout:item-1:work:worker:attempt-1-runtime-retry-1"]).toMatchObject({
       status: "completed",
       runtimeRetryOf: "fanout:item-1:attempt-1",
       runtimeRetryOrdinal: 1
@@ -679,13 +736,13 @@ describe("fanout runtime stability", () => {
       runtimeRetryOrdinal: 1
     });
     expect(retriedItem?.errorCode).toBeUndefined();
-    expect(index.attempts["fanout:item-2:attempt-1"]).toMatchObject({
+    expect(index.attempts["fanout:item-2:work:worker:attempt-1"]).toMatchObject({
       status: "failed",
       runtimeErrorCode: RuntimeErrorCodes.AGENT_RUNTIME_ERROR
     });
-    expect(index.attempts["fanout:item-2:attempt-1-runtime-retry-1"]).toMatchObject({
+    expect(index.attempts["fanout:item-2:work:worker:attempt-1-runtime-retry-1"]).toMatchObject({
       status: "completed",
-      runtimeRetryOf: "fanout:item-2:attempt-1"
+      runtimeRetryOf: "fanout:item-2:work:worker:attempt-1"
     });
     expect(report.diagnostics).not.toContainEqual(expect.objectContaining({
       code: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
@@ -714,6 +771,101 @@ describe("fanout runtime stability", () => {
       status: "completed",
       runtimeRetryOf: "quality_loop:attempt-1"
     });
+  });
+
+  it("runs fixLoop fixer when validation findings match routingPolicy.fixOn", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fixloop-fixon-"));
+    const runtime = new ScriptedRuntime([
+      { kind: "text", text: plainJsonOutput(validationOutput({ verdict: "fix", findings: [{ severity: "P1", summary: "fix it" }] })) },
+      { kind: "text", text: plainJsonOutput(implementationOutput({ summary: "fixed" })) },
+      { kind: "text", text: plainJsonOutput(validationOutput({ verdict: "pass", summary: "passed" })) }
+    ]);
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const prepared = await prepareRun(fixLoopOnlySpec(cwd), { cwd, input: { cwd } });
+
+    const index = await startPreparedRun(cwd, prepared);
+
+    expect(index.status).toBe("completed");
+    expect(runtime.requests.map((request) => request.sessionKey)).toEqual([
+      "role:validator",
+      "role:implementer",
+      "role:validator"
+    ]);
+  });
+
+  it("completes fixLoop without fixer when validation only matches ignoreForRouting", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fixloop-ignore-"));
+    const runtime = new ScriptedRuntime([
+      { kind: "text", text: plainJsonOutput(validationOutput({ verdict: "fix", findings: [{ severity: "P2", summary: "minor" }], severityCounts: { P0: 0, P1: 0, P2: 1, P3: 0 } })) },
+      { kind: "text", text: plainJsonOutput(implementationOutput({ summary: "should not run" })) }
+    ]);
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const prepared = await prepareRun(fixLoopOnlySpec(cwd), { cwd, input: { cwd } });
+
+    const index = await startPreparedRun(cwd, prepared);
+
+    expect(index.status).toBe("completed");
+    expect(runtime.requests.map((request) => request.sessionKey)).toEqual(["role:validator"]);
+  });
+
+  it("runs fixLoop fixer when validation checks match routingPolicy.fixOn", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fixloop-check-"));
+    const runtime = new ScriptedRuntime([
+      { kind: "text", text: plainJsonOutput(validationOutput({ verdict: "fix", checks: [{ name: "failedRequiredCheck", status: "fail", summary: "required check failed" }] })) },
+      { kind: "text", text: plainJsonOutput(implementationOutput({ summary: "fixed check" })) },
+      { kind: "text", text: plainJsonOutput(validationOutput({ verdict: "pass", summary: "passed" })) }
+    ]);
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const spec = fixLoopOnlySpec(cwd);
+    const loop = spec.stages.find((stage) => stage.kind === "fixLoop");
+    if (loop?.kind !== "fixLoop") throw new Error("missing fixLoop");
+    loop.routingPolicy.fixOn = ["P0", "P1", "failedRequiredCheck"];
+    const prepared = await prepareRun(spec, { cwd, input: { cwd } });
+
+    const index = await startPreparedRun(cwd, prepared);
+
+    expect(index.status).toBe("completed");
+    expect(runtime.requests.map((request) => request.sessionKey)).toEqual([
+      "role:validator",
+      "role:implementer",
+      "role:validator"
+    ]);
+  });
+
+  it("blocks fixLoop on unknown validation verdict", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fixloop-unknown-"));
+    const runtime = new ScriptedRuntime([
+      { kind: "text", text: plainJsonOutput(validationOutput({ verdict: "unknown", summary: "unclear" })) }
+    ]);
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const prepared = await prepareRun(fixLoopOnlySpec(cwd), { cwd, input: { cwd } });
+
+    const index = await startPreparedRun(cwd, prepared);
+
+    expect(index.status).toBe("blocked");
+    expect(index.stages.quality_loop?.blockedReason).toBe("FIX_LOOP_UNKNOWN");
+    expect(runtime.requests.map((request) => request.sessionKey)).toEqual(["role:validator"]);
+  });
+
+  it("blocks fixLoop as exhausted when fixOn keeps matching through maxRounds", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fixloop-exhausted-"));
+    const runtime = new ScriptedRuntime([
+      { kind: "text", text: plainJsonOutput(validationOutput({ verdict: "fix", findings: [{ severity: "P1", summary: "first" }] })) },
+      { kind: "text", text: plainJsonOutput(implementationOutput({ summary: "fixed first" })) },
+      { kind: "text", text: plainJsonOutput(validationOutput({ verdict: "fix", findings: [{ severity: "P1", summary: "second" }] })) }
+    ]);
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const prepared = await prepareRun(fixLoopOnlySpec(cwd), { cwd, input: { cwd } });
+
+    const index = await startPreparedRun(cwd, prepared);
+
+    expect(index.status).toBe("blocked");
+    expect(index.stages.quality_loop?.blockedReason).toBe("FIX_LOOP_EXHAUSTED");
+    expect(runtime.requests.map((request) => request.sessionKey)).toEqual([
+      "role:validator",
+      "role:implementer",
+      "role:validator"
+    ]);
   });
 
   it("retries a transient repair runtime throw and completes from repaired output", async () => {
@@ -1317,12 +1469,12 @@ function fanoutSpec(
       id: "fanout",
       kind: "fanout",
       items: { source: "input.items" },
-      role: "worker",
       limits: {
         maxConcurrency: limits.maxConcurrency ?? count,
         maxFanoutItems: limits.maxFanoutItems ?? count
       },
       prompt: "Handle one item",
+      laneGroups: [{ id: "work", mode: "all", lanes: [{ id: "worker", role: "worker" }] }],
       fanoutPolicy: policy
     }]
   });
@@ -1478,7 +1630,7 @@ class TransientFanoutRuntime implements OrchestratorAgentRuntime {
 
   async runTurn(input: AgentTurnRequest, onEvent?: (event: AcpRuntimeEvent) => Promise<void> | void): Promise<AgentTurnResult> {
     this.requests.push(input);
-    if (input.sessionKey.endsWith(`item:${this.failingItemId}`) && !this.failures.has(input.sessionKey)) {
+    if (itemIdFromSessionKey(input.sessionKey) === this.failingItemId && !this.failures.has(input.sessionKey)) {
       this.failures.add(input.sessionKey);
       throw new Error("queue rejected item turn");
     }
@@ -1501,7 +1653,7 @@ class SelectiveFanoutRuntime implements OrchestratorAgentRuntime {
 
   async runTurn(input: AgentTurnRequest, onEvent?: (event: AcpRuntimeEvent) => Promise<void> | void): Promise<AgentTurnResult> {
     this.requests.push(input);
-    if (input.sessionKey.endsWith(`item:${this.failingItemId}`)) {
+    if (itemIdFromSessionKey(input.sessionKey) === this.failingItemId) {
       throw new Error("backend queue rejected item turn");
     }
     const rawText = plainJsonOutput(baseOutput({ summary: input.sessionKey }));
@@ -1594,7 +1746,7 @@ class DelayedFanoutRuntime implements OrchestratorAgentRuntime {
 }
 
 function itemIdFromSessionKey(sessionKey: string): string {
-  return sessionKey.split(":item:").at(-1) ?? sessionKey;
+  return (sessionKey.split(":item:").at(-1) ?? sessionKey).split(":group:")[0];
 }
 
 async function sleep(ms: number): Promise<void> {

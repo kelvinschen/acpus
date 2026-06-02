@@ -1,4 +1,5 @@
 import { issue, type OrchestratorIssue } from "../errors.js";
+import { contractNameForStage } from "../contracts/output-contracts.js";
 import { validateInputDefaults } from "../schema/input-validation.js";
 import type { Stage, WorkflowSpec } from "../schema/workflow-spec.js";
 import { findVariableIssues } from "../variables/interpolate.js";
@@ -275,6 +276,31 @@ function lintVariables(spec: WorkflowSpec, stages: Map<string, Stage>): Orchestr
       const variableIssues = findVariableIssues(stage.prompt, stageVariables);
       pushVariablePromptIssues(issues, variableIssues, `/stages/${index}/prompt`, `/stages/${index}/variables`);
     }
+    if (stage.kind === "fanout") {
+      for (let groupIndex = 0; groupIndex < stage.laneGroups.length; groupIndex += 1) {
+        const group = stage.laneGroups[groupIndex];
+        for (let laneIndex = 0; laneIndex < group.lanes.length; laneIndex += 1) {
+          const lane = group.lanes[laneIndex];
+          const prompt = lane.prompt ?? stage.prompt;
+          if (!prompt) {
+            issues.push(issue({
+              code: "FANOUT_LANE_PROMPT_REQUIRED",
+              severity: "error",
+              path: `/stages/${index}/laneGroups/${groupIndex}/lanes/${laneIndex}/prompt`,
+              message: `Fanout lane ${group.id}/${lane.id} must declare prompt or inherit the fanout stage prompt.`,
+              suggestions: ["Add a stage prompt shared by all lanes, or add prompt to this lane."]
+            }));
+            continue;
+          }
+          pushVariablePromptIssues(
+            issues,
+            findVariableIssues(prompt, stage.variables ?? []),
+            lane.prompt ? `/stages/${index}/laneGroups/${groupIndex}/lanes/${laneIndex}/prompt` : `/stages/${index}/prompt`,
+            `/stages/${index}/variables`
+          );
+        }
+      }
+    }
     if (stage.kind === "fixLoop") {
       pushVariablePromptIssues(
         issues,
@@ -486,8 +512,88 @@ function lintFanout(spec: WorkflowSpec, stages: Map<string, Stage>): Orchestrato
   for (let index = 0; index < spec.stages.length; index += 1) {
     const stage = spec.stages[index];
     if (stage.kind !== "fanout") continue;
-    const role = spec.roles[stage.role];
-    if (role?.mode === "edit") {
+    const groupIds = new Set<string>();
+    const contracts = new Set<string>();
+    let hasEditLane = false;
+    for (let groupIndex = 0; groupIndex < stage.laneGroups.length; groupIndex += 1) {
+      const group = stage.laneGroups[groupIndex];
+      if (groupIds.has(group.id)) {
+        issues.push(issue({
+          code: "FANOUT_LANE_GROUP_DUPLICATE",
+          severity: "error",
+          path: `/stages/${index}/laneGroups/${groupIndex}/id`,
+          message: `Duplicate fanout lane group id: ${group.id}`,
+          suggestions: ["Give every lane group in the fanout stage a unique id."]
+        }));
+      }
+      groupIds.add(group.id);
+      const laneIds = new Set<string>();
+      const defaultLanes = group.lanes.filter((lane) => lane.default === true);
+      if (group.mode === "oneOf" && defaultLanes.length > 1) {
+        issues.push(issue({
+          code: "FANOUT_ONE_OF_DEFAULT_DUPLICATE",
+          severity: "error",
+          path: `/stages/${index}/laneGroups/${groupIndex}/lanes`,
+          message: `Fanout oneOf group ${group.id} declares more than one default lane.`,
+          suggestions: ["Keep at most one default lane in a oneOf group."]
+        }));
+      }
+      for (let laneIndex = 0; laneIndex < group.lanes.length; laneIndex += 1) {
+        const lane = group.lanes[laneIndex];
+        if (laneIds.has(lane.id)) {
+          issues.push(issue({
+            code: "FANOUT_LANE_DUPLICATE",
+            severity: "error",
+            path: `/stages/${index}/laneGroups/${groupIndex}/lanes/${laneIndex}/id`,
+            message: `Duplicate fanout lane id in group ${group.id}: ${lane.id}`,
+            suggestions: ["Lane ids only need to be unique within their group."]
+          }));
+        }
+        laneIds.add(lane.id);
+        if (group.mode === "all" && lane.default === true) {
+          issues.push(issue({
+            code: "FANOUT_DEFAULT_INVALID",
+            severity: "error",
+            path: `/stages/${index}/laneGroups/${groupIndex}/lanes/${laneIndex}/default`,
+            message: `Fanout all group ${group.id} cannot declare a default lane.`,
+            suggestions: ["Remove default from this lane, or change the group mode to oneOf."]
+          }));
+        }
+        if (group.mode === "oneOf" && lane.default === true && lane.when) {
+          issues.push(issue({
+            code: "FANOUT_DEFAULT_WHEN_INVALID",
+            severity: "error",
+            path: `/stages/${index}/laneGroups/${groupIndex}/lanes/${laneIndex}/when`,
+            message: `Fanout default lane ${group.id}/${lane.id} cannot declare when.`,
+            suggestions: ["Default lanes are unconditional fallbacks; remove when."]
+          }));
+        }
+        if (group.mode === "oneOf" && lane.default !== true && !lane.when) {
+          issues.push(issue({
+            code: "FANOUT_ONE_OF_WHEN_REQUIRED",
+            severity: "error",
+            path: `/stages/${index}/laneGroups/${groupIndex}/lanes/${laneIndex}/when`,
+            message: `Fanout oneOf lane ${group.id}/${lane.id} must declare when unless it is default.`,
+            suggestions: ["Add a condition or mark exactly one fallback lane as default."]
+          }));
+        }
+        const role = spec.roles[lane.role];
+        if (role) {
+          contracts.add(contractNameForStage(stage, role));
+          hasEditLane ||= role.mode === "edit";
+        }
+      }
+    }
+    if (contracts.size > 1) {
+      issues.push(issue({
+        code: "FANOUT_CONTRACT_MISMATCH",
+        severity: "error",
+        path: `/stages/${index}/laneGroups`,
+        message: `Fanout stage ${stage.id} lanes resolve to multiple output contracts: ${[...contracts].join(", ")}.`,
+        suggestions: ["Use lane roles with the same role category contract in one fanout stage."]
+      }));
+    }
+    if (hasEditLane) {
       issues.push(issue({
         code: "FANOUT_EDIT_HIGH_RISK",
         severity: "warning",
@@ -557,9 +663,10 @@ function lintDiscover(spec: WorkflowSpec): OrchestratorIssue[] {
 function stageRoles(stage: Stage): string[] {
   switch (stage.kind) {
     case "agentTask":
-    case "fanout":
     case "summarize":
       return [stage.role];
+    case "fanout":
+      return stage.laneGroups.flatMap((group) => group.lanes.map((lane) => lane.role));
     case "discover":
       return stage.role ? [stage.role] : [];
     case "reduce":

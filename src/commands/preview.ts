@@ -26,6 +26,9 @@ export function registerPreview(program: Command): void {
         process.stdout.write(`Workflow: ${view.workflowName}\n`);
         process.stdout.write(`Status: ${view.status}\n`);
         process.stdout.write(`Planned agent calls: ${view.agentUsage.planned}\n`);
+        for (const fanout of view.fanout) {
+          process.stdout.write(`Fanout ${fanout.stageId}: up to ${fanout.estimatedWorkUnits} lane work unit(s) from ${fanout.maxItems} item(s)\n`);
+        }
         process.stdout.write("Risks:\n");
         for (const risk of view.risks) process.stdout.write(`- ${risk}\n`);
         process.stdout.write("Stages:\n");

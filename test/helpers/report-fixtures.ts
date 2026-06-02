@@ -60,6 +60,7 @@ export function minimalReportView(runId = "fixture-run"): RunReportView {
       roles: [],
       stages: [],
       attempts: [],
+      fanout: [],
       agentUsage: { planned: 1, actual: 1, repairCalls: 0 },
       artifacts: [],
       commands: {}
@@ -221,7 +222,7 @@ async function writeFanoutPartialFixture(cwd: string, runId: string, dir: string
     limits: { stageTimeoutMinutes: 60 },
     stages: [
       { id: "discover_files", kind: "discover", method: "glob", args: { pattern: "src/**/*.ts" }, output: "files" },
-      { id: "review_files", kind: "fanout", dependsOn: ["discover_files"], role: "reviewer", items: { source: "outputs.discover_files.files" }, limits: { maxConcurrency: 2, maxFanoutItems: 5 }, prompt: "Review", fanoutPolicy: { allowPartial: true, minCompletedRatio: 0.5, maxBlockedItems: 2 } },
+      { id: "review_files", kind: "fanout", dependsOn: ["discover_files"], items: { source: "outputs.discover_files.files" }, limits: { maxConcurrency: 2, maxFanoutItems: 5 }, prompt: "Review", laneGroups: [{ id: "review", mode: "all", lanes: [{ id: "reviewer", role: "reviewer" }] }], fanoutPolicy: { allowPartial: true, minCompletedRatio: 0.5, maxBlockedItems: 2 } },
       { id: "reconcile", kind: "reduce", mode: "agent", role: "reviewer", from: "review_files", dependsOn: ["review_files"], prompt: "Reconcile" },
       { id: "gate", kind: "gate", dependsOn: ["reconcile"] }
     ]

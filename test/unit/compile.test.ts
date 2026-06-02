@@ -29,24 +29,69 @@ describe("compileExecutionPlan", () => {
   });
 
   it("plans fanout item sessions independently", () => {
-    const spec = WorkflowSpecSchema.parse(JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "..", "workflows/examples/review-only-fanout.workflow.spec.json"), "utf8")));
+    const spec = WorkflowSpecSchema.parse(JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "..", "workflows/examples/fanout/read-only-single-lane.workflow.spec.json"), "utf8")));
     const plan = compileExecutionPlan(spec);
     const fanout = plan.stages.find((stage) => stage.id === "review_files");
 
-    expect(fanout?.session).toEqual({ kind: "fanoutItem", template: "role:validator:fanout:review_files:item:{itemId}" });
+    expect(fanout?.session).toEqual({ kind: "fanoutItem", template: "fanout:review_files:item:{itemId}:group:{groupId}:lane:{laneId}" });
     expect(fanout?.fanout).toMatchObject({
       itemsSource: "outputs.discover_changed_files.files",
       allowPartial: true,
       maxConcurrency: 4
     });
+    expect(fanout?.fanout?.laneGroups[0].lanes[0]).toMatchObject({
+      roleName: "validator",
+      sessionKeyTemplate: "role:validator:fanout:review_files:item:{itemId}:group:review:lane:validator"
+    });
     expect(plan.fanout[0]).toMatchObject({
-      stageId: "review_files",
-      sessionKeyTemplate: "role:validator:fanout:review_files:item:{itemId}"
+      stageId: "review_files"
     });
   });
 
+  it("plans heterogeneous fanout lane groups with inherited and overridden prompts", () => {
+    const spec = WorkflowSpecSchema.parse({
+      schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+      name: "heterogeneous",
+      root: "review",
+      inputs: { items: { type: "array<json>", default: [] } },
+      roles: {
+        codex: { category: "review", agent: "codex", mode: "readOnly" },
+        claude: { category: "review", agent: "claude", mode: "readOnly" }
+      },
+      stages: [
+        {
+          id: "review",
+          kind: "fanout",
+          items: { source: "input.items" },
+          prompt: "Review ${item.path}",
+          variables: [{ name: "path", source: "item.path" }],
+          laneGroups: [
+            {
+              id: "cross",
+              mode: "all",
+              lanes: [
+                { id: "codex", role: "codex" },
+                { id: "claude", role: "claude", prompt: "Claude review ${path}" }
+              ]
+            }
+          ]
+        },
+        { id: "gate", kind: "gate", dependsOn: ["review"] }
+      ]
+    });
+    const plan = compileExecutionPlan(spec);
+    const fanout = plan.stages.find((stage) => stage.id === "review");
+
+    expect(fanout?.fanout?.laneGroups[0].lanes.map((lane) => [lane.id, lane.roleName, lane.promptId])).toEqual([
+      ["codex", "codex", "review__cross__codex"],
+      ["claude", "claude", "review__cross__claude"]
+    ]);
+    expect(plan.prompts.review__cross__codex.template).toBe("Review ${item.path}");
+    expect(plan.prompts.review__cross__claude.template).toBe("Claude review ${path}");
+  });
+
   it("defaults fanout concurrency and item caps to one when omitted", () => {
-    const base = WorkflowSpecSchema.parse(JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "..", "workflows/examples/review-only-fanout.workflow.spec.json"), "utf8")));
+    const base = WorkflowSpecSchema.parse(JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "..", "workflows/examples/fanout/read-only-single-lane.workflow.spec.json"), "utf8")));
     const spec = WorkflowSpecSchema.parse({
       ...base,
       stages: base.stages.map((stage) => stage.id === "review_files" ? { ...stage, limits: undefined } : stage)
@@ -66,7 +111,7 @@ describe("compileExecutionPlan", () => {
   });
 
   it("keeps program decisions and reducers as runtime metadata", () => {
-    const base = WorkflowSpecSchema.parse(JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "..", "workflows/examples/review-only-fanout.workflow.spec.json"), "utf8")));
+    const base = WorkflowSpecSchema.parse(JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "..", "workflows/examples/fanout/read-only-single-lane.workflow.spec.json"), "utf8")));
     const spec = WorkflowSpecSchema.parse({
       ...base,
       limits: { ...base.limits },

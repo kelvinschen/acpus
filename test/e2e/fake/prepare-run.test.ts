@@ -173,7 +173,7 @@ describe("runtime-driven fake e2e", () => {
 
   it("runs fanout items with independent session keys", async () => {
     const temp = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-workflow-orchestrator-fanout-"));
-    const spec = WorkflowSpecSchema.parse(JSON.parse(await fs.readFile(path.resolve(__dirname, "..", "..", "..", "workflows/examples/edit-fanout-reconcile.workflow.spec.json"), "utf8")));
+    const spec = WorkflowSpecSchema.parse(JSON.parse(await fs.readFile(path.resolve(__dirname, "..", "..", "..", "workflows/examples/fanout/edit-only-single-lane.workflow.spec.json"), "utf8")));
     const fake = fakeRuntimeFactory([
       { text: plainJsonOutput(implementationOutput({ summary: "item 1" })) },
       { text: plainJsonOutput(implementationOutput({ summary: "item 2" })) },
@@ -188,8 +188,8 @@ describe("runtime-driven fake e2e", () => {
 
     expect(index.status).toBe("completed");
     const sessionKeys = fake.runtime.requests.map((request) => request.sessionKey);
-    expect(sessionKeys).toContain("role:implementer:fanout:edit_items:item:path-0d18d4eb377a");
-    expect(sessionKeys).toContain("role:implementer:fanout:edit_items:item:path-ded2f7f761b7");
+    expect(sessionKeys).toContain("role:implementer:fanout:edit_items:item:path-0d18d4eb377a:group:edit:lane:implementer");
+    expect(sessionKeys).toContain("role:implementer:fanout:edit_items:item:path-ded2f7f761b7:group:edit:lane:implementer");
     await expect(fs.stat(path.join(prepared.dir, "outputs", "edit_items.json"))).resolves.toBeTruthy();
   });
 });

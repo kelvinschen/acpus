@@ -1,6 +1,6 @@
 {
   "schemaVersion": "acpx-workflow-orchestrator.workflow/v1",
-  "name": "edit-fanout-reconcile",
+  "name": "edit-only-single-lane",
   "description": "High-risk example that edits multiple independent items, then reconciles with a read-only reducer.",
   "root": "edit_items",
   "inputs": {
@@ -19,7 +19,6 @@
     {
       "id": "edit_items",
       "kind": "fanout",
-      "role": "implementer",
       "items": { "source": "input.items" },
       "limits": { "maxConcurrency": 3, "maxFanoutItems": 8 },
       "fanoutPolicy": { "allowPartial": false },
@@ -27,7 +26,16 @@
         { "name": "task", "source": "input.task" },
         { "name": "item", "source": "item", "transform": [{ "fn": "json" }] }
       ],
-      "prompt": "Apply the requested scoped edit for this item only.\n\nTask:\n${task}\n\nItem:\n${item}"
+      "prompt": "Apply the requested scoped edit for this item only.\n\nTask:\n${task}\n\nItem:\n${item}",
+      "laneGroups": [
+        {
+          "id": "edit",
+          "mode": "all",
+          "lanes": [
+            { "id": "implementer", "role": "implementer" }
+          ]
+        }
+      ]
     },
     {
       "id": "reconcile",

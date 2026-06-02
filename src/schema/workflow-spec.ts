@@ -155,7 +155,17 @@ export const ConditionSchema: z.ZodType<Condition> = z.lazy(() =>
   z.union([
     z.object({
       source: z.string().min(1),
-      op: z.enum(["eq", "neq", "gt", "gte", "lt", "lte", "in", "exists", "empty"]),
+      op: z.literal("in"),
+      value: z.array(z.unknown())
+    }),
+    z.object({
+      source: z.string().min(1),
+      op: z.enum(["eq", "neq", "gt", "gte", "lt", "lte"]),
+      value: z.unknown().optional()
+    }),
+    z.object({
+      source: z.string().min(1),
+      op: z.enum(["exists", "empty"]),
       value: z.unknown().optional()
     }),
     z.object({ all: z.array(ConditionSchema).min(1) }),
@@ -167,6 +177,20 @@ export const ConditionSchema: z.ZodType<Condition> = z.lazy(() =>
 export const DecisionRuleSchema = z.object({
   when: ConditionSchema,
   to: z.string().min(1)
+});
+
+export const FanoutLaneSchema = z.object({
+  id: IdentifierSchema,
+  role: IdentifierSchema,
+  prompt: z.string().min(1).optional(),
+  when: ConditionSchema.optional(),
+  default: z.boolean().optional()
+});
+
+export const FanoutLaneGroupSchema = z.object({
+  id: IdentifierSchema,
+  mode: z.enum(["all", "oneOf"]),
+  lanes: z.array(FanoutLaneSchema).min(1)
 });
 
 export const AgentTaskStageSchema = StageBaseSchema.extend({
@@ -187,8 +211,8 @@ export const DiscoverStageSchema = StageBaseSchema.extend({
 export const FanoutStageSchema = StageBaseSchema.extend({
   kind: z.literal("fanout"),
   items: SourceRefSchema,
-  role: IdentifierSchema,
-  prompt: z.string().min(1),
+  prompt: z.string().min(1).optional(),
+  laneGroups: z.array(FanoutLaneGroupSchema).min(1),
   fanoutPolicy: z.object({
     allowPartial: z.boolean().default(false),
     minCompletedRatio: z.number().min(0).max(1).optional(),

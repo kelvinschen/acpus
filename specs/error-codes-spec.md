@@ -64,6 +64,8 @@ Stable runtime run-level codes:
 - `FANOUT_ITEM_UNSTARTED_TIMEOUT`
 - `FANOUT_ITEM_BLOCKED`
 - `FANOUT_ITEM_CASCADE_BLOCKED`
+- `FANOUT_LANE_SELECTION_FAILED`
+- `NO_MATCHING_LANES`
 - `MISSING_FANOUT_ITEM_OUTPUT`
 - `FANOUT_STAGE_STUCK_PENDING_BATCH`
 - `RUN_INDEX_OUTPUT_MISMATCH`
@@ -88,7 +90,7 @@ Error data includes stable code, severity, JSON Pointer path, human-readable mes
 
 ## Runtime Behavior
 
-Validation and compiler errors reject invalid specs before execution. Output parser errors block the affected attempt/stage/run and remain repair-oriented. ACPX runtime errors receive the runtime retry behavior defined by the runtime SPEC. `AGENT_RUNTIME_ERROR` and `FANOUT_ITEM_RUNTIME_ERROR` MUST represent true agent runtime throw/failure paths, not scheduler stale recovery. `AGENT_STAGE_STALE_RECOVERY` and `FANOUT_ITEM_STALE_RECOVERY` MUST mark scheduler stale recovery after a running attempt has no terminal output and no same-attempt heartbeat for the effective stage timeout plus grace interval. Runtime diagnostic error codes SHOULD match the terminal blocked reason for runtime and stale-recovery output artifacts. Persistence lock timeouts and run-index/output mismatches are surfaced as stable runtime diagnostics. `FANOUT_ITEM_BLOCKED` marks fanout aggregation blocked because one or more active items did not complete. `MISSING_FANOUT_ITEM_OUTPUT` marks a terminal fanout item whose expected output artifact could not be read during aggregation. `FANOUT_ITEM_CASCADE_BLOCKED` marks queued fanout items that were not launched after an `allowPartial: false` item failure. Gate verdict codes convert terminal gate outputs into run-level blocked outcomes when the gate returns blocked, failed, or unknown verdicts. `GATE_CONDITION_FAILED` blocks a run when a program gate condition evaluates false.
+Validation and compiler errors reject invalid specs before execution. Output parser errors block the affected attempt/stage/run and remain repair-oriented. ACPX runtime errors receive the runtime retry behavior defined by the runtime SPEC. `AGENT_RUNTIME_ERROR` and `FANOUT_ITEM_RUNTIME_ERROR` MUST represent true agent runtime throw/failure paths, not scheduler stale recovery. `AGENT_STAGE_STALE_RECOVERY` and `FANOUT_ITEM_STALE_RECOVERY` MUST mark scheduler stale recovery after a running attempt has no terminal output and no same-attempt heartbeat for the effective stage timeout plus grace interval. Runtime diagnostic error codes SHOULD match the terminal blocked reason for runtime and stale-recovery output artifacts. Persistence lock timeouts and run-index/output mismatches are surfaced as stable runtime diagnostics. `FANOUT_ITEM_BLOCKED` marks fanout aggregation blocked because one or more active items did not complete. `FANOUT_LANE_SELECTION_FAILED` marks a `oneOf` lane group selection error for an item. `NO_MATCHING_LANES` marks a skipped item that produced no lane work units across all lane groups. `MISSING_FANOUT_ITEM_OUTPUT` marks a terminal fanout item or lane whose expected output artifact could not be read during aggregation. `FANOUT_ITEM_CASCADE_BLOCKED` marks queued fanout work that was not launched after an `allowPartial: false` item failure. Gate verdict codes convert terminal gate outputs into run-level blocked outcomes when the gate returns blocked, failed, or unknown verdicts. `GATE_CONDITION_FAILED` blocks a run when a program gate condition evaluates false.
 
 ## Extension Points
 

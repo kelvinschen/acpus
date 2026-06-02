@@ -1,6 +1,6 @@
 {
   "schemaVersion": "acpx-workflow-orchestrator.workflow/v1",
-  "name": "review-only-fanout",
+  "name": "read-only-single-lane",
   "description": "Discover changed files, fan out read-only review, reduce findings, and gate completion.",
   "root": "discover_changed_files",
   "inputs": {
@@ -28,7 +28,6 @@
     {
       "id": "review_files",
       "kind": "fanout",
-      "role": "validator",
       "dependsOn": ["discover_changed_files"],
       "items": { "source": "outputs.discover_changed_files.files" },
       "limits": { "maxConcurrency": 4, "maxFanoutItems": 12 },
@@ -37,7 +36,16 @@
         { "name": "task", "source": "input.task" },
         { "name": "file", "source": "item.path", "transform": [{ "fn": "default", "args": { "value": "(unknown item)" } }] }
       ],
-      "prompt": "Review this file for task-relevant issues.\n\nTask:\n${task}\n\nFile:\n${file}"
+      "prompt": "Review this file for task-relevant issues.\n\nTask:\n${task}\n\nFile:\n${file}",
+      "laneGroups": [
+        {
+          "id": "review",
+          "mode": "all",
+          "lanes": [
+            { "id": "validator", "role": "validator" }
+          ]
+        }
+      ]
     },
     {
       "id": "reduce_findings",

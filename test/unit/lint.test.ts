@@ -16,10 +16,45 @@ describe("compiler lint", () => {
   });
 
   it("warns for edit fanout but requires reconcile", () => {
-    const spec = example("edit-fanout-reconcile.workflow.spec.json");
+    const spec = example("fanout/edit-only-single-lane.workflow.spec.json");
     const issues = lintWorkflowSpec(spec);
     expect(issues.map((entry) => entry.code)).toContain("FANOUT_EDIT_HIGH_RISK");
     expect(issues.map((entry) => entry.code)).not.toContain("FANOUT_EDIT_RECONCILE_MISSING");
+  });
+
+  it("validates heterogeneous fanout lane group rules", () => {
+    const spec = example("fanout/read-only-single-lane.workflow.spec.json");
+    const fanout = spec.stages.find((stage) => stage.kind === "fanout");
+    if (fanout?.kind !== "fanout") throw new Error("missing fanout");
+    fanout.laneGroups = [
+      {
+        id: "route",
+        mode: "oneOf",
+        lanes: [
+          { id: "a", role: "validator" },
+          { id: "b", role: "validator", default: true, when: { source: "item.area", op: "eq", value: "docs" } },
+          { id: "c", role: "validator", default: true }
+        ]
+      },
+      { id: "route", mode: "all", lanes: [{ id: "a", role: "validator", default: true }] }
+    ];
+
+    const codes = lintWorkflowSpec(spec).map((entry) => entry.code);
+    expect(codes).toContain("FANOUT_LANE_GROUP_DUPLICATE");
+    expect(codes).toContain("FANOUT_ONE_OF_WHEN_REQUIRED");
+    expect(codes).toContain("FANOUT_ONE_OF_DEFAULT_DUPLICATE");
+    expect(codes).toContain("FANOUT_DEFAULT_WHEN_INVALID");
+    expect(codes).toContain("FANOUT_DEFAULT_INVALID");
+  });
+
+  it("rejects fanout lanes with mismatched inferred contracts", () => {
+    const spec = example("fanout/read-only-single-lane.workflow.spec.json");
+    spec.roles.implementer = { category: "implementation", agent: "codex", mode: "edit" };
+    const fanout = spec.stages.find((stage) => stage.kind === "fanout");
+    if (fanout?.kind !== "fanout") throw new Error("missing fanout");
+    fanout.laneGroups[0].lanes.push({ id: "implementer", role: "implementer" });
+
+    expect(lintWorkflowSpec(spec).map((entry) => entry.code)).toContain("FANOUT_CONTRACT_MISMATCH");
   });
 
   it("rejects undeclared prompt variables", () => {
@@ -52,14 +87,14 @@ describe("compiler lint", () => {
   });
 
   it("rejects edit roles for read-only orchestration stages", () => {
-    const spec = example("review-only-fanout.workflow.spec.json");
+    const spec = example("fanout/read-only-single-lane.workflow.spec.json");
     spec.roles.reviewer = { category: "implementation", agent: "trae", mode: "edit" };
     const issues = lintWorkflowSpec(spec);
     expect(issues.map((entry) => entry.code)).toContain("ROLE_MODE_CONFLICT");
   });
 
   it("rejects stage concurrency on non-fanout stages", () => {
-    const spec = example("review-only-fanout.workflow.spec.json");
+    const spec = example("fanout/read-only-single-lane.workflow.spec.json");
     const reduce = spec.stages.find((stage) => stage.id === "reduce_findings");
     if (!reduce) throw new Error("missing reduce");
     reduce.limits = { maxConcurrency: 2 };
@@ -125,5 +160,43 @@ describe("compiler lint", () => {
     loop.validator.prompt = "Missing ${undeclared}";
     const issues = lintWorkflowSpec(spec);
     expect(issues.some((entry) => entry.code === "VARIABLE_UNDECLARED" && entry.path.endsWith("/validator/prompt"))).toBe(true);
+  });
+
+  it("validates condition in operator value shape during schema parsing", () => {
+    const spec = example("simple-feature.workflow.spec.json");
+    const gate = spec.stages.find((stage) => stage.kind === "gate");
+    if (gate?.kind !== "gate") throw new Error("missing gate");
+
+    expect(() => WorkflowSpecSchema.parse({
+      ...spec,
+      stages: spec.stages.map((stage) => stage.id === gate.id ? {
+        ...stage,
+        condition: { source: "outputs.implement.status", op: "in", value: ["completed", "blocked"] }
+      } : stage)
+    })).not.toThrow();
+    expect(() => WorkflowSpecSchema.parse({
+      ...spec,
+      stages: spec.stages.map((stage) => stage.id === gate.id ? {
+        ...stage,
+        condition: { source: "outputs.implement.status", op: "in", value: "completed" }
+      } : stage)
+    })).toThrow();
+    expect(() => WorkflowSpecSchema.parse({
+      ...spec,
+      stages: spec.stages.map((stage) => stage.id === gate.id ? {
+        ...stage,
+        condition: { source: "outputs.implement.status", op: "in" }
+      } : stage)
+    })).toThrow();
+    expect(() => WorkflowSpecSchema.parse({
+      ...spec,
+      stages: spec.stages.map((stage) => stage.id === gate.id ? {
+        ...stage,
+        condition: { all: [
+          { source: "outputs.implement.status", op: "exists" },
+          { source: "outputs.implement.blockedReason", op: "empty" }
+        ] }
+      } : stage)
+    })).not.toThrow();
   });
 });

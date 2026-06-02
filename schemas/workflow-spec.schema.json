@@ -457,9 +457,63 @@
                 ],
                 "additionalProperties": false
               },
-              "role": {
-                "type": "string",
-                "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
+              "laneGroups": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
+                    },
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "all",
+                        "oneOf"
+                      ]
+                    },
+                    "lanes": {
+                      "minItems": 1,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
+                          },
+                          "role": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
+                          },
+                          "prompt": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "when": {
+                            "$ref": "#/$defs/__schema0"
+                          },
+                          "default": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "role"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "mode",
+                    "lanes"
+                  ],
+                  "additionalProperties": false
+                }
               },
               "fanoutPolicy": {
                 "type": "object",
@@ -484,10 +538,9 @@
             },
             "required": [
               "id",
-              "prompt",
               "kind",
               "items",
-              "role"
+              "laneGroups"
             ],
             "additionalProperties": false
           },
@@ -1320,14 +1373,56 @@
             },
             "op": {
               "type": "string",
+              "const": "in"
+            },
+            "value": {
+              "type": "array",
+              "items": {}
+            }
+          },
+          "required": [
+            "source",
+            "op",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "op": {
+              "type": "string",
               "enum": [
                 "eq",
                 "neq",
                 "gt",
                 "gte",
                 "lt",
-                "lte",
-                "in",
+                "lte"
+              ]
+            },
+            "value": {}
+          },
+          "required": [
+            "source",
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "op": {
+              "type": "string",
+              "enum": [
                 "exists",
                 "empty"
               ]

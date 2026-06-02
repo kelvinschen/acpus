@@ -94,8 +94,8 @@ export function validateResumePolicy(spec: WorkflowSpec, policy: ResumePolicy): 
       continue;
     }
 
-    const role = spec.roles[stage.role];
-    if (fanoutPolicy.allowPartial && role?.mode === "edit") {
+    const hasEditLane = stage.laneGroups.some((group) => group.lanes.some((lane) => spec.roles[lane.role]?.mode === "edit"));
+    if (fanoutPolicy.allowPartial && hasEditLane) {
       issues.push(issue({
         code: "RESUME_POLICY_PARTIAL_REQUIRES_READONLY",
         severity: "error",

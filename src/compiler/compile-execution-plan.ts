@@ -21,17 +21,16 @@ export function compileExecutionPlan(spec: WorkflowSpec, options: CompileExecuti
     if (!stage) continue;
     const planStage = executionPlanStage(spec, stage, limits, prompts, contracts);
     stages.push(planStage);
-    if (planStage.fanout && planStage.roleName) {
+    if (planStage.fanout) {
       fanout.push({
         stageId: stage.id,
-        roleName: planStage.roleName,
         itemsSource: planStage.fanout.itemsSource,
-        sessionKeyTemplate: `role:${planStage.roleName}:fanout:${stage.id}:item:{itemId}`,
         maxItems: planStage.fanout.maxItems,
         maxConcurrency: planStage.fanout.maxConcurrency,
         allowPartial: planStage.fanout.allowPartial,
         minCompletedRatio: planStage.fanout.minCompletedRatio,
-        maxBlockedItems: planStage.fanout.maxBlockedItems
+        maxBlockedItems: planStage.fanout.maxBlockedItems,
+        laneGroups: planStage.fanout.laneGroups
       });
     }
   }
@@ -85,7 +84,7 @@ export function topologicalOrder(spec: WorkflowSpec): string[] {
 }
 
 export function stageRoleName(stage: Stage): string | undefined {
-  if (stage.kind === "agentTask" || stage.kind === "fanout") return stage.role;
+  if (stage.kind === "agentTask") return stage.role;
   if (stage.kind === "discover" || stage.kind === "reduce" || stage.kind === "decisionGate" || stage.kind === "gate") return stage.role;
   return undefined;
 }
@@ -130,16 +129,38 @@ function executionPlanStage(
   }
   if (stage.kind === "fanout") {
     const maxConcurrency = stage.limits?.maxConcurrency ?? 1;
+    const laneGroups = stage.laneGroups.map((group) => ({
+      id: group.id,
+      mode: group.mode,
+      lanes: group.lanes.map((lane) => {
+        const laneRole = spec.roles[lane.role];
+        const laneContract = contractPlanForStage(spec, stage, contractNameForStage(stage, laneRole));
+        const promptId = `${stage.id}__${group.id}__${lane.id}`;
+        prompts[promptId] = promptPlan(spec, stage, promptId, lane.prompt ?? stage.prompt ?? "", stage.variables ?? [], lane.role, laneContract, laneRole);
+        return {
+          id: lane.id,
+          roleName: lane.role,
+          promptId,
+          contract: laneContract,
+          sessionKeyTemplate: `role:${lane.role}:fanout:${stage.id}:item:{itemId}:group:${group.id}:lane:${lane.id}`,
+          when: lane.when,
+          default: lane.default
+        };
+      })
+    }));
     return {
       ...base,
-      session: { kind: "fanoutItem", template: `role:${stage.role}:fanout:${stage.id}:item:{itemId}` },
+      roleName: undefined,
+      promptId: undefined,
+      session: { kind: "fanoutItem", template: `fanout:${stage.id}:item:{itemId}:group:{groupId}:lane:{laneId}` },
       fanout: {
         itemsSource: stage.items.source,
         allowPartial: stage.fanoutPolicy?.allowPartial ?? false,
         minCompletedRatio: stage.fanoutPolicy?.minCompletedRatio,
         maxBlockedItems: stage.fanoutPolicy?.maxBlockedItems,
         maxItems: stage.limits?.maxFanoutItems ?? 1,
-        maxConcurrency
+        maxConcurrency,
+        laneGroups
       }
     };
   }

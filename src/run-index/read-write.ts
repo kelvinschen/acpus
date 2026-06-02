@@ -12,6 +12,8 @@ export const RuntimeErrorCodes = {
   FANOUT_ITEM_STALE_RECOVERY: "FANOUT_ITEM_STALE_RECOVERY",
   FANOUT_ITEM_BLOCKED: "FANOUT_ITEM_BLOCKED",
   FANOUT_ITEM_CASCADE_BLOCKED: "FANOUT_ITEM_CASCADE_BLOCKED",
+  FANOUT_LANE_SELECTION_FAILED: "FANOUT_LANE_SELECTION_FAILED",
+  NO_MATCHING_LANES: "NO_MATCHING_LANES",
   FANOUT_ITEM_UNSTARTED_TIMEOUT: "FANOUT_ITEM_UNSTARTED_TIMEOUT",
   MISSING_FANOUT_ITEM_OUTPUT: "MISSING_FANOUT_ITEM_OUTPUT",
   FANOUT_STAGE_STUCK_PENDING_BATCH: "FANOUT_STAGE_STUCK_PENDING_BATCH",
@@ -71,6 +73,8 @@ export type AttemptIndexEntry = {
   id: string;
   stageId: string;
   itemId?: string;
+  groupId?: string;
+  laneId?: string;
   kind: "attempt" | "repair" | "diagnostic";
   status: AttemptStatus;
   path: string;
@@ -109,6 +113,8 @@ export type StageIndexEntry = {
     blockedItems: number;
     allowPartial: boolean;
     failedItems?: number;
+    skippedItems?: number;
+    workUnits?: number;
     items: Array<{
       id: string;
       index: number;
@@ -122,6 +128,26 @@ export type StageIndexEntry = {
       errorMessage?: string;
       runtimeRetryOf?: string;
       runtimeRetryOrdinal?: number;
+      skippedReason?: string;
+      groups?: Array<{
+        id: string;
+        mode: "all" | "oneOf";
+        status: StageStatus;
+        lanes: Array<{
+          id: string;
+          roleName: string;
+          status: StageStatus;
+          outputPath?: string;
+          blockedReason?: string;
+          attemptId?: string;
+          startedAt?: string;
+          completedAt?: string;
+          errorCode?: string;
+          errorMessage?: string;
+          runtimeRetryOf?: string;
+          runtimeRetryOrdinal?: number;
+        }>;
+      }>;
     }>;
   };
 };

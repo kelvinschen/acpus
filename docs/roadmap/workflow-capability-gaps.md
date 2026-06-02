@@ -251,34 +251,127 @@ search -> extract -> verify -> vote
 **问题**
 
 当前 `fanout` 是一个 stage definition 跑多个 item。所有 item 共享同一个 role、prompt、contract 和 policy。  
-这适合均质工作，但不适合每个 item 需要不同 agent、prompt 或工具的场景。
+这适合均质工作，但不适合同一个 item 需要多个 role/agent 交叉处理，或不同 item 需要不同 role/agent 处理的场景。
+
+**当前方向**
+
+第一版异构 fanout 倾向以 `laneGroups[]` 作为 canonical API，而不是只做 `roleSelector` 或顶层 `allLanes` / `oneOfLanes`。  
+`lane` 表示 fanout item 的一个执行通道，每个 lane 可以绑定自己的 role 和 prompt。`laneGroup` 表示一组 lane 的选择语义，第一版支持 `all` 和 `oneOf`。单 lane group 可表达现有均质 fanout；`oneOf` group 可表达“每个 item 选择一个 agent”；`all` group 可表达“同一个 item 同时跑多个 agents”。
+
+第一版允许同一个 fanout 声明多个 lane groups，但只支持每个 group 独立展开，不支持 group 之间的依赖、引用或顺序约束。
+
+Heterogeneous fanout 落地时不保留 legacy `fanout.role` 简写。均质 fanout 也应通过单个 `laneGroups` entry 表达；由于该能力尚未发布，第一版可以采用 breaking schema migration，避免维护双 API。
+
+`laneGroups` 不允许为空；每个 lane group 的 `lanes` 也不允许为空。
+
+第一版不增加 lane group 或 lane 的 `description` / `label` 展示字段；`id` 用于 report、session、output identity。
+
+默认 failure 边界应是 item：如果某个 item 的任一 required lane blocked/failed，则整个 item blocked。只有显式 `fanoutPolicy.allowPartial` 或后续 lane-level partial policy 允许时，partial lane outputs 才能进入 reduce。
+
+Fanout stage-level `prompt` 应保留为 lane 默认 prompt。Lane prompt 可以继承 fanout stage prompt；lane 自己声明 prompt 时覆盖 stage prompt。
+
+Lane-level `variables` 第一版不支持。Fanout variables 只在 stage 级声明，所有 lanes 共享；lane prompt 可以覆盖 stage prompt，但只能引用 stage variables 和内置 item 上下文。
 
 **可能的 spec 形态**
 
 ```json
 {
-  "id": "multi_source_search",
+  "id": "cross_agent_review",
   "kind": "fanout",
-  "items": { "source": "outputs.plan.sources" },
-  "dispatch": {
-    "source": "item.type",
-    "cases": {
-      "academic": { "role": "scholar", "prompt": "..." },
-      "news": { "role": "newsSearcher", "prompt": "..." },
-      "community": { "role": "communitySearcher", "prompt": "..." }
+  "items": { "source": "outputs.discover_changed_files.files" },
+  "prompt": "Review ${item.path}.",
+  "laneGroups": [
+    {
+      "id": "cross_review",
+      "mode": "all",
+      "lanes": [
+        {
+          "id": "codex",
+          "role": "codex_reviewer"
+        },
+        {
+          "id": "claude",
+          "role": "claude_reviewer",
+          "prompt": "Review ${item.path} for specification consistency and edge cases."
+        }
+      ]
     }
-  }
+  ],
+  "limits": { "maxConcurrency": 4, "maxFanoutItems": 12 },
+  "fanoutPolicy": { "allowPartial": false }
+}
+```
+
+每个 item 只选择一个 agent 可以作为 lane 选择策略，而不是独立顶层模型：
+
+```json
+{
+  "id": "area_review",
+  "kind": "fanout",
+  "items": { "source": "input.items" },
+  "prompt": "Review ${item.path}.",
+  "laneGroups": [
+    {
+      "id": "specialist",
+      "mode": "oneOf",
+      "lanes": [
+        {
+          "id": "runtime",
+          "role": "codex_reviewer",
+          "when": { "source": "item.area", "op": "eq", "value": "runtime" }
+        },
+        {
+          "id": "schema",
+          "role": "claude_reviewer",
+          "when": { "source": "item.area", "op": "eq", "value": "schema" },
+          "prompt": "Review ${item.path} for schema and spec consistency."
+        },
+        {
+          "id": "docs",
+          "role": "docs_reviewer",
+          "default": true
+        }
+      ]
+    }
+  ]
 }
 ```
 
 **运行时语义**
 
-- attempt id 和 session key 仍需要基于 item identity 保持确定性。
-- budget 估算需要按 dispatch 的最大成本计算。
-- 输出契约可以采用共享 base contract，或允许 per-case contract 后再做 normalization。
+- 调度单位从 `item` 扩展为 `item x laneGroup x lane`。
+- Run-index 持久状态应保持 item-centric：item 下嵌套 groups/lanes；scheduler 内部可以扁平化为 work units 执行。
+- Attempt id、session key、output path 需要同时包含稳定 item identity、group id 和 lane id。
+- `laneGroup.id` 在 fanout stage 内必须唯一；`lane.id` 只需在所属 group 内唯一，持久 identity 使用 `(groupId, laneId)`。
+- Session key 和 run metadata 应保留原始 `groupId` / `laneId`；filesystem paths 应使用 safe path segment，避免 id 字符集扩展影响 artifact 路径。
+- `limits.maxConcurrency` 第一版应继续表示 fanout stage 的总并发，所有 `item x laneGroup x lane` work units 共享同一个 fanout pool；不支持 per-lane 或 per-group 独立并发。
+- `limits.maxFanoutItems` 继续作为 candidate item safety cap，不直接限制展开后的 lane work units；第一版不引入 `maxWorkUnits`，preview/report 应展示估算 work unit 数。
+- 输出聚合需要保留 item/group/lane 结构，reduce 可以读取每个 item 的 lane outputs。
+- Fanout aggregate output 应同时提供嵌套 `items[].groups[].lanes[]` 视图和扁平 `laneOutputs[]` 视图；嵌套视图服务 item 汇总和报告，扁平视图服务 reduce/transform。
+- 输出契约第一版不新增显式 contract 字段；同一个 fanout stage 的所有 lanes 应按各自 role category 推导 contract，推导结果必须一致，否则 lint error。Per-lane contract 需要 normalization 设计后再开放。
+- 不同 lanes 可以使用不同 role mode；如果任一 lane role 是 `edit`，整个 fanout stage 应按 edit fanout 风险处理，并要求 read-only reduce/reconcile。框架第一版不禁止 edit/readOnly lanes 并行，工作区读写竞态由 workflow 作者通过 item/lane 设计控制。
+- Lane prompt 解析顺序为 lane prompt 优先，缺省时继承 fanout stage prompt；至少其中一处必须提供 prompt。
+- Lane-level variables 第一版不支持；prompt placeholder 校验只基于 fanout stage variables 和内置 item context。
+- Lane `when` 第一版应复用现有 condition DSL（`source` / `op` / `value` / `all` / `any` / `not`），不引入第二套 predicate 语法。
+- Lane `when` 对缺失 source、`exists`、`empty`、比较和组合条件的处理应复用 condition DSL 的评估语义。
+- `all` group 对每个 item 启用 group 内所有 matching lanes；没有 `when` 的 lane 表示对每个 item 都启用。`all` group 匹配 0 个 lanes 是合法状态，不产生 work unit，也不单独阻塞 item。
+- `all` group 不要求存在 always-on lane；所有 lanes 都可以声明 `when`。
+- `when` 是 lane predicate；group `mode` 是 cardinality / selection policy。`all` 允许 0 到 N 个 matching lanes，不能作为 `oneOf` 的替代。
+- `oneOf` group 对每个 item 只启用一个 lane；没有 `when` 的 default lane 只作为 fallback 使用，unmatched item 使用 default lane，多个非 default lane 匹配固定 hard error。
+- `oneOf` group 中非 default lane 必须声明 `when`。
+- 第一版不暴露 `onMultipleMatches` 字段；不要使用 first-match wins，避免 lane 顺序成为隐藏语义。
+- `oneOf` group 如果没有任何 lane 匹配且没有 default lane，应 hard error / block 该 fanout item；允许 0 个 lane 的语义应作为未来 `zeroOrOne` 模式单独设计。
+- `default: true` 只允许出现在 `oneOf` group，不能出现在 `all` group；每个 `oneOf` group 最多一个 default lane；default lane 不允许声明 `when`。
+- 同一个 fanout 可以声明多个 lane groups；第一版各 group 独立展开为 work units，group 之间不能声明依赖或消费彼此输出。
+- 如果一个 item 在所有 lane groups 中都没有产生任何 work unit，该 item 应标记为 `skipped`，并记录稳定原因 `NO_MATCHING_LANES`。
+- Item status 汇总应使用现有 stage status 集合：所有 active lanes completed 时 item 为 `completed`；任一 active lane blocked/failed 且 partial 不允许时 item 为 `blocked`；partial 允许时 item 仍为 `completed`，但 item output 应记录 `partial: true` 和 blocked/failed lanes。
+- Fanout aggregation 的完成率和 partial policy 应排除 skipped items；`skippedItems` 应作为单独计数展示。
+- Partial policy 第一版只支持 fanout stage 级 `fanoutPolicy.allowPartial` / `minCompletedRatio` / `maxBlockedItems`；laneGroup 级 partial policy 暂不支持。
+- Resume policy 第一版只支持 item-level skip；group/lane-level skip 作为后续能力。
 
 **主要场景**
 
+- 同一个文件交给 Codex 和 Claude Code 交叉评审，再由 reduce 去重和处理分歧。
 - deep research 中学术、新闻、社区等不同来源搜索。
 - 设计到代码中不同组件策略：复用现有组件或新建组件。
 

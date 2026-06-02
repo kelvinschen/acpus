@@ -16,17 +16,17 @@ const spec = WorkflowSpecSchema.parse({
       id: "review_files",
       kind: "fanout",
       items: { source: "input.files" },
-      role: "reviewer",
       limits: { maxFanoutItems: 4 },
-      prompt: "Review one file"
+      prompt: "Review one file",
+      laneGroups: [{ id: "review", mode: "all", lanes: [{ id: "reviewer", role: "reviewer" }] }]
     },
     {
       id: "edit_files",
       kind: "fanout",
       items: { source: "input.files" },
-      role: "editor",
       limits: { maxFanoutItems: 2 },
-      prompt: "Edit one file"
+      prompt: "Edit one file",
+      laneGroups: [{ id: "edit", mode: "all", lanes: [{ id: "editor", role: "editor" }] }]
     },
     {
       id: "gate",

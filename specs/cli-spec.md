@@ -72,6 +72,7 @@ Resume policy flags:
 - `--max-fanout-items <stage=count>` lowers the effective fanout item cap.
 - `--skip-fanout-item <stage=index>` skips a zero-based item index.
 - `--allow-partial-fanout <stage>` allows partial read-only fanout results.
+- Fanout resume skip policy MUST remain item-level; group-level and lane-level skip selectors MUST NOT be accepted.
 
 ## Data Model
 

@@ -31,3 +31,15 @@ _Avoid_: agent call budget, total agent calls
 **Agent Call**:
 A runtime interaction with an agent used for usage reporting and attempt accounting. Agent calls are distinct from agent concurrency.
 _Avoid_: active agent, concurrency slot
+
+**Heterogeneous Fanout**:
+A fanout pattern where work items, or lanes for the same work item, may be assigned to different roles or agents within one fanout stage.
+_Avoid_: multi-agent fanout, mixed-agent fanout, agent selection fanout
+
+**Lane**:
+A named execution channel within heterogeneous fanout that binds selected work items to a role and prompt.
+_Avoid_: agent option, branch
+
+**Lane Group**:
+A named set of lanes evaluated together for each fanout item under one selection mode.
+_Avoid_: lane selector, lane collection

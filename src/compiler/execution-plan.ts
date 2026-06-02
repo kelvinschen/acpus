@@ -58,6 +58,22 @@ export type SessionKeyStrategy =
   | { kind: "linear"; key: string }
   | { kind: "fanoutItem"; template: string };
 
+export type FanoutLanePlan = {
+  id: string;
+  roleName: string;
+  promptId: string;
+  contract: ContractPlan;
+  sessionKeyTemplate: string;
+  when?: Extract<Stage, { kind: "fanout" }>["laneGroups"][number]["lanes"][number]["when"];
+  default?: boolean;
+};
+
+export type FanoutLaneGroupPlan = {
+  id: string;
+  mode: "all" | "oneOf";
+  lanes: FanoutLanePlan[];
+};
+
 export type ExecutionPlanStage = {
   id: string;
   kind: Stage["kind"];
@@ -74,6 +90,7 @@ export type ExecutionPlanStage = {
     maxBlockedItems?: number;
     maxItems: number;
     maxConcurrency: number;
+    laneGroups: FanoutLaneGroupPlan[];
   };
   reduce?: {
     mode: "agent" | "program";
@@ -117,12 +134,11 @@ export type ExecutionPlanStage = {
 
 export type FanoutPlan = {
   stageId: string;
-  roleName: string;
   itemsSource: string;
-  sessionKeyTemplate: string;
   maxItems: number;
   maxConcurrency: number;
   allowPartial: boolean;
   minCompletedRatio?: number;
   maxBlockedItems?: number;
+  laneGroups: FanoutLaneGroupPlan[];
 };

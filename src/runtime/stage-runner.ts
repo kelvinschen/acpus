@@ -26,6 +26,8 @@ export type AgentWorkUnit = {
   itemId?: string;
   itemIndex?: number;
   item?: unknown;
+  groupId?: string;
+  laneId?: string;
   roleName: string;
   role: Role;
   sessionKey: string;
@@ -41,6 +43,8 @@ export type AgentWorkUnit = {
 export type AgentWorkResult = {
   stageId: string;
   itemId?: string;
+  groupId?: string;
+  laneId?: string;
   status: "completed" | "blocked" | "failed";
   output?: Record<string, unknown>;
   outputPath?: string;
@@ -245,14 +249,15 @@ async function runFixLoop(input: {
     lastOutput = validator.output;
     if (validator.status !== "completed") return { ...validator, attempts, agentCalls, repairCalls };
 
-    const verdict = String(lastOutput?.verdict ?? "unknown");
+    const route = evaluateFixLoopRoute(lastOutput, stage.fixLoop.routingPolicy);
     latestFindings = Array.isArray(lastOutput?.findings) ? lastOutput.findings : [];
-    if (verdict === "pass") {
+    if (route === "complete") {
       await fs.writeFile(input.unit.outputPath, `${JSON.stringify(lastOutput, null, 2)}\n`, "utf8");
       return { stageId: input.unit.stageId, status: "completed", output: lastOutput, outputPath: input.unit.outputPath, attempts, agentCalls, repairCalls };
     }
-    if (verdict === "blocked" || verdict === "unknown") {
-      const blocked = { ...lastOutput, status: "blocked", blockedReason: `FIX_LOOP_${verdict.toUpperCase()}` };
+    if (route === "blocked" || route === "unknown") {
+      const blockedReason = route === "blocked" ? "FIX_LOOP_BLOCKED" : "FIX_LOOP_UNKNOWN";
+      const blocked = { ...lastOutput, status: "blocked", blockedReason };
       await fs.writeFile(input.unit.outputPath, `${JSON.stringify(blocked, null, 2)}\n`, "utf8");
       return { stageId: input.unit.stageId, status: "blocked", output: blocked, outputPath: input.unit.outputPath, attempts, agentCalls, repairCalls, blockedReason: String(blocked.blockedReason) };
     }
@@ -302,6 +307,42 @@ async function runFixLoop(input: {
   return { stageId: input.unit.stageId, status: "blocked", output: blocked, outputPath: input.unit.outputPath, attempts, agentCalls, repairCalls, blockedReason: "FIX_LOOP_EXHAUSTED" };
 }
 
+type FixLoopRoutingPolicy = NonNullable<ExecutionPlanStage["fixLoop"]>["routingPolicy"];
+
+function evaluateFixLoopRoute(output: Record<string, unknown> | undefined, routingPolicy: FixLoopRoutingPolicy): "fix" | "complete" | "blocked" | "unknown" {
+  if (!output) return "unknown";
+  const verdict = typeof output.verdict === "string" ? output.verdict : "unknown";
+  if (verdict === "unknown") return "unknown";
+  if (verdict === "blocked") return "blocked";
+  const signals = fixLoopRoutingSignals(output, verdict);
+  const fixOn = new Set(routingPolicy.fixOn.map(String));
+  if (signals.some((signal) => fixOn.has(signal))) return "fix";
+  return "complete";
+}
+
+function fixLoopRoutingSignals(output: Record<string, unknown>, verdict: string): string[] {
+  const signals = new Set<string>([verdict]);
+  const findings = Array.isArray(output.findings) ? output.findings : [];
+  for (const finding of findings) {
+    const record = objectRecord(finding);
+    if (record && typeof record.severity === "string") signals.add(record.severity);
+  }
+  const severityCounts = objectRecord(output.severityCounts);
+  if (severityCounts) {
+    for (const [severity, count] of Object.entries(severityCounts)) {
+      if (Number(count) > 0) signals.add(severity);
+    }
+  }
+  const checks = Array.isArray(output.checks) ? output.checks : [];
+  for (const check of checks) {
+    const record = objectRecord(check);
+    if (!record) continue;
+    if (typeof record.status === "string") signals.add(record.status);
+    if (typeof record.name === "string") signals.add(record.name);
+  }
+  return [...signals];
+}
+
 async function executeAttemptWithRepair(input: {
   cwd: string;
   runDir: string;
@@ -342,6 +383,8 @@ async function executeAttemptWithRepair(input: {
     return {
       stageId: input.unit.stageId,
       itemId: input.unit.itemId,
+      groupId: input.unit.groupId,
+      laneId: input.unit.laneId,
       status: "blocked",
       output,
       outputPath: input.unit.outputPath,
@@ -371,6 +414,8 @@ async function executeAttemptWithRepair(input: {
     return {
       stageId: input.unit.stageId,
       itemId: input.unit.itemId,
+      groupId: input.unit.groupId,
+      laneId: input.unit.laneId,
       status: output.status === "blocked" ? "blocked" : "completed",
       output,
       outputPath: input.unit.outputPath,
@@ -395,6 +440,8 @@ async function executeAttemptWithRepair(input: {
     return {
       stageId: input.unit.stageId,
       itemId: input.unit.itemId,
+      groupId: input.unit.groupId,
+      laneId: input.unit.laneId,
       status: "blocked",
       output: blocked,
       outputPath: input.unit.outputPath,
@@ -471,6 +518,8 @@ async function executeRepairAttempt(input: {
     return {
       stageId: input.unit.stageId,
       itemId: input.unit.itemId,
+      groupId: input.unit.groupId,
+      laneId: input.unit.laneId,
       status: output.status === "blocked" ? "blocked" : "completed",
       output,
       outputPath: input.unit.outputPath,
@@ -490,6 +539,8 @@ async function executeRepairAttempt(input: {
   return {
     stageId: input.unit.stageId,
     itemId: input.unit.itemId,
+    groupId: input.unit.groupId,
+    laneId: input.unit.laneId,
     status: "blocked",
     output,
     outputPath: input.unit.outputPath,
@@ -533,7 +584,10 @@ async function executeRuntimeTurnWithRetry(input: {
   originalReason?: string;
 }): Promise<RuntimeTurnExecution> {
   if (!input.repair) {
-    await writePromptAudit(input.runDir, input.unit.itemId ? `${input.unit.stageId}__${input.unit.itemId}` : input.unit.stageId, input.prompt);
+    const promptAuditId = input.unit.itemId && input.unit.groupId && input.unit.laneId
+      ? `${input.unit.stageId}__${input.unit.itemId}__${input.unit.groupId}__${input.unit.laneId}`
+      : input.unit.itemId ? `${input.unit.stageId}__${input.unit.itemId}` : input.unit.stageId;
+    await writePromptAudit(input.runDir, promptAuditId, input.prompt);
   }
   const priorAttempts: AttemptIndexEntry[] = [];
   let calls = 0;
@@ -543,6 +597,8 @@ async function executeRuntimeTurnWithRetry(input: {
     const id = attemptId({
       stageId: input.unit.stageId,
       itemId: input.unit.itemId,
+      groupId: input.unit.groupId,
+      laneId: input.unit.laneId,
       kind: input.kind,
       ordinal: input.ordinal,
       runtimeRetryOrdinal
@@ -550,6 +606,8 @@ async function executeRuntimeTurnWithRetry(input: {
     const dir = attemptDir(input.runDir, {
       stageId: input.unit.stageId,
       itemId: input.unit.itemId,
+      groupId: input.unit.groupId,
+      laneId: input.unit.laneId,
       kind: input.kind,
       ordinal: input.ordinal,
       runtimeRetryOrdinal
@@ -561,6 +619,8 @@ async function executeRuntimeTurnWithRetry(input: {
       id,
       stageId: input.unit.stageId,
       itemId: input.unit.itemId,
+      groupId: input.unit.groupId,
+      laneId: input.unit.laneId,
       kind: input.kind,
       status: "running",
       path: path.relative(input.runDir, dir),
@@ -622,7 +682,7 @@ async function executeRuntimeTurnWithRetry(input: {
       if (canRetryRuntimeFailure(runtimeRetryOrdinal)) {
         priorAttempts.push(finalizeRuntimeFailedAttempt(attemptBase, failure));
         const nextRetryOrdinal = (runtimeRetryOrdinal ?? 0) + 1;
-        const nextAttemptId = attemptId({ stageId: input.unit.stageId, itemId: input.unit.itemId, kind: input.kind, ordinal: input.ordinal, runtimeRetryOrdinal: nextRetryOrdinal });
+        const nextAttemptId = attemptId({ stageId: input.unit.stageId, itemId: input.unit.itemId, groupId: input.unit.groupId, laneId: input.unit.laneId, kind: input.kind, ordinal: input.ordinal, runtimeRetryOrdinal: nextRetryOrdinal });
         await appendEvent(input.cwd, input.runId, { type: "runtime_retry_scheduled", stageId: input.unit.stageId, itemId: input.unit.itemId, attemptId: id, retryAttemptId: nextAttemptId, runtimeRetryOrdinal: nextRetryOrdinal, errorCode: failure.code, errorMessage: failure.message, repair: input.repair });
         runtimeRetryOf = runtimeRetryOf ?? id;
         runtimeRetryOrdinal = nextRetryOrdinal;
@@ -645,7 +705,7 @@ async function executeRuntimeTurnWithRetry(input: {
       if (canRetryRuntimeFailure(runtimeRetryOrdinal)) {
         priorAttempts.push(finalizeRuntimeFailedAttempt(attemptBase, retryFailure));
         const nextRetryOrdinal = (runtimeRetryOrdinal ?? 0) + 1;
-        const nextAttemptId = attemptId({ stageId: input.unit.stageId, itemId: input.unit.itemId, kind: input.kind, ordinal: input.ordinal, runtimeRetryOrdinal: nextRetryOrdinal });
+        const nextAttemptId = attemptId({ stageId: input.unit.stageId, itemId: input.unit.itemId, groupId: input.unit.groupId, laneId: input.unit.laneId, kind: input.kind, ordinal: input.ordinal, runtimeRetryOrdinal: nextRetryOrdinal });
         await appendEvent(input.cwd, input.runId, { type: "runtime_retry_scheduled", stageId: input.unit.stageId, itemId: input.unit.itemId, attemptId: id, retryAttemptId: nextAttemptId, runtimeRetryOrdinal: nextRetryOrdinal, errorCode: retryFailure.code, errorMessage: retryFailure.message, repair: input.repair });
         runtimeRetryOf = runtimeRetryOf ?? id;
         runtimeRetryOrdinal = nextRetryOrdinal;
@@ -785,6 +845,8 @@ async function runtimeFailureAgentWorkResult(input: {
     ok: false,
     stageId: unit.stageId,
     itemId: unit.itemId,
+    groupId: unit.groupId,
+    laneId: unit.laneId,
     status: "blocked",
     output,
     outputPath: unit.outputPath,
@@ -953,11 +1015,11 @@ function evaluateDecision(stage: Extract<Stage, { kind: "decisionGate" }>, outpu
   return stage.default;
 }
 
-function evaluateCondition(condition: ConditionNode, outputs: Record<string, unknown>, workflowInput: Record<string, unknown>): boolean {
-  if ("all" in condition) return Array.isArray(condition.all) && condition.all.every((item) => evaluateCondition(item, outputs, workflowInput));
-  if ("any" in condition) return Array.isArray(condition.any) && condition.any.some((item) => evaluateCondition(item, outputs, workflowInput));
-  if ("not" in condition) return condition.not ? !evaluateCondition(condition.not, outputs, workflowInput) : false;
-  const value = condition.source ? resolveSource(condition.source, workflowInput, outputs) : undefined;
+export function evaluateCondition(condition: ConditionNode, outputs: Record<string, unknown>, workflowInput: Record<string, unknown>, local: Record<string, unknown> = {}): boolean {
+  if ("all" in condition) return Array.isArray(condition.all) && condition.all.every((item) => evaluateCondition(item, outputs, workflowInput, local));
+  if ("any" in condition) return Array.isArray(condition.any) && condition.any.some((item) => evaluateCondition(item, outputs, workflowInput, local));
+  if ("not" in condition) return condition.not ? !evaluateCondition(condition.not, outputs, workflowInput, local) : false;
+  const value = condition.source ? resolveSource(condition.source, workflowInput, outputs, local) : undefined;
   switch (condition.op) {
     case "eq": return value === condition.value;
     case "neq": return value !== condition.value;

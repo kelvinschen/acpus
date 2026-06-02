@@ -146,6 +146,19 @@ export type ReportStageDetail = {
       blockedReason?: string;
       errorCode?: string;
       errorMessage?: string;
+      groups?: Array<{
+        id: string;
+        mode?: string;
+        status?: string;
+        lanes: Array<{
+          id: string;
+          roleName?: string;
+          status?: string;
+          outputPath?: string;
+          blockedReason?: string;
+          errorCode?: string;
+        }>;
+      }>;
     }>;
   };
   decision?: {
@@ -432,7 +445,20 @@ async function buildFanoutDetail(dir: string, state: RunIndex["stages"][string] 
       output: output === undefined || !outputPath ? undefined : makePreview(JSON.stringify(output, null, 2), limits.outputPreviewChars, outputPath),
       blockedReason: item.blockedReason ?? stringField(output, "blockedReason"),
       errorCode: item.errorCode,
-      errorMessage: item.errorMessage
+      errorMessage: item.errorMessage,
+      groups: item.groups?.map((group) => ({
+        id: group.id,
+        mode: group.mode,
+        status: group.status,
+        lanes: group.lanes.map((lane) => ({
+          id: lane.id,
+          roleName: lane.roleName,
+          status: lane.status,
+          outputPath: lane.outputPath ? path.join(dir, lane.outputPath) : undefined,
+          blockedReason: lane.blockedReason,
+          errorCode: lane.errorCode
+        }))
+      }))
     };
   }));
   return {
@@ -711,7 +737,7 @@ async function readJsonIfExists(filePath: string): Promise<Record<string, unknow
 }
 
 function stageRoleName(stage: Stage): string | undefined {
-  if (stage.kind === "agentTask" || stage.kind === "fanout") return stage.role;
+  if (stage.kind === "agentTask") return stage.role;
   if (stage.kind === "discover" || stage.kind === "reduce" || stage.kind === "decisionGate" || stage.kind === "gate") return stage.role;
   if (stage.kind === "fixLoop") return stage.validator.role;
   return undefined;

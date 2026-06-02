@@ -53,6 +53,7 @@ export type RunView = {
     parseErrorCode?: string;
     path: string;
   }>;
+  fanout: Array<{ stageId: string; maxItems: number; laneUpperBound: number; estimatedWorkUnits: number }>;
   agentUsage: { planned: number; actual?: number; repairCalls?: number; recoveryCalls?: number };
   artifacts: Array<{ kind?: string; path?: string; label?: string }>;
   commands: Record<string, string>;
@@ -76,6 +77,7 @@ export function previewRunView(spec: WorkflowSpec, issues: OrchestratorIssue[] =
       dependsOn: stage.dependsOn ?? []
     })),
     attempts: [],
+    fanout: estimateFanoutWork(spec),
     agentUsage: {
       planned: estimateAgentCalls(spec)
     },
@@ -148,10 +150,23 @@ export function estimateAgentCalls(spec: WorkflowSpec): number {
     if (stage.kind === "discover" && stage.method === "agent") baseCalls += 1;
     if (stage.kind === "reduce" && stage.mode === "agent") baseCalls += 1;
     if (stage.kind === "decisionGate" && stage.mode === "agent") baseCalls += 1;
-    if (stage.kind === "fanout") baseCalls += stage.limits?.maxFanoutItems ?? 1;
+    if (stage.kind === "fanout") baseCalls += (stage.limits?.maxFanoutItems ?? 1) * fanoutLaneUpperBound(stage);
     if (stage.kind === "fixLoop") baseCalls += stage.maxRounds + Math.max(0, stage.maxRounds - 1);
   }
   return baseCalls;
+}
+
+export function estimateFanoutWork(spec: WorkflowSpec): RunView["fanout"] {
+  return spec.stages.filter((stage): stage is Extract<WorkflowSpec["stages"][number], { kind: "fanout" }> => stage.kind === "fanout").map((stage) => {
+    const maxItems = stage.limits?.maxFanoutItems ?? 1;
+    const laneUpperBound = fanoutLaneUpperBound(stage);
+    return {
+      stageId: stage.id,
+      maxItems,
+      laneUpperBound,
+      estimatedWorkUnits: maxItems * laneUpperBound
+    };
+  });
 }
 
 async function readStageOutputs(cwd: string, logicalRunId: string, spec: WorkflowSpec): Promise<Record<string, unknown>> {
@@ -231,9 +246,13 @@ function previewRisks(spec: WorkflowSpec): string[] {
   ];
   const editRoles = Object.entries(spec.roles).filter(([, role]) => role.mode === "edit").map(([name]) => name);
   if (editRoles.length > 0) risks.push(`Edit-capable roles may modify files: ${editRoles.join(", ")}.`);
-  const editFanout = spec.stages.filter((stage) => stage.kind === "fanout" && spec.roles[stage.role]?.mode === "edit").map((stage) => stage.id);
+  const editFanout = spec.stages.filter((stage) => stage.kind === "fanout" && stage.laneGroups.some((group) => group.lanes.some((lane) => spec.roles[lane.role]?.mode === "edit"))).map((stage) => stage.id);
   if (editFanout.length > 0) risks.push(`Edit fanout is high risk; independent item sessions run under stage-local fanout concurrency: ${editFanout.join(", ")}.`);
   const allowPartial = spec.stages.filter((stage) => stage.kind === "fanout" && stage.fanoutPolicy?.allowPartial).map((stage) => stage.id);
   if (allowPartial.length > 0) risks.push(`Partial fanout results are explicitly allowed for: ${allowPartial.join(", ")}.`);
   return risks;
+}
+
+function fanoutLaneUpperBound(stage: Extract<WorkflowSpec["stages"][number], { kind: "fanout" }>): number {
+  return Math.max(1, stage.laneGroups.reduce((total, group) => total + (group.mode === "oneOf" ? 1 : group.lanes.length), 0));
 }
