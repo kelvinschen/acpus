@@ -922,6 +922,64 @@ describe("fanout runtime stability", () => {
     });
   });
 
+  it("aggregates loop body fanout lane results by task identity when completion order differs", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-fanout-order-"));
+    const runtime = new DelayedFanoutRuntime({ "item-1": 25, "item-2": 1 });
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const spec = loopFanoutSpec(cwd, {
+      maxConcurrency: 2,
+      laneGroups: [{ id: "work", mode: "all", lanes: [{ id: "worker", role: "worker" }] }]
+    });
+    const prepared = await prepareRun(spec, { cwd, input: { cwd, items: fanoutInputItems(2) } });
+
+    const index = await startPreparedRun(cwd, prepared);
+    const items = index.stages.quality_loop?.loop?.rounds[0]?.stages.review_items.fanout?.items ?? [];
+    const itemSummaries = items.map((item) => {
+      const lane = item.groups?.[0]?.lanes[0] as ({ output?: { summary?: string } } | undefined);
+      const laneOutput = lane?.output;
+      return [item.id, item.status, laneOutput?.summary];
+    });
+
+    expect(index.status).toBe("completed");
+    expect(runtime.requests.map((request) => itemIdFromSessionKey(request.sessionKey)).sort()).toEqual(["item-1", "item-2"]);
+    expect(itemSummaries).toEqual([
+      ["item-1", "completed", expect.stringContaining("item:item-1:group:work:lane:worker")],
+      ["item-2", "completed", expect.stringContaining("item:item-2:group:work:lane:worker")]
+    ]);
+  });
+
+  it("aggregates same-item loop body fanout lanes after concurrent execution", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-fanout-lanes-"));
+    const runtime = new DelayedFanoutRuntime({ "item-1": 10 });
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const spec = loopFanoutSpec(cwd, {
+      maxConcurrency: 2,
+      laneGroups: [{
+        id: "review",
+        mode: "all",
+        lanes: [
+          { id: "static", role: "worker" },
+          { id: "semantic", role: "worker" }
+        ]
+      }]
+    });
+    const prepared = await prepareRun(spec, { cwd, input: { cwd, items: fanoutInputItems(1) } });
+
+    const index = await startPreparedRun(cwd, prepared);
+    const group = index.stages.quality_loop?.loop?.rounds[0]?.stages.review_items.fanout?.items[0]?.groups?.[0];
+
+    expect(index.status).toBe("completed");
+    expect(runtime.maxActive).toBe(2);
+    expect(group).toMatchObject({ id: "review", status: "completed" });
+    expect(group?.lanes.map((lane) => {
+      const output = (lane as { output?: { summary?: string } }).output;
+      return [lane.id, lane.status, output?.summary];
+    })).toEqual([
+      ["static", "completed", expect.stringContaining("lane:static")],
+      ["semantic", "completed", expect.stringContaining("lane:semantic")]
+    ]);
+  });
+
   it("cascade-blocks unstarted loop body fanout work when partial fanout is disabled", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-fanout-cascade-"));
     const runtime = new DelayedFanoutRuntime({ "item-1": 25, "item-2": 1 }, ["item-2"]);

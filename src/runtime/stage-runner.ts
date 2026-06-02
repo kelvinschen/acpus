@@ -592,61 +592,56 @@ async function runLoopFanoutStage(input: {
   const laneResultsByItemIndex = new Map<number, FanoutCoreLaneResult[]>();
   const itemOutputsByIndex = new Map<number, Record<string, unknown>>(expanded.preExecutionItemOutputs);
   type LoopFanoutTask = FanoutCoreWorkUnit & {
+    ordinal: number;
     laneOutputPath: string;
-    laneEntry: NonNullable<NonNullable<StageIndexEntry["fanout"]>["items"][number]["groups"]>[number]["lanes"][number];
   };
-  const tasks: LoopFanoutTask[] = expanded.workUnits.flatMap((workUnit) => {
-    const laneEntry = fanoutItems
-      .find((item) => item.index === workUnit.itemIndex)
-      ?.groups?.find((group) => group.id === workUnit.groupId)
-      ?.lanes.find((lane) => lane.id === workUnit.laneId);
-    if (!laneEntry) return [];
-    return [{
-      ...workUnit,
-      laneOutputPath: loopFanoutLaneOutputPath(input.runDir, input.planStage.id, input.round, input.bodyStage.id, workUnit.itemId, workUnit.groupId, workUnit.laneId),
-      laneEntry
-    }];
-  });
+  type LoopFanoutTaskResult = { task: LoopFanoutTask; result: AgentWorkResult };
+  const tasks: LoopFanoutTask[] = expanded.workUnits.map((workUnit, ordinal) => ({
+    ...workUnit,
+    ordinal,
+    laneOutputPath: loopFanoutLaneOutputPath(input.runDir, input.planStage.id, input.round, input.bodyStage.id, workUnit.itemId, workUnit.groupId, workUnit.laneId)
+  }));
 
   let nextTask = 0;
   let fastStop = false;
   const workerCount = Math.min(Math.max(1, plan.maxConcurrency), tasks.length);
-  await Promise.all(Array.from({ length: workerCount }, async () => {
+  const workerResults = await Promise.all(Array.from({ length: workerCount }, async () => {
+    const localResults: LoopFanoutTaskResult[] = [];
     while (nextTask < tasks.length) {
-      if (fastStop) return;
+      if (fastStop) return localResults;
       const task = tasks[nextTask];
       nextTask += 1;
       const result = await runLoopFanoutLaneTask(input, task);
-      attempts.push(...result.attempts);
-      agentCalls += result.agentCalls;
-      repairCalls += result.repairCalls;
-      const existing = laneResultsByItemIndex.get(task.itemIndex) ?? [];
-      if (result.outputPath && result.output) {
-        existing.push({
-          itemId: task.itemId,
-          itemIndex: task.itemIndex,
-          groupId: task.groupId,
-          laneId: task.laneId,
-          roleName: task.roleName,
-          status: result.status,
-          output: result.output,
-          outputPath: path.relative(input.runDir, result.outputPath),
-          blockedReason: result.blockedReason,
-          errorCode: result.errorCode
-        });
-      }
-      laneResultsByItemIndex.set(task.itemIndex, existing);
-      const settledItem = fanoutItems.find((item) => item.index === task.itemIndex);
-      const settledGroup = settledItem?.groups?.find((group) => group.id === task.groupId);
-      if (settledItem && settledGroup) {
-        settledGroup.status = fanoutGroupStatus(settledGroup.lanes);
-        settledItem.status = fanoutItemStatus(settledItem);
-      }
+      localResults.push({ task, result });
       if (result.status !== "completed" && !plan.allowPartial) {
         fastStop = true;
       }
     }
+    return localResults;
   }));
+  const taskResults = workerResults.flat().sort((left, right) => left.task.ordinal - right.task.ordinal);
+  for (const { task, result } of taskResults) {
+    attempts.push(...result.attempts);
+    agentCalls += result.agentCalls;
+    repairCalls += result.repairCalls;
+    applyLoopFanoutLaneResult(fanoutItems, input.runDir, task, result);
+    const existing = laneResultsByItemIndex.get(task.itemIndex) ?? [];
+    if (result.outputPath && result.output) {
+      existing.push({
+        itemId: task.itemId,
+        itemIndex: task.itemIndex,
+        groupId: task.groupId,
+        laneId: task.laneId,
+        roleName: task.roleName,
+        status: result.status,
+        output: result.output,
+        outputPath: path.relative(input.runDir, result.outputPath),
+        blockedReason: result.blockedReason,
+        errorCode: result.errorCode
+      });
+    }
+    laneResultsByItemIndex.set(task.itemIndex, existing);
+  }
 
   if (fastStop) {
     const cascaded = cascadeBlockFanoutItems({
@@ -741,7 +736,6 @@ async function runLoopFanoutLaneTask(
     promptId: string;
     contract: ContractPlan;
     laneOutputPath: string;
-    laneEntry: NonNullable<NonNullable<StageIndexEntry["fanout"]>["items"][number]["groups"]>[number]["lanes"][number];
   }
 ): Promise<AgentWorkResult> {
   const role = input.spec.roles[task.roleName];
@@ -780,15 +774,8 @@ async function runLoopFanoutLaneTask(
     laneId: task.laneId
   });
   if ("result" in rendered) {
-    task.laneEntry.status = "blocked";
-    task.laneEntry.outputPath = path.relative(input.runDir, task.laneOutputPath);
-    task.laneEntry.blockedReason = RuntimeErrorCodes.VARIABLE_RESOLUTION_FAILED;
-    task.laneEntry.completedAt = new Date().toISOString();
-    task.laneEntry.errorCode = RuntimeErrorCodes.VARIABLE_RESOLUTION_FAILED;
     return rendered.result;
   }
-  task.laneEntry.status = "running";
-  task.laneEntry.startedAt = new Date().toISOString();
   const result = await executeAttemptWithRepair({
     cwd: input.cwd,
     runDir: input.runDir,
@@ -802,15 +789,28 @@ async function runLoopFanoutLaneTask(
     contractName: task.contract.name,
     contractOptions: task.contract.options
   });
-  const outputPath = path.relative(input.runDir, task.laneOutputPath);
-  task.laneEntry.status = result.status;
-  task.laneEntry.outputPath = outputPath;
-  task.laneEntry.blockedReason = result.blockedReason;
-  task.laneEntry.attemptId = result.attempts.at(-1)?.id;
-  task.laneEntry.completedAt = new Date().toISOString();
-  task.laneEntry.errorCode = result.errorCode;
-  task.laneEntry.errorMessage = result.errorMessage;
   return result;
+}
+
+function applyLoopFanoutLaneResult(
+  fanoutItems: FanoutCoreItem[],
+  runDir: string,
+  task: FanoutCoreWorkUnit & { laneOutputPath: string },
+  result: AgentWorkResult
+): void {
+  const item = fanoutItems.find((candidate) => candidate.index === task.itemIndex);
+  const group = item?.groups?.find((candidate) => candidate.id === task.groupId);
+  const lane = group?.lanes.find((candidate) => candidate.id === task.laneId);
+  if (!item || !group || !lane) return;
+  lane.status = result.status;
+  lane.outputPath = result.outputPath ? path.relative(runDir, result.outputPath) : path.relative(runDir, task.laneOutputPath);
+  lane.blockedReason = result.blockedReason;
+  lane.attemptId = result.attempts.at(-1)?.id;
+  lane.completedAt = new Date().toISOString();
+  lane.errorCode = result.errorCode;
+  lane.errorMessage = result.errorMessage;
+  group.status = fanoutGroupStatus(group.lanes);
+  item.status = fanoutItemStatus(item);
 }
 
 function missingLoopFanoutLaneOutput(itemId: string, groupId: string, laneId: string): Record<string, unknown> {
@@ -1093,10 +1093,10 @@ async function executeRepairAttempt(input: {
     status: "blocked",
     output,
     outputPath: input.unit.outputPath,
-    attempts: [...execution.attempts, { ...entryBase, status: "blocked", endedAt: new Date().toISOString(), blockedReason: "OUTPUT_REPAIR_FAILED", parseErrorCode: parsed?.diagnostics.errorCode ?? RuntimeErrorCodes.AGENT_TURN_FAILED, rawPreview: previewText(turn.rawText) }],
+    attempts: [...execution.attempts, { ...entryBase, status: "blocked", endedAt: new Date().toISOString(), blockedReason: RuntimeErrorCodes.OUTPUT_REPAIR_FAILED, parseErrorCode: parsed?.diagnostics.errorCode ?? RuntimeErrorCodes.AGENT_TURN_FAILED, rawPreview: previewText(turn.rawText) }],
     agentCalls: execution.agentCalls,
     repairCalls: execution.agentCalls,
-    blockedReason: "OUTPUT_REPAIR_FAILED"
+    blockedReason: RuntimeErrorCodes.OUTPUT_REPAIR_FAILED
   };
 }
 

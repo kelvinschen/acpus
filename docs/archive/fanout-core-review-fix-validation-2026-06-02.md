@@ -20,4 +20,4 @@
 
 ## Follow-Up
 
-Remaining P0/P1 findings are tracked in `docs/roadmap/fanout-core-review-follow-up-issues.md`.
+The remaining P0/P1 findings were resolved and archived in `docs/archive/fanout-core-review-follow-up-resolution-2026-06-02.md`.

@@ -42,7 +42,7 @@ Status: solved for the repair pass tracked by this document.
 - Core/runtime coverage added: `test/unit/fanout-core.test.ts`, `test/unit/runtime-stability.test.ts`, `test/e2e/fake/stage-kinds.test.ts`.
 - Regression passed: `npm run typecheck`, `npm test`, `npm run build`, and validation for `workflows/examples/loop-review-convergence.workflow.spec.json` plus `workflows/examples/bugfix-loop.workflow.spec.json`.
 - Adversarial loop-review completed: run `2026-06-02T07-15-45-385Z-cc970f0c`, terminal status `completed`.
-- Remaining P0/P1 findings from the final review are documented as follow-up roadmap work in `docs/roadmap/fanout-core-review-follow-up-issues.md`; they are not unresolved TODOs for this repair pass.
+- Remaining P0/P1 findings from the final review were resolved and archived in `docs/archive/fanout-core-review-follow-up-resolution-2026-06-02.md`; they are not unresolved TODOs for this repair pass.
 
 ## Issue 1: Fix Fanout Core blocked status and aggregate diagnostics
 

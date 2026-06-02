@@ -1,4 +1,5 @@
 import { getOutputContract, type OutputContractName } from "../contracts/output-contracts.js";
+import { RuntimeErrorCodes } from "../run-index/read-write.js";
 import type { OutputParseFailure } from "./output-parser.js";
 
 export function isRepairableOutputFailure(reason: string | undefined): boolean {
@@ -53,7 +54,7 @@ export function repairFailedEnvelope(input: {
     summary: input.summary,
     artifacts: [],
     nextFocus: "Review blocked workflow output",
-    blockedReason: "OUTPUT_REPAIR_FAILED",
+    blockedReason: RuntimeErrorCodes.OUTPUT_REPAIR_FAILED,
     originalBlockedReason: input.originalReason,
     parseDiagnostics: input.repairDiagnostics,
     metadata: {

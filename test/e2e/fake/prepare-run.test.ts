@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { prepareRun, startPreparedRun } from "../../../src/runtime/run-workflow.js";
 import { syncRun } from "../../../src/runtime/sync.js";
 import { setAgentRuntimeFactoryForTests } from "../../../src/runtime/agent-runtime.js";
+import { RuntimeErrorCodes } from "../../../src/run-index/read-write.js";
 import { WorkflowSpecSchema } from "../../../src/schema/workflow-spec.js";
 import { fakeRuntimeFactory, implementationOutput, gateOutput, validationOutput, plainJsonOutput } from "../../helpers/fake-runtime.js";
 
@@ -168,7 +169,7 @@ describe("runtime-driven fake e2e", () => {
     const output = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "implement.json"), "utf8")) as { blockedReason: string };
 
     expect(index.status).toBe("blocked");
-    expect(output.blockedReason).toBe("OUTPUT_REPAIR_FAILED");
+    expect(output.blockedReason).toBe(RuntimeErrorCodes.OUTPUT_REPAIR_FAILED);
   });
 
   it("runs fanout items with independent session keys", async () => {
