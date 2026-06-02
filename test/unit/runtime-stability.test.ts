@@ -226,8 +226,8 @@ describe("fanout runtime stability", () => {
     const report = await buildRunReportView(cwd, spec, index, { mode: "snapshot" });
 
     expect(index.status).toBe("blocked");
-    expect(index.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_BLOCKED);
-    expect(index.stages.fanout?.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_BLOCKED);
+    expect(index.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR);
+    expect(index.stages.fanout?.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR);
     expect(items.map((item) => [item.id, item.status, item.errorCode])).toEqual([
       ["item-1", "completed", undefined],
       ["item-2", "blocked", RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR],
@@ -241,9 +241,9 @@ describe("fanout runtime stability", () => {
       cascade: true
     }));
     expect(report.diagnostics).toContainEqual(expect.objectContaining({
-      code: RuntimeErrorCodes.FANOUT_ITEM_BLOCKED,
-      stageId: undefined,
-      itemId: undefined
+      code: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
+      stageId: "fanout",
+      itemId: "item-2"
     }));
     expect(report.diagnostics).toContainEqual(expect.objectContaining({
       code: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
@@ -828,6 +828,75 @@ describe("fanout runtime stability", () => {
     ]);
   });
 
+  it("exposes loop.previous.output to continueWhen after a completed round", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-previous-continue-"));
+    const runtime = new ScriptedRuntime([
+      { kind: "text", text: plainJsonOutput(baseOutput({ summary: "first", data: { needsAnotherRound: true } })) },
+      { kind: "text", text: plainJsonOutput(baseOutput({ summary: "second", data: { needsAnotherRound: false } })) },
+      { kind: "text", text: plainJsonOutput(baseOutput({ summary: "third", data: { needsAnotherRound: false } })) }
+    ]);
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const spec = loopContinueWithPreviousSpec(cwd);
+    const prepared = await prepareRun(spec, { cwd, input: { cwd } });
+
+    const index = await startPreparedRun(cwd, prepared);
+
+    expect(index.status).toBe("completed");
+    expect(runtime.requests).toHaveLength(3);
+  });
+
+  it("blocks ordinary stages with durable output when required variables are missing", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-variable-missing-"));
+    const runtime = new ScriptedRuntime([{ kind: "text", text: plainJsonOutput(baseOutput({ summary: "should not run" })) }]);
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const spec = missingVariableSpec(cwd);
+    const prepared = await prepareRun(spec, { cwd, input: { cwd } });
+
+    const index = await startPreparedRun(cwd, prepared);
+    const output = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "task.json"), "utf8")) as Record<string, unknown>;
+
+    expect(index.status).toBe("blocked");
+    expect(index.stages.task?.blockedReason).toBe(RuntimeErrorCodes.VARIABLE_RESOLUTION_FAILED);
+    expect(output).toMatchObject({
+      status: "blocked",
+      blockedReason: RuntimeErrorCodes.VARIABLE_RESOLUTION_FAILED,
+      runtimeDiagnostics: {
+        variableName: "missing",
+        source: "outputs.nope.summary"
+      }
+    });
+    expect(runtime.requests).toHaveLength(0);
+  });
+
+  it("ignores corrupt author output artifacts instead of crashing scheduler collection", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-corrupt-author-output-"));
+    setAgentRuntimeFactoryForTests(() => new ScriptedRuntime([
+      { kind: "text", text: plainJsonOutput(baseOutput({ summary: "ok" })) }
+    ]));
+    const spec = simpleTaskSpec(cwd);
+    const prepared = await prepareRun(spec, { cwd, input: { cwd } });
+    await fs.writeFile(path.join(prepared.dir, "outputs", "corrupt.json"), "{not-json", "utf8");
+
+    const index = await startPreparedRun(cwd, prepared);
+
+    expect(index.status).toBe("completed");
+  });
+
+  it("blocks loop body agent stages with durable output when required variables are missing", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-variable-missing-"));
+    const runtime = new ScriptedRuntime([{ kind: "text", text: plainJsonOutput(baseOutput({ summary: "should not run" })) }]);
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const spec = loopMissingVariableSpec(cwd);
+    const prepared = await prepareRun(spec, { cwd, input: { cwd } });
+
+    const index = await startPreparedRun(cwd, prepared);
+
+    expect(index.status).toBe("blocked");
+    expect(index.stages.quality_loop?.blockedReason).toBe(RuntimeErrorCodes.LOOP_BODY_STAGE_BLOCKED);
+    expect(index.stages.quality_loop?.loop?.rounds[0]?.stages.review.blockedReason).toBe(RuntimeErrorCodes.VARIABLE_RESOLUTION_FAILED);
+    expect(runtime.requests).toHaveLength(0);
+  });
+
   it("runs loop body fanout with stage-local maxConcurrency", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-fanout-concurrency-"));
     const runtime = new DelayedFanoutRuntime({ "item-1": 25, "item-2": 25 });
@@ -851,6 +920,49 @@ describe("fanout runtime stability", () => {
       completedItems: 2,
       workUnits: 2
     });
+  });
+
+  it("cascade-blocks unstarted loop body fanout work when partial fanout is disabled", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-fanout-cascade-"));
+    const runtime = new DelayedFanoutRuntime({ "item-1": 25, "item-2": 1 }, ["item-2"]);
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const spec = loopFanoutSpec(cwd, {
+      maxConcurrency: 2,
+      laneGroups: [{ id: "work", mode: "all", lanes: [{ id: "worker", role: "worker" }] }],
+      allowPartial: false
+    });
+    const prepared = await prepareRun(spec, { cwd, input: { cwd, items: fanoutInputItems(4) } });
+
+    const index = await startPreparedRun(cwd, prepared);
+    const fanout = index.stages.quality_loop?.loop?.rounds[0]?.stages.review_items.fanout;
+    const requested = runtime.requests.map((request) => itemIdFromSessionKey(request.sessionKey)).sort();
+
+    expect(index.status).toBe("blocked");
+    expect(requested).toEqual(["item-1", "item-2", "item-2"]);
+    expect(fanout?.items.map((item) => [item.id, item.status, item.errorCode])).toEqual([
+      ["item-1", "completed", undefined],
+      ["item-2", "blocked", RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR],
+      ["item-3", "blocked", RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED],
+      ["item-4", "blocked", RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED]
+    ]);
+  });
+
+  it("blocks loop body fanout lanes with durable output when required variables are missing", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-fanout-variable-missing-"));
+    const runtime = new ScriptedRuntime([{ kind: "text", text: plainJsonOutput(baseOutput({ summary: "should not run" })) }]);
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const spec = loopFanoutMissingVariableSpec(cwd);
+    const prepared = await prepareRun(spec, { cwd, input: { cwd, items: [{ id: "item-1" }] } });
+
+    const index = await startPreparedRun(cwd, prepared);
+    const fanout = index.stages.quality_loop?.loop?.rounds[0]?.stages.review_items.fanout;
+
+    expect(index.status).toBe("blocked");
+    expect(fanout?.items[0]).toMatchObject({
+      status: "blocked",
+      errorCode: RuntimeErrorCodes.VARIABLE_RESOLUTION_FAILED
+    });
+    expect(runtime.requests).toHaveLength(0);
   });
 
   it("blocks loop body fanout oneOf items with multiple matching lanes", async () => {
@@ -1318,15 +1430,7 @@ describe("fanout runtime stability", () => {
       status: "running",
       blockedReason: undefined,
       resumePolicy: { fanout: { fanout: { allowPartial: true } } },
-      stages: {
-        ...blocked.stages,
-        fanout: {
-          ...blocked.stages.fanout,
-          status: "running",
-          blockedReason: undefined,
-          completedAt: undefined
-        }
-      }
+      stages: blocked.stages
     });
 
     const resumed = await syncRun(cwd, prepared.logicalRunId);
@@ -1356,22 +1460,14 @@ describe("fanout runtime stability", () => {
       status: "running",
       blockedReason: undefined,
       resumePolicy: { fanout: { fanout: { allowPartial: true } } },
-      stages: {
-        ...blocked.stages,
-        fanout: {
-          ...blocked.stages.fanout,
-          status: "running",
-          blockedReason: undefined,
-          completedAt: undefined
-        }
-      }
+      stages: blocked.stages
     });
 
     const resumed = await syncRun(cwd, prepared.logicalRunId);
 
     expect(resumed.status).toBe("blocked");
     expect(resumed.stages.fanout?.status).toBe("blocked");
-    expect(resumed.stages.fanout?.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_BLOCKED);
+    expect(resumed.stages.fanout?.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR);
     expect(resumed.stages.fanout?.fanout).toMatchObject({
       completedItems: 2,
       blockedItems: 1,
@@ -1419,13 +1515,13 @@ describe("fanout runtime stability", () => {
     const report = await buildRunReportView(cwd, spec, aggregated, { mode: "snapshot" });
 
     expect(aggregated.status).toBe("blocked");
-    expect(aggregated.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_BLOCKED);
-    expect(aggregated.stages.fanout?.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_BLOCKED);
+    expect(aggregated.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR);
+    expect(aggregated.stages.fanout?.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR);
     expect(aggregate.blockedItems).toContainEqual(expect.objectContaining({
-      blockedReason: RuntimeErrorCodes.MISSING_FANOUT_ITEM_OUTPUT
+      blockedReason: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR
     }));
     expect(report.diagnostics).toContainEqual(expect.objectContaining({
-      code: RuntimeErrorCodes.FANOUT_ITEM_BLOCKED
+      code: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR
     }));
   });
 
@@ -1660,6 +1756,129 @@ function loopOnlySpec(cwd: string): WorkflowSpec {
           kind: "agentTask",
           role: "reviewer",
           prompt: "Review"
+        }]
+      },
+      continueWhen: { source: "loop.current.output.data.needsAnotherRound", op: "eq", value: true },
+      onExhausted: "blocked"
+    }]
+  });
+}
+
+function loopContinueWithPreviousSpec(cwd: string): WorkflowSpec {
+  return WorkflowSpecSchema.parse({
+    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    name: "loop-previous-continue",
+    root: "quality_loop",
+    inputs: { cwd: { type: "path", default: cwd } },
+    roles: {
+      reviewer: { category: "coordination", agent: "fake", mode: "readOnly" }
+    },
+    limits: { stageTimeoutMinutes: 1 },
+    stages: [{
+      id: "quality_loop",
+      kind: "loop",
+      maxRounds: 3,
+      body: {
+        root: "review",
+        output: "review",
+        stages: [{
+          id: "review",
+          kind: "agentTask",
+          role: "reviewer",
+          prompt: "Review"
+        }]
+      },
+      continueWhen: {
+        any: [
+          { source: "loop.current.output.data.needsAnotherRound", op: "eq", value: true },
+          { source: "loop.previous.output.summary", op: "eq", value: "first" }
+        ]
+      },
+      onExhausted: "blocked"
+    }]
+  });
+}
+
+function missingVariableSpec(cwd: string): WorkflowSpec {
+  return WorkflowSpecSchema.parse({
+    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    name: "missing-variable",
+    root: "task",
+    inputs: { cwd: { type: "path", default: cwd } },
+    roles: {
+      worker: { category: "coordination", agent: "fake", mode: "readOnly" }
+    },
+    limits: { stageTimeoutMinutes: 1 },
+    stages: [{
+      id: "task",
+      kind: "agentTask",
+      role: "worker",
+      variables: [{ name: "missing", source: "outputs.nope.summary" }],
+      prompt: "Use ${missing}"
+    }]
+  });
+}
+
+function loopMissingVariableSpec(cwd: string): WorkflowSpec {
+  return WorkflowSpecSchema.parse({
+    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    name: "loop-missing-variable",
+    root: "quality_loop",
+    inputs: { cwd: { type: "path", default: cwd } },
+    roles: {
+      reviewer: { category: "coordination", agent: "fake", mode: "readOnly" }
+    },
+    limits: { stageTimeoutMinutes: 1 },
+    stages: [{
+      id: "quality_loop",
+      kind: "loop",
+      maxRounds: 1,
+      body: {
+        root: "review",
+        output: "review",
+        stages: [{
+          id: "review",
+          kind: "agentTask",
+          role: "reviewer",
+          variables: [{ name: "missing", source: "outputs.nope.summary" }],
+          prompt: "Review ${missing}"
+        }]
+      },
+      continueWhen: { source: "loop.current.output.data.needsAnotherRound", op: "eq", value: true },
+      onExhausted: "blocked"
+    }]
+  });
+}
+
+function loopFanoutMissingVariableSpec(cwd: string): WorkflowSpec {
+  return WorkflowSpecSchema.parse({
+    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    name: "loop-fanout-missing-variable",
+    root: "quality_loop",
+    inputs: {
+      cwd: { type: "path", default: cwd },
+      items: { type: "array<json>" }
+    },
+    roles: {
+      worker: { category: "coordination", agent: "fake", mode: "readOnly" }
+    },
+    limits: { stageTimeoutMinutes: 1 },
+    stages: [{
+      id: "quality_loop",
+      kind: "loop",
+      maxRounds: 1,
+      body: {
+        root: "review_items",
+        output: "review_items",
+        stages: [{
+          id: "review_items",
+          kind: "fanout",
+          items: { source: "input.items" },
+          limits: { maxConcurrency: 1, maxFanoutItems: 1 },
+          variables: [{ name: "missing", source: "outputs.nope.summary" }],
+          prompt: "Review ${missing}",
+          laneGroups: [{ id: "work", mode: "all", lanes: [{ id: "worker", role: "worker" }] }],
+          fanoutPolicy: { allowPartial: false }
         }]
       },
       continueWhen: { source: "loop.current.output.data.needsAnotherRound", op: "eq", value: true },

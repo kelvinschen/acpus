@@ -37,6 +37,8 @@ export type FanoutCoreLaneResult = {
   errorCode?: string;
 };
 
+export type FanoutCoreItemOutput = Record<string, unknown>;
+
 export type FanoutCoreAggregate = {
   status: "completed" | "blocked";
   summary: string;
@@ -47,6 +49,11 @@ export type FanoutCoreAggregate = {
   artifacts: unknown[];
   nextFocus: string;
   blockedReason?: string;
+};
+
+export type FanoutCoreCascadeOutput = {
+  item: FanoutCoreItem;
+  output: FanoutCoreItemOutput;
 };
 
 export function expandFanoutItems(input: {
@@ -143,8 +150,9 @@ export function expandFanoutItems(input: {
 export function fanoutGroupStatus(lanes: Array<{ status: StageStatus }>): StageStatus {
   if (lanes.some((lane) => lane.status === "running")) return "running";
   if (lanes.some((lane) => lane.status === "pending" || lane.status === "ready")) return "ready";
-  if (lanes.some((lane) => lane.status === "blocked")) return "blocked";
   if (lanes.some((lane) => lane.status === "failed")) return "failed";
+  if (lanes.some((lane) => lane.status === "blocked")) return "blocked";
+  if (lanes.length > 0 && lanes.every((lane) => lane.status === "skipped")) return "skipped";
   return "completed";
 }
 
@@ -153,8 +161,9 @@ export function fanoutItemStatus(item: Pick<FanoutCoreItem, "status" | "groups">
   const groups = item.groups ?? [];
   if (groups.some((group) => group.status === "running")) return "running";
   if (groups.some((group) => group.status === "pending" || group.status === "ready")) return "ready";
-  if (groups.some((group) => group.status === "blocked")) return "blocked";
   if (groups.some((group) => group.status === "failed")) return "failed";
+  if (groups.some((group) => group.status === "blocked")) return "blocked";
+  if (groups.length > 0 && groups.every((group) => group.status === "skipped")) return "skipped";
   return "completed";
 }
 
@@ -205,6 +214,28 @@ export function buildFanoutItemOutput(input: {
   missingLaneOutput: (item: FanoutCoreItem, group: FanoutCoreGroup, lane: FanoutCoreLane) => FanoutCoreLaneResult;
 }): Record<string, unknown> {
   const item = input.item;
+  const mismatch = mismatchedLaneResult(item, input.laneResults);
+  if (mismatch) {
+    return {
+      status: "blocked",
+      summary: `Fanout item ${item.id} received a lane result for ${mismatch.itemId}/${mismatch.groupId}/${mismatch.laneId}, which is not selected for this item.`,
+      artifacts: [],
+      nextFocus: "diagnose",
+      blockedReason: RuntimeErrorCodes.FANOUT_LANE_RESULT_MISMATCH,
+      errorCode: RuntimeErrorCodes.FANOUT_LANE_RESULT_MISMATCH,
+      itemId: item.id,
+      itemIndex: item.index,
+      groups: item.groups ?? [],
+      laneOutputs: [],
+      runtimeDiagnostics: {
+        errorCode: RuntimeErrorCodes.FANOUT_LANE_RESULT_MISMATCH,
+        expectedItemId: item.id,
+        resultItemId: mismatch.itemId,
+        resultGroupId: mismatch.groupId,
+        resultLaneId: mismatch.laneId
+      }
+    };
+  }
   if (item.status === "blocked" && item.errorCode === RuntimeErrorCodes.FANOUT_LANE_SELECTION_FAILED) {
     return {
       status: "blocked",
@@ -221,13 +252,17 @@ export function buildFanoutItemOutput(input: {
     };
   }
   if ((item.status === "blocked" || item.status === "failed") && (!item.groups || item.groups.length === 0)) {
+    const blockedReason = item.outputPath
+      ? item.blockedReason ?? item.errorCode ?? RuntimeErrorCodes.FANOUT_ITEM_BLOCKED
+      : item.blockedReason ?? item.errorCode ?? RuntimeErrorCodes.MISSING_FANOUT_ITEM_OUTPUT;
     return {
       ...(input.existingItemOutput ?? {}),
       status: "blocked",
       summary: input.existingItemOutput?.summary ?? item.errorMessage ?? `Fanout item ${item.id} blocked before lane execution.`,
       artifacts: Array.isArray(input.existingItemOutput?.artifacts) ? input.existingItemOutput.artifacts : [],
       nextFocus: typeof input.existingItemOutput?.nextFocus === "string" ? input.existingItemOutput.nextFocus : "diagnose",
-      blockedReason: item.outputPath ? item.blockedReason ?? item.errorCode ?? RuntimeErrorCodes.FANOUT_LANE_SELECTION_FAILED : RuntimeErrorCodes.MISSING_FANOUT_ITEM_OUTPUT,
+      blockedReason,
+      errorCode: blockedReason,
       itemId: item.id,
       itemIndex: item.index,
       groups: [],
@@ -245,8 +280,8 @@ export function buildFanoutItemOutput(input: {
         status: result.status,
         output: result.output,
         outputPath: result.outputPath,
-        blockedReason: lane.blockedReason ?? result.blockedReason ?? stringField(result.output, "blockedReason"),
-        errorCode: lane.errorCode ?? result.errorCode
+        blockedReason: result.blockedReason ?? stringField(result.output, "blockedReason") ?? lane.blockedReason,
+        errorCode: result.errorCode ?? lane.errorCode
       };
     });
     return { id: group.id, mode: group.mode, status: fanoutGroupStatus(lanes.map((lane) => ({ status: lane.status }))), lanes };
@@ -259,13 +294,17 @@ export function buildFanoutItemOutput(input: {
     roleName: lane.roleName,
     output: lane.output,
     outputPath: lane.outputPath,
-    status: lane.status
+    status: lane.status,
+    blockedReason: lane.blockedReason,
+    errorCode: lane.errorCode
   })));
   const blockedLaneOutputs = laneOutputs.filter((lane) => lane.status !== "completed");
   const partial = blockedLaneOutputs.length > 0 && input.allowPartial;
   const status = blockedLaneOutputs.length > 0 && !input.allowPartial ? "blocked" : "completed";
   const firstBlockedLane = blockedLaneOutputs[0];
   const firstBlockedOutput = objectRecord(firstBlockedLane?.output);
+  const errorCode = firstBlockedLane?.errorCode ?? stringField(firstBlockedOutput, "errorCode") ?? stringField(firstBlockedOutput, "blockedReason") ?? RuntimeErrorCodes.FANOUT_ITEM_BLOCKED;
+  const blockedReason = firstBlockedLane?.blockedReason ?? stringField(firstBlockedOutput, "blockedReason") ?? errorCode;
   return {
     status,
     summary: `Fanout item ${item.id} completed ${laneOutputs.length - blockedLaneOutputs.length}/${laneOutputs.length} lane(s).`,
@@ -277,8 +316,9 @@ export function buildFanoutItemOutput(input: {
     laneOutputs,
     partial,
     blockedLanes: blockedLaneOutputs.map((lane) => ({ groupId: lane.groupId, laneId: lane.laneId, status: lane.status })),
-    blockedReason: status === "blocked" ? stringField(firstBlockedOutput, "blockedReason") ?? RuntimeErrorCodes.FANOUT_ITEM_BLOCKED : undefined,
-    runtimeDiagnostics: status === "blocked" ? firstBlockedOutput?.runtimeDiagnostics : undefined
+    blockedReason: blockedLaneOutputs.length > 0 ? blockedReason : undefined,
+    errorCode: blockedLaneOutputs.length > 0 ? errorCode : undefined,
+    runtimeDiagnostics: blockedLaneOutputs.length > 0 ? firstBlockedOutput?.runtimeDiagnostics : undefined
   };
 }
 
@@ -296,17 +336,85 @@ export function buildFanoutStageOutput(input: {
     && (input.plan.minCompletedRatio == null || ratio >= input.plan.minCompletedRatio)
     && (input.plan.maxBlockedItems == null || nonCompletedItems.length <= input.plan.maxBlockedItems);
   const status = nonCompletedItems.length > 0 && !partialAllowed ? "blocked" : "completed";
+  const firstBlockedReason = firstBlockedItemReason(nonCompletedItems);
   return {
     status,
-    summary: `Fanout completed with ${input.itemOutputs.length} active item output(s) and ${input.skippedItems.length} skipped item(s).`,
+    summary: `Fanout ${status} with ${input.itemOutputs.length} active item output(s) and ${input.skippedItems.length} skipped item(s).`,
     items: input.itemOutputs,
     laneOutputs,
     blockedItems,
     skippedItems: input.skippedItems,
     artifacts: [],
     nextFocus: "reduce",
-    blockedReason: status === "blocked" ? RuntimeErrorCodes.FANOUT_ITEM_BLOCKED : undefined
+    blockedReason: status === "blocked" ? firstBlockedReason ?? RuntimeErrorCodes.FANOUT_ITEM_BLOCKED : undefined
   };
+}
+
+export function cascadeBlockFanoutItems(input: {
+  items: FanoutCoreItem[];
+  now: string;
+  outputPathForItem?: (item: FanoutCoreItem) => string | undefined;
+}): { items: FanoutCoreItem[]; outputs: FanoutCoreCascadeOutput[] } {
+  const outputs: FanoutCoreCascadeOutput[] = [];
+  const items = input.items.map((item) => {
+    if (item.status !== "pending" && item.status !== "ready") return item;
+    const output: FanoutCoreItemOutput = {
+      status: "blocked",
+      summary: `Fanout item ${item.id} was not started because an earlier item blocked and partial fanout is disabled.`,
+      artifacts: [],
+      nextFocus: "diagnose",
+      blockedReason: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
+      errorCode: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
+      itemId: item.id,
+      itemIndex: item.index,
+      groups: item.groups ?? [],
+      laneOutputs: []
+    };
+    const blockedItem: FanoutCoreItem = {
+      ...item,
+      status: "blocked",
+      outputPath: input.outputPathForItem?.(item) ?? item.outputPath,
+      blockedReason: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
+      errorCode: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
+      completedAt: input.now,
+      groups: item.groups?.map((group) => ({
+        ...group,
+        status: "blocked" as StageStatus,
+        lanes: group.lanes.map((lane) => ({
+          ...lane,
+          status: "blocked" as StageStatus,
+          blockedReason: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
+          errorCode: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
+          completedAt: input.now
+        }))
+      }))
+    };
+    outputs.push({ item: blockedItem, output });
+    return blockedItem;
+  });
+  return { items, outputs };
+}
+
+function mismatchedLaneResult(item: FanoutCoreItem, results: FanoutCoreLaneResult[]): FanoutCoreLaneResult | undefined {
+  const laneKeys = new Set((item.groups ?? []).flatMap((group) => group.lanes.map((lane) => `${group.id}:${lane.id}`)));
+  return results.find((result) => result.itemId !== item.id || result.itemIndex !== item.index || !laneKeys.has(`${result.groupId}:${result.laneId}`));
+}
+
+function firstBlockedItemReason(items: Record<string, unknown>[]): string | undefined {
+  for (const item of items) {
+    const errorCode = stringField(item, "errorCode");
+    const blockedReason = stringField(item, "blockedReason");
+    if (errorCode) return errorCode;
+    if (blockedReason) return blockedReason;
+    const blockedLanes = Array.isArray(item.blockedLanes) ? item.blockedLanes : [];
+    for (const lane of blockedLanes) {
+      if (!lane || typeof lane !== "object" || Array.isArray(lane)) continue;
+      const laneRecord = lane as Record<string, unknown>;
+      const laneCode = stringField(laneRecord, "errorCode") ?? stringField(laneRecord, "blockedReason");
+      if (laneCode) return laneCode;
+    }
+  }
+  return undefined;
 }
 
 function stringField(value: Record<string, unknown> | undefined, key: string): string | undefined {

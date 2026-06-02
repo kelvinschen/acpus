@@ -4,6 +4,7 @@ import { RuntimeErrorCodes, type StageStatus } from "../../src/run-index/read-wr
 import {
   buildFanoutItemOutput,
   buildFanoutStageOutput,
+  cascadeBlockFanoutItems,
   deriveFanoutSummary,
   expandFanoutItems,
   type FanoutCoreItem,
@@ -117,6 +118,123 @@ describe("fanout core", () => {
     expect(output.blockedReason).toBe(RuntimeErrorCodes.AGENT_TURN_FAILED);
     expect(output.blockedLanes).toEqual([{ groupId: "work", laneId: "worker", status: "blocked" }]);
     expect(output.runtimeDiagnostics).toEqual({ errorCode: RuntimeErrorCodes.AGENT_TURN_FAILED });
+  });
+
+  it("rejects lane results that do not match the selected item lane", () => {
+    const output = buildFanoutItemOutput({
+      item: completedItem("item-1", 0),
+      allowPartial: false,
+      laneResults: [{ ...completedLane("item-2", 1), groupId: "other" }],
+      missingLaneOutput
+    });
+
+    expect(output).toMatchObject({
+      status: "blocked",
+      blockedReason: RuntimeErrorCodes.FANOUT_LANE_RESULT_MISMATCH,
+      errorCode: RuntimeErrorCodes.FANOUT_LANE_RESULT_MISMATCH
+    });
+  });
+
+  it("uses the first specific blocked item reason for blocked stage aggregates", () => {
+    const aggregate = buildFanoutStageOutput({
+      plan: { allowPartial: false },
+      itemOutputs: [
+        { status: "completed", summary: "ok", artifacts: [], nextFocus: "reduce", laneOutputs: [] },
+        { status: "blocked", summary: "bad", artifacts: [], nextFocus: "diagnose", blockedReason: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED, laneOutputs: [] }
+      ],
+      skippedItems: []
+    });
+
+    expect(aggregate.status).toBe("blocked");
+    expect(aggregate.summary).toContain("blocked");
+    expect(aggregate.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED);
+  });
+
+  it("prioritizes failed over blocked when deriving group and item status", () => {
+    const item: FanoutCoreItem = {
+      id: "item-1",
+      index: 0,
+      status: "pending",
+      groups: [{ id: "work", mode: "all", status: "pending", lanes: [
+        { id: "a", roleName: "worker", status: "blocked" },
+        { id: "b", roleName: "worker", status: "failed" }
+      ] }]
+    };
+
+    expect(buildFanoutItemOutput({
+      item,
+      allowPartial: false,
+      laneResults: [
+        { ...blockedLane("item-1", 0), laneId: "a" },
+        { ...blockedLane("item-1", 0), laneId: "b", status: "failed" }
+      ],
+      missingLaneOutput
+    }).groups).toContainEqual(expect.objectContaining({ status: "failed" }));
+  });
+
+  it("does not mark mixed skipped and completed lane groups as skipped", () => {
+    expect(buildFanoutItemOutput({
+      item: {
+        id: "item-1",
+        index: 0,
+        status: "pending",
+        groups: [{ id: "work", mode: "all", status: "pending", lanes: [
+          { id: "a", roleName: "worker", status: "pending" },
+          { id: "b", roleName: "worker", status: "pending" }
+        ] }]
+      },
+      allowPartial: false,
+      laneResults: [
+        { ...completedLane("item-1", 0), laneId: "a" },
+        { ...completedLane("item-1", 0), laneId: "b", status: "skipped" }
+      ],
+      missingLaneOutput
+    }).groups).toContainEqual(expect.objectContaining({ status: "completed" }));
+  });
+
+  it("keeps blockedReason and errorCode independently sourced when both are present", () => {
+    const output = buildFanoutItemOutput({
+      item: completedItem("item-1", 0),
+      allowPartial: false,
+      laneResults: [{
+        ...blockedLane("item-1", 0),
+        blockedReason: "human-blocked-reason",
+        errorCode: RuntimeErrorCodes.AGENT_TURN_FAILED,
+        output: {
+          status: "blocked",
+          summary: "failed",
+          artifacts: [],
+          nextFocus: "diagnose",
+          blockedReason: "human-blocked-reason",
+          errorCode: RuntimeErrorCodes.AGENT_TURN_FAILED
+        }
+      }],
+      missingLaneOutput
+    });
+
+    expect(output.blockedReason).toBe("human-blocked-reason");
+    expect(output.errorCode).toBe(RuntimeErrorCodes.AGENT_TURN_FAILED);
+  });
+
+  it("cascade-blocks queued items with a reusable pure core helper", () => {
+    const started: FanoutCoreItem = { ...completedItem("item-1", 0), status: "completed" };
+    const queued = completedItem("item-2", 1);
+    const cascaded = cascadeBlockFanoutItems({
+      items: [started, queued],
+      now: "2026-06-02T00:00:00.000Z",
+      outputPathForItem: (item) => `outputs/fanout/${item.id}.json`
+    });
+
+    expect(cascaded.items[0]?.status).toBe("completed");
+    expect(cascaded.items[1]).toMatchObject({
+      status: "blocked",
+      blockedReason: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
+      outputPath: "outputs/fanout/item-2.json"
+    });
+    expect(cascaded.outputs).toHaveLength(1);
+    expect(cascaded.outputs[0]?.output).toMatchObject({
+      blockedReason: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED
+    });
   });
 });
 

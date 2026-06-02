@@ -10,6 +10,7 @@ import { attemptDir, attemptId, safeFileName, upsertAttemptIndex, writeAttemptFi
 import {
   buildFanoutItemOutput as buildCoreFanoutItemOutput,
   buildFanoutStageOutput,
+  cascadeBlockFanoutItems,
   deriveFanoutSummary,
   expandFanoutItems,
   fanoutGroupStatus,
@@ -187,7 +188,7 @@ async function reconcileFanoutRuntimeState(snapshot: RuntimeSnapshot): Promise<{
             outputPath: relativeOutputPath,
             blockedReason: stringField(output, "blockedReason") ?? item.blockedReason,
             completedAt: item.completedAt ?? new Date().toISOString(),
-            errorCode: stringField(output, "blockedReason") ?? item.errorCode
+            errorCode: stringField(output, "errorCode") ?? stringField(objectRecord(output.runtimeDiagnostics), "errorCode") ?? item.errorCode
           };
           stageChanged = true;
         }
@@ -195,20 +196,22 @@ async function reconcileFanoutRuntimeState(snapshot: RuntimeSnapshot): Promise<{
       }
 
       if (state.status === "completed" || state.status === "blocked" || state.status === "failed") continue;
+      const runningLane = firstRunningFanoutLane(item);
+      const currentAttemptId = item.attemptId ?? runningLane?.lane.attemptId;
       if (item.status === "running" && isStaleAttempt({
-        attemptId: item.attemptId,
+        attemptId: currentAttemptId,
         fallbackStartedAt: item.startedAt ?? state.startedAt,
         activityByAttempt,
         staleAfterMs
       })) {
-        if (item.attemptId && canScheduleRuntimeRetry(item.runtimeRetryOrdinal)) {
+        if (currentAttemptId && canScheduleRuntimeRetry(item.runtimeRetryOrdinal)) {
           const retryOrdinal = (item.runtimeRetryOrdinal ?? 0) + 1;
-          const retryAttemptId = attemptId({ stageId: stage.id, itemId: item.id, kind: "attempt", ordinal: 1, runtimeRetryOrdinal: retryOrdinal });
+          const retryAttemptId = attemptId({ stageId: stage.id, itemId: item.id, groupId: runningLane?.group.id, laneId: runningLane?.lane.id, kind: "attempt", ordinal: 1, runtimeRetryOrdinal: retryOrdinal });
           const message = "Fanout item attempt had no terminal output and no recent activity before scheduler stale recovery; scheduling one runtime retry.";
           attempts.push(recoveredRuntimeAttempt(index, snapshot.runDir, {
             stageId: stage.id,
             itemId: item.id,
-            attemptId: item.attemptId,
+            attemptId: currentAttemptId,
             startedAt: item.startedAt ?? state.startedAt,
             code: RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY,
             message,
@@ -223,15 +226,31 @@ async function reconcileFanoutRuntimeState(snapshot: RuntimeSnapshot): Promise<{
             errorCode: undefined,
             errorMessage: undefined,
             attemptId: retryAttemptId,
-            runtimeRetryOf: item.runtimeRetryOf ?? item.attemptId,
-            runtimeRetryOrdinal: retryOrdinal
+            runtimeRetryOf: item.runtimeRetryOf ?? currentAttemptId,
+            runtimeRetryOrdinal: retryOrdinal,
+            groups: item.groups?.map((group) => ({
+              ...group,
+              status: group.id === runningLane?.group.id ? "ready" as StageStatus : group.status,
+              lanes: group.lanes.map((lane) => group.id === runningLane?.group.id && lane.id === runningLane?.lane.id ? {
+                ...lane,
+                status: "ready" as StageStatus,
+                startedAt: undefined,
+                completedAt: undefined,
+                blockedReason: undefined,
+                errorCode: undefined,
+                errorMessage: undefined,
+                attemptId: retryAttemptId,
+                runtimeRetryOf: lane.runtimeRetryOf ?? lane.attemptId ?? currentAttemptId,
+                runtimeRetryOrdinal: retryOrdinal
+              } : lane)
+            }))
           };
           stageChanged = true;
           await appendEvent(snapshot.cwd, snapshot.runId, {
             type: "runtime_retry_scheduled",
             stageId: stage.id,
             itemId: item.id,
-            attemptId: item.attemptId,
+            attemptId: currentAttemptId,
             retryAttemptId,
             runtimeRetryOrdinal: retryOrdinal,
             errorCode: RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY,
@@ -239,8 +258,8 @@ async function reconcileFanoutRuntimeState(snapshot: RuntimeSnapshot): Promise<{
           });
           continue;
         }
-        const code = item.attemptId ? RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY : RuntimeErrorCodes.FANOUT_ITEM_UNSTARTED_TIMEOUT;
-        const message = item.attemptId
+        const code = currentAttemptId ? RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY : RuntimeErrorCodes.FANOUT_ITEM_UNSTARTED_TIMEOUT;
+        const message = currentAttemptId
           ? "Fanout item attempt had no terminal output and no recent activity before scheduler stale recovery."
           : "Fanout item was selected but no attempt was started before scheduler recovery.";
         const result = await writeRecoveredFanoutItemFailure({
@@ -249,7 +268,7 @@ async function reconcileFanoutRuntimeState(snapshot: RuntimeSnapshot): Promise<{
           runId: snapshot.runId,
           stageId: stage.id,
           itemId: item.id,
-          attemptId: item.attemptId ?? attemptId({ stageId: stage.id, itemId: item.id, kind: "attempt", ordinal: 1 }),
+          attemptId: currentAttemptId ?? attemptId({ stageId: stage.id, itemId: item.id, groupId: runningLane?.group.id, laneId: runningLane?.lane.id, kind: "attempt", ordinal: 1 }),
           startedAt: item.startedAt ?? state.startedAt,
           code,
           message,
@@ -267,7 +286,7 @@ async function reconcileFanoutRuntimeState(snapshot: RuntimeSnapshot): Promise<{
         };
         attempts.push(result.attempt);
         stageChanged = true;
-        if (item.attemptId && item.runtimeRetryOrdinal !== undefined) {
+        if (currentAttemptId && item.runtimeRetryOrdinal !== undefined) {
           await appendEvent(snapshot.cwd, snapshot.runId, {
             type: "runtime_retry_exhausted",
             stageId: stage.id,
@@ -780,7 +799,7 @@ function selectFanoutRunnableUnits(
   if (capacity === 0) return [];
   const sessionKeys = new Set<string>();
   return units
-    .filter((unit) => unit.type === "fanoutItem" && unit.stageId === stageId && !active.has(fanoutUnitKey(unit)))
+    .filter((unit) => unit.type === "fanoutItem" && unit.stageId === stageId && !active.has(fanoutUnitKey(unit)) && isRunnableUnit(index, plan, unit))
     .filter((unit) => {
       if (sessionKeys.has(unit.sessionKey)) return false;
       sessionKeys.add(unit.sessionKey);
@@ -835,42 +854,16 @@ async function terminalizeQueuedFanoutItems(snapshot: RuntimeSnapshot, index: Ru
   const stage = index.stages[stageId];
   if (!stage?.fanout) return index;
   const now = new Date().toISOString();
-  const items: FanoutItemIndexEntry[] = [];
-  for (const item of stage.fanout.items) {
-    if (item.status !== "pending" && item.status !== "ready") {
-      items.push(item);
-      continue;
-    }
+  const cascaded = cascadeBlockFanoutItems({
+    items: stage.fanout.items,
+    now,
+    outputPathForItem: (item) => path.relative(snapshot.runDir, path.join(snapshot.runDir, "outputs", stageId, `${safeFileName(item.id)}.json`))
+  });
+  for (const { item, output } of cascaded.outputs) {
     const outputPath = path.join(snapshot.runDir, "outputs", stageId, `${safeFileName(item.id)}.json`);
-    const output = {
-      status: "blocked",
-      summary: `Fanout item ${item.id} was not started because an earlier item blocked and partial fanout is disabled.`,
-      artifacts: [],
-      nextFocus: "diagnose",
-      blockedReason: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED
-    };
     await fs.mkdir(path.dirname(outputPath), { recursive: true });
     await fs.writeFile(outputPath, `${JSON.stringify(output, null, 2)}\n`, "utf8");
     const relativeOutputPath = path.relative(snapshot.runDir, outputPath);
-    items.push({
-      ...item,
-      status: "blocked",
-      outputPath: relativeOutputPath,
-      blockedReason: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
-      errorCode: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
-      completedAt: now,
-      groups: item.groups?.map((group) => ({
-        ...group,
-        status: "blocked" as StageStatus,
-        lanes: group.lanes.map((lane) => ({
-          ...lane,
-          status: "blocked" as StageStatus,
-          blockedReason: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
-          errorCode: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
-          completedAt: now
-        }))
-      }))
-    });
     await appendEvent(snapshot.cwd, snapshot.runId, {
       type: "fanout_pool_item_settled",
       stageId,
@@ -882,6 +875,7 @@ async function terminalizeQueuedFanoutItems(snapshot: RuntimeSnapshot, index: Ru
       cascade: true
     });
   }
+  const items = cascaded.items;
   const counts = fanoutItemCounts(items);
   return updateStage(index, stageId, {
     ...stage,
@@ -903,9 +897,21 @@ function fanoutUnitKey(unit: AgentWorkUnit): string {
 }
 
 function selectRunnableUnits(index: RunIndex, plan: ExecutionPlan, units: AgentWorkUnit[]): AgentWorkUnit[] {
-  void index;
-  void plan;
-  return units.slice(0, 1);
+  return units.filter((unit) => isRunnableUnit(index, plan, unit)).slice(0, 1);
+}
+
+function isRunnableUnit(index: RunIndex, plan: ExecutionPlan, unit: AgentWorkUnit): boolean {
+  const stage = index.stages[unit.stageId];
+  const planStage = plan.stages.find((candidate) => candidate.id === unit.stageId);
+  if (!stage || !planStage) return false;
+  if (unit.type === "fanoutItem") {
+    if (!stage.fanout || !unit.itemId || !unit.groupId || !unit.laneId) return false;
+    const item = stage.fanout.items.find((candidate) => candidate.id === unit.itemId);
+    const lane = item?.groups?.find((group) => group.id === unit.groupId)?.lanes.find((candidate) => candidate.id === unit.laneId);
+    return (item?.status === "pending" || item?.status === "ready" || item?.status === "running")
+      && (lane?.status === "pending" || lane?.status === "ready");
+  }
+  return stage.status === "pending" || stage.status === "ready";
 }
 
 function markUnitsRunning(index: RunIndex, units: AgentWorkUnit[], runDir: string): RunIndex {
@@ -925,6 +931,7 @@ function markUnitsRunning(index: RunIndex, units: AgentWorkUnit[], runDir: strin
         ...item,
         status: "running" as StageStatus,
         startedAt: item.startedAt ?? startedAt,
+        attemptId: item.attemptId ?? selectedAttemptId,
         errorCode: undefined,
         errorMessage: undefined,
         groups: item.groups?.map((group) => group.id !== unit.groupId ? group : {
@@ -1090,12 +1097,15 @@ async function completeReadyFanoutAggregates(snapshot: RuntimeSnapshot): Promise
   for (const stage of snapshot.spec.stages.filter((candidate): candidate is Extract<Stage, { kind: "fanout" }> => candidate.kind === "fanout")) {
     let state = index.stages[stage.id];
     const applied = applyFanoutResumePolicy(state, fanoutResumePolicy(index, stage.id));
+    const resumePolicyChangedStage = applied.changed;
     if (applied.changed && applied.stage) {
       state = applied.stage;
       index = updateStage(index, stage.id, state);
       changed = true;
     }
-    if (!state?.fanout || state.status === "completed" || state.status === "blocked" || state.status === "failed") continue;
+    const resumePolicy = fanoutResumePolicy(index, stage.id);
+    const mayReaggregateTerminalBlocked = state?.status === "blocked" && resumePolicy !== undefined && resumePolicyChangedStage;
+    if (!state?.fanout || state.status === "completed" || state.status === "failed" || (state.status === "blocked" && !mayReaggregateTerminalBlocked)) continue;
     const items = state.fanout.items;
     if (items.length === 0) continue;
     if (items.some((item) => item.status === "pending" || item.status === "ready" || item.status === "running")) continue;
@@ -1112,7 +1122,6 @@ async function completeReadyFanoutAggregates(snapshot: RuntimeSnapshot): Promise
     }));
     const completed = itemOutputs.filter((output) => output.status === "completed" && output.partial !== true).length;
     const failed = activeItems.filter((item) => item.status === "failed").length;
-    const resumePolicy = fanoutResumePolicy(index, stage.id);
     const allowsPartialMode = resumePolicy?.allowPartial === true || plan.allowPartial;
     const aggregate = buildFanoutStageOutput({
       plan: { allowPartial: allowsPartialMode, minCompletedRatio: plan.minCompletedRatio, maxBlockedItems: plan.maxBlockedItems },
@@ -1181,6 +1190,14 @@ function applyFanoutResumePolicy(
 
 type FanoutItemIndexEntry = FanoutCoreItem;
 
+function firstRunningFanoutLane(item: FanoutItemIndexEntry): { group: NonNullable<FanoutItemIndexEntry["groups"]>[number]; lane: NonNullable<FanoutItemIndexEntry["groups"]>[number]["lanes"][number] } | undefined {
+  for (const group of item.groups ?? []) {
+    const lane = group.lanes.find((candidate) => candidate.status === "running");
+    if (lane) return { group, lane };
+  }
+  return undefined;
+}
+
 function isTerminalStageStatus(status: StageStatus): boolean {
   return status === "completed" || status === "blocked" || status === "failed" || status === "skipped";
 }
@@ -1211,8 +1228,8 @@ async function buildFanoutItemOutputFromFiles(runDir: string, stageId: string, i
         status: statusFromItemOutput(output),
         output,
         outputPath: path.relative(runDir, outputPath),
-        blockedReason: lane.blockedReason ?? stringField(output, "blockedReason"),
-        errorCode: lane.errorCode
+        blockedReason: stringField(output, "blockedReason") ?? lane.blockedReason,
+        errorCode: stringField(output, "errorCode") ?? lane.errorCode ?? stringField(output, "blockedReason")
       });
     }
   }
@@ -1540,6 +1557,7 @@ function runtimeBlockedOutput(input: {
     artifacts: [],
     nextFocus: "diagnose",
     blockedReason: input.code,
+    errorCode: input.code,
     runtimeDiagnostics: {
       requestId: input.requestId,
       sessionKey: input.sessionKey,
@@ -1687,7 +1705,8 @@ async function readAuthorOutputs(runDir: string): Promise<Record<string, unknown
     const entries = await fs.readdir(outputDir, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-      outputs[path.basename(entry.name, ".json")] = JSON.parse(await fs.readFile(path.join(outputDir, entry.name), "utf8"));
+      const output = await readJsonIfExists(path.join(outputDir, entry.name));
+      if (output) outputs[path.basename(entry.name, ".json")] = output;
     }
   } catch {
     // Missing output directory means no stages have completed.

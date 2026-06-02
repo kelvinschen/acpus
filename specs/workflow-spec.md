@@ -49,7 +49,7 @@
 - `loop.body.root` MUST name the single dependency-free loop body stage.
 - `loop.body.output` MUST name a loop body stage whose output is used for round convergence and stage output.
 - Loop body dependencies MUST be acyclic and MUST only reference other stages in the same loop body.
-- Loop body prompt variables MAY read workflow `input.*`, upstream top-level `outputs.*`, same-round loop body `outputs.*`, and loop-local `loop.current.*` or `loop.previous.*` sources.
+- Loop body prompt variables MAY read workflow `input.*`, upstream top-level `outputs.*`, same-round loop body `outputs.*`, and loop-local `loop.current.*` or `loop.previous.*` sources. `loop.current` and `loop.previous` MUST expose `{ output, outputs }` expression views.
 - A `loop` round MUST execute the full body until `body.output` is produced or a body stage blocks.
 - `loop.continueWhen` MUST be evaluated after each completed round against loop-local context.
 - `loop` MUST complete when `continueWhen` evaluates false.
@@ -104,7 +104,7 @@ Validation first performs Zod shape validation, then compiler lint checks. Compi
 
 At runtime, actual agent attempts and repair attempts are recorded in `run.json`. Transient agent runtime failures get one automatic retry; the retry counts in `agentUsage.actual`, and repair-turn retries count in `repairCalls`. Agent call accounting is usage data and MUST NOT control scheduler capacity.
 
-For `loop`, each round runs the complete inline body according to body dependencies. Program body stages execute deterministically, agent body stages use the normal ACPX attempt and repair pipeline, and fanout body stages execute selected lane work inside the round before aggregation. After `body.output` is produced, `continueWhen` evaluates against `loop.current.output`, `loop.current.outputs`, and `loop.previous.output`. A false condition completes the stage and writes the loop output. A true condition starts the next round until `maxRounds`; if the condition remains true after the final round, the stage blocks with `LOOP_EXHAUSTED`.
+For `loop`, each round runs the complete inline body according to body dependencies. Program body stages execute deterministically, agent body stages use the normal ACPX attempt and repair pipeline, and fanout body stages execute selected lane work inside the round before aggregation. After `body.output` is produced, `continueWhen` evaluates against `loop.current.output`, `loop.current.outputs`, and `loop.previous.output` using the same `{ output, outputs }` expression shape exposed to body prompts. A false condition completes the stage and writes the loop output. A true condition starts the next round until `maxRounds`; if the condition remains true after the final round, the stage blocks with `LOOP_EXHAUSTED`.
 
 At terminal completion, the `gate` stage writes the workflow `gateVerdict`. Verdicts `pass` and `pass_with_warnings` complete the run. Verdicts `blocked`, `failed`, and `unknown` block the run with gate-specific runtime blocked reasons. Runtime `failed` remains reserved for infrastructure failures.
 
