@@ -32,6 +32,22 @@ _Avoid_: agent call budget, total agent calls
 A runtime interaction with an agent used for usage reporting and attempt accounting. Agent calls are distinct from agent concurrency.
 _Avoid_: active agent, concurrency slot
 
+**Agent Work Unit**:
+A schedulable unit of agent-backed workflow work, such as a stage attempt, fanout lane attempt, or Loop Body stage attempt. Agent work units are the entities whose runtime state is tracked for concurrency and progress.
+_Avoid_: agent, task, active agent
+
+**Run Monitor View**:
+A lightweight observation surface for current run, stage, and Agent Work Unit progress. A Run Monitor View is not a runtime report, audit timeline, or scheduler state source.
+_Avoid_: report view, dashboard state, web UI model
+
+**Run Diagnostics View**:
+A lightweight observation surface for runtime diagnostics used by recovery and troubleshooting workflows. A Run Diagnostics View is separate from report generation and does not define a user-facing report surface.
+_Avoid_: report view, detailed report, diagnostic report
+
+**Work Unit Detail View**:
+A focused observation surface for one selected Agent Work Unit, including lightweight metadata and bounded previews of related artifacts. A Work Unit Detail View is loaded on demand and is separate from the Run Monitor View.
+_Avoid_: report detail, full artifact view, expanded monitor view
+
 **Heterogeneous Fanout**:
 A fanout pattern where work items, or lanes for the same work item, may be assigned to different roles or agents within one fanout stage.
 _Avoid_: multi-agent fanout, mixed-agent fanout, agent selection fanout

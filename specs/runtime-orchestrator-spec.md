@@ -3,7 +3,7 @@
 ## Status
 
 - Current implementation: current
-- Source modules: `src/runtime/`, `src/run-index/`, `src/acpx/`, `src/compiler/compile-execution-plan.ts`, `src/compiler/execution-plan.ts`, `src/commands/run.ts`, `src/commands/follow.ts`, `src/commands/resume.ts`, `src/commands/diagnose.ts`
+- Source modules: `src/runtime/`, `src/run-index/`, `src/acpx/`, `src/compiler/compile-execution-plan.ts`, `src/compiler/execution-plan.ts`, `src/projections/run-monitor.ts`, `src/commands/run.ts`, `src/commands/follow.ts`, `src/commands/monitor.ts`, `src/commands/resume.ts`, `src/commands/diagnose.ts`
 - Maintenance trigger: update this spec when changing scheduler behavior, run state, attempt lifecycle, session binding, fanout execution, resume, diagnose, ACPX runtime integration, or run directory artifacts
 
 ## Purpose
@@ -23,6 +23,7 @@ The runtime orchestrator is the authoritative workflow driver. It executes compi
 - `run --wait` MUST enable fanout-stage-local draining for ready fanout stages.
 - `run` without `--wait` MUST remain a bounded scheduler advancement and MUST NOT drain an entire fanout stage solely because queued items remain.
 - `follow` MUST observe and sync an existing run; it MUST NOT create a new workflow run.
+- `monitor` MUST observe and sync an existing run; it MUST NOT create a new workflow run, start pending work, or mutate workflow execution.
 - `resume` MUST continue from persisted `run.json` and `execution-plan.json`.
 - `resume --wait` MUST enable the same fanout-stage-local draining behavior as `run --wait`.
 - Resume policy flags MUST only tighten fanout handling.
@@ -61,7 +62,11 @@ Run directories contain:
 - `events.ndjson`
 - `run.json`
 
-Runtime commands are exposed through `run`, `follow`, `resume`, and `diagnose` CLI commands.
+Runtime commands are exposed through `run`, `follow`, `monitor`, `resume`, and `diagnose` CLI commands.
+
+Run Monitor View projects the current run, stage summaries, known Agent Work Units, and aggregate work-unit progress from `run.json` plus `workflow.spec.json`. Its top-level fields MUST include `version`, `generatedAt`, `run`, `stages`, `workUnits`, and `progress`. Work Unit Detail View projects bounded detail for one selected Agent Work Unit from `run.json`, attempt previews, and the selected output artifact path when present. Its top-level fields MUST include `version`, `generatedAt`, `run`, `workUnit`, optional prompt/raw/output previews, optional outcome summary, and bounded activity.
+
+The monitor TUI MUST render from polled Run Monitor View snapshots and MUST load Work Unit Detail View lazily for the selected Agent Work Unit. Polling and detail loads MUST ignore stale asynchronous results when a newer request has been issued. The initial TUI snapshot SHOULD select the active stage by default; after the user moves stage selection, subsequent refreshes MUST preserve that user selection except for clamping to available stages. When the selected stage changes, the selected work-unit index MUST be reset or clamped to a valid work unit in the new stage. Run Monitor View and the monitor TUI MUST NOT read `events.ndjson`; bounded event-tail reads are reserved for diagnostics projections.
 
 Execution event types include:
 
@@ -79,7 +84,7 @@ The scheduler MUST NOT emit `scheduler_batch_started` or `scheduler_batch_comple
 
 ## Data Model
 
-The runtime data model includes a logical run, compiled execution plan, stage states, attempts, fanout item/group/lane attempts, loop round/body attempts, output artifacts, event stream, role/session bindings, ACPX session state, usage accounting, gate verdict, blocked reason, and diagnostics.
+The runtime data model includes a logical run, compiled execution plan, stage states, attempts, Agent Work Units, fanout item/group/lane attempts, loop round/body attempts, output artifacts, event stream, role/session bindings, ACPX session state, usage accounting, gate verdict, blocked reason, monitor projections, and diagnostics.
 
 Fanout pool state MUST be derived from fanout item/group/lane status, attempts, and output artifacts. The run index MUST remain item-centric with nested lane group and lane records, and MUST NOT persist a separate pool object.
 
@@ -115,7 +120,7 @@ Runtime prompt rendering failures caused by missing required variables MUST writ
 
 Gate execution is terminal. Program gates evaluate their condition or default upstream-exists check and write a gate output without an agent turn. Agent gates use the gate output contract. The scheduler promotes the gate output verdict into `run.json.gateVerdict` and derives the terminal run status from it.
 
-Observation-only surfaces, including `follow`, report snapshots, report serving, and diagnose wait polling, MUST call `syncRun` with `startPending: false`. `syncRun` with `startPending: false` MUST be read-only: it MUST return the persisted `run.json` state as-is, MUST NOT start pending work, MUST NOT reconcile stale running attempts, MUST NOT aggregate fanout outputs, MUST NOT write `run.json`, and MUST NOT append `run_synced` events.
+Observation-only surfaces, including `follow`, `monitor`, and diagnose wait polling, MUST call `syncRun` with `startPending: false`. `syncRun` with `startPending: false` MUST be read-only: it MUST return the persisted `run.json` state as-is, MUST NOT start pending work, MUST NOT reconcile stale running attempts, MUST NOT aggregate fanout outputs, MUST NOT write `run.json`, and MUST NOT append `run_synced` events.
 
 Run and resume advancement paths MAY perform scheduler stale recovery for running agent attempts that have no terminal output. Stale recovery MUST use attempt-scoped activity from `events.ndjson` as a heartbeat. The scheduler MUST consider only activity events for the same `attemptId`, including `attempt_started`, `turn_started`, `agent_event`, `turn_finished`, and `runtime_retry_started`. When no heartbeat exists for an attempt, the scheduler MUST fall back to the stage or fanout item `startedAt` timestamp.
 
@@ -123,7 +128,7 @@ Stale recovery MUST NOT trigger until the latest same-attempt heartbeat or fallb
 
 ## Extension Points
 
-Supported extension points are stage runtime policies, resume policy tightening, role/session key planning, output contract integration, and report projections. Extensions MUST preserve durable run-index recovery semantics.
+Supported extension points are stage runtime policies, resume policy tightening, role/session key planning, output contract integration, monitor projections, and diagnostics projections. Extensions MUST preserve durable run-index recovery semantics.
 
 ## Non-Goals
 
@@ -140,6 +145,7 @@ Supported extension points are stage runtime policies, resume policy tightening,
 - Attempts and outputs -> `src/runtime/attempts.ts`, `src/runtime/output-parser.ts`, `src/runtime/repair.ts`
 - `loop` runtime execution -> `src/runtime/stage-runner.ts`
 - Resume and diagnose -> `src/runtime/resume-policy.ts`, `src/runtime/diagnose-run.ts`, `src/commands/resume.ts`, `src/commands/diagnose.ts`
+- Monitor projections -> `src/projections/run-monitor.ts`, `src/commands/monitor.ts`
 - Session bindings -> `src/runtime/session-bindings.ts`
 - Run index and paths -> `src/run-index/read-write.ts`, `src/run-index/paths.ts`, `src/run-index/locator.ts`
 - Synchronization -> `src/runtime/sync.ts`

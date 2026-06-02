@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { getOutputContract } from "../contracts/output-contracts.js";
-import { buildRunReportView, type ReportDiagnostic, type ReportEvent } from "../projections/run-report.js";
+import { buildRunDiagnosticsView, type RunDiagnostic, type RunDiagnosticEvent } from "../projections/run-diagnostics.js";
 import { runDir } from "../run-index/paths.js";
 import { appendEvent, readRunIndex, writeRunIndex, type RunIndex } from "../run-index/read-write.js";
 import { WorkflowSpecSchema, type Role } from "../schema/workflow-spec.js";
@@ -23,13 +23,13 @@ export async function startDiagnosticRun(cwd: string, logicalRunId: string): Pro
     }
   };
   await fs.mkdir(path.join(dir, "prompts"), { recursive: true });
-  const report = await buildRunReportView(cwd, spec, index, { mode: "snapshot", limits: { eventLimit: 50 } });
+  const diagnostics = await buildRunDiagnosticsView(cwd, index, { eventTailLimit: 50 });
   await fs.writeFile(path.join(dir, "prompts", `${diagnosticId}.md`), diagnosticPrompt({
     workflowName: spec.name,
     runSnapshot: index,
     outputs: await readExistingOutputs(dir),
-    diagnostics: report.diagnostics,
-    events: report.events
+    diagnostics: diagnostics.diagnostics,
+    eventTail: diagnostics.eventTail
   }), "utf8");
   await fs.mkdir(path.join(dir, "diagnostics"), { recursive: true });
   await fs.writeFile(path.join(dir, "diagnostics", `${diagnosticId}.json`), `${JSON.stringify(output, null, 2)}\n`, "utf8");
@@ -67,7 +67,7 @@ async function readExistingOutputs(dir: string): Promise<Record<string, unknown>
   return outputs;
 }
 
-function diagnosticPrompt(input: { workflowName: string; runSnapshot: RunIndex; outputs: Record<string, unknown>; diagnostics: ReportDiagnostic[]; events: ReportEvent[] }): string {
+function diagnosticPrompt(input: { workflowName: string; runSnapshot: RunIndex; outputs: Record<string, unknown>; diagnostics: RunDiagnostic[]; eventTail: RunDiagnosticEvent[] }): string {
   return `You are the recovery reviewer for a blocked acpx-workflow-orchestrator workflow.
 
 Workflow: ${input.workflowName}
@@ -89,7 +89,7 @@ ${JSON.stringify(input.diagnostics, null, 2)}
 
 Recent runtime events:
 \`\`\`json
-${JSON.stringify(input.events, null, 2)}
+${JSON.stringify(input.eventTail, null, 2)}
 \`\`\`
 
 Diagnose why the run is blocked and recommend the smallest safe recovery plan. Do not edit files. Do not rerun prior edit work.

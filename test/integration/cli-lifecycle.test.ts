@@ -17,7 +17,7 @@ describe("CLI lifecycle", () => {
     await execa("npm", ["run", "build"], { cwd: root });
   }, 60_000);
 
-  it("validates, saves, runs, observes, diagnoses, resumes, reports, and generates drafts", async () => {
+  it("validates, saves, runs, observes, diagnoses, resumes, and generates drafts", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-cli-lifecycle-"));
     await fs.writeFile(path.join(cwd, "sample.txt"), "hello\n", "utf8");
     const specPath = path.join(cwd, "deterministic.workflow.spec.json");
@@ -32,9 +32,9 @@ describe("CLI lifecycle", () => {
     const drafts = JSON.parse((await run(cwd, "list", "drafts", "--json")).stdout) as { entries: string[] };
     const draft = JSON.parse((await run(cwd, "show", "draft", path.basename(generated.path), "--json")).stdout) as { name: string };
     const runResult = JSON.parse((await run(cwd, "run", "--workflow", "deterministic", "--yes", "--wait", "--json")).stdout) as { logicalRunId: string; status: string };
-    const follow = JSON.parse((await run(cwd, "follow", runResult.logicalRunId, "--json")).stdout) as { status: string };
-    const diagnose = JSON.parse((await run(cwd, "diagnose", runResult.logicalRunId, "--wait", "--json")).stdout) as { status: string };
-    const report = JSON.parse((await run(cwd, "report", "--run", runResult.logicalRunId, "--json", "--detailed")).stdout) as { run: { status: string }; diagnostics: unknown[] };
+    const follow = JSON.parse((await run(cwd, "follow", runResult.logicalRunId, "--json")).stdout) as { version: string; run: { status: string }; workUnits: unknown[] };
+    const monitor = JSON.parse((await run(cwd, "monitor", runResult.logicalRunId, "--json")).stdout) as { version: string; run: { status: string }; workUnits: unknown[] };
+    const diagnose = JSON.parse((await run(cwd, "diagnose", runResult.logicalRunId, "--wait", "--json")).stdout) as { status: string; diagnosticId: string; diagnostics: { version: string; run: { status: string }; diagnostics: unknown[] } };
     const resume = JSON.parse((await run(cwd, "resume", runResult.logicalRunId, "--wait", "--json")).stdout) as { status: string };
     const shownRun = JSON.parse((await run(cwd, "show", "run", runResult.logicalRunId, "--json")).stdout) as { logicalRunId: string };
     const runs = JSON.parse((await run(cwd, "list", "runs", "--json")).stdout) as { entries: string[] };
@@ -48,30 +48,38 @@ describe("CLI lifecycle", () => {
     expect(drafts.entries).toContain(path.basename(generated.path));
     expect(draft.name).toBe("generated");
     expect(runResult.status).toBe("blocked");
-    expect(follow.status).toBe("blocked");
+    expect(follow.version).toBe("acpx-workflow-orchestrator.monitor/v1");
+    expect(follow.run.status).toBe("blocked");
+    expect(monitor.version).toBe("acpx-workflow-orchestrator.monitor/v1");
+    expect(monitor.run.status).toBe("blocked");
+    expect(monitor.workUnits).toEqual(follow.workUnits);
     expect(diagnose.status).toBe("diagnosed_blocked");
-    expect(report.run.status).toBe("diagnosed_blocked");
-    expect(report.diagnostics.length).toBeGreaterThan(0);
+    expect(diagnose.diagnosticId).toBe("diagnostic-1");
+    expect(diagnose.diagnostics.version).toBe("acpx-workflow-orchestrator.diagnostics/v1");
+    expect(diagnose.diagnostics.run.status).toBe("diagnosed_blocked");
     expect(resume.status).toBe("blocked");
     expect(shownRun.logicalRunId).toBe(runResult.logicalRunId);
     expect(runs.entries).toContain(runResult.logicalRunId);
   }, 60_000);
 
-  it("keeps follow and report observation-only for pending prepared runs", async () => {
+  it("keeps follow observation-only for pending prepared runs", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-cli-observe-"));
-    await fs.writeFile(path.join(cwd, "sample.txt"), "hello\n", "utf8");
-    const spec = observationOnlySpec(cwd);
+    const spec = observationOnlySpec();
     const prepared = await prepareRun(spec, { cwd, input: { cwd } });
 
-    const follow = JSON.parse((await run(cwd, "follow", prepared.logicalRunId, "--json")).stdout) as { status: string };
+    const follow = JSON.parse((await run(cwd, "follow", prepared.logicalRunId, "--json")).stdout) as { version: string; run: { status: string }; workUnits: Array<{ id: string }> };
+    const monitor = JSON.parse((await run(cwd, "monitor", prepared.logicalRunId, "--json")).stdout) as { version: string; run: { status: string }; workUnits: Array<{ id: string }> };
+    const detail = JSON.parse((await run(cwd, "monitor", "detail", prepared.logicalRunId, follow.workUnits[0]?.id ?? "", "--json")).stdout) as { version: string; workUnit: { id: string } };
     const afterFollow = await readRunIndex(cwd, prepared.logicalRunId);
-    const report = JSON.parse((await run(cwd, "report", "--run", prepared.logicalRunId, "--json")).stdout) as { status: string };
-    const afterReport = await readRunIndex(cwd, prepared.logicalRunId);
 
-    expect(follow.status).toBe("pending");
-    expect(report.status).toBe("pending");
-    expect(afterFollow.stages.discover.status).toBe("pending");
-    expect(afterReport.stages.discover.status).toBe("pending");
+    expect(follow.version).toBe("acpx-workflow-orchestrator.monitor/v1");
+    expect(follow.run.status).toBe("pending");
+    expect(monitor.version).toBe("acpx-workflow-orchestrator.monitor/v1");
+    expect(monitor.run.status).toBe("pending");
+    expect(follow.workUnits[0]?.id).toBe("stage:task");
+    expect(detail.version).toBe("acpx-workflow-orchestrator.work-unit-detail/v1");
+    expect(detail.workUnit.id).toBe("stage:task");
+    expect(afterFollow.stages.task.status).toBe("pending");
   }, 60_000);
 });
 
@@ -105,19 +113,18 @@ function deterministicSpec(cwd: string) {
   };
 }
 
-function observationOnlySpec(cwd: string) {
+function observationOnlySpec() {
   return WorkflowSpecSchema.parse({
     schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
     name: "observation-only-cli",
-    root: "discover",
-    inputs: {
-      cwd: { type: "path", default: cwd }
+    root: "task",
+    roles: {
+      implementer: { category: "implementation", agent: "gpt-test", mode: "readOnly" }
     },
-    roles: {},
     limits: { stageTimeoutMinutes: 1 },
     stages: [
-      { id: "discover", kind: "discover", method: "glob", args: { scope: ["*.txt"] }, output: "files" },
-      { id: "gate", kind: "gate", dependsOn: ["discover"] }
+      { id: "task", kind: "agentTask", role: "implementer", prompt: "Observe only." },
+      { id: "gate", kind: "gate", dependsOn: ["task"] }
     ]
   });
 }

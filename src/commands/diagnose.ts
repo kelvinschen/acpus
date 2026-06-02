@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import { buildRunDiagnosticsView } from "../projections/run-diagnostics.js";
 import { resolveRunLocator } from "../run-index/locator.js";
 import { startDiagnosticRun } from "../runtime/diagnose-run.js";
 import { syncRun } from "../runtime/sync.js";
@@ -13,11 +14,14 @@ export function registerDiagnose(program: Command): void {
       const locator = await resolveRunLocator(runArg);
       const started = await startDiagnosticRun(locator.cwd, locator.runId);
       const index = options.wait ? await waitForDiagnostic(locator.cwd, locator.runId) : started;
+      const diagnostics = await buildRunDiagnosticsView(locator.cwd, index, { eventTailLimit: 50 });
       const output = {
         ok: true,
         runId: locator.runId,
+        diagnosticId: `diagnostic-${index.agentUsage.recoveryCalls}`,
         status: index.status,
-        message: options.wait ? "Diagnostic preparation finished." : "Diagnostic preparation started."
+        message: options.wait ? "Diagnostic preparation finished." : "Diagnostic preparation started.",
+        diagnostics
       };
       if (options.json) printJson(output);
       else process.stdout.write(`${output.message}\n`);

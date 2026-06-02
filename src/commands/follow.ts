@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { buildRunMonitorView } from "../projections/run-monitor.js";
 import { runViewFromIndex } from "../projections/run-view.js";
 import { resolveRunLocator } from "../run-index/locator.js";
 import { runDir } from "../run-index/paths.js";
@@ -16,8 +17,11 @@ export function registerFollow(program: Command): void {
       const locator = await resolveRunLocator(runArg);
       const index = await syncRun(locator.cwd, locator.runId, { startPending: false });
       const spec = WorkflowSpecSchema.parse(JSON.parse(await fs.readFile(path.join(runDir(locator.runId, locator.cwd), "workflow.spec.json"), "utf8")));
-      const view = await runViewFromIndex(locator.cwd, spec, index);
-      if (options.json) printJson(view);
-      else process.stdout.write(`run ${locator.runId} status=${view.status} workflow=${view.workflowName}${view.gateVerdict ? ` verdict=${view.gateVerdict}` : ""}\n`);
+      if (options.json) {
+        printJson(await buildRunMonitorView(locator.cwd, spec, index));
+      } else {
+        const view = await runViewFromIndex(locator.cwd, spec, index);
+        process.stdout.write(`run ${locator.runId} status=${view.status} workflow=${view.workflowName}${view.gateVerdict ? ` verdict=${view.gateVerdict}` : ""}\n`);
+      }
     });
 }

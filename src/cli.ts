@@ -4,8 +4,8 @@ import { registerDiagnose } from "./commands/diagnose.js";
 import { registerFollow } from "./commands/follow.js";
 import { registerGenerate } from "./commands/generate.js";
 import { registerList } from "./commands/list.js";
+import { registerMonitor } from "./commands/monitor.js";
 import { registerPreview } from "./commands/preview.js";
-import { registerReport } from "./commands/report.js";
 import { registerResume } from "./commands/resume.js";
 import { registerRun } from "./commands/run.js";
 import { registerSave } from "./commands/save.js";
@@ -27,9 +27,9 @@ registerSave(program);
 registerList(program);
 registerShow(program);
 registerFollow(program);
+registerMonitor(program);
 registerResume(program);
 registerDiagnose(program);
-registerReport(program);
 registerGenerate(program);
 
 program.parseAsync(process.argv).catch((error: unknown) => {

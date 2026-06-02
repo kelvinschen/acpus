@@ -15,7 +15,7 @@ uses:
 
 Severities:
 
-- `warning`: spec is runnable, but the preview/report must surface the risk.
+- `warning`: spec is runnable, but preview and diagnostics surfaces must expose the risk.
 - `error`: spec is rejected until corrected.
 - `fatal`: tooling/runtime could not safely continue.
 
@@ -50,7 +50,7 @@ Output contract failures map to blocked attempt/stage/run state, not failed.
 `failed` is reserved for compiler, scheduler, ACPX runtime, or other
 unrecoverable runtime errors.
 
-Runtime run-level codes emitted in reports:
+Runtime run-level codes emitted in diagnostics:
 
 - `EVENT_APPEND_LOCK_TIMEOUT`: event append persistence could not acquire the
   event write lock before timeout.

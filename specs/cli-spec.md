@@ -8,7 +8,7 @@
 
 ## Purpose
 
-The CLI is the developer and Main Agent entry point for validating, previewing, running, observing, diagnosing, resuming, reporting, saving, listing, showing, and generating workflows.
+The CLI is the developer and Main Agent entry point for validating, previewing, running, observing, monitoring, diagnosing, resuming, saving, listing, showing, and generating workflows.
 
 ## Normative Requirements
 
@@ -23,17 +23,19 @@ The CLI is the developer and Main Agent entry point for validating, previewing, 
 - `run --yes --wait` MUST advance until terminal status and MUST enable fanout-stage-local draining.
 - `run --prepare-only` MUST prepare the logical run and write runtime artifacts without starting runtime turns.
 - `follow` MUST observe and sync existing artifacts for an existing logical run and MUST NOT create a new workflow or start pending workflow work.
+- `follow --json` MUST output the Run Monitor View.
+- `monitor <run>` MUST observe the selected run and render the Ink monitor TUI.
+- `monitor <run> --json` MUST observe the selected run and output the Run Monitor View.
+- `monitor detail <run> <work-unit-id> --json` MUST observe the selected run and output the Work Unit Detail View for the selected Agent Work Unit.
+- `monitor detail` MUST be registered as a real CLI subcommand, not parsed by treating the first positional `monitor` argument as a sentinel.
+- `monitor detail` without `--json` MAY fail because work-unit detail is reached through the TUI.
 - `diagnose` MUST prepare read-only recovery diagnostic prompt/artifacts and MUST NOT rerun edit work or change the saved workflow spec.
+- `diagnose --json` MUST include the post-diagnose Run Diagnostics View.
 - `resume` MUST advance an existing run from persisted `run.json` and `execution-plan.json`.
 - `resume --wait` MUST advance until terminal status or current scheduler quiescence and MUST enable fanout-stage-local draining.
 - Resume fanout policy flags MUST only tighten fanout handling.
 - `save` MUST write a saved workflow directory only when explicitly requested.
 - Approval to run MUST NOT imply approval to save.
-- `report --html --output <file>` MUST write a self-contained HTML snapshot.
-- `report` commands MUST sync existing artifacts with observation-only semantics and MUST NOT start pending workflow work.
-- `report serve` MUST start an observation-only local server.
-- `report serve --open` MAY open the local report URL in a browser.
-- `report serve --interval-ms <ms>` MUST configure live report sync interval.
 - `generate` MUST write starter workflow drafts under `.acpx-workflow-orchestrator/drafts/`.
 - `list` MUST support `workflows`, `runs`, and `drafts` kinds.
 - `show` MUST support `workflow`, `run`, and `draft` kinds.
@@ -58,13 +60,14 @@ skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator show workfl
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator show run <logical-run-id>
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator show draft <draft-name>
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator follow <logical-run-id>
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator follow <logical-run-id> --json
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator monitor <logical-run-id>
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator monitor <logical-run-id> --json
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator monitor detail <logical-run-id> <work-unit-id> --json
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator diagnose <logical-run-id> --wait
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator diagnose <logical-run-id> --wait --json
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator resume <logical-run-id> --wait
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator resume <logical-run-id> --max-fanout-items review_files=4 --allow-partial-fanout review_files
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator report --run <logical-run-id>
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator report --run <logical-run-id> --html --output report.html
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator report --run <logical-run-id> --json --detailed
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator report serve --run <logical-run-id> --port 0 --interval-ms 1000 --open
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator generate --name draft-workflow
 ```
 
@@ -77,7 +80,7 @@ Resume policy flags:
 
 ## Data Model
 
-CLI commands operate on workflow specs, saved workflow directories, logical run IDs or run directories, execution plans, run indexes, report projections, generated drafts, and JSON command output envelopes.
+CLI commands operate on workflow specs, saved workflow directories, logical run IDs or run directories, execution plans, run indexes, monitor projections, work-unit detail projections, diagnostics projections, generated drafts, and JSON command output envelopes.
 
 Saved workflow directories contain `workflow.spec.json`, `execution-plan.json`, README, schema/docs references, wrapper, and built helper files from the current package build.
 
@@ -92,14 +95,15 @@ New commands and flags MAY be added through `src/commands/` and `src/cli.ts`. Pu
 ## Non-Goals
 
 - The CLI does not provide a long-running workflow control server.
-- `follow`, `diagnose`, and report serving are not hidden run/resume commands.
+- `follow`, `monitor`, and `diagnose` are not hidden run/resume commands.
+- `monitor` does not provide workflow mutation controls.
+- `monitor detail` does not provide a non-JSON CLI detail renderer.
 - Generated drafts are templates only and are not validated or run automatically.
 
 ## Implementation Map
 
 - CLI registration -> `src/cli.ts`
 - Common command helpers -> `src/commands/common.ts`
-- Lifecycle commands -> `src/commands/validate.ts`, `src/commands/preview.ts`, `src/commands/run.ts`, `src/commands/follow.ts`, `src/commands/resume.ts`, `src/commands/diagnose.ts`
+- Lifecycle commands -> `src/commands/validate.ts`, `src/commands/preview.ts`, `src/commands/run.ts`, `src/commands/follow.ts`, `src/commands/monitor.ts`, `src/commands/resume.ts`, `src/commands/diagnose.ts`
 - Workflow library commands -> `src/commands/save.ts`, `src/commands/list.ts`, `src/commands/show.ts`, `src/commands/generate.ts`
-- Report command -> `src/commands/report.ts`
 - Skill wrapper -> `skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator`

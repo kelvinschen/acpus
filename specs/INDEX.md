@@ -62,7 +62,7 @@ Agents and maintainers MUST update the affected SPEC in the same change when mod
 - runtime scheduling, resume, diagnose, status, session, attempt, fanout, or run-index behavior;
 - output contracts, output contract names, parser behavior, repair behavior, schema field normalization policy, or contract examples;
 - CLI commands, flags, list/show kinds, output modes, lifecycle behavior, or saved workflow layout;
-- report projections, markdown/JSON/HTML output, live report server behavior, or report data sources;
+- monitor projections, diagnostics projections, or runtime observation data sources;
 - error severity, error code families, stable error codes, run-index runtime error codes, command diagnostics, turn diagnostics, or repair suggestions;
 - module ownership or public boundaries.
 
@@ -73,6 +73,5 @@ If a code change does not require a SPEC update, the final response MUST state w
 - [Workflow Specification](workflow-spec.md)
 - [Runtime Orchestrator Specification](runtime-orchestrator-spec.md)
 - [Output Contracts Specification](output-contracts-spec.md)
-- [Report Specification](report-spec.md)
 - [CLI Specification](cli-spec.md)
 - [Error Codes Specification](error-codes-spec.md)

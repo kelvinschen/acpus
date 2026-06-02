@@ -3,23 +3,24 @@
 ## Status
 
 - Current implementation: current
-- Source modules: `src/errors.ts`, `src/schema/`, `src/compiler/`, `src/contracts/`, `src/runtime/`, `src/reports/`, `src/commands/`
-- Maintenance trigger: update this spec when changing error shape, severity semantics, code families, stable runtime codes, output-contract codes, repair suggestions, or report diagnostics
+- Source modules: `src/errors.ts`, `src/schema/`, `src/compiler/`, `src/contracts/`, `src/runtime/`, `src/projections/run-diagnostics.ts`, `src/commands/`
+- Maintenance trigger: update this spec when changing error shape, severity semantics, code families, stable runtime codes, output-contract codes, repair suggestions, or diagnostics projections
 
 ## Purpose
 
-Error codes provide a stable repair-oriented surface for Main Agent loops, CLI users, reports, and diagnostics. They identify validation, compiler, runtime, output-contract, resume, ACPX, and internal failures.
+Error codes provide a stable repair-oriented surface for Main Agent loops, CLI users, and diagnostics. They identify validation, compiler, runtime, output-contract, resume, ACPX, and internal failures.
 
 ## Normative Requirements
 
 - Structured errors MUST include `code`, `severity`, `path`, `message`, and `suggestions` when emitted through the repair-oriented JSON surface.
-- Severity `warning` MUST mean the spec is runnable, but preview/report surfaces should expose the risk.
+- Severity `warning` MUST mean the spec is runnable, but preview and diagnostics surfaces should expose the risk.
 - Severity `error` MUST mean the spec is rejected until corrected.
 - Severity `fatal` MUST mean tooling or runtime could not safely continue.
 - Error code families MUST remain stable and MUST NOT be renamed casually.
 - Output contract failures MUST map to blocked attempt/stage/run state, not failed infrastructure state.
 - Runtime `failed` MUST remain reserved for compiler, scheduler, ACPX runtime, or other unrecoverable runtime errors.
-- Reports MUST surface run-level runtime diagnostic codes when present.
+- Diagnostics projections MUST surface run-level runtime diagnostic codes when present.
+- Diagnostics projections MUST recognize every stable runtime run-level code listed in this SPEC when it appears as the persisted run blocked reason.
 
 ## Interfaces and Contracts
 
@@ -93,7 +94,7 @@ Stable command diagnostics:
 
 ## Data Model
 
-Error data includes stable code, severity, JSON Pointer path, human-readable message, repair suggestions, run-level blocked reason, attempt diagnostics, output parser diagnostics, runtime diagnostics, persistence diagnostics, command diagnostics, turn diagnostics, and report diagnostic projection.
+Error data includes stable code, severity, JSON Pointer path, human-readable message, repair suggestions, run-level blocked reason, attempt diagnostics, output parser diagnostics, runtime diagnostics, persistence diagnostics, command diagnostics, turn diagnostics, and diagnostics projections.
 
 ## Runtime Behavior
 
@@ -101,7 +102,7 @@ Validation and compiler errors reject invalid specs before execution. Output par
 
 ## Extension Points
 
-New error codes MAY be added under an existing family when the family semantics match. New families require updating this SPEC and developer documentation. New stable report diagnostics MUST be documented here.
+New error codes MAY be added under an existing family when the family semantics match. New families require updating this SPEC and developer documentation. New stable diagnostics projection codes MUST be documented here.
 
 ## Non-Goals
 
@@ -117,5 +118,5 @@ New error codes MAY be added under an existing family when the family semantics 
 - Output contract diagnostics -> `src/contracts/`, `src/runtime/output-parser.ts`, `src/runtime/repair.ts`
 - Runtime diagnostics -> `src/runtime/`
 - Run-index and persistence diagnostics -> `src/run-index/read-write.ts`
-- Report diagnostics -> `src/projections/run-report.ts`, `src/projections/run-view.ts`, `src/reports/`
+- Diagnostics projection -> `src/projections/run-diagnostics.ts`
 - Command JSON surfaces -> `src/commands/`

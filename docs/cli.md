@@ -24,13 +24,14 @@ skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator show workfl
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator show run <logical-run-id>
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator show draft <draft-name>
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator follow <logical-run-id>
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator follow <logical-run-id> --json
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator monitor <logical-run-id>
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator monitor <logical-run-id> --json
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator monitor detail <logical-run-id> <work-unit-id> --json
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator diagnose <logical-run-id> --wait
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator diagnose <logical-run-id> --wait --json
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator resume <logical-run-id> --wait
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator resume <logical-run-id> --max-fanout-items review_files=4 --allow-partial-fanout review_files
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator report --run <logical-run-id>
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator report --run <logical-run-id> --html --output report.html
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator report --run <logical-run-id> --json --detailed
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator report serve --run <logical-run-id> --port 0 --interval-ms 1000 --open
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator generate --name draft-workflow
 ```
 
@@ -43,13 +44,20 @@ advance until terminal status. Use `--prepare-only` to prepare the logical run
 and write runtime artifacts without starting runtime turns.
 
 `follow` observes and syncs the selected logical run. It does not create a new
-workflow.
+workflow. `follow --json` returns the Run Monitor View.
+
+`monitor <run>` opens the observation-only Ink TUI. Use up/down to move,
+left/right to switch panels, enter for work-unit detail, esc to return, r to
+refresh, and q to quit. `monitor <run> --json` returns the same Run Monitor View
+as `follow --json`. `monitor detail <run> <work-unit-id> --json` returns bounded
+detail for one Agent Work Unit from the monitor output.
 
 `generate` writes a starter workflow draft under `.acpx-workflow-orchestrator/drafts/`.
 Generated drafts are templates only; validate and preview them before running.
 
 `diagnose` prepares a read-only recovery diagnostic prompt/artifact. It does not
-rerun edit work and does not change the saved workflow spec.
+rerun edit work and does not change the saved workflow spec. `diagnose --json`
+returns the post-diagnose Run Diagnostics View.
 
 `resume` advances an existing run from its persisted run snapshot and
 `execution-plan.json`. Resume policy flags may only tighten fanout handling:
@@ -69,10 +77,3 @@ the current package build. Approval to run is not save approval; saving is
 always explicit.
 
 `list` and `show` support `workflows`, `runs`, and `drafts`.
-
-`report --html --output <file>` writes a self-contained HTML snapshot based on
-the run index, final outputs, attempts, events, and diagnostics. `report serve`
-starts an observation-only local server that streams RunReportView snapshots
-over SSE after syncing existing artifacts with `startPending: false`; it does
-not expose workflow control endpoints. `--interval-ms` controls live sync
-interval, and `--open` opens the served report URL in a browser.

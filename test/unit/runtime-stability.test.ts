@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AcpRuntimeEvent, AcpRuntimeHandle } from "acpx/runtime";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildRunReportView, ReportDiagnosticCodes } from "../../src/projections/run-report.js";
+import { buildRunDiagnosticsView, RunDiagnosticCodes } from "../../src/projections/run-diagnostics.js";
 import { runDir } from "../../src/run-index/paths.js";
 import { appendEvent, readRunIndex, RuntimeErrorCodes, writeRunIndex, type RunIndex } from "../../src/run-index/read-write.js";
 import { setAgentRuntimeFactoryForTests, type AgentTurnRequest, type AgentTurnResult, type OrchestratorAgentRuntime } from "../../src/runtime/agent-runtime.js";
@@ -223,7 +223,7 @@ describe("fanout runtime stability", () => {
     const items = index.stages.fanout?.fanout?.items ?? [];
     const requested = runtime.requests.map((request) => itemIdFromSessionKey(request.sessionKey));
     const events = await readEvents(prepared.dir);
-    const report = await buildRunReportView(cwd, spec, index, { mode: "snapshot" });
+    const diagnostics = await buildRunDiagnosticsView(cwd, index);
 
     expect(index.status).toBe("blocked");
     expect(index.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR);
@@ -240,12 +240,12 @@ describe("fanout runtime stability", () => {
       itemId: "item-3",
       cascade: true
     }));
-    expect(report.diagnostics).toContainEqual(expect.objectContaining({
+    expect(diagnostics.diagnostics).toContainEqual(expect.objectContaining({
       code: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
       stageId: "fanout",
       itemId: "item-2"
     }));
-    expect(report.diagnostics).toContainEqual(expect.objectContaining({
+    expect(diagnostics.diagnostics).toContainEqual(expect.objectContaining({
       code: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
       stageId: "fanout",
       itemId: "item-3"
@@ -305,8 +305,7 @@ describe("fanout runtime stability", () => {
       outputPath: path.join("outputs", "fanout", "item-1.json")
     });
     expect(recovered.attempts["fanout:item-1:attempt-1"]).toMatchObject({ status: "completed" });
-    const report = await buildRunReportView(cwd, spec, recovered, { mode: "snapshot" });
-    expect(report.metrics.attemptsRunning).toBe(0);
+    expect(Object.values(recovered.attempts).filter((attempt) => attempt.status === "running")).toHaveLength(0);
     await expect(fs.stat(path.join(prepared.dir, "outputs", "fanout.json"))).resolves.toBeTruthy();
   });
 
@@ -361,7 +360,6 @@ describe("fanout runtime stability", () => {
     });
 
     const recovered = await syncRun(cwd, prepared.logicalRunId);
-    const report = await buildRunReportView(cwd, spec, recovered, { mode: "snapshot" });
 
     expect(recovered.stages.fanout?.fanout?.items[0]).toMatchObject({
       status: "blocked",
@@ -373,7 +371,7 @@ describe("fanout runtime stability", () => {
       blockedReason: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
       runtimeErrorCode: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR
     });
-    expect(report.metrics.attemptsRunning).toBe(0);
+    expect(Object.values(recovered.attempts).filter((attempt) => attempt.status === "running")).toHaveLength(0);
   });
 
   it("recovers a stale running fanout item and continues queued work", async () => {
@@ -727,7 +725,7 @@ describe("fanout runtime stability", () => {
     });
 
     const index = await startPreparedRun(cwd, prepared);
-    const report = await buildRunReportView(cwd, spec, index, { mode: "snapshot" });
+    const diagnostics = await buildRunDiagnosticsView(cwd, index);
 
     expect(index.status).toBe("completed");
     const retriedItem = index.stages.fanout?.fanout?.items.find((item) => item.id === "item-2");
@@ -744,7 +742,7 @@ describe("fanout runtime stability", () => {
       status: "completed",
       runtimeRetryOf: "fanout:item-2:work:worker:attempt-1"
     });
-    expect(report.diagnostics).not.toContainEqual(expect.objectContaining({
+    expect(diagnostics.diagnostics).not.toContainEqual(expect.objectContaining({
       code: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
       itemId: "item-2"
     }));
@@ -1189,7 +1187,7 @@ describe("fanout runtime stability", () => {
     const prepared = await prepareRun(spec, { cwd, input: { cwd } });
 
     const index = await startPreparedRun(cwd, prepared);
-    const report = await buildRunReportView(cwd, spec, index, { mode: "snapshot" });
+    const diagnostics = await buildRunDiagnosticsView(cwd, index);
 
     expect(index.status).toBe("blocked");
     expect(index.stages.task?.blockedReason).toBe(RuntimeErrorCodes.AGENT_RUNTIME_ERROR);
@@ -1198,7 +1196,7 @@ describe("fanout runtime stability", () => {
       runtimeRetryOf: "task:attempt-1",
       runtimeRetryOrdinal: 1
     });
-    expect(report.diagnostics).toContainEqual(expect.objectContaining({
+    expect(diagnostics.diagnostics).toContainEqual(expect.objectContaining({
       code: RuntimeErrorCodes.AGENT_RUNTIME_ERROR,
       stageId: "task"
     }));
@@ -1335,8 +1333,8 @@ describe("fanout runtime stability", () => {
     });
   });
 
-  it("surfaces item runtime errors in detailed report diagnostics", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fanout-report-"));
+  it("surfaces item runtime errors in run diagnostics", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fanout-diagnostics-"));
     setAgentRuntimeFactoryForTests(() => new SelectiveFanoutRuntime("item-2"));
     const spec = fanoutSpec(2, { allowPartial: false });
     const prepared = await prepareRun(spec, {
@@ -1345,15 +1343,15 @@ describe("fanout runtime stability", () => {
     });
     const index = await startPreparedRun(cwd, prepared);
 
-    const report = await buildRunReportView(cwd, spec, index, { mode: "snapshot" });
-    const fanout = report.stages.find((stage) => stage.id === "fanout")?.fanout;
+    const diagnostics = await buildRunDiagnosticsView(cwd, index);
+    const fanout = index.stages.fanout?.fanout;
 
     expect(fanout?.items.find((item) => item.id === "item-2")).toMatchObject({
       status: "blocked",
       errorCode: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
       blockedReason: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR
     });
-    expect(report.diagnostics).toContainEqual(expect.objectContaining({
+    expect(diagnostics.diagnostics).toContainEqual(expect.objectContaining({
       code: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
       stageId: "fanout",
       itemId: "item-2"
@@ -1361,7 +1359,7 @@ describe("fanout runtime stability", () => {
   });
 
   it("diagnoses a fanout stage stuck running with queued items", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fanout-stuck-report-"));
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fanout-stuck-diagnostics-"));
     const spec = fanoutSpec(2, { allowPartial: false }, { maxConcurrency: 1 });
     const prepared = await prepareRun(spec, {
       cwd,
@@ -1390,9 +1388,9 @@ describe("fanout runtime stability", () => {
       }
     };
 
-    const report = await buildRunReportView(cwd, spec, stuckIndex, { mode: "snapshot" });
+    const diagnostics = await buildRunDiagnosticsView(cwd, stuckIndex);
 
-    expect(report.diagnostics).toContainEqual(expect.objectContaining({
+    expect(diagnostics.diagnostics).toContainEqual(expect.objectContaining({
       code: RuntimeErrorCodes.FANOUT_STAGE_STUCK_PENDING_BATCH,
       stageId: "fanout",
       itemId: undefined,
@@ -1407,14 +1405,14 @@ describe("fanout runtime stability", () => {
     const prepared = await prepareRun(spec, { cwd, input: { cwd } });
 
     const index = await startPreparedRun(cwd, prepared);
-    const report = await buildRunReportView(cwd, spec, index, { mode: "snapshot" });
+    const diagnostics = await buildRunDiagnosticsView(cwd, index);
 
     expect(index.status).toBe("blocked");
     expect(index.agentUsage.actual).toBe(1);
     expect(index.gateVerdict).toBe("unknown");
     expect(index.blockedReason).toBe(RuntimeErrorCodes.GATE_VERDICT_UNKNOWN);
-    expect(report.run.blockedReason).toBe(RuntimeErrorCodes.GATE_VERDICT_UNKNOWN);
-    expect(report.diagnostics).toContainEqual(expect.objectContaining({
+    expect(diagnostics.run.blockedReason).toBe(RuntimeErrorCodes.GATE_VERDICT_UNKNOWN);
+    expect(diagnostics.diagnostics).toContainEqual(expect.objectContaining({
       code: RuntimeErrorCodes.GATE_VERDICT_UNKNOWN,
       stageId: undefined,
       itemId: undefined
@@ -1458,17 +1456,14 @@ describe("fanout runtime stability", () => {
         }
       };
 
-      const report = await buildRunReportView(cwd, spec, index, { mode: "snapshot" });
+      const diagnostics = await buildRunDiagnosticsView(cwd, index);
 
-      expect(report.run.status).toBe("blocked");
-      expect(report.run.blockedReason).toBe(RuntimeErrorCodes.GATE_VERDICT_BLOCKED);
-      expect(report.diagnostics).toContainEqual(expect.objectContaining({
-        code: ReportDiagnosticCodes.SCHEDULER_RECOVERY_SUCCEEDED_WITH_BLOCKED_VERDICT,
+      expect(diagnostics.run.status).toBe("blocked");
+      expect(diagnostics.run.blockedReason).toBe(RuntimeErrorCodes.GATE_VERDICT_BLOCKED);
+      expect(diagnostics.diagnostics).toContainEqual(expect.objectContaining({
+        code: RunDiagnosticCodes.SCHEDULER_RECOVERY_SUCCEEDED_WITH_BLOCKED_VERDICT,
         status: "completed",
-        summary: expect.stringContaining("Scheduler recovery completed"),
-        raw: expect.objectContaining({
-          recoveredFanoutStages: ["fanout"]
-        })
+        summary: expect.stringContaining("Scheduler recovery completed")
       }));
     }
   });
@@ -1570,7 +1565,7 @@ describe("fanout runtime stability", () => {
     const aggregate = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "fanout.json"), "utf8")) as {
       blockedItems: Array<{ blockedReason?: string }>;
     };
-    const report = await buildRunReportView(cwd, spec, aggregated, { mode: "snapshot" });
+    const diagnostics = await buildRunDiagnosticsView(cwd, aggregated);
 
     expect(aggregated.status).toBe("blocked");
     expect(aggregated.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR);
@@ -1578,7 +1573,7 @@ describe("fanout runtime stability", () => {
     expect(aggregate.blockedItems).toContainEqual(expect.objectContaining({
       blockedReason: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR
     }));
-    expect(report.diagnostics).toContainEqual(expect.objectContaining({
+    expect(diagnostics.diagnostics).toContainEqual(expect.objectContaining({
       code: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR
     }));
   });
@@ -1639,9 +1634,8 @@ describe("fanout runtime stability", () => {
       }
     });
 
-    const report = await buildRunReportView(cwd, spec, await readRunIndex(cwd, prepared.logicalRunId), { mode: "snapshot" });
-
-    expect(report.summary.agentUsage.recoveryCalls).toBe(2);
+    const persisted = await readRunIndex(cwd, prepared.logicalRunId);
+    expect(persisted.agentUsage.recoveryCalls).toBe(2);
   });
 
   it("preserves diagnosed_blocked status during observation-only sync", async () => {
@@ -1676,14 +1670,14 @@ describe("fanout runtime stability", () => {
       }
     });
     const secondTick = await syncRun(cwd, prepared.logicalRunId);
-    const report = await buildRunReportView(cwd, spec, secondTick, { mode: "snapshot" });
+    const diagnostics = await buildRunDiagnosticsView(cwd, secondTick);
 
     expect(firstTick.status).toBe("running");
     expect(secondTick.status).toBe("completed");
     expect(secondTick.stages.validate).toMatchObject({
       status: "completed"
     });
-    expect(report.diagnostics.map((entry) => entry.code)).not.toContain("LIMIT_AGENT_BUDGET_EXHAUSTED");
+    expect(diagnostics.diagnostics.map((entry) => entry.code)).not.toContain("LIMIT_AGENT_BUDGET_EXHAUSTED");
   });
 });
 

@@ -48,7 +48,7 @@ Stage kinds select output contract names as follows:
 
 Gate output verdicts MUST be one of `pass`, `pass_with_warnings`, `blocked`, `failed`, or `unknown`. Gate outputs MUST use `status: "completed"` with pass verdicts and `status: "blocked"` with blocked, failed, or unknown verdicts.
 
-Output parser diagnostics include parse failure, schema failure, candidate information, and repair failure codes suitable for report surfaces and Main Agent repair loops.
+Output parser diagnostics include parse failure, schema failure, candidate information, and repair failure codes suitable for diagnostics surfaces and Main Agent repair loops.
 
 ## Data Model
 
