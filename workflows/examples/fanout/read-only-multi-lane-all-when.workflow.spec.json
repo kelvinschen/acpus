@@ -1,0 +1,149 @@
+{
+  "schemaVersion": "acpus.workflow/v1",
+  "name": "read-only-multi-lane-all-when",
+  "root": "review_items",
+  "inputs": {
+    "task": {
+      "type": "string",
+      "default": "Review changed files with area-specific read-only lanes."
+    },
+    "items": {
+      "type": "array<json>",
+      "default": [
+        {
+          "path": "src/runtime/scheduler.ts",
+          "area": "runtime"
+        },
+        {
+          "path": "src/schema/workflow-spec.ts",
+          "area": "schema"
+        },
+        {
+          "path": "specs/workflow-spec.md",
+          "area": "docs"
+        }
+      ]
+    }
+  },
+  "roles": {
+    "runtime_reviewer": {
+      "category": "review",
+      "agent": "pi",
+      "mode": "readOnly"
+    },
+    "schema_reviewer": {
+      "category": "review",
+      "agent": "aiden",
+      "mode": "readOnly"
+    },
+    "docs_reviewer": {
+      "category": "review",
+      "agent": "claude",
+      "mode": "readOnly"
+    },
+    "review_reducer": {
+      "category": "review",
+      "agent": "aiden",
+      "mode": "readOnly"
+    }
+  },
+  "limits": {
+    "stageTimeoutMinutes": 45
+  },
+  "stages": [
+    {
+      "id": "review_items",
+      "kind": "fanout",
+      "items": {
+        "source": "input.items"
+      },
+      "limits": {
+        "maxConcurrency": 4,
+        "maxFanoutItems": 12
+      },
+      "fanoutPolicy": {
+        "allowPartial": true,
+        "minCompletedRatio": 0.8,
+        "maxBlockedItems": 2
+      },
+      "variables": [
+        {
+          "name": "task",
+          "source": "input.task"
+        },
+        {
+          "name": "item",
+          "source": "item",
+          "transform": [
+            {
+              "fn": "json"
+            }
+          ]
+        }
+      ],
+      "prompt": "Review this item only if your lane matched it.\n\nTask:\n${task}\n\nItem:\n${item}",
+      "laneGroups": [
+        {
+          "id": "area_reviews",
+          "mode": "all",
+          "lanes": [
+            {
+              "id": "runtime",
+              "role": "runtime_reviewer",
+              "when": {
+                "source": "item.area",
+                "op": "in",
+                "value": [
+                  "runtime",
+                  "platform"
+                ]
+              }
+            },
+            {
+              "id": "schema",
+              "role": "schema_reviewer",
+              "when": {
+                "source": "item.area",
+                "op": "eq",
+                "value": "schema"
+              }
+            },
+            {
+              "id": "docs",
+              "role": "docs_reviewer",
+              "when": {
+                "source": "item.area",
+                "op": "eq",
+                "value": "docs"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "reduce_findings",
+      "kind": "reduce",
+      "mode": "agent",
+      "role": "review_reducer",
+      "from": "review_items",
+      "dependsOn": [
+        "review_items"
+      ],
+      "variables": [
+        {
+          "name": "results",
+          "source": "outputs.review_items.summary"
+        }
+      ],
+      "prompt": "Merge and deduplicate these lane-specific review results:\n\n${results}"
+    },
+    {
+      "id": "gate",
+      "kind": "gate",
+      "dependsOn": [
+        "reduce_findings"
+      ]
+    }
+  ]
+}

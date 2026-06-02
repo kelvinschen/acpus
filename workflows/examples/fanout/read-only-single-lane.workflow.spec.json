@@ -1,0 +1,68 @@
+{
+  "schemaVersion": "acpus.workflow/v1",
+  "name": "read-only-single-lane",
+  "description": "Discover changed files, fan out read-only review, reduce findings, and gate completion.",
+  "root": "discover_changed_files",
+  "inputs": {
+    "task": { "type": "string", "default": "Review changed TypeScript files." },
+    "cwd": { "type": "path", "default": "." }
+  },
+  "roles": {
+    "validator": { "category": "validation", "agent": "aiden", "mode": "readOnly" },
+    "reviewer": { "category": "review", "agent": "aiden", "mode": "readOnly" }
+  },
+  "limits": {
+    "stageTimeoutMinutes": 45
+  },
+  "stages": [
+    {
+      "id": "discover_changed_files",
+      "kind": "discover",
+      "method": "gitChangedFiles",
+      "args": {
+        "scope": ["**/*.ts"],
+        "exclude": ["**/node_modules/**"]
+      },
+      "output": "files"
+    },
+    {
+      "id": "review_files",
+      "kind": "fanout",
+      "dependsOn": ["discover_changed_files"],
+      "items": { "source": "outputs.discover_changed_files.files" },
+      "limits": { "maxConcurrency": 4, "maxFanoutItems": 12 },
+      "fanoutPolicy": { "allowPartial": true, "minCompletedRatio": 0.8, "maxBlockedItems": 2 },
+      "variables": [
+        { "name": "task", "source": "input.task" },
+        { "name": "file", "source": "item.path", "transform": [{ "fn": "default", "args": { "value": "(unknown item)" } }] }
+      ],
+      "prompt": "Review this file for task-relevant issues.\n\nTask:\n${task}\n\nFile:\n${file}",
+      "laneGroups": [
+        {
+          "id": "review",
+          "mode": "all",
+          "lanes": [
+            { "id": "validator", "role": "validator" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "reduce_findings",
+      "kind": "reduce",
+      "mode": "agent",
+      "role": "reviewer",
+      "from": "review_files",
+      "dependsOn": ["review_files"],
+      "variables": [
+        { "name": "results", "source": "outputs.review_files.summary" }
+      ],
+      "prompt": "Merge and deduplicate these review results:\n\n${results}"
+    },
+    {
+      "id": "gate",
+      "kind": "gate",
+      "dependsOn": ["reduce_findings"]
+    }
+  ]
+}

@@ -1,0 +1,101 @@
+{
+  "schemaVersion": "acpus.workflow/v1",
+  "name": "loop-review-convergence",
+  "description": "Loop review workflow that converges dual static and semantic review findings before final summary.",
+  "root": "review_loop",
+  "inputs": {
+    "cwd": { "type": "path", "default": "." },
+    "reviewItems": {
+      "type": "array<json>",
+      "default": [
+        { "id": "workflow-loop", "path": "src/runtime/stage-runner.ts" }
+      ]
+    }
+  },
+  "roles": {
+    "static_reviewer": { "category": "validation", "agent": "aiden", "mode": "readOnly" },
+    "semantic_reviewer": { "category": "review", "agent": "claude", "mode": "readOnly" },
+    "convergence_lead": { "category": "coordination", "agent": "pi", "mode": "readOnly" },
+    "final_summarizer": { "category": "coordination", "agent": "pi", "mode": "readOnly" }
+  },
+  "limits": { "stageTimeoutMinutes": 30 },
+  "stages": [
+    {
+      "id": "review_loop",
+      "kind": "loop",
+      "maxRounds": 3,
+      "body": {
+        "root": "cross_review",
+        "output": "converge_review",
+        "stages": [
+          {
+            "id": "cross_review",
+            "kind": "fanout",
+            "items": { "source": "input.reviewItems" },
+            "limits": { "maxConcurrency": 4, "maxFanoutItems": 8 },
+            "variables": [
+              { "name": "path", "source": "item.path" },
+              { "name": "previousConsensus", "source": "loop.previous.output.data.consensus", "transform": [{ "fn": "default", "args": { "value": "No previous consensus." } }] }
+            ],
+            "prompt": "Review ${path}. Previous consensus:\n${previousConsensus}",
+            "laneGroups": [
+              {
+                "id": "dual_review",
+                "mode": "all",
+                "lanes": [
+                  {
+                    "id": "static",
+                    "role": "static_reviewer",
+                    "prompt": "Run static review for ${path}. Previous consensus:\n${previousConsensus}\n\nFocus on checks, contracts, and blocking defects."
+                  },
+                  {
+                    "id": "semantic",
+                    "role": "semantic_reviewer",
+                    "prompt": "Run semantic review for ${path}. Previous consensus:\n${previousConsensus}\n\nFocus on workflow intent, convergence, and review quality."
+                  }
+                ]
+              }
+            ],
+            "fanoutPolicy": { "allowPartial": false }
+          },
+          {
+            "id": "merge_findings",
+            "kind": "reduce",
+            "mode": "program",
+            "from": "cross_review",
+            "dependsOn": ["cross_review"],
+            "operation": "dedupeFindings"
+          },
+          {
+            "id": "converge_review",
+            "kind": "agentTask",
+            "role": "convergence_lead",
+            "dependsOn": ["merge_findings"],
+            "variables": [
+              { "name": "findings", "source": "outputs.merge_findings.items", "transform": [{ "fn": "json" }] },
+              { "name": "previousConsensus", "source": "loop.previous.output.data.consensus", "transform": [{ "fn": "default", "args": { "value": "No previous consensus." } }] }
+            ],
+            "prompt": "Converge review findings and decide whether another review round is needed.\n\nPrevious consensus:\n${previousConsensus}\n\nFindings:\n${findings}\n\nReturn data.needsAnotherRound and data.consensus."
+          }
+        ]
+      },
+      "continueWhen": { "source": "loop.current.output.data.needsAnotherRound", "op": "eq", "value": true },
+      "onExhausted": "blocked"
+    },
+    {
+      "id": "final_summary",
+      "kind": "agentTask",
+      "role": "final_summarizer",
+      "dependsOn": ["review_loop"],
+      "variables": [
+        { "name": "loopOutput", "source": "outputs.review_loop", "transform": [{ "fn": "json" }] }
+      ],
+      "prompt": "Summarize the converged loop review conclusion.\n\n${loopOutput}"
+    },
+    {
+      "id": "gate",
+      "kind": "gate",
+      "dependsOn": ["final_summary"]
+    }
+  ]
+}
