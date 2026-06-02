@@ -194,40 +194,80 @@ function executionPlanStage(
       }
     };
   }
-  if (stage.kind === "fixLoop") {
-    const validatorRole = spec.roles[stage.validator.role];
-    const fixerRole = spec.roles[stage.fixer.role];
-    const validatorContract = contractPlan("validation");
-    const fixerContract = contractPlan("implementation");
-    prompts[`${stage.id}__validate`] = promptPlan(spec, stage, `${stage.id}__validate`, stage.validator.prompt, stage.validator.variables ?? [], stage.validator.role, validatorContract, validatorRole);
-    prompts[`${stage.id}__fix`] = promptPlan(spec, stage, `${stage.id}__fix`, stage.fixer.prompt, stage.fixer.variables ?? [], stage.fixer.role, fixerContract, fixerRole);
-    contracts[`${stage.id}__validate`] = validatorContract;
-    contracts[`${stage.id}__fix`] = fixerContract;
+  if (stage.kind === "loop") {
+    const bodyPlan = compileLoopBodyExecutionPlan(spec, stage, limits, prompts, contracts);
     return {
       ...base,
-      contract: validatorContract,
+      contract: contractPlan("base"),
       promptId: undefined,
-      fixLoop: {
+      session: { kind: "linear", key: `loop:${stage.id}` },
+      loop: {
         maxRounds: stage.maxRounds,
-        validator: {
-          roleName: stage.validator.role,
-          promptId: `${stage.id}__validate`,
-          contract: validatorContract,
-          session: { kind: "linear", key: `role:${stage.validator.role}` }
+        body: {
+          root: stage.body.root,
+          output: stage.body.output,
+          stages: bodyPlan
         },
-        fixer: {
-          roleName: stage.fixer.role,
-          promptId: `${stage.id}__fix`,
-          contract: fixerContract,
-          session: { kind: "linear", key: `role:${stage.fixer.role}` }
-        },
-        routingPolicy: stage.routingPolicy,
-        onUnknown: stage.onUnknown,
+        continueWhen: stage.continueWhen,
         onExhausted: stage.onExhausted
       }
     };
   }
   return base;
+}
+
+function compileLoopBodyExecutionPlan(
+  spec: WorkflowSpec,
+  loop: Extract<Stage, { kind: "loop" }>,
+  limits: ExecutionPlanLimits,
+  prompts: Record<string, PromptPlan>,
+  contracts: Record<string, ContractPlan>
+): ExecutionPlanStage[] {
+  const bodySpec: WorkflowSpec = {
+    ...spec,
+    root: loop.body.root,
+    stages: loop.body.stages as Stage[]
+  };
+  const stages: ExecutionPlanStage[] = [];
+  for (const stageId of topologicalOrder(bodySpec)) {
+    const bodyStage = loop.body.stages.find((candidate) => candidate.id === stageId) as Stage | undefined;
+    if (!bodyStage) continue;
+    const localPrompts: Record<string, PromptPlan> = {};
+    const localContracts: Record<string, ContractPlan> = {};
+    const planStage = executionPlanStage(spec, bodyStage, limits, localPrompts, localContracts);
+    for (const [id, prompt] of Object.entries(localPrompts)) {
+      prompts[`${loop.id}__${id}`] = { ...prompt, id: `${loop.id}__${prompt.id}`, stageId: `${loop.id}.${prompt.stageId}` };
+    }
+    for (const [id, contract] of Object.entries(localContracts)) {
+      contracts[`${loop.id}__${id}`] = contract;
+    }
+    stages.push(prefixLoopBodyPlan(loop.id, planStage));
+  }
+  return stages;
+}
+
+function prefixLoopBodyPlan(loopId: string, stage: ExecutionPlanStage): ExecutionPlanStage {
+  const prefixPrompt = (promptId: string | undefined) => promptId ? `${loopId}__${promptId}` : undefined;
+  const next: ExecutionPlanStage = {
+    ...stage,
+    promptId: prefixPrompt(stage.promptId),
+    dependencies: stage.dependencies,
+    session: stage.session.kind === "linear" ? { kind: "linear", key: `loop:${loopId}:${stage.session.key}` } : stage.session
+  };
+  if (stage.fanout) {
+    next.fanout = {
+      ...stage.fanout,
+      laneGroups: stage.fanout.laneGroups.map((group) => ({
+        ...group,
+        lanes: group.lanes.map((lane) => ({
+          ...lane,
+          promptId: `${loopId}__${lane.promptId}`,
+          sessionKeyTemplate: `loop:${loopId}:${lane.sessionKeyTemplate}`
+        }))
+      }))
+    };
+  }
+  return next;
 }
 
 function promptPlan(

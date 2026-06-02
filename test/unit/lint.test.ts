@@ -153,13 +153,57 @@ describe("compiler lint", () => {
     expect(issues.map((entry) => entry.code)).toContain("GATE_PROGRAM_CONDITION_REQUIRED");
   });
 
-  it("validates fixLoop validator and fixer prompt variables", () => {
-    const spec = example("bugfix-fixloop.workflow.spec.json");
-    const loop = spec.stages.find((stage) => stage.kind === "fixLoop");
-    if (loop?.kind !== "fixLoop") throw new Error("missing fixLoop example");
-    loop.validator.prompt = "Missing ${undeclared}";
+  it("validates loop body prompt variables", () => {
+    const spec = example("simple-feature.workflow.spec.json");
+    spec.stages[2] = {
+      id: "quality_loop",
+      kind: "loop",
+      dependsOn: ["implement"],
+      maxRounds: 2,
+      body: {
+        root: "validate",
+        output: "validate",
+        stages: [{ id: "validate", kind: "agentTask", role: "validator", prompt: "Missing ${undeclared}" }]
+      },
+      continueWhen: { source: "loop.current.output.data.needsAnotherRound", op: "eq", value: true },
+      onExhausted: "blocked"
+    };
+    spec.stages[3] = { id: "gate", kind: "gate", mode: "program", dependsOn: ["quality_loop"] };
     const issues = lintWorkflowSpec(spec);
-    expect(issues.some((entry) => entry.code === "VARIABLE_UNDECLARED" && entry.path.endsWith("/validator/prompt"))).toBe(true);
+    expect(issues.some((entry) => entry.code === "VARIABLE_UNDECLARED" && entry.path.includes("/body/stages/0/prompt"))).toBe(true);
+  });
+
+  it("rejects edit roles for loop body orchestration stages", () => {
+    const spec = example("simple-feature.workflow.spec.json");
+    spec.roles.router = { category: "implementation", agent: "trae", mode: "edit" };
+    spec.stages[2] = {
+      id: "quality_loop",
+      kind: "loop",
+      dependsOn: ["implement"],
+      maxRounds: 2,
+      body: {
+        root: "validate",
+        output: "route",
+        stages: [
+          { id: "validate", kind: "agentTask", role: "validator", prompt: "Validate" },
+          {
+            id: "route",
+            kind: "decisionGate",
+            mode: "agent",
+            role: "router",
+            prompt: "Route",
+            dependsOn: ["validate"],
+            rules: [{ when: { source: "outputs.validate.status", op: "eq", value: "completed" }, to: "gate" }],
+            default: "blocked"
+          }
+        ]
+      },
+      continueWhen: { source: "loop.current.output.data.needsAnotherRound", "op": "eq", value: true },
+      onExhausted: "blocked"
+    };
+    spec.stages[3] = { id: "gate", kind: "gate", mode: "program", dependsOn: ["quality_loop"] };
+    const issues = lintWorkflowSpec(spec);
+    expect(issues.some((entry) => entry.code === "ROLE_MODE_CONFLICT" && entry.path === "/stages/2/body/stages/1/role")).toBe(true);
   });
 
   it("validates condition in operator value shape during schema parsing", () => {

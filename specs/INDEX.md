@@ -58,7 +58,7 @@ Every module SPEC MUST use these sections:
 
 Agents and maintainers MUST update the affected SPEC in the same change when modifying:
 
-- workflow schema, validation, linting, compilation, execution-plan shape, `fixLoop` shape, or role categories;
+- workflow schema, validation, linting, compilation, execution-plan shape, `loop` shape, or role categories;
 - runtime scheduling, resume, diagnose, status, session, attempt, fanout, or run-index behavior;
 - output contracts, output contract names, parser behavior, repair behavior, schema field normalization policy, or contract examples;
 - CLI commands, flags, list/show kinds, output modes, lifecycle behavior, or saved workflow layout;

@@ -128,19 +128,38 @@ describe("compileExecutionPlan", () => {
     });
   });
 
-  it("plans fixLoop validator and fixer prompts without old flow routes", () => {
-    const spec = WorkflowSpecSchema.parse(JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "..", "workflows/examples/bugfix-fixloop.workflow.spec.json"), "utf8")));
+  it("plans loop body prompts without old flow routes", () => {
+    const spec = WorkflowSpecSchema.parse({
+      schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+      name: "loop-plan",
+      root: "quality_loop",
+      roles: {
+        validator: { category: "validation", agent: "aiden", mode: "readOnly" }
+      },
+      stages: [
+        {
+          id: "quality_loop",
+          kind: "loop",
+          maxRounds: 2,
+          body: {
+            root: "validate",
+            output: "validate",
+            stages: [{ id: "validate", kind: "agentTask", role: "validator", prompt: "Validate" }]
+          },
+          continueWhen: { source: "loop.current.output.data.needsAnotherRound", op: "eq", value: true },
+          onExhausted: "blocked"
+        },
+        { id: "gate", kind: "gate", dependsOn: ["quality_loop"] }
+      ]
+    });
     const plan = compileExecutionPlan(spec);
     const loop = plan.stages.find((stage) => stage.id === "quality_loop");
 
-    expect(loop?.fixLoop).toMatchObject({
+    expect(loop?.loop).toMatchObject({
       maxRounds: 2,
-      validator: { roleName: "validator", promptId: "quality_loop__validate", contract: { name: "validation" } },
-      fixer: { roleName: "implementer", promptId: "quality_loop__fix", contract: { name: "implementation" } }
+      body: { root: "validate", output: "validate" }
     });
     expect(plan.prompts.quality_loop__validate.footer).toContain("Output contract:");
-    expect(plan.prompts.quality_loop__validate.footer).not.toContain("Minimal valid example");
-    expect(plan.prompts.quality_loop__validate.footer).not.toContain("Allowed deterministic alias");
     expect(JSON.stringify(plan)).not.toContain("__blocked_stop");
   });
 

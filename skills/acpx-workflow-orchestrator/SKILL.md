@@ -56,7 +56,7 @@ stage id, and authoring stage kinds:
 - `discover`
 - `fanout`
 - `reduce`
-- `fixLoop`
+- `loop`
 - `decisionGate`
 - `gate`
 

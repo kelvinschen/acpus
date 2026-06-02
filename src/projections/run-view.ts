@@ -151,9 +151,20 @@ export function estimateAgentCalls(spec: WorkflowSpec): number {
     if (stage.kind === "reduce" && stage.mode === "agent") baseCalls += 1;
     if (stage.kind === "decisionGate" && stage.mode === "agent") baseCalls += 1;
     if (stage.kind === "fanout") baseCalls += (stage.limits?.maxFanoutItems ?? 1) * fanoutLaneUpperBound(stage);
-    if (stage.kind === "fixLoop") baseCalls += stage.maxRounds + Math.max(0, stage.maxRounds - 1);
+    if (stage.kind === "loop") baseCalls += stage.maxRounds * estimateLoopBodyAgentCalls(stage);
   }
   return baseCalls;
+}
+
+function estimateLoopBodyAgentCalls(stage: Extract<WorkflowSpec["stages"][number], { kind: "loop" }>): number {
+  return stage.body.stages.reduce((total, bodyStage) => {
+    if (bodyStage.kind === "agentTask") return total + 1;
+    if (bodyStage.kind === "discover" && bodyStage.method === "agent") return total + 1;
+    if (bodyStage.kind === "reduce" && bodyStage.mode === "agent") return total + 1;
+    if (bodyStage.kind === "decisionGate" && bodyStage.mode === "agent") return total + 1;
+    if (bodyStage.kind === "fanout") return total + (bodyStage.limits?.maxFanoutItems ?? 1) * fanoutLaneUpperBound(bodyStage);
+    return total;
+  }, 0);
 }
 
 export function estimateFanoutWork(spec: WorkflowSpec): RunView["fanout"] {

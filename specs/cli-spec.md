@@ -16,6 +16,7 @@ The CLI is the developer and Main Agent entry point for validating, previewing, 
 - Commands that expose useful machine-readable output SHOULD support `--json`.
 - `validate` MUST validate the workflow spec without running it.
 - `preview` MUST show the compiled workflow plan without running it.
+- `preview` estimated agent calls MUST account for bounded loop body agent and fanout calls multiplied by loop `maxRounds`.
 - `run` MUST validate automatically.
 - `run` without `--yes` MUST print a preview and exit with approval required.
 - `run --yes` MUST prepare a logical run, write `execution-plan.json`, advance one scheduler tick, and return unless `--wait` is set.

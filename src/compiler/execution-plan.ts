@@ -112,22 +112,14 @@ export type ExecutionPlanStage = {
     mode: "agent" | "program";
     condition?: Extract<Stage, { kind: "gate" }>["condition"];
   };
-  fixLoop?: {
+  loop?: {
     maxRounds: number;
-    validator: {
-      roleName: string;
-      promptId: string;
-      contract: ContractPlan;
-      session: SessionKeyStrategy;
+    body: {
+      root: string;
+      output: string;
+      stages: ExecutionPlanStage[];
     };
-    fixer: {
-      roleName: string;
-      promptId: string;
-      contract: ContractPlan;
-      session: SessionKeyStrategy;
-    };
-    routingPolicy: Extract<Stage, { kind: "fixLoop" }>["routingPolicy"];
-    onUnknown: "blocked";
+    continueWhen: Extract<Stage, { kind: "loop" }>["continueWhen"];
     onExhausted: "blocked";
   };
 };

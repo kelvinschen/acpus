@@ -166,10 +166,10 @@ export type ReportStageDetail = {
     defaultRoute?: string;
     routes: string[];
   };
-  fixLoop?: {
+  loop?: {
     maxRounds: number;
     observedRounds?: number;
-    finalValidatorStatus?: string;
+    bodyOutputStageId?: string;
   };
   relatedAttemptIds: string[];
   relatedEventIds: string[];
@@ -360,7 +360,7 @@ async function buildStageDetails(
       parseDiagnostics: parseDiagnosticsSummary(output),
       fanout: stage.kind === "fanout" ? await buildFanoutDetail(dir, state, limits) : undefined,
       decision: stage.kind === "decisionGate" ? buildDecisionDetail(stage, output) : undefined,
-      fixLoop: stage.kind === "fixLoop" ? buildFixLoopDetail(stage, relatedAttemptIds.length) : undefined,
+      loop: stage.kind === "loop" ? buildLoopDetail(stage, state) : undefined,
       relatedAttemptIds,
       relatedEventIds
     };
@@ -739,7 +739,6 @@ async function readJsonIfExists(filePath: string): Promise<Record<string, unknow
 function stageRoleName(stage: Stage): string | undefined {
   if (stage.kind === "agentTask") return stage.role;
   if (stage.kind === "discover" || stage.kind === "reduce" || stage.kind === "decisionGate" || stage.kind === "gate") return stage.role;
-  if (stage.kind === "fixLoop") return stage.validator.role;
   return undefined;
 }
 
@@ -804,10 +803,11 @@ function buildDecisionDetail(stage: Extract<Stage, { kind: "decisionGate" }>, ou
   };
 }
 
-function buildFixLoopDetail(stage: Extract<Stage, { kind: "fixLoop" }>, attemptCount: number): ReportStageDetail["fixLoop"] {
+function buildLoopDetail(stage: Extract<Stage, { kind: "loop" }>, state: RunIndex["stages"][string] | undefined): ReportStageDetail["loop"] {
   return {
     maxRounds: stage.maxRounds,
-    observedRounds: attemptCount
+    observedRounds: state?.loop?.rounds.length,
+    bodyOutputStageId: stage.body.output
   };
 }
 

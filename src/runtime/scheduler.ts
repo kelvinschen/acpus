@@ -77,6 +77,7 @@ export async function syncRun(cwd: string, logicalRunId: string, options: SyncRu
       runDir: snapshot.runDir,
       runId: logicalRunId,
       workflowInput: snapshot.input,
+      spec: snapshot.spec,
       outputs,
       plan: snapshot.plan,
       unit,
@@ -684,20 +685,19 @@ function agentUnitForStage(snapshot: RuntimeSnapshot, stage: Stage, planStage: E
     || (stage.kind === "discover" && stage.method === "agent")
     || (stage.kind === "reduce" && stage.mode === "agent")
     || (stage.kind === "decisionGate" && stage.mode === "agent")
-    || stage.kind === "fixLoop";
+    || stage.kind === "loop";
   if (!needsAgent) return undefined;
-  const roleName = stage.kind === "fixLoop" ? planStage.fixLoop?.validator.roleName : stageRoleName(stage);
+  const roleName = stage.kind === "loop" ? undefined : stageRoleName(stage);
   const resolvedRoleName = roleName ?? stageRoleName(stage);
-  if (!resolvedRoleName) return undefined;
-  const role = snapshot.spec.roles[resolvedRoleName];
-  const promptId = stage.kind === "fixLoop" ? planStage.fixLoop?.validator.promptId : planStage.promptId;
-  if (!role || !promptId && stage.kind !== "fixLoop") return undefined;
+  const role = resolvedRoleName ? snapshot.spec.roles[resolvedRoleName] : { category: "coordination" as const, agent: "loop", mode: "readOnly" as const };
+  const promptId = stage.kind === "loop" ? stage.id : planStage.promptId;
+  if (!role || !promptId && stage.kind !== "loop") return undefined;
   return {
-    type: stage.kind === "fixLoop" ? "fixLoop" : "stage",
+    type: stage.kind === "loop" ? "loop" : "stage",
     stageId: stage.id,
-    roleName: resolvedRoleName,
+    roleName: resolvedRoleName ?? "loop",
     role,
-    sessionKey: `role:${resolvedRoleName}`,
+    sessionKey: stage.kind === "loop" ? `loop:${stage.id}` : `role:${resolvedRoleName}`,
     promptId: promptId ?? stage.id,
     contract: planStage.contract ?? { name: "base" },
     outputPath: path.join(snapshot.runDir, "outputs", `${stage.id}.json`),
@@ -828,6 +828,7 @@ async function runFanoutUnitSafely(
       runDir: snapshot.runDir,
       runId: snapshot.runId,
       workflowInput: snapshot.input,
+      spec: snapshot.spec,
       outputs,
       plan: snapshot.plan,
       unit,
@@ -940,7 +941,12 @@ function markUnitsRunning(index: RunIndex, units: AgentWorkUnit[], runDir: strin
     const stage = next.stages[unit.stageId];
     if (!stage) continue;
     const startedAt = new Date().toISOString();
-    if (unit.itemId && stage.fanout) {
+    if (unit.type === "loop") {
+      next = updateStage(next, unit.stageId, {
+        status: "running",
+        startedAt: stage.startedAt ?? startedAt
+      });
+    } else if (unit.itemId && stage.fanout) {
       const selectedAttemptId = attemptId({ stageId: unit.stageId, itemId: unit.itemId, groupId: unit.groupId, laneId: unit.laneId, kind: "attempt", ordinal: 1, runtimeRetryOrdinal: unit.runtimeRetryOrdinal });
       const items = stage.fanout.items.map((item) => item.id === unit.itemId ? {
         ...item,
@@ -1069,6 +1075,7 @@ function mergeAgentResult(index: RunIndex, result: AgentWorkResult, runDir: stri
       outputPath: result.outputPath ? path.relative(runDir, result.outputPath) : stage.outputPath,
       completedAt: new Date().toISOString(),
       blockedReason: result.blockedReason,
+      loop: loopIndexFromOutput(stage, result.output),
       ...retryMetadata
     });
     const stageSpec = Object.values(next.stages).find((entry) => entry.stageId === result.stageId);
@@ -1083,6 +1090,16 @@ function mergeAgentResult(index: RunIndex, result: AgentWorkResult, runDir: stri
       actual: next.agentUsage.actual + result.agentCalls,
       repairCalls: next.agentUsage.repairCalls + result.repairCalls
     }
+  };
+}
+
+function loopIndexFromOutput(stage: StageIndexEntry, output: Record<string, unknown> | undefined): StageIndexEntry["loop"] | undefined {
+  if (!output || !Array.isArray(output.rounds)) return stage.loop;
+  return {
+    maxRounds: Number(output.rounds.length),
+    currentRound: typeof output.round === "number" ? output.round : output.rounds.length,
+    bodyOutputStageId: typeof output.bodyOutputStageId === "string" ? output.bodyOutputStageId : "",
+    rounds: output.rounds as NonNullable<StageIndexEntry["loop"]>["rounds"]
   };
 }
 

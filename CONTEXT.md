@@ -36,6 +36,26 @@ _Avoid_: active agent, concurrency slot
 A fanout pattern where work items, or lanes for the same work item, may be assigned to different roles or agents within one fanout stage.
 _Avoid_: multi-agent fanout, mixed-agent fanout, agent selection fanout
 
+**Workflow-Level Bounded Loop**:
+A workflow control pattern that repeats a bounded set of workflow stages until an explicit exit condition is met or a configured round limit is exhausted.
+_Avoid_: generalized fixLoop, arbitrary cycle, workflow recursion
+
+**Loop Body**:
+The scoped set of stages repeated by a Workflow-Level Bounded Loop. A Loop Body is part of the loop container, not a set of top-level workflow stages.
+_Avoid_: referenced stages, top-level loop stages
+
+**Loop Body Output**:
+The explicitly selected Loop Body stage output that represents the result of one Loop Round. A Loop Body Output is chosen by loop configuration rather than inferred from terminal body stages.
+_Avoid_: inferred terminal output, last body stage
+
+**Loop Round**:
+One complete execution of a Loop Body within a Workflow-Level Bounded Loop. Loop continuation or exit is evaluated at Loop Round boundaries.
+_Avoid_: iteration step, partial round, mid-loop break
+
+**Loop Output**:
+The top-level stage output emitted by a Workflow-Level Bounded Loop. A Loop Output summarizes the latest round and preserves round history without promoting Loop Body stage outputs to top-level workflow outputs.
+_Avoid_: flattened body outputs, final body stage output
+
 **Lane**:
 A named execution channel within heterogeneous fanout that binds selected work items to a role and prompt.
 _Avoid_: agent option, branch

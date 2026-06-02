@@ -1,7 +1,7 @@
 {
   "schemaVersion": "acpx-workflow-orchestrator.workflow/v1",
-  "name": "bugfix-fixloop",
-  "description": "Bugfix workflow with a bounded validation/fix loop.",
+  "name": "bugfix-loop",
+  "description": "Bugfix workflow with a bounded workflow-level loop.",
   "root": "plan",
   "inputs": {
     "task": { "type": "string", "default": "" },
@@ -34,34 +34,31 @@
         { "name": "task", "source": "input.task" },
         { "name": "plan", "source": "outputs.plan.summary" }
       ],
-      "prompt": "Implement the bugfix.\n\nTask:\n${task}\n\nPlan:\n${plan}"
+      "prompt": "Implement the initial bugfix.\n\nTask:\n${task}\n\nPlan:\n${plan}"
     },
     {
       "id": "quality_loop",
-      "kind": "fixLoop",
+      "kind": "loop",
       "dependsOn": ["implement"],
       "maxRounds": 2,
-      "validator": {
-        "role": "validator",
-        "variables": [
-          { "name": "task", "source": "input.task" },
-          { "name": "implementation", "source": "outputs.implement.summary" }
-        ],
-        "prompt": "Validate the bugfix.\n\nTask:\n${task}\n\nImplementation:\n${implementation}"
+      "body": {
+        "root": "validate",
+        "output": "validate",
+        "stages": [
+          {
+            "id": "validate",
+            "kind": "agentTask",
+            "role": "validator",
+            "variables": [
+              { "name": "task", "source": "input.task" },
+              { "name": "implementation", "source": "outputs.implement.summary" },
+              { "name": "previousFindings", "source": "loop.previous.output.findings", "transform": [{ "fn": "default", "args": { "value": [] } }, { "fn": "json" }] }
+            ],
+            "prompt": "Validate the bugfix and decide whether another loop round is needed.\n\nTask:\n${task}\n\nImplementation:\n${implementation}\n\nPrevious findings:\n${previousFindings}\n\nReturn validation output with data.needsAnotherRound set to true only for blocking findings."
+          }
+        ]
       },
-      "fixer": {
-        "role": "implementer",
-        "variables": [
-          { "name": "findings", "source": "loop.latestFindings", "transform": [{ "fn": "json" }] }
-        ],
-        "prompt": "Fix only these blocking findings:\n\n${findings}"
-      },
-      "routingPolicy": {
-        "fixOn": ["P0", "P1", "failedRequiredCheck"],
-        "ignoreForRouting": ["P2", "P3"],
-        "unknown": "blocked"
-      },
-      "onUnknown": "blocked",
+      "continueWhen": { "source": "loop.current.output.data.needsAnotherRound", "op": "eq", "value": true },
       "onExhausted": "blocked"
     },
     {

@@ -229,28 +229,6 @@ export const ReduceStageSchema = StageBaseSchema.extend({
   operation: z.enum(["mergeArrays", "severitySummary", "dedupeFindings", "sortBySeverity"]).optional()
 });
 
-export const FixLoopStageSchema = StageBaseSchema.extend({
-  kind: z.literal("fixLoop"),
-  maxRounds: z.number().int().positive(),
-  validator: z.object({
-    role: IdentifierSchema,
-    prompt: z.string().min(1),
-    variables: z.array(VariableSchema).optional()
-  }),
-  fixer: z.object({
-    role: IdentifierSchema,
-    prompt: z.string().min(1),
-    variables: z.array(VariableSchema).optional()
-  }),
-  routingPolicy: z.object({
-    fixOn: z.array(z.string()).default(["P0", "P1", "failedRequiredCheck"]),
-    ignoreForRouting: z.array(z.string()).default(["P2", "P3"]),
-    unknown: z.literal("blocked")
-  }),
-  onUnknown: z.literal("blocked"),
-  onExhausted: z.literal("blocked")
-});
-
 export const DecisionGateStageSchema = StageBaseSchema.extend({
   kind: z.literal("decisionGate"),
   mode: z.enum(["program", "agent"]).default("program"),
@@ -275,12 +253,32 @@ export const SummarizeStageSchema = StageBaseSchema.extend({
   prompt: z.string().min(1)
 });
 
+export const LoopBodyStageSchema = z.discriminatedUnion("kind", [
+  AgentTaskStageSchema,
+  DiscoverStageSchema,
+  FanoutStageSchema,
+  ReduceStageSchema,
+  DecisionGateStageSchema
+]);
+
+export const LoopStageSchema = StageBaseSchema.extend({
+  kind: z.literal("loop"),
+  maxRounds: z.number().int().positive(),
+  body: z.object({
+    root: IdentifierSchema,
+    output: IdentifierSchema,
+    stages: z.array(LoopBodyStageSchema).min(1)
+  }),
+  continueWhen: ConditionSchema,
+  onExhausted: z.literal("blocked")
+});
+
 export const StageSchema = z.discriminatedUnion("kind", [
   AgentTaskStageSchema,
   DiscoverStageSchema,
   FanoutStageSchema,
   ReduceStageSchema,
-  FixLoopStageSchema,
+  LoopStageSchema,
   DecisionGateStageSchema,
   GateStageSchema,
   SummarizeStageSchema

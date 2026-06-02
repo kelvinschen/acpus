@@ -7,6 +7,8 @@ export const RuntimeErrorCodes = {
   EVENT_APPEND_LOCK_TIMEOUT: "EVENT_APPEND_LOCK_TIMEOUT",
   RUN_INDEX_LOCK_TIMEOUT: "RUN_INDEX_LOCK_TIMEOUT",
   AGENT_RUNTIME_ERROR: "AGENT_RUNTIME_ERROR",
+  AGENT_TURN_CANCELLED: "AGENT_TURN_CANCELLED",
+  AGENT_TURN_FAILED: "AGENT_TURN_FAILED",
   AGENT_STAGE_STALE_RECOVERY: "AGENT_STAGE_STALE_RECOVERY",
   FANOUT_ITEM_RUNTIME_ERROR: "FANOUT_ITEM_RUNTIME_ERROR",
   FANOUT_ITEM_STALE_RECOVERY: "FANOUT_ITEM_STALE_RECOVERY",
@@ -21,7 +23,11 @@ export const RuntimeErrorCodes = {
   GATE_CONDITION_FAILED: "GATE_CONDITION_FAILED",
   GATE_VERDICT_BLOCKED: "GATE_VERDICT_BLOCKED",
   GATE_VERDICT_FAILED: "GATE_VERDICT_FAILED",
-  GATE_VERDICT_UNKNOWN: "GATE_VERDICT_UNKNOWN"
+  GATE_VERDICT_UNKNOWN: "GATE_VERDICT_UNKNOWN",
+  LOOP_EXHAUSTED: "LOOP_EXHAUSTED",
+  LOOP_BODY_STAGE_BLOCKED: "LOOP_BODY_STAGE_BLOCKED",
+  LOOP_BODY_STAGE_FAILED: "LOOP_BODY_STAGE_FAILED",
+  LOOP_BODY_OUTPUT_MISSING: "LOOP_BODY_OUTPUT_MISSING"
 } as const;
 
 export type RuntimeErrorCode = (typeof RuntimeErrorCodes)[keyof typeof RuntimeErrorCodes];
@@ -147,6 +153,31 @@ export type StageIndexEntry = {
           runtimeRetryOf?: string;
           runtimeRetryOrdinal?: number;
         }>;
+      }>;
+    }>;
+  };
+  loop?: {
+    maxRounds: number;
+    currentRound?: number;
+    bodyOutputStageId: string;
+    rounds: Array<{
+      round: number;
+      status: StageStatus;
+      startedAt?: string;
+      completedAt?: string;
+      outputPath?: string;
+      bodyOutputStageId: string;
+      bodyOutput?: Record<string, unknown>;
+      outputs?: Record<string, unknown>;
+      stages: Record<string, {
+        stageId: string;
+        status: StageStatus;
+        attempts: string[];
+        outputPath?: string;
+        blockedReason?: string;
+        startedAt?: string;
+        completedAt?: string;
+        fanout?: StageIndexEntry["fanout"];
       }>;
     }>;
   };

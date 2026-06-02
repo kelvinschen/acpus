@@ -750,122 +750,205 @@ describe("fanout runtime stability", () => {
     }));
   });
 
-  it("retries a transient fixLoop validator runtime throw and continues the loop", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-runtime-retry-fixloop-"));
+  it("retries a transient loop body runtime throw and completes the loop", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-runtime-retry-loop-"));
     const runtime = new ScriptedRuntime([
       { kind: "throw", message: "agent process failed to start" },
-      { kind: "text", text: plainJsonOutput(validationOutput({ verdict: "pass", summary: "passed" })) }
+      { kind: "text", text: plainJsonOutput(baseOutput({ summary: "passed", data: { needsAnotherRound: false } })) }
     ]);
     setAgentRuntimeFactoryForTests(() => runtime);
-    const spec = fixLoopOnlySpec(cwd);
+    const spec = loopOnlySpec(cwd);
     const prepared = await prepareRun(spec, { cwd, input: { cwd } });
 
     const index = await startPreparedRun(cwd, prepared);
 
     expect(index.status).toBe("completed");
-    expect(index.attempts["quality_loop:attempt-1"]).toMatchObject({
+    expect(index.attempts["quality_loop:round-1__stage-review:attempt-1"]).toMatchObject({
       status: "failed",
       runtimeErrorCode: RuntimeErrorCodes.AGENT_RUNTIME_ERROR
     });
-    expect(index.attempts["quality_loop:attempt-1-runtime-retry-1"]).toMatchObject({
+    expect(index.attempts["quality_loop:round-1__stage-review:attempt-1-runtime-retry-1"]).toMatchObject({
       status: "completed",
-      runtimeRetryOf: "quality_loop:attempt-1"
+      runtimeRetryOf: "quality_loop:round-1__stage-review:attempt-1"
     });
   });
 
-  it("runs fixLoop fixer when validation findings match routingPolicy.fixOn", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fixloop-fixon-"));
+  it("runs loop rounds while continueWhen matches", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-continue-"));
     const runtime = new ScriptedRuntime([
-      { kind: "text", text: plainJsonOutput(validationOutput({ verdict: "fix", findings: [{ severity: "P1", summary: "fix it" }] })) },
-      { kind: "text", text: plainJsonOutput(implementationOutput({ summary: "fixed" })) },
-      { kind: "text", text: plainJsonOutput(validationOutput({ verdict: "pass", summary: "passed" })) }
+      { kind: "text", text: plainJsonOutput(baseOutput({ summary: "needs another round", data: { needsAnotherRound: true } })) },
+      { kind: "text", text: plainJsonOutput(baseOutput({ summary: "converged", data: { needsAnotherRound: false } })) }
     ]);
     setAgentRuntimeFactoryForTests(() => runtime);
-    const prepared = await prepareRun(fixLoopOnlySpec(cwd), { cwd, input: { cwd } });
+    const prepared = await prepareRun(loopOnlySpec(cwd), { cwd, input: { cwd } });
 
     const index = await startPreparedRun(cwd, prepared);
+    const output = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "quality_loop.json"), "utf8")) as { rounds: unknown[]; round: number };
 
     expect(index.status).toBe("completed");
+    expect(output.round).toBe(2);
+    expect(output.rounds).toHaveLength(2);
     expect(runtime.requests.map((request) => request.sessionKey)).toEqual([
-      "role:validator",
-      "role:implementer",
-      "role:validator"
+      "role:reviewer:loop:quality_loop:round:1:stage:review",
+      "role:reviewer:loop:quality_loop:round:2:stage:review"
     ]);
   });
 
-  it("completes fixLoop without fixer when validation only matches ignoreForRouting", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fixloop-ignore-"));
+  it("completes loop after one round when continueWhen is false", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-one-round-"));
     const runtime = new ScriptedRuntime([
-      { kind: "text", text: plainJsonOutput(validationOutput({ verdict: "fix", findings: [{ severity: "P2", summary: "minor" }], severityCounts: { P0: 0, P1: 0, P2: 1, P3: 0 } })) },
-      { kind: "text", text: plainJsonOutput(implementationOutput({ summary: "should not run" })) }
+      { kind: "text", text: plainJsonOutput(baseOutput({ summary: "done", data: { needsAnotherRound: false } })) },
+      { kind: "text", text: plainJsonOutput(baseOutput({ summary: "should not run" })) }
     ]);
     setAgentRuntimeFactoryForTests(() => runtime);
-    const prepared = await prepareRun(fixLoopOnlySpec(cwd), { cwd, input: { cwd } });
+    const prepared = await prepareRun(loopOnlySpec(cwd), { cwd, input: { cwd } });
 
     const index = await startPreparedRun(cwd, prepared);
 
     expect(index.status).toBe("completed");
-    expect(runtime.requests.map((request) => request.sessionKey)).toEqual(["role:validator"]);
+    expect(runtime.requests.map((request) => request.sessionKey)).toEqual(["role:reviewer:loop:quality_loop:round:1:stage:review"]);
   });
 
-  it("runs fixLoop fixer when validation checks match routingPolicy.fixOn", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fixloop-check-"));
+  it("blocks loop as exhausted when continueWhen remains true through maxRounds", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-exhausted-"));
     const runtime = new ScriptedRuntime([
-      { kind: "text", text: plainJsonOutput(validationOutput({ verdict: "fix", checks: [{ name: "failedRequiredCheck", status: "fail", summary: "required check failed" }] })) },
-      { kind: "text", text: plainJsonOutput(implementationOutput({ summary: "fixed check" })) },
-      { kind: "text", text: plainJsonOutput(validationOutput({ verdict: "pass", summary: "passed" })) }
+      { kind: "text", text: plainJsonOutput(baseOutput({ summary: "again", data: { needsAnotherRound: true } })) },
+      { kind: "text", text: plainJsonOutput(baseOutput({ summary: "again", data: { needsAnotherRound: true } })) }
     ]);
     setAgentRuntimeFactoryForTests(() => runtime);
-    const spec = fixLoopOnlySpec(cwd);
-    const loop = spec.stages.find((stage) => stage.kind === "fixLoop");
-    if (loop?.kind !== "fixLoop") throw new Error("missing fixLoop");
-    loop.routingPolicy.fixOn = ["P0", "P1", "failedRequiredCheck"];
+    const prepared = await prepareRun(loopOnlySpec(cwd), { cwd, input: { cwd } });
+
+    const index = await startPreparedRun(cwd, prepared);
+
+    expect(index.status).toBe("blocked");
+    expect(index.stages.quality_loop?.blockedReason).toBe(RuntimeErrorCodes.LOOP_EXHAUSTED);
+    expect(runtime.requests.map((request) => request.sessionKey)).toEqual([
+      "role:reviewer:loop:quality_loop:round:1:stage:review",
+      "role:reviewer:loop:quality_loop:round:2:stage:review"
+    ]);
+  });
+
+  it("runs loop body fanout with stage-local maxConcurrency", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-fanout-concurrency-"));
+    const runtime = new DelayedFanoutRuntime({ "item-1": 25, "item-2": 25 });
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const spec = loopFanoutSpec(cwd, {
+      maxConcurrency: 2,
+      laneGroups: [{ id: "work", mode: "all", lanes: [{ id: "worker", role: "worker" }] }]
+    });
+    const prepared = await prepareRun(spec, { cwd, input: { cwd, items: fanoutInputItems(2) } });
+
+    const index = await startPreparedRun(cwd, prepared);
+
+    expect(index.status).toBe("completed");
+    expect(runtime.maxActive).toBe(2);
+    expect(runtime.requests.map((request) => request.sessionKey)).toEqual(expect.arrayContaining([
+      "role:worker:loop:quality_loop:round:1:stage:review_items:item:item-1:group:work:lane:worker",
+      "role:worker:loop:quality_loop:round:1:stage:review_items:item:item-2:group:work:lane:worker"
+    ]));
+    expect(index.stages.quality_loop?.loop?.rounds[0]?.stages.review_items.fanout).toMatchObject({
+      totalItems: 2,
+      completedItems: 2,
+      workUnits: 2
+    });
+  });
+
+  it("blocks loop body fanout oneOf items with multiple matching lanes", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-fanout-oneof-multi-"));
+    const runtime = new ScriptedRuntime([{ kind: "text", text: plainJsonOutput(baseOutput({ summary: "should not run" })) }]);
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const spec = loopFanoutSpec(cwd, {
+      laneGroups: [{
+        id: "route",
+        mode: "oneOf",
+        lanes: [
+          { id: "a", role: "worker", when: { source: "item.kind", op: "eq", value: "both" } },
+          { id: "b", role: "worker", when: { source: "item.kind", op: "eq", value: "both" } }
+        ]
+      }]
+    });
+    const prepared = await prepareRun(spec, { cwd, input: { cwd, items: [{ id: "item-1", kind: "both" }] } });
+
+    const index = await startPreparedRun(cwd, prepared);
+    const output = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "quality_loop", "round-1", "review_items.json"), "utf8")) as { blockedItems: Array<{ errorCode?: string }> };
+
+    expect(index.status).toBe("blocked");
+    expect(index.stages.quality_loop?.blockedReason).toBe(RuntimeErrorCodes.LOOP_BODY_STAGE_BLOCKED);
+    expect(output.blockedItems[0]?.errorCode).toBe(RuntimeErrorCodes.FANOUT_LANE_SELECTION_FAILED);
+    expect(runtime.requests).toHaveLength(0);
+  });
+
+  it("blocks loop body fanout oneOf items with no matching lane and no default", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-fanout-oneof-none-"));
+    const runtime = new ScriptedRuntime([{ kind: "text", text: plainJsonOutput(baseOutput({ summary: "should not run" })) }]);
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const spec = loopFanoutSpec(cwd, {
+      laneGroups: [{
+        id: "route",
+        mode: "oneOf",
+        lanes: [{ id: "a", role: "worker", when: { source: "item.kind", op: "eq", value: "a" } }]
+      }]
+    });
+    const prepared = await prepareRun(spec, { cwd, input: { cwd, items: [{ id: "item-1", kind: "b" }] } });
+
+    const index = await startPreparedRun(cwd, prepared);
+    const output = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "quality_loop", "round-1", "review_items.json"), "utf8")) as { blockedItems: Array<{ errorCode?: string }> };
+
+    expect(index.status).toBe("blocked");
+    expect(output.blockedItems[0]?.errorCode).toBe(RuntimeErrorCodes.FANOUT_LANE_SELECTION_FAILED);
+    expect(runtime.requests).toHaveLength(0);
+  });
+
+  it("skips loop body fanout items with no matching all-group lanes", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-fanout-skipped-"));
+    const runtime = new StaticRuntime();
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const spec = loopFanoutSpec(cwd, {
+      laneGroups: [{
+        id: "work",
+        mode: "all",
+        lanes: [{ id: "worker", role: "worker", when: { source: "item.kind", op: "eq", value: "run" } }]
+      }]
+    });
+    const prepared = await prepareRun(spec, { cwd, input: { cwd, items: [{ id: "item-1", kind: "skip" }] } });
+
+    const index = await startPreparedRun(cwd, prepared);
+    const output = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "quality_loop", "round-1", "review_items.json"), "utf8")) as { skippedItems: Array<{ skippedReason?: string }> };
+
+    expect(index.status).toBe("completed");
+    expect(output.skippedItems[0]?.skippedReason).toBe(RuntimeErrorCodes.NO_MATCHING_LANES);
+  });
+
+  it("blocks loop when a planned body stage is missing from the workflow spec", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-missing-body-stage-"));
+    setAgentRuntimeFactoryForTests(() => new StaticRuntime());
+    const spec = loopOnlySpec(cwd);
+    const prepared = await prepareRun(spec, { cwd, input: { cwd } });
+    const planPath = path.join(prepared.dir, "execution-plan.json");
+    const plan = JSON.parse(await fs.readFile(planPath, "utf8")) as { stages: Array<{ id: string; loop?: { body: { stages: Array<{ id: string }> } } }> };
+    plan.stages[0]?.loop?.body.stages.push({ ...plan.stages[0].loop.body.stages[0], id: "missing_review" });
+    await fs.writeFile(planPath, `${JSON.stringify(plan, null, 2)}\n`, "utf8");
+
+    const index = await startPreparedRun(cwd, prepared);
+
+    expect(index.status).toBe("blocked");
+    expect(index.stages.quality_loop?.blockedReason).toBe(RuntimeErrorCodes.LOOP_BODY_STAGE_FAILED);
+  });
+
+  it("makes loop.current.output visible after the canonical loop body output stage runs", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-current-output-"));
+    const runtime = new ScriptedRuntime([
+      { kind: "text", text: plainJsonOutput(baseOutput({ summary: "canonical output", data: { needsAnotherRound: false } })) },
+      { kind: "text", text: plainJsonOutput(baseOutput({ summary: "after canonical" })) }
+    ]);
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const spec = loopCurrentOutputSpec(cwd);
     const prepared = await prepareRun(spec, { cwd, input: { cwd } });
 
     const index = await startPreparedRun(cwd, prepared);
 
     expect(index.status).toBe("completed");
-    expect(runtime.requests.map((request) => request.sessionKey)).toEqual([
-      "role:validator",
-      "role:implementer",
-      "role:validator"
-    ]);
-  });
-
-  it("blocks fixLoop on unknown validation verdict", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fixloop-unknown-"));
-    const runtime = new ScriptedRuntime([
-      { kind: "text", text: plainJsonOutput(validationOutput({ verdict: "unknown", summary: "unclear" })) }
-    ]);
-    setAgentRuntimeFactoryForTests(() => runtime);
-    const prepared = await prepareRun(fixLoopOnlySpec(cwd), { cwd, input: { cwd } });
-
-    const index = await startPreparedRun(cwd, prepared);
-
-    expect(index.status).toBe("blocked");
-    expect(index.stages.quality_loop?.blockedReason).toBe("FIX_LOOP_UNKNOWN");
-    expect(runtime.requests.map((request) => request.sessionKey)).toEqual(["role:validator"]);
-  });
-
-  it("blocks fixLoop as exhausted when fixOn keeps matching through maxRounds", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fixloop-exhausted-"));
-    const runtime = new ScriptedRuntime([
-      { kind: "text", text: plainJsonOutput(validationOutput({ verdict: "fix", findings: [{ severity: "P1", summary: "first" }] })) },
-      { kind: "text", text: plainJsonOutput(implementationOutput({ summary: "fixed first" })) },
-      { kind: "text", text: plainJsonOutput(validationOutput({ verdict: "fix", findings: [{ severity: "P1", summary: "second" }] })) }
-    ]);
-    setAgentRuntimeFactoryForTests(() => runtime);
-    const prepared = await prepareRun(fixLoopOnlySpec(cwd), { cwd, input: { cwd } });
-
-    const index = await startPreparedRun(cwd, prepared);
-
-    expect(index.status).toBe("blocked");
-    expect(index.stages.quality_loop?.blockedReason).toBe("FIX_LOOP_EXHAUSTED");
-    expect(runtime.requests.map((request) => request.sessionKey)).toEqual([
-      "role:validator",
-      "role:implementer",
-      "role:validator"
-    ]);
+    expect(runtime.requests[1]?.prompt).toContain("canonical output");
   });
 
   it("retries a transient repair runtime throw and completes from repaired output", async () => {
@@ -921,7 +1004,7 @@ describe("fanout runtime stability", () => {
     const blocked = await startPreparedRun(blockedCwd, blockedPrepared);
 
     expect(blocked.status).toBe("blocked");
-    expect(blocked.stages.task?.blockedReason).toBe("AGENT_TURN_FAILED");
+    expect(blocked.stages.task?.blockedReason).toBe(RuntimeErrorCodes.AGENT_TURN_FAILED);
     expect(blockedRuntime.requests).toHaveLength(1);
   });
 
@@ -1078,7 +1161,7 @@ describe("fanout runtime stability", () => {
       stopReason: "cancelled",
       requestId: "task:attempt-1",
       sessionKey: "role:worker",
-      runtimeErrorCode: "AGENT_TURN_CANCELLED"
+      runtimeErrorCode: RuntimeErrorCodes.AGENT_TURN_CANCELLED
     });
   });
 
@@ -1555,25 +1638,115 @@ function simpleTaskSpec(cwd: string): WorkflowSpec {
   });
 }
 
-function fixLoopOnlySpec(cwd: string): WorkflowSpec {
+function loopOnlySpec(cwd: string): WorkflowSpec {
   return WorkflowSpecSchema.parse({
     schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
-    name: "fix-loop-only",
+    name: "loop-only",
     root: "quality_loop",
     inputs: { cwd: { type: "path", default: cwd } },
     roles: {
-      validator: { category: "validation", agent: "fake", mode: "readOnly" },
-      implementer: { category: "implementation", agent: "fake", mode: "edit" }
+      reviewer: { category: "coordination", agent: "fake", mode: "readOnly" }
     },
     limits: { stageTimeoutMinutes: 1 },
     stages: [{
       id: "quality_loop",
-      kind: "fixLoop",
+      kind: "loop",
       maxRounds: 2,
-      validator: { role: "validator", prompt: "Validate" },
-      fixer: { role: "implementer", prompt: "Fix" },
-      routingPolicy: { fixOn: ["P0", "P1"], ignoreForRouting: ["P2", "P3"], unknown: "blocked" },
-      onUnknown: "blocked",
+      body: {
+        root: "review",
+        output: "review",
+        stages: [{
+          id: "review",
+          kind: "agentTask",
+          role: "reviewer",
+          prompt: "Review"
+        }]
+      },
+      continueWhen: { source: "loop.current.output.data.needsAnotherRound", op: "eq", value: true },
+      onExhausted: "blocked"
+    }]
+  });
+}
+
+function loopFanoutSpec(cwd: string, options: {
+  maxConcurrency?: number;
+  laneGroups: Array<{
+    id: string;
+    mode: "all" | "oneOf";
+    lanes: Array<{
+      id: string;
+      role: string;
+      when?: { source: string; op: "eq"; value: unknown };
+      default?: boolean;
+    }>;
+  }>;
+  allowPartial?: boolean;
+}): WorkflowSpec {
+  return WorkflowSpecSchema.parse({
+    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    name: "loop-fanout",
+    root: "quality_loop",
+    inputs: {
+      cwd: { type: "path", default: cwd },
+      items: { type: "array<json>" }
+    },
+    roles: {
+      worker: { category: "coordination", agent: "fake", mode: "readOnly" }
+    },
+    limits: { stageTimeoutMinutes: 1 },
+    stages: [{
+      id: "quality_loop",
+      kind: "loop",
+      maxRounds: 1,
+      body: {
+        root: "review_items",
+        output: "review_items",
+        stages: [{
+          id: "review_items",
+          kind: "fanout",
+          items: { source: "input.items" },
+          limits: { maxConcurrency: options.maxConcurrency ?? 1, maxFanoutItems: 10 },
+          prompt: "Review item",
+          laneGroups: options.laneGroups,
+          fanoutPolicy: { allowPartial: options.allowPartial ?? false }
+        }]
+      },
+      continueWhen: { source: "loop.current.output.data.needsAnotherRound", op: "eq", value: true },
+      onExhausted: "blocked"
+    }]
+  });
+}
+
+function loopCurrentOutputSpec(cwd: string): WorkflowSpec {
+  return WorkflowSpecSchema.parse({
+    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    name: "loop-current-output",
+    root: "quality_loop",
+    inputs: { cwd: { type: "path", default: cwd } },
+    roles: {
+      reviewer: { category: "coordination", agent: "fake", mode: "readOnly" }
+    },
+    limits: { stageTimeoutMinutes: 1 },
+    stages: [{
+      id: "quality_loop",
+      kind: "loop",
+      maxRounds: 1,
+      body: {
+        root: "review",
+        output: "review",
+        stages: [
+          { id: "review", kind: "agentTask", role: "reviewer", prompt: "Review" },
+          {
+            id: "after",
+            kind: "agentTask",
+            role: "reviewer",
+            dependsOn: ["review"],
+            variables: [{ name: "summary", source: "loop.current.output.summary" }],
+            prompt: "After ${summary}"
+          }
+        ]
+      },
+      continueWhen: { source: "loop.current.output.data.needsAnotherRound", op: "eq", value: true },
       onExhausted: "blocked"
     }]
   });

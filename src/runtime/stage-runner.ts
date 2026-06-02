@@ -10,7 +10,7 @@ import type { ContractPlan, ExecutionPlan, ExecutionPlanStage, PromptPlan } from
 import type { Role, Stage, WorkflowSpec, ConditionNode, Variable } from "../schema/workflow-spec.js";
 import { applyTransforms } from "../transformers/builtins.js";
 import { renderPrompt } from "../variables/interpolate.js";
-import { appendEvent, RuntimeErrorCodes, type AttemptIndexEntry } from "../run-index/read-write.js";
+import { appendEvent, RuntimeErrorCodes, type AttemptIndexEntry, type StageIndexEntry, type StageStatus } from "../run-index/read-write.js";
 import { attemptDir, attemptId, previewText, safeFileName, writeAttemptFile } from "./attempts.js";
 import type { AgentTurnResult, OrchestratorAgentRuntime } from "./agent-runtime.js";
 import { formatRepairPrompt, isRepairableOutputFailure, repairFailedEnvelope } from "./repair.js";
@@ -21,7 +21,7 @@ const execFileAsync = promisify(execFile);
 const MAX_RUNTIME_RETRIES = 1;
 
 export type AgentWorkUnit = {
-  type: "stage" | "fanoutItem" | "fixLoop" | "diagnostic";
+  type: "stage" | "fanoutItem" | "loop" | "diagnostic";
   stageId: string;
   itemId?: string;
   itemIndex?: number;
@@ -36,6 +36,7 @@ export type AgentWorkUnit = {
   outputPath: string;
   cwd: string;
   timeoutMs: number;
+  local?: Record<string, unknown>;
   runtimeRetryOf?: string;
   runtimeRetryOrdinal?: number;
 };
@@ -124,12 +125,13 @@ export async function runAgentWork(input: {
   runDir: string;
   runId: string;
   workflowInput: Record<string, unknown>;
+  spec: WorkflowSpec;
   outputs: Record<string, unknown>;
   plan: ExecutionPlan;
   unit: AgentWorkUnit;
   runtime: OrchestratorAgentRuntime;
 }): Promise<AgentWorkResult> {
-  if (input.unit.type === "fixLoop") return runFixLoop(input);
+  if (input.unit.type === "loop") return runLoopWork(input);
   return runSingleAgentUnit(input);
 }
 
@@ -180,6 +182,7 @@ async function runSingleAgentUnit(input: {
   runDir: string;
   runId: string;
   workflowInput: Record<string, unknown>;
+  spec: WorkflowSpec;
   outputs: Record<string, unknown>;
   plan: ExecutionPlan;
   unit: AgentWorkUnit;
@@ -191,7 +194,7 @@ async function runSingleAgentUnit(input: {
     prompt,
     workflowInput: input.workflowInput,
     outputs: input.outputs,
-    local: input.unit.itemId ? { item: input.unit.item } : undefined
+    local: { ...(input.unit.local ?? {}), ...(input.unit.itemId ? { item: input.unit.item } : {}) }
   });
   return executeAttemptWithRepair({
     ...input,
@@ -201,146 +204,606 @@ async function runSingleAgentUnit(input: {
   });
 }
 
-async function runFixLoop(input: {
+async function runLoopWork(input: {
   cwd: string;
   runDir: string;
   runId: string;
   workflowInput: Record<string, unknown>;
+  spec: WorkflowSpec;
   outputs: Record<string, unknown>;
   plan: ExecutionPlan;
   unit: AgentWorkUnit;
   runtime: OrchestratorAgentRuntime;
 }): Promise<AgentWorkResult> {
   const stage = input.plan.stages.find((candidate) => candidate.id === input.unit.stageId);
-  if (!stage?.fixLoop) throw new Error(`Missing fixLoop plan for ${input.unit.stageId}`);
+  if (!stage?.loop) throw new Error(`Missing loop plan for ${input.unit.stageId}`);
   const attempts: AttemptIndexEntry[] = [];
   let agentCalls = 0;
   let repairCalls = 0;
-  let latestFindings: unknown[] = [];
-  let lastOutput: Record<string, unknown> | undefined;
+  const rounds: Array<Record<string, unknown>> = [];
+  let previous: Record<string, unknown> | undefined;
 
-  for (let round = 1; round <= stage.fixLoop.maxRounds; round += 1) {
-    const validatorPrompt = input.plan.prompts[stage.fixLoop.validator.promptId];
-    if (!validatorPrompt) throw new Error(`Missing validator prompt for ${input.unit.stageId}`);
-    const validatorRole = input.plan.roles[stage.fixLoop.validator.roleName];
-    const validator = await executeAttemptWithRepair({
-      ...input,
-      unit: {
-        ...input.unit,
-        roleName: stage.fixLoop.validator.roleName,
-        role: validatorRole,
-        sessionKey: `role:${stage.fixLoop.validator.roleName}`,
-        promptId: stage.fixLoop.validator.promptId,
-        contract: stage.fixLoop.validator.contract
-      },
-      prompt: renderPlannedPrompt({
-        prompt: validatorPrompt,
-        workflowInput: input.workflowInput,
-        outputs: input.outputs,
-        local: { loop: { round, latestFindings } }
-      }),
-      contractName: "validation",
-      contractOptions: undefined,
-      attemptOrdinal: round * 2 - 1
-    });
-    attempts.push(...validator.attempts);
-    agentCalls += validator.agentCalls;
-    repairCalls += validator.repairCalls;
-    lastOutput = validator.output;
-    if (validator.status !== "completed") return { ...validator, attempts, agentCalls, repairCalls };
-
-    const route = evaluateFixLoopRoute(lastOutput, stage.fixLoop.routingPolicy);
-    latestFindings = Array.isArray(lastOutput?.findings) ? lastOutput.findings : [];
-    if (route === "complete") {
-      await fs.writeFile(input.unit.outputPath, `${JSON.stringify(lastOutput, null, 2)}\n`, "utf8");
-      return { stageId: input.unit.stageId, status: "completed", output: lastOutput, outputPath: input.unit.outputPath, attempts, agentCalls, repairCalls };
-    }
-    if (route === "blocked" || route === "unknown") {
-      const blockedReason = route === "blocked" ? "FIX_LOOP_BLOCKED" : "FIX_LOOP_UNKNOWN";
-      const blocked = { ...lastOutput, status: "blocked", blockedReason };
+  for (let round = 1; round <= stage.loop.maxRounds; round += 1) {
+    const roundResult = await runLoopRound({ ...input, planStage: stage, round, previous });
+    attempts.push(...roundResult.attempts);
+    agentCalls += roundResult.agentCalls;
+    repairCalls += roundResult.repairCalls;
+    rounds.push(roundResult.roundRecord);
+    if (roundResult.status !== "completed") {
+      const blocked = loopOutput(stage.id, stage.loop.body.output, round, rounds, roundResult.outputs, roundResult.bodyOutput, "blocked", roundResult.blockedReason ?? RuntimeErrorCodes.LOOP_BODY_STAGE_BLOCKED);
+      await fs.mkdir(path.dirname(input.unit.outputPath), { recursive: true });
       await fs.writeFile(input.unit.outputPath, `${JSON.stringify(blocked, null, 2)}\n`, "utf8");
       return { stageId: input.unit.stageId, status: "blocked", output: blocked, outputPath: input.unit.outputPath, attempts, agentCalls, repairCalls, blockedReason: String(blocked.blockedReason) };
     }
-    if (round >= stage.fixLoop.maxRounds) {
-      const blocked = { ...lastOutput, status: "blocked", blockedReason: "FIX_LOOP_EXHAUSTED" };
-      await fs.writeFile(input.unit.outputPath, `${JSON.stringify(blocked, null, 2)}\n`, "utf8");
-      return { stageId: input.unit.stageId, status: "blocked", output: blocked, outputPath: input.unit.outputPath, attempts, agentCalls, repairCalls, blockedReason: "FIX_LOOP_EXHAUSTED" };
+    previous = { output: roundResult.bodyOutput, outputs: roundResult.outputs };
+    const shouldContinue = evaluateCondition(stage.loop.continueWhen, input.outputs, input.workflowInput, { loop: { round, current: previous, previous: rounds.length > 1 ? rounds.at(-2) : undefined } });
+    if (!shouldContinue) {
+      const output = loopOutput(stage.id, stage.loop.body.output, round, rounds, roundResult.outputs, roundResult.bodyOutput, "completed");
+      await fs.mkdir(path.dirname(input.unit.outputPath), { recursive: true });
+      await fs.writeFile(input.unit.outputPath, `${JSON.stringify(output, null, 2)}\n`, "utf8");
+      return { stageId: input.unit.stageId, status: "completed", output, outputPath: input.unit.outputPath, attempts, agentCalls, repairCalls };
     }
-
-    const fixerPrompt = input.plan.prompts[stage.fixLoop.fixer.promptId];
-    if (!fixerPrompt) throw new Error(`Missing fixer prompt for ${input.unit.stageId}`);
-    const fixerRole = input.plan.roles[stage.fixLoop.fixer.roleName];
-    const fixer = await executeAttemptWithRepair({
-      ...input,
-      unit: {
-        ...input.unit,
-        roleName: stage.fixLoop.fixer.roleName,
-        role: fixerRole,
-        sessionKey: `role:${stage.fixLoop.fixer.roleName}`,
-        promptId: stage.fixLoop.fixer.promptId,
-        contract: stage.fixLoop.fixer.contract
-      },
-      prompt: renderPlannedPrompt({
-        prompt: fixerPrompt,
-        workflowInput: input.workflowInput,
-        outputs: input.outputs,
-        local: { loop: { round, latestFindings } }
-      }),
-      contractName: "implementation",
-      contractOptions: undefined,
-      attemptOrdinal: round * 2
-    });
-    attempts.push(...fixer.attempts);
-    agentCalls += fixer.agentCalls;
-    repairCalls += fixer.repairCalls;
-    if (fixer.status !== "completed") return { ...fixer, attempts, agentCalls, repairCalls };
   }
 
-  const blocked = {
-    status: "blocked",
-    summary: "Fix loop exhausted without a passing validation result.",
-    artifacts: [],
-    nextFocus: "diagnose",
-    blockedReason: "FIX_LOOP_EXHAUSTED"
-  };
+  const lastRound = rounds.at(-1);
+  const outputs = objectRecord(lastRound?.outputs) ?? {};
+  const bodyOutput = objectRecord(lastRound?.bodyOutput);
+  const blocked = loopOutput(stage.id, stage.loop.body.output, stage.loop.maxRounds, rounds, outputs, bodyOutput, "blocked", RuntimeErrorCodes.LOOP_EXHAUSTED);
+  await fs.mkdir(path.dirname(input.unit.outputPath), { recursive: true });
   await fs.writeFile(input.unit.outputPath, `${JSON.stringify(blocked, null, 2)}\n`, "utf8");
-  return { stageId: input.unit.stageId, status: "blocked", output: blocked, outputPath: input.unit.outputPath, attempts, agentCalls, repairCalls, blockedReason: "FIX_LOOP_EXHAUSTED" };
+  return { stageId: input.unit.stageId, status: "blocked", output: blocked, outputPath: input.unit.outputPath, attempts, agentCalls, repairCalls, blockedReason: RuntimeErrorCodes.LOOP_EXHAUSTED };
 }
 
-type FixLoopRoutingPolicy = NonNullable<ExecutionPlanStage["fixLoop"]>["routingPolicy"];
+async function runLoopRound(input: {
+  cwd: string;
+  runDir: string;
+  runId: string;
+  workflowInput: Record<string, unknown>;
+  spec: WorkflowSpec;
+  outputs: Record<string, unknown>;
+  plan: ExecutionPlan;
+  planStage: ExecutionPlanStage;
+  unit: AgentWorkUnit;
+  runtime: OrchestratorAgentRuntime;
+  round: number;
+  previous?: Record<string, unknown>;
+}): Promise<{
+  status: "completed" | "blocked" | "failed";
+  outputs: Record<string, unknown>;
+  bodyOutput?: Record<string, unknown>;
+  roundRecord: Record<string, unknown>;
+  attempts: AttemptIndexEntry[];
+  agentCalls: number;
+  repairCalls: number;
+  blockedReason?: string;
+}> {
+  const loop = input.planStage.loop;
+  if (!loop) throw new Error(`Missing loop plan for ${input.planStage.id}`);
+  const attempts: AttemptIndexEntry[] = [];
+  let agentCalls = 0;
+  let repairCalls = 0;
+  const outputs: Record<string, unknown> = {};
+  const stageStates: Record<string, Record<string, unknown>> = {};
+  const startedAt = new Date().toISOString();
+  const bodyStages = loop.body.stages;
 
-function evaluateFixLoopRoute(output: Record<string, unknown> | undefined, routingPolicy: FixLoopRoutingPolicy): "fix" | "complete" | "blocked" | "unknown" {
-  if (!output) return "unknown";
-  const verdict = typeof output.verdict === "string" ? output.verdict : "unknown";
-  if (verdict === "unknown") return "unknown";
-  if (verdict === "blocked") return "blocked";
-  const signals = fixLoopRoutingSignals(output, verdict);
-  const fixOn = new Set(routingPolicy.fixOn.map(String));
-  if (signals.some((signal) => fixOn.has(signal))) return "fix";
-  return "complete";
-}
-
-function fixLoopRoutingSignals(output: Record<string, unknown>, verdict: string): string[] {
-  const signals = new Set<string>([verdict]);
-  const findings = Array.isArray(output.findings) ? output.findings : [];
-  for (const finding of findings) {
-    const record = objectRecord(finding);
-    if (record && typeof record.severity === "string") signals.add(record.severity);
-  }
-  const severityCounts = objectRecord(output.severityCounts);
-  if (severityCounts) {
-    for (const [severity, count] of Object.entries(severityCounts)) {
-      if (Number(count) > 0) signals.add(severity);
+  for (const bodyStagePlan of bodyStages) {
+    const bodyStage = bodyStagePlan.id ? findLoopBodyStage(input.planStage.id, input.spec, bodyStagePlan.id) : undefined;
+    if (!bodyStage) {
+      const stageId = bodyStagePlan.id || "<unknown>";
+      stageStates[stageId] = {
+        stageId,
+        status: "blocked",
+        attempts: [],
+        blockedReason: RuntimeErrorCodes.LOOP_BODY_STAGE_FAILED,
+        completedAt: new Date().toISOString()
+      };
+      const roundRecord = buildRoundRecord(input.round, "blocked", startedAt, outputs, loop.body.output, stageStates, RuntimeErrorCodes.LOOP_BODY_STAGE_FAILED);
+      return { status: "blocked", outputs, roundRecord, attempts, agentCalls, repairCalls, blockedReason: RuntimeErrorCodes.LOOP_BODY_STAGE_FAILED };
+    }
+    if (!loopBodyDependenciesCompleted(bodyStage, stageStates)) continue;
+    const visibleOutputs = { ...input.outputs, ...outputs };
+    const bodyOutputPath = loopBodyOutputPath(input.runDir, input.planStage.id, input.round, bodyStage.id);
+    let output: Record<string, unknown> | undefined;
+    if (bodyStage.kind === "fanout") {
+      const fanout = await runLoopFanoutStage({ ...input, bodyStage, bodyStagePlan, outputs: visibleOutputs, previous: input.previous });
+      output = fanout.output;
+      attempts.push(...fanout.attempts);
+      agentCalls += fanout.agentCalls;
+      repairCalls += fanout.repairCalls;
+      stageStates[bodyStage.id] = {
+        stageId: bodyStage.id,
+        status: output.status === "blocked" ? "blocked" : "completed",
+        attempts: fanout.attempts.map((attempt) => attempt.id),
+        outputPath: path.relative(input.runDir, bodyOutputPath),
+        blockedReason: typeof output.blockedReason === "string" ? output.blockedReason : undefined,
+        completedAt: new Date().toISOString(),
+        fanout: fanout.fanout
+      };
+    } else {
+      const programOutput = await runProgramStage({
+        cwd: input.cwd,
+        runDir: input.runDir,
+        workflowInput: input.workflowInput,
+        spec: { ...input.spec, root: loop.body.root, stages: loopBodyStagesFromSpec(input.spec, input.planStage.id) },
+        plan: input.plan,
+        stage: bodyStage,
+        planStage: bodyStagePlan,
+        outputs: visibleOutputs
+      });
+      if (programOutput) {
+        output = programOutput;
+        await fs.mkdir(path.dirname(bodyOutputPath), { recursive: true });
+        await fs.writeFile(bodyOutputPath, `${JSON.stringify(output, null, 2)}\n`, "utf8");
+        await appendEvent(input.cwd, input.runId, { type: "loop_body_program_stage_completed", stageId: input.planStage.id, bodyStageId: bodyStage.id, round: input.round, status: output.status });
+        stageStates[bodyStage.id] = {
+          stageId: bodyStage.id,
+          status: output.status === "blocked" ? "blocked" : "completed",
+          attempts: [],
+          outputPath: path.relative(input.runDir, bodyOutputPath),
+          blockedReason: typeof output.blockedReason === "string" ? output.blockedReason : undefined,
+          completedAt: new Date().toISOString()
+        };
+      } else {
+        const agent = await runLoopBodyAgentStage({ ...input, bodyStage, bodyStagePlan, outputs: visibleOutputs, previous: input.previous, outputPath: bodyOutputPath });
+        output = agent.output;
+        attempts.push(...agent.attempts);
+        agentCalls += agent.agentCalls;
+        repairCalls += agent.repairCalls;
+        stageStates[bodyStage.id] = {
+          stageId: bodyStage.id,
+          status: agent.status,
+          attempts: agent.attempts.map((attempt) => attempt.id),
+          outputPath: path.relative(input.runDir, bodyOutputPath),
+          blockedReason: agent.blockedReason,
+          completedAt: new Date().toISOString()
+        };
+      }
+    }
+    outputs[bodyStage.id] = output;
+    if (output?.status === "blocked") {
+      const roundRecord = buildRoundRecord(input.round, "blocked", startedAt, outputs, loop.body.output, stageStates, RuntimeErrorCodes.LOOP_BODY_STAGE_BLOCKED);
+      return { status: "blocked", outputs, bodyOutput: objectRecord(outputs[loop.body.output]), roundRecord, attempts, agentCalls, repairCalls, blockedReason: RuntimeErrorCodes.LOOP_BODY_STAGE_BLOCKED };
     }
   }
-  const checks = Array.isArray(output.checks) ? output.checks : [];
-  for (const check of checks) {
-    const record = objectRecord(check);
-    if (!record) continue;
-    if (typeof record.status === "string") signals.add(record.status);
-    if (typeof record.name === "string") signals.add(record.name);
+
+  const bodyOutput = objectRecord(outputs[loop.body.output]);
+  if (!bodyOutput) {
+    const roundRecord = buildRoundRecord(input.round, "blocked", startedAt, outputs, loop.body.output, stageStates, RuntimeErrorCodes.LOOP_BODY_OUTPUT_MISSING);
+    return { status: "blocked", outputs, roundRecord, attempts, agentCalls, repairCalls, blockedReason: RuntimeErrorCodes.LOOP_BODY_OUTPUT_MISSING };
   }
-  return [...signals];
+  const roundRecord = buildRoundRecord(input.round, "completed", startedAt, outputs, loop.body.output, stageStates);
+  return { status: "completed", outputs, bodyOutput, roundRecord, attempts, agentCalls, repairCalls };
+}
+
+function findLoopBodyStage(loopId: string, spec: WorkflowSpec, bodyStageId: string): Stage | undefined {
+  const loopStage = spec.stages.find((stage): stage is Extract<Stage, { kind: "loop" }> => stage.id === loopId && stage.kind === "loop");
+  return loopStage?.body.stages.find((stage) => stage.id === bodyStageId) as Stage | undefined;
+}
+
+function loopBodyStagesFromSpec(spec: WorkflowSpec, loopId: string): Stage[] {
+  const loopStage = spec.stages.find((stage): stage is Extract<Stage, { kind: "loop" }> => stage.id === loopId && stage.kind === "loop");
+  return (loopStage?.body.stages ?? []) as Stage[];
+}
+
+async function runLoopBodyAgentStage(input: {
+  cwd: string;
+  runDir: string;
+  runId: string;
+  workflowInput: Record<string, unknown>;
+  spec: WorkflowSpec;
+  outputs: Record<string, unknown>;
+  plan: ExecutionPlan;
+  planStage: ExecutionPlanStage;
+  unit: AgentWorkUnit;
+  runtime: OrchestratorAgentRuntime;
+  round: number;
+  previous?: Record<string, unknown>;
+  bodyStage: Stage;
+  bodyStagePlan: ExecutionPlanStage;
+  outputPath: string;
+}): Promise<AgentWorkResult> {
+  const roleName = stageRoleNameFromBody(input.bodyStage);
+  if (!roleName || !input.bodyStagePlan.promptId) {
+    return {
+      stageId: input.unit.stageId,
+      status: "blocked",
+      output: blockedOutput(RuntimeErrorCodes.LOOP_BODY_STAGE_BLOCKED, `Loop body stage ${input.bodyStage.id} is not executable as an agent stage.`),
+      outputPath: input.outputPath,
+      attempts: [],
+      agentCalls: 0,
+      repairCalls: 0,
+      blockedReason: RuntimeErrorCodes.LOOP_BODY_STAGE_BLOCKED
+    };
+  }
+  const role = input.spec.roles[roleName];
+  const prompt = input.plan.prompts[input.bodyStagePlan.promptId];
+  if (!role || !prompt) throw new Error(`Missing loop body role or prompt for ${input.planStage.id}/${input.bodyStage.id}`);
+  const loopLocal = loopLocalContext(input.round, input.outputs, input.previous, objectRecord(input.outputs[input.planStage.loop?.body.output ?? ""]));
+  const renderedPrompt = renderPlannedPrompt({
+    prompt,
+    workflowInput: input.workflowInput,
+    outputs: input.outputs,
+    local: loopLocal
+  });
+  return executeAttemptWithRepair({
+    cwd: input.cwd,
+    runDir: input.runDir,
+    runId: input.runId,
+    workflowInput: input.workflowInput,
+    outputs: input.outputs,
+    plan: input.plan,
+    runtime: input.runtime,
+    unit: {
+      type: "stage",
+      stageId: input.unit.stageId,
+      itemId: `round-${input.round}__stage-${input.bodyStage.id}`,
+      roleName,
+      role,
+      sessionKey: `role:${roleName}:loop:${input.planStage.id}:round:${input.round}:stage:${input.bodyStage.id}`,
+      promptId: input.bodyStagePlan.promptId,
+      contract: input.bodyStagePlan.contract ?? { name: "base" },
+      outputPath: input.outputPath,
+      cwd: input.unit.cwd,
+      timeoutMs: input.unit.timeoutMs,
+      local: loopLocal
+    },
+    prompt: renderedPrompt,
+    contractName: input.bodyStagePlan.contract?.name ?? "base",
+    contractOptions: input.bodyStagePlan.contract?.options
+  });
+}
+
+async function runLoopFanoutStage(input: {
+  cwd: string;
+  runDir: string;
+  runId: string;
+  workflowInput: Record<string, unknown>;
+  spec: WorkflowSpec;
+  outputs: Record<string, unknown>;
+  plan: ExecutionPlan;
+  planStage: ExecutionPlanStage;
+  unit: AgentWorkUnit;
+  runtime: OrchestratorAgentRuntime;
+  round: number;
+  previous?: Record<string, unknown>;
+  bodyStage: Extract<Stage, { kind: "fanout" }>;
+  bodyStagePlan: ExecutionPlanStage;
+}): Promise<{ output: Record<string, unknown>; attempts: AttemptIndexEntry[]; agentCalls: number; repairCalls: number; fanout: NonNullable<StageIndexEntry["fanout"]> }> {
+  const plan = input.bodyStagePlan.fanout;
+  if (!plan) throw new Error(`Missing loop fanout plan for ${input.bodyStage.id}`);
+  const source = resolveSource(plan.itemsSource, input.workflowInput, input.outputs, loopLocalContext(input.round, input.outputs, input.previous, objectRecord(input.outputs[input.bodyStage.id])));
+  const items = Array.isArray(source) ? source.slice(0, plan.maxItems) : [];
+  const attempts: AttemptIndexEntry[] = [];
+  let agentCalls = 0;
+  let repairCalls = 0;
+  const itemOutputsByIndex = new Map<number, Record<string, unknown>>();
+  const fanoutItems: NonNullable<StageIndexEntry["fanout"]>["items"] = [];
+  type FanoutItemGroups = NonNullable<NonNullable<StageIndexEntry["fanout"]>["items"][number]["groups"]>;
+  type FanoutLaneEntry = FanoutItemGroups[number]["lanes"][number];
+  type LoopFanoutTask = {
+    item: unknown;
+    itemIndex: number;
+    itemId: string;
+    groupId: string;
+    laneId: string;
+    roleName: string;
+    promptId: string;
+    contract: ContractPlan;
+    laneOutputPath: string;
+    laneOutputs: Record<string, unknown>[];
+    laneEntry: FanoutLaneEntry;
+  };
+  const tasks: LoopFanoutTask[] = [];
+
+  for (let itemIndex = 0; itemIndex < items.length; itemIndex += 1) {
+    const item = items[itemIndex];
+    const itemId = stableItemId(item, itemIndex);
+    const groups: FanoutItemGroups = [];
+    const laneOutputs: Record<string, unknown>[] = [];
+    const selectionErrors: string[] = [];
+    const itemTasks: LoopFanoutTask[] = [];
+    for (const group of plan.laneGroups) {
+      const local = { item, ...loopLocalContext(input.round, input.outputs, input.previous, objectRecord(input.outputs[input.bodyStage.id])) };
+      const matched = group.lanes.filter((lane) => lane.default !== true && (!lane.when || evaluateCondition(lane.when, input.outputs, input.workflowInput, local)));
+      const defaultLane = group.lanes.find((lane) => lane.default === true);
+      const selected = group.mode === "all" ? matched : matched.length === 1 ? matched : matched.length === 0 && defaultLane ? [defaultLane] : [];
+      if (group.mode === "oneOf" && matched.length > 1) {
+        selectionErrors.push(`oneOf group ${group.id} matched multiple lanes: ${matched.map((lane) => lane.id).join(", ")}`);
+      } else if (group.mode === "oneOf" && selected.length === 0) {
+        selectionErrors.push(`oneOf group ${group.id} matched no lane and has no default.`);
+      }
+      if (selected.length === 0) continue;
+      const lanes: FanoutLaneEntry[] = [];
+      for (const lane of selected) {
+        const laneOutputPath = loopFanoutLaneOutputPath(input.runDir, input.planStage.id, input.round, input.bodyStage.id, itemId, group.id, lane.id);
+        const laneEntry: FanoutLaneEntry = { id: lane.id, roleName: lane.roleName, status: "pending" };
+        lanes.push(laneEntry);
+        itemTasks.push({
+          item,
+          itemIndex,
+          itemId,
+          groupId: group.id,
+          laneId: lane.id,
+          roleName: lane.roleName,
+          promptId: lane.promptId,
+          contract: lane.contract,
+          laneOutputPath,
+          laneOutputs,
+          laneEntry
+        });
+      }
+      groups.push({ id: group.id, mode: group.mode, status: fanoutGroupStatusLocal(lanes), lanes });
+    }
+    if (selectionErrors.length > 0) {
+      const itemOutput = {
+        status: "blocked",
+        summary: `Loop fanout item ${itemId} lane selection failed.`,
+        artifacts: [],
+        nextFocus: "diagnose",
+        itemId,
+        itemIndex,
+        groups,
+        laneOutputs,
+        blockedReason: RuntimeErrorCodes.FANOUT_LANE_SELECTION_FAILED,
+        errorCode: RuntimeErrorCodes.FANOUT_LANE_SELECTION_FAILED,
+        errorMessage: selectionErrors.join(" ")
+      };
+      itemOutputsByIndex.set(itemIndex, itemOutput);
+      fanoutItems.push({ id: itemId, index: itemIndex, status: "blocked", blockedReason: RuntimeErrorCodes.FANOUT_LANE_SELECTION_FAILED, errorCode: RuntimeErrorCodes.FANOUT_LANE_SELECTION_FAILED, errorMessage: selectionErrors.join(" "), completedAt: new Date().toISOString(), groups });
+    } else if (groups.length === 0) {
+      const itemOutput = {
+        status: "skipped",
+        summary: `Loop fanout item ${itemId} produced no matching lanes.`,
+        artifacts: [],
+        nextFocus: "reduce",
+        itemId,
+        itemIndex,
+        groups: [],
+        laneOutputs,
+        skippedReason: RuntimeErrorCodes.NO_MATCHING_LANES
+      };
+      itemOutputsByIndex.set(itemIndex, itemOutput);
+      fanoutItems.push({ id: itemId, index: itemIndex, status: "skipped", skippedReason: RuntimeErrorCodes.NO_MATCHING_LANES, completedAt: new Date().toISOString(), groups: [] });
+    } else {
+      tasks.push(...itemTasks);
+      fanoutItems.push({ id: itemId, index: itemIndex, status: "pending", groups });
+    }
+  }
+
+  let nextTask = 0;
+  const workerCount = Math.min(Math.max(1, plan.maxConcurrency), tasks.length);
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextTask < tasks.length) {
+      const task = tasks[nextTask];
+      nextTask += 1;
+      const result = await runLoopFanoutLaneTask(input, task);
+      attempts.push(...result.attempts);
+      agentCalls += result.agentCalls;
+      repairCalls += result.repairCalls;
+    }
+  }));
+
+  for (const item of fanoutItems) {
+    if (itemOutputsByIndex.has(item.index)) continue;
+    const itemTasks = tasks.filter((task) => task.itemIndex === item.index);
+    const laneOutputs = itemTasks.flatMap((task) => task.laneOutputs.filter((lane) => lane.groupId === task.groupId && lane.laneId === task.laneId));
+    for (const group of item.groups ?? []) group.status = fanoutGroupStatusLocal(group.lanes);
+    const blocked = laneOutputs.some((lane) => lane.status !== "completed");
+    const itemOutput = {
+      status: blocked ? "blocked" : "completed",
+      summary: `Loop fanout item ${item.id} completed ${laneOutputs.filter((lane) => lane.status === "completed").length}/${laneOutputs.length} lane(s).`,
+      artifacts: [],
+      nextFocus: "reduce",
+      itemId: item.id,
+      itemIndex: item.index,
+      groups: item.groups ?? [],
+      laneOutputs,
+      blockedReason: blocked ? RuntimeErrorCodes.FANOUT_ITEM_BLOCKED : undefined
+    };
+    itemOutputsByIndex.set(item.index, itemOutput);
+    item.status = blocked ? "blocked" : "completed";
+    item.blockedReason = blocked ? RuntimeErrorCodes.FANOUT_ITEM_BLOCKED : undefined;
+    item.outputPath = path.relative(input.runDir, loopFanoutItemOutputPath(input.runDir, input.planStage.id, input.round, input.bodyStage.id, item.id));
+    item.completedAt = new Date().toISOString();
+  }
+
+  const itemOutputs = Array.from(itemOutputsByIndex.entries()).sort(([left], [right]) => left - right).map(([, output]) => output);
+  for (const itemOutput of itemOutputs) {
+    const itemId = String(itemOutput.itemId);
+    const itemOutputPath = loopFanoutItemOutputPath(input.runDir, input.planStage.id, input.round, input.bodyStage.id, itemId);
+    await fs.mkdir(path.dirname(itemOutputPath), { recursive: true });
+    await fs.writeFile(itemOutputPath, `${JSON.stringify(itemOutput, null, 2)}\n`, "utf8");
+    const item = fanoutItems.find((candidate) => candidate.id === itemId);
+    if (item) item.outputPath = path.relative(input.runDir, itemOutputPath);
+  }
+
+  const laneOutputs = itemOutputs.flatMap((item) => Array.isArray(item.laneOutputs) ? item.laneOutputs as Record<string, unknown>[] : []);
+  const blockedItems = itemOutputs.filter((item) => item.status === "blocked");
+  const skippedItems = itemOutputs.filter((item) => item.status === "skipped");
+  const output = {
+    status: blockedItems.length > 0 && !plan.allowPartial ? "blocked" : "completed",
+    summary: `Loop fanout completed with ${itemOutputs.length} item output(s).`,
+    items: itemOutputs,
+    laneOutputs,
+    blockedItems,
+    skippedItems,
+    artifacts: [],
+    nextFocus: "reduce",
+    blockedReason: blockedItems.length > 0 && !plan.allowPartial ? RuntimeErrorCodes.FANOUT_ITEM_BLOCKED : undefined
+  };
+  const outputPath = loopBodyOutputPath(input.runDir, input.planStage.id, input.round, input.bodyStage.id);
+  await fs.mkdir(path.dirname(outputPath), { recursive: true });
+  await fs.writeFile(outputPath, `${JSON.stringify(output, null, 2)}\n`, "utf8");
+  const fanout = {
+    totalItems: items.length,
+    completedItems: fanoutItems.filter((item) => item.status === "completed").length,
+    blockedItems: fanoutItems.filter((item) => item.status === "blocked").length,
+    skippedItems: fanoutItems.filter((item) => item.status === "skipped").length,
+    failedItems: 0,
+    workUnits: tasks.length,
+    allowPartial: plan.allowPartial,
+    items: fanoutItems
+  };
+  return { output, attempts, agentCalls, repairCalls, fanout };
+}
+
+async function runLoopFanoutLaneTask(
+  input: {
+    cwd: string;
+    runDir: string;
+    runId: string;
+    workflowInput: Record<string, unknown>;
+    spec: WorkflowSpec;
+    outputs: Record<string, unknown>;
+    plan: ExecutionPlan;
+    planStage: ExecutionPlanStage;
+    unit: AgentWorkUnit;
+    runtime: OrchestratorAgentRuntime;
+    round: number;
+    previous?: Record<string, unknown>;
+    bodyStage: Extract<Stage, { kind: "fanout" }>;
+  },
+  task: {
+    item: unknown;
+    itemIndex: number;
+    itemId: string;
+    groupId: string;
+    laneId: string;
+    roleName: string;
+    promptId: string;
+    contract: ContractPlan;
+    laneOutputPath: string;
+    laneOutputs: Record<string, unknown>[];
+    laneEntry: NonNullable<NonNullable<StageIndexEntry["fanout"]>["items"][number]["groups"]>[number]["lanes"][number];
+  }
+): Promise<AgentWorkResult> {
+  const role = input.spec.roles[task.roleName];
+  const prompt = input.plan.prompts[task.promptId];
+  if (!role || !prompt) throw new Error(`Missing loop fanout lane role or prompt for ${input.bodyStage.id}/${task.groupId}/${task.laneId}`);
+  const local = { item: task.item, ...loopLocalContext(input.round, input.outputs, input.previous, objectRecord(input.outputs[input.bodyStage.id])) };
+  const renderedPrompt = renderPlannedPrompt({
+    prompt,
+    workflowInput: input.workflowInput,
+    outputs: input.outputs,
+    local
+  });
+  task.laneEntry.status = "running";
+  task.laneEntry.startedAt = new Date().toISOString();
+  const result = await executeAttemptWithRepair({
+    cwd: input.cwd,
+    runDir: input.runDir,
+    runId: input.runId,
+    workflowInput: input.workflowInput,
+    outputs: input.outputs,
+    plan: input.plan,
+    runtime: input.runtime,
+    unit: {
+      type: "fanoutItem",
+      stageId: input.unit.stageId,
+      itemId: `round-${input.round}__stage-${input.bodyStage.id}__item-${task.itemId}`,
+      itemIndex: task.itemIndex,
+      item: task.item,
+      groupId: task.groupId,
+      laneId: task.laneId,
+      roleName: task.roleName,
+      role,
+      sessionKey: `role:${task.roleName}:loop:${input.planStage.id}:round:${input.round}:stage:${input.bodyStage.id}:item:${task.itemId}:group:${task.groupId}:lane:${task.laneId}`,
+      promptId: task.promptId,
+      contract: task.contract,
+      outputPath: task.laneOutputPath,
+      cwd: input.unit.cwd,
+      timeoutMs: input.unit.timeoutMs,
+      local
+    },
+    prompt: renderedPrompt,
+    contractName: task.contract.name,
+    contractOptions: task.contract.options
+  });
+  const outputPath = path.relative(input.runDir, task.laneOutputPath);
+  task.laneOutputs.push({ itemId: task.itemId, itemIndex: task.itemIndex, groupId: task.groupId, laneId: task.laneId, roleName: task.roleName, status: result.status, output: result.output, outputPath });
+  task.laneEntry.status = result.status;
+  task.laneEntry.outputPath = outputPath;
+  task.laneEntry.blockedReason = result.blockedReason;
+  task.laneEntry.attemptId = result.attempts.at(-1)?.id;
+  task.laneEntry.completedAt = new Date().toISOString();
+  task.laneEntry.errorCode = result.errorCode;
+  task.laneEntry.errorMessage = result.errorMessage;
+  return result;
+}
+
+function loopBodyDependenciesCompleted(stage: Stage, stageStates: Record<string, Record<string, unknown>>): boolean {
+  return (stage.dependsOn ?? []).every((dep) => stageStates[dep]?.status === "completed");
+}
+
+function buildRoundRecord(round: number, status: StageStatus, startedAt: string, outputs: Record<string, unknown>, outputStageId: string, stages: Record<string, Record<string, unknown>>, blockedReason?: string): Record<string, unknown> {
+  return {
+    round,
+    status,
+    startedAt,
+    completedAt: new Date().toISOString(),
+    bodyOutputStageId: outputStageId,
+    bodyOutput: outputs[outputStageId],
+    outputs,
+    stages,
+    blockedReason
+  };
+}
+
+function loopOutput(loopId: string, outputStageId: string, round: number, rounds: Array<Record<string, unknown>>, finalOutputs: Record<string, unknown>, bodyOutput: Record<string, unknown> | undefined, status: "completed" | "blocked", blockedReason?: string): Record<string, unknown> {
+  return {
+    status,
+    summary: typeof bodyOutput?.summary === "string" ? bodyOutput.summary : `Loop ${loopId} ${status}.`,
+    artifacts: Array.isArray(bodyOutput?.artifacts) ? bodyOutput.artifacts : [],
+    nextFocus: status === "completed" ? "gate" : "diagnose",
+    round,
+    bodyOutputStageId: outputStageId,
+    bodyOutput,
+    finalOutputs,
+    rounds,
+    blockedReason
+  };
+}
+
+function loopLocalContext(round: number, outputs: Record<string, unknown>, previous?: Record<string, unknown>, currentOutput?: Record<string, unknown>): Record<string, unknown> {
+  return {
+    loop: {
+      round,
+      current: {
+        outputs,
+        output: currentOutput
+      },
+      previous
+    }
+  };
+}
+
+function loopBodyOutputPath(runDir: string, loopId: string, round: number, bodyStageId: string): string {
+  return path.join(runDir, "outputs", loopId, `round-${round}`, `${safeFileName(bodyStageId)}.json`);
+}
+
+function loopFanoutItemOutputPath(runDir: string, loopId: string, round: number, bodyStageId: string, itemId: string): string {
+  return path.join(runDir, "outputs", loopId, `round-${round}`, safeFileName(bodyStageId), `${safeFileName(itemId)}.json`);
+}
+
+function loopFanoutLaneOutputPath(runDir: string, loopId: string, round: number, bodyStageId: string, itemId: string, groupId: string, laneId: string): string {
+  return path.join(runDir, "outputs", loopId, `round-${round}`, safeFileName(bodyStageId), safeFileName(itemId), safeFileName(groupId), `${safeFileName(laneId)}.json`);
+}
+
+function stageRoleNameFromBody(stage: Stage): string | undefined {
+  if (stage.kind === "agentTask") return stage.role;
+  if (stage.kind === "discover" || stage.kind === "reduce" || stage.kind === "decisionGate") return stage.role;
+  return undefined;
+}
+
+function fanoutGroupStatusLocal(lanes: Array<{ status: StageStatus }>): StageStatus {
+  if (lanes.some((lane) => lane.status === "blocked")) return "blocked";
+  if (lanes.some((lane) => lane.status === "failed")) return "failed";
+  return "completed";
+}
+
+function blockedOutput(code: string, summary: string): Record<string, unknown> {
+  return { status: "blocked", summary, artifacts: [], nextFocus: "diagnose", blockedReason: code };
 }
 
 async function executeAttemptWithRepair(input: {
@@ -375,7 +838,7 @@ async function executeAttemptWithRepair(input: {
       summary: turn.error ?? `Agent turn ${turn.status}.`,
       artifacts: [],
       nextFocus: "diagnose",
-      blockedReason: turn.status === "cancelled" ? "AGENT_TURN_CANCELLED" : "AGENT_TURN_FAILED",
+      blockedReason: turn.status === "cancelled" ? RuntimeErrorCodes.AGENT_TURN_CANCELLED : RuntimeErrorCodes.AGENT_TURN_FAILED,
       runtimeDiagnostics: diagnostics
     };
     await writeAttemptFile(dir, "output.json", output);
@@ -507,7 +970,7 @@ async function executeRepairAttempt(input: {
         contractOptions: input.contractOptions
       })
     : undefined;
-  await writeAttemptFile(dir, "parse.json", parsed?.diagnostics ?? { errorCode: "AGENT_TURN_FAILED", summary: turn.error ?? turn.status });
+  await writeAttemptFile(dir, "parse.json", parsed?.diagnostics ?? { errorCode: RuntimeErrorCodes.AGENT_TURN_FAILED, summary: turn.error ?? turn.status });
   if (parsed?.ok) {
     const output = withOutputParseMetadata(parsed.value, {
       ...parsed.outputParse,
@@ -532,7 +995,7 @@ async function executeRepairAttempt(input: {
   const output = repairFailedEnvelope({
     summary: parsed?.summary ?? (turn.error ?? "Repair turn failed."),
     originalReason: input.originalReason,
-    repairDiagnostics: parsed?.diagnostics ?? { errorCode: "AGENT_TURN_FAILED", summary: turn.error ?? turn.status }
+    repairDiagnostics: parsed?.diagnostics ?? { errorCode: RuntimeErrorCodes.AGENT_TURN_FAILED, summary: turn.error ?? turn.status }
   });
   await writeAttemptFile(dir, "output.json", output);
   await writeUnitOutput(input, output, id);
@@ -544,7 +1007,7 @@ async function executeRepairAttempt(input: {
     status: "blocked",
     output,
     outputPath: input.unit.outputPath,
-    attempts: [...execution.attempts, { ...entryBase, status: "blocked", endedAt: new Date().toISOString(), blockedReason: "OUTPUT_REPAIR_FAILED", parseErrorCode: parsed?.diagnostics.errorCode ?? "AGENT_TURN_FAILED", rawPreview: previewText(turn.rawText) }],
+    attempts: [...execution.attempts, { ...entryBase, status: "blocked", endedAt: new Date().toISOString(), blockedReason: "OUTPUT_REPAIR_FAILED", parseErrorCode: parsed?.diagnostics.errorCode ?? RuntimeErrorCodes.AGENT_TURN_FAILED, rawPreview: previewText(turn.rawText) }],
     agentCalls: execution.agentCalls,
     repairCalls: execution.agentCalls,
     blockedReason: "OUTPUT_REPAIR_FAILED"
@@ -742,7 +1205,7 @@ function canRetryRuntimeFailure(runtimeRetryOrdinal: number | undefined): boolea
 function retryableRuntimeTurnFailure(turn: AgentTurnResult, requestId: string): RuntimeFailureSummary | undefined {
   if (turn.status !== "failed") return undefined;
   if (turn.retryable === false) return undefined;
-  const code = turn.errorDetailCode ?? turn.errorCode ?? "AGENT_TURN_FAILED";
+  const code = turn.errorDetailCode ?? turn.errorCode ?? RuntimeErrorCodes.AGENT_TURN_FAILED;
   const message = turn.error ?? `Agent turn ${turn.status}.`;
   if (turn.retryable === true || looksTransientRuntimeFailure([code, message])) {
     return {
@@ -1091,11 +1554,7 @@ function severitySummary(items: unknown[]): Record<string, number> {
 }
 
 function dedupeFindings(items: unknown[]): Array<Record<string, unknown>> {
-  const findings = items.flatMap((item) => {
-    if (item && typeof item === "object" && Array.isArray((item as Record<string, unknown>).findings)) return (item as Record<string, unknown>).findings as unknown[];
-    if (item && typeof item === "object" && "severity" in item && "summary" in item) return [item];
-    return [];
-  });
+  const findings = items.flatMap((item) => collectFindings(item));
   const seen = new Set<string>();
   const result: Array<Record<string, unknown>> = [];
   for (const finding of findings) {
@@ -1107,6 +1566,17 @@ function dedupeFindings(items: unknown[]): Array<Record<string, unknown>> {
     result.push(record);
   }
   return result;
+}
+
+function collectFindings(value: unknown): unknown[] {
+  if (!value || typeof value !== "object") return [];
+  const record = value as Record<string, unknown>;
+  const direct = Array.isArray(record.findings) ? record.findings : [];
+  const self = "severity" in record && "summary" in record ? [record] : [];
+  const output = collectFindings(record.output);
+  const laneOutputs = Array.isArray(record.laneOutputs) ? record.laneOutputs.flatMap(collectFindings) : [];
+  const items = Array.isArray(record.items) ? record.items.flatMap(collectFindings) : [];
+  return [...self, ...direct, ...output, ...laneOutputs, ...items];
 }
 
 function severityRank(value: unknown): number {

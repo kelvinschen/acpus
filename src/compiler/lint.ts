@@ -31,6 +31,7 @@ export function lintWorkflowSpec(spec: WorkflowSpec): OrchestratorIssue[] {
   issues.push(...lintGates(spec));
   issues.push(...lintDiscover(spec));
   issues.push(...lintFanout(spec, stages));
+  issues.push(...lintLoops(spec));
   issues.push(...validateInputDefaults(spec));
   return issues;
 }
@@ -131,7 +132,7 @@ function lintGraph(spec: WorkflowSpec, stages: Map<string, Stage>): Orchestrator
         severity: "error",
         path: "/stages",
         message: `Cycle detected: ${[...path, id].join(" -> ")}`,
-        suggestions: ["Remove the cycle. Use fixLoop for bounded loops."]
+        suggestions: ["Remove the cycle. Use loop for bounded loops."]
       }));
       return;
     }
@@ -181,17 +182,18 @@ function lintRoles(spec: WorkflowSpec, stages: Map<string, Stage>): Orchestrator
   const roleNames = new Set(Object.keys(spec.roles));
   for (let index = 0; index < spec.stages.length; index += 1) {
     const stage = spec.stages[index];
-    for (const role of stageRoles(stage)) {
-      if (!roleNames.has(role)) {
+    for (const reference of stageRoleReferences(stage, `/stages/${index}`)) {
+      if (!roleNames.has(reference.role)) {
         issues.push(issue({
           code: "ROLE_UNKNOWN",
           severity: "error",
-          path: `/stages/${index}/role`,
-          message: `Stage ${stage.id} references unknown role ${role}.`,
-          suggestions: [`Define /roles/${role}, or use an existing role.`]
+          path: reference.path,
+          message: `Stage ${reference.stageId} references unknown role ${reference.role}.`,
+          suggestions: [`Define /roles/${reference.role}, or use an existing role.`]
         }));
       }
     }
+    lintStageRoleModes(spec, stage, `/stages/${index}`, issues);
     if (stage.kind === "gate" && stage.mode === "agent") {
       if (!stage.role) {
         issues.push(issue({
@@ -220,46 +222,6 @@ function lintRoles(spec: WorkflowSpec, stages: Map<string, Stage>): Orchestrator
           suggestions: ["Use a readOnly or denyAll role for terminal gate decisions."]
         }));
       }
-    }
-    if (stage.kind === "fixLoop") {
-      const validator = spec.roles[stage.validator.role];
-      const fixer = spec.roles[stage.fixer.role];
-      if (validator?.mode === "edit") {
-        issues.push(issue({
-          code: "ROLE_MODE_CONFLICT",
-          severity: "error",
-          path: `/stages/${index}/validator/role`,
-          message: "fixLoop validator role must not be edit mode.",
-          suggestions: ["Use a readOnly validation or review role for validator."]
-        }));
-      }
-      if (fixer && fixer.mode !== "edit") {
-        issues.push(issue({
-          code: "ROLE_MODE_CONFLICT",
-          severity: "error",
-          path: `/stages/${index}/fixer/role`,
-          message: "fixLoop fixer role must be edit mode.",
-          suggestions: ["Use an implementation role with mode edit for fixer."]
-        }));
-      }
-    }
-    if (stage.kind === "reduce" && stage.mode === "agent" && stage.role && spec.roles[stage.role]?.mode === "edit") {
-      issues.push(issue({
-        code: "ROLE_MODE_CONFLICT",
-        severity: "error",
-        path: `/stages/${index}/role`,
-        message: `Agent reduce stage ${stage.id} must not use an edit role.`,
-        suggestions: ["Use a readOnly review/validation role for reduce, or switch to mode program for mechanical aggregation."]
-      }));
-    }
-    if (stage.kind === "decisionGate" && stage.mode === "agent" && stage.role && spec.roles[stage.role]?.mode === "edit") {
-      issues.push(issue({
-        code: "ROLE_MODE_CONFLICT",
-        severity: "error",
-        path: `/stages/${index}/role`,
-        message: `Agent decisionGate stage ${stage.id} must not use an edit role.`,
-        suggestions: ["Use a readOnly coordination/review role for semantic routing decisions."]
-      }));
     }
   }
   void stages;
@@ -301,20 +263,7 @@ function lintVariables(spec: WorkflowSpec, stages: Map<string, Stage>): Orchestr
         }
       }
     }
-    if (stage.kind === "fixLoop") {
-      pushVariablePromptIssues(
-        issues,
-        findVariableIssues(stage.validator.prompt, stage.validator.variables ?? []),
-        `/stages/${index}/validator/prompt`,
-        `/stages/${index}/validator/variables`
-      );
-      pushVariablePromptIssues(
-        issues,
-        findVariableIssues(stage.fixer.prompt, stage.fixer.variables ?? []),
-        `/stages/${index}/fixer/prompt`,
-        `/stages/${index}/fixer/variables`
-      );
-    }
+    if (stage.kind === "loop") lintLoopBodyVariables(spec, stage, index, issues);
     for (let varIndex = 0; varIndex < stageVariables.length; varIndex += 1) {
       const variable = stageVariables[varIndex];
       try {
@@ -660,30 +609,212 @@ function lintDiscover(spec: WorkflowSpec): OrchestratorIssue[] {
   return issues;
 }
 
-function stageRoles(stage: Stage): string[] {
+function lintLoops(spec: WorkflowSpec): OrchestratorIssue[] {
+  const issues: OrchestratorIssue[] = [];
+  for (let index = 0; index < spec.stages.length; index += 1) {
+    const stage = spec.stages[index];
+    if (stage.kind !== "loop") continue;
+    const bodyStages = stage.body.stages as Stage[];
+    const byId = new Map<string, Stage>();
+    for (let bodyIndex = 0; bodyIndex < bodyStages.length; bodyIndex += 1) {
+      const bodyStage = bodyStages[bodyIndex];
+      if (byId.has(bodyStage.id)) {
+        issues.push(issue({
+          code: "LOOP_BODY_DUPLICATE_STAGE_ID",
+          severity: "error",
+          path: `/stages/${index}/body/stages/${bodyIndex}/id`,
+          message: `Loop ${stage.id} body declares duplicate stage id ${bodyStage.id}.`,
+          suggestions: ["Give every loop body stage a unique id within the loop body."]
+        }));
+      }
+      byId.set(bodyStage.id, bodyStage);
+    }
+    if (!byId.has(stage.body.root)) {
+      issues.push(issue({
+        code: "LOOP_BODY_ROOT_UNKNOWN",
+        severity: "error",
+        path: `/stages/${index}/body/root`,
+        message: `Loop ${stage.id} body root ${stage.body.root} does not match any body stage id.`,
+        suggestions: ["Set body.root to a loop body stage id."]
+      }));
+    }
+    if (!byId.has(stage.body.output)) {
+      issues.push(issue({
+        code: "LOOP_BODY_OUTPUT_UNKNOWN",
+        severity: "error",
+        path: `/stages/${index}/body/output`,
+        message: `Loop ${stage.id} body output ${stage.body.output} does not match any body stage id.`,
+        suggestions: ["Set body.output to the body stage that represents each round result."]
+      }));
+    }
+    const roots = bodyStages.filter((bodyStage) => (bodyStage.dependsOn ?? []).length === 0);
+    if (roots.length !== 1 || roots[0]?.id !== stage.body.root) {
+      issues.push(issue({
+        code: "LOOP_BODY_ROOT_INVALID",
+        severity: "error",
+        path: `/stages/${index}/body/root`,
+        message: `Loop ${stage.id} body must have exactly one dependency-free root matching body.root.`,
+        suggestions: ["Add body dependencies so only body.root has no dependsOn."]
+      }));
+    }
+    for (let bodyIndex = 0; bodyIndex < bodyStages.length; bodyIndex += 1) {
+      const bodyStage = bodyStages[bodyIndex];
+      for (const dep of bodyStage.dependsOn ?? []) {
+        if (!byId.has(dep)) {
+          issues.push(issue({
+            code: "LOOP_BODY_UNKNOWN_DEPENDENCY",
+            severity: "error",
+            path: `/stages/${index}/body/stages/${bodyIndex}/dependsOn`,
+            message: `Loop ${stage.id} body stage ${bodyStage.id} depends on unknown body stage ${dep}.`,
+            suggestions: ["Loop body dependencies must reference stages in the same loop body."]
+          }));
+        }
+      }
+    }
+    const visiting = new Set<string>();
+    const visited = new Set<string>();
+    const visit = (id: string, pathStack: string[]): void => {
+      if (visiting.has(id)) {
+        issues.push(issue({
+          code: "LOOP_BODY_CYCLE",
+          severity: "error",
+          path: `/stages/${index}/body/stages`,
+          message: `Loop ${stage.id} body cycle detected: ${[...pathStack, id].join(" -> ")}`,
+          suggestions: ["Remove the body cycle; loop rounds are controlled by continueWhen."]
+        }));
+        return;
+      }
+      if (visited.has(id)) return;
+      visiting.add(id);
+      for (const dep of byId.get(id)?.dependsOn ?? []) visit(dep, [...pathStack, id]);
+      visiting.delete(id);
+      visited.add(id);
+    };
+    for (const bodyStage of bodyStages) visit(bodyStage.id, []);
+  }
+  return issues;
+}
+
+function lintLoopBodyVariables(spec: WorkflowSpec, loop: Extract<Stage, { kind: "loop" }>, loopIndex: number, issues: OrchestratorIssue[]): void {
+  const bodyStages = loop.body.stages as Stage[];
+  const bodyIds = new Set(bodyStages.map((stage) => stage.id));
+  const topLevelIds = new Set(spec.stages.map((stage) => stage.id));
+  for (let bodyIndex = 0; bodyIndex < bodyStages.length; bodyIndex += 1) {
+    const stage = bodyStages[bodyIndex];
+    const stageVariables = stage.variables ?? [];
+    if (stage.prompt) {
+      pushVariablePromptIssues(
+        issues,
+        findVariableIssues(stage.prompt, stageVariables),
+        `/stages/${loopIndex}/body/stages/${bodyIndex}/prompt`,
+        `/stages/${loopIndex}/body/stages/${bodyIndex}/variables`
+      );
+    }
+    if (stage.kind === "fanout") {
+      for (let groupIndex = 0; groupIndex < stage.laneGroups.length; groupIndex += 1) {
+        const group = stage.laneGroups[groupIndex];
+        for (let laneIndex = 0; laneIndex < group.lanes.length; laneIndex += 1) {
+          const lane = group.lanes[laneIndex];
+          const prompt = lane.prompt ?? stage.prompt;
+          if (!prompt) continue;
+          pushVariablePromptIssues(
+            issues,
+            findVariableIssues(prompt, stageVariables),
+            lane.prompt ? `/stages/${loopIndex}/body/stages/${bodyIndex}/laneGroups/${groupIndex}/lanes/${laneIndex}/prompt` : `/stages/${loopIndex}/body/stages/${bodyIndex}/prompt`,
+            `/stages/${loopIndex}/body/stages/${bodyIndex}/variables`
+          );
+        }
+      }
+    }
+    for (let varIndex = 0; varIndex < stageVariables.length; varIndex += 1) {
+      const variable = stageVariables[varIndex];
+      try {
+        const parsed = parseSourcePath(variable.source);
+        if (parsed.root === "input" && !spec.inputs[parsed.parts[0] ?? ""]) {
+          issues.push(issue({
+            code: "VARIABLE_SOURCE_UNKNOWN",
+            severity: "error",
+            path: `/stages/${loopIndex}/body/stages/${bodyIndex}/variables/${varIndex}/source`,
+            message: `Unknown input source ${variable.source}.`,
+            suggestions: [`Declare /inputs/${parsed.parts[0]}.`]
+          }));
+        }
+        if (parsed.root === "outputs") {
+          const sourceStage = parsed.parts[0];
+          if (!sourceStage || (!bodyIds.has(sourceStage) && !topLevelIds.has(sourceStage))) {
+            issues.push(issue({
+              code: "VARIABLE_SOURCE_UNKNOWN",
+              severity: "error",
+              path: `/stages/${loopIndex}/body/stages/${bodyIndex}/variables/${varIndex}/source`,
+              message: `Unknown loop body output source ${variable.source}.`,
+              suggestions: ["Reference outputs from an existing body stage in the same loop or an upstream top-level stage."]
+            }));
+          }
+        }
+      } catch (error) {
+        issues.push(issue({
+          code: "VARIABLE_SOURCE_INVALID",
+          severity: "error",
+          path: `/stages/${loopIndex}/body/stages/${bodyIndex}/variables/${varIndex}/source`,
+          message: (error as Error).message,
+          suggestions: ["Use a restricted source path such as input.task, outputs.review.summary, or loop.previous.output.summary."]
+        }));
+      }
+    }
+  }
+}
+
+function stageRoleReferences(stage: Stage, path: string): { role: string; path: string; stageId: string }[] {
   switch (stage.kind) {
     case "agentTask":
     case "summarize":
-      return [stage.role];
+      return [{ role: stage.role, path: `${path}/role`, stageId: stage.id }];
     case "fanout":
-      return stage.laneGroups.flatMap((group) => group.lanes.map((lane) => lane.role));
+      return stage.laneGroups.flatMap((group, groupIndex) =>
+        group.lanes.map((lane, laneIndex) => ({
+          role: lane.role,
+          path: `${path}/laneGroups/${groupIndex}/lanes/${laneIndex}/role`,
+          stageId: stage.id
+        }))
+      );
     case "discover":
-      return stage.role ? [stage.role] : [];
+      return stage.role ? [{ role: stage.role, path: `${path}/role`, stageId: stage.id }] : [];
     case "reduce":
-      return stage.role ? [stage.role] : [];
     case "decisionGate":
-      return stage.role ? [stage.role] : [];
     case "gate":
-      return stage.role ? [stage.role] : [];
-    case "fixLoop":
-      return [stage.validator.role, stage.fixer.role];
+      return stage.role ? [{ role: stage.role, path: `${path}/role`, stageId: stage.id }] : [];
+    case "loop":
+      return stage.body.stages.flatMap((bodyStage, bodyIndex) => stageRoleReferences(bodyStage as Stage, `${path}/body/stages/${bodyIndex}`));
+  }
+}
+
+function lintStageRoleModes(spec: WorkflowSpec, stage: Stage, path: string, issues: OrchestratorIssue[]): void {
+  if (stage.kind === "reduce" && stage.mode === "agent" && stage.role && spec.roles[stage.role]?.mode === "edit") {
+    issues.push(issue({
+      code: "ROLE_MODE_CONFLICT",
+      severity: "error",
+      path: `${path}/role`,
+      message: `Agent reduce stage ${stage.id} must not use an edit role.`,
+      suggestions: ["Use a readOnly review/validation role for reduce, or switch to mode program for mechanical aggregation."]
+    }));
+  }
+  if (stage.kind === "decisionGate" && stage.mode === "agent" && stage.role && spec.roles[stage.role]?.mode === "edit") {
+    issues.push(issue({
+      code: "ROLE_MODE_CONFLICT",
+      severity: "error",
+      path: `${path}/role`,
+      message: `Agent decisionGate stage ${stage.id} must not use an edit role.`,
+      suggestions: ["Use a readOnly coordination/review role for semantic routing decisions."]
+    }));
+  }
+  if (stage.kind === "loop") {
+    stage.body.stages.forEach((bodyStage, bodyIndex) => {
+      lintStageRoleModes(spec, bodyStage as Stage, `${path}/body/stages/${bodyIndex}`, issues);
+    });
   }
 }
 
 function stageVariablesForLint(stage: Stage) {
-  if (stage.kind === "fixLoop") {
-    return [...(stage.variables ?? []), ...(stage.validator.variables ?? []), ...(stage.fixer.variables ?? [])];
-  }
   return stage.variables ?? [];
 }
 

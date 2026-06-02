@@ -24,6 +24,8 @@ Reports expose persisted run state, outputs, attempts, diagnostics, and gate ver
 - Reports MUST treat `agentUsage` as usage accounting and MUST NOT present agent call counts as a scheduler budget.
 - Reports MUST surface fanout item cascade blocking through persisted item status, `blockedReason`, `errorCode`, and event history when present.
 - Reports MUST surface fanout lane group and lane details when present, including skipped item counts, lane output paths, and partial item metadata.
+- Reports MUST surface loop stage metadata when present, including `maxRounds`, observed round count, and the loop body output stage id.
+- Detailed reports MUST expose persisted loop round history through stage details when present.
 
 ## Interfaces and Contracts
 
@@ -49,7 +51,7 @@ Reports are generated from:
 - `sessions/role-bindings.json` for role/session identity;
 - `events.ndjson` for event history when projected.
 
-The detailed report model includes run summary, gate verdict, graph view, per-stage status, attempts, role, agent, session key, prompt path, output path, parse diagnostics, contract outputs, fanout item/group/lane details, warnings, risks, checks, changed files, usage accounting including recovery calls, and diagnostics.
+The detailed report model includes run summary, gate verdict, graph view, per-stage status, attempts, role, agent, session key, prompt path, output path, parse diagnostics, contract outputs, fanout item/group/lane details, loop round metadata, warnings, risks, checks, changed files, usage accounting including recovery calls, and diagnostics.
 
 ## Runtime Behavior
 

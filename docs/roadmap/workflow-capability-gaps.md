@@ -208,6 +208,9 @@ D/E/F 中被选中的 branch -> G
 
 ### 5. Workflow 级有界循环
 
+阶段性 PRD: [Workflow-Level Bounded Loop PRD](workflow-level-bounded-loop-prd.md)
+Architecture decision: [Workflow-Level Bounded Loop ADR](../adr/0003-workflow-level-bounded-loop.md)
+
 **问题**
 
 deep research 通常需要：
@@ -220,6 +223,40 @@ search -> extract -> verify -> vote
 
 当前 graph cycle 会被拒绝。`fixLoop` 只覆盖 validator/fixer 这种特定循环，不能泛化为多 stage research loop 或设计验证 loop。
 
+**已确认方向**
+
+Workflow 级有界循环应作为显式容器控制节点表达，而不是允许普通 top-level stages 之间直接声明 back edge。顶层 workflow graph 继续保持 DAG；循环只发生在 loop container 内部，以便每轮输出、attempt、report 和 resume 能按稳定的 loop identity、round identity 和 body stage identity 定位。
+
+Loop body 应使用内联的 scoped stage definitions，而不是引用 top-level stages。Body 内 stage id 只在 loop scope 内唯一；每轮输出不应污染 top-level `outputs.<stageId>` 命名空间。
+
+第一版 loop body 应只允许现有可恢复且输出契约明确的非终端 stage kind：`agentTask`、`discover`、`fanout`、`reduce`、`decisionGate`。第一版应禁止 `gate`、嵌套 `loop`，并暂不引入新的 tool/program task；`gate` 继续作为整个 workflow 的唯一 terminal signal。
+
+Loop 退出条件应只在完整 loop round 结束后判断，基于本轮最终可观测输出决定继续或退出。第一版不支持 body 中间 stage 提前 break；如果一轮内部需要条件路径，应在 loop body 内用 `decisionGate` 表达，但 loop 是否继续仍只在 round boundary 判断。
+
+第一版应只支持 `continueWhen`，不同时支持 `exitWhen`。`continueWhen` 为 true 且未达到 `maxRounds` 时继续下一轮；`continueWhen` 为 false 时 loop 完成。若达到 `maxRounds` 后 `continueWhen` 仍为 true，第一版只允许 `onExhausted: "blocked"`，并将 loop stage 标记为 blocked。
+
+第一版中任何 loop body stage blocked 或 failed 都应立即使 loop stage blocked，并跳过 `continueWhen` 评估，除非未来显式引入 loop-level partial 或 recovery policy。需要返工、驳回或失败回流的业务结果应作为 completed stage output 中的结构化 verdict/check/finding 表达，再由 `continueWhen` 决定是否进入下一轮。
+
+Loop 完成后，对外应只暴露 loop stage 自己的聚合输出。Loop output 应包含最后一轮摘要、`finalOutputs` 和完整 `rounds` metadata；loop body stage outputs 不应提升为 top-level `outputs.<bodyStageId>`。
+
+Loop body 应显式声明 `body.output` 指向一个 body stage id，作为每个 loop round 的 canonical result。Loop output 的 `summary`、主要 status metadata 和返工信号应优先来自该 Loop Body Output，而不是从 body 内无 downstream 的 stage 推断。
+
+`continueWhen` 应复用现有 condition DSL。第一版应支持 `loop.current.output` 作为本轮 Loop Body Output 的稳定别名，并允许 `loop.current.outputs.<bodyStageId>` 读取本轮其他 body stage outputs。
+
+Loop body stage 可以通过显式变量读取上一轮结果：`loop.previous.output` 指向上一轮 Loop Body Output，`loop.previous.outputs.<bodyStageId>` 指向上一轮其他 body stage output。第一轮这些 source 缺失，workflow 作者应通过变量 transform default 或 prompt 逻辑处理空上下文。
+
+Run-index 持久化也应保持这个边界：loop 作为一个 top-level stage entry，loop body stage 状态嵌套在该 loop stage 的 `rounds[]` history 中，而不是创建 top-level stage entries。Attempt、output 和 event identity 应包含 loop id、round number 和 body stage id，例如 `loop:<loopId>:round:<round>:stage:<bodyStageId>`。
+
+Loop body agent session 应按 loop id、round number 和 body stage id 隔离，不跨 round 复用。需要跨轮传递的上下文应通过 `loop.previous.outputs`、`loop.current.outputs` 或显式变量进入 prompt，而不是依赖隐式对话历史。
+
+Loop 第一版不应新增独立并发池。Loop body 内的并行迁移、多 worker 或异构 agent 并发应继续由 `fanout` 及其 stage-local `limits.maxConcurrency` 表达；一个 loop round 必须等 body 内 fanout 完整聚合后，才能运行依赖该 fanout 的 downstream body stages 或评估 `continueWhen`。
+
+目标图中的“双重审查 静态 + 语义”不应新增专用 review stage。第一版应使用 `fanout` 的 `laneGroups` 表达：同一审查 item 进入一个 `all` lane group，静态审查和语义审查分别作为 lanes 并行执行；后续 `reduce` 聚合 findings，`continueWhen` 基于聚合后的 blocking findings 决定是否进入下一轮。
+
+Workflow-Level Bounded Loop 落地时应作为 breaking schema migration 完全替代 `fixLoop`。由于该能力尚未发布，不应保留 `fixLoop` authoring shape、compiler sugar、runtime compatibility path 或前向兼容逻辑。
+
+Schema stage kind 应命名为 `loop`。术语上使用 Workflow-Level Bounded Loop；schema 中的 bounded 语义由 required `maxRounds` 表达，不另设 `boundedLoop` stage kind。
+
 **可能的 spec 形态**
 
 ```json
@@ -227,24 +264,45 @@ search -> extract -> verify -> vote
   "id": "research_loop",
   "kind": "loop",
   "maxRounds": 3,
-  "body": ["search", "extract", "verify", "vote"],
-  "continueWhen": { "source": "outputs.vote.confidence", "op": "lt", "value": 0.75 },
-  "exitTo": "synthesize",
+  "body": {
+    "root": "search",
+    "output": "vote",
+    "stages": [
+      { "id": "search", "kind": "agentTask" },
+      { "id": "extract", "kind": "agentTask", "dependsOn": ["search"] },
+      { "id": "verify", "kind": "agentTask", "dependsOn": ["extract"] },
+      { "id": "vote", "kind": "agentTask", "dependsOn": ["verify"] }
+    ]
+  },
+  "continueWhen": { "source": "loop.current.output.confidence", "op": "lt", "value": 0.75 },
   "onExhausted": "blocked"
 }
 ```
 
 **运行时语义**
 
-- 每一轮输出需要隔离，例如 `outputs.search.rounds[2]`。
-- loop 需要稳定变量根，例如 `loop.round`、`loop.previousOutputs`。
+- 每一轮输出需要隔离，例如 `outputs.research_loop.rounds[2].vote`。
+- loop stage 的 top-level output 应暴露最后一轮汇总和 round history，例如 `outputs.research_loop.finalOutputs.vote` 与 `outputs.research_loop.rounds[]`。
+- loop body 应显式声明 `body.output`，作为每轮结果和 loop output 摘要的 canonical source。
+- `continueWhen` 应优先通过 `loop.current.output` 读取本轮 Loop Body Output，也可通过 `loop.current.outputs.<bodyStageId>` 读取本轮其他 body outputs。
+- body stage 跨轮输入应通过显式变量读取 `loop.previous.output` 或 `loop.previous.outputs.<bodyStageId>`，不隐式注入历史。
+- run-index 应只创建 top-level loop stage entry；body stage state 应嵌套在 loop round history 中。
+- loop body agent session key 应包含 loop id、round number 和 body stage id；跨轮上下文应显式通过 loop variables 传递。
+- loop 不新增独立并发；body 内多 worker 应使用 fanout stage-local concurrency。
+- 双重审查应建模为 fanout `all` lane group 加 reduce 聚合，而不是专用 `parallelReview` stage。
+- loop 落地时应删除 `fixLoop` 形态，不保留兼容层或 sugar。
+- schema stage kind 应使用 `loop`，不使用 `boundedLoop`。
+- loop 需要稳定变量根，例如 `loop.round`、`loop.current.outputs`、`loop.previous.outputs`。
+- `continueWhen` 应在每个 loop round 完整结束后评估，不在 body 中间提前终止本轮。
+- 耗尽 `maxRounds` 后如果 `continueWhen` 仍为 true，loop 应 blocked，而不是把未收敛结果当作 completed。
+- body stage blocked 或 failed 应直接阻塞 loop；业务上的返工信号应通过 completed output 表达。
 - agent budget 估算必须按最坏轮数计算。
 - report view 需要展示每轮历史，而不是覆盖前一轮输出。
 
 **主要场景**
 
 - deep research 低置信度补搜。
-- 视觉验证失败后进行有界代码/测试修复，如果 `fixLoop` 不足以表达完整阶段序列。
+- 视觉验证失败后进行有界代码/测试修复，并替代现有专用 `fixLoop` 形态。
 
 ### 6. 异构 Fanout
 
@@ -511,17 +569,17 @@ deep research 和设计迁移常常在运行中发现更多工作。
 
 ## 推荐实现顺序
 
-1. **条件汇合 / 选中路由汇合**
-   - 对 route convergence 场景收益最高。
-   - 如果先限制为一个上游 `decisionGate`，概念和实现都相对可控。
+1. **Workflow-Level Bounded Loop / `loop`**
+   - 直接覆盖目标图中的多阶段有界回流。
+   - 第一阶段只允许 loop body 使用现有 `fanout`、`reduce`、`decisionGate` 等已确认 stage kind，不先引入普通 top-level parallel graph。
 
-2. **Route output alias**
-   - 条件汇合后通常马上需要读取被选中分支输出。
+2. **异构 fanout**
+   - 目标图中的多 worker 和双重审查依赖 lane group 表达。
+   - 若实现状态已满足当前 spec，则作为 loop body 的基础能力复用；否则应先补齐 lane group fanout。
+
+3. **Route output alias / loop output polish**
+   - loop 完成后下游通常需要读取 canonical Loop Output 或本轮 Loop Body Output。
    - 可以避免 prompt 里塞多个 optional variable。
-
-3. **普通并行分支/汇合**
-   - 解锁 `A -> B1/B2 -> C` 和 code/test 并行。
-   - 建议显式声明，不要从多个 dependent 隐式推断。
 
 4. **原生 tool/MCP task 节点**
    - 对设计到代码和 research ingest 很关键。
@@ -531,12 +589,12 @@ deep research 和设计迁移常常在运行中发现更多工作。
    - 对验证、构建、截图、确定性 transform 都有用。
    - 需要强约束 sandbox、timeout 和 output contract。
 
-6. **异构 fanout**
-   - 如果普通并行分支/汇合之后仍频繁需要 item-level dispatch，再引入。
+6. **Fanout 后续增强**
+   - 已并入第一阶段 loop 前置能力；这里保留给 lane group dependencies、lane-level variables 或 partial policy 等增强。
 
-7. **workflow 级有界循环**
-   - 对 deep research 价值高，但会显著影响 state、budget 和 report。
-   - 建议在 route metadata 和 join 语义稳定后再设计。
+7. **条件汇合 / 普通并行分支/汇合**
+   - 暂不作为目标图第一阶段前置项。
+   - 后续解锁 top-level `A -> B1/B2 -> C` 和 selected route convergence。
 
 8. **per-item subgraph / 动态 worklist**
    - 能力很强，但会明显扩大 scheduler 语义。

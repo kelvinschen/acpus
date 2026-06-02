@@ -767,194 +767,753 @@
               },
               "kind": {
                 "type": "string",
-                "const": "fixLoop"
+                "const": "loop"
               },
               "maxRounds": {
                 "type": "integer",
                 "exclusiveMinimum": 0,
                 "maximum": 9007199254740991
               },
-              "validator": {
+              "body": {
                 "type": "object",
                 "properties": {
-                  "role": {
+                  "root": {
                     "type": "string",
                     "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
                   },
-                  "prompt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "variables": {
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "name": {
-                          "type": "string",
-                          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
-                        },
-                        "source": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "transform": {
-                          "type": "array",
-                          "items": {
-                            "type": "object",
-                            "properties": {
-                              "fn": {
-                                "type": "string",
-                                "enum": [
-                                  "compact",
-                                  "tail",
-                                  "json",
-                                  "quoteBlock",
-                                  "pathList",
-                                  "filterSeverity",
-                                  "severitySummary",
-                                  "join",
-                                  "default"
-                                ]
-                              },
-                              "args": {
-                                "type": "object",
-                                "propertyNames": {
-                                  "type": "string"
-                                },
-                                "additionalProperties": {}
-                              }
-                            },
-                            "required": [
-                              "fn"
-                            ],
-                            "additionalProperties": false
-                          }
-                        }
-                      },
-                      "required": [
-                        "name",
-                        "source"
-                      ],
-                      "additionalProperties": false
-                    }
-                  }
-                },
-                "required": [
-                  "role",
-                  "prompt"
-                ],
-                "additionalProperties": false
-              },
-              "fixer": {
-                "type": "object",
-                "properties": {
-                  "role": {
+                  "output": {
                     "type": "string",
                     "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
                   },
-                  "prompt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "variables": {
+                  "stages": {
+                    "minItems": 1,
                     "type": "array",
                     "items": {
-                      "type": "object",
-                      "properties": {
-                        "name": {
-                          "type": "string",
-                          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
-                        },
-                        "source": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "transform": {
-                          "type": "array",
-                          "items": {
-                            "type": "object",
-                            "properties": {
-                              "fn": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
+                            },
+                            "dependsOn": {
+                              "type": "array",
+                              "items": {
                                 "type": "string",
-                                "enum": [
-                                  "compact",
-                                  "tail",
-                                  "json",
-                                  "quoteBlock",
-                                  "pathList",
-                                  "filterSeverity",
-                                  "severitySummary",
-                                  "join",
-                                  "default"
-                                ]
-                              },
-                              "args": {
-                                "type": "object",
-                                "propertyNames": {
-                                  "type": "string"
-                                },
-                                "additionalProperties": {}
+                                "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
                               }
                             },
-                            "required": [
-                              "fn"
-                            ],
-                            "additionalProperties": false
-                          }
+                            "variables": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "name": {
+                                    "type": "string",
+                                    "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                                  },
+                                  "source": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "transform": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "fn": {
+                                          "type": "string",
+                                          "enum": [
+                                            "compact",
+                                            "tail",
+                                            "json",
+                                            "quoteBlock",
+                                            "pathList",
+                                            "filterSeverity",
+                                            "severitySummary",
+                                            "join",
+                                            "default"
+                                          ]
+                                        },
+                                        "args": {
+                                          "type": "object",
+                                          "propertyNames": {
+                                            "type": "string"
+                                          },
+                                          "additionalProperties": {}
+                                        }
+                                      },
+                                      "required": [
+                                        "fn"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "source"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "prompt": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "limits": {
+                              "type": "object",
+                              "properties": {
+                                "maxConcurrency": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "maxFanoutItems": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "stageTimeoutMinutes": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "additionalProperties": false
+                            },
+                            "kind": {
+                              "type": "string",
+                              "const": "agentTask"
+                            },
+                            "role": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "prompt",
+                            "kind",
+                            "role"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
+                            },
+                            "dependsOn": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
+                              }
+                            },
+                            "variables": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "name": {
+                                    "type": "string",
+                                    "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                                  },
+                                  "source": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "transform": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "fn": {
+                                          "type": "string",
+                                          "enum": [
+                                            "compact",
+                                            "tail",
+                                            "json",
+                                            "quoteBlock",
+                                            "pathList",
+                                            "filterSeverity",
+                                            "severitySummary",
+                                            "join",
+                                            "default"
+                                          ]
+                                        },
+                                        "args": {
+                                          "type": "object",
+                                          "propertyNames": {
+                                            "type": "string"
+                                          },
+                                          "additionalProperties": {}
+                                        }
+                                      },
+                                      "required": [
+                                        "fn"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "source"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "prompt": {
+                              "type": "string"
+                            },
+                            "limits": {
+                              "type": "object",
+                              "properties": {
+                                "maxConcurrency": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "maxFanoutItems": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "stageTimeoutMinutes": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "additionalProperties": false
+                            },
+                            "kind": {
+                              "type": "string",
+                              "const": "discover"
+                            },
+                            "method": {
+                              "type": "string",
+                              "enum": [
+                                "gitChangedFiles",
+                                "glob",
+                                "agent"
+                              ]
+                            },
+                            "args": {
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string"
+                              },
+                              "additionalProperties": {}
+                            },
+                            "output": {
+                              "default": "items",
+                              "type": "string"
+                            },
+                            "role": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "kind",
+                            "method"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
+                            },
+                            "dependsOn": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
+                              }
+                            },
+                            "variables": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "name": {
+                                    "type": "string",
+                                    "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                                  },
+                                  "source": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "transform": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "fn": {
+                                          "type": "string",
+                                          "enum": [
+                                            "compact",
+                                            "tail",
+                                            "json",
+                                            "quoteBlock",
+                                            "pathList",
+                                            "filterSeverity",
+                                            "severitySummary",
+                                            "join",
+                                            "default"
+                                          ]
+                                        },
+                                        "args": {
+                                          "type": "object",
+                                          "propertyNames": {
+                                            "type": "string"
+                                          },
+                                          "additionalProperties": {}
+                                        }
+                                      },
+                                      "required": [
+                                        "fn"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "source"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "prompt": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "limits": {
+                              "type": "object",
+                              "properties": {
+                                "maxConcurrency": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "maxFanoutItems": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "stageTimeoutMinutes": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "additionalProperties": false
+                            },
+                            "kind": {
+                              "type": "string",
+                              "const": "fanout"
+                            },
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "source": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "source"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "laneGroups": {
+                              "minItems": 1,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string",
+                                    "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
+                                  },
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "all",
+                                      "oneOf"
+                                    ]
+                                  },
+                                  "lanes": {
+                                    "minItems": 1,
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "id": {
+                                          "type": "string",
+                                          "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
+                                        },
+                                        "role": {
+                                          "type": "string",
+                                          "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
+                                        },
+                                        "prompt": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        "when": {
+                                          "$ref": "#/$defs/__schema0"
+                                        },
+                                        "default": {
+                                          "type": "boolean"
+                                        }
+                                      },
+                                      "required": [
+                                        "id",
+                                        "role"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "mode",
+                                  "lanes"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "fanoutPolicy": {
+                              "type": "object",
+                              "properties": {
+                                "allowPartial": {
+                                  "default": false,
+                                  "type": "boolean"
+                                },
+                                "minCompletedRatio": {
+                                  "type": "number",
+                                  "minimum": 0,
+                                  "maximum": 1
+                                },
+                                "maxBlockedItems": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "kind",
+                            "items",
+                            "laneGroups"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
+                            },
+                            "dependsOn": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
+                              }
+                            },
+                            "variables": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "name": {
+                                    "type": "string",
+                                    "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                                  },
+                                  "source": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "transform": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "fn": {
+                                          "type": "string",
+                                          "enum": [
+                                            "compact",
+                                            "tail",
+                                            "json",
+                                            "quoteBlock",
+                                            "pathList",
+                                            "filterSeverity",
+                                            "severitySummary",
+                                            "join",
+                                            "default"
+                                          ]
+                                        },
+                                        "args": {
+                                          "type": "object",
+                                          "propertyNames": {
+                                            "type": "string"
+                                          },
+                                          "additionalProperties": {}
+                                        }
+                                      },
+                                      "required": [
+                                        "fn"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "source"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "prompt": {
+                              "type": "string"
+                            },
+                            "limits": {
+                              "type": "object",
+                              "properties": {
+                                "maxConcurrency": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "maxFanoutItems": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "stageTimeoutMinutes": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "additionalProperties": false
+                            },
+                            "kind": {
+                              "type": "string",
+                              "const": "reduce"
+                            },
+                            "mode": {
+                              "default": "agent",
+                              "type": "string",
+                              "enum": [
+                                "agent",
+                                "program"
+                              ]
+                            },
+                            "from": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
+                            },
+                            "role": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
+                            },
+                            "operation": {
+                              "type": "string",
+                              "enum": [
+                                "mergeArrays",
+                                "severitySummary",
+                                "dedupeFindings",
+                                "sortBySeverity"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "kind",
+                            "from"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
+                            },
+                            "dependsOn": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
+                              }
+                            },
+                            "variables": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "name": {
+                                    "type": "string",
+                                    "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                                  },
+                                  "source": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "transform": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "fn": {
+                                          "type": "string",
+                                          "enum": [
+                                            "compact",
+                                            "tail",
+                                            "json",
+                                            "quoteBlock",
+                                            "pathList",
+                                            "filterSeverity",
+                                            "severitySummary",
+                                            "join",
+                                            "default"
+                                          ]
+                                        },
+                                        "args": {
+                                          "type": "object",
+                                          "propertyNames": {
+                                            "type": "string"
+                                          },
+                                          "additionalProperties": {}
+                                        }
+                                      },
+                                      "required": [
+                                        "fn"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "source"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "prompt": {
+                              "type": "string"
+                            },
+                            "limits": {
+                              "type": "object",
+                              "properties": {
+                                "maxConcurrency": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "maxFanoutItems": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "stageTimeoutMinutes": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "additionalProperties": false
+                            },
+                            "kind": {
+                              "type": "string",
+                              "const": "decisionGate"
+                            },
+                            "mode": {
+                              "default": "program",
+                              "type": "string",
+                              "enum": [
+                                "program",
+                                "agent"
+                              ]
+                            },
+                            "rules": {
+                              "minItems": 1,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "when": {
+                                    "$ref": "#/$defs/__schema0"
+                                  },
+                                  "to": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": [
+                                  "when",
+                                  "to"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "default": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "role": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
+                            },
+                            "routes": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "kind",
+                            "rules",
+                            "default"
+                          ],
+                          "additionalProperties": false
                         }
-                      },
-                      "required": [
-                        "name",
-                        "source"
-                      ],
-                      "additionalProperties": false
+                      ]
                     }
                   }
                 },
                 "required": [
-                  "role",
-                  "prompt"
+                  "root",
+                  "output",
+                  "stages"
                 ],
                 "additionalProperties": false
               },
-              "routingPolicy": {
-                "type": "object",
-                "properties": {
-                  "fixOn": {
-                    "default": [
-                      "P0",
-                      "P1",
-                      "failedRequiredCheck"
-                    ],
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
-                  },
-                  "ignoreForRouting": {
-                    "default": [
-                      "P2",
-                      "P3"
-                    ],
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
-                  },
-                  "unknown": {
-                    "type": "string",
-                    "const": "blocked"
-                  }
-                },
-                "required": [
-                  "unknown"
-                ],
-                "additionalProperties": false
-              },
-              "onUnknown": {
-                "type": "string",
-                "const": "blocked"
+              "continueWhen": {
+                "$ref": "#/$defs/__schema0"
               },
               "onExhausted": {
                 "type": "string",
@@ -965,10 +1524,8 @@
               "id",
               "kind",
               "maxRounds",
-              "validator",
-              "fixer",
-              "routingPolicy",
-              "onUnknown",
+              "body",
+              "continueWhen",
               "onExhausted"
             ],
             "additionalProperties": false

@@ -35,11 +35,14 @@ The runtime orchestrator is the authoritative workflow driver. It executes compi
 - Program gate stages MUST advance deterministically, and agent gate stages MUST run through the normal agent attempt pipeline.
 - Terminal gate dependencies MAY treat skipped upstream decision branches as satisfied; other stage dependencies MUST require completed upstream stages.
 - Gate verdicts `pass` and `pass_with_warnings` MUST complete a run, while `blocked`, `failed`, and `unknown` MUST block a run without using runtime `failed`.
-- `fixLoop` stages MUST run validator and fixer turns through the same ACPX runtime attempt pipeline used by other agent work.
-- `fixLoop` validator attempts MUST use the validator role/session key, and fixer attempts MUST use the fixer role/session key.
-- `fixLoop` MUST run a fixer turn when validator output matches `routingPolicy.fixOn`.
-- `fixLoop` MUST complete when validator output does not match `routingPolicy.fixOn`.
-- `fixLoop` unknown, blocked, or exhausted outcomes MUST block the stage rather than silently completing.
+- `loop` stages MUST execute as bounded workflow-level stages driven by the runtime scheduler.
+- `loop` body agent stages MUST run through the same ACPX runtime attempt and repair pipeline used by other agent work.
+- `loop` body attempts MUST use deterministic session keys that include parent loop id, round, body stage id, and fanout item/group/lane identity when applicable.
+- `loop` body program stages MUST execute deterministically inside the round.
+- `loop` body fanout stages MUST use the same stage-local `limits.maxConcurrency` lane work semantics as top-level fanout stages.
+- `loop` body fanout stages MUST select and aggregate lane work before downstream body stages run in the same round.
+- `loop` MUST evaluate `continueWhen` after each completed round and MUST complete when the condition is false.
+- `loop` body blocked, missing body output, or exhausted outcomes MUST block the stage rather than silently completing.
 - `diagnose` MUST prepare read-only diagnostic artifacts and MUST NOT rerun edit work or mutate the saved workflow spec.
 - `diagnose --wait` MUST preserve `diagnosed_blocked` while underlying stages remain blocked or failed.
 
@@ -68,17 +71,20 @@ Execution event types include:
 - `attempt_created`, `attempt_started`, `turn_started`, `turn_finished`, `agent_event`, `output_written`, and `repair_started` for attempt, turn, output, and repair lifecycle.
 - `runtime_retry_scheduled`, `runtime_retry_started`, and `runtime_retry_exhausted` for transient runtime retry handling.
 - `program_stage_completed` for deterministic program stage completion.
+- `loop_body_program_stage_completed` for deterministic loop body program stage completion.
 - `diagnostic_prepared` for diagnose artifact preparation.
 
 The scheduler MUST NOT emit `scheduler_batch_started` or `scheduler_batch_completed`.
 
 ## Data Model
 
-The runtime data model includes a logical run, compiled execution plan, stage states, attempts, fanout item/group/lane attempts, fix-loop validator/fixer attempts, output artifacts, event stream, role/session bindings, ACPX session state, usage accounting, gate verdict, blocked reason, and diagnostics.
+The runtime data model includes a logical run, compiled execution plan, stage states, attempts, fanout item/group/lane attempts, loop round/body attempts, output artifacts, event stream, role/session bindings, ACPX session state, usage accounting, gate verdict, blocked reason, and diagnostics.
 
 Fanout pool state MUST be derived from fanout item/group/lane status, attempts, and output artifacts. The run index MUST remain item-centric with nested lane group and lane records, and MUST NOT persist a separate pool object.
 
 Terminal workflow outcomes are represented in the run index. Output-contract failures block attempts, stages, and runs; infrastructure or unrecoverable runtime errors fail attempts, stages, or runs.
+
+Loop stage state MUST persist parent loop metadata in `run.json`, including `maxRounds`, `currentRound` when known, `bodyOutputStageId`, and an ordered `rounds[]` history. Each round record MUST include round number, status, timestamps, output path when available, body output stage id, body output, per-body-stage outputs, and per-body-stage status details. Body fanout stage details MUST preserve nested fanout item/group/lane state.
 
 ## Runtime Behavior
 
@@ -96,7 +102,9 @@ When fanout draining is not enabled, the scheduler MAY start up to the stage `ma
 
 When a fanout item blocks or fails and partial fanout is not allowed, the scheduler MUST stop launching additional items for that fanout stage, MUST allow already running items to settle, MUST terminalize queued items as blocked with `FANOUT_ITEM_CASCADE_BLOCKED`, and MUST aggregate the fanout stage as blocked.
 
-Fix-loop execution is round-based. Each round starts with a validator attempt using the validation output contract. A fix-triggering validator result starts a fixer attempt using the implementation output contract when another round is available. Passing validation completes the stage. Unknown validation or exhausted rounds block the stage.
+Loop execution is round-based. Each round starts at the loop body root, advances eligible body stages by dependency completion, and records body stage outputs under `outputs/<loopId>/round-<round>/<bodyStageId>.json`. Agent body stages use parent-loop stage state but distinct attempt item ids. Fanout body stages write lane outputs under the round directory and aggregate item and stage outputs before downstream body stages run. Loop body fanout concurrency is controlled only by the fanout stage `limits.maxConcurrency`; the loop controls round sequencing and MUST NOT introduce a separate concurrency pool. The loop writes an aggregate parent output to `outputs/<loopId>.json` containing status, round count, current/previous body output, round history, and blocked reason when applicable.
+
+If a body stage blocks, the loop stage MUST block with `LOOP_BODY_STAGE_BLOCKED`. If the declared body output is missing after a round, the loop stage MUST block with `LOOP_BODY_OUTPUT_MISSING`. If `continueWhen` remains true after the final allowed round, the loop stage MUST block with `LOOP_EXHAUSTED`.
 
 Gate execution is terminal. Program gates evaluate their condition or default upstream-exists check and write a gate output without an agent turn. Agent gates use the gate output contract. The scheduler promotes the gate output verdict into `run.json.gateVerdict` and derives the terminal run status from it.
 
@@ -123,7 +131,7 @@ Supported extension points are stage runtime policies, resume policy tightening,
 - ACPX runtime integration -> `src/runtime/agent-runtime.ts`, `src/runtime/acpx-config.ts`
 - Scheduler -> `src/runtime/scheduler.ts`, `src/runtime/run-workflow.ts`, `src/runtime/stage-runner.ts`
 - Attempts and outputs -> `src/runtime/attempts.ts`, `src/runtime/output-parser.ts`, `src/runtime/repair.ts`
-- `fixLoop` runtime execution -> `src/runtime/stage-runner.ts`
+- `loop` runtime execution -> `src/runtime/stage-runner.ts`
 - Resume and diagnose -> `src/runtime/resume-policy.ts`, `src/runtime/diagnose-run.ts`, `src/commands/resume.ts`, `src/commands/diagnose.ts`
 - Session bindings -> `src/runtime/session-bindings.ts`
 - Run index and paths -> `src/run-index/read-write.ts`, `src/run-index/paths.ts`, `src/run-index/locator.ts`
