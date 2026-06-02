@@ -1,11 +1,43 @@
 {
   "name": "acpus",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.0.1",
+  "private": false,
+  "description": "Runtime-driven workflow orchestrator for ACP agents",
+  "keywords": [
+    "acpx",
+    "workflow",
+    "orchestrator",
+    "agent",
+    "cli"
+  ],
+  "license": "MIT",
+  "author": "kkkyran",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kelvinschen/acpus.git"
+  },
+  "homepage": "https://github.com/kelvinschen/acpus#readme",
+  "bugs": {
+    "url": "https://github.com/kelvinschen/acpus/issues"
+  },
   "type": "module",
   "bin": {
     "acpus": "dist/cli.mjs"
   },
+  "main": "dist/index.mjs",
+  "types": "dist/index.d.mts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "types": "./dist/index.d.mts"
+    }
+  },
+  "files": [
+    "dist",
+    "schemas",
+    "LICENSE",
+    "README.md"
+  ],
   "engines": {
     "node": ">=22.13.0"
   },

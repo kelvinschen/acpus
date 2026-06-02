@@ -1,0 +1,27 @@
+# Source code — not needed in published package
+src/
+test/
+specs/
+docs/
+skills/
+workflows/
+
+# Development config
+tsconfig.json
+tsdown.config.ts
+vitest.config.ts
+AGENTS.md
+CONTEXT.md
+
+# GitHub and CI
+.github/
+
+# Build artifacts
+*.tsbuildinfo
+
+# Local runtime state
+.acpus/
+.acpx/
+
+# Page source (separate deployment)
+page/

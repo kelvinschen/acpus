@@ -1,86 +1,152 @@
 ---
 name: acpus
-description: Use when the user wants runtime-driven workflow orchestration for ACP agents: validate, preview, save, generate, run, follow, monitor, resume, recover, or diagnose a workflow spec (score) or logical run (opus). The Main Agent writes structured workflow specs; the Acpus CLI conducts execution over the acpx agent runtime.
+description: >
+  Orchestrate multi-step agent workflows with acpus — compile a spec into a
+  deterministic execution plan, fan out work across parallel lanes, route
+  through decision gates, and recover from failures. Use this skill whenever
+  the user wants to coordinate multiple agent sessions in a structured pipeline,
+  run heterogeneous parallel agent work, author a workflow spec, monitor or
+  recover a running workflow, or anything involving the acpus CLI. Even if the
+  user doesn't say "acpus" or "workflow", if they describe a multi-stage agent
+  pipeline, parallel agent review, or conditional agent routing, this skill
+  applies.
 ---
 
 # Acpus
 
 Acpus is a runtime-driven workflow orchestrator for ACP agents, built on the
-acpx agent runtime. It accepts a structured *workflow spec* (总谱), validates it,
-compiles a deterministic execution plan, and conducts heterogeneous fanout across
-parallel lanes. Every run is catalogued as a numbered, replayable opus (作品).
+acpx agent runtime. It accepts a structured *workflow spec*, validates it,
+compiles a deterministic execution plan, and conducts heterogeneous fanout
+across parallel lanes. Every run is tracked as a numbered, replayable execution.
 
-The public surface is the `acpus` CLI binary. Do not generate or execute
-`workflow.flow.ts`, `materialized.flow.ts`, or `acpx flow run` artifacts
-directly.
+The public surface is the `acpus` CLI binary. 
 
 ## Core Workflow
 
-1. The Main Agent writes a workflow spec under `.acpus/drafts/` or selects a
-   saved spec under `.acpus/workflows/`.
-
-2. **Compose** -- validate and preview before execution:
+1. **Author** — generate a starter spec, then edit:
 
    ```bash
-   acpus validate --spec <workflow.spec.json>
-   acpus preview --spec <workflow.spec.json>
+   npx acpus generate [--name <name>]
    ```
 
-3. **Conduct** -- run after preview confirms correctness. Plain `run` creates the
-   run, starts a background worker, and returns immediately. Use `--wait` only
-   when the calling context requires the process to remain attached until the
-   workflow reaches terminal status:
+   Writes a draft scaffold to `.acpus/drafts/<timestamp>-<name>.workflow.spec.json`.
+   The draft is a minimal two-stage template (plan + gate); edit before running.
+
+2. **Compose** — validate and preview before execution:
 
    ```bash
-   acpus run --spec <workflow.spec.json>
-   acpus run --workflow <saved-name>
-   acpus run --workflow <saved-name> --wait
+   npx acpus validate --spec <workflow.spec.json>
+   npx acpus validate --workflow <saved-name> [--global]
+   npx acpus preview --spec <workflow.spec.json>
    ```
 
-4. **Observe and recover** -- operate on logical runs by run id:
+   Preview shows: workflow name, planned agent calls, fanout estimates,
+   risk factors, stage listing, audit trail, and any lint issues.
+
+3. **Conduct** — run after preview confirms correctness:
 
    ```bash
-   acpus monitor <logical-run-id>
-   acpus follow <logical-run-id>
-   acpus recover <logical-run-id>
+   npx acpus run --spec <workflow.spec.json>
+   npx acpus run --spec <workflow.spec.json> --input-json <input.json>
+   npx acpus run --workflow <saved-name> [--global]
+   npx acpus run --workflow <saved-name> --wait
    ```
 
-   Use `recover <logical-run-id>` only when the execution driver is stale or dead
-   and the run has not reached terminal status. Use `resume <logical-run-id>`
-   only for blocked, failed, or diagnosed-blocked recovery. `monitor` and
-   `follow` are observation-only; they must not start workers or advance
-   workflow state. Use `diagnose <logical-run-id> --wait` for blocked runs --
-   it produces a read-only recovery diagnostic without rerunning edit work.
+   Plain `run` spawns a background worker and returns immediately.
+   `--wait` runs in foreground until terminal state.
+   `--input-json <path>` supplies typed workflow inputs.
 
-## Spec Authoring (编曲)
+4. **Observe** — inspect runs by run id or directory path:
 
-Specs declare `schemaVersion: "acpus.workflow/v1"`, an explicit `root`
-stage id, and one or more stage kinds:
+   ```bash
+   npx acpus monitor <run>            # Interactive TUI (three-panel)
+   npx acpus monitor <run> --json     # RunMonitorView as JSON
+   npx acpus monitor detail <run> <task-id> --json
+   npx acpus follow <run>             # One-shot status snapshot
+   npx acpus follow <run> --json
+   ```
 
-- `agentTask`
-- `discover`
-- `fanout`
-- `reduce`
-- `loop`
-- `decisionGate`
-- `gate`
+   `monitor` opens an Ink-based TUI with Stage List / Stage Info / Task Detail
+   panels. 
 
-Prompt text is freeform. Variables are explicit and interpolated as
-`${variableName}`. Agent outputs should terminate with one plain JSON object;
-the parser selects the last balanced JSON object and tolerates non-JSON trailing
-text. Markdown code fences are tolerated but not required. Zod-backed contracts
-validate outputs; deterministic `checks[].result -> checks[].status`
-normalization is permitted, and one schema-aware repair turn may execute within
-the same session.
+5. **Recover** — operate on blocked/failed/diagnosed runs:
 
-Treat **preview** as the mandatory preflight step: verify roles, edit modes,
-fanout configuration, partial-result policy, limits, and audit paths before
-running. Running does not persist a reusable workflow -- use
-`save <name> --spec <path>` as a separate, explicit action.
+   ```bash
+   npx acpus recover <run>            # Spawn new worker for stale/dead run
+   npx acpus resume <run>             # Reset blocked stages, re-execute
+   npx acpus resume <run> --wait
+   npx acpus resume <run> --allow-partial-fanout <stage...>
+   npx acpus resume <run> --max-fanout-items <stage=count...>
+   npx acpus resume <run> --skip-fanout-item <stage=index...>
+   npx acpus diagnose <run> [--wait]  # Read-only diagnostic analysis
+   ```
 
-## Reference
+   **Recovery decision tree:**
+   - Run stuck? → `diagnose` first (read-only, explains what went wrong)
+   - Worker stale/dead? → `recover` (spawns new worker, picks up where it left off)
+   - Stage blocked with bad output? → `resume` (resets blocked stages to pending)
+   - Fanout partially blocked? → `resume --allow-partial-fanout <stage>` or
+     `--skip-fanout-item` to skip specific items
 
-- [specs/INDEX.md](specs/INDEX.md) -- schema reference
-- [docs/cli.md](docs/cli.md) -- complete CLI documentation
+6. **Catalogue** — list and inspect saved artifacts:
 
-Example workflows reside in `workflows/examples/`.
+   ```bash
+   npx acpus save <name> --spec <path> [--overwrite] [--global]
+   npx acpus list <workflows|runs|drafts> [--global] [--json]
+   npx acpus show <workflow|run|draft> <name> [--global] [--json]
+   ```
+
+   All commands accept `--json` for machine-readable output.
+
+## Key Concepts
+
+**Spec** — a JSON document declaring stages, roles, inputs, and how data flows
+between stages. Starts from a single `root` stage, branches only through
+`decisionGate`, and terminates at exactly one `gate`.
+
+**Stage** — a unit of work. Seven kinds: `agentTask` (single agent call),
+`discover` (find items), `fanout` (parallel execution across items and lanes),
+`reduce` (aggregate results), `decisionGate` (conditional routing), `gate`
+(final pass/fail), `loop` (bounded repetition).
+
+**Role** — defines which agent runs a stage and what it can do. Category
+(planning/implementation/validation/...) determines the output contract.
+Mode (denyAll/readOnly/edit) controls tool access.
+
+**Output contract** — the structured JSON each stage must produce. Contract
+type is derived from stage kind and role category — authors don't choose it
+directly. Contract failures produce **blocked** state, not **failed** (failed
+is reserved for infrastructure errors).
+
+**Condition DSL** — used for gate pass/fail, decisionGate routing, fanout lane
+selection, and loop continuation. Six forms: comparison, membership, existence,
+conjunction, disjunction, negation. Source roots: `input.*`, `outputs.*`,
+`item.*`, `loop.*`, `run.*`.
+
+## Design Constraints
+
+These are enforced by lint or runtime and can't be worked around:
+
+1. One root stage, one terminal gate per workflow
+2. No arbitrary cycles — only `loop` for bounded repetition
+3. Branching only via `decisionGate` — ordinary stages cannot have multiple dependents
+4. Output contract failures block, never fail — `failed` is for infrastructure errors only
+5. Observation surfaces are strictly read-only — `follow`/`monitor`/`diagnose` never mutate state
+6. Disk state is authoritative — source of truth for crash recovery
+7. Each run is isolated — independent directory + session store
+8. No direct ACPX flow execution — acpus drives acpx through runtime API only
+9. `summarize` stage is deprecated — replace with terminal `gate`
+10. Edit-mode fanout requires a downstream readOnly `reduce` stage
+
+## Reference Files
+
+Read these when you need concrete details for a specific task:
+
+| File | When to Read |
+|------|-------------|
+| `workflow-examples/` | Starting a new spec — 8 runnable example specs (raw JSON) covering linear pipeline, loops, fanout patterns, lane routing, and edit+reconcile. See `workflow-examples/README.md` for pattern index. |
+| `references/spec-authoring.md` | Writing a workflow spec — complete field reference for inputs, roles, all 7 stage kinds with JSON fragments |
+| `references/routing.md` | Writing decisionGate rules, gate conditions, or fanout lane groups — concrete JSON examples of each routing pattern |
+| `references/conditions-and-variables.md` | Writing conditions, variable declarations, or prompt interpolation — all source roots, transform chains, template rendering |
+| `references/output-contracts.md` | Understanding what output each stage produces — contract schemas, selection logic, parser behavior |
+| `references/runtime.md` | Understanding runtime internals — worker lifecycle, scheduler, recovery, fanout pool, run directory, lint families |

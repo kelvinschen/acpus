@@ -19,7 +19,7 @@ acpus validate --spec workflows/examples/simple-feature.workflow.spec.json
 # Inspect the compiled execution plan as structured output.
 acpus preview --spec workflows/examples/simple-feature.workflow.spec.json --json
 
-# Save a workflow to the catalogue for reuse.
+# Save a workflow to the local store for reuse.
 acpus save simple-feature --spec workflows/examples/simple-feature.workflow.spec.json
 acpus save simple-feature --spec workflows/examples/simple-feature.workflow.spec.json --overwrite
 

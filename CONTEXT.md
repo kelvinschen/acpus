@@ -40,7 +40,7 @@ _Avoid_: agent, task, active agent
 
 ## Runtime & Observation Surfaces
 
-**Run** (brand annotation: *opus*):
+**Run**:
 One complete execution of a workflow spec under `acpus`. Each run is assigned a numbered identifier and produces replayable state within `.acpus/`.
 _Avoid_: execution instance, job, pipeline run
 
@@ -62,11 +62,11 @@ _Avoid_: Work Unit Detail View, report detail, full artifact view, expanded moni
 
 ## Workflow Structure
 
-**Workflow Spec** (brand annotation: *score*):
-The declarative definition of a workflow consumed by `acpus compose` and executed by `acpus run`. A score defines stages, lanes, loop boundaries, and inter-stage hooks.
+**Workflow Spec**:
+The declarative definition of a workflow consumed by `acpus compose` and executed by `acpus run`. A workflow spec defines stages, lanes, loop boundaries, and inter-stage hooks.
 _Avoid_: pipeline config, job definition, workflow YAML
 
-**Stage** (brand annotation: *movement*):
+**Stage**:
 A named phase within a workflow spec that groups related tasks and defines execution order relative to other stages.
 _Avoid_: step, phase, section
 
@@ -86,12 +86,12 @@ _Avoid_: agent option, branch
 A named set of lanes evaluated together for each fanout item under one selection mode.
 _Avoid_: lane selector, lane collection
 
-**Cadenza** (brand annotation: *cadenza*):
+**Cadenza**:
 An agent-backed block within a stage where the agent operates with broad discretion over approach and output format, constrained only by the surrounding stage contract.
 _Avoid_: free-form task, open-ended agent call
 
-**Intermezzo** (brand annotation: *intermezzo*):
-A hook that executes between stages, used for cross-stage validation, state propagation, or conditional branching before the next movement begins.
+**Intermezzo**:
+A hook that executes between stages, used for cross-stage validation, state propagation, or conditional branching before the next stage begins.
 _Avoid_: pre/post hook, middleware, interceptor
 
 ## Loop Constructs
@@ -116,12 +116,12 @@ _Avoid_: iteration step, partial round, mid-loop break
 The top-level stage output emitted by a Workflow-Level Bounded Loop. A Loop Output summarizes the latest round and preserves round history without promoting Loop Body stage outputs to top-level workflow outputs.
 _Avoid_: flattened body outputs, final body stage output
 
-## Reporting & Catalogue
+## Reporting & List
 
-**Coda** (brand annotation: *coda*):
+**Coda**:
 The final report produced at the conclusion of a run, summarising outcomes across all stages, loop rounds, and fanout lanes.
 _Avoid_: final report, summary, post-run output
 
-**Catalogue** (brand annotation: *catalogue*):
+**List**:
 The template and archival system accessible via `acpus list` and `acpus show`, storing reusable workflow specs and completed run records.
 _Avoid_: template library, registry, run history

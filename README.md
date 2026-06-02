@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="page/logo/logo-opus-mark.svg" alt="Acpus opus mark" width="120">
+  <img src="page/logo/logo-opus-mark.svg" alt="Acpus mark" width="120">
 </p>
 
 <h1 align="center">Acpus</h1>
-<p align="center">Every run is an opus.</p>
+<p align="center" font-style="italic">Every run is an opus.</p>
 
-Acpus is a runtime-driven workflow orchestrator for ACP agents, built on the acpx agent runtime. You hand it a *workflow spec*; Acpus validates it, compiles a deterministic execution plan, conducts heterogeneous fanout across lanes, and catalogues every run as a numbered, replayable opus.
+Acpus is a runtime-driven workflow orchestrator for ACP agents, built on the acpx agent runtime. You hand it a *workflow spec*; Acpus validates it, compiles a deterministic execution plan, conducts heterogeneous fanout across lanes, and tracks every run as a numbered, replayable execution, or say, an *opus*.
 
 ## Quick Start
 
@@ -26,6 +26,12 @@ acpus run --spec workflows/examples/simple-feature.workflow.spec.json
 acpus follow <logical-run-id>
 ```
 
+## Skill
+
+```bash
+npx skills add @kelvinschen/acpus --skill acpus
+```
+
 ## Commands
 
 Acpus commands are grouped by four verbs.
@@ -36,7 +42,7 @@ Acpus commands are grouped by four verbs.
 |---|---|
 | `acpus validate --spec <path>` | Validate a workflow spec against the schema |
 | `acpus preview --spec <path>` | Render the compiled execution plan without running |
-| `acpus save <name> --spec <path>` | Save a spec to the local catalogue |
+| `acpus save <name> --spec <path>` | Save a spec to the local store |
 | `acpus generate` | Scaffold a new workflow spec from a template |
 
 ### Conduct — run, follow, monitor, resume
@@ -64,11 +70,11 @@ Acpus commands are grouped by four verbs.
 
 ## Architecture
 
-Acpus sits between the author and the acpx runtime. The main agent produces a *score* (workflow spec). Acpus reads it, validates it against the JSON schema, and compiles it into an *execution plan* — a deterministic sequence of stages, each containing parallel lanes that map to independent acpx sessions.
+Acpus sits between the author and the acpx runtime. The main agent produces a *workflow spec*. Acpus reads it, validates it against the JSON schema, and compiles it into an *execution plan* — a deterministic sequence of stages, each containing parallel lanes that map to independent acpx sessions.
 
 Run directories live under `.acpus/runs/<id>/`. Each contains:
 
-- `workflow.spec.json` — the original score
+- `workflow.spec.json` — the original workflow spec
 - `execution-plan.json` — the compiled plan
 - `input.json` — resolved inputs at launch time
 - `outputs/` — stage outputs and final artefacts
