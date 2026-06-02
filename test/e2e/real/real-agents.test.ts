@@ -51,12 +51,10 @@ describe.skipIf(!runReal)("real acpx agents e2e", () => {
       ]
     }, null, 2), "utf8");
 
-    const raw = runCli(cwd, acpx, ["run", "--spec", specPath, "--yes", "--wait", "--json"], 2 * 60 * 1000);
-    const result = JSON.parse(raw);
+    const raw = runCli(cwd, acpx, ["run", "--spec", specPath, "--wait", "--json"], 2 * 60 * 1000);
+    const result = parseTerminalSummary(raw);
     expect(result.status).toBe("blocked");
-    expect(result.runView.status).toBe("blocked");
     await expect(fs.stat(path.join(result.runDir, "outputs", "discover.json"))).resolves.toBeTruthy();
-    await expect(fs.stat(path.join(result.runDir, "attempts"))).resolves.toBeTruthy();
   }, 3 * 60 * 1000);
 
   it("runs a small code task through a configured real ACP agent", async () => {
@@ -103,8 +101,8 @@ describe.skipIf(!runReal)("real acpx agents e2e", () => {
       task: "Edit src/status.txt so it contains exactly one line: done"
     }, null, 2), "utf8");
 
-    const raw = runCli(cwd, acpx, ["run", "--spec", specPath, "--input-json", inputPath, "--yes", "--wait", "--json"], 20 * 60 * 1000);
-    const result = JSON.parse(raw);
+    const raw = runCli(cwd, acpx, ["run", "--spec", specPath, "--input-json", inputPath, "--wait", "--json"], 20 * 60 * 1000);
+    const result = parseTerminalSummary(raw);
     expect(result.status).toBe("completed");
     expect((await fs.readFile(path.join(cwd, "src", "status.txt"), "utf8")).trim()).toBe("done");
     await expect(fs.stat(path.join(result.runDir, "attempts", "implement", "attempt-1", "raw.txt"))).resolves.toBeTruthy();
@@ -119,6 +117,15 @@ function runCli(cwd: string, acpx: string, args: string[], timeout: number): str
     timeout,
     env: { ...process.env, PATH: `${path.dirname(acpx)}:${process.env.PATH ?? ""}` }
   });
+}
+
+function parseTerminalSummary(raw: string): { status: string; runDir: string } {
+  const events = raw.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as { type?: string; status?: string; runDir?: string });
+  const summary = events.at(-1);
+  if (summary?.type !== "terminal_summary" || !summary.status || !summary.runDir) {
+    throw new Error(`Missing terminal summary in CLI output:\n${raw}`);
+  }
+  return { status: summary.status, runDir: summary.runDir };
 }
 
 function cliPath(): string {

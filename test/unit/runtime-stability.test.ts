@@ -4,6 +4,7 @@ import path from "node:path";
 import type { AcpRuntimeEvent, AcpRuntimeHandle } from "acpx/runtime";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildRunDiagnosticsView, RunDiagnosticCodes } from "../../src/projections/run-diagnostics.js";
+import { buildRunMonitorView } from "../../src/projections/run-monitor.js";
 import { runDir } from "../../src/run-index/paths.js";
 import { appendEvent, readRunIndex, RuntimeErrorCodes, writeRunIndex, type RunIndex } from "../../src/run-index/read-write.js";
 import { setAgentRuntimeFactoryForTests, type AgentTurnRequest, type AgentTurnResult, type OrchestratorAgentRuntime } from "../../src/runtime/agent-runtime.js";
@@ -207,6 +208,90 @@ describe("fanout runtime stability", () => {
     expect(item3Started).toBeLessThan(item1Settled);
     expect(events.map((event) => event.type)).not.toContain("scheduler_batch_started");
     expect(events.map((event) => event.type)).not.toContain("scheduler_batch_completed");
+  });
+
+  it("persists loop body fanout lanes while they are running", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-fanout-realtime-"));
+    const runtime = new DelayedFanoutRuntime({ "item-1": 50 });
+    const spec = loopFanoutRealtimeSpec();
+    const prepared = await prepareRun(spec, {
+      cwd,
+      input: { cwd, items: [{ id: "item-1" }] }
+    });
+    let runningLaneStatus: string | undefined;
+    runtime.onStart = async (itemId) => {
+      if (itemId !== "item-1" || runningLaneStatus) return;
+      runningLaneStatus = await waitForLoopFanoutLaneStatus(cwd, prepared.logicalRunId, spec, "item-1");
+    };
+    setAgentRuntimeFactoryForTests(() => runtime);
+
+    const index = await syncRun(cwd, prepared.logicalRunId, { drainFanoutPool: true });
+    const finalView = await buildRunMonitorView(cwd, spec, index);
+    const finalLane = finalView.workUnits.find((unit) => unit.kind === "loopFanoutLane" && unit.itemId === "item-1");
+
+    expect(runningLaneStatus).toBe("running");
+    expect(finalLane).toMatchObject({
+      kind: "loopFanoutLane",
+      status: "completed",
+      outputPath: expect.stringContaining("outputs/review_loop/round-1/body_fanout/item-1/work/worker.json")
+    });
+  });
+
+  it("persists loop body fanout lane settlement before the whole fanout pool finishes", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-fanout-realtime-settle-"));
+    const runtime = new DelayedFanoutRuntime({ "item-1": 1, "item-2": 400 });
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const spec = loopFanoutSpec(cwd, {
+      maxConcurrency: 2,
+      laneGroups: [{ id: "work", mode: "all", lanes: [{ id: "worker", role: "worker" }] }]
+    });
+    const prepared = await prepareRun(spec, { cwd, input: { cwd, items: fanoutInputItems(2) } });
+
+    const running = syncRun(cwd, prepared.logicalRunId, { drainFanoutPool: true });
+    const settledLane = await waitForLoopFanoutLane(cwd, prepared.logicalRunId, spec, "item-1", (unit) => unit.status === "completed");
+    const concurrentLane = await waitForLoopFanoutLane(cwd, prepared.logicalRunId, spec, "item-2", (unit) => unit.status === "running");
+    const finalIndex = await running;
+
+    expect(settledLane).toMatchObject({
+      kind: "loopFanoutLane",
+      status: "completed",
+      outputPath: expect.stringContaining("outputs/quality_loop/round-1/review_items/item-1/work/worker.json")
+    });
+    expect(concurrentLane).toMatchObject({ kind: "loopFanoutLane", status: "running" });
+    expect(finalIndex.status).toBe("completed");
+  });
+
+  it("does not overwrite loop body fanout startedAt or attempts during later lane starts", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-fanout-progress-merge-"));
+    const runtime = new DelayedFanoutRuntime({ "item-1": 1, "item-2": 50 });
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const spec = loopFanoutSpec(cwd, {
+      maxConcurrency: 1,
+      laneGroups: [{ id: "work", mode: "all", lanes: [{ id: "worker", role: "worker" }] }]
+    });
+    const prepared = await prepareRun(spec, { cwd, input: { cwd, items: fanoutInputItems(2) } });
+    let firstStartedAt: string | undefined;
+    let secondStartedAt: string | undefined;
+    let attemptsDuringSecondStart: string[] = [];
+    runtime.onStart = async (itemId) => {
+      if (itemId === "item-1") {
+        const stage = await waitForLoopBodyStage(cwd, prepared.logicalRunId, "quality_loop", "review_items", (entry) => entry.status === "running");
+        firstStartedAt = stage?.startedAt;
+      }
+      if (itemId === "item-2") {
+        const stage = await waitForLoopBodyStage(cwd, prepared.logicalRunId, "quality_loop", "review_items", (entry) => (entry.attempts?.length ?? 0) > 0);
+        secondStartedAt = stage?.startedAt;
+        attemptsDuringSecondStart = stage?.attempts ?? [];
+      }
+    };
+
+    const finalIndex = await syncRun(cwd, prepared.logicalRunId, { drainFanoutPool: true });
+
+    expect(finalIndex.status).toBe("completed");
+    expect(firstStartedAt).toEqual(expect.any(String));
+    expect(secondStartedAt).toBe(firstStartedAt);
+    expect(attemptsDuringSecondStart).toHaveLength(1);
+    expect(attemptsDuringSecondStart[0]).toContain("item-item-1");
   });
 
   it("cascade-blocks pending fanout items after an allowPartial=false item failure", async () => {
@@ -1715,6 +1800,40 @@ function fanoutInputItems(count: number): Array<{ id: string }> {
   return Array.from({ length: count }, (_, index) => ({ id: `item-${index + 1}` }));
 }
 
+function loopFanoutRealtimeSpec(): WorkflowSpec {
+  return WorkflowSpecSchema.parse({
+    schemaVersion: "acpx-workflow-orchestrator.workflow/v1",
+    name: "loop-fanout-realtime",
+    root: "review_loop",
+    inputs: {
+      cwd: { type: "path" },
+      items: { type: "array<json>" }
+    },
+    roles: { worker: { category: "coordination", agent: "fake", mode: "readOnly" } },
+    limits: { stageTimeoutMinutes: 1 },
+    stages: [{
+      id: "review_loop",
+      kind: "loop",
+      maxRounds: 1,
+      body: {
+        root: "body_fanout",
+        output: "body_fanout",
+        stages: [{
+          id: "body_fanout",
+          kind: "fanout",
+          items: { source: "input.items" },
+          limits: { maxConcurrency: 1, maxFanoutItems: 1 },
+          prompt: "Review loop fanout item",
+          laneGroups: [{ id: "work", mode: "all", lanes: [{ id: "worker", role: "worker" }] }],
+          fanoutPolicy: { allowPartial: false }
+        }]
+      },
+      continueWhen: { source: "loop.current.output.status", op: "eq", value: "again" },
+      onExhausted: "blocked"
+    }]
+  });
+}
+
 function queuedFanoutItemCount(index: RunIndex): number {
   return index.stages.fanout?.fanout?.items.filter((item) => item.status === "pending" || item.status === "ready").length ?? 0;
 }
@@ -1739,6 +1858,45 @@ async function fanoutPoolStartedCount(dir: string): Promise<number> {
 async function readEvents(dir: string): Promise<Array<{ type?: string; itemId?: string; cascade?: boolean }>> {
   const text = await fs.readFile(path.join(dir, "events.ndjson"), "utf8");
   return text.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as { type?: string; itemId?: string; cascade?: boolean });
+}
+
+async function waitForLoopFanoutLaneStatus(cwd: string, runId: string, spec: WorkflowSpec, itemId: string): Promise<string | undefined> {
+  return (await waitForLoopFanoutLane(cwd, runId, spec, itemId, () => true))?.status;
+}
+
+async function waitForLoopFanoutLane(
+  cwd: string,
+  runId: string,
+  spec: WorkflowSpec,
+  itemId: string,
+  predicate: (unit: Awaited<ReturnType<typeof buildRunMonitorView>>["workUnits"][number]) => boolean
+): Promise<Awaited<ReturnType<typeof buildRunMonitorView>>["workUnits"][number] | undefined> {
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline) {
+    const snapshot = await readRunIndex(cwd, runId);
+    const view = await buildRunMonitorView(cwd, spec, snapshot);
+    const lane = view.workUnits.find((unit) => unit.kind === "loopFanoutLane" && unit.itemId === itemId);
+    if (lane && predicate(lane)) return lane;
+    await sleep(10);
+  }
+  return undefined;
+}
+
+async function waitForLoopBodyStage(
+  cwd: string,
+  runId: string,
+  loopStageId: string,
+  bodyStageId: string,
+  predicate: (entry: NonNullable<NonNullable<RunIndex["stages"][string]["loop"]>["rounds"][number]["stages"][string]>) => boolean
+): Promise<NonNullable<NonNullable<RunIndex["stages"][string]["loop"]>["rounds"][number]["stages"][string]> | undefined> {
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline) {
+    const snapshot = await readRunIndex(cwd, runId);
+    const stage = snapshot.stages[loopStageId]?.loop?.rounds.at(-1)?.stages[bodyStageId];
+    if (stage && predicate(stage)) return stage;
+    await sleep(10);
+  }
+  return undefined;
 }
 
 function gateSpec(cwd: string): WorkflowSpec {

@@ -6,7 +6,7 @@ import { resolveRunLocator } from "../run-index/locator.js";
 import { runDir } from "../run-index/paths.js";
 import { appendEvent, readRunIndex, writeRunIndex } from "../run-index/read-write.js";
 import { mergeResumePolicy, parseResumePolicyOptions, validateResumePolicy } from "../runtime/resume-policy.js";
-import { syncRun } from "../runtime/sync.js";
+import { runWorkflowWorker, spawnBackgroundWorker, workerIsActive } from "../runtime/worker.js";
 import { WorkflowSpecSchema, type WorkflowSpec } from "../schema/workflow-spec.js";
 import { printIssues, printJson } from "./common.js";
 
@@ -30,6 +30,28 @@ export function registerResume(program: Command): void {
       }
 
       const index = await readRunIndex(locator.cwd, locator.runId);
+      if (index.status !== "blocked" && index.status !== "failed" && index.status !== "diagnosed_blocked") {
+        printResumeIssues(options.json, [issue({
+          code: "RESUME_POLICY_INVALID",
+          severity: "error",
+          path: "/",
+          message: `Run ${locator.runId} is ${index.status}; resume is only for blocked, failed, or diagnosed_blocked runs.`,
+          suggestions: [index.status === "running" || index.status === "pending" ? "Use monitor to observe the active run, or recover if its worker is stale." : "Start a new run for completed workflows."]
+        })]);
+        process.exitCode = 2;
+        return;
+      }
+      if (workerIsActive(index.worker)) {
+        printResumeIssues(options.json, [issue({
+          code: "RESUME_POLICY_INVALID",
+          severity: "error",
+          path: "/",
+          message: `Run ${locator.runId} already has an active worker pid=${index.worker?.pid}; resume cannot take ownership.`,
+          suggestions: ["Use monitor to observe the active run, or recover after the worker becomes stale."]
+        })]);
+        process.exitCode = 2;
+        return;
+      }
       const reset = resetRecoverableStages({
         ...index,
         resumePolicy: mergeResumePolicy(index.resumePolicy, parsedPolicy.policy)
@@ -37,7 +59,9 @@ export function registerResume(program: Command): void {
       await writeRunIndex(locator.cwd, reset);
       let finalIndex;
       try {
-        finalIndex = options.wait ? await waitForResume(locator.cwd, locator.runId) : await syncRun(locator.cwd, locator.runId);
+        finalIndex = options.wait ? await runWorkflowWorker(locator.cwd, locator.runId) : await readRunIndex(locator.cwd, locator.runId);
+        const worker = options.wait ? finalIndex.worker : await spawnBackgroundWorker(locator.cwd, locator.runId);
+        if (!options.wait) finalIndex = { ...await readRunIndex(locator.cwd, locator.runId), worker };
       } catch (error) {
         await markKnownRunFatal(locator.cwd, locator.runId, error);
         throw error;
@@ -46,7 +70,8 @@ export function registerResume(program: Command): void {
         ok: true,
         runId: locator.runId,
         status: finalIndex.status,
-        message: options.wait ? "Run resume reached a terminal state or current scheduler quiescence." : "Run resume advanced one scheduler tick."
+        worker: finalIndex.worker,
+        message: options.wait ? "Run resume reached a terminal state." : "Run resume started a background worker."
       };
       if (options.json) printJson(output);
       else process.stdout.write(`${output.message}\n`);
@@ -92,14 +117,6 @@ function printResumeIssues(json: boolean | undefined, issues: OrchestratorIssue[
   const result = resultFromIssues("resume", issues.map(issue));
   if (json) printJson(result);
   else printIssues(result);
-}
-
-async function waitForResume(cwd: string, runId: string) {
-  while (true) {
-    const index = await syncRun(cwd, runId, { drainFanoutPool: true });
-    if (index.status !== "pending" && index.status !== "running") return index;
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-  }
 }
 
 async function markKnownRunFatal(cwd: string, runId: string, error: unknown): Promise<void> {

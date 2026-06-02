@@ -21,12 +21,16 @@ The runtime orchestrator is the authoritative workflow driver. It executes compi
 - `run` MUST prepare the logical run, write runtime artifacts, and advance at least one scheduler tick.
 - `run --wait` MUST continue advancing until the run reaches a terminal state.
 - `run --wait` MUST enable fanout-stage-local draining for ready fanout stages.
-- `run` without `--wait` MUST remain a bounded scheduler advancement and MUST NOT drain an entire fanout stage solely because queued items remain.
+- `run` without `--wait` MUST start a background worker and return without blocking on workflow completion.
+- `run --wait` MUST execute the workflow in the foreground until terminal status.
 - `follow` MUST observe and sync an existing run; it MUST NOT create a new workflow run.
 - `monitor` MUST observe and sync an existing run; it MUST NOT create a new workflow run, start pending work, or mutate workflow execution.
-- `resume` MUST continue from persisted `run.json` and `execution-plan.json`.
+- `recover` MUST restart a stale or dead worker for a non-terminal run from persisted `run.json` and `execution-plan.json`.
+- `resume` MUST be limited to blocked, failed, or diagnosed-blocked run recovery.
+- `resume` without `--wait` MUST start a background worker and return without blocking on workflow completion.
 - `resume --wait` MUST enable the same fanout-stage-local draining behavior as `run --wait`.
-- Resume policy flags MUST only tighten fanout handling.
+- `resume` MUST reject runs with an active non-stale worker.
+- Resume `--max-fanout-items` and `--skip-fanout-item` policy flags MUST tighten fanout handling. Resume `--allow-partial-fanout` MAY allow partial results only for read-only fanout stages.
 - Resume policy overrides MUST be persisted into `run.json` before advancing the scheduler.
 - Resume fanout item filtering MUST NOT remove running fanout items from `run.json`; running items MUST settle before tightening or skip policy can remove them from the active fanout set.
 - Resume MUST preserve completed pass or pass-with-warnings gate verdicts when it only resets non-gate stages. A blocked, failed, or unknown gate verdict MAY reset the gate stage for recomputation.
@@ -62,9 +66,9 @@ Run directories contain:
 - `events.ndjson`
 - `run.json`
 
-Runtime commands are exposed through `run`, `follow`, `monitor`, `resume`, and `diagnose` CLI commands.
+Runtime commands are exposed through `run`, `follow`, `monitor`, `recover`, `resume`, and `diagnose` CLI commands.
 
-Run Monitor View projects the current run, stage summaries, known Agent Work Units, and aggregate work-unit progress from `run.json` plus `workflow.spec.json`. Its top-level fields MUST include `version`, `generatedAt`, `run`, `stages`, `workUnits`, and `progress`. Work Unit Detail View projects bounded detail for one selected Agent Work Unit from `run.json`, attempt previews, and the selected output artifact path when present. Its top-level fields MUST include `version`, `generatedAt`, `run`, `workUnit`, optional prompt/raw/output previews, optional outcome summary, and bounded activity.
+Run Monitor View projects the current run, stage summaries, known Agent Work Units, worker summary, and aggregate work-unit progress from `run.json` plus `workflow.spec.json`. Its top-level fields MUST include `version`, `generatedAt`, `run`, `stages`, `workUnits`, and `progress`. Agent Work Unit `kind` MUST be one of `stage`, `fanoutLane`, `loopStage`, or `loopFanoutLane`. Work Unit Detail View projects bounded detail for one selected Agent Work Unit from `run.json`, attempt previews, and the selected output artifact path when present. Its top-level fields MUST include `version`, `generatedAt`, `run`, `workUnit`, optional prompt/raw/output previews, optional outcome summary, and bounded activity.
 
 The monitor TUI MUST render from polled Run Monitor View snapshots and MUST load Work Unit Detail View lazily for the selected Agent Work Unit. Polling and detail loads MUST ignore stale asynchronous results when a newer request has been issued. The initial TUI snapshot SHOULD select the active stage by default; after the user moves stage selection, subsequent refreshes MUST preserve that user selection except for clamping to available stages. When the selected stage changes, the selected work-unit index MUST be reset or clamped to a valid work unit in the new stage. Run Monitor View and the monitor TUI MUST NOT read `events.ndjson`; bounded event-tail reads are reserved for diagnostics projections.
 
@@ -84,13 +88,15 @@ The scheduler MUST NOT emit `scheduler_batch_started` or `scheduler_batch_comple
 
 ## Data Model
 
-The runtime data model includes a logical run, compiled execution plan, stage states, attempts, Agent Work Units, fanout item/group/lane attempts, loop round/body attempts, output artifacts, event stream, role/session bindings, ACPX session state, usage accounting, gate verdict, blocked reason, monitor projections, and diagnostics.
+The runtime data model includes a logical run, compiled execution plan, stage states, attempts, Agent Work Units, fanout item/group/lane attempts, loop round/body attempts, output artifacts, event stream, role/session bindings, ACPX session state, usage accounting, worker metadata, gate verdict, blocked reason, monitor projections, and diagnostics.
 
 Fanout pool state MUST be derived from fanout item/group/lane status, attempts, and output artifacts. The run index MUST remain item-centric with nested lane group and lane records, and MUST NOT persist a separate pool object.
 
 Terminal workflow outcomes are represented in the run index. Output-contract failures block attempts, stages, and runs; infrastructure or unrecoverable runtime errors fail attempts, stages, or runs.
 
 Loop stage state MUST persist parent loop metadata in `run.json`, including `maxRounds`, `currentRound` when known, `bodyOutputStageId`, and an ordered `rounds[]` history. Each round record MUST include round number, status, timestamps, output path when available, body output stage id, body output, per-body-stage outputs, and per-body-stage status details. Body fanout stage details MUST preserve nested fanout item/group/lane state.
+
+Worker metadata MUST be persisted in `run.json.worker` with `pid`, `generation`, `status`, `startedAt`, `heartbeatAt`, and optional `exitedAt` and `exitCode`. A worker heartbeat older than 60 seconds is stale. Workers SHOULD update heartbeat every 10 seconds. A run MUST NOT have more than one active non-stale worker. Worker ownership MUST be fenced by both `pid` and `generation`; a worker that no longer owns the current `pid` and `generation` MUST stop advancing the run.
 
 ## Runtime Behavior
 
@@ -112,13 +118,15 @@ When a fanout item blocks or fails and partial fanout is not allowed, the schedu
 
 When resume policy changes a previously blocked top-level fanout stage, the scheduler MAY re-aggregate existing terminal item outputs under the updated policy. This re-aggregation MUST NOT rerun completed item work and MUST NOT repeatedly re-aggregate a terminal blocked stage when the persisted fanout state already reflects the resume policy.
 
-Loop execution is round-based. Each round starts at the loop body root, advances eligible body stages by dependency completion, and records body stage outputs under `outputs/<loopId>/round-<round>/<bodyStageId>.json`. Agent body stages use parent-loop stage state but distinct attempt item ids. Fanout body stages write lane outputs under the round directory and aggregate item and stage outputs before downstream body stages run. Loop body fanout concurrency is controlled only by the fanout stage `limits.maxConcurrency`; the loop controls round sequencing and MUST NOT introduce a separate concurrency pool. Loop-local expressions MUST expose `loop.current` and `loop.previous` as `{ output, outputs }` views; round records MAY persist additional stage metadata but MUST NOT replace the expression shape. The loop writes an aggregate parent output to `outputs/<loopId>.json` containing status, round count, current/previous body output, round history, and blocked reason when applicable.
+Loop execution is round-based. Each round starts at the loop body root, advances eligible body stages by dependency completion, and records body stage outputs under `outputs/<loopId>/round-<round>/<bodyStageId>.json`. Agent body stages use parent-loop stage state but distinct attempt item ids. Fanout body stages write lane outputs under `outputs/<loopId>/round-<round>/<bodyStageId>/<itemId>/<groupId>/<laneId>.json`, write item aggregates under `outputs/<loopId>/round-<round>/<bodyStageId>/<itemId>.json`, and aggregate item and stage outputs before downstream body stages run. Loop body fanout concurrency is controlled only by the fanout stage `limits.maxConcurrency`; the loop controls round sequencing and MUST NOT introduce a separate concurrency pool. Loop-local expressions MUST expose `loop.current` and `loop.previous` as `{ output, outputs }` views; round records MAY persist additional stage metadata but MUST NOT replace the expression shape. The loop writes an aggregate parent output to `outputs/<loopId>.json` containing status, round count, current/previous body output, round history, and blocked reason when applicable.
 
 If a body stage blocks, the loop stage MUST block with `LOOP_BODY_STAGE_BLOCKED`. If the declared body output is missing after a round, the loop stage MUST block with `LOOP_BODY_OUTPUT_MISSING`. If `continueWhen` remains true after the final allowed round, the loop stage MUST block with `LOOP_EXHAUSTED`.
 
 Runtime prompt rendering failures caused by missing required variables MUST write a durable blocked output with `VARIABLE_RESOLUTION_FAILED` for ordinary agent stages, loop body agent stages, and loop body fanout lanes. Variables with explicit default transforms MUST continue to use the transformed default value instead of blocking.
 
 Gate execution is terminal. Program gates evaluate their condition or default upstream-exists check and write a gate output without an agent turn. Agent gates use the gate output contract. The scheduler promotes the gate output verdict into `run.json.gateVerdict` and derives the terminal run status from it.
+
+Loop body fanout execution MUST persist round/body-stage/fanout lane state into `run.json` at start and settle boundaries so monitor projections can show loop Agent Work Units while the loop is still running. Loop realtime persistence MUST NOT write raw agent event streams into `run.json`.
 
 Observation-only surfaces, including `follow`, `monitor`, and diagnose wait polling, MUST call `syncRun` with `startPending: false`. `syncRun` with `startPending: false` MUST be read-only: it MUST return the persisted `run.json` state as-is, MUST NOT start pending work, MUST NOT reconcile stale running attempts, MUST NOT aggregate fanout outputs, MUST NOT write `run.json`, and MUST NOT append `run_synced` events.
 
@@ -144,6 +152,7 @@ Supported extension points are stage runtime policies, resume policy tightening,
 - Scheduler -> `src/runtime/scheduler.ts`, `src/runtime/run-workflow.ts`, `src/runtime/stage-runner.ts`
 - Attempts and outputs -> `src/runtime/attempts.ts`, `src/runtime/output-parser.ts`, `src/runtime/repair.ts`
 - `loop` runtime execution -> `src/runtime/stage-runner.ts`
+- Workers -> `src/runtime/worker.ts`, `src/commands/run-worker.ts`, `src/commands/recover.ts`
 - Resume and diagnose -> `src/runtime/resume-policy.ts`, `src/runtime/diagnose-run.ts`, `src/commands/resume.ts`, `src/commands/diagnose.ts`
 - Monitor projections -> `src/projections/run-monitor.ts`, `src/commands/monitor.ts`
 - Session bindings -> `src/runtime/session-bindings.ts`

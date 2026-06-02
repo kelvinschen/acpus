@@ -10,7 +10,7 @@ import type { ContractPlan, ExecutionPlan, ExecutionPlanStage, PromptPlan } from
 import type { Role, Stage, WorkflowSpec, ConditionNode, Variable } from "../schema/workflow-spec.js";
 import { applyTransforms } from "../transformers/builtins.js";
 import { renderPrompt } from "../variables/interpolate.js";
-import { appendEvent, RuntimeErrorCodes, type AttemptIndexEntry, type StageIndexEntry, type StageStatus } from "../run-index/read-write.js";
+import { appendEvent, RuntimeErrorCodes, updateRunIndex, type AttemptIndexEntry, type StageIndexEntry, type StageStatus } from "../run-index/read-write.js";
 import { attemptDir, attemptId, previewText, safeFileName, writeAttemptFile } from "./attempts.js";
 import type { AgentTurnResult, OrchestratorAgentRuntime } from "./agent-runtime.js";
 import { formatRepairPrompt, isRepairableOutputFailure, repairFailedEnvelope } from "./repair.js";
@@ -601,47 +601,86 @@ async function runLoopFanoutStage(input: {
     ordinal,
     laneOutputPath: loopFanoutLaneOutputPath(input.runDir, input.planStage.id, input.round, input.bodyStage.id, workUnit.itemId, workUnit.groupId, workUnit.laneId)
   }));
+  let progressWrite: Promise<void> = Promise.resolve();
+  let progressError: unknown;
+  const enqueueLoopProgress = (bodyStageState: LoopRoundStageStateUpdate): void => {
+    const snapshot = cloneLoopRoundStageState(bodyStageState);
+    progressWrite = progressWrite
+      .catch((error: unknown) => {
+        progressError ??= error;
+      })
+      .then(async () => {
+        if (progressError) return;
+        await persistLoopBodyStage(input, input.bodyStage.id, snapshot);
+      })
+      .catch((error: unknown) => {
+        progressError ??= error;
+      });
+  };
+  const flushLoopProgress = async (): Promise<void> => {
+    await progressWrite;
+    if (progressError) throw progressError;
+  };
+  await persistLoopBodyStage(input, input.bodyStage.id, {
+    stageId: input.bodyStage.id,
+    status: fanoutItems.length === 0 ? "completed" : "running",
+    attempts: [],
+    startedAt: new Date().toISOString(),
+    fanout: deriveFanoutSummary({ candidateItemCount: items.length, items: fanoutItems, allowPartial: plan.allowPartial })
+  });
 
   let nextTask = 0;
   let fastStop = false;
   const workerCount = Math.min(Math.max(1, plan.maxConcurrency), tasks.length);
-  const workerResults = await Promise.all(Array.from({ length: workerCount }, async () => {
-    const localResults: LoopFanoutTaskResult[] = [];
+  const taskResults: LoopFanoutTaskResult[] = [];
+  await Promise.all(Array.from({ length: workerCount }, async () => {
     while (nextTask < tasks.length) {
-      if (fastStop) return localResults;
+      if (fastStop || progressError) return;
       const task = tasks[nextTask];
       nextTask += 1;
+      markLoopFanoutLaneRunning(fanoutItems, task);
+      enqueueLoopProgress({
+        stageId: input.bodyStage.id,
+        status: "running",
+        fanout: deriveFanoutSummary({ candidateItemCount: items.length, items: fanoutItems, allowPartial: plan.allowPartial })
+      });
       const result = await runLoopFanoutLaneTask(input, task);
-      localResults.push({ task, result });
+      taskResults.push({ task, result });
+      attempts.push(...result.attempts);
+      agentCalls += result.agentCalls;
+      repairCalls += result.repairCalls;
+      applyLoopFanoutLaneResult(fanoutItems, input.runDir, task, result);
+      const existing = laneResultsByItemIndex.get(task.itemIndex) ?? [];
+      if (result.outputPath && result.output) {
+        existing.push({
+          itemId: task.itemId,
+          itemIndex: task.itemIndex,
+          groupId: task.groupId,
+          laneId: task.laneId,
+          roleName: task.roleName,
+          status: result.status,
+          output: result.output,
+          outputPath: path.relative(input.runDir, result.outputPath),
+          blockedReason: result.blockedReason,
+          errorCode: result.errorCode
+        });
+      }
+      laneResultsByItemIndex.set(task.itemIndex, existing);
+      enqueueLoopProgress({
+        stageId: input.bodyStage.id,
+        status: "running",
+        attempts: attempts.map((attempt) => attempt.id),
+        startedAt: new Date().toISOString(),
+        fanout: deriveFanoutSummary({ candidateItemCount: items.length, items: fanoutItems, allowPartial: plan.allowPartial })
+      });
       if (result.status !== "completed" && !plan.allowPartial) {
         fastStop = true;
       }
     }
-    return localResults;
   }));
-  const taskResults = workerResults.flat().sort((left, right) => left.task.ordinal - right.task.ordinal);
-  for (const { task, result } of taskResults) {
-    attempts.push(...result.attempts);
-    agentCalls += result.agentCalls;
-    repairCalls += result.repairCalls;
-    applyLoopFanoutLaneResult(fanoutItems, input.runDir, task, result);
-    const existing = laneResultsByItemIndex.get(task.itemIndex) ?? [];
-    if (result.outputPath && result.output) {
-      existing.push({
-        itemId: task.itemId,
-        itemIndex: task.itemIndex,
-        groupId: task.groupId,
-        laneId: task.laneId,
-        roleName: task.roleName,
-        status: result.status,
-        output: result.output,
-        outputPath: path.relative(input.runDir, result.outputPath),
-        blockedReason: result.blockedReason,
-        errorCode: result.errorCode
-      });
-    }
-    laneResultsByItemIndex.set(task.itemIndex, existing);
-  }
+  await flushLoopProgress();
+  taskResults.sort((left, right) => left.task.ordinal - right.task.ordinal);
+  attempts.splice(0, attempts.length, ...taskResults.flatMap(({ result }) => result.attempts));
 
   if (fastStop) {
     const cascaded = cascadeBlockFanoutItems({
@@ -707,7 +746,89 @@ async function runLoopFanoutStage(input: {
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
   await fs.writeFile(outputPath, `${JSON.stringify(output, null, 2)}\n`, "utf8");
   const fanout = deriveFanoutSummary({ candidateItemCount: items.length, items: fanoutItems, allowPartial: plan.allowPartial });
+  await persistLoopBodyStage(input, input.bodyStage.id, {
+    stageId: input.bodyStage.id,
+    status: output.status === "blocked" ? "blocked" : "completed",
+    attempts: attempts.map((attempt) => attempt.id),
+    outputPath: path.relative(input.runDir, outputPath),
+    blockedReason: typeof output.blockedReason === "string" ? output.blockedReason : undefined,
+    completedAt: new Date().toISOString(),
+    fanout
+  });
   return { output, attempts, agentCalls, repairCalls, fanout };
+}
+
+type LoopRoundStageState = NonNullable<NonNullable<StageIndexEntry["loop"]>["rounds"][number]["stages"][string]>;
+type LoopRoundStageStateUpdate = Pick<LoopRoundStageState, "stageId" | "status"> & Partial<Omit<LoopRoundStageState, "stageId" | "status">>;
+
+function cloneLoopRoundStageState(state: LoopRoundStageStateUpdate): LoopRoundStageStateUpdate {
+  return JSON.parse(JSON.stringify(state)) as LoopRoundStageStateUpdate;
+}
+
+async function persistLoopBodyStage(input: {
+  cwd: string;
+  runId: string;
+  planStage: ExecutionPlanStage;
+  round: number;
+}, bodyStageId: string, bodyStageState: LoopRoundStageStateUpdate): Promise<void> {
+  await updateRunIndex(input.cwd, input.runId, (index) => {
+    const existingStage = index.stages[input.planStage.id];
+    if (!existingStage) return index;
+    const existingLoop = existingStage.loop;
+    const rounds = [...(existingLoop?.rounds ?? [])];
+    const roundIndex = rounds.findIndex((entry) => entry.round === input.round);
+    const existingRound = roundIndex >= 0 ? rounds[roundIndex] : undefined;
+    const previousStageState = existingRound?.stages?.[bodyStageId];
+    const nextStageState: LoopRoundStageState = {
+      ...(previousStageState ?? { stageId: bodyStageId, status: "pending" as StageStatus, attempts: [] }),
+      ...bodyStageState
+    };
+    nextStageState.attempts = bodyStageState.attempts ?? previousStageState?.attempts ?? [];
+    nextStageState.startedAt = previousStageState?.startedAt ?? bodyStageState.startedAt;
+    const nextRound: NonNullable<StageIndexEntry["loop"]>["rounds"][number] = {
+      round: input.round,
+      status: "running" as StageStatus,
+      startedAt: existingRound?.startedAt ?? new Date().toISOString(),
+      bodyOutputStageId: input.planStage.loop?.body.output ?? existingLoop?.bodyOutputStageId ?? "",
+      bodyOutput: existingRound?.bodyOutput,
+      outputs: existingRound?.outputs ?? {},
+      stages: {
+        ...(existingRound?.stages ?? {}),
+        [bodyStageId]: nextStageState
+      }
+    };
+    if (roundIndex >= 0) rounds[roundIndex] = nextRound;
+    else rounds.push(nextRound);
+    return {
+      ...index,
+      stages: {
+        ...index.stages,
+        [input.planStage.id]: {
+          ...existingStage,
+          status: "running",
+          loop: {
+            maxRounds: existingLoop?.maxRounds ?? input.planStage.loop?.maxRounds ?? input.round,
+            currentRound: input.round,
+            bodyOutputStageId: nextRound.bodyOutputStageId,
+            rounds
+          }
+        }
+      }
+    };
+  });
+}
+
+function markLoopFanoutLaneRunning(fanoutItems: FanoutCoreItem[], task: FanoutCoreWorkUnit): void {
+  const now = new Date().toISOString();
+  const item = fanoutItems.find((candidate) => candidate.index === task.itemIndex);
+  const group = item?.groups?.find((candidate) => candidate.id === task.groupId);
+  const lane = group?.lanes.find((candidate) => candidate.id === task.laneId);
+  if (!item || !group || !lane) return;
+  item.status = "running";
+  item.startedAt = item.startedAt ?? now;
+  group.status = "running";
+  lane.status = "running";
+  lane.startedAt = lane.startedAt ?? now;
 }
 
 async function runLoopFanoutLaneTask(

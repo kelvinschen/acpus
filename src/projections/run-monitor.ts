@@ -3,6 +3,7 @@ import path from "node:path";
 import { estimateAgentCalls } from "./run-view.js";
 import { runDir } from "../run-index/paths.js";
 import type { AttemptIndexEntry, AttemptStatus, RunIndex, StageIndexEntry, StageStatus } from "../run-index/read-write.js";
+import { workerSummary } from "../runtime/worker.js";
 import type { Stage, WorkflowSpec } from "../schema/workflow-spec.js";
 
 export const RUN_MONITOR_VIEW_VERSION = "acpx-workflow-orchestrator.monitor/v1";
@@ -70,6 +71,7 @@ export type RunMonitorView = {
     runDir: string;
     createdAt: string;
     updatedAt: string;
+    worker?: ReturnType<typeof workerSummary>;
   };
   stages: RunMonitorStage[];
   workUnits: RunMonitorWorkUnit[];
@@ -130,7 +132,8 @@ export async function buildRunMonitorView(cwd: string, spec: WorkflowSpec, index
       gateVerdict: index.gateVerdict,
       runDir: dir,
       createdAt: index.createdAt,
-      updatedAt: index.updatedAt
+      updatedAt: index.updatedAt,
+      worker: workerSummary(index.worker)
     },
     stages: spec.stages.map((stage) => stageSummary(stage, index.stages[stage.id], workUnits)),
     workUnits,

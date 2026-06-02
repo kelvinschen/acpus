@@ -1,6 +1,6 @@
 ---
 name: acpx-workflow-orchestrator
-description: Use when the user explicitly wants dynamic acpx workflow orchestration, reusable agent workflows, or multi-agent coding workflows backed by the acpx runtime. The Main Agent generates structured workflow specs; the skill CLI validates, previews, saves, runs, follows, resumes, diagnoses, and reports logical workflow runs.
+description: Use when the user explicitly wants dynamic acpx workflow orchestration, reusable agent workflows, or multi-agent coding workflows backed by the acpx runtime. The Main Agent generates structured workflow specs; the skill CLI validates, previews, saves, runs, monitors, follows, recovers, resumes, and diagnoses logical workflow runs.
 ---
 
 # ACPX Workflow Orchestrator
@@ -23,29 +23,31 @@ skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator validate --
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator preview --spec <workflow.spec.json>
 ```
 
-3. Run only after preview/approval. Use `--yes` when the user explicitly allows
-   running:
+3. Run after preview when the user wants execution. Plain `run` creates the run,
+   starts a background worker, and returns immediately. Use `--wait` only when
+   the command itself should stay attached until the workflow reaches terminal
+   status:
 
 ```bash
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator run --spec <workflow.spec.json> --yes
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator run --workflow <saved-name> --yes
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator run --spec <workflow.spec.json>
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator run --workflow <saved-name>
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator run --workflow <saved-name> --wait
 ```
 
-4. Follow/report logical runs by run id:
+4. Observe and operate on logical runs by run id:
 
 ```bash
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator monitor <logical-run-id>
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator follow <logical-run-id>
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator report --run <logical-run-id>
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator report --run <logical-run-id> --html --output report.html
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator report serve --run <logical-run-id> --port 0
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator recover <logical-run-id>
 ```
 
-Use `--wait` when the user wants the command to advance until terminal status.
-Use `diagnose <logical-run-id> --wait` for blocked runs; it prepares a
-read-only recovery diagnostic without rerunning edit work.
-
-HTML reports are observation-only. Snapshot HTML is self-contained, while
-`report serve` streams run state over SSE and syncs with `startPending: false`.
+Use `recover <logical-run-id>` only when the execution driver is stale or dead
+and the run is not terminal. Use `resume <logical-run-id>` only for
+blocked/failed/diagnosed-blocked recovery. `monitor` and `follow` are
+observation-only and must not start workers or advance workflow state. Use
+`diagnose <logical-run-id> --wait` for blocked runs; it prepares a read-only
+recovery diagnostic without rerunning edit work.
 
 ## Spec Authoring
 
@@ -68,16 +70,14 @@ contracts validate outputs, deterministic
 `checks[].result -> checks[].status` normalization is allowed, and one
 schema-aware repair turn may run in the same session.
 
-Preview must be treated as the approval artifact: check roles, edit modes,
-fanout, partial-result policy, limits, and audit paths before using `--yes`.
+Preview must be treated as the preflight artifact: check roles, edit modes,
+fanout, partial-result policy, limits, and audit paths before running.
 Running does not save a reusable workflow; use `save <name> --spec <path>` as a
 separate explicit action.
 
 Read:
 
-- [docs/runtime-orchestrator-refactor-implementation.md](docs/runtime-orchestrator-refactor-implementation.md)
-- [docs/workflow-spec.md](docs/workflow-spec.md)
+- [specs/INDEX.md](specs/INDEX.md)
 - [docs/cli.md](docs/cli.md)
-- [docs/html-report-design.md](docs/html-report-design.md)
 
 Examples live in `workflows/examples/`.

@@ -251,7 +251,7 @@ function gateVerdict(output?: Record<string, unknown>): RunView["gateVerdict"] |
 
 function previewRisks(spec: WorkflowSpec): string[] {
   const risks: string[] = [
-    "Approval permits this run only; saving for reuse requires an explicit save command.",
+    "Running this workflow does not save it for reuse; saving requires an explicit save command.",
     "Audit artifacts are written under .acpx-workflow-orchestrator/runs/<logicalRunId>/ with spec, execution plan, prompts, outputs, attempts, sessions, and events.",
     "Agent turns run through run-local ACPX runtime sessions; repair turns count toward actual usage."
   ];

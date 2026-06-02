@@ -78,6 +78,18 @@ export type RunStatus =
   | "failed"
   | "cancelled";
 
+export type WorkerStatus = "starting" | "running" | "stale" | "exited" | "failed";
+
+export type RunWorkerState = {
+  pid: number;
+  generation: number;
+  status: WorkerStatus;
+  startedAt: string;
+  heartbeatAt: string;
+  exitedAt?: string;
+  exitCode?: number | null;
+};
+
 export type AttemptIndexEntry = {
   id: string;
   stageId: string;
@@ -206,6 +218,7 @@ export type RunIndex = {
     repairCalls: number;
     recoveryCalls: number;
   };
+  worker?: RunWorkerState;
   gateVerdict?: "pass" | "pass_with_warnings" | "blocked" | "failed" | "unknown";
   blockedReason?: string;
   resumePolicy?: {
@@ -236,9 +249,36 @@ export async function writeRunIndex(cwd: string, index: RunIndex): Promise<void>
   }
 }
 
+export async function updateRunIndex(cwd: string, logicalRunId: string, update: (index: RunIndex) => RunIndex | Promise<RunIndex>): Promise<RunIndex> {
+  const dir = runDir(logicalRunId, cwd);
+  await fs.mkdir(dir, { recursive: true });
+  const release = await lockRunIndex(dir, {
+    operation: "updateRunIndex",
+    targetPath: path.join(dir, "run.json"),
+    logicalRunId
+  });
+  try {
+    const filePath = path.join(dir, "run.json");
+    const parsed = JSON.parse(await fs.readFile(filePath, "utf8")) as RunIndex;
+    const current = normalizeRunIndex(parsed);
+    const next = await update(current);
+    const updated = { ...next, updatedAt: new Date().toISOString() };
+    const tmpPath = `${filePath}.tmp`;
+    await fs.writeFile(tmpPath, `${JSON.stringify(updated, null, 2)}\n`, "utf8");
+    await fs.rename(tmpPath, filePath);
+    return normalizeRunIndex(updated);
+  } finally {
+    await release();
+  }
+}
+
 export async function readRunIndex(cwd: string, logicalRunId: string): Promise<RunIndex> {
   const filePath = path.join(runDir(logicalRunId, cwd), "run.json");
   const parsed = JSON.parse(await fs.readFile(filePath, "utf8")) as RunIndex;
+  return normalizeRunIndex(parsed);
+}
+
+function normalizeRunIndex(parsed: RunIndex): RunIndex {
   return {
     ...parsed,
     schemaVersion: parsed.schemaVersion ?? "acpx-workflow-orchestrator.run/v2",

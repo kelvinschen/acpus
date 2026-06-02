@@ -66,7 +66,7 @@ describe("resume policy", () => {
     ]);
   });
 
-  it("accepts read-only fanout policy that only tightens compiled limits", () => {
+  it("accepts read-only fanout policy with bounded partial recovery", () => {
     const issues = validateResumePolicy(spec, {
       fanout: {
         review_files: { allowPartial: true, maxItems: 4, skipItemIndexes: [3] }

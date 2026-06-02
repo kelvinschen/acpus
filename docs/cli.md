@@ -11,12 +11,11 @@ Primary commands:
 ```bash
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator validate --spec workflows/examples/simple-feature.workflow.spec.json
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator preview --spec workflows/examples/simple-feature.workflow.spec.json --json
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator run --spec workflows/examples/simple-feature.workflow.spec.json --yes
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator run --spec workflows/examples/simple-feature.workflow.spec.json --yes --wait
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator run --spec workflows/examples/simple-feature.workflow.spec.json --yes --prepare-only
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator run --spec workflows/examples/simple-feature.workflow.spec.json
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator run --spec workflows/examples/simple-feature.workflow.spec.json --wait
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator save simple-feature --spec workflows/examples/simple-feature.workflow.spec.json
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator save simple-feature --spec workflows/examples/simple-feature.workflow.spec.json --overwrite
-skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator run --workflow simple-feature --yes
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator run --workflow simple-feature
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator list workflows
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator list runs
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator list drafts
@@ -30,6 +29,7 @@ skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator monitor <lo
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator monitor detail <logical-run-id> <work-unit-id> --json
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator diagnose <logical-run-id> --wait
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator diagnose <logical-run-id> --wait --json
+skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator recover <logical-run-id>
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator resume <logical-run-id> --wait
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator resume <logical-run-id> --max-fanout-items review_files=4 --allow-partial-fanout review_files
 skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator generate --name draft-workflow
@@ -37,11 +37,11 @@ skills/acpx-workflow-orchestrator/scripts/acpx-workflow-orchestrator generate --
 
 All commands support `--json` where structured output is useful.
 
-`run` validates automatically. Without `--yes`, it prints a preview and exits
-with approval required. With `--yes`, it prepares a logical run, writes
-`execution-plan.json`, advances one scheduler tick, and returns. Use `--wait` to
-advance until terminal status. Use `--prepare-only` to prepare the logical run
-and write runtime artifacts without starting runtime turns.
+`run` validates automatically, prepares a logical run, writes
+`execution-plan.json`, starts a background worker, and returns the run id. Use
+`--wait` to run in the foreground until terminal status with progress output.
+Use `preview` before `run` when you want to inspect the compiled plan without
+creating or starting a run.
 
 `follow` observes and syncs the selected logical run. It does not create a new
 workflow. `follow --json` returns the Run Monitor View.
@@ -59,12 +59,20 @@ Generated drafts are templates only; validate and preview them before running.
 rerun edit work and does not change the saved workflow spec. `diagnose --json`
 returns the post-diagnose Run Diagnostics View.
 
+`recover` restarts a stale or dead workflow worker for a non-terminal run. It
+does not restore arbitrary in-memory agent runtime state; running attempts still
+use the scheduler's stale recovery rules.
+
 `resume` advances an existing run from its persisted run snapshot and
-`execution-plan.json`. Resume policy flags may only tighten fanout handling:
+`execution-plan.json` only when the run is blocked, failed, or diagnosed
+blocked. Without `--wait`, resume resets recoverable persisted state, starts a
+background worker, and returns immediately. With `--wait`, resume runs in the
+foreground until terminal status. Resume refuses to take ownership while a
+non-stale worker is active. Resume policy flags have these effects:
 
 - `--max-fanout-items <stage=count>` lowers the effective fanout item cap.
 - `--skip-fanout-item <stage=index>` skips a zero-based item index.
-- `--allow-partial-fanout <stage>` allows partial read-only fanout results.
+- `--allow-partial-fanout <stage>` allows partial results for read-only fanout stages.
 
 Resume persists these policy overrides into `run.json` before advancing the
 scheduler. Blocked fanout stages are re-aggregated from existing item outputs
@@ -73,7 +81,7 @@ pending so the next scheduler tick can retry them.
 
 `save` writes a saved workflow directory with `workflow.spec.json`,
 `execution-plan.json`, README, schema/docs, wrapper, and built helper files from
-the current package build. Approval to run is not save approval; saving is
-always explicit.
+the current package build. Running a workflow does not save it; saving is always
+explicit.
 
 `list` and `show` support `workflows`, `runs`, and `drafts`.

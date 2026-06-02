@@ -135,7 +135,8 @@ export function MonitorApp({ runArg, pollMs = 1000, initialView, initialLocator,
 
 function Header({ view }: { view: RunMonitorView }) {
   const title = `${view.run.workflowName}`;
-  const meta = `${runProgressLabel(view)} - ${view.run.status}`;
+  const worker = view.run.worker ? ` - worker ${view.run.worker.status}` : "";
+  const meta = `${runProgressLabel(view)} - ${view.run.status}${worker}`;
   return (
     <Box flexDirection="column">
       <Text color="blue" bold>{title}</Text>

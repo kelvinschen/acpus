@@ -20,6 +20,7 @@ describe("RunMonitorView", () => {
 
     expect(view.version).toBe("acpx-workflow-orchestrator.monitor/v1");
     expect(view.run).toMatchObject({ logicalRunId: "monitor-run", workflowName: "monitor-workflow", status: "running" });
+    expect(view.run.worker).toMatchObject({ pid: 1234, status: "running" });
     expect(view).not.toHaveProperty("eventTail");
     expect(view.stages.find((stage) => stage.id === "review")?.workUnitCounts).toMatchObject({ total: 1, running: 1 });
     expect(view.workUnits.map((unit) => unit.id)).toEqual(expect.arrayContaining([
@@ -187,6 +188,13 @@ function monitorIndex(): RunIndex {
       "loop:round-1__stage-body:attempt-1": { id: "loop:round-1__stage-body:attempt-1", stageId: "quality_loop", itemId: "round-1__stage-body", kind: "attempt", status: "completed", path: "attempts/quality_loop/item-round-1__stage-body/attempt-1", startedAt: "2026-06-02T00:00:30.000Z", endedAt: "2026-06-02T00:00:40.000Z", promptPreview: "Review loop.", agent: "gpt-test", roleMode: "readOnly" },
       "loop:round-1__stage-body_fanout__item-item-2:g:a:attempt-1": { id: "loop:round-1__stage-body_fanout__item-item-2:g:a:attempt-1", stageId: "quality_loop", itemId: "round-1__stage-body_fanout__item-item-2", groupId: "g", laneId: "a", kind: "attempt", status: "running", path: "attempts/quality_loop/item-round-1__stage-body_fanout__item-item-2/group-g/lane-a/attempt-1", startedAt: "2026-06-02T00:00:50.000Z", promptPreview: "Loop fanout.", agent: "gpt-review", roleMode: "readOnly" }
     },
-    agentUsage: { planned: 4, actual: 2, repairCalls: 0, recoveryCalls: 0 }
+    agentUsage: { planned: 4, actual: 2, repairCalls: 0, recoveryCalls: 0 },
+    worker: {
+      pid: 1234,
+      generation: 1,
+      status: "running",
+      startedAt: "2026-06-02T00:00:00.000Z",
+      heartbeatAt: new Date().toISOString()
+    }
   };
 }

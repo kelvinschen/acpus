@@ -19,7 +19,7 @@ export function registerPreview(program: Command): void {
       }
       const view = previewRunView(spec, [...result.warnings, ...result.errors], {
         validate: `acpx-workflow-orchestrator validate --spec ${specPath}`,
-        run: `acpx-workflow-orchestrator run --spec ${specPath} --yes`
+        run: `acpx-workflow-orchestrator run --spec ${specPath}`
       });
       if (options.json) printJson(view);
       else {
