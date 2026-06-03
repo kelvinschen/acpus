@@ -26,7 +26,7 @@ export function registerPlan(program: Command): void {
         return;
       }
       const view = previewRunView(loaded, [...result.warnings, ...result.errors], {
-        validate: `acpus plan ${specPath}`,
+        plan: `acpus plan ${specPath}`,
         run: `acpus run ${specPath}`
       });
       if (options.json) {

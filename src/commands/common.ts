@@ -36,12 +36,12 @@ export async function loadAndLint(specPath: string): Promise<{
 }> {
   const loaded = await loadWorkflowSpec(specPath);
   if (!loaded.spec) {
-    return { result: resultFromIssues("validate", loaded.issues) };
+    return { result: resultFromIssues("spec", loaded.issues) };
   }
   const issues = [...loaded.issues, ...lintWorkflowSpec(loaded.spec)];
   return {
     spec: loaded.spec,
-    result: resultFromIssues("validate", issues)
+    result: resultFromIssues("spec", issues)
   };
 }
 

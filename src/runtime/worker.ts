@@ -169,18 +169,6 @@ export async function spawnBackgroundWorker(cwd: string, runId: string): Promise
   }
 }
 
-export async function recoverDriver(runArg: string): Promise<{ runId: string; runDir: string; worker: RunWorkerState }> {
-  const locator = await resolveRunLocator(runArg);
-  const index = await readRunIndex(locator.cwd, locator.runId);
-  if (terminalRunStatus(index.status)) throw new Error(`Cannot recover terminal run ${locator.runId} (${index.status}).`);
-  if (workerIsActive(index.worker)) throw new Error(`Run ${locator.runId} already has an active worker pid=${index.worker?.pid}.`);
-  return {
-    runId: locator.runId,
-    runDir: locator.dir,
-    worker: await spawnBackgroundWorker(locator.cwd, locator.runId)
-  };
-}
-
 function workerCommandArgs(runId: string): string[] {
   const args = process.argv.slice(1);
   const commandIndex = args.findIndex((arg) => arg === "run" || arg === "resume" || arg === "_run-worker");

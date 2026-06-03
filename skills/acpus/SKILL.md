@@ -31,7 +31,7 @@ The public surface is the `acpus` CLI binary.
 
    Writes a saved workflow directory with a minimal two-stage template (plan + gate); edit before running.
 
-2. **Compose** — validate and preview before execution:
+2. **Plan** — validate and preview before execution:
 
    ```bash
    npx acpus plan <spec>
@@ -69,7 +69,7 @@ The public surface is the `acpus` CLI binary.
    `monitor` opens an Ink-based TUI with Stage List / Stage Info / Task Detail
    panels. `follow` streams events in real time until the run reaches terminal status.
 
-5. **Recover** — operate on blocked/failed/diagnosed runs:
+5. **Resume & Diagnose** — operate on blocked/failed/diagnosed runs:
 
    ```bash
    npx acpus resume <run>             # Reset blocked stages, re-execute

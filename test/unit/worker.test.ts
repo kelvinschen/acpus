@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { readRunIndex, updateRunIndex } from "../../src/run-index/read-write.js";
 import { prepareRun } from "../../src/runtime/run-workflow.js";
-import { claimWorker, heartbeatWorker, markWorkerExit, recoverDriver, workerIsActive, workerSummary, WORKER_STALE_AFTER_MS } from "../../src/runtime/worker.js";
+import { claimWorker, heartbeatWorker, markWorkerExit, terminalRunStatus, workerIsActive, workerSummary, WORKER_STALE_AFTER_MS } from "../../src/runtime/worker.js";
 import { WorkflowSpecSchema } from "../../src/schema/workflow-spec.js";
 
 describe("run worker metadata", () => {
@@ -44,7 +44,7 @@ describe("run worker metadata", () => {
     expect(exited.worker?.exitedAt).toEqual(expect.any(String));
   });
 
-  it("rejects driver recovery for terminal runs", async () => {
+  it("rejects stale worker reclaim for terminal runs", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-worker-terminal-"));
     const prepared = await prepareRun(workerSpec(), { cwd, input: { cwd } });
     await updateRunIndex(cwd, prepared.logicalRunId, (index) => ({
@@ -52,7 +52,9 @@ describe("run worker metadata", () => {
       status: "completed"
     }));
 
-    await expect(recoverDriver(prepared.dir)).rejects.toThrow("Cannot recover terminal run");
+    // Terminal runs should not allow reclaiming even with stale worker
+    const index = await readRunIndex(cwd, prepared.logicalRunId);
+    expect(terminalRunStatus(index.status)).toBe(true);
   });
 });
 
