@@ -9,7 +9,7 @@ recovery, fanout pool, diagnostics, segmentation, and run directory layout.
 - **Foreground worker** (`--wait`): heartbeat every 10s; 250ms sync interval
 - **Stale detection**: heartbeat older than 60s
 - **Ownership fencing**: PID + generation counter prevents stale writes
-- **Crash recovery**: `recover` validates no active worker, then spawns new
+- **Crash recovery**: `resume --force` bypasses the active-worker check, then spawns a new worker
 
 ## Scheduler Sync Loop
 

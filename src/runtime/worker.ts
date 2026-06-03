@@ -183,7 +183,7 @@ export async function recoverDriver(runArg: string): Promise<{ runId: string; ru
 
 function workerCommandArgs(runId: string): string[] {
   const args = process.argv.slice(1);
-  const commandIndex = args.findIndex((arg) => arg === "run" || arg === "resume" || arg === "recover" || arg === "_run-worker");
+  const commandIndex = args.findIndex((arg) => arg === "run" || arg === "resume" || arg === "_run-worker");
   const prefix = commandIndex >= 0 ? args.slice(0, commandIndex) : args;
   return [...process.execArgv, ...prefix, "_run-worker", runId];
 }

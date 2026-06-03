@@ -35,13 +35,13 @@
         {
           "id": "cli-tui-contract",
           "paths": [
-            "src/commands/recover.ts",
             "src/commands/resume.ts",
+            "src/commands/plan.ts",
             "src/tui/monitor-app.tsx",
             "specs/cli-spec.md",
             "specs/runtime-orchestrator-spec.md"
           ],
-          "focus": "recover/resume command semantics, worker state display, and SPEC alignment"
+          "focus": "resume (including --force) and plan command semantics, worker state display, and SPEC alignment"
         }
       ]
     }

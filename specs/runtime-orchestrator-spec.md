@@ -25,8 +25,8 @@ The runtime orchestrator is the authoritative workflow driver. It executes compi
 - `run --wait` MUST execute the workflow in the foreground until terminal status.
 - `follow` MUST observe and sync an existing run; it MUST NOT create a new workflow run.
 - `monitor` MUST observe and sync an existing run; it MUST NOT create a new workflow run, start pending work, or mutate workflow execution.
-- `recover` MUST restart a stale or dead worker for a non-terminal run from persisted `run.json` and `execution-plan.json`.
-- `resume` MUST be limited to blocked, failed, or diagnosed-blocked run recovery.
+- `resume --force` MUST bypass the active-worker check to restart a stale or dead worker for a non-terminal run from persisted `run.json` and `execution-plan.json`.
+- `resume` (without `--force`) MUST be limited to blocked, failed, or diagnosed-blocked run recovery.
 - `resume` without `--wait` MUST start a background worker and return without blocking on workflow completion.
 - `resume --wait` MUST enable the same fanout-stage-local draining behavior as `run --wait`.
 - `resume` MUST reject runs with an active non-stale worker.
@@ -66,7 +66,7 @@ Run directories contain:
 - `events.ndjson`
 - `run.json`
 
-Runtime commands are exposed through `run`, `follow`, `monitor`, `recover`, `resume`, and `diagnose` CLI commands.
+Runtime commands are exposed through `run`, `follow`, `monitor`, `resume`, and `diagnose` CLI commands.
 
 Run Monitor View projects the current run, stage summaries, known Stage Tasks, worker summary, and aggregate task progress from `run.json` plus `workflow.spec.json`. Its top-level fields MUST include `version`, `generatedAt`, `run`, `stages`, `tasks`, and `progress`. Stage Task `kind` MUST be one of `stage`, `fanoutLane`, `loopStage`, or `loopFanoutLane`; `execution` MUST be `agent` or `deterministic`. Stage summaries MUST expose `taskCounts`. Progress MUST include `knownTasks` and `completedTasks`.
 
@@ -158,7 +158,7 @@ Supported extension points are stage runtime policies, resume policy tightening,
 - Scheduler -> `src/runtime/scheduler.ts`, `src/runtime/run-workflow.ts`, `src/runtime/stage-runner.ts`
 - Attempts and outputs -> `src/runtime/attempts.ts`, `src/runtime/output-parser.ts`, `src/runtime/repair.ts`
 - `loop` runtime execution -> `src/runtime/stage-runner.ts`
-- Workers -> `src/runtime/worker.ts`, `src/commands/run-worker.ts`, `src/commands/recover.ts`
+- Workers -> `src/runtime/worker.ts`, `src/commands/run-worker.ts`
 - Resume and diagnose -> `src/runtime/resume-policy.ts`, `src/runtime/diagnose-run.ts`, `src/commands/resume.ts`, `src/commands/diagnose.ts`
 - Monitor projections -> `src/projections/run-monitor.ts`, `src/commands/monitor.ts`
 - Session bindings -> `src/runtime/session-bindings.ts`

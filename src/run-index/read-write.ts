@@ -206,7 +206,7 @@ export type RunIndex = {
   createdAt: string;
   updatedAt: string;
   source?: {
-    kind: "draft" | "saved" | "spec";
+    kind: "saved" | "spec";
     path?: string;
     sha256?: string;
   };

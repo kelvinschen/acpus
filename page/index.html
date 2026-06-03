@@ -138,7 +138,7 @@
     <p class="tagline">Every run is an opus.</p>
     <p class="positioning">
       A runtime-driven workflow orchestrator for ACP agents.
-      Validate a spec, preview the plan, then conduct the run.
+      Plan a spec, then conduct the run.
     </p>
   </header>
 
@@ -156,23 +156,16 @@
 
       <div class="step">
         <p class="step-num">02</p>
-        <h3>Validate a spec</h3>
-        <p>Check that a workflow spec conforms to the schema before anything else.</p>
-        <pre><code>acpus validate --spec my-workflow.workflow.spec.json</code></pre>
+        <h3>Plan the workflow</h3>
+        <p>Validate the spec and preview the compiled execution plan — stages, lanes, agent calls — in one step.</p>
+        <pre><code>acpus plan my-workflow.workflow.spec.json</code></pre>
       </div>
 
       <div class="step">
         <p class="step-num">03</p>
-        <h3>Preview the execution plan</h3>
-        <p>See the compiled plan — stages, lanes, dependencies — without running anything.</p>
-        <pre><code>acpus preview --spec my-workflow.workflow.spec.json</code></pre>
-      </div>
-
-      <div class="step">
-        <p class="step-num">04</p>
         <h3>Run the workflow</h3>
         <p>Execute the spec end-to-end. Acpus conducts each stage, fans out lanes in parallel, and records every attempt.</p>
-        <pre><code>acpus run --spec my-workflow.workflow.spec.json</code></pre>
+        <pre><code>acpus run my-workflow.workflow.spec.json</code></pre>
       </div>
     </section>
   </main>

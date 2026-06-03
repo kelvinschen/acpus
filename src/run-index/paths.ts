@@ -8,10 +8,6 @@ export function orchestratorDir(cwd = process.cwd()): string {
   return path.join(repoOrCwd(cwd), ".acpus");
 }
 
-export function draftsDir(cwd = process.cwd()): string {
-  return path.join(orchestratorDir(cwd), "drafts");
-}
-
 export function projectWorkflowsDir(cwd = process.cwd()): string {
   return path.join(orchestratorDir(cwd), "workflows");
 }

@@ -63,7 +63,7 @@ _Avoid_: Work Unit Detail View, report detail, full artifact view, expanded moni
 ## Workflow Structure
 
 **Workflow Spec**:
-The declarative definition of a workflow consumed by `acpus compose` and executed by `acpus run`. A workflow spec defines stages, lanes, loop boundaries, and inter-stage hooks.
+The declarative definition of a workflow consumed by the Compose commands (`plan`, `save`) and executed by `acpus run`. A workflow spec defines stages, lanes, loop boundaries, and inter-stage hooks.
 _Avoid_: pipeline config, job definition, workflow YAML
 
 **Stage**:
