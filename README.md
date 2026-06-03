@@ -5,6 +5,16 @@
 <h1 align="center">Acpus</h1>
 <p align="center" font-style="italic">Every run is an opus.</p>
 
+<p align="center">
+  <a href="https://www.npmjs.com/package/acpus"><img src="https://img.shields.io/npm/v/acpus?label=npm" alt="npm version"></a>
+  <a href="https://github.com/kelvinschen/acpus/actions/workflows/publish.yml"><img src="https://img.shields.io/github/actions/workflow/status/kelvinschen/acpus/publish.yml?label=publish" alt="Publish workflow status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/npm/l/acpus?label=license" alt="License"></a>
+  <img src="https://img.shields.io/node/v/acpus?label=node" alt="Node version">
+</p>
+
+> [!WARNING]
+> Acpus is currently in alpha. CLI/runtime interfaces will change frequently.
+
 Acpus is a runtime-driven workflow orchestrator for ACP agents, built on the acpx agent runtime. You hand it a *workflow spec*; Acpus validates it, compiles a deterministic execution plan, conducts heterogeneous fanout across lanes, and tracks every run as a numbered, replayable execution, or say, an *opus*.
 
 ## Quick Start
