@@ -54,6 +54,12 @@ Acpus commands are grouped by four verbs.
 | `acpus monitor <run-id>` | Open the terminal UI for run inspection |
 | `acpus resume <run-id>` | Resume an interrupted or failed run from last checkpoint |
 
+<figure align="center">
+  <img src="page/img/monitor_basic.jpg" alt="Acpus monitor TUI — real-time run inspection with stage progress, lane status, and event stream" width="720">
+  <br>
+  <sup><em>Real-time run inspection — stages, lanes, and the event stream at a glance.</em></sup>
+</figure>
+
 ### Recover — recover, diagnose
 
 | Command | Purpose |
