@@ -1,28 +1,37 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import type { Command } from "commander";
 import { previewRunView } from "../projections/run-view.js";
-import { loadAndLint, printIssues, printJson, resolveSpecPath } from "./common.js";
+import { loadAndLint, printIssues, printJson, resolveSpecArg } from "./common.js";
 
-export function registerPreview(program: Command): void {
-  program.command("preview")
-    .option("--spec <path>", "workflow spec path")
-    .option("--workflow <name>", "saved workflow name")
+export function registerPlan(program: Command): void {
+  program.command("plan")
+    .argument("<spec>", "spec file path or saved workflow name (auto-detected)")
     .option("--global", "resolve saved workflow from global directory")
+    .option("--quiet", "suppress plan preview, show only issues")
     .option("--json", "print JSON")
-    .action(async (options: { spec?: string; workflow?: string; global?: boolean; json?: boolean }) => {
-      const specPath = resolveSpecPath(options);
-      const { spec, result } = await loadAndLint(specPath);
-      if (!spec) {
+    .action(async (spec: string, options: { global?: boolean; quiet?: boolean; json?: boolean }) => {
+      const specPath = await resolveSpecArg({ spec, global: options.global });
+      const { spec: loaded, result } = await loadAndLint(specPath);
+      if (!loaded) {
         if (options.json) printJson(result);
         else printIssues(result);
         process.exitCode = 1;
         return;
       }
-      const view = previewRunView(spec, [...result.warnings, ...result.errors], {
-        validate: `acpus validate --spec ${specPath}`,
-        run: `acpus run --spec ${specPath}`
+      if (options.quiet) {
+        if (options.json) printJson(result);
+        else printIssues(result);
+        if (!result.ok) process.exitCode = 1;
+        return;
+      }
+      const view = previewRunView(loaded, [...result.warnings, ...result.errors], {
+        validate: `acpus plan ${specPath}`,
+        run: `acpus run ${specPath}`
       });
-      if (options.json) printJson(view);
-      else {
+      if (options.json) {
+        printJson(view);
+      } else {
         process.stdout.write(`Workflow: ${view.workflowName}\n`);
         process.stdout.write(`Status: ${view.status}\n`);
         process.stdout.write(`Planned agent calls: ${view.agentUsage.planned}\n`);

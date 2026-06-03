@@ -1,23 +1,32 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Command } from "commander";
-import { draftsDir, globalWorkflowsDir, projectWorkflowsDir, runsDir } from "../run-index/paths.js";
+import { globalWorkflowsDir, projectWorkflowsDir, runsDir } from "../run-index/paths.js";
 import { printJson } from "./common.js";
 
 export function registerList(program: Command): void {
-  program.command("list")
-    .argument("<kind>", "workflows|runs|drafts")
+  const list = program.command("list");
+
+  list.command("workflows")
     .option("--global", "list global workflows")
     .option("--json", "print JSON")
-    .action(async (kind: string, options: { global?: boolean; json?: boolean }) => {
-      const dir = kind === "workflows"
-        ? (options.global ? globalWorkflowsDir() : projectWorkflowsDir())
-        : kind === "runs"
-          ? runsDir()
-          : kind === "drafts"
-            ? draftsDir()
-            : "";
-      if (!dir) throw new Error("kind must be workflows, runs, or drafts");
+    .action(async (options: { global?: boolean; json?: boolean }) => {
+      const kind = "workflows";
+      const dir = options.global ? globalWorkflowsDir() : projectWorkflowsDir();
+      const entries = await safeList(dir);
+      const output = { kind, dir, entries };
+      if (options.json) printJson(output);
+      else {
+        process.stdout.write(`${kind} in ${dir}\n`);
+        for (const entry of entries) process.stdout.write(`- ${entry}\n`);
+      }
+    });
+
+  list.command("runs")
+    .option("--json", "print JSON")
+    .action(async (options: { json?: boolean }) => {
+      const kind = "runs";
+      const dir = runsDir();
       const entries = await safeList(dir);
       const output = { kind, dir, entries };
       if (options.json) printJson(output);

@@ -2,42 +2,34 @@
 import { Command } from "commander";
 import { registerDiagnose } from "./commands/diagnose.js";
 import { registerFollow } from "./commands/follow.js";
-import { registerGenerate } from "./commands/generate.js";
 import { registerList } from "./commands/list.js";
 import { registerMonitor } from "./commands/monitor.js";
-import { registerPreview } from "./commands/preview.js";
-import { registerRecover } from "./commands/recover.js";
+import { registerPlan } from "./commands/plan.js";
 import { registerResume } from "./commands/resume.js";
 import { registerRun } from "./commands/run.js";
 import { registerRunWorker } from "./commands/run-worker.js";
 import { registerSave } from "./commands/save.js";
 import { registerShow } from "./commands/show.js";
-import { registerValidate } from "./commands/validate.js";
 import { issue, resultFromIssues } from "./errors.js";
 
 const program = new Command();
 
 program
   .name("acpus")
-  .description("Acpus — compose, conduct, recover, catalogue.")
+  .description("Acpus — compose, conduct, catalogue.")
   .version("0.1.0");
 
 // ── Compose ─────────────────────────────────────────────────
-registerValidate(program);
-registerPreview(program);
+registerPlan(program);
 registerSave(program);
-registerGenerate(program);
 
 // ── Conduct ──────────────────────────────────────────────────
 registerRun(program);
 registerFollow(program);
 registerMonitor(program);
 registerResume(program);
-registerRunWorker(program);
-
-// ── Recover ──────────────────────────────────────────────────
-registerRecover(program);
 registerDiagnose(program);
+registerRunWorker(program);
 
 // ── Catalogue ────────────────────────────────────────────────
 registerList(program);

@@ -10,6 +10,26 @@ export type CommandGlobalOptions = {
   json?: boolean;
 };
 
+export async function resolveSpecArg(
+  options: { spec?: string; global?: boolean }
+): Promise<string> {
+  if (options.spec) {
+    const hasPathSeparator = options.spec.includes("/") || options.spec.includes("\\");
+    const hasSpecExtension =
+      options.spec.endsWith(".json") || options.spec.endsWith(".spec.json");
+    if (hasPathSeparator || hasSpecExtension) {
+      return options.spec;
+    }
+    // Bare name without path separators or spec extension: treat as saved workflow name.
+    return path.join(
+      options.global ? globalWorkflowsDir() : projectWorkflowsDir(),
+      options.spec,
+      "workflow.spec.json"
+    );
+  }
+  throw new Error("Provide a spec file path or workflow name.");
+}
+
 export async function loadAndLint(specPath: string): Promise<{
   spec?: WorkflowSpec;
   result: IssueResult;
@@ -62,15 +82,4 @@ export async function readJsonFile(filePath: string): Promise<Record<string, unk
 
 export function resolvePath(value: string): string {
   return path.resolve(process.cwd(), value);
-}
-
-export function resolveSpecPath(options: { spec?: string; workflow?: string; global?: boolean }): string {
-  if (options.spec && options.workflow) {
-    throw new Error("Use only one of --spec or --workflow.");
-  }
-  if (options.spec) return options.spec;
-  if (options.workflow) {
-    return path.join(options.global ? globalWorkflowsDir() : projectWorkflowsDir(), options.workflow, "workflow.spec.json");
-  }
-  throw new Error("Provide --spec <path> or --workflow <name>.");
 }

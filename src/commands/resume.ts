@@ -6,9 +6,11 @@ import { resolveRunLocator } from "../run-index/locator.js";
 import { runDir } from "../run-index/paths.js";
 import { appendEvent, readRunIndex, writeRunIndex } from "../run-index/read-write.js";
 import { mergeResumePolicy, parseResumePolicyOptions, validateResumePolicy } from "../runtime/resume-policy.js";
-import { runWorkflowWorker, spawnBackgroundWorker, workerIsActive } from "../runtime/worker.js";
+import { runWorkflowWorker, spawnBackgroundWorker, workerIsActive, WORKER_STALE_AFTER_MS } from "../runtime/worker.js";
 import { WorkflowSpecSchema, type WorkflowSpec } from "../schema/workflow-spec.js";
 import { printIssues, printJson } from "./common.js";
+
+const TERMINAL_STATUSES = new Set(["completed", "cancelled"]);
 
 export function registerResume(program: Command): void {
   program.command("resume")
@@ -16,9 +18,10 @@ export function registerResume(program: Command): void {
     .option("--allow-partial-fanout <stage...>", "allow partial results for read-only fanout stage(s) on resume")
     .option("--max-fanout-items <stage=count...>", "tighten max fanout items for stage(s), bounded by the compiled snapshot")
     .option("--skip-fanout-item <stage=index...>", "skip zero-based fanout item index(es) on resume")
+    .option("--force", "bypass active-worker check to restart a stale worker")
     .option("--wait", "advance until terminal")
     .option("--json", "print JSON")
-    .action(async (runArg: string, options: { allowPartialFanout?: string[]; maxFanoutItems?: string[]; skipFanoutItem?: string[]; wait?: boolean; json?: boolean }) => {
+    .action(async (runArg: string, options: { allowPartialFanout?: string[]; maxFanoutItems?: string[]; skipFanoutItem?: string[]; force?: boolean; wait?: boolean; json?: boolean }) => {
       const locator = await resolveRunLocator(runArg);
       const spec = await readRunSpec(locator.cwd, locator.runId);
       const parsedPolicy = parseResumePolicyOptions(options);
@@ -30,28 +33,58 @@ export function registerResume(program: Command): void {
       }
 
       const index = await readRunIndex(locator.cwd, locator.runId);
-      if (index.status !== "blocked" && index.status !== "failed" && index.status !== "diagnosed_blocked") {
+
+      // Status validation
+      const allowedStatuses = options.force
+        ? new Set(["blocked", "failed", "diagnosed_blocked", "running", "pending"])
+        : new Set(["blocked", "failed", "diagnosed_blocked"]);
+      if (TERMINAL_STATUSES.has(index.status) || !allowedStatuses.has(index.status)) {
+        const hint = options.force && (index.status === "running" || index.status === "pending")
+          ? "Use monitor to observe the active run."
+          : index.status === "running" || index.status === "pending"
+            ? "Use monitor to observe the active run, recover if its worker is stale, or use --force to bypass."
+            : "Start a new run for completed workflows.";
         printResumeIssues(options.json, [issue({
           code: "RESUME_POLICY_INVALID",
           severity: "error",
           path: "/",
-          message: `Run ${locator.runId} is ${index.status}; resume is only for blocked, failed, or diagnosed_blocked runs.`,
-          suggestions: [index.status === "running" || index.status === "pending" ? "Use monitor to observe the active run, or recover if its worker is stale." : "Start a new run for completed workflows."]
+          message: `Run ${locator.runId} is ${index.status}; resume is only for blocked, failed, or diagnosed_blocked runs${options.force ? " (or running with --force)" : ""}.`,
+          suggestions: [hint]
         })]);
         process.exitCode = 2;
         return;
       }
-      if (workerIsActive(index.worker)) {
+
+      // Active-worker guard (--force bypasses for stale workers, rejects for truly active workers)
+      if (workerIsActive(index.worker) && !options.force) {
         printResumeIssues(options.json, [issue({
           code: "RESUME_POLICY_INVALID",
           severity: "error",
           path: "/",
           message: `Run ${locator.runId} already has an active worker pid=${index.worker?.pid}; resume cannot take ownership.`,
-          suggestions: ["Use monitor to observe the active run, or recover after the worker becomes stale."]
+          suggestions: ["Use monitor to observe the active run, recover after the worker becomes stale, or use --force to bypass."]
         })]);
         process.exitCode = 2;
         return;
       }
+      if (workerIsActive(index.worker) && options.force) {
+        // --force allows resuming past a stale-but-heartbeating worker,
+        // but if the worker is truly active (recent heartbeat), still reject.
+        const staleThreshold = WORKER_STALE_AFTER_MS;
+        const heartbeatAge = Date.now() - Date.parse(index.worker!.heartbeatAt);
+        if (heartbeatAge <= staleThreshold) {
+          printResumeIssues(options.json, [issue({
+            code: "RESUME_POLICY_INVALID",
+            severity: "error",
+            path: "/",
+            message: `Run ${locator.runId} has an active worker pid=${index.worker?.pid} with a recent heartbeat; --force cannot take ownership of a truly active worker.`,
+            suggestions: ["Use monitor to observe the active run, or wait for the worker to become stale."]
+          })]);
+          process.exitCode = 2;
+          return;
+        }
+      }
+
       const reset = resetRecoverableStages({
         ...index,
         resumePolicy: mergeResumePolicy(index.resumePolicy, parsedPolicy.policy)
@@ -59,7 +92,7 @@ export function registerResume(program: Command): void {
       await writeRunIndex(locator.cwd, reset);
       let finalIndex;
       try {
-        finalIndex = options.wait ? await runWorkflowWorker(locator.cwd, locator.runId) : await readRunIndex(locator.cwd, locator.runId);
+        finalIndex = options.wait ? await runWorkflowWorker(locator.cwd, locator.runId, { force: options.force }) : await readRunIndex(locator.cwd, locator.runId);
         const worker = options.wait ? finalIndex.worker : await spawnBackgroundWorker(locator.cwd, locator.runId);
         if (!options.wait) finalIndex = { ...await readRunIndex(locator.cwd, locator.runId), worker };
       } catch (error) {
@@ -74,7 +107,14 @@ export function registerResume(program: Command): void {
         message: options.wait ? "Run resume reached a terminal state." : "Run resume started a background worker."
       };
       if (options.json) printJson(output);
-      else process.stdout.write(`${output.message}\n`);
+      else {
+        process.stdout.write(`${output.message}\n`);
+        if (!options.wait) {
+          process.stdout.write(`runId=${output.runId}\n`);
+          process.stdout.write(`runDir=${runDir(locator.runId, locator.cwd)}\n`);
+          if (output.worker) process.stdout.write(`worker=${output.worker.pid ?? "unknown"}\n`);
+        }
+      }
     });
 }
 

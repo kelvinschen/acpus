@@ -18,37 +18,34 @@ describe("CLI lifecycle", () => {
     await execa("npm", ["run", "build"], { cwd: root });
   }, 60_000);
 
-  it("validates, saves, runs, observes, diagnoses, resumes, and generates drafts", async () => {
+  it("plans, saves, runs, observes, diagnoses, and resumes", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-cli-lifecycle-"));
     await fs.writeFile(path.join(cwd, "sample.txt"), "hello\n", "utf8");
     const specPath = path.join(cwd, "deterministic.workflow.spec.json");
     await fs.writeFile(specPath, `${JSON.stringify(deterministicSpec(cwd), null, 2)}\n`, "utf8");
 
-    const validate = JSON.parse((await run(cwd, "validate", "--spec", specPath, "--json")).stdout) as { ok: boolean };
-    const preview = JSON.parse((await run(cwd, "preview", "--spec", specPath, "--json")).stdout) as { workflowName: string; status: string };
-    const save = JSON.parse((await run(cwd, "save", "deterministic", "--spec", specPath, "--json")).stdout) as { ok: boolean; workflow: string };
+    const planQuiet = JSON.parse((await run(cwd, "plan", specPath, "--quiet", "--json")).stdout) as { ok: boolean };
+    const plan = JSON.parse((await run(cwd, "plan", specPath, "--json")).stdout) as { workflowName: string; status: string };
+    const save = JSON.parse((await run(cwd, "save", "deterministic", specPath, "--json")).stdout) as { ok: boolean; workflow: string };
     const workflows = JSON.parse((await run(cwd, "list", "workflows", "--json")).stdout) as { entries: string[] };
     const saved = JSON.parse((await run(cwd, "show", "workflow", "deterministic", "--json")).stdout) as { name: string };
-    const generated = JSON.parse((await run(cwd, "generate", "--name", "generated", "--json")).stdout) as { ok: boolean; path: string };
-    const drafts = JSON.parse((await run(cwd, "list", "drafts", "--json")).stdout) as { entries: string[] };
-    const draft = JSON.parse((await run(cwd, "show", "draft", path.basename(generated.path), "--json")).stdout) as { name: string };
-    const runEvents = parseNdjson((await run(cwd, "run", "--workflow", "deterministic", "--wait", "--json")).stdout);
+    const generated = JSON.parse((await run(cwd, "save", "generated", "--template", "basic", "--json")).stdout) as { ok: boolean; workflow: string; path: string };
+    const runEvents = parseNdjson((await run(cwd, "run", "deterministic", "--wait", "--json")).stdout);
     const runResult = runEvents.at(-1) as { type: string; ok: boolean; logicalRunId: string; runDir: string; status: string; blockedReason?: string; gateVerdict?: string };
-    const follow = JSON.parse((await run(cwd, "follow", runResult.logicalRunId, "--json")).stdout) as { version: string; run: { status: string }; tasks: unknown[] };
+    const followOutput = parseNdjson((await run(cwd, "follow", runResult.logicalRunId, "--json")).stdout);
+    const follow = (followOutput.at(-1) ?? {}) as { version: string; run: { status: string }; tasks: unknown[] };
     const monitor = JSON.parse((await run(cwd, "monitor", runResult.logicalRunId, "--json")).stdout) as { version: string; run: { status: string }; tasks: unknown[] };
     const diagnose = JSON.parse((await run(cwd, "diagnose", runResult.logicalRunId, "--wait", "--json")).stdout) as { status: string; diagnosticId: string; diagnostics: { version: string; run: { status: string }; diagnostics: unknown[] } };
     const resume = JSON.parse((await run(cwd, "resume", runResult.logicalRunId, "--wait", "--json")).stdout) as { status: string };
     const shownRun = JSON.parse((await run(cwd, "show", "run", runResult.logicalRunId, "--json")).stdout) as { logicalRunId: string };
     const runs = JSON.parse((await run(cwd, "list", "runs", "--json")).stdout) as { entries: string[] };
 
-    expect(validate.ok).toBe(true);
-    expect(preview).toMatchObject({ workflowName: "deterministic-cli", status: "pending" });
+    expect(planQuiet.ok).toBe(true);
+    expect(plan).toMatchObject({ workflowName: "deterministic-cli", status: "pending" });
     expect(save).toMatchObject({ ok: true, workflow: "deterministic" });
     expect(workflows.entries).toContain("deterministic");
     expect(saved.name).toBe("deterministic-cli");
-    expect(generated.ok).toBe(true);
-    expect(drafts.entries).toContain(path.basename(generated.path));
-    expect(draft.name).toBe("generated");
+    expect(generated).toMatchObject({ ok: true, workflow: "generated", path: expect.any(String) });
     expect(runEvents.map((event) => event.type)).toContain("worker_started");
     expect(runResult).toMatchObject({
       type: "terminal_summary",
@@ -77,7 +74,8 @@ describe("CLI lifecycle", () => {
     const spec = observationOnlySpec();
     const prepared = await prepareRun(spec, { cwd, input: { cwd } });
 
-    const follow = JSON.parse((await run(cwd, "follow", prepared.logicalRunId, "--json")).stdout) as { version: string; run: { status: string }; tasks: Array<{ id: string }> };
+    const followOutput = parseNdjson((await run(cwd, "follow", prepared.logicalRunId, "--json")).stdout);
+    const follow = (followOutput.at(-1) ?? {}) as { version: string; run: { status: string }; tasks: Array<{ id: string }> };
     const monitor = JSON.parse((await run(cwd, "monitor", prepared.logicalRunId, "--json")).stdout) as { version: string; run: { status: string }; tasks: Array<{ id: string }> };
     const detail = JSON.parse((await run(cwd, "monitor", "detail", prepared.logicalRunId, follow.tasks[0]?.id ?? "", "--json")).stdout) as { version: string; task: { id: string } };
     const afterFollow = await readRunIndex(cwd, prepared.logicalRunId);
@@ -98,7 +96,7 @@ describe("CLI lifecycle", () => {
     const specPath = path.join(cwd, "background.workflow.spec.json");
     await fs.writeFile(specPath, `${JSON.stringify(deterministicSpec(cwd), null, 2)}\n`, "utf8");
 
-    const started = JSON.parse((await run(cwd, "run", "--spec", specPath, "--json")).stdout) as {
+    const started = JSON.parse((await run(cwd, "run", specPath, "--json")).stdout) as {
       ok: boolean;
       logicalRunId: string;
       runDir: string;
@@ -125,7 +123,7 @@ describe("CLI lifecycle", () => {
     expect(`${resume.stderr}\n${resume.stdout}`).toContain("RESUME_POLICY_INVALID");
   }, 60_000);
 
-  it("rejects recover for an active worker and starts a new worker after it is stale", async () => {
+  it("rejects resume --force for an active worker and starts a new worker after it is stale", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-cli-recover-"));
     await fs.writeFile(path.join(cwd, "sample.txt"), "hello\n", "utf8");
     const spec = deterministicSpec(cwd);
@@ -142,7 +140,7 @@ describe("CLI lifecycle", () => {
       }
     }));
 
-    const activeRecover = await runMaybe(cwd, "recover", prepared.logicalRunId, "--json");
+    const activeResume = await runMaybe(cwd, "resume", prepared.logicalRunId, "--force", "--json");
     await updateRunIndex(cwd, prepared.logicalRunId, (index) => ({
       ...index,
       worker: index.worker ? {
@@ -150,11 +148,11 @@ describe("CLI lifecycle", () => {
         heartbeatAt: new Date(Date.now() - 61_000).toISOString()
       } : undefined
     }));
-    const recovered = await run(cwd, "recover", prepared.logicalRunId);
+    const recovered = await run(cwd, "resume", prepared.logicalRunId, "--force");
     const finalIndex = await waitForTerminal(cwd, prepared.logicalRunId);
 
-    expect(activeRecover.exitCode).not.toBe(0);
-    expect(`${activeRecover.stderr}\n${activeRecover.stdout}`).toContain("already has an active worker");
+    expect(activeResume.exitCode).not.toBe(0);
+    expect(`${activeResume.stderr}\n${activeResume.stdout}`).toContain("active worker");
     expect(recovered.stdout).toContain(`runId=${prepared.logicalRunId}`);
     expect(recovered.stdout).toContain(`runDir=${prepared.dir}`);
     expect(recovered.stdout).toContain("worker=");
@@ -166,7 +164,7 @@ describe("CLI lifecycle", () => {
     await fs.writeFile(path.join(cwd, "sample.txt"), "hello\n", "utf8");
     const specPath = path.join(cwd, "resume-background.workflow.spec.json");
     await fs.writeFile(specPath, `${JSON.stringify(deterministicSpec(cwd), null, 2)}\n`, "utf8");
-    const runEvents = parseNdjson((await run(cwd, "run", "--spec", specPath, "--wait", "--json")).stdout);
+    const runEvents = parseNdjson((await run(cwd, "run", specPath, "--wait", "--json")).stdout);
     const runResult = runEvents.at(-1) as { logicalRunId: string };
 
     const resumed = JSON.parse((await run(cwd, "resume", runResult.logicalRunId, "--json")).stdout) as {
@@ -208,7 +206,7 @@ describe("CLI lifecycle", () => {
     const resume = await runMaybe(cwd, "resume", prepared.logicalRunId, "--wait", "--json");
 
     expect(resume.exitCode).not.toBe(0);
-    expect(`${resume.stderr}\n${resume.stdout}`).toContain("already has an active worker");
+    expect(`${resume.stderr}\n${resume.stdout}`).toContain("active worker");
   }, 60_000);
 });
 

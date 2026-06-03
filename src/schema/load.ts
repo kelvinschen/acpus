@@ -15,7 +15,7 @@ export async function loadWorkflowSpec(filePath: string): Promise<{ spec?: Workf
           severity: "fatal",
           path: "/",
           message: `Unable to read spec file: ${(error as Error).message}`,
-          suggestions: ["Check that the --spec path exists and is readable."]
+          suggestions: ["Check that the spec file path exists and is readable."]
         })
       ]
     };

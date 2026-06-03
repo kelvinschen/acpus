@@ -4,18 +4,23 @@ import { prepareRun } from "../runtime/run-workflow.js";
 import { runWorkflowWorker, spawnBackgroundWorker, type WorkerProgressEvent } from "../runtime/worker.js";
 import { resultFromIssues } from "../errors.js";
 import { applyInputDefaults, validateWorkflowInput } from "../schema/input-validation.js";
-import { loadAndLint, printIssues, printJson, readJsonFile, resolveSpecPath } from "./common.js";
+import { loadAndLint, printIssues, printJson, readJsonFile, resolveSpecArg } from "./common.js";
 
 export function registerRun(program: Command): void {
   program.command("run")
-    .option("--spec <path>", "workflow spec path")
-    .option("--workflow <name>", "saved workflow name")
+    .argument("[spec]", "spec file path or workflow name")
     .option("--global", "resolve saved workflow from global directory")
     .option("--input-json <path>", "raw workflow input JSON file")
     .option("--wait", "run in the foreground until the workflow reaches a terminal state")
     .option("--json", "print JSON")
-    .action(async (options: { spec?: string; workflow?: string; global?: boolean; inputJson?: string; wait?: boolean; json?: boolean }) => {
-      const specPath = resolveSpecPath(options);
+    .action(async (specArg: string | undefined, options: { global?: boolean; inputJson?: string; wait?: boolean; json?: boolean }) => {
+      if (!specArg) {
+        if (options.json) printJson(resultFromIssues("run", []));
+        else process.stderr.write("Error: provide a spec file path or workflow name.\n");
+        process.exitCode = 1;
+        return;
+      }
+      const specPath = await resolveSpecArg({ spec: specArg, global: options.global });
       const { spec, result } = await loadAndLint(specPath);
       if (!spec || !result.ok) {
         if (options.json) printJson(result);

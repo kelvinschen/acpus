@@ -26,18 +26,17 @@ The public surface is the `acpus` CLI binary.
 1. **Author** — generate a starter spec, then edit:
 
    ```bash
-   npx acpus generate [--name <name>]
+   npx acpus save <name> --template basic
    ```
 
-   Writes a draft scaffold to `.acpus/drafts/<timestamp>-<name>.workflow.spec.json`.
-   The draft is a minimal two-stage template (plan + gate); edit before running.
+   Writes a saved workflow directory with a minimal two-stage template (plan + gate); edit before running.
 
 2. **Compose** — validate and preview before execution:
 
    ```bash
-   npx acpus validate --spec <workflow.spec.json>
-   npx acpus validate --workflow <saved-name> [--global]
-   npx acpus preview --spec <workflow.spec.json>
+   npx acpus plan <spec>
+   npx acpus plan <spec> --quiet
+   npx acpus plan <spec> --json
    ```
 
    Preview shows: workflow name, planned agent calls, fanout estimates,
@@ -46,12 +45,13 @@ The public surface is the `acpus` CLI binary.
 3. **Conduct** — run after preview confirms correctness:
 
    ```bash
-   npx acpus run --spec <workflow.spec.json>
-   npx acpus run --spec <workflow.spec.json> --input-json <input.json>
-   npx acpus run --workflow <saved-name> [--global]
-   npx acpus run --workflow <saved-name> --wait
+   npx acpus run <spec>
+   npx acpus run <spec> --input-json <input.json>
+   npx acpus run <name> [--global]
+   npx acpus run <name> --wait
    ```
 
+   The positional argument accepts either a spec file path or a saved workflow name.
    Plain `run` spawns a background worker and returns immediately.
    `--wait` runs in foreground until terminal state.
    `--input-json <path>` supplies typed workflow inputs.
@@ -62,38 +62,38 @@ The public surface is the `acpus` CLI binary.
    npx acpus monitor <run>            # Interactive TUI (three-panel)
    npx acpus monitor <run> --json     # RunMonitorView as JSON
    npx acpus monitor detail <run> <task-id> --json
-   npx acpus follow <run>             # One-shot status snapshot
-   npx acpus follow <run> --json
+   npx acpus follow <run>             # Stream events in real time
+   npx acpus follow <run> --json      # Stream NDJSON events
    ```
 
    `monitor` opens an Ink-based TUI with Stage List / Stage Info / Task Detail
-   panels. 
+   panels. `follow` streams events in real time until the run reaches terminal status.
 
 5. **Recover** — operate on blocked/failed/diagnosed runs:
 
    ```bash
-   npx acpus recover <run>            # Spawn new worker for stale/dead run
    npx acpus resume <run>             # Reset blocked stages, re-execute
    npx acpus resume <run> --wait
    npx acpus resume <run> --allow-partial-fanout <stage...>
    npx acpus resume <run> --max-fanout-items <stage=count...>
    npx acpus resume <run> --skip-fanout-item <stage=index...>
+   npx acpus resume <run> --force     # Bypass active-worker check for stale workers
    npx acpus diagnose <run> [--wait]  # Read-only diagnostic analysis
    ```
 
    **Recovery decision tree:**
    - Run stuck? → `diagnose` first (read-only, explains what went wrong)
-   - Worker stale/dead? → `recover` (spawns new worker, picks up where it left off)
    - Stage blocked with bad output? → `resume` (resets blocked stages to pending)
+   - Worker stale/dead? → `resume --force` (bypasses active-worker check)
    - Fanout partially blocked? → `resume --allow-partial-fanout <stage>` or
      `--skip-fanout-item` to skip specific items
 
 6. **Catalogue** — list and inspect saved artifacts:
 
    ```bash
-   npx acpus save <name> --spec <path> [--overwrite] [--global]
-   npx acpus list <workflows|runs|drafts> [--global] [--json]
-   npx acpus show <workflow|run|draft> <name> [--global] [--json]
+   npx acpus save <name> <path> [--overwrite] [--global]
+   npx acpus list <workflows|runs> [--global] [--json]
+   npx acpus show <workflow|run> <name> [--global] [--json]
    ```
 
    All commands accept `--json` for machine-readable output.

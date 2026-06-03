@@ -51,7 +51,7 @@ describe.skipIf(!runReal)("real acpx agents e2e", () => {
       ]
     }, null, 2), "utf8");
 
-    const raw = runCli(cwd, acpx, ["run", "--spec", specPath, "--wait", "--json"], 2 * 60 * 1000);
+    const raw = runCli(cwd, acpx, ["run", specPath, "--wait", "--json"], 2 * 60 * 1000);
     const result = parseTerminalSummary(raw);
     expect(result.status).toBe("blocked");
     await expect(fs.stat(path.join(result.runDir, "outputs", "discover.json"))).resolves.toBeTruthy();
@@ -101,7 +101,7 @@ describe.skipIf(!runReal)("real acpx agents e2e", () => {
       task: "Edit src/status.txt so it contains exactly one line: done"
     }, null, 2), "utf8");
 
-    const raw = runCli(cwd, acpx, ["run", "--spec", specPath, "--input-json", inputPath, "--wait", "--json"], 20 * 60 * 1000);
+    const raw = runCli(cwd, acpx, ["run", specPath, "--input-json", inputPath, "--wait", "--json"], 20 * 60 * 1000);
     const result = parseTerminalSummary(raw);
     expect(result.status).toBe("completed");
     expect((await fs.readFile(path.join(cwd, "src", "status.txt"), "utf8")).trim()).toBe("done");

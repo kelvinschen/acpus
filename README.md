@@ -13,14 +13,14 @@ Acpus is a runtime-driven workflow orchestrator for ACP agents, built on the acp
 # Install
 npm install -g acpus
 
-# Validate a workflow spec
-acpus validate --spec workflows/examples/simple-feature.workflow.spec.json
+# Plan a workflow (validate + preview)
+acpus plan workflows/examples/simple-feature.workflow.spec.json
 
-# Preview the execution plan
-acpus preview --spec workflows/examples/simple-feature.workflow.spec.json
+# Plan and output as JSON
+acpus plan workflows/examples/simple-feature.workflow.spec.json --json
 
 # Run the workflow
-acpus run --spec workflows/examples/simple-feature.workflow.spec.json
+acpus run workflows/examples/simple-feature.workflow.spec.json
 
 # Follow a running workflow in real time
 acpus follow <logical-run-id>
@@ -34,25 +34,25 @@ npx skills add kelvinschen/acpus --skill acpus
 
 ## Commands
 
-Acpus commands are grouped by four verbs.
+Acpus commands are grouped by three verbs.
 
-### Compose — validate, preview, save, generate
-
-| Command | Purpose |
-|---|---|
-| `acpus validate --spec <path>` | Validate a workflow spec against the schema |
-| `acpus preview --spec <path>` | Render the compiled execution plan without running |
-| `acpus save <name> --spec <path>` | Save a spec to the local store |
-| `acpus generate` | Scaffold a new workflow spec from a template |
-
-### Conduct — run, follow, monitor, resume
+### Compose — plan, save
 
 | Command | Purpose |
 |---|---|
-| `acpus run --spec <path>` | Execute a workflow spec end-to-end |
-| `acpus follow <run-id>` | Attach to a running workflow and stream output |
+| `acpus plan <path> [--json]` | Validate a spec and render the compiled execution plan |
+| `acpus save <name> <path>` | Save a spec to the local store |
+| `acpus save --template` | Scaffold a new workflow spec from a template |
+
+### Conduct — run, follow, monitor, resume, diagnose
+
+| Command | Purpose |
+|---|---|
+| `acpus run <path>` | Execute a workflow spec end-to-end |
+| `acpus follow <run-id>` | Attach to a running workflow and stream output in real time |
 | `acpus monitor <run-id>` | Open the terminal UI for run inspection |
 | `acpus resume <run-id>` | Resume an interrupted or failed run from last checkpoint |
+| `acpus diagnose <run-id> [--wait]` | Produce a structured diagnosis of a completed or running run |
 
 <figure align="center">
   <img src="page/img/monitor_basic.webp" alt="Acpus monitor TUI — real-time run inspection with stage progress, lane status, and event stream" width="720">
@@ -60,19 +60,14 @@ Acpus commands are grouped by four verbs.
   <sup><em>Real-time run inspection — stages, lanes, and the event stream at a glance.</em></sup>
 </figure>
 
-### Recover — recover, diagnose
-
-| Command | Purpose |
-|---|---|
-| `acpus recover <run-id>` | Attempt automatic repair of a failed run |
-| `acpus diagnose <run-id> [--wait]` | Produce a structured diagnosis of a completed or running run |
-
 ### Catalogue — list, show
 
 | Command | Purpose |
 |---|---|
-| `acpus list` | List saved specs and historical runs |
-| `acpus show <id>` | Display details of a saved spec or past run |
+| `acpus list runs` | List saved specs and historical runs |
+| `acpus list workflows` | List saved workflows |
+| `acpus show run <id>` | Display details of a past run |
+| `acpus show workflow <name>` | Display details of a saved spec |
 
 ## Architecture
 
