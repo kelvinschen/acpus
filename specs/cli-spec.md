@@ -19,7 +19,7 @@ The CLI is the developer and Main Agent entry point for planning, running, obser
 - `plan --quiet` MUST suppress the plan preview and show only validation issues.
 - `run` MUST validate, prepare a logical run, write runtime artifacts, start a background worker, and return unless `--wait` is set.
 - `run --wait` MUST run in the foreground until terminal status and enable fanout draining.
-- `run --input <json-or-path>` MUST accept either an inline JSON object string or a JSON file path. Inline detection MUST treat values whose first non-whitespace character is `{` as JSON; all other values MUST be read as file paths. Parsed input MUST be a JSON object.
+- `run --input <json-or-yaml-or-path>` MUST accept an inline JSON object string, a JSON file path, or a YAML/YML file path. Inline detection MUST treat values whose first non-whitespace character is `{` as JSON; all other values MUST be read as file paths, so inline YAML is not supported. Parsed input MUST be a top-level object.
 - `run --json --wait` MUST emit NDJSON progress events and a final terminal summary with `finalOutput` when a gate output artifact exists.
 - `follow` and `monitor` observation paths MUST read `workflow.spec.yaml`.
 - `follow --json <run>` MUST stream existing/new events as NDJSON and emit a final Run Monitor View containing `finalOutput` when the run is terminal and a gate output artifact exists.
@@ -47,6 +47,7 @@ skills/acpus/scripts/acpus plan simple-feature
 skills/acpus/scripts/acpus run workflows/examples/simple-feature.workflow.spec.yaml --wait
 skills/acpus/scripts/acpus run workflows/examples/simple-feature.workflow.spec.yaml --input '{"task":"review"}'
 skills/acpus/scripts/acpus run workflows/examples/simple-feature.workflow.spec.yaml --input input.json
+skills/acpus/scripts/acpus run workflows/examples/simple-feature.workflow.spec.yaml --input input.yaml
 skills/acpus/scripts/acpus run simple-feature
 skills/acpus/scripts/acpus save simple-feature workflows/examples/simple-feature.workflow.spec.yaml
 skills/acpus/scripts/acpus save simple-feature --template basic

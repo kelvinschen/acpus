@@ -47,7 +47,7 @@ The public surface is the `acpus` CLI binary.
    ```bash
    npx acpus run <spec>
    npx acpus run <spec> --input '{"task":"review"}'
-   npx acpus run <spec> --input <input.json>
+   npx acpus run <spec> --input <input.yaml>
    npx acpus run <name> [--global]
    npx acpus run <name> --wait
    ```
@@ -55,7 +55,7 @@ The public surface is the `acpus` CLI binary.
    The positional argument accepts either a spec file path or a saved workflow name.
    Plain `run` spawns a background worker and returns immediately.
    `--wait` runs in foreground until terminal state.
-   `--input <json-or-path>` supplies workflow input values validated by `input.schema`.
+   `--input <json-or-yaml-or-path>` supplies workflow input values from an inline JSON object or a JSON/YAML file validated by `input.schema`.
 
 4. **Observe** — inspect runs by run id or directory path:
 

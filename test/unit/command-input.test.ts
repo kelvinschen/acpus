@@ -26,6 +26,36 @@ describe("command input parsing", () => {
     await expect(readInputArg(`  ${inputPath}`)).resolves.toEqual({ task: "review" });
   });
 
+  it("reads YAML objects from .yaml files", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-input-yaml-"));
+    const inputPath = path.join(cwd, "input.yaml");
+    await fs.writeFile(inputPath, "task: review\nitems:\n  - path: src/index.ts\n", "utf8");
+
+    await expect(readInputArg(inputPath)).resolves.toEqual({
+      task: "review",
+      items: [{ path: "src/index.ts" }]
+    });
+  });
+
+  it("reads YAML objects from .yml files", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-input-yml-"));
+    const inputPath = path.join(cwd, "input.yml");
+    await fs.writeFile(inputPath, "task: review\nmaxConcurrency: 2\n", "utf8");
+
+    await expect(readInputArg(inputPath)).resolves.toEqual({
+      task: "review",
+      maxConcurrency: 2
+    });
+  });
+
+  it("keeps unknown input file extensions on the JSON parser path", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-input-noext-"));
+    const inputPath = path.join(cwd, "input");
+    await fs.writeFile(inputPath, JSON.stringify({ task: "review" }), "utf8");
+
+    await expect(readInputArg(inputPath)).resolves.toEqual({ task: "review" });
+  });
+
   it("rejects malformed inline JSON", async () => {
     await expect(readInputArg("{bad")).rejects.toThrow("--input: invalid JSON");
   });
@@ -38,12 +68,39 @@ describe("command input parsing", () => {
     await expect(readInputArg(inputPath)).rejects.toThrow(`${inputPath}: invalid JSON`);
   });
 
+  it("rejects malformed YAML with the file path in the error", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-input-bad-yaml-"));
+    const inputPath = path.join(cwd, "input.yaml");
+    await fs.writeFile(inputPath, "task: [review\n", "utf8");
+
+    await expect(readInputArg(inputPath)).rejects.toThrow(`${inputPath}: invalid YAML`);
+  });
+
   it("rejects non-object JSON input", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-input-array-"));
     const inputPath = path.join(cwd, "input.json");
     await fs.writeFile(inputPath, "[1,2,3]", "utf8");
 
-    await expect(readInputArg(inputPath)).rejects.toThrow("must contain one JSON object");
+    await expect(readInputArg(inputPath)).rejects.toThrow("must contain one input object");
+  });
+
+  it("rejects non-object YAML input", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-input-yaml-array-"));
+    const inputPath = path.join(cwd, "input.yml");
+    await fs.writeFile(inputPath, "- one\n- two\n", "utf8");
+
+    await expect(readInputArg(inputPath)).rejects.toThrow("must contain one input object");
+  });
+
+  it("rejects YAML scalar and null input", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-input-yaml-scalar-"));
+    const scalarPath = path.join(cwd, "input.yaml");
+    const nullPath = path.join(cwd, "input.yml");
+    await fs.writeFile(scalarPath, "review\n", "utf8");
+    await fs.writeFile(nullPath, "null\n", "utf8");
+
+    await expect(readInputArg(scalarPath)).rejects.toThrow("must contain one input object");
+    await expect(readInputArg(nullPath)).rejects.toThrow("must contain one input object");
   });
 
   it("rejects missing input files", async () => {

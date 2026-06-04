@@ -36,6 +36,7 @@ acpus run my-workflow
 acpus run foo.workflow.spec.yaml --wait
 acpus run foo.workflow.spec.yaml --input '{"task":"review"}'
 acpus run foo.workflow.spec.yaml --input input.json
+acpus run foo.workflow.spec.yaml --input input.yaml
 
 # Follow a run with streaming output.
 acpus follow
@@ -57,7 +58,7 @@ acpus resume <logical-run-id> --force
 
 ```
 
-`run` validates the spec automatically, prepares a logical run, writes `execution-plan.json`, starts a background worker, and returns the run identifier. The positional argument accepts either a spec file path or a saved workflow name. `--input <json-or-path>` accepts either an inline JSON object or a JSON file path. With `--wait`, the command runs in the foreground until terminal status and prints progress output.
+`run` validates the spec automatically, prepares a logical run, writes `execution-plan.json`, starts a background worker, and returns the run identifier. The positional argument accepts either a spec file path or a saved workflow name. `--input <json-or-yaml-or-path>` accepts either an inline JSON object or a JSON/YAML file path. Inline YAML is not supported; non-JSON-inline values are interpreted as file paths. With `--wait`, the command runs in the foreground until terminal status and prints progress output.
 
 `follow <run>` observes a run by streaming its output in real time. It does not create a new workflow. `follow <run> --json` streams events and emits a final Run Monitor View as structured output. Without a run argument, `follow` lists current project runs; in an interactive TTY it opens a run picker, in non-interactive text mode it prints the list and exits, and with `--json` it prints the run summary list JSON.
 

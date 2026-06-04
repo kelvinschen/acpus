@@ -20,22 +20,13 @@ Acpus is a runtime-driven workflow orchestrator for ACP agents, built on the acp
 ## Quick Start
 
 ```bash
-# Install
 npm install -g acpus
 
-# Plan a workflow (validate + preview)
 acpus plan workflows/examples/simple-feature.workflow.spec.yaml
 
-# Plan and output as JSON
-acpus plan workflows/examples/simple-feature.workflow.spec.yaml --json
-
-# Run the workflow
 acpus run workflows/examples/simple-feature.workflow.spec.yaml
-acpus run workflows/examples/simple-feature.workflow.spec.yaml --input '{"task":"review"}'
 
-# Follow a running workflow in real time
-acpus follow
-acpus follow <logical-run-id>
+acpus monitor
 ```
 
 ## Skill
@@ -46,25 +37,26 @@ npx skills add kelvinschen/acpus --skill acpus
 
 ## Commands
 
-Acpus commands are grouped by three verbs.
+Acpus commands are grouped by workflow phase. Optional parameters are shown in brackets.
 
 ### Compose — plan, save
 
-| Command | Purpose |
-|---|---|
-| `acpus plan <path> [--json]` | Validate a spec and render the compiled execution plan |
-| `acpus save <name> <path>` | Save a spec to the local store |
-| `acpus save --template` | Scaffold a new workflow spec from a template |
+| Command | Options | Purpose |
+|---|---|---|
+| `acpus plan <spec>` | `--global`, `--quiet`, `--json` | Validate a spec file or saved workflow name and preview the compiled execution plan |
+| `acpus save <name> [spec]` | `--template <name>`, `--overwrite`, `--global`, `--json` | Save a spec or generated template to the workflow store |
 
 ### Conduct — run, follow, monitor, resume
 
-| Command | Purpose |
-|---|---|
-| `acpus run <path>` | Execute a workflow spec end-to-end |
-| `acpus run <path> --input <json-or-path>` | Execute with inline JSON input or an input JSON file |
-| `acpus follow [run-id]` | Select or attach to a run and stream output in real time |
-| `acpus monitor [run-id]` | Select or open a run in the terminal UI for inspection |
-| `acpus resume <run-id>` | Resume an interrupted or failed run from last checkpoint |
+| Command | Options | Purpose |
+|---|---|---|
+| `acpus run [spec]` | `--global`, `--input <json-or-yaml-or-path>`, `--wait`, `--json` | Prepare and start a workflow from a spec file or saved workflow name |
+| `acpus follow [run]` | `--json` | Select or attach to a run and stream events in real time |
+| `acpus monitor [run]` | `--json` | Select or open a run in the terminal UI, or print the monitor view as JSON |
+| `acpus monitor detail <run> <task-id>` | `--json` | Show bounded detail for one stage task |
+| `acpus resume <run>` | `--allow-partial-fanout <stage...>`, `--max-fanout-items <stage=count...>`, `--skip-fanout-item <stage=index...>`, `--force`, `--wait`, `--json` | Resume a blocked or failed run, or recover a stale running/pending run with `--force` |
+
+`--input` accepts an inline JSON object or a JSON/YAML file path, for example `--input input.yaml`.
 
 <figure align="center">
   <img src="page/img/monitor_basic.webp" alt="Acpus monitor TUI — real-time run inspection with stage progress, lane status, and event stream" width="720">
@@ -74,12 +66,18 @@ Acpus commands are grouped by three verbs.
 
 ### Catalogue — list, show
 
+| Command | Options | Purpose |
+|---|---|---|
+| `acpus list workflows` | `--global`, `--json` | List saved workflows |
+| `acpus list runs` | `--json` | List project runs |
+| `acpus show workflow <name>` | `--global`, `--json` | Display a saved workflow |
+| `acpus show run <id>` | `--json` | Display a run by logical run id or run directory |
+
+### Internal
+
 | Command | Purpose |
 |---|---|
-| `acpus list runs` | List saved specs and historical runs |
-| `acpus list workflows` | List saved workflows |
-| `acpus show run <id>` | Display details of a past run |
-| `acpus show workflow <name>` | Display details of a saved spec |
+| `acpus _run-worker <run>` | Hidden background worker entry point used by `run` and `resume`; not intended for direct use |
 
 ## Architecture
 

@@ -12,7 +12,7 @@ export function registerRun(program: Command): void {
   program.command("run")
     .argument("[spec]", "spec file path or workflow name")
     .option("--global", "resolve saved workflow from global directory")
-    .option("--input <json-or-path>", "workflow input as a JSON object string or JSON file path")
+    .option("--input <json-or-yaml-or-path>", "workflow input as an inline JSON object or JSON/YAML file path")
     .option("--wait", "run in the foreground until the workflow reaches a terminal state")
     .option("--json", "print JSON")
     .action(async (specArg: string | undefined, options: { global?: boolean; input?: string; wait?: boolean; json?: boolean }) => {

@@ -1,177 +1,257 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Acpus — Every run is an opus.</title>
-  <link rel="icon" href="./logo/logo-favicon.svg" />
-  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
-  <style>
-    :root {
-      --ink: #1A1A1A;
-      --paper: #F5F1E6;
-      --gold: #B7892C;
-      --rule: #C8B98A;
-    }
-    * { box-sizing: border-box; margin: 0; }
-    body {
-      background: var(--paper);
-      color: var(--ink);
-      font-family: 'IBM Plex Sans', system-ui, sans-serif;
-      line-height: 1.6;
-    }
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Acpus — Every run is an opus.</title>
+    <link rel="icon" href="./logo/logo-favicon.svg" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+      rel="stylesheet" />
+    <style>
+      :root {
+        --ink: #1a1a1a;
+        --paper: #f5f1e6;
+        --gold: #b7892c;
+        --rule: #c8b98a;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+      }
+      body {
+        background: var(--paper);
+        color: var(--ink);
+        font-family: "IBM Plex Sans", system-ui, sans-serif;
+        line-height: 1.6;
+      }
 
-    /* ── Hero ── */
-    header.hero {
-      max-width: 920px;
-      margin: 0 auto;
-      padding: 96px 32px 64px;
-      text-align: center;
-      border-bottom: 1px solid var(--rule);
-    }
-    header.hero img { width: 180px; height: 180px; }
-    h1 {
-      font-family: 'Cormorant Garamond', Georgia, serif;
-      font-size: 84px;
-      font-weight: 500;
-      letter-spacing: -1px;
-      margin: 16px 0 8px;
-    }
-    .tagline {
-      font-family: 'Cormorant Garamond', serif;
-      font-style: italic;
-      font-size: 22px;
-      margin: 0 0 16px;
-    }
-    .positioning {
-      font-family: 'IBM Plex Sans', sans-serif;
-      font-size: 16px;
-      color: #555;
-      max-width: 540px;
-      margin: 0 auto;
-      line-height: 1.7;
-    }
+      /* ── Hero ── */
+      header.hero {
+        max-width: 920px;
+        margin: 0 auto;
+        padding: 96px 32px 64px;
+        text-align: center;
+        border-bottom: 1px solid var(--rule);
+      }
+      .hero-link {
+        display: block;
+        color: inherit;
+        text-decoration: none;
+        cursor: pointer;
+      }
+      .hero-link img {
+        transition: transform 160ms ease;
+      }
+      .hero-link:hover img,
+      .hero-link:focus-visible img {
+        transform: translateY(-3px);
+      }
+      .hero-link:focus-visible {
+        outline: 2px solid var(--gold);
+        outline-offset: 12px;
+      }
+      header.hero img {
+        width: 180px;
+        height: 180px;
+      }
+      h1 {
+        font-family: "Cormorant Garamond", Georgia, serif;
+        font-size: 84px;
+        font-weight: 500;
+        letter-spacing: -1px;
+        margin: 16px 0 8px;
+      }
+      .tagline {
+        font-family: "Cormorant Garamond", serif;
+        font-style: italic;
+        font-size: 22px;
+        margin: 0 0 16px;
+      }
+      .positioning {
+        font-family: "IBM Plex Sans", sans-serif;
+        font-size: 16px;
+        color: #555;
+        max-width: 540px;
+        margin: 0 auto;
+        line-height: 1.7;
+      }
 
-    /* ── Quick Start ── */
-    main {
-      max-width: 720px;
-      margin: 0 auto;
-      padding: 64px 32px 96px;
-    }
-    section h2 {
-      font-family: 'Cormorant Garamond', serif;
-      font-size: 32px;
-      font-weight: 600;
-      margin: 0 0 8px;
-    }
-    section h2 small {
-      font-family: 'IBM Plex Mono', monospace;
-      letter-spacing: 3px;
-      font-size: 11px;
-      color: var(--gold);
-      display: block;
-      margin-bottom: 8px;
-    }
-    .rule {
-      width: 56px; height: 1px; background: var(--ink); margin: 8px 0 32px;
-    }
-    .step {
-      margin-bottom: 32px;
-    }
-    .step-num {
-      font-family: 'IBM Plex Mono', monospace;
-      font-size: 11px;
-      letter-spacing: 2px;
-      color: var(--gold);
-      margin-bottom: 4px;
-    }
-    .step h3 {
-      font-family: 'IBM Plex Sans', sans-serif;
-      font-size: 18px;
-      font-weight: 600;
-      margin-bottom: 8px;
-    }
-    .step p {
-      font-size: 15px;
-      color: #444;
-      max-width: 560px;
-      margin-bottom: 12px;
-    }
-    pre {
-      background: var(--ink);
-      color: var(--paper);
-      padding: 18px 22px;
-      overflow-x: auto;
-      font-family: 'IBM Plex Mono', monospace;
-      font-size: 13px;
-      line-height: 1.65;
-      border-left: 3px solid var(--gold);
-    }
-    code { font-family: 'IBM Plex Mono', monospace; }
+      /* ── Quick Start ── */
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 64px 32px 96px;
+      }
+      section h2 {
+        font-family: "Cormorant Garamond", serif;
+        font-size: 32px;
+        font-weight: 600;
+        margin: 0 0 8px;
+      }
+      section h2 small {
+        font-family: "IBM Plex Mono", monospace;
+        letter-spacing: 3px;
+        font-size: 11px;
+        color: var(--gold);
+        display: block;
+        margin-bottom: 8px;
+      }
+      .rule {
+        width: 56px;
+        height: 1px;
+        background: var(--ink);
+        margin: 8px 0 32px;
+      }
+      .step {
+        margin-bottom: 32px;
+      }
+      .step-num {
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 11px;
+        letter-spacing: 2px;
+        color: var(--gold);
+        margin-bottom: 4px;
+      }
+      .step h3 {
+        font-family: "IBM Plex Sans", sans-serif;
+        font-size: 18px;
+        font-weight: 600;
+        margin-bottom: 8px;
+      }
+      .step p {
+        font-size: 15px;
+        color: #444;
+        max-width: 560px;
+        margin-bottom: 12px;
+      }
+      pre {
+        background: var(--ink);
+        color: var(--paper);
+        padding: 18px 22px;
+        overflow-x: auto;
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 13px;
+        line-height: 1.65;
+        border-left: 3px solid var(--gold);
+      }
+      code {
+        font-family: "IBM Plex Mono", monospace;
+      }
 
-    /* ── Footer ── */
-    footer {
-      max-width: 920px;
-      margin: 0 auto;
-      padding: 32px;
-      text-align: center;
-      font-family: 'Cormorant Garamond', serif;
-      font-style: italic;
-      color: #666;
-      border-top: 1px solid var(--rule);
-    }
-    footer a {
-      color: var(--gold);
-      text-decoration: none;
-      font-style: normal;
-      font-family: 'IBM Plex Mono', monospace;
-      font-size: 12px;
-      letter-spacing: 1px;
-    }
-    footer a:hover { text-decoration: underline; }
-  </style>
-</head>
-<body>
-  <header class="hero">
-    <img src="./logo/logo-opus-mark.svg" alt="Acpus opus mark" />
-    <h1>Acpus</h1>
-    <p class="tagline">Every run is an opus.</p>
-    <p class="positioning">
-      A runtime-driven workflow orchestrator for ACP agents.
-      Plan a spec, then conduct the run.
-    </p>
-  </header>
+      /* ── GitHub ── */
+      .github-more {
+        margin-top: 56px;
+        padding: 36px 0 0;
+        border-top: 1px solid var(--rule);
+      }
+      .github-more p {
+        max-width: 560px;
+        margin: 0 0 20px;
+        color: #444;
+        font-size: 15px;
+      }
+      .github-link {
+        display: inline-block;
+        color: var(--gold);
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 12px;
+        letter-spacing: 1.5px;
+        text-decoration: none;
+        text-transform: uppercase;
+        border-bottom: 1px solid currentColor;
+        padding-bottom: 2px;
+      }
+      .github-link:hover,
+      .github-link:focus-visible {
+        color: var(--ink);
+        outline: none;
+      }
 
-  <main>
-    <section>
-      <h2><small>GETTING STARTED</small>Quick Start</h2>
-      <div class="rule"></div>
+      /* ── Footer ── */
+      footer {
+        max-width: 920px;
+        margin: 0 auto;
+        padding: 32px;
+        text-align: center;
+        font-family: "Cormorant Garamond", serif;
+        font-style: italic;
+        color: #666;
+        border-top: 1px solid var(--rule);
+      }
+      footer a {
+        color: var(--gold);
+        text-decoration: none;
+        font-style: normal;
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 12px;
+        letter-spacing: 1px;
+      }
+      footer a:hover {
+        text-decoration: underline;
+      }
+    </style>
+    </head>
 
-      <div class="step">
-        <p class="step-num">01</p>
-        <h3>Install</h3>
-        <p>Install the CLI globally.</p>
-        <pre><code>npm install -g acpus</code></pre>
-      </div>
+  <body>
+    <header class="hero">
+      <a class="hero-link" href="https://github.com/kelvinschen/acpus" aria-label="Open Acpus on GitHub">
+        <img src="./logo/logo-opus-mark.svg" alt="Acpus opus mark" />
+        <h1>Acpus</h1>
+        <p class="tagline">Every run is an opus.</p>
+        <p class="positioning">
+          A runtime-driven workflow orchestrator for ACP agents. Plan a spec,
+          then conduct the run.
+          </p>
+      </a>
+    </header>
 
-      <div class="step">
-        <p class="step-num">02</p>
-        <h3>Plan the workflow</h3>
-        <p>Validate the spec and preview the compiled execution plan — stages, lanes, agent calls — in one step.</p>
-        <pre><code>acpus plan my-workflow.workflow.spec.json</code></pre>
-      </div>
+    <main>
+      <section>
+        <h2><small>GETTING STARTED</small>Quick Start</h2>
+        <div class="rule"></div>
 
-      <div class="step">
-        <p class="step-num">03</p>
-        <h3>Run the workflow</h3>
-        <p>Execute the spec end-to-end. Acpus conducts each stage, fans out lanes in parallel, and records every attempt.</p>
-        <pre><code>acpus run my-workflow.workflow.spec.json</code></pre>
-      </div>
-    </section>
-  </main>
+        <div class="step">
+          <p class="step-num">01</p>
+          <h3>Install</h3>
+          <p>Install the CLI globally.</p>
+          <pre><code>npm install -g acpus</code></pre>
+        </div>
 
-  <footer>
-    Acpus &nbsp;·&nbsp; 2026 &nbsp;·&nbsp; <a href="https://github.com/kelvinschen/acpus">GitHub</a>
-  </footer>
-</body>
+        <div class="step">
+          <p class="step-num">02</p>
+          <h3>Compose the workflow</h3>
+          <p>
+            Validate the spec and preview the compiled execution plan — stages,
+            lanes, agent calls — in one step.
+          </p>
+          <pre><code>acpus plan any.workflow.spec.yaml</code></pre>
+          </div>
+
+        <div class="step">
+          <p class="step-num">03</p>
+          <h3>Conduct the workflow</h3>
+          <p>
+            Execute the spec end-to-end. Acpus conducts each stage, fans out
+            lanes in parallel, and records every attempt. Monitor for the outcomes.
+          </p>
+          <pre><code>acpus run any.workflow.spec.yaml<br>acpus monitor</code></pre>
+          </div>
+          </section>
+      <section class="github-more">
+        <h2><small>SOURCE</small>More on GitHub</h2>
+        <div class="rule"></div>
+        <p>
+          Read the current docs, inspect examples, follow releases, and open
+          issues in the Acpus repository.
+        </p>
+        <a class="github-link" href="https://github.com/kelvinschen/acpus">View Repository</a>
+      </section>
+    </main>
+
+    <footer>
+      Acpus &nbsp;·&nbsp; 2026 &nbsp;·&nbsp;
+      <a href="https://github.com/kelvinschen/acpus">GitHub</a>
+      </footer>
+      </body>
 </html>

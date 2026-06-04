@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import YAML from "yaml";
 import { resultFromIssues, type IssueResult } from "../errors.js";
 import { lintWorkflowSpec } from "../compiler/lint.js";
 import { loadWorkflowSpec } from "../schema/load.js";
@@ -85,7 +86,7 @@ export async function readJsonFile(filePath: string): Promise<Record<string, unk
 export async function readInputArg(value: string): Promise<Record<string, unknown>> {
   const trimmed = value.trimStart();
   if (trimmed.startsWith("{")) return parseJsonObject(value, "--input");
-  return readJsonFile(trimmed);
+  return readInputFile(trimmed);
 }
 
 function parseJsonObject(raw: string, source: string): Record<string, unknown> {
@@ -96,10 +97,36 @@ function parseJsonObject(raw: string, source: string): Record<string, unknown> {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`${source}: invalid JSON: ${message}`);
   }
+  return assertInputObject(parsed, source);
+}
+
+async function readInputFile(filePath: string): Promise<Record<string, unknown>> {
+  const raw = await fs.readFile(filePath, "utf8");
+  if (isYamlPath(filePath)) return parseYamlObject(raw, filePath);
+  return parseJsonObject(raw, filePath);
+}
+
+function parseYamlObject(raw: string, source: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = YAML.parse(raw) as unknown;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${source}: invalid YAML: ${message}`);
+  }
+  return assertInputObject(parsed, source);
+}
+
+function assertInputObject(parsed: unknown, source: string): Record<string, unknown> {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`${source} must contain one JSON object.`);
+    throw new Error(`${source} must contain one input object.`);
   }
   return parsed as Record<string, unknown>;
+}
+
+function isYamlPath(filePath: string): boolean {
+  const lower = filePath.toLowerCase();
+  return lower.endsWith(".yaml") || lower.endsWith(".yml");
 }
 
 export function resolvePath(value: string): string {
