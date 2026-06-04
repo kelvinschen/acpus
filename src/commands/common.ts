@@ -16,15 +16,17 @@ export async function resolveSpecArg(
   if (options.spec) {
     const hasPathSeparator = options.spec.includes("/") || options.spec.includes("\\");
     const hasSpecExtension =
-      options.spec.endsWith(".json") || options.spec.endsWith(".spec.json");
-    if (hasPathSeparator || hasSpecExtension) {
+      options.spec.endsWith(".yaml") || options.spec.endsWith(".yml");
+    const hasUnsupportedSpecExtension =
+      options.spec.endsWith(".json") || options.spec.endsWith(".workflow.spec.json");
+    if (hasPathSeparator || hasSpecExtension || hasUnsupportedSpecExtension) {
       return options.spec;
     }
     // Bare name without path separators or spec extension: treat as saved workflow name.
     return path.join(
       options.global ? globalWorkflowsDir() : projectWorkflowsDir(),
       options.spec,
-      "workflow.spec.json"
+      "workflow.spec.yaml"
     );
   }
   throw new Error("Provide a spec file path or workflow name.");
@@ -77,7 +79,27 @@ export async function ensureEmptyOrOverwrite(target: string, overwrite?: boolean
 }
 
 export async function readJsonFile(filePath: string): Promise<Record<string, unknown>> {
-  return JSON.parse(await fs.readFile(filePath, "utf8")) as Record<string, unknown>;
+  return parseJsonObject(await fs.readFile(filePath, "utf8"), filePath);
+}
+
+export async function readInputArg(value: string): Promise<Record<string, unknown>> {
+  const trimmed = value.trimStart();
+  if (trimmed.startsWith("{")) return parseJsonObject(value, "--input");
+  return readJsonFile(trimmed);
+}
+
+function parseJsonObject(raw: string, source: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${source}: invalid JSON: ${message}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${source} must contain one JSON object.`);
+  }
+  return parsed as Record<string, unknown>;
 }
 
 export function resolvePath(value: string): string {

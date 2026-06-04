@@ -2,41 +2,48 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { buildRunMonitorView } from "../../../src/projections/run-monitor.js";
 import { setAgentRuntimeFactoryForTests } from "../../../src/runtime/agent-runtime.js";
 import { prepareRun } from "../../../src/runtime/run-workflow.js";
 import { syncRun } from "../../../src/runtime/sync.js";
-import { WorkflowSpecSchema, type WorkflowSpec } from "../../../src/schema/workflow-spec.js";
-import { baseOutput, fakeRuntimeFactory, implementationOutput, gateOutput, validationOutput, plainJsonOutput } from "../../helpers/fake-runtime.js";
+import { WorkflowSpecSchema, type Actor, type WorkflowSpec } from "../../../src/schema/workflow-spec.js";
+import { baseOutput, fakeRuntimeFactory, gateOutput, plainJsonOutput } from "../../helpers/fake-runtime.js";
 
 describe("stage kind fake runtime e2e", () => {
   afterEach(() => setAgentRuntimeFactoryForTests(undefined));
 
-  it("runs agent discovery into program reduce", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-stage-agent-discover-"));
+  it("runs fanout lanes into program mergeArrays fanin", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-stage-program-fanin-"));
     const fake = fakeRuntimeFactory([
-      { text: plainJsonOutput({ ...baseOutput({ nextFocus: "reduce" }), items: [{ findings: [{ severity: "P1", summary: "one" }] }, { findings: [{ severity: "P3", summary: "two" }] }] }) },
+      { match: (request) => request.sessionKey.includes("item:one:"), text: plainJsonOutput(baseOutput({ data: [{ severity: "P1", summary: "one" }] })) },
+      { match: (request) => request.sessionKey.includes("item:two:"), text: plainJsonOutput(baseOutput({ data: [{ severity: "P3", summary: "two" }] })) },
       { text: plainJsonOutput(gateOutput({ summary: "done" })) }
     ]);
     setAgentRuntimeFactoryForTests(fake.factory);
-    const prepared = await prepareRun(agentDiscoverProgramReduceSpec(cwd), { cwd, input: { cwd } });
+    const spec = programFaninSpec(cwd);
+    const prepared = await prepareRun(spec, { cwd, input: { cwd, reviewItems: [{ id: "one" }, { id: "two" }] } });
 
     const index = await runToTerminal(cwd, prepared.logicalRunId);
-    const reduced = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "reduce.json"), "utf8")) as { items: Record<string, number> };
+    const merged = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "collect.json"), "utf8")) as { data: Array<{ severity: string }> };
+    const gate = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "gate.json"), "utf8")) as { data?: unknown; verdict?: string };
+    const monitor = await buildRunMonitorView(cwd, spec, index);
 
     expect(index.status).toBe("completed");
-    expect(reduced.items).toEqual({ P0: 0, P1: 1, P2: 0, P3: 1 });
+    expect(merged.data.map((item) => item.severity)).toEqual(["P1", "P3"]);
+    expect(gate).toMatchObject({ status: "completed", verdict: "pass", data: merged });
+    expect(monitor.finalOutput).toMatchObject({ status: "completed", verdict: "pass", data: merged });
   });
 
-  it("skips unselected downstream routes for agent decision gates", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-stage-agent-decision-"));
+  it("skips unselected downstream routes for agent routes", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-stage-agent-route-"));
     const fake = fakeRuntimeFactory([
-      { text: plainJsonOutput({ ...baseOutput({ nextFocus: "left" }), route: "left" }) },
+      { text: plainJsonOutput({ ...baseOutput(), route: "left" }) },
       { text: plainJsonOutput(baseOutput({ summary: "left ran" })) },
       { text: plainJsonOutput(baseOutput({ summary: "left ran" })) },
       { text: plainJsonOutput(gateOutput({ summary: "done" })) }
     ]);
     setAgentRuntimeFactoryForTests(fake.factory);
-    const prepared = await prepareRun(agentDecisionSpec(cwd), { cwd, input: { cwd } });
+    const prepared = await prepareRun(agentRouteSpec(cwd), { cwd, input: { cwd } });
 
     const index = await runToTerminal(cwd, prepared.logicalRunId);
 
@@ -46,6 +53,51 @@ describe("stage kind fake runtime e2e", () => {
     expect(fake.runtime.requests.map((request) => request.prompt)).not.toEqual(expect.arrayContaining([
       expect.stringContaining("Right")
     ]));
+  });
+
+  it("wraps the effective upstream output for route-style program gates", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-stage-program-gate-route-"));
+    const fake = fakeRuntimeFactory([
+      { text: plainJsonOutput({ ...baseOutput(), route: "left" }) },
+      { text: plainJsonOutput(baseOutput({ summary: "left ran", data: [{ branch: "left" }] })) }
+    ]);
+    setAgentRuntimeFactoryForTests(fake.factory);
+    const spec = agentRouteSpec(cwd);
+    const prepared = await prepareRun(spec, { cwd, input: { cwd } });
+
+    const index = await runToTerminal(cwd, prepared.logicalRunId);
+    const gate = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "gate.json"), "utf8")) as { data?: unknown; verdict?: string };
+
+    expect(index.status).toBe("completed");
+    expect(gate).toMatchObject({
+      status: "completed",
+      verdict: "pass",
+      data: { summary: "left ran", data: [{ branch: "left" }] }
+    });
+  });
+
+  it("wraps multiple effective upstream outputs by stage id", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-stage-program-gate-multi-"));
+    const fake = fakeRuntimeFactory([
+      { text: plainJsonOutput(baseOutput({ summary: "one" })) },
+      { text: plainJsonOutput(baseOutput({ summary: "two" })) }
+    ]);
+    setAgentRuntimeFactoryForTests(fake.factory);
+    const spec = multiOutputGateSpec(cwd);
+    const prepared = await prepareRun(spec, { cwd, input: { cwd } });
+
+    const index = await runToTerminal(cwd, prepared.logicalRunId);
+    const gate = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "gate.json"), "utf8")) as { data?: unknown; verdict?: string };
+
+    expect(index.status).toBe("completed");
+    expect(gate).toMatchObject({
+      status: "completed",
+      verdict: "pass",
+      data: {
+        one: { summary: "one" },
+        two: { summary: "two" }
+      }
+    });
   });
 
   it("runs loop rounds without overwriting attempt ids", async () => {
@@ -72,15 +124,15 @@ describe("stage kind fake runtime e2e", () => {
 
   it("runs loop review convergence workflow through dual review and final summary", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-review-convergence-"));
-    const spec = WorkflowSpecSchema.parse(JSON.parse(await fs.readFile(path.resolve(__dirname, "..", "..", "..", "workflows", "examples", "loop-review-convergence.workflow.spec.json"), "utf8")));
+    const spec = loopReviewConvergenceSpec(cwd);
     const fake = fakeRuntimeFactory([
-      { match: (request) => request.sessionKey.includes("round:1") && request.sessionKey.includes(":lane:"), text: plainJsonOutput(validationOutput({ verdict: "fix", findings: [{ severity: "P1", summary: "review blocker" }], severityCounts: { P0: 0, P1: 1, P2: 0, P3: 0 } })) },
-      { match: (request) => request.sessionKey.includes("round:1") && request.sessionKey.includes(":lane:"), text: plainJsonOutput(validationOutput({ verdict: "fix", findings: [{ severity: "P1", summary: "review blocker" }], severityCounts: { P0: 0, P1: 1, P2: 0, P3: 0 } })) },
+      { match: (request) => request.sessionKey.includes("round:1") && request.sessionKey.includes(":lane:"), text: plainJsonOutput(baseOutput({ data: [{ severity: "P1", summary: "review blocker" }] })) },
+      { match: (request) => request.sessionKey.includes("round:1") && request.sessionKey.includes(":lane:"), text: plainJsonOutput(baseOutput({ data: [{ severity: "P1", summary: "review blocker" }] })) },
       { match: (request) => request.sessionKey.includes("round:1:stage:converge_review"), text: plainJsonOutput(baseOutput({ summary: "review needs another round", data: { needsAnotherRound: true, consensus: "blocking review findings remain", blockingFindings: ["static blocker", "semantic blocker"] } })) },
-      { match: (request) => request.sessionKey.includes("round:2") && request.sessionKey.includes(":lane:"), text: plainJsonOutput(validationOutput({ verdict: "pass", summary: "review lane passed" })) },
-      { match: (request) => request.sessionKey.includes("round:2") && request.sessionKey.includes(":lane:"), text: plainJsonOutput(validationOutput({ verdict: "pass", summary: "review lane passed" })) },
+      { match: (request) => request.sessionKey.includes("round:2") && request.sessionKey.includes(":lane:"), text: plainJsonOutput(baseOutput({ summary: "review lane passed", data: [] })) },
+      { match: (request) => request.sessionKey.includes("round:2") && request.sessionKey.includes(":lane:"), text: plainJsonOutput(baseOutput({ summary: "review lane passed", data: [] })) },
       { match: (request) => request.sessionKey.includes("round:2:stage:converge_review"), text: plainJsonOutput(baseOutput({ summary: "review converged", data: { needsAnotherRound: false, consensus: "review conclusions converged", blockingFindings: [] } })) },
-      { match: (request) => request.sessionKey === "role:final_summarizer", text: plainJsonOutput(baseOutput({ summary: "final review summary" })) },
+      { match: (request) => request.sessionKey === "agent:final_summarizer", text: plainJsonOutput(baseOutput({ summary: "final review summary" })) },
       { text: plainJsonOutput(gateOutput({ summary: "done" })) }
     ]);
     setAgentRuntimeFactoryForTests(fake.factory);
@@ -93,24 +145,24 @@ describe("stage kind fake runtime e2e", () => {
     expect(loopOutput.round).toBe(2);
     expect(loopOutput.rounds).toHaveLength(2);
     expect(loopOutput.bodyOutput?.data?.consensus).toBe("review conclusions converged");
-    await expect(fs.stat(path.join(prepared.dir, "outputs", "review_loop", "round-1", "cross_review", "workflow-loop", "dual_review", "static.json"))).resolves.toBeTruthy();
-    await expect(fs.stat(path.join(prepared.dir, "outputs", "review_loop", "round-2", "cross_review", "workflow-loop", "dual_review", "semantic.json"))).resolves.toBeTruthy();
+    await expect(fs.stat(path.join(prepared.dir, "outputs", "review_loop", "round-1", "cross_review", "workflow-loop", "static.json"))).resolves.toBeTruthy();
+    await expect(fs.stat(path.join(prepared.dir, "outputs", "review_loop", "round-2", "cross_review", "workflow-loop", "semantic.json"))).resolves.toBeTruthy();
     expect(fake.runtime.requests.map((request) => request.sessionKey)).toEqual(expect.arrayContaining([
-      "role:static_reviewer:loop:review_loop:round:1:stage:cross_review:item:workflow-loop:group:dual_review:lane:static",
-      "role:semantic_reviewer:loop:review_loop:round:1:stage:cross_review:item:workflow-loop:group:dual_review:lane:semantic",
-      "role:static_reviewer:loop:review_loop:round:2:stage:cross_review:item:workflow-loop:group:dual_review:lane:static",
-      "role:semantic_reviewer:loop:review_loop:round:2:stage:cross_review:item:workflow-loop:group:dual_review:lane:semantic"
+      "loop:review_loop:round:1:stage:cross_review:item:workflow-loop:lane:static:agent:static_reviewer",
+      "loop:review_loop:round:1:stage:cross_review:item:workflow-loop:lane:semantic:agent:semantic_reviewer",
+      "loop:review_loop:round:2:stage:cross_review:item:workflow-loop:lane:static:agent:static_reviewer",
+      "loop:review_loop:round:2:stage:cross_review:item:workflow-loop:lane:semantic:agent:semantic_reviewer"
     ]));
-    expect(fake.runtime.requests.map((request) => request.roleName)).toContain("final_summarizer");
+    expect(fake.runtime.requests.map((request) => request.actorLabel)).toContain("final_summarizer");
   });
 
   it("runs loop body fanout lane work units for multiple items and lanes", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-body-fanout-"));
     const fake = fakeRuntimeFactory([
-      { text: plainJsonOutput(baseOutput({ summary: "lane completed" })) },
-      { text: plainJsonOutput(baseOutput({ summary: "lane completed" })) },
-      { text: plainJsonOutput(baseOutput({ summary: "lane completed" })) },
-      { text: plainJsonOutput(baseOutput({ summary: "lane completed" })) }
+      { text: plainJsonOutput(baseOutput({ summary: "lane completed", data: [] })) },
+      { text: plainJsonOutput(baseOutput({ summary: "lane completed", data: [] })) },
+      { text: plainJsonOutput(baseOutput({ summary: "lane completed", data: [] })) },
+      { text: plainJsonOutput(baseOutput({ summary: "lane completed", data: [] })) }
     ]);
     setAgentRuntimeFactoryForTests(fake.factory);
     const prepared = await prepareRun(loopBodyFanoutSpec(cwd), {
@@ -119,10 +171,10 @@ describe("stage kind fake runtime e2e", () => {
     });
 
     const index = await runToTerminal(cwd, prepared.logicalRunId);
-    const output = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "review_loop", "round-1", "review_items.json"), "utf8")) as { laneOutputs: unknown[] };
+    const output = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "review_loop", "round-1", "review_items.json"), "utf8")) as { data: unknown[] };
 
     expect(index.status).toBe("completed");
-    expect(output.laneOutputs).toHaveLength(4);
+    expect(output.data).toHaveLength(0);
     expect(index.stages.review_loop?.loop?.rounds[0]?.stages.review_items.fanout).toMatchObject({
       totalItems: 2,
       completedItems: 2,
@@ -130,10 +182,10 @@ describe("stage kind fake runtime e2e", () => {
     });
     expect(fake.runtime.requests.map((request) => request.sessionKey)).toHaveLength(4);
     expect(fake.runtime.requests.map((request) => request.sessionKey)).toEqual(expect.arrayContaining([
-      "role:worker:loop:review_loop:round:1:stage:review_items:item:item-1:group:dual:lane:static",
-      "role:worker:loop:review_loop:round:1:stage:review_items:item:item-1:group:dual:lane:semantic",
-      "role:worker:loop:review_loop:round:1:stage:review_items:item:item-2:group:dual:lane:static",
-      "role:worker:loop:review_loop:round:1:stage:review_items:item:item-2:group:dual:lane:semantic"
+      "loop:review_loop:round:1:stage:review_items:item:item-1:lane:static:agent:worker",
+      "loop:review_loop:round:1:stage:review_items:item:item-1:lane:semantic:agent:worker",
+      "loop:review_loop:round:1:stage:review_items:item:item-2:lane:static:agent:worker",
+      "loop:review_loop:round:1:stage:review_items:item:item-2:lane:semantic:agent:worker"
     ]));
   });
 });
@@ -144,40 +196,60 @@ async function runToTerminal(cwd: string, runId: string) {
   return index;
 }
 
-function agentDiscoverProgramReduceSpec(cwd: string): WorkflowSpec {
+function actor(label: string): Actor {
+  return { agent: "fake", mode: "readOnly", label };
+}
+
+function programFaninSpec(cwd: string): WorkflowSpec {
   return WorkflowSpecSchema.parse({
     schemaVersion: "acpus.workflow/v1",
-    name: "agent-discover-program-reduce",
-    root: "discover",
-    inputs: { cwd: { type: "path", default: cwd } },
-    roles: {
-      discoverer: { category: "coordination", agent: "fake", mode: "readOnly" }
-    },
+    name: "program-fanin",
+    root: "collect",
+    input: { schema: "{cwd:string,reviewItems:[{id:string,path?:string}]}", default: { cwd } },
     limits: { stageTimeoutMinutes: 1 },
     stages: [
-      { id: "discover", kind: "discover", method: "agent", role: "discoverer", output: "items", prompt: "Discover items" },
-      { id: "reduce", kind: "reduce", mode: "program", from: "discover", operation: "severitySummary", dependsOn: ["discover"] },
-      { id: "gate", kind: "gate", dependsOn: ["reduce"] }
+      {
+        id: "collect",
+        kind: "fanout",
+        items: { source: "input.reviewItems" },
+        limits: { maxConcurrency: 2, maxFanoutItems: 2 },
+        prompt: "Collect item data",
+        lanes: [{ id: "worker", actor: actor("worker") }],
+        fanin: { mode: "program", operation: "mergeArrays" },
+        fanoutPolicy: { allowPartial: false }
+      },
+      { id: "gate", kind: "gate", mode: "program", dependsOn: ["collect"] }
     ]
   });
 }
 
-function agentDecisionSpec(cwd: string): WorkflowSpec {
+function agentRouteSpec(cwd: string): WorkflowSpec {
   return WorkflowSpecSchema.parse({
     schemaVersion: "acpus.workflow/v1",
-    name: "agent-decision",
+    name: "agent-route",
     root: "decide",
-    inputs: { cwd: { type: "path", default: cwd } },
-    roles: {
-      decider: { category: "validation", agent: "fake", mode: "readOnly" },
-      worker: { category: "coordination", agent: "fake", mode: "readOnly" }
-    },
+    input: { schema: "{cwd:string}", default: { cwd } },
     limits: { stageTimeoutMinutes: 1 },
     stages: [
-      { id: "decide", kind: "decisionGate", mode: "agent", role: "decider", prompt: "Pick a route", rules: [{ when: { source: "input.cwd", op: "exists" }, to: "left" }], default: "right", routes: ["left", "right"] },
-      { id: "left", kind: "agentTask", role: "worker", dependsOn: ["decide"], prompt: "Left" },
-      { id: "right", kind: "agentTask", role: "worker", dependsOn: ["decide"], prompt: "Right" },
+      { id: "decide", kind: "route", mode: "agent", actor: actor("decider"), prompt: "Pick a route", rules: [{ when: { source: "input.cwd", op: "exists" }, to: "left" }], routes: ["left", "right"] },
+      { id: "left", kind: "task", mode: "agent", actor: actor("worker"), dependsOn: ["decide"], prompt: "Left" },
+      { id: "right", kind: "task", mode: "agent", actor: actor("worker"), dependsOn: ["decide"], prompt: "Right" },
       { id: "gate", kind: "gate", dependsOn: ["left", "right"], condition: { any: [{ source: "outputs.left", op: "exists" }, { source: "outputs.right", op: "exists" }] } }
+    ]
+  });
+}
+
+function multiOutputGateSpec(cwd: string): WorkflowSpec {
+  return WorkflowSpecSchema.parse({
+    schemaVersion: "acpus.workflow/v1",
+    name: "multi-output-gate",
+    root: "one",
+    input: { schema: "{cwd:string}", default: { cwd } },
+    limits: { stageTimeoutMinutes: 1 },
+    stages: [
+      { id: "one", kind: "task", mode: "agent", actor: actor("one"), prompt: "One" },
+      { id: "two", kind: "task", mode: "agent", actor: actor("two"), dependsOn: ["one"], prompt: "Two" },
+      { id: "gate", kind: "gate", dependsOn: ["one", "two"] }
     ]
   });
 }
@@ -187,10 +259,7 @@ function loopSpec(cwd: string): WorkflowSpec {
     schemaVersion: "acpus.workflow/v1",
     name: "loop",
     root: "quality_loop",
-    inputs: { cwd: { type: "path", default: cwd } },
-    roles: {
-      reviewer: { category: "coordination", agent: "fake", mode: "readOnly" }
-    },
+    input: { schema: "{cwd:string}", default: { cwd } },
     limits: { stageTimeoutMinutes: 1 },
     stages: [
       {
@@ -200,12 +269,67 @@ function loopSpec(cwd: string): WorkflowSpec {
         body: {
           root: "review",
           output: "review",
-          stages: [{ id: "review", kind: "agentTask", role: "reviewer", prompt: "Review" }]
+          stages: [{ id: "review", kind: "task", mode: "agent", actor: actor("reviewer"), prompt: "Review" }]
         },
         continueWhen: { source: "loop.current.output.data.needsAnotherRound", op: "eq", value: true },
         onExhausted: "blocked"
       },
-      { id: "gate", kind: "gate", dependsOn: ["quality_loop"] }
+      { id: "gate", kind: "gate", mode: "program", dependsOn: ["quality_loop"] }
+    ]
+  });
+}
+
+function loopReviewConvergenceSpec(cwd: string): WorkflowSpec {
+  return WorkflowSpecSchema.parse({
+    schemaVersion: "acpus.workflow/v1",
+    name: "loop-review-convergence",
+    root: "review_loop",
+    input: { schema: "{cwd:string,reviewItems:[{id:string,path?:string}]}", default: { cwd } },
+    limits: { stageTimeoutMinutes: 1 },
+    stages: [
+      {
+        id: "review_loop",
+        kind: "loop",
+        maxRounds: 2,
+        body: {
+          root: "cross_review",
+          output: "converge_review",
+          stages: [
+            {
+              id: "cross_review",
+              kind: "fanout",
+              items: { source: "input.reviewItems" },
+              limits: { maxConcurrency: 2, maxFanoutItems: 4 },
+              prompt: "Review item",
+              lanes: [
+                { id: "static", actor: actor("static_reviewer") },
+                { id: "semantic", actor: actor("semantic_reviewer") }
+              ],
+              fanin: { mode: "program", operation: "mergeArrays" },
+              fanoutPolicy: { allowPartial: false }
+            },
+            {
+              id: "converge_review",
+              kind: "task",
+              mode: "agent",
+              actor: actor("review_converger"),
+              dependsOn: ["cross_review"],
+              prompt: "Converge review results"
+            }
+          ]
+        },
+        continueWhen: { source: "loop.current.output.data.needsAnotherRound", op: "eq", value: true },
+        onExhausted: "blocked"
+      },
+      {
+        id: "final_summary",
+        kind: "task",
+        mode: "agent",
+        actor: actor("final_summarizer"),
+        dependsOn: ["review_loop"],
+        prompt: "Summarize final review"
+      },
+      { id: "gate", kind: "gate", mode: "program", dependsOn: ["final_summary"] }
     ]
   });
 }
@@ -215,13 +339,7 @@ function loopBodyFanoutSpec(cwd: string): WorkflowSpec {
     schemaVersion: "acpus.workflow/v1",
     name: "loop-body-fanout",
     root: "review_loop",
-    inputs: {
-      cwd: { type: "path", default: cwd },
-      reviewItems: { type: "array<json>" }
-    },
-    roles: {
-      worker: { category: "coordination", agent: "fake", mode: "readOnly" }
-    },
+    input: { schema: "{cwd:string,reviewItems:[{id:string,path?:string}]}", default: { cwd } },
     limits: { stageTimeoutMinutes: 1 },
     stages: [
       {
@@ -237,21 +355,18 @@ function loopBodyFanoutSpec(cwd: string): WorkflowSpec {
             items: { source: "input.reviewItems" },
             limits: { maxConcurrency: 2, maxFanoutItems: 2 },
             prompt: "Review item",
-            laneGroups: [{
-              id: "dual",
-              mode: "all",
-              lanes: [
-                { id: "static", role: "worker" },
-                { id: "semantic", role: "worker" }
-              ]
-            }],
+            lanes: [
+              { id: "static", actor: actor("worker") },
+              { id: "semantic", actor: actor("worker") }
+            ],
+            fanin: { mode: "program", operation: "mergeArrays" },
             fanoutPolicy: { allowPartial: false }
           }]
         },
-        continueWhen: { source: "loop.current.output.status", op: "eq", value: "again" },
+        continueWhen: { source: "loop.round", op: "eq", value: 0 },
         onExhausted: "blocked"
       },
-      { id: "gate", kind: "gate", dependsOn: ["review_loop"] }
+      { id: "gate", kind: "gate", mode: "program", dependsOn: ["review_loop"] }
     ]
   });
 }

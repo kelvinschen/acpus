@@ -1,101 +1,125 @@
-import { describe, expect, it } from "vitest";
-import { OutputContractNameSchema } from "../../src/contracts/output-contracts.js";
-import { formatRepairPrompt } from "../../src/runtime/repair.js";
+import { afterEach, describe, expect, it } from "vitest";
+import { z } from "zod";
+import { compileSchemaDsl, outputSchemaFooter } from "../../src/contracts/schema-dsl.js";
+import { AGENT_TASK_RETRY_DELAY_MS, agentTaskRetryDelayMs, formatContinuationPrompt, setAgentTaskRetryDelayForTests } from "../../src/runtime/agent-task-retry.js";
 import { parseWorkflowOutput } from "../../src/runtime/output-parser.js";
 
-function implementationOutput(extra: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    status: "completed",
-    summary: "Implemented safely.",
-    artifacts: [],
-    nextFocus: "gate",
-    changedFiles: ["src/app.ts"],
-    checks: [{ command: "npm test", status: "pass", summary: "ok" }],
-    ...extra
-  };
-}
+const REVIEW_SCHEMA = compileSchemaDsl("{summary:string,data:[{severity:string,category:string,title:string,path?:string,line?:number,evidence:string,recommendation:string}]}");
+const GATE_SCHEMA = compileSchemaDsl("{summary:string}");
 
-function validationOutput(extra: Record<string, unknown> = {}): Record<string, unknown> {
+function reviewOutput(extra: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    status: "completed",
     summary: "Reviewed safely.",
-    artifacts: [],
-    nextFocus: "gate",
-    verdict: "pass",
-    severityCounts: { P0: 0, P1: 0, P2: 0, P3: 0 },
-    findings: [],
-    checks: [],
+    data: [{
+      severity: "P2",
+      category: "runtime",
+      title: "example finding",
+      path: "src/runtime/example.ts",
+      line: 12,
+      evidence: "Concrete evidence.",
+      recommendation: "Concrete fix."
+    }],
     ...extra
   };
 }
 
-function gateOutput(extra: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    status: "completed",
-    summary: "Gate passed.",
-    artifacts: [],
-    nextFocus: "",
-    verdict: "pass",
-    deliverables: [],
-    changedFiles: [],
-    checks: [],
-    warnings: [],
-    risks: [],
-    nextActions: [],
-    ...extra
-  };
-}
-
-function trailing(value: unknown, prefix = "Done.\n"): string {
-  return `${prefix}${JSON.stringify(value, null, 2)}`;
-}
-
-function fenced(tag: string, value: unknown): string {
-  return `\`\`\`${tag}\n${JSON.stringify(value, null, 2)}\n\`\`\``;
+function strictJson(value: unknown): string {
+  return JSON.stringify(value, null, 2);
 }
 
 describe("runtime output parser", () => {
-  it("accepts prose containing a final balanced JSON object", () => {
-    const parsed = parseWorkflowOutput(trailing(implementationOutput()), "implementation");
+  afterEach(() => setAgentTaskRetryDelayForTests(undefined));
+
+  it("accepts exactly one JSON object matching a compiled DSL schema", () => {
+    const parsed = parseWorkflowOutput(strictJson(reviewOutput()), { outputSchema: REVIEW_SCHEMA });
 
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
+    expect(parsed.value.summary).toBe("Reviewed safely.");
     expect(parsed.outputParse).toMatchObject({
-      mode: "lastBalancedJson",
-      repaired: false,
+      mode: "lastBalancedJsonObject",
       candidateCount: 1
     });
   });
 
-  it("accepts long prose containing a valid final contract JSON object", () => {
-    const raw = trailing(implementationOutput({ summary: "long output parsed" }), `${"Progress update.\n".repeat(2500)}\n`);
+  it("extracts a final fenced JSON object with prose before and after", () => {
+    const parsed = parseWorkflowOutput([
+      "Next is my summary",
+      "```json",
+      "{ \"summary\": \"my summary\" }",
+      "```",
+      "This is my summary."
+    ].join("\n"), { outputSchema: GATE_SCHEMA });
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.summary).toBe("my summary");
+  });
+
+  it("extracts a fenced JSON object without surrounding prose", () => {
+    const parsed = parseWorkflowOutput("```json\n{ \"summary\": \"my summary\" }\n```", { outputSchema: GATE_SCHEMA });
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.summary).toBe("my summary");
+  });
+
+  it("extracts an object followed by a semicolon", () => {
+    const parsed = parseWorkflowOutput("{ \"summary\": \"my summary\" };", { outputSchema: GATE_SCHEMA });
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.summary).toBe("my summary");
+  });
+
+  it("extracts an object followed by a semicolon and prose", () => {
+    const parsed = parseWorkflowOutput("{ \"summary\": \"my summary\" };\nThis is my summary.", { outputSchema: GATE_SCHEMA });
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.summary).toBe("my summary");
+  });
+
+  it("extracts a final object from prose", () => {
+    const parsed = parseWorkflowOutput(`Done.\n${strictJson(reviewOutput())}`, { outputSchema: REVIEW_SCHEMA });
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.summary).toBe("Reviewed safely.");
+  });
+
+  it("accepts a long strict JSON response", () => {
+    const raw = strictJson({
+      summary: "long output parsed",
+      data: [{
+        severity: "P2",
+        category: "runtime",
+        title: "large evidence",
+        evidence: "x".repeat(32000),
+        recommendation: "Keep strict JSON parsing."
+      }]
+    });
     expect(raw.length).toBeGreaterThan(32000);
 
-    const parsed = parseWorkflowOutput(raw, "implementation");
+    const parsed = parseWorkflowOutput(raw, { outputSchema: REVIEW_SCHEMA });
 
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     expect(parsed.value.summary).toBe("long output parsed");
-    expect(parsed.outputParse).toMatchObject({
-      mode: "lastBalancedJson",
-      candidateCount: 1
-    });
   });
 
-  it("accepts trailing symbols and text after the final JSON object", () => {
-    const parsed = parseWorkflowOutput(`${JSON.stringify(implementationOutput({ summary: "with tail" }), null, 2)}\n✅ Done. ###`, "implementation");
+  it("reports parse failure for invalid JSON syntax", () => {
+    const raw = "{\"summary\":\"ok\", \"data\":[{\"severity\":\"P1\",\"category\":\"runtime\",\"title\":\"t\",\"evidence\":\"e\",\"recommendation\":\"r\",}],}";
+    const parsed = parseWorkflowOutput(raw, { outputSchema: REVIEW_SCHEMA });
 
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    expect(parsed.value.summary).toBe("with tail");
-    expect(parsed.outputParse).toMatchObject({
-      mode: "lastBalancedJson",
-      candidateCount: 1
-    });
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) return;
+    expect(parsed.errorCode).toBe("OUTPUT_PARSE_FAILED");
+    expect(parsed.diagnostics.candidateCount).toBe(1);
   });
 
-  it("fails closed when no balanced JSON exists", () => {
-    const parsed = parseWorkflowOutput("Now, let's write the workflow output JSON.", "implementation");
+  it("fails closed when no JSON response exists", () => {
+    const parsed = parseWorkflowOutput("Now, let's write the workflow output JSON.", { outputSchema: REVIEW_SCHEMA });
 
     expect(parsed.ok).toBe(false);
     if (parsed.ok) return;
@@ -103,217 +127,146 @@ describe("runtime output parser", () => {
     expect(parsed.diagnostics.candidateCount).toBe(0);
   });
 
-  it("repairs JSON syntax before schema validation", () => {
-    const raw = [
-      "Done.",
-      "{\"status\":\"completed\",\"summary\":\"ok\", // brief result",
-      "\"artifacts\":[],\"nextFocus\":\"done\",\"changedFiles\":[\"a.ts\",],\"checks\":[]}",
-      "Finished."
-    ].join("\n");
-    const parsed = parseWorkflowOutput(raw, "implementation");
+  it("fails closed when the response is empty", () => {
+    const parsed = parseWorkflowOutput("", { outputSchema: REVIEW_SCHEMA });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) return;
+    expect(parsed.errorCode).toBe("OUTPUT_PARSE_FAILED");
+    expect(parsed.diagnostics.candidateCount).toBe(0);
+  });
+
+  it("fails closed when the JSON response is schema-invalid", () => {
+    const parsed = parseWorkflowOutput(strictJson({ card: "67-zhaopin", overall_result: "PASS" }), { outputSchema: REVIEW_SCHEMA });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) return;
+    expect(parsed.errorCode).toBe("OUTPUT_SCHEMA_FAILED");
+    expect(parsed.diagnostics.candidates[0]?.schemaErrors.map((error) => error.path)).toEqual(expect.arrayContaining(["/summary", "/data"]));
+  });
+
+  it("validates wrapper objects as the submitted output object", () => {
+    const parsed = parseWorkflowOutput(strictJson({ final: reviewOutput() }), { outputSchema: REVIEW_SCHEMA });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) return;
+    expect(parsed.errorCode).toBe("OUTPUT_SCHEMA_FAILED");
+    expect(parsed.diagnostics.candidates[0]?.schemaErrors.map((error) => error.path)).toEqual(expect.arrayContaining(["/summary", "/data"]));
+  });
+
+  it("uses the final object when multiple objects are present", () => {
+    const baseData = reviewOutput().data as Array<Record<string, unknown>>;
+    const final = reviewOutput({
+      data: [{ ...baseData[0], title: "second" }]
+    });
+    const parsed = parseWorkflowOutput(`${strictJson(reviewOutput())}\n${strictJson(final)}`, { outputSchema: REVIEW_SCHEMA });
 
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(parsed.outputParse).toMatchObject({
-      mode: "lastBalancedJson",
-      repaired: true,
-      candidateCount: 1
-    });
+    expect((parsed.value.data as Array<{ title: string }>)[0]?.title).toBe("second");
   });
 
-  it("does not treat workflow-output wrapper objects specially", () => {
-    const parsed = parseWorkflowOutput(trailing({ "workflow-output": implementationOutput() }), "implementation");
-
-    expect(parsed.ok).toBe(false);
-    if (parsed.ok) return;
-    expect(parsed.errorCode).toBe("OUTPUT_SCHEMA_FAILED");
-    expect(parsed.diagnostics).toMatchObject({
-      candidateCount: 1,
-      bestCandidateId: "candidate-1"
-    });
-    expect(parsed.diagnostics.candidates[0]?.schemaErrors.map((error) => error.path)).toEqual(expect.arrayContaining(["/status"]));
-  });
-
-  it("rejects checks[].result instead of normalizing it to checks[].status", () => {
-    const parsed = parseWorkflowOutput(trailing(implementationOutput({
-      checks: [{ name: "unit", result: "pass" }]
-    })), "implementation");
-
-    expect(parsed.ok).toBe(false);
-    if (parsed.ok) return;
-    expect(parsed.errorCode).toBe("OUTPUT_SCHEMA_FAILED");
-    expect(parsed.diagnostics.candidates[0]?.schemaErrors.map((error) => error.path)).toContain("/checks/0/status");
-  });
-
-  it("accepts valid gate pass and blocked outputs", () => {
-    expect(parseWorkflowOutput(trailing(gateOutput()), "gate").ok).toBe(true);
-    expect(parseWorkflowOutput(trailing(gateOutput({ status: "blocked", verdict: "unknown", blockedReason: "GATE_VERDICT_UNKNOWN" })), "gate").ok).toBe(true);
-  });
-
-  it("rejects inconsistent gate status and verdict pairs", () => {
-    const parsed = parseWorkflowOutput(trailing(gateOutput({ status: "completed", verdict: "unknown" })), "gate");
-    expect(parsed.ok).toBe(false);
-    if (parsed.ok) return;
-    expect(parsed.errorCode).toBe("OUTPUT_SCHEMA_FAILED");
-    expect(parsed.diagnostics.candidates[0]?.schemaErrors.map((error) => error.path)).toContain("/status");
-  });
-
-  it("does not expose summarize as a current output contract", () => {
-    expect(OutputContractNameSchema.safeParse("summarize").success).toBe(false);
-  });
-
-  it("uses only the final parseable JSON object when earlier valid JSON appears in prose", () => {
-    const parsed = parseWorkflowOutput([
-      JSON.stringify(implementationOutput({ summary: "First" }), null, 2),
-      "The previous object was an example; final result follows.",
-      JSON.stringify(implementationOutput({ summary: "Second" }), null, 2)
-    ].join("\n"), "implementation");
-
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    expect(parsed.value.summary).toBe("Second");
-    expect(parsed.outputParse.candidateCount).toBe(1);
-  });
-
-  it("fails closed when the last parseable JSON object is schema-invalid", () => {
-    const parsed = parseWorkflowOutput([
-      JSON.stringify(implementationOutput({ summary: "Valid earlier" }), null, 2),
-      "The last parseable object is a domain report.",
-      JSON.stringify({ card: "67-zhaopin", overall_result: "PASS" }, null, 2)
-    ].join("\n"), "implementation");
+  it("does not fall back when the final object is schema-invalid", () => {
+    const parsed = parseWorkflowOutput(`${strictJson(reviewOutput())}\n${strictJson({ summary: "missing data" })}`, { outputSchema: REVIEW_SCHEMA });
 
     expect(parsed.ok).toBe(false);
     if (parsed.ok) return;
     expect(parsed.errorCode).toBe("OUTPUT_SCHEMA_FAILED");
     expect(parsed.diagnostics.candidateCount).toBe(1);
-    expect(parsed.diagnostics.candidates[0]?.rawPreview).toContain("67-zhaopin");
+    expect(parsed.diagnostics.candidates[0]?.schemaErrors.map((error) => error.path)).toContain("/data");
   });
 
-  it("skips a later balanced brace span when it cannot be parsed or repaired", () => {
-    const parsed = parseWorkflowOutput([
-      JSON.stringify(implementationOutput({ summary: "Valid before noisy braces" }), null, 2),
-      "debug tail {not json}"
-    ].join("\n"), "implementation");
+  it("ignores braces inside JSON strings while finding the final object", () => {
+    const parsed = parseWorkflowOutput(`notes { ignored\n${strictJson({ summary: "literal braces { nested } are text" })}`, { outputSchema: GATE_SCHEMA });
 
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(parsed.value.summary).toBe("Valid before noisy braces");
-    expect(parsed.outputParse).toMatchObject({ mode: "lastBalancedJson", candidateCount: 1 });
+    expect(parsed.value.summary).toBe("literal braces { nested } are text");
   });
 
-  it("parses report input/audio style findings with nested TypeScript fences in JSON strings", () => {
-    const parsed = parseWorkflowOutput(trailing(validationOutput({
-      verdict: "fix",
-      severityCounts: { P0: 0, P1: 2, P2: 0, P3: 0 },
-      findings: [{
-        severity: "P1",
-        summary: "input validate state typo",
-        path: "packages/lego/lego_core/src/components/input/index.tsx",
-        details: "Evidence:\n```typescript\nif (!('validateState' in this.props)) {\n```\nRecommendation: Fix the typo.",
-        evidence: "```typescript\n// line 232-236\nevent(document as unknown as HTMLElement, 'visibilitychange', this.visiblePaused);\n```"
-      }, {
-        severity: "P1",
-        summary: "audio browser global access",
-        details: "The component uses document directly.\n```typescript\nthis.audio = document.createElement('audio');\n```"
-      }]
-    })), "validation");
+  it("ignores arrays and primitives as workflow output candidates", () => {
+    for (const raw of ["[1, 2, 3]", "[{\"summary\":\"array object\"}]", "[{\"outer\":{\"summary\":\"nested in array\"}}]", "[1,{\"a\":{\"b\":1}}]", "\"string\"", "42", "true", "null"]) {
+      const parsed = parseWorkflowOutput(raw, { outputSchema: GATE_SCHEMA });
+      expect(parsed.ok).toBe(false);
+      if (parsed.ok) continue;
+      expect(parsed.errorCode).toBe("OUTPUT_PARSE_FAILED");
+      expect(parsed.diagnostics.candidateCount).toBe(0);
+    }
+  });
+
+  it("validates runtime implicit fields with the compiled schema", () => {
+    const parsed = parseWorkflowOutput(strictJson({ summary: "Gate passed.", verdict: "pass" }), {
+      outputSchema: GATE_SCHEMA,
+      implicitFields: { verdict: z.enum(["pass", "pass_with_warnings", "blocked", "failed", "unknown"]) }
+    });
 
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(parsed.outputParse).toMatchObject({ mode: "lastBalancedJson", candidateCount: 1 });
-    expect(parsed.value.findings).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        details: expect.stringContaining("```typescript")
-      })
-    ]));
+    expect(parsed.value.verdict).toBe("pass");
   });
 
-  it("parses report select/tabs/view style findings with nested TSX fences in JSON strings", () => {
-    const parsed = parseWorkflowOutput(trailing(validationOutput({
-      verdict: "fix",
-      severityCounts: { P0: 0, P1: 1, P2: 0, P3: 0 },
-      findings: [{
-        severity: "P1",
-        summary: "select unique id issue",
-        path: "packages/lego/lego_core/src/components/select/index.tsx",
-        details: "Lines 486-494:\n```tsx\nprivate readonly getUniqueId = (() => {\n  let uniqueId = '';\n  return () => uniqueId;\n})();\n```"
-      }]
-    })), "validation");
-
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    expect(parsed.value.findings).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        details: expect.stringContaining("```tsx")
-      })
-    ]));
-  });
-
-  it("accepts legacy fenced JSON only because the object is balanced in full text", () => {
-    const parsed = parseWorkflowOutput(fenced("workflow-output", validationOutput({
-      verdict: "fix",
-      findings: [{
-        severity: "P1",
-        summary: "legacy fenced output",
-        details: "```tsx\nconst value = 1;\n```"
-      }],
-      severityCounts: { P0: 0, P1: 1, P2: 0, P3: 0 }
-    })), "validation");
-
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    expect(parsed.outputParse).toMatchObject({ mode: "lastBalancedJson", candidateCount: 1 });
-    expect(parsed.value.findings).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        details: expect.stringContaining("```tsx")
-      })
-    ]));
-  });
-
-  it("fails closed for empty timeline-style raw output", () => {
-    const parsed = parseWorkflowOutput("", "validation");
-
-    expect(parsed.ok).toBe(false);
-    if (parsed.ok) return;
-    expect(parsed.errorCode).toBe("OUTPUT_PARSE_FAILED");
-    expect(parsed.diagnostics.candidateCount).toBe(0);
-  });
-
-  it("returns schema diagnostics for domain reports such as the 67-zhaopin shape", () => {
-    const domainReport = {
-      card: "67-zhaopin",
-      path: "packages/tt-search/business/Lego/67-zhaopin",
-      overall_result: "PASS"
-    };
-    const parsed = parseWorkflowOutput(trailing(domainReport, "Here's the final JSON:\n"), "implementation");
+  it("rejects missing runtime implicit fields", () => {
+    const parsed = parseWorkflowOutput(strictJson({ summary: "Gate passed." }), {
+      outputSchema: GATE_SCHEMA,
+      implicitFields: { verdict: z.enum(["pass", "pass_with_warnings", "blocked", "failed", "unknown"]) }
+    });
 
     expect(parsed.ok).toBe(false);
     if (parsed.ok) return;
     expect(parsed.errorCode).toBe("OUTPUT_SCHEMA_FAILED");
-    expect(parsed.diagnostics).toMatchObject({
-      errorCode: "OUTPUT_SCHEMA_FAILED",
-      candidateCount: 1,
-      recoverability: "repairable"
-    });
-    expect(parsed.diagnostics.candidates.flatMap((candidate) => candidate.schemaErrors.map((error) => error.path))).toEqual(expect.arrayContaining(["/status", "/summary", "/artifacts", "/nextFocus", "/changedFiles", "/checks"]));
+    expect(parsed.diagnostics.candidates[0]?.schemaErrors.map((error) => error.path)).toContain("/verdict");
   });
 
-  it("formats schema-aware repair prompts for balanced JSON failures", () => {
-    const parsed = parseWorkflowOutput(trailing({ card: "67-zhaopin" }), "implementation");
-
+  it("builds continuation prompts from the final output schema only", () => {
+    const parsed = parseWorkflowOutput(strictJson({ summary: "missing data" }), { outputSchema: REVIEW_SCHEMA });
     expect(parsed.ok).toBe(false);
     if (parsed.ok) return;
-    const prompt = formatRepairPrompt({ contractName: "implementation", failure: parsed });
-    expect(prompt).toContain("Blocked reason: OUTPUT_SCHEMA_FAILED");
-    expect(prompt).toContain("**Contract: implementation**");
-    expect(prompt).toContain("Canonical schema");
-    expect(prompt).toContain("/status");
-    expect(prompt).toContain("Candidate count: 1");
-    expect(prompt).toContain("Best candidate or raw body:");
-    expect(prompt).toContain("End with exactly one valid, parseable JSON object that satisfies the schema.");
-    expect(prompt).toContain("Do not wrap the final JSON object in Markdown code fences. Do not use ```json.");
-    expect(prompt).not.toContain("Minimal valid example");
-    expect(prompt).not.toContain("Allowed deterministic aliases");
-    expect(prompt).not.toContain("checks[].result");
+
+    const prompt = formatContinuationPrompt({ outputSchema: REVIEW_SCHEMA, failure: parsed });
+
+    expect(prompt).toContain("Continue your work");
+    expect(prompt).toContain("# Final Output Contract");
+    expect(prompt).toContain("After completing the whole task");
+    expect(prompt).toContain("final JSON object");
+    expect(prompt).toContain("summary: string");
+    expect(prompt).toContain("recommendation: string");
+    expect(prompt).toContain("without ```json fence");
+    expect(prompt).not.toContain("missing data");
+    expect(prompt).not.toContain("best candidate");
+  });
+
+  it("renders route implicit fields in continuation prompts", () => {
+    const parsed = parseWorkflowOutput(strictJson({ summary: "missing route" }), {
+      implicitFields: { route: z.enum(["left", "right"]) }
+    });
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) return;
+
+    const prompt = formatContinuationPrompt({ failure: parsed, implicitOutputFields: ["route:left|right"] });
+
+    expect(prompt).toContain("route: \"left\" | \"right\"");
+    expect(prompt).not.toContain("route:left|right");
+  });
+
+  it("uses a five second Agent Task Retry interval by default", () => {
+    expect(AGENT_TASK_RETRY_DELAY_MS).toBe(5_000);
+    expect(agentTaskRetryDelayMs()).toBe(5_000);
+    setAgentTaskRetryDelayForTests(0);
+    expect(agentTaskRetryDelayMs()).toBe(0);
+  });
+
+  it("renders implicit fields inside the final output schema", () => {
+    const footer = outputSchemaFooter(GATE_SCHEMA, ["verdict"]);
+
+    expect(footer).toContain("# Final Output Contract");
+    expect(footer).toContain("verdict: \"pass\" | \"pass_with_warnings\" | \"blocked\" | \"failed\" | \"unknown\"");
+    expect(footer).toContain("**After completing the whole task, respond with exactly one valid, parseable final JSON object without ```json fence that satisfies this schema; the response must start with `{` and end with `}` and include no prose, Markdown, or code fences.**");
+  });
+
+  it("renders route implicit fields inside the final output schema", () => {
+    const footer = outputSchemaFooter(undefined, ["route:left|right"]);
+
+    expect(footer).toContain("route: \"left\" | \"right\"");
+    expect(footer).not.toContain("route:left|right");
   });
 });

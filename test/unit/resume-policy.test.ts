@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { ExecutionPlan } from "../../src/compiler/execution-plan.js";
 import { localizeResumePolicyForSegment, mergeResumePolicy, parseResumePolicyOptions, validateResumePolicy } from "../../src/runtime/resume-policy.js";
 import { WorkflowSpecSchema } from "../../src/schema/workflow-spec.js";
 
@@ -6,10 +7,6 @@ const spec = WorkflowSpecSchema.parse({
   schemaVersion: "acpus.workflow/v1",
   name: "resume-policy",
   root: "review_files",
-  roles: {
-    reviewer: { category: "review", agent: "aiden", mode: "readOnly" },
-    editor: { category: "implementation", agent: "trae", mode: "edit" }
-  },
   limits: { stageTimeoutMinutes: 10 },
   stages: [
     {
@@ -18,7 +15,8 @@ const spec = WorkflowSpecSchema.parse({
       items: { source: "input.files" },
       limits: { maxFanoutItems: 4 },
       prompt: "Review one file",
-      laneGroups: [{ id: "review", mode: "all", lanes: [{ id: "reviewer", role: "reviewer" }] }]
+      lanes: [{ id: "reviewer", actor: { agent: "aiden", mode: "readOnly", label: "reviewer" } }],
+      fanin: { mode: "program", operation: "mergeArrays" }
     },
     {
       id: "edit_files",
@@ -26,11 +24,13 @@ const spec = WorkflowSpecSchema.parse({
       items: { source: "input.files" },
       limits: { maxFanoutItems: 2 },
       prompt: "Edit one file",
-      laneGroups: [{ id: "edit", mode: "all", lanes: [{ id: "editor", role: "editor" }] }]
+      lanes: [{ id: "editor", actor: { agent: "trae", mode: "edit", label: "editor" } }],
+      fanin: { mode: "program", operation: "mergeArrays" }
     },
     {
       id: "gate",
       kind: "gate",
+      mode: "program",
       dependsOn: ["review_files"]
     }
   ]
@@ -89,6 +89,22 @@ describe("resume policy", () => {
       "RESUME_POLICY_MAX_ITEMS_NOT_TIGHTENING",
       "RESUME_POLICY_SKIP_ITEM_OUT_OF_RANGE"
     ]);
+  });
+
+  it("bounds resume max items by the compiled execution plan instead of recomputing spec limits", () => {
+    const sourcedSpec = WorkflowSpecSchema.parse({
+      ...spec,
+      stages: spec.stages.map((stage) => stage.id === "review_files"
+        ? { ...stage, limits: { maxFanoutItems: { source: "input.maxFanoutItems", default: 2 } } }
+        : stage)
+    });
+    const plan = {
+      fanout: [{ stageId: "review_files", maxItems: 6 }]
+    } as ExecutionPlan;
+
+    expect(validateResumePolicy(sourcedSpec, {
+      fanout: { review_files: { maxItems: 5, skipItemIndexes: [5] } }
+    }, plan)).toEqual([]);
   });
 
   it("rejects partial-result resume on edit fanout", () => {

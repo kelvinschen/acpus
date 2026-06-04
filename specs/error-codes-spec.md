@@ -4,119 +4,140 @@
 
 - Current implementation: current
 - Source modules: `src/errors.ts`, `src/schema/`, `src/compiler/`, `src/contracts/`, `src/runtime/`, `src/projections/run-diagnostics.ts`, `src/commands/`
-- Maintenance trigger: update this spec when changing error shape, severity semantics, code families, stable runtime codes, output-contract codes, repair suggestions, or diagnostics projections
+- Maintenance trigger: update this spec when changing error shape, severity semantics, code families, stable runtime codes, output schema codes, command diagnostics, or diagnostics projections
 
 ## Purpose
 
-Error codes provide a stable repair-oriented surface for Main Agent loops, CLI users, and diagnostics. They identify validation, compiler, runtime, output-contract, resume, ACPX, and internal failures.
+Error codes provide a stable machine-readable surface for Main Agent loops, CLI users, and diagnostics.
 
 ## Normative Requirements
 
-- Structured errors MUST include `code`, `severity`, `path`, `message`, and `suggestions` when emitted through the repair-oriented JSON surface.
-- Severity `warning` MUST mean the spec is runnable, but preview and diagnostics surfaces should expose the risk.
-- Severity `error` MUST mean the spec is rejected until corrected.
-- Severity `fatal` MUST mean tooling or runtime could not safely continue.
-- Error code families MUST remain stable and MUST NOT be renamed casually.
-- Output contract failures MUST map to blocked attempt/stage/run state, not failed infrastructure state.
-- Runtime `failed` MUST remain reserved for compiler, scheduler, ACPX runtime, or other unrecoverable runtime errors.
-- Diagnostics projections MUST surface run-level runtime diagnostic codes when present.
-- Diagnostics projections MUST recognize every stable runtime run-level code listed in this SPEC when it appears as the persisted run blocked reason.
+- Structured validation errors MUST include `code`, `severity`, `path`, `message`, and suggestions when emitted through JSON command surfaces.
+- Severity `error` MUST mean the workflow is rejected until corrected.
+- Runtime output parse/schema failures MUST use Agent Task Retry and MUST block with `AGENT_TASK_RETRY_EXHAUSTED` when retry budget is exhausted.
+- Scheduler stale recovery exhaustion MUST use `AGENT_TASK_RETRY_EXHAUSTED` as the blocked reason; `AGENT_STAGE_STALE_RECOVERY` and `FANOUT_ITEM_STALE_RECOVERY` identify stale attempt failures.
+- Runtime `failed` MUST remain reserved for infrastructure or unrecoverable runtime failures.
+- Diagnostics projections MUST recognize stable runtime blocked reasons listed here.
+- New stable codes MUST be documented in this SPEC in the same change that introduces them.
 
 ## Interfaces and Contracts
 
-Repair-oriented JSON output uses this shape:
-
-```json
-{
-  "code": "VARIABLE_UNDECLARED",
-  "severity": "error",
-  "path": "/stages/0/prompt",
-  "message": "Prompt references ${task}, but no variable named task is declared.",
-  "suggestions": ["Add a variable named task to /stages/0/variables."]
-}
-```
-
 Stable code families:
 
-- `SCHEMA_*`: JSON shape, version, file read, declared input, or runtime input errors.
-- `GRAPH_*`: root, dependency, cycle, branching, deprecated summarize, or terminal gate errors.
+- `SCHEMA_*`: schema version, YAML format, YAML parse, or file read errors.
+- `INPUT_*`: workflow input schema DSL, default, unknown input, missing required input, or runtime input schema errors.
+- `GRAPH_*`: root, dependency, cycle, unsupported branch shape, or terminal gate errors.
 - `VARIABLE_*`: prompt placeholder and variable source errors.
-- `ROLE_*`: unknown role or role/mode conflict.
+- `ACTOR_*`: invalid actor declarations or actor mode conflicts.
 - `LIMIT_*`: stage-limit validation errors.
-- `DECISION_*`: invalid decision target/default routing.
-- `DISCOVER_*`: invalid agent discover declaration.
-- `FANOUT_*`: edit fanout risk or missing reconcile stage.
-- `OUTPUT_*`: runtime output parse, schema, ambiguity, or repair errors.
-- `RUNTIME_*`: logical run index, scheduler, session, or command errors.
+- `ROUTE_*`: invalid route targets, route/downstream mismatch, or unmatched runtime routing.
+- `FANOUT_*`: fanout shape, lane selection, item output, partial policy, or fanin requirement errors.
+- `PROGRAM_*`: program task operation, command safety/runtime, or program fanin input errors.
+- `OUTPUT_*`: schema DSL, parse, or schema errors.
+- `LOOP_*`: loop body output or loop execution errors.
+- `RUNTIME_*`: logical run index, scheduler, session, or persistence errors.
 - `RESUME_*`: resume policy errors.
-- `ACPX_*`: `acpx/runtime` startup, session, or turn errors.
-- `INTERNAL_*`: unexpected compiler/runtime invariant failure.
+- `ACPX_*`: agent runtime startup, session, or turn errors.
+- `INTERNAL_*`: unexpected compiler/runtime invariant failures.
 
-Stable output contract codes:
+Stable output codes:
 
+- `OUTPUT_SCHEMA_DSL_INVALID`
 - `OUTPUT_PARSE_FAILED`
 - `OUTPUT_SCHEMA_FAILED`
-- `OUTPUT_REPAIR_FAILED`
 
-Stable runtime run-level codes:
+Stable schema/runtime loading codes:
 
-- `EVENT_APPEND_LOCK_TIMEOUT`
-- `RUN_INDEX_LOCK_TIMEOUT`
-- `OUTPUT_REPAIR_FAILED`
-- `FANOUT_ITEM_UNSTARTED_TIMEOUT`
+- `SCHEMA_FORMAT_UNSUPPORTED`
+- `SCHEMA_YAML_INVALID`
+
+Stable input codes:
+
+- `INPUT_SCHEMA_DSL_INVALID`
+- `INPUT_DEFAULT_SCHEMA_INVALID`
+- `INPUT_REQUIRED`
+- `INPUT_UNKNOWN`
+- `INPUT_SCHEMA_INVALID`
+
+`INPUT_REQUIRED` MUST also cover missing input-sourced limit paths when the binding has no default. `INPUT_SCHEMA_INVALID` MUST also cover invalid limit source roots/paths and source values that do not resolve to positive integer numbers.
+
+Stable route codes:
+
+- `ROUTE_ROUTES_MISMATCH`
+- `ROUTE_TARGET_UNKNOWN`
+- `ROUTE_UNMATCHED`
+
+Stable program codes:
+
+- `PROGRAM_TASK_OPERATION_UNKNOWN`
+- `PROGRAM_COMMAND_CWD_INVALID`
+- `PROGRAM_COMMAND_TIMEOUT`
+- `PROGRAM_COMMAND_SPAWN_FAILED`
+- `PROGRAM_COMMAND_SAFETY_VIOLATION`
+- `PROGRAM_FANIN_INPUT_INVALID`
+
+Stable fanout/loop codes:
+
+- `FANOUT_FANIN_REQUIRED`
 - `FANOUT_ITEM_BLOCKED`
 - `FANOUT_ITEM_CASCADE_BLOCKED`
-- `FANOUT_LANE_SELECTION_FAILED`
 - `FANOUT_LANE_RESULT_MISMATCH`
-- `NO_MATCHING_LANES`
+- `NO_SELECTED_LANES`
 - `MISSING_FANOUT_ITEM_OUTPUT`
 - `FANOUT_STAGE_STUCK_PENDING_BATCH`
-- `RUN_INDEX_OUTPUT_MISMATCH`
+- `FANOUT_ITEM_RUNTIME_ERROR`
+- `FANOUT_ITEM_STALE_RECOVERY`
 - `LOOP_EXHAUSTED`
 - `LOOP_BODY_STAGE_BLOCKED`
 - `LOOP_BODY_STAGE_FAILED`
 - `LOOP_BODY_OUTPUT_MISSING`
+- `LOOP_BODY_OUTPUT_ROUTE_INVALID`
+
+Stable agent/gate/runtime codes:
+
+- `VARIABLE_UNDECLARED`
 - `VARIABLE_RESOLUTION_FAILED`
+- `VARIABLE_RESERVED`
+- `ROUTE_AGENT_ACTOR_REQUIRED`
+- `GATE_AGENT_ACTOR_REQUIRED`
+- `ACTOR_MODE_CONFLICT`
 - `AGENT_RUNTIME_ERROR`
 - `AGENT_TURN_FAILED`
 - `AGENT_TURN_CANCELLED`
+- `AGENT_TASK_RETRY_EXHAUSTED`
 - `AGENT_STAGE_STALE_RECOVERY`
-- `FANOUT_ITEM_RUNTIME_ERROR`
-- `FANOUT_ITEM_STALE_RECOVERY`
 - `GATE_CONDITION_FAILED`
 - `GATE_VERDICT_BLOCKED`
 - `GATE_VERDICT_FAILED`
 - `GATE_VERDICT_UNKNOWN`
-
-Stable command diagnostics:
-
-- `RUNTIME_COMMAND_ERROR`
+- `EVENT_APPEND_LOCK_TIMEOUT`
+- `RUN_INDEX_LOCK_TIMEOUT`
+- `RUN_INDEX_OUTPUT_MISMATCH`
 
 ## Data Model
 
-Error data includes stable code, severity, JSON Pointer path, human-readable message, repair suggestions, run-level blocked reason, attempt diagnostics, output parser diagnostics, runtime diagnostics, persistence diagnostics, command diagnostics, turn diagnostics, and diagnostics projections.
+Error data includes stable code, severity, JSON Pointer path, human-readable message, suggestions, run-level blocked reason, attempt diagnostics, output parser diagnostics, runtime diagnostics, persistence diagnostics, command diagnostics, turn diagnostics, and diagnostics projections.
 
 ## Runtime Behavior
 
-Validation and compiler errors reject invalid specs before execution. Output parser errors block the affected attempt/stage/run and remain repair-oriented. ACPX runtime errors receive the runtime retry behavior defined by the runtime SPEC. `AGENT_RUNTIME_ERROR` and `FANOUT_ITEM_RUNTIME_ERROR` MUST represent true agent runtime throw/failure paths, not scheduler stale recovery. `AGENT_TURN_FAILED` and `AGENT_TURN_CANCELLED` MUST represent terminal agent turn statuses returned by the runtime without a valid completed output. `AGENT_STAGE_STALE_RECOVERY` and `FANOUT_ITEM_STALE_RECOVERY` MUST mark scheduler stale recovery after a running attempt has no terminal output and no same-attempt heartbeat for the effective stage timeout plus grace interval. Runtime diagnostic error codes SHOULD match the terminal blocked reason for runtime and stale-recovery output artifacts. Persistence lock timeouts and run-index/output mismatches are surfaced as stable runtime diagnostics. `FANOUT_ITEM_BLOCKED` marks fanout aggregation blocked because one or more active items did not complete and no more specific item reason is available. `FANOUT_LANE_SELECTION_FAILED` marks a `oneOf` lane group selection error for an item. `FANOUT_LANE_RESULT_MISMATCH` marks an adapter/core consistency failure where a lane result does not belong to the selected item, group, or lane being aggregated. `NO_MATCHING_LANES` marks a skipped item that produced no lane work units across all lane groups. `MISSING_FANOUT_ITEM_OUTPUT` marks a terminal fanout item or lane whose expected output artifact could not be read during aggregation when no explicit terminal item reason is available. `FANOUT_ITEM_CASCADE_BLOCKED` marks queued fanout work that was not launched after an `allowPartial: false` item failure. `VARIABLE_RESOLUTION_FAILED` marks runtime prompt rendering blocked because a required variable resolved to a missing value without an explicit default transform. `LOOP_EXHAUSTED` marks a bounded loop whose convergence condition still requested another round after `maxRounds`. `LOOP_BODY_STAGE_BLOCKED` marks a blocked loop body stage. `LOOP_BODY_STAGE_FAILED` marks a loop body infrastructure or execution-plan/spec consistency failure. `LOOP_BODY_OUTPUT_MISSING` marks a loop round that completed without producing the declared `body.output`. Gate verdict codes convert terminal gate outputs into run-level blocked outcomes when the gate returns blocked, failed, or unknown verdicts. `GATE_CONDITION_FAILED` blocks a run when a program gate condition evaluates false.
+Validation and compiler errors reject invalid specs before execution. Runtime blocked codes are persisted into `run.json` and output artifacts. Command non-zero exit codes are data and MUST NOT use `PROGRAM_COMMAND_*`; command safety, spawn, timeout, and bounded-output failures MUST use `PROGRAM_COMMAND_*`.
 
 ## Extension Points
 
-New error codes MAY be added under an existing family when the family semantics match. New families require updating this SPEC and developer documentation. New stable diagnostics projection codes MUST be documented here.
+New codes MAY be added under existing families when semantics match. New families require this SPEC update and tests.
 
 ## Non-Goals
 
 - Error codes are not a substitute for full logs or attempt artifacts.
 - Error code names are not localized.
-- Runtime `failed` is not used for agent output contract failures.
+- Removed workflow constructs do not require reverse-compatibility rejection tests.
 
 ## Implementation Map
 
 - Error model and helpers -> `src/errors.ts`
 - Schema/input errors -> `src/schema/`
 - Compiler/lint errors -> `src/compiler/`
-- Output contract diagnostics -> `src/contracts/`, `src/runtime/output-parser.ts`, `src/runtime/repair.ts`
-- Runtime diagnostics -> `src/runtime/`
-- Run-index and persistence diagnostics -> `src/run-index/read-write.ts`
+- Output diagnostics -> `src/contracts/`, `src/runtime/output-parser.ts`, `src/runtime/agent-task-retry.ts`
+- Runtime diagnostics -> `src/runtime/`, `src/run-index/read-write.ts`
 - Diagnostics projection -> `src/projections/run-diagnostics.ts`
 - Command JSON surfaces -> `src/commands/`

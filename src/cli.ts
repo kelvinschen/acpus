@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { Command } from "commander";
-import { registerDiagnose } from "./commands/diagnose.js";
 import { registerFollow } from "./commands/follow.js";
 import { registerList } from "./commands/list.js";
 import { registerMonitor } from "./commands/monitor.js";
@@ -28,7 +27,6 @@ registerRun(program);
 registerFollow(program);
 registerMonitor(program);
 registerResume(program);
-registerDiagnose(program);
 registerRunWorker(program);
 
 // ── Catalogue ────────────────────────────────────────────────

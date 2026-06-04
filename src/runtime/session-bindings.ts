@@ -4,7 +4,7 @@ import type { AcpRuntimeHandle } from "acpx/runtime";
 
 export type SessionBinding = {
   sessionKey: string;
-  roleName: string;
+  actorLabel: string;
   agent: string;
   cwd: string;
   acpxRecordId?: string;
@@ -15,17 +15,17 @@ export type SessionBinding = {
 
 export async function recordSessionBinding(runDir: string, input: {
   sessionKey: string;
-  roleName: string;
+  actorLabel: string;
   agent: string;
   cwd: string;
   handle: AcpRuntimeHandle;
 }): Promise<void> {
-  const filePath = path.join(runDir, "sessions", "role-bindings.json");
+  const filePath = path.join(runDir, "sessions", "actor-bindings.json");
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const existing = await readSessionBindings(runDir);
   existing[input.sessionKey] = {
     sessionKey: input.sessionKey,
-    roleName: input.roleName,
+    actorLabel: input.actorLabel,
     agent: input.agent,
     cwd: input.cwd,
     acpxRecordId: input.handle.acpxRecordId,
@@ -38,7 +38,7 @@ export async function recordSessionBinding(runDir: string, input: {
 
 export async function readSessionBindings(runDir: string): Promise<Record<string, SessionBinding>> {
   try {
-    return JSON.parse(await fs.readFile(path.join(runDir, "sessions", "role-bindings.json"), "utf8")) as Record<string, SessionBinding>;
+    return JSON.parse(await fs.readFile(path.join(runDir, "sessions", "actor-bindings.json"), "utf8")) as Record<string, SessionBinding>;
   } catch {
     return {};
   }

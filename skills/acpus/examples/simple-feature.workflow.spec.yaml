@@ -1,0 +1,58 @@
+schemaVersion: acpus.workflow/v1
+name: simple-feature
+description: Plan, implement, and gate a feature request.
+root: plan
+input:
+  schema: |
+    {
+      task: string,
+      items: [unknown]
+    }
+  default:
+    task: ""
+    items: []
+limits:
+  stageTimeoutMinutes: 45
+stages:
+  - id: plan
+    kind: task
+    mode: agent
+    actor:
+      agent: claude
+      mode: readOnly
+      label: planner
+    prompt: "Plan the requested feature: ${task}"
+    variables:
+      - name: task
+        source: input.task
+  - id: implement
+    kind: task
+    mode: agent
+    actor:
+      agent: codex
+      mode: edit
+      label: implementer
+    dependsOn: [plan]
+    prompt: Implement the plan.
+    output:
+      schema: |
+        {
+          summary: string,
+          data?: [
+            {
+              kind: string,
+              path?: string,
+              status?: string,
+              summary?: string
+            }
+          ]
+        }
+  - id: gate
+    kind: gate
+    mode: agent
+    actor:
+      agent: aiden
+      mode: readOnly
+      label: gate
+    prompt: Validate the implementation and choose a final verdict.
+    dependsOn: [implement]

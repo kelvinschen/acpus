@@ -1,10 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import YAML from "yaml";
 import type { ExecutionPlan, ExecutionPlanStage } from "../compiler/execution-plan.js";
-import { stageRoleName } from "../compiler/compile-execution-plan.js";
 import { runDir as resolveRunDir } from "../run-index/paths.js";
-import { appendEvent, readRunIndex, RuntimeErrorCodes, writeRunIndex, type AttemptIndexEntry, type AttemptStatus, type RunIndex, type StageIndexEntry, type StageStatus } from "../run-index/read-write.js";
+import { appendEvent, readRunIndex, RuntimeErrorCodes, writeRunIndex, type AgentTaskRetryReason, type AttemptIndexEntry, type AttemptStatus, type RunIndex, type StageIndexEntry, type StageStatus } from "../run-index/read-write.js";
 import { WorkflowSpecSchema, type Stage, type WorkflowSpec } from "../schema/workflow-spec.js";
+import { AGENT_TASK_RETRY_BUDGET, retryExhaustedEnvelope } from "./agent-task-retry.js";
 import { createOrchestratorAgentRuntime } from "./agent-runtime.js";
 import { attemptDir, attemptId, safeFileName, upsertAttemptIndex, writeAttemptFile } from "./attempts.js";
 import {
@@ -13,7 +14,6 @@ import {
   cascadeBlockFanoutItems,
   deriveFanoutSummary,
   expandFanoutItems,
-  fanoutGroupStatus,
   fanoutItemCounts,
   fanoutItemStatus,
   fanoutTransientStatus,
@@ -22,11 +22,9 @@ import {
   type FanoutCoreItem,
   type FanoutCoreLaneResult
 } from "./fanout-core.js";
-import { evaluateCondition, resolveSource, runAgentWork, runProgramStage, stableItemId, type AgentWorkResult, type AgentWorkUnit } from "./stage-runner.js";
+import { evaluateFanoutLaneCondition, resolveSource, runAgentWork, runProgramStage, stableItemId, type AgentWorkResult, type AgentWorkUnit } from "./stage-runner.js";
 
 const STALE_RECOVERY_GRACE_MS = 60_000;
-const MAX_RUNTIME_RETRIES = 1;
-
 export type SyncRunOptions = {
   startPending?: boolean;
   drainFanoutPool?: boolean;
@@ -62,6 +60,14 @@ export async function syncRun(cwd: string, logicalRunId: string, options: SyncRu
 
   const readyUnits = await collectReadyAgentWork({ ...snapshot, index });
   index = await readRunIndex(cwd, logicalRunId);
+  const afterReadyFanout = await completeReadyFanoutAggregates({ ...snapshot, index });
+  if (afterReadyFanout.changed) {
+    index = afterReadyFanout.index;
+    const afterDeterministic = await advanceDeterministicStages({ ...snapshot, index });
+    index = updateRunStatus(afterDeterministic.index, snapshot.spec);
+    await writeRunIndex(cwd, index);
+    return readRunIndex(cwd, logicalRunId);
+  }
   const readyFanoutStageId = firstReadyFanoutStageId(readyUnits);
   if (readyFanoutStageId) {
     return runFanoutPool({ ...snapshot, index }, readyFanoutStageId, { drain: options.drainFanoutPool === true });
@@ -106,8 +112,8 @@ export async function syncRun(cwd: string, logicalRunId: string, options: SyncRu
   merged = { ...merged, stages: index.stages, attempts: index.attempts, agentUsage: index.agentUsage };
   merged = mergeAgentResult(merged, result, snapshot.runDir);
   const stage = snapshot.spec.stages.find((candidate) => candidate.id === result.stageId);
-  if (stage?.kind === "decisionGate" && result.output) {
-    merged = markUnselectedDecisionRoutes(merged, snapshot.spec, stage, String(result.output.route ?? "blocked"));
+  if (stage?.kind === "route" && result.output) {
+    merged = markUnselectedRouteBranches(merged, snapshot.spec, stage, String(result.output.route ?? ""));
   }
   await appendEvent(cwd, logicalRunId, { type: "work_settled", stageId: result.stageId, status: result.status, errorCode: result.errorCode, outputPath: result.outputPath ? path.relative(snapshot.runDir, result.outputPath) : undefined });
   const afterFanout = await completeReadyFanoutAggregates({ ...snapshot, index: merged });
@@ -122,7 +128,7 @@ export async function syncRun(cwd: string, logicalRunId: string, options: SyncRu
 async function loadSnapshot(cwd: string, runId: string): Promise<RuntimeSnapshot> {
   const runDir = resolveRunDir(runId, cwd);
   const [specRaw, planRaw, inputRaw, index] = await Promise.all([
-    fs.readFile(path.join(runDir, "workflow.spec.json"), "utf8"),
+    fs.readFile(path.join(runDir, "workflow.spec.yaml"), "utf8"),
     fs.readFile(path.join(runDir, "execution-plan.json"), "utf8"),
     fs.readFile(path.join(runDir, "input.json"), "utf8"),
     readRunIndex(cwd, runId)
@@ -131,7 +137,7 @@ async function loadSnapshot(cwd: string, runId: string): Promise<RuntimeSnapshot
     cwd,
     runId,
     runDir,
-    spec: WorkflowSpecSchema.parse(JSON.parse(specRaw)),
+    spec: WorkflowSpecSchema.parse(YAML.parse(specRaw)),
     plan: JSON.parse(planRaw) as ExecutionPlan,
     input: JSON.parse(inputRaw) as Record<string, unknown>,
     index
@@ -151,16 +157,19 @@ async function reconcileFanoutRuntimeState(snapshot: RuntimeSnapshot): Promise<{
     const items = [...state.fanout.items];
     const attempts: AttemptIndexEntry[] = [];
     for (const [itemPosition, item] of items.entries()) {
+      const runningLane = firstRunningFanoutLane(item);
+      const currentAttemptId = runningLane?.lane.attemptId;
       const outputPath = fanoutItemOutputPath(snapshot.runDir, stage.id, item);
       const output = await readJsonIfExists(outputPath);
       if (output) {
         const status = statusFromItemOutput(output);
         const relativeOutputPath = path.relative(snapshot.runDir, outputPath);
-        if (item.attemptId) {
+        if (currentAttemptId) {
           const attempt = terminalAttemptFromFanoutOutput(index, snapshot.runDir, {
             stageId: stage.id,
             itemId: item.id,
-            attemptId: item.attemptId,
+            laneId: runningLane.lane.id,
+            attemptId: currentAttemptId,
             output,
             outputStatus: status,
             startedAt: item.startedAt ?? state.startedAt
@@ -188,34 +197,80 @@ async function reconcileFanoutRuntimeState(snapshot: RuntimeSnapshot): Promise<{
             outputPath: relativeOutputPath,
             blockedReason: stringField(output, "blockedReason") ?? item.blockedReason,
             completedAt: item.completedAt ?? new Date().toISOString(),
-            errorCode: stringField(output, "errorCode") ?? stringField(objectRecord(output.runtimeDiagnostics), "errorCode") ?? item.errorCode
+            errorCode: stringField(output, "errorCode") ?? stringField(objectRecord(output.runtimeDiagnostics), "errorCode") ?? item.errorCode,
+            lanes: item.lanes.map((lane) => ({
+              ...lane,
+              status,
+              outputPath: lane.status === "skipped" ? lane.outputPath : lane.outputPath ?? relativeOutputPath,
+              blockedReason: stringField(output, "blockedReason") ?? lane.blockedReason,
+              completedAt: lane.status === "skipped" ? lane.completedAt : lane.completedAt ?? new Date().toISOString(),
+              errorCode: stringField(output, "errorCode") ?? stringField(objectRecord(output.runtimeDiagnostics), "errorCode") ?? lane.errorCode
+            }))
           };
           stageChanged = true;
         }
         continue;
       }
 
+      if (runningLane && currentAttemptId) {
+        const laneOutputPath = runningLane.lane.outputPath
+          ? path.join(snapshot.runDir, runningLane.lane.outputPath)
+          : fanoutLaneOutputPath(snapshot.runDir, stage.id, item.id, runningLane.lane.id);
+        const laneOutput = await readJsonIfExists(laneOutputPath);
+        if (laneOutput) {
+          const laneStatus = statusFromLaneOutput(laneOutput, runningLane.lane.status);
+          const relativeLaneOutputPath = path.relative(snapshot.runDir, laneOutputPath);
+          const attempt = terminalAttemptFromFanoutOutput(index, snapshot.runDir, {
+            stageId: stage.id,
+            itemId: item.id,
+            laneId: runningLane.lane.id,
+            attemptId: currentAttemptId,
+            output: laneOutput,
+            outputStatus: laneStatus,
+            startedAt: runningLane.lane.startedAt ?? item.startedAt ?? state.startedAt
+          });
+          if (attempt && index.attempts[attempt.id]?.status !== attempt.status) attempts.push(attempt);
+          const lanes = item.lanes.map((lane) => lane.id === runningLane.lane.id ? {
+              ...lane,
+              status: laneStatus,
+              outputPath: relativeLaneOutputPath,
+              blockedReason: stringField(laneOutput, "blockedReason") ?? lane.blockedReason,
+              completedAt: lane.completedAt ?? new Date().toISOString(),
+              errorCode: stringField(laneOutput, "errorCode") ?? stringField(objectRecord(laneOutput.runtimeDiagnostics), "errorCode") ?? lane.errorCode
+            } : lane);
+          const nextItem = { ...item, lanes };
+          const itemStatus = fanoutItemStatus(nextItem);
+          items[itemPosition] = {
+            ...nextItem,
+            status: itemStatus,
+            outputPath: isTerminalStageStatus(itemStatus) ? path.relative(snapshot.runDir, outputPath) : item.outputPath,
+            completedAt: isTerminalStageStatus(itemStatus) ? item.completedAt ?? new Date().toISOString() : item.completedAt
+          };
+          stageChanged = true;
+          continue;
+        }
+      }
+
       if (state.status === "completed" || state.status === "blocked" || state.status === "failed") continue;
-      const runningLane = firstRunningFanoutLane(item);
-      const currentAttemptId = item.attemptId ?? runningLane?.lane.attemptId;
       if (item.status === "running" && isStaleAttempt({
         attemptId: currentAttemptId,
         fallbackStartedAt: item.startedAt ?? state.startedAt,
         activityByAttempt,
         staleAfterMs
       })) {
-        if (currentAttemptId && canScheduleRuntimeRetry(item.runtimeRetryOrdinal)) {
-          const retryOrdinal = (item.runtimeRetryOrdinal ?? 0) + 1;
-          const retryAttemptId = attemptId({ stageId: stage.id, itemId: item.id, groupId: runningLane?.group.id, laneId: runningLane?.lane.id, kind: "attempt", ordinal: 1, runtimeRetryOrdinal: retryOrdinal });
-          const message = "Fanout item attempt had no terminal output and no recent activity before scheduler stale recovery; scheduling one runtime retry.";
-          attempts.push(recoveredRuntimeAttempt(index, snapshot.runDir, {
+        if (currentAttemptId && canScheduleAgentTaskRetry(item.retryOrdinal)) {
+          const retryOrdinal = (item.retryOrdinal ?? 0) + 1;
+          const retryAttemptId = attemptId({ stageId: stage.id, itemId: item.id, laneId: runningLane?.lane.id, ordinal: retryOrdinal + 1 });
+          const message = "Fanout item attempt had no terminal output and no recent activity before scheduler stale recovery; scheduling one stale retry.";
+          attempts.push(buildStaleRecoveredAttempt(index, snapshot.runDir, {
             stageId: stage.id,
             itemId: item.id,
+            laneId: runningLane.lane.id,
             attemptId: currentAttemptId,
             startedAt: item.startedAt ?? state.startedAt,
             code: RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY,
             message,
-            runtimeRetryOrdinal: item.runtimeRetryOrdinal
+            retryOrdinal: item.retryOrdinal
           }));
           items[itemPosition] = {
             ...item,
@@ -225,13 +280,10 @@ async function reconcileFanoutRuntimeState(snapshot: RuntimeSnapshot): Promise<{
             blockedReason: undefined,
             errorCode: undefined,
             errorMessage: undefined,
-            attemptId: retryAttemptId,
-            runtimeRetryOf: item.runtimeRetryOf ?? currentAttemptId,
-            runtimeRetryOrdinal: retryOrdinal,
-            groups: item.groups?.map((group) => ({
-              ...group,
-              status: group.id === runningLane?.group.id ? "ready" as StageStatus : group.status,
-              lanes: group.lanes.map((lane) => group.id === runningLane?.group.id && lane.id === runningLane?.lane.id ? {
+            retryOf: item.retryOf ?? currentAttemptId,
+            retryOrdinal: retryOrdinal,
+            retryReason: "stale",
+            lanes: item.lanes.map((lane) => lane.id === runningLane?.lane.id ? {
                 ...lane,
                 status: "ready" as StageStatus,
                 startedAt: undefined,
@@ -240,60 +292,73 @@ async function reconcileFanoutRuntimeState(snapshot: RuntimeSnapshot): Promise<{
                 errorCode: undefined,
                 errorMessage: undefined,
                 attemptId: retryAttemptId,
-                runtimeRetryOf: lane.runtimeRetryOf ?? lane.attemptId ?? currentAttemptId,
-                runtimeRetryOrdinal: retryOrdinal
+                retryOf: lane.retryOf ?? lane.attemptId ?? currentAttemptId,
+                retryOrdinal: retryOrdinal,
+                retryReason: "stale"
               } : lane)
-            }))
           };
           stageChanged = true;
           await appendEvent(snapshot.cwd, snapshot.runId, {
-            type: "runtime_retry_scheduled",
+            type: "agent_task_retry_scheduled",
             stageId: stage.id,
             itemId: item.id,
             attemptId: currentAttemptId,
             retryAttemptId,
-            runtimeRetryOrdinal: retryOrdinal,
+            retryReason: "stale",
+            retryOrdinal: retryOrdinal,
             errorCode: RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY,
             errorMessage: message
           });
           continue;
         }
+        if (!runningLane) continue;
         const code = currentAttemptId ? RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY : RuntimeErrorCodes.FANOUT_ITEM_UNSTARTED_TIMEOUT;
         const message = currentAttemptId
           ? "Fanout item attempt had no terminal output and no recent activity before scheduler stale recovery."
           : "Fanout item was selected but no attempt was started before scheduler recovery.";
         const result = await writeRecoveredFanoutItemFailure({
+          index,
           cwd: snapshot.cwd,
           runDir: snapshot.runDir,
           runId: snapshot.runId,
           stageId: stage.id,
           itemId: item.id,
-          attemptId: currentAttemptId ?? attemptId({ stageId: stage.id, itemId: item.id, groupId: runningLane?.group.id, laneId: runningLane?.lane.id, kind: "attempt", ordinal: 1 }),
+          attemptId: currentAttemptId ?? attemptId({ stageId: stage.id, itemId: item.id, laneId: runningLane?.lane.id, kind: "attempt", ordinal: 1 }),
           startedAt: item.startedAt ?? state.startedAt,
           code,
           message,
-          outputPath
+          outputPath,
+          laneId: runningLane.lane.id,
+          exhausted: currentAttemptId !== undefined
         });
+        const blockedReason = currentAttemptId ? RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED : code;
         items[itemPosition] = {
           ...item,
           status: "blocked",
           outputPath: path.relative(snapshot.runDir, result.outputPath),
-          blockedReason: code,
+          blockedReason,
           completedAt: new Date().toISOString(),
-          errorCode: code,
+          errorCode: blockedReason,
           errorMessage: message,
-          attemptId: result.attempt.id
+          lanes: item.lanes.map((lane) => lane.id === runningLane?.lane.id ? {
+              ...lane,
+              status: "blocked" as StageStatus,
+              completedAt: new Date().toISOString(),
+              blockedReason,
+              errorCode: blockedReason,
+              errorMessage: message
+            } : lane)
         };
         attempts.push(result.attempt);
         stageChanged = true;
-        if (currentAttemptId && item.runtimeRetryOrdinal !== undefined) {
+        if (currentAttemptId && item.retryOrdinal !== undefined) {
           await appendEvent(snapshot.cwd, snapshot.runId, {
-            type: "runtime_retry_exhausted",
+            type: "agent_task_retry_exhausted",
             stageId: stage.id,
             itemId: item.id,
             attemptId: result.attempt.id,
-            runtimeRetryOf: item.runtimeRetryOf,
-            runtimeRetryOrdinal: item.runtimeRetryOrdinal,
+            retryOf: item.retryOf,
+            retryOrdinal: item.retryOrdinal,
             errorCode: code,
             errorMessage: message
           });
@@ -367,17 +432,17 @@ async function reconcileStageRuntimeState(snapshot: RuntimeSnapshot): Promise<{ 
       activityByAttempt,
       staleAfterMs: timeoutMs(snapshot.plan, planStage) + STALE_RECOVERY_GRACE_MS
     })) continue;
-    if (canScheduleRuntimeRetry(state.runtimeRetryOrdinal)) {
-      const retryOrdinal = (state.runtimeRetryOrdinal ?? 0) + 1;
-      const retryAttemptId = attemptId({ stageId: stage.id, kind: "attempt", ordinal: 1, runtimeRetryOrdinal: retryOrdinal });
-      const message = "Agent stage attempt had no terminal output and no recent activity before scheduler stale recovery; scheduling one runtime retry.";
-      index = upsertAttemptIndex(index, recoveredRuntimeAttempt(index, snapshot.runDir, {
+    if (canScheduleAgentTaskRetry(state.retryOrdinal)) {
+      const retryOrdinal = (state.retryOrdinal ?? 0) + 1;
+      const retryAttemptId = attemptId({ stageId: stage.id, ordinal: retryOrdinal + 1 });
+      const message = "Agent stage attempt had no terminal output and no recent activity before scheduler stale recovery; scheduling one stale retry.";
+      index = upsertAttemptIndex(index, buildStaleRecoveredAttempt(index, snapshot.runDir, {
         stageId: stage.id,
         attemptId: currentAttemptId,
         startedAt: state.startedAt,
         code: RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY,
         message,
-        runtimeRetryOrdinal: state.runtimeRetryOrdinal
+        retryOrdinal: state.retryOrdinal
       }));
       state = index.stages[stage.id];
       index = updateStage(index, stage.id, {
@@ -386,15 +451,17 @@ async function reconcileStageRuntimeState(snapshot: RuntimeSnapshot): Promise<{ 
         startedAt: undefined,
         completedAt: undefined,
         blockedReason: undefined,
-        runtimeRetryOf: state.runtimeRetryOf ?? currentAttemptId,
-        runtimeRetryOrdinal: retryOrdinal
+        retryOf: state.retryOf ?? currentAttemptId,
+        retryOrdinal: retryOrdinal,
+        retryReason: "stale"
       });
       await appendEvent(snapshot.cwd, snapshot.runId, {
-        type: "runtime_retry_scheduled",
+        type: "agent_task_retry_scheduled",
         stageId: stage.id,
         attemptId: currentAttemptId,
         retryAttemptId,
-        runtimeRetryOrdinal: retryOrdinal,
+        retryReason: "stale",
+        retryOrdinal: retryOrdinal,
         errorCode: RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY,
         errorMessage: message
       });
@@ -420,15 +487,15 @@ async function reconcileStageRuntimeState(snapshot: RuntimeSnapshot): Promise<{ 
       ...state,
       status: "blocked",
       outputPath: path.relative(snapshot.runDir, result.outputPath),
-      blockedReason: RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY,
+      blockedReason: RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED,
       completedAt: new Date().toISOString()
     });
     await appendEvent(snapshot.cwd, snapshot.runId, {
-      type: "runtime_retry_exhausted",
+      type: "agent_task_retry_exhausted",
       stageId: stage.id,
       attemptId: currentAttemptId,
-      runtimeRetryOf: state.runtimeRetryOf,
-      runtimeRetryOrdinal: state.runtimeRetryOrdinal,
+      retryOf: state.retryOf,
+      retryOrdinal: state.retryOrdinal,
       errorCode: RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY,
       errorMessage: message
     });
@@ -482,7 +549,7 @@ async function advanceDeterministicStages(snapshot: RuntimeSnapshot): Promise<{ 
       await appendEvent(snapshot.cwd, snapshot.runId, { type: "program_stage_completed", stageId: stage.id, status: programOutput.status });
       changed = true;
       progressed = true;
-      if (stage.kind === "decisionGate") index = markUnselectedDecisionRoutes(index, snapshot.spec, stage, String(programOutput.route ?? "blocked"));
+      if (stage.kind === "route") index = markUnselectedRouteBranches(index, snapshot.spec, stage, String(programOutput.route ?? ""));
       if (stage.kind === "gate") index = { ...index, gateVerdict: gateVerdictFromOutput(programOutput) ?? index.gateVerdict };
     }
     const fanout = await completeReadyFanoutAggregates({ ...snapshot, index });
@@ -531,7 +598,7 @@ async function initializeFanoutItem(
     outputs,
     localForItem: (candidate) => ({ item: candidate }),
     itemIdFor: (candidate) => stableItemId(candidate, itemIndex),
-    evaluate: evaluateCondition
+    evaluate: evaluateFanoutLaneCondition
   });
   return { ...expanded.items[0], index: itemIndex };
 }
@@ -562,22 +629,21 @@ async function collectFanoutUnits(snapshot: RuntimeSnapshot, stage: Extract<Stag
     index = updateStage(index, stage.id, state);
     await writeRunIndex(snapshot.cwd, index);
     if (items.length === 0) {
-      const output = {
+      const results = {
         status: "completed",
         summary: "Fanout completed with 0 item outputs.",
         items: [],
         laneOutputs: [],
         blockedItems: [],
-        skippedItems: [],
-        artifacts: [],
-        nextFocus: "reduce"
+        skippedItems: []
       };
-      const outputPath = path.join(snapshot.runDir, "outputs", `${stage.id}.json`);
-      await fs.mkdir(path.dirname(outputPath), { recursive: true });
-      await fs.writeFile(outputPath, `${JSON.stringify(output, null, 2)}\n`, "utf8");
+      const fanin = await runFanoutFanin({ ...snapshot, index }, stage, planStage, results);
+      index = fanin.index;
       index = updateStage(index, stage.id, {
         ...state,
-        outputPath: path.relative(snapshot.runDir, outputPath),
+        status: fanin.status,
+        outputPath: fanin.outputPath,
+        blockedReason: fanin.blockedReason,
         completedAt: new Date().toISOString()
       });
       await writeRunIndex(snapshot.cwd, index);
@@ -592,113 +658,61 @@ async function collectFanoutUnits(snapshot: RuntimeSnapshot, stage: Extract<Stag
     }
   }
   const sourceItems = Array.isArray(resolveSource(stage.items.source, snapshot.input, outputs)) ? resolveSource(stage.items.source, snapshot.input, outputs) as unknown[] : [];
-  if (state.fanout?.items.some((item) => !item.groups)) {
-    const hydrated = await Promise.all(state.fanout.items.map(async (item) => item.groups ? item : hydrateLegacyFanoutItem(snapshot, stage, planStage, item, sourceItems[item.index], outputs)));
-    state = {
-      ...state,
-      fanout: {
-        ...state.fanout,
-        ...deriveFanoutSummary({
-          candidateItemCount: state.fanout.totalItems,
-          items: hydrated,
-          allowPartial: state.fanout.allowPartial
-        })
-      }
-    };
-    index = updateStage(index, stage.id, state);
-    await writeRunIndex(snapshot.cwd, index);
-  }
   const units: AgentWorkUnit[] = [];
   for (const item of state.fanout?.items ?? []) {
     if (item.status !== "pending" && item.status !== "ready" && item.status !== "running") continue;
-    for (const group of item.groups ?? []) {
-      for (const lane of group.lanes) {
-        if (lane.status !== "pending" && lane.status !== "ready") continue;
-        const lanePlan = plan.laneGroups.find((candidate) => candidate.id === group.id)?.lanes.find((candidate) => candidate.id === lane.id);
-        if (!lanePlan) continue;
-        const role = snapshot.spec.roles[lanePlan.roleName];
-        const outputPath = fanoutLaneOutputPath(snapshot.runDir, stage.id, item.id, group.id, lane.id);
-        units.push({
-          type: "fanoutItem",
-          stageId: stage.id,
-          itemId: item.id,
-          itemIndex: item.index,
-          item: sourceItems[item.index],
-          groupId: group.id,
-          laneId: lane.id,
-          roleName: lanePlan.roleName,
-          role,
-          sessionKey: `role:${lanePlan.roleName}:fanout:${stage.id}:item:${item.id}:group:${group.id}:lane:${lane.id}`,
-          promptId: lanePlan.promptId,
-          contract: lanePlan.contract,
-          outputPath,
-          cwd: workflowCwd(snapshot.input),
-          timeoutMs: timeoutMs(snapshot.plan, planStage),
-          runtimeRetryOf: lane.runtimeRetryOf,
-          runtimeRetryOrdinal: lane.runtimeRetryOrdinal
-        });
-      }
+    for (const lane of item.lanes) {
+      if (lane.status !== "pending" && lane.status !== "ready") continue;
+      const lanePlan = plan.lanes.find((candidate) => candidate.id === lane.id);
+      if (!lanePlan) continue;
+      const actorLabel = lanePlan.actor.label ?? lanePlan.actor.agent;
+      const outputPath = fanoutLaneOutputPath(snapshot.runDir, stage.id, item.id, lane.id);
+      units.push({
+        type: "fanoutItem",
+        stageId: stage.id,
+        itemId: item.id,
+        itemIndex: item.index,
+        item: sourceItems[item.index],
+        laneId: lane.id,
+        actorLabel,
+        actor: lanePlan.actor,
+        sessionKey: `fanout:${stage.id}:item:${item.id}:lane:${lane.id}:agent:${actorLabel}`,
+        promptId: lanePlan.promptId,
+        outputSchema: lanePlan.outputSchema,
+        implicitOutputFields: lanePlan.implicitOutputFields,
+        outputPath,
+        cwd: workflowCwd(snapshot.input),
+        timeoutMs: timeoutMs(snapshot.plan, planStage),
+        retryOf: lane.retryOf,
+        retryOrdinal: lane.retryOrdinal,
+        retryReason: lane.retryReason
+      });
     }
   }
   return units;
 }
 
-async function hydrateLegacyFanoutItem(
-  snapshot: RuntimeSnapshot,
-  stage: Extract<Stage, { kind: "fanout" }>,
-  planStage: ExecutionPlanStage,
-  item: FanoutItemIndexEntry,
-  sourceItem: unknown,
-  outputs: Record<string, unknown>
-): Promise<FanoutItemIndexEntry> {
-  const initialized = await initializeFanoutItem(snapshot, stage, planStage, sourceItem, item.index, outputs);
-  const groups = initialized.groups?.map((group) => ({
-    ...group,
-    status: item.status === "completed" || item.status === "blocked" || item.status === "failed" ? item.status : group.status,
-    lanes: group.lanes.map((lane) => ({
-      ...lane,
-      status: item.status === "completed" || item.status === "blocked" || item.status === "failed" ? item.status : lane.status,
-      outputPath: item.outputPath,
-      blockedReason: item.blockedReason,
-      errorCode: item.errorCode,
-      errorMessage: item.errorMessage,
-      attemptId: item.attemptId,
-      startedAt: item.startedAt,
-      completedAt: item.completedAt,
-      runtimeRetryOf: item.runtimeRetryOf,
-      runtimeRetryOrdinal: item.runtimeRetryOrdinal
-    }))
-  }));
-  return { ...item, groups };
-}
-
 function agentUnitForStage(snapshot: RuntimeSnapshot, stage: Stage, planStage: ExecutionPlanStage): AgentWorkUnit | undefined {
-  const needsAgent =
-    stage.kind === "agentTask"
-    || (stage.kind === "gate" && stage.mode === "agent")
-    || (stage.kind === "discover" && stage.method === "agent")
-    || (stage.kind === "reduce" && stage.mode === "agent")
-    || (stage.kind === "decisionGate" && stage.mode === "agent")
-    || stage.kind === "loop";
-  if (!needsAgent) return undefined;
-  const roleName = stage.kind === "loop" ? undefined : stageRoleName(stage);
-  const resolvedRoleName = roleName ?? stageRoleName(stage);
-  const role = resolvedRoleName ? snapshot.spec.roles[resolvedRoleName] : { category: "coordination" as const, agent: "loop", mode: "readOnly" as const };
-  const promptId = stage.kind === "loop" ? stage.id : planStage.promptId;
-  if (!role || !promptId && stage.kind !== "loop") return undefined;
+  if (stage.kind !== "loop" && !planStage.agent) return undefined;
+  const actor = planStage.agent?.actor ?? { agent: "loop", mode: "readOnly" as const, label: "loop" };
+  const actorLabel = actor.label ?? actor.agent;
+  const promptId = stage.kind === "loop" ? stage.id : planStage.agent?.promptId;
+  if (!promptId && stage.kind !== "loop") return undefined;
   return {
     type: stage.kind === "loop" ? "loop" : "stage",
     stageId: stage.id,
-    roleName: resolvedRoleName ?? "loop",
-    role,
-    sessionKey: stage.kind === "loop" ? `loop:${stage.id}` : `role:${resolvedRoleName}`,
+    actorLabel,
+    actor,
+    sessionKey: stage.kind === "loop" ? `loop:${stage.id}` : planStage.session.kind === "linear" ? planStage.session.key : `stage:${stage.id}`,
     promptId: promptId ?? stage.id,
-    contract: planStage.contract ?? { name: "base" },
+    outputSchema: planStage.agent?.outputSchema,
+    implicitOutputFields: planStage.agent?.implicitOutputFields,
     outputPath: path.join(snapshot.runDir, "outputs", `${stage.id}.json`),
     cwd: workflowCwd(snapshot.input),
     timeoutMs: timeoutMs(snapshot.plan, planStage),
-    runtimeRetryOf: snapshot.index.stages[stage.id]?.runtimeRetryOf,
-    runtimeRetryOrdinal: snapshot.index.stages[stage.id]?.runtimeRetryOrdinal
+    retryOf: snapshot.index.stages[stage.id]?.retryOf,
+    retryOrdinal: snapshot.index.stages[stage.id]?.retryOrdinal,
+    retryReason: snapshot.index.stages[stage.id]?.retryReason
   };
 }
 
@@ -736,7 +750,6 @@ async function runFanoutPool(snapshot: RuntimeSnapshot, stageId: string, options
         stageId: unit.stageId,
         itemId: unit.itemId,
         itemIndex: unit.itemIndex,
-        groupId: unit.groupId,
         laneId: unit.laneId
       });
       active.set(fanoutUnitKey(unit), runFanoutUnitSafely(snapshot, unit, runtime, outputs));
@@ -895,7 +908,7 @@ function firstReadyFanoutStageId(units: AgentWorkUnit[]): string | undefined {
 }
 
 function fanoutUnitKey(unit: AgentWorkUnit): string {
-  return `${unit.stageId}:${unit.itemId ?? ""}:${unit.groupId ?? ""}:${unit.laneId ?? ""}`;
+  return `${unit.stageId}:${unit.itemId ?? ""}:${unit.laneId ?? ""}`;
 }
 
 function selectRunnableUnits(index: RunIndex, plan: ExecutionPlan, units: AgentWorkUnit[]): AgentWorkUnit[] {
@@ -907,9 +920,9 @@ function isRunnableUnit(index: RunIndex, plan: ExecutionPlan, unit: AgentWorkUni
   const planStage = plan.stages.find((candidate) => candidate.id === unit.stageId);
   if (!stage || !planStage) return false;
   if (unit.type === "fanoutItem") {
-    if (!stage.fanout || !unit.itemId || !unit.groupId || !unit.laneId) return false;
+    if (!stage.fanout || !unit.itemId || !unit.laneId) return false;
     const item = stage.fanout.items.find((candidate) => candidate.id === unit.itemId);
-    const lane = item?.groups?.find((group) => group.id === unit.groupId)?.lanes.find((candidate) => candidate.id === unit.laneId);
+    const lane = item?.lanes.find((candidate) => candidate.id === unit.laneId);
     return (item?.status === "pending" || item?.status === "ready" || item?.status === "running")
       && (lane?.status === "pending" || lane?.status === "ready");
   }
@@ -928,27 +941,23 @@ function markUnitsRunning(index: RunIndex, units: AgentWorkUnit[], runDir: strin
         startedAt: stage.startedAt ?? startedAt
       });
     } else if (unit.itemId && stage.fanout) {
-      const selectedAttemptId = attemptId({ stageId: unit.stageId, itemId: unit.itemId, groupId: unit.groupId, laneId: unit.laneId, kind: "attempt", ordinal: 1, runtimeRetryOrdinal: unit.runtimeRetryOrdinal });
+      const selectedAttemptId = attemptId({ stageId: unit.stageId, itemId: unit.itemId, laneId: unit.laneId, ordinal: nextAttemptOrdinal(next, unit.stageId, unit.itemId, unit.laneId) });
       const items = stage.fanout.items.map((item) => item.id === unit.itemId ? {
         ...item,
         status: "running" as StageStatus,
         startedAt: item.startedAt ?? startedAt,
-        attemptId: item.attemptId ?? selectedAttemptId,
         errorCode: undefined,
         errorMessage: undefined,
-        groups: item.groups?.map((group) => group.id !== unit.groupId ? group : {
-          ...group,
-          status: "running" as StageStatus,
-          lanes: group.lanes.map((lane) => lane.id !== unit.laneId ? lane : {
+        lanes: item.lanes.map((lane) => lane.id !== unit.laneId ? lane : {
             ...lane,
             status: "running" as StageStatus,
             attemptId: lane.attemptId ?? selectedAttemptId,
             startedAt: lane.startedAt ?? startedAt,
-            runtimeRetryOf: unit.runtimeRetryOf ?? lane.runtimeRetryOf,
-            runtimeRetryOrdinal: unit.runtimeRetryOrdinal ?? lane.runtimeRetryOrdinal,
+            retryOf: unit.retryOf ?? lane.retryOf,
+            retryOrdinal: unit.retryOrdinal ?? lane.retryOrdinal,
+            retryReason: unit.retryReason ?? lane.retryReason,
             errorCode: undefined,
             errorMessage: undefined
-          })
         })
       } : item);
       next = updateStage(next, unit.stageId, {
@@ -961,41 +970,51 @@ function markUnitsRunning(index: RunIndex, units: AgentWorkUnit[], runDir: strin
         id: selectedAttemptId,
         stageId: unit.stageId,
         itemId: unit.itemId,
-        groupId: unit.groupId,
         laneId: unit.laneId,
         kind: "attempt",
         status: "running",
-        path: path.relative(runDir, attemptDir(runDir, { stageId: unit.stageId, itemId: unit.itemId, groupId: unit.groupId, laneId: unit.laneId, kind: "attempt", ordinal: 1, runtimeRetryOrdinal: unit.runtimeRetryOrdinal })),
+        path: path.relative(runDir, attemptDir(runDir, { stageId: unit.stageId, itemId: unit.itemId, laneId: unit.laneId, ordinal: nextAttemptOrdinal(next, unit.stageId, unit.itemId, unit.laneId) })),
         startedAt,
         sessionKey: unit.sessionKey,
         requestId: selectedAttemptId,
-        runtimeRetryOf: unit.runtimeRetryOf,
-        runtimeRetryOrdinal: unit.runtimeRetryOrdinal,
-        agent: unit.role.agent,
-        roleMode: unit.role.mode,
+        isRetry: unit.retryReason !== undefined,
+        retryOf: unit.retryOf,
+        retryOrdinal: unit.retryOrdinal,
+        retryReason: unit.retryReason,
+        retryBudgetUsed: unit.retryOrdinal ?? 0,
+        retryBudgetLimit: AGENT_TASK_RETRY_BUDGET,
+        promptPolicy: unit.retryReason === "continuation" ? "continuation" : "original",
+        agent: unit.actor.agent,
+        actorMode: unit.actor.mode,
         runtimeDisposeInvoked: false
       });
     } else {
-      const selectedAttemptId = attemptId({ stageId: unit.stageId, kind: "attempt", ordinal: 1, runtimeRetryOrdinal: unit.runtimeRetryOrdinal });
+      const selectedAttemptId = attemptId({ stageId: unit.stageId, ordinal: nextAttemptOrdinal(next, unit.stageId) });
       next = updateStage(next, unit.stageId, {
         status: "running",
         startedAt: stage.startedAt ?? startedAt,
-        runtimeRetryOf: unit.runtimeRetryOf,
-        runtimeRetryOrdinal: unit.runtimeRetryOrdinal
+        retryOf: unit.retryOf,
+        retryOrdinal: unit.retryOrdinal,
+        retryReason: unit.retryReason
       });
       next = upsertAttemptIndex(next, {
         id: selectedAttemptId,
         stageId: unit.stageId,
         kind: "attempt",
         status: "running",
-        path: path.relative(runDir, attemptDir(runDir, { stageId: unit.stageId, kind: "attempt", ordinal: 1, runtimeRetryOrdinal: unit.runtimeRetryOrdinal })),
+        path: path.relative(runDir, attemptDir(runDir, { stageId: unit.stageId, ordinal: nextAttemptOrdinal(next, unit.stageId) })),
         startedAt,
         sessionKey: unit.sessionKey,
         requestId: selectedAttemptId,
-        runtimeRetryOf: unit.runtimeRetryOf,
-        runtimeRetryOrdinal: unit.runtimeRetryOrdinal,
-        agent: unit.role.agent,
-        roleMode: unit.role.mode,
+        isRetry: unit.retryReason !== undefined,
+        retryOf: unit.retryOf,
+        retryOrdinal: unit.retryOrdinal,
+        retryReason: unit.retryReason,
+        retryBudgetUsed: unit.retryOrdinal ?? 0,
+        retryBudgetLimit: AGENT_TASK_RETRY_BUDGET,
+        promptPolicy: unit.retryReason === "continuation" ? "continuation" : "original",
+        agent: unit.actor.agent,
+        actorMode: unit.actor.mode,
         runtimeDisposeInvoked: false
       });
     }
@@ -1008,13 +1027,12 @@ function mergeAgentResult(index: RunIndex, result: AgentWorkResult, runDir: stri
   for (const attempt of result.attempts) next = upsertAttemptIndex(next, attempt);
   const stage = next.stages[result.stageId];
   if (!stage) return next;
-  const retryMetadata = runtimeRetryMetadataFromAttempts(result.attempts);
+  const retryMetadata = retryMetadataFromAttempts(result.attempts);
+  const finalAttemptId = result.attempts.at(-1)?.id;
   if (result.itemId && stage.fanout) {
     const items = stage.fanout.items.map((item) => {
       if (item.id !== result.itemId) return item;
-      const groups = item.groups?.map((group) => group.id !== result.groupId ? group : {
-        ...group,
-        lanes: group.lanes.map((lane) => lane.id !== result.laneId ? lane : {
+      const lanes = item.lanes.map((lane) => lane.id !== result.laneId ? lane : {
           ...lane,
           status: result.status === "failed" ? "failed" as StageStatus : result.status,
           outputPath: result.outputPath ? path.relative(runDir, result.outputPath) : lane.outputPath,
@@ -1022,14 +1040,10 @@ function mergeAgentResult(index: RunIndex, result: AgentWorkResult, runDir: stri
           completedAt: new Date().toISOString(),
           errorCode: result.errorCode ?? result.blockedReason ?? lane.errorCode,
           errorMessage: result.errorMessage ?? result.error ?? lane.errorMessage,
+          attemptId: finalAttemptId ?? lane.attemptId,
           ...retryMetadata
-        }),
-        status: fanoutGroupStatus(group.lanes.map((lane) => lane.id !== result.laneId ? lane : {
-          ...lane,
-          status: result.status === "failed" ? "failed" as StageStatus : result.status
-        }))
       });
-      const status = fanoutItemStatus({ ...item, groups });
+      const status = fanoutItemStatus({ ...item, lanes });
       return {
         ...item,
         status,
@@ -1038,7 +1052,7 @@ function mergeAgentResult(index: RunIndex, result: AgentWorkResult, runDir: stri
         errorCode: result.errorCode ?? item.errorCode,
         errorMessage: result.errorMessage ?? result.error ?? item.errorMessage,
         ...retryMetadata,
-        groups
+        lanes
       };
     });
     const counts = fanoutItemCounts(items);
@@ -1064,15 +1078,53 @@ function mergeAgentResult(index: RunIndex, result: AgentWorkResult, runDir: stri
     void stageSpec;
   }
   const gateVerdict = gateVerdictFromOutput(result.output) ?? next.gateVerdict;
+  const retryCounts = retryCountsFromAttempts(result.attempts);
   return {
     ...next,
     gateVerdict,
     agentUsage: {
       ...next.agentUsage,
       actual: next.agentUsage.actual + result.agentCalls,
-      repairCalls: next.agentUsage.repairCalls + result.repairCalls
+      retryCalls: next.agentUsage.retryCalls + result.retryCalls,
+      retries: {
+        runtime: next.agentUsage.retries.runtime + retryCounts.runtime,
+        stale: next.agentUsage.retries.stale + retryCounts.stale,
+        continuation: next.agentUsage.retries.continuation + retryCounts.continuation
+      }
     }
   };
+}
+
+function nextAttemptOrdinal(index: RunIndex, stageId: string, itemId?: string, laneId?: string): number {
+  return Object.values(index.attempts)
+    .filter((attempt) => attempt.stageId === stageId && attempt.itemId === itemId && attempt.laneId === laneId)
+    .length + 1;
+}
+
+function retryCountsFromAttempts(attempts: AttemptIndexEntry[]): Record<AgentTaskRetryReason, number> {
+  return {
+    runtime: attempts.filter((attempt) => attempt.retryReason === "runtime").length,
+    stale: attempts.filter((attempt) => attempt.retryReason === "stale").length,
+    continuation: attempts.filter((attempt) => attempt.retryReason === "continuation").length
+  };
+}
+
+function retryHistoryForUnit(index: RunIndex, stageId: string, itemId?: string, laneId?: string): unknown[] {
+  return Object.values(index.attempts)
+    .filter((attempt) => attempt.stageId === stageId && attempt.itemId === itemId && attempt.laneId === laneId)
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((attempt) => ({
+      id: attempt.id,
+      status: attempt.status,
+      retryReason: attempt.retryReason,
+      retryOf: attempt.retryOf,
+      retryOrdinal: attempt.retryOrdinal,
+      promptPolicy: attempt.promptPolicy,
+      blockedReason: attempt.blockedReason,
+      parseErrorCode: attempt.parseErrorCode,
+      runtimeErrorCode: attempt.runtimeErrorCode,
+      lastFailureCode: attempt.lastFailureCode
+    }));
 }
 
 function loopIndexFromOutput(stage: StageIndexEntry, output: Record<string, unknown> | undefined): StageIndexEntry["loop"] | undefined {
@@ -1085,11 +1137,12 @@ function loopIndexFromOutput(stage: StageIndexEntry, output: Record<string, unkn
   };
 }
 
-function runtimeRetryMetadataFromAttempts(attempts: AttemptIndexEntry[]): Pick<StageIndexEntry, "runtimeRetryOf" | "runtimeRetryOrdinal"> {
-  const retryAttempt = [...attempts].reverse().find((attempt) => attempt.runtimeRetryOrdinal !== undefined);
+function retryMetadataFromAttempts(attempts: AttemptIndexEntry[]): Pick<StageIndexEntry, "retryOf" | "retryOrdinal" | "retryReason"> {
+  const retryAttempt = [...attempts].reverse().find((attempt) => attempt.retryOrdinal !== undefined || attempt.retryReason !== undefined);
   return {
-    runtimeRetryOf: retryAttempt?.runtimeRetryOf,
-    runtimeRetryOrdinal: retryAttempt?.runtimeRetryOrdinal
+    retryOf: retryAttempt?.retryOf,
+    retryOrdinal: retryAttempt?.retryOrdinal,
+    retryReason: retryAttempt?.retryReason
   };
 }
 
@@ -1111,48 +1164,200 @@ async function completeReadyFanoutAggregates(snapshot: RuntimeSnapshot): Promise
     const items = state.fanout.items;
     if (items.length === 0) continue;
     if (items.some((item) => item.status === "pending" || item.status === "ready" || item.status === "running")) continue;
-    const activeItems = items.filter((item) => item.status !== "skipped");
     const planStage = snapshot.plan.stages.find((candidate) => candidate.id === stage.id);
     const plan = planStage?.fanout;
     if (!plan) continue;
-    const itemOutputs = await Promise.all(activeItems.map((item) => buildFanoutItemOutputFromFiles(snapshot.runDir, stage.id, item, state?.fanout?.allowPartial === true)));
+    const itemOutputs = await Promise.all(items.map((item) => buildFanoutItemOutputFromFiles(snapshot.runDir, stage.id, item, state?.fanout?.allowPartial === true)));
     const skippedItems = items.filter((item) => item.status === "skipped").map((item) => ({
       id: item.id,
       index: item.index,
       status: "skipped" as const,
       skippedReason: item.skippedReason
     }));
-    const completed = itemOutputs.filter((output) => output.status === "completed" && output.partial !== true).length;
-    const failed = activeItems.filter((item) => item.status === "failed").length;
+    const counts = fanoutItemCounts(items);
     const allowsPartialMode = resumePolicy?.allowPartial === true || plan.allowPartial;
-    const aggregate = buildFanoutStageOutput({
+    const results = buildFanoutStageOutput({
       plan: { allowPartial: allowsPartialMode, minCompletedRatio: plan.minCompletedRatio, maxBlockedItems: plan.maxBlockedItems },
       itemOutputs,
       skippedItems
     });
+    const fanin = results.status === "completed"
+      ? await runFanoutFanin({ ...snapshot, index }, stage, planStage, results, { reuseExistingOutput: !mayReaggregateTerminalBlocked })
+      : {
+          index,
+          status: "blocked" as const,
+          outputPath: undefined,
+          blockedReason: results.blockedReason,
+          output: results
+        };
     const outputPath = path.join(snapshot.runDir, "outputs", `${stage.id}.json`);
     await fs.mkdir(path.dirname(outputPath), { recursive: true });
-    await fs.writeFile(outputPath, `${JSON.stringify(aggregate, null, 2)}\n`, "utf8");
-    index = updateStage(index, stage.id, {
+    if (results.status !== "completed") {
+      await fs.writeFile(outputPath, `${JSON.stringify(results, null, 2)}\n`, "utf8");
+    }
+    index = updateStage(fanin.index, stage.id, {
       ...state,
-      status: aggregate.status,
-      outputPath: path.relative(snapshot.runDir, outputPath),
-      blockedReason: aggregate.blockedReason,
+      status: fanin.status,
+      outputPath: fanin.outputPath ?? path.relative(snapshot.runDir, outputPath),
+      blockedReason: fanin.blockedReason,
       completedAt: new Date().toISOString(),
       fanout: {
         ...state.fanout,
         totalItems: items.length,
-        completedItems: completed,
-        blockedItems: aggregate.blockedItems.length,
-        failedItems: failed,
+        completedItems: counts.completedItems,
+        blockedItems: results.blockedItems.length,
+        failedItems: counts.failedItems,
         skippedItems: skippedItems.length,
-        workUnits: aggregate.laneOutputs.length
+        workUnits: results.laneOutputs.length
       }
     });
-    await appendEvent(snapshot.cwd, snapshot.runId, { type: "fanout_aggregated", stageId: stage.id, status: aggregate.status, itemCount: itemOutputs.length, blockedCount: aggregate.blockedItems.length, skippedCount: skippedItems.length, workUnitCount: aggregate.laneOutputs.length });
+    await appendEvent(snapshot.cwd, snapshot.runId, { type: "fanout_fanin_completed", stageId: stage.id, status: fanin.status, itemCount: itemOutputs.length, blockedCount: results.blockedItems.length, skippedCount: skippedItems.length, workUnitCount: results.laneOutputs.length });
     changed = true;
   }
   return { index, changed };
+}
+
+async function runFanoutFanin(
+  snapshot: RuntimeSnapshot,
+  stage: Extract<Stage, { kind: "fanout" }>,
+  planStage: ExecutionPlanStage,
+  results: Record<string, unknown>,
+  options: { reuseExistingOutput?: boolean } = {}
+): Promise<{ index: RunIndex; status: StageStatus; outputPath?: string; blockedReason?: string; output: Record<string, unknown> }> {
+  const fanin = planStage.fanout?.fanin;
+  const outputPath = path.join(snapshot.runDir, "outputs", `${stage.id}.json`);
+  const existingOutput = options.reuseExistingOutput === false ? undefined : await readJsonIfExists(outputPath);
+  if (existingOutput) {
+    const status = statusFromItemOutput(existingOutput);
+    return {
+      index: finalizeStageItemAttempts(snapshot.index, snapshot.runDir, {
+        stageId: stage.id,
+        itemId: "fanin",
+        status,
+        output: existingOutput
+      }),
+      status,
+      outputPath: path.relative(snapshot.runDir, outputPath),
+      blockedReason: stringField(existingOutput, "blockedReason"),
+      output: existingOutput
+    };
+  }
+  if (!fanin) {
+    const blocked = {
+      status: "blocked",
+      data: null,
+      blockedReason: RuntimeErrorCodes.PROGRAM_FANIN_INPUT_INVALID,
+      errorCode: RuntimeErrorCodes.PROGRAM_FANIN_INPUT_INVALID
+    };
+    await fs.writeFile(outputPath, `${JSON.stringify(blocked, null, 2)}\n`, "utf8");
+    return { index: snapshot.index, status: "blocked", outputPath: path.relative(snapshot.runDir, outputPath), blockedReason: RuntimeErrorCodes.PROGRAM_FANIN_INPUT_INVALID, output: blocked };
+  }
+  if (fanin.mode === "program") {
+    const output = programMergeArraysFanin(results);
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    await fs.writeFile(outputPath, `${JSON.stringify(output, null, 2)}\n`, "utf8");
+    return {
+      index: snapshot.index,
+      status: output.status === "blocked" ? "blocked" : "completed",
+      outputPath: path.relative(snapshot.runDir, outputPath),
+      blockedReason: typeof output.blockedReason === "string" ? output.blockedReason : undefined,
+      output
+    };
+  }
+
+  const runtime = createOrchestratorAgentRuntime({ cwd: snapshot.cwd, runDir: snapshot.runDir });
+  try {
+    const actorLabel = fanin.actor.label ?? fanin.actor.agent;
+    const result = await runAgentWork({
+      cwd: snapshot.cwd,
+      runDir: snapshot.runDir,
+      runId: snapshot.runId,
+      workflowInput: snapshot.input,
+      spec: snapshot.spec,
+      outputs: await readAuthorOutputs(snapshot.runDir),
+      plan: snapshot.plan,
+      runtime,
+      unit: {
+        type: "stage",
+        stageId: stage.id,
+        itemId: "fanin",
+        actorLabel,
+        actor: fanin.actor,
+        sessionKey: fanin.sessionKey,
+        promptId: fanin.promptId,
+        outputSchema: fanin.outputSchema,
+        implicitOutputFields: fanin.implicitOutputFields,
+        outputPath,
+        cwd: workflowCwd(snapshot.input),
+        timeoutMs: timeoutMs(snapshot.plan, planStage),
+        local: { results }
+      }
+    });
+    let index = snapshot.index;
+    for (const attempt of result.attempts) index = upsertAttemptIndex(index, attempt);
+    const state = index.stages[stage.id];
+    index = updateStage(index, stage.id, {
+      ...state,
+      attempts: [...(state?.attempts ?? []), ...result.attempts.map((attempt) => attempt.id)]
+    });
+    return {
+      index,
+      status: result.status,
+      outputPath: result.outputPath ? path.relative(snapshot.runDir, result.outputPath) : undefined,
+      blockedReason: result.blockedReason,
+      output: result.output ?? {}
+    };
+  } finally {
+    await runtime.dispose?.();
+  }
+}
+
+function programMergeArraysFanin(results: Record<string, unknown>): Record<string, unknown> {
+  const laneOutputs = Array.isArray(results.laneOutputs) ? results.laneOutputs : [];
+  const data: unknown[] = [];
+  for (const laneResult of laneOutputs) {
+    if (objectRecord(laneResult)?.status !== "completed") continue;
+    const output = objectRecord(laneResult)?.output;
+    const value = objectRecord(output)?.data;
+    if (!Array.isArray(value)) {
+      return {
+        status: "blocked",
+        data: [],
+        blockedReason: RuntimeErrorCodes.PROGRAM_FANIN_INPUT_INVALID,
+        errorCode: RuntimeErrorCodes.PROGRAM_FANIN_INPUT_INVALID
+      };
+    }
+    data.push(...value);
+  }
+  return { status: "completed", data };
+}
+
+function finalizeStageItemAttempts(index: RunIndex, runDir: string, input: {
+  stageId: string;
+  itemId: string;
+  status: StageStatus;
+  output: Record<string, unknown>;
+}): RunIndex {
+  let next = index;
+  for (const attempt of Object.values(index.attempts)) {
+    if (attempt.stageId !== input.stageId || attempt.itemId !== input.itemId) continue;
+    if (attempt.status !== "pending" && attempt.status !== "running" && attempt.status !== "raw_received" && attempt.status !== "parsing") continue;
+    next = upsertAttemptIndex(next, {
+      ...attempt,
+      status: attemptStatusFromStageStatus(input.status),
+      endedAt: attempt.endedAt ?? new Date().toISOString(),
+      blockedReason: stringField(input.output, "blockedReason") ?? attempt.blockedReason,
+      runtimeErrorCode: stringField(objectRecord(input.output.runtimeDiagnostics), "errorCode") ?? attempt.runtimeErrorCode,
+      parseErrorCode: stringField(objectRecord(input.output.parseDiagnostics), "errorCode") ?? attempt.parseErrorCode,
+      path: attempt.path ?? path.relative(runDir, attemptDir(runDir, {
+        stageId: input.stageId,
+        itemId: input.itemId,
+        kind: attempt.kind,
+        ordinal: attemptOrdinalFromAttemptId(attempt.id) ?? (attempt.retryOrdinal ?? 0) + 1
+      }))
+    });
+  }
+  return next;
 }
 
 function fanoutResumePolicy(index: RunIndex, stageId: string): NonNullable<NonNullable<RunIndex["resumePolicy"]>["fanout"]>[string] | undefined {
@@ -1192,12 +1397,9 @@ function applyFanoutResumePolicy(
 
 type FanoutItemIndexEntry = FanoutCoreItem;
 
-function firstRunningFanoutLane(item: FanoutItemIndexEntry): { group: NonNullable<FanoutItemIndexEntry["groups"]>[number]; lane: NonNullable<FanoutItemIndexEntry["groups"]>[number]["lanes"][number] } | undefined {
-  for (const group of item.groups ?? []) {
-    const lane = group.lanes.find((candidate) => candidate.status === "running");
-    if (lane) return { group, lane };
-  }
-  return undefined;
+function firstRunningFanoutLane(item: FanoutItemIndexEntry): { lane: FanoutItemIndexEntry["lanes"][number] } | undefined {
+  const lane = item.lanes.find((candidate) => candidate.status === "running");
+  return lane ? { lane } : undefined;
 }
 
 function isTerminalStageStatus(status: StageStatus): boolean {
@@ -1210,45 +1412,42 @@ function shouldSkipRunningStage(stage: Stage, state: StageIndexEntry): boolean {
   return hasRunningFanoutItems(items) || !hasQueuedFanoutItems(items);
 }
 
-function fanoutLaneOutputPath(runDir: string, stageId: string, itemId: string, groupId: string, laneId: string): string {
-  return path.join(runDir, "outputs", stageId, safeFileName(itemId), safeFileName(groupId), `${safeFileName(laneId)}.json`);
+function fanoutLaneOutputPath(runDir: string, stageId: string, itemId: string, laneId: string): string {
+  return path.join(runDir, "outputs", stageId, safeFileName(itemId), `${safeFileName(laneId)}.json`);
 }
 
 async function buildFanoutItemOutputFromFiles(runDir: string, stageId: string, item: FanoutItemIndexEntry, allowPartial: boolean): Promise<Record<string, unknown>> {
   const existingItemOutput = item.outputPath ? await readJsonIfExists(path.join(runDir, item.outputPath)) : undefined;
   const laneResults: FanoutCoreLaneResult[] = [];
-  for (const group of item.groups ?? []) {
-    for (const lane of group.lanes) {
-      const outputPath = lane.outputPath ? path.join(runDir, lane.outputPath) : fanoutLaneOutputPath(runDir, stageId, item.id, group.id, lane.id);
-      const output = await readJsonIfExists(outputPath) ?? missingFanoutLaneOutput(item.id, group.id, lane.id);
-      laneResults.push({
-        itemId: item.id,
-        itemIndex: item.index,
-        groupId: group.id,
-        laneId: lane.id,
-        roleName: lane.roleName,
-        status: statusFromItemOutput(output),
-        output,
-        outputPath: path.relative(runDir, outputPath),
-        blockedReason: stringField(output, "blockedReason") ?? lane.blockedReason,
-        errorCode: stringField(output, "errorCode") ?? lane.errorCode ?? stringField(output, "blockedReason")
-      });
-    }
+  for (const lane of item.lanes) {
+    if (lane.status === "skipped") continue;
+    const outputPath = lane.outputPath ? path.join(runDir, lane.outputPath) : fanoutLaneOutputPath(runDir, stageId, item.id, lane.id);
+    const output = await readJsonIfExists(outputPath) ?? missingPersistedFanoutLaneOutput(item.id, lane.id, lane.status, lane.errorCode ?? lane.blockedReason ?? item.errorCode ?? item.blockedReason);
+    laneResults.push({
+      itemId: item.id,
+      itemIndex: item.index,
+      laneId: lane.id,
+      actorLabel: lane.actorLabel,
+      status: statusFromLaneOutput(output, lane.status),
+      output,
+      outputPath: path.relative(runDir, outputPath),
+      blockedReason: stringField(output, "blockedReason") ?? lane.blockedReason,
+      errorCode: stringField(output, "errorCode") ?? lane.errorCode ?? stringField(output, "blockedReason")
+    });
   }
   const output = buildCoreFanoutItemOutput({
     item,
     laneResults,
     allowPartial,
     existingItemOutput,
-    missingLaneOutput: (_item, group, lane) => ({
+    missingLaneOutput: (_item, lane) => ({
       itemId: item.id,
       itemIndex: item.index,
-      groupId: group.id,
       laneId: lane.id,
-      roleName: lane.roleName,
+      actorLabel: lane.actorLabel,
       status: "blocked",
-      output: missingFanoutLaneOutput(item.id, group.id, lane.id),
-      outputPath: path.relative(runDir, fanoutLaneOutputPath(runDir, stageId, item.id, group.id, lane.id)),
+      output: missingFanoutLaneOutput(item.id, lane.id),
+      outputPath: path.relative(runDir, fanoutLaneOutputPath(runDir, stageId, item.id, lane.id)),
       blockedReason: RuntimeErrorCodes.MISSING_FANOUT_ITEM_OUTPUT,
       errorCode: RuntimeErrorCodes.MISSING_FANOUT_ITEM_OUTPUT
     })
@@ -1259,14 +1458,30 @@ async function buildFanoutItemOutputFromFiles(runDir: string, stageId: string, i
   return output;
 }
 
-function missingFanoutLaneOutput(itemId: string, groupId: string, laneId: string): Record<string, unknown> {
+function missingFanoutLaneOutput(itemId: string, laneId: string): Record<string, unknown> {
   return {
     status: "blocked",
-    summary: `Missing fanout lane output ${itemId}/${groupId}/${laneId}.`,
-    artifacts: [],
-    nextFocus: "diagnose",
+    summary: `Missing fanout lane output ${itemId}/${laneId}.`,
     blockedReason: RuntimeErrorCodes.MISSING_FANOUT_ITEM_OUTPUT
   };
+}
+
+function missingPersistedFanoutLaneOutput(itemId: string, laneId: string, laneStatus: StageStatus, laneErrorCode: string | undefined): Record<string, unknown> {
+  if ((laneStatus === "blocked" || laneStatus === "failed") && laneErrorCode) {
+    return {
+      status: "blocked",
+      summary: `Fanout lane ${itemId}/${laneId} has terminal runtime state but no output artifact.`,
+      blockedReason: laneErrorCode,
+      errorCode: laneErrorCode,
+      runtimeDiagnostics: {
+        errorCode: laneErrorCode,
+        missingOutput: true,
+        itemId,
+        laneId
+      }
+    };
+  }
+  return missingFanoutLaneOutput(itemId, laneId);
 }
 
 async function fanoutItemRuntimeErrorResult(input: {
@@ -1277,16 +1492,17 @@ async function fanoutItemRuntimeErrorResult(input: {
   error: unknown;
 }): Promise<AgentWorkResult> {
   const itemId = input.unit.itemId ?? "item";
-  const id = attemptId({ stageId: input.unit.stageId, itemId, groupId: input.unit.groupId, laneId: input.unit.laneId, kind: "attempt", ordinal: 1, runtimeRetryOrdinal: input.unit.runtimeRetryOrdinal });
-  const dir = attemptDir(input.runDir, { stageId: input.unit.stageId, itemId, groupId: input.unit.groupId, laneId: input.unit.laneId, kind: "attempt", ordinal: 1, runtimeRetryOrdinal: input.unit.runtimeRetryOrdinal });
+  const attemptOrdinal = (input.unit.retryOrdinal ?? 0) + 1;
+  const id = attemptId({ stageId: input.unit.stageId, itemId, laneId: input.unit.laneId, kind: "attempt", ordinal: attemptOrdinal });
+  const dir = attemptDir(input.runDir, { stageId: input.unit.stageId, itemId, laneId: input.unit.laneId, kind: "attempt", ordinal: attemptOrdinal });
   const message = errorMessage(input.error);
   const output = runtimeBlockedOutput({
     code: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
     message,
     requestId: id,
     sessionKey: input.unit.sessionKey,
-    agent: input.unit.role.agent,
-    roleMode: input.unit.role.mode
+    agent: input.unit.actor.agent,
+    actorMode: input.unit.actor.mode
   });
   const now = new Date().toISOString();
   await writeAttemptFile(dir, "output.json", output);
@@ -1296,7 +1512,6 @@ async function fanoutItemRuntimeErrorResult(input: {
     type: "output_written",
     stageId: input.unit.stageId,
     itemId,
-    groupId: input.unit.groupId,
     laneId: input.unit.laneId,
     attemptId: id,
     outputPath: path.relative(input.runDir, input.unit.outputPath),
@@ -1306,7 +1521,6 @@ async function fanoutItemRuntimeErrorResult(input: {
   return {
     stageId: input.unit.stageId,
     itemId,
-    groupId: input.unit.groupId,
     laneId: input.unit.laneId,
     status: "blocked",
     output,
@@ -1315,7 +1529,6 @@ async function fanoutItemRuntimeErrorResult(input: {
       id,
       stageId: input.unit.stageId,
       itemId,
-      groupId: input.unit.groupId,
       laneId: input.unit.laneId,
       kind: "attempt",
       status: "failed",
@@ -1327,15 +1540,21 @@ async function fanoutItemRuntimeErrorResult(input: {
       promptPreview: "",
       sessionKey: input.unit.sessionKey,
       requestId: id,
-      runtimeRetryOf: input.unit.runtimeRetryOf,
-      runtimeRetryOrdinal: input.unit.runtimeRetryOrdinal,
+      isRetry: input.unit.retryReason !== undefined,
+      retryOf: input.unit.retryOf,
+      retryOrdinal: input.unit.retryOrdinal,
+      retryReason: input.unit.retryReason,
+      retryBudgetUsed: input.unit.retryOrdinal ?? 0,
+      retryBudgetLimit: AGENT_TASK_RETRY_BUDGET,
+      promptPolicy: input.unit.retryReason === "continuation" ? "continuation" : "original",
+      lastFailureCode: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
       runtimeErrorCode: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
-      agent: input.unit.role.agent,
-      roleMode: input.unit.role.mode,
+      agent: input.unit.actor.agent,
+      actorMode: input.unit.actor.mode,
       runtimeDisposeInvoked: false
     }],
     agentCalls: 0,
-    repairCalls: 0,
+    retryCalls: 0,
     blockedReason: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
     errorCode: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
     errorMessage: message
@@ -1343,27 +1562,37 @@ async function fanoutItemRuntimeErrorResult(input: {
 }
 
 async function writeRecoveredFanoutItemFailure(input: {
+  index: RunIndex;
   cwd: string;
   runDir: string;
   runId: string;
   stageId: string;
   itemId: string;
+  laneId: string;
   attemptId: string;
   startedAt?: string;
   code: string;
   message: string;
   outputPath: string;
+  exhausted?: boolean;
 }): Promise<{ outputPath: string; attempt: AttemptIndexEntry }> {
-  const runtimeRetryOrdinal = runtimeRetryOrdinalFromAttemptId(input.attemptId);
-  const dir = attemptDir(input.runDir, { stageId: input.stageId, itemId: input.itemId, kind: "attempt", ordinal: 1, runtimeRetryOrdinal });
-  const output = runtimeBlockedOutput({
-    code: input.code,
-    message: input.message,
-    requestId: input.attemptId,
-    sessionKey: undefined,
-    agent: undefined,
-    roleMode: undefined
-  });
+  const attemptOrdinal = attemptOrdinalFromAttemptId(input.attemptId) ?? 1;
+  const retryOrdinal = retryOrdinalFromAttemptId(input.attemptId);
+  const dir = attemptDir(input.runDir, { stageId: input.stageId, itemId: input.itemId, laneId: input.laneId, kind: "attempt", ordinal: attemptOrdinal });
+  const output = input.exhausted
+    ? retryExhaustedEnvelope({
+      summary: input.message,
+      lastFailureCode: input.code,
+      retryHistory: retryHistoryForUnit(input.index, input.stageId, input.itemId, input.laneId)
+    })
+    : runtimeBlockedOutput({
+      code: input.code,
+      message: input.message,
+      requestId: input.attemptId,
+      sessionKey: undefined,
+      agent: undefined,
+      actorMode: undefined
+    });
   const now = new Date().toISOString();
   await writeAttemptFile(dir, "output.json", output);
   await fs.mkdir(path.dirname(input.outputPath), { recursive: true });
@@ -1372,6 +1601,7 @@ async function writeRecoveredFanoutItemFailure(input: {
     type: "output_written",
     stageId: input.stageId,
     itemId: input.itemId,
+    laneId: input.laneId,
     attemptId: input.attemptId,
     outputPath: path.relative(input.runDir, input.outputPath),
     status: output.status,
@@ -1383,6 +1613,7 @@ async function writeRecoveredFanoutItemFailure(input: {
       id: input.attemptId,
       stageId: input.stageId,
       itemId: input.itemId,
+      laneId: input.laneId,
       kind: "attempt",
       status: "failed",
       path: path.relative(input.runDir, dir),
@@ -1390,7 +1621,12 @@ async function writeRecoveredFanoutItemFailure(input: {
       endedAt: now,
       blockedReason: input.code,
       runtimeErrorCode: input.code,
-      runtimeRetryOrdinal,
+      retryOrdinal,
+      retryReason: retryOrdinal !== undefined && retryOrdinal > 0 ? "stale" : undefined,
+      retryBudgetUsed: retryOrdinal ?? 0,
+      retryBudgetLimit: AGENT_TASK_RETRY_BUDGET,
+      promptPolicy: "original",
+      lastFailureCode: input.code,
       rawPreview: "",
       promptPreview: ""
     }
@@ -1409,14 +1645,12 @@ async function writeRecoveredStageFailure(input: {
   message: string;
   outputPath: string;
 }): Promise<{ outputPath: string; attempt: AttemptIndexEntry }> {
-  const dir = attemptDir(input.runDir, { stageId: input.stageId, kind: "attempt", ordinal: 1, runtimeRetryOrdinal: runtimeRetryOrdinalFromAttemptId(input.attemptId) });
-  const output = runtimeBlockedOutput({
-    code: input.code,
-    message: input.message,
-    requestId: input.attemptId,
-    sessionKey: undefined,
-    agent: undefined,
-    roleMode: undefined
+  const attemptOrdinal = attemptOrdinalFromAttemptId(input.attemptId) ?? 1;
+  const dir = attemptDir(input.runDir, { stageId: input.stageId, kind: "attempt", ordinal: attemptOrdinal });
+  const output = retryExhaustedEnvelope({
+    summary: input.message,
+    lastFailureCode: input.code,
+    retryHistory: retryHistoryForUnit(input.index, input.stageId)
   });
   const now = new Date().toISOString();
   await writeAttemptFile(dir, "output.json", output);
@@ -1432,50 +1666,59 @@ async function writeRecoveredStageFailure(input: {
   });
   return {
     outputPath: input.outputPath,
-    attempt: recoveredRuntimeAttempt(input.index, input.runDir, {
+    attempt: buildStaleRecoveredAttempt(input.index, input.runDir, {
       stageId: input.stageId,
       attemptId: input.attemptId,
       startedAt: input.startedAt,
       code: input.code,
       message: input.message,
-      runtimeRetryOrdinal: runtimeRetryOrdinalFromAttemptId(input.attemptId),
+      retryOrdinal: retryOrdinalFromAttemptId(input.attemptId),
       endedAt: now
     })
   };
 }
 
-function recoveredRuntimeAttempt(index: RunIndex, runDir: string, input: {
+function buildStaleRecoveredAttempt(index: RunIndex, runDir: string, input: {
   stageId: string;
   attemptId: string;
   itemId?: string;
+  laneId?: string;
   startedAt?: string;
   code: string;
   message: string;
-  runtimeRetryOrdinal?: number;
+  retryOrdinal?: number;
   endedAt?: string;
 }): AttemptIndexEntry {
   const existing = index.attempts[input.attemptId];
-  const runtimeRetryOrdinal = input.runtimeRetryOrdinal ?? runtimeRetryOrdinalFromAttemptId(input.attemptId);
+  const retryOrdinal = input.retryOrdinal ?? retryOrdinalFromAttemptId(input.attemptId);
+  const attemptOrdinal = attemptOrdinalFromAttemptId(input.attemptId) ?? (retryOrdinal ?? 0) + 1;
   return {
     id: input.attemptId,
     stageId: input.stageId,
     itemId: input.itemId,
+    laneId: input.laneId,
     kind: "attempt",
     status: "failed",
-    path: existing?.path ?? path.relative(runDir, attemptDir(runDir, { stageId: input.stageId, itemId: input.itemId, kind: "attempt", ordinal: 1, runtimeRetryOrdinal })),
+    path: existing?.path ?? path.relative(runDir, attemptDir(runDir, { stageId: input.stageId, itemId: input.itemId, laneId: input.laneId, kind: "attempt", ordinal: attemptOrdinal })),
     startedAt: existing?.startedAt ?? input.startedAt,
     endedAt: input.endedAt ?? new Date().toISOString(),
     blockedReason: input.code,
     runtimeErrorCode: input.code,
-    runtimeRetryOf: existing?.runtimeRetryOf,
-    runtimeRetryOrdinal: existing?.runtimeRetryOrdinal ?? runtimeRetryOrdinal,
-    runtimeRetryReason: input.message,
+    retryOf: existing?.retryOf,
+    retryOrdinal: existing?.retryOrdinal ?? retryOrdinal,
+    isRetry: existing?.isRetry ?? (retryOrdinal ?? 0) > 0,
+    retryReason: existing?.retryReason ?? ((retryOrdinal ?? 0) > 0 ? "stale" : undefined),
+    retryBudgetUsed: existing?.retryBudgetUsed ?? retryOrdinal ?? 0,
+    retryBudgetLimit: existing?.retryBudgetLimit ?? AGENT_TASK_RETRY_BUDGET,
+    promptPolicy: existing?.promptPolicy ?? "original",
+    lastFailureCode: existing?.lastFailureCode ?? input.code,
+    retryMessage: input.message,
     rawPreview: existing?.rawPreview ?? "",
     promptPreview: existing?.promptPreview ?? "",
     sessionKey: existing?.sessionKey,
     requestId: existing?.requestId ?? input.attemptId,
     agent: existing?.agent,
-    roleMode: existing?.roleMode,
+    actorMode: existing?.actorMode,
     runtimeDisposeInvoked: existing?.runtimeDisposeInvoked ?? false
   };
 }
@@ -1483,6 +1726,7 @@ function recoveredRuntimeAttempt(index: RunIndex, runDir: string, input: {
 function terminalAttemptFromFanoutOutput(index: RunIndex, runDir: string, input: {
   stageId: string;
   itemId: string;
+  laneId: string;
   attemptId: string;
   output: Record<string, unknown>;
   outputStatus: StageStatus;
@@ -1495,14 +1739,16 @@ function terminalAttemptFromFanoutOutput(index: RunIndex, runDir: string, input:
   const blockedReason = stringField(input.output, "blockedReason");
   const runtimeErrorCode = stringField(runtimeDiagnostics, "errorCode");
   const parseErrorCode = stringField(parseDiagnostics, "errorCode");
-  const runtimeRetryOrdinal = existing?.runtimeRetryOrdinal ?? runtimeRetryOrdinalFromAttemptId(input.attemptId);
+  const retryOrdinal = existing?.retryOrdinal ?? retryOrdinalFromAttemptId(input.attemptId);
+  const attemptOrdinal = attemptOrdinalFromAttemptId(input.attemptId) ?? (retryOrdinal ?? 0) + 1;
   return {
     id: input.attemptId,
     stageId: input.stageId,
     itemId: input.itemId,
+    laneId: input.laneId,
     kind: existing?.kind ?? "attempt",
     status: attemptStatusFromStageStatus(input.outputStatus),
-    path: existing?.path ?? path.relative(runDir, attemptDir(runDir, { stageId: input.stageId, itemId: input.itemId, kind: "attempt", ordinal: 1, runtimeRetryOrdinal })),
+    path: existing?.path ?? path.relative(runDir, attemptDir(runDir, { stageId: input.stageId, itemId: input.itemId, laneId: input.laneId, kind: "attempt", ordinal: attemptOrdinal })),
     startedAt: existing?.startedAt ?? input.startedAt,
     endedAt: existing?.endedAt ?? new Date().toISOString(),
     blockedReason: blockedReason ?? existing?.blockedReason,
@@ -1513,11 +1759,11 @@ function terminalAttemptFromFanoutOutput(index: RunIndex, runDir: string, input:
     requestId: existing?.requestId ?? input.attemptId,
     stopReason: existing?.stopReason,
     runtimeErrorCode: runtimeErrorCode ?? existing?.runtimeErrorCode,
-    runtimeRetryOf: existing?.runtimeRetryOf,
-    runtimeRetryOrdinal: existing?.runtimeRetryOrdinal ?? runtimeRetryOrdinal,
-    runtimeRetryReason: existing?.runtimeRetryReason,
+    retryOf: existing?.retryOf,
+    retryOrdinal: existing?.retryOrdinal ?? retryOrdinal,
+    retryReason: existing?.retryReason,
     agent: existing?.agent,
-    roleMode: existing?.roleMode,
+    actorMode: existing?.actorMode,
     runtimeDisposeInvoked: existing?.runtimeDisposeInvoked
   };
 }
@@ -1528,8 +1774,8 @@ function attemptStatusFromStageStatus(status: StageStatus): AttemptStatus {
   return "blocked";
 }
 
-function canScheduleRuntimeRetry(runtimeRetryOrdinal: number | undefined): boolean {
-  return (runtimeRetryOrdinal ?? 0) < MAX_RUNTIME_RETRIES;
+function canScheduleAgentTaskRetry(retryOrdinal: number | undefined): boolean {
+  return (retryOrdinal ?? 0) < AGENT_TASK_RETRY_BUDGET;
 }
 
 function runningStageAttemptId(index: RunIndex, state: StageIndexEntry, stageId: string): string {
@@ -1537,12 +1783,20 @@ function runningStageAttemptId(index: RunIndex, state: StageIndexEntry, stageId:
     .reverse()
     .map((id) => index.attempts[id])
     .find((attempt) => attempt?.status === "running");
-  return latestRunning?.id ?? attemptId({ stageId, kind: "attempt", ordinal: 1, runtimeRetryOrdinal: state.runtimeRetryOrdinal });
+  return latestRunning?.id ?? attemptId({ stageId, kind: "attempt", ordinal: (state.retryOrdinal ?? 0) + 1 });
 }
 
-function runtimeRetryOrdinalFromAttemptId(attemptIdValue: string): number | undefined {
-  const match = attemptIdValue.match(/-runtime-retry-(\d+)$/);
-  return match ? Number(match[1]) : undefined;
+function retryOrdinalFromAttemptId(attemptIdValue: string): number | undefined {
+  const ordinal = attemptOrdinalFromAttemptId(attemptIdValue);
+  if (ordinal === undefined) return undefined;
+  return ordinal - 1;
+}
+
+function attemptOrdinalFromAttemptId(attemptIdValue: string): number | undefined {
+  const match = attemptIdValue.match(/:attempt-(\d+)$/);
+  if (!match) return undefined;
+  const ordinal = Number(match[1]);
+  return Number.isInteger(ordinal) && ordinal > 0 ? ordinal : undefined;
 }
 
 function runtimeBlockedOutput(input: {
@@ -1551,20 +1805,18 @@ function runtimeBlockedOutput(input: {
   requestId: string;
   sessionKey?: string;
   agent?: string;
-  roleMode?: string;
+  actorMode?: string;
 }): Record<string, unknown> {
   return {
     status: "blocked",
     summary: input.message,
-    artifacts: [],
-    nextFocus: "diagnose",
     blockedReason: input.code,
     errorCode: input.code,
     runtimeDiagnostics: {
       requestId: input.requestId,
       sessionKey: input.sessionKey,
       agent: input.agent,
-      roleMode: input.roleMode,
+      actorMode: input.actorMode,
       runtimeDisposeInvoked: false,
       errorCode: input.code,
       rawTextPreview: ""
@@ -1588,7 +1840,16 @@ async function readJsonIfExists(filePath: string): Promise<Record<string, unknow
 function statusFromItemOutput(output: Record<string, unknown>): StageStatus {
   if (output.status === "completed") return "completed";
   if (output.status === "failed") return "failed";
-  return "blocked";
+  if (output.status === "blocked") return "blocked";
+  return output.blockedReason || output.errorCode ? "blocked" : "completed";
+}
+
+function statusFromLaneOutput(output: Record<string, unknown>, laneStatus: StageStatus): StageStatus {
+  if (output.status === "completed") return "completed";
+  if (output.status === "failed") return "failed";
+  if (output.status === "blocked") return "blocked";
+  if (output.blockedReason || output.errorCode) return "blocked";
+  return isTerminalStageStatus(laneStatus) ? laneStatus : "completed";
 }
 
 function isStaleAttempt(input: {
@@ -1641,7 +1902,7 @@ function isAttemptActivityEvent(type: string): boolean {
     || type === "turn_started"
     || type === "agent_event"
     || type === "turn_finished"
-    || type === "runtime_retry_started";
+    || type === "agent_task_retry_started";
 }
 
 function stringField(value: Record<string, unknown> | undefined, key: string): string | undefined {
@@ -1663,9 +1924,7 @@ function updateRunStatus(index: RunIndex, spec: WorkflowSpec): RunIndex {
   const gateState = gate ? index.stages[gate.id] : undefined;
   let gateVerdict = index.gateVerdict;
   let status = index.status;
-  if (index.status === "diagnosed_blocked" && (statuses.includes("blocked") || statuses.includes("failed"))) {
-    status = "diagnosed_blocked";
-  } else if (statuses.includes("failed")) status = "failed";
+  if (statuses.includes("failed")) status = "failed";
   else if (statuses.includes("blocked")) status = "blocked";
   else if (gateState?.status === "completed") {
     status = gateVerdict && gateVerdict !== "pass" && gateVerdict !== "pass_with_warnings" ? "blocked" : "completed";
@@ -1676,7 +1935,7 @@ function updateRunStatus(index: RunIndex, spec: WorkflowSpec): RunIndex {
   }
   const blocked = Object.values(index.stages).find((stage) => stage.status === "blocked");
   const gateVerdictBlockedReason = blockedReasonFromGateVerdict(gateVerdict);
-  const blockedReason = status === "blocked" || status === "diagnosed_blocked"
+  const blockedReason = status === "blocked"
     ? blocked?.blockedReason ?? gateVerdictBlockedReason ?? index.blockedReason
     : undefined;
   return {
@@ -1723,14 +1982,14 @@ function dependenciesCompleted(stage: Stage, index: RunIndex): boolean {
   });
 }
 
-function markUnselectedDecisionRoutes(index: RunIndex, spec: WorkflowSpec, stage: Extract<Stage, { kind: "decisionGate" }>, selectedRoute: string): RunIndex {
+function markUnselectedRouteBranches(index: RunIndex, spec: WorkflowSpec, stage: Extract<Stage, { kind: "route" }>, selectedRoute: string): RunIndex {
   const dependents = spec.stages.filter((candidate) => (candidate.dependsOn ?? []).includes(stage.id));
   let next = index;
   for (const dependent of dependents) {
     if (dependent.id === selectedRoute) continue;
     const state = next.stages[dependent.id];
     if (!state || state.status !== "pending") continue;
-    next = updateStage(next, dependent.id, { status: "skipped", skippedReason: `Decision ${stage.id} selected ${selectedRoute}.` });
+    next = updateStage(next, dependent.id, { status: "skipped", skippedReason: `Route ${stage.id} selected ${selectedRoute || "none"}.` });
   }
   return next;
 }

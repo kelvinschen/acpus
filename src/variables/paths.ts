@@ -1,11 +1,11 @@
-export type PathRoot = "input" | "outputs" | "loop" | "item" | "run";
+export type PathRoot = "input" | "outputs" | "loop" | "item" | "results";
 
 export type ParsedSourcePath = {
   root: PathRoot;
   parts: string[];
 };
 
-const ROOTS = new Set<PathRoot>(["input", "outputs", "loop", "item", "run"]);
+const ROOTS = new Set<PathRoot>(["input", "outputs", "loop", "item", "results"]);
 const PART_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]*$/;
 
 export function parseSourcePath(source: string): ParsedSourcePath {

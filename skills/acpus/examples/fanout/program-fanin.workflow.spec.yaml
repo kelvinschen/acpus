@@ -1,0 +1,61 @@
+schemaVersion: acpus.workflow/v1
+name: fanout-program-fanin
+description: Review input items in fanout lanes and merge array data with program fanin.
+root: review_items
+input:
+  schema: |
+    {
+      items: [
+        {
+          path: string
+        }
+      ],
+      maxConcurrency?: number,
+      maxFanoutItems?: number
+    }
+  default:
+    items: []
+    maxConcurrency: 4
+    maxFanoutItems: 20
+limits:
+  stageTimeoutMinutes: 45
+stages:
+  - id: review_items
+    kind: fanout
+    items:
+      source: input.items
+    prompt: "Review item ${path} and return findings as data array."
+    variables:
+      - name: path
+        source: item.path
+    limits:
+      maxConcurrency:
+        source: input.maxConcurrency
+      maxFanoutItems:
+        source: input.maxFanoutItems
+    lanes:
+      - id: validator
+        actor:
+          agent: aiden
+          mode: readOnly
+          label: validator
+        output:
+          schema: |
+            {
+              summary: string,
+              data: [
+                {
+                  summary: string,
+                  severity?: string
+                }
+              ]
+            }
+    fanin:
+      mode: program
+      operation: mergeArrays
+    fanoutPolicy:
+      allowPartial: true
+  - id: gate
+    kind: gate
+    mode: program
+    dependsOn: [review_items]

@@ -1,17 +1,16 @@
 import path from "node:path";
 import { AcpxRuntime, createAgentRegistry, createFileSessionStore, type AcpRuntimeEvent, type AcpRuntimeHandle, type AcpRuntimeOptions } from "acpx/runtime";
-import type { Role } from "../schema/workflow-spec.js";
+import type { Actor } from "../schema/workflow-spec.js";
 import { loadAcpxAgentOverrides } from "./acpx-config.js";
 
 export type AgentTurnRequest = {
   sessionKey: string;
-  roleName: string;
-  role: Role;
+  actorLabel: string;
+  actor: Actor;
   cwd: string;
   prompt: string;
   requestId: string;
   timeoutMs: number;
-  repair?: boolean;
 };
 
 export type AgentTurnResult = {
@@ -53,14 +52,14 @@ class AcpxRuntimeAdapter implements OrchestratorAgentRuntime {
   }
 
   async runTurn(input: AgentTurnRequest, onEvent?: (event: AcpRuntimeEvent) => Promise<void> | void): Promise<AgentTurnResult> {
-    const runtime = await this.runtimeForRole(input.role);
+    const runtime = await this.runtimeForActor(input.actor);
     const handle = await runtime.ensureSession({
       sessionKey: input.sessionKey,
-      agent: input.role.agent,
+      agent: input.actor.agent,
       mode: "persistent",
       cwd: input.cwd
     });
-    this.activeHandles.set(`${input.role.mode}:${input.sessionKey}`, { runtime, handle });
+    this.activeHandles.set(`${input.actor.mode}:${input.sessionKey}`, { runtime, handle });
     const turn = runtime.startTurn({
       handle,
       text: input.prompt,
@@ -72,7 +71,7 @@ class AcpxRuntimeAdapter implements OrchestratorAgentRuntime {
     let rawText = "";
     for await (const event of turn.events) {
       events.push(event);
-      if (event.type === "text_delta" && event.stream !== "thought") rawText += event.text;
+      if (event.type === "text_delta" && event.stream !== "thought" && !isAcpTransportStatusText(event.text)) rawText += event.text;
       await onEvent?.(event);
     }
     const result = await turn.result;
@@ -107,8 +106,8 @@ class AcpxRuntimeAdapter implements OrchestratorAgentRuntime {
     }).catch(() => undefined)));
   }
 
-  private async runtimeForRole(role: Role): Promise<AcpxRuntime> {
-    const permissionMode = role.mode === "edit" ? "approve-all" : role.mode === "denyAll" ? "deny-all" : "approve-reads";
+  private async runtimeForActor(actor: Actor): Promise<AcpxRuntime> {
+    const permissionMode = actor.mode === "edit" ? "approve-all" : actor.mode === "denyAll" ? "deny-all" : "approve-reads";
     const existing = this.runtimes.get(permissionMode);
     if (existing) return existing;
     const overrides = await this.agentOverrides;
@@ -124,4 +123,9 @@ class AcpxRuntimeAdapter implements OrchestratorAgentRuntime {
     this.runtimes.set(permissionMode, runtime);
     return runtime;
   }
+}
+
+export function isAcpTransportStatusText(text: string): boolean {
+  const trimmed = text.trim();
+  return /^Retrying \(attempt \d+\/\d+, waiting \d+s\)\.\.\.$/.test(trimmed) || trimmed === "Retry finished, resuming.";
 }

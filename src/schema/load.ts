@@ -1,9 +1,25 @@
 import fs from "node:fs/promises";
+import path from "node:path";
+import YAML from "yaml";
 import { ZodError } from "zod";
 import { issue, type OrchestratorIssue } from "../errors.js";
 import { WorkflowSpecSchema, type WorkflowSpec } from "./workflow-spec.js";
 
 export async function loadWorkflowSpec(filePath: string): Promise<{ spec?: WorkflowSpec; issues: OrchestratorIssue[] }> {
+  if (!isWorkflowYamlPath(filePath)) {
+    return {
+      issues: [
+        issue({
+          code: "SCHEMA_FORMAT_UNSUPPORTED",
+          severity: "error",
+          path: "/",
+          message: "Workflow specs must be authored as YAML files named *.workflow.spec.yaml, *.workflow.spec.yml, workflow.spec.yaml, or workflow.spec.yml.",
+          suggestions: ["Rename the spec to *.workflow.spec.yaml or *.workflow.spec.yml and use YAML syntax."]
+        })
+      ]
+    };
+  }
+
   let raw: string;
   try {
     raw = await fs.readFile(filePath, "utf8");
@@ -23,16 +39,16 @@ export async function loadWorkflowSpec(filePath: string): Promise<{ spec?: Workf
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw) as unknown;
+    parsed = YAML.parse(raw) as unknown;
   } catch (error) {
     return {
       issues: [
         issue({
-          code: "SCHEMA_JSON_INVALID",
+          code: "SCHEMA_YAML_INVALID",
           severity: "error",
           path: "/",
-          message: `Spec must be valid JSON: ${(error as Error).message}`,
-          suggestions: ["Fix the JSON syntax and run validate again."]
+          message: `Spec must be valid YAML: ${(error as Error).message}`,
+          suggestions: ["Fix the YAML syntax and run validate again."]
         })
       ]
     };
@@ -56,6 +72,21 @@ export async function loadWorkflowSpec(filePath: string): Promise<{ spec?: Workf
       )
     };
   }
+}
+
+export function stringifyWorkflowSpec(spec: WorkflowSpec): string {
+  return YAML.stringify(spec, {
+    aliasDuplicateObjects: false,
+    lineWidth: 100
+  });
+}
+
+export function isWorkflowYamlPath(filePath: string): boolean {
+  const base = path.basename(filePath);
+  return base === "workflow.spec.yaml"
+    || base === "workflow.spec.yml"
+    || base.endsWith(".workflow.spec.yaml")
+    || base.endsWith(".workflow.spec.yml");
 }
 
 function toJsonPointer(path: PropertyKey[]): string {

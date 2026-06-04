@@ -30,9 +30,14 @@ export function runProgressLabel(view: RunMonitorView): string {
   return `${view.progress.completedTasks}/${view.progress.knownTasks} tasks`;
 }
 
+export function runStatusLabel(view: RunMonitorView): string {
+  if ((view.run.status === "running" || view.run.status === "pending") && view.run.worker?.status === "stale") return "stale";
+  return view.run.status;
+}
+
 export function statusMark(status: string | undefined): string {
   if (status === "completed") return "✔";
-  if (status === "running" || status === "raw_received" || status === "parsing" || status === "repairing") return "●";
+  if (status === "running" || status === "raw_received" || status === "parsing") return "●";
   if (status === "blocked" || status === "failed" || status === "cancelled" || status === "timed_out") return "!";
   if (status === "skipped") return "-";
   return " ";
@@ -52,13 +57,18 @@ export function detailSummary(detail: TaskDetailView | undefined): string[] {
     `${statusMark(detail.task.status)} ${detail.task.status} - ${detail.task.execution}${detail.task.agent ? ` - ${detail.task.agent}` : ""}`,
     detail.task.durationMs !== undefined || detail.task.elapsedMs !== undefined ? `Time: ${formatDuration(detail.task.durationMs ?? detail.task.elapsedMs ?? 0)}` : undefined,
     detail.task.blockedReason ? `Reason: ${detail.task.blockedReason}` : undefined,
+    detail.task.lastRetryReason ? `Retry: ${detail.task.lastRetryReason} ${detail.task.retryBudgetUsed ?? 0}/${detail.task.retryBudgetLimit ?? "?"}` : undefined,
+    detail.task.lastFailureCode ? `Last failure: ${detail.task.lastFailureCode}` : undefined,
     detail.outcome?.summary ? `Outcome: ${detail.outcome.summary}` : undefined,
     detail.outcome?.path ? `Output: ${detail.outcome.path}` : undefined,
     detail.prompt ? `Prompt: ${detail.prompt.lines} line(s)` : undefined,
     detail.prompt?.preview ? detail.prompt.preview : undefined,
     detail.activity.totalAttempts > 0 ? `Attempts: ${detail.activity.totalAttempts}` : "No agent attempts",
-    ...detail.activity.attempts.map((attempt) => `${attempt.id} ${attempt.status} ${attempt.path}`),
-    ...((detail.outcome?.artifacts ?? []).map((artifact) => `Artifact: ${artifact.label ?? artifact.kind ?? "artifact"} ${artifact.path ?? artifact.url ?? ""}`))
+    ...detail.activity.attempts.map((attempt) => {
+      const retry = attempt.isRetry ? ` retry=${attempt.retryReason ?? "unknown"}#${attempt.retryOrdinal ?? "?"}` : "";
+      const failure = attempt.lastFailureCode ? ` last=${attempt.lastFailureCode}` : "";
+      return `${attempt.id} ${attempt.status}${retry}${failure} ${attempt.path}`;
+    })
   ];
   return lines.filter((line): line is string => typeof line === "string" && line.length > 0);
 }

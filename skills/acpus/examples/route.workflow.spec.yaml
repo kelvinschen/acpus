@@ -1,0 +1,58 @@
+schemaVersion: acpus.workflow/v1
+name: route-example
+description: Select exactly one downstream branch with route.
+root: inspect
+input:
+  schema: |
+    {
+      mode: string
+    }
+  default:
+    mode: left
+stages:
+  - id: inspect
+    kind: task
+    mode: program
+    operation: command
+    command: node
+    args:
+      - -e
+      - "console.log(JSON.stringify({status:'completed',data:{mode:process.env.ACPUS_MODE||'left'}}))"
+  - id: choose
+    kind: route
+    mode: program
+    dependsOn: [inspect]
+    rules:
+      - when:
+          source: input.mode
+          op: eq
+          value: left
+        to: left
+      - when:
+          source: input.mode
+          op: eq
+          value: right
+        to: right
+    routes: [left, right]
+  - id: left
+    kind: task
+    mode: program
+    operation: command
+    command: node
+    args:
+      - -e
+      - "console.log(JSON.stringify({status:'completed',data:['left']}))"
+    dependsOn: [choose]
+  - id: right
+    kind: task
+    mode: program
+    operation: command
+    command: node
+    args:
+      - -e
+      - "console.log(JSON.stringify({status:'completed',data:['right']}))"
+    dependsOn: [choose]
+  - id: gate
+    kind: gate
+    mode: program
+    dependsOn: [left, right]

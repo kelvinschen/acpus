@@ -8,13 +8,12 @@ export const RUN_DIAGNOSTICS_VIEW_VERSION = "acpus.diagnostics/v1";
 const RUN_LEVEL_RUNTIME_CODES = new Set<string>([
   RuntimeErrorCodes.EVENT_APPEND_LOCK_TIMEOUT,
   RuntimeErrorCodes.RUN_INDEX_LOCK_TIMEOUT,
-  RuntimeErrorCodes.OUTPUT_REPAIR_FAILED,
+  RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED,
   RuntimeErrorCodes.FANOUT_ITEM_UNSTARTED_TIMEOUT,
   RuntimeErrorCodes.FANOUT_ITEM_BLOCKED,
   RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
-  RuntimeErrorCodes.FANOUT_LANE_SELECTION_FAILED,
   RuntimeErrorCodes.FANOUT_LANE_RESULT_MISMATCH,
-  RuntimeErrorCodes.NO_MATCHING_LANES,
+  RuntimeErrorCodes.NO_SELECTED_LANES,
   RuntimeErrorCodes.MISSING_FANOUT_ITEM_OUTPUT,
   RuntimeErrorCodes.FANOUT_STAGE_STUCK_PENDING_BATCH,
   RuntimeErrorCodes.RUN_INDEX_OUTPUT_MISMATCH,
@@ -27,8 +26,6 @@ const RUN_LEVEL_RUNTIME_CODES = new Set<string>([
   RuntimeErrorCodes.AGENT_TURN_FAILED,
   RuntimeErrorCodes.AGENT_TURN_CANCELLED,
   RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY,
-  RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
-  RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY,
   RuntimeErrorCodes.GATE_CONDITION_FAILED,
   RuntimeErrorCodes.GATE_VERDICT_BLOCKED,
   RuntimeErrorCodes.GATE_VERDICT_FAILED,
@@ -154,14 +151,18 @@ async function buildRuntimeDiagnostics(dir: string, index: RunIndex): Promise<Ru
   }
 
   for (const stage of Object.values(index.stages)) {
-    if (!stage.fanout && (stage.blockedReason === RuntimeErrorCodes.AGENT_RUNTIME_ERROR || stage.blockedReason === RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY)) {
+    if (!stage.fanout && (
+      stage.blockedReason === RuntimeErrorCodes.AGENT_RUNTIME_ERROR
+      || stage.blockedReason === RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY
+      || stage.blockedReason === RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED
+    )) {
       const outputPath = stage.outputPath ? path.join(dir, stage.outputPath) : path.join(dir, "outputs", `${stage.stageId}.json`);
       const code = stage.blockedReason;
       diagnostics.push(runtimeDiagnostic({
         code,
         stageId: stage.stageId,
         path: outputPath,
-        summary: code === RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY ? "Agent stage stale recovery exhausted runtime retry." : "Agent runtime failed after one retry.",
+        summary: stageRetryDiagnosticSummary(code),
         source: "run_index"
       }));
     }
@@ -209,6 +210,12 @@ async function buildRuntimeDiagnostics(dir: string, index: RunIndex): Promise<Ru
   return diagnostics;
 }
 
+function stageRetryDiagnosticSummary(code: string): string {
+  if (code === RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY) return "Agent task retry exhausted after scheduler stale recovery.";
+  if (code === RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED) return "Agent task retry budget exhausted.";
+  return "Agent runtime failed after retry exhaustion.";
+}
+
 function buildEventTailDiagnostics(eventPath: string, eventTail: RunDiagnosticEvent[]): RunDiagnostic[] {
   const diagnostics: RunDiagnostic[] = [];
   for (const event of eventTail) {
@@ -236,8 +243,7 @@ function buildRecoverySucceededWithBlockedVerdictDiagnostic(dir: string, index: 
     if (!stage.fanout) return false;
     if (stage.fanout.items.some((item) => item.status === "running" || item.status === "pending" || item.status === "ready")) return false;
     return stage.fanout.items.some((item) =>
-      item.errorCode === RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR
-      || item.errorCode === RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY
+      item.errorCode === RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED
       || item.errorCode === RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED
       || item.errorCode === RuntimeErrorCodes.FANOUT_ITEM_UNSTARTED_TIMEOUT
       || item.errorCode === RuntimeErrorCodes.RUN_INDEX_OUTPUT_MISMATCH
@@ -289,8 +295,9 @@ function isBlockedGateVerdictCode(value: string | undefined): boolean {
 }
 
 function runLevelBlockedSummary(index: RunIndex): string {
-  if (index.blockedReason === RuntimeErrorCodes.AGENT_RUNTIME_ERROR) return "Agent runtime failed after one retry.";
-  if (index.blockedReason === RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY) return "Agent stage stale recovery exhausted runtime retry.";
+  if (index.blockedReason === RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED) return "Agent Task Retry budget exhausted.";
+  if (index.blockedReason === RuntimeErrorCodes.AGENT_RUNTIME_ERROR) return "Agent runtime failed after Agent Task Retry budget exhaustion.";
+  if (index.blockedReason === RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY) return "Agent stage stale recovery exhausted Agent Task Retry budget.";
   if (index.blockedReason === RuntimeErrorCodes.FANOUT_ITEM_BLOCKED) return "Fanout stage blocked because one or more items did not complete.";
   if (index.blockedReason === RuntimeErrorCodes.GATE_CONDITION_FAILED) return "Program gate condition failed.";
   if (index.gateVerdict === "blocked") return "Gate returned verdict=blocked.";

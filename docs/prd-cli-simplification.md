@@ -20,11 +20,11 @@ Simplify the CLI from 11 commands to 7 top-level commands, restructured into thr
 
 - **Merge `validate` and `preview` → `plan`**: A single command that validates the spec and, if valid, previews the execution plan. `--quiet` suppresses the plan and shows only issues (for CI).
 - **Merge `generate` → `save --template`**: Scaffold + save in one step. The `drafts` directory and `draft` kind are removed.
-- **Merge `recover` → `resume --force`**: Resume handles both blocked/failed recovery and stale worker restart. `--force` bypasses the active-worker check to restart a stale worker.
+- **Merge `recover` → `resume --force`**: Resume handles both blocked/failed recovery and stale worker restart. `--force` permits running/pending recovery after the worker is stale, but still refuses active non-stale workers.
 - **Make `<spec>` a positional argument with auto-detection**: `acpus run foo.json` (file path) or `acpus run my-workflow` (saved name). The CLI auto-detects by checking if the argument looks like a file path (exists on disk, has extension) or a saved workflow name.
 - **Make `follow` actually stream**: Rename behavior to match name — stream events in real-time from a running workflow, rather than printing a one-shot snapshot.
 - **Convert `list` and `show` to subcommand style**: `acpus list runs`, `acpus list workflows`, `acpus show run <id>`, `acpus show workflow <name>`. Remove `drafts`/`draft` kinds.
-- **Restructure groups**: Compose (plan, save), Conduct (run, follow, monitor, resume, diagnose), Catalogue (list, show).
+- **Restructure groups**: Compose (plan, save), Conduct (run, follow, monitor, resume), Catalogue (list, show). Public diagnose was later removed by ADR 0007.
 
 This is a breaking change. As the project is pre-1.0, no backward-compatibility layer is provided.
 
@@ -53,11 +53,11 @@ This is a breaking change. As the project is pre-1.0, no backward-compatibility 
 21. As a workflow author, I want `acpus save my-wf my-spec.json --template basic --overwrite` to scaffold and overwrite in one step, so that I can iterate on templates.
 22. As a workflow author, I want `--global` to remain on plan, run, save, list, and show, so that I can work with the global workflow store.
 23. As a workflow author, I want the `--help` output to show three music-themed groups (Compose, Conduct, Catalogue), so that the CLI feels cohesive with the project's brand.
-24. As a workflow author, I want `acpus resume my-run --force` to bypass the active-worker check, so that I can restart a worker I know is stale without waiting for heartbeat timeout.
+24. As a workflow author, I want `acpus resume my-run --force` to restart a stale worker, so that I can recover running or pending work after the heartbeat is stale.
 25. As a workflow author, I want `acpus resume my-run --allow-partial-fanout stage3` to continue working as before, so that my existing resume policy workflows are not disrupted.
 26. As a workflow author, I want `acpus follow my-run --json` to stream NDJSON events, so that I can programmatically consume run progress.
 27. As a workflow author, I want `acpus monitor my-run` to open the TUI as before, so that the interactive monitoring experience is preserved.
-28. As a workflow author, I want `acpus diagnose my-run --wait` to continue working as before, so that diagnostic workflows are not disrupted.
+28. Superseded by ADR 0007: public `acpus diagnose` is no longer a current command.
 
 ## Implementation Decisions
 
@@ -98,8 +98,8 @@ The `save` command:
 
 The `resume` command:
 - Keeps all existing behavior (resume policy flags, status validation, worker activity check).
-- Adds `--force` flag that bypasses the `workerIsActive` check, enabling restart of a stale worker. This is the `recover` use case.
-- When `--force` is used on a run that is not blocked/failed/diagnosed_blocked AND has no active worker, it still rejects (same status validation as current `recover`).
+- Adds `--force` flag that enables restart of a stale worker for blocked, failed, running, or pending runs. This is the `recover` use case.
+- When `--force` is used on a terminal run or a run with an active non-stale worker, it still rejects.
 - The `recover.ts` command file is deleted. The `recoverDriver` function from `src/runtime/worker.ts` is inlined or called from the resume handler.
 
 ### 5. `follow` streams events instead of snapshot
@@ -184,8 +184,8 @@ acpus save <name> [spec] [--template <name>] [--overwrite] [--global] [--json]
 
 ### 11. `resume --force` behavior
 
-- Without `--force`: current behavior — rejects runs with active workers, only allows blocked/failed/diagnosed_blocked.
-- With `--force`: allows resuming runs with stale workers (bypasses `workerIsActive` check). Still rejects terminal runs (completed, cancelled). Still rejects runs with a genuinely active (non-stale) worker unless the heartbeat is stale.
+- Without `--force`: rejects runs with active workers and only allows blocked/failed.
+- With `--force`: allows resuming blocked, failed, running, or pending runs with no active non-stale worker. Still rejects terminal runs (completed, cancelled). Still rejects runs with a genuinely active (non-stale) worker unless the heartbeat is stale.
 - Implementation: the `--force` flag relaxes the worker-activity guard to only reject when the worker heartbeat is recent (within the stale threshold). This mirrors the current `recoverDriver` logic.
 
 ### 12. `follow` streaming design
@@ -243,7 +243,7 @@ The existing integration test exercises `validate`, `preview`, `generate`, `list
 - **`follow` snapshot mode**: The one-shot snapshot behavior is removed. Users should use `monitor --json` for a single status check.
 - **Additional templates**: Only the `basic` template (matching current `generate` output) is in scope. Adding more templates (e.g., `fanout`, `loop`) is future work.
 - **`monitor` changes**: The `monitor` TUI and its `detail` subcommand are unchanged.
-- **`diagnose` changes**: The `diagnose` command behavior is unchanged; only its group assignment changes.
+- **`diagnose` changes**: Superseded by ADR 0007; public diagnose is removed.
 - **Skill wrapper update**: The `skills/acpus/scripts/acpus` wrapper is not in scope but should be updated in a follow-up.
 - **JSON output schema changes**: No changes to the structure of JSON output envelopes (e.g., `run --json`, `resume --json`). New envelopes (`plan --json`, `follow --json`) follow existing conventions.
 - **`--global` changes**: The `--global` flag behavior and availability are unchanged.

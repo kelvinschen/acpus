@@ -24,15 +24,17 @@ Acpus is a runtime-driven workflow orchestrator for ACP agents, built on the acp
 npm install -g acpus
 
 # Plan a workflow (validate + preview)
-acpus plan workflows/examples/simple-feature.workflow.spec.json
+acpus plan workflows/examples/simple-feature.workflow.spec.yaml
 
 # Plan and output as JSON
-acpus plan workflows/examples/simple-feature.workflow.spec.json --json
+acpus plan workflows/examples/simple-feature.workflow.spec.yaml --json
 
 # Run the workflow
-acpus run workflows/examples/simple-feature.workflow.spec.json
+acpus run workflows/examples/simple-feature.workflow.spec.yaml
+acpus run workflows/examples/simple-feature.workflow.spec.yaml --input '{"task":"review"}'
 
 # Follow a running workflow in real time
+acpus follow
 acpus follow <logical-run-id>
 ```
 
@@ -54,15 +56,15 @@ Acpus commands are grouped by three verbs.
 | `acpus save <name> <path>` | Save a spec to the local store |
 | `acpus save --template` | Scaffold a new workflow spec from a template |
 
-### Conduct — run, follow, monitor, resume, diagnose
+### Conduct — run, follow, monitor, resume
 
 | Command | Purpose |
 |---|---|
 | `acpus run <path>` | Execute a workflow spec end-to-end |
-| `acpus follow <run-id>` | Attach to a running workflow and stream output in real time |
-| `acpus monitor <run-id>` | Open the terminal UI for run inspection |
+| `acpus run <path> --input <json-or-path>` | Execute with inline JSON input or an input JSON file |
+| `acpus follow [run-id]` | Select or attach to a run and stream output in real time |
+| `acpus monitor [run-id]` | Select or open a run in the terminal UI for inspection |
 | `acpus resume <run-id>` | Resume an interrupted or failed run from last checkpoint |
-| `acpus diagnose <run-id> [--wait]` | Produce a structured diagnosis of a completed or running run |
 
 <figure align="center">
   <img src="page/img/monitor_basic.webp" alt="Acpus monitor TUI — real-time run inspection with stage progress, lane status, and event stream" width="720">
@@ -85,7 +87,7 @@ Acpus sits between the author and the acpx runtime. The main agent produces a *w
 
 Run directories live under `.acpus/runs/<id>/`. Each contains:
 
-- `workflow.spec.json` — the original workflow spec
+- `workflow.spec.yaml` — the original workflow spec
 - `execution-plan.json` — the compiled plan
 - `input.json` — resolved inputs at launch time
 - `outputs/` — stage outputs and final artefacts

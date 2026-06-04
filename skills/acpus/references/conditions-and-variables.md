@@ -1,6 +1,6 @@
 # Condition DSL Reference
 
-Conditions control fanout lane selection, gate pass/fail, decisionGate routing,
+Conditions control fanout lane selection, gate pass/fail, route routing,
 and loop continuation.
 
 ## Six Condition Forms
@@ -31,7 +31,7 @@ and loop continuation.
 ### Existence — presence check
 
 ```json
-{ "source": "outputs.discover.items", "op": "exists" }
+{ "source": "outputs.inspect.data.items", "op": "exists" }
 ```
 
 | op | True when |
@@ -74,13 +74,14 @@ All forms can be nested arbitrarily: an `all` can contain `any` which contains
 
 ## Source Paths
 
-Conditions reference values through dot-separated source paths with five roots:
+Conditions reference values through dot-separated source paths with these roots:
 
 | Root | Backed by | Example |
 |------|-----------|---------|
 | `input` | Workflow inputs | `input.task`, `input.cwd` |
 | `outputs` | Stage outputs by ID | `outputs.plan.summary`, `outputs.review.verdict` |
 | `item` | Current fanout item | `item.path`, `item.area` |
+| `results` | Fanout aggregate available to fanin | `results.laneOutputs` |
 | `loop` | Loop context (body only) | `loop.current.output.data.needsAnotherRound`, `loop.previous.output.findings` |
 | `run` | Run metadata | `run.id` |
 
@@ -89,6 +90,8 @@ Safe navigation: if any intermediate key is missing, the path resolves to
 yields `undefined`, which makes `exists`/`empty` checks useful for optional
 stages.
 
+`results` is injected only for fanin execution. Agent fanin prompts may reference `${results}` without declaring a workflow variable.
+
 ---
 
 ## Where Conditions Are Used
@@ -96,9 +99,9 @@ stages.
 | Context | Field | Evaluated Against |
 |---------|-------|-------------------|
 | Loop `continueWhen` | After each round | `outputs` + `workflowInput` + `local.loop` |
-| Fanout lane `when` | Per item per group | `outputs` + `workflowInput` + `local.item` + loop context |
+| Fanout lane `when` | Per item per lane | `outputs` + `workflowInput` + `local.item` + loop context |
 | Gate `condition` | On gate execution | `outputs` + `workflowInput` |
-| DecisionGate `when` | On rule evaluation | `outputs` + `workflowInput` |
+| Route `when` | On rule evaluation | `outputs` + `workflowInput` |
 
 ---
 

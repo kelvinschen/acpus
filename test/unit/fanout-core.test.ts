@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { FanoutLaneGroupPlan } from "../../src/compiler/execution-plan.js";
-import { RuntimeErrorCodes, type StageStatus } from "../../src/run-index/read-write.js";
+import type { FanoutLanePlan } from "../../src/compiler/execution-plan.js";
+import { RuntimeErrorCodes } from "../../src/run-index/read-write.js";
 import {
   buildFanoutItemOutput,
   buildFanoutStageOutput,
@@ -11,66 +11,106 @@ import {
   type FanoutCoreLaneResult,
   type FanoutCorePlan
 } from "../../src/runtime/fanout-core.js";
-import { evaluateCondition, stableItemId } from "../../src/runtime/stage-runner.js";
+import { evaluateFanoutLaneCondition, stableItemId } from "../../src/runtime/stage-runner.js";
 
 describe("fanout core", () => {
-  it("blocks oneOf items with multiple matching lanes", () => {
+  it("selects every lane by default", () => {
     const expanded = expandFanoutItems({
-      plan: plan([{ id: "route", mode: "oneOf", lanes: [
-        lane("a", { source: "item.kind", op: "eq", value: "both" }),
-        lane("b", { source: "item.kind", op: "eq", value: "both" })
-      ] }]),
-      items: [{ id: "item-1", kind: "both" }],
+      plan: plan([lane("a"), lane("b")]),
+      items: [{ id: "item-1" }],
       workflowInput: {},
       outputs: {},
       localForItem: (item) => ({ item }),
       itemIdFor: stableItemId,
-      evaluate: evaluateCondition
+      evaluate: evaluateFanoutLaneCondition
     });
 
-    expect(expanded.items[0]).toMatchObject({
-      status: "blocked",
-      errorCode: RuntimeErrorCodes.FANOUT_LANE_SELECTION_FAILED
-    });
-    expect(expanded.workUnits).toHaveLength(0);
+    expect(expanded.items[0]?.lanes.map((entry) => [entry.id, entry.status])).toEqual([["a", "pending"], ["b", "pending"]]);
+    expect(expanded.workUnits.map((unit) => unit.laneId)).toEqual(["a", "b"]);
   });
 
-  it("blocks oneOf items with no matching lane and no default", () => {
+  it("filters lanes with when and records skipped lanes", () => {
     const expanded = expandFanoutItems({
-      plan: plan([{ id: "route", mode: "oneOf", lanes: [lane("a", { source: "item.kind", op: "eq", value: "a" })] }]),
-      items: [{ id: "item-1", kind: "b" }],
+      plan: plan([
+        lane("docs", { source: "item.kind", op: "eq", value: "docs" }),
+        lane("code", { source: "item.kind", op: "eq", value: "code" })
+      ]),
+      items: [{ id: "item-1", kind: "docs" }],
       workflowInput: {},
       outputs: {},
       localForItem: (item) => ({ item }),
       itemIdFor: stableItemId,
-      evaluate: evaluateCondition
+      evaluate: evaluateFanoutLaneCondition
     });
 
-    expect(expanded.items[0]?.errorCode).toBe(RuntimeErrorCodes.FANOUT_LANE_SELECTION_FAILED);
-    expect(expanded.workUnits).toHaveLength(0);
+    expect(expanded.items[0]?.status).toBe("pending");
+    expect(expanded.items[0]?.lanes).toMatchObject([
+      { id: "docs", status: "pending" },
+      { id: "code", status: "skipped", skippedReason: RuntimeErrorCodes.NO_SELECTED_LANES }
+    ]);
+    expect(expanded.workUnits.map((unit) => unit.laneId)).toEqual(["docs"]);
   });
 
-  it("skips all-group items with no selected lanes", () => {
+  it("skips an item when no lane is selected", () => {
     const expanded = expandFanoutItems({
-      plan: plan([{ id: "work", mode: "all", lanes: [lane("worker", { source: "item.kind", op: "eq", value: "run" })] }]),
+      plan: plan([lane("worker", { source: "item.kind", op: "eq", value: "run" })]),
       items: [{ id: "item-1", kind: "skip" }],
       workflowInput: {},
       outputs: {},
       localForItem: (item) => ({ item }),
       itemIdFor: stableItemId,
-      evaluate: evaluateCondition
+      evaluate: evaluateFanoutLaneCondition
     });
 
     expect(expanded.items[0]).toMatchObject({
       status: "skipped",
-      skippedReason: RuntimeErrorCodes.NO_MATCHING_LANES
+      skippedReason: RuntimeErrorCodes.NO_SELECTED_LANES,
+      lanes: [{ id: "worker", status: "skipped", skippedReason: RuntimeErrorCodes.NO_SELECTED_LANES }]
+    });
+    expect(expanded.preExecutionItemOutputs.get(0)).toMatchObject({
+      status: "skipped",
+      laneOutputs: [],
+      skippedLanes: [{ laneId: "worker", skippedReason: RuntimeErrorCodes.NO_SELECTED_LANES }]
     });
     expect(expanded.workUnits).toHaveLength(0);
   });
 
-  it("excludes skipped items from aggregate items while retaining candidate total", () => {
-    const skipped: FanoutCoreItem = { id: "item-1", index: 0, status: "skipped", skippedReason: RuntimeErrorCodes.NO_MATCHING_LANES, groups: [] };
-    const completed = completedItem("item-2", 1);
+  it("treats missing when sources as skipped", () => {
+    const expanded = expandFanoutItems({
+      plan: plan([lane("worker", { source: "item.missing", op: "neq", value: "x" })]),
+      items: [{ id: "item-1" }],
+      workflowInput: {},
+      outputs: {},
+      localForItem: (item) => ({ item }),
+      itemIdFor: stableItemId,
+      evaluate: evaluateFanoutLaneCondition
+    });
+
+    expect(expanded.items[0]?.status).toBe("skipped");
+    expect(expanded.workUnits).toHaveLength(0);
+  });
+
+  it("evaluates any conditions with missing source leaves as false leaves", () => {
+    const expanded = expandFanoutItems({
+      plan: plan([lane("worker", { any: [
+        { source: "item.missing", op: "eq", value: "run" },
+        { source: "item.kind", op: "eq", value: "run" }
+      ] })]),
+      items: [{ id: "item-1", kind: "run" }],
+      workflowInput: {},
+      outputs: {},
+      localForItem: (item) => ({ item }),
+      itemIdFor: stableItemId,
+      evaluate: evaluateFanoutLaneCondition
+    });
+
+    expect(expanded.items[0]?.status).toBe("pending");
+    expect(expanded.workUnits.map((unit) => unit.laneId)).toEqual(["worker"]);
+  });
+
+  it("includes skipped items in completed counts while retaining skipped counters", () => {
+    const skipped: FanoutCoreItem = { id: "item-1", index: 0, status: "skipped", skippedReason: RuntimeErrorCodes.NO_SELECTED_LANES, lanes: [{ id: "worker", actorLabel: "worker", status: "skipped", skippedReason: RuntimeErrorCodes.NO_SELECTED_LANES }] };
+    const completed: FanoutCoreItem = { ...completedItem("item-2", 1), status: "completed" };
     const itemOutput = buildFanoutItemOutput({
       item: completed,
       allowPartial: false,
@@ -79,14 +119,16 @@ describe("fanout core", () => {
     });
     const aggregate = buildFanoutStageOutput({
       plan: { allowPartial: false },
-      itemOutputs: [itemOutput],
+      itemOutputs: [itemOutput, skippedOutput(skipped)],
       skippedItems: [{ id: skipped.id, index: skipped.index, status: "skipped", skippedReason: skipped.skippedReason }]
     });
     const summary = deriveFanoutSummary({ candidateItemCount: 2, items: [skipped, completed], allowPartial: false });
 
-    expect(aggregate.items).toHaveLength(1);
+    expect(aggregate.status).toBe("completed");
+    expect(aggregate.items).toHaveLength(2);
     expect(aggregate.skippedItems).toHaveLength(1);
-    expect(summary.totalItems).toBe(2);
+    expect(aggregate.skippedLanes).toHaveLength(1);
+    expect(summary.completedItems).toBe(2);
     expect(summary.skippedItems).toBe(1);
   });
 
@@ -116,7 +158,7 @@ describe("fanout core", () => {
 
     expect(output.status).toBe("blocked");
     expect(output.blockedReason).toBe(RuntimeErrorCodes.AGENT_TURN_FAILED);
-    expect(output.blockedLanes).toEqual([{ groupId: "work", laneId: "worker", status: "blocked" }]);
+    expect(output.blockedLanes).toEqual([{ laneId: "worker", status: "blocked" }]);
     expect(output.runtimeDiagnostics).toEqual({ errorCode: RuntimeErrorCodes.AGENT_TURN_FAILED });
   });
 
@@ -124,7 +166,7 @@ describe("fanout core", () => {
     const output = buildFanoutItemOutput({
       item: completedItem("item-1", 0),
       allowPartial: false,
-      laneResults: [{ ...completedLane("item-2", 1), groupId: "other" }],
+      laneResults: [{ ...completedLane("item-2", 1), laneId: "other" }],
       missingLaneOutput
     });
 
@@ -139,8 +181,8 @@ describe("fanout core", () => {
     const aggregate = buildFanoutStageOutput({
       plan: { allowPartial: false },
       itemOutputs: [
-        { status: "completed", summary: "ok", artifacts: [], nextFocus: "reduce", laneOutputs: [] },
-        { status: "blocked", summary: "bad", artifacts: [], nextFocus: "diagnose", blockedReason: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED, laneOutputs: [] }
+        { status: "completed", summary: "ok", laneOutputs: [], skippedLanes: [] },
+        { status: "blocked", summary: "bad", blockedReason: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED, laneOutputs: [], skippedLanes: [] }
       ],
       skippedItems: []
     });
@@ -148,48 +190,6 @@ describe("fanout core", () => {
     expect(aggregate.status).toBe("blocked");
     expect(aggregate.summary).toContain("blocked");
     expect(aggregate.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED);
-  });
-
-  it("prioritizes failed over blocked when deriving group and item status", () => {
-    const item: FanoutCoreItem = {
-      id: "item-1",
-      index: 0,
-      status: "pending",
-      groups: [{ id: "work", mode: "all", status: "pending", lanes: [
-        { id: "a", roleName: "worker", status: "blocked" },
-        { id: "b", roleName: "worker", status: "failed" }
-      ] }]
-    };
-
-    expect(buildFanoutItemOutput({
-      item,
-      allowPartial: false,
-      laneResults: [
-        { ...blockedLane("item-1", 0), laneId: "a" },
-        { ...blockedLane("item-1", 0), laneId: "b", status: "failed" }
-      ],
-      missingLaneOutput
-    }).groups).toContainEqual(expect.objectContaining({ status: "failed" }));
-  });
-
-  it("does not mark mixed skipped and completed lane groups as skipped", () => {
-    expect(buildFanoutItemOutput({
-      item: {
-        id: "item-1",
-        index: 0,
-        status: "pending",
-        groups: [{ id: "work", mode: "all", status: "pending", lanes: [
-          { id: "a", roleName: "worker", status: "pending" },
-          { id: "b", roleName: "worker", status: "pending" }
-        ] }]
-      },
-      allowPartial: false,
-      laneResults: [
-        { ...completedLane("item-1", 0), laneId: "a" },
-        { ...completedLane("item-1", 0), laneId: "b", status: "skipped" }
-      ],
-      missingLaneOutput
-    }).groups).toContainEqual(expect.objectContaining({ status: "completed" }));
   });
 
   it("keeps blockedReason and errorCode independently sourced when both are present", () => {
@@ -203,8 +203,6 @@ describe("fanout core", () => {
         output: {
           status: "blocked",
           summary: "failed",
-          artifacts: [],
-          nextFocus: "diagnose",
           blockedReason: "human-blocked-reason",
           errorCode: RuntimeErrorCodes.AGENT_TURN_FAILED
         }
@@ -238,34 +236,43 @@ describe("fanout core", () => {
   });
 });
 
-function plan(laneGroups: FanoutLaneGroupPlan[], policy: Partial<FanoutCorePlan> = {}): FanoutCorePlan {
-  return { allowPartial: false, laneGroups, ...policy };
+function plan(lanes: FanoutLanePlan[], policy: Partial<FanoutCorePlan> = {}): FanoutCorePlan {
+  return { allowPartial: false, lanes, ...policy };
 }
 
-function lane(id: string, when?: FanoutLaneGroupPlan["lanes"][number]["when"]): FanoutLaneGroupPlan["lanes"][number] {
+function lane(id: string, when?: FanoutLanePlan["when"]): FanoutLanePlan {
   return {
     id,
-    roleName: "worker",
+    actor: { agent: "worker", mode: "readOnly", label: "worker" },
     promptId: `prompt-${id}`,
-    contract: { name: "base" },
     sessionKeyTemplate: id,
     when
   };
 }
 
 function completedItem(id: string, index: number): FanoutCoreItem {
-  return { id, index, status: "pending", groups: [{ id: "work", mode: "all", status: "pending", lanes: [{ id: "worker", roleName: "worker", status: "pending" }] }] };
+  return { id, index, status: "pending", lanes: [{ id: "worker", actorLabel: "worker", status: "pending" }] };
+}
+
+function skippedOutput(item: FanoutCoreItem): Record<string, unknown> {
+  return {
+    status: "skipped",
+    itemId: item.id,
+    itemIndex: item.index,
+    lanes: item.lanes,
+    laneOutputs: [],
+    skippedLanes: item.lanes.map((lane) => ({ itemId: item.id, itemIndex: item.index, laneId: lane.id, actorLabel: lane.actorLabel, skippedReason: lane.skippedReason }))
+  };
 }
 
 function completedLane(itemId: string, itemIndex: number): FanoutCoreLaneResult {
   return {
     itemId,
     itemIndex,
-    groupId: "work",
     laneId: "worker",
-    roleName: "worker",
+    actorLabel: "worker",
     status: "completed",
-    output: { status: "completed", summary: "ok", artifacts: [], nextFocus: "reduce" },
+    output: { summary: "ok", data: [] },
     outputPath: "lane.json"
   };
 }
@@ -274,15 +281,12 @@ function blockedLane(itemId: string, itemIndex: number): FanoutCoreLaneResult {
   return {
     itemId,
     itemIndex,
-    groupId: "work",
     laneId: "worker",
-    roleName: "worker",
+    actorLabel: "worker",
     status: "blocked",
     output: {
       status: "blocked",
       summary: "failed",
-      artifacts: [],
-      nextFocus: "diagnose",
       blockedReason: RuntimeErrorCodes.AGENT_TURN_FAILED,
       runtimeDiagnostics: { errorCode: RuntimeErrorCodes.AGENT_TURN_FAILED }
     },
@@ -296,11 +300,10 @@ function missingLaneOutput(item: FanoutCoreItem): FanoutCoreLaneResult {
   return {
     itemId: item.id,
     itemIndex: item.index,
-    groupId: "work",
     laneId: "worker",
-    roleName: "worker",
+    actorLabel: "worker",
     status: "blocked",
-    output: { status: "blocked", summary: "missing", artifacts: [], nextFocus: "diagnose", blockedReason: RuntimeErrorCodes.MISSING_FANOUT_ITEM_OUTPUT },
+    output: { status: "blocked", summary: "missing", blockedReason: RuntimeErrorCodes.MISSING_FANOUT_ITEM_OUTPUT },
     outputPath: "missing.json",
     blockedReason: RuntimeErrorCodes.MISSING_FANOUT_ITEM_OUTPUT,
     errorCode: RuntimeErrorCodes.MISSING_FANOUT_ITEM_OUTPUT

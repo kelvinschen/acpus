@@ -1,79 +1,94 @@
-# Output Contracts Specification
+# Output Schema Specification
 
 ## Status
 
 - Current implementation: current
-- Source modules: `src/contracts/`, `src/runtime/output-parser.ts`, `src/runtime/repair.ts`, `src/compiler/contracts.ts`
-- Maintenance trigger: update this spec when changing output contract schemas, descriptors, examples, parser behavior, repair behavior, prompt footer content, or output failure semantics
+- Source modules: `src/contracts/schema-dsl.ts`, `src/runtime/output-parser.ts`, `src/runtime/agent-task-retry.ts`
+- Maintenance trigger: update this spec when changing schema DSL parsing, parser behavior, continuation retry behavior, prompt footer content, implicit runtime fields, or output failure semantics
 
 ## Purpose
 
-Output contracts define the structured data agents must return and the runtime must validate. They make agent outputs parseable, repairable, reportable, and safe for downstream workflow stages.
+Output schema handling defines parseable agent JSON and runtime-owned output metadata. Workflow-visible agent output shape is declared with `output.schema`; diagnostic schemas remain runtime-internal.
 
 ## Normative Requirements
 
-- Zod schemas in `src/contracts/` MUST be the source of truth for output contract shapes.
-- Contract descriptors MUST be injected into agent prompts through compiler/runtime prompt construction.
-- Agent output SHOULD end with one plain JSON object matching the stage contract.
-- The parser MUST select the last balanced JSON object from an agent response.
-- The parser MUST tolerate non-JSON tail text after the selected JSON object.
-- Fenced output parsing MUST handle nested markdown fences inside JSON strings by closing candidates only on a standalone closing fence line.
-- The parser MUST NOT rename fields or normalize schema aliases before schema validation.
-- The runtime MUST allow at most one schema-aware repair turn for an invalid agent output.
-- Repair turns MUST count in runtime usage accounting.
-- `OUTPUT_PARSE_FAILED`, `OUTPUT_SCHEMA_FAILED`, and `OUTPUT_REPAIR_FAILED` MUST produce blocked attempt/stage/run state, not failed infrastructure state.
-- Runtime output repair MUST NOT silently invent missing semantic content beyond explicit repair prompting.
+- Workflow agent executables MAY declare `output.schema`.
+- When `output.schema` is omitted, agent output MUST satisfy the default schema `{summary:string,data?:unknown}`.
+- Declared `output.schema` MUST replace the default base schema for that executable.
+- Runtime implicit fields MUST be merged into the declared or default schema.
+- Gate agent output MUST include implicit `verdict`.
+- Route agent output MUST include implicit `route`; route stages MUST NOT declare `output.schema`.
+- Route agent implicit `route` prompt schemas and runtime validation MUST constrain `route` to the route stage's declared route IDs.
+- Program tasks MUST NOT use `output.schema`.
+- Program tasks MUST produce or be normalized to `{status,data}`.
+- Program gate output MUST be normalized to `{status,summary,verdict,data?}`.
+- Program fanin MUST produce `{status,data}`.
+- Program fanin `mergeArrays` MUST concatenate `data` arrays from completed lane outputs in fanout order.
+- If a completed lane output does not contain array `data`, program fanin MUST block with `PROGRAM_FANIN_INPUT_INVALID`.
+- The schema DSL MUST support primitives, `unknown`, literals, arrays, objects, optional keys, and unions.
+- The schema DSL MUST reject `any`, `Record`, and type aliases.
+- Workflow output schema roots MUST be objects.
+- Runtime parsing and continuation retry APIs MUST receive the compiled workflow output schema.
+- Parsed object fields outside the declared schema MUST be rejected.
+- Successful agent outputs MUST NOT receive a runtime-injected `status` content field.
+- The parser MUST extract the final balanced JSON object from the complete agent response.
+- The parser MUST ignore surrounding prose, Markdown code fences, semicolons, and trailing text around that final object.
+- The parser MUST NOT treat arrays or primitive JSON values as workflow output candidates.
+- If the final extracted object has invalid JSON syntax or fails schema validation, the parser MUST NOT fall back to earlier objects.
+- The parser MUST NOT rename fields or normalize schema aliases before validation.
+- Agent prompt footers MUST inject a single `# Final Output Contract` section containing the final effective schema rendered in a `typescript` code fence.
+- Agent prompt footers MUST instruct the agent to respond only after completing its work.
+- Task prompt text SHOULD NOT duplicate the final JSON object shape when `output.schema` already declares it.
+- `OUTPUT_PARSE_FAILED` and `OUTPUT_SCHEMA_FAILED` MUST trigger an Agent Task Retry with reason `continuation` whenever shared retry budget remains.
+- Continuation retry prompts MUST reuse the same session key and MUST contain only a short continue instruction, the previous failure code, and the final `# Final Output Contract`.
+- Continuation retry prompts MUST NOT include the original prompt, raw output, best candidate, schema error details, or schema-fix hints.
+- If retry budget is exhausted, output recovery MUST block with `AGENT_TASK_RETRY_EXHAUSTED`.
 
 ## Interfaces and Contracts
 
-Supported role-category contracts include:
+Example output schema declarations:
 
-- base output: generic status, summary, artifacts, next focus, and optional data;
-- implementation output: changed files and checks;
-- validation or review output: verdict, severity counts, findings, and checks;
-- decision output: selected route and routing rationale for decision gates;
-- discover output: discovered items under the stage output key; agent discover output is not intrinsically capped by the contract, and downstream fanout stages MUST apply their own `limits.maxFanoutItems` cap;
-- gate output: `verdict`, deliverables, changed files, checks, warnings, risks, and next actions;
-- diagnostic output: read-only recovery guidance, diagnostics, and next actions for diagnose flows.
+```yaml
+output:
+  schema: "{summary:string,data?:[{path:string,severity?:string}]}"
+```
 
-Stage kinds select output contract names as follows:
+```yaml
+output:
+  schema: "{summary:string,verdict:\"pass\"|\"pass_with_warnings\"|\"blocked\"|\"failed\"|\"unknown\"}"
+```
 
-- `decisionGate` selects `decision`;
-- `discover` selects `discover`;
-- `gate` selects `gate`;
-- implementation roles select `implementation`;
-- validation and review roles select `validation`;
-- diagnostic runtime units select `diagnostic`;
-- other stages select `base`.
+Gate verdicts MUST be one of `pass`, `pass_with_warnings`, `blocked`, `failed`, or `unknown`.
 
-Gate output verdicts MUST be one of `pass`, `pass_with_warnings`, `blocked`, `failed`, or `unknown`. Gate outputs MUST use `status: "completed"` with pass verdicts and `status: "blocked"` with blocked, failed, or unknown verdicts.
+Route values MUST be one of the route stage's declared route IDs.
 
-Output parser diagnostics include parse failure, schema failure, candidate information, and repair failure codes suitable for diagnostics surfaces and Main Agent repair loops.
+Prompt footers MUST include one bold instruction telling agents to respond only after completing the whole task, with exactly one valid parseable final JSON object, without a Markdown JSON code fence, starting with `{`, ending with `}`, and containing no prose, Markdown, or code fences.
+
+Parser diagnostics include parse failure, schema failure, and final-object candidate information.
 
 ## Data Model
 
-Output contract data includes contract schemas, descriptors, examples, repair hints, parsed output, parse diagnostics, repair prompts, raw repair output, and blocked envelopes for unrepaired contract failures.
+Output data includes the compiled DSL AST, parsed output, parse diagnostics, continuation prompt, blocked envelopes, runtime metadata, command metadata, and fanout `results` used as fanin input. Agent completion status is runtime metadata; program output `status` remains part of `{status,data}` program content.
 
 ## Runtime Behavior
 
-The runtime records raw agent output, extracts a candidate JSON object, repairs syntactic JSON when supported, validates the result against the stage Zod schema without field aliasing, and writes parsed output artifacts. If validation fails, the runtime performs one schema-aware repair turn and repeats parsing and validation. If repair fails, the stage is blocked with a structured diagnostic.
+The runtime records raw agent output, extracts the final balanced JSON object, validates the result against the executable output schema plus implicit fields, and writes parsed output artifacts. If parsing or validation fails, the runtime performs continuation retry through the unified Agent Task Retry engine until the shared work-unit retry budget is exhausted. If retry budget is exhausted, the executable blocks with structured diagnostics.
+
+Program command output is normalized independently of the DSL. A command non-zero exit code is output data, not a blocking condition.
 
 ## Extension Points
 
-New output contracts MAY be added by defining schema, descriptor, examples, repair hints, and compiler/runtime integration. New contract names MUST be documented here and in the error-code SPEC when they introduce new diagnostics.
+New DSL constructs, implicit runtime fields, runtime-internal diagnostic payloads, and program fanin output shapes MAY be added when documented here and covered by tests.
 
 ## Non-Goals
 
-- Output contracts are not free-form natural-language summaries.
-- Output repair is not a general semantic correction engine.
-- Handwritten validators are not the main path.
-- Contract changes MUST NOT be hidden only in prompt text.
+- Workflow output shape is selected only with `output.schema`.
+- No `any`, `Record`, or type alias support in workflow output schemas.
+- No alias normalization during parser validation.
+- No syntax correction, semantic correction, alias fallback, or field normalization before validation.
 
 ## Implementation Map
 
-- Contract schemas -> `src/contracts/schemas.ts`, `src/contracts/output-contracts.ts`
-- Descriptors and examples -> `src/contracts/descriptors.ts`, `src/contracts/examples.ts`
-- Repair hints -> `src/contracts/repair-hints.ts`
-- Compiler contract selection -> `src/compiler/contracts.ts`
+- Schema DSL -> `src/contracts/schema-dsl.ts`
 - Runtime parsing -> `src/runtime/output-parser.ts`
-- Runtime repair -> `src/runtime/repair.ts`
+- Agent Task Retry -> `src/runtime/agent-task-retry.ts`

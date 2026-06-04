@@ -1,0 +1,167 @@
+schemaVersion: acpus.workflow/v1
+name: change-review
+description: General-purpose fanout review workflow for arbitrary functionality changes.
+root: review
+input:
+  schema: |
+    {
+      reviewItems: [
+        {
+          id: string,
+          scope: string,
+          files: [string]
+        }
+      ],
+      maxConcurrency?: number,
+      maxFanoutItems?: number
+    }
+limits:
+  stageTimeoutMinutes: 45
+stages:
+  - id: review
+    kind: fanout
+    items:
+      source: input.reviewItems
+    limits:
+      maxConcurrency:
+        source: input.maxConcurrency
+        default: 10
+      maxFanoutItems:
+        source: input.maxFanoutItems
+        default: 5
+    variables:
+      - name: sliceId
+        source: item.id
+      - name: scope
+        source: item.scope
+      - name: files
+        source: item.files
+        transform:
+          - fn: json
+    lanes:
+      - id: correctness
+        actor:
+          agent: &reviewAgent aiden
+          mode: readOnly
+          label: correctness_reviewer
+        prompt: |
+          You are an adversarial correctness reviewer. Your bias is that functionality refactors often appear coherent while hiding behavioral regressions.
+
+          Review the provided slice by tracing actual execution paths, schema boundaries, persisted state, CLI behavior, and tests. Prioritize concrete runtime bugs, broken assumptions, missing positive coverage, incorrect error semantics, and places where the implementation can pass tests while violating the intended behavior.
+
+          Review slice:
+          - id: ${sliceId}
+          - scope: ${scope}
+          - files/directories to prioritize: ${files}
+
+          Repository context:
+          - Current working directory is the Acpus repo.
+          - Review the unstaged diff and current files. Start with `git diff --stat`, `git diff --name-only`, and targeted `git diff -- <file>` for your slice.
+          - Use `rg` to search for residue or inconsistent naming relevant to your slice.
+          - Focus on correctness of the changed implementation, not formatting.
+          - Do not edit files.
+
+          Required review style:
+          - Be skeptical. If behavior is ambiguous, inspect code before concluding.
+          - Findings must be actionable and cite concrete files/functions/tests.
+          - Prefer high-signal findings over broad commentary.
+          - If you find no issue in this slice, return an empty data array and a concise summary.
+        output:
+          schema: |
+            {
+              summary: string,
+              data: [
+                {
+                  severity: string,
+                  category: string,
+                  title: string,
+                  path?: string,
+                  line?: number,
+                  evidence: string,
+                  recommendation: string
+                }
+              ]
+            }
+      - id: consistency
+        actor:
+          agent: *reviewAgent
+          mode: readOnly
+          label: consistency_reviewer
+        prompt: |
+          You are an adversarial consistency reviewer. Your bias is that large changes often leave behind migration-shaped code, stale docs, stale examples, weak terminology, and old/new dual paths.
+
+          Review the provided slice by checking whether the current implementation, schemas, specs, examples, tests, prompts, monitor projections, and persisted artifacts all describe one canonical model. Prioritize old-world residue, compatibility logic that was not explicitly required, confusing aliases, fallback paths, duplicated concepts, and documentation that would mislead future implementers.
+
+          Review slice:
+          - id: ${sliceId}
+          - scope: ${scope}
+          - files/directories to prioritize: ${files}
+
+          Repository context:
+          - Current working directory is the Acpus repo.
+          - Review the unstaged diff and current files. Start with `git diff --stat`, `git diff --name-only`, and targeted `git diff -- <file>` for your slice.
+          - Use `rg` to search for residue or inconsistent naming relevant to your slice.
+          - Focus on correctness of the changed implementation, not formatting.
+          - Do not edit files.
+
+          Required review style:
+          - Be skeptical. If behavior is ambiguous, inspect code before concluding.
+          - Findings must be actionable and cite concrete files/functions/tests.
+          - Prefer high-signal findings over broad commentary.
+          - If you find no issue in this slice, return an empty data array and a concise summary.
+        output:
+          schema: |
+            {
+              summary: string,
+              data: [
+                {
+                  severity: string,
+                  category: string,
+                  title: string,
+                  path?: string,
+                  line?: number,
+                  evidence: string,
+                  recommendation: string
+                }
+              ]
+            }
+    fanin:
+      mode: agent
+      actor:
+        agent: *reviewAgent
+        mode: readOnly
+        label: finding_curator
+      prompt: |
+        You are the final review curator. You receive all lane outputs for all review items as `${results}`.
+
+        Your job is to deduplicate overlapping findings, discard low-signal or speculative points, and keep only high-value findings that are actionable, evidence-backed, and worth fixing before the change is accepted.
+
+        Curator rules:
+        - Merge duplicate findings that describe the same underlying issue.
+        - Prefer concrete bugs, contract mismatches, stale current-facing docs/specs, missing positive tests, and runtime observability gaps.
+        - Drop style-only feedback, vague concerns, and findings without concrete evidence.
+        - Preserve the most useful path and line when available.
+        - If no high-value finding remains, return an empty data array and a concise summary.
+
+        Lane results:
+        ${results}
+      output:
+        schema: |
+          {
+            summary: string,
+            data: [
+              {
+                severity: string,
+                category: string,
+                title: string,
+                path?: string,
+                line?: number,
+                evidence: string,
+                recommendation: string
+              }
+            ]
+          }
+  - id: gate
+    kind: gate
+    mode: program
+    dependsOn: [review]

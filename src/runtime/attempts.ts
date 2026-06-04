@@ -2,20 +2,20 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { AttemptIndexEntry, AttemptStatus, RunIndex } from "../run-index/read-write.js";
 
-export type AttemptKind = "attempt" | "repair" | "diagnostic";
+export type AttemptKind = "attempt";
 
-export function attemptId(input: { stageId: string; kind: AttemptKind; ordinal: number; itemId?: string; groupId?: string; laneId?: string; runtimeRetryOrdinal?: number }): string {
-  const laneSuffix = input.groupId && input.laneId ? `:${input.groupId}:${input.laneId}` : "";
+type AttemptLocator = { stageId: string; ordinal: number; itemId?: string; laneId?: string; kind?: AttemptKind; retryOrdinal?: number };
+
+export function attemptId(input: AttemptLocator): string {
+  const laneSuffix = input.laneId ? `:${input.laneId}` : "";
   const prefix = input.itemId ? `${input.stageId}:${input.itemId}${laneSuffix}` : input.stageId;
-  const retrySuffix = input.runtimeRetryOrdinal ? `-runtime-retry-${input.runtimeRetryOrdinal}` : "";
-  return `${prefix}:${input.kind}-${input.ordinal}${retrySuffix}`;
+  return `${prefix}:attempt-${input.ordinal}`;
 }
 
-export function attemptDir(runDir: string, input: { stageId: string; kind: AttemptKind; ordinal: number; itemId?: string; groupId?: string; laneId?: string; runtimeRetryOrdinal?: number }): string {
-  const retrySuffix = input.runtimeRetryOrdinal ? `-runtime-retry-${input.runtimeRetryOrdinal}` : "";
-  const leaf = `${input.kind}-${input.ordinal}${retrySuffix}`;
-  if (input.itemId && input.groupId && input.laneId) {
-    return path.join(runDir, "attempts", input.stageId, `item-${safeFileName(input.itemId)}`, `group-${safeFileName(input.groupId)}`, `lane-${safeFileName(input.laneId)}`, leaf);
+export function attemptDir(runDir: string, input: AttemptLocator): string {
+  const leaf = `attempt-${input.ordinal}`;
+  if (input.itemId && input.laneId) {
+    return path.join(runDir, "attempts", input.stageId, `item-${safeFileName(input.itemId)}`, `lane-${safeFileName(input.laneId)}`, leaf);
   }
   if (input.itemId) return path.join(runDir, "attempts", input.stageId, `item-${safeFileName(input.itemId)}`, leaf);
   return path.join(runDir, "attempts", input.stageId, leaf);

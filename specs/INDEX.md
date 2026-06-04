@@ -58,12 +58,12 @@ Every module SPEC MUST use these sections:
 
 Agents and maintainers MUST update the affected SPEC in the same change when modifying:
 
-- workflow schema, validation, linting, compilation, execution-plan shape, `loop` shape, or role categories;
-- runtime scheduling, resume, diagnose, status, session, attempt, fanout, or run-index behavior;
-- output contracts, output contract names, parser behavior, repair behavior, schema field normalization policy, or contract examples;
+- workflow schema, validation, linting, compilation, execution-plan shape, `loop` shape, or actor declarations;
+- runtime scheduling, resume, status, session, attempt, fanout, or run-index behavior;
+- schema DSL, parser behavior, continuation retry behavior, schema validation policy, or output examples;
 - CLI commands, flags, list/show kinds, output modes, lifecycle behavior, or saved workflow layout;
 - monitor projections, diagnostics projections, or runtime observation data sources;
-- error severity, error code families, stable error codes, run-index runtime error codes, command diagnostics, turn diagnostics, or repair suggestions;
+- error severity, error code families, stable error codes, run-index runtime error codes, command diagnostics, turn diagnostics, or retry suggestions;
 - module ownership or public boundaries.
 
 If a code change does not require a SPEC update, the final response MUST state why.
@@ -72,6 +72,6 @@ If a code change does not require a SPEC update, the final response MUST state w
 
 - [Workflow Specification](workflow-spec.md)
 - [Runtime Orchestrator Specification](runtime-orchestrator-spec.md)
-- [Output Contracts Specification](output-contracts-spec.md)
+- [Output Schema Specification](output-contracts-spec.md)
 - [CLI Specification](cli-spec.md)
 - [Error Codes Specification](error-codes-spec.md)

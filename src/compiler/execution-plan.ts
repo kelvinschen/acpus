@@ -1,5 +1,5 @@
-import type { Role, Stage, Variable, WorkflowSpec } from "../schema/workflow-spec.js";
-import type { OutputContractName } from "../contracts/output-contracts.js";
+import type { Actor, ConditionNode, Stage, Variable } from "../schema/workflow-spec.js";
+import type { CompiledSchema } from "../contracts/schema-dsl.js";
 
 export const EXECUTION_PLAN_VERSION = "acpus.execution-plan/v1";
 
@@ -8,16 +8,9 @@ export type ExecutionPlan = {
   workflowName: string;
   root: string;
   stages: ExecutionPlanStage[];
-  roles: Record<string, ExecutionPlanRole>;
   limits: ExecutionPlanLimits;
   prompts: Record<string, PromptPlan>;
-  contracts: Record<string, ContractPlan>;
-  repairPolicy: RepairPolicyPlan;
   fanout: FanoutPlan[];
-};
-
-export type ExecutionPlanRole = Role & {
-  name: string;
 };
 
 export type ExecutionPlanLimits = {
@@ -36,53 +29,62 @@ export type PromptPlan = {
   template: string;
   variables: Variable[];
   footer: string;
-  roleName?: string;
-  contractName: OutputContractName;
-  contractOptions?: ContractPlan["options"];
-};
-
-export type ContractPlan = {
-  name: OutputContractName;
-  options?: {
-    outputKey?: string;
-    maxItems?: number;
-  };
-};
-
-export type RepairPolicyPlan = {
-  maxRepairTurns: 1;
-  repairableReasons: ["OUTPUT_PARSE_FAILED", "OUTPUT_SCHEMA_FAILED"];
+  actor?: Actor;
+  outputSchema?: CompiledSchema;
+  implicitOutputFields?: string[];
 };
 
 export type SessionKeyStrategy =
   | { kind: "linear"; key: string }
   | { kind: "fanoutItem"; template: string };
 
-export type FanoutLanePlan = {
-  id: string;
-  roleName: string;
+export type AgentPlan = {
+  actor: Actor;
   promptId: string;
-  contract: ContractPlan;
-  sessionKeyTemplate: string;
-  when?: Extract<Stage, { kind: "fanout" }>["laneGroups"][number]["lanes"][number]["when"];
-  default?: boolean;
+  outputSchema?: CompiledSchema;
+  implicitOutputFields?: string[];
 };
 
-export type FanoutLaneGroupPlan = {
-  id: string;
-  mode: "all" | "oneOf";
-  lanes: FanoutLanePlan[];
+export type ProgramCommandPlan = {
+  operation: "command";
+  command: string;
+  args: string[];
+  cwd?: string;
+  timeoutSeconds: number;
+  allowMutation: boolean;
 };
+
+export type FanoutLanePlan = {
+  id: string;
+  actor: Actor;
+  promptId: string;
+  outputSchema?: CompiledSchema;
+  implicitOutputFields?: string[];
+  sessionKeyTemplate: string;
+  when?: ConditionNode;
+};
+
+export type FanoutFaninPlan =
+  | ({ mode: "agent" } & AgentPlan & { sessionKey: string })
+  | { mode: "program"; operation: "mergeArrays" };
 
 export type ExecutionPlanStage = {
   id: string;
   kind: Stage["kind"];
   dependencies: string[];
-  roleName?: string;
-  contract?: ContractPlan;
-  promptId?: string;
   session: SessionKeyStrategy;
   limits: ExecutionPlanStageLimits;
+  agent?: AgentPlan;
+  program?: ProgramCommandPlan;
+  route?: {
+    mode: "agent" | "program";
+    rules: Array<{ when: ConditionNode; to: string }>;
+    routes: string[];
+  };
+  gate?: {
+    mode: "agent" | "program";
+    condition?: ConditionNode;
+  };
   fanout?: {
     itemsSource: string;
     allowPartial: boolean;
@@ -90,27 +92,8 @@ export type ExecutionPlanStage = {
     maxBlockedItems?: number;
     maxItems: number;
     maxConcurrency: number;
-    laneGroups: FanoutLaneGroupPlan[];
-  };
-  reduce?: {
-    mode: "agent" | "program";
-    from: string;
-    operation?: string;
-  };
-  discover?: {
-    method: "gitChangedFiles" | "glob" | "agent";
-    args?: Record<string, unknown>;
-    outputKey: string;
-  };
-  decision?: {
-    mode: "agent" | "program";
-    rules: Extract<Stage, { kind: "decisionGate" }>["rules"];
-    defaultRoute: string;
-    routes: string[];
-  };
-  gate?: {
-    mode: "agent" | "program";
-    condition?: Extract<Stage, { kind: "gate" }>["condition"];
+    lanes: FanoutLanePlan[];
+    fanin: FanoutFaninPlan;
   };
   loop?: {
     maxRounds: number;
@@ -119,7 +102,7 @@ export type ExecutionPlanStage = {
       output: string;
       stages: ExecutionPlanStage[];
     };
-    continueWhen: Extract<Stage, { kind: "loop" }>["continueWhen"];
+    continueWhen: ConditionNode;
     onExhausted: "blocked";
   };
 };
@@ -132,5 +115,6 @@ export type FanoutPlan = {
   allowPartial: boolean;
   minCompletedRatio?: number;
   maxBlockedItems?: number;
-  laneGroups: FanoutLaneGroupPlan[];
+  lanes: FanoutLanePlan[];
+  fanin: FanoutFaninPlan;
 };

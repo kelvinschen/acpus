@@ -6,7 +6,9 @@ import { estimateAgentCalls } from "../projections/run-view.js";
 import { runDir } from "../run-index/paths.js";
 import { appendEvent, writeRunIndex, type RunIndex } from "../run-index/read-write.js";
 import type { WorkflowSpec } from "../schema/workflow-spec.js";
+import { applyInputDefaults } from "../schema/input-validation.js";
 import { syncRun } from "./sync.js";
+import { stringifyWorkflowSpec } from "../schema/load.js";
 
 export type PreparedRun = {
   logicalRunId: string;
@@ -21,7 +23,8 @@ export async function prepareRun(spec: WorkflowSpec, options: {
 }): Promise<PreparedRun> {
   const logicalRunId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${crypto.randomBytes(4).toString("hex")}`;
   const dir = runDir(logicalRunId, options.cwd);
-  const plan = compileExecutionPlan(spec);
+  const input = applyInputDefaults(spec, options.input);
+  const plan = compileExecutionPlan(spec, { input });
   await fs.mkdir(dir, { recursive: true });
   await fs.mkdir(path.join(dir, "outputs"), { recursive: true });
   await fs.mkdir(path.join(dir, "attempts"), { recursive: true });
@@ -29,9 +32,9 @@ export async function prepareRun(spec: WorkflowSpec, options: {
   await fs.mkdir(path.join(dir, "sessions"), { recursive: true });
   await fs.mkdir(path.join(dir, "acpx-state", "sessions"), { recursive: true });
 
-  await fs.writeFile(path.join(dir, "workflow.spec.json"), `${JSON.stringify(spec, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(dir, "workflow.spec.yaml"), stringifyWorkflowSpec(spec), "utf8");
   await fs.writeFile(path.join(dir, "execution-plan.json"), `${JSON.stringify(plan, null, 2)}\n`, "utf8");
-  await fs.writeFile(path.join(dir, "input.json"), `${JSON.stringify(options.input, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(dir, "input.json"), `${JSON.stringify(input, null, 2)}\n`, "utf8");
 
   const now = new Date().toISOString();
   const index: RunIndex = {
@@ -51,8 +54,12 @@ export async function prepareRun(spec: WorkflowSpec, options: {
     agentUsage: {
       planned: estimateAgentCalls(spec),
       actual: 0,
-      repairCalls: 0,
-      recoveryCalls: 0
+      retryCalls: 0,
+      retries: {
+        runtime: 0,
+        stale: 0,
+        continuation: 0
+      }
     }
   };
   await writeRunIndex(options.cwd, index);

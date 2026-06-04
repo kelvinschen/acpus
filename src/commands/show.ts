@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Command } from "commander";
+import YAML from "yaml";
 import { resolveRunLocator } from "../run-index/locator.js";
 import { globalWorkflowsDir, projectWorkflowsDir, runDir } from "../run-index/paths.js";
 import { printJson } from "./common.js";
@@ -16,10 +17,10 @@ export function registerShow(program: Command): void {
       const file = path.join(
         options.global ? globalWorkflowsDir() : projectWorkflowsDir(),
         name,
-        "workflow.spec.json"
+        "workflow.spec.yaml"
       );
       const text = await fs.readFile(file, "utf8");
-      if (options.json) printJson(JSON.parse(text));
+      if (options.json) printJson(YAML.parse(text));
       else process.stdout.write(text);
     });
 

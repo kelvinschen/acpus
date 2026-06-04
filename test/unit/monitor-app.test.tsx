@@ -155,7 +155,7 @@ function monitorView(overrides: Partial<RunMonitorView> & { workflowName?: strin
 function stage(id: string, status: RunMonitorView["stages"][number]["status"]): RunMonitorView["stages"][number] {
   return {
     id,
-    kind: "agentTask",
+    kind: "task",
     status,
     dependsOn: [],
     taskCounts: {
@@ -195,7 +195,7 @@ function detail(view: RunMonitorView, taskId: string, summary: string): TaskDeta
     generatedAt: "2026-06-02T00:00:00.000Z",
     run: view.run,
     task: selectedTask,
-    outcome: { status: "completed", summary, artifacts: [] },
+    outcome: { status: "completed", summary },
     activity: { totalAttempts: 0, attempts: [] }
   };
 }

@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import YAML from "yaml";
 
 const runReal = process.env.RUN_REAL_ACPX_E2E === "1";
 
@@ -27,34 +28,29 @@ describe.skipIf(!runReal)("real acpx agents e2e", () => {
     const acpx = findAcpxOrThrow();
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpus-real-contract-"));
     await fs.writeFile(path.join(cwd, "sample.txt"), "hello\n", "utf8");
-    const specPath = path.join(cwd, "workflow.spec.json");
-    await fs.writeFile(specPath, JSON.stringify({
+    const specPath = path.join(cwd, "workflow.spec.yaml");
+    await fs.writeFile(specPath, YAML.stringify({
       schemaVersion: "acpus.workflow/v1",
       name: "real-deterministic-contract",
-      root: "discover",
-      inputs: {
-        cwd: { type: "path", default: cwd }
-      },
-      roles: {},
+      root: "decide",
+      input: { schema: "{cwd:string}", default: { cwd } },
       limits: { stageTimeoutMinutes: 1 },
       stages: [
-        { id: "discover", kind: "discover", method: "glob", args: { scope: ["**/*.txt"] }, output: "files" },
         {
           id: "decide",
-          kind: "decisionGate",
+          kind: "route",
           mode: "program",
-          dependsOn: ["discover"],
-          rules: [{ when: { source: "outputs.discover.files", op: "exists" }, to: "blocked" }],
-          default: "blocked"
+          rules: [{ when: { source: "outputs.missing", op: "exists" }, to: "gate" }],
+          routes: ["gate"]
         },
-        { id: "gate", kind: "gate", dependsOn: ["decide"] }
+        { id: "gate", kind: "gate", mode: "program", dependsOn: ["decide"] }
       ]
-    }, null, 2), "utf8");
+    }), "utf8");
 
     const raw = runCli(cwd, acpx, ["run", specPath, "--wait", "--json"], 2 * 60 * 1000);
     const result = parseTerminalSummary(raw);
     expect(result.status).toBe("blocked");
-    await expect(fs.stat(path.join(result.runDir, "outputs", "discover.json"))).resolves.toBeTruthy();
+    await expect(fs.stat(path.join(result.runDir, "outputs", "decide.json"))).resolves.toBeTruthy();
   }, 3 * 60 * 1000);
 
   it("runs a small code task through a configured real ACP agent", async () => {
@@ -62,25 +58,20 @@ describe.skipIf(!runReal)("real acpx agents e2e", () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpus-real-"));
     await fs.mkdir(path.join(cwd, "src"));
     await fs.writeFile(path.join(cwd, "src", "status.txt"), "initial\n", "utf8");
-    const specPath = path.join(cwd, "workflow.spec.json");
+    const specPath = path.join(cwd, "workflow.spec.yaml");
     const inputPath = path.join(cwd, "input.json");
-    await fs.writeFile(specPath, JSON.stringify({
+    await fs.writeFile(specPath, YAML.stringify({
       schemaVersion: "acpus.workflow/v1",
       name: "real-small-code-task",
       root: "implement",
-      inputs: {
-        task: { type: "string", default: "" },
-        cwd: { type: "path", default: cwd }
-      },
-      roles: {
-        implementer: { category: "implementation", agent: realEditAgent(), mode: "edit" }
-      },
+      input: { schema: "{task:string,cwd:string}", default: { task: "", cwd } },
       limits: { stageTimeoutMinutes: 10 },
       stages: [
         {
           id: "implement",
-          kind: "agentTask",
-          role: "implementer",
+          kind: "task",
+          mode: "agent",
+          actor: { agent: realEditAgent(), mode: "edit", label: "implementer" },
           variables: [{ name: "task", source: "input.task" }],
           prompt: [
             "In the current working directory, complete this task:",
@@ -92,16 +83,17 @@ describe.skipIf(!runReal)("real acpx agents e2e", () => {
         {
           id: "gate",
           kind: "gate",
+          mode: "program",
           dependsOn: ["implement"]
         }
       ]
-    }, null, 2), "utf8");
+    }), "utf8");
     await fs.writeFile(inputPath, JSON.stringify({
       cwd,
       task: "Edit src/status.txt so it contains exactly one line: done"
     }, null, 2), "utf8");
 
-    const raw = runCli(cwd, acpx, ["run", specPath, "--input-json", inputPath, "--wait", "--json"], 20 * 60 * 1000);
+    const raw = runCli(cwd, acpx, ["run", specPath, "--input", inputPath, "--wait", "--json"], 20 * 60 * 1000);
     const result = parseTerminalSummary(raw);
     expect(result.status).toBe("completed");
     expect((await fs.readFile(path.join(cwd, "src", "status.txt"), "utf8")).trim()).toBe("done");

@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import fs from "node:fs/promises";
 import path from "node:path";
+import YAML from "yaml";
 import { resolveRunLocator } from "../run-index/locator.js";
 import { runDir } from "../run-index/paths.js";
 import { readRunIndex } from "../run-index/read-write.js";
@@ -9,6 +10,7 @@ import { terminalRunStatus, workerIsActive } from "../runtime/worker.js";
 import { buildRunMonitorView } from "../projections/run-monitor.js";
 import { WorkflowSpecSchema } from "../schema/workflow-spec.js";
 import { printJson } from "./common.js";
+import { resolveOptionalRunArg } from "./run-selection.js";
 
 function printNdjson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -16,9 +18,11 @@ function printNdjson(value: unknown): void {
 
 export function registerFollow(program: Command): void {
   program.command("follow")
-    .argument("<run>", "logical run id or run directory")
+    .argument("[run]", "logical run id or run directory")
     .option("--json", "print JSON")
-    .action(async (runArg: string, options: { json?: boolean }) => {
+    .action(async (runArg: string | undefined, options: { json?: boolean }) => {
+      runArg = await resolveOptionalRunArg({ runArg, json: options.json, title: "Select a run to follow" });
+      if (!runArg) return;
       const locator = await resolveRunLocator(runArg);
       const index = await syncRun(locator.cwd, locator.runId, { startPending: false });
 
@@ -28,7 +32,7 @@ export function registerFollow(program: Command): void {
       // If the run is already terminal, output and exit immediately.
       if (terminalRunStatus(index.status)) {
         if (options.json) {
-          const spec = WorkflowSpecSchema.parse(JSON.parse(await fs.readFile(path.join(dir, "workflow.spec.json"), "utf8")));
+          const spec = WorkflowSpecSchema.parse(YAML.parse(await fs.readFile(path.join(dir, "workflow.spec.yaml"), "utf8")));
           printNdjson(await buildRunMonitorView(locator.cwd, spec, index));
         } else {
           process.stdout.write(`run ${locator.runId} ${index.status}\n`);
@@ -40,7 +44,7 @@ export function registerFollow(program: Command): void {
       // There is nothing to follow if no worker will produce new events.
       if (!workerIsActive(index.worker)) {
         if (options.json) {
-          const spec = WorkflowSpecSchema.parse(JSON.parse(await fs.readFile(path.join(dir, "workflow.spec.json"), "utf8")));
+          const spec = WorkflowSpecSchema.parse(YAML.parse(await fs.readFile(path.join(dir, "workflow.spec.yaml"), "utf8")));
           printNdjson(await buildRunMonitorView(locator.cwd, spec, index));
         } else {
           process.stdout.write(`run ${locator.runId} ${index.status} (no active worker)\n`);
@@ -69,7 +73,7 @@ export function registerFollow(program: Command): void {
           const idx = await readRunIndex(locator.cwd, locator.runId);
           if (terminalRunStatus(idx.status)) {
             if (options.json) {
-              const spec = WorkflowSpecSchema.parse(JSON.parse(await fs.readFile(path.join(dir, "workflow.spec.json"), "utf8")));
+              const spec = WorkflowSpecSchema.parse(YAML.parse(await fs.readFile(path.join(dir, "workflow.spec.yaml"), "utf8")));
               printNdjson(await buildRunMonitorView(locator.cwd, spec, idx));
             } else {
               process.stdout.write(`run ${locator.runId} ${idx.status}\n`);
@@ -136,9 +140,6 @@ function formatEvent(line: string): void {
       break;
     case "runtime_fatal":
       process.stdout.write(`fatal: ${event.message ?? String(event.error ?? "")}\n`);
-      break;
-    case "stage_completed":
-      process.stdout.write(`stage ${event.stageId ?? "?"} completed\n`);
       break;
     default:
       process.stdout.write(`event ${type}\n`);

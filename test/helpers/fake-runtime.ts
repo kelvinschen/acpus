@@ -18,7 +18,7 @@ export class FakeAgentRuntime implements OrchestratorAgentRuntime {
     const selectedIndex = turnIndex >= 0 ? turnIndex : this.index;
     const selected = this.turns[selectedIndex] ?? this.turns.at(-1);
     this.index = selectedIndex + 1;
-    const text = selected?.text ?? plainJsonOutput({ status: "completed", summary: "ok", artifacts: [], nextFocus: "done" });
+    const text = selected?.text ?? plainJsonOutput({ summary: "ok" });
     await onEvent?.({ type: "text_delta", text, stream: "output" });
     return {
       handle: fakeHandle(input),
@@ -48,34 +48,13 @@ export function plainJsonOutput(value: unknown): string {
 }
 
 export function baseOutput(extra: Record<string, unknown> = {}): Record<string, unknown> {
-  return { status: "completed", summary: "ok", artifacts: [], nextFocus: "next", ...extra };
-}
-
-export function implementationOutput(extra: Record<string, unknown> = {}): Record<string, unknown> {
-  return { ...baseOutput({ nextFocus: "validate" }), changedFiles: [], checks: [], ...extra };
-}
-
-export function validationOutput(extra: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    ...baseOutput({ nextFocus: "gate" }),
-    verdict: "pass",
-    severityCounts: { P0: 0, P1: 0, P2: 0, P3: 0 },
-    findings: [],
-    checks: [],
-    ...extra
-  };
+  return { summary: "ok", data: [], ...extra };
 }
 
 export function gateOutput(extra: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    ...baseOutput({ nextFocus: "" }),
+    ...baseOutput(),
     verdict: "pass",
-    deliverables: [],
-    changedFiles: [],
-    checks: [],
-    warnings: [],
-    risks: [],
-    nextActions: [],
     ...extra
   };
 }

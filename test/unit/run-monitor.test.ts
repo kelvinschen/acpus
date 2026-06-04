@@ -20,25 +20,27 @@ describe("RunMonitorView", () => {
 
     expect(view.version).toBe("acpus.monitor/v1");
     expect(view.run).toMatchObject({ logicalRunId: "monitor-run", workflowName: "monitor-workflow", status: "running" });
-    expect(view.run.worker).toMatchObject({ pid: 1234, status: "running" });
+    expect(view.run.worker).toMatchObject({ pid: process.pid, status: "running" });
     expect(view).not.toHaveProperty("eventTail");
-    expect(view.progress).toEqual({ knownTasks: 6, completedTasks: 4 });
-    expect(view.stages.find((stage) => stage.id === "review")?.taskCounts).toMatchObject({ total: 1, running: 1 });
+    expect(view.progress).toEqual({ knownTasks: 8, completedTasks: 4 });
+    expect(view.stages.find((stage) => stage.id === "review")?.taskCounts).toMatchObject({ total: 2, running: 1, pending: 1 });
     expect(view.stages.find((stage) => stage.id === "final_gate")?.taskCounts).toMatchObject({ total: 1, completed: 1 });
     expect(view.tasks.map((task) => task.id)).toEqual(expect.arrayContaining([
       "task:task",
-      "task:review:item:item-1:group:g:lane:a",
+      "task:review:item:item-1:lane:a",
+      "task:review:fanin",
       "task:quality_loop:round:1:stage:body",
       "task:quality_loop:round:1:stage:body_gate",
-      "task:quality_loop:round:1:fanout:body_fanout:item:item-2:group:g:lane:a",
+      "task:quality_loop:round:1:fanout:body_fanout:item:item-2:lane:a",
+      "task:quality_loop:round:1:fanout:body_fanout:fanin",
       "task:final_gate"
     ]));
     expect(view.tasks.find((task) => task.id === "task:task")).toMatchObject({
       status: "completed",
       execution: "agent",
-      roleName: "implementer",
+      actorLabel: "implementer",
       agent: "gpt-test",
-      roleMode: "readOnly",
+      actorMode: "readOnly",
       attemptId: "task:attempt-1",
       durationMs: 10_000
     });
@@ -48,6 +50,147 @@ describe("RunMonitorView", () => {
       attemptIds: [],
       durationMs: 1_000
     });
+    expect(view.tasks.find((task) => task.id === "task:review:fanin")).toMatchObject({
+      status: "pending",
+      execution: "deterministic",
+      attemptIds: []
+    });
+    expect(view.tasks.find((task) => task.id === "task:review:fanin")?.startedAt).toBeUndefined();
+    expect(view.tasks.find((task) => task.id === "task:quality_loop:round:1:fanout:body_fanout:fanin")).toMatchObject({
+      status: "pending",
+      execution: "deterministic",
+      attemptIds: []
+    });
+    expect(view.tasks.find((task) => task.id === "task:quality_loop:round:1:fanout:body_fanout:fanin")?.startedAt).toBeUndefined();
+  });
+
+  it("freezes elapsed counters at the last worker heartbeat when the worker is stale", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-run-monitor-stale-"));
+    const spec = monitorSpec();
+    const index = monitorIndex();
+    const review = index.stages.review;
+    const item = review.fanout?.items[0];
+    const lane = item?.lanes[0];
+    review.startedAt = "2026-06-02T00:00:20.000Z";
+    if (item) item.startedAt = "2026-06-02T00:00:20.000Z";
+    if (lane) lane.startedAt = "2026-06-02T00:00:20.000Z";
+    index.worker = {
+      pid: 999_999_999,
+      generation: 1,
+      status: "running",
+      startedAt: "2026-06-02T00:00:00.000Z",
+      heartbeatAt: "2026-06-02T00:01:00.000Z"
+    };
+
+    const view = await buildRunMonitorView(cwd, spec, index);
+
+    expect(view.run.worker).toMatchObject({ status: "stale" });
+    expect(view.run.elapsedMs).toBe(60_000);
+    expect(view.stages.find((stage) => stage.id === "review")?.elapsedMs).toBe(40_000);
+    expect(view.tasks.find((task) => task.id === "task:review:item:item-1:lane:a")?.elapsedMs).toBe(40_000);
+  });
+
+  it("does not borrow fanout stage start time for completed program fanin tasks", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-run-monitor-fanin-"));
+    const spec = monitorSpec();
+    const index = monitorIndex();
+    const review = index.stages.review;
+    const item = review.fanout?.items[0];
+    const lane = item?.lanes[0];
+    review.status = "completed";
+    review.startedAt = "2026-06-02T00:00:15.000Z";
+    review.completedAt = "2026-06-02T00:00:35.000Z";
+    review.outputPath = "outputs/review.json";
+    if (review.fanout) {
+      review.fanout.completedItems = 1;
+    }
+    if (item && lane) {
+      item.status = "completed";
+      item.completedAt = "2026-06-02T00:00:34.000Z";
+      item.outputPath = "outputs/review/item-1.json";
+      lane.status = "completed";
+      lane.completedAt = "2026-06-02T00:00:34.000Z";
+    }
+
+    const view = await buildRunMonitorView(cwd, spec, index);
+    const fanin = view.tasks.find((task) => task.id === "task:review:fanin");
+
+    expect(fanin).toMatchObject({
+      status: "completed",
+      execution: "deterministic",
+      attemptIds: [],
+      completedAt: "2026-06-02T00:00:35.000Z"
+    });
+    expect(fanin?.startedAt).toBeUndefined();
+  });
+
+  it("includes finalOutput for terminal runs when the gate output artifact exists", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-run-monitor-final-output-"));
+    const spec = monitorSpec();
+    const index = monitorIndex();
+    index.status = "completed";
+    index.gateVerdict = "pass";
+    const dir = runDir(index.logicalRunId, cwd);
+    const gateOutput = {
+      status: "completed",
+      summary: "Gate passed.",
+      verdict: "pass",
+      data: { value: 42 }
+    };
+    await fs.mkdir(path.join(dir, "outputs"), { recursive: true });
+    await fs.writeFile(path.join(dir, "outputs", "final_gate.json"), `${JSON.stringify(gateOutput)}\n`, "utf8");
+
+    const view = await buildRunMonitorView(cwd, spec, index);
+
+    expect(view.finalOutput).toEqual(gateOutput);
+  });
+
+  it("omits finalOutput for non-terminal runs", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-run-monitor-final-output-running-"));
+    const spec = monitorSpec();
+    const index = monitorIndex();
+    const dir = runDir(index.logicalRunId, cwd);
+    await fs.mkdir(path.join(dir, "outputs"), { recursive: true });
+    await fs.writeFile(path.join(dir, "outputs", "final_gate.json"), `${JSON.stringify({ status: "completed", verdict: "pass" })}\n`, "utf8");
+
+    const view = await buildRunMonitorView(cwd, spec, index);
+
+    expect(view.finalOutput).toBeUndefined();
+  });
+
+  it("omits finalOutput when the workflow has no gate", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-run-monitor-final-output-no-gate-"));
+    const spec = WorkflowSpecSchema.parse({
+      schemaVersion: "acpus.workflow/v1",
+      name: "no-gate",
+      root: "task",
+      stages: [
+        { id: "task", kind: "task", mode: "agent", actor: { agent: "gpt-test", mode: "readOnly" }, prompt: "Do work." }
+      ]
+    });
+    const index = {
+      ...monitorIndex(),
+      workflowName: "no-gate",
+      status: "completed",
+      stages: {
+        task: { stageId: "task", status: "completed", attempts: [], outputPath: "outputs/task.json" }
+      }
+    } as RunIndex;
+
+    const view = await buildRunMonitorView(cwd, spec, index);
+
+    expect(view.finalOutput).toBeUndefined();
+  });
+
+  it("omits finalOutput when the gate output artifact is missing", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-run-monitor-final-output-missing-"));
+    const spec = monitorSpec();
+    const index = monitorIndex();
+    index.status = "completed";
+
+    const view = await buildRunMonitorView(cwd, spec, index);
+
+    expect(view.finalOutput).toBeUndefined();
   });
 
   it("returns bounded task details from run-index attempts and output files", async () => {
@@ -59,7 +202,6 @@ describe("RunMonitorView", () => {
     await fs.writeFile(path.join(dir, "outputs", "task.json"), `${JSON.stringify({
       status: "completed",
       summary: "Task completed.",
-      artifacts: [{ kind: "file", path: "src/task.ts", label: "Task" }],
       data: { text: "x".repeat(4096) }
     }, null, 2)}\n`, "utf8");
 
@@ -71,10 +213,91 @@ describe("RunMonitorView", () => {
     expect(detail.activity).toMatchObject({ totalAttempts: 1 });
     expect(detail.outcome).toMatchObject({
       status: "completed",
-      summary: "Task completed.",
-      artifacts: [{ kind: "file", path: "src/task.ts", label: "Task" }]
+      summary: "Task completed."
     });
     expect(detail.outcome?.preview?.length).toBeLessThanOrEqual(2100);
+  });
+
+  it("projects retry metadata and final attempt identity for retried fanout lanes", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-run-monitor-retry-detail-"));
+    const spec = monitorSpec();
+    const index = monitorIndex();
+    const dir = runDir(index.logicalRunId, cwd);
+    const review = index.stages.review;
+    const item = review.fanout?.items[0];
+    const lane = item?.lanes[0];
+    if (!item || !lane) throw new Error("missing monitor fixture lane");
+    item.status = "completed";
+    item.retryOf = "review:item-1:a:attempt-1";
+    item.retryOrdinal = 1;
+    item.retryReason = "continuation";
+    item.outputPath = "outputs/review/item-1.json";
+    lane.status = "completed";
+    lane.attemptId = "review:item-1:a:attempt-2";
+    lane.retryOf = "review:item-1:a:attempt-1";
+    lane.retryOrdinal = 1;
+    lane.retryReason = "continuation";
+    lane.outputPath = "outputs/review/item-1/a.json";
+    index.attempts["review:item-1:a:attempt-1"] = {
+      ...index.attempts["review:item-1:a:attempt-1"],
+      status: "blocked",
+      endedAt: "2026-06-02T00:00:25.000Z",
+      blockedReason: "OUTPUT_PARSE_FAILED",
+      parseErrorCode: "OUTPUT_PARSE_FAILED",
+      retryBudgetUsed: 0,
+      retryBudgetLimit: 2
+    };
+    index.attempts["review:item-1:a:attempt-2"] = {
+      id: "review:item-1:a:attempt-2",
+      stageId: "review",
+      itemId: "item-1",
+      laneId: "a",
+      kind: "attempt",
+      status: "completed",
+      path: "attempts/review/item-item-1/lane-a/attempt-2",
+      startedAt: "2026-06-02T00:00:26.000Z",
+      endedAt: "2026-06-02T00:00:30.000Z",
+      agent: "gpt-review",
+      actorMode: "readOnly",
+      isRetry: true,
+      retryReason: "continuation",
+      retryOf: "review:item-1:a:attempt-1",
+      retryOrdinal: 1,
+      retryBudgetUsed: 1,
+      retryBudgetLimit: 2,
+      promptPolicy: "continuation",
+      lastFailureCode: "OUTPUT_PARSE_FAILED"
+    };
+    await fs.mkdir(path.join(dir, "outputs", "review", "item-1"), { recursive: true });
+    await fs.writeFile(path.join(dir, "outputs", "review", "item-1", "a.json"), `${JSON.stringify({
+      status: "completed",
+      summary: "retry completed"
+    }, null, 2)}\n`, "utf8");
+
+    const view = await buildRunMonitorView(cwd, spec, index);
+    const task = view.tasks.find((candidate) => candidate.id === "task:review:item:item-1:lane:a");
+    const detail = await buildTaskDetailView(cwd, spec, index, "task:review:item:item-1:lane:a");
+
+    expect(task).toMatchObject({
+      status: "completed",
+      attemptId: "review:item-1:a:attempt-2",
+      attemptCount: 2,
+      currentAttemptOrdinal: 2,
+      lastRetryReason: "continuation",
+      retryBudgetUsed: 1,
+      retryBudgetLimit: 2,
+      lastFailureCode: "OUTPUT_PARSE_FAILED"
+    });
+    expect(detail.activity.totalAttempts).toBe(2);
+    expect(detail.activity.attempts.at(-1)).toMatchObject({
+      id: "review:item-1:a:attempt-2",
+      isRetry: true,
+      retryReason: "continuation",
+      retryOf: "review:item-1:a:attempt-1",
+      retryOrdinal: 1,
+      promptPolicy: "continuation",
+      lastFailureCode: "OUTPUT_PARSE_FAILED"
+    });
   });
 
   it("returns deterministic task details without attempts", async () => {
@@ -86,8 +309,7 @@ describe("RunMonitorView", () => {
     await fs.writeFile(path.join(dir, "outputs", "final_gate.json"), `${JSON.stringify({
       status: "completed",
       summary: "Gate passed.",
-      verdict: "pass",
-      artifacts: []
+      verdict: "pass"
     }, null, 2)}\n`, "utf8");
 
     const detail = await buildTaskDetailView(cwd, spec, index, "task:final_gate");
@@ -109,21 +331,16 @@ function monitorSpec(): WorkflowSpec {
     schemaVersion: "acpus.workflow/v1",
     name: "monitor-workflow",
     root: "task",
-    inputs: {
-      items: { type: "array<json>", default: [] }
-    },
-    roles: {
-      implementer: { category: "implementation", agent: "gpt-test", mode: "readOnly" },
-      reviewer: { category: "review", agent: "gpt-review", mode: "readOnly" }
-    },
+    input: { schema: "{items:[unknown]}", default: { items: [] } },
     stages: [
-      { id: "task", kind: "agentTask", role: "implementer", prompt: "Implement task." },
+      { id: "task", kind: "task", mode: "agent", actor: { agent: "gpt-test", mode: "readOnly", label: "implementer" }, prompt: "Implement task." },
       {
         id: "review",
         kind: "fanout",
         dependsOn: ["task"],
-        items: { source: "inputs.items" },
-        laneGroups: [{ id: "g", mode: "all", lanes: [{ id: "a", role: "reviewer", prompt: "Review item." }] }]
+        items: { source: "input.items" },
+        lanes: [{ id: "a", actor: { agent: "gpt-review", mode: "readOnly", label: "reviewer" }, prompt: "Review item." }],
+        fanin: { mode: "program", operation: "mergeArrays" }
       },
       {
         id: "quality_loop",
@@ -134,18 +351,19 @@ function monitorSpec(): WorkflowSpec {
           root: "body",
           output: "body",
           stages: [
-            { id: "body", kind: "agentTask", role: "implementer", prompt: "Review loop." },
-            { id: "body_gate", kind: "decisionGate", dependsOn: ["body"], rules: [{ when: { source: "outputs.body.status", op: "eq", value: "completed" }, to: "body_fanout" }], default: "body_fanout" },
+            { id: "body", kind: "task", mode: "agent", actor: { agent: "gpt-test", mode: "readOnly", label: "implementer" }, prompt: "Review loop." },
+            { id: "body_gate", kind: "route", mode: "program", dependsOn: ["body"], rules: [{ when: { source: "outputs.body.status", op: "eq", value: "completed" }, to: "body_fanout" }], routes: ["body_fanout"] },
             {
               id: "body_fanout",
               kind: "fanout",
               dependsOn: ["body_gate"],
-              items: { source: "inputs.items" },
-              laneGroups: [{ id: "g", mode: "all", lanes: [{ id: "a", role: "reviewer", prompt: "Loop fanout." }] }]
+              items: { source: "input.items" },
+              lanes: [{ id: "a", actor: { agent: "gpt-review", mode: "readOnly", label: "reviewer" }, prompt: "Loop fanout." }],
+              fanin: { mode: "program", operation: "mergeArrays" }
             }
           ]
         },
-        continueWhen: { source: "loop.current.output.status", op: "eq", value: "again" },
+        continueWhen: { source: "loop.round", op: "eq", value: 0 },
         onExhausted: "blocked"
       },
       { id: "final_gate", kind: "gate", dependsOn: ["quality_loop"], mode: "program" }
@@ -177,7 +395,7 @@ function monitorIndex(): RunIndex {
             id: "item-1",
             index: 0,
             status: "running",
-            groups: [{ id: "g", mode: "all", status: "running", lanes: [{ id: "a", roleName: "reviewer", status: "running", attemptId: "review:item-1:g:a:attempt-1", outputPath: "outputs/review/item-1/g/a.json" }] }]
+            lanes: [{ id: "a", actorLabel: "reviewer", status: "running", attemptId: "review:item-1:a:attempt-1", outputPath: "outputs/review/item-1/a.json" }]
           }]
         }
       },
@@ -209,7 +427,7 @@ function monitorIndex(): RunIndex {
                     id: "item-2",
                     index: 0,
                     status: "running",
-                    groups: [{ id: "g", mode: "all", status: "running", lanes: [{ id: "a", roleName: "reviewer", status: "running", attemptId: "loop:round-1__stage-body_fanout__item-item-2:g:a:attempt-1", outputPath: "outputs/quality_loop/round-1/body_fanout/item-2/g/a.json" }] }]
+                    lanes: [{ id: "a", actorLabel: "reviewer", status: "running", attemptId: "loop:round-1__stage-body_fanout__item-item-2:a:attempt-1", outputPath: "outputs/quality_loop/round-1/body_fanout/item-2/a.json" }]
                   }]
                 }
               }
@@ -220,14 +438,14 @@ function monitorIndex(): RunIndex {
       final_gate: { stageId: "final_gate", status: "completed", attempts: [], outputPath: "outputs/final_gate.json", startedAt: "2026-06-02T00:00:58.000Z", completedAt: "2026-06-02T00:00:59.000Z" }
     },
     attempts: {
-      "task:attempt-1": { id: "task:attempt-1", stageId: "task", kind: "attempt", status: "completed", path: "attempts/task/attempt-1", startedAt: "2026-06-02T00:00:00.000Z", endedAt: "2026-06-02T00:00:10.000Z", promptPreview: "Implement task.", agent: "gpt-test", roleMode: "readOnly" },
-      "review:item-1:g:a:attempt-1": { id: "review:item-1:g:a:attempt-1", stageId: "review", itemId: "item-1", groupId: "g", laneId: "a", kind: "attempt", status: "running", path: "attempts/review/item-item-1/group-g/lane-a/attempt-1", startedAt: "2026-06-02T00:00:20.000Z", promptPreview: "Review item.", agent: "gpt-review", roleMode: "readOnly" },
-      "loop:round-1__stage-body:attempt-1": { id: "loop:round-1__stage-body:attempt-1", stageId: "quality_loop", itemId: "round-1__stage-body", kind: "attempt", status: "completed", path: "attempts/quality_loop/item-round-1__stage-body/attempt-1", startedAt: "2026-06-02T00:00:30.000Z", endedAt: "2026-06-02T00:00:40.000Z", promptPreview: "Review loop.", agent: "gpt-test", roleMode: "readOnly" },
-      "loop:round-1__stage-body_fanout__item-item-2:g:a:attempt-1": { id: "loop:round-1__stage-body_fanout__item-item-2:g:a:attempt-1", stageId: "quality_loop", itemId: "round-1__stage-body_fanout__item-item-2", groupId: "g", laneId: "a", kind: "attempt", status: "running", path: "attempts/quality_loop/item-round-1__stage-body_fanout__item-item-2/group-g/lane-a/attempt-1", startedAt: "2026-06-02T00:00:50.000Z", promptPreview: "Loop fanout.", agent: "gpt-review", roleMode: "readOnly" }
+      "task:attempt-1": { id: "task:attempt-1", stageId: "task", kind: "attempt", status: "completed", path: "attempts/task/attempt-1", startedAt: "2026-06-02T00:00:00.000Z", endedAt: "2026-06-02T00:00:10.000Z", promptPreview: "Implement task.", agent: "gpt-test", actorMode: "readOnly" },
+      "review:item-1:a:attempt-1": { id: "review:item-1:a:attempt-1", stageId: "review", itemId: "item-1", laneId: "a", kind: "attempt", status: "running", path: "attempts/review/item-item-1/lane-a/attempt-1", startedAt: "2026-06-02T00:00:20.000Z", promptPreview: "Review item.", agent: "gpt-review", actorMode: "readOnly" },
+      "loop:round-1__stage-body:attempt-1": { id: "loop:round-1__stage-body:attempt-1", stageId: "quality_loop", itemId: "round-1__stage-body", kind: "attempt", status: "completed", path: "attempts/quality_loop/item-round-1__stage-body/attempt-1", startedAt: "2026-06-02T00:00:30.000Z", endedAt: "2026-06-02T00:00:40.000Z", promptPreview: "Review loop.", agent: "gpt-test", actorMode: "readOnly" },
+      "loop:round-1__stage-body_fanout__item-item-2:a:attempt-1": { id: "loop:round-1__stage-body_fanout__item-item-2:a:attempt-1", stageId: "quality_loop", itemId: "round-1__stage-body_fanout__item-item-2", laneId: "a", kind: "attempt", status: "running", path: "attempts/quality_loop/item-round-1__stage-body_fanout__item-item-2/lane-a/attempt-1", startedAt: "2026-06-02T00:00:50.000Z", promptPreview: "Loop fanout.", agent: "gpt-review", actorMode: "readOnly" }
     },
-    agentUsage: { planned: 4, actual: 2, repairCalls: 0, recoveryCalls: 0 },
+    agentUsage: { planned: 4, actual: 2, retryCalls: 0, retries: { runtime: 0, stale: 0, continuation: 0 } },
     worker: {
-      pid: 1234,
+      pid: process.pid,
       generation: 1,
       status: "running",
       startedAt: "2026-06-02T00:00:00.000Z",

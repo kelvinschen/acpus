@@ -10,19 +10,24 @@ export const RuntimeErrorCodes = {
   AGENT_TURN_CANCELLED: "AGENT_TURN_CANCELLED",
   AGENT_TURN_FAILED: "AGENT_TURN_FAILED",
   AGENT_STAGE_STALE_RECOVERY: "AGENT_STAGE_STALE_RECOVERY",
-  OUTPUT_REPAIR_FAILED: "OUTPUT_REPAIR_FAILED",
+  AGENT_TASK_RETRY_EXHAUSTED: "AGENT_TASK_RETRY_EXHAUSTED",
   FANOUT_ITEM_RUNTIME_ERROR: "FANOUT_ITEM_RUNTIME_ERROR",
   FANOUT_ITEM_STALE_RECOVERY: "FANOUT_ITEM_STALE_RECOVERY",
   FANOUT_ITEM_BLOCKED: "FANOUT_ITEM_BLOCKED",
   FANOUT_ITEM_CASCADE_BLOCKED: "FANOUT_ITEM_CASCADE_BLOCKED",
-  FANOUT_LANE_SELECTION_FAILED: "FANOUT_LANE_SELECTION_FAILED",
   FANOUT_LANE_RESULT_MISMATCH: "FANOUT_LANE_RESULT_MISMATCH",
-  NO_MATCHING_LANES: "NO_MATCHING_LANES",
+  NO_SELECTED_LANES: "NO_SELECTED_LANES",
   FANOUT_ITEM_UNSTARTED_TIMEOUT: "FANOUT_ITEM_UNSTARTED_TIMEOUT",
   MISSING_FANOUT_ITEM_OUTPUT: "MISSING_FANOUT_ITEM_OUTPUT",
   FANOUT_STAGE_STUCK_PENDING_BATCH: "FANOUT_STAGE_STUCK_PENDING_BATCH",
   RUN_INDEX_OUTPUT_MISMATCH: "RUN_INDEX_OUTPUT_MISMATCH",
   GATE_CONDITION_FAILED: "GATE_CONDITION_FAILED",
+  ROUTE_UNMATCHED: "ROUTE_UNMATCHED",
+  PROGRAM_COMMAND_CWD_INVALID: "PROGRAM_COMMAND_CWD_INVALID",
+  PROGRAM_COMMAND_TIMEOUT: "PROGRAM_COMMAND_TIMEOUT",
+  PROGRAM_COMMAND_SPAWN_FAILED: "PROGRAM_COMMAND_SPAWN_FAILED",
+  PROGRAM_COMMAND_SAFETY_VIOLATION: "PROGRAM_COMMAND_SAFETY_VIOLATION",
+  PROGRAM_FANIN_INPUT_INVALID: "PROGRAM_FANIN_INPUT_INVALID",
   GATE_VERDICT_BLOCKED: "GATE_VERDICT_BLOCKED",
   GATE_VERDICT_FAILED: "GATE_VERDICT_FAILED",
   GATE_VERDICT_UNKNOWN: "GATE_VERDICT_UNKNOWN",
@@ -53,7 +58,6 @@ export type AttemptStatus =
   | "running"
   | "raw_received"
   | "parsing"
-  | "repairing"
   | "completed"
   | "blocked"
   | "failed"
@@ -74,9 +78,11 @@ export type RunStatus =
   | "running"
   | "completed"
   | "blocked"
-  | "diagnosed_blocked"
   | "failed"
   | "cancelled";
+
+export type AgentTaskRetryReason = "runtime" | "stale" | "continuation";
+export type AgentTaskRetryPromptPolicy = "original" | "continuation";
 
 export type WorkerStatus = "starting" | "running" | "stale" | "exited" | "failed";
 
@@ -94,9 +100,8 @@ export type AttemptIndexEntry = {
   id: string;
   stageId: string;
   itemId?: string;
-  groupId?: string;
   laneId?: string;
-  kind: "attempt" | "repair" | "diagnostic";
+  kind: "attempt";
   status: AttemptStatus;
   path: string;
   startedAt?: string;
@@ -109,11 +114,17 @@ export type AttemptIndexEntry = {
   requestId?: string;
   stopReason?: string;
   runtimeErrorCode?: string;
-  runtimeRetryOf?: string;
-  runtimeRetryOrdinal?: number;
-  runtimeRetryReason?: string;
+  isRetry?: boolean;
+  retryReason?: AgentTaskRetryReason;
+  retryOf?: string;
+  retryOrdinal?: number;
+  retryBudgetUsed?: number;
+  retryBudgetLimit?: number;
+  promptPolicy?: AgentTaskRetryPromptPolicy;
+  lastFailureCode?: string;
+  retryMessage?: string;
   agent?: string;
-  roleMode?: string;
+  actorMode?: string;
   runtimeDisposeInvoked?: boolean;
 };
 
@@ -126,8 +137,9 @@ export type StageIndexEntry = {
   startedAt?: string;
   completedAt?: string;
   skippedReason?: string;
-  runtimeRetryOf?: string;
-  runtimeRetryOrdinal?: number;
+  retryOf?: string;
+  retryOrdinal?: number;
+  retryReason?: AgentTaskRetryReason;
   fanout?: {
     totalItems: number;
     completedItems: number;
@@ -142,32 +154,29 @@ export type StageIndexEntry = {
       status: StageStatus;
       outputPath?: string;
       blockedReason?: string;
-      attemptId?: string;
       startedAt?: string;
       completedAt?: string;
       errorCode?: string;
       errorMessage?: string;
-      runtimeRetryOf?: string;
-      runtimeRetryOrdinal?: number;
+      retryOf?: string;
+      retryOrdinal?: number;
+      retryReason?: AgentTaskRetryReason;
       skippedReason?: string;
-      groups?: Array<{
+      lanes: Array<{
         id: string;
-        mode: "all" | "oneOf";
+        actorLabel: string;
         status: StageStatus;
-        lanes: Array<{
-          id: string;
-          roleName: string;
-          status: StageStatus;
-          outputPath?: string;
-          blockedReason?: string;
-          attemptId?: string;
-          startedAt?: string;
-          completedAt?: string;
-          errorCode?: string;
-          errorMessage?: string;
-          runtimeRetryOf?: string;
-          runtimeRetryOrdinal?: number;
-        }>;
+        outputPath?: string;
+        blockedReason?: string;
+        skippedReason?: string;
+        attemptId?: string;
+        startedAt?: string;
+        completedAt?: string;
+        errorCode?: string;
+        errorMessage?: string;
+        retryOf?: string;
+        retryOrdinal?: number;
+        retryReason?: AgentTaskRetryReason;
       }>;
     }>;
   };
@@ -215,8 +224,12 @@ export type RunIndex = {
   agentUsage: {
     planned: number;
     actual: number;
-    repairCalls: number;
-    recoveryCalls: number;
+    retryCalls: number;
+    retries: {
+      runtime: number;
+      stale: number;
+      continuation: number;
+    };
   };
   worker?: RunWorkerState;
   gateVerdict?: "pass" | "pass_with_warnings" | "blocked" | "failed" | "unknown";
@@ -279,12 +292,13 @@ export async function readRunIndex(cwd: string, logicalRunId: string): Promise<R
 }
 
 function normalizeRunIndex(parsed: RunIndex): RunIndex {
-  return {
-    ...parsed,
-    schemaVersion: parsed.schemaVersion ?? "acpus.run/v2",
-    stages: parsed.stages ?? {},
-    attempts: parsed.attempts ?? {}
-  };
+  if (parsed.schemaVersion !== "acpus.run/v2") {
+    throw new Error(`Unsupported run index schemaVersion: ${String(parsed.schemaVersion)}`);
+  }
+  if (!parsed.stages || !parsed.attempts) {
+    throw new Error("Run index is missing required stages or attempts.");
+  }
+  return parsed;
 }
 
 export async function appendEvent(cwd: string, logicalRunId: string, event: Record<string, unknown>): Promise<void> {

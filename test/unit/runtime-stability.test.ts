@@ -2,20 +2,56 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AcpRuntimeEvent, AcpRuntimeHandle } from "acpx/runtime";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildRunDiagnosticsView, RunDiagnosticCodes } from "../../src/projections/run-diagnostics.js";
 import { buildRunMonitorView } from "../../src/projections/run-monitor.js";
 import { runDir } from "../../src/run-index/paths.js";
 import { appendEvent, readRunIndex, RuntimeErrorCodes, writeRunIndex, type RunIndex } from "../../src/run-index/read-write.js";
-import { setAgentRuntimeFactoryForTests, type AgentTurnRequest, type AgentTurnResult, type OrchestratorAgentRuntime } from "../../src/runtime/agent-runtime.js";
-import { startDiagnosticRun } from "../../src/runtime/diagnose-run.js";
+import { isAcpTransportStatusText, setAgentRuntimeFactoryForTests, type AgentTurnRequest, type AgentTurnResult, type OrchestratorAgentRuntime } from "../../src/runtime/agent-runtime.js";
+import { setAgentTaskRetryDelayForTests } from "../../src/runtime/agent-task-retry.js";
 import { prepareRun, startPreparedRun } from "../../src/runtime/run-workflow.js";
 import { syncRun } from "../../src/runtime/sync.js";
 import { WorkflowSpecSchema, type WorkflowSpec } from "../../src/schema/workflow-spec.js";
-import { baseOutput, gateOutput, implementationOutput, validationOutput, plainJsonOutput } from "../helpers/fake-runtime.js";
+import { baseOutput, gateOutput, plainJsonOutput } from "../helpers/fake-runtime.js";
 
 describe("fanout runtime stability", () => {
-  afterEach(() => setAgentRuntimeFactoryForTests(undefined));
+  beforeEach(() => setAgentTaskRetryDelayForTests(0));
+  afterEach(() => {
+    setAgentRuntimeFactoryForTests(undefined);
+    setAgentTaskRetryDelayForTests(undefined);
+  });
+
+  it("identifies ACP transport retry status text without treating JSON output as status", () => {
+    expect(isAcpTransportStatusText("Retrying (attempt 1/3, waiting 2s)...")).toBe(true);
+    expect(isAcpTransportStatusText("Retry finished, resuming.")).toBe(true);
+    expect(isAcpTransportStatusText("{\"summary\":\"Retry finished, resuming.\",\"data\":[]}")).toBe(false);
+    expect(isAcpTransportStatusText("Retrying a review finding is not a transport status.")).toBe(false);
+  });
+
+  it("blocks obvious mutating program commands unless mutation is allowed", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-program-safety-"));
+    const marker = path.join(cwd, "marker.txt");
+    const prepared = await prepareRun(programTouchSpec(cwd, false), { cwd, input: { cwd } });
+
+    const index = await startPreparedRun(cwd, prepared);
+    const output = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "touch_file.json"), "utf8")) as Record<string, unknown>;
+
+    expect(index.status).toBe("blocked");
+    expect(index.stages.touch_file?.blockedReason).toBe(RuntimeErrorCodes.PROGRAM_COMMAND_SAFETY_VIOLATION);
+    expect(output.blockedReason).toBe(RuntimeErrorCodes.PROGRAM_COMMAND_SAFETY_VIOLATION);
+    await expect(fs.stat(marker)).rejects.toThrow();
+  });
+
+  it("runs mutating program commands when mutation is explicitly allowed", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-program-mutation-"));
+    const marker = path.join(cwd, "marker.txt");
+    const prepared = await prepareRun(programTouchSpec(cwd, true), { cwd, input: { cwd } });
+
+    const index = await startPreparedRun(cwd, prepared);
+
+    expect(index.status).toBe("completed");
+    await expect(fs.stat(marker)).resolves.toBeTruthy();
+  });
 
   it("serializes concurrent event appends without leaking lock contention", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-event-queue-"));
@@ -54,18 +90,17 @@ describe("fanout runtime stability", () => {
     expect(index.status).toBe("blocked");
     expect(itemStatuses).toEqual([
       ["item-1", "completed", undefined],
-      ["item-2", "blocked", RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR],
+      ["item-2", "blocked", RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED],
       ["item-3", "completed", undefined]
     ]);
-    expect(failedOutput.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR);
-    expect(failedOutput.runtimeDiagnostics?.errorCode).toBe(RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR);
+    expect(failedOutput.blockedReason).toBe(RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED);
     expect(stage?.fanout?.completedItems).toBe(2);
     expect(stage?.fanout?.blockedItems).toBe(1);
     expect(events).toContain("fanout_pool_completed");
     expect(events).not.toContain("scheduler_batch_completed");
   });
 
-  it("expands heterogeneous all and oneOf lane groups into lane outputs", async () => {
+  it("expands heterogeneous lanes into lane outputs", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-heterogeneous-fanout-"));
     const runtime = new StaticRuntime();
     setAgentRuntimeFactoryForTests(() => runtime);
@@ -73,15 +108,7 @@ describe("fanout runtime stability", () => {
       schemaVersion: "acpus.workflow/v1",
       name: "heterogeneous-fanout",
       root: "review",
-      inputs: {
-        cwd: { type: "path" },
-        items: { type: "array<json>" }
-      },
-      roles: {
-        pi: { category: "coordination", agent: "pi", mode: "readOnly" },
-        aiden: { category: "coordination", agent: "aiden", mode: "readOnly" },
-        claude: { category: "coordination", agent: "claude", mode: "readOnly" }
-      },
+      input: { schema: "{cwd:string,items:[{id:string,area?:string}]}" },
       stages: [
         {
           id: "review",
@@ -89,19 +116,15 @@ describe("fanout runtime stability", () => {
           items: { source: "input.items" },
           limits: { maxConcurrency: 3, maxFanoutItems: 2 },
           prompt: "Review one item",
-          laneGroups: [
-            { id: "cross", mode: "all", lanes: [{ id: "pi", role: "pi" }, { id: "aiden", role: "aiden" }] },
-            {
-              id: "route",
-              mode: "oneOf",
-              lanes: [
-                { id: "claude", role: "claude", when: { source: "item.area", op: "eq", value: "schema" } },
-                { id: "pi_default", role: "pi", default: true }
-              ]
-            }
-          ]
+          lanes: [
+            { id: "pi", actor: { agent: "fake", mode: "readOnly", label: "pi" } },
+            { id: "aiden", actor: { agent: "fake", mode: "readOnly", label: "aiden" } },
+            { id: "claude_schema", actor: { agent: "fake", mode: "readOnly", label: "claude" }, when: { source: "item.area", op: "eq", value: "schema" } },
+            { id: "pi_runtime", actor: { agent: "fake", mode: "readOnly", label: "pi" }, when: { source: "item.area", op: "eq", value: "runtime" } }
+          ],
+          fanin: { mode: "program", operation: "mergeArrays" }
         },
-        { id: "gate", kind: "gate", dependsOn: ["review"] }
+        { id: "gate", kind: "gate", mode: "program", dependsOn: ["review"] }
       ]
     });
     const prepared = await prepareRun(spec, {
@@ -110,18 +133,112 @@ describe("fanout runtime stability", () => {
     });
 
     const index = await startPreparedRun(cwd, prepared, { drainFanoutPool: true });
-    const aggregate = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "review.json"), "utf8")) as { laneOutputs: Array<{ itemId: string; groupId: string; laneId: string }> };
+    const laneOutputs = index.stages.review?.fanout?.items.flatMap((item) =>
+      item.lanes.map((lane) => ({ itemId: item.id, laneId: lane.id, status: lane.status }))
+    ) ?? [];
 
     expect(index.status).toBe("completed");
     expect(index.stages.review?.fanout?.workUnits).toBe(6);
-    expect(aggregate.laneOutputs.map((lane) => [lane.itemId, lane.groupId, lane.laneId])).toEqual([
-      ["item-1", "cross", "pi"],
-      ["item-1", "cross", "aiden"],
-      ["item-1", "route", "claude"],
-      ["item-2", "cross", "pi"],
-      ["item-2", "cross", "aiden"],
-      ["item-2", "route", "pi_default"]
+    expect(laneOutputs.map((lane) => [lane.itemId, lane.laneId, lane.status])).toEqual([
+      ["item-1", "pi", "completed"],
+      ["item-1", "aiden", "completed"],
+      ["item-1", "claude_schema", "completed"],
+      ["item-1", "pi_runtime", "skipped"],
+      ["item-2", "pi", "completed"],
+      ["item-2", "aiden", "completed"],
+      ["item-2", "claude_schema", "skipped"],
+      ["item-2", "pi_runtime", "completed"]
     ]);
+  });
+
+  it("merges only completed lane outputs and keeps skipped lane aggregates", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fanout-skipped-merge-"));
+    const runtime = new ScriptedRuntime([
+      { kind: "text", text: plainJsonOutput(baseOutput({ summary: "selected", data: [{ id: "selected" }] })) }
+    ]);
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const spec = fanoutLaneFilterSpec("fanout-skipped-merge", [
+      { id: "selected", actor: { agent: "fake", mode: "readOnly", label: "selected" }, when: { source: "item.kind", op: "eq", value: "run" } },
+      { id: "skipped", actor: { agent: "fake", mode: "readOnly", label: "skipped" }, when: { source: "item.kind", op: "eq", value: "skip" } }
+    ]);
+    const prepared = await prepareRun(spec, { cwd, input: { cwd, items: [{ id: "item-1", kind: "run" }] } });
+
+    const index = await startPreparedRun(cwd, prepared, { drainFanoutPool: true });
+    const faninOutput = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "fanout.json"), "utf8")) as { data?: unknown[] };
+    const itemOutput = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "fanout", "item-1.json"), "utf8")) as { laneOutputs?: unknown[]; skippedLanes?: unknown[] };
+
+    expect(index.status).toBe("completed");
+    expect(faninOutput.data).toEqual([{ id: "selected" }]);
+    expect(itemOutput.laneOutputs).toHaveLength(1);
+    expect(itemOutput.skippedLanes).toEqual([expect.objectContaining({ laneId: "skipped", skippedReason: RuntimeErrorCodes.NO_SELECTED_LANES })]);
+    expect(index.stages.fanout?.fanout).toMatchObject({ completedItems: 1, skippedItems: 0, workUnits: 1 });
+    expect(index.stages.fanout?.fanout?.items[0]?.lanes.map((lane) => [lane.id, lane.status])).toEqual([["selected", "completed"], ["skipped", "skipped"]]);
+  });
+
+  it("runs program fanin with empty data when every lane is skipped", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fanout-all-skipped-"));
+    const runtime = new ScriptedRuntime([{ kind: "text", text: plainJsonOutput(baseOutput({ summary: "should not run" })) }]);
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const spec = fanoutLaneFilterSpec("fanout-all-skipped", [
+      { id: "missing", actor: { agent: "fake", mode: "readOnly", label: "missing" }, when: { source: "item.missing", op: "eq", value: "run" } }
+    ]);
+    const prepared = await prepareRun(spec, { cwd, input: { cwd, items: [{ id: "item-1", kind: "skip" }] } });
+
+    const index = await startPreparedRun(cwd, prepared, { drainFanoutPool: true });
+    const faninOutput = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "fanout.json"), "utf8")) as { status?: string; data?: unknown[] };
+    const itemOutput = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "fanout", "item-1.json"), "utf8")) as { status?: string; skippedLanes?: unknown[] };
+
+    expect(index.status).toBe("completed");
+    expect(runtime.requests).toHaveLength(0);
+    expect(faninOutput).toMatchObject({ status: "completed", data: [] });
+    expect(itemOutput).toMatchObject({ status: "skipped", skippedLanes: [expect.objectContaining({ laneId: "missing" })] });
+    expect(index.stages.fanout?.fanout).toMatchObject({ completedItems: 1, skippedItems: 1, workUnits: 0 });
+  });
+
+  it("does not resolve item-scoped stage variables while rendering top-level agent fanin", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-agent-fanin-item-scope-"));
+    const runtime = new ScriptedRuntime([
+      { kind: "text", text: plainJsonOutput(baseOutput({ summary: "lane", data: [{ id: "item-1" }] })) },
+      { kind: "text", text: plainJsonOutput(baseOutput({ summary: "fanin", data: [{ id: "deduped" }] })) }
+    ]);
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const spec = WorkflowSpecSchema.parse({
+      schemaVersion: "acpus.workflow/v1",
+      name: "agent-fanin-item-scope",
+      root: "fanout",
+      input: { schema: "{cwd:string,items:[{id:string}]}" },
+      limits: { stageTimeoutMinutes: 1 },
+      stages: [
+        {
+          id: "fanout",
+          kind: "fanout",
+          items: { source: "input.items" },
+          variables: [{ name: "sliceId", source: "item.id" }],
+          prompt: "Handle ${sliceId}",
+          limits: { maxConcurrency: 1, maxFanoutItems: 1 },
+          lanes: [{ id: "worker", actor: { agent: "fake", mode: "readOnly", label: "worker" } }],
+          fanin: {
+            mode: "agent",
+            actor: { agent: "fake", mode: "readOnly", label: "fanin_agent" },
+            prompt: "Deduplicate ${results}",
+            output: { schema: "{summary:string,data:[unknown]}" }
+          },
+          fanoutPolicy: { allowPartial: false }
+        },
+        { id: "gate", kind: "gate", mode: "program", dependsOn: ["fanout"] }
+      ]
+    });
+    const prepared = await prepareRun(spec, { cwd, input: { cwd, items: [{ id: "item-1" }] } });
+
+    const index = await startPreparedRun(cwd, prepared, { drainFanoutPool: true });
+    const output = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "fanout.json"), "utf8")) as { summary?: string };
+
+    expect(index.status).toBe("completed");
+    expect(output.summary).toBe("fanin");
+    expect(runtime.requests).toHaveLength(2);
+    expect(runtime.requests[0]?.prompt).toContain("Handle item-1");
+    expect(runtime.requests[1]?.prompt).toContain("\"laneOutputs\"");
+    expect(runtime.requests[1]?.prompt).not.toContain("VARIABLE_RESOLUTION_FAILED");
   });
 
   it("continues batched fanout after the first concurrency window completes", async () => {
@@ -199,8 +316,8 @@ describe("fanout runtime stability", () => {
     const item1Settled = events.findIndex((event) => event.type === "fanout_pool_item_settled" && event.itemId === "item-1");
 
     expect(index.status).toBe("completed");
-    expect(index.stages.fanout?.fanout?.completedItems).toBe(3);
     expect(runtime.maxActive).toBe(2);
+    expect(index.stages.fanout?.fanout?.completedItems).toBe(3);
     expect(item2StatusBeforeItem3).toBe("completed");
     expect(actualCallsBeforeItem3).toBeGreaterThanOrEqual(1);
     expect(item2Settled).toBeGreaterThanOrEqual(0);
@@ -233,7 +350,7 @@ describe("fanout runtime stability", () => {
     expect(finalLane).toMatchObject({
       kind: "loopFanoutLane",
       status: "completed",
-      outputPath: expect.stringContaining("outputs/review_loop/round-1/body_fanout/item-1/work/worker.json")
+      outputPath: expect.stringContaining("outputs/review_loop/round-1/body_fanout/item-1/worker.json")
     });
   });
 
@@ -243,7 +360,7 @@ describe("fanout runtime stability", () => {
     setAgentRuntimeFactoryForTests(() => runtime);
     const spec = loopFanoutSpec(cwd, {
       maxConcurrency: 2,
-      laneGroups: [{ id: "work", mode: "all", lanes: [{ id: "worker", role: "worker" }] }]
+      lanes: [{ id: "worker", actor: { agent: "fake", mode: "readOnly", label: "worker" } }]
     });
     const prepared = await prepareRun(spec, { cwd, input: { cwd, items: fanoutInputItems(2) } });
 
@@ -255,7 +372,7 @@ describe("fanout runtime stability", () => {
     expect(settledLane).toMatchObject({
       kind: "loopFanoutLane",
       status: "completed",
-      outputPath: expect.stringContaining("outputs/quality_loop/round-1/review_items/item-1/work/worker.json")
+      outputPath: expect.stringContaining("outputs/quality_loop/round-1/review_items/item-1/worker.json")
     });
     expect(concurrentLane).toMatchObject({ kind: "loopFanoutLane", status: "running" });
     expect(finalIndex.status).toBe("completed");
@@ -267,7 +384,7 @@ describe("fanout runtime stability", () => {
     setAgentRuntimeFactoryForTests(() => runtime);
     const spec = loopFanoutSpec(cwd, {
       maxConcurrency: 1,
-      laneGroups: [{ id: "work", mode: "all", lanes: [{ id: "worker", role: "worker" }] }]
+      lanes: [{ id: "worker", actor: { agent: "fake", mode: "readOnly", label: "worker" } }]
     });
     const prepared = await prepareRun(spec, { cwd, input: { cwd, items: fanoutInputItems(2) } });
     let firstStartedAt: string | undefined;
@@ -298,7 +415,7 @@ describe("fanout runtime stability", () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fanout-cascade-block-"));
     const runtime = new DelayedFanoutRuntime({ "item-1": 40, "item-2": 1 }, ["item-2"]);
     setAgentRuntimeFactoryForTests(() => runtime);
-    const spec = fanoutSpec(4, { allowPartial: false }, { maxConcurrency: 2 });
+    const spec = fanoutSpec(4, { allowPartial: false }, { maxConcurrency: 1 });
     const prepared = await prepareRun(spec, {
       cwd,
       input: { cwd, items: fanoutInputItems(4) }
@@ -311,22 +428,22 @@ describe("fanout runtime stability", () => {
     const diagnostics = await buildRunDiagnosticsView(cwd, index);
 
     expect(index.status).toBe("blocked");
-    expect(index.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR);
-    expect(index.stages.fanout?.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR);
+    expect(index.blockedReason).toBe(RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED);
+    expect(index.stages.fanout?.blockedReason).toBe(RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED);
     expect(items.map((item) => [item.id, item.status, item.errorCode])).toEqual([
       ["item-1", "completed", undefined],
-      ["item-2", "blocked", RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR],
+      ["item-2", "blocked", RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED],
       ["item-3", "blocked", RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED],
       ["item-4", "blocked", RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED]
     ]);
-    expect(requested.sort()).toEqual(["item-1", "item-2", "item-2"]);
+    expect(requested.sort()).toEqual(["item-1", "item-2", "item-2", "item-2"]);
     expect(events).toContainEqual(expect.objectContaining({
       type: "fanout_pool_item_settled",
       itemId: "item-3",
       cascade: true
     }));
     expect(diagnostics.diagnostics).toContainEqual(expect.objectContaining({
-      code: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
+      code: RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED,
       stageId: "fanout",
       itemId: "item-2"
     }));
@@ -337,7 +454,7 @@ describe("fanout runtime stability", () => {
     }));
   });
 
-  it("recovers a running fanout item when its output file already exists", async () => {
+  it("recovers a running fanout item when its lane output file already exists", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fanout-recover-"));
     const spec = fanoutSpec(1, { allowPartial: false });
     const prepared = await prepareRun(spec, {
@@ -345,17 +462,18 @@ describe("fanout runtime stability", () => {
       input: { cwd, items: [{ id: "item-1" }] }
     });
     const staleStartedAt = staleRecoveryStartedAt();
-    const outputPath = path.join(prepared.dir, "outputs", "fanout", "item-1.json");
+    const outputPath = path.join(prepared.dir, "outputs", "fanout", "item-1", "worker.json");
     await fs.mkdir(path.dirname(outputPath), { recursive: true });
-    await fs.writeFile(outputPath, `${JSON.stringify(baseOutput({ summary: "already done" }), null, 2)}\n`, "utf8");
+    await fs.writeFile(outputPath, `${JSON.stringify(baseOutput({ summary: "already done", data: ["item-1"] }), null, 2)}\n`, "utf8");
     await writeRunIndex(cwd, {
       ...prepared.index,
       status: "running",
       attempts: {
-        "fanout:item-1:attempt-1": {
-          id: "fanout:item-1:attempt-1",
+        "fanout:item-1:worker:attempt-1": {
+          id: "fanout:item-1:worker:attempt-1",
           stageId: "fanout",
           itemId: "item-1",
+          laneId: "worker",
           kind: "attempt",
           status: "running",
           path: path.join("attempts", "fanout", "item-item-1", "attempt-1"),
@@ -367,14 +485,20 @@ describe("fanout runtime stability", () => {
         fanout: {
           stageId: "fanout",
           status: "running",
-          attempts: ["fanout:item-1:attempt-1"],
+          attempts: ["fanout:item-1:worker:attempt-1"],
           startedAt: staleStartedAt,
           fanout: {
             totalItems: 1,
             completedItems: 0,
             blockedItems: 0,
             allowPartial: false,
-            items: [{ id: "item-1", index: 0, status: "running", startedAt: staleStartedAt, attemptId: "fanout:item-1:attempt-1" }]
+            items: [{
+              id: "item-1",
+              index: 0,
+              status: "running",
+              startedAt: staleStartedAt,
+              lanes: [{ id: "worker", actorLabel: "worker", status: "running", attemptId: "fanout:item-1:worker:attempt-1", startedAt: staleStartedAt }]
+            }]
           }
         }
       }
@@ -389,7 +513,7 @@ describe("fanout runtime stability", () => {
       status: "completed",
       outputPath: path.join("outputs", "fanout", "item-1.json")
     });
-    expect(recovered.attempts["fanout:item-1:attempt-1"]).toMatchObject({ status: "completed" });
+    expect(recovered.attempts["fanout:item-1:worker:attempt-1"]).toMatchObject({ status: "completed" });
     expect(Object.values(recovered.attempts).filter((attempt) => attempt.status === "running")).toHaveLength(0);
     await expect(fs.stat(path.join(prepared.dir, "outputs", "fanout.json"))).resolves.toBeTruthy();
   });
@@ -407,8 +531,6 @@ describe("fanout runtime stability", () => {
     await fs.writeFile(outputPath, `${JSON.stringify({
       status: "blocked",
       summary: "Recovered blocked item",
-      artifacts: [],
-      nextFocus: "diagnose",
       blockedReason: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
       runtimeDiagnostics: { errorCode: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR }
     }, null, 2)}\n`, "utf8");
@@ -416,10 +538,11 @@ describe("fanout runtime stability", () => {
       ...prepared.index,
       status: "running",
       attempts: {
-        "fanout:item-1:attempt-1": {
-          id: "fanout:item-1:attempt-1",
+        "fanout:item-1:worker:attempt-1": {
+          id: "fanout:item-1:worker:attempt-1",
           stageId: "fanout",
           itemId: "item-1",
+          laneId: "worker",
           kind: "attempt",
           status: "running",
           path: path.join("attempts", "fanout", "item-item-1", "attempt-1"),
@@ -431,14 +554,14 @@ describe("fanout runtime stability", () => {
         fanout: {
           stageId: "fanout",
           status: "running",
-          attempts: ["fanout:item-1:attempt-1"],
+          attempts: ["fanout:item-1:worker:attempt-1"],
           startedAt: staleStartedAt,
           fanout: {
             totalItems: 1,
             completedItems: 0,
             blockedItems: 0,
             allowPartial: true,
-            items: [{ id: "item-1", index: 0, status: "running", startedAt: staleStartedAt, attemptId: "fanout:item-1:attempt-1" }]
+            items: [{ id: "item-1", index: 0, status: "running", startedAt: staleStartedAt, lanes: singleLaneLanes("running", "fanout:item-1:worker:attempt-1", staleStartedAt) }]
           }
         }
       }
@@ -451,7 +574,7 @@ describe("fanout runtime stability", () => {
       blockedReason: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
       errorCode: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR
     });
-    expect(recovered.attempts["fanout:item-1:attempt-1"]).toMatchObject({
+    expect(recovered.attempts["fanout:item-1:worker:attempt-1"]).toMatchObject({
       status: "blocked",
       blockedReason: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
       runtimeErrorCode: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR
@@ -484,8 +607,19 @@ describe("fanout runtime stability", () => {
             blockedItems: 0,
             allowPartial: true,
             items: [
-              { id: "item-1", index: 0, status: "running", startedAt: staleStartedAt, attemptId: "fanout:item-1:attempt-1" },
-              { id: "item-2", index: 1, status: "pending" }
+              {
+                id: "item-1",
+                index: 0,
+                status: "running",
+                startedAt: staleStartedAt,
+                lanes: [{ id: "worker", actorLabel: "worker", status: "running", attemptId: "fanout:item-1:worker:attempt-1", startedAt: staleStartedAt }]
+              },
+              {
+                id: "item-2",
+                index: 1,
+                status: "pending",
+                lanes: [{ id: "worker", actorLabel: "worker", status: "pending" }]
+              }
             ]
           }
         }
@@ -509,14 +643,15 @@ describe("fanout runtime stability", () => {
       completedItems: 2,
       blockedItems: 0
     });
-    expect(recovered.attempts["fanout:item-1:attempt-1"]).toMatchObject({
+    expect(recovered.attempts["fanout:item-1:worker:attempt-1"]).toMatchObject({
       status: "failed",
       runtimeErrorCode: RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY
     });
-    expect(recovered.attempts["fanout:item-1:work:worker:attempt-1-runtime-retry-1"]).toMatchObject({
+    expect(recovered.attempts["fanout:item-1:worker:attempt-2"]).toMatchObject({
       status: "completed",
-      runtimeRetryOf: "fanout:item-1:attempt-1",
-      runtimeRetryOrdinal: 1
+      retryOf: "fanout:item-1:worker:attempt-1",
+      retryOrdinal: 1,
+      retryReason: "stale"
     });
     expect(hasStuckFanoutPendingBatch(recovered)).toBe(false);
   });
@@ -537,20 +672,20 @@ describe("fanout runtime stability", () => {
         fanout: {
           stageId: "fanout",
           status: "running",
-          attempts: ["fanout:item-1:attempt-1"],
+          attempts: ["fanout:item-1:worker:attempt-1"],
           startedAt: staleStartedAt,
           fanout: {
             totalItems: 1,
             completedItems: 0,
             blockedItems: 0,
             allowPartial: true,
-            items: [{ id: "item-1", index: 0, status: "running", startedAt: staleStartedAt, attemptId: "fanout:item-1:attempt-1" }]
+            items: [{ id: "item-1", index: 0, status: "running", startedAt: staleStartedAt, lanes: singleLaneLanes("running", "fanout:item-1:worker:attempt-1", staleStartedAt) }]
           }
         }
       },
       attempts: {
-        "fanout:item-1:attempt-1": {
-          id: "fanout:item-1:attempt-1",
+        "fanout:item-1:worker:attempt-1": {
+          id: "fanout:item-1:worker:attempt-1",
           stageId: "fanout",
           itemId: "item-1",
           kind: "attempt",
@@ -573,7 +708,7 @@ describe("fanout runtime stability", () => {
     expect(afterEvents).toBe(beforeEvents);
     expect(observed.stages.fanout?.fanout?.items[0]).toMatchObject({
       status: "running",
-      attemptId: "fanout:item-1:attempt-1"
+      lanes: [expect.objectContaining({ attemptId: "fanout:item-1:worker:attempt-1" })]
     });
     await expect(fs.stat(path.join(prepared.dir, "outputs", "fanout", "item-1.json"))).rejects.toThrow();
   });
@@ -594,20 +729,20 @@ describe("fanout runtime stability", () => {
         fanout: {
           stageId: "fanout",
           status: "running",
-          attempts: ["fanout:item-1:attempt-1"],
+          attempts: ["fanout:item-1:worker:attempt-1"],
           startedAt: staleStartedAt,
           fanout: {
             totalItems: 1,
             completedItems: 0,
             blockedItems: 0,
             allowPartial: true,
-            items: [{ id: "item-1", index: 0, status: "running", startedAt: staleStartedAt, attemptId: "fanout:item-1:attempt-1" }]
+            items: [{ id: "item-1", index: 0, status: "running", startedAt: staleStartedAt, lanes: singleLaneLanes("running", "fanout:item-1:worker:attempt-1", staleStartedAt) }]
           }
         }
       },
       attempts: {
-        "fanout:item-1:attempt-1": {
-          id: "fanout:item-1:attempt-1",
+        "fanout:item-1:worker:attempt-1": {
+          id: "fanout:item-1:worker:attempt-1",
           stageId: "fanout",
           itemId: "item-1",
           kind: "attempt",
@@ -621,7 +756,7 @@ describe("fanout runtime stability", () => {
       type: "agent_event",
       stageId: "fanout",
       itemId: "item-1",
-      attemptId: "fanout:item-1:attempt-1",
+      attemptId: "fanout:item-1:worker:attempt-1",
       event: { type: "text_delta", stream: "output", text: "still running" }
     });
 
@@ -630,10 +765,10 @@ describe("fanout runtime stability", () => {
     expect(observed.status).toBe("running");
     expect(observed.stages.fanout?.fanout?.items[0]).toMatchObject({
       status: "running",
-      attemptId: "fanout:item-1:attempt-1"
+      lanes: [expect.objectContaining({ attemptId: "fanout:item-1:worker:attempt-1" })]
     });
-    expect(observed.attempts["fanout:item-1:attempt-1"]).toMatchObject({ status: "running" });
-    expect(observed.attempts["fanout:item-1:attempt-1-runtime-retry-1"]).toBeUndefined();
+    expect(observed.attempts["fanout:item-1:worker:attempt-1"]).toMatchObject({ status: "running" });
+    expect(observed.attempts["fanout:item-1:worker:attempt-2"]).toBeUndefined();
     await expect(fs.stat(path.join(prepared.dir, "outputs", "fanout", "item-1.json"))).rejects.toThrow();
   });
 
@@ -653,7 +788,7 @@ describe("fanout runtime stability", () => {
         fanout: {
           stageId: "fanout",
           status: "running",
-          attempts: ["fanout:item-1:attempt-1", "fanout:item-1:attempt-1-runtime-retry-1"],
+          attempts: ["fanout:item-1:worker:attempt-1", "fanout:item-1:worker:attempt-2"],
           startedAt: staleStartedAt,
           fanout: {
             totalItems: 1,
@@ -665,16 +800,19 @@ describe("fanout runtime stability", () => {
               index: 0,
               status: "running",
               startedAt: staleStartedAt,
-              attemptId: "fanout:item-1:attempt-1-runtime-retry-1",
-              runtimeRetryOf: "fanout:item-1:attempt-1",
-              runtimeRetryOrdinal: 1
+              retryOf: "fanout:item-1:worker:attempt-1",
+              retryOrdinal: 1,
+              lanes: singleLaneLanes("running", "fanout:item-1:worker:attempt-2", staleStartedAt, {
+                retryOf: "fanout:item-1:worker:attempt-1",
+                retryOrdinal: 1
+              })
             }]
           }
         }
       },
       attempts: {
-        "fanout:item-1:attempt-1": {
-          id: "fanout:item-1:attempt-1",
+        "fanout:item-1:worker:attempt-1": {
+          id: "fanout:item-1:worker:attempt-1",
           stageId: "fanout",
           itemId: "item-1",
           kind: "attempt",
@@ -684,16 +822,17 @@ describe("fanout runtime stability", () => {
           endedAt: staleStartedAt,
           runtimeErrorCode: RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY
         },
-        "fanout:item-1:attempt-1-runtime-retry-1": {
-          id: "fanout:item-1:attempt-1-runtime-retry-1",
+        "fanout:item-1:worker:attempt-2": {
+          id: "fanout:item-1:worker:attempt-2",
           stageId: "fanout",
           itemId: "item-1",
+          laneId: "worker",
           kind: "attempt",
           status: "running",
-          path: path.join("attempts", "fanout", "item-item-1", "attempt-1-runtime-retry-1"),
+          path: path.join("attempts", "fanout", "item-item-1", "attempt-2"),
           startedAt: staleStartedAt,
-          runtimeRetryOf: "fanout:item-1:attempt-1",
-          runtimeRetryOrdinal: 1
+          retryOf: "fanout:item-1:worker:attempt-1",
+          retryOrdinal: 1
         }
       }
     });
@@ -708,20 +847,19 @@ describe("fanout runtime stability", () => {
     expect(recovered.status).toBe("completed");
     expect(item).toMatchObject({
       status: "blocked",
-      blockedReason: RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY,
-      errorCode: RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY
+      blockedReason: RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED,
+      errorCode: RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED
     });
-    expect(recovered.attempts["fanout:item-1:attempt-1-runtime-retry-1"]).toMatchObject({
+    expect(recovered.attempts["fanout:item-1:worker:attempt-3"]).toMatchObject({
       status: "failed",
-      runtimeErrorCode: RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY
+      runtimeErrorCode: RuntimeErrorCodes.AGENT_RUNTIME_ERROR
     });
-    expect(output.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY);
-    expect(output.runtimeDiagnostics?.errorCode).toBe(RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY);
+    expect(output.blockedReason).toBe(RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED);
     const events = await readEvents(prepared.dir);
     expect(events).toContainEqual(expect.objectContaining({
-      type: "runtime_retry_exhausted",
+      type: "agent_task_retry_exhausted",
       itemId: "item-1",
-      errorCode: RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY
+      errorCode: RuntimeErrorCodes.AGENT_RUNTIME_ERROR
     }));
     expect(events).not.toContainEqual(expect.objectContaining({
       type: "fanout_item_recovered",
@@ -730,17 +868,14 @@ describe("fanout runtime stability", () => {
     }));
   });
 
-  it("continues a legacy fanout stage stuck running with queued items", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fanout-legacy-stuck-"));
-    setAgentRuntimeFactoryForTests(() => new StaticRuntime());
-    const spec = fanoutSpec(2, { allowPartial: false }, { maxConcurrency: 1 });
+  it("directly blocks scheduler-exhausted stale fanout retries with the unified retry code", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fanout-stale-direct-exhausted-"));
+    const spec = fanoutSpec(1, { allowPartial: true });
     const prepared = await prepareRun(spec, {
       cwd,
-      input: { cwd, items: fanoutInputItems(2) }
+      input: { cwd, items: [{ id: "item-1" }] }
     });
-    const firstOutputPath = path.join(prepared.dir, "outputs", "fanout", "item-1.json");
-    await fs.mkdir(path.dirname(firstOutputPath), { recursive: true });
-    await fs.writeFile(firstOutputPath, `${JSON.stringify(baseOutput({ summary: "already complete" }), null, 2)}\n`, "utf8");
+    const staleStartedAt = staleRecoveryStartedAt();
     await writeRunIndex(cwd, {
       ...prepared.index,
       status: "running",
@@ -749,32 +884,105 @@ describe("fanout runtime stability", () => {
         fanout: {
           stageId: "fanout",
           status: "running",
-          attempts: [],
+          attempts: ["fanout:item-1:worker:attempt-1", "fanout:item-1:worker:attempt-2", "fanout:item-1:worker:attempt-3"],
+          startedAt: staleStartedAt,
           fanout: {
-            totalItems: 2,
-            completedItems: 1,
+            totalItems: 1,
+            completedItems: 0,
             blockedItems: 0,
-            allowPartial: false,
-            items: [
-              { id: "item-1", index: 0, status: "completed", outputPath: path.join("outputs", "fanout", "item-1.json"), completedAt: new Date().toISOString() },
-              { id: "item-2", index: 1, status: "pending" }
-            ]
+            allowPartial: true,
+            items: [{
+              id: "item-1",
+              index: 0,
+              status: "running",
+              startedAt: staleStartedAt,
+              retryOf: "fanout:item-1:worker:attempt-2",
+              retryOrdinal: 2,
+              retryReason: "stale",
+              lanes: singleLaneLanes("running", "fanout:item-1:worker:attempt-3", staleStartedAt, {
+                retryOf: "fanout:item-1:worker:attempt-2",
+                retryOrdinal: 2,
+                retryReason: "stale"
+              })
+            }]
           }
+        }
+      },
+      attempts: {
+        "fanout:item-1:worker:attempt-1": {
+          id: "fanout:item-1:worker:attempt-1",
+          stageId: "fanout",
+          itemId: "item-1",
+          laneId: "worker",
+          kind: "attempt",
+          status: "failed",
+          path: path.join("attempts", "fanout", "item-item-1", "attempt-1"),
+          startedAt: staleStartedAt,
+          endedAt: staleStartedAt,
+          runtimeErrorCode: RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY
+        },
+        "fanout:item-1:worker:attempt-2": {
+          id: "fanout:item-1:worker:attempt-2",
+          stageId: "fanout",
+          itemId: "item-1",
+          laneId: "worker",
+          kind: "attempt",
+          status: "failed",
+          path: path.join("attempts", "fanout", "item-item-1", "lane-worker", "attempt-2"),
+          startedAt: staleStartedAt,
+          endedAt: staleStartedAt,
+          retryOf: "fanout:item-1:worker:attempt-1",
+          retryOrdinal: 1,
+          retryReason: "stale",
+          runtimeErrorCode: RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY
+        },
+        "fanout:item-1:worker:attempt-3": {
+          id: "fanout:item-1:worker:attempt-3",
+          stageId: "fanout",
+          itemId: "item-1",
+          laneId: "worker",
+          kind: "attempt",
+          status: "running",
+          path: path.join("attempts", "fanout", "item-item-1", "lane-worker", "attempt-3"),
+          startedAt: staleStartedAt,
+          requestId: "fanout:item-1:worker:attempt-3",
+          retryOf: "fanout:item-1:worker:attempt-2",
+          retryOrdinal: 2,
+          retryReason: "stale",
+          retryBudgetUsed: 2,
+          retryBudgetLimit: 2
         }
       }
     });
 
-    const synced = await syncRun(cwd, prepared.logicalRunId);
+    const recovered = await syncRun(cwd, prepared.logicalRunId);
+    const item = recovered.stages.fanout?.fanout?.items[0];
+    const output = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "fanout", "item-1.json"), "utf8")) as { blockedReason: string; lastFailureCode?: string };
 
-    expect(synced.status).toBe("completed");
-    expect(synced.stages.fanout?.status).toBe("completed");
-    expect(synced.stages.fanout?.fanout?.completedItems).toBe(2);
-    expect(await fanoutPoolStartedCount(prepared.dir)).toBe(1);
-    expect(hasStuckFanoutPendingBatch(synced)).toBe(false);
+    expect(recovered.status).toBe("completed");
+    expect(item).toMatchObject({
+      status: "blocked",
+      blockedReason: RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED,
+      errorCode: RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED,
+      lanes: [expect.objectContaining({
+        attemptId: "fanout:item-1:worker:attempt-3",
+        blockedReason: RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED,
+        errorCode: RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED
+      })]
+    });
+    expect(output).toMatchObject({
+      blockedReason: RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED
+    });
+    expect(recovered.attempts["fanout:item-1:worker:attempt-3"]).toMatchObject({
+      status: "failed",
+      runtimeErrorCode: RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY,
+      retryReason: "stale",
+      retryOrdinal: 2
+    });
   });
 
-  it("retries a transient agentTask runtime throw once and completes", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-runtime-retry-stage-"));
+  it("retries a transient task runtime throw once and completes", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-agent-task-retry-runtime-stage-"));
     const runtime = new ScriptedRuntime([
       { kind: "throw", message: "transport reset while starting agent" },
       { kind: "text", text: plainJsonOutput(baseOutput({ summary: "retried" })) }
@@ -792,15 +1000,18 @@ describe("fanout runtime stability", () => {
       status: "failed",
       runtimeErrorCode: RuntimeErrorCodes.AGENT_RUNTIME_ERROR
     });
-    expect(index.attempts["task:attempt-1-runtime-retry-1"]).toMatchObject({
+    expect(index.attempts["task:attempt-2"]).toMatchObject({
       status: "completed",
-      runtimeRetryOf: "task:attempt-1",
-      runtimeRetryOrdinal: 1
+      retryOf: "task:attempt-1",
+      retryOrdinal: 1,
+      retryReason: "runtime",
+      retryBudgetUsed: 1,
+      retryBudgetLimit: 2
     });
   });
 
   it("retries one transient fanout item runtime throw without surfacing an item error", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-runtime-retry-fanout-"));
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-agent-task-retry-runtime-fanout-"));
     const runtime = new TransientFanoutRuntime("item-2");
     setAgentRuntimeFactoryForTests(() => runtime);
     const spec = fanoutSpec(2, { allowPartial: false }, { maxConcurrency: 2 });
@@ -816,16 +1027,23 @@ describe("fanout runtime stability", () => {
     const retriedItem = index.stages.fanout?.fanout?.items.find((item) => item.id === "item-2");
     expect(retriedItem).toMatchObject({
       status: "completed",
-      runtimeRetryOrdinal: 1
+      retryOrdinal: 1,
+      retryReason: "runtime"
+    });
+    expect(retriedItem?.lanes.find((lane) => lane.id === "worker")).toMatchObject({
+      status: "completed",
+      attemptId: "fanout:item-2:worker:attempt-2",
+      retryReason: "runtime",
+      retryOrdinal: 1
     });
     expect(retriedItem?.errorCode).toBeUndefined();
-    expect(index.attempts["fanout:item-2:work:worker:attempt-1"]).toMatchObject({
+    expect(index.attempts["fanout:item-2:worker:attempt-1"]).toMatchObject({
       status: "failed",
       runtimeErrorCode: RuntimeErrorCodes.AGENT_RUNTIME_ERROR
     });
-    expect(index.attempts["fanout:item-2:work:worker:attempt-1-runtime-retry-1"]).toMatchObject({
+    expect(index.attempts["fanout:item-2:worker:attempt-2"]).toMatchObject({
       status: "completed",
-      runtimeRetryOf: "fanout:item-2:work:worker:attempt-1"
+      retryOf: "fanout:item-2:worker:attempt-1"
     });
     expect(diagnostics.diagnostics).not.toContainEqual(expect.objectContaining({
       code: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
@@ -833,8 +1051,52 @@ describe("fanout runtime stability", () => {
     }));
   });
 
+  it("points a running fanout lane at the active continuation attempt", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-agent-task-retry-fanout-running-pointer-"));
+    let runId = "";
+    let observedAttemptId: string | undefined;
+    const runtime: OrchestratorAgentRuntime = {
+      async runTurn(input, onEvent) {
+        if (input.requestId.endsWith(":attempt-2")) {
+          const index = await readRunIndex(cwd, runId);
+          observedAttemptId = index.stages.fanout?.fanout?.items
+            .find((item) => item.id === "item-1")?.lanes
+            .find((lane) => lane.id === "worker")?.attemptId;
+        }
+        const rawText = input.requestId.endsWith(":attempt-1")
+          ? plainJsonOutput({ unexpected: true })
+          : plainJsonOutput(baseOutput({ summary: "continued", data: [] }));
+        await onEvent?.({ type: "text_delta", text: rawText, stream: "output" });
+        return {
+          handle: fakeHandle(input),
+          rawText,
+          events: [{ type: "text_delta", text: rawText, stream: "output" }],
+          status: "completed"
+        };
+      }
+    };
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const spec = fanoutSpec(1, { allowPartial: false }, { maxConcurrency: 1 });
+    const prepared = await prepareRun(spec, {
+      cwd,
+      input: { cwd, items: [{ id: "item-1" }] }
+    });
+    runId = prepared.logicalRunId;
+
+    const index = await startPreparedRun(cwd, prepared);
+
+    expect(index.status).toBe("completed");
+    expect(observedAttemptId).toBe("fanout:item-1:worker:attempt-2");
+    expect(index.stages.fanout?.fanout?.items[0]?.lanes[0]).toMatchObject({
+      status: "completed",
+      attemptId: "fanout:item-1:worker:attempt-2",
+      retryReason: "continuation",
+      retryOrdinal: 1
+    });
+  });
+
   it("retries a transient loop body runtime throw and completes the loop", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-runtime-retry-loop-"));
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-agent-task-retry-runtime-loop-"));
     const runtime = new ScriptedRuntime([
       { kind: "throw", message: "agent process failed to start" },
       { kind: "text", text: plainJsonOutput(baseOutput({ summary: "passed", data: { needsAnotherRound: false } })) }
@@ -850,9 +1112,9 @@ describe("fanout runtime stability", () => {
       status: "failed",
       runtimeErrorCode: RuntimeErrorCodes.AGENT_RUNTIME_ERROR
     });
-    expect(index.attempts["quality_loop:round-1__stage-review:attempt-1-runtime-retry-1"]).toMatchObject({
+    expect(index.attempts["quality_loop:round-1__stage-review:attempt-2"]).toMatchObject({
       status: "completed",
-      runtimeRetryOf: "quality_loop:round-1__stage-review:attempt-1"
+      retryOf: "quality_loop:round-1__stage-review:attempt-1"
     });
   });
 
@@ -872,8 +1134,8 @@ describe("fanout runtime stability", () => {
     expect(output.round).toBe(2);
     expect(output.rounds).toHaveLength(2);
     expect(runtime.requests.map((request) => request.sessionKey)).toEqual([
-      "role:reviewer:loop:quality_loop:round:1:stage:review",
-      "role:reviewer:loop:quality_loop:round:2:stage:review"
+      "loop:quality_loop:round:1:stage:review:agent:reviewer",
+      "loop:quality_loop:round:2:stage:review:agent:reviewer"
     ]);
   });
 
@@ -889,7 +1151,7 @@ describe("fanout runtime stability", () => {
     const index = await startPreparedRun(cwd, prepared);
 
     expect(index.status).toBe("completed");
-    expect(runtime.requests.map((request) => request.sessionKey)).toEqual(["role:reviewer:loop:quality_loop:round:1:stage:review"]);
+    expect(runtime.requests.map((request) => request.sessionKey)).toEqual(["loop:quality_loop:round:1:stage:review:agent:reviewer"]);
   });
 
   it("blocks loop as exhausted when continueWhen remains true through maxRounds", async () => {
@@ -906,8 +1168,8 @@ describe("fanout runtime stability", () => {
     expect(index.status).toBe("blocked");
     expect(index.stages.quality_loop?.blockedReason).toBe(RuntimeErrorCodes.LOOP_EXHAUSTED);
     expect(runtime.requests.map((request) => request.sessionKey)).toEqual([
-      "role:reviewer:loop:quality_loop:round:1:stage:review",
-      "role:reviewer:loop:quality_loop:round:2:stage:review"
+      "loop:quality_loop:round:1:stage:review:agent:reviewer",
+      "loop:quality_loop:round:2:stage:review:agent:reviewer"
     ]);
   });
 
@@ -986,7 +1248,7 @@ describe("fanout runtime stability", () => {
     setAgentRuntimeFactoryForTests(() => runtime);
     const spec = loopFanoutSpec(cwd, {
       maxConcurrency: 2,
-      laneGroups: [{ id: "work", mode: "all", lanes: [{ id: "worker", role: "worker" }] }]
+      lanes: [{ id: "worker", actor: { agent: "fake", mode: "readOnly", label: "worker" } }]
     });
     const prepared = await prepareRun(spec, { cwd, input: { cwd, items: fanoutInputItems(2) } });
 
@@ -995,8 +1257,8 @@ describe("fanout runtime stability", () => {
     expect(index.status).toBe("completed");
     expect(runtime.maxActive).toBe(2);
     expect(runtime.requests.map((request) => request.sessionKey)).toEqual(expect.arrayContaining([
-      "role:worker:loop:quality_loop:round:1:stage:review_items:item:item-1:group:work:lane:worker",
-      "role:worker:loop:quality_loop:round:1:stage:review_items:item:item-2:group:work:lane:worker"
+      "loop:quality_loop:round:1:stage:review_items:item:item-1:lane:worker:agent:worker",
+      "loop:quality_loop:round:1:stage:review_items:item:item-2:lane:worker:agent:worker"
     ]));
     expect(index.stages.quality_loop?.loop?.rounds[0]?.stages.review_items.fanout).toMatchObject({
       totalItems: 2,
@@ -1011,14 +1273,14 @@ describe("fanout runtime stability", () => {
     setAgentRuntimeFactoryForTests(() => runtime);
     const spec = loopFanoutSpec(cwd, {
       maxConcurrency: 2,
-      laneGroups: [{ id: "work", mode: "all", lanes: [{ id: "worker", role: "worker" }] }]
+      lanes: [{ id: "worker", actor: { agent: "fake", mode: "readOnly", label: "worker" } }]
     });
     const prepared = await prepareRun(spec, { cwd, input: { cwd, items: fanoutInputItems(2) } });
 
     const index = await startPreparedRun(cwd, prepared);
     const items = index.stages.quality_loop?.loop?.rounds[0]?.stages.review_items.fanout?.items ?? [];
     const itemSummaries = items.map((item) => {
-      const lane = item.groups?.[0]?.lanes[0] as ({ output?: { summary?: string } } | undefined);
+      const lane = item.lanes[0] as ({ output?: { summary?: string } } | undefined);
       const laneOutput = lane?.output;
       return [item.id, item.status, laneOutput?.summary];
     });
@@ -1026,9 +1288,49 @@ describe("fanout runtime stability", () => {
     expect(index.status).toBe("completed");
     expect(runtime.requests.map((request) => itemIdFromSessionKey(request.sessionKey)).sort()).toEqual(["item-1", "item-2"]);
     expect(itemSummaries).toEqual([
-      ["item-1", "completed", expect.stringContaining("item:item-1:group:work:lane:worker")],
-      ["item-2", "completed", expect.stringContaining("item:item-2:group:work:lane:worker")]
+      ["item-1", "completed", expect.stringContaining("item:item-1:lane:worker")],
+      ["item-2", "completed", expect.stringContaining("item:item-2:lane:worker")]
     ]);
+  });
+
+  it("runs loop body agent fanin after all fanout lanes finish", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-agent-fanin-"));
+    const runtime = new ScriptedRuntime([
+      { kind: "text", text: plainJsonOutput(baseOutput({ summary: "lane one", data: [{ id: "one" }] })) },
+      { kind: "text", text: plainJsonOutput(baseOutput({ summary: "lane two", data: [{ id: "two" }] })) },
+      { kind: "text", text: plainJsonOutput(baseOutput({ summary: "agent fanin", data: { needsAnotherRound: false, merged: ["one", "two"] } })) }
+    ]);
+    setAgentRuntimeFactoryForTests(() => runtime);
+    const spec = loopFanoutSpec(cwd, {
+      maxConcurrency: 2,
+      fanin: {
+        mode: "agent",
+        actor: { agent: "fake", mode: "readOnly", label: "fanin_agent" },
+        prompt: "Merge ${results}"
+      },
+      lanes: [{ id: "worker", actor: { agent: "fake", mode: "readOnly", label: "worker" } }]
+    });
+    const prepared = await prepareRun(spec, { cwd, input: { cwd, items: fanoutInputItems(2) } });
+
+    const index = await startPreparedRun(cwd, prepared);
+    const output = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "quality_loop.json"), "utf8")) as { summary?: string; data?: unknown };
+    const round = index.stages.quality_loop?.loop?.rounds[0];
+    const faninAttempt = index.attempts["quality_loop:round-1__fanin-review_items:attempt-1"];
+
+    expect(index.status).toBe("completed");
+    expect(runtime.requests.map((request) => request.sessionKey)).toContain("loop:quality_loop:round:1:fanin:review_items");
+    expect(runtime.requests.at(-1)?.prompt).toContain("\"laneOutputs\"");
+    expect(runtime.requests.at(-1)?.prompt).toContain("\"skippedItems\"");
+    expect(faninAttempt).toMatchObject({
+      status: "completed",
+      itemId: "round-1__fanin-review_items",
+      sessionKey: "loop:quality_loop:round:1:fanin:review_items"
+    });
+    expect(round?.bodyOutput).toMatchObject({
+      summary: "agent fanin",
+      data: { needsAnotherRound: false, merged: ["one", "two"] }
+    });
+    expect(output).toMatchObject({ summary: "agent fanin" });
   });
 
   it("aggregates same-item loop body fanout lanes after concurrent execution", async () => {
@@ -1037,24 +1339,19 @@ describe("fanout runtime stability", () => {
     setAgentRuntimeFactoryForTests(() => runtime);
     const spec = loopFanoutSpec(cwd, {
       maxConcurrency: 2,
-      laneGroups: [{
-        id: "review",
-        mode: "all",
-        lanes: [
-          { id: "static", role: "worker" },
-          { id: "semantic", role: "worker" }
-        ]
-      }]
+      lanes: [
+        { id: "static", actor: { agent: "fake", mode: "readOnly", label: "worker" } },
+        { id: "semantic", actor: { agent: "fake", mode: "readOnly", label: "worker" } }
+      ]
     });
     const prepared = await prepareRun(spec, { cwd, input: { cwd, items: fanoutInputItems(1) } });
 
     const index = await startPreparedRun(cwd, prepared);
-    const group = index.stages.quality_loop?.loop?.rounds[0]?.stages.review_items.fanout?.items[0]?.groups?.[0];
+    const lanes = index.stages.quality_loop?.loop?.rounds[0]?.stages.review_items.fanout?.items[0]?.lanes;
 
     expect(index.status).toBe("completed");
     expect(runtime.maxActive).toBe(2);
-    expect(group).toMatchObject({ id: "review", status: "completed" });
-    expect(group?.lanes.map((lane) => {
+    expect(lanes?.map((lane) => {
       const output = (lane as { output?: { summary?: string } }).output;
       return [lane.id, lane.status, output?.summary];
     })).toEqual([
@@ -1069,7 +1366,7 @@ describe("fanout runtime stability", () => {
     setAgentRuntimeFactoryForTests(() => runtime);
     const spec = loopFanoutSpec(cwd, {
       maxConcurrency: 2,
-      laneGroups: [{ id: "work", mode: "all", lanes: [{ id: "worker", role: "worker" }] }],
+      lanes: [{ id: "worker", actor: { agent: "fake", mode: "readOnly", label: "worker" } }],
       allowPartial: false
     });
     const prepared = await prepareRun(spec, { cwd, input: { cwd, items: fanoutInputItems(4) } });
@@ -1079,10 +1376,10 @@ describe("fanout runtime stability", () => {
     const requested = runtime.requests.map((request) => itemIdFromSessionKey(request.sessionKey)).sort();
 
     expect(index.status).toBe("blocked");
-    expect(requested).toEqual(["item-1", "item-2", "item-2"]);
+    expect(requested).toEqual(["item-1", "item-2", "item-2", "item-2"]);
     expect(fanout?.items.map((item) => [item.id, item.status, item.errorCode])).toEqual([
       ["item-1", "completed", undefined],
-      ["item-2", "blocked", RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR],
+      ["item-2", "blocked", RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED],
       ["item-3", "blocked", RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED],
       ["item-4", "blocked", RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED]
     ]);
@@ -1106,70 +1403,37 @@ describe("fanout runtime stability", () => {
     expect(runtime.requests).toHaveLength(0);
   });
 
-  it("blocks loop body fanout oneOf items with multiple matching lanes", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-fanout-oneof-multi-"));
-    const runtime = new ScriptedRuntime([{ kind: "text", text: plainJsonOutput(baseOutput({ summary: "should not run" })) }]);
+  it("runs every loop body fanout lane whose condition is true", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-fanout-multi-match-"));
+    const runtime = new StaticRuntime();
     setAgentRuntimeFactoryForTests(() => runtime);
     const spec = loopFanoutSpec(cwd, {
-      laneGroups: [{
-        id: "route",
-        mode: "oneOf",
-        lanes: [
-          { id: "a", role: "worker", when: { source: "item.kind", op: "eq", value: "both" } },
-          { id: "b", role: "worker", when: { source: "item.kind", op: "eq", value: "both" } }
-        ]
-      }]
+      lanes: [
+        { id: "a", actor: { agent: "fake", mode: "readOnly", label: "worker" }, when: { source: "item.kind", op: "eq", value: "both" } },
+        { id: "b", actor: { agent: "fake", mode: "readOnly", label: "worker" }, when: { source: "item.kind", op: "eq", value: "both" } }
+      ]
     });
     const prepared = await prepareRun(spec, { cwd, input: { cwd, items: [{ id: "item-1", kind: "both" }] } });
 
     const index = await startPreparedRun(cwd, prepared);
-    const output = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "quality_loop", "round-1", "review_items.json"), "utf8")) as { blockedItems: Array<{ errorCode?: string }> };
+    const lanes = index.stages.quality_loop?.loop?.rounds[0]?.stages.review_items.fanout?.items[0]?.lanes;
 
-    expect(index.status).toBe("blocked");
-    expect(index.stages.quality_loop?.blockedReason).toBe(RuntimeErrorCodes.LOOP_BODY_STAGE_BLOCKED);
-    expect(output.blockedItems[0]?.errorCode).toBe(RuntimeErrorCodes.FANOUT_LANE_SELECTION_FAILED);
-    expect(runtime.requests).toHaveLength(0);
+    expect(index.status).toBe("completed");
+    expect(lanes?.map((lane) => [lane.id, lane.status])).toEqual([["a", "completed"], ["b", "completed"]]);
   });
 
-  it("blocks loop body fanout oneOf items with no matching lane and no default", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-fanout-oneof-none-"));
-    const runtime = new ScriptedRuntime([{ kind: "text", text: plainJsonOutput(baseOutput({ summary: "should not run" })) }]);
-    setAgentRuntimeFactoryForTests(() => runtime);
-    const spec = loopFanoutSpec(cwd, {
-      laneGroups: [{
-        id: "route",
-        mode: "oneOf",
-        lanes: [{ id: "a", role: "worker", when: { source: "item.kind", op: "eq", value: "a" } }]
-      }]
-    });
-    const prepared = await prepareRun(spec, { cwd, input: { cwd, items: [{ id: "item-1", kind: "b" }] } });
-
-    const index = await startPreparedRun(cwd, prepared);
-    const output = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "quality_loop", "round-1", "review_items.json"), "utf8")) as { blockedItems: Array<{ errorCode?: string }> };
-
-    expect(index.status).toBe("blocked");
-    expect(output.blockedItems[0]?.errorCode).toBe(RuntimeErrorCodes.FANOUT_LANE_SELECTION_FAILED);
-    expect(runtime.requests).toHaveLength(0);
-  });
-
-  it("skips loop body fanout items with no matching all-group lanes", async () => {
+  it("skips loop body fanout items with no matching lanes", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-loop-fanout-skipped-"));
     const runtime = new StaticRuntime();
     setAgentRuntimeFactoryForTests(() => runtime);
     const spec = loopFanoutSpec(cwd, {
-      laneGroups: [{
-        id: "work",
-        mode: "all",
-        lanes: [{ id: "worker", role: "worker", when: { source: "item.kind", op: "eq", value: "run" } }]
-      }]
+      lanes: [{ id: "worker", actor: { agent: "fake", mode: "readOnly", label: "worker" }, when: { source: "item.kind", op: "eq", value: "run" } }]
     });
     const prepared = await prepareRun(spec, { cwd, input: { cwd, items: [{ id: "item-1", kind: "skip" }] } });
 
     const index = await startPreparedRun(cwd, prepared);
-    const output = JSON.parse(await fs.readFile(path.join(prepared.dir, "outputs", "quality_loop", "round-1", "review_items.json"), "utf8")) as { skippedItems: Array<{ skippedReason?: string }> };
-
     expect(index.status).toBe("completed");
-    expect(output.skippedItems[0]?.skippedReason).toBe(RuntimeErrorCodes.NO_MATCHING_LANES);
+    expect(index.stages.quality_loop?.loop?.rounds[0]?.stages.review_items.fanout?.items[0]?.skippedReason).toBe(RuntimeErrorCodes.NO_SELECTED_LANES);
   });
 
   it("blocks loop when a planned body stage is missing from the workflow spec", async () => {
@@ -1204,12 +1468,12 @@ describe("fanout runtime stability", () => {
     expect(runtime.requests[1]?.prompt).toContain("canonical output");
   });
 
-  it("retries a transient repair runtime throw and completes from repaired output", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-runtime-retry-repair-"));
+  it("retries a transient continuation runtime throw and completes from continuation output", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-agent-task-retry-continuation-"));
     const runtime = new ScriptedRuntime([
       { kind: "text", text: plainJsonOutput({ status: "completed" }) },
-      { kind: "throw", message: "queue rejected repair turn" },
-      { kind: "text", text: plainJsonOutput(baseOutput({ summary: "repaired" })) }
+      { kind: "throw", message: "queue rejected continuation turn" },
+      { kind: "text", text: plainJsonOutput(baseOutput({ summary: "continued" })) }
     ]);
     setAgentRuntimeFactoryForTests(() => runtime);
     const spec = simpleTaskSpec(cwd);
@@ -1219,19 +1483,24 @@ describe("fanout runtime stability", () => {
 
     expect(index.status).toBe("completed");
     expect(index.agentUsage.actual).toBe(3);
-    expect(index.agentUsage.repairCalls).toBe(2);
-    expect(index.attempts["task:repair-1"]).toMatchObject({
+    expect(index.agentUsage.retryCalls).toBe(2);
+    expect(index.agentUsage.retries.continuation).toBe(1);
+    expect(index.agentUsage.retries.runtime).toBe(1);
+    expect(index.attempts["task:attempt-2"]).toMatchObject({
       status: "failed",
-      runtimeErrorCode: RuntimeErrorCodes.AGENT_RUNTIME_ERROR
+      runtimeErrorCode: RuntimeErrorCodes.AGENT_RUNTIME_ERROR,
+      retryReason: "continuation",
+      retryOf: "task:attempt-1"
     });
-    expect(index.attempts["task:repair-1-runtime-retry-1"]).toMatchObject({
+    expect(index.attempts["task:attempt-3"]).toMatchObject({
       status: "completed",
-      runtimeRetryOf: "task:repair-1"
+      retryReason: "runtime",
+      retryOf: "task:attempt-2"
     });
   });
 
   it("retries failed retryable turns but not non-retryable failed turns", async () => {
-    const retryCwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-runtime-retry-failed-"));
+    const retryCwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-agent-task-retry-failed-turn-"));
     const retryRuntime = new ScriptedRuntime([
       { kind: "failed", message: "queue rejected prompt", errorCode: "ACP_TURN_FAILED", retryable: true },
       { kind: "text", text: plainJsonOutput(baseOutput({ summary: "retried failed status" })) }
@@ -1262,7 +1531,7 @@ describe("fanout runtime stability", () => {
   });
 
   it("blocks non-fanout stages with AGENT_RUNTIME_ERROR after retry exhaustion", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-runtime-retry-exhausted-"));
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-agent-task-retry-exhausted-"));
     const runtime = new ScriptedRuntime([
       { kind: "throw", message: "transport reset" },
       { kind: "throw", message: "transport reset again" }
@@ -1275,14 +1544,14 @@ describe("fanout runtime stability", () => {
     const diagnostics = await buildRunDiagnosticsView(cwd, index);
 
     expect(index.status).toBe("blocked");
-    expect(index.stages.task?.blockedReason).toBe(RuntimeErrorCodes.AGENT_RUNTIME_ERROR);
-    expect(index.attempts["task:attempt-1-runtime-retry-1"]).toMatchObject({
+    expect(index.stages.task?.blockedReason).toBe(RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED);
+    expect(index.attempts["task:attempt-2"]).toMatchObject({
       status: "failed",
-      runtimeRetryOf: "task:attempt-1",
-      runtimeRetryOrdinal: 1
+      retryOf: "task:attempt-1",
+      retryOrdinal: 1
     });
     expect(diagnostics.diagnostics).toContainEqual(expect.objectContaining({
-      code: RuntimeErrorCodes.AGENT_RUNTIME_ERROR,
+      code: RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED,
       stageId: "task"
     }));
   });
@@ -1325,9 +1594,11 @@ describe("fanout runtime stability", () => {
       status: "failed",
       runtimeErrorCode: RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY
     });
-    expect(recovered.attempts["task:attempt-1-runtime-retry-1"]).toMatchObject({
+    expect(recovered.attempts["task:attempt-2"]).toMatchObject({
       status: "completed",
-      runtimeRetryOf: "task:attempt-1"
+      retryOf: "task:attempt-1",
+      retryReason: "stale",
+      retryOrdinal: 1
     });
 
     const exhaustedCwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-runtime-stale-stage-exhausted-"));
@@ -1340,10 +1611,10 @@ describe("fanout runtime stability", () => {
         task: {
           stageId: "task",
           status: "running",
-          attempts: ["task:attempt-1", "task:attempt-1-runtime-retry-1"],
+          attempts: ["task:attempt-1", "task:attempt-2", "task:attempt-3"],
           startedAt: staleStartedAt,
-          runtimeRetryOf: "task:attempt-1",
-          runtimeRetryOrdinal: 1
+          retryOf: "task:attempt-2",
+          retryOrdinal: 2
         }
       },
       attempts: {
@@ -1357,27 +1628,51 @@ describe("fanout runtime stability", () => {
           endedAt: staleStartedAt,
           runtimeErrorCode: RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY
         },
-        "task:attempt-1-runtime-retry-1": {
-          id: "task:attempt-1-runtime-retry-1",
+        "task:attempt-2": {
+          id: "task:attempt-2",
+          stageId: "task",
+          kind: "attempt",
+          status: "failed",
+          path: path.join("attempts", "task", "attempt-2"),
+          startedAt: staleStartedAt,
+          endedAt: staleStartedAt,
+          requestId: "task:attempt-2",
+          retryOf: "task:attempt-1",
+          retryOrdinal: 1,
+          runtimeErrorCode: RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY
+        },
+        "task:attempt-3": {
+          id: "task:attempt-3",
           stageId: "task",
           kind: "attempt",
           status: "running",
-          path: path.join("attempts", "task", "attempt-1-runtime-retry-1"),
+          path: path.join("attempts", "task", "attempt-3"),
           startedAt: staleStartedAt,
-          requestId: "task:attempt-1-runtime-retry-1",
-          runtimeRetryOf: "task:attempt-1",
-          runtimeRetryOrdinal: 1
+          requestId: "task:attempt-3",
+          retryOf: "task:attempt-2",
+          retryOrdinal: 2
         }
       }
     });
 
     const exhausted = await syncRun(exhaustedCwd, exhaustedPrepared.logicalRunId);
+    const exhaustedOutput = JSON.parse(await fs.readFile(path.join(exhaustedPrepared.dir, "outputs", "task.json"), "utf8")) as { blockedReason: string; lastFailureCode?: string };
+    const reconciledAgain = await syncRun(exhaustedCwd, exhaustedPrepared.logicalRunId);
 
     expect(exhausted.status).toBe("blocked");
-    expect(exhausted.stages.task?.blockedReason).toBe(RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY);
-    expect(exhausted.attempts["task:attempt-1-runtime-retry-1"]).toMatchObject({
+    expect(exhausted.stages.task?.blockedReason).toBe(RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED);
+    expect(exhaustedOutput).toMatchObject({
+      blockedReason: RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED,
+      lastFailureCode: RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY
+    });
+    expect(reconciledAgain.stages.task?.blockedReason).toBe(RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED);
+    expect(exhausted.attempts["task:attempt-3"]).toMatchObject({
       status: "failed",
-      runtimeErrorCode: RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY
+      runtimeErrorCode: RuntimeErrorCodes.AGENT_STAGE_STALE_RECOVERY,
+      retryReason: "stale",
+      retryOrdinal: 2,
+      retryBudgetUsed: 2,
+      retryBudgetLimit: 2
     });
   });
 
@@ -1388,10 +1683,9 @@ describe("fanout runtime stability", () => {
       schemaVersion: "acpus.workflow/v1",
       name: "cancelled-turn",
       root: "task",
-      inputs: { cwd: { type: "path", default: cwd } },
-      roles: { worker: { category: "coordination", agent: "fake", mode: "readOnly" } },
+      input: { schema: "{cwd:string}", default: { cwd } },
       limits: { stageTimeoutMinutes: 1 },
-      stages: [{ id: "task", kind: "agentTask", role: "worker", prompt: "Do work" }]
+      stages: [{ id: "task", kind: "task", mode: "agent", actor: { agent: "fake", mode: "readOnly", label: "worker" }, prompt: "Do work" }]
     });
     const prepared = await prepareRun(spec, { cwd, input: { cwd } });
 
@@ -1404,16 +1698,16 @@ describe("fanout runtime stability", () => {
     expect(output.runtimeDiagnostics).toMatchObject({
       stopReason: "cancelled",
       requestId: "task:attempt-1",
-      sessionKey: "role:worker",
+      sessionKey: "agent:worker",
       agent: "fake",
-      roleMode: "readOnly",
+      actorMode: "readOnly",
       runtimeDisposeInvoked: false,
       rawTextPreview: "partial cancelled text"
     });
     expect(attempt).toMatchObject({
       stopReason: "cancelled",
       requestId: "task:attempt-1",
-      sessionKey: "role:worker",
+      sessionKey: "agent:worker",
       runtimeErrorCode: RuntimeErrorCodes.AGENT_TURN_CANCELLED
     });
   });
@@ -1433,17 +1727,17 @@ describe("fanout runtime stability", () => {
 
     expect(fanout?.items.find((item) => item.id === "item-2")).toMatchObject({
       status: "blocked",
-      errorCode: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
-      blockedReason: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR
+      errorCode: RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED,
+      blockedReason: RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED
     });
     expect(diagnostics.diagnostics).toContainEqual(expect.objectContaining({
-      code: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR,
+      code: RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED,
       stageId: "fanout",
       itemId: "item-2"
     }));
   });
 
-  it("diagnoses a fanout stage stuck running with queued items", async () => {
+  it("reports a fanout stage stuck running with queued items", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fanout-stuck-diagnostics-"));
     const spec = fanoutSpec(2, { allowPartial: false }, { maxConcurrency: 1 });
     const prepared = await prepareRun(spec, {
@@ -1465,8 +1759,8 @@ describe("fanout runtime stability", () => {
             blockedItems: 0,
             allowPartial: false,
             items: [
-              { id: "item-1", index: 0, status: "completed", completedAt: new Date().toISOString() },
-              { id: "item-2", index: 1, status: "pending" }
+              { id: "item-1", index: 0, status: "completed", completedAt: new Date().toISOString(), lanes: singleLaneLanes("completed") },
+              { id: "item-2", index: 1, status: "pending", lanes: singleLaneLanes("pending") }
             ]
           }
         }
@@ -1511,7 +1805,7 @@ describe("fanout runtime stability", () => {
       cwd,
       input: { cwd, items: [{ id: "item-1" }] }
     });
-    for (const itemCode of [RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR, RuntimeErrorCodes.FANOUT_ITEM_STALE_RECOVERY]) {
+    for (const itemCode of [RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED, RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED]) {
       const index: RunIndex = {
         ...prepared.index,
         status: "blocked",
@@ -1534,7 +1828,8 @@ describe("fanout runtime stability", () => {
                 status: "blocked",
                 blockedReason: itemCode,
                 errorCode: itemCode,
-                completedAt: new Date().toISOString()
+                completedAt: new Date().toISOString(),
+                lanes: singleLaneLanes("blocked", undefined, undefined, { blockedReason: itemCode, errorCode: itemCode })
               }]
             }
           }
@@ -1605,7 +1900,7 @@ describe("fanout runtime stability", () => {
 
     expect(resumed.status).toBe("blocked");
     expect(resumed.stages.fanout?.status).toBe("blocked");
-    expect(resumed.stages.fanout?.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR);
+    expect(resumed.stages.fanout?.blockedReason).toBe(RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED);
     expect(resumed.stages.fanout?.fanout).toMatchObject({
       completedItems: 2,
       blockedItems: 1,
@@ -1613,16 +1908,16 @@ describe("fanout runtime stability", () => {
     });
   });
 
-  it("blocks fanout aggregation when a failed item has no output artifact", async () => {
+  it("blocks fanout aggregation when a blocked retry-exhausted item has no output artifact", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-fanout-missing-output-"));
     const spec = fanoutSpec(2, { allowPartial: false });
     const prepared = await prepareRun(spec, {
       cwd,
       input: { cwd, items: fanoutInputItems(2) }
     });
-    const firstOutputPath = path.join(prepared.dir, "outputs", "fanout", "item-1.json");
+    const firstOutputPath = path.join(prepared.dir, "outputs", "fanout", "item-1", "worker.json");
     await fs.mkdir(path.dirname(firstOutputPath), { recursive: true });
-    await fs.writeFile(firstOutputPath, `${JSON.stringify(baseOutput({ summary: "done" }), null, 2)}\n`, "utf8");
+    await fs.writeFile(firstOutputPath, `${JSON.stringify({ status: "completed", ...baseOutput({ summary: "done" }) }, null, 2)}\n`, "utf8");
     await writeRunIndex(cwd, {
       ...prepared.index,
       status: "running",
@@ -1638,8 +1933,19 @@ describe("fanout runtime stability", () => {
             blockedItems: 0,
             allowPartial: false,
             items: [
-              { id: "item-1", index: 0, status: "completed", outputPath: path.join("outputs", "fanout", "item-1.json"), completedAt: new Date().toISOString() },
-              { id: "item-2", index: 1, status: "failed", completedAt: new Date().toISOString(), errorCode: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR }
+              { id: "item-1", index: 0, status: "completed", outputPath: path.join("outputs", "fanout", "item-1.json"), completedAt: new Date().toISOString(), lanes: singleLaneLanes("completed") },
+              {
+                id: "item-2",
+                index: 1,
+                status: "blocked",
+                completedAt: new Date().toISOString(),
+                blockedReason: RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED,
+                errorCode: RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED,
+                lanes: singleLaneLanes("blocked", undefined, undefined, {
+                  blockedReason: RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED,
+                  errorCode: RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED
+                })
+              }
             ]
           }
         }
@@ -1653,13 +1959,13 @@ describe("fanout runtime stability", () => {
     const diagnostics = await buildRunDiagnosticsView(cwd, aggregated);
 
     expect(aggregated.status).toBe("blocked");
-    expect(aggregated.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR);
-    expect(aggregated.stages.fanout?.blockedReason).toBe(RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR);
+    expect(aggregated.blockedReason).toBe(RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED);
+    expect(aggregated.stages.fanout?.blockedReason).toBe(RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED);
     expect(aggregate.blockedItems).toContainEqual(expect.objectContaining({
-      blockedReason: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR
+      blockedReason: RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED
     }));
     expect(diagnostics.diagnostics).toContainEqual(expect.objectContaining({
-      code: RuntimeErrorCodes.FANOUT_ITEM_RUNTIME_ERROR
+      code: RuntimeErrorCodes.AGENT_TASK_RETRY_EXHAUSTED
     }));
   });
 
@@ -1688,9 +1994,9 @@ describe("fanout runtime stability", () => {
             blockedItems: 0,
             allowPartial: true,
             items: [
-              { id: "item-1", index: 0, status: "pending" },
-              { id: "item-2", index: 1, status: "running", startedAt, attemptId: "fanout:item-2:attempt-1" },
-              { id: "item-3", index: 2, status: "pending" }
+              { id: "item-1", index: 0, status: "pending", lanes: singleLaneLanes("pending") },
+              { id: "item-2", index: 1, status: "running", startedAt, lanes: singleLaneLanes("running", "fanout:item-2:worker:attempt-1", startedAt) },
+              { id: "item-3", index: 2, status: "pending", lanes: singleLaneLanes("pending") }
             ]
           }
         }
@@ -1715,29 +2021,12 @@ describe("fanout runtime stability", () => {
       ...index,
       agentUsage: {
         ...index.agentUsage,
-        recoveryCalls: 2
+        retryCalls: 2
       }
     });
 
     const persisted = await readRunIndex(cwd, prepared.logicalRunId);
-    expect(persisted.agentUsage.recoveryCalls).toBe(2);
-  });
-
-  it("preserves diagnosed_blocked status during observation-only sync", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-diagnosed-sync-"));
-    setAgentRuntimeFactoryForTests(() => new SelectiveFanoutRuntime("item-2"));
-    const spec = fanoutSpec(2, { allowPartial: false });
-    const prepared = await prepareRun(spec, {
-      cwd,
-      input: { cwd, items: [{ id: "item-1" }, { id: "item-2" }] }
-    });
-    await startPreparedRun(cwd, prepared);
-
-    const diagnosed = await startDiagnosticRun(cwd, prepared.logicalRunId);
-    const observed = await syncRun(cwd, prepared.logicalRunId, { startPending: false });
-
-    expect(diagnosed.status).toBe("diagnosed_blocked");
-    expect(observed.status).toBe("diagnosed_blocked");
+    expect(persisted.agentUsage.retryCalls).toBe(2);
   });
 
   it("does not use agent call accounting as a scheduler budget", async () => {
@@ -1775,11 +2064,7 @@ function fanoutSpec(
     schemaVersion: "acpus.workflow/v1",
     name: "fanout-stability",
     root: "fanout",
-    inputs: {
-      cwd: { type: "path" },
-      items: { type: "array<json>" }
-    },
-    roles: { worker: { category: "coordination", agent: "fake", mode: "readOnly" } },
+    input: { schema: "{cwd:string,items:[{id:string,path?:string,area?:string,kind?:string}]}" },
     limits: { stageTimeoutMinutes: 1 },
     stages: [{
       id: "fanout",
@@ -1790,8 +2075,33 @@ function fanoutSpec(
         maxFanoutItems: limits.maxFanoutItems ?? count
       },
       prompt: "Handle one item",
-      laneGroups: [{ id: "work", mode: "all", lanes: [{ id: "worker", role: "worker" }] }],
+      lanes: [{ id: "worker", actor: { agent: "fake", mode: "readOnly", label: "worker" } }],
+      fanin: { mode: "program", operation: "mergeArrays" },
       fanoutPolicy: policy
+    }]
+  });
+}
+
+function fanoutLaneFilterSpec(name: string, lanes: Array<{
+  id: string;
+  actor: { agent: string; mode: "denyAll" | "readOnly" | "edit"; label?: string };
+  when?: { source: string; op: "eq"; value: unknown };
+}>): WorkflowSpec {
+  return WorkflowSpecSchema.parse({
+    schemaVersion: "acpus.workflow/v1",
+    name,
+    root: "fanout",
+    input: { schema: "{cwd:string,items:[{id:string,path?:string,area?:string,kind?:string}]}" },
+    limits: { stageTimeoutMinutes: 1 },
+    stages: [{
+      id: "fanout",
+      kind: "fanout",
+      items: { source: "input.items" },
+      limits: { maxConcurrency: 2, maxFanoutItems: 10 },
+      prompt: "Handle one item",
+      lanes,
+      fanin: { mode: "program", operation: "mergeArrays" },
+      fanoutPolicy: { allowPartial: false }
     }]
   });
 }
@@ -1800,16 +2110,28 @@ function fanoutInputItems(count: number): Array<{ id: string }> {
   return Array.from({ length: count }, (_, index) => ({ id: `item-${index + 1}` }));
 }
 
+function singleLaneLanes(
+  status: RunIndex["stages"][string]["status"],
+  attemptId?: string,
+  startedAt?: string,
+  extra: Record<string, unknown> = {}
+): NonNullable<NonNullable<RunIndex["stages"][string]["fanout"]>["items"][number]["lanes"]> {
+  return [{
+    id: "worker",
+    actorLabel: "worker",
+    status,
+    attemptId,
+    startedAt,
+    ...extra
+  }];
+}
+
 function loopFanoutRealtimeSpec(): WorkflowSpec {
   return WorkflowSpecSchema.parse({
     schemaVersion: "acpus.workflow/v1",
     name: "loop-fanout-realtime",
     root: "review_loop",
-    inputs: {
-      cwd: { type: "path" },
-      items: { type: "array<json>" }
-    },
-    roles: { worker: { category: "coordination", agent: "fake", mode: "readOnly" } },
+    input: { schema: "{cwd:string,items:[{id:string,path?:string,area?:string,kind?:string}]}" },
     limits: { stageTimeoutMinutes: 1 },
     stages: [{
       id: "review_loop",
@@ -1824,11 +2146,12 @@ function loopFanoutRealtimeSpec(): WorkflowSpec {
           items: { source: "input.items" },
           limits: { maxConcurrency: 1, maxFanoutItems: 1 },
           prompt: "Review loop fanout item",
-          laneGroups: [{ id: "work", mode: "all", lanes: [{ id: "worker", role: "worker" }] }],
+          lanes: [{ id: "worker", actor: { agent: "fake", mode: "readOnly", label: "worker" } }],
+          fanin: { mode: "program", operation: "mergeArrays" },
           fanoutPolicy: { allowPartial: false }
         }]
       },
-      continueWhen: { source: "loop.current.output.status", op: "eq", value: "again" },
+      continueWhen: { source: "loop.round", op: "eq", value: 0 },
       onExhausted: "blocked"
     }]
   });
@@ -1904,12 +2227,9 @@ function gateSpec(cwd: string): WorkflowSpec {
     schemaVersion: "acpus.workflow/v1",
     name: "gate-verdict",
     root: "gate",
-    inputs: { cwd: { type: "path", default: cwd } },
-    roles: {
-      gater: { category: "validation", agent: "fake", mode: "readOnly" }
-    },
+    input: { schema: "{cwd:string}", default: { cwd } },
     limits: { stageTimeoutMinutes: 1 },
-    stages: [{ id: "gate", kind: "gate", mode: "agent", role: "gater", prompt: "Gate" }]
+    stages: [{ id: "gate", kind: "gate", mode: "agent", actor: { agent: "fake", mode: "readOnly", label: "gater" }, prompt: "Gate" }]
   });
 }
 
@@ -1918,14 +2238,11 @@ function usageAccountingSpec(cwd: string): WorkflowSpec {
     schemaVersion: "acpus.workflow/v1",
     name: "agent-usage-not-budget",
     root: "plan",
-    inputs: { cwd: { type: "path", default: cwd } },
-    roles: {
-      worker: { category: "coordination", agent: "fake", mode: "readOnly" }
-    },
+    input: { schema: "{cwd:string}", default: { cwd } },
     limits: { stageTimeoutMinutes: 1 },
     stages: [
-      { id: "plan", kind: "agentTask", role: "worker", prompt: "Plan" },
-      { id: "validate", kind: "agentTask", role: "worker", dependsOn: ["plan"], prompt: "Validate" }
+      { id: "plan", kind: "task", mode: "agent", actor: { agent: "fake", mode: "readOnly", label: "worker" }, prompt: "Plan" },
+      { id: "validate", kind: "task", mode: "agent", actor: { agent: "fake", mode: "readOnly", label: "worker" }, dependsOn: ["plan"], prompt: "Validate" }
     ]
   });
 }
@@ -1935,12 +2252,31 @@ function simpleTaskSpec(cwd: string): WorkflowSpec {
     schemaVersion: "acpus.workflow/v1",
     name: "simple-task",
     root: "task",
-    inputs: { cwd: { type: "path", default: cwd } },
-    roles: {
-      worker: { category: "coordination", agent: "fake", mode: "readOnly" }
-    },
+    input: { schema: "{cwd:string}", default: { cwd } },
     limits: { stageTimeoutMinutes: 1 },
-    stages: [{ id: "task", kind: "agentTask", role: "worker", prompt: "Do work" }]
+    stages: [{ id: "task", kind: "task", mode: "agent", actor: { agent: "fake", mode: "readOnly", label: "worker" }, prompt: "Do work" }]
+  });
+}
+
+function programTouchSpec(cwd: string, allowMutation: boolean): WorkflowSpec {
+  return WorkflowSpecSchema.parse({
+    schemaVersion: "acpus.workflow/v1",
+    name: "program-touch",
+    root: "touch_file",
+    input: { schema: "{cwd:string}", default: { cwd } },
+    limits: { stageTimeoutMinutes: 1 },
+    stages: [
+      {
+        id: "touch_file",
+        kind: "task",
+        mode: "program",
+        operation: "command",
+        command: "touch",
+        args: ["marker.txt"],
+        allowMutation
+      },
+      { id: "gate", kind: "gate", mode: "program", dependsOn: ["touch_file"] }
+    ]
   });
 }
 
@@ -1949,10 +2285,7 @@ function loopOnlySpec(cwd: string): WorkflowSpec {
     schemaVersion: "acpus.workflow/v1",
     name: "loop-only",
     root: "quality_loop",
-    inputs: { cwd: { type: "path", default: cwd } },
-    roles: {
-      reviewer: { category: "coordination", agent: "fake", mode: "readOnly" }
-    },
+    input: { schema: "{cwd:string}", default: { cwd } },
     limits: { stageTimeoutMinutes: 1 },
     stages: [{
       id: "quality_loop",
@@ -1963,8 +2296,7 @@ function loopOnlySpec(cwd: string): WorkflowSpec {
         output: "review",
         stages: [{
           id: "review",
-          kind: "agentTask",
-          role: "reviewer",
+          kind: "task", mode: "agent", actor: { agent: "fake", mode: "readOnly", label: "reviewer" },
           prompt: "Review"
         }]
       },
@@ -1979,10 +2311,7 @@ function loopContinueWithPreviousSpec(cwd: string): WorkflowSpec {
     schemaVersion: "acpus.workflow/v1",
     name: "loop-previous-continue",
     root: "quality_loop",
-    inputs: { cwd: { type: "path", default: cwd } },
-    roles: {
-      reviewer: { category: "coordination", agent: "fake", mode: "readOnly" }
-    },
+    input: { schema: "{cwd:string}", default: { cwd } },
     limits: { stageTimeoutMinutes: 1 },
     stages: [{
       id: "quality_loop",
@@ -1993,8 +2322,7 @@ function loopContinueWithPreviousSpec(cwd: string): WorkflowSpec {
         output: "review",
         stages: [{
           id: "review",
-          kind: "agentTask",
-          role: "reviewer",
+          kind: "task", mode: "agent", actor: { agent: "fake", mode: "readOnly", label: "reviewer" },
           prompt: "Review"
         }]
       },
@@ -2014,15 +2342,11 @@ function missingVariableSpec(cwd: string): WorkflowSpec {
     schemaVersion: "acpus.workflow/v1",
     name: "missing-variable",
     root: "task",
-    inputs: { cwd: { type: "path", default: cwd } },
-    roles: {
-      worker: { category: "coordination", agent: "fake", mode: "readOnly" }
-    },
+    input: { schema: "{cwd:string}", default: { cwd } },
     limits: { stageTimeoutMinutes: 1 },
     stages: [{
       id: "task",
-      kind: "agentTask",
-      role: "worker",
+      kind: "task", mode: "agent", actor: { agent: "fake", mode: "readOnly", label: "worker" },
       variables: [{ name: "missing", source: "outputs.nope.summary" }],
       prompt: "Use ${missing}"
     }]
@@ -2034,10 +2358,7 @@ function loopMissingVariableSpec(cwd: string): WorkflowSpec {
     schemaVersion: "acpus.workflow/v1",
     name: "loop-missing-variable",
     root: "quality_loop",
-    inputs: { cwd: { type: "path", default: cwd } },
-    roles: {
-      reviewer: { category: "coordination", agent: "fake", mode: "readOnly" }
-    },
+    input: { schema: "{cwd:string}", default: { cwd } },
     limits: { stageTimeoutMinutes: 1 },
     stages: [{
       id: "quality_loop",
@@ -2048,8 +2369,7 @@ function loopMissingVariableSpec(cwd: string): WorkflowSpec {
         output: "review",
         stages: [{
           id: "review",
-          kind: "agentTask",
-          role: "reviewer",
+          kind: "task", mode: "agent", actor: { agent: "fake", mode: "readOnly", label: "reviewer" },
           variables: [{ name: "missing", source: "outputs.nope.summary" }],
           prompt: "Review ${missing}"
         }]
@@ -2065,13 +2385,7 @@ function loopFanoutMissingVariableSpec(cwd: string): WorkflowSpec {
     schemaVersion: "acpus.workflow/v1",
     name: "loop-fanout-missing-variable",
     root: "quality_loop",
-    inputs: {
-      cwd: { type: "path", default: cwd },
-      items: { type: "array<json>" }
-    },
-    roles: {
-      worker: { category: "coordination", agent: "fake", mode: "readOnly" }
-    },
+    input: { schema: "{cwd:string,items:[{id:string,path?:string,area?:string,kind?:string}]}", default: { cwd } },
     limits: { stageTimeoutMinutes: 1 },
     stages: [{
       id: "quality_loop",
@@ -2087,7 +2401,8 @@ function loopFanoutMissingVariableSpec(cwd: string): WorkflowSpec {
           limits: { maxConcurrency: 1, maxFanoutItems: 1 },
           variables: [{ name: "missing", source: "outputs.nope.summary" }],
           prompt: "Review ${missing}",
-          laneGroups: [{ id: "work", mode: "all", lanes: [{ id: "worker", role: "worker" }] }],
+          lanes: [{ id: "worker", actor: { agent: "fake", mode: "readOnly", label: "worker" } }],
+          fanin: { mode: "program", operation: "mergeArrays" },
           fanoutPolicy: { allowPartial: false }
         }]
       },
@@ -2099,29 +2414,23 @@ function loopFanoutMissingVariableSpec(cwd: string): WorkflowSpec {
 
 function loopFanoutSpec(cwd: string, options: {
   maxConcurrency?: number;
-  laneGroups: Array<{
+  lanes: Array<{
     id: string;
-    mode: "all" | "oneOf";
-    lanes: Array<{
-      id: string;
-      role: string;
-      when?: { source: string; op: "eq"; value: unknown };
-      default?: boolean;
-    }>;
+    actor: { agent: string; mode: "denyAll" | "readOnly" | "edit"; label?: string };
+    when?: { source: string; op: "eq"; value: unknown };
   }>;
   allowPartial?: boolean;
+  fanin?: {
+    mode: "agent";
+    actor: { agent: string; mode: "denyAll" | "readOnly" | "edit"; label?: string };
+    prompt: string;
+  };
 }): WorkflowSpec {
   return WorkflowSpecSchema.parse({
     schemaVersion: "acpus.workflow/v1",
     name: "loop-fanout",
     root: "quality_loop",
-    inputs: {
-      cwd: { type: "path", default: cwd },
-      items: { type: "array<json>" }
-    },
-    roles: {
-      worker: { category: "coordination", agent: "fake", mode: "readOnly" }
-    },
+    input: { schema: "{cwd:string,items:[{id:string,path?:string,area?:string,kind?:string}]}", default: { cwd } },
     limits: { stageTimeoutMinutes: 1 },
     stages: [{
       id: "quality_loop",
@@ -2136,7 +2445,8 @@ function loopFanoutSpec(cwd: string, options: {
           items: { source: "input.items" },
           limits: { maxConcurrency: options.maxConcurrency ?? 1, maxFanoutItems: 10 },
           prompt: "Review item",
-          laneGroups: options.laneGroups,
+          lanes: options.lanes,
+          fanin: options.fanin ?? { mode: "program", operation: "mergeArrays" },
           fanoutPolicy: { allowPartial: options.allowPartial ?? false }
         }]
       },
@@ -2151,10 +2461,7 @@ function loopCurrentOutputSpec(cwd: string): WorkflowSpec {
     schemaVersion: "acpus.workflow/v1",
     name: "loop-current-output",
     root: "quality_loop",
-    inputs: { cwd: { type: "path", default: cwd } },
-    roles: {
-      reviewer: { category: "coordination", agent: "fake", mode: "readOnly" }
-    },
+    input: { schema: "{cwd:string}", default: { cwd } },
     limits: { stageTimeoutMinutes: 1 },
     stages: [{
       id: "quality_loop",
@@ -2164,11 +2471,10 @@ function loopCurrentOutputSpec(cwd: string): WorkflowSpec {
         root: "review",
         output: "review",
         stages: [
-          { id: "review", kind: "agentTask", role: "reviewer", prompt: "Review" },
+          { id: "review", kind: "task", mode: "agent", actor: { agent: "fake", mode: "readOnly", label: "reviewer" }, prompt: "Review" },
           {
             id: "after",
-            kind: "agentTask",
-            role: "reviewer",
+            kind: "task", mode: "agent", actor: { agent: "fake", mode: "readOnly", label: "reviewer" },
             dependsOn: ["review"],
             variables: [{ name: "summary", source: "loop.current.output.summary" }],
             prompt: "After ${summary}"
@@ -2286,7 +2592,7 @@ class GateVerdictRuntime implements OrchestratorAgentRuntime {
   constructor(private readonly verdict: "blocked" | "failed" | "unknown") {}
 
   async runTurn(input: AgentTurnRequest, onEvent?: (event: AcpRuntimeEvent) => Promise<void> | void): Promise<AgentTurnResult> {
-    const rawText = plainJsonOutput(gateOutput({ status: "blocked", verdict: this.verdict }));
+    const rawText = plainJsonOutput(gateOutput({ verdict: this.verdict }));
     const event: AcpRuntimeEvent = { type: "text_delta", text: rawText, stream: "output" };
     await onEvent?.(event);
     return {
@@ -2348,7 +2654,7 @@ class DelayedFanoutRuntime implements OrchestratorAgentRuntime {
 }
 
 function itemIdFromSessionKey(sessionKey: string): string {
-  return (sessionKey.split(":item:").at(-1) ?? sessionKey).split(":group:")[0];
+  return (sessionKey.split(":item:").at(-1) ?? sessionKey).split(":lane:")[0];
 }
 
 async function sleep(ms: number): Promise<void> {

@@ -1,6 +1,6 @@
 # Error Codes
 
-Acpus errors are designed for Main Agent repair loops. Each error carries a structured payload:
+Acpus errors are designed for Main Agent recovery loops. Each error carries a structured payload:
 
 ```json
 {
@@ -24,29 +24,29 @@ Code families are stable. Rename them only with deliberate intent and coordinate
 
 | Family | Scope |
 |---|---|
-| `SCHEMA_*` | JSON shape, version, file read, declared input, or runtime input errors. |
-| `GRAPH_*` | Root, dependency, cycle, branching, deprecated summarize, or terminal gate errors. |
+| `SCHEMA_*` | YAML spec shape, version, file read, declared input, or runtime input errors. |
+| `GRAPH_*` | Root, dependency, cycle, route, fanout, or terminal gate errors. |
 | `VARIABLE_*` | Prompt placeholder and variable source errors. |
-| `ROLE_*` | Unknown role or role/mode conflict. |
+| `ACTOR_*` | Invalid actor declaration or actor mode conflict. |
 | `LIMIT_*` | Global hard limit or stage-limit errors. |
-| `DECISION_*` | Invalid decision target or default routing. |
-| `DISCOVER_*` | Invalid agent discover declaration. |
-| `FANOUT_*` | Edit fanout risk or missing reconcile stage. |
-| `OUTPUT_*` | Runtime output parse, schema, ambiguity, or repair errors. |
-| `RUNTIME_*` | Logical run index, scheduler, session, or command errors. |
+| `ROUTE_*` | Invalid route target, route list mismatch, or unmatched routing. |
+| `FANOUT_*` | Fanout lane selection, fanout item, and fanin aggregation errors. |
+| `OUTPUT_*` | Runtime output parse or schema errors. |
+| `PROGRAM_*` | Program command and program fanin errors. |
+| `RUNTIME_*` | Logical run index, scheduler, session, or persistence errors. |
 | `RESUME_*` | Resume policy errors. |
 | `ACPX_*` | Upstream `acpx/runtime` startup, session, or turn errors. |
 | `INTERNAL_*` | Unexpected compiler or runtime invariant failure. |
 
-## Output Contract Codes
+## Output Schema Codes
 
-These codes are emitted by the runtime output parser when an agent response fails to satisfy its stage's output contract.
+These codes are emitted by the runtime output parser when an agent response fails to satisfy its stage's output schema.
 
-- **OUTPUT_PARSE_FAILED** -- No balanced JSON object could be parsed from the agent response.
-- **OUTPUT_SCHEMA_FAILED** -- A balanced JSON object was found, but it did not satisfy the stage-specific Zod-backed output contract.
-- **OUTPUT_REPAIR_FAILED** -- The single allowed schema-aware repair turn did not produce a valid balanced JSON object.
+- **OUTPUT_PARSE_FAILED** -- The agent response did not contain a parseable final JSON object.
+- **OUTPUT_SCHEMA_FAILED** -- The JSON response did not satisfy the executable output schema.
+- **AGENT_TASK_RETRY_EXHAUSTED** -- The Agent Work Unit exhausted its shared retry budget before producing a usable terminal result.
 
-Output contract failures map to blocked state at the attempt, stage, or run level -- not failed. The `failed` state is reserved for compiler errors, scheduler failures, ACPX (upstream) runtime errors, or other unrecoverable conditions.
+Output schema failures map to blocked state at the attempt, stage, or run level -- not failed. The `failed` state is reserved for compiler errors, scheduler failures, ACPX (upstream) runtime errors, or other unrecoverable conditions.
 
 ## Runtime Run-Level Codes
 
@@ -59,13 +59,20 @@ These codes appear in diagnostics when the scheduler or persistence layer encoun
 - **MISSING_FANOUT_ITEM_OUTPUT** -- A terminal fanout item did not have a readable output artifact when the scheduler aggregated results.
 - **FANOUT_STAGE_STUCK_PENDING_BATCH** -- A fanout stage had queued item state that could not progress to terminal item results.
 - **RUN_INDEX_OUTPUT_MISMATCH** -- Persisted run-index state and output artifacts disagree about a stage or item result.
-- **AGENT_RUNTIME_ERROR** -- A non-fanout agent runtime turn failed after one transient retry. This covers backend, process, or transport failures -- not output contract failures.
+- **AGENT_RUNTIME_ERROR** -- A non-fanout agent runtime turn failed after one transient retry. This covers backend, process, or transport failures -- not output schema failures.
 - **FANOUT_ITEM_RUNTIME_ERROR** -- A fanout item runtime turn failed after one transient retry, or stale recovery exhausted retries for that item.
 - **FANOUT_ITEM_CASCADE_BLOCKED** -- A queued fanout item was not launched because an earlier item blocked or failed while partial fanout was disabled. The scheduler lets already-running items settle, then marks the fanout stage as blocked.
 - **GATE_CONDITION_FAILED** -- A program gate condition evaluated to false.
 - **GATE_VERDICT_BLOCKED** -- The terminal gate returned `verdict: "blocked"`.
 - **GATE_VERDICT_FAILED** -- The terminal gate returned `verdict: "failed"`. The run records a blocked workflow outcome; the runtime `failed` state remains reserved for infrastructure failures.
 - **GATE_VERDICT_UNKNOWN** -- The terminal gate returned `verdict: "unknown"`. Inspect the gate output and upstream fanout item outputs before treating the workflow as verified.
+
+## Program Command Codes
+
+- **PROGRAM_COMMAND_CWD_INVALID** -- A program task requested a working directory outside the project.
+- **PROGRAM_COMMAND_TIMEOUT** -- A program task command exceeded its configured timeout.
+- **PROGRAM_COMMAND_SPAWN_FAILED** -- A program task command could not be spawned.
+- **PROGRAM_COMMAND_SAFETY_VIOLATION** -- A program task command was blocked by the read-only safety policy; set `allowMutation: true` only when mutation is intended.
 
 ## Command and Turn Diagnostics
 

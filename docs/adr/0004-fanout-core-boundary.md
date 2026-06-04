@@ -16,7 +16,7 @@ Fanout Core does not read author-facing schema, know about `maxConcurrency`, run
 
 ## Consequences
 
-Top-level fanout and Loop Body fanout call the same Fanout Core for behavior that must not drift: Lane Group selection, `oneOf` failure handling, skipped item handling, partial policy, item output shape, stage aggregate shape, blocked lane diagnostics, and fanout summary counts.
+Top-level fanout and Loop Body fanout call the same Fanout Core for behavior that must not drift: lane filter evaluation, skipped lane/item handling, partial policy, item output shape, stage aggregate shape, blocked lane diagnostics, and fanout summary counts.
 
 Their adapters remain responsible for execution lifecycle concerns: top-level scheduler pool draining, resume and stale recovery, loop round sequencing, session keys, attempt identity, output paths, run-index updates, and event emission.
 

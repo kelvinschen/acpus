@@ -11,7 +11,7 @@ export default defineConfig({
   platform: "node",
   target: "node22",
   deps: {
-    alwaysBundle: [/^(commander|proper-lockfile|zod|jsonrepair)(\/.*)?$/],
+    alwaysBundle: [/^(commander|proper-lockfile|zod)(\/.*)?$/],
     onlyBundle: false,
     dts: {
       neverBundle: [/^zod(\/.*)?$/]

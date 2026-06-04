@@ -1,12 +1,14 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Command } from "commander";
+import YAML from "yaml";
 import { issue, resultFromIssues, type OrchestratorIssue } from "../errors.js";
+import type { ExecutionPlan } from "../compiler/execution-plan.js";
 import { resolveRunLocator } from "../run-index/locator.js";
 import { runDir } from "../run-index/paths.js";
 import { appendEvent, readRunIndex, writeRunIndex } from "../run-index/read-write.js";
 import { mergeResumePolicy, parseResumePolicyOptions, validateResumePolicy } from "../runtime/resume-policy.js";
-import { runWorkflowWorker, spawnBackgroundWorker, workerIsActive, WORKER_STALE_AFTER_MS } from "../runtime/worker.js";
+import { runWorkflowWorker, spawnBackgroundWorker, workerIsActive } from "../runtime/worker.js";
 import { WorkflowSpecSchema, type WorkflowSpec } from "../schema/workflow-spec.js";
 import { printIssues, printJson } from "./common.js";
 
@@ -24,8 +26,9 @@ export function registerResume(program: Command): void {
     .action(async (runArg: string, options: { allowPartialFanout?: string[]; maxFanoutItems?: string[]; skipFanoutItem?: string[]; force?: boolean; wait?: boolean; json?: boolean }) => {
       const locator = await resolveRunLocator(runArg);
       const spec = await readRunSpec(locator.cwd, locator.runId);
+      const plan = await readRunPlan(locator.cwd, locator.runId);
       const parsedPolicy = parseResumePolicyOptions(options);
-      const policyIssues = [...parsedPolicy.issues, ...validateResumePolicy(spec, parsedPolicy.policy)];
+      const policyIssues = [...parsedPolicy.issues, ...validateResumePolicy(spec, parsedPolicy.policy, plan)];
       if (policyIssues.some((entry) => entry.severity !== "warning")) {
         printResumeIssues(options.json, policyIssues);
         process.exitCode = 2;
@@ -36,8 +39,8 @@ export function registerResume(program: Command): void {
 
       // Status validation
       const allowedStatuses = options.force
-        ? new Set(["blocked", "failed", "diagnosed_blocked", "running", "pending"])
-        : new Set(["blocked", "failed", "diagnosed_blocked"]);
+        ? new Set(["blocked", "failed", "running", "pending"])
+        : new Set(["blocked", "failed"]);
       if (TERMINAL_STATUSES.has(index.status) || !allowedStatuses.has(index.status)) {
         const hint = options.force && (index.status === "running" || index.status === "pending")
           ? "Use monitor to observe the active run."
@@ -48,7 +51,7 @@ export function registerResume(program: Command): void {
           code: "RESUME_POLICY_INVALID",
           severity: "error",
           path: "/",
-          message: `Run ${locator.runId} is ${index.status}; resume is only for blocked, failed, or diagnosed_blocked runs${options.force ? " (or running with --force)" : ""}.`,
+          message: `Run ${locator.runId} is ${index.status}; resume is only for blocked or failed runs${options.force ? " (or running with --force)" : ""}.`,
           suggestions: [hint]
         })]);
         process.exitCode = 2;
@@ -68,21 +71,15 @@ export function registerResume(program: Command): void {
         return;
       }
       if (workerIsActive(index.worker) && options.force) {
-        // --force allows resuming past a stale-but-heartbeating worker,
-        // but if the worker is truly active (recent heartbeat), still reject.
-        const staleThreshold = WORKER_STALE_AFTER_MS;
-        const heartbeatAge = Date.now() - Date.parse(index.worker!.heartbeatAt);
-        if (heartbeatAge <= staleThreshold) {
-          printResumeIssues(options.json, [issue({
-            code: "RESUME_POLICY_INVALID",
-            severity: "error",
-            path: "/",
-            message: `Run ${locator.runId} has an active worker pid=${index.worker?.pid} with a recent heartbeat; --force cannot take ownership of a truly active worker.`,
-            suggestions: ["Use monitor to observe the active run, or wait for the worker to become stale."]
-          })]);
-          process.exitCode = 2;
-          return;
-        }
+        printResumeIssues(options.json, [issue({
+          code: "RESUME_POLICY_INVALID",
+          severity: "error",
+          path: "/",
+          message: `Run ${locator.runId} has an active worker pid=${index.worker?.pid}; --force cannot take ownership of an active worker.`,
+          suggestions: ["Use monitor to observe the active run, or wait for the worker to become stale."]
+        })]);
+        process.exitCode = 2;
+        return;
       }
 
       const reset = resetRecoverableStages({
@@ -119,7 +116,11 @@ export function registerResume(program: Command): void {
 }
 
 async function readRunSpec(cwd: string, runId: string): Promise<WorkflowSpec> {
-  return WorkflowSpecSchema.parse(JSON.parse(await fs.readFile(path.join(runDir(runId, cwd), "workflow.spec.json"), "utf8")));
+  return WorkflowSpecSchema.parse(YAML.parse(await fs.readFile(path.join(runDir(runId, cwd), "workflow.spec.yaml"), "utf8")));
+}
+
+async function readRunPlan(cwd: string, runId: string): Promise<ExecutionPlan> {
+  return JSON.parse(await fs.readFile(path.join(runDir(runId, cwd), "execution-plan.json"), "utf8")) as ExecutionPlan;
 }
 
 function resetRecoverableStages(index: Awaited<ReturnType<typeof readRunIndex>>, spec: WorkflowSpec) {

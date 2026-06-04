@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detailSummary, defaultStageIndex, shorten, statusMark, tasksForStage } from "../../src/tui/monitor-rendering.js";
+import { detailSummary, defaultStageIndex, runStatusLabel, shorten, statusMark, tasksForStage } from "../../src/tui/monitor-rendering.js";
 import type { RunMonitorView, TaskDetailView } from "../../src/projections/run-monitor.js";
 
 describe("monitor TUI rendering helpers", () => {
@@ -27,6 +27,21 @@ describe("monitor TUI rendering helpers", () => {
     expect(statusMark("completed")).toBe("✔");
   });
 
+  it("labels non-terminal runs with stale workers as stale for monitor display", () => {
+    const view = monitorView();
+    view.run.worker = {
+      pid: 1234,
+      generation: 1,
+      status: "stale",
+      startedAt: "2026-06-02T00:00:00.000Z",
+      heartbeatAt: "2026-06-02T00:00:01.000Z",
+      exitedAt: undefined,
+      exitCode: undefined
+    };
+
+    expect(runStatusLabel(view)).toBe("stale");
+  });
+
   it("builds bounded detail summary without token or tool-call labels", () => {
     const detail: TaskDetailView = {
       version: "acpus.task-detail/v1",
@@ -41,8 +56,7 @@ describe("monitor TUI rendering helpers", () => {
       outcome: {
         path: "outputs/task.json",
         status: "completed",
-        summary: "Done.",
-        artifacts: [{ kind: "file", path: "src/task.ts" }]
+        summary: "Done."
       }
     };
     const text = detailSummary(detail).join("\n");
@@ -55,7 +69,7 @@ describe("monitor TUI rendering helpers", () => {
 function stage(id: string, status: RunMonitorView["stages"][number]["status"]): RunMonitorView["stages"][number] {
   return {
     id,
-    kind: "agentTask",
+    kind: "task",
     status,
     dependsOn: [],
     taskCounts: { total: 1, pending: 0, running: status === "running" ? 1 : 0, completed: status === "completed" ? 1 : 0, blocked: status === "blocked" ? 1 : 0, failed: 0, skipped: 0 }

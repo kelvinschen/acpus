@@ -1,35 +1,34 @@
-import type { FanoutLaneGroupPlan } from "../compiler/execution-plan.js";
+import type { FanoutLanePlan } from "../compiler/execution-plan.js";
 import { RuntimeErrorCodes, type StageIndexEntry, type StageStatus } from "../run-index/read-write.js";
-import type { ConditionNode } from "../schema/workflow-spec.js";
+import type { Actor, ConditionNode } from "../schema/workflow-spec.js";
 
 export type FanoutCorePlan = {
   allowPartial: boolean;
   minCompletedRatio?: number;
   maxBlockedItems?: number;
-  laneGroups: FanoutLaneGroupPlan[];
+  lanes: FanoutLanePlan[];
 };
 
 export type FanoutCoreItem = NonNullable<StageIndexEntry["fanout"]>["items"][number];
-export type FanoutCoreGroup = NonNullable<FanoutCoreItem["groups"]>[number];
-export type FanoutCoreLane = FanoutCoreGroup["lanes"][number];
+export type FanoutCoreLane = FanoutCoreItem["lanes"][number];
 
 export type FanoutCoreWorkUnit = {
   item: unknown;
   itemIndex: number;
   itemId: string;
-  groupId: string;
   laneId: string;
-  roleName: string;
+  actorLabel: string;
+  actor: Actor;
   promptId: string;
-  contract: FanoutLaneGroupPlan["lanes"][number]["contract"];
+  outputSchema: FanoutLanePlan["outputSchema"];
+  implicitOutputFields: FanoutLanePlan["implicitOutputFields"];
 };
 
 export type FanoutCoreLaneResult = {
   itemId: string;
   itemIndex: number;
-  groupId: string;
   laneId: string;
-  roleName: string;
+  actorLabel: string;
   status: StageStatus;
   output: Record<string, unknown>;
   outputPath: string;
@@ -39,6 +38,10 @@ export type FanoutCoreLaneResult = {
 
 export type FanoutCoreItemOutput = Record<string, unknown>;
 
+type FanoutCoreItemOutputLane = FanoutCoreLane & {
+  output?: Record<string, unknown>;
+};
+
 export type FanoutCoreAggregate = {
   status: "completed" | "blocked";
   summary: string;
@@ -46,8 +49,7 @@ export type FanoutCoreAggregate = {
   laneOutputs: FanoutCoreLaneResult[];
   blockedItems: Record<string, unknown>[];
   skippedItems: Array<{ id: string; index: number; status: "skipped"; skippedReason?: string }>;
-  artifacts: unknown[];
-  nextFocus: string;
+  skippedLanes: Array<{ itemId: string; itemIndex: number; laneId: string; actorLabel: string; skippedReason?: string }>;
   blockedReason?: string;
 };
 
@@ -72,99 +74,76 @@ export function expandFanoutItems(input: {
   for (let itemIndex = 0; itemIndex < input.items.length; itemIndex += 1) {
     const item = input.items[itemIndex];
     const itemId = input.itemIdFor(item, itemIndex);
-    const groups: FanoutCoreGroup[] = [];
-    const selectionErrors: string[] = [];
-    const itemWorkUnits: FanoutCoreWorkUnit[] = [];
     const local = input.localForItem(item, itemIndex);
+    const lanes = input.plan.lanes.map((lane) => {
+      const selected = !lane.when || input.evaluate(lane.when, input.outputs, input.workflowInput, local);
+      return {
+        id: lane.id,
+        actorLabel: actorLabel(lane.actor, lane.id),
+        status: selected ? "pending" as StageStatus : "skipped" as StageStatus,
+        skippedReason: selected ? undefined : RuntimeErrorCodes.NO_SELECTED_LANES
+      };
+    });
+    const selectedLanes = lanes.filter((lane) => lane.status !== "skipped");
 
-    for (const group of input.plan.laneGroups) {
-      const matched = group.lanes.filter((lane) => lane.default !== true && (!lane.when || input.evaluate(lane.when, input.outputs, input.workflowInput, local)));
-      const defaultLane = group.lanes.find((lane) => lane.default === true);
-      const selected = group.mode === "all"
-        ? matched
-        : matched.length === 1 ? matched : matched.length === 0 && defaultLane ? [defaultLane] : [];
-      if (group.mode === "oneOf" && matched.length > 1) {
-        selectionErrors.push(`oneOf group ${group.id} matched multiple lanes: ${matched.map((lane) => lane.id).join(", ")}`);
-      } else if (group.mode === "oneOf" && selected.length === 0) {
-        selectionErrors.push(`oneOf group ${group.id} matched no lane and has no default.`);
-      }
-      if (selected.length === 0) continue;
-      groups.push({
-        id: group.id,
-        mode: group.mode,
-        status: "pending",
-        lanes: selected.map((lane) => ({ id: lane.id, roleName: lane.roleName, status: "pending" }))
-      });
-      for (const lane of selected) {
-        itemWorkUnits.push({
-          item,
-          itemIndex,
-          itemId,
-          groupId: group.id,
-          laneId: lane.id,
-          roleName: lane.roleName,
-          promptId: lane.promptId,
-          contract: lane.contract
-        });
-      }
-    }
-
-    if (selectionErrors.length > 0) {
+    if (selectedLanes.length === 0) {
       const itemOutput = {
-        status: "blocked",
-        summary: `Fanout item ${itemId} lane selection failed.`,
-        artifacts: [],
-        nextFocus: "diagnose",
+        status: "skipped",
+        summary: `Fanout item ${itemId} selected no lanes.`,
         itemId,
         itemIndex,
-        groups,
+        lanes,
         laneOutputs: [],
-        blockedReason: RuntimeErrorCodes.FANOUT_LANE_SELECTION_FAILED,
-        errorCode: RuntimeErrorCodes.FANOUT_LANE_SELECTION_FAILED,
-        errorMessage: selectionErrors.join(" ")
+        skippedLanes: lanes.map((lane) => ({
+          itemId,
+          itemIndex,
+          laneId: lane.id,
+          actorLabel: lane.actorLabel,
+          skippedReason: RuntimeErrorCodes.NO_SELECTED_LANES
+        })),
+        skippedReason: RuntimeErrorCodes.NO_SELECTED_LANES
       };
       preExecutionItemOutputs.set(itemIndex, itemOutput);
-      fanoutItems.push({ id: itemId, index: itemIndex, status: "blocked", blockedReason: RuntimeErrorCodes.FANOUT_LANE_SELECTION_FAILED, errorCode: RuntimeErrorCodes.FANOUT_LANE_SELECTION_FAILED, errorMessage: selectionErrors.join(" "), groups });
-    } else if (groups.length === 0) {
-      preExecutionItemOutputs.set(itemIndex, {
-        status: "skipped",
-        summary: `Fanout item ${itemId} produced no matching lanes.`,
-        artifacts: [],
-        nextFocus: "reduce",
-        itemId,
-        itemIndex,
-        groups: [],
-        laneOutputs: [],
-        skippedReason: RuntimeErrorCodes.NO_MATCHING_LANES
-      });
-      fanoutItems.push({ id: itemId, index: itemIndex, status: "skipped", skippedReason: RuntimeErrorCodes.NO_MATCHING_LANES, groups: [] });
-    } else {
-      workUnits.push(...itemWorkUnits);
-      fanoutItems.push({ id: itemId, index: itemIndex, status: "pending", groups });
+      fanoutItems.push({ id: itemId, index: itemIndex, status: "skipped", skippedReason: RuntimeErrorCodes.NO_SELECTED_LANES, lanes });
+      continue;
     }
+
+    for (const lane of input.plan.lanes.filter((lane) => selectedLanes.some((selected) => selected.id === lane.id))) {
+      workUnits.push({
+        item,
+        itemIndex,
+        itemId,
+        laneId: lane.id,
+        actorLabel: actorLabel(lane.actor, lane.id),
+        actor: lane.actor,
+        promptId: lane.promptId,
+        outputSchema: lane.outputSchema,
+        implicitOutputFields: lane.implicitOutputFields
+      });
+    }
+    fanoutItems.push({ id: itemId, index: itemIndex, status: "pending", lanes });
   }
 
   return { items: fanoutItems, workUnits, preExecutionItemOutputs };
 }
 
-export function fanoutGroupStatus(lanes: Array<{ status: StageStatus }>): StageStatus {
-  if (lanes.some((lane) => lane.status === "running")) return "running";
-  if (lanes.some((lane) => lane.status === "pending" || lane.status === "ready")) return "ready";
-  if (lanes.some((lane) => lane.status === "failed")) return "failed";
-  if (lanes.some((lane) => lane.status === "blocked")) return "blocked";
-  if (lanes.length > 0 && lanes.every((lane) => lane.status === "skipped")) return "skipped";
+function actorLabel(actor: Actor, fallback: string): string {
+  return actor.label ?? actor.agent ?? fallback;
+}
+
+export function fanoutLaneSetStatus(lanes: Array<{ status: StageStatus }>): StageStatus {
+  const selected = lanes.filter((lane) => lane.status !== "skipped");
+  if (selected.some((lane) => lane.status === "running")) return "running";
+  if (selected.some((lane) => lane.status === "pending" || lane.status === "ready")) return "ready";
+  if (selected.some((lane) => lane.status === "failed")) return "failed";
+  if (selected.some((lane) => lane.status === "blocked")) return "blocked";
+  if (selected.length === 0) return "skipped";
   return "completed";
 }
 
-export function fanoutItemStatus(item: Pick<FanoutCoreItem, "status" | "groups">): StageStatus {
+export function fanoutItemStatus(item: Pick<FanoutCoreItem, "status" | "lanes">): StageStatus {
   if (item.status === "blocked" || item.status === "skipped") return item.status;
-  const groups = item.groups ?? [];
-  if (groups.some((group) => group.status === "running")) return "running";
-  if (groups.some((group) => group.status === "pending" || group.status === "ready")) return "ready";
-  if (groups.some((group) => group.status === "failed")) return "failed";
-  if (groups.some((group) => group.status === "blocked")) return "blocked";
-  if (groups.length > 0 && groups.every((group) => group.status === "skipped")) return "skipped";
-  return "completed";
+  return fanoutLaneSetStatus(item.lanes);
 }
 
 export function fanoutTransientStatus(items: FanoutCoreItem[]): StageStatus {
@@ -172,23 +151,23 @@ export function fanoutTransientStatus(items: FanoutCoreItem[]): StageStatus {
 }
 
 export function hasRunningFanoutItems(items: FanoutCoreItem[]): boolean {
-  return items.some((item) => item.status === "running" || item.groups?.some((group) => group.lanes.some((lane) => lane.status === "running")));
+  return items.some((item) => item.status === "running" || item.lanes.some((lane) => lane.status === "running"));
 }
 
 export function hasQueuedFanoutItems(items: FanoutCoreItem[]): boolean {
-  return items.some((item) => item.status === "pending" || item.status === "ready" || item.groups?.some((group) => group.lanes.some((lane) => lane.status === "pending" || lane.status === "ready")));
+  return items.some((item) => item.status === "pending" || item.status === "ready" || item.lanes.some((lane) => lane.status === "pending" || lane.status === "ready"));
 }
 
 export function fanoutItemCounts(items: FanoutCoreItem[]): Pick<NonNullable<StageIndexEntry["fanout"]>, "completedItems" | "blockedItems" | "failedItems"> {
   return {
-    completedItems: items.filter((item) => item.status === "completed").length,
+    completedItems: items.filter((item) => item.status === "completed" || item.status === "skipped").length,
     blockedItems: items.filter((item) => item.status === "blocked").length,
     failedItems: items.filter((item) => item.status === "failed").length
   };
 }
 
 export function countFanoutWorkUnits(items: FanoutCoreItem[]): number {
-  return items.reduce((total, item) => total + (item.groups ?? []).reduce((groupTotal, group) => groupTotal + group.lanes.length, 0), 0);
+  return items.reduce((total, item) => total + item.lanes.filter((lane) => lane.status !== "skipped").length, 0);
 }
 
 export function deriveFanoutSummary(input: {
@@ -211,93 +190,86 @@ export function buildFanoutItemOutput(input: {
   laneResults: FanoutCoreLaneResult[];
   allowPartial: boolean;
   existingItemOutput?: Record<string, unknown>;
-  missingLaneOutput: (item: FanoutCoreItem, group: FanoutCoreGroup, lane: FanoutCoreLane) => FanoutCoreLaneResult;
+  missingLaneOutput: (item: FanoutCoreItem, lane: FanoutCoreLane) => FanoutCoreLaneResult;
 }): Record<string, unknown> {
   const item = input.item;
   const mismatch = mismatchedLaneResult(item, input.laneResults);
   if (mismatch) {
     return {
       status: "blocked",
-      summary: `Fanout item ${item.id} received a lane result for ${mismatch.itemId}/${mismatch.groupId}/${mismatch.laneId}, which is not selected for this item.`,
-      artifacts: [],
-      nextFocus: "diagnose",
+      summary: `Fanout item ${item.id} received a lane result for ${mismatch.itemId}/${mismatch.laneId}, which is not selected for this item.`,
       blockedReason: RuntimeErrorCodes.FANOUT_LANE_RESULT_MISMATCH,
       errorCode: RuntimeErrorCodes.FANOUT_LANE_RESULT_MISMATCH,
       itemId: item.id,
       itemIndex: item.index,
-      groups: item.groups ?? [],
+      lanes: item.lanes,
       laneOutputs: [],
+      skippedLanes: skippedLaneSummaries(item),
       runtimeDiagnostics: {
         errorCode: RuntimeErrorCodes.FANOUT_LANE_RESULT_MISMATCH,
         expectedItemId: item.id,
         resultItemId: mismatch.itemId,
-        resultGroupId: mismatch.groupId,
         resultLaneId: mismatch.laneId
       }
     };
   }
-  if (item.status === "blocked" && item.errorCode === RuntimeErrorCodes.FANOUT_LANE_SELECTION_FAILED) {
-    return {
-      status: "blocked",
-      summary: item.errorMessage ?? `Fanout item ${item.id} lane selection failed.`,
-      artifacts: [],
-      nextFocus: "diagnose",
-      blockedReason: RuntimeErrorCodes.FANOUT_LANE_SELECTION_FAILED,
-      errorCode: RuntimeErrorCodes.FANOUT_LANE_SELECTION_FAILED,
-      errorMessage: item.errorMessage,
-      itemId: item.id,
-      itemIndex: item.index,
-      groups: item.groups ?? [],
-      laneOutputs: []
-    };
-  }
-  if ((item.status === "blocked" || item.status === "failed") && (!item.groups || item.groups.length === 0)) {
+  if ((item.status === "blocked" || item.status === "failed") && item.lanes.filter((lane) => lane.status !== "skipped").length === 0) {
     const blockedReason = item.outputPath
       ? item.blockedReason ?? item.errorCode ?? RuntimeErrorCodes.FANOUT_ITEM_BLOCKED
       : item.blockedReason ?? item.errorCode ?? RuntimeErrorCodes.MISSING_FANOUT_ITEM_OUTPUT;
     return {
-      ...(input.existingItemOutput ?? {}),
       status: "blocked",
       summary: input.existingItemOutput?.summary ?? item.errorMessage ?? `Fanout item ${item.id} blocked before lane execution.`,
-      artifacts: Array.isArray(input.existingItemOutput?.artifacts) ? input.existingItemOutput.artifacts : [],
-      nextFocus: typeof input.existingItemOutput?.nextFocus === "string" ? input.existingItemOutput.nextFocus : "diagnose",
       blockedReason,
       errorCode: blockedReason,
       itemId: item.id,
       itemIndex: item.index,
-      groups: [],
-      laneOutputs: []
+      lanes: item.lanes,
+      laneOutputs: [],
+      skippedLanes: skippedLaneSummaries(item)
+    };
+  }
+  if (item.status === "skipped") {
+    return {
+      status: "skipped",
+      summary: `Fanout item ${item.id} selected no lanes.`,
+      itemId: item.id,
+      itemIndex: item.index,
+      lanes: item.lanes,
+      laneOutputs: [],
+      skippedLanes: skippedLaneSummaries(item),
+      skippedReason: item.skippedReason ?? RuntimeErrorCodes.NO_SELECTED_LANES
     };
   }
 
-  const resultByLane = new Map(input.laneResults.map((result) => [`${result.groupId}:${result.laneId}`, result]));
-  const groups = (item.groups ?? []).map((group) => {
-    const lanes = group.lanes.map((lane) => {
-      const result = resultByLane.get(`${group.id}:${lane.id}`) ?? input.missingLaneOutput(item, group, lane);
-      return {
-        id: lane.id,
-        roleName: lane.roleName,
-        status: result.status,
-        output: result.output,
-        outputPath: result.outputPath,
-        blockedReason: result.blockedReason ?? stringField(result.output, "blockedReason") ?? lane.blockedReason,
-        errorCode: result.errorCode ?? lane.errorCode
-      };
-    });
-    return { id: group.id, mode: group.mode, status: fanoutGroupStatus(lanes.map((lane) => ({ status: lane.status }))), lanes };
+  const resultByLane = new Map(input.laneResults.map((result) => [result.laneId, result]));
+  const lanes: FanoutCoreItemOutputLane[] = item.lanes.map((lane) => {
+    if (lane.status === "skipped") return lane;
+    const result = resultByLane.get(lane.id) ?? input.missingLaneOutput(item, lane);
+    return {
+      id: lane.id,
+      actorLabel: lane.actorLabel,
+      status: result.status,
+      output: result.output,
+      outputPath: result.outputPath,
+      blockedReason: result.blockedReason ?? stringField(result.output, "blockedReason") ?? lane.blockedReason,
+      errorCode: result.errorCode ?? lane.errorCode
+    };
   });
-  const laneOutputs = groups.flatMap((group) => group.lanes.map((lane) => ({
-    itemId: item.id,
-    itemIndex: item.index,
-    groupId: group.id,
-    laneId: lane.id,
-    roleName: lane.roleName,
-    output: lane.output,
-    outputPath: lane.outputPath,
-    status: lane.status,
-    blockedReason: lane.blockedReason,
-    errorCode: lane.errorCode
-  })));
+  const laneOutputs = lanes
+    .filter((lane) => lane.status !== "skipped")
+    .map((lane) => ({
+      itemId: item.id,
+      itemIndex: item.index,
+      laneId: lane.id,
+      actorLabel: lane.actorLabel,
+      output: lane.output,
+      outputPath: lane.outputPath,
+      status: lane.status,
+      blockedReason: lane.blockedReason,
+      errorCode: lane.errorCode
+    }));
+  const skippedLanes = skippedLaneSummaries({ ...item, lanes });
   const blockedLaneOutputs = laneOutputs.filter((lane) => lane.status !== "completed");
   const partial = blockedLaneOutputs.length > 0 && input.allowPartial;
   const status = blockedLaneOutputs.length > 0 && !input.allowPartial ? "blocked" : "completed";
@@ -307,15 +279,14 @@ export function buildFanoutItemOutput(input: {
   const blockedReason = firstBlockedLane?.blockedReason ?? stringField(firstBlockedOutput, "blockedReason") ?? errorCode;
   return {
     status,
-    summary: `Fanout item ${item.id} completed ${laneOutputs.length - blockedLaneOutputs.length}/${laneOutputs.length} lane(s).`,
-    artifacts: [],
-    nextFocus: "reduce",
+    summary: `Fanout item ${item.id} completed ${laneOutputs.length - blockedLaneOutputs.length}/${laneOutputs.length} selected lane(s).`,
     itemId: item.id,
     itemIndex: item.index,
-    groups,
+    lanes,
     laneOutputs,
+    skippedLanes,
     partial,
-    blockedLanes: blockedLaneOutputs.map((lane) => ({ groupId: lane.groupId, laneId: lane.laneId, status: lane.status })),
+    blockedLanes: blockedLaneOutputs.map((lane) => ({ laneId: lane.laneId, status: lane.status })),
     blockedReason: blockedLaneOutputs.length > 0 ? blockedReason : undefined,
     errorCode: blockedLaneOutputs.length > 0 ? errorCode : undefined,
     runtimeDiagnostics: blockedLaneOutputs.length > 0 ? firstBlockedOutput?.runtimeDiagnostics : undefined
@@ -328,11 +299,10 @@ export function buildFanoutStageOutput(input: {
   skippedItems: Array<{ id: string; index: number; status: "skipped"; skippedReason?: string }>;
 }): FanoutCoreAggregate {
   const laneOutputs = input.itemOutputs.flatMap((item) => Array.isArray(item.laneOutputs) ? item.laneOutputs as FanoutCoreLaneResult[] : []);
+  const skippedLanes = input.itemOutputs.flatMap((item) => Array.isArray(item.skippedLanes) ? item.skippedLanes as FanoutCoreAggregate["skippedLanes"] : []);
   const blockedItems = input.itemOutputs.filter((output) => output.status === "blocked" || output.partial === true);
-  const nonCompletedItems = input.itemOutputs.filter((output) => output.status !== "completed" || output.partial === true);
-  const completedForRatio = input.plan.allowPartial
-    ? input.itemOutputs.filter((output) => output.status === "completed").length
-    : input.itemOutputs.filter((output) => output.status === "completed" && output.partial !== true).length;
+  const nonCompletedItems = input.itemOutputs.filter((output) => output.status !== "completed" && output.status !== "skipped" || output.partial === true);
+  const completedForRatio = input.itemOutputs.filter((output) => (output.status === "completed" || output.status === "skipped") && (input.plan.allowPartial || output.partial !== true)).length;
   const ratio = input.itemOutputs.length === 0 ? 1 : completedForRatio / input.itemOutputs.length;
   const partialAllowed = input.plan.allowPartial
     && (input.plan.minCompletedRatio == null || ratio >= input.plan.minCompletedRatio)
@@ -341,13 +311,12 @@ export function buildFanoutStageOutput(input: {
   const firstBlockedReason = firstBlockedItemReason(nonCompletedItems);
   return {
     status,
-    summary: `Fanout ${status} with ${input.itemOutputs.length} active item output(s) and ${input.skippedItems.length} skipped item(s).`,
+    summary: `Fanout ${status} with ${input.itemOutputs.length} item output(s), ${input.skippedItems.length} skipped item(s), and ${skippedLanes.length} skipped lane(s).`,
     items: input.itemOutputs,
     laneOutputs,
     blockedItems,
     skippedItems: input.skippedItems,
-    artifacts: [],
-    nextFocus: "reduce",
+    skippedLanes,
     blockedReason: status === "blocked" ? firstBlockedReason ?? RuntimeErrorCodes.FANOUT_ITEM_BLOCKED : undefined
   };
 }
@@ -360,17 +329,23 @@ export function cascadeBlockFanoutItems(input: {
   const outputs: FanoutCoreCascadeOutput[] = [];
   const items = input.items.map((item) => {
     if (item.status !== "pending" && item.status !== "ready") return item;
+    const lanes = item.lanes.map((lane) => lane.status === "skipped" ? lane : {
+      ...lane,
+      status: "blocked" as StageStatus,
+      blockedReason: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
+      errorCode: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
+      completedAt: input.now
+    });
     const output: FanoutCoreItemOutput = {
       status: "blocked",
       summary: `Fanout item ${item.id} was not started because an earlier item blocked and partial fanout is disabled.`,
-      artifacts: [],
-      nextFocus: "diagnose",
       blockedReason: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
       errorCode: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
       itemId: item.id,
       itemIndex: item.index,
-      groups: item.groups ?? [],
-      laneOutputs: []
+      lanes,
+      laneOutputs: [],
+      skippedLanes: skippedLaneSummaries({ ...item, lanes })
     };
     const blockedItem: FanoutCoreItem = {
       ...item,
@@ -379,17 +354,7 @@ export function cascadeBlockFanoutItems(input: {
       blockedReason: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
       errorCode: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
       completedAt: input.now,
-      groups: item.groups?.map((group) => ({
-        ...group,
-        status: "blocked" as StageStatus,
-        lanes: group.lanes.map((lane) => ({
-          ...lane,
-          status: "blocked" as StageStatus,
-          blockedReason: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
-          errorCode: RuntimeErrorCodes.FANOUT_ITEM_CASCADE_BLOCKED,
-          completedAt: input.now
-        }))
-      }))
+      lanes
     };
     outputs.push({ item: blockedItem, output });
     return blockedItem;
@@ -397,9 +362,21 @@ export function cascadeBlockFanoutItems(input: {
   return { items, outputs };
 }
 
+function skippedLaneSummaries(item: Pick<FanoutCoreItem, "id" | "index" | "lanes">): FanoutCoreAggregate["skippedLanes"] {
+  return item.lanes
+    .filter((lane) => lane.status === "skipped")
+    .map((lane) => ({
+      itemId: item.id,
+      itemIndex: item.index,
+      laneId: lane.id,
+      actorLabel: lane.actorLabel,
+      skippedReason: lane.skippedReason ?? RuntimeErrorCodes.NO_SELECTED_LANES
+    }));
+}
+
 function mismatchedLaneResult(item: FanoutCoreItem, results: FanoutCoreLaneResult[]): FanoutCoreLaneResult | undefined {
-  const laneKeys = new Set((item.groups ?? []).flatMap((group) => group.lanes.map((lane) => `${group.id}:${lane.id}`)));
-  return results.find((result) => result.itemId !== item.id || result.itemIndex !== item.index || !laneKeys.has(`${result.groupId}:${result.laneId}`));
+  const laneKeys = new Set(item.lanes.map((lane) => lane.id));
+  return results.find((result) => result.itemId !== item.id || result.itemIndex !== item.index || !laneKeys.has(result.laneId));
 }
 
 function firstBlockedItemReason(items: Record<string, unknown>[]): string | undefined {

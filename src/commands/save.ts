@@ -6,6 +6,8 @@ import { compileExecutionPlan } from "../compiler/compile.js";
 import { globalWorkflowsDir, projectWorkflowsDir } from "../run-index/paths.js";
 import { ensureEmptyOrOverwrite, loadAndLint, printIssues, printJson, resolveSpecArg } from "./common.js";
 import type { WorkflowSpec } from "../schema/workflow-spec.js";
+import { stringifyWorkflowSpec } from "../schema/load.js";
+import { applyInputDefaults } from "../schema/input-validation.js";
 
 export function registerSave(program: Command): void {
   program.command("save")
@@ -54,11 +56,11 @@ export function registerSave(program: Command): void {
       const target = path.join(root, name);
       await ensureEmptyOrOverwrite(target, options.overwrite);
       await fs.mkdir(target, { recursive: true });
-      const plan = compileExecutionPlan(workflowSpec);
-      await fs.writeFile(path.join(target, "workflow.spec.json"), `${JSON.stringify(workflowSpec, null, 2)}\n`, "utf8");
+      const plan = compileExecutionPlan(workflowSpec, { input: applyInputDefaults(workflowSpec) });
+      await fs.writeFile(path.join(target, "workflow.spec.yaml"), stringifyWorkflowSpec(workflowSpec), "utf8");
       await fs.writeFile(path.join(target, "execution-plan.json"), `${JSON.stringify(plan, null, 2)}\n`, "utf8");
       await writeHelperSnapshot(target);
-      await fs.writeFile(path.join(target, "README.md"), `# ${name}\n\n${workflowSpec.description || "Saved acpus workflow."}\n\nThis directory is a saved runtime-driven workflow snapshot. The stable authoring interface is workflow.spec.json; execution-plan.json is the derived runtime plan and should normally be regenerated from the spec.\n\nRun with acpus using workflow.spec.json.\n`, "utf8");
+      await fs.writeFile(path.join(target, "README.md"), `# ${name}\n\n${workflowSpec.description || "Saved acpus workflow."}\n\nThis directory is a saved runtime-driven workflow snapshot. The stable authoring interface is workflow.spec.yaml; execution-plan.json is the derived runtime plan and should normally be regenerated from the spec.\n\nRun with acpus using workflow.spec.yaml.\n`, "utf8");
       const output = { ok: true, workflow: name, path: target };
       if (options.json) printJson(output);
       else process.stdout.write(`saved ${name} -> ${target}\n`);
@@ -72,16 +74,17 @@ function scaffoldFromTemplate(name: string, template: string): WorkflowSpec {
       name,
       description: "Draft workflow scaffold. Main Agent should edit before running.",
       root: "plan",
-      inputs: {
-        task: { type: "string", default: "" },
-        cwd: { type: "path", default: "." }
-      },
-      roles: {
-        planner: { category: "planning", agent: "claude", mode: "readOnly" }
-      },
+      input: { schema: "{task:string,cwd:string}", default: { task: "", cwd: "." } },
       limits: { stageTimeoutMinutes: 30 },
       stages: [
-        { id: "plan", kind: "agentTask", role: "planner", prompt: "Plan the requested workflow task: ${task}", variables: [{ name: "task", source: "input.task" }] },
+        {
+          id: "plan",
+          kind: "task",
+          mode: "agent",
+          actor: { agent: "claude", mode: "readOnly", label: "planner" },
+          prompt: "Plan the requested workflow task: ${task}",
+          variables: [{ name: "task", source: "input.task" }]
+        },
         { id: "gate", kind: "gate", mode: "program", dependsOn: ["plan"] }
       ]
     };

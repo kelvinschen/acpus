@@ -1,15 +1,15 @@
 import crypto from "node:crypto";
-import { jsonrepair } from "jsonrepair";
-import { getOutputContract, type OutputContractName } from "../contracts/output-contracts.js";
+import { defaultAgentOutputZod, zodForCompiledSchema, type CompiledSchema } from "../contracts/schema-dsl.js";
+import type { z } from "zod";
 
 export type OutputParseErrorCode =
   | "OK"
   | "OUTPUT_PARSE_FAILED"
   | "OUTPUT_SCHEMA_FAILED";
 
-export type OutputCandidateMode = "lastBalancedJson";
+export type OutputCandidateMode = "lastBalancedJsonObject";
 
-export type OutputCandidateSyntax = "invalidJson" | "validJson" | "repairedJson";
+export type OutputCandidateSyntax = "invalidJson" | "validJson";
 
 export type OutputCandidateDiagnostic = {
   id: string;
@@ -18,7 +18,6 @@ export type OutputCandidateDiagnostic = {
   rawHash: string;
   rawPreview: string;
   normalizedPreview?: string;
-  repairedPreview?: string;
   parseError?: string;
   schemaErrors: Array<{ path: string; message: string }>;
   valid: boolean;
@@ -30,9 +29,8 @@ export type OutputParseDiagnostics = {
   summary: string;
   candidateCount: number;
   bestCandidateId?: string;
-  recoverability: "repairable" | "not_repairable";
+  recoverability: "retryable" | "not_retryable";
   candidates: OutputCandidateDiagnostic[];
-  warnings: string[];
 };
 
 export type OutputParseSuccess = {
@@ -40,9 +38,7 @@ export type OutputParseSuccess = {
   value: Record<string, unknown>;
   outputParse: {
     mode: OutputCandidateMode;
-    repaired: boolean;
     candidateCount: number;
-    warnings: string[];
   };
   diagnostics: OutputParseDiagnostics;
 };
@@ -58,10 +54,8 @@ export type OutputParseFailure = {
 export type OutputParseResult = OutputParseSuccess | OutputParseFailure;
 
 export type ParseWorkflowOutputOptions = {
-  contractOptions?: {
-    outputKey?: string;
-    maxItems?: number;
-  };
+  outputSchema?: CompiledSchema;
+  implicitFields?: Record<string, z.ZodType>;
 };
 
 type RawCandidate = {
@@ -74,29 +68,31 @@ type RawCandidate = {
 
 const PREVIEW_CHARS = 2000;
 
-export function parseWorkflowOutput(text: string, contractName: OutputContractName, options: ParseWorkflowOutputOptions = {}): OutputParseResult {
+export function parseWorkflowOutput(text: string, options: ParseWorkflowOutputOptions = {}): OutputParseResult {
   const source = String(text ?? "");
-  const contract = getOutputContract(contractName, options.contractOptions);
+  const outputSchema = options.outputSchema
+    ? { schema: zodForCompiledSchema(options.outputSchema, options.implicitFields) }
+    : { schema: defaultAgentOutputZod(options.implicitFields) };
   const rawCandidates = collectWorkflowOutputCandidates(source);
-  const evaluated = rawCandidates.map((candidate) => evaluateCandidate(candidate, contract));
+  const evaluated = rawCandidates.map((candidate) => evaluateCandidate(candidate, outputSchema));
 
-  if (evaluated[0]?.valid && evaluated[0].value && typeof evaluated[0].value === "object") {
+  if (evaluated[0]?.valid && evaluated[0].value && typeof evaluated[0].value === "object" && !Array.isArray(evaluated[0].value)) {
     return successResult(evaluated[0], evaluated);
   }
 
-  const hasJson = evaluated.some((candidate) => candidate.syntax === "validJson" || candidate.syntax === "repairedJson");
+  const hasJson = evaluated.some((candidate) => candidate.syntax === "validJson");
   const errorCode: Exclude<OutputParseErrorCode, "OK"> = hasJson ? "OUTPUT_SCHEMA_FAILED" : "OUTPUT_PARSE_FAILED";
   const summary = rawCandidates.length === 0
-    ? "Missing balanced JSON object."
+    ? "Missing JSON response."
     : hasJson
-      ? `Last balanced JSON object did not satisfy the ${contractName} contract.`
-      : "Last balanced JSON object could not be parsed as JSON.";
+      ? "JSON response did not satisfy the workflow output schema."
+      : "Response could not be parsed as JSON.";
   const bestCandidate = evaluated[0];
   const diagnostics = createDiagnostics({
     errorCode,
     summary,
     candidates: evaluated,
-    recoverability: "repairable",
+    recoverability: "retryable",
     bestCandidateId: bestCandidate?.id
   });
   return { ok: false, errorCode, summary, diagnostics, bestCandidate };
@@ -104,18 +100,66 @@ export function parseWorkflowOutput(text: string, contractName: OutputContractNa
 
 export function collectWorkflowOutputCandidates(text: string): RawCandidate[] {
   const source = String(text ?? "");
-  const span = extractLastBalancedJsonObject(source);
-  if (!span) return [];
+  const candidate = findLastBalancedObject(source);
+  if (!candidate) return [];
   return [{
     id: "candidate-1",
-    mode: "lastBalancedJson",
-    raw: span.raw,
-    start: span.start,
-    end: span.end
+    mode: "lastBalancedJsonObject",
+    raw: source.slice(candidate.start, candidate.end),
+    start: candidate.start,
+    end: candidate.end
   }];
 }
 
-function evaluateCandidate(rawCandidate: RawCandidate, contract: ReturnType<typeof getOutputContract>): OutputCandidateDiagnostic {
+function findLastBalancedObject(source: string): { start: number; end: number } | undefined {
+  const stack: Array<{ char: "{" | "["; index: number }> = [];
+  let inString = false;
+  let escaped = false;
+  let last: { start: number; end: number } | undefined;
+
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+    if (char === "{" || char === "[") {
+      stack.push({ char, index });
+      continue;
+    }
+    if (char !== "}" && char !== "]") continue;
+
+    const open = stack.at(-1);
+    if (!open) continue;
+    if (char === "}" && open.char !== "{") {
+      stack.length = 0;
+      continue;
+    }
+    if (char === "]" && open.char !== "[") {
+      stack.length = 0;
+      continue;
+    }
+    stack.pop();
+    if (char === "}" && !stack.some((entry) => entry.char === "[")) {
+      last = { start: open.index, end: index + 1 };
+    }
+  }
+
+  return last;
+}
+
+function evaluateCandidate(rawCandidate: RawCandidate, outputSchema: { schema: z.ZodType }): OutputCandidateDiagnostic {
   const base = {
     id: rawCandidate.id,
     mode: rawCandidate.mode,
@@ -126,16 +170,15 @@ function evaluateCandidate(rawCandidate: RawCandidate, contract: ReturnType<type
     valid: false
   };
 
-  const parsed = parseJsonWithRepair(rawCandidate.raw);
+  const parsed = parseJson(rawCandidate.raw);
   if (!parsed.ok) {
     return {
       ...base,
       parseError: parsed.error,
-      repairedPreview: parsed.repairedPreview
     };
   }
 
-  const validation = contract.schema.safeParse(parsed.value);
+  const validation = outputSchema.schema.safeParse(parsed.value);
   const schemaErrors = validation.success
     ? []
     : validation.error.issues.map((issue) => ({
@@ -146,56 +189,42 @@ function evaluateCandidate(rawCandidate: RawCandidate, contract: ReturnType<type
 
   return {
     ...base,
-    syntax: parsed.repaired ? "repairedJson" : "validJson",
+    syntax: "validJson",
     normalizedPreview: preview(JSON.stringify(selectedValue, null, 2)),
-    repairedPreview: parsed.repairedText ? preview(parsed.repairedText) : undefined,
     schemaErrors,
     value: selectedValue,
     valid: validation.success
   };
 }
 
-function parseJsonWithRepair(raw: string): {
+function parseJson(raw: string): {
   ok: true;
   value: unknown;
-  repaired: boolean;
-  repairedText?: string;
 } | {
   ok: false;
   error: string;
-  repairedPreview?: string;
 } {
   try {
-    return { ok: true, value: JSON.parse(raw) as unknown, repaired: false };
+    return { ok: true, value: JSON.parse(raw) as unknown };
   } catch (error) {
-    const firstError = error instanceof Error ? error.message : String(error);
-    try {
-      const repairedText = jsonrepair(raw);
-      return { ok: true, value: JSON.parse(repairedText) as unknown, repaired: true, repairedText };
-    } catch (repairError) {
-      const secondError = repairError instanceof Error ? repairError.message : String(repairError);
-      return { ok: false, error: `${firstError}; jsonrepair failed: ${secondError}` };
-    }
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
-function successResult(candidate: OutputCandidateDiagnostic, evaluated: OutputCandidateDiagnostic[], warnings: string[] = []): OutputParseSuccess {
+function successResult(candidate: OutputCandidateDiagnostic, evaluated: OutputCandidateDiagnostic[]): OutputParseSuccess {
   return {
     ok: true,
     value: candidate.value as Record<string, unknown>,
     outputParse: {
       mode: candidate.mode,
-      repaired: candidate.syntax === "repairedJson",
-      candidateCount: evaluated.length,
-      warnings
+      candidateCount: evaluated.length
     },
     diagnostics: createDiagnostics({
       errorCode: "OK",
       summary: "Workflow output parsed.",
       candidates: evaluated,
-      recoverability: "not_repairable",
-      bestCandidateId: candidate.id,
-      warnings
+      recoverability: "not_retryable",
+      bestCandidateId: candidate.id
     })
   };
 }
@@ -204,9 +233,8 @@ function createDiagnostics(input: {
   errorCode: OutputParseErrorCode;
   summary: string;
   candidates: OutputCandidateDiagnostic[];
-  recoverability: "repairable" | "not_repairable";
+  recoverability: "retryable" | "not_retryable";
   bestCandidateId?: string;
-  warnings?: string[];
 }): OutputParseDiagnostics {
   return {
     errorCode: input.errorCode,
@@ -217,49 +245,8 @@ function createDiagnostics(input: {
     candidates: input.candidates.map((candidate) => ({
       ...candidate,
       value: candidate.valid ? undefined : candidate.value
-    })),
-    warnings: input.warnings ?? []
+    }))
   };
-}
-
-function extractLastBalancedJsonObject(text: string): { raw: string; start: number; end: number } | undefined {
-  const spans = balancedObjectSpans(text);
-  for (let index = spans.length - 1; index >= 0; index -= 1) {
-    const span = spans[index];
-    const raw = text.slice(span.start, span.end);
-    const parsed = parseJsonWithRepair(raw);
-    if (parsed.ok && isPlainObject(parsed.value)) return { raw, start: span.start, end: span.end };
-  }
-  return undefined;
-}
-
-function balancedObjectSpans(text: string): Array<{ start: number; end: number }> {
-  const starts: number[] = [];
-  const spans: Array<{ start: number; end: number }> = [];
-  let inString = false;
-  let escaped = false;
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index];
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (char === "\\") escaped = true;
-      else if (char === "\"") inString = false;
-      continue;
-    }
-    if (char === "\"") {
-      inString = true;
-    } else if (char === "{") {
-      starts.push(index);
-    } else if (char === "}") {
-      const start = starts.pop();
-      if (start !== undefined) spans.push({ start, end: index + 1 });
-    }
-  }
-  return spans;
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function preview(value: string, limit = PREVIEW_CHARS): string {

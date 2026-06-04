@@ -3,13 +3,14 @@ import path from "node:path";
 import { runDir } from "../run-index/paths.js";
 import type { AttemptIndexEntry, AttemptStatus, RunIndex, StageIndexEntry, StageStatus } from "../run-index/read-write.js";
 import { workerSummary } from "../runtime/worker.js";
-import type { Stage, WorkflowSpec } from "../schema/workflow-spec.js";
+import type { Actor, Stage, WorkflowSpec } from "../schema/workflow-spec.js";
+import { readFinalOutput } from "./final-output.js";
 
 export const RUN_MONITOR_VIEW_VERSION = "acpus.monitor/v1";
 export const TASK_DETAIL_VIEW_VERSION = "acpus.task-detail/v1";
 
 export type TaskStatus = StageStatus | AttemptStatus;
-export type TaskKind = "stage" | "fanoutLane" | "loopStage" | "loopFanoutLane";
+export type TaskKind = "stage" | "fanoutLane" | "fanoutFanin" | "loopStage" | "loopFanoutLane" | "loopFanoutFanin";
 export type TaskExecution = "agent" | "deterministic";
 
 export type RunMonitorStage = {
@@ -44,16 +45,15 @@ export type RunMonitorTask = {
   stageId: string;
   label: string;
   status: TaskStatus;
-  roleName?: string;
+  actorLabel?: string;
   agent?: string;
-  roleMode?: string;
+  actorMode?: string;
   attemptId?: string;
   attemptIds: string[];
   round?: number;
   bodyStageId?: string;
   itemId?: string;
   itemIndex?: number;
-  groupId?: string;
   laneId?: string;
   startedAt?: string;
   completedAt?: string;
@@ -62,6 +62,12 @@ export type RunMonitorTask = {
   outputPath?: string;
   elapsedMs?: number;
   durationMs?: number;
+  attemptCount?: number;
+  currentAttemptOrdinal?: number;
+  lastRetryReason?: AttemptIndexEntry["retryReason"];
+  retryBudgetUsed?: number;
+  retryBudgetLimit?: number;
+  lastFailureCode?: string;
 };
 
 export type RunMonitorView = {
@@ -86,6 +92,7 @@ export type RunMonitorView = {
     knownTasks: number;
     completedTasks: number;
   };
+  finalOutput?: Record<string, unknown>;
 };
 
 export type TaskDetailView = {
@@ -108,6 +115,15 @@ export type TaskDetailView = {
       blockedReason?: string;
       parseErrorCode?: string;
       runtimeErrorCode?: string;
+      isRetry?: boolean;
+      retryReason?: AttemptIndexEntry["retryReason"];
+      retryOf?: string;
+      retryOrdinal?: number;
+      retryBudgetUsed?: number;
+      retryBudgetLimit?: number;
+      promptPolicy?: AttemptIndexEntry["promptPolicy"];
+      lastFailureCode?: string;
+      retryMessage?: string;
     }>;
     totalAttempts: number;
   };
@@ -116,7 +132,6 @@ export type TaskDetailView = {
     status?: string;
     summary?: string;
     blockedReason?: string;
-    artifacts: Array<{ kind?: string; path?: string; url?: string; label?: string }>;
     preview?: string;
   };
 };
@@ -127,7 +142,10 @@ const MAX_OUTPUT_PREVIEW_CHARS = 2048;
 export async function buildRunMonitorView(cwd: string, spec: WorkflowSpec, index: RunIndex): Promise<RunMonitorView> {
   const dir = runDir(index.logicalRunId, cwd);
   const generatedAt = new Date().toISOString();
-  const tasks = buildTasks(spec, index, generatedAt);
+  const worker = workerSummary(index.worker);
+  const observationNow = monitorObservationNow(index, worker, generatedAt);
+  const tasks = buildTasks(spec, index, observationNow);
+  const finalOutput = terminalRun(index.status) ? await readFinalOutput(dir, spec) : undefined;
   return {
     version: RUN_MONITOR_VIEW_VERSION,
     generatedAt,
@@ -140,15 +158,16 @@ export async function buildRunMonitorView(cwd: string, spec: WorkflowSpec, index
       runDir: dir,
       createdAt: index.createdAt,
       updatedAt: index.updatedAt,
-      ...timing(index.createdAt, terminalRun(index.status) ? index.updatedAt : undefined, generatedAt),
-      worker: workerSummary(index.worker)
+      ...timing(index.createdAt, terminalRun(index.status) ? index.updatedAt : undefined, observationNow),
+      worker
     },
-    stages: spec.stages.map((stage) => stageSummary(stage, index.stages[stage.id], tasks, generatedAt)),
+    stages: spec.stages.map((stage) => stageSummary(stage, index.stages[stage.id], tasks, observationNow)),
     tasks,
     progress: {
       knownTasks: tasks.length,
       completedTasks: tasks.filter((task) => task.status === "completed").length
-    }
+    },
+    finalOutput
   };
 }
 
@@ -178,7 +197,16 @@ export async function buildTaskDetailView(cwd: string, spec: WorkflowSpec, index
         path: attempt.path,
         blockedReason: attempt.blockedReason,
         parseErrorCode: attempt.parseErrorCode,
-        runtimeErrorCode: attempt.runtimeErrorCode
+        runtimeErrorCode: attempt.runtimeErrorCode,
+        isRetry: attempt.isRetry,
+        retryReason: attempt.retryReason,
+        retryOf: attempt.retryOf,
+        retryOrdinal: attempt.retryOrdinal,
+        retryBudgetUsed: attempt.retryBudgetUsed,
+        retryBudgetLimit: attempt.retryBudgetLimit,
+        promptPolicy: attempt.promptPolicy,
+        lastFailureCode: attempt.lastFailureCode,
+        retryMessage: attempt.retryMessage
       })),
       totalAttempts: attempts.length
     },
@@ -191,22 +219,22 @@ function buildTasks(spec: WorkflowSpec, index: RunIndex, now: string): RunMonito
   for (const stage of spec.stages) {
     const state = index.stages[stage.id];
     if (!state) continue;
-    const roleName = stageRoleName(stage);
-    if (roleName) {
+    const actorLabel = stageActorLabel(stage);
+    if (actorLabel) {
       const attempts = topLevelStageAttempts(index, state);
-      tasks.push(stageTask(stage, state, roleName, spec, attempts, now));
+      tasks.push(stageTask(stage, state, actorLabel, stageActor(stage), attempts, now));
     } else if (stage.kind !== "fanout" && stage.kind !== "loop") {
       tasks.push(deterministicStageTask(stage, state, now));
     }
-    if (stage.kind === "fanout") tasks.push(...fanoutTasks(stage.id, state.fanout, spec, index, now));
+    if (stage.kind === "fanout") tasks.push(...fanoutTasks(stage, state, spec, index, now));
     if (stage.kind === "loop") tasks.push(...loopTasks(stage, state, spec, index, now));
   }
   return tasks;
 }
 
-function stageTask(stage: Stage, state: StageIndexEntry, roleName: string, spec: WorkflowSpec, attempts: AttemptIndexEntry[], now: string): RunMonitorTask {
+function stageTask(stage: Stage, state: StageIndexEntry, actorLabel: string, actor: Actor | undefined, attempts: AttemptIndexEntry[], now: string): RunMonitorTask {
   const latest = latestAttempt(attempts);
-  const role = spec.roles[roleName];
+  const retry = retrySummary(attempts);
   return {
     id: stageTaskId(stage.id),
     kind: "stage",
@@ -214,9 +242,9 @@ function stageTask(stage: Stage, state: StageIndexEntry, roleName: string, spec:
     stageId: stage.id,
     label: stage.id,
     status: latest?.status ?? state.status,
-    roleName,
-    agent: latest?.agent ?? role?.agent,
-    roleMode: latest?.roleMode ?? role?.mode,
+    actorLabel,
+    agent: latest?.agent ?? actor?.agent,
+    actorMode: latest?.actorMode ?? actor?.mode,
     attemptId: latest?.id,
     attemptIds: attempts.map((attempt) => attempt.id),
     startedAt: latest?.startedAt ?? state.startedAt,
@@ -224,6 +252,7 @@ function stageTask(stage: Stage, state: StageIndexEntry, roleName: string, spec:
     blockedReason: latest?.blockedReason ?? state.blockedReason,
     errorCode: latest?.runtimeErrorCode ?? latest?.parseErrorCode,
     outputPath: state.outputPath,
+    ...retry,
     ...timing(latest?.startedAt ?? state.startedAt, latest?.endedAt ?? state.completedAt, now)
   };
 }
@@ -245,42 +274,73 @@ function deterministicStageTask(stage: Stage, state: StageIndexEntry, now: strin
   };
 }
 
-function fanoutTasks(stageId: string, fanout: StageIndexEntry["fanout"], spec: WorkflowSpec, index: RunIndex, now: string): RunMonitorTask[] {
+function fanoutTasks(stage: Extract<Stage, { kind: "fanout" }>, state: StageIndexEntry, spec: WorkflowSpec, index: RunIndex, now: string): RunMonitorTask[] {
+  const fanout = state.fanout;
   if (!fanout) return [];
+  const stageId = stage.id;
   const tasks: RunMonitorTask[] = [];
   for (const item of fanout.items) {
-    for (const group of item.groups ?? []) {
-      for (const lane of group.lanes) {
-        const attempts = lane.attemptId ? [index.attempts[lane.attemptId]].filter((attempt): attempt is AttemptIndexEntry => attempt !== undefined) : attemptsFor(index, (attempt) => attempt.stageId === stageId && attempt.itemId === item.id && attempt.groupId === group.id && attempt.laneId === lane.id);
-        const latest = latestAttempt(attempts);
-        const role = spec.roles[lane.roleName];
-        tasks.push({
-          id: fanoutTaskId(stageId, item.id, group.id, lane.id),
-          kind: "fanoutLane",
-          execution: "agent",
-          stageId,
-          label: `${item.id}/${group.id}/${lane.id}`,
-          status: latest?.status ?? lane.status,
-          roleName: lane.roleName,
-          agent: latest?.agent ?? role?.agent,
-          roleMode: latest?.roleMode ?? role?.mode,
-          attemptId: latest?.id ?? lane.attemptId,
-          attemptIds: attempts.map((attempt) => attempt.id),
-          itemId: item.id,
-          itemIndex: item.index,
-          groupId: group.id,
-          laneId: lane.id,
-          startedAt: latest?.startedAt ?? lane.startedAt ?? item.startedAt,
-          completedAt: latest?.endedAt ?? lane.completedAt ?? item.completedAt,
-          blockedReason: latest?.blockedReason ?? lane.blockedReason ?? item.blockedReason,
-          errorCode: latest?.runtimeErrorCode ?? lane.errorCode ?? item.errorCode,
-          outputPath: lane.outputPath ?? item.outputPath,
-          ...timing(latest?.startedAt ?? lane.startedAt ?? item.startedAt, latest?.endedAt ?? lane.completedAt ?? item.completedAt, now)
-        });
-      }
+    for (const lane of item.lanes) {
+      const attempts = attemptsFor(index, (attempt) => attempt.stageId === stageId && attempt.itemId === item.id && attempt.laneId === lane.id);
+      const latest = latestAttempt(attempts);
+      const actor = fanoutLaneActor(spec, stageId, lane.id);
+      const retry = retrySummary(attempts);
+      tasks.push({
+        id: fanoutTaskId(stageId, item.id, lane.id),
+        kind: "fanoutLane",
+        execution: "agent",
+        stageId,
+        label: `${item.id}/${lane.id}`,
+        status: latest?.status ?? lane.status,
+        actorLabel: lane.actorLabel,
+        agent: latest?.agent ?? actor?.agent,
+        actorMode: latest?.actorMode ?? actor?.mode,
+        attemptId: latest?.id ?? lane.attemptId,
+        attemptIds: attempts.map((attempt) => attempt.id),
+        itemId: item.id,
+        itemIndex: item.index,
+        laneId: lane.id,
+        startedAt: latest?.startedAt ?? lane.startedAt ?? item.startedAt,
+        completedAt: latest?.endedAt ?? lane.completedAt ?? item.completedAt,
+        blockedReason: latest?.blockedReason ?? lane.blockedReason ?? lane.skippedReason ?? item.blockedReason ?? item.skippedReason,
+        errorCode: latest?.runtimeErrorCode ?? lane.errorCode ?? item.errorCode,
+        outputPath: lane.outputPath ?? item.outputPath,
+        ...retry,
+        ...timing(latest?.startedAt ?? lane.startedAt ?? item.startedAt, latest?.endedAt ?? lane.completedAt ?? item.completedAt, now)
+      });
     }
   }
+  tasks.push(fanoutFaninTask(stage, state, index, now));
   return tasks;
+}
+
+function fanoutFaninTask(stage: Extract<Stage, { kind: "fanout" }>, state: StageIndexEntry, index: RunIndex, now: string): RunMonitorTask {
+  const attempts = attemptsFor(index, (attempt) => attempt.stageId === stage.id && attempt.itemId === "fanin");
+  const latest = latestAttempt(attempts);
+  const retry = retrySummary(attempts);
+  const faninStatus = latest?.status ?? faninProjectionStatus(state.status, state.fanout);
+  const startedAt = latest?.startedAt;
+  const completedAt = latest?.endedAt ?? state.completedAt;
+  return {
+    id: fanoutFaninTaskId(stage.id),
+    kind: "fanoutFanin",
+    execution: stage.fanin.mode === "agent" ? "agent" : "deterministic",
+    stageId: stage.id,
+    label: `${stage.id}/fanin`,
+    status: faninStatus,
+    actorLabel: stage.fanin.mode === "agent" ? stage.fanin.actor.label ?? stage.fanin.actor.agent : undefined,
+    agent: latest?.agent ?? (stage.fanin.mode === "agent" ? stage.fanin.actor.agent : undefined),
+    actorMode: latest?.actorMode ?? (stage.fanin.mode === "agent" ? stage.fanin.actor.mode : undefined),
+    attemptId: latest?.id,
+    attemptIds: attempts.map((attempt) => attempt.id),
+    startedAt,
+    completedAt,
+    blockedReason: latest?.blockedReason ?? state.blockedReason,
+    errorCode: latest?.runtimeErrorCode ?? latest?.parseErrorCode,
+    outputPath: state.outputPath,
+    ...retry,
+    ...timing(startedAt, completedAt, now)
+  };
 }
 
 function loopTasks(stage: Extract<Stage, { kind: "loop" }>, state: StageIndexEntry, spec: WorkflowSpec, index: RunIndex, now: string): RunMonitorTask[] {
@@ -291,15 +351,15 @@ function loopTasks(stage: Extract<Stage, { kind: "loop" }>, state: StageIndexEnt
     for (const roundStage of Object.values(round.stages)) {
       const bodyStage = bodyStages.get(roundStage.stageId);
       if (!bodyStage) continue;
-      const roleName = stageRoleName(bodyStage);
-      if (roleName) {
+      const actorLabel = stageActorLabel(bodyStage);
+      if (actorLabel) {
         const itemId = loopBodyItemId(round.round, bodyStage.id);
         const attempts = roundStage.attempts
           .map((id) => index.attempts[id])
           .filter((attempt): attempt is AttemptIndexEntry => attempt !== undefined)
           .filter((attempt) => attempt.itemId === itemId || !attempt.itemId);
         const latest = latestAttempt(attempts);
-        const role = spec.roles[roleName];
+        const actor = stageActor(bodyStage);
         tasks.push({
           id: loopStageTaskId(stage.id, round.round, bodyStage.id),
           kind: "loopStage",
@@ -307,9 +367,9 @@ function loopTasks(stage: Extract<Stage, { kind: "loop" }>, state: StageIndexEnt
           stageId: stage.id,
           label: `${round.round}/${bodyStage.id}`,
           status: latest?.status ?? roundStage.status,
-          roleName,
-          agent: latest?.agent ?? role?.agent,
-          roleMode: latest?.roleMode ?? role?.mode,
+          actorLabel,
+          agent: latest?.agent ?? actor?.agent,
+          actorMode: latest?.actorMode ?? actor?.mode,
           attemptId: latest?.id,
           attemptIds: attempts.map((attempt) => attempt.id),
           round: round.round,
@@ -339,51 +399,103 @@ function loopTasks(stage: Extract<Stage, { kind: "loop" }>, state: StageIndexEnt
           ...timing(roundStage.startedAt, roundStage.completedAt, now)
         });
       }
-      if (bodyStage.kind === "fanout") tasks.push(...loopFanoutTasks(stage.id, round.round, roundStage, spec, index, now));
+      if (bodyStage.kind === "fanout") tasks.push(...loopFanoutTasks(stage.id, round.round, roundStage, bodyStage, spec, index, now));
     }
   }
   return tasks;
 }
 
-function loopFanoutTasks(loopStageId: string, round: number, roundStage: NonNullable<NonNullable<StageIndexEntry["loop"]>["rounds"][number]["stages"][string]>, spec: WorkflowSpec, index: RunIndex, now: string): RunMonitorTask[] {
+function loopFanoutTasks(loopStageId: string, round: number, roundStage: NonNullable<NonNullable<StageIndexEntry["loop"]>["rounds"][number]["stages"][string]>, bodyStage: Extract<Stage, { kind: "fanout" }>, spec: WorkflowSpec, index: RunIndex, now: string): RunMonitorTask[] {
   if (!roundStage.fanout) return [];
   const tasks: RunMonitorTask[] = [];
   for (const item of roundStage.fanout.items) {
-    for (const group of item.groups ?? []) {
-      for (const lane of group.lanes) {
-        const itemId = loopFanoutItemId(round, roundStage.stageId, item.id);
-        const attempts = lane.attemptId ? [index.attempts[lane.attemptId]].filter((attempt): attempt is AttemptIndexEntry => attempt !== undefined) : attemptsFor(index, (attempt) => attempt.stageId === loopStageId && attempt.itemId === itemId && attempt.groupId === group.id && attempt.laneId === lane.id);
-        const latest = latestAttempt(attempts);
-        const role = spec.roles[lane.roleName];
-        tasks.push({
-          id: loopFanoutTaskId(loopStageId, round, roundStage.stageId, item.id, group.id, lane.id),
-          kind: "loopFanoutLane",
-          execution: "agent",
-          stageId: loopStageId,
-          label: `${round}/${roundStage.stageId}/${item.id}/${group.id}/${lane.id}`,
-          status: latest?.status ?? lane.status,
-          roleName: lane.roleName,
-          agent: latest?.agent ?? role?.agent,
-          roleMode: latest?.roleMode ?? role?.mode,
-          attemptId: latest?.id ?? lane.attemptId,
-          attemptIds: attempts.map((attempt) => attempt.id),
-          round,
-          bodyStageId: roundStage.stageId,
-          itemId: item.id,
-          itemIndex: item.index,
-          groupId: group.id,
-          laneId: lane.id,
-          startedAt: latest?.startedAt ?? lane.startedAt ?? item.startedAt,
-          completedAt: latest?.endedAt ?? lane.completedAt ?? item.completedAt,
-          blockedReason: latest?.blockedReason ?? lane.blockedReason ?? item.blockedReason,
-          errorCode: latest?.runtimeErrorCode ?? lane.errorCode ?? item.errorCode,
-          outputPath: lane.outputPath ?? item.outputPath,
-          ...timing(latest?.startedAt ?? lane.startedAt ?? item.startedAt, latest?.endedAt ?? lane.completedAt ?? item.completedAt, now)
-        });
-      }
+    for (const lane of item.lanes) {
+      const itemId = loopFanoutItemId(round, roundStage.stageId, item.id);
+      const attempts = attemptsFor(index, (attempt) => attempt.stageId === loopStageId && attempt.itemId === itemId && attempt.laneId === lane.id);
+      const latest = latestAttempt(attempts);
+      const actor = loopFanoutLaneActor(spec, loopStageId, roundStage.stageId, lane.id);
+      const retry = retrySummary(attempts);
+      tasks.push({
+        id: loopFanoutTaskId(loopStageId, round, roundStage.stageId, item.id, lane.id),
+        kind: "loopFanoutLane",
+        execution: "agent",
+        stageId: loopStageId,
+        label: `${round}/${roundStage.stageId}/${item.id}/${lane.id}`,
+        status: latest?.status ?? lane.status,
+        actorLabel: lane.actorLabel,
+        agent: latest?.agent ?? actor?.agent,
+        actorMode: latest?.actorMode ?? actor?.mode,
+        attemptId: latest?.id ?? lane.attemptId,
+        attemptIds: attempts.map((attempt) => attempt.id),
+        round,
+        bodyStageId: roundStage.stageId,
+        itemId: item.id,
+        itemIndex: item.index,
+        laneId: lane.id,
+        startedAt: latest?.startedAt ?? lane.startedAt ?? item.startedAt,
+        completedAt: latest?.endedAt ?? lane.completedAt ?? item.completedAt,
+        blockedReason: latest?.blockedReason ?? lane.blockedReason ?? lane.skippedReason ?? item.blockedReason ?? item.skippedReason,
+        errorCode: latest?.runtimeErrorCode ?? lane.errorCode ?? item.errorCode,
+        outputPath: lane.outputPath ?? item.outputPath,
+        ...retry,
+        ...timing(latest?.startedAt ?? lane.startedAt ?? item.startedAt, latest?.endedAt ?? lane.completedAt ?? item.completedAt, now)
+      });
     }
   }
+  tasks.push(loopFanoutFaninTask(loopStageId, round, roundStage, bodyStage, index, now));
   return tasks;
+}
+
+function loopFanoutFaninTask(loopStageId: string, round: number, roundStage: NonNullable<NonNullable<StageIndexEntry["loop"]>["rounds"][number]["stages"][string]>, bodyStage: Extract<Stage, { kind: "fanout" }>, index: RunIndex, now: string): RunMonitorTask {
+  const faninItemId = `round-${round}__fanin-${roundStage.stageId}`;
+  const attempts = attemptsFor(index, (attempt) => attempt.stageId === loopStageId && attempt.itemId === faninItemId);
+  const latest = latestAttempt(attempts);
+  const retry = retrySummary(attempts);
+  const faninStatus = latest?.status ?? faninProjectionStatus(roundStage.status, roundStage.fanout);
+  const startedAt = latest?.startedAt;
+  const completedAt = latest?.endedAt ?? roundStage.completedAt;
+  return {
+    id: loopFanoutFaninTaskId(loopStageId, round, roundStage.stageId),
+    kind: "loopFanoutFanin",
+    execution: bodyStage.fanin.mode === "agent" ? "agent" : "deterministic",
+    stageId: loopStageId,
+    label: `${round}/${roundStage.stageId}/fanin`,
+    status: faninStatus,
+    actorLabel: bodyStage.fanin.mode === "agent" ? bodyStage.fanin.actor.label ?? bodyStage.fanin.actor.agent : undefined,
+    agent: latest?.agent ?? (bodyStage.fanin.mode === "agent" ? bodyStage.fanin.actor.agent : undefined),
+    actorMode: latest?.actorMode ?? (bodyStage.fanin.mode === "agent" ? bodyStage.fanin.actor.mode : undefined),
+    attemptId: latest?.id,
+    attemptIds: attempts.map((attempt) => attempt.id),
+    round,
+    bodyStageId: roundStage.stageId,
+    startedAt,
+    completedAt,
+    blockedReason: latest?.blockedReason ?? roundStage.blockedReason,
+    errorCode: latest?.runtimeErrorCode ?? latest?.parseErrorCode,
+    outputPath: roundStage.outputPath,
+    ...retry,
+    ...timing(startedAt, completedAt, now)
+  };
+}
+
+function faninProjectionStatus(stageStatus: StageStatus, fanout: StageIndexEntry["fanout"] | undefined): TaskStatus {
+  if (!allFanoutItemsTerminal(fanout)) return "pending";
+  return stageStatus;
+}
+
+function allFanoutItemsTerminal(fanout: StageIndexEntry["fanout"] | undefined): boolean {
+  if (!fanout) return false;
+  for (const item of fanout.items) {
+    if (!isTerminalStatus(item.status)) return false;
+    for (const lane of item.lanes) {
+      if (!isTerminalStatus(lane.status)) return false;
+    }
+  }
+  return true;
+}
+
+function isTerminalStatus(status: TaskStatus): boolean {
+  return status === "completed" || status === "blocked" || status === "failed" || status === "skipped" || status === "cancelled" || status === "timed_out";
 }
 
 function stageSummary(stage: Stage, state: StageIndexEntry | undefined, tasks: RunMonitorTask[], now: string): RunMonitorStage {
@@ -407,7 +519,7 @@ function countTasks(tasks: RunMonitorTask[]): TaskCounts {
   return {
     total: tasks.length,
     pending: tasks.filter((task) => task.status === "pending" || task.status === "ready").length,
-    running: tasks.filter((task) => task.status === "running" || task.status === "raw_received" || task.status === "parsing" || task.status === "repairing").length,
+    running: tasks.filter((task) => task.status === "running" || task.status === "raw_received" || task.status === "parsing").length,
     completed: tasks.filter((task) => task.status === "completed").length,
     blocked: tasks.filter((task) => task.status === "blocked").length,
     failed: tasks.filter((task) => task.status === "failed" || task.status === "cancelled" || task.status === "timed_out").length,
@@ -415,14 +527,27 @@ function countTasks(tasks: RunMonitorTask[]): TaskCounts {
   };
 }
 
-function stageRoleName(stage: Stage): string | undefined {
-  if (stage.kind === "agentTask") return stage.role;
-  if (stage.kind === "summarize") return stage.role;
-  if (stage.kind === "discover" && stage.method === "agent") return stage.role;
-  if (stage.kind === "reduce" && stage.mode === "agent") return stage.role;
-  if (stage.kind === "decisionGate" && stage.mode === "agent") return stage.role;
-  if (stage.kind === "gate" && stage.mode === "agent") return stage.role;
+function stageActorLabel(stage: Stage): string | undefined {
+  const actor = stageActor(stage);
+  return actor ? actor.label ?? actor.agent : undefined;
+}
+
+function stageActor(stage: Stage): Actor | undefined {
+  if (stage.kind === "task" && stage.mode === "agent") return stage.actor;
+  if (stage.kind === "route" && stage.mode === "agent") return stage.actor;
+  if (stage.kind === "gate" && stage.mode === "agent") return stage.actor;
   return undefined;
+}
+
+function fanoutLaneActor(spec: WorkflowSpec, stageId: string, laneId: string): Actor | undefined {
+  const stage = spec.stages.find((candidate): candidate is Extract<Stage, { kind: "fanout" }> => candidate.id === stageId && candidate.kind === "fanout");
+  return stage?.lanes.find((lane) => lane.id === laneId)?.actor;
+}
+
+function loopFanoutLaneActor(spec: WorkflowSpec, loopStageId: string, bodyStageId: string, laneId: string): Actor | undefined {
+  const loop = spec.stages.find((candidate): candidate is Extract<Stage, { kind: "loop" }> => candidate.id === loopStageId && candidate.kind === "loop");
+  const fanout = loop?.body.stages.find((candidate): candidate is Extract<Stage, { kind: "fanout" }> => candidate.id === bodyStageId && candidate.kind === "fanout");
+  return fanout?.lanes.find((lane) => lane.id === laneId)?.actor;
 }
 
 function topLevelStageAttempts(index: RunIndex, state: StageIndexEntry): AttemptIndexEntry[] {
@@ -438,6 +563,26 @@ function attemptsFor(index: RunIndex, predicate: (attempt: AttemptIndexEntry) =>
 
 function latestAttempt(attempts: AttemptIndexEntry[]): AttemptIndexEntry | undefined {
   return [...attempts].sort(compareAttempts).at(-1);
+}
+
+function retrySummary(attempts: AttemptIndexEntry[]): Pick<RunMonitorTask, "attemptCount" | "currentAttemptOrdinal" | "lastRetryReason" | "retryBudgetUsed" | "retryBudgetLimit" | "lastFailureCode"> {
+  const sorted = [...attempts].sort(compareAttempts);
+  const latest = sorted.at(-1);
+  return {
+    attemptCount: sorted.length,
+    currentAttemptOrdinal: latest ? attemptOrdinal(latest.id) : undefined,
+    lastRetryReason: latest?.retryReason ?? [...sorted].reverse().find((attempt) => attempt.retryReason)?.retryReason,
+    retryBudgetUsed: latest?.retryBudgetUsed ?? latest?.retryOrdinal,
+    retryBudgetLimit: latest?.retryBudgetLimit,
+    lastFailureCode: latest?.lastFailureCode ?? latest?.runtimeErrorCode ?? latest?.parseErrorCode
+  };
+}
+
+function attemptOrdinal(attemptId: string): number | undefined {
+  const match = attemptId.match(/:attempt-(\d+)$/);
+  if (!match) return undefined;
+  const ordinal = Number(match[1]);
+  return Number.isInteger(ordinal) && ordinal > 0 ? ordinal : undefined;
 }
 
 function compareAttempts(left: AttemptIndexEntry, right: AttemptIndexEntry): number {
@@ -456,7 +601,6 @@ async function readOutputSummary(filePath: string): Promise<TaskDetailView["outc
       status: typeof parsed.status === "string" ? parsed.status : undefined,
       summary: typeof parsed.summary === "string" ? parsed.summary : undefined,
       blockedReason: typeof parsed.blockedReason === "string" ? parsed.blockedReason : undefined,
-      artifacts: artifactSummaries(parsed.artifacts),
       preview: previewJson(parsed)
     };
   } catch {
@@ -464,21 +608,13 @@ async function readOutputSummary(filePath: string): Promise<TaskDetailView["outc
   }
 }
 
-function artifactSummaries(value: unknown): Array<{ kind?: string; path?: string; url?: string; label?: string }> {
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((entry): entry is Record<string, unknown> => entry !== null && typeof entry === "object")
-    .map((entry) => ({
-      kind: typeof entry.kind === "string" ? entry.kind : undefined,
-      path: typeof entry.path === "string" ? entry.path : undefined,
-      url: typeof entry.url === "string" ? entry.url : undefined,
-      label: typeof entry.label === "string" ? entry.label : undefined
-    }));
-}
-
 function previewJson(value: unknown): string {
   const text = JSON.stringify(value, null, 2);
   return text.length > MAX_OUTPUT_PREVIEW_CHARS ? `${text.slice(0, MAX_OUTPUT_PREVIEW_CHARS)}\n... [truncated]` : text;
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
 function lineCount(value: string): number {
@@ -495,24 +631,38 @@ function timing(startedAt: string | undefined, completedAt: string | undefined, 
   return completedAt ? { durationMs: value } : { elapsedMs: value };
 }
 
+function monitorObservationNow(index: RunIndex, worker: ReturnType<typeof workerSummary>, generatedAt: string): string {
+  if (terminalRun(index.status)) return generatedAt;
+  if (worker?.status === "stale") return index.worker?.exitedAt ?? index.worker?.heartbeatAt ?? generatedAt;
+  return generatedAt;
+}
+
 function terminalRun(status: RunIndex["status"]): boolean {
-  return status === "completed" || status === "blocked" || status === "diagnosed_blocked" || status === "failed" || status === "cancelled";
+  return status === "completed" || status === "blocked" || status === "failed" || status === "cancelled";
 }
 
 function stageTaskId(stageId: string): string {
   return `task:${stageId}`;
 }
 
-function fanoutTaskId(stageId: string, itemId: string, groupId: string, laneId: string): string {
-  return `task:${stageId}:item:${itemId}:group:${groupId}:lane:${laneId}`;
+function fanoutTaskId(stageId: string, itemId: string, laneId: string): string {
+  return `task:${stageId}:item:${itemId}:lane:${laneId}`;
+}
+
+function fanoutFaninTaskId(stageId: string): string {
+  return `task:${stageId}:fanin`;
 }
 
 function loopStageTaskId(loopStageId: string, round: number, bodyStageId: string): string {
   return `task:${loopStageId}:round:${round}:stage:${bodyStageId}`;
 }
 
-function loopFanoutTaskId(loopStageId: string, round: number, bodyStageId: string, itemId: string, groupId: string, laneId: string): string {
-  return `task:${loopStageId}:round:${round}:fanout:${bodyStageId}:item:${itemId}:group:${groupId}:lane:${laneId}`;
+function loopFanoutTaskId(loopStageId: string, round: number, bodyStageId: string, itemId: string, laneId: string): string {
+  return `task:${loopStageId}:round:${round}:fanout:${bodyStageId}:item:${itemId}:lane:${laneId}`;
+}
+
+function loopFanoutFaninTaskId(loopStageId: string, round: number, bodyStageId: string): string {
+  return `task:${loopStageId}:round:${round}:fanout:${bodyStageId}:fanin`;
 }
 
 function loopBodyItemId(round: number, bodyStageId: string): string {

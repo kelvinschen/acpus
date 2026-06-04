@@ -86,8 +86,8 @@ function runIndex(input: Partial<RunIndex>): RunIndex {
     agentUsage: {
       planned: 0,
       actual: 0,
-      repairCalls: 0,
-      recoveryCalls: 0
+      retryCalls: 0,
+      retries: { runtime: 0, stale: 0, continuation: 0 }
     },
     blockedReason: input.blockedReason,
     gateVerdict: input.gateVerdict

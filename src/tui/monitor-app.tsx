@@ -3,7 +3,7 @@ import { Box, Text, useApp, useInput, useStdout } from "ink";
 import type { RunMonitorView, RunMonitorTask, TaskDetailView } from "../projections/run-monitor.js";
 import type { RunLocator } from "../run-index/locator.js";
 import { loadMonitorSnapshot as defaultLoadMonitorSnapshot, loadTaskDetail as defaultLoadTaskDetail } from "./monitor-data.js";
-import { clampIndex, defaultStageIndex, detailSummary, formatDuration, nextIndex, runProgressLabel, shorten, stageProgressLabel, statusMark, type MonitorFocus, tasksForStage } from "./monitor-rendering.js";
+import { clampIndex, defaultStageIndex, detailSummary, formatDuration, nextIndex, runProgressLabel, runStatusLabel, shorten, stageProgressLabel, statusMark, type MonitorFocus, tasksForStage } from "./monitor-rendering.js";
 
 export type MonitorAppProps = {
   runArg: string;
@@ -156,7 +156,7 @@ function Header({ view }: { view: RunMonitorView }) {
   const title = `${view.run.workflowName}`;
   const worker = view.run.worker ? ` - worker ${view.run.worker.status}` : "";
   const runTime = formatDuration(view.run.durationMs ?? view.run.elapsedMs);
-  const meta = `${runProgressLabel(view)} - ${view.run.status}${runTime ? ` - ${runTime}` : ""}${worker}`;
+  const meta = `${runProgressLabel(view)} - ${runStatusLabel(view)}${runTime ? ` - ${runTime}` : ""}${worker}`;
   return (
     <Box flexDirection="column">
       <Text color="blue" bold>{title}</Text>
@@ -239,7 +239,7 @@ function monitorPanelWidths(columns: number | undefined): { stages: number; task
 function StatusMark({ status }: { status: string | undefined }) {
   const mark = statusMark(status);
   if (status === "completed") return <Text color="green">{mark}</Text>;
-  if (status === "running" || status === "raw_received" || status === "parsing" || status === "repairing") return <Text color="yellow">{mark}</Text>;
+  if (status === "running" || status === "raw_received" || status === "parsing") return <Text color="yellow">{mark}</Text>;
   if (status === "blocked" || status === "failed" || status === "cancelled" || status === "timed_out") return <Text color="red">{mark}</Text>;
   if (status === "skipped") return <Text dimColor>{mark}</Text>;
   return <Text dimColor>{mark}</Text>;

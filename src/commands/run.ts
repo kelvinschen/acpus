@@ -1,19 +1,21 @@
 import type { Command } from "commander";
+import type { WorkflowSpec } from "../schema/workflow-spec.js";
+import { readFinalOutput } from "../projections/final-output.js";
 import { appendEvent, readRunIndex, writeRunIndex, type RunIndex } from "../run-index/read-write.js";
 import { prepareRun } from "../runtime/run-workflow.js";
 import { runWorkflowWorker, spawnBackgroundWorker, type WorkerProgressEvent } from "../runtime/worker.js";
 import { resultFromIssues } from "../errors.js";
 import { applyInputDefaults, validateWorkflowInput } from "../schema/input-validation.js";
-import { loadAndLint, printIssues, printJson, readJsonFile, resolveSpecArg } from "./common.js";
+import { loadAndLint, printIssues, printJson, readInputArg, resolveSpecArg } from "./common.js";
 
 export function registerRun(program: Command): void {
   program.command("run")
     .argument("[spec]", "spec file path or workflow name")
     .option("--global", "resolve saved workflow from global directory")
-    .option("--input-json <path>", "raw workflow input JSON file")
+    .option("--input <json-or-path>", "workflow input as a JSON object string or JSON file path")
     .option("--wait", "run in the foreground until the workflow reaches a terminal state")
     .option("--json", "print JSON")
-    .action(async (specArg: string | undefined, options: { global?: boolean; inputJson?: string; wait?: boolean; json?: boolean }) => {
+    .action(async (specArg: string | undefined, options: { global?: boolean; input?: string; wait?: boolean; json?: boolean }) => {
       if (!specArg) {
         if (options.json) printJson(resultFromIssues("run", []));
         else process.stderr.write("Error: provide a spec file path or workflow name.\n");
@@ -28,7 +30,7 @@ export function registerRun(program: Command): void {
         process.exitCode = 1;
         return;
       }
-      const input = applyInputDefaults(spec, options.inputJson ? await readJsonFile(options.inputJson) : {});
+      const input = applyInputDefaults(spec, options.input ? await readInputArg(options.input) : {});
       const inputResult = resultFromIssues("input", validateWorkflowInput(spec, input));
       if (!inputResult.ok) {
         if (options.json) printJson(inputResult);
@@ -46,7 +48,7 @@ export function registerRun(program: Command): void {
           const finalIndex = await runWorkflowWorker(process.cwd(), prepared.logicalRunId, {
             reporter: waitReporter(options.json)
           });
-          emitTerminalSummary(options.json, prepared.logicalRunId, prepared.dir, finalIndex);
+          await emitTerminalSummary(options.json, prepared.logicalRunId, prepared.dir, finalIndex, spec);
           return;
         }
         const worker = await spawnBackgroundWorker(process.cwd(), prepared.logicalRunId);
@@ -88,7 +90,7 @@ function waitReporter(json: boolean | undefined) {
   };
 }
 
-function emitTerminalSummary(json: boolean | undefined, runId: string, dir: string, index: RunIndex): void {
+async function emitTerminalSummary(json: boolean | undefined, runId: string, dir: string, index: RunIndex, spec: WorkflowSpec): Promise<void> {
   const summary = {
     type: "terminal_summary",
     ok: index.status !== "failed" && index.status !== "cancelled",
@@ -96,7 +98,8 @@ function emitTerminalSummary(json: boolean | undefined, runId: string, dir: stri
     runDir: dir,
     status: index.status,
     blockedReason: index.blockedReason,
-    gateVerdict: index.gateVerdict
+    gateVerdict: index.gateVerdict,
+    finalOutput: json ? await readFinalOutput(dir, spec) : undefined
   };
   if (json) process.stdout.write(`${JSON.stringify(summary)}\n`);
   else process.stdout.write(`terminal status=${summary.status}${summary.gateVerdict ? ` verdict=${summary.gateVerdict}` : ""}\n`);

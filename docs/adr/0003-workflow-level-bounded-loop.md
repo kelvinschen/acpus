@@ -25,6 +25,6 @@ Loop body stages are inline and scoped to the loop container. The first version 
 
 Loop output and runtime state preserve the container boundary. The top-level run index contains one loop stage entry with nested round history, not top-level entries for body stages. Loop output exposes the latest round summary, final outputs, and round metadata. Agent session keys include loop id, round number, and body stage id so cross-round context passes explicitly through loop variables rather than implicit conversation history.
 
-Express parallel migration workers and dual static/semantic review with existing fanout and Lane Group semantics inside the Loop Body. The loop itself does not introduce another concurrency pool.
+Express parallel migration workers and dual static/semantic review with fanout lane filter semantics inside the Loop Body. The loop itself does not introduce another concurrency pool.
 
 Implementation requires updates to workflow schema, generated JSON schema, compiler lint, execution planning, runtime scheduling, run-index state, resume behavior, report projections, examples, and relevant specifications when this capability becomes current behavior.

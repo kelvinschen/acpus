@@ -14,9 +14,9 @@
 - 只能有一个 terminal `gate` stage；
 - 依赖通过显式 `dependsOn` 表达；
 - 不支持任意图环；有界回流通过 `loop` 容器表达；
-- 分支路由只能通过 `decisionGate`；
+- 分支路由只能通过 `route` stage；
 - 并发主要通过 `fanout` item 表达；
-- 纯程序节点只支持内置 `discover`、`reduce`、`decisionGate` program mode 和 terminal `gate`。
+- 纯程序执行只支持 `task` command、program `route`、program `gate` 和 program fanin `mergeArrays`。
 
 下面把能力缺口拆成较小的原子能力，方便后续逐步优化框架，而不是一次性把 workflow spec 扩成无约束的通用编排器。
 
@@ -24,11 +24,11 @@
 
 | 场景诉求 | 当前支持情况 | 缺失原子能力 |
 | --- | --- | --- |
-| `A -> (B1, B2) -> C`，其中 B1/B2 是独立 stage | 不直接支持。普通 stage 有多个 downstream 会被 lint 拒绝，除非它是 `decisionGate`。 | 普通并行分支与汇合 |
-| `decisionGate -> D/E/F -> G`，只有被选中的 route 运行，然后汇合到 G | 不支持。未选中 route 会变成 `skipped`，依赖解析只把 `completed` 视为满足。 | 条件汇合 / 选中路由汇合 |
+| `A -> (B1, B2) -> C`，其中 B1/B2 是独立 stage | 不直接支持。普通 stage 有多个 downstream 会被 lint 拒绝，除非它是 `route`。 | 普通并行分支与汇合 |
+| `route -> D/E/F -> G`，只有被选中的 route branch 运行，然后汇合到 G | 不支持。未选中 route 会变成 `skipped`，依赖解析只把 `completed` 视为满足。 | 条件汇合 / 选中路由汇合 |
 | 每个 fanout item 需要多步流水线，例如 search -> extract -> verify | 不支持 item 内部子图。只能折叠到一个 item prompt，或拆成全局 stage。 | per-item subgraph / map pipeline |
 | Figma MCP 提取作为一等确定性节点 | workflow spec 不支持原生工具节点。只能藏在 agent turn 里，前提是 agent runtime 有 MCP 工具。 | 原生 tool/MCP task 节点 |
-| 自定义纯程序节点 | 只支持少量内置 program 能力：glob/git discover、program reduce、program decision。 | 自定义 program/command task 节点 |
+| 自定义纯程序节点 | 支持 `task` command；内置 fanin 目前只有 `mergeArrays`。 | 更多 program task / fanin 操作 |
 | 代码生成和测试生成并行，然后进入视觉验证 | 不支持两个普通 stage 并行后 join。只能串行、合并到一个 agent task，或用 fanout 近似。 | 普通并行分支与汇合 |
 | 下游 stage 读取“被选中 route 的输出” | 不好表达。变量当前只能读取固定路径，例如 `outputs.D.summary`。 | route output alias / selected output binding |
 
@@ -38,7 +38,7 @@
 
 **问题**
 
-当前 graph lint 会拒绝非 `decisionGate` stage 拥有多个 dependent，因此不能直接表达普通并行工作：
+当前 graph lint 会拒绝非 `route` stage 拥有多个 dependent，因此不能直接表达普通并行工作：
 
 ```text
 A -> B1
@@ -95,7 +95,8 @@ B1 + B2 -> C
 ```json
 {
   "id": "C",
-  "kind": "agentTask",
+  "kind": "task",
+  "mode": "agent",
   "dependsOn": ["B1", "B2"],
   "joinPolicy": { "type": "allCompleted" }
 }
@@ -115,13 +116,13 @@ B1 + B2 -> C
 
 **问题**
 
-`decisionGate` 可以选择一个 route，并把未选中的直接下游 stage 标为 `skipped`。  
+`route` 可以选择一个 route branch，并把未选中的直接下游 stage 标为 `skipped`。  
 但如果后续 stage 依赖所有 route branch，它不会运行，因为依赖解析只把 `completed` 当成满足。
 
 ```text
-C -> decisionGate -> D
-                  -> E
-                  -> F
+C -> route -> D
+          -> E
+          -> F
 D/E/F 中被选中的 branch -> G
 ```
 
@@ -130,7 +131,8 @@ D/E/F 中被选中的 branch -> G
 ```json
 {
   "id": "G",
-  "kind": "agentTask",
+  "kind": "task",
+  "mode": "agent",
   "dependsOn": ["D", "E", "F"],
   "joinPolicy": {
     "type": "selectedRouteCompleted",

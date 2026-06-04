@@ -8,9 +8,8 @@ Status: completed.
 
 - Delete the `report` CLI command, `RunReportView`, report renderers, live report server, web-report frontend, and report-specific tests.
 - Delete `specs/report-spec.md` and remove current report requirements from other SPEC files.
-- Add `RunDiagnosticsView` for `diagnose` and troubleshooting workflows.
-- Update `diagnose` to use `RunDiagnosticsView` instead of report projections.
-- Add `diagnose --json` output backed by diagnostics projection.
+- Keep `RunDiagnosticsView` as an internal troubleshooting projection.
+- Do not restore a public `diagnose` command; ADR 0007 removed that product surface.
 - Keep `RunView` temporarily for existing run and follow summaries.
 - Keep `save` helper snapshots, but remove the requirement for `dist/report-web`.
 - Remove web-report build/test scripts and web-only dependencies.
@@ -37,6 +36,6 @@ Status: completed.
 - Render stages, selected-stage Stage Tasks, and Task Detail in the TUI.
 - Default selection should prefer the current running stage, then the first blocked stage, then the first non-completed stage.
 - Load `TaskDetailView` lazily when a Stage Task is selected.
-- Keep the first TUI observation-only: no resume, diagnose, cancel, or workflow mutation actions.
+- Keep the first TUI observation-only: no resume, cancel, or workflow mutation actions.
 - Do not display token usage or tool-call counts in the first TUI.
 - Do not inline full prompt, raw output, or output artifacts; show bounded previews and paths only.

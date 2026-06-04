@@ -3,133 +3,171 @@
 ## Status
 
 - Current implementation: current
-- Source modules: `src/schema/workflow-spec.ts`, `src/schema/input-validation.ts`, `src/schema/load.ts`, `src/compiler/compile.ts`, `src/compiler/lint.ts`, `src/compiler/compile-execution-plan.ts`, `src/compiler/execution-plan.ts`, `schemas/workflow-spec.schema.json`, `workflows/examples/**/*.workflow.spec.json`
-- Maintenance trigger: update this spec when changing workflow schema, validation, linting, compilation, execution-plan shape, stage kinds, variable semantics, limits, or example workflow contracts
+- Source modules: `src/schema/workflow-spec.ts`, `src/schema/load.ts`, `src/compiler/compile.ts`, `src/compiler/lint.ts`, `src/compiler/compile-execution-plan.ts`, `src/compiler/execution-plan.ts`, `schemas/workflow-spec.schema.json`, `skills/acpus/examples/**/*.workflow.spec.yaml`, `workflows/examples`
+- Maintenance trigger: update this spec when changing workflow schema, YAML loading, validation, linting, compilation, execution-plan shape, stage kinds, variables, limits, input/output schema declarations, example workflow specs, or the repository examples entry
 
 ## Purpose
 
-`workflow.spec.json` is the stable, hand-editable authoring interface for the Acpus workflow orchestrator. The compiler validates it, lints graph semantics, and compiles it into `execution-plan.json` for the runtime scheduler.
+`workflow.spec.yaml` is the stable authoring interface for Acpus workflows. The compiler validates parsed YAML objects, lints graph semantics, and compiles them into `execution-plan.json` for the runtime scheduler.
 
 ## Normative Requirements
 
-- Workflow specs MUST use schema version `acpus.workflow/v1`.
-- A workflow spec MUST explicitly name `root`.
-- A workflow graph MUST have exactly one dependency-free root stage, and `root` MUST name that stage.
-- A workflow graph MUST have exactly one `gate` stage.
-- The `gate` stage MUST be terminal and MUST be the only terminal workflow stage.
-- `summarize` stages are deprecated authoring input and MUST be rejected by lint with migration guidance.
-- Program `gate` stages MUST use `mode: "program"` by default and MAY declare `condition` using the condition DSL.
-- Condition DSL `in` predicates MUST declare an array `value`; `exists` and `empty` predicates MUST NOT require `value`.
-- A program `gate` without `condition` MUST have exactly one upstream dependency and MUST pass when `outputs.<upstream>` exists.
-- Agent `gate` stages MUST declare a role and prompt, and the role MUST NOT use edit mode.
-- Terminal `gate` dependencies MAY treat skipped upstream decision branches as satisfied.
-- Stage dependencies MUST be expressed with explicit `dependsOn` fields.
-- Workflow specs MUST NOT use global `edges`.
-- Workflow graphs MUST NOT contain arbitrary cycles; bounded repeated execution MUST use the supported `loop` model.
-- Route branching MUST be expressed with `decisionGate`.
-- File or glob discovery MUST be expressed as an explicit `discover` stage.
-- Agent discovery MUST declare an explicit role and prompt.
-- `fanout` stages MUST declare non-empty `laneGroups`; the legacy single `role` fanout shape MUST be rejected.
-- Homogeneous fanout MUST be represented as one lane group with one lane.
-- A fanout lane group MUST declare `id`, `mode`, and non-empty `lanes`.
-- Fanout lane group `mode` MUST be either `all` or `oneOf`.
-- `all` groups MUST run every matching lane for an item; a lane without `when` MUST match in `all`.
-- `oneOf` groups MUST select exactly one lane per item; non-default lanes MUST declare `when`.
-- `oneOf` groups MUST allow at most one `default` lane, and a default lane MUST NOT declare `when`.
-- `default` MUST be invalid outside `oneOf` groups.
-- Fanout stage `prompt` MAY provide the default prompt for lanes; every lane MUST either declare `prompt` or inherit the stage prompt.
-- Fanout lane predicates MUST reuse the condition DSL.
-- All fanout lanes in one stage MUST infer the same output contract from their roles.
-- `fanout` MUST schedule independent lane work units for selected item/group/lane combinations while respecting the fanout stage `limits.maxConcurrency` value.
-- Fanout lane work units MUST use deterministic session keys that include item id, group id, and lane id.
-- Fanout item outputs MUST be aggregated by the orchestrator before downstream stages run.
-- `loop` MUST be the only supported workflow-level bounded repetition stage kind.
-- `loop` MUST declare `maxRounds`, `body.root`, `body.output`, non-empty `body.stages`, `continueWhen`, and `onExhausted: "blocked"`.
-- `loop.body.stages` MUST support `agentTask`, `discover`, `fanout`, `reduce`, and `decisionGate` stages.
-- `loop.body.root` MUST name the single dependency-free loop body stage.
-- `loop.body.output` MUST name a loop body stage whose output is used for round convergence and stage output.
-- Loop body dependencies MUST be acyclic and MUST only reference other stages in the same loop body.
-- Loop body prompt variables MAY read workflow `input.*`, upstream top-level `outputs.*`, same-round loop body `outputs.*`, and loop-local `loop.current.*` or `loop.previous.*` sources. `loop.current` and `loop.previous` MUST expose `{ output, outputs }` expression views.
-- A `loop` round MUST execute the full body until `body.output` is produced or a body stage blocks.
-- `loop.continueWhen` MUST be evaluated after each completed round against loop-local context.
-- `loop` MUST complete when `continueWhen` evaluates false.
-- `loop` MUST block with exhausted behavior when `continueWhen` remains true after `maxRounds`.
-- `fixLoop` MUST NOT be accepted as an authoring stage kind.
-- Edit fanout MAY be used, but it MUST be followed by a read-only reconcile or reduce stage.
-- Prompt placeholders MUST use `${variableName}` syntax only.
-- Variables MUST declare a `source` and MAY declare fixed built-in transforms.
-- Input defaults and runtime `--input-json` values MUST be checked against lightweight input type declarations.
-- The compiler MUST reject undeclared variables and unsafe graph shapes with JSON Pointer errors.
-- The generated JSON Schema MUST match Zod default semantics: properties with schema defaults MUST NOT be required by the JSON Schema.
-- Top-level `limits` MUST NOT include agent call budgets, concurrency limits, fanout item caps, or loop round caps.
-- Fanout stage `limits.maxConcurrency` MUST default to `1` when omitted.
-- Fanout stage `limits.maxFanoutItems` MUST default to `1` when omitted.
-- Stage `limits.maxConcurrency` and `limits.maxFanoutItems` MUST be accepted only on `fanout` stages.
-- `limits.stageTimeoutMinutes` MAY bound stage runtime duration where enforced by runtime execution.
-- Stage `limits.stageTimeoutMinutes` MAY override the workflow timeout, but MUST NOT exceed top-level `limits.stageTimeoutMinutes` when the top-level value is declared.
+- Workflow specs MUST use `schemaVersion: "acpus.workflow/v1"`.
+- Workflow specs MUST be authored and saved as YAML.
+- Workflow spec file paths MAY use `.yaml` or `.yml`.
+- `loadWorkflowSpec` MUST reject non-YAML workflow spec paths with `SCHEMA_FORMAT_UNSUPPORTED`.
+- YAML parse failures MUST be reported as `SCHEMA_YAML_INVALID`.
+- The generated JSON Schema MUST describe the parsed YAML object.
+- A workflow graph MUST declare `root`, and `root` MUST name the single dependency-free root stage.
+- A workflow graph MUST have exactly one terminal `gate` stage.
+- Stage dependencies MUST be expressed with `dependsOn`; specs MUST NOT use global `edges`.
+- Workflow specs MAY declare `input.schema`, `input.default`, and `input.description`.
+- `input.schema` MUST use the schema DSL and MUST have an object root.
+- `input.default`, when present, MUST be an object and MUST satisfy `input.schema`.
+- Runtime input MUST be top-level shallow-merged over `input.default` before validation.
+- Runtime input MUST satisfy `input.schema`; missing required fields, unknown fields, and nested object extra fields MUST be rejected.
+- The only top-level stage kinds are `task`, `fanout`, `loop`, `route`, and `gate`.
+- Task, route, and fanin executable objects MUST declare `mode`; gate executable objects MAY omit `mode` and MUST default to program mode. `fanout` and `loop` MUST NOT declare stage-level `mode`.
+- Agent task, route, gate, and fanin executable objects MUST declare inline `actor: { agent, mode, label? }` and `prompt`.
+- Specs MUST NOT declare top-level `roles` or string role references.
+- Program task stages MUST use `operation: "command"` and MUST declare `command`.
+- Program task stages MAY declare `args`, `cwd`, `timeoutSeconds`, and `allowMutation`.
+- Agent task and agent gate stages MAY declare `output.schema` using the schema DSL.
+- Program gate stages MUST NOT declare `actor`, `prompt`, or `output.schema`.
+- Route stages MUST NOT declare `output.schema`.
+- Route stages MUST declare `routes`; `routes` MUST exactly equal the direct downstream stage IDs.
+- Route rules MUST be evaluated first-match; when no rule matches, the route stage blocks with `ROUTE_UNMATCHED`.
+- Branching MUST be expressed with `route`.
+- `fanout` stages MUST declare `items.source`, non-empty `lanes`, and `fanin`.
+- Fanout stages MAY declare `prompt` as the default prompt for lanes.
+- Fanout lanes MUST be agent-only executable lanes with inline actors.
+- Each fanout lane MUST declare `prompt` or inherit the fanout stage `prompt`.
+- Each fanout item MUST execute every lane whose `when` condition is absent or evaluates true.
+- A lane with `when` false or a missing `when.source` MUST be skipped and MUST NOT block the item.
+- Multiple fanout lane conditions that evaluate true MUST all execute; one-of behavior is an authoring pattern created with mutually exclusive `when` conditions.
+- Fanout `fanin` MUST be either agent fanin with actor and prompt or program fanin with `operation: "mergeArrays"`.
+- Program fanin MUST NOT support operations other than `mergeArrays`.
+- Loop stages MUST declare `maxRounds`, `body.root`, `body.output`, non-empty `body.stages`, `continueWhen`, and `onExhausted: "blocked"`.
+- Loop body stages MUST support `task`, `fanout`, and `route`.
+- `loop.body.output` MUST NOT name a route stage.
+- Prompt placeholders MUST use `${variableName}` syntax.
+- Variables MUST declare `source` and MAY declare supported built-in transforms.
+- Variable source roots MUST be `input`, `outputs`, `item`, `loop`, or `results` where that root is in scope.
+- `run.*` source variables are not supported.
+- Top-level `limits` MAY include `stageTimeoutMinutes`.
+- Stage limits MAY include `stageTimeoutMinutes`; fanout stage limits MAY also include `maxConcurrency` and `maxFanoutItems`.
+- Each limit value MUST be either a positive integer number or an input-sourced binding object `{source, default?}`.
+- Limit binding `source` MUST be an absolute `input.*` path.
+- Limit binding `default`, when present, MUST be a positive integer number and MUST be used only when the source path is missing.
+- Limit resolution MUST NOT coerce strings or non-integer numbers.
+- Fanout `maxConcurrency` and `maxFanoutItems` both default to `1` when omitted.
+- Specs MUST contain only the current stage kinds and operations listed in this SPEC.
 
 ## Interfaces and Contracts
 
-The canonical minimal shape is:
+Minimal YAML shape:
 
-```json
-{
-  "schemaVersion": "acpus.workflow/v1",
-  "root": "plan"
-}
+```yaml
+schemaVersion: acpus.workflow/v1
+name: example
+root: task
+input:
+  schema: |
+    {
+      task: string,
+      maxConcurrency?: number
+    }
+  default:
+    task: ""
+    maxConcurrency: 2
+limits:
+  stageTimeoutMinutes: 30
+stages:
+  - id: task
+    kind: task
+    mode: agent
+    actor:
+      agent: codex
+      mode: readOnly
+    prompt: Do the work.
+  - id: gate
+    kind: gate
+    dependsOn: [task]
 ```
 
-Authoring examples live under `workflows/examples/**/*.workflow.spec.json`. The generated JSON schema lives at `schemas/workflow-spec.schema.json`.
+Input-sourced limit example:
 
-Stage output contracts are inferred from role category:
+```yaml
+stages:
+  - id: review
+    kind: fanout
+    items:
+      source: input.reviewItems
+    prompt: Review one item.
+    limits:
+      maxConcurrency:
+        source: input.maxConcurrency
+      maxFanoutItems:
+        source: input.maxFanoutItems
+        default: 50
+    lanes:
+      - id: reviewer
+        actor: { agent: aiden, mode: readOnly }
+    fanin:
+      mode: program
+      operation: mergeArrays
+```
 
-- planning, research, and coordination roles use the base output contract unless selected by a more specific stage kind;
-- implementation roles produce changed files and checks;
-- validation and review roles produce verdicts, severity counts, findings, and checks;
-- gate produces `verdict`, deliverables, changed files, checks, warnings, risks, and next actions.
-
-Fanout aggregate output includes nested `items[].groups[].lanes[]` and flat `laneOutputs[]`. `skippedItems` MUST be reported separately from completed and blocked active items.
+Authoring examples MUST live under `skills/acpus/examples/**/*.workflow.spec.yaml` so skill installs copy the real files. The repository-visible `workflows/examples` entry MUST be a relative symlink to `../skills/acpus/examples`. Saved workflows store `workflow.spec.yaml`. Runtime snapshots store the compiled `execution-plan.json` as JSON.
 
 ## Data Model
 
-A workflow spec contains schema metadata, optional typed inputs, roles, limits, stages, explicit dependencies, variables, and stage-specific configuration. Role categories are `planning`, `implementation`, `validation`, `review`, `research`, `summarization`, and `coordination`. Role modes are `denyAll`, `readOnly`, and `edit`.
+A workflow spec contains schema metadata, optional workflow input schema/default, top-level limits, stages, explicit dependencies, variables, inline actors, output schema declarations, and stage-specific configuration.
 
-Top-level limits include `stageTimeoutMinutes`. Stage limits include `stageTimeoutMinutes`; fanout stages additionally support `maxConcurrency` and `maxFanoutItems`. `maxFanoutItems` caps candidate items before lane expansion and MUST NOT cap expanded lane work units.
+Limit binding objects are authoring-time run-start parameterization. `workflow.spec.yaml` snapshots preserve the authored binding object. Compiled `execution-plan.json` stores only resolved numeric limits.
 
-`loop` stages contain a bounded inline body, maximum round count, convergence condition, and explicit blocked behavior for exhausted outcomes. The compiled execution plan is the runtime-derived snapshot of the validated authoring model. Loop body prompt and contract identifiers are namespaced by the parent loop stage in the execution plan.
+An actor is `{ agent, mode, label? }`, where `mode` is `denyAll`, `readOnly`, or `edit`. Actor labels are display and session-key labels; they are not global role definitions.
+
+The schema DSL supports primitives, `unknown`, literals, arrays, objects, optional keys, and unions. It does not support `any`, `Record`, or type aliases. Workflow input schema roots and workflow output schema roots MUST be objects.
+
+Program gate output is a wrapper object. Gate control fields stay at the top level; effective upstream output is exposed as `data`. With one effective upstream output, `data` is that output. With multiple effective upstream outputs, `data` is an object keyed by upstream stage ID. Agent gate output is produced by the agent and does not automatically pass through upstream output.
+
+Fanout final downstream output is the fanin output. The raw item/lane aggregate is internal runtime `results`.
+Fanout stage `prompt`, when present, is the default prompt for lanes that omit their own prompt. Lane-level `prompt` overrides the stage-level default.
+Fanout items record `lanes[]`, `laneOutputs[]`, `skippedLanes`, and item-level skip reason `NO_SELECTED_LANES` when no lanes are selected.
+The agent fanin `results` aggregate exposes top-level `items`, `laneOutputs`, `blockedItems`, `skippedItems`, and `skippedLanes`. Each entry in `items` contains that item's nested `lanes`, `laneOutputs`, and `skippedLanes`.
 
 ## Runtime Behavior
 
-Validation first performs Zod shape validation, then compiler lint checks. Compilation produces `execution-plan.json`, not ACPX flow source. Runtime agent prompts receive a safety and output footer generated from the stage contract.
+Validation first performs Zod shape validation, input schema validation, input-sourced limit validation, then compiler lint checks. Compilation produces `execution-plan.json`; it does not produce ACPX flow source.
 
-At runtime, actual agent attempts and repair attempts are recorded in `run.json`. Transient agent runtime failures get one automatic retry; the retry counts in `agentUsage.actual`, and repair-turn retries count in `repairCalls`. Agent call accounting is usage data and MUST NOT control scheduler capacity.
+Agent prompts receive a structured output schema footer. Agent gate outputs require a `verdict`; route outputs require a valid `route` when route mode is agent. Program gate output is normalized to `{status,summary,verdict,data?}`. Program command output is normalized to `{status,data}`.
 
-For `loop`, each round runs the complete inline body according to body dependencies. Program body stages execute deterministically, agent body stages use the normal ACPX attempt and repair pipeline, and fanout body stages execute selected lane work inside the round before aggregation. After `body.output` is produced, `continueWhen` evaluates against `loop.current.output`, `loop.current.outputs`, and `loop.previous.output` using the same `{ output, outputs }` expression shape exposed to body prompts. A false condition completes the stage and writes the loop output. A true condition starts the next round until `maxRounds`; if the condition remains true after the final round, the stage blocks with `LOOP_EXHAUSTED`.
+Loop rounds execute the body graph until `body.output` is produced or a body stage blocks. Loop body fanout stages run lane work, create internal `results`, execute fanin, and expose fanin output as the body stage output.
 
-At terminal completion, the `gate` stage writes the workflow `gateVerdict`. Verdicts `pass` and `pass_with_warnings` complete the run. Verdicts `blocked`, `failed`, and `unknown` block the run with gate-specific runtime blocked reasons. Runtime `failed` remains reserved for infrastructure failures.
+Agent fanin prompts may reference `${results}`; the compiler injects this fanin-local variable as JSON without requiring a workflow variable declaration.
+For fanout stages with agent fanin, workflow variables MUST NOT declare the name `results`; that name is reserved for the fanin aggregate.
+Loop body prompts and loop conditions may reference `loop.round`, `loop.current.output`, `loop.current.outputs`, `loop.previous.output`, and `loop.previous.outputs`.
 
 ## Extension Points
 
-Supported extension points are new validated stage fields, built-in transforms, role categories, output contracts, and compiler/runtime policies documented in the relevant SPEC. Extensions MUST preserve explicit graph semantics and validation errors.
+Supported extension points are new validated fields, built-in transforms, schema DSL additions, program task operations, program fanin operations, and compiler/runtime policies documented in the relevant SPEC.
 
 ## Non-Goals
 
-- The workflow spec is not a general-purpose workflow engine.
-- The workflow spec does not support arbitrary graph cycles.
-- The workflow spec does not use generated ACPX flow files as an execution contract.
-- Roadmap capabilities such as ordinary parallel split/join, fanout lane group dependencies, and native tool tasks are not current behavior unless separately implemented and reflected in this SPEC.
+- YAML is the only workflow authoring format.
+- Actors are declared inline on executable agent objects.
+- Current stage kinds and operations are the only authoring constructs.
+- No arbitrary graph cycles outside `loop`.
 
 ## Implementation Map
 
 - Schema definitions -> `src/schema/workflow-spec.ts`
-- Input validation -> `src/schema/input-validation.ts`
-- Spec loading -> `src/schema/load.ts`
+- YAML loading -> `src/schema/load.ts`
 - Compiler entry points -> `src/compiler/compile.ts`, `src/compiler/compile-execution-plan.ts`
 - Graph linting -> `src/compiler/lint.ts`
-- Execution-plan model -> `src/compiler/execution-plan.ts`, `src/compiler/contracts.ts`
+- Execution-plan model -> `src/compiler/execution-plan.ts`
+- Schema DSL -> `src/contracts/schema-dsl.ts`
 - Variable interpolation and sources -> `src/variables/interpolate.ts`, `src/variables/paths.ts`
-- Built-in transforms -> `src/transformers/builtins.ts`
-- `loop` schema, linting, and planning -> `src/schema/workflow-spec.ts`, `src/compiler/lint.ts`, `src/compiler/compile-execution-plan.ts`, `src/compiler/execution-plan.ts`
-- `gate` schema, linting, planning, and runtime verdict handling -> `src/schema/workflow-spec.ts`, `src/compiler/lint.ts`, `src/compiler/compile-execution-plan.ts`, `src/runtime/stage-runner.ts`, `src/runtime/scheduler.ts`
 - JSON schema generation -> `src/schema/generate-json-schema.ts`, `schemas/workflow-spec.schema.json`
-- Example authoring contracts -> `workflows/examples/**/*.workflow.spec.json`
+- Examples -> `skills/acpus/examples/**/*.workflow.spec.yaml`, exposed through `workflows/examples`

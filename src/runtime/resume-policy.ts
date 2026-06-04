@@ -1,4 +1,6 @@
 import { issue, type OrchestratorIssue } from "../errors.js";
+import type { ExecutionPlan } from "../compiler/execution-plan.js";
+import { staticLimitOrDefault } from "../schema/limit-resolution.js";
 import type { WorkflowSpec } from "../schema/workflow-spec.js";
 
 export type ResumePolicy = {
@@ -65,7 +67,7 @@ export function parseResumePolicyOptions(options: ResumePolicyOptions): {
   return { policy: { fanout }, issues };
 }
 
-export function validateResumePolicy(spec: WorkflowSpec, policy: ResumePolicy): OrchestratorIssue[] {
+export function validateResumePolicy(spec: WorkflowSpec, policy: ResumePolicy, plan?: ExecutionPlan): OrchestratorIssue[] {
   const issues: OrchestratorIssue[] = [];
   const stageIds = spec.stages.map((stage) => stage.id);
 
@@ -94,18 +96,19 @@ export function validateResumePolicy(spec: WorkflowSpec, policy: ResumePolicy): 
       continue;
     }
 
-    const hasEditLane = stage.laneGroups.some((group) => group.lanes.some((lane) => spec.roles[lane.role]?.mode === "edit"));
+    const hasEditLane = stage.lanes.some((lane) => lane.actor.mode === "edit");
     if (fanoutPolicy.allowPartial && hasEditLane) {
       issues.push(issue({
         code: "RESUME_POLICY_PARTIAL_REQUIRES_READONLY",
         severity: "error",
         path: `${policyPath}/allowPartial`,
         message: `Resume cannot enable partial results for edit fanout stage ${stageId}.`,
-        suggestions: ["Use diagnose for recovery advice, then start a new run if edit recovery is needed."]
+        suggestions: ["Inspect monitor details, then start a new run if edit recovery is needed."]
       }));
     }
 
-    const compiledMaxItems = stage.limits?.maxFanoutItems ?? 1;
+    const compiledMaxItems = plan?.fanout.find((entry) => entry.stageId === stageId)?.maxItems
+      ?? staticLimitOrDefault(stage.limits?.maxFanoutItems, 1);
     if (fanoutPolicy.maxItems !== undefined && fanoutPolicy.maxItems > compiledMaxItems) {
       issues.push(issue({
         code: "RESUME_POLICY_MAX_ITEMS_NOT_TIGHTENING",

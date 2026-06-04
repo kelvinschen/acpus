@@ -2,15 +2,14 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { OrchestratorIssue } from "../errors.js";
 import type { WorkflowSpec } from "../schema/workflow-spec.js";
+import { staticLimitOrDefault } from "../schema/limit-resolution.js";
 import { runDir } from "../run-index/paths.js";
 import type { RunIndex } from "../run-index/read-write.js";
 
-export type RunViewStatus = "pending" | "running" | "completed" | "blocked" | "diagnosed_blocked" | "failed" | "cancelled";
+export type RunViewStatus = "pending" | "running" | "completed" | "blocked" | "failed" | "cancelled";
 export type RunViewOutputParse = {
   mode?: string;
-  repaired?: boolean;
   candidateCount?: number;
-  warnings: string[];
 };
 export type RunViewParseDiagnostics = {
   errorCode?: string;
@@ -27,12 +26,11 @@ export type RunView = {
   gateVerdict?: "pass" | "pass_with_warnings" | "blocked" | "failed" | "unknown";
   blockedReason?: string;
   summary: string;
-  checks: Array<{ command?: string; name?: string; status?: string; summary?: string }>;
   finalWarnings: string[];
   risks: string[];
   warnings: OrchestratorIssue[];
   errors: OrchestratorIssue[];
-  roles: Array<{ name: string; category: string; agent: string; mode: string }>;
+  actors: Array<{ label: string; agent: string; mode: string }>;
   stages: Array<{
     id: string;
     kind: string;
@@ -52,10 +50,18 @@ export type RunView = {
     blockedReason?: string;
     parseErrorCode?: string;
     path: string;
+    isRetry?: boolean;
+    retryReason?: string;
+    retryOf?: string;
+    retryOrdinal?: number;
+    retryBudgetUsed?: number;
+    retryBudgetLimit?: number;
+    promptPolicy?: string;
+    lastFailureCode?: string;
+    retryMessage?: string;
   }>;
   fanout: Array<{ stageId: string; maxItems: number; laneUpperBound: number; estimatedWorkUnits: number }>;
-  agentUsage: { planned: number; actual?: number; repairCalls?: number; recoveryCalls?: number };
-  artifacts: Array<{ kind?: string; path?: string; label?: string }>;
+  agentUsage: { planned: number; actual?: number; retryCalls?: number; retries?: { runtime: number; stale: number; continuation: number } };
   commands: Record<string, string>;
 };
 
@@ -65,12 +71,11 @@ export function previewRunView(spec: WorkflowSpec, issues: OrchestratorIssue[] =
     workflowName: spec.name,
     status: issues.some((entry) => entry.severity !== "warning") ? "blocked" : "pending",
     summary: spec.description || `Workflow ${spec.name}`,
-    checks: [],
     finalWarnings: issues.filter((entry) => entry.severity === "warning").map((entry) => `${entry.code}: ${entry.message}`),
     risks,
     warnings: issues.filter((entry) => entry.severity === "warning"),
     errors: issues.filter((entry) => entry.severity !== "warning"),
-    roles: Object.entries(spec.roles).map(([name, role]) => ({ name, ...role })),
+    actors: actorsForSpec(spec),
     stages: spec.stages.map((stage) => ({
       id: stage.id,
       kind: stage.kind,
@@ -81,7 +86,6 @@ export function previewRunView(spec: WorkflowSpec, issues: OrchestratorIssue[] =
     agentUsage: {
       planned: estimateAgentCalls(spec)
     },
-    artifacts: [],
     commands
   };
 }
@@ -91,11 +95,6 @@ export async function runViewFromIndex(cwd: string, spec: WorkflowSpec, index: R
   const gateStage = spec.stages.find((stage) => stage.kind === "gate")?.id;
   const finalOutput = gateStage ? stageOutputs[gateStage] : undefined;
   const final = objectRecord(finalOutput);
-  const artifacts = Object.values(stageOutputs)
-    .flatMap((output) => Array.isArray(objectRecord(output)?.artifacts) ? objectRecord(output)?.artifacts as Array<{ kind?: string; path?: string; label?: string }> : []);
-  const finalWarnings = stringArray(final?.warnings);
-  const outputRisks = stringArray(final?.risks);
-  const checks = Array.isArray(final?.checks) ? final.checks as RunView["checks"] : [];
   const preview = previewRunView(spec, issues);
   return {
     ...preview,
@@ -105,9 +104,6 @@ export async function runViewFromIndex(cwd: string, spec: WorkflowSpec, index: R
     gateVerdict: index.gateVerdict ?? gateVerdict(final),
     blockedReason: index.blockedReason,
     summary: typeof final?.summary === "string" ? final.summary : (index.blockedReason ?? spec.description ?? ""),
-    checks,
-    finalWarnings,
-    risks: [...preview.risks, ...outputRisks],
     stages: spec.stages.map((stage) => {
       const output = objectRecord(stageOutputs[stage.id]);
       const indexed = index.stages[stage.id];
@@ -115,7 +111,7 @@ export async function runViewFromIndex(cwd: string, spec: WorkflowSpec, index: R
         id: stage.id,
         kind: stage.kind,
         dependsOn: stage.dependsOn ?? [],
-        status: typeof output?.status === "string" ? output.status : indexed?.status,
+        status: indexed?.status,
         summary: typeof output?.summary === "string" ? output.summary : undefined,
         blockedReason: typeof output?.blockedReason === "string" ? output.blockedReason : indexed?.blockedReason,
         outputParse: outputParseSummary(output),
@@ -130,27 +126,33 @@ export async function runViewFromIndex(cwd: string, spec: WorkflowSpec, index: R
       status: attempt.status,
       blockedReason: attempt.blockedReason,
       parseErrorCode: attempt.parseErrorCode,
-      path: attempt.path
+      path: attempt.path,
+      isRetry: attempt.isRetry,
+      retryReason: attempt.retryReason,
+      retryOf: attempt.retryOf,
+      retryOrdinal: attempt.retryOrdinal,
+      retryBudgetUsed: attempt.retryBudgetUsed,
+      retryBudgetLimit: attempt.retryBudgetLimit,
+      promptPolicy: attempt.promptPolicy,
+      lastFailureCode: attempt.lastFailureCode,
+      retryMessage: attempt.retryMessage
     })),
     agentUsage: {
       planned: index.agentUsage.planned,
       actual: index.agentUsage.actual,
-      repairCalls: index.agentUsage.repairCalls,
-      recoveryCalls: index.agentUsage.recoveryCalls
-    },
-    artifacts: artifacts.filter((artifact) => artifact && typeof artifact === "object")
+      retryCalls: index.agentUsage.retryCalls,
+      retries: index.agentUsage.retries
+    }
   };
 }
 
 export function estimateAgentCalls(spec: WorkflowSpec): number {
   let baseCalls = 0;
   for (const stage of spec.stages) {
-    if (stage.kind === "agentTask") baseCalls += 1;
+    if (stage.kind === "task" && stage.mode === "agent") baseCalls += 1;
     if (stage.kind === "gate" && stage.mode === "agent") baseCalls += 1;
-    if (stage.kind === "discover" && stage.method === "agent") baseCalls += 1;
-    if (stage.kind === "reduce" && stage.mode === "agent") baseCalls += 1;
-    if (stage.kind === "decisionGate" && stage.mode === "agent") baseCalls += 1;
-    if (stage.kind === "fanout") baseCalls += (stage.limits?.maxFanoutItems ?? 1) * fanoutLaneUpperBound(stage);
+    if (stage.kind === "route" && stage.mode === "agent") baseCalls += 1;
+    if (stage.kind === "fanout") baseCalls += staticLimitOrDefault(stage.limits?.maxFanoutItems, 1) * fanoutLaneUpperBound(stage);
     if (stage.kind === "loop") baseCalls += stage.maxRounds * estimateLoopBodyAgentCalls(stage);
   }
   return baseCalls;
@@ -158,18 +160,20 @@ export function estimateAgentCalls(spec: WorkflowSpec): number {
 
 function estimateLoopBodyAgentCalls(stage: Extract<WorkflowSpec["stages"][number], { kind: "loop" }>): number {
   return stage.body.stages.reduce((total, bodyStage) => {
-    if (bodyStage.kind === "agentTask") return total + 1;
-    if (bodyStage.kind === "discover" && bodyStage.method === "agent") return total + 1;
-    if (bodyStage.kind === "reduce" && bodyStage.mode === "agent") return total + 1;
-    if (bodyStage.kind === "decisionGate" && bodyStage.mode === "agent") return total + 1;
-    if (bodyStage.kind === "fanout") return total + (bodyStage.limits?.maxFanoutItems ?? 1) * fanoutLaneUpperBound(bodyStage);
+    if (bodyStage.kind === "task" && bodyStage.mode === "agent") return total + 1;
+    if (bodyStage.kind === "route" && bodyStage.mode === "agent") return total + 1;
+    if (bodyStage.kind === "fanout") {
+      return total
+        + staticLimitOrDefault(bodyStage.limits?.maxFanoutItems, 1) * fanoutLaneUpperBound(bodyStage)
+        + (bodyStage.fanin.mode === "agent" ? 1 : 0);
+    }
     return total;
   }, 0);
 }
 
 export function estimateFanoutWork(spec: WorkflowSpec): RunView["fanout"] {
   return spec.stages.filter((stage): stage is Extract<WorkflowSpec["stages"][number], { kind: "fanout" }> => stage.kind === "fanout").map((stage) => {
-    const maxItems = stage.limits?.maxFanoutItems ?? 1;
+    const maxItems = staticLimitOrDefault(stage.limits?.maxFanoutItems, 1);
     const laneUpperBound = fanoutLaneUpperBound(stage);
     return {
       stageId: stage.id,
@@ -203,9 +207,7 @@ function outputParseSummary(output: Record<string, unknown> | undefined): RunVie
   if (!outputParse) return undefined;
   return {
     mode: typeof outputParse.mode === "string" ? outputParse.mode : undefined,
-    repaired: typeof outputParse.repaired === "boolean" ? outputParse.repaired : undefined,
-    candidateCount: typeof outputParse.candidateCount === "number" ? outputParse.candidateCount : undefined,
-    warnings: stringArray(outputParse.warnings)
+    candidateCount: typeof outputParse.candidateCount === "number" ? outputParse.candidateCount : undefined
   };
 }
 
@@ -253,11 +255,11 @@ function previewRisks(spec: WorkflowSpec): string[] {
   const risks: string[] = [
     "Running this workflow does not save it for reuse; saving requires an explicit save command.",
     "Audit artifacts are written under .acpus/runs/<logicalRunId>/ with spec, execution plan, prompts, outputs, attempts, sessions, and events.",
-    "Agent turns run through run-local ACPX runtime sessions; repair turns count toward actual usage."
+    "Agent turns run through run-local ACPX runtime sessions; retry calls count toward actual usage."
   ];
-  const editRoles = Object.entries(spec.roles).filter(([, role]) => role.mode === "edit").map(([name]) => name);
-  if (editRoles.length > 0) risks.push(`Edit-capable roles may modify files: ${editRoles.join(", ")}.`);
-  const editFanout = spec.stages.filter((stage) => stage.kind === "fanout" && stage.laneGroups.some((group) => group.lanes.some((lane) => spec.roles[lane.role]?.mode === "edit"))).map((stage) => stage.id);
+  const editActors = actorsForSpec(spec).filter((actor) => actor.mode === "edit").map((actor) => actor.label);
+  if (editActors.length > 0) risks.push(`Edit-capable actors may modify files: ${editActors.join(", ")}.`);
+  const editFanout = spec.stages.filter((stage) => stage.kind === "fanout" && stage.lanes.some((lane) => lane.actor.mode === "edit")).map((stage) => stage.id);
   if (editFanout.length > 0) risks.push(`Edit fanout is high risk; independent item sessions run under stage-local fanout concurrency: ${editFanout.join(", ")}.`);
   const allowPartial = spec.stages.filter((stage) => stage.kind === "fanout" && stage.fanoutPolicy?.allowPartial).map((stage) => stage.id);
   if (allowPartial.length > 0) risks.push(`Partial fanout results are explicitly allowed for: ${allowPartial.join(", ")}.`);
@@ -265,5 +267,33 @@ function previewRisks(spec: WorkflowSpec): string[] {
 }
 
 function fanoutLaneUpperBound(stage: Extract<WorkflowSpec["stages"][number], { kind: "fanout" }>): number {
-  return Math.max(1, stage.laneGroups.reduce((total, group) => total + (group.mode === "oneOf" ? 1 : group.lanes.length), 0));
+  const lanes = Math.max(1, stage.lanes.length);
+  return lanes + (stage.fanin.mode === "agent" ? 1 : 0);
+}
+
+function actorsForSpec(spec: WorkflowSpec): RunView["actors"] {
+  const actors = new Map<string, RunView["actors"][number]>();
+  const add = (label: string, actor: { agent: string; mode: string }): void => {
+    actors.set(label, { label, agent: actor.agent, mode: actor.mode });
+  };
+  for (const stage of spec.stages) {
+    if (stage.kind === "task" && stage.mode === "agent") add(stage.actor.label ?? stage.id, stage.actor);
+    if (stage.kind === "route" && stage.mode === "agent" && stage.actor) add(stage.actor.label ?? stage.id, stage.actor);
+    if (stage.kind === "gate" && stage.mode === "agent" && stage.actor) add(stage.actor.label ?? stage.id, stage.actor);
+    if (stage.kind === "fanout") {
+      for (const lane of stage.lanes) add(lane.actor.label ?? `${stage.id}.${lane.id}`, lane.actor);
+      if (stage.fanin.mode === "agent") add(stage.fanin.actor.label ?? `${stage.id}.fanin`, stage.fanin.actor);
+    }
+    if (stage.kind === "loop") {
+      for (const bodyStage of stage.body.stages) {
+        if (bodyStage.kind === "task" && bodyStage.mode === "agent") add(bodyStage.actor.label ?? `${stage.id}.${bodyStage.id}`, bodyStage.actor);
+        if (bodyStage.kind === "route" && bodyStage.mode === "agent" && bodyStage.actor) add(bodyStage.actor.label ?? `${stage.id}.${bodyStage.id}`, bodyStage.actor);
+        if (bodyStage.kind === "fanout") {
+          for (const lane of bodyStage.lanes) add(lane.actor.label ?? `${stage.id}.${bodyStage.id}.${lane.id}`, lane.actor);
+          if (bodyStage.fanin.mode === "agent") add(bodyStage.fanin.actor.label ?? `${stage.id}.${bodyStage.id}.fanin`, bodyStage.fanin.actor);
+        }
+      }
+    }
+  }
+  return [...actors.values()];
 }

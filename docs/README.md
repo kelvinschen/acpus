@@ -7,7 +7,7 @@ Current normative design and implementation truth lives in [../specs/INDEX.md](.
 ## Current Guides
 
 - [CLI](cli.md) covers command usage and conventions.
-- [Error Codes](error-codes.md) covers the repair-oriented error surface.
+- [Error Codes](error-codes.md) covers the recovery-oriented error surface.
 
 ## Non-Normative Material
 

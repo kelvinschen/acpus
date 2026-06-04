@@ -17,12 +17,13 @@ export type WorkerProgressEvent =
 export type WorkerReporter = (event: WorkerProgressEvent) => void | Promise<void>;
 
 export function terminalRunStatus(status: RunStatus): boolean {
-  return status === "completed" || status === "blocked" || status === "diagnosed_blocked" || status === "failed" || status === "cancelled";
+  return status === "completed" || status === "blocked" || status === "failed" || status === "cancelled";
 }
 
 export function workerIsActive(worker: RunWorkerState | undefined, now = Date.now()): boolean {
   if (!worker) return false;
   if (worker.status !== "starting" && worker.status !== "running") return false;
+  if (!pidIsAlive(worker.pid)) return false;
   return now - Date.parse(worker.heartbeatAt) <= WORKER_STALE_AFTER_MS;
 }
 
@@ -38,6 +39,16 @@ export function workerSummary(worker: RunWorkerState | undefined, now = Date.now
     exitedAt: worker.exitedAt,
     exitCode: worker.exitCode
   };
+}
+
+function pidIsAlive(pid: number | undefined): boolean {
+  if (!pid || !Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error instanceof Error && "code" in error && error.code === "EPERM";
+  }
 }
 
 export async function claimWorker(cwd: string, runId: string, pid: number, options: { force?: boolean } = {}): Promise<RunIndex> {
