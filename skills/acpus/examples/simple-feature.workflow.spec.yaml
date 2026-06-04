@@ -51,7 +51,7 @@ stages:
     kind: gate
     mode: agent
     actor:
-      agent: aiden
+      agent: claude
       mode: readOnly
       label: gate
     prompt: Validate the implementation and choose a final verdict.
