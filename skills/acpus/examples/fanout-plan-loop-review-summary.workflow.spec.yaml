@@ -1,0 +1,231 @@
+schemaVersion: acpus.workflow/v1
+name: fanout-plan-loop-review-summary
+description: Plan component work with fanout, iterate implementation through adversarial review, then summarize the result.
+root: component_plans
+input:
+  schema: |
+    {
+      task: string,
+      components: [
+        {
+          id: string,
+          path: string,
+          scope: string
+        }
+      ],
+      maxConcurrency?: number,
+      maxFanoutItems?: number
+    }
+  default:
+    task: Add a focused workflow capability while preserving current CLI behavior.
+    components:
+      - id: runtime
+        path: src/runtime
+        scope: Runtime behavior and state transitions.
+      - id: cli
+        path: src/commands
+        scope: Command behavior, user-facing errors, and automation output.
+      - id: tests
+        path: test
+        scope: Regression coverage for the changed behavior.
+    maxConcurrency: 3
+    maxFanoutItems: 8
+limits:
+  stageTimeoutMinutes: 90
+stages:
+  - id: component_plans
+    kind: fanout
+    items:
+      source: input.components
+    prompt: "Plan ${task} for ${componentId} at ${componentPath}. Scope: ${componentScope}"
+    variables:
+      - name: task
+        source: input.task
+      - name: componentId
+        source: item.id
+      - name: componentPath
+        source: item.path
+      - name: componentScope
+        source: item.scope
+    limits:
+      maxConcurrency:
+        source: input.maxConcurrency
+      maxFanoutItems:
+        source: input.maxFanoutItems
+    lanes:
+      - id: implementation_plan
+        actor:
+          agent: claude
+          mode: readOnly
+          label: implementation-planner
+        prompt: "Create the implementation plan for ${componentId}. Include target files, sequencing, expected edits, and integration risks."
+        output:
+          schema: |
+            {
+              summary: string,
+              data: {
+                component: string,
+                path: string,
+                steps: [
+                  {
+                    action: string,
+                    files?: [string],
+                    risk?: string
+                  }
+                ]
+              }
+            }
+      - id: regression_plan
+        actor:
+          agent: claude
+          mode: readOnly
+          label: regression-planner
+        prompt: "Design regression coverage for ${componentId}. Focus on behavior that would fail if the implementation is incomplete."
+        output:
+          schema: |
+            {
+              summary: string,
+              data: {
+                component: string,
+                tests: [
+                  {
+                    command?: string,
+                    purpose: string
+                  }
+                ],
+                edgeCases?: [string]
+              }
+            }
+      - id: adversarial_precheck
+        actor:
+          agent: claude
+          mode: readOnly
+          label: adversarial-precheck
+        prompt: "Review the proposed work for ${componentId} from a skeptical maintainer perspective. Identify ambiguity, unsafe assumptions, and likely review objections."
+        output:
+          schema: |
+            {
+              summary: string,
+              data: {
+                component: string,
+                objections: [
+                  {
+                    severity: "high" | "medium" | "low",
+                    concern: string,
+                    mitigation?: string
+                  }
+                ]
+              }
+            }
+    fanin:
+      mode: agent
+      actor:
+        agent: claude
+        mode: readOnly
+        label: plan-synthesizer
+      prompt: "Synthesize ${results} into one implementation brief. Deduplicate steps, order the work, call out risks, and list the regression commands the implementer should run."
+      output:
+        schema: |
+          {
+            summary: string,
+            data: {
+              plan: string,
+              targetFiles?: [string],
+              risks?: [string],
+              regressionCommands?: [string]
+            }
+          }
+    fanoutPolicy:
+      allowPartial: false
+
+  - id: implementation_loop
+    kind: loop
+    dependsOn: [component_plans]
+    maxRounds: 3
+    body:
+      root: implement
+      output: adversarial_review
+      stages:
+        - id: implement
+          kind: task
+          mode: agent
+          actor:
+            agent: claude
+            mode: edit
+            label: implementer
+          prompt: "Implement the synthesized brief: ${implementationBrief}. Keep the change scoped, preserve public behavior outside the task, and run the most relevant regression checks."
+          variables:
+            - name: implementationBrief
+              source: outputs.component_plans.data.plan
+          output:
+            schema: |
+              {
+                summary: string,
+                data: {
+                  changedFiles?: [string],
+                  commandsRun?: [string],
+                  unresolvedNotes?: [string]
+                }
+              }
+        - id: adversarial_review
+          kind: task
+          mode: agent
+          dependsOn: [implement]
+          actor:
+            agent: codex 
+            mode: readOnly
+            label: adversarial-reviewer
+          prompt: "Perform an adversarial review of the implementation summary: ${implementationSummary}. Treat the code as untrusted, look for spec drift, missing tests, broken edge cases, and unclear user-facing behavior. Set needsChanges to true only for issues that should block the final summary."
+          variables:
+            - name: implementationSummary
+              source: outputs.implement.summary
+          output:
+            schema: |
+              {
+                summary: string,
+                data: {
+                  needsChanges: boolean,
+                  blockingFindings?: [
+                    {
+                      severity: "critical" | "high" | "medium" | "low",
+                      finding: string,
+                      recommendation?: string
+                    }
+                  ],
+                  testsToRun?: [string]
+                }
+              }
+    continueWhen:
+      source: loop.current.output.data.needsChanges
+      op: eq
+      value: true
+    onExhausted: blocked
+
+  - id: summarize
+    kind: task
+    mode: agent
+    dependsOn: [implementation_loop]
+    actor:
+      agent: pi 
+      mode: readOnly
+      label: summarizer
+    prompt: "Summarize the completed work using the implementation loop result: ${loopSummary}. Include what changed, which review objections were resolved, remaining risks, and the commands that should be rerun before merge."
+    variables:
+      - name: loopSummary
+        source: outputs.implementation_loop.summary
+    output:
+      schema: |
+        {
+          summary: string,
+          data: {
+            changedFiles?: [string],
+            resolvedReviewPoints?: [string],
+            residualRisks?: [string],
+            recommendedCommands?: [string]
+          }
+        }
+
+  - id: gate
+    kind: gate
+    mode: program
+    dependsOn: [summarize]

@@ -27,10 +27,11 @@ describe("CLI lifecycle", () => {
 
     const planQuiet = JSON.parse((await run(cwd, "plan", specPath, "--quiet", "--json")).stdout) as { ok: boolean };
     const plan = JSON.parse((await run(cwd, "plan", specPath, "--json")).stdout) as { workflowName: string; status: string };
-    const save = JSON.parse((await run(cwd, "save", "deterministic", specPath, "--json")).stdout) as { ok: boolean; workflow: string };
+    const save = JSON.parse((await run(cwd, "save", "deterministic", specPath, "--json")).stdout) as { ok: boolean; workflow: string; path: string };
+    const saveOverwrite = JSON.parse((await run(cwd, "save", "deterministic", specPath, "--overwrite", "--json")).stdout) as { ok: boolean; workflow: string; path: string };
+    const saveMissingSpec = await runMaybe(cwd, "save", "missing-spec");
     const workflows = JSON.parse((await run(cwd, "list", "workflows", "--json")).stdout) as { entries: string[] };
     const saved = JSON.parse((await run(cwd, "show", "workflow", "deterministic", "--json")).stdout) as { name: string };
-    const generated = JSON.parse((await run(cwd, "save", "generated", "--template", "basic", "--json")).stdout) as { ok: boolean; workflow: string; path: string };
     const runEvents = parseNdjson((await run(cwd, "run", "deterministic", "--wait", "--json")).stdout);
     const runResult = runEvents.at(-1) as { type: string; ok: boolean; logicalRunId: string; runDir: string; status: string; blockedReason?: string; gateVerdict?: string };
     const followOutput = parseNdjson((await run(cwd, "follow", runResult.logicalRunId, "--json")).stdout);
@@ -46,10 +47,12 @@ describe("CLI lifecycle", () => {
 
     expect(planQuiet.ok).toBe(true);
     expect(plan).toMatchObject({ workflowName: "deterministic-cli", status: "pending" });
-    expect(save).toMatchObject({ ok: true, workflow: "deterministic" });
+    expect(save).toMatchObject({ ok: true, workflow: "deterministic", path: expect.any(String) });
+    expect(saveOverwrite).toMatchObject({ ok: true, workflow: "deterministic", path: save.path });
+    expect(saveMissingSpec.exitCode).toBe(1);
+    expect(saveMissingSpec.stderr).toContain("missing required argument 'spec'");
     expect(workflows.entries).toContain("deterministic");
     expect(saved.name).toBe("deterministic-cli");
-    expect(generated).toMatchObject({ ok: true, workflow: "generated", path: expect.any(String) });
     expect(runEvents.map((event) => event.type)).toContain("worker_started");
     expect(runResult).toMatchObject({
       type: "terminal_summary",

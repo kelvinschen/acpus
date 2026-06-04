@@ -1,0 +1,118 @@
+schemaVersion: acpus.workflow/v1
+name: code-review
+description: >
+  Fanout code review — each file is reviewed by a validator agent in parallel,
+  results are merged via program fanin (mergeArrays), a program task counts P0
+  findings, and a program gate passes only when there are zero P0 findings.
+root: review_files
+input:
+  schema: |
+    {
+      files: [
+        {
+          path: string,
+          language?: string
+        }
+      ],
+      maxConcurrency?: number,
+      maxFanoutItems?: number
+    }
+  default:
+    files: []
+    maxConcurrency: 4
+    maxFanoutItems: 50
+limits:
+  stageTimeoutMinutes: 30
+stages:
+  # ── Fanout: one validator agent per file ──────────────────────────
+  - id: review_files
+    kind: fanout
+    items:
+      source: input.files
+    prompt: |
+      You are a code review validator. Review the file at ${filePath} and report findings.
+
+      Review focus:
+      - Correctness bugs, logic errors, off-by-one errors
+      - Security vulnerabilities (injection, unsafe deserialization, missing auth checks)
+      - Error handling gaps (swallowed errors, missing catch branches)
+      - Contract violations (wrong return types, missing null checks)
+      - Performance regressions (unnecessary allocations, N+1 patterns)
+
+      For each finding, assign a severity:
+      - P0 — must fix before merge (correctness bug, security vulnerability, data loss)
+      - P1 — should fix (non-critical bug, missing error handling)
+      - P2 — nice to fix (style, minor improvement)
+      - P3 — informational (suggestion, question)
+
+      If the file has no issues, return an empty data array and a short summary.
+    variables:
+      - name: filePath
+        source: item.path
+      - name: language
+        source: item.language
+        transform:
+          - fn: default
+            args:
+              value: unknown
+    limits:
+      maxConcurrency:
+        source: input.maxConcurrency
+      maxFanoutItems:
+        source: input.maxFanoutItems
+    lanes:
+      - id: validator
+        actor:
+          agent: claude
+          mode: readOnly
+          label: file_validator
+        output:
+          schema: |
+            {
+              summary: string,
+              data: [
+                {
+                  severity: string,
+                  category: string,
+                  title: string,
+                  path?: string,
+                  line?: number,
+                  evidence: string,
+                  recommendation: string
+                }
+              ]
+            }
+    fanin:
+      mode: program
+      operation: mergeArrays
+    fanoutPolicy:
+      allowPartial: true
+
+  # ── Program task: count P0 findings from merged results ───────────
+  - id: check_p0
+    kind: task
+    mode: program
+    operation: command
+    command: node
+    args:
+      - -e
+      - |
+        const fs = require('fs');
+        const raw = JSON.parse(fs.readFileSync('/dev/stdin', 'utf8'));
+        const findings = raw.data || [];
+        const p0Count = findings.filter(f => f.severity === 'P0').length;
+        const p1Count = findings.filter(f => f.severity === 'P1').length;
+        const total = findings.length;
+        const out = { p0Count, p1Count, total };
+        process.stdout.write(JSON.stringify(out));
+    dependsOn: [review_files]
+
+  # ── Program gate: pass only when P0 count is zero ─────────────────
+  - id: gate
+    kind: gate
+    mode: program
+    dependsOn: [check_p0]
+    condition:
+      source: outputs.check_p0.data.p0Count
+      op: eq
+      value: 0

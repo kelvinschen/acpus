@@ -1,5 +1,7 @@
 # Runtime Reference
 
+This reference covers runtime internals useful for advanced debugging and understanding run directory structure. Spec authors typically don't need this — see `spec-authoring.md` and `routing.md` for authoring guidance.
+
 ## Scheduler
 
 `syncRun()` advances persisted `run.json` state. It executes deterministic program stages, collects ready agent work, runs fanout pools, runs fanin after lanes are terminal, and updates run status.
@@ -16,7 +18,14 @@ Program task v1 supports only `operation: command`. Non-zero exit codes are data
 
 Fanout first creates internal `results`, then runs required fanin. Final downstream output is fanin output. Program fanin supports `mergeArrays`; agent fanin receives `results` in the prompt context. Monitor fanin tasks stay `pending` until all fanout items and lanes are terminal.
 
-Session keys:
+The `results` aggregate (available to agent fanin via `${results}`) exposes:
+- `items` — all fanout items with their nested `lanes`, `laneOutputs`, and `skippedLanes`
+- `laneOutputs` — all lane outputs across items
+- `blockedItems` — items with at least one blocked lane
+- `skippedItems` — items with all lanes skipped
+- `skippedLanes` — lanes that were skipped due to `when` conditions
+
+Session keys (useful when inspecting `sessions/` directories for debugging):
 
 - Top-level fanin: `fanin:<stageId>`
 - Loop body fanin: `loop:<loopId>:round:<N>:fanin:<bodyStageId>`

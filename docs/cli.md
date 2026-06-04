@@ -19,13 +19,13 @@ acpus plan <spec> --quiet
 acpus plan <spec> --json
 
 # Save a workflow to the local store for reuse.
-acpus save <name> --template basic
-acpus save <name> --template basic --overwrite
+acpus save <name> <spec>
+acpus save <name> <spec> --overwrite
 ```
 
-`plan` validates schema correctness, graph structure, variable binding, and output schema declarations, then compiles the spec into an execution plan. It returns the plan without creating or starting a run. Use `plan` before `run` when you need to inspect the plan first. `--quiet` suppresses non-essential output. `--json` returns the compiled execution plan as structured output.
+`plan` validates schema correctness, graph structure, variable binding, and output schema declarations, then compiles the spec into an execution plan. It returns the plan without creating or starting a run. Use `plan` before `run` when you need to inspect the plan first. `--quiet` suppresses non-essential output. `--json` returns the structured plan preview and validation view for automation.
 
-`save` writes a saved workflow directory containing `workflow.spec.yaml`, `execution-plan.json`, README, schema documentation, wrapper scripts, and helper files from the current package build. Saving is always explicit; running a workflow does not save it. Provide the spec as a positional argument and the template name with `--template`.
+`save` writes a saved workflow directory containing `workflow.spec.yaml`, `execution-plan.json`, README, schema documentation, wrapper scripts, and helper files from the current package build. Saving is always explicit; running a workflow does not save it. Provide the spec as a positional argument. `save --json` returns `{ok, workflow, path}` for scripts that need the saved workflow path.
 
 ### Conduct -- Execute and observe runs
 

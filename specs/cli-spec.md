@@ -28,7 +28,6 @@ The CLI is the developer and Main Agent entry point for planning, running, obser
 - `show workflow` MUST display saved YAML by default.
 - `show workflow --json` MUST output the parsed YAML object as JSON.
 - `save` MUST write `workflow.spec.yaml` and `execution-plan.json` into saved workflow directories.
-- `save --template` MUST generate a YAML workflow spec using the current model.
 - `resume` without `--force` MUST be limited to blocked or failed recovery and MUST reject active non-stale workers.
 - `resume --force` MAY recover blocked, failed, running, or pending runs when no active non-stale worker owns the run; it MUST reject terminal runs and MUST NOT take ownership from an active non-stale worker.
 - Resume fanout policy flags MUST remain item-level.
@@ -50,7 +49,6 @@ skills/acpus/scripts/acpus run workflows/examples/simple-feature.workflow.spec.y
 skills/acpus/scripts/acpus run workflows/examples/simple-feature.workflow.spec.yaml --input input.yaml
 skills/acpus/scripts/acpus run simple-feature
 skills/acpus/scripts/acpus save simple-feature workflows/examples/simple-feature.workflow.spec.yaml
-skills/acpus/scripts/acpus save simple-feature --template basic
 skills/acpus/scripts/acpus show workflow simple-feature
 skills/acpus/scripts/acpus show workflow simple-feature --json
 skills/acpus/scripts/acpus monitor
@@ -63,6 +61,7 @@ skills/acpus/scripts/acpus resume <logical-run-id> --wait
 JSON output envelopes:
 
 - `plan --json` MUST include validation and plan data.
+- `save --json` MUST include `ok`, `workflow`, and `path`.
 - `run --json` without `--wait` MUST include run ID, run directory, status, and worker metadata.
 - `run --json --wait` MUST finish with a `terminal_summary`; terminal summaries MUST include `finalOutput` when a gate output artifact exists.
 - `resume --json` MUST include run ID, status, worker metadata, and message.

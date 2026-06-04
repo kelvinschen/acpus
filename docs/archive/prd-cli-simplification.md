@@ -1,5 +1,7 @@
 # CLI Simplification PRD
 
+> Historical archive: this document is preserved for context and is not current implementation truth.
+
 ## Problem Statement
 
 The acpus CLI has 11 top-level commands grouped into four categories (Compose, Conduct, Recover, Catalogue). Several commands overlap in functionality, require redundant flags, or have misleading names. Specifically:

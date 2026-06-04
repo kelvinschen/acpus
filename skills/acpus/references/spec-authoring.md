@@ -40,14 +40,16 @@ stages:
         default: 50
 ```
 
-There is no top-level `roles` map. Agent executables use inline actors:
+Agent executables use inline actors (no top-level `roles` map):
 
 ```yaml
 actor:
   agent: codex
-  mode: readOnly
+  mode: readOnly      # filesystem access: denyAll | readOnly | edit
   label: reviewer
 ```
+
+Note: Actor `mode` (filesystem access) is distinct from stage-level `mode` (agent/program).
 
 ## Stage Kinds
 
@@ -61,13 +63,32 @@ actor:
 
 Executable objects declare `mode`. `fanout` and `loop` do not declare stage-level `mode`.
 
-## Task
+## Dependencies
+
+Stages declare execution dependencies with `dependsOn`:
 
 ```yaml
 - id: implement
   kind: task
-  mode: agent
-  actor: { agent: codex, mode: edit, label: implementer }
+  # ... task fields ...
+
+- id: validate
+  kind: task
+  dependsOn: [implement]
+  # ... task fields ...
+```
+
+`dependsOn` is an array of stage IDs that must all reach terminal state before this stage can execute. Outputs of depended-on stages are available via the `outputs.*` source root. The `root` stage must not declare `dependsOn`.
+
+## Task
+
+Agent task (LLM executes a prompt):
+
+```yaml
+- id: implement
+  kind: task
+  mode: agent                          # stage mode: agent | program
+  actor: { agent: codex, mode: edit, label: implementer }  # actor mode: filesystem access
   prompt: Implement ${task}
   variables:
     - name: task
@@ -76,7 +97,7 @@ Executable objects declare `mode`. `fanout` and `loop` do not declare stage-leve
     schema: "{summary:string,data?:unknown}"
 ```
 
-Program task:
+Program task (shell command):
 
 ```yaml
 - id: collect
@@ -118,9 +139,16 @@ Program task:
     operation: mergeArrays
   fanoutPolicy:
     allowPartial: true
+  limits:
+    maxConcurrency: 2       # or: { source: input.maxConcurrency }
+    maxFanoutItems: 50      # or: { source: input.maxFanoutItems, default: 50 }
 ```
 
 Program fanin supports only `mergeArrays`. Agent fanin uses `mode: agent`, `actor`, and `prompt`; agent fanin prompts may reference `${results}` without declaring a workflow variable.
+
+**`fanoutPolicy.allowPartial`** (default `false`): when `true`, the fanout stage can reach a terminal state even if some items are blocked, allowing fanin to proceed with partial results.
+
+**Per-stage `limits`**: fanout stages accept `maxConcurrency` (parallel agent sessions, default 1) and `maxFanoutItems` (default 1). Values can be literal numbers or input-sourced bindings (`{ source: input.xxx, default?: N }`).
 
 ## Loop
 
@@ -129,8 +157,8 @@ Program fanin supports only `mergeArrays`. Agent fanin uses `mode: agent`, `acto
   kind: loop
   maxRounds: 3
   body:
-    root: review
-    output: review
+    root: review              # first stage executed each round
+    output: review            # which body stage's output becomes the loop's output
     stages:
       - id: review
         kind: task
@@ -141,4 +169,6 @@ Program fanin supports only `mergeArrays`. Agent fanin uses `mode: agent`, `acto
   onExhausted: blocked
 ```
 
-Loop body output cannot be a `route` stage.
+- **`body.root`**: the first stage executed in each loop round.
+- **`body.output`**: names which body stage's output becomes the loop stage's output (used by `continueWhen` and downstream stages). Cannot name a `route` stage.
+- **`onExhausted`**: determines the loop's status when `maxRounds` is reached without `continueWhen` becoming false. Currently only `blocked` is supported.

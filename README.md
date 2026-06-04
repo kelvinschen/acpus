@@ -44,7 +44,9 @@ Acpus commands are grouped by workflow phase. Optional parameters are shown in b
 | Command | Options | Purpose |
 |---|---|---|
 | `acpus plan <spec>` | `--global`, `--quiet`, `--json` | Validate a spec file or saved workflow name and preview the compiled execution plan |
-| `acpus save <name> [spec]` | `--template <name>`, `--overwrite`, `--global`, `--json` | Save a spec or generated template to the workflow store |
+| `acpus save <name> <spec>` | `--overwrite`, `--global`, `--json` | Save a workflow spec to the workflow store |
+
+`plan --json` emits a structured plan preview for automation. `save --json` emits `{ok, workflow, path}` so scripts can capture the saved workflow path.
 
 ### Conduct — run, follow, monitor, resume
 

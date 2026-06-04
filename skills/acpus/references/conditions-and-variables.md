@@ -98,10 +98,10 @@ stages.
 
 | Context | Field | Evaluated Against |
 |---------|-------|-------------------|
-| Loop `continueWhen` | After each round | `outputs` + `workflowInput` + `local.loop` |
-| Fanout lane `when` | Per item per lane | `outputs` + `workflowInput` + `local.item` + loop context |
-| Gate `condition` | On gate execution | `outputs` + `workflowInput` |
-| Route `when` | On rule evaluation | `outputs` + `workflowInput` |
+| Loop `continueWhen` | After each round | `outputs` + `input` + `loop` |
+| Fanout lane `when` | Per item per lane | `outputs` + `input` + `item` + loop context |
+| Gate `condition` | On gate execution | `outputs` + `input` |
+| Route `when` | On rule evaluation | `outputs` + `input` |
 
 ---
 
@@ -163,7 +163,7 @@ Rendering rules:
 - `string` → used as-is
 - objects/arrays → `JSON.stringify(value, null, 2)`
 
-Escape `\${` for literal `${}` in output.
+**Important:** Any `${...}` in prompt text will be interpolated. Use `\${` to produce a literal `${` in the output. For prompts containing shell-style variables or template literals, escape them to avoid unexpected substitution.
 
 ### Built-in Transformers
 

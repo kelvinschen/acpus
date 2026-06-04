@@ -5,51 +5,28 @@ import type { Command } from "commander";
 import { compileExecutionPlan } from "../compiler/compile.js";
 import { globalWorkflowsDir, projectWorkflowsDir } from "../run-index/paths.js";
 import { ensureEmptyOrOverwrite, loadAndLint, printIssues, printJson, resolveSpecArg } from "./common.js";
-import type { WorkflowSpec } from "../schema/workflow-spec.js";
 import { stringifyWorkflowSpec } from "../schema/load.js";
 import { applyInputDefaults } from "../schema/input-validation.js";
 
 export function registerSave(program: Command): void {
   program.command("save")
     .argument("<name>", "workflow name")
-    .argument("[spec]", "spec file path or workflow name")
-    .option("--template <name>", "generate from template instead of spec file")
+    .argument("<spec>", "spec file path or workflow name")
     .option("--overwrite", "overwrite existing workflow")
     .option("--global", "save to global workflow directory")
     .option("--json", "print JSON")
-    .action(async (name: string, spec: string | undefined, options: {
-      template?: string;
+    .action(async (name: string, spec: string, options: {
       overwrite?: boolean;
       global?: boolean;
       json?: boolean;
     }) => {
-      // Mutual exclusion: --template and spec cannot both be provided
-      if (options.template && spec) {
-        process.stderr.write("Error: --template and a spec argument are mutually exclusive.\n");
+      const specPath = await resolveSpecArg({ spec, global: options.global });
+      const { spec: workflowSpec, result } = await loadAndLint(specPath);
+      if (!workflowSpec || !result.ok) {
+        if (options.json) printJson(result);
+        else printIssues(result);
         process.exitCode = 1;
         return;
-      }
-      // One of --template or spec must be provided
-      if (!options.template && !spec) {
-        process.stderr.write("Error: provide a spec argument or use --template <name>.\n");
-        process.exitCode = 1;
-        return;
-      }
-
-      let workflowSpec: WorkflowSpec;
-
-      if (options.template) {
-        workflowSpec = scaffoldFromTemplate(name, options.template);
-      } else {
-        const specPath = await resolveSpecArg({ spec, global: options.global });
-        const { spec: loaded, result } = await loadAndLint(specPath);
-        if (!loaded || !result.ok) {
-          if (options.json) printJson(result);
-          else printIssues(result);
-          process.exitCode = 1;
-          return;
-        }
-        workflowSpec = loaded;
       }
 
       const root = options.global ? globalWorkflowsDir() : projectWorkflowsDir();
@@ -65,31 +42,6 @@ export function registerSave(program: Command): void {
       if (options.json) printJson(output);
       else process.stdout.write(`saved ${name} -> ${target}\n`);
     });
-}
-
-function scaffoldFromTemplate(name: string, template: string): WorkflowSpec {
-  if (template === "basic") {
-    return {
-      schemaVersion: "acpus.workflow/v1",
-      name,
-      description: "Draft workflow scaffold. Main Agent should edit before running.",
-      root: "plan",
-      input: { schema: "{task:string,cwd:string}", default: { task: "", cwd: "." } },
-      limits: { stageTimeoutMinutes: 30 },
-      stages: [
-        {
-          id: "plan",
-          kind: "task",
-          mode: "agent",
-          actor: { agent: "claude", mode: "readOnly", label: "planner" },
-          prompt: "Plan the requested workflow task: ${task}",
-          variables: [{ name: "task", source: "input.task" }]
-        },
-        { id: "gate", kind: "gate", mode: "program", dependsOn: ["plan"] }
-      ]
-    };
-  }
-  throw new Error(`Unknown template: ${template}. Available templates: basic`);
 }
 
 async function writeHelperSnapshot(target: string): Promise<void> {
