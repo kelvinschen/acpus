@@ -81,6 +81,118 @@ Acpus commands are grouped by workflow phase. Optional parameters are shown in b
 |---|---|
 | `acpus _run-worker <run>` | Hidden background worker entry point used by `run` and `resume`; not intended for direct use |
 
+## Example: Aspect Review Fanout
+
+The workflow below matches a common code-review shape: a program task gathers changed files from `git`, a `fanout` stage runs the same four review lanes for each item, program `fanin` merges every lane's finding array, and an agent `gate` turns the merged findings into the final verdict. With three changed files and four lanes, Acpus schedules up to twelve lane work units while `limits.maxConcurrency` caps active lane execution at four. `fanoutPolicy.allowPartial: true` lets fanin aggregate completed lane outputs even if some lane work blocks.
+
+<figure align="center">
+  <img src="page/img/aspect-review-workflow.png" alt="Aspect review workflow — collect changed items, run four review lanes per item, merge lane outputs, and judge the final verdict" width="860">
+  <br>
+  <sup><em>Aspect review fanout — three input items, four review lanes each, program fanin, then a terminal gate.</em></sup>
+</figure>
+
+```yaml
+schemaVersion: acpus.workflow/v1
+name: aspect-review
+description: Review changed files across correctness, security, performance, and style lanes.
+root: collect_diff
+input:
+  schema: |
+    {
+      maxConcurrency?: number,
+      maxFanoutItems?: number
+    }
+  default:
+    maxConcurrency: 4
+    maxFanoutItems: 20
+limits:
+  stageTimeoutMinutes: 45
+stages:
+  - id: collect_diff
+    kind: task
+    mode: program
+    operation: command
+    command: node
+    args:
+      - -e
+      - |
+        const { execFileSync } = require("node:child_process");
+        const files = execFileSync("git", ["diff", "--name-only"], { encoding: "utf8" })
+          .trim()
+          .split(/\n/)
+          .filter(Boolean);
+        console.log(JSON.stringify({
+          status: "completed",
+          data: files.map((path, index) => ({ id: `item_${index + 1}`, path }))
+        }));
+
+  - id: aspect_review
+    kind: fanout
+    dependsOn: [collect_diff]
+    items:
+      source: outputs.collect_diff.data.value
+    limits:
+      maxConcurrency:
+        source: input.maxConcurrency
+      maxFanoutItems:
+        source: input.maxFanoutItems
+    variables:
+      - name: path
+        source: item.path
+    lanes:
+      - id: correctness
+        actor: { agent: codex, mode: readOnly, label: correctness }
+        prompt: "Review ${path} for correctness regressions. Return findings in data."
+        output:
+          schema: |
+            {
+              summary: string,
+              data: [{ path: string, severity: string, summary: string }]
+            }
+      - id: security
+        actor: { agent: codex, mode: readOnly, label: security }
+        prompt: "Review ${path} for security risks. Return findings in data."
+        output:
+          schema: |
+            {
+              summary: string,
+              data: [{ path: string, severity: string, summary: string }]
+            }
+      - id: performance
+        actor: { agent: codex, mode: readOnly, label: performance }
+        prompt: "Review ${path} for performance regressions. Return findings in data."
+        output:
+          schema: |
+            {
+              summary: string,
+              data: [{ path: string, severity: string, summary: string }]
+            }
+      - id: style
+        actor: { agent: codex, mode: readOnly, label: style }
+        prompt: "Review ${path} for maintainability and style issues. Return findings in data."
+        output:
+          schema: |
+            {
+              summary: string,
+              data: [{ path: string, severity: string, summary: string }]
+            }
+    fanin:
+      mode: program
+      operation: mergeArrays
+    fanoutPolicy:
+      allowPartial: true
+
+  - id: gate
+    kind: gate
+    mode: agent
+    dependsOn: [aspect_review]
+    actor: { agent: codex, mode: readOnly, label: judge }
+    variables:
+      - name: findings
+        source: outputs.aspect_review.data
+    prompt: "Judge the merged review findings: ${findings}. Return verdict pass, pass_with_warnings, or blocked."
+```
+
 ## Architecture
 
 Acpus sits between the author and the acpx runtime. The main agent produces a *workflow spec*. Acpus reads it, validates it against the JSON schema, and compiles it into an *execution plan* — a deterministic sequence of stages, each containing parallel lanes that map to independent acpx sessions.
