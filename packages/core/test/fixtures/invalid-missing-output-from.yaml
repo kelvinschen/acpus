@@ -1,0 +1,11 @@
+version: 1
+name: invalid-missing-output-from
+workflow:
+  steps:
+    - id: grouped
+      parallel:
+        - id: branch
+          run: program
+          cmd: ["echo", "ok"]
+outputs:
+  result: ${{ steps.grouped.output }}
