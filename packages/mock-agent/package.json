@@ -20,6 +20,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@acpus/core": "workspace:*",
     "@agentclientprotocol/sdk": "^0.24.0",
     "yaml": "^2.9.0"
   },

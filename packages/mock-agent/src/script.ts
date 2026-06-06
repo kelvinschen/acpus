@@ -1,5 +1,8 @@
 import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
+import { parseDurationMs } from "@acpus/core";
+
+export { parseDurationMs } from "@acpus/core";
 
 export type MockRespond =
   | { type: "text"; text: string; stream?: MockStream; crash_after_chunks?: number; exit_code?: number }
@@ -15,6 +18,7 @@ export interface MockStream {
 export interface MockRuleWhen {
   prompt_contains?: string;
   prompt_matches?: string;
+  promptMatchesRegex?: RegExp;
   prompt_count?: number;
 }
 
@@ -112,18 +116,6 @@ export function splitIntoChunks(text: string, chunks: number): string[] {
   return result;
 }
 
-export function parseDurationMs(value: string | undefined): number {
-  if (value === undefined) {
-    return 0;
-  }
-  const match = /^(\d+)(ms|s)?$/.exec(value.trim());
-  if (!match) {
-    throw new Error(`Invalid duration '${value}'. Use ms or s.`);
-  }
-  const amount = Number(match[1]);
-  return match[2] === "s" ? amount * 1000 : amount;
-}
-
 function parseRule(value: unknown, path: string): MockRule {
   if (!isRecord(value)) {
     throw new Error(`${path} must be an object.`);
@@ -134,7 +126,7 @@ function parseRule(value: unknown, path: string): MockRule {
   if (!isRecord(value.when)) {
     throw new Error(`${path}.when must be an object.`);
   }
-  const when = {
+  const when: MockRuleWhen = {
     prompt_contains: stringOrUndefined(value.when.prompt_contains),
     prompt_matches: stringOrUndefined(value.when.prompt_matches),
     prompt_count: positiveIntegerOrUndefined(value.when.prompt_count, `${path}.when.prompt_count`)
@@ -148,6 +140,7 @@ function parseRule(value: unknown, path: string): MockRule {
     } catch (error) {
       throw new Error(`${path}.when.prompt_matches is not a valid regex: ${errorMessage(error)}`);
     }
+    when.promptMatchesRegex = new RegExp(when.prompt_matches);
   }
 
   const hasRespond = "respond" in value;
@@ -234,7 +227,7 @@ function parseStream(value: unknown, path: string): MockStream | undefined {
     throw new Error(`${path}.chunks must be a positive integer.`);
   }
   const chunk_interval = stringOrUndefined(value.chunk_interval);
-  parseDurationMs(chunk_interval);
+  parseDurationMs(chunk_interval, { strict: true });
   return { chunks: value.chunks, chunk_interval };
 }
 
@@ -245,7 +238,7 @@ function matchesRule(rule: MockRule, prompt: string, promptCount: number | undef
   if (rule.when.prompt_contains !== undefined && prompt.includes(rule.when.prompt_contains)) {
     return true;
   }
-  if (rule.when.prompt_matches !== undefined && new RegExp(rule.when.prompt_matches).test(prompt)) {
+  if (rule.when.promptMatchesRegex !== undefined && rule.when.promptMatchesRegex.test(prompt)) {
     return true;
   }
   return rule.when.prompt_count !== undefined && rule.when.prompt_contains === undefined && rule.when.prompt_matches === undefined;

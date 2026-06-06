@@ -138,7 +138,7 @@ export class MockAgent {
     const text = responseText(response);
     const stream = response.stream;
     const chunks = splitIntoChunks(text, stream?.chunks ?? 1);
-    const intervalMs = parseDurationMs(stream?.chunk_interval);
+    const intervalMs = parseDurationMs(stream?.chunk_interval, { strict: true });
 
     for (const [index, chunk] of chunks.entries()) {
       if (abortController.signal.aborted) {

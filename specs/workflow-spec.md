@@ -24,20 +24,20 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - An Agent Step MUST declare `use`.
 - An Agent Step MUST declare `prompt`.
 - An Agent Step MUST reference an agent declared under `agents`.
-- An Agent Step MUST run against a local ACP-compatible agent through acpx once runtime execution exists.
+- An Agent Step MUST run against a local ACP-compatible agent through acpx.
 - An Agent Step MAY omit `output` when no structured output parsing is required.
 - An Agent Step MAY declare `output` using the Acpus Schema DSL defined in [Schema Spec](schema-spec.md).
 - An Agent Step `output` declared with the Acpus Schema DSL MUST compile nested object and array item structure into the Agent Step output schema stored in the IR.
 - An Agent Step MAY declare `output.schema` as a JSON Schema escape hatch.
 - An Agent Step MUST declare `output` as an object when `output` is present.
-- An Agent Step with `output` present MUST produce a JSON object that matches the declared output schema at `steps.<id>.output` once runtime execution exists.
+- An Agent Step with `output` present MUST produce a JSON object that matches the declared output schema at `steps.<id>.output`.
 - Agent output parse failures and schema failures MUST be handled as continuation retries when retry attempts remain.
 
 ### Program Steps
 
 - A Program Step MUST use `run: program`.
 - A Program Step MUST declare `cmd`.
-- A Program Step MUST run as a local subprocess on the same host once runtime execution exists.
+- A Program Step MUST run as a local subprocess on the same host.
 - A Program Step MAY declare `env`.
 - A Program Step MAY declare `capture`.
 - A Program Step MUST declare `capture` as an object when `capture` is present.
@@ -45,7 +45,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - Program Step `capture.parse` MUST be `json` or `text`.
 - Program Step `capture.path` MUST be present when `capture.from` is `file`.
 - A Program Step MUST expose `steps.<id>.exit_code`.
-- A Program Step MUST expose stdout and stderr artifact references once runtime execution exists.
+- A Program Step MUST expose stdout and stderr artifact references.
 - Non-zero Program Step exit codes MUST be treated as step data unless the runtime contract explicitly marks the failure as non-recoverable.
 - A Program Step MAY omit `capture` when no structured output parsing is required.
 
@@ -93,7 +93,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - Expressions MAY read `steps.<id>.output.*`.
 - Expressions MAY read `steps.<id>.exit_code`.
 - Expressions MAY read fanout and loop scope variables when in scope.
-- `now()` MUST be bound to the deterministic workflow clock once runtime execution exists.
+- `now()` MUST be bound to the deterministic workflow clock.
 
 ### Local Runtime Boundary
 
@@ -114,6 +114,6 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - Compiler tests MUST cover expression collection and validation.
 - Compiler tests MUST cover output schema validation.
 - Compiler tests MUST cover Agent Step output declarations that use the Acpus Schema DSL.
-- Runtime tests MUST cover Agent Steps through acpx once runtime execution exists.
-- Runtime tests MUST cover Program Steps as local subprocesses once runtime execution exists.
-- Runtime tests MUST cover deterministic replay once runtime execution exists.
+- Runtime tests MUST cover Agent Steps through acpx.
+- Runtime tests MUST cover Program Steps as local subprocesses.
+- Runtime tests MUST cover deterministic replay.

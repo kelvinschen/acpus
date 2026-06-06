@@ -2,11 +2,11 @@ import { parse as parseCel } from "@marcbachmann/cel-js";
 import type { DiagnosticBag } from "./diagnostics.js";
 import type { IrExpression } from "./types.js";
 
-const EXPRESSION_PATTERN = /\$\{\{\s*([\s\S]*?)\s*\}\}/g;
+export const EXPRESSION_PATTERN = /\$\{\{\s*([\s\S]*?)\s*\}\}/g;
 const STEP_REFERENCE_PATTERN = /\bsteps\.([A-Za-z_][A-Za-z0-9_-]*)\b/g;
 const ROOT_REFERENCE_PATTERN = /(?<![\w.])([A-Za-z_][A-Za-z0-9_]*)\s*(?:\.|\()/g;
-const ALLOWED_ROOTS = new Set(["input", "steps", "loop", "item", "item_id", "item_index", "run_id"]);
-const ALLOWED_FUNCTIONS = new Set(["now", "len", "startsWith", "matches", "coalesce"]);
+export const ALLOWED_ROOTS = new Set(["input", "steps", "loop", "item", "item_id", "item_index", "run_id"]);
+export const ALLOWED_FUNCTIONS = new Set(["now", "len", "startsWith", "matches", "coalesce"]);
 
 export interface ExpressionCollector {
   expressions: IrExpression[];
@@ -79,7 +79,7 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function toCelParseSource(source: string): string {
+export function toCelParseSource(source: string): string {
   return source.replace(/\bloop\./g, "loop_ctx.");
 }
 

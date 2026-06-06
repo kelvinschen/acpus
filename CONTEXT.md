@@ -43,3 +43,19 @@ _Avoid_: pause, manual stop
 **Mock Agent**:
 An ACP-compatible Agent used to produce deterministic responses for repeatable Workflow testing.
 _Avoid_: fake runtime, simulator
+
+**Node Key**:
+A stable filesystem-safe string that identifies a Node within a Run, resolved from the IR NodeKeyTemplate plus runtime dynamic context (loop round, fanout item, parallel branch).
+_Avoid_: task id, step path
+
+**Node State Machine**:
+A unified 6-state lifecycle (pending → running → {completed, failed, paused, cancelled}) governing every Node in a Run.
+_Avoid_: status enum, phase tracker
+
+**Daemon**:
+A long-running background process that owns interpreter instances, persists Node state to disk, and exposes a REST API for Run control.
+_Avoid_: server, service
+
+**Artifact**:
+A durable file produced by a Node execution (transcript, stdout capture, etc.) stored on disk and referenced by URI.
+_Avoid_: output file, blob

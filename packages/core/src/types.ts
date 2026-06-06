@@ -78,6 +78,7 @@ export interface AcpusIr {
   root: IrNode;
   outputs: Record<string, unknown>;
   expressions: IrExpression[];
+  runtimeInput?: Record<string, unknown>;
 }
 
 export type OutputMerge = "map" | "array" | "selected" | "last";

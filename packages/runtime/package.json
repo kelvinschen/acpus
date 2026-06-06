@@ -1,5 +1,5 @@
 {
-  "name": "@acpus/core",
+  "name": "@acpus/runtime",
   "version": "0.1.0",
   "type": "module",
   "exports": {
@@ -20,13 +20,15 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@acpus/core": "workspace:*",
+    "@hono/node-server": "^1.14.0",
     "@marcbachmann/cel-js": "^7.6.1",
     "ajv": "^8.20.0",
-    "ms": "^2.1.3",
-    "yaml": "^2.9.0"
+    "execa": "^9.6.0",
+    "hono": "^4.7.0",
+    "p-limit": "^6.2.0"
   },
   "devDependencies": {
-    "@types/ms": "^2.1.0",
     "@types/node": "^22.15.30"
   }
 }
