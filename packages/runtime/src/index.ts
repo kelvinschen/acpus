@@ -12,7 +12,10 @@ export type {
   RunOptions,
   DaemonConfig,
   StartRunRequest,
-  RunSummary
+  RunSummary,
+  ReplayResult,
+  ReplayMismatch,
+  NodeDynamicContext
 } from "./types.js";
 
 // ─── Executor contract ───────────────────────────────────────────
@@ -28,7 +31,7 @@ export { ExpressionEvaluator } from "./evaluator.js";
 export { RunStore } from "./store.js";
 
 // ─── State Machine ───────────────────────────────────────────────
-export { canTransition, transition, isTerminal, createInitialNodeState } from "./state-machine.js";
+export { canTransition, transition, isTerminal, createInitialNodeState, resetFailedForRetry, resetRunningForCrashRecovery } from "./state-machine.js";
 
 // ─── Artifacts ───────────────────────────────────────────────────
 export { ArtifactStore } from "./artifacts.js";

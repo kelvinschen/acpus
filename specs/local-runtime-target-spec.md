@@ -22,17 +22,19 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 
 ### Node State Machine
 
-- Every Node in a Run MUST follow a unified 6-state lifecycle: `pending → running → {completed, failed, paused, cancelled}`.
-- A `paused` Node MUST be resumable (transition back to `running`).
-- A `failed` Node MUST be retryable (reset to `pending`, then `running`).
-- Terminal states (`completed`, `cancelled`) MUST block all further transitions.
-- The runtime MUST persist every state transition to disk immediately.
+- Every Node in a Run MUST follow a unified 6-state business lifecycle: `pending → running → {completed, failed, paused, cancelled}`.
+- A `paused` Node MUST be resumable (a `paused → running` lifecycle transition).
+- `completed`, `failed`, and `cancelled` MUST be terminal in the business lifecycle: they MUST NOT have any outgoing lifecycle transition, and `canTransition`/`transition` MUST reject moving out of them.
+- Recovery from a terminal or stale state MUST be modeled as an explicit control-plane reset, not as a business-lifecycle transition: operator retry MAY reset a `failed` Node to `pending`, and crash recovery MAY reset a stale `running` Node to `pending`. These resets MUST be exposed only through dedicated operations, never through the generic transition API.
+- `completed` and `cancelled` MUST NOT be resettable by any control-plane operation.
+- The runtime MUST persist every state change to disk immediately.
 
 ### State Persistence
 
 - The runtime MUST persist per-node state as individual JSON files with atomic write (temp file + rename) for crash safety.
 - The runtime MUST persist run-level metadata (run ID, workflow name, status, IR digest, input digest) separately from node state.
 - The runtime MUST persist a frozen IR snapshot at run creation and MUST NOT re-read mutable YAML during replay or resume.
+- The runtime MUST persist, for each executable leaf Node, a snapshot of its parent dynamic value-context (fanout item, loop round) so resume and retry can rebuild the expression context without re-deriving ancestor scopes; the snapshot MUST contain only value context, never large artifact payloads.
 - The runtime MUST write node keys as filesystem-safe filenames by replacing `/` with `:`.
 
 ### Node Keys
@@ -95,7 +97,9 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 
 - The runtime MUST expose a daemon process as a long-running Hono HTTP server.
 - The daemon MUST listen on `127.0.0.1:3839` by default.
-- The daemon MUST expose a REST API for run submission, run listing, run inspection, node state listing, node retrieval, and node control (pause, resume, cancel, retry).
+- The daemon MUST expose a REST API for run submission, run listing, run inspection, node state listing, node retrieval, node control (pause, resume, cancel, retry), and run replay.
+- When a `resume`, `retry`, or `replay` request targets a Run that is not in the daemon's in-memory interpreter map (e.g. after a daemon restart), the daemon MUST lazily obtain an interpreter for that Run from persisted state, returning a not-found error only when the Run does not exist on disk; `resume`/`retry` reset stale `running` nodes, while `replay` MUST remain read-only.
+- `pause` and `cancel` abort an in-flight turn and therefore MUST require a live interpreter; the daemon MUST NOT lazily recover one for them. When no live interpreter exists, the daemon MUST return a conflict error if the Run exists on disk and a not-found error otherwise.
 - Run submission MUST execute the run in the background and return the initial `running` state immediately, rather than blocking until the run reaches a terminal state.
 - Node keys MUST be passed as `?key=` query parameters in the REST API because node keys contain `/` which is incompatible with path segments.
 - The daemon MUST write a PID file at startup.
@@ -107,10 +111,19 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 
 - The runtime MUST support checkpoint recovery: after an unclean shutdown, a resumed run MUST rebuild state from persisted node files and re-execute only nodes that were `pending` or `running`.
 - The runtime MUST support node-level pause, resume, cancel, and retry control operations during execution.
+- On resume and retry, the runtime MUST restore the targeted Node's persisted dynamic value-context (fanout item, loop round) into the rebuilt expression context so command and prompt templates re-render identically.
 - Operator pause and cancel both abort the in-flight Activity, but the runtime MUST resolve the node to `paused` for pause and `cancelled` for cancel; the operator intent MUST take precedence when an aborted Activity reports a partial result.
 - A cancelled Agent Step MUST still persist its partial transcript artifact, the same as a paused one.
 - The daemon MUST register a run's interpreter before execution begins so that node-control operations can reach an in-flight run.
 - When a child node is paused or cancelled, the runtime MUST propagate the state change to the parent node.
+
+### Replay
+
+- The runtime MUST support deterministic replay of a persisted Run that re-walks the frozen IR snapshot and verifies that the reconstructed Node topology matches the persisted Run.
+- Replay MUST NOT execute Agent Steps or Program Steps, MUST NOT write to disk, and MUST NOT re-read mutable YAML.
+- Replay MUST be self-deterministic: it MUST reuse the recorded run ID and a frozen clock (the Run's `createdAt`) so the re-walk does not depend on wall-clock time, and MUST NOT depend on random values or large artifact payloads.
+- Replay MUST feed recorded per-Node outputs back into the expression context so control-flow decisions (switch branches, loop rounds, fanout lanes) are re-derived deterministically.
+- Replay MUST report a structured result indicating success or a list of discrepancies between the recorded and replayed Node topology (the set of reached Node keys); per-Node terminal-state and output equivalence verification is out of scope for this milestone.
 
 ## Verification
 
@@ -118,6 +131,9 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Runtime tests MUST cover a real Acpus→acpx→Mock Agent end-to-end path for: mid-turn cooperative cancel producing a partial transcript artifact and a `paused` Node; resume re-entering the paused node with the fixed continuation prompt and completing the turn; and recovery of a dead agent subprocess by re-running the Activity.
 - Runtime tests MUST cover that Program Steps execute as local subprocesses.
 - Runtime tests MUST cover that workflow retry, timeout, pause, resume, and cancel decisions remain owned by Acpus.
+- Runtime tests MUST cover that resume and retry restore a Node's persisted dynamic value-context so fanout item and loop round templates re-render correctly.
+- Runtime tests MUST cover that, after a daemon restart, `resume`/`retry` on an existing Run recover an interpreter from disk instead of failing, `pause`/`cancel` return a conflict for an existing Run with no live interpreter, and an unknown Run returns not-found.
+- Runtime tests MUST cover that replay reproduces a Run's Node topology deterministically, reports discrepancies when the persisted Run's topology is tampered with, and does not mutate persisted state.
 - Runtime tests MUST cover that acpx session names are explicit and stable enough for Node-level continuation.
 - Runtime tests MUST cover that normal runtime execution does not require remote workers, remote task queues, or a shared Temporal cluster.
 - Runtime tests MUST cover the 6-state node lifecycle and all legal transitions.

@@ -25,6 +25,41 @@ export function createDaemonApp(
   // Active interpreter instances
   const interpreters = new Map<string, WorkflowInterpreter>();
 
+  /** Create an interpreter bound to this daemon's store + executors. */
+  function newInterpreter(): WorkflowInterpreter {
+    return new WorkflowInterpreter(store, agentExecutor, programExecutor, { acpxAgentExecutor });
+  }
+
+  /**
+   * Interpreter for a forward-progress control action (resume / retry). When the
+   * daemon has restarted (in-memory map empty) but the Run persists, lazily
+   * recover one and reset stale `running` nodes so the action can proceed.
+   * Returns `undefined` only when the Run does not exist on disk.
+   */
+  function getOrRecoverInterpreter(runId: string): WorkflowInterpreter | undefined {
+    const live = interpreters.get(runId);
+    if (live) return live;
+    if (!store.hasRun(runId)) return undefined;
+    const recovered = newInterpreter();
+    recovered.recoverStaleNodes(runId);
+    interpreters.set(runId, recovered);
+    return recovered;
+  }
+
+  /**
+   * Read-only interpreter used by replay. Lazily creates one for cross-process
+   * access but NEVER mutates persisted state (no crash recovery). Returns
+   * `undefined` only when the Run does not exist on disk.
+   */
+  function getReadOnlyInterpreter(runId: string): WorkflowInterpreter | undefined {
+    const live = interpreters.get(runId);
+    if (live) return live;
+    if (!store.hasRun(runId)) return undefined;
+    // Not cached: a read-only adopter must not become the run's owning
+    // interpreter (that role belongs to execution / recovery paths).
+    return newInterpreter();
+  }
+
   // ─── Runs ────────────────────────────────────────────────────────
 
   app.post("/runs", async (c) => {
@@ -102,9 +137,14 @@ export function createDaemonApp(
     if (!nodeKey) {
       return c.json({ error: "key query parameter is required" }, 400);
     }
+    // Pause aborts an in-flight turn — it only makes sense for a run with a live
+    // interpreter. After a restart there is no in-flight execution to abort, so
+    // we do NOT lazily recover here.
     const interpreter = interpreters.get(runId);
     if (!interpreter) {
-      return c.json({ error: "No active interpreter for this run" }, 404);
+      return store.hasRun(runId)
+        ? c.json({ error: "Run is not actively executing; pause requires an in-flight run" }, 409)
+        : c.json({ error: "Run not found" }, 404);
     }
     interpreter.pauseNode(runId, nodeKey);
     const state = store.readNodeState(runId, nodeKey);
@@ -117,9 +157,9 @@ export function createDaemonApp(
     if (!nodeKey) {
       return c.json({ error: "key query parameter is required" }, 400);
     }
-    const interpreter = interpreters.get(runId);
+    const interpreter = getOrRecoverInterpreter(runId);
     if (!interpreter) {
-      return c.json({ error: "No active interpreter for this run" }, 404);
+      return c.json({ error: "Run not found" }, 404);
     }
     await interpreter.resumeNode(runId, nodeKey);
     const state = store.readNodeState(runId, nodeKey);
@@ -132,9 +172,13 @@ export function createDaemonApp(
     if (!nodeKey) {
       return c.json({ error: "key query parameter is required" }, 400);
     }
+    // Cancel aborts an in-flight turn — like pause, it requires a live
+    // interpreter and is not lazily recovered after a restart.
     const interpreter = interpreters.get(runId);
     if (!interpreter) {
-      return c.json({ error: "No active interpreter for this run" }, 404);
+      return store.hasRun(runId)
+        ? c.json({ error: "Run is not actively executing; cancel requires an in-flight run" }, 409)
+        : c.json({ error: "Run not found" }, 404);
     }
     interpreter.cancelNode(runId, nodeKey);
     const state = store.readNodeState(runId, nodeKey);
@@ -147,13 +191,28 @@ export function createDaemonApp(
     if (!nodeKey) {
       return c.json({ error: "key query parameter is required" }, 400);
     }
-    const interpreter = interpreters.get(runId);
+    const interpreter = getOrRecoverInterpreter(runId);
     if (!interpreter) {
-      return c.json({ error: "No active interpreter for this run" }, 404);
+      return c.json({ error: "Run not found" }, 404);
     }
     await interpreter.retryNode(runId, nodeKey);
     const state = store.readNodeState(runId, nodeKey);
     return c.json(state);
+  });
+
+  // ─── Replay ──────────────────────────────────────────────────────
+
+  app.post("/runs/:runId/replay", (c) => {
+    const runId = c.req.param("runId");
+    // Replay is strictly read-only: use a non-recovering interpreter so it never
+    // mutates persisted state. A mismatch is reported as ok:false (HTTP 200) so
+    // the full structured diff stays readable; the CLI maps ok:false to its exit code.
+    const interpreter = getReadOnlyInterpreter(runId);
+    if (!interpreter) {
+      return c.json({ error: "Run not found" }, 404);
+    }
+    const result = interpreter.replay(runId);
+    return c.json(result);
   });
 
   // ─── Output & Artifacts ──────────────────────────────────────────

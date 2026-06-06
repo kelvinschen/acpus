@@ -2,6 +2,11 @@ import type { IrNodeKind } from "@acpus/core";
 import type { NodeExecutionState, NodeState } from "./types.js";
 
 // ─── Legal transitions ───────────────────────────────────────────
+//
+// This table models only the *business lifecycle* of a Node. Control-plane
+// resets (operator retry, crash recovery) are NOT transitions here — they are
+// reset operations exposed via dedicated helpers below, so that no generic
+// `canTransition(x, "pending")` call can accidentally gain retry/reset rights.
 
 const TRANSITIONS: Record<NodeState, Set<NodeState>> = {
   pending: new Set(["running"]),
@@ -28,9 +33,31 @@ export function transition(from: NodeState, to: NodeState): NodeState {
   return to;
 }
 
-/** Check if a state is terminal (no further transitions possible). */
+/** Check if a state is terminal (no further business-lifecycle transitions). */
 export function isTerminal(state: NodeState): boolean {
   return TRANSITIONS[state].size === 0;
+}
+
+// ─── Control-plane resets ────────────────────────────────────────
+//
+// These are NOT business-lifecycle transitions. They are explicit reset
+// operations invoked only from dedicated control entry points, so the
+// generic state machine never exposes a path back to `pending`.
+
+/** Control-plane reset: operator retry of a failed node (failed → pending). */
+export function resetFailedForRetry(from: NodeState): NodeState {
+  if (from !== "failed") {
+    throw new Error(`Cannot retry node in state '${from}': only failed nodes are retryable`);
+  }
+  return "pending";
+}
+
+/** Control-plane reset: crash recovery of a stale running node (running → pending). */
+export function resetRunningForCrashRecovery(from: NodeState): NodeState {
+  if (from !== "running") {
+    throw new Error(`Cannot recover stale node in state '${from}': only running nodes can be reset`);
+  }
+  return "pending";
 }
 
 /** Create the initial NodeExecutionState for a node. */

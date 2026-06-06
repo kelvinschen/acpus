@@ -28,9 +28,11 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, runn
 - The CLI MUST support Node-level cancel through `acpus cancel <run_id> <nodeKey>`.
 - The CLI MUST support Node-level retry through `acpus retry <run_id> <nodeKey>`.
 - Node-level controls MUST be validated against the current local Run state before being accepted.
+- Node-level control commands (`pause`, `resume`, `cancel`, `retry`) MUST support machine-readable JSON output reporting the resulting Node state.
+- The CLI MUST support `acpus replay <run_id>` to deterministically replay a local Run and verify its reconstructed Node topology against the persisted Run.
+- `acpus replay` MUST reconstruct the Run from the frozen IR snapshot and recorded Node outcomes, and MUST NOT depend on mutable YAML, system time, random values, or large artifact payloads.
+- `acpus replay` MUST report verification results as machine-readable JSON, including any discrepancies between the recorded and replayed Node topology.
 - The CLI MUST route Agent Step execution through acpx once Agent Step runtime execution exists.
-- The CLI MUST expose agent management commands through `acpus agents` for local acpx-registered agents once agent management exists.
-- The CLI MUST expose `acpus mock` for running the Mock Agent once that command exists.
 - The CLI MUST NOT expose `acpus worker` as a normal runtime command.
 - The CLI MUST NOT expose `--server` or `--task-queue` as normal runtime flags.
 - The CLI MAY expose diagnostic commands that connect to external services, but those commands MUST NOT change the core local runtime target.
@@ -43,4 +45,6 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, runn
 - CLI tests MUST cover daemon connection failure behavior.
 - Runtime CLI tests MUST cover local Run execution without remote workers, remote task queues, or a shared Temporal cluster.
 - Runtime CLI tests MUST cover Node-level pause, resume, cancel, and retry validation.
+- Runtime CLI tests MUST cover Node-level control commands and `acpus replay` producing machine-readable JSON output.
+- Runtime CLI tests MUST cover `acpus replay` reproducing a Run's Node topology deterministically and reporting discrepancies when the persisted Run's topology is tampered with.
 - Runtime CLI tests MUST cover Agent Step execution through acpx once Agent Activity integration exists.

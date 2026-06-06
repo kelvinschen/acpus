@@ -173,13 +173,15 @@ program
   .argument("<runId>", "run ID")
   .argument("<nodeKey>", "node key to pause")
   .option("--daemon <url>", "daemon URL")
-  .action(async (runId: string, nodeKey: string, options: { daemon?: string }) => {
+  .option("--json", "output machine-readable JSON")
+  .action(async (runId: string, nodeKey: string, options: { daemon?: string; json?: boolean }) => {
     try {
       const client = new DaemonClient(options.daemon);
       const state = await client.pauseNode(runId, nodeKey);
-      console.log(`Node ${nodeKey} paused (state: ${state.state})`);
+      if (options.json) console.log(JSON.stringify(state));
+      else console.log(`Node ${nodeKey} paused (state: ${state.state})`);
     } catch (error) {
-      printError(errorMessage(error), { json: false, quiet: false });
+      printError(errorMessage(error), { json: Boolean(options.json), quiet: false });
       process.exitCode = isDaemonConnectionError(error) ? EXIT_DAEMON_ERROR : EXIT_RUNTIME_ERROR;
     }
   });
@@ -189,13 +191,15 @@ program
   .argument("<runId>", "run ID")
   .argument("<nodeKey>", "node key to resume")
   .option("--daemon <url>", "daemon URL")
-  .action(async (runId: string, nodeKey: string, options: { daemon?: string }) => {
+  .option("--json", "output machine-readable JSON")
+  .action(async (runId: string, nodeKey: string, options: { daemon?: string; json?: boolean }) => {
     try {
       const client = new DaemonClient(options.daemon);
       const state = await client.resumeNode(runId, nodeKey);
-      console.log(`Node ${nodeKey} resumed (state: ${state.state})`);
+      if (options.json) console.log(JSON.stringify(state));
+      else console.log(`Node ${nodeKey} resumed (state: ${state.state})`);
     } catch (error) {
-      printError(errorMessage(error), { json: false, quiet: false });
+      printError(errorMessage(error), { json: Boolean(options.json), quiet: false });
       process.exitCode = isDaemonConnectionError(error) ? EXIT_DAEMON_ERROR : EXIT_RUNTIME_ERROR;
     }
   });
@@ -205,13 +209,15 @@ program
   .argument("<runId>", "run ID")
   .argument("<nodeKey>", "node key to cancel")
   .option("--daemon <url>", "daemon URL")
-  .action(async (runId: string, nodeKey: string, options: { daemon?: string }) => {
+  .option("--json", "output machine-readable JSON")
+  .action(async (runId: string, nodeKey: string, options: { daemon?: string; json?: boolean }) => {
     try {
       const client = new DaemonClient(options.daemon);
       const state = await client.cancelNode(runId, nodeKey);
-      console.log(`Node ${nodeKey} cancelled (state: ${state.state})`);
+      if (options.json) console.log(JSON.stringify(state));
+      else console.log(`Node ${nodeKey} cancelled (state: ${state.state})`);
     } catch (error) {
-      printError(errorMessage(error), { json: false, quiet: false });
+      printError(errorMessage(error), { json: Boolean(options.json), quiet: false });
       process.exitCode = isDaemonConnectionError(error) ? EXIT_DAEMON_ERROR : EXIT_RUNTIME_ERROR;
     }
   });
@@ -221,13 +227,42 @@ program
   .argument("<runId>", "run ID")
   .argument("<nodeKey>", "node key to retry")
   .option("--daemon <url>", "daemon URL")
-  .action(async (runId: string, nodeKey: string, options: { daemon?: string }) => {
+  .option("--json", "output machine-readable JSON")
+  .action(async (runId: string, nodeKey: string, options: { daemon?: string; json?: boolean }) => {
     try {
       const client = new DaemonClient(options.daemon);
       const state = await client.retryNode(runId, nodeKey);
-      console.log(`Node ${nodeKey} retried (state: ${state.state})`);
+      if (options.json) console.log(JSON.stringify(state));
+      else console.log(`Node ${nodeKey} retried (state: ${state.state})`);
     } catch (error) {
-      printError(errorMessage(error), { json: false, quiet: false });
+      printError(errorMessage(error), { json: Boolean(options.json), quiet: false });
+      process.exitCode = isDaemonConnectionError(error) ? EXIT_DAEMON_ERROR : EXIT_RUNTIME_ERROR;
+    }
+  });
+
+program
+  .command("replay")
+  .argument("<runId>", "run ID")
+  .option("--daemon <url>", "daemon URL")
+  .option("--json", "output machine-readable JSON")
+  .description("deterministically replay a Run and verify its interpretation")
+  .action(async (runId: string, options: { daemon?: string; json?: boolean }) => {
+    try {
+      const client = new DaemonClient(options.daemon);
+      const result = await client.replay(runId);
+      if (options.json) {
+        console.log(JSON.stringify(result));
+      } else if (result.ok) {
+        console.log(`Replay OK: ${runId} reproduced deterministically.`);
+      } else {
+        console.log(`Replay MISMATCH: ${runId} (${result.mismatches.length} discrepancies)`);
+        for (const m of result.mismatches.slice(0, 10)) {
+          console.log(`  ${m.nodeKey} [${m.kind}] expected=${m.expected ?? "-"} actual=${m.actual ?? "-"}`);
+        }
+      }
+      if (!result.ok) process.exitCode = EXIT_RUNTIME_ERROR;
+    } catch (error) {
+      printError(errorMessage(error), { json: Boolean(options.json), quiet: false });
       process.exitCode = isDaemonConnectionError(error) ? EXIT_DAEMON_ERROR : EXIT_RUNTIME_ERROR;
     }
   });

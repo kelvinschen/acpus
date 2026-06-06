@@ -6,9 +6,9 @@
  * characters that are incompatible with URL path segments.
  */
 
-import type { RunState, NodeExecutionState, RunSummary } from "@acpus/runtime";
+import type { RunState, NodeExecutionState, RunSummary, ReplayResult } from "@acpus/runtime";
 
-export type { RunState, NodeExecutionState, RunSummary };
+export type { RunState, NodeExecutionState, RunSummary, ReplayResult };
 
 export class DaemonClient {
   private readonly baseUrl: string;
@@ -82,5 +82,11 @@ export class DaemonClient {
     const res = await fetch(`${this.baseUrl}/runs/${runId}/output`);
     if (!res.ok) throw new Error(`Failed to get output: ${res.status}`);
     return res.json() as Promise<{ status: string; output: Record<string, unknown> }>;
+  }
+
+  async replay(runId: string): Promise<ReplayResult> {
+    const res = await fetch(`${this.baseUrl}/runs/${runId}/replay`, { method: "POST" });
+    if (!res.ok) throw new Error(`Failed to replay run: ${res.status}`);
+    return res.json() as Promise<ReplayResult>;
   }
 }

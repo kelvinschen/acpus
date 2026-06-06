@@ -41,6 +41,21 @@ export interface NodeExecutionState {
   output?: unknown;
   /** References to artifacts stored for this node */
   artifactRefs?: string[];
+  /**
+   * Snapshot of the parent dynamic value-context this node executed under
+   * (fanout item / loop round). Persisted so resume/retry can rebuild the
+   * expression context for command/prompt re-rendering. Only value context is
+   * stored — never large artifact payloads.
+   */
+  dynamicContext?: NodeDynamicContext;
+}
+
+/** Persisted parent value-context for a leaf node (fanout item / loop round). */
+export interface NodeDynamicContext {
+  item?: unknown;
+  item_id?: string;
+  item_index?: number;
+  loop?: { iter: number; last?: unknown };
 }
 
 // ─── Run-level metadata ─────────────────────────────────────────
@@ -148,4 +163,29 @@ export interface RunSummary {
   status: RunStatus;
   createdAt: string;
   updatedAt: string;
+}
+
+// ─── Replay ─────────────────────────────────────────────────────
+
+/** A single discrepancy found while replaying a persisted Run. */
+export interface ReplayMismatch {
+  nodeKey: string;
+  /** What kind of discrepancy: a node reached in only one walk, or differing state. */
+  kind: "state" | "missing-in-replay" | "unexpected-in-replay";
+  /** Persisted (recorded) value. */
+  expected?: NodeState;
+  /** Value derived by the deterministic replay walk. */
+  actual?: NodeState;
+}
+
+/**
+ * Result of a deterministic replay: re-walking the frozen IR against recorded
+ * node outputs and verifying the reconstructed node topology (the set of reached
+ * node keys) matches what was persisted. No agents/programs are executed and no
+ * disk writes occur.
+ */
+export interface ReplayResult {
+  runId: string;
+  ok: boolean;
+  mismatches: ReplayMismatch[];
 }

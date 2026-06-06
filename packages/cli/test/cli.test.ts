@@ -130,4 +130,28 @@ outputs:
     // Exit code 20 is used when the daemon IS reachable but returns a runtime error.
     expect(result.exitCode).toBe(40);
   });
+
+  it("exposes a replay command that fails with a JSON error when no daemon is reachable", async () => {
+    const result = await execaNode(cliEntry, ["replay", "some-run-id", "--json"], {
+      nodeOptions: ["--import", "tsx", "--conditions=development"],
+      reject: false
+    });
+
+    // No daemon running → connection error (exit 40); --json wiring emits a
+    // machine-readable error envelope on stdout.
+    expect(result.exitCode).toBe(40);
+    expect(JSON.parse(result.stdout).ok).toBe(false);
+  });
+
+  it("accepts --json on node control commands (pause)", async () => {
+    const result = await execaNode(cliEntry, ["pause", "some-run-id", "workflow/step-a", "--json"], {
+      nodeOptions: ["--import", "tsx", "--conditions=development"],
+      reject: false
+    });
+
+    // The --json flag is accepted (no commander "unknown option" error) and the
+    // error path emits JSON; without a daemon this is a connection error (40).
+    expect(result.exitCode).toBe(40);
+    expect(JSON.parse(result.stdout).ok).toBe(false);
+  });
 });

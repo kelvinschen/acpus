@@ -59,3 +59,7 @@ _Avoid_: server, service
 **Artifact**:
 A durable file produced by a Node execution (transcript, stdout capture, etc.) stored on disk and referenced by URI.
 _Avoid_: output file, blob
+
+**Replay**:
+A read-only re-interpretation of a finished Run against its frozen snapshot and recorded Node outcomes, used to verify that the same inputs reproduce the same Node topology.
+_Avoid_: re-run, rerun, simulation

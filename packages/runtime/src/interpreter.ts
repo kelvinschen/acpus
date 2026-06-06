@@ -6,10 +6,10 @@ import type { ExpressionContext, InterpreterOptions, NodeKeyDynamic, RunOptions 
 import { RunStore } from "./store.js";
 import { ExpressionEvaluator } from "./evaluator.js";
 import { resolveNodeKey } from "./keys.js";
-import { canTransition, transition, createInitialNodeState, isTerminal } from "./state-machine.js";
+import { canTransition, transition, createInitialNodeState, resetFailedForRetry, resetRunningForCrashRecovery } from "./state-machine.js";
 import { ArtifactStore } from "./artifacts.js";
 import type { ExecutorAdapter } from "./executors/types.js";
-import type { NodeExecutionState, NodeState } from "./types.js";
+import type { NodeExecutionState, NodeState, ReplayResult, ReplayMismatch } from "./types.js";
 import { randomUUID } from "node:crypto";
 import pLimit from "p-limit";
 
@@ -109,12 +109,7 @@ export class WorkflowInterpreter {
     }
 
     // Reset any running nodes back to pending (crash recovery)
-    for (const nodeState of this.store.listNodeStates(runId)) {
-      if (nodeState.state === "running") {
-        nodeState.state = "pending";
-        this.store.writeNodeState(runId, nodeState);
-      }
-    }
+    this.recoverStaleNodes(runId);
 
     const meta = this.store.readRunMeta(runId)!;
     meta.status = "running";
@@ -141,6 +136,184 @@ export class WorkflowInterpreter {
   }
 
   /**
+   * Reset any nodes persisted as `running` back to `pending` (crash recovery).
+   * Safe to call when adopting a Run after a daemon restart: in-memory abort
+   * controllers are gone, so a node marked `running` on disk has no live
+   * execution and must be re-runnable.
+   */
+  recoverStaleNodes(runId: string): void {
+    for (const nodeState of this.store.listNodeStates(runId)) {
+      if (nodeState.state === "running") {
+        nodeState.state = resetRunningForCrashRecovery(nodeState.state);
+        this.store.writeNodeState(runId, nodeState);
+      }
+    }
+  }
+
+  /**
+   * Deterministically replay a persisted Run and verify its reconstructed
+   * Node topology.
+   *
+   * Re-walks the frozen IR snapshot (never the mutable YAML), feeding recorded
+   * per-node outputs back into the expression context so control-flow decisions
+   * (switch branches, loop rounds, fanout lanes) are re-derived. No agents or
+   * programs are executed, no disk writes occur, and the walk is pinned to the
+   * recorded runId + a frozen clock for self-determinism. The set of node keys
+   * the re-walk reaches is compared against what was persisted; per-node
+   * terminal-state and output equivalence are out of scope for this milestone.
+   */
+  replay(runId: string): ReplayResult {
+    const ir = this.store.readIr(runId);
+    const input = this.store.readInput(runId);
+    if (!ir || !input) {
+      throw new Error(`Run ${runId} not found`);
+    }
+
+    // Pin determinism to the run's frozen creation clock. `createdAt` is written
+    // once at run init and never mutated (unlike `updatedAt`), so it is a stable
+    // deterministic-clock source for re-deriving any now()-dependent values.
+    // NOTE: aligning the execution-time clock to this same value (so now()-driven
+    // control flow replays identically) is a follow-up; R3 replay verifies node
+    // topology (reached key set), which does not depend on wall-clock time.
+    const meta = this.store.readRunMeta(runId);
+    const evaluator = new ExpressionEvaluator({ nowTimestamp: meta?.createdAt });
+
+    // Persisted (recorded) node states, keyed by node key.
+    const recorded = new Map<string, NodeExecutionState>();
+    for (const s of this.store.listNodeStates(runId)) recorded.set(s.nodeKey, s);
+
+    // States reached by the deterministic re-walk.
+    const reached = new Map<string, NodeState>();
+    const ctx = this.buildContext(input, runId);
+    this.replayNode(ir.root, ctx, runId, {}, undefined, recorded, reached, evaluator);
+
+    // Compare the set of node keys reached by the re-walk against what was
+    // persisted. `reached` carries each node's recorded state for reporting; the
+    // effective check is topological (which keys the interpretation reaches),
+    // since recorded outputs are replayed rather than recomputed.
+    const mismatches: ReplayMismatch[] = [];
+    for (const [key, recordedState] of recorded) {
+      const actual = reached.get(key);
+      if (actual === undefined) {
+        mismatches.push({ nodeKey: key, kind: "missing-in-replay", expected: recordedState.state });
+      } else if (actual !== recordedState.state) {
+        mismatches.push({ nodeKey: key, kind: "state", expected: recordedState.state, actual });
+      }
+    }
+    for (const [key, actual] of reached) {
+      if (!recorded.has(key)) {
+        mismatches.push({ nodeKey: key, kind: "unexpected-in-replay", actual });
+      }
+    }
+
+    return { runId, ok: mismatches.length === 0, mismatches };
+  }
+
+  /**
+   * Read-only re-walk used by {@link replay}. Mirrors the control-flow dispatch
+   * of executeNode but never executes leaves: it replays recorded outputs into
+   * the context and records the reconstructed node key → state. Concurrent
+   * containers (parallel/fanout) descend only into the lanes/branches that were
+   * actually recorded (racy joins do not run every branch).
+   */
+  private replayNode(
+    node: IrNode,
+    ctx: ExpressionContext,
+    runId: string,
+    dynamic: NodeKeyDynamic,
+    keyPrefix: string | undefined,
+    recorded: Map<string, NodeExecutionState>,
+    reached: Map<string, NodeState>,
+    evaluator: ExpressionEvaluator
+  ): void {
+    const resolved = resolveNodeKey(node.keyTemplate, dynamic);
+    const nodeKey = keyPrefix ? `${keyPrefix}/${resolved}` : resolved;
+    const rec = recorded.get(nodeKey);
+
+    // A node absent from the recording was never reached on the original walk
+    // (e.g. an untaken switch branch); skip it so we don't fabricate topology.
+    if (!rec) return;
+    reached.set(nodeKey, rec.state);
+
+    // Feed the recorded output into the step context so downstream decisions
+    // re-derive identically. Leaves contribute their output; containers below
+    // populate ctx.steps for their own children as they descend.
+    if (rec.output !== undefined) ctx.steps[node.id] = rec.output;
+
+    switch (node.kind) {
+      case "pipeline":
+        for (const child of node.children ?? []) {
+          this.replayNode(child, ctx, runId, dynamic, keyPrefix, recorded, reached, evaluator);
+        }
+        break;
+      case "parallel":
+        (node.children ?? []).forEach((child, index) => {
+          const branchDynamic: NodeKeyDynamic = { ...dynamic, parallelBranchId: String(index) };
+          this.replayNode(child, ctx, runId, branchDynamic, keyPrefix, recorded, reached, evaluator);
+        });
+        break;
+      case "fanout": {
+        const overExpr = node.metadata.over as string | undefined;
+        const items = overExpr ? evaluator.evaluateOverExpression(overExpr, ctx) : [];
+        items.forEach((item, index) => {
+          const itemId = this.extractItemId(item, node.metadata.key as string | undefined, index);
+          const itemDynamic: NodeKeyDynamic = { ...dynamic, fanoutItemId: itemId, laneId: String(index) };
+          const itemCtx: ExpressionContext = { ...ctx, steps: { ...ctx.steps }, item, item_id: itemId, item_index: index };
+          for (const child of node.children ?? []) {
+            this.replayNode(child, itemCtx, runId, itemDynamic, keyPrefix, recorded, reached, evaluator);
+          }
+        });
+        break;
+      }
+      case "switch":
+        for (const branch of node.branches ?? []) {
+          const taken = !branch.when || Boolean(evaluator.evaluateExpression(branch.when, ctx));
+          if (taken) {
+            for (const child of branch.children) {
+              this.replayNode(child, ctx, runId, dynamic, keyPrefix, recorded, reached, evaluator);
+            }
+            break;
+          }
+        }
+        break;
+      case "loop": {
+        const untilExpr = node.metadata.until as string | undefined;
+        const maxIterations = (node.metadata.max_iterations as number) ?? 100;
+        let lastOutput: unknown;
+        for (let iter = 0; iter < maxIterations; iter++) {
+          const loopCtx: ExpressionContext = { ...ctx, loop: { iter, last: lastOutput } };
+          const loopDynamic: NodeKeyDynamic = { ...dynamic, loopRound: iter };
+          if (untilExpr && iter > 0 && evaluator.evaluateExpression(untilExpr, loopCtx)) break;
+          // Only descend while this round's children were actually recorded.
+          let anyChildReached = false;
+          for (const child of node.children ?? []) {
+            const before = reached.size;
+            this.replayNode(child, loopCtx, runId, loopDynamic, keyPrefix, recorded, reached, evaluator);
+            if (reached.size > before) anyChildReached = true;
+            const childKey = `${keyPrefix ? `${keyPrefix}/` : ""}${resolveNodeKey(child.keyTemplate, loopDynamic)}`;
+            lastOutput = recorded.get(childKey)?.output ?? lastOutput;
+          }
+          if (!anyChildReached) break;
+        }
+        break;
+      }
+      case "subworkflow":
+        // The child root was executed under this node's key as prefix; descend
+        // using recorded child node states (frozen child IR is not re-read).
+        for (const [key, state] of recorded) {
+          if (key.startsWith(`${nodeKey}/`) && !reached.has(key)) {
+            reached.set(key, state.state);
+          }
+        }
+        break;
+      // run.agent / run.program / approval are leaves: their recorded state was
+      // already captured above; nothing further to descend.
+      default:
+        break;
+    }
+  }
+
+  /**
    * Pause a running node.
    */
   pauseNode(runId: string, nodeKey: string): void {
@@ -151,7 +324,7 @@ export class WorkflowInterpreter {
     }
 
     const state = this.store.readNodeState(runId, nodeKey);
-    if (state && !isTerminal(state.state)) {
+    if (state && canTransition(state.state, "paused")) {
       state.state = transition(state.state, "paused") as NodeState;
       this.store.writeNodeState(runId, state);
     }
@@ -166,7 +339,6 @@ export class WorkflowInterpreter {
       throw new Error(`Node ${nodeKey} not found in run ${runId}`);
     }
     state.state = transition(state.state, "running") as NodeState;
-    state.attempt++;
     this.store.writeNodeState(runId, state);
 
     const ir = this.store.readIr(runId);
@@ -177,8 +349,12 @@ export class WorkflowInterpreter {
     if (node) {
       const ctx = this.buildContext(input, runId);
       this.populateStepOutputs(runId, ctx);
+      // Restore the parent dynamic value-context (fanout item / loop round)
+      // captured at first execution so command/prompt re-rendering sees item/loop.
+      this.restoreDynamicContext(ctx, state.dynamicContext);
       // Resume re-enters the node as a continuation (continuation prompt for
       // agents), preserving the original full node key for stable identity.
+      // `attempt` is incremented by executeNode (single source of truth).
       await this.executeNode(node, ctx, runId, {}, undefined, true, nodeKey);
     }
   }
@@ -194,7 +370,7 @@ export class WorkflowInterpreter {
     }
 
     const state = this.store.readNodeState(runId, nodeKey);
-    if (state && !isTerminal(state.state)) {
+    if (state && canTransition(state.state, "cancelled")) {
       state.state = transition(state.state, "cancelled") as NodeState;
       this.store.writeNodeState(runId, state);
     }
@@ -207,16 +383,24 @@ export class WorkflowInterpreter {
 
   /**
    * Retry a failed node.
+   *
+   * Only a `failed` Node is retryable. A `paused` Node must be resumed (not
+   * retried) and `completed`/`cancelled` are terminal — those are rejected with
+   * a clear message rather than an opaque illegal-transition error.
    */
   async retryNode(runId: string, nodeKey: string): Promise<void> {
     const state = this.store.readNodeState(runId, nodeKey);
     if (!state) {
       throw new Error(`Node ${nodeKey} not found in run ${runId}`);
     }
-    // Reset to pending for retry (bypasses state machine intentionally —
-    // retry is a control-plane operation that resets a terminal state)
-    state.state = "pending";
-    state.attempt++;
+    if (state.state !== "failed") {
+      throw new Error(
+        `Cannot retry node ${nodeKey} in state '${state.state}': only failed nodes are retryable (use resume for paused nodes)`
+      );
+    }
+    // Control-plane reset (failed → pending), not a business-lifecycle
+    // transition. `attempt` is incremented by executeNode.
+    state.state = resetFailedForRetry(state.state);
     state.error = undefined;
     this.store.writeNodeState(runId, state);
 
@@ -228,6 +412,8 @@ export class WorkflowInterpreter {
     if (node) {
       const ctx = this.buildContext(input, runId);
       this.populateStepOutputs(runId, ctx);
+      // Restore the parent dynamic value-context captured at first execution.
+      this.restoreDynamicContext(ctx, state.dynamicContext);
       // Retry re-runs the Activity as a continuation: for agents this resumes
       // the same acpx session (recovering a dead subprocess) via the fixed
       // continuation prompt rather than replaying the original turn. The
@@ -279,6 +465,14 @@ export class WorkflowInterpreter {
     }
     state.attempt++;
     state.startedAt = new Date().toISOString();
+    // Snapshot the parent dynamic value-context (fanout item / loop round) for
+    // executable leaves so resume/retry can re-render their command/prompt
+    // without the parent re-deriving item/loop. Only captured on first run
+    // (not on resume/retry, which restore it from disk into ctx).
+    if (!resume && (node.kind === "run.agent" || node.kind === "run.program")) {
+      const snapshot = this.captureDynamicContext(ctx);
+      if (snapshot) state.dynamicContext = snapshot;
+    }
     this.store.writeNodeState(runId, state);
 
     try {
@@ -750,6 +944,26 @@ export class WorkflowInterpreter {
         ctx.steps[nodeState.nodeId] = nodeState.output;
       }
     }
+  }
+
+  /** Extract the parent dynamic value-context (fanout item / loop round) from a context, if any. */
+  private captureDynamicContext(ctx: ExpressionContext): import("./types.js").NodeDynamicContext | undefined {
+    const snapshot: import("./types.js").NodeDynamicContext = {};
+    let has = false;
+    if (ctx.item !== undefined) { snapshot.item = ctx.item; has = true; }
+    if (ctx.item_id !== undefined) { snapshot.item_id = ctx.item_id; has = true; }
+    if (ctx.item_index !== undefined) { snapshot.item_index = ctx.item_index; has = true; }
+    if (ctx.loop !== undefined) { snapshot.loop = ctx.loop; has = true; }
+    return has ? snapshot : undefined;
+  }
+
+  /** Merge a persisted dynamic value-context back into a rebuilt context (resume/retry). */
+  private restoreDynamicContext(ctx: ExpressionContext, snapshot: import("./types.js").NodeDynamicContext | undefined): void {
+    if (!snapshot) return;
+    if (snapshot.item !== undefined) ctx.item = snapshot.item;
+    if (snapshot.item_id !== undefined) ctx.item_id = snapshot.item_id;
+    if (snapshot.item_index !== undefined) ctx.item_index = snapshot.item_index;
+    if (snapshot.loop !== undefined) ctx.loop = snapshot.loop;
   }
 
   private findNodeByKey(root: IrNode, nodeKey: string): IrNode | undefined {
