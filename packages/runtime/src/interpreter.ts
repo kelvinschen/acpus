@@ -338,25 +338,36 @@ export class WorkflowInterpreter {
     if (!state) {
       throw new Error(`Node ${nodeKey} not found in run ${runId}`);
     }
-    state.state = transition(state.state, "running") as NodeState;
-    this.store.writeNodeState(runId, state);
 
     const ir = this.store.readIr(runId);
     const input = this.store.readInput(runId);
-    if (!ir || !input) return;
-
-    const node = this.findNodeByKey(ir.root, nodeKey);
-    if (node) {
-      const ctx = this.buildContext(input, runId);
-      this.populateStepOutputs(runId, ctx);
-      // Restore the parent dynamic value-context (fanout item / loop round)
-      // captured at first execution so command/prompt re-rendering sees item/loop.
-      this.restoreDynamicContext(ctx, state.dynamicContext);
-      // Resume re-enters the node as a continuation (continuation prompt for
-      // agents), preserving the original full node key for stable identity.
-      // `attempt` is incremented by executeNode (single source of truth).
-      await this.executeNode(node, ctx, runId, {}, undefined, true, nodeKey);
+    if (!ir || !input) {
+      throw new Error(`Cannot resume node ${nodeKey}: run ${runId} has no persisted IR or input`);
     }
+
+    // Resolve the node IR *before* mutating state. Subworkflow child IR is
+    // compiled on demand and never persisted, so a child key like
+    // `workflow/sub/child` is unresolvable here; reject explicitly rather than
+    // silently no-op and leave the node stuck in a running/pending state.
+    const node = this.findNodeByKey(ir.root, nodeKey);
+    if (!node) {
+      throw new Error(
+        `Cannot resume node ${nodeKey}: its definition was not found in the run's IR (subworkflow child nodes are not individually resumable)`
+      );
+    }
+
+    state.state = transition(state.state, "running") as NodeState;
+    this.store.writeNodeState(runId, state);
+
+    const ctx = this.buildContext(input, runId);
+    this.populateStepOutputs(runId, ctx);
+    // Restore the parent dynamic value-context (fanout item / loop round)
+    // captured at first execution so command/prompt re-rendering sees item/loop.
+    this.restoreDynamicContext(ctx, state.dynamicContext);
+    // Resume re-enters the node as a continuation (continuation prompt for
+    // agents), preserving the original full node key for stable identity.
+    // `attempt` is incremented by executeNode (single source of truth).
+    await this.executeNode(node, ctx, runId, {}, undefined, true, nodeKey);
   }
 
   /**
@@ -398,28 +409,39 @@ export class WorkflowInterpreter {
         `Cannot retry node ${nodeKey} in state '${state.state}': only failed nodes are retryable (use resume for paused nodes)`
       );
     }
+
+    const ir = this.store.readIr(runId);
+    const input = this.store.readInput(runId);
+    if (!ir || !input) {
+      throw new Error(`Cannot retry node ${nodeKey}: run ${runId} has no persisted IR or input`);
+    }
+
+    // Resolve the node IR *before* mutating state. Subworkflow child IR is
+    // compiled on demand and never persisted, so a child key like
+    // `workflow/sub/child` is unresolvable here; reject explicitly rather than
+    // silently no-op and leave the node stuck in a pending state.
+    const node = this.findNodeByKey(ir.root, nodeKey);
+    if (!node) {
+      throw new Error(
+        `Cannot retry node ${nodeKey}: its definition was not found in the run's IR (subworkflow child nodes are not individually retryable)`
+      );
+    }
+
     // Control-plane reset (failed → pending), not a business-lifecycle
     // transition. `attempt` is incremented by executeNode.
     state.state = resetFailedForRetry(state.state);
     state.error = undefined;
     this.store.writeNodeState(runId, state);
 
-    const ir = this.store.readIr(runId);
-    const input = this.store.readInput(runId);
-    if (!ir || !input) return;
-
-    const node = this.findNodeByKey(ir.root, nodeKey);
-    if (node) {
-      const ctx = this.buildContext(input, runId);
-      this.populateStepOutputs(runId, ctx);
-      // Restore the parent dynamic value-context captured at first execution.
-      this.restoreDynamicContext(ctx, state.dynamicContext);
-      // Retry re-runs the Activity as a continuation: for agents this resumes
-      // the same acpx session (recovering a dead subprocess) via the fixed
-      // continuation prompt rather than replaying the original turn. The
-      // original full node key is preserved for stable identity.
-      await this.executeNode(node, ctx, runId, {}, undefined, true, nodeKey);
-    }
+    const ctx = this.buildContext(input, runId);
+    this.populateStepOutputs(runId, ctx);
+    // Restore the parent dynamic value-context captured at first execution.
+    this.restoreDynamicContext(ctx, state.dynamicContext);
+    // Retry re-runs the Activity as a continuation: for agents this resumes
+    // the same acpx session (recovering a dead subprocess) via the fixed
+    // continuation prompt rather than replaying the original turn. The
+    // original full node key is preserved for stable identity.
+    await this.executeNode(node, ctx, runId, {}, undefined, true, nodeKey);
   }
 
   // ─── Node execution dispatch ──────────────────────────────────
@@ -577,7 +599,7 @@ export class WorkflowInterpreter {
     const executor = agent?.type === "mock" ? this.mockAgentExecutor : this.acpxAgentExecutor;
 
     for (let attempt = 0; ; attempt++) {
-      const result = await executor.execute({ node, context: ctx, signal, nodeKey, resume });
+      const result = await executor.execute({ node, context: ctx, signal, nodeKey, resume, retry: attempt > 0 });
 
       // Always persist the transcript (and stderr) as artifacts when the
       // executor produced raw output (acpx NDJSON). Mock executors return no
@@ -606,7 +628,8 @@ export class WorkflowInterpreter {
       }
 
       if (result.failureKind || (result.error && !result.partial)) {
-        throw new LeafExecutionError(`Agent execution failed${result.failureKind ? ` (${result.failureKind})` : ""}: ${result.error ?? "unknown"}`, artifactRefs);
+        const use = (node.metadata.agent as { use?: string } | undefined)?.use ?? "?";
+        throw new LeafExecutionError(`Agent step '${node.id}' (use: ${use}) failed${result.failureKind ? ` (${result.failureKind})` : ""}: ${result.error ?? "unknown"}`, artifactRefs);
       }
 
       // Agent output is wrapped in an envelope for parity with program steps.
@@ -628,7 +651,7 @@ export class WorkflowInterpreter {
 
     // Non-recoverable failures fail the node.
     if (result.failureKind) {
-      throw new LeafExecutionError(`Program execution failed (${result.failureKind}): ${result.error ?? "unknown"}`, artifactRefs);
+      throw new LeafExecutionError(`Program step '${node.id}' failed (${result.failureKind}): ${result.error ?? "unknown"}`, artifactRefs);
     }
 
     // A non-zero exit code is step data. Expose output + exit_code envelope.

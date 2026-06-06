@@ -134,4 +134,52 @@ workflow:
     const sub = store.listNodeStates(meta.runId).find((n) => n.nodeId === "sub");
     expect(sub?.state).toBe("failed");
   });
+
+  it("rejects resume/retry of a subworkflow child node without mutating its state", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-subwf-resume-"));
+    const childPath = join(dir, "child.yaml");
+    writeFileSync(childPath, `
+version: 1
+name: child
+workflow:
+  steps:
+    - id: child-step
+      run: program
+      cmd: ["echo", "hi"]
+`);
+
+    const ir = compileYaml(`
+version: 1
+name: parent
+workflow:
+  steps:
+    - id: sub
+      subworkflow: ${childPath}
+`);
+
+    // The child step fails non-recoverably, so its persisted state is `failed`
+    // — which lets us exercise retry's IR-lookup guard (a completed node would
+    // be rejected earlier by the "only failed nodes are retryable" check).
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: { "child-step": { failureKind: "spawn", stderr: "boom" } }
+    });
+    cleanups.push(cleanup);
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("failed");
+
+    const childNode = store.listNodeStates(meta.runId).find((n) => n.nodeId === "child-step");
+    expect(childNode?.nodeKey.startsWith("workflow/sub/")).toBe(true);
+    expect(childNode?.state).toBe("failed");
+    const childKey = childNode!.nodeKey;
+
+    // The child IR is not persisted in the parent run, so its definition cannot
+    // be resolved here: resume/retry must reject rather than silently no-op.
+    await expect(interpreter.resumeNode(meta.runId, childKey)).rejects.toThrow(/not.*found in the run's IR/);
+    await expect(interpreter.retryNode(meta.runId, childKey)).rejects.toThrow(/not.*found in the run's IR/);
+
+    // State must be untouched (no dirty running/pending left behind).
+    expect(store.readNodeState(meta.runId, childKey)?.state).toBe("failed");
+  });
 });

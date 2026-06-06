@@ -14,6 +14,8 @@ export interface ExecutionRequest {
   nodeKey: string;
   /** True when continuing a previously paused node (continuation prompt). */
   resume?: boolean;
+  /** True when this is a parse/schema auto-retry iteration (continuation prompt + schema section). */
+  retry?: boolean;
 }
 
 export interface ExecutorAdapter {
