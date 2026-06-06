@@ -12,7 +12,7 @@ function toScheduleNode(node: IrNode): ScheduleNode {
     id: node.id,
     kind: node.kind,
     nodePath: node.nodePath.join("/"),
-    outputFrom: node.outputFrom,
+    outputMerge: node.outputMerge,
     children: node.children?.map(toScheduleNode),
     branches: node.branches?.map((branch) => ({
       id: branch.id,

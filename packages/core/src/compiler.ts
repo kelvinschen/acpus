@@ -4,6 +4,7 @@ import { parse as parseYaml } from "yaml";
 import { DiagnosticBag } from "./diagnostics.js";
 import { createExpressionCollector } from "./expressions.js";
 import { createSchedule } from "./schedule.js";
+import { compileInputSchema, compileSchemaDsl, isFlatMap } from "./schema/index.js";
 import type {
   AcpusIr,
   AgentSpec,
@@ -34,10 +35,11 @@ export function compileWorkflow(source: string, options: CompileOptions = {}): C
   const context: CompileContext = {
     diagnostics,
     stepIds,
+    agents: isRecord(expanded.agents) ? expanded.agents : {},
     sourcePath: options.sourcePath
   };
 
-  validateSpec(expanded, diagnostics);
+  validateSpec(expanded, context);
   const rootChildren = compileSteps(expanded.workflow.steps, ["workflow"], "$.workflow.steps", context);
   const root: IrNode = {
     id: "workflow",
@@ -51,7 +53,7 @@ export function compileWorkflow(source: string, options: CompileOptions = {}): C
   };
 
   const expressionCollector = createExpressionCollector(diagnostics, stepIds);
-  expressionCollector.visit(expanded.inputs ?? {}, "$.inputs");
+  expressionCollector.visit(expanded.input ?? {}, "$.input");
   expressionCollector.visit(expanded.defaults ?? {}, "$.defaults");
   expressionCollector.visit(expanded.agents ?? {}, "$.agents");
   expressionCollector.visit(expanded.workflow.steps, "$.workflow.steps");
@@ -71,7 +73,7 @@ export function compileWorkflow(source: string, options: CompileOptions = {}): C
     },
     name: expanded.name,
     description: expanded.description,
-    inputs: expanded.inputs ?? {},
+    input: expanded.input ?? {},
     defaults: expanded.defaults ?? {},
     agents: expanded.agents ?? {},
     root,
@@ -98,6 +100,7 @@ export function lintWorkflow(source: string, options: CompileOptions = {}): Lint
 interface CompileContext {
   diagnostics: DiagnosticBag;
   stepIds: Set<string>;
+  agents: Record<string, unknown>;
   sourcePath?: string;
 }
 
@@ -147,9 +150,23 @@ function expandIncludes(spec: WorkflowSpec, options: CompileOptions, diagnostics
   };
 }
 
-function validateSpec(spec: WorkflowSpec, diagnostics: DiagnosticBag): void {
+function validateSpec(spec: WorkflowSpec, context: CompileContext): void {
+  const { diagnostics } = context;
   if (spec.version !== 1) {
     diagnostics.error("SPEC_VERSION", "Only DSL version 1 is supported.", "$.version");
+  }
+
+  // Compile input flat-map to JSON Schema
+  if (isRecord(spec.input)) {
+    const { schema, errors } = compileInputSchema(spec.input);
+    for (const err of errors) {
+      diagnostics.error("INPUT_SHAPE", err.message, `$.input.${err.field}`);
+    }
+    if (errors.length === 0) {
+      validateJsonSchema(schema, "$.input", context);
+    }
+    // Replace input with compiled schema in the spec so the IR stores the JSON Schema
+    spec.input = schema;
   }
 
   if (!isRecord(spec.agents ?? {})) {
@@ -191,7 +208,7 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
     return {
       ...base,
       kind: "run.agent",
-      metadata: pickMetadata(step, ["run", "use", "prompt", "expect", "side_effects", "retry", "timeout", "on_error"])
+      metadata: pickMetadata(step, ["run", "use", "prompt", "output", "retry", "timeout", "on_error"])
     };
   }
 
@@ -200,17 +217,17 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
     return {
       ...base,
       kind: "run.program",
-      metadata: pickMetadata(step, ["run", "cmd", "env", "idempotency_key", "side_effects", "output", "retry", "timeout", "on_error"])
+      metadata: pickMetadata(step, ["run", "cmd", "env", "capture", "retry", "timeout", "on_error"])
     };
   }
 
   if (Array.isArray(step.parallel)) {
-    requireOutputFrom(step.outputFrom, `${path}.outputFrom`, "parallel", context);
+    validateJoin(step.join, ["all", "race"], `${path}.join`, "parallel.join", context);
     return {
       ...base,
       kind: "parallel",
       keyTemplate: { ...keyTemplate(nodePath), parallelBranchId: true },
-      outputFrom: stringOrUndefined(step.outputFrom),
+      outputMerge: "map",
       children: compileSteps(asSteps(step.parallel, `${path}.parallel`, context), nodePath, `${path}.parallel`, context),
       metadata: pickMetadata(step, ["max_concurrency", "join"])
     };
@@ -218,7 +235,7 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
 
   if (isRecord(step.fanout)) {
     const fanout = step.fanout;
-    requireOutputFrom(fanout.outputFrom, `${path}.fanout.outputFrom`, "fanout", context);
+    validateFanout(fanout, path, context);
     if (fanout.key === undefined) {
       context.diagnostics.warning("FANOUT_KEY", "fanout.key is missing; runtime will fall back to item index identity.", `${path}.fanout.key`);
     }
@@ -230,15 +247,14 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
       ...base,
       kind: "fanout",
       keyTemplate: { ...keyTemplate(nodePath), fanoutItemId: true, laneId: true },
-      outputFrom: stringOrUndefined(fanout.outputFrom),
+      outputMerge: "array",
       children,
-      metadata: pickMetadata(fanout, ["over", "key", "max_concurrency", "join", "quorum"])
+      metadata: pickMetadata(fanout, ["over", "key", "max_concurrency", "join", "quorum", "success_criteria"])
     };
   }
 
   if (isRecord(step.switch)) {
     const switchSpec = step.switch;
-    requireOutputFrom(step.outputFrom, `${path}.outputFrom`, "switch", context);
     const branches: IrBranch[] = [];
     if (Array.isArray(switchSpec.cases)) {
       switchSpec.cases.forEach((caseSpec, caseIndex) => {
@@ -264,7 +280,7 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
     return {
       ...base,
       kind: "switch",
-      outputFrom: stringOrUndefined(step.outputFrom),
+      outputMerge: "selected",
       branches,
       metadata: pickMetadata(switchSpec, ["on"])
     };
@@ -272,7 +288,6 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
 
   if (isRecord(step.loop)) {
     const loop = step.loop;
-    requireOutputFrom(step.outputFrom, `${path}.outputFrom`, "loop", context);
     if (typeof loop.until !== "string") {
       context.diagnostics.error("LOOP_UNTIL", "loop.until must be an expression string.", `${path}.loop.until`);
     }
@@ -283,7 +298,7 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
       ...base,
       kind: "loop",
       keyTemplate: { ...keyTemplate(nodePath), loopRound: true },
-      outputFrom: stringOrUndefined(step.outputFrom),
+      outputMerge: "last",
       children: Array.isArray(loop.do) ? compileSteps(asSteps(loop.do, `${path}.loop.do`, context), nodePath, `${path}.loop.do`, context) : [],
       metadata: pickMetadata(loop, ["until", "max_iterations"])
     };
@@ -302,8 +317,7 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
     return {
       ...base,
       kind: "subworkflow",
-      outputFrom: stringOrUndefined(step.outputFrom),
-      metadata: pickMetadata(step, ["subworkflow", "inputs"])
+      metadata: pickMetadata(step, ["subworkflow", "input"])
     };
   }
 
@@ -318,15 +332,31 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
 function validateAgentStep(step: WorkflowStep, path: string, context: CompileContext): void {
   if (typeof step.use !== "string") {
     context.diagnostics.error("AGENT_USE", "run: agent steps must define use.", `${path}.use`);
-  }
-  if (step.use !== undefined && typeof step.use === "string" && !context.stepIds.has(step.id ?? "") && false) {
-    // Reserved for agent registry checks once package-level agent metadata is normalized.
+  } else if (!Object.prototype.hasOwnProperty.call(context.agents, step.use)) {
+    context.diagnostics.error("AGENT_REF", `run: agent step references unknown agent '${step.use}'.`, `${path}.use`);
   }
   if (typeof step.prompt !== "string") {
     context.diagnostics.error("AGENT_PROMPT", "run: agent steps must define a prompt string.", `${path}.prompt`);
   }
-  if (isRecord(step.expect) && "schema" in step.expect) {
-    validateJsonSchema(step.expect.schema, `${path}.expect.schema`, context);
+  if (step.output !== undefined && !isRecord(step.output)) {
+    context.diagnostics.error("OUTPUT_SHAPE", "run: agent output must be an object when present.", `${path}.output`);
+  }
+  if (isRecord(step.output)) {
+    if ("schema" in step.output) {
+      // Escape hatch: explicit JSON Schema
+      validateJsonSchema(step.output.schema, `${path}.output.schema`, context);
+    } else if (isFlatMap(step.output)) {
+      // Flat-map shorthand: compile to JSON Schema
+      const { schema, errors } = compileSchemaDsl(step.output);
+      for (const err of errors) {
+        context.diagnostics.error("OUTPUT_SHAPE", err.message, `${path}.output.${err.field}`);
+      }
+      if (errors.length === 0) {
+        validateJsonSchema(schema, `${path}.output`, context);
+      }
+      // Replace step.output with compiled schema so the IR stores the JSON Schema
+      step.output = schema;
+    }
   }
 }
 
@@ -334,8 +364,58 @@ function validateProgramStep(step: WorkflowStep, path: string, context: CompileC
   if (!Array.isArray(step.cmd) && typeof step.cmd !== "string") {
     context.diagnostics.error("PROGRAM_CMD", "run: program steps must define cmd as a string or array.", `${path}.cmd`);
   }
-  if (step.side_effects === "write" && step.idempotency_key === undefined && step.retry !== undefined) {
-    context.diagnostics.warning("PROGRAM_RETRY_WRITE", "Program step with side_effects: write and retry should define idempotency_key.", `${path}.idempotency_key`);
+  if (step.capture !== undefined) {
+    validateCapture(step.capture, path, context);
+  }
+}
+
+function validateFanout(fanout: Record<string, unknown>, path: string, context: CompileContext): void {
+  if (fanout.over === undefined) {
+    context.diagnostics.error("FANOUT_OVER", "fanout.over is required.", `${path}.fanout.over`);
+  }
+  validateJoin(fanout.join, ["all", "race", "quorum"], `${path}.fanout.join`, "fanout.join", context);
+
+  if (fanout.join === "quorum" && !isPositiveInteger(fanout.quorum)) {
+    context.diagnostics.error("FANOUT_QUORUM", "fanout.quorum must be a positive integer when join is quorum.", `${path}.fanout.quorum`);
+  }
+
+  if (fanout.success_criteria !== undefined) {
+    if (!isRecord(fanout.success_criteria)) {
+      context.diagnostics.error("FANOUT_SUCCESS_CRITERIA", "fanout.success_criteria must be an object.", `${path}.fanout.success_criteria`);
+      return;
+    }
+    if (!isPositiveInteger(fanout.success_criteria.min_success)) {
+      context.diagnostics.error("FANOUT_SUCCESS_CRITERIA", "fanout.success_criteria.min_success must be a positive integer.", `${path}.fanout.success_criteria.min_success`);
+    }
+  }
+}
+
+function validateJoin(value: unknown, allowed: string[], path: string, label: string, context: CompileContext): void {
+  if (value === undefined) {
+    return;
+  }
+  if (typeof value !== "string" || !allowed.includes(value)) {
+    context.diagnostics.error("JOIN_VALUE", `${label} must be one of ${allowed.join(", ")}.`, path);
+  }
+}
+
+function validateCapture(capture: unknown, path: string, context: CompileContext): void {
+  if (!isRecord(capture)) {
+    context.diagnostics.error("CAPTURE_SHAPE", "run: program capture must be an object when present.", `${path}.capture`);
+    return;
+  }
+
+  if (!["stdout", "file"].includes(String(capture.from))) {
+    context.diagnostics.error("CAPTURE_FROM", "run: program capture.from must be stdout or file.", `${path}.capture.from`);
+  }
+  if (!["json", "text"].includes(String(capture.parse))) {
+    context.diagnostics.error("CAPTURE_PARSE", "run: program capture.parse must be json or text.", `${path}.capture.parse`);
+  }
+  if (capture.from === "file" && typeof capture.path !== "string") {
+    context.diagnostics.error("CAPTURE_PATH", "run: program capture.path must be a string when capture.from is file.", `${path}.capture.path`);
+  }
+  if (capture.path !== undefined && typeof capture.path !== "string") {
+    context.diagnostics.error("CAPTURE_PATH", "run: program capture.path must be a string when present.", `${path}.capture.path`);
   }
 }
 
@@ -353,7 +433,7 @@ function validateApprovalStep(approval: Record<string, unknown>, path: string, c
 
 function validateJsonSchema(schema: unknown, path: string, context: CompileContext): void {
   if (!isRecord(schema)) {
-    context.diagnostics.error("JSON_SCHEMA_SHAPE", "expect.schema must be a JSON Schema object.", path);
+    context.diagnostics.error("JSON_SCHEMA_SHAPE", "output.schema must be a JSON Schema object.", path);
     return;
   }
   if (!ajv.validateSchema(schema)) {
@@ -398,14 +478,6 @@ function collectStepIds(steps: WorkflowStep[], diagnostics: DiagnosticBag): Set<
   return ids;
 }
 
-function requireOutputFrom(value: unknown, path: string, kind: IrNodeKind | "parallel" | "fanout" | "switch" | "loop", context: CompileContext): void {
-  if (typeof value !== "string" || value.length === 0) {
-    context.diagnostics.error("OUTPUT_FROM_REQUIRED", `${kind} nodes must declare outputFrom.`, path);
-  } else if (!context.stepIds.has(value)) {
-    context.diagnostics.error("OUTPUT_FROM_UNKNOWN", `outputFrom references unknown step '${value}'.`, path);
-  }
-}
-
 function keyTemplate(nodePath: string[]): NodeKeyTemplate {
   return {
     astVersion: 1,
@@ -445,8 +517,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function stringOrUndefined(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
+function isPositiveInteger(value: unknown): value is number {
+  return Number.isInteger(value) && typeof value === "number" && value > 0;
 }
 
 function digest(source: string): string {

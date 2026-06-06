@@ -29,7 +29,7 @@ export interface WorkflowSpec {
   version: number;
   name: string;
   description?: string;
-  inputs?: Record<string, unknown>;
+  input?: Record<string, unknown>;
   defaults?: Record<string, unknown>;
   agents?: Record<string, AgentSpec>;
   workflow: {
@@ -72,7 +72,7 @@ export interface AcpusIr {
   };
   name: string;
   description?: string;
-  inputs: Record<string, unknown>;
+  input: Record<string, unknown>;
   defaults: Record<string, unknown>;
   agents: Record<string, AgentSpec>;
   root: IrNode;
@@ -80,12 +80,14 @@ export interface AcpusIr {
   expressions: IrExpression[];
 }
 
+export type OutputMerge = "map" | "array" | "selected" | "last";
+
 export interface IrNode {
   id: string;
   kind: IrNodeKind;
   nodePath: string[];
   keyTemplate: NodeKeyTemplate;
-  outputFrom?: string;
+  outputMerge?: OutputMerge;
   children?: IrNode[];
   branches?: IrBranch[];
   metadata: Record<string, unknown>;
@@ -122,7 +124,7 @@ export interface ScheduleNode {
   id: string;
   kind: IrNodeKind;
   nodePath: string;
-  outputFrom?: string;
+  outputMerge?: OutputMerge;
   children?: ScheduleNode[];
   branches?: Array<{
     id: string;

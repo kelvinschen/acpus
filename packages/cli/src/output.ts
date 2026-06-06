@@ -21,8 +21,8 @@ export function printLint(result: LintResult, options: OutputOptions): void {
 
 export function printCompile(result: CompileResult, options: OutputOptions): void {
   if (options.quiet) {
-    if (result.ok && result.ir) {
-      console.log(JSON.stringify({ ok: true, ir: result.ir }));
+    if (options.json) {
+      writeJsonLine({ ok: result.ok, diagnostics: result.diagnostics, ir: result.ir, schedule: result.schedule });
     }
     return;
   }

@@ -1,7 +1,7 @@
 version: 1
 name: all-primitives
-inputs:
-  files: { type: array, required: true }
+input:
+  files: array
 agents:
   coder: { type: mock, model: fixture }
 workflow:
@@ -9,20 +9,17 @@ workflow:
     - id: discover
       run: program
       cmd: ["echo", "{\"files\":[{\"path\":\"a.ts\"}]}"]
-      side_effects: read
-      output: { from: stdout, parse: json }
+      capture:
+        from: stdout
+        parse: json
 
     - id: review
       run: agent
       use: coder
       prompt: "Review ${{ steps.discover.output.files }}"
-      expect:
-        schema:
-          type: object
-          required: [issues]
-          properties:
-            issues:
-              type: array
+      output:
+        issues:
+          - description: string
 
     - id: branches
       parallel:
@@ -32,7 +29,6 @@ workflow:
         - id: right
           run: program
           cmd: ["echo", "right"]
-      outputFrom: left
 
     - id: mapped
       fanout:
@@ -44,9 +40,8 @@ workflow:
             run: agent
             use: coder
             prompt: "Inspect ${{ item.path }}"
-            expect:
-              schema: { type: object, required: [ok], properties: { ok: { type: boolean } } }
-        outputFrom: inspect_one
+            output:
+              ok: boolean
 
     - id: route
       switch:
@@ -61,7 +56,6 @@ workflow:
             - id: route_no
               run: program
               cmd: ["echo", "no"]
-      outputFrom: route_yes
 
     - id: fix_loop
       loop:
@@ -72,9 +66,8 @@ workflow:
             run: agent
             use: coder
             prompt: "Fix round ${{ loop.iter }}"
-            expect:
-              schema: { type: object, required: [ok], properties: { ok: { type: boolean } } }
-      outputFrom: fix_once
+            output:
+              ok: boolean
 
     - id: human_gate
       approval:
@@ -84,8 +77,7 @@ workflow:
 
     - id: child
       subworkflow: ./child.yaml
-      inputs:
+      input:
         file: ${{ steps.discover.output.files[0].path }}
-      outputFrom: child_output
 outputs:
   approved: ${{ steps.human_gate.output.approved }}

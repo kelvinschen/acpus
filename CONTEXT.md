@@ -39,3 +39,7 @@ _Avoid_: shell task, script step
 **Approval Gate**:
 A planned human decision point inside a Workflow.
 _Avoid_: pause, manual stop
+
+**Mock Agent**:
+An ACP-compatible Agent used to produce deterministic responses for repeatable Workflow testing.
+_Avoid_: fake runtime, simulator

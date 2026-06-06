@@ -1,27 +1,26 @@
 {
-  "name": "@acpus/core",
+  "name": "@acpus/mock-agent",
   "version": "0.1.0",
   "type": "module",
+  "bin": {
+    "acpus-mock-agent": "./dist/index.js"
+  },
   "exports": {
     ".": {
-      "development": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": [
-    "dist"
-  ],
+  "files": ["dist"],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node -e \"require('node:fs').chmodSync('dist/index.js', 0o755)\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@marcbachmann/cel-js": "^7.6.1",
-    "ajv": "^8.20.0",
+    "@agentclientprotocol/sdk": "^0.24.0",
     "yaml": "^2.9.0"
   },
   "devDependencies": {

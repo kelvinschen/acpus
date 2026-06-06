@@ -1,0 +1,9 @@
+version: 1
+name: invalid-missing-id
+agents:
+  mock: { type: mock }
+workflow:
+  steps:
+    - run: agent
+      use: mock
+      prompt: "hello"

@@ -1,0 +1,10 @@
+version: 1
+name: include-cycle-a
+agents:
+  mock: { type: mock }
+workflow:
+  steps:
+    - id: step_a
+      run: program
+      cmd: ["echo", "a"]
+    - include: include-cycle-b.yaml

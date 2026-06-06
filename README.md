@@ -10,8 +10,9 @@ Runtime execution through Temporal is intentionally not implemented in M1.
 | --- | --- |
 | `@acpus/core` | Own the YAML DSL compiler boundary: parse specs, validate JSON Schema fragments, parse CEL expressions, lint references, emit frozen IR, and project a schedule summary. |
 | `acpus` | Own the user-facing CLI: read files and input payloads, resolve includes, expose `lint`, and expose `run --dry-run` for IR inspection. |
+| `@acpus/mock-agent` | Own the deterministic ACP-compatible Mock Agent used to validate agent protocol behavior before Temporal runtime exists. |
 
-Future packages should be split only when the runtime surface exists: likely `@acpus/runtime` for Temporal workflows/activities, `@acpus/mock-agent` for ACP-compatible fixtures, and `@acpus/artifacts` for artifact-store implementations.
+The Mock Agent package is intentionally being built before the runtime surface because ACP session, streaming, and cancellation behavior are among the highest-risk integration points. Future runtime packages should be split when the runtime surface exists: likely `@acpus/runtime` for Temporal workflows/activities and `@acpus/artifacts` for artifact-store implementations.
 
 ## Commands
 
@@ -27,6 +28,7 @@ CLI examples:
 ```sh
 pnpm acpus lint packages/core/test/fixtures/all-primitives.yaml
 pnpm acpus run packages/core/test/fixtures/all-primitives.yaml --dry-run --json
+pnpm mock-agent --script packages/mock-agent/test/fixtures/mock.yaml
 ```
 
 `acpus run <spec>` without `--dry-run` exits with a clear M1 runtime-not-implemented error.
@@ -35,11 +37,12 @@ pnpm acpus run packages/core/test/fixtures/all-primitives.yaml --dry-run --json
 
 - Keep `@acpus/core` free of process, filesystem, Temporal, and agent runtime side effects.
 - Keep CLI output stable enough for tests and CI: `run --dry-run --json` emits `{ ok, diagnostics, ir, schedule }`.
-- Keep workflow specs YAML-first and use standard JSON Schema objects under `expect.schema`.
+- Keep workflow specs YAML-first and use standard JSON Schema objects under `output.schema`.
 - Build packages with `tsc` only for M1; bundling is a future publishing optimization, not a compiler/runtime requirement.
+- Keep `@acpus/mock-agent` ACP-compatible and deterministic; acpx is not part of the mock-agent foundation slice.
 
 ## References
 
-- [PRD](docs/PRD-acpus.md)
-- [CLI contract](docs/spec-cli.md)
-- [DSL reference](docs/spec-dsl.md)
+- [PRD](prd/PRD-acpus.md)
+- [CLI Spec](specs/cli-spec.md)
+- [Workflow Spec](specs/workflow-spec.md)

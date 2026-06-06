@@ -92,7 +92,7 @@ v1 目标能力：
 - **Artifacts**：transcripts、raw outputs、parsed outputs、command logs、cache entries、partial state 都存放在 Temporal history 外部。
 - **Observation**：monitor/list/detail 由 Temporal Query + artifact summaries 投影，不读取本地 `run.json`。
 - **Failure policy**：每个 composite node 都有显式或继承的 structured failure policy。
-- **Output contract**：每个 composite 用显式 `outputFrom` 暴露稳定下游输出。
+- **Output contract**：每个 composite 的输出由其结构决定（parallel → branch map, fanout → array, switch → selected, loop → last iteration）。
 
 ## 当前能力到目标能力的映射
 
@@ -135,7 +135,6 @@ v1 目标能力：
 - `id`
 - `type`
 - `failurePolicy`
-- `outputFrom`
 - optional `timeout`
 - optional `retryPolicy`
 - optional `cachePolicy`
@@ -144,7 +143,7 @@ Run-start AST 规则：
 
 - YAML 被 parse、validate、compile，然后冻结成 AST snapshot。
 - 记录 AST schema version。
-- 冻结 inputs 和 resolved limits。
+- 冻结 input 和 resolved limits。
 - 已启动 run 在 replay 或 resume 时绝不重新读取可变 YAML。
 
 ### Temporal Workflow 布局
@@ -280,7 +279,7 @@ Prototype monitor 应暴露归一化概念，而不是 Acpus 特有的本地状�
 5. 实现 `NodeExecutionKey` 生成和 node state Query。
 6. 实现 `pauseNode`、`resumeNode`、`cancelNode` Updates。
 7. 依次加入 `parallel`、`fanout`、bounded `loop`。
-8. 加入 `branches` 和显式 `outputFrom`。
+8. 加入 `branches`。
 9. 基于 Temporal Query + artifact summaries 构建 monitor projection。
 10. 将部分 Acpus tests 作为 behavior specs 迁移，不迁移实现细节测试。
 
@@ -298,7 +297,7 @@ Prototype monitor 应暴露归一化概念，而不是 Acpus 特有的本地状�
 
 - agent runtime 可能没有足够强的 cooperative cancellation primitives。当前 Acpus adapter 能观察 cancelled turns，但没有暴露显式 runtime-level cancel control。
 - program execution 完全开放只在 trusted single-tenant 假设下成立。不要把它描述成适用于 multi-tenant shared workers 的安全模型。
-- nested composite output contracts 如果不强制 `outputFrom`，很快会变得混乱。
+- nested composite output contracts 需要清晰的结构化输出规则（parallel → branch map, fanout → array, switch → selected, loop → last iteration）。
 - 如果把 composite state 或 transcripts 放进 workflow state，而不是 artifact references，Temporal history 会快速膨胀。
 - 复用过多 Acpus 代码可能把 local run-directory assumptions 带进新的 service runtime。
 

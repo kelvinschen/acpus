@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "acpus": "node packages/cli/dist/index.js",
+    "mock-agent": "node packages/mock-agent/dist/index.js",
     "clean": "pnpm -r clean"
   },
   "devDependencies": {

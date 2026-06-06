@@ -330,7 +330,7 @@ CLI 的设计原则：**子命令最少、行为最可预测、无副作用命�
 
 ### 3.4 输入与上下文
 
-- `--input k=v`（重复多次）或 `--input-file inputs.json`：注入 workflow 顶层 `inputs`。
+- `--input k=v`（重复多次）或 `--input-file input.json`：注入 workflow 顶层 `input`。
 - `--secret k=@file` / `--secret k=$ENV_VAR`：通过 secret 引用注入，不进 Workflow History（用 `SideEffect` 派发到 Activity）。
 - 工作目录：`--workspace .`（默认 cwd），所有 program / agent 都基于此目录派生子进程。
 
@@ -352,7 +352,7 @@ CLI 的设计原则：**子命令最少、行为最可预测、无副作用命�
 version: 1
 name: <workflow-name>
 description: <human readable>
-inputs:
+input:
   <param>: { type: string, required: true, default: <value> }
 secrets:
   - OPENAI_API_KEY
@@ -363,7 +363,7 @@ agents:
   <ref>:
     type: claude-code | codex | opencode | <acp-registry-id>
     model: <model>
-    cwd: ${{ inputs.workspace }}
+    cwd: ${{ input.workspace }}
     env: { ... }
     tools_allowlist: [fs.read, fs.write, shell]
     max_concurrency: 1
@@ -380,18 +380,18 @@ outputs:
 
 | 原语 | 语法骨架 | 语义 |
 |---|---|---|
-| `run: agent` | `{ id, run: agent, use, prompt, output, expect?, on_error? }` | 对一个 ACP agent session 发送 prompt，等待 final message；output 写进 `steps.<id>.output` |
+| `run: agent` | `{ id, run: agent, use, prompt, output?: { schema }, on_error? }` | 对一个 ACP agent session 发送 prompt，等待 final message；output 写进 `steps.<id>.output` |
 | `run: program` | `{ id, run: program, cmd, env?, idempotency_key?, side_effects? }` | 跑外部命令；带 `idempotency_key` 时自动 dedupe（防重试副作用） |
 | `parallel` | `{ parallel: [steps...], max_concurrency? }` | 静态并发；所有分支必须全部成功才进下一节点（除非 `on_error: continue`） |
 | `fanout` | `{ fanout: { over: <list>, as: <var>, do: [steps...], join: all\|race\|quorum, max_concurrency? } }` | 动态展开（map）；`join` 决定汇聚策略 |
 | `switch` | `{ switch: [{ when: <expr>, do: [...] }, { else: [...] }] }` | 条件分支 |
 | `loop` | `{ loop: { while: <expr> \| until: <expr>, max_iterations, do: [...] } }` | 带上限循环；每次迭代是一个独立 scope，可读 `loop.iter` |
 | `approval` | `{ approval: { prompt, channels?, timeout, on_timeout: fail\|escalate\|approve\|reject } }` | 等待外部 Signal；durable Timer 兜底 |
-| `subworkflow` | `{ subworkflow: <path>, inputs: {...}, async?: bool }` | 启动 child workflow |
+| `subworkflow` | `{ subworkflow: <path>, input: {...}, async?: bool }` | 启动 child workflow |
 
 ### 4.4 表达式（CEL）能力清单
 
-- 上下文变量：`inputs.*`、`secrets.*`、`steps.<id>.output.*`、`loop.iter`、`run_id`、`now()`（**确定性**now，从 Workflow 时钟取）
+- 上下文变量：`input.*`、`secrets.*`、`steps.<id>.output.*`、`loop.iter`、`run_id`、`now()`（**确定性**now，从 Workflow 时钟取）
 - 函数：`len`、`startsWith`、`matches`、`json.parse`、`hash.sha256`、`coalesce`
 - 类型：string / int / bool / list / map（无浮点比较默认 epsilon）
 - **禁用**：任意外部 I/O、随机数、系统时间
@@ -407,7 +407,7 @@ outputs:
 ```yaml
 version: 1
 name: plan-review-impl
-inputs:
+input:
   feature: { type: string, required: true }
 agents:
   planner:  { type: claude-code, model: sonnet-4.5 }
@@ -419,7 +419,7 @@ workflow:
       use: planner
       prompt: |
         Read repo structure, then propose an implementation plan for:
-          ${{ inputs.feature }}
+          ${{ input.feature }}
         Output: numbered steps + risk list.
       output_format: markdown
 
@@ -455,7 +455,7 @@ outputs:
 ```yaml
 version: 1
 name: multi-agent-review
-inputs:
+input:
   pr_url: { type: string, required: true }
 agents:
   claude:  { type: claude-code, model: sonnet-4.5 }
@@ -465,7 +465,7 @@ workflow:
   steps:
     - id: fetch_pr
       run: program
-      cmd: ["bash", "-lc", "gh pr checkout ${{ inputs.pr_url }}"]
+      cmd: ["bash", "-lc", "gh pr checkout ${{ input.pr_url }}"]
       side_effects: write
 
     - id: reviews
@@ -479,7 +479,7 @@ workflow:
           - id: by_claude
             run: agent
             use: claude
-            prompt: "Review PR ${{ inputs.pr_url }} for ${{ aspect }} issues. Return JSON {issues:[...]}."
+            prompt: "Review PR ${{ input.pr_url }} for ${{ aspect }} issues. Return JSON {issues:[...]}."
             output_format: json
             timeout: 10m
           - id: by_codex
@@ -515,7 +515,7 @@ workflow:
         - when: ${{ steps.gate.approved }}
           do:
             - run: program
-              cmd: ["gh", "pr", "comment", "${{ inputs.pr_url }}", "--body-file", "${{ steps.aggregate.output.body_path }}"]
+              cmd: ["gh", "pr", "comment", "${{ input.pr_url }}", "--body-file", "${{ steps.aggregate.output.body_path }}"]
               side_effects: write
         - else:
             do:
@@ -535,7 +535,7 @@ workflow:
 ```yaml
 version: 1
 name: refactor-and-fix
-inputs:
+input:
   module: { type: string, required: true }
   from_framework: { type: string, required: true }
   to_framework:   { type: string, required: true }
@@ -546,7 +546,7 @@ workflow:
   steps:
     - id: discover
       run: program
-      cmd: ["acpus-tool", "list-files", "--module", "${{ inputs.module }}"]
+      cmd: ["acpus-tool", "list-files", "--module", "${{ input.module }}"]
       output_format: json
 
     - id: rewrite_files
@@ -557,10 +557,10 @@ workflow:
         join: all
         do:
           - subworkflow: ./refactor-one-file.spec.yaml
-            inputs:
+            input:
               file: ${{ file }}
-              from: ${{ inputs.from_framework }}
-              to:   ${{ inputs.to_framework }}
+              from: ${{ input.from_framework }}
+              to:   ${{ input.to_framework }}
 
     - id: fix_loop
       loop:
@@ -583,7 +583,7 @@ workflow:
                   - run: agent
                     use: fixer
                     prompt: |
-                      The following tests failed in module ${{ inputs.module }}:
+                      The following tests failed in module ${{ input.module }}:
                       ${{ steps.parse_failures.output.failures_md }}
                       Fix them. Do not change unrelated files.
                     side_effects: write
@@ -615,7 +615,7 @@ workflow:
 ```yaml
 version: 1
 name: deep-research
-inputs:
+input:
   topic: { type: string, required: true }
   depth: { type: int,    default: 2 }
 agents:
@@ -628,8 +628,8 @@ workflow:
       run: agent
       use: planner
       prompt: |
-        For topic "${{ inputs.topic }}", produce a JSON tree with up to
-        ${{ inputs.depth }} levels of sub-questions.
+        For topic "${{ input.topic }}", produce a JSON tree with up to
+        ${{ input.depth }} levels of sub-questions.
       output_format: json
 
     - id: collect
@@ -673,7 +673,7 @@ workflow:
       run: agent
       use: writer
       prompt: |
-        Write a research report in markdown for topic ${{ inputs.topic }}
+        Write a research report in markdown for topic ${{ input.topic }}
         from outline ${{ steps.refine.last.iter_output.outline }}.
       output_format: markdown
       artifact: report.md

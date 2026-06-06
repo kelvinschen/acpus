@@ -1,0 +1,79 @@
+version: 1
+name: refactor-and-fix
+input:
+  module: string
+  from_framework: string
+  to_framework: string
+agents:
+  fixer: { type: codex, model: gpt-5 }
+workflow:
+  steps:
+    - id: discover
+      run: program
+      cmd: ["acpus-tool", "list-files", "--module", "${{ input.module }}"]
+      capture:
+        from: stdout
+        parse: json
+
+    - id: rewrite_files
+      fanout:
+        over: ${{ steps.discover.output.files }}
+        key: ${{ item.path }}
+        max_concurrency: 4
+        join: all
+        do:
+          - id: refactor_one
+            subworkflow: ./refactor-one-file.spec.yaml
+            input:
+              file: ${{ item.path }}
+              from: ${{ input.from_framework }}
+              to:   ${{ input.to_framework }}
+
+    - id: fix_loop
+      loop:
+        until: ${{ coalesce(loop.last.tests_green, false) }}
+        max_iterations: 5
+        do:
+          - id: run_tests
+            run: program
+            cmd: ["bash", "-lc", "pnpm test --json"]
+            capture:
+              from: file
+              path: .test.json
+              parse: json
+          - id: parse_failures
+            run: program
+            cmd: ["acpus-tool", "parse-jest", "--input", ".test.json"]
+            capture:
+              from: stdout
+              parse: json
+          - id: fix_round
+            switch:
+              cases:
+                - when: ${{ len(steps.parse_failures.output.failures) > 0 }}
+                  do:
+                    - id: apply_fix
+                      run: agent
+                      use: fixer
+                      prompt: |
+                        These tests failed in ${{ input.module }}:
+                        ${{ steps.parse_failures.output.failures_md }}
+                        Fix them. Do not change unrelated files.
+                      output:
+                        tests_green: boolean
+              default:
+                do:
+                  - id: green
+                    run: program
+                    cmd: ["echo", "all green"]
+                    capture:
+                      from: stdout
+                      parse: text
+
+    - id: final_gate
+      approval:
+        prompt: "Refactor done. Patches summarized in steps.fix_loop.iterations. Push branch?"
+        timeout: 24h
+        on_timeout: reject
+outputs:
+  pushed: ${{ steps.final_gate.output.approved }}

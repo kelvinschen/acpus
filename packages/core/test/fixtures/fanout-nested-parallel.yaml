@@ -1,0 +1,34 @@
+version: 1
+name: fanout-nested-parallel
+input:
+  paths: array
+agents:
+  coder: { type: mock, model: fixture }
+workflow:
+  steps:
+    - id: discover
+      run: program
+      cmd: ["echo", "{\"files\":[{\"path\":\"a.ts\"}]}"]
+      capture:
+        from: stdout
+        parse: json
+
+    - id: mapped
+      fanout:
+        over: ${{ steps.discover.output.files }}
+        key: ${{ item.path }}
+        join: all
+        do:
+          - id: review_and_test
+            parallel:
+              - id: review
+                run: agent
+                use: coder
+                prompt: "Review ${{ item.path }} for issues."
+                output:
+                  verdict: string
+                  issues:
+                    - description: string
+              - id: test
+                run: program
+                cmd: ["make", "test"]

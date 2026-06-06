@@ -1,0 +1,81 @@
+version: 1
+name: deep-research
+input:
+  topic: string
+  depth?: integer = 2
+agents:
+  planner:   { type: claude-code, model: opus-4 }
+  collector: { type: opencode,    model: glm-4.6 }
+  writer:    { type: codex,       model: gpt-5 }
+workflow:
+  steps:
+    - id: plan
+      run: agent
+      use: planner
+      prompt: |
+        For topic "${{ input.topic }}", produce a research question tree with up to
+        ${{ input.depth }} levels of sub-questions.
+      output:
+        leaves:
+          - text: string
+
+    - id: collect
+      fanout:
+        over: ${{ steps.plan.output.leaves }}
+        key: ${{ item.text }}
+        max_concurrency: 8
+        join: all
+        do:
+          - id: gather
+            run: agent
+            use: collector
+            prompt: |
+              Search the web for the question:
+              ${{ item.text }}
+            output:
+              q: string
+              findings:
+                - url: string
+                  snippet: string
+            timeout: 8m
+            retry: { max_attempts: 3 }
+
+    - id: refine
+      loop:
+        until: ${{ coalesce(loop.last.coverage, 0) >= 0.9 }}
+        max_iterations: 3
+        do:
+          - id: replan
+            run: agent
+            use: planner
+            prompt: |
+              Given findings ${{ steps.collect.output }} and previous gaps
+              ${{ coalesce(loop.last.gaps, []) }}, propose follow-up sub-questions and an outline.
+            output:
+              gaps:
+                - text: string
+              coverage: number
+              outline_md: string
+          - id: merge
+            run: program
+            cmd: ["acpus-tool", "merge-findings", "--in", ".findings.json"]
+            capture:
+              from: stdout
+              parse: json
+
+    - id: human_outline
+      approval:
+        prompt: "Outline & coverage in steps.refine.last.replan.output. Approve writing?"
+        timeout: 6h
+        on_timeout: reject
+
+    - id: write
+      run: agent
+      use: writer
+      prompt: |
+        Write a research report for "${{ input.topic }}"
+        from outline ${{ steps.refine.last.replan.output.outline_md }}.
+      output:
+        report_md: string
+outputs:
+  report: ${{ steps.write.output.report_md }}

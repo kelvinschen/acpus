@@ -5,7 +5,7 @@ import type { IrExpression } from "./types.js";
 const EXPRESSION_PATTERN = /\$\{\{\s*([\s\S]*?)\s*\}\}/g;
 const STEP_REFERENCE_PATTERN = /\bsteps\.([A-Za-z_][A-Za-z0-9_-]*)\b/g;
 const ROOT_REFERENCE_PATTERN = /(?<![\w.])([A-Za-z_][A-Za-z0-9_]*)\s*(?:\.|\()/g;
-const ALLOWED_ROOTS = new Set(["inputs", "steps", "loop", "item", "item_id", "item_index", "run_id"]);
+const ALLOWED_ROOTS = new Set(["input", "steps", "loop", "item", "item_id", "item_index", "run_id"]);
 const ALLOWED_FUNCTIONS = new Set(["now", "len", "startsWith", "matches", "coalesce"]);
 
 export interface ExpressionCollector {

@@ -1,0 +1,88 @@
+version: 1
+name: multi-agent-review
+input:
+  pr_url: string
+agents:
+  claude: { type: claude-code, model: sonnet-4.5 }
+  codex:  { type: codex,       model: gpt-5 }
+  open:   { type: opencode,    model: glm-4.6 }
+workflow:
+  steps:
+    - id: fetch_pr
+      run: program
+      cmd: ["bash", "-lc", "gh pr checkout ${{ input.pr_url }}"]
+      capture:
+        from: stdout
+        parse: text
+
+    - id: reviews
+      fanout:
+        over: ["security", "performance", "readability"]
+        key: ${{ item }}
+        max_concurrency: 3
+        join: quorum
+        quorum: 2
+        do:
+          - id: multi_review
+            parallel:
+              - id: by_claude
+                run: agent
+                use: claude
+                prompt: "Review PR ${{ input.pr_url }} for ${{ item }} issues."
+                output:
+                  issues:
+                    - description: string
+                timeout: 10m
+              - id: by_codex
+                run: agent
+                use: codex
+                prompt: "Same task, Codex viewpoint, aspect ${{ item }}."
+                output:
+                  issues:
+                    - description: string
+                timeout: 10m
+              - id: by_open
+                run: agent
+                use: open
+                prompt: "Same task, OpenCode viewpoint, aspect ${{ item }}."
+                output:
+                  issues:
+                    - description: string
+                timeout: 10m
+
+    - id: aggregate
+      run: program
+      cmd: ["acpus-tool", "vote", "--input", "${{ steps.reviews.output }}"]
+      capture:
+        from: stdout
+        parse: json
+
+    - id: gate
+      approval:
+        prompt: |
+          Aggregated issues:
+          ${{ steps.aggregate.output.summary_md }}
+          Approve auto-comment to PR?
+        timeout: 12h
+        on_timeout: reject
+
+    - id: post_comment
+      switch:
+        on: ${{ steps.gate.output.approved }}
+        cases:
+          - when: ${{ steps.gate.output.approved }}
+            do:
+              - id: do_comment
+                run: program
+                cmd: ["gh", "pr", "comment", "${{ input.pr_url }}", "--body-file", "${{ steps.aggregate.output.body_path }}"]
+                capture:
+                  from: stdout
+                  parse: text
+        default:
+          do:
+            - id: skip
+              run: program
+              cmd: ["echo", "skipped"]
+              capture:
+                from: stdout
+                parse: text

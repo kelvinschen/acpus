@@ -13,7 +13,7 @@ const program = new Command();
 
 program
   .name("acpus")
-  .description("Temporal-backed ACP Agent YAML orchestrator")
+  .description("Local Temporal-backed ACP workflow runner")
   .version("0.1.0");
 
 program
@@ -54,12 +54,12 @@ program
       }
 
       const sourcePath = resolve(process.cwd(), spec);
-      const inputs = parseInput(options.input);
+      const parsedInput = parseInput(options.input);
       const result = compileWorkflow(readTextFile(sourcePath), {
         sourcePath,
         includeResolver: createIncludeResolver()
       });
-      const output = inputs === undefined || !result.ir ? result : { ...result, ir: { ...result.ir, runtimeInputs: inputs } };
+      const output = parsedInput === undefined || !result.ir ? result : { ...result, ir: { ...result.ir, runtimeInput: parsedInput } };
       printCompile(output, options);
       process.exitCode = result.ok ? 0 : EXIT_DSL_STATIC_ERROR;
     } catch (error) {

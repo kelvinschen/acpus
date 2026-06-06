@@ -1,0 +1,40 @@
+version: 1
+agent_id: acpus-fixture-mock
+default_response:
+  type: text
+  text: "default ok"
+rules:
+  - name: json-rule
+    when:
+      prompt_contains: "Return JSON"
+    respond:
+      type: json
+      payload:
+        ok: true
+        source: json-rule
+      stream:
+        chunks: 2
+        chunk_interval: 0ms
+  - name: regex-rule
+    when:
+      prompt_matches: "fix.*test"
+    respond:
+      type: text
+      text: "fixed tests"
+  - name: slow-rule
+    when:
+      prompt_contains: "slow"
+    respond:
+      type: text
+      text: "slow response"
+      stream:
+        chunks: 6
+        chunk_interval: 25ms
+  - name: error-rule
+    when:
+      prompt_contains: "fail"
+    respond:
+      type: error
+      error:
+        code: E_MOCK
+        message: "mock failure"

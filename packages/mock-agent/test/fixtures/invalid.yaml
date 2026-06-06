@@ -1,0 +1,4 @@
+version: 1
+agent_id: invalid
+default_response:
+  type: nope
