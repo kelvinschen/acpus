@@ -4,9 +4,9 @@ input:
   topic: string
   depth?: integer = 2
 agents:
-  planner:   { type: claude-code, model: opus-4 }
-  collector: { type: opencode,    model: glm-4.6 }
-  writer:    { type: codex,       model: gpt-5 }
+  planner:   { use: claude-code, model: opus-4 }
+  collector: { use: opencode,    model: glm-4.6 }
+  writer:    { use: codex,       model: gpt-5 }
 workflow:
   steps:
     - id: plan
@@ -42,7 +42,7 @@ workflow:
 
     - id: refine
       loop:
-        until: ${{ coalesce(loop.last.coverage, 0) >= 0.9 }}
+        until: ${{ loop.iter > 0 && coalesce(steps.replan.output.coverage, 0) >= 0.9 }}
         max_iterations: 3
         do:
           - id: replan
@@ -50,7 +50,7 @@ workflow:
             use: planner
             prompt: |
               Given findings ${{ steps.collect.output }} and previous gaps
-              ${{ coalesce(loop.last.gaps, []) }}, propose follow-up sub-questions and an outline.
+              ${{ loop.iter == 0 ? [] : steps.replan.output.gaps }}, propose follow-up sub-questions and an outline.
             output:
               gaps:
                 - text: string
@@ -65,7 +65,12 @@ workflow:
 
     - id: human_outline
       approval:
-        prompt: "Outline & coverage in steps.refine.last.replan.output. Approve writing?"
+        prompt: |
+          Outline:
+          ${{ steps.replan.output.outline_md }}
+
+          Coverage: ${{ steps.replan.output.coverage }}
+          Approve writing?
         timeout: 6h
         on_timeout: reject
 
@@ -74,7 +79,7 @@ workflow:
       use: writer
       prompt: |
         Write a research report for "${{ input.topic }}"
-        from outline ${{ steps.refine.last.replan.output.outline_md }}.
+        from outline ${{ steps.replan.output.outline_md }}.
       output:
         report_md: string
 outputs:

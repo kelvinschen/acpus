@@ -3,9 +3,9 @@ name: multi-agent-review
 input:
   pr_url: string
 agents:
-  claude: { type: claude-code, model: sonnet-4.5 }
-  codex:  { type: codex,       model: gpt-5 }
-  open:   { type: opencode,    model: glm-4.6 }
+  claude: { use: claude-code, model: sonnet-4.5 }
+  codex:  { use: codex,       model: gpt-5 }
+  open:   { use: opencode,    model: glm-4.6 }
 workflow:
   steps:
     - id: fetch_pr
@@ -68,9 +68,8 @@ workflow:
 
     - id: post_comment
       switch:
-        on: ${{ steps.gate.output.approved }}
         cases:
-          - when: ${{ steps.gate.output.approved }}
+          - when: ${{ steps.gate.approved }}
             do:
               - id: do_comment
                 run: program

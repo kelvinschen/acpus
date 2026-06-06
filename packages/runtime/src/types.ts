@@ -96,10 +96,6 @@ export interface ExecutorResult {
   partial?: boolean;
 }
 
-export interface ExecutorAdapter {
-  execute(node: unknown, context: ExpressionContext, signal: AbortSignal): Promise<ExecutorResult>;
-}
-
 // ─── Artifact references ────────────────────────────────────────
 
 export interface ArtifactRef {

@@ -85,4 +85,55 @@ workflow:
     // outputMerge: "array"
     expect(Array.isArray(fanoutNode?.output)).toBe(true);
   });
+
+  it("retry preserves a fanout lane's composite node key (stable identity)", async () => {
+    // A fanout lane agent step fails (no mock response). Retrying that lane must
+    // re-execute under its ORIGINAL composite key (with item/lane dims), not a
+    // re-resolved bare key — otherwise an agent's acpx session identity would
+    // change across resume/retry.
+    const ir = compileYaml(`
+version: 1
+name: fanout-identity
+agents:
+  coder:
+    type: mock
+workflow:
+  steps:
+    - id: mapped
+      fanout:
+        over: input.items
+        do:
+          - id: work
+            run: agent
+            use: coder
+            prompt: "do"
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({});
+    cleanups.push(cleanup);
+
+    const runId = "fanout-identity-run";
+    await interpreter.start(ir, { input: { items: ["a", "b"] }, runId });
+
+    // Each lane's "work" node failed and carries a composite key with dynamics.
+    const failedLanes = store.listNodeStates(runId).filter((n) => n.nodeId === "work");
+    expect(failedLanes.length).toBe(2);
+    failedLanes.forEach((n) => expect(n.state).toBe("failed"));
+    const laneKey = failedLanes[0]!.nodeKey;
+    // Composite key includes item/lane dimensions (not a bare "workflow/mapped/work").
+    expect(laneKey).toMatch(/item:|lane:/);
+
+    const keysBefore = new Set(store.listNodeStates(runId).map((n) => n.nodeKey));
+
+    // Retry the specific lane by its composite key. It fails again (still no
+    // mock response), but identity must be preserved regardless of outcome.
+    await interpreter.retryNode(runId, laneKey).catch(() => undefined);
+
+    // No new bare-key node was created; the same composite key was re-executed.
+    const keysAfter = store.listNodeStates(runId).map((n) => n.nodeKey);
+    const newKeys = keysAfter.filter((k) => !keysBefore.has(k));
+    expect(newKeys).toEqual([]);
+    expect(keysAfter).toContain(laneKey);
+    expect(keysAfter).not.toContain("workflow/mapped/work");
+  });
 });

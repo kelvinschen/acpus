@@ -23,8 +23,7 @@ describe("MockAgentExecutor", () => {
       "test-step": { output: { result: "done" } }
     });
     const node = makeAgentNode({ prompt: "Do something" });
-    const result = await executor.execute(node, baseCtx(), new AbortController().signal);
-
+    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
     expect(result.output).toEqual({ result: "done" });
     expect(result.error).toBeUndefined();
   });
@@ -32,7 +31,7 @@ describe("MockAgentExecutor", () => {
   it("returns error for unconfigured step", async () => {
     const executor = new MockAgentExecutor({});
     const node = makeAgentNode({ prompt: "Do something" });
-    const result = await executor.execute(node, baseCtx(), new AbortController().signal);
+    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
 
     expect(result.error).toContain("No mock response");
   });
@@ -47,7 +46,7 @@ describe("MockAgentExecutor", () => {
     // Abort immediately
     controller.abort();
 
-    const result = await executor.execute(node, baseCtx(), controller.signal);
+    const result = await executor.execute({ node, context: baseCtx(), signal: controller.signal, nodeKey: node.id });
     expect(result.partial).toBe(true);
   });
 
@@ -65,7 +64,7 @@ describe("MockAgentExecutor", () => {
         required: ["score"]
       }
     });
-    const result = await executor.execute(node, baseCtx(), new AbortController().signal);
+    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
     expect(result.output).toEqual({ score: 8 });
   });
 });

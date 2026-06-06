@@ -235,6 +235,106 @@ workflow:
     expect(result.diagnostics.some((d) => d.code === "AGENT_REF")).toBe(true);
   });
 
+  it("defaults agent type to builtin and injects the resolved agent into node metadata", () => {
+    const source = `
+version: 1
+name: agent-builtin-default
+agents:
+  coder: { use: pi, model: gpt-5 }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: coder
+      prompt: "x"
+`;
+    const result = compileWorkflow(source);
+
+    expect(result.ok).toBe(true);
+    const agentNode = result.ir!.root.children!.find((n) => n.id === "ask")!;
+    const agent = agentNode.metadata.agent as { type?: string; use?: string; model?: string };
+    expect(agent.type).toBe("builtin");
+    expect(agent.use).toBe("pi");
+    expect(agent.model).toBe("gpt-5");
+  });
+
+  it("accepts a command agent with a launch command", () => {
+    const source = `
+version: 1
+name: agent-command
+agents:
+  custom: { type: command, use: "node ./acp-server.js" }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: custom
+      prompt: "x"
+`;
+    const result = compileWorkflow(source);
+
+    expect(result.ok).toBe(true);
+    const agentNode = result.ir!.root.children!.find((n) => n.id === "ask")!;
+    expect((agentNode.metadata.agent as { type?: string }).type).toBe("command");
+  });
+
+  it("accepts a mock agent that omits use", () => {
+    const source = `
+version: 1
+name: agent-mock-no-use
+agents:
+  fake: { type: mock }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: fake
+      prompt: "x"
+`;
+    const result = compileWorkflow(source);
+
+    expect(result.ok).toBe(true);
+    expect((result.ir!.root.children!.find((n) => n.id === "ask")!.metadata.agent as { type?: string }).type).toBe("mock");
+  });
+
+  it("rejects a builtin/command agent missing use", () => {
+    const source = `
+version: 1
+name: agent-missing-use
+agents:
+  coder: { type: builtin }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: coder
+      prompt: "x"
+`;
+    const result = lintWorkflow(source);
+
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "AGENT_SHAPE")).toBe(true);
+  });
+
+  it("rejects an agent with an unknown type", () => {
+    const source = `
+version: 1
+name: agent-bad-type
+agents:
+  coder: { type: bogus, use: pi }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: coder
+      prompt: "x"
+`;
+    const result = lintWorkflow(source);
+
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "AGENT_SHAPE")).toBe(true);
+  });
+
   it("rejects fanout without over", () => {
     const source = `
 version: 1

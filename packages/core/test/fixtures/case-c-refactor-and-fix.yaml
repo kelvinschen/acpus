@@ -5,7 +5,7 @@ input:
   from_framework: string
   to_framework: string
 agents:
-  fixer: { type: codex, model: gpt-5 }
+  fixer: { use: codex, model: gpt-5 }
 workflow:
   steps:
     - id: discover
@@ -31,7 +31,7 @@ workflow:
 
     - id: fix_loop
       loop:
-        until: ${{ coalesce(loop.last.tests_green, false) }}
+        until: ${{ loop.iter > 0 && (len(steps.parse_failures.output.failures) == 0 || steps.apply_fix.output.tests_green) }}
         max_iterations: 5
         do:
           - id: run_tests
@@ -72,7 +72,7 @@ workflow:
 
     - id: final_gate
       approval:
-        prompt: "Refactor done. Patches summarized in steps.fix_loop.iterations. Push branch?"
+        prompt: "Refactor loop complete for ${{ input.module }}. Push branch?"
         timeout: 24h
         on_timeout: reject
 outputs:

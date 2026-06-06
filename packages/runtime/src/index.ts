@@ -7,7 +7,6 @@ export type {
   RunState,
   ExpressionContext,
   ExecutorResult,
-  ExecutorAdapter,
   ArtifactRef,
   InterpreterOptions,
   RunOptions,
@@ -15,6 +14,9 @@ export type {
   StartRunRequest,
   RunSummary
 } from "./types.js";
+
+// ─── Executor contract ───────────────────────────────────────────
+export type { ExecutorAdapter, ExecutionRequest } from "./executors/types.js";
 
 // ─── Keys ────────────────────────────────────────────────────────
 export { resolveNodeKey, encodeNodeKeyForFs, encodeNodeKeyForDir } from "./keys.js";

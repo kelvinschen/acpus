@@ -16,6 +16,7 @@
 ## 缺口清单
 
 - 跨进程 resume/retry 断层。需让 HTTP 路由在 in-memory interpreter 缺失时回退到 `interpreter.resume(runId)` 的磁盘冷恢复（`daemon.ts:95-98` → `interpreter.ts:73`）。
+- resume/retry 执行上下文重建不完整。R2 已让 resume/retry 透传完整 nodeKey 保持稳定 identity（agent session 名不变），但被恢复的叶子节点缺少父级动态上下文（fanout `item`/`item_id`、loop `loop.iter` 等）；当前 agent resume 走固定 continuation prompt 不重渲染原 prompt 故不受影响，但 program 重渲染 cmd 或 prompt 引用了 `item.*`/`loop.*` 的场景需要持久化并重建完整执行上下文（dynamic + item/loop 快照）。
 - retry 绕过状态机。`interpreter.ts:178` 直接置 pending（注释自承），需经状态机合法转移（`failed → pending → running`）。
 - `replay` 缺失。需要运行时确定性重放语义（从持久化 history 或 replay bundle 验证，不依赖可变 YAML / 系统时间 / 随机值 / 大 artifact 负载）+ CLI 命令 + HTTP 路由 + daemon-client 方法。对应 PRD 强制场景 #9。
 - `agents` 缺失。`specs/cli-spec.md:32` 要求暴露本地 acpx 注册 agent 的管理命令。

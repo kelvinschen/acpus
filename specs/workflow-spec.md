@@ -24,7 +24,12 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - An Agent Step MUST declare `use`.
 - An Agent Step MUST declare `prompt`.
 - An Agent Step MUST reference an agent declared under `agents`.
-- An Agent Step MUST run against a local ACP-compatible agent through acpx.
+- An Agent Step backed by a `builtin` or `command` agent MUST run against a local ACP-compatible agent through acpx; a `mock` agent is a test-only in-memory executor that does not use acpx.
+- An agent declared under `agents` MAY declare `type` as one of `builtin`, `command`, or `mock`; `type` defaults to `builtin` when omitted.
+- A `builtin` agent MUST declare `use` naming an acpx built-in adapter (e.g. `pi`, `claude`, `codex`); the runtime drives it as `acpx <use>`.
+- A `command` agent MUST declare `use` as the launch command for a custom ACP server; the runtime drives it through the acpx `--agent "<use>"` escape hatch.
+- A `mock` agent MAY omit `use`; it is served by the in-memory mock executor and does not require acpx.
+- An agent MAY declare `model`, `cwd`, and `env`, which the runtime forwards to acpx.
 - An Agent Step MAY omit `output` when no structured output parsing is required.
 - An Agent Step MAY declare `output` using the Acpus Schema DSL defined in [Schema Spec](schema-spec.md).
 - An Agent Step `output` declared with the Acpus Schema DSL MUST compile nested object and array item structure into the Agent Step output schema stored in the IR.

@@ -1,10 +1,9 @@
 import { execa } from "execa";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { IrNode } from "@acpus/core";
 import { parseDurationMs } from "@acpus/core";
 import type { ExpressionContext, ExecutorResult } from "../types.js";
-import type { ExecutorAdapter } from "./types.js";
+import type { ExecutorAdapter, ExecutionRequest } from "./types.js";
 import { ExpressionEvaluator } from "../evaluator.js";
 
 /**
@@ -22,7 +21,7 @@ export class ProgramExecutor implements ExecutorAdapter {
     this.evaluator = evaluator ?? new ExpressionEvaluator();
   }
 
-  async execute(node: IrNode, context: ExpressionContext, signal: AbortSignal): Promise<ExecutorResult> {
+  async execute({ node, context, signal }: ExecutionRequest): Promise<ExecutorResult> {
     const cmdTemplate = node.metadata.cmd;
     const timeout = node.metadata.timeout as string | undefined;
     const capture = node.metadata.capture as Record<string, unknown> | undefined;

@@ -24,7 +24,7 @@ describe("ProgramExecutor", () => {
       cmd: "echo hello",
       capture: { from: "stdout", parse: "text" }
     });
-    const result = await executor.execute(node, baseCtx(), new AbortController().signal);
+    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
     expect(result.exitCode).toBe(0);
     expect((result.output as string).trim()).toBe("hello");
   });
@@ -35,7 +35,7 @@ describe("ProgramExecutor", () => {
       cmd: 'echo \'{"key":"value"}\'',
       capture: { from: "stdout", parse: "json" }
     });
-    const result = await executor.execute(node, baseCtx(), new AbortController().signal);
+    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
     expect(result.exitCode).toBe(0);
     expect(result.output).toEqual({ key: "value" });
   });
@@ -43,7 +43,7 @@ describe("ProgramExecutor", () => {
   it("treats a non-zero exit code as data (no error)", async () => {
     const executor = new ProgramExecutor();
     const node = makeProgramNode({ cmd: "exit 1" });
-    const result = await executor.execute(node, baseCtx(), new AbortController().signal);
+    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
     expect(result.exitCode).toBe(1);
     expect(result.error).toBeUndefined();
     expect(result.failureKind).toBeUndefined();
@@ -52,7 +52,7 @@ describe("ProgramExecutor", () => {
   it("classifies a missing command as a spawn failure", async () => {
     const executor = new ProgramExecutor();
     const node = makeProgramNode({ cmd: ["this-command-does-not-exist-xyz"] });
-    const result = await executor.execute(node, baseCtx(), new AbortController().signal);
+    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
     expect(result.failureKind).toBe("spawn");
   });
 
@@ -69,7 +69,7 @@ describe("ProgramExecutor", () => {
         cmd: "echo ignored",
         capture: { from: "file", parse: "json", path: filePath }
       });
-      const result = await executor.execute(node, baseCtx(), new AbortController().signal);
+      const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
       expect(result.exitCode).toBe(0);
       expect(result.output).toEqual({ from: "file" });
     } finally {
@@ -83,7 +83,7 @@ describe("ProgramExecutor", () => {
       cmd: "echo ignored",
       capture: { from: "file", parse: "json", path: "/nonexistent/acpus-missing.json" }
     });
-    const result = await executor.execute(node, baseCtx(), new AbortController().signal);
+    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
     expect(result.failureKind).toBe("capture");
   });
 
@@ -95,7 +95,7 @@ describe("ProgramExecutor", () => {
     // Abort immediately
     setTimeout(() => controller.abort(), 10);
 
-    const result = await executor.execute(node, baseCtx(), controller.signal);
+    const result = await executor.execute({ node, context: baseCtx(), signal: controller.signal, nodeKey: node.id });
     expect(result.partial).toBe(true);
   });
 
@@ -106,7 +106,7 @@ describe("ProgramExecutor", () => {
       capture: { from: "stdout", parse: "text" }
     });
     const ctx: ExpressionContext = { input: { name: "world" }, steps: {}, run_id: "test" };
-    const result = await executor.execute(node, ctx, new AbortController().signal);
+    const result = await executor.execute({ node, context: ctx, signal: new AbortController().signal, nodeKey: node.id });
     expect(result.exitCode).toBe(0);
     expect((result.output as string).trim()).toBe("world");
   });

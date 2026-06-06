@@ -7,6 +7,7 @@ import type { MockAgentResponse } from "../../src/executors/mock-agent.js";
 import { MockProgramExecutor } from "../../src/executors/mock-program.js";
 import type { MockProgramResponse } from "../../src/executors/mock-program.js";
 import { ProgramExecutor } from "../../src/executors/program.js";
+import { AgentExecutor } from "../../src/executors/agent.js";
 import type { InterpreterOptions } from "../../src/types.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -26,6 +27,8 @@ export function createTestInterpreter(options?: {
   interpreterOptions?: InterpreterOptions;
   /** Use the real ProgramExecutor instead of the mock (for subprocess/timeout tests). */
   useRealProgramExecutor?: boolean;
+  /** Inject the real acpx-backed AgentExecutor for builtin/command agents (e2e). */
+  useRealAgentExecutor?: boolean;
 }): { interpreter: WorkflowInterpreter; store: RunStore; tmpDir: string; cleanup: () => void } {
   const tmpDir = mkdtempSync(join(tmpdir(), "acpus-interp-"));
   const store = new RunStore(tmpDir);
@@ -46,6 +49,7 @@ export function createTestInterpreter(options?: {
   const interpreter = new WorkflowInterpreter(store, agentExecutor, programExecutor, {
     nowTimestamp: "2025-01-01T00:00:00Z",
     sleep: () => Promise.resolve(),
+    ...(options?.useRealAgentExecutor ? { acpxAgentExecutor: new AgentExecutor() } : {}),
     ...options?.interpreterOptions
   });
 

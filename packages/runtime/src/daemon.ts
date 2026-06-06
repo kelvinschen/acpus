@@ -13,7 +13,13 @@ import type { RunState } from "./types.js";
  * which are incompatible with URL path segments. All node-control
  * routes accept the nodeKey as a query parameter instead.
  */
-export function createDaemonApp(config: DaemonConfig, store: RunStore, agentExecutor: ExecutorAdapter, programExecutor: ExecutorAdapter) {
+export function createDaemonApp(
+  config: DaemonConfig,
+  store: RunStore,
+  agentExecutor: ExecutorAdapter,
+  programExecutor: ExecutorAdapter,
+  acpxAgentExecutor?: ExecutorAdapter
+) {
   const app = new Hono();
 
   // Active interpreter instances
@@ -32,9 +38,13 @@ export function createDaemonApp(config: DaemonConfig, store: RunStore, agentExec
       return c.json({ error: "Compilation failed", diagnostics: result.diagnostics }, 400);
     }
 
-    const interpreter = new WorkflowInterpreter(store, agentExecutor, programExecutor);
-    const runState = await interpreter.start(result.ir, { input: body.input ?? {} });
+    const interpreter = new WorkflowInterpreter(store, agentExecutor, programExecutor, { acpxAgentExecutor });
+    // Initialize and register the interpreter BEFORE execution so node-control
+    // routes (pause/cancel/resume/retry) can reach a running run. Execution
+    // runs in the background; POST /runs returns the initial running state.
+    const runState = interpreter.initRun(result.ir, { input: body.input ?? {} });
     interpreters.set(runState.runId, interpreter);
+    void interpreter.runToCompletion(result.ir, { input: body.input ?? {} }, runState.runId).catch(() => undefined);
 
     return c.json(runState, 201);
   });

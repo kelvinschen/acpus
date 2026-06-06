@@ -1,7 +1,8 @@
 import { createDaemonApp } from "./daemon.js";
 import { RunStore } from "./store.js";
 import { MockAgentExecutor } from "./executors/mock-agent.js";
-import { MockProgramExecutor } from "./executors/mock-program.js";
+import { AgentExecutor } from "./executors/agent.js";
+import { ProgramExecutor } from "./executors/program.js";
 import type { DaemonConfig } from "./types.js";
 import { writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -26,8 +27,11 @@ export async function startDaemon(config: DaemonConfig = {}): Promise<void> {
   }
 
   const store = new RunStore(join(stateDir, "runs"));
-  const agentExecutor = new MockAgentExecutor({});
-  const programExecutor = new MockProgramExecutor({});
+  // `mockAgentExecutor` serves `type: mock` agents; `acpxAgentExecutor` drives
+  // real agents (builtin/command) through acpx. Programs run for real.
+  const mockAgentExecutor = new MockAgentExecutor({});
+  const acpxAgentExecutor = new AgentExecutor();
+  const programExecutor = new ProgramExecutor();
 
   // Startup recovery: reset running nodes to pending
   for (const runId of store.listRunIds()) {
@@ -42,7 +46,7 @@ export async function startDaemon(config: DaemonConfig = {}): Promise<void> {
     }
   }
 
-  const app = createDaemonApp(config, store, agentExecutor, programExecutor);
+  const app = createDaemonApp(config, store, mockAgentExecutor, programExecutor, acpxAgentExecutor);
 
   // Start the HTTP server
   let httpServer: ReturnType<typeof serve> | undefined;

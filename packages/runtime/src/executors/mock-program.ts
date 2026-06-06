@@ -1,6 +1,5 @@
-import type { IrNode } from "@acpus/core";
-import type { ExpressionContext, ExecutorResult, FailureKind } from "../types.js";
-import type { ExecutorAdapter } from "./types.js";
+import type { ExecutorResult, FailureKind } from "../types.js";
+import type { ExecutorAdapter, ExecutionRequest } from "./types.js";
 import { ExpressionEvaluator } from "../evaluator.js";
 
 export interface MockProgramResponse {
@@ -26,7 +25,7 @@ export class MockProgramExecutor implements ExecutorAdapter {
     this.evaluator = evaluator ?? new ExpressionEvaluator();
   }
 
-  async execute(node: IrNode, context: ExpressionContext, signal: AbortSignal): Promise<ExecutorResult> {
+  async execute({ node, context, signal }: ExecutionRequest): Promise<ExecutorResult> {
     const stepId = node.id;
     const response = this.responses.get(stepId);
     if (!response) {

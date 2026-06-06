@@ -20,7 +20,8 @@ import pLimit from "p-limit";
 export class WorkflowInterpreter {
   private readonly store: RunStore;
   private readonly evaluator: ExpressionEvaluator;
-  private readonly agentExecutor: ExecutorAdapter;
+  private readonly mockAgentExecutor: ExecutorAdapter;
+  private readonly acpxAgentExecutor: ExecutorAdapter;
   private readonly programExecutor: ExecutorAdapter;
   private readonly artifactStore: ArtifactStore;
   private readonly maxConcurrency: number;
@@ -29,8 +30,8 @@ export class WorkflowInterpreter {
   /** Active abort controllers keyed by "runId:nodeKey" for pause/cancel support */
   private readonly abortControllers: Map<string, AbortController> = new Map();
 
-  /** Artifact refs produced by the current leaf execution, consumed by executeNode. */
-  private pendingArtifactRefs?: string[];
+  /** Intent of an in-flight abort keyed by "runId:nodeKey" (pause vs cancel). */
+  private readonly abortIntents: Map<string, "paused" | "cancelled"> = new Map();
 
   /** Absolute paths of subworkflow specs currently on the execution stack (cycle guard). */
   private readonly subworkflowStack: Set<string> = new Set();
@@ -39,11 +40,15 @@ export class WorkflowInterpreter {
     store: RunStore,
     agentExecutor: ExecutorAdapter,
     programExecutor: ExecutorAdapter,
-    options?: InterpreterOptions
+    options?: InterpreterOptions & { acpxAgentExecutor?: ExecutorAdapter }
   ) {
     this.store = store;
     this.evaluator = new ExpressionEvaluator({ nowTimestamp: options?.nowTimestamp });
-    this.agentExecutor = agentExecutor;
+    // `agentExecutor` handles `type: mock` (in-memory); `acpxAgentExecutor`
+    // handles builtin/command via acpx. When no real executor is injected,
+    // fall back to the mock for both (keeps unit tests acpx-free).
+    this.mockAgentExecutor = agentExecutor;
+    this.acpxAgentExecutor = options?.acpxAgentExecutor ?? agentExecutor;
     this.programExecutor = programExecutor;
     this.artifactStore = new ArtifactStore(store.getBaseDir());
     this.maxConcurrency = options?.maxConcurrency ?? 10;
@@ -51,12 +56,28 @@ export class WorkflowInterpreter {
   }
 
   /**
-   * Start a new workflow run.
+   * Start a new workflow run to completion (init + execute). Convenience for
+   * callers that want to await the terminal state.
    */
   async start(ir: AcpusIr, opts: RunOptions): Promise<import("./types.js").RunState> {
-    const runId = opts.runId ?? randomUUID();
-    const meta = this.store.initRun(runId, ir, opts.input);
+    const meta = this.initRun(ir, opts);
+    return this.runToCompletion(ir, opts, meta.runId);
+  }
 
+  /**
+   * Initialize a run (freeze IR + input, write running meta) and return the
+   * initial running state synchronously, without executing nodes.
+   */
+  initRun(ir: AcpusIr, opts: RunOptions): import("./types.js").RunState {
+    const runId = opts.runId ?? randomUUID();
+    return this.store.initRun(runId, ir, opts.input);
+  }
+
+  /**
+   * Execute a previously-initialized run to its terminal state.
+   */
+  async runToCompletion(ir: AcpusIr, opts: RunOptions, runId: string): Promise<import("./types.js").RunState> {
+    const meta = this.store.readRunMeta(runId)!;
     try {
       await this.executeNode(ir.root, this.buildContext(opts.input, runId), runId, {});
       meta.status = "completed";
@@ -123,6 +144,7 @@ export class WorkflowInterpreter {
    * Pause a running node.
    */
   pauseNode(runId: string, nodeKey: string): void {
+    this.abortIntents.set(`${runId}:${nodeKey}`, "paused");
     const controller = this.abortControllers.get(`${runId}:${nodeKey}`);
     if (controller) {
       controller.abort();
@@ -155,7 +177,9 @@ export class WorkflowInterpreter {
     if (node) {
       const ctx = this.buildContext(input, runId);
       this.populateStepOutputs(runId, ctx);
-      await this.executeNode(node, ctx, runId, {});
+      // Resume re-enters the node as a continuation (continuation prompt for
+      // agents), preserving the original full node key for stable identity.
+      await this.executeNode(node, ctx, runId, {}, undefined, true, nodeKey);
     }
   }
 
@@ -163,6 +187,7 @@ export class WorkflowInterpreter {
    * Cancel a node.
    */
   cancelNode(runId: string, nodeKey: string): void {
+    this.abortIntents.set(`${runId}:${nodeKey}`, "cancelled");
     const controller = this.abortControllers.get(`${runId}:${nodeKey}`);
     if (controller) {
       controller.abort();
@@ -173,6 +198,11 @@ export class WorkflowInterpreter {
       state.state = transition(state.state, "cancelled") as NodeState;
       this.store.writeNodeState(runId, state);
     }
+  }
+
+  /** Resolve the operator intent for an in-flight abort; defaults to paused. */
+  private abortIntent(runId: string, nodeKey: string): "paused" | "cancelled" {
+    return this.abortIntents.get(`${runId}:${nodeKey}`) ?? "paused";
   }
 
   /**
@@ -198,7 +228,11 @@ export class WorkflowInterpreter {
     if (node) {
       const ctx = this.buildContext(input, runId);
       this.populateStepOutputs(runId, ctx);
-      await this.executeNode(node, ctx, runId, {});
+      // Retry re-runs the Activity as a continuation: for agents this resumes
+      // the same acpx session (recovering a dead subprocess) via the fixed
+      // continuation prompt rather than replaying the original turn. The
+      // original full node key is preserved for stable identity.
+      await this.executeNode(node, ctx, runId, {}, undefined, true, nodeKey);
     }
   }
 
@@ -209,10 +243,15 @@ export class WorkflowInterpreter {
     ctx: ExpressionContext,
     runId: string,
     dynamic: NodeKeyDynamic,
-    keyPrefix?: string
+    keyPrefix?: string,
+    resume?: boolean,
+    overrideNodeKey?: string
   ): Promise<unknown> {
+    // On resume/retry the full resolved node key is supplied directly so the
+    // node's stable identity (and thus the agent's acpx session name) survives
+    // across loop/fanout/lane/subworkflow dynamics that are not re-derived here.
     const resolved = resolveNodeKey(node.keyTemplate, dynamic);
-    const nodeKey = keyPrefix ? `${keyPrefix}/${resolved}` : resolved;
+    const nodeKey = overrideNodeKey ?? (keyPrefix ? `${keyPrefix}/${resolved}` : resolved);
 
     // Check if already completed (from prior run)
     const existing = this.store.readNodeState(runId, nodeKey);
@@ -244,18 +283,27 @@ export class WorkflowInterpreter {
 
     try {
       let output: unknown;
-      this.pendingArtifactRefs = undefined;
+      // Artifact refs produced by a leaf execution in this call frame. Kept as a
+      // local (not a shared field) so concurrent parallel/fanout siblings can't
+      // clobber each other's refs.
+      let artifactRefs: string[] | undefined;
 
       switch (node.kind) {
         case "pipeline":
           output = await this.executePipeline(node, ctx, runId, dynamic, keyPrefix);
           break;
-        case "run.agent":
-          output = await this.executeAgent(node, ctx, runId, controller.signal, nodeKey);
+        case "run.agent": {
+          const leaf = await this.executeAgent(node, ctx, runId, controller.signal, nodeKey, resume);
+          output = leaf.output;
+          artifactRefs = leaf.artifactRefs;
           break;
-        case "run.program":
-          output = await this.executeProgram(node, ctx, runId, controller.signal, nodeKey);
+        }
+        case "run.program": {
+          const leaf = await this.executeProgram(node, ctx, runId, controller.signal, nodeKey);
+          output = leaf.output;
+          artifactRefs = leaf.artifactRefs;
           break;
+        }
         case "parallel":
           output = await this.executeParallel(node, ctx, runId, dynamic, keyPrefix);
           break;
@@ -281,7 +329,7 @@ export class WorkflowInterpreter {
       // Transition to completed
       state.state = "completed";
       state.output = output;
-      if (this.pendingArtifactRefs) state.artifactRefs = this.pendingArtifactRefs;
+      if (artifactRefs) state.artifactRefs = artifactRefs;
       state.completedAt = new Date().toISOString();
       this.store.writeNodeState(runId, state);
 
@@ -291,22 +339,26 @@ export class WorkflowInterpreter {
       return output;
     } catch (error) {
       if (error instanceof NodeAbortedError) {
-        // Transition this node to the same state as the child that was aborted
+        // Transition this node to the same state as the child that was aborted.
         state.state = error.state === "paused" ? "paused" : "cancelled";
         state.error = `Aborted: ${error.state}`;
+        // Preserve any output + partial transcript artifacts from the aborted leaf.
+        if (error.output !== undefined) state.output = error.output;
+        if (error.artifactRefs) state.artifactRefs = error.artifactRefs;
         this.store.writeNodeState(runId, state);
         throw error;
       }
 
       state.state = "failed";
       state.error = error instanceof Error ? error.message : String(error);
-      if (this.pendingArtifactRefs) state.artifactRefs = this.pendingArtifactRefs;
+      // Preserve artifacts a leaf wrote before failing (e.g. program stdout/stderr).
+      if (error instanceof LeafExecutionError && error.artifactRefs) state.artifactRefs = error.artifactRefs;
       state.completedAt = new Date().toISOString();
       this.store.writeNodeState(runId, state);
       throw error;
     } finally {
-      this.pendingArtifactRefs = undefined;
       this.abortControllers.delete(`${runId}:${nodeKey}`);
+      this.abortIntents.delete(`${runId}:${nodeKey}`);
     }
   }
 
@@ -321,23 +373,30 @@ export class WorkflowInterpreter {
     return { ...ctx.steps };
   }
 
-  private async executeAgent(node: IrNode, ctx: ExpressionContext, runId: string, signal: AbortSignal, nodeKey: string): Promise<unknown> {
+  private async executeAgent(node: IrNode, ctx: ExpressionContext, runId: string, signal: AbortSignal, nodeKey: string, resume?: boolean): Promise<LeafResult> {
     const retry = node.metadata.retry as { max?: number; backoff?: string } | undefined;
     const maxRetries = typeof retry?.max === "number" ? retry.max : 0;
     const backoffMs = retry?.backoff ? parseDurationMs(retry.backoff) : 0;
 
+    // Route to the in-memory mock executor or the real acpx-backed executor.
+    const agent = node.metadata.agent as { type?: string } | undefined;
+    const executor = agent?.type === "mock" ? this.mockAgentExecutor : this.acpxAgentExecutor;
+
     for (let attempt = 0; ; attempt++) {
-      const result = await this.agentExecutor.execute(node, ctx, signal);
+      const result = await executor.execute({ node, context: ctx, signal, nodeKey, resume });
+
+      // Always persist the transcript (and stderr) as artifacts when the
+      // executor produced raw output (acpx NDJSON). Mock executors return no
+      // stdout, so nothing is written for them. Refs flow back to executeNode
+      // via the return value / thrown error (no shared mutable field).
+      const artifactRefs = (result.stdout !== undefined || result.stderr !== undefined)
+        ? this.writeAgentArtifacts(runId, nodeKey, result.stdout ?? "", result.stderr ?? "")
+        : result.artifactRefs;
 
       if (result.partial) {
-        const state = this.store.readNodeState(runId, nodeKey);
-        if (state) {
-          state.state = "paused";
-          state.output = result.output;
-          state.artifactRefs = result.artifactRefs;
-          this.store.writeNodeState(runId, state);
-        }
-        throw new NodeAbortedError(nodeKey, "paused");
+        // Operator abort → carry output + transcript refs on the abort error;
+        // executeNode persists the paused/cancelled state.
+        throw new NodeAbortedError(nodeKey, this.abortIntent(runId, nodeKey), artifactRefs, result.output);
       }
 
       // parse/schema failures are retryable while attempts remain.
@@ -352,46 +411,46 @@ export class WorkflowInterpreter {
         continue;
       }
 
-      if (result.error && !result.partial) {
-        throw new Error(`Agent execution failed: ${result.error}`);
+      if (result.failureKind || (result.error && !result.partial)) {
+        throw new LeafExecutionError(`Agent execution failed${result.failureKind ? ` (${result.failureKind})` : ""}: ${result.error ?? "unknown"}`, artifactRefs);
       }
 
       // Agent output is wrapped in an envelope for parity with program steps.
-      return { output: result.output };
+      return { output: { output: result.output }, artifactRefs };
     }
   }
 
-  private async executeProgram(node: IrNode, ctx: ExpressionContext, runId: string, signal: AbortSignal, nodeKey: string): Promise<unknown> {
-    const result = await this.programExecutor.execute(node, ctx, signal);
+  private async executeProgram(node: IrNode, ctx: ExpressionContext, runId: string, signal: AbortSignal, nodeKey: string): Promise<LeafResult> {
+    const result = await this.programExecutor.execute({ node, context: ctx, signal, nodeKey });
 
-    // Operator abort → paused.
+    // Operator abort → paused/cancelled (carry output on the abort error).
     if (result.partial) {
-      const state = this.store.readNodeState(runId, nodeKey);
-      if (state) {
-        state.state = "paused";
-        state.output = result.output;
-        this.store.writeNodeState(runId, state);
-      }
-      throw new NodeAbortedError(nodeKey, "paused");
+      throw new NodeAbortedError(nodeKey, this.abortIntent(runId, nodeKey), undefined, result.output);
     }
 
     // Always persist stdout/stderr as artifacts (even when empty). An artifact
     // write failure is itself non-recoverable.
     const artifactRefs = this.writeProgramArtifacts(runId, nodeKey, result.stdout ?? "", result.stderr ?? "");
-    this.pendingArtifactRefs = artifactRefs;
 
     // Non-recoverable failures fail the node.
     if (result.failureKind) {
-      throw new Error(`Program execution failed (${result.failureKind}): ${result.error ?? "unknown"}`);
+      throw new LeafExecutionError(`Program execution failed (${result.failureKind}): ${result.error ?? "unknown"}`, artifactRefs);
     }
 
     // A non-zero exit code is step data. Expose output + exit_code envelope.
-    return { output: result.output, exit_code: result.exitCode ?? 0 };
+    return { output: { output: result.output, exit_code: result.exitCode ?? 0 }, artifactRefs };
   }
 
   /** Write stdout.log/stderr.log artifacts; returns their URIs. */
   private writeProgramArtifacts(runId: string, nodeKey: string, stdout: string, stderr: string): string[] {
     const out = this.artifactStore.write(runId, nodeKey, "stdout.log", stdout);
+    const err = this.artifactStore.write(runId, nodeKey, "stderr.log", stderr);
+    return [out.uri, err.uri];
+  }
+
+  /** Write the agent transcript (ACP NDJSON) and stderr as artifacts; returns their URIs. */
+  private writeAgentArtifacts(runId: string, nodeKey: string, transcript: string, stderr: string): string[] {
+    const out = this.artifactStore.write(runId, nodeKey, "transcript.jsonl", transcript);
     const err = this.artifactStore.write(runId, nodeKey, "stderr.log", stderr);
     return [out.uri, err.uri];
   }
@@ -748,12 +807,33 @@ export class WorkflowInterpreter {
 /** Result of a single fanout lane: success carries the output, failure the message. */
 type LaneResult = { ok: true; output: unknown } | { ok: false; error: string };
 
+/** Output + artifact references produced by a leaf (agent/program) execution. */
+interface LeafResult {
+  output: unknown;
+  artifactRefs?: string[];
+}
+
 class NodeAbortedError extends Error {
   constructor(
     public readonly nodeKey: string,
-    public readonly state: "paused" | "cancelled"
+    public readonly state: "paused" | "cancelled",
+    /** Artifact refs (e.g. partial transcript) to persist on the aborted node. */
+    public readonly artifactRefs?: string[],
+    /** Partial output captured before the abort. */
+    public readonly output?: unknown
   ) {
     super(`Node ${nodeKey} aborted: ${state}`);
     this.name = "NodeAbortedError";
+  }
+}
+
+/** A non-recoverable leaf failure that still carries artifacts written before failing. */
+class LeafExecutionError extends Error {
+  constructor(
+    message: string,
+    public readonly artifactRefs?: string[]
+  ) {
+    super(message);
+    this.name = "LeafExecutionError";
   }
 }

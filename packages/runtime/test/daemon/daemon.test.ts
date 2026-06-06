@@ -51,6 +51,18 @@ describe("Daemon HTTP API", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  /** Poll a run until it reaches a terminal status (or time out). */
+  async function pollRunStatus(runId: string, timeoutMs = 4000): Promise<string> {
+    const start = Date.now();
+    for (;;) {
+      const res = await fetch(`${baseUrl}/runs/${runId}/output`);
+      const data = await res.json();
+      if (["completed", "failed", "paused", "cancelled"].includes(data.status)) return data.status as string;
+      if (Date.now() - start > timeoutMs) return data.status as string;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  }
+
   it("starts a run via POST /runs", async () => {
     const res = await fetch(`${baseUrl}/runs`, {
       method: "POST",
@@ -60,8 +72,11 @@ describe("Daemon HTTP API", () => {
     expect(res.status).toBe(201);
     const data = await res.json();
     expect(data.runId).toBeDefined();
-    expect(data.status).toBe("completed");
+    // POST returns immediately with the initial running state; the run then
+    // completes in the background.
+    expect(data.status).toBe("running");
     expect(data.workflowName).toBe("daemon-test");
+    expect(await pollRunStatus(data.runId)).toBe("completed");
   });
 
   it("lists runs via GET /runs", async () => {
@@ -139,10 +154,29 @@ describe("Daemon HTTP API", () => {
     });
     const { runId } = await createRes.json();
 
+    expect(await pollRunStatus(runId)).toBe("completed");
     const res = await fetch(`${baseUrl}/runs/${runId}/output`);
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.status).toBe("completed");
     expect(data.output).toBeDefined();
+  });
+
+  it("registers the interpreter before execution so control routes reach a running run", async () => {
+    // A run that is in flight must be controllable: the interpreter is registered
+    // synchronously at POST time, so node control does not 404 with "no interpreter".
+    const createRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: SPEC_YAML, input: {} })
+    });
+    const { runId } = await createRes.json();
+
+    // Immediately issue a control request; it must not fail with the
+    // "No active interpreter for this run" 404.
+    const res = await fetch(`${baseUrl}/runs/${runId}/pause?key=${encodeURIComponent("workflow/step-a")}`, { method: "POST" });
+    expect(res.status).not.toBe(404);
+
+    await pollRunStatus(runId);
   });
 });

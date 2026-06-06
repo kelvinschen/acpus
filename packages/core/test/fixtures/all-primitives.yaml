@@ -46,7 +46,7 @@ workflow:
     - id: route
       switch:
         cases:
-          - when: ${{ len(steps.mapped.output) > 0 }}
+          - when: ${{ len(steps.mapped) > 0 }}
             do:
               - id: route_yes
                 run: program
@@ -59,7 +59,7 @@ workflow:
 
     - id: fix_loop
       loop:
-        until: ${{ coalesce(loop.last.ok, false) }}
+        until: ${{ loop.iter > 0 && coalesce(loop.last.output.ok, false) }}
         max_iterations: 2
         do:
           - id: fix_once
@@ -80,4 +80,4 @@ workflow:
       input:
         file: ${{ steps.discover.output.files[0].path }}
 outputs:
-  approved: ${{ steps.human_gate.output.approved }}
+  approved: ${{ steps.human_gate.approved }}

@@ -23,7 +23,7 @@ describe("MockProgramExecutor", () => {
       "test-cmd": { parsedOutput: { files: ["a.txt"] } }
     });
     const node = makeProgramNode({ cmd: ["ls"] });
-    const result = await executor.execute(node, baseCtx(), new AbortController().signal);
+    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
 
     expect(result.output).toEqual({ files: ["a.txt"] });
     expect(result.exitCode).toBe(0);
@@ -34,7 +34,7 @@ describe("MockProgramExecutor", () => {
       "test-cmd": { exitCode: 1, stdout: "failed" }
     });
     const node = makeProgramNode({ cmd: ["exit", "1"] });
-    const result = await executor.execute(node, baseCtx(), new AbortController().signal);
+    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
 
     expect(result.exitCode).toBe(1);
     expect(result.error).toBeUndefined();
@@ -47,7 +47,7 @@ describe("MockProgramExecutor", () => {
       "test-cmd": { failureKind: "timeout" }
     });
     const node = makeProgramNode({ cmd: ["sleep", "1"] });
-    const result = await executor.execute(node, baseCtx(), new AbortController().signal);
+    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
 
     expect(result.failureKind).toBe("timeout");
   });
@@ -60,7 +60,7 @@ describe("MockProgramExecutor", () => {
       cmd: "echo",
       capture: { from: "stdout", parse: "json" }
     });
-    const result = await executor.execute(node, baseCtx(), new AbortController().signal);
+    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
 
     expect(result.output).toEqual({ key: "value" });
   });
@@ -73,7 +73,7 @@ describe("MockProgramExecutor", () => {
     const controller = new AbortController();
     controller.abort();
 
-    const result = await executor.execute(node, baseCtx(), controller.signal);
+    const result = await executor.execute({ node, context: baseCtx(), signal: controller.signal, nodeKey: node.id });
     expect(result.partial).toBe(true);
   });
 });

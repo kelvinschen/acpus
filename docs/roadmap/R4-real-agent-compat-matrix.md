@@ -29,4 +29,4 @@
 
 - PRD Milestone：M6。Open Risks #1 / #2 / #3 / #4（`prd/PRD-acpus.md:125-130`）。
 - 前置：R2（真实 acpx 集成路径）、R3（replay 用于跨 adapter 行为验证）。
-- 约束：保持单主机本地 CLI 边界，Temporal 仅作实现内核，不引入分布式/远程 worker 假设；artifact 默认本地文件系统。
+- 约束：保持单主机本地 CLI 边界，不引入分布式/远程 worker 假设；artifact 默认本地文件系统。

@@ -3,8 +3,8 @@ name: plan-review-impl
 input:
   feature: string
 agents:
-  planner: { type: claude-code, model: sonnet-4.5 }
-  coder:   { type: codex,       model: gpt-5 }
+  planner: { use: claude-code, model: sonnet-4.5 }
+  coder:   { use: codex,       model: gpt-5 }
 workflow:
   steps:
     - id: plan

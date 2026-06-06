@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { compileYaml, createTestInterpreter } from "./helper.js";
+import { ArtifactStore } from "../../src/artifacts.js";
 
 describe("Parallel execution", () => {
   const cleanups: Array<() => void> = [];
@@ -87,5 +88,49 @@ workflow:
     expect(parallelNode?.state).toBe("completed");
     // outputMerge: "map" — should have step outputs
     expect(parallelNode?.output).toBeDefined();
+  });
+
+  it("keeps each concurrent branch's artifact refs isolated (no cross-contamination)", async () => {
+    // Two program branches run concurrently with different delays to force their
+    // executions to interleave at await points. Each node's artifactRefs must
+    // reference its OWN stdout, proving refs are not shared across siblings.
+    const ir = compileYaml(`
+version: 1
+name: parallel-artifact-isolation
+workflow:
+  steps:
+    - id: par
+      parallel:
+        - id: slow
+          run: program
+          cmd: ["echo", "slow"]
+        - id: fast
+          run: program
+          cmd: ["echo", "fast"]
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: {
+        slow: { stdout: "slow-out", delay: 40 },
+        fast: { stdout: "fast-out", delay: 5 }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+
+    const nodes = store.listNodeStates(meta.runId);
+    const slow = nodes.find((n) => n.nodeId === "slow");
+    const fast = nodes.find((n) => n.nodeId === "fast");
+    expect(slow?.artifactRefs?.length).toBe(2);
+    expect(fast?.artifactRefs?.length).toBe(2);
+
+    const artifacts = new ArtifactStore(store.getBaseDir());
+    expect(artifacts.read(meta.runId, slow!.nodeKey, "stdout.log").toString()).toBe("slow-out");
+    expect(artifacts.read(meta.runId, fast!.nodeKey, "stdout.log").toString()).toBe("fast-out");
+    // Refs must point at the node's own artifact directory.
+    expect(slow?.artifactRefs?.every((u) => u.includes("workflow:par:slow"))).toBe(true);
+    expect(fast?.artifactRefs?.every((u) => u.includes("workflow:par:fast"))).toBe(true);
   });
 });

@@ -175,8 +175,18 @@ function validateSpec(spec: WorkflowSpec, context: CompileContext): void {
   }
 
   for (const [agentName, agent] of Object.entries(spec.agents ?? {})) {
-    if (!isRecord(agent) || typeof agent.type !== "string") {
-      diagnostics.error("AGENT_SHAPE", `Agent '${agentName}' must define a string type.`, `$.agents.${agentName}`);
+    if (!isRecord(agent)) {
+      diagnostics.error("AGENT_SHAPE", `Agent '${agentName}' must be an object.`, `$.agents.${agentName}`);
+      continue;
+    }
+    // `type` defaults to "builtin" when omitted.
+    const type = agent.type ?? "builtin";
+    if (type !== "builtin" && type !== "command" && type !== "mock") {
+      diagnostics.error("AGENT_SHAPE", `Agent '${agentName}' type must be one of builtin, command, mock.`, `$.agents.${agentName}.type`);
+    }
+    // builtin/command require a non-empty `use` (adapter name or launch command).
+    if ((type === "builtin" || type === "command") && (typeof agent.use !== "string" || agent.use.length === 0)) {
+      diagnostics.error("AGENT_SHAPE", `Agent '${agentName}' (type ${type}) must define a non-empty use.`, `$.agents.${agentName}.use`);
     }
   }
 
@@ -206,10 +216,19 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
 
   if (step.run === "agent") {
     validateAgentStep(step, path, context);
+    const metadata = pickMetadata(step, ["run", "use", "prompt", "output", "retry", "timeout", "on_error"]);
+    // Snapshot the referenced agent definition into the node so the runtime can
+    // route to the right executor and build the acpx invocation. `type` defaults
+    // to "builtin".
+    const agentName = typeof step.use === "string" ? step.use : undefined;
+    const agentSpec = agentName ? context.agents[agentName] : undefined;
+    if (isRecord(agentSpec)) {
+      metadata.agent = { ...agentSpec, type: agentSpec.type ?? "builtin" };
+    }
     return {
       ...base,
       kind: "run.agent",
-      metadata: pickMetadata(step, ["run", "use", "prompt", "output", "retry", "timeout", "on_error"])
+      metadata
     };
   }
 

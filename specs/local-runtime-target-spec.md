@@ -60,11 +60,22 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - The runtime MUST support mock executor adapters for testing (MockAgentExecutor, MockProgramExecutor).
 - The runtime MUST support a real ProgramExecutor using `execa` for local subprocess execution.
 - The runtime MUST support a real AgentExecutor spawning `acpx` via `execa` for ACP session management.
+- Executor adapters MUST implement a single `execute(request)` method receiving an `ExecutionRequest` `{ node, context, signal, nodeKey, resume? }`.
+- The interpreter MUST route Agent Steps by the resolved agent definition's `type`: `mock` to the in-memory MockAgentExecutor, and `builtin`/`command` to the acpx-backed AgentExecutor.
 - ProgramExecutor MUST handle cmd template resolution, capture config (json/text), `capture.from: file` reads, timeout (SIGKILL), and abort signals.
 - ProgramExecutor MUST return raw stdout/stderr and classify failures via `failureKind` (parse, schema, spawn, timeout, killed, capture, exit).
 - The runtime MUST treat a non-zero program exit code as step data and fail the Node only when a `failureKind` marks the failure non-recoverable.
 - The interpreter MUST write program stdout/stderr as `stdout.log`/`stderr.log` artifacts and record their references on the Node.
-- AgentExecutor MUST derive stable session names from node keys, send prompts via stdin JSON, parse stdout JSON, and validate output against schemas with Ajv.
+- AgentExecutor MUST derive a stable acpx session name from the resolved node key (`acpus-<runId>-<sanitized nodeKey>`), ensuring uniqueness across loop rounds, fanout lanes, and subworkflow nesting.
+- AgentExecutor MUST select the underlying agent from the agent definition: a `builtin` `use` value selects an acpx built-in adapter (`acpx <use>`); a `command` `use` value launches a custom ACP server through the acpx `--agent "<use>"` escape hatch.
+- AgentExecutor MUST create the saved session via `acpx … sessions ensure --name <session>` before prompting, and run the turn via `acpx … --format json prompt -s <session> <prompt>`.
+- AgentExecutor MUST, on first execution, render the Agent Step prompt template; on resume it MUST send a fixed runtime continuation prompt instead and rely on acpx to load/resume the same session.
+- AgentExecutor MUST treat the acpx `--format json` ACP NDJSON stream as the transcript: the agent reply is the concatenation of `agent_message_chunk` text, and the final `result.stopReason` classifies the turn.
+- AgentExecutor MUST validate the parsed reply against the Step's output schema with Ajv when declared, classifying a non-JSON reply as `parse` and a schema mismatch as `schema`; without a schema it MUST wrap the reply as `{ text }`.
+- AgentExecutor MUST return the full ACP NDJSON stream as `stdout` and MUST NOT write artifacts itself; the interpreter owns artifact writes.
+- The interpreter MUST always write the agent transcript as a `transcript.jsonl` artifact (and `stderr.log`) and record their references on the Node, on both success and pause.
+- On operator pause of a running Agent Step, AgentExecutor MUST request a cooperative ACP cancel via `acpx … cancel -s <session>`, wait for the in-flight turn to settle, and SIGKILL only as a last resort; the interpreter MUST mark the Node `paused` and persist the partial transcript artifact.
+- The interpreter MUST resume a paused Agent Step against the same acpx-managed session using the fixed continuation prompt, and MUST recover a dead agent subprocess by re-running the Activity (acpx reloads or resumes the saved ACP session).
 - The interpreter MUST automatically retry an Agent Step on parse/schema `failureKind` while the node's `retry.max` budget remains, sleeping `retry.backoff` between attempts.
 
 ### Artifacts
@@ -85,6 +96,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - The runtime MUST expose a daemon process as a long-running Hono HTTP server.
 - The daemon MUST listen on `127.0.0.1:3839` by default.
 - The daemon MUST expose a REST API for run submission, run listing, run inspection, node state listing, node retrieval, and node control (pause, resume, cancel, retry).
+- Run submission MUST execute the run in the background and return the initial `running` state immediately, rather than blocking until the run reaches a terminal state.
 - Node keys MUST be passed as `?key=` query parameters in the REST API because node keys contain `/` which is incompatible with path segments.
 - The daemon MUST write a PID file at startup.
 - The daemon MUST perform startup recovery: reset orphaned `running` nodes to `pending`.
@@ -95,11 +107,15 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 
 - The runtime MUST support checkpoint recovery: after an unclean shutdown, a resumed run MUST rebuild state from persisted node files and re-execute only nodes that were `pending` or `running`.
 - The runtime MUST support node-level pause, resume, cancel, and retry control operations during execution.
+- Operator pause and cancel both abort the in-flight Activity, but the runtime MUST resolve the node to `paused` for pause and `cancelled` for cancel; the operator intent MUST take precedence when an aborted Activity reports a partial result.
+- A cancelled Agent Step MUST still persist its partial transcript artifact, the same as a paused one.
+- The daemon MUST register a run's interpreter before execution begins so that node-control operations can reach an in-flight run.
 - When a child node is paused or cancelled, the runtime MUST propagate the state change to the parent node.
 
 ## Verification
 
 - Runtime tests MUST cover that Agent Steps are invoked through acpx rather than direct ACP session management by Acpus.
+- Runtime tests MUST cover a real Acpus→acpx→Mock Agent end-to-end path for: mid-turn cooperative cancel producing a partial transcript artifact and a `paused` Node; resume re-entering the paused node with the fixed continuation prompt and completing the turn; and recovery of a dead agent subprocess by re-running the Activity.
 - Runtime tests MUST cover that Program Steps execute as local subprocesses.
 - Runtime tests MUST cover that workflow retry, timeout, pause, resume, and cancel decisions remain owned by Acpus.
 - Runtime tests MUST cover that acpx session names are explicit and stable enough for Node-level continuation.
