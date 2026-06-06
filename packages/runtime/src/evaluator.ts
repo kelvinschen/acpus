@@ -44,6 +44,14 @@ export class ExpressionEvaluator {
   }
 
   /**
+   * The deterministic timestamp bound to now(). Exposed so the interpreter can
+   * stamp control outputs (e.g. approval `at`) without reading wall-clock time.
+   */
+  getNow(): string {
+    return this.nowTimestamp;
+  }
+
+  /**
    * Evaluate a ${{ expr }} template by finding all expression patterns,
    * evaluating each, and substituting the results.
    */

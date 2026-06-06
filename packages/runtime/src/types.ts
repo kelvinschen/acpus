@@ -74,11 +74,24 @@ export interface ExpressionContext {
 
 // ─── Executor adapter contract ──────────────────────────────────
 
+/**
+ * Classification of an executor failure. Used by the interpreter to decide
+ * whether a node is non-recoverable (→ failed) and whether an agent failure
+ * is retryable (parse/schema).
+ */
+export type FailureKind = "parse" | "schema" | "spawn" | "timeout" | "killed" | "capture" | "exit";
+
 export interface ExecutorResult {
   output?: unknown;
   exitCode?: number;
   artifactRefs?: string[];
   error?: string;
+  /** Raw process stdout, captured as an artifact by the interpreter. */
+  stdout?: string;
+  /** Raw process stderr, captured as an artifact by the interpreter. */
+  stderr?: string;
+  /** Failure classification when execution did not succeed. */
+  failureKind?: FailureKind;
   /** True if the executor was aborted mid-execution */
   partial?: boolean;
 }
@@ -104,6 +117,8 @@ export interface InterpreterOptions {
   maxConcurrency?: number;
   /** Deterministic timestamp for now() in expressions (ISO string) */
   nowTimestamp?: string;
+  /** Injectable sleep used for retry backoff (default: real setTimeout). */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export interface RunOptions {

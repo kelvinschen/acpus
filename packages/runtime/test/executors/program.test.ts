@@ -40,12 +40,51 @@ describe("ProgramExecutor", () => {
     expect(result.output).toEqual({ key: "value" });
   });
 
-  it("handles non-zero exit code", async () => {
+  it("treats a non-zero exit code as data (no error)", async () => {
     const executor = new ProgramExecutor();
     const node = makeProgramNode({ cmd: "exit 1" });
     const result = await executor.execute(node, baseCtx(), new AbortController().signal);
     expect(result.exitCode).toBe(1);
-    expect(result.error).toBeDefined();
+    expect(result.error).toBeUndefined();
+    expect(result.failureKind).toBeUndefined();
+  });
+
+  it("classifies a missing command as a spawn failure", async () => {
+    const executor = new ProgramExecutor();
+    const node = makeProgramNode({ cmd: ["this-command-does-not-exist-xyz"] });
+    const result = await executor.execute(node, baseCtx(), new AbortController().signal);
+    expect(result.failureKind).toBe("spawn");
+  });
+
+  it("captures from a file with capture.from: file", async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = mkdtempSync(join(tmpdir(), "acpus-capture-"));
+    const filePath = join(dir, "out.json");
+    writeFileSync(filePath, JSON.stringify({ from: "file" }));
+    try {
+      const executor = new ProgramExecutor();
+      const node = makeProgramNode({
+        cmd: "echo ignored",
+        capture: { from: "file", parse: "json", path: filePath }
+      });
+      const result = await executor.execute(node, baseCtx(), new AbortController().signal);
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toEqual({ from: "file" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails capture when the file is missing", async () => {
+    const executor = new ProgramExecutor();
+    const node = makeProgramNode({
+      cmd: "echo ignored",
+      capture: { from: "file", parse: "json", path: "/nonexistent/acpus-missing.json" }
+    });
+    const result = await executor.execute(node, baseCtx(), new AbortController().signal);
+    expect(result.failureKind).toBe("capture");
   });
 
   it("handles abort signal", async () => {

@@ -1,4 +1,6 @@
 import { execa } from "execa";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { IrNode } from "@acpus/core";
 import { parseDurationMs } from "@acpus/core";
 import type { ExpressionContext, ExecutorResult } from "../types.js";
@@ -8,6 +10,10 @@ import { ExpressionEvaluator } from "../evaluator.js";
 /**
  * Real program executor using execa for subprocess management.
  * Handles cmd template resolution, capture config, timeout, and abort signal.
+ *
+ * A non-zero exit code is treated as step data (the node completes and exposes
+ * exit_code). Only non-recoverable conditions — timeout, signal kill, spawn
+ * failure, or capture parse failure — fail the node via `failureKind`.
  */
 export class ProgramExecutor implements ExecutorAdapter {
   private readonly evaluator: ExpressionEvaluator;
@@ -33,8 +39,9 @@ export class ProgramExecutor implements ExecutorAdapter {
     const command = Array.isArray(cmd) ? cmd[0] : cmd;
     const timeoutMs = timeout ? parseDurationMs(timeout) : undefined;
 
+    let result;
     try {
-      const result = await execa(command, args, {
+      result = await execa(command, args, {
         shell,
         reject: false,
         timeout: timeoutMs && timeoutMs > 0 ? timeoutMs : 0,
@@ -42,46 +49,85 @@ export class ProgramExecutor implements ExecutorAdapter {
         cancelSignal: signal,
         env: { ...process.env, ...(node.metadata.env as Record<string, string> | undefined) },
       });
+    } catch (error) {
+      // Spawn-level failure (e.g. command not found) — non-recoverable.
+      return {
+        failureKind: "spawn",
+        error: error instanceof Error ? error.message : String(error),
+        stdout: "",
+        stderr: error instanceof Error ? error.message : String(error)
+      };
+    }
 
-      if (result.isCanceled) {
-        return { partial: true, output: result.stdout, error: "Aborted during execution" };
-      }
+    const stdout = result.stdout ?? "";
+    const stderr = result.stderr ?? "";
 
-      if (result.failed && result.exitCode !== 0) {
-        return {
-          exitCode: result.exitCode ?? 1,
-          error: result.stderr || `Process exited with code ${result.exitCode}`,
-          output: result.stderr
-        };
-      }
+    // Operator abort (pause/cancel) → partial.
+    if (result.isCanceled) {
+      return { partial: true, output: stdout, stdout, stderr, error: "Aborted during execution" };
+    }
 
-      // Handle capture config
-      let output: unknown;
-      if (capture) {
-        const from = capture.from as string;
-        const parse = capture.parse as string;
+    // Timeout → non-recoverable.
+    if (result.timedOut) {
+      return { failureKind: "timeout", error: `Process timed out after ${timeout}`, stdout, stderr };
+    }
 
-        const rawOutput = from === "file" ? result.stdout : result.stdout; // For now, always stdout
+    // Killed by signal (SIGKILL etc.) → non-recoverable.
+    if (result.isTerminated || (result.signal !== undefined && result.signal !== null)) {
+      return { failureKind: "killed", error: `Process killed by signal ${result.signal}`, stdout, stderr };
+    }
 
-        if (parse === "json") {
-          try {
-            output = JSON.parse(rawOutput);
-          } catch {
-            return { exitCode: 0, error: "Failed to parse stdout as JSON" };
-          }
-        } else if (parse === "text") {
-          output = rawOutput;
-        } else {
-          output = rawOutput;
+    // Spawn failure (e.g. command not found) — execa with reject:false reports
+    // `failed` with no exit code rather than throwing.
+    if (result.failed && (result.exitCode === undefined || result.exitCode === null)) {
+      return {
+        failureKind: "spawn",
+        error: result.shortMessage || result.message || "Failed to spawn process",
+        stdout,
+        stderr
+      };
+    }
+
+    const exitCode = result.exitCode ?? 0;
+
+    // Handle capture config.
+    let output: unknown;
+    if (capture) {
+      const from = capture.from as string;
+      const parse = capture.parse as string;
+
+      let raw: string;
+      if (from === "file") {
+        const filePath = resolve(process.cwd(), capture.path as string);
+        try {
+          raw = readFileSync(filePath, "utf8");
+        } catch (error) {
+          return {
+            failureKind: "capture",
+            error: `Failed to read capture file '${capture.path}': ${error instanceof Error ? error.message : String(error)}`,
+            exitCode,
+            stdout,
+            stderr
+          };
         }
       } else {
-        output = result.stdout || undefined;
+        raw = stdout;
       }
 
-      return { exitCode: 0, output };
-    } catch (error) {
-      return { exitCode: 1, error: error instanceof Error ? error.message : String(error) };
+      if (parse === "json") {
+        try {
+          output = JSON.parse(raw);
+        } catch {
+          return { failureKind: "capture", error: "Failed to parse captured output as JSON", exitCode, stdout, stderr };
+        }
+      } else {
+        output = raw;
+      }
+    } else {
+      output = stdout || undefined;
     }
+
+    return { exitCode, output, stdout, stderr };
   }
 
   private resolveCmd(cmd: unknown, context: ExpressionContext): string | string[] {

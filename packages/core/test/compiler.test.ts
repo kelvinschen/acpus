@@ -255,6 +255,65 @@ workflow:
     expect(result.diagnostics.some((d) => d.code === "FANOUT_OVER")).toBe(true);
   });
 
+  it("rejects an agent retry with a non-positive max", () => {
+    const source = `
+version: 1
+name: bad-retry
+agents:
+  mock: { type: mock }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: mock
+      prompt: "x"
+      retry: { max: 0 }
+`;
+    const result = lintWorkflow(source);
+
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "RETRY_SHAPE")).toBe(true);
+  });
+
+  it("rejects an agent retry with an invalid backoff", () => {
+    const source = `
+version: 1
+name: bad-retry-backoff
+agents:
+  mock: { type: mock }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: mock
+      prompt: "x"
+      retry: { max: 2, backoff: "soon" }
+`;
+    const result = lintWorkflow(source);
+
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "RETRY_SHAPE")).toBe(true);
+  });
+
+  it("accepts a valid agent retry policy", () => {
+    const source = `
+version: 1
+name: good-retry
+agents:
+  mock: { type: mock }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: mock
+      prompt: "x"
+      retry: { max: 3, backoff: "500ms" }
+`;
+    const result = lintWorkflow(source);
+
+    expect(result.ok).toBe(true);
+  });
+
   it("rejects invalid fanout and parallel join values", () => {
     const source = `
 version: 1

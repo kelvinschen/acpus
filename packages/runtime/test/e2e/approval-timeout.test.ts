@@ -33,7 +33,7 @@ workflow:
 
     const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "approve");
     expect(node?.state).toBe("completed");
-    expect(node?.output).toEqual({ approved: true, timedOut: true });
+    expect(node?.output).toEqual({ approved: true, decision: "timeout", at: "2025-01-01T00:00:00Z" });
   });
 
   it("follows on_timeout=fail", async () => {

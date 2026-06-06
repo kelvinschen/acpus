@@ -53,20 +53,32 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - The runtime MUST use cooperative single-event-loop concurrency (Promise.all/Promise.race).
 - The runtime MUST use `p-limit` to cap concurrency for fanout and parallel nodes.
 - Fanout lanes MUST receive fresh shallow copies of the steps context to prevent data races.
+- A `race` wait strategy MUST NOT cancel losing branches/lanes; their settled results MUST be consumed to avoid unhandled rejections.
 
 ### Executors
 
 - The runtime MUST support mock executor adapters for testing (MockAgentExecutor, MockProgramExecutor).
 - The runtime MUST support a real ProgramExecutor using `execa` for local subprocess execution.
 - The runtime MUST support a real AgentExecutor spawning `acpx` via `execa` for ACP session management.
-- ProgramExecutor MUST handle cmd template resolution, capture config (json/text), timeout (SIGKILL), and abort signals.
+- ProgramExecutor MUST handle cmd template resolution, capture config (json/text), `capture.from: file` reads, timeout (SIGKILL), and abort signals.
+- ProgramExecutor MUST return raw stdout/stderr and classify failures via `failureKind` (parse, schema, spawn, timeout, killed, capture, exit).
+- The runtime MUST treat a non-zero program exit code as step data and fail the Node only when a `failureKind` marks the failure non-recoverable.
+- The interpreter MUST write program stdout/stderr as `stdout.log`/`stderr.log` artifacts and record their references on the Node.
 - AgentExecutor MUST derive stable session names from node keys, send prompts via stdin JSON, parse stdout JSON, and validate output against schemas with Ajv.
+- The interpreter MUST automatically retry an Agent Step on parse/schema `failureKind` while the node's `retry.max` budget remains, sleeping `retry.backoff` between attempts.
 
 ### Artifacts
 
 - The runtime MUST store node artifacts on the local filesystem under `.acpus/runs/<runId>/artifacts/`.
 - Artifact references MUST use the URI format `artifact://runs/<runId>/nodes/<nodeKey>/<filename>`.
 - The runtime MUST reject artifact filenames containing `/`, `\`, or `..` to prevent directory traversal.
+
+### Subworkflows
+
+- The runtime MUST resolve a `subworkflow` path relative to the parent spec's source path, compile it with `compileWorkflow`, and execute its root as a nested run.
+- Subworkflow file reads and compilation MUST occur in the runtime layer, never in `@acpus/core`.
+- The runtime MUST guard against subworkflow cycles by tracking specs currently on the execution stack.
+- Subworkflow child Node keys MUST be prefixed with the parent subworkflow Node key to stay unique within the run.
 
 ### Daemon
 

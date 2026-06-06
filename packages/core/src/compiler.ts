@@ -5,6 +5,7 @@ import { DiagnosticBag } from "./diagnostics.js";
 import { createExpressionCollector } from "./expressions.js";
 import { createSchedule } from "./schedule.js";
 import { compileInputSchema, compileSchemaDsl, isFlatMap } from "./schema/index.js";
+import { parseDurationMs } from "./duration.js";
 import type {
   AcpusIr,
   AgentSpec,
@@ -338,6 +339,9 @@ function validateAgentStep(step: WorkflowStep, path: string, context: CompileCon
   if (typeof step.prompt !== "string") {
     context.diagnostics.error("AGENT_PROMPT", "run: agent steps must define a prompt string.", `${path}.prompt`);
   }
+  if ((step as Record<string, unknown>).retry !== undefined) {
+    validateRetry((step as Record<string, unknown>).retry, path, context);
+  }
   if (step.output !== undefined && !isRecord(step.output)) {
     context.diagnostics.error("OUTPUT_SHAPE", "run: agent output must be an object when present.", `${path}.output`);
   }
@@ -428,6 +432,27 @@ function validateApprovalStep(approval: Record<string, unknown>, path: string, c
   }
   if (!["fail", "escalate", "approve", "reject"].includes(String(approval.on_timeout))) {
     context.diagnostics.error("APPROVAL_ON_TIMEOUT", "approval.on_timeout must be fail, escalate, approve, or reject.", `${path}.approval.on_timeout`);
+  }
+}
+
+function validateRetry(retry: unknown, path: string, context: CompileContext): void {
+  if (!isRecord(retry)) {
+    context.diagnostics.error("RETRY_SHAPE", "retry must be an object when present.", `${path}.retry`);
+    return;
+  }
+  if (!isPositiveInteger(retry.max)) {
+    context.diagnostics.error("RETRY_SHAPE", "retry.max must be a positive integer.", `${path}.retry.max`);
+  }
+  if (retry.backoff !== undefined) {
+    if (typeof retry.backoff !== "string") {
+      context.diagnostics.error("RETRY_SHAPE", "retry.backoff must be a duration string.", `${path}.retry.backoff`);
+    } else {
+      try {
+        parseDurationMs(retry.backoff, { strict: true });
+      } catch {
+        context.diagnostics.error("RETRY_SHAPE", "retry.backoff must be a valid duration string.", `${path}.retry.backoff`);
+      }
+    }
   }
 }
 

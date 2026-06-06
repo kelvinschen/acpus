@@ -1,12 +1,15 @@
 import type { IrNode } from "@acpus/core";
-import type { ExpressionContext, ExecutorResult } from "../types.js";
+import type { ExpressionContext, ExecutorResult, FailureKind } from "../types.js";
 import type { ExecutorAdapter } from "./types.js";
 import { ExpressionEvaluator } from "../evaluator.js";
 
 export interface MockProgramResponse {
   stdout?: string;
+  stderr?: string;
   exitCode?: number;
   parsedOutput?: unknown;
+  /** Simulate a non-recoverable failure (timeout/spawn/killed/capture). */
+  failureKind?: FailureKind;
   delay?: number;
 }
 
@@ -56,28 +59,33 @@ export class MockProgramExecutor implements ExecutorAdapter {
         return { partial: true, error: "Aborted during execution" };
       }
 
-      const exitCode = response.exitCode ?? 0;
-      if (exitCode !== 0) {
-        return { exitCode, error: response.stdout ?? `Process exited with code ${exitCode}` };
+      const stdout = response.stdout ?? "";
+      const stderr = response.stderr ?? "";
+
+      // Simulate a non-recoverable failure if configured.
+      if (response.failureKind) {
+        return { failureKind: response.failureKind, error: `Simulated ${response.failureKind} failure`, stdout, stderr };
       }
 
-      // Handle capture config
+      const exitCode = response.exitCode ?? 0;
+
+      // Handle capture config — a non-zero exit code is still step data.
       const capture = node.metadata.capture as Record<string, unknown> | undefined;
       let output: unknown = response.parsedOutput;
 
-      if (!output && response.stdout && capture?.parse === "json") {
+      if (output === undefined && response.stdout && capture?.parse === "json") {
         try {
           output = JSON.parse(response.stdout);
         } catch {
-          return { error: "Failed to parse stdout as JSON" };
+          return { failureKind: "capture", error: "Failed to parse stdout as JSON", exitCode, stdout, stderr };
         }
       }
 
-      if (!output && response.stdout && capture?.parse === "text") {
+      if (output === undefined && response.stdout && capture?.parse === "text") {
         output = response.stdout;
       }
 
-      return { output, exitCode };
+      return { output, exitCode, stdout, stderr };
     } finally {
       signal.removeEventListener("abort", onAbort);
     }

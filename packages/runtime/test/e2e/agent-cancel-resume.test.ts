@@ -60,6 +60,6 @@ workflow:
 
     const taskNode = store.listNodeStates(meta.runId).find((n) => n.nodeId === "task");
     expect(taskNode?.state).toBe("completed");
-    expect(taskNode?.output).toEqual({ done: true });
+    expect(taskNode?.output).toEqual({ output: { done: true } });
   });
 });

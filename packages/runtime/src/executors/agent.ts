@@ -62,11 +62,15 @@ export class AgentExecutor implements ExecutorAdapter {
         };
       }
 
-      // Parse output from acpx
+      // Parse output from acpx. When the node declares an output schema, a
+      // non-JSON response is a retryable parse failure.
       let output: unknown;
       try {
         output = JSON.parse(result.stdout);
       } catch {
+        if (outputSchema) {
+          return { failureKind: "parse", error: "Failed to parse agent output as JSON", output: result.stdout };
+        }
         output = { text: result.stdout };
       }
 
@@ -75,6 +79,7 @@ export class AgentExecutor implements ExecutorAdapter {
         const validate = this.ajv.compile(outputSchema);
         if (!validate(output)) {
           return {
+            failureKind: "schema",
             error: `Output validation failed: ${this.ajv.errorsText(validate.errors)}`,
             output
           };

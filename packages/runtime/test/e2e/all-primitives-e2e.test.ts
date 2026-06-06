@@ -75,7 +75,7 @@ workflow:
     // All top-level nodes should be completed
     const buildNode = nodes.find((n) => n.nodeId === "build");
     expect(buildNode?.state).toBe("completed");
-    expect(buildNode?.output).toEqual({ status: "built" });
+    expect(buildNode?.output).toEqual({ output: { status: "built" } });
 
     const parallelNode = nodes.find((n) => n.nodeId === "review-parallel");
     expect(parallelNode?.state).toBe("completed");
@@ -91,7 +91,7 @@ workflow:
 
     const fastDeploy = nodes.find((n) => n.nodeId === "fast-deploy");
     expect(fastDeploy?.state).toBe("completed");
-    expect(fastDeploy?.output).toEqual({ deployed: true });
+    expect(fastDeploy?.output).toEqual({ output: { deployed: true }, exit_code: 0 });
 
     // slow-deploy should NOT have been executed (switch selected fast path)
     const slowDeploy = nodes.find((n) => n.nodeId === "slow-deploy");

@@ -79,7 +79,7 @@ workflow:
 
     const second = store.listNodeStates(meta.runId).find((n) => n.nodeId === "second");
     expect(second?.state).toBe("completed");
-    expect(second?.output).toEqual({ value: 84 });
+    expect(second?.output).toEqual({ output: { value: 84 } });
   });
 
   it("fails the pipeline if a child fails", async () => {

@@ -39,7 +39,7 @@ workflow:
 
     const stepA = store.listNodeStates(meta.runId).find((n) => n.nodeId === "step-a");
     expect(stepA?.state).toBe("completed");
-    expect(stepA?.output).toEqual({ done: true });
+    expect(stepA?.output).toEqual({ output: { done: true } });
 
     const stepB = store.listNodeStates(meta.runId).find((n) => n.nodeId === "step-b");
     expect(stepB?.state).toBe("failed");

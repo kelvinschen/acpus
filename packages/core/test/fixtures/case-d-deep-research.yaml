@@ -38,7 +38,7 @@ workflow:
                 - url: string
                   snippet: string
             timeout: 8m
-            retry: { max_attempts: 3 }
+            retry: { max: 3 }
 
     - id: refine
       loop:

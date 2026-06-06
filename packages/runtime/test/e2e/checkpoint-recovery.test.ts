@@ -40,7 +40,7 @@ workflow:
     // Verify step-a's output is persisted
     const stepA = store.readNodeState(meta.runId, "workflow/step-a");
     expect(stepA?.state).toBe("completed");
-    expect(stepA?.output).toEqual({ done: true });
+    expect(stepA?.output).toEqual({ output: { done: true } });
 
     // Step-b should be failed
     const stepB = store.readNodeState(meta.runId, "workflow/step-b");

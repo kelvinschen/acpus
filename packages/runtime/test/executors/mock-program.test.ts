@@ -29,7 +29,7 @@ describe("MockProgramExecutor", () => {
     expect(result.exitCode).toBe(0);
   });
 
-  it("returns error for non-zero exit code", async () => {
+  it("treats a non-zero exit code as data (no error)", async () => {
     const executor = new MockProgramExecutor({
       "test-cmd": { exitCode: 1, stdout: "failed" }
     });
@@ -37,7 +37,19 @@ describe("MockProgramExecutor", () => {
     const result = await executor.execute(node, baseCtx(), new AbortController().signal);
 
     expect(result.exitCode).toBe(1);
-    expect(result.error).toBeDefined();
+    expect(result.error).toBeUndefined();
+    expect(result.failureKind).toBeUndefined();
+    expect(result.stdout).toBe("failed");
+  });
+
+  it("surfaces a simulated non-recoverable failure", async () => {
+    const executor = new MockProgramExecutor({
+      "test-cmd": { failureKind: "timeout" }
+    });
+    const node = makeProgramNode({ cmd: ["sleep", "1"] });
+    const result = await executor.execute(node, baseCtx(), new AbortController().signal);
+
+    expect(result.failureKind).toBe("timeout");
   });
 
   it("parses JSON capture from stdout", async () => {

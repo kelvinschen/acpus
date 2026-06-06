@@ -9,20 +9,21 @@ describe("E2E: Program timeout", () => {
     cleanups.length = 0;
   });
 
-  it("records program failure on non-zero exit code", async () => {
+  it("records a program timeout as a node failure", async () => {
     const ir = compileYaml(`
 version: 1
 name: program-timeout-test
 workflow:
   steps:
-    - id: failing-cmd
+    - id: slow-cmd
       run: program
-      cmd: ["exit", "1"]
+      cmd: ["sleep", "100"]
+      timeout: 10ms
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
       programResponses: {
-        "failing-cmd": { exitCode: 1, stdout: "error output" }
+        "slow-cmd": { failureKind: "timeout" }
       }
     });
     cleanups.push(cleanup);
@@ -30,7 +31,7 @@ workflow:
     const meta = await interpreter.start(ir, { input: {} });
     expect(meta.status).toBe("failed");
 
-    const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "failing-cmd");
+    const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "slow-cmd");
     expect(node?.state).toBe("failed");
   });
 });

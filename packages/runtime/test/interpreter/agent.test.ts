@@ -34,7 +34,7 @@ workflow:
 
     const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "review");
     expect(node?.state).toBe("completed");
-    expect(node?.output).toEqual({ approved: true, comments: [] });
+    expect(node?.output).toEqual({ output: { approved: true, comments: [] } });
   });
 
   it("validates output against schema", async () => {
@@ -63,6 +63,6 @@ workflow:
 
     const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "structured");
     expect(node?.state).toBe("completed");
-    expect(node?.output).toEqual({ score: 8.5 });
+    expect(node?.output).toEqual({ output: { score: 8.5 } });
   });
 });

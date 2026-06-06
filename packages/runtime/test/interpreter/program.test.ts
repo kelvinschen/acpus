@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { compileYaml, createTestInterpreter } from "./helper.js";
+import { ArtifactStore } from "../../src/artifacts.js";
 
 describe("Program execution", () => {
   const cleanups: Array<() => void> = [];
@@ -35,10 +36,10 @@ workflow:
 
     const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "list-files");
     expect(node?.state).toBe("completed");
-    expect(node?.output).toEqual({ files: ["a.txt", "b.txt"] });
+    expect(node?.output).toEqual({ output: { files: ["a.txt", "b.txt"] }, exit_code: 0 });
   });
 
-  it("fails on non-zero exit code", async () => {
+  it("treats a non-zero exit code as step data", async () => {
     const ir = compileYaml(`
 version: 1
 name: program-fail-test
@@ -57,9 +58,35 @@ workflow:
     cleanups.push(cleanup);
 
     const meta = await interpreter.start(ir, { input: {} });
-    expect(meta.status).toBe("failed");
+    expect(meta.status).toBe("completed");
 
     const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "fail-cmd");
+    expect(node?.state).toBe("completed");
+    expect((node?.output as { exit_code: number }).exit_code).toBe(1);
+  });
+
+  it("fails the node on a non-recoverable failure", async () => {
+    const ir = compileYaml(`
+version: 1
+name: program-nonrecoverable-test
+workflow:
+  steps:
+    - id: timeout-cmd
+      run: program
+      cmd: ["sleep", "100"]
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: {
+        "timeout-cmd": { failureKind: "timeout" }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("failed");
+
+    const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "timeout-cmd");
     expect(node?.state).toBe("failed");
   });
 
@@ -89,6 +116,33 @@ workflow:
 
     const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "echo-hello");
     expect(node?.state).toBe("completed");
-    expect(node?.output).toBe("hello\n");
+    expect(node?.output).toEqual({ output: "hello\n", exit_code: 0 });
+  });
+
+  it("persists stdout.log and stderr.log artifacts", async () => {
+    const ir = compileYaml(`
+version: 1
+name: program-artifact-test
+workflow:
+  steps:
+    - id: emit
+      run: program
+      cmd: ["echo", "hi"]
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: { emit: { stdout: "stdout-content", stderr: "stderr-content" } }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+
+    const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "emit");
+    expect(node?.artifactRefs?.length).toBe(2);
+
+    const artifacts = new ArtifactStore(store.getBaseDir());
+    expect(artifacts.read(meta.runId, "workflow/emit", "stdout.log").toString()).toBe("stdout-content");
+    expect(artifacts.read(meta.runId, "workflow/emit", "stderr.log").toString()).toBe("stderr-content");
   });
 });

@@ -30,8 +30,11 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - An Agent Step `output` declared with the Acpus Schema DSL MUST compile nested object and array item structure into the Agent Step output schema stored in the IR.
 - An Agent Step MAY declare `output.schema` as a JSON Schema escape hatch.
 - An Agent Step MUST declare `output` as an object when `output` is present.
-- An Agent Step with `output` present MUST produce a JSON object that matches the declared output schema at `steps.<id>.output`.
+- An Agent Step with `output` present MUST produce a JSON object that matches the declared output schema, exposed at `steps.<id>.output`.
+- An Agent Step result MUST be exposed as an envelope `{ output }` at `steps.<id>`, so the produced object is read through `steps.<id>.output`.
 - Agent output parse failures and schema failures MUST be handled as continuation retries when retry attempts remain.
+- An Agent Step MAY declare `retry` as an object with a positive integer `max` and an optional duration `backoff`.
+- When `retry` is present, Agent output parse or schema failures MUST trigger automatic re-execution until `max` attempts are exhausted.
 
 ### Program Steps
 
@@ -44,9 +47,12 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - Program Step `capture.from` MUST be `stdout` or `file`.
 - Program Step `capture.parse` MUST be `json` or `text`.
 - Program Step `capture.path` MUST be present when `capture.from` is `file`.
+- A Program Step with `capture.from: file` MUST read `capture.path` (resolved relative to the workspace) and parse it per `capture.parse`.
+- A Program Step result MUST be exposed as an envelope `{ output, exit_code }` at `steps.<id>`.
 - A Program Step MUST expose `steps.<id>.exit_code`.
-- A Program Step MUST expose stdout and stderr artifact references.
-- Non-zero Program Step exit codes MUST be treated as step data unless the runtime contract explicitly marks the failure as non-recoverable.
+- A Program Step MUST persist its stdout and stderr as artifacts (`stdout.log` and `stderr.log`) on every execution, and expose their references.
+- Non-zero Program Step exit codes MUST be treated as step data; the Node completes and carries `exit_code`.
+- A Program Step MUST fail the Node only on non-recoverable conditions: process timeout, signal kill, spawn failure, capture parse/read failure, or artifact write failure.
 - A Program Step MAY omit `capture` when no structured output parsing is required.
 
 ### Composite Nodes
@@ -54,6 +60,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A `parallel` Node MUST contain named child Nodes.
 - A `parallel` Node MUST produce a map keyed by branch id.
 - A `parallel` Node MAY declare `join` as `all` or `race`.
+- A `parallel` Node with `join: race` MUST produce a single-key map containing only the first branch to complete; losing branches are not cancelled.
 - A `fanout` Node MUST declare `over`.
 - A `fanout` Node MAY declare `key`.
 - A `fanout` Node SHOULD declare `key` when items have stable identity.
@@ -62,7 +69,10 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A `fanout` Node MUST declare `quorum` when `join: quorum` is used.
 - A `fanout` Node MAY declare `success_criteria.min_success` as a positive integer.
 - Node `join` MUST define the wait strategy, not the overall success criteria.
+- A failed `fanout` lane MUST be captured as a lane result rather than aborting the Node; operator pause/cancel MUST still propagate.
 - `success_criteria.min_success` MUST define how many successful fanout lanes are required for overall fanout success after the wait strategy completes.
+- When `success_criteria.min_success` is absent, the default MUST follow the wait strategy: `all` requires all lanes, `race` requires 1, and `quorum` requires `quorum`.
+- A `fanout` Node MUST produce an array of the successful lane outputs.
 - A `fanout` Node MUST expose `item`, `item_id`, and `item_index` inside its body.
 - A `switch` Node MUST select at most one branch.
 - A `switch` Node MUST evaluate cases in order.
@@ -71,7 +81,8 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A `loop` Node MUST expose `loop.iter`.
 - A `loop` Node MAY expose prior iteration output as `loop.last`.
 - A `subworkflow` Node MUST reference another Workflow Spec path.
-- A `subworkflow` Node MUST be awaited.
+- A `subworkflow` Node MUST be compiled and executed at runtime, with its `input` expressions evaluated against the current context.
+- A `subworkflow` Node MUST nest child Node keys under its own Node key, and MUST be awaited.
 
 ### Approval Gates
 
@@ -80,6 +91,8 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - An Approval Gate MUST declare `timeout`.
 - An Approval Gate MUST declare `on_timeout`.
 - An Approval Gate MUST produce a JSON object that includes `approved`, `decision`, and `at`.
+- The `decision` field MUST be one of `approved`, `rejected`, or `timeout`, and `at` MUST be the deterministic workflow clock value.
+- An Approval Gate with `on_timeout: fail` or `on_timeout: escalate` MUST fail the Node on timeout; full `escalate` semantics are deferred.
 - Approval Gates MUST be distinct from operator pause.
 
 ### Expressions

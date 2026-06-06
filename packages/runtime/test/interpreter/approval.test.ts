@@ -33,7 +33,34 @@ workflow:
 
     const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "approve-step");
     expect(node?.state).toBe("completed");
-    expect(node?.output).toEqual({ approved: true, timedOut: true });
+    expect(node?.output).toEqual({ approved: true, decision: "timeout", at: "2025-01-01T00:00:00Z" });
+  });
+
+  it("resolves approval with timeout and on_timeout=reject", async () => {
+    const ir = compileYaml(`
+version: 1
+name: approval-reject-test
+agents:
+  coder:
+    type: mock
+workflow:
+  steps:
+    - id: approve-step
+      approval:
+        prompt: "Approve this?"
+        timeout: 50ms
+        on_timeout: reject
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({});
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+
+    const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "approve-step");
+    expect(node?.state).toBe("completed");
+    expect(node?.output).toEqual({ approved: false, decision: "timeout", at: "2025-01-01T00:00:00Z" });
   });
 
   it("fails on timeout with on_timeout=fail", async () => {

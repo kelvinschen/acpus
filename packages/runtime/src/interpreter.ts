@@ -1,5 +1,7 @@
 import type { AcpusIr, IrNode, NodeKeyTemplate } from "@acpus/core";
-import { parseDurationMs } from "@acpus/core";
+import { parseDurationMs, compileWorkflow } from "@acpus/core";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import type { ExpressionContext, InterpreterOptions, NodeKeyDynamic, RunOptions } from "./types.js";
 import { RunStore } from "./store.js";
 import { ExpressionEvaluator } from "./evaluator.js";
@@ -22,9 +24,16 @@ export class WorkflowInterpreter {
   private readonly programExecutor: ExecutorAdapter;
   private readonly artifactStore: ArtifactStore;
   private readonly maxConcurrency: number;
+  private readonly sleep: (ms: number) => Promise<void>;
 
   /** Active abort controllers keyed by "runId:nodeKey" for pause/cancel support */
   private readonly abortControllers: Map<string, AbortController> = new Map();
+
+  /** Artifact refs produced by the current leaf execution, consumed by executeNode. */
+  private pendingArtifactRefs?: string[];
+
+  /** Absolute paths of subworkflow specs currently on the execution stack (cycle guard). */
+  private readonly subworkflowStack: Set<string> = new Set();
 
   constructor(
     store: RunStore,
@@ -38,6 +47,7 @@ export class WorkflowInterpreter {
     this.programExecutor = programExecutor;
     this.artifactStore = new ArtifactStore(store.getBaseDir());
     this.maxConcurrency = options?.maxConcurrency ?? 10;
+    this.sleep = options?.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   }
 
   /**
@@ -198,9 +208,11 @@ export class WorkflowInterpreter {
     node: IrNode,
     ctx: ExpressionContext,
     runId: string,
-    dynamic: NodeKeyDynamic
+    dynamic: NodeKeyDynamic,
+    keyPrefix?: string
   ): Promise<unknown> {
-    const nodeKey = resolveNodeKey(node.keyTemplate, dynamic);
+    const resolved = resolveNodeKey(node.keyTemplate, dynamic);
+    const nodeKey = keyPrefix ? `${keyPrefix}/${resolved}` : resolved;
 
     // Check if already completed (from prior run)
     const existing = this.store.readNodeState(runId, nodeKey);
@@ -232,10 +244,11 @@ export class WorkflowInterpreter {
 
     try {
       let output: unknown;
+      this.pendingArtifactRefs = undefined;
 
       switch (node.kind) {
         case "pipeline":
-          output = await this.executePipeline(node, ctx, runId, dynamic);
+          output = await this.executePipeline(node, ctx, runId, dynamic, keyPrefix);
           break;
         case "run.agent":
           output = await this.executeAgent(node, ctx, runId, controller.signal, nodeKey);
@@ -244,22 +257,22 @@ export class WorkflowInterpreter {
           output = await this.executeProgram(node, ctx, runId, controller.signal, nodeKey);
           break;
         case "parallel":
-          output = await this.executeParallel(node, ctx, runId, dynamic);
+          output = await this.executeParallel(node, ctx, runId, dynamic, keyPrefix);
           break;
         case "fanout":
-          output = await this.executeFanout(node, ctx, runId, dynamic);
+          output = await this.executeFanout(node, ctx, runId, dynamic, keyPrefix);
           break;
         case "switch":
-          output = await this.executeSwitch(node, ctx, runId, dynamic);
+          output = await this.executeSwitch(node, ctx, runId, dynamic, keyPrefix);
           break;
         case "loop":
-          output = await this.executeLoop(node, ctx, runId, dynamic);
+          output = await this.executeLoop(node, ctx, runId, dynamic, keyPrefix);
           break;
         case "approval":
           output = await this.executeApproval(node, ctx, runId, controller.signal, nodeKey);
           break;
         case "subworkflow":
-          output = await this.executeSubworkflow(node, ctx, runId);
+          output = await this.executeSubworkflow(node, ctx, runId, dynamic, nodeKey);
           break;
         default:
           throw new Error(`Unknown node kind: ${node.kind}`);
@@ -268,6 +281,7 @@ export class WorkflowInterpreter {
       // Transition to completed
       state.state = "completed";
       state.output = output;
+      if (this.pendingArtifactRefs) state.artifactRefs = this.pendingArtifactRefs;
       state.completedAt = new Date().toISOString();
       this.store.writeNodeState(runId, state);
 
@@ -286,48 +300,71 @@ export class WorkflowInterpreter {
 
       state.state = "failed";
       state.error = error instanceof Error ? error.message : String(error);
+      if (this.pendingArtifactRefs) state.artifactRefs = this.pendingArtifactRefs;
       state.completedAt = new Date().toISOString();
       this.store.writeNodeState(runId, state);
       throw error;
     } finally {
+      this.pendingArtifactRefs = undefined;
       this.abortControllers.delete(`${runId}:${nodeKey}`);
     }
   }
 
   // ─── Kind-specific execution ───────────────────────────────────
 
-  private async executePipeline(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic): Promise<unknown> {
+  private async executePipeline(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {
     const children = node.children ?? [];
     for (const child of children) {
-      await this.executeNode(child, ctx, runId, dynamic);
+      await this.executeNode(child, ctx, runId, dynamic, keyPrefix);
     }
     // Pipeline output: map of step outputs
     return { ...ctx.steps };
   }
 
   private async executeAgent(node: IrNode, ctx: ExpressionContext, runId: string, signal: AbortSignal, nodeKey: string): Promise<unknown> {
-    const result = await this.agentExecutor.execute(node, ctx, signal);
-    if (result.error && !result.partial) {
-      throw new Error(`Agent execution failed: ${result.error}`);
-    }
-    if (result.partial) {
-      const state = this.store.readNodeState(runId, nodeKey);
-      if (state) {
-        state.state = "paused";
-        state.output = result.output;
-        state.artifactRefs = result.artifactRefs;
-        this.store.writeNodeState(runId, state);
+    const retry = node.metadata.retry as { max?: number; backoff?: string } | undefined;
+    const maxRetries = typeof retry?.max === "number" ? retry.max : 0;
+    const backoffMs = retry?.backoff ? parseDurationMs(retry.backoff) : 0;
+
+    for (let attempt = 0; ; attempt++) {
+      const result = await this.agentExecutor.execute(node, ctx, signal);
+
+      if (result.partial) {
+        const state = this.store.readNodeState(runId, nodeKey);
+        if (state) {
+          state.state = "paused";
+          state.output = result.output;
+          state.artifactRefs = result.artifactRefs;
+          this.store.writeNodeState(runId, state);
+        }
+        throw new NodeAbortedError(nodeKey, "paused");
       }
-      throw new NodeAbortedError(nodeKey, "paused");
+
+      // parse/schema failures are retryable while attempts remain.
+      const retryable = result.failureKind === "parse" || result.failureKind === "schema";
+      if (retryable && attempt < maxRetries) {
+        const state = this.store.readNodeState(runId, nodeKey);
+        if (state) {
+          state.attempt++;
+          this.store.writeNodeState(runId, state);
+        }
+        if (backoffMs > 0) await this.sleep(backoffMs);
+        continue;
+      }
+
+      if (result.error && !result.partial) {
+        throw new Error(`Agent execution failed: ${result.error}`);
+      }
+
+      // Agent output is wrapped in an envelope for parity with program steps.
+      return { output: result.output };
     }
-    return result.output;
   }
 
   private async executeProgram(node: IrNode, ctx: ExpressionContext, runId: string, signal: AbortSignal, nodeKey: string): Promise<unknown> {
     const result = await this.programExecutor.execute(node, ctx, signal);
-    if (result.error && !result.partial) {
-      throw new Error(`Program execution failed: ${result.error}`);
-    }
+
+    // Operator abort → paused.
     if (result.partial) {
       const state = this.store.readNodeState(runId, nodeKey);
       if (state) {
@@ -337,35 +374,64 @@ export class WorkflowInterpreter {
       }
       throw new NodeAbortedError(nodeKey, "paused");
     }
-    return result.output;
+
+    // Always persist stdout/stderr as artifacts (even when empty). An artifact
+    // write failure is itself non-recoverable.
+    const artifactRefs = this.writeProgramArtifacts(runId, nodeKey, result.stdout ?? "", result.stderr ?? "");
+    this.pendingArtifactRefs = artifactRefs;
+
+    // Non-recoverable failures fail the node.
+    if (result.failureKind) {
+      throw new Error(`Program execution failed (${result.failureKind}): ${result.error ?? "unknown"}`);
+    }
+
+    // A non-zero exit code is step data. Expose output + exit_code envelope.
+    return { output: result.output, exit_code: result.exitCode ?? 0 };
   }
 
-  private async executeParallel(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic): Promise<unknown> {
+  /** Write stdout.log/stderr.log artifacts; returns their URIs. */
+  private writeProgramArtifacts(runId: string, nodeKey: string, stdout: string, stderr: string): string[] {
+    const out = this.artifactStore.write(runId, nodeKey, "stdout.log", stdout);
+    const err = this.artifactStore.write(runId, nodeKey, "stderr.log", stderr);
+    return [out.uri, err.uri];
+  }
+
+  private async executeParallel(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {
     const children = node.children ?? [];
     const maxConcurrency = (node.metadata.max_concurrency as number) ?? this.maxConcurrency;
+    const join = (node.metadata.join as string) ?? "all";
 
-    // Execute children concurrently with concurrency limit
-    // Each branch gets a unique parallelBranchId
-    const results = await this.runWithConcurrency(
-      children,
-      maxConcurrency,
-      async (child, index) => {
+    const limit = pLimit(maxConcurrency);
+    // Each branch resolves to { child, output } so race can identify the winner.
+    const branchPromises = children.map((child, index) =>
+      limit(async () => {
         const branchDynamic: NodeKeyDynamic = { ...dynamic, parallelBranchId: String(index) };
-        return this.executeNode(child, { ...ctx, steps: { ...ctx.steps } }, runId, branchDynamic);
-      }
+        const output = await this.executeNode(child, { ...ctx, steps: { ...ctx.steps } }, runId, branchDynamic, keyPrefix);
+        return { child, output };
+      })
     );
 
-    // outputMerge: "map" — collect all outputs keyed by step id
+    if (join === "race") {
+      // First branch to settle wins; losers are not cancelled but silently
+      // consumed so their later rejection doesn't surface as unhandled.
+      const winner = await Promise.race(branchPromises);
+      branchPromises.forEach((p) => void p.catch(() => undefined));
+      const mapOutput: Record<string, unknown> = { [winner.child.id]: winner.output };
+      ctx.steps[winner.child.id] = winner.output;
+      return mapOutput;
+    }
+
+    // join: all — collect every branch output keyed by step id.
+    const results = await Promise.all(branchPromises);
     const mapOutput: Record<string, unknown> = {};
-    for (let i = 0; i < children.length; i++) {
-      const child = children[i];
-      mapOutput[child.id] = results[i];
-      ctx.steps[child.id] = results[i];
+    for (const { child, output } of results) {
+      mapOutput[child.id] = output;
+      ctx.steps[child.id] = output;
     }
     return mapOutput;
   }
 
-  private async executeFanout(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic): Promise<unknown> {
+  private async executeFanout(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {
     const overExpr = node.metadata.over as string;
     if (!overExpr) {
       throw new Error(`fanout node ${node.id} missing 'over' expression`);
@@ -374,19 +440,19 @@ export class WorkflowInterpreter {
     const items = this.evaluator.evaluateOverExpression(overExpr, ctx);
     const maxConcurrency = (node.metadata.max_concurrency as number) ?? this.maxConcurrency;
     const join = (node.metadata.join as string) ?? "all";
+    const quorum = node.metadata.quorum as number | undefined;
+    const successCriteria = node.metadata.success_criteria as { min_success?: number } | undefined;
     const children = node.children ?? [];
 
-    // For each item, execute the lane body with item context
-    const results = await this.runWithConcurrency(
-      items,
-      maxConcurrency,
-      async (item, index) => {
+    const limit = pLimit(maxConcurrency);
+
+    // Each lane resolves to a LaneResult. A normal failure is captured (does
+    // not reject) so the join/min_success logic can run. A NodeAbortedError
+    // (operator pause/cancel) re-throws so it propagates to the parent.
+    const lanePromises = items.map((item, index) =>
+      limit(async (): Promise<LaneResult> => {
         const itemId = this.extractItemId(item, node.metadata.key as string | undefined, index);
-        const itemDynamic: NodeKeyDynamic = {
-          ...dynamic,
-          fanoutItemId: itemId,
-          laneId: String(index)
-        };
+        const itemDynamic: NodeKeyDynamic = { ...dynamic, fanoutItemId: itemId, laneId: String(index) };
         const itemCtx: ExpressionContext = {
           ...ctx,
           steps: { ...ctx.steps },
@@ -394,26 +460,68 @@ export class WorkflowInterpreter {
           item_id: itemId,
           item_index: index
         };
-
-        // Execute children as an implicit pipeline per lane
-        let laneOutput: unknown;
-        for (const child of children) {
-          laneOutput = await this.executeNode(child, itemCtx, runId, itemDynamic);
+        try {
+          let laneOutput: unknown;
+          for (const child of children) {
+            laneOutput = await this.executeNode(child, itemCtx, runId, itemDynamic, keyPrefix);
+          }
+          return { ok: true, output: laneOutput };
+        } catch (error) {
+          if (error instanceof NodeAbortedError) throw error;
+          return { ok: false, error: error instanceof Error ? error.message : String(error) };
         }
-        return laneOutput;
-      }
+      })
     );
 
-    // Join strategy
-    if (join === "race") {
-      return results[0];
+    // Wait strategy.
+    const settled = await this.waitForFanout(lanePromises, join, quorum);
+
+    // Success criteria. Default min_success follows the join strategy.
+    const defaultMinSuccess = join === "race" ? 1 : join === "quorum" ? (quorum ?? 1) : items.length;
+    const minSuccess = successCriteria?.min_success ?? defaultMinSuccess;
+
+    const successes = settled.filter((r): r is { ok: true; output: unknown } => r.ok);
+    if (successes.length < minSuccess) {
+      throw new Error(`fanout ${node.id}: ${successes.length} successful lanes, requires ${minSuccess}`);
     }
 
-    // outputMerge: "array"
-    return results;
+    // outputMerge: "array" of successful lane outputs.
+    return successes.map((r) => r.output);
   }
 
-  private async executeSwitch(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic): Promise<unknown> {
+  /**
+   * Resolve fanout lanes per the wait strategy. Lanes never reject on normal
+   * failure (captured as LaneResult); only NodeAbortedError rejects, which we
+   * let propagate. Losing/excess lanes are silently consumed.
+   */
+  private async waitForFanout(lanePromises: Promise<LaneResult>[], join: string, quorum?: number): Promise<LaneResult[]> {
+    if (join === "race") {
+      const first = await Promise.race(lanePromises);
+      lanePromises.forEach((p) => void p.catch(() => undefined));
+      return [first];
+    }
+
+    if (join === "quorum") {
+      const target = Math.min(quorum ?? lanePromises.length, lanePromises.length);
+      return new Promise<LaneResult[]>((resolve, reject) => {
+        const collected: LaneResult[] = [];
+        for (const p of lanePromises) {
+          p.then(
+            (r) => {
+              collected.push(r);
+              if (collected.length >= target) resolve(collected.slice());
+            },
+            (err) => reject(err)
+          );
+        }
+      });
+    }
+
+    // join: all — wait for every lane.
+    return Promise.all(lanePromises);
+  }
+
+  private async executeSwitch(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {
     const branches = node.branches ?? [];
 
     for (const branch of branches) {
@@ -422,7 +530,7 @@ export class WorkflowInterpreter {
         if (matches) {
           let lastOutput: unknown;
           for (const child of branch.children) {
-            lastOutput = await this.executeNode(child, ctx, runId, dynamic);
+            lastOutput = await this.executeNode(child, ctx, runId, dynamic, keyPrefix);
           }
           return lastOutput;
         }
@@ -430,7 +538,7 @@ export class WorkflowInterpreter {
         // Default branch (no when condition)
         let lastOutput: unknown;
         for (const child of branch.children) {
-          lastOutput = await this.executeNode(child, ctx, runId, dynamic);
+          lastOutput = await this.executeNode(child, ctx, runId, dynamic, keyPrefix);
         }
         return lastOutput;
       }
@@ -439,7 +547,7 @@ export class WorkflowInterpreter {
     throw new Error(`Switch node ${node.id}: no branch matched and no default`);
   }
 
-  private async executeLoop(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic): Promise<unknown> {
+  private async executeLoop(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {
     const untilExpr = node.metadata.until as string;
     const maxIterations = (node.metadata.max_iterations as number) ?? 100;
     const children = node.children ?? [];
@@ -460,7 +568,7 @@ export class WorkflowInterpreter {
 
       // Execute loop body
       for (const child of children) {
-        lastOutput = await this.executeNode(child, loopCtx, runId, loopDynamic);
+        lastOutput = await this.executeNode(child, loopCtx, runId, loopDynamic, keyPrefix);
       }
     }
 
@@ -471,6 +579,7 @@ export class WorkflowInterpreter {
   private async executeApproval(node: IrNode, ctx: ExpressionContext, runId: string, signal: AbortSignal, nodeKey: string): Promise<unknown> {
     const timeout = node.metadata.timeout as string | undefined;
     const onTimeout = node.metadata.on_timeout as string | undefined;
+    const at = this.evaluator.getNow();
 
     const timeoutMs = timeout ? parseDurationMs(timeout) : undefined;
 
@@ -483,12 +592,15 @@ export class WorkflowInterpreter {
       const timer = timeoutMs
         ? setTimeout(() => {
             cleanup();
+            // On timeout, the resolved decision follows the configured policy.
+            // `approve`/`reject` resolve; `fail`/`escalate` fail the node
+            // (escalate has no runtime channel yet — see R3).
             if (onTimeout === "approve") {
-              resolve({ approved: true, timedOut: true });
+              resolve({ approved: true, decision: "timeout", at });
             } else if (onTimeout === "reject") {
-              resolve({ approved: false, timedOut: true });
+              resolve({ approved: false, decision: "timeout", at });
             } else {
-              reject(new Error(`Approval timed out after ${timeout}`));
+              reject(new Error(`Approval timed out after ${timeout} (on_timeout: ${onTimeout ?? "fail"})`));
             }
           }, timeoutMs)
         : undefined;
@@ -504,15 +616,67 @@ export class WorkflowInterpreter {
       if (!timeoutMs) {
         setTimeout(() => {
           cleanup();
-          resolve({ approved: true });
+          resolve({ approved: true, decision: "approved", at });
         }, 100);
       }
     });
   }
 
-  private async executeSubworkflow(node: IrNode, ctx: ExpressionContext, runId: string): Promise<unknown> {
-    void node; void ctx; void runId;
-    return {};
+  private async executeSubworkflow(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, nodeKey: string): Promise<unknown> {
+    const specPath = node.metadata.subworkflow as string;
+    const inputSpec = node.metadata.input as Record<string, unknown> | undefined;
+
+    // Resolve the child spec path relative to the parent spec, falling back to cwd.
+    const parentIr = this.store.readIr(runId);
+    const baseDir = parentIr?.source.path ? dirname(parentIr.source.path) : process.cwd();
+    const childAbs = resolve(baseDir, specPath);
+
+    // Cycle guard across nested subworkflows.
+    if (this.subworkflowStack.has(childAbs)) {
+      throw new Error(`Subworkflow cycle detected for '${childAbs}'`);
+    }
+
+    // Compile the child spec at runtime (file I/O lives in the runtime layer).
+    const source = readFileSync(childAbs, "utf8");
+    const compiled = compileWorkflow(source, {
+      sourcePath: childAbs,
+      includeResolver: (includePath, fromPath) => {
+        const dir = fromPath ? dirname(resolve(fromPath)) : process.cwd();
+        return readFileSync(resolve(dir, includePath), "utf8");
+      }
+    });
+    if (!compiled.ok || !compiled.ir) {
+      throw new Error(`Subworkflow '${specPath}' failed to compile: ${compiled.diagnostics.map((d) => d.message).join(", ")}`);
+    }
+
+    // Evaluate the declared input map against the current context. A field that
+    // is a single ${{ }} expression keeps its native type; otherwise it is a
+    // template string.
+    const childInput: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(inputSpec ?? {})) {
+      childInput[key] = this.evaluateInputValue(value, ctx);
+    }
+
+    // Execute the child root as a nested pipeline. Child node keys are nested
+    // under this subworkflow's node key to stay unique within the run.
+    this.subworkflowStack.add(childAbs);
+    try {
+      const childCtx = this.buildContext(childInput, runId);
+      await this.executeNode(compiled.ir.root, childCtx, runId, dynamic, nodeKey);
+      return { ...childCtx.steps };
+    } finally {
+      this.subworkflowStack.delete(childAbs);
+    }
+  }
+
+  /** Evaluate a subworkflow input value, preserving native type for single expressions. */
+  private evaluateInputValue(value: unknown, ctx: ExpressionContext): unknown {
+    if (typeof value !== "string") return value;
+    const single = value.match(/^\s*\$\{\{(.+)\}\}\s*$/s);
+    if (single) {
+      return this.evaluator.evaluateExpression(single[1]!.trim(), ctx);
+    }
+    return this.evaluator.evaluateTemplate(value, ctx);
   }
 
   // ─── Helpers ────────────────────────────────────────────────────
@@ -579,16 +743,10 @@ export class WorkflowInterpreter {
     }
     return String(index ?? 0);
   }
-
-  private async runWithConcurrency<T>(
-    items: T[],
-    maxConcurrency: number,
-    fn: (item: T, index: number) => Promise<unknown>
-  ): Promise<unknown[]> {
-    const limit = pLimit(maxConcurrency);
-    return Promise.all(items.map((item, index) => limit(() => fn(item, index))));
-  }
 }
+
+/** Result of a single fanout lane: success carries the output, failure the message. */
+type LaneResult = { ok: true; output: unknown } | { ok: false; error: string };
 
 class NodeAbortedError extends Error {
   constructor(
