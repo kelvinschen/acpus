@@ -3,4 +3,5 @@ dist/
 coverage/
 .tmp-tests/
 .DS_Store
+.acpus/
 *.tsbuildinfo
