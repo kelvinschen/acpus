@@ -81,12 +81,24 @@ export class AgentExecutor implements ExecutorAdapter {
     try {
       // Ensure a saved session exists (idempotent). acpx requires a session
       // record before prompt commands route to it.
-      await execa(invoker.command, [...invoker.prefixArgs, ...build([], ["sessions", "ensure", "--name", sessionName])], {
+      const ensureResult = await execa(invoker.command, [...invoker.prefixArgs, ...build([], ["sessions", "ensure", "--name", sessionName])], {
         reject: false,
         env
       });
 
+      if (ensureResult.failed) {
+        const exitCode = ensureResult.exitCode ?? 1;
+        const stderr = ensureResult.stderr ?? "";
+        const detail = stderr || ensureResult.shortMessage || `acpx sessions ensure exited with code ${exitCode}`;
+        return { failureKind: "spawn", exitCode, error: detail, stdout: ensureResult.stdout ?? "", stderr };
+      }
+
       if (signal.aborted) {
+        // Best-effort cleanup of the session we just created; fire-and-forget.
+        void execa(invoker.command, [...invoker.prefixArgs, ...build([], ["sessions", "close", sessionName])], {
+          reject: false,
+          env
+        }).catch(() => undefined);
         return { partial: true, error: "Aborted before prompt" };
       }
 
