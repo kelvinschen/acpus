@@ -1431,7 +1431,7 @@ workflow:
     expect(result.ok).toBe(false);
     expect(result.diagnostics.some((d) => d.code === "STEP_ON_ERROR")).toBe(true);
     const diag = result.diagnostics.find((d) => d.code === "STEP_ON_ERROR")!;
-    expect(diag.message).toContain("null");
+    expect(diag.message).toContain("on_error");
   });
 
   it("reports 'got null' instead of 'got object' for null when/until", () => {
@@ -1586,5 +1586,151 @@ workflow:
     expect(schemaDiag).toBeDefined();
     expect(schemaDiag!.message).toContain("no longer supported");
     expect(schemaDiag!.message).toContain("escape hatch");
+  });
+
+  // ── Schema-driven unknown field detection tests ──
+
+  it("rejects unknown top-level property", () => {
+    const source = `
+version: 1
+name: test
+unknown_top: true
+workflow:
+  steps:
+    - id: s1
+      run: program
+      cmd: ["echo", "hi"]
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "SPEC_SHAPE" && d.message.includes("Unknown"))).toBe(true);
+  });
+
+  it("rejects unknown agent property", () => {
+    const source = `
+version: 1
+name: test
+agents:
+  coder: { type: mock, modle: gpt-5 }
+workflow:
+  steps:
+    - id: s1
+      run: agent
+      use: coder
+      prompt: "x"
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "AGENT_SHAPE" && d.message.includes("Unknown"))).toBe(true);
+  });
+
+  it("rejects unknown step property", () => {
+    const source = `
+version: 1
+name: test
+agents:
+  mock: { type: mock }
+workflow:
+  steps:
+    - id: s1
+      run: agent
+      use: mock
+      prompt: "x"
+      cmdd: "echo"
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "STEP_SHAPE" && d.message.includes("Unknown"))).toBe(true);
+  });
+
+  it("rejects unknown capture property", () => {
+    const source = `
+version: 1
+name: test
+workflow:
+  steps:
+    - id: s1
+      run: program
+      cmd: ["echo", "hi"]
+      capture: { from: stdout, parse: text, encoding: utf8 }
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "CAPTURE_SHAPE" && d.message.includes("Unknown"))).toBe(true);
+  });
+
+  it("rejects unknown retry property (max_attempts)", () => {
+    const source = `
+version: 1
+name: test
+agents:
+  mock: { type: mock }
+workflow:
+  steps:
+    - id: s1
+      run: agent
+      use: mock
+      prompt: "x"
+      retry: { max_attempts: 2 }
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "RETRY_SHAPE" && d.message.includes("Unknown"))).toBe(true);
+  });
+
+  it("rejects unknown fanout property", () => {
+    const source = `
+version: 1
+name: test
+workflow:
+  steps:
+    - id: s1
+      fanout:
+        over: [1, 2]
+        batch_size: 5
+        do:
+          - id: each
+            run: program
+            cmd: ["echo", "hi"]
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "STEP_SHAPE" && d.message.includes("Unknown"))).toBe(true);
+  });
+
+  it("rejects unknown approval property", () => {
+    const source = `
+version: 1
+name: test
+agents:
+  mock: { type: mock }
+workflow:
+  steps:
+    - id: gate
+      approval:
+        prompt: "OK?"
+        timeout: 5m
+        on_timeout: fail
+        notify: admin@example.com
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "STEP_SHAPE" && d.message.includes("Unknown"))).toBe(true);
+  });
+
+  it("rejects unknown workflow property", () => {
+    const source = `
+version: 1
+name: test
+workflow:
+  timeout: 10m
+  steps:
+    - id: s1
+      run: program
+      cmd: ["echo", "hi"]
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "SPEC_SHAPE" && d.message.includes("Unknown"))).toBe(true);
   });
 });

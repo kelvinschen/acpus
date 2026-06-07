@@ -6,6 +6,7 @@ import { createExpressionCollector } from "./expressions.js";
 import { createSchedule } from "./schedule.js";
 import { compileSchemaDsl } from "./schema/index.js";
 import { parseDurationMs } from "./duration.js";
+import { validateWithSchema } from "./schema-validator.js";
 import type {
   AcpusIr,
   AgentSpec,
@@ -32,6 +33,7 @@ export function compileWorkflow(source: string, options: CompileOptions = {}): C
   }
 
   const expanded = expandIncludes(parsed, options, diagnostics, new Set());
+  validateWithSchema(expanded, diagnostics);
   const stepIds = collectStepIds(expanded.workflow.steps, diagnostics);
   const context: CompileContext = {
     diagnostics,
@@ -151,9 +153,6 @@ function expandIncludes(spec: WorkflowSpec, options: CompileOptions, diagnostics
 
 function validateSpec(spec: WorkflowSpec, context: CompileContext): void {
   const { diagnostics } = context;
-  if (spec.version !== 1) {
-    diagnostics.error("SPEC_VERSION", "Only DSL version 1 is supported.", "$.version");
-  }
 
   // Compile input flat-map to JSON Schema
   if (isRecord(spec.input)) {
@@ -168,30 +167,11 @@ function validateSpec(spec: WorkflowSpec, context: CompileContext): void {
     spec.input = schema;
   }
 
-  if (!isRecord(spec.agents ?? {})) {
-    diagnostics.error("AGENTS_SHAPE", "agents must be an object when present.", "$.agents");
-  }
-
+  // Semantic checks not covered by JSON Schema
   for (const [agentName, agent] of Object.entries(spec.agents ?? {})) {
-    if (!isRecord(agent)) {
-      diagnostics.error("AGENT_SHAPE", `Agent '${agentName}' must be an object.`, `$.agents.${agentName}`);
-      continue;
-    }
-    // `type` defaults to "builtin" when omitted.
-    const type = agent.type ?? "builtin";
-    if (type !== "builtin" && type !== "command" && type !== "mock") {
-      diagnostics.error("AGENT_SHAPE", `Agent '${agentName}' type must be one of builtin, command, mock.`, `$.agents.${agentName}.type`);
-    }
-    // builtin/command require a non-empty `use` (adapter name or launch command).
-    if ((type === "builtin" || type === "command") && (typeof agent.use !== "string" || agent.use.length === 0)) {
-      diagnostics.error("AGENT_SHAPE", `Agent '${agentName}' (type ${type}) must define a non-empty use.`, `$.agents.${agentName}.use`);
-    }
-  }
-
-  for (const [outputName, outputExpression] of Object.entries(spec.outputs ?? {})) {
-    if (typeof outputExpression !== "string") {
-      diagnostics.error("OUTPUT_SHAPE", `Output '${outputName}' must be an expression string.`, `$.outputs.${outputName}`);
-    }
+    if (!isRecord(agent)) continue;  // Schema handles shape errors
+    // AGENT_REF: check that referenced agents actually exist (cross-reference)
+    // This is done in validateAgentStep at step level
   }
 }
 
@@ -201,6 +181,7 @@ function compileSteps(steps: WorkflowStep[], parentPath: string[], path: string,
 
 function compileStep(step: WorkflowStep, parentPath: string[], path: string, context: CompileContext): IrNode {
   const id = typeof step.id === "string" && step.id.length > 0 ? step.id : `missing_${parentPath.length}_${path}`;
+  // Defensive: Schema already validates id; keep as fallback
   if (typeof step.id !== "string" || step.id.length === 0) {
     context.diagnostics.error("STEP_ID", "Every workflow step must define a non-empty string id.", `${path}.id`);
   }
@@ -215,7 +196,6 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
   if (step.run === "agent") {
     validateAgentStep(step, path, context);
     validateStepTimeout(step, path, context);
-    validateStepOnError(step, path, context);
     const metadata = pickMetadata(step, ["run", "use", "prompt", "output", "retry", "timeout", "on_error"]);
     // Snapshot the referenced agent definition into the node so the runtime can
     // route to the right executor and build the acpx invocation. `type` defaults
@@ -235,7 +215,6 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
   if (step.run === "program") {
     validateProgramStep(step, path, context);
     validateStepTimeout(step, path, context);
-    validateStepOnError(step, path, context);
     return {
       ...base,
       kind: "run.program",
@@ -244,7 +223,6 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
   }
 
   if (Array.isArray(step.parallel)) {
-    validateJoin(step.join, ["all", "race"], `${path}.join`, "parallel.join", context);
     return {
       ...base,
       kind: "parallel",
@@ -328,9 +306,6 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
         context.diagnostics.error("LOOP_UNTIL_TYPE", `loop.until must be a boolean or CEL expression string, got ${typeDesc}.`, `${path}.loop.until`);
       }
     }
-    if (typeof loop.max_iterations !== "number") {
-      context.diagnostics.error("LOOP_MAX_ITERATIONS", "loop.max_iterations must be a number.", `${path}.loop.max_iterations`);
-    }
     return {
       ...base,
       kind: "loop",
@@ -358,6 +333,7 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
     };
   }
 
+  // Defensive: Schema already validates step kind; keep as fallback
   context.diagnostics.error("STEP_KIND", "Step must define one of run: agent, run: program, parallel, fanout, switch, loop, approval, subworkflow, or include.", path);
   return {
     ...base,
@@ -367,21 +343,15 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
 }
 
 function validateAgentStep(step: WorkflowStep, path: string, context: CompileContext): void {
-  if (typeof step.use !== "string") {
-    context.diagnostics.error("AGENT_USE", "run: agent steps must define use.", `${path}.use`);
-  } else if (!Object.prototype.hasOwnProperty.call(context.agents, step.use)) {
+  // AGENT_REF: cross-reference check (not possible in JSON Schema)
+  if (typeof step.use === "string" && !Object.prototype.hasOwnProperty.call(context.agents, step.use)) {
     context.diagnostics.error("AGENT_REF", `run: agent step references unknown agent '${step.use}'.`, `${path}.use`);
-  }
-  if (typeof step.prompt !== "string") {
-    context.diagnostics.error("AGENT_PROMPT", "run: agent steps must define a prompt string.", `${path}.prompt`);
   }
   if ((step as Record<string, unknown>).retry !== undefined) {
     validateRetry((step as Record<string, unknown>).retry, path, context);
   }
-  if (step.output !== undefined && !isRecord(step.output)) {
-    context.diagnostics.error("OUTPUT_SHAPE", "run: agent output must be an object when present.", `${path}.output`);
-  }
   if (isRecord(step.output)) {
+    // output.schema deprecation check (semantic, not structural)
     if ("schema" in step.output) {
       context.diagnostics.error("OUTPUT_SHAPE", "The 'schema' key in agent output is no longer supported as a JSON Schema escape hatch. Use the Acpus Schema DSL directly (e.g. output: { field: string }).", `${path}.output.schema`);
     }
@@ -397,16 +367,8 @@ function validateAgentStep(step: WorkflowStep, path: string, context: CompileCon
 }
 
 function validateProgramStep(step: WorkflowStep, path: string, context: CompileContext): void {
-  if (!Array.isArray(step.cmd) && typeof step.cmd !== "string") {
-    context.diagnostics.error("PROGRAM_CMD", "run: program steps must define cmd as a string or array.", `${path}.cmd`);
-  }
-  if (step.capture !== undefined) {
-    validateCapture(step.capture, path, context);
-  }
-  if (step.output !== undefined && !isRecord(step.output)) {
-    context.diagnostics.error("OUTPUT_SHAPE", "run: program output must be an object when present.", `${path}.output`);
-  }
   if (isRecord(step.output)) {
+    // output.schema deprecation check (semantic, not structural)
     if ("schema" in step.output) {
       context.diagnostics.error("OUTPUT_SHAPE", "The 'schema' key in program output is no longer supported as a JSON Schema escape hatch. Use the Acpus Schema DSL directly (e.g. output: { field: string }).", `${path}.output.schema`);
     }
@@ -429,11 +391,10 @@ function validateProgramStep(step: WorkflowStep, path: string, context: CompileC
 }
 
 function validateFanout(fanout: Record<string, unknown>, path: string, context: CompileContext): void {
-  if (fanout.over === undefined) {
-    context.diagnostics.error("FANOUT_OVER", "fanout.over is required.", `${path}.fanout.over`);
-  } else if (Array.isArray(fanout.over)) {
-    // Reject arrays containing non-primitive values (objects, nested arrays)
-    // since JSON.stringify of objects produces invalid CEL syntax.
+  // Reject arrays containing non-primitive values (objects, nested arrays)
+  // since JSON.stringify of objects produces invalid CEL syntax.
+  // Schema validates that over is string|array; this is a runtime coercion check.
+  if (Array.isArray(fanout.over)) {
     for (let i = 0; i < fanout.over.length; i++) {
       const el = fanout.over[i];
       if (el !== null && el !== undefined && typeof el === "object") {
@@ -442,85 +403,24 @@ function validateFanout(fanout: Record<string, unknown>, path: string, context: 
     }
     // Coerce array → JSON string so the IR always stores strings
     fanout.over = JSON.stringify(fanout.over);
-  } else if (typeof fanout.over !== "string") {
-    context.diagnostics.error("FANOUT_OVER_TYPE", `fanout.over must be an array or CEL expression string, got ${typeof fanout.over === "object" && fanout.over !== null ? "object" : typeof fanout.over}.`, `${path}.fanout.over`);
-  }
-  validateJoin(fanout.join, ["all", "race", "quorum"], `${path}.fanout.join`, "fanout.join", context);
-
-  if (fanout.join === "quorum" && !isPositiveInteger(fanout.quorum)) {
-    context.diagnostics.error("FANOUT_QUORUM", "fanout.quorum must be a positive integer when join is quorum.", `${path}.fanout.quorum`);
-  }
-
-  if (fanout.success_criteria !== undefined) {
-    if (!isRecord(fanout.success_criteria)) {
-      context.diagnostics.error("FANOUT_SUCCESS_CRITERIA", "fanout.success_criteria must be an object.", `${path}.fanout.success_criteria`);
-      return;
-    }
-    if (!isPositiveInteger(fanout.success_criteria.min_success)) {
-      context.diagnostics.error("FANOUT_SUCCESS_CRITERIA", "fanout.success_criteria.min_success must be a positive integer.", `${path}.fanout.success_criteria.min_success`);
-    }
-  }
-}
-
-function validateJoin(value: unknown, allowed: string[], path: string, label: string, context: CompileContext): void {
-  if (value === undefined) {
-    return;
-  }
-  if (typeof value !== "string" || !allowed.includes(value)) {
-    context.diagnostics.error("JOIN_VALUE", `${label} must be one of ${allowed.join(", ")}.`, path);
-  }
-}
-
-function validateCapture(capture: unknown, path: string, context: CompileContext): void {
-  if (!isRecord(capture)) {
-    context.diagnostics.error("CAPTURE_SHAPE", "run: program capture must be an object when present.", `${path}.capture`);
-    return;
-  }
-
-  if (!["stdout", "file"].includes(String(capture.from))) {
-    context.diagnostics.error("CAPTURE_FROM", "run: program capture.from must be stdout or file.", `${path}.capture.from`);
-  }
-  if (!["json", "text"].includes(String(capture.parse))) {
-    context.diagnostics.error("CAPTURE_PARSE", "run: program capture.parse must be json or text.", `${path}.capture.parse`);
-  }
-  if (capture.from === "file" && typeof capture.path !== "string") {
-    context.diagnostics.error("CAPTURE_PATH", "run: program capture.path must be a string when capture.from is file.", `${path}.capture.path`);
-  }
-  if (capture.path !== undefined && typeof capture.path !== "string") {
-    context.diagnostics.error("CAPTURE_PATH", "run: program capture.path must be a string when present.", `${path}.capture.path`);
   }
 }
 
 function validateApprovalStep(approval: Record<string, unknown>, path: string, context: CompileContext): void {
-  if (typeof approval.prompt !== "string") {
-    context.diagnostics.error("APPROVAL_PROMPT", "approval.prompt must be a string.", `${path}.approval.prompt`);
-  }
-  if (typeof approval.timeout !== "string") {
-    context.diagnostics.error("APPROVAL_TIMEOUT", "approval.timeout must be a duration string.", `${path}.approval.timeout`);
-  } else {
+  // Duration format validation (not expressible in JSON Schema)
+  if (typeof approval.timeout === "string") {
     try {
       parseDurationMs(approval.timeout, { strict: true });
     } catch {
       context.diagnostics.error("APPROVAL_TIMEOUT", "approval.timeout must be a valid duration string (e.g. 5m, 2h, 30s).", `${path}.approval.timeout`);
     }
   }
-  if (!["fail", "escalate", "approve", "reject"].includes(String(approval.on_timeout))) {
-    context.diagnostics.error("APPROVAL_ON_TIMEOUT", "approval.on_timeout must be fail, escalate, approve, or reject.", `${path}.approval.on_timeout`);
-  }
 }
 
 function validateRetry(retry: unknown, path: string, context: CompileContext): void {
-  if (!isRecord(retry)) {
-    context.diagnostics.error("RETRY_SHAPE", "retry must be an object when present.", `${path}.retry`);
-    return;
-  }
-  if (!isPositiveInteger(retry.max)) {
-    context.diagnostics.error("RETRY_SHAPE", "retry.max must be a positive integer.", `${path}.retry.max`);
-  }
-  if (retry.backoff !== undefined) {
-    if (typeof retry.backoff !== "string") {
-      context.diagnostics.error("RETRY_SHAPE", "retry.backoff must be a duration string.", `${path}.retry.backoff`);
-    } else {
+  // Duration format validation for backoff (not expressible in JSON Schema)
+  if (isRecord(retry) && retry.backoff !== undefined) {
+    if (typeof retry.backoff === "string") {
       try {
         parseDurationMs(retry.backoff, { strict: true });
       } catch {
@@ -532,33 +432,13 @@ function validateRetry(retry: unknown, path: string, context: CompileContext): v
 
 function validateStepTimeout(step: Record<string, unknown>, path: string, context: CompileContext): void {
   if (step.timeout === undefined) return;
-  if (typeof step.timeout === "number") {
-    if (step.timeout <= 0) {
-      context.diagnostics.error("STEP_TIMEOUT", "step.timeout number must be positive (milliseconds).", `${path}.timeout`);
-    }
-    return;
-  }
+  // Duration format validation for string timeouts (not expressible in JSON Schema)
   if (typeof step.timeout === "string") {
     try {
       parseDurationMs(step.timeout, { strict: true });
     } catch {
       context.diagnostics.error("STEP_TIMEOUT", "step.timeout must be a valid duration string or number (ms).", `${path}.timeout`);
     }
-    return;
-  }
-  const typeDesc = step.timeout === null ? "null" : typeof step.timeout;
-  context.diagnostics.error("STEP_TIMEOUT", `step.timeout must be a duration string or number (ms), got ${typeDesc}.`, `${path}.timeout`);
-}
-
-function validateStepOnError(step: Record<string, unknown>, path: string, context: CompileContext): void {
-  if (step.on_error === undefined) return;
-  if (typeof step.on_error !== "string") {
-    const typeDesc = step.on_error === null ? "null" : typeof step.on_error;
-    context.diagnostics.error("STEP_ON_ERROR", `step.on_error must be a string, one of fail, retry, skip, got ${typeDesc}.`, `${path}.on_error`);
-    return;
-  }
-  if (!["fail", "retry", "skip"].includes(step.on_error)) {
-    context.diagnostics.error("STEP_ON_ERROR", `step.on_error must be one of fail, retry, skip, got '${step.on_error}'.`, `${path}.on_error`);
   }
 }
 
@@ -646,10 +526,6 @@ function isWorkflowSpec(value: unknown): value is WorkflowSpec {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isPositiveInteger(value: unknown): value is number {
-  return Number.isInteger(value) && typeof value === "number" && value > 0;
 }
 
 function digest(source: string): string {

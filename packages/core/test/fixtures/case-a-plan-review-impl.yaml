@@ -39,7 +39,7 @@ workflow:
       capture:
         from: stdout
         parse: text
-      retry: { max_attempts: 2 }
+      retry: { max: 2 }
 outputs:
   plan: ${{ steps.plan.output.plan_md }}
   patch_ref: ${{ steps.implement.output.commit_sha }}
