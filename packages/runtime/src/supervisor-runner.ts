@@ -4,7 +4,7 @@ import { MockAgentExecutor } from "./executors/mock-agent.js";
 import { AgentExecutor } from "./executors/agent.js";
 import { ProgramExecutor } from "./executors/program.js";
 import type { SupervisorConfig, SupervisorMetadata } from "./types.js";
-import { writeFileSync, mkdirSync, rmSync, existsSync, readFileSync, openSync, closeSync } from "node:fs";
+import { writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { serve } from "@hono/node-server";
 
@@ -23,23 +23,9 @@ export async function startRunSupervisor(config: SupervisorConfig = {}): Promise
   config = { ...config, stateDir }; // Write computed stateDir back so createSupervisorApp resolves workspace correctly
   const idleTimeoutMs = config.idleTimeoutMs ?? 5 * 60 * 1000; // 5 min default
   const metadataFile = join(stateDir, "supervisor.json");
-  const lockFile = join(stateDir, "supervisor.lock");
 
   // Ensure state directory exists
   mkdirSync(stateDir, { recursive: true });
-
-  // Write lock file atomically — use O_EXCL to avoid overwriting an existing lock
-  // held by a concurrent ensureWorkspaceSupervisor() call.
-  try {
-    const fd = openSync(lockFile, "wx");
-    closeSync(fd);
-    writeFileSync(lockFile, JSON.stringify({ pid: process.pid, timestamp: Date.now() }), "utf8");
-  } catch (err: any) {
-    if (err.code === "EEXIST") {
-      throw new Error(`Supervisor lock file already exists at ${lockFile} — another supervisor may be starting`);
-    }
-    throw err;
-  }
 
   const store = new RunStore(join(stateDir, "runs"));
   const mockAgentExecutor = new MockAgentExecutor({});
@@ -103,9 +89,6 @@ export async function startRunSupervisor(config: SupervisorConfig = {}): Promise
   // Push health overrides so GET /health reports the correct endpoint/startedAt
   setHealthOverrides({ startedAt, endpoint });
 
-  // Remove lock file after metadata is written
-  try { rmSync(lockFile); } catch { /* ignore */ }
-
   // ─── Idle shutdown ───────────────────────────────────────────────
 
   const idleCheckInterval = setInterval(() => {
@@ -141,9 +124,8 @@ export async function startRunSupervisor(config: SupervisorConfig = {}): Promise
       }
     }
 
-    // Remove metadata and lock files
+    // Remove metadata file
     try { if (existsSync(metadataFile)) rmSync(metadataFile); } catch { /* ignore */ }
-    try { if (existsSync(lockFile)) rmSync(lockFile); } catch { /* ignore */ }
 
     // Close the HTTP server gracefully, then exit
     if (httpServer) {

@@ -28,10 +28,12 @@
     "execa": "^9.6.0",
     "hono": "^4.7.0",
     "jsonrepair": "^3.14.0",
-    "p-limit": "^6.2.0"
+    "p-limit": "^6.2.0",
+    "proper-lockfile": "^4.1.2"
   },
   "devDependencies": {
     "@acpus/mock-agent": "workspace:*",
-    "@types/node": "^22.15.30"
+    "@types/node": "^22.15.30",
+    "@types/proper-lockfile": "^4.1.4"
   }
 }

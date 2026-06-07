@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The Acpus CLI is the local command-line surface for linting Workflow Specs, submitting and following local durable Workflow Runs, controlling local Runs and Nodes, inspecting local Runs, replaying persisted Runs, and watching Runs through a terminal UI.
+The Acpus CLI is the local command-line surface for linting Workflow Specs, submitting and following local durable Workflow Runs, controlling local Runs and Nodes, inspecting local Runs, replaying persisted Runs, and observing Runs through a visualizer.
 
 ## Requirements
 
@@ -17,10 +17,10 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, subm
 - `acpus run <spec> --json` MUST emit newline-delimited JSON Run Observations until the submitted Run reaches a terminal status, followed by a terminal Run summary observation.
 - `acpus run <spec> --background` MUST submit a Run through the Workspace Run Supervisor, print the submitted Run identity in human-readable form, and exit without following the Run.
 - `acpus run <spec> --background --json` MUST submit a Run through the Workspace Run Supervisor, print the submitted Run state as JSON, and exit without following the Run.
-- `acpus run <spec> --watch` MUST submit a Run through the Workspace Run Supervisor and immediately open the single-Run watch view for that Run.
-- `acpus run <spec> --background --watch` MUST be rejected as invalid because background submission and immediate watch attachment are mutually exclusive.
-- `acpus run <spec> --watch --json` MUST be rejected as invalid because the terminal UI and JSONL observation stream are mutually exclusive.
-- During foreground follow or `--watch`, Ctrl-C MUST detach the CLI from the Run without cancelling the Run, and the CLI MUST exit successfully.
+- `acpus run <spec> --visualizer` MUST submit a Run through the Workspace Run Supervisor and immediately open the single-Run visualizer view for that Run.
+- `acpus run <spec> --background --visualizer` MUST be rejected as invalid because background submission and immediate visualizer attachment are mutually exclusive.
+- `acpus run <spec> --visualizer --json` MUST be rejected as invalid because the visualizer and JSONL observation stream are mutually exclusive.
+- During foreground follow or `--visualizer`, Ctrl-C MUST detach the CLI from the Run without cancelling the Run, and the CLI MUST exit successfully.
 - `acpus run <spec> --dry-run` MUST compile to IR and print schedule projection without ensuring a Run Supervisor and without executing Agent Steps or Program Steps.
 - The CLI MUST accept `--input <value>` for `run`, where `<value>` is either inline JSON or a path to a `.json`, `.yaml`, or `.yml` input file.
 - The CLI MUST support machine-readable JSON output for automation where a command exposes `--json`.
@@ -56,10 +56,10 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, subm
 - The CLI MUST support `acpus replay <run_id>` to deterministically replay a local Run through the Run Supervisor and verify its reconstructed Node topology against the persisted Run.
 - `acpus replay` MUST reconstruct the Run from the frozen IR snapshot and recorded Node outcomes, and MUST NOT depend on mutable YAML, system time, random values, or large artifact payloads.
 - `acpus replay` MUST report verification results as machine-readable JSON, including any discrepancies between the recorded and replayed Node topology.
-- The CLI MUST support `acpus watch [run_id]`.
-- `acpus watch <run_id>` MUST open the single-Run terminal UI for the specified Run.
-- `acpus watch` without a Run ID MUST open a Run picker, not a multi-Run dashboard.
-- The Run picker MUST list the most recent 50 Runs in the current Workspace sorted by `updatedAt` descending and allow selecting a Run to open the single-Run watch view.
+- The CLI MUST support `acpus visualizer [run_id]`.
+- `acpus visualizer <run_id>` MUST open the single-Run visualizer for the specified Run.
+- `acpus visualizer` without a Run ID MUST open a Run picker, not a multi-Run dashboard.
+- The Run picker MUST list the most recent 50 Runs in the current Workspace sorted by `updatedAt` descending and allow selecting a Run to open the single-Run visualizer view.
 - The Run picker MAY refresh the Run list while open.
 - The CLI MUST route Agent Step execution through acpx once Agent Step runtime execution exists.
 - The CLI MUST NOT expose `acpus worker` as a normal runtime command.
@@ -75,8 +75,8 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, subm
 - CLI tests MUST cover `run` foreground human follow output reaching completed, failed, cancelled, and paused exit codes.
 - CLI tests MUST cover `run --json` emitting JSONL Run Observations and a terminal summary.
 - CLI tests MUST cover `run --background` and `run --background --json` returning after submission.
-- CLI tests MUST cover `run --watch` opening the single-Run watch view for the submitted Run.
-- CLI tests MUST cover invalid `run --background --watch` and `run --watch --json` combinations.
+- CLI tests MUST cover `run --visualizer` opening the single-Run visualizer view for the submitted Run.
+- CLI tests MUST cover invalid `run --background --visualizer` and `run --visualizer --json` combinations.
 - CLI tests MUST cover Ctrl-C detaching foreground follow without cancelling the Run.
 - Runtime CLI tests MUST cover local Run execution without remote workers, remote task queues, or a shared Temporal cluster.
 - Runtime CLI tests MUST cover Run-level pause, resume, cancel, and retry validation.
@@ -84,6 +84,6 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, subm
 - Runtime CLI tests MUST cover Run-level and Node-level control commands producing machine-readable JSON output.
 - Runtime CLI tests MUST cover `acpus replay` producing machine-readable JSON output.
 - Runtime CLI tests MUST cover `acpus replay` reproducing a Run's Node topology deterministically and reporting discrepancies when the persisted Run's topology is tampered with.
-- Runtime CLI tests MUST cover `acpus watch` without a Run ID opening a picker and `acpus watch <run_id>` opening the single-Run view.
-- Runtime CLI tests MUST cover `acpus ls` and the Run picker listing the most recent 50 Runs sorted by `updatedAt` descending.
+- Runtime CLI tests MUST cover `acpus visualizer` without a Run ID opening a picker and `acpus visualizer <run_id>` opening the single-Run view.
+- Runtime CLI tests MUST cover `acpus ls` and the visualizer picker listing the most recent 50 Runs sorted by `updatedAt` descending.
 - Runtime CLI tests MUST cover Agent Step execution through acpx once Agent Activity integration exists.

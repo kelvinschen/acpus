@@ -1,0 +1,345 @@
+version: 1
+name: adversarial-review
+description: |
+  Multi-module adversarial code review workflow.
+  Fans out across modules, each lane runs 4 review dimensions in parallel
+  (correctness, security, performance, readability). A synthesis agent then
+  merges findings across all modules, deduplicates, and produces a
+  prioritized report.
+
+input:
+  modules:
+    - string
+  review_instructions: string = "Focus on bugs, vulnerabilities, and design flaws."
+  review_depth: string = "deep"
+
+agents:
+  reviewer:
+    use: pi
+    model: super-relay/ark/seed-code-0602
+  synthesizer:
+    use: pi
+    model: aiden-oai/deepseek-v4-flash
+
+workflow:
+  steps:
+    # ── Phase 1: Fanout over modules, parallel over dimensions ────────
+    #   Outer fanout: one lane per module (independent work unit).
+    #   Inner parallel: 4 review dimensions for the same module.
+    - id: review_modules
+      fanout:
+        over: input.modules
+        key: "${{ item }}"
+        max_concurrency: 4
+        join: all
+        do:
+          - id: module_review
+            parallel:
+              # ── Correctness ─────────────────────────────────────────
+              - id: correctness
+                run: agent
+                use: reviewer
+                prompt: |
+                  You are an adversarial code reviewer focusing on **correctness**.
+
+                  ## Target
+                  Review the code at: `${{ item }}`
+                  Use your tools to read the source files directly.
+
+                  ## Review Focus: Correctness
+                  Look for logic errors, off-by-one bugs, race conditions,
+                  wrong assumptions, unhandled edge cases, missing null checks,
+                  type confusion, incorrect algorithms, and broken invariants.
+                  Prefer false positives over false negatives.
+
+                  ## Custom Instructions
+                  ${{ input.review_instructions }}
+
+                  ## Depth
+                  ${{ input.review_depth }} — cite exact file and line range for each finding.
+
+                  ## Output Format
+                  Produce a JSON object:
+                  ```json
+                  {
+                    "module": "${{ item }}",
+                    "dimension": "correctness",
+                    "findings": [
+                      {
+                        "title": "short summary",
+                        "severity": "critical|high|medium|low",
+                        "file": "relative path",
+                        "line_range": "start-end",
+                        "description": "detailed explanation",
+                        "suggestion": "how to fix"
+                      }
+                    ]
+                  }
+                  ```
+                output:
+                  module: string
+                  dimension: string
+                  findings:
+                    - title: string
+                      severity: string
+                      file: string
+                      line_range: string
+                      description: string
+                      suggestion: string
+                timeout: 15m
+
+              # ── Security ────────────────────────────────────────────
+              - id: security
+                run: agent
+                use: reviewer
+                prompt: |
+                  You are an adversarial code reviewer focusing on **security**.
+
+                  ## Target
+                  Review the code at: `${{ item }}`
+                  Use your tools to read the source files directly.
+
+                  ## Review Focus: Security
+                  Look for injection vulnerabilities, auth/authz bypasses,
+                  data leaks, insecure defaults, missing input validation,
+                  SSRF, XSS, path traversal, unsafe deserialization,
+                  hardcoded secrets, and privilege escalation.
+                  Prefer false positives over false negatives.
+
+                  ## Custom Instructions
+                  ${{ input.review_instructions }}
+
+                  ## Depth
+                  ${{ input.review_depth }} — cite exact file and line range for each finding.
+
+                  ## Output Format
+                  Produce a JSON object:
+                  ```json
+                  {
+                    "module": "${{ item }}",
+                    "dimension": "security",
+                    "findings": [
+                      {
+                        "title": "short summary",
+                        "severity": "critical|high|medium|low",
+                        "file": "relative path",
+                        "line_range": "start-end",
+                        "description": "detailed explanation",
+                        "suggestion": "how to fix"
+                      }
+                    ]
+                  }
+                  ```
+                output:
+                  module: string
+                  dimension: string
+                  findings:
+                    - title: string
+                      severity: string
+                      file: string
+                      line_range: string
+                      description: string
+                      suggestion: string
+                timeout: 15m
+
+              # ── Performance ──────────────────────────────────────────
+              - id: performance
+                run: agent
+                use: reviewer
+                prompt: |
+                  You are an adversarial code reviewer focusing on **performance**.
+
+                  ## Target
+                  Review the code at: `${{ item }}`
+                  Use your tools to read the source files directly.
+
+                  ## Review Focus: Performance
+                  Look for O(n²) where O(n) suffices, unnecessary allocations,
+                  N+1 queries, missing caching opportunities, blocking I/O on
+                  hot paths, memory leaks, excessive serialization, unbounded
+                  collections, and algorithmic inefficiency.
+                  Prefer false positives over false negatives.
+
+                  ## Custom Instructions
+                  ${{ input.review_instructions }}
+
+                  ## Depth
+                  ${{ input.review_depth }} — cite exact file and line range for each finding.
+
+                  ## Output Format
+                  Produce a JSON object:
+                  ```json
+                  {
+                    "module": "${{ item }}",
+                    "dimension": "performance",
+                    "findings": [
+                      {
+                        "title": "short summary",
+                        "severity": "critical|high|medium|low",
+                        "file": "relative path",
+                        "line_range": "start-end",
+                        "description": "detailed explanation",
+                        "suggestion": "how to fix"
+                      }
+                    ]
+                  }
+                  ```
+                output:
+                  module: string
+                  dimension: string
+                  findings:
+                    - title: string
+                      severity: string
+                      file: string
+                      line_range: string
+                      description: string
+                      suggestion: string
+                timeout: 15m
+
+              # ── Readability & Maintainability ────────────────────────
+              - id: readability
+                run: agent
+                use: reviewer
+                prompt: |
+                  You are an adversarial code reviewer focusing on **readability
+                  and maintainability**.
+
+                  ## Target
+                  Review the code at: `${{ item }}`
+                  Use your tools to read the source files directly.
+
+                  ## Review Focus: Readability & Maintainability
+                  Look for misleading names, god functions, deep nesting,
+                  duplicated logic, missing or wrong abstractions, unclear
+                  control flow, magic numbers, dead code, inconsistent style,
+                  poor error messages, and tests that don't explain intent.
+                  Prefer false positives over false negatives.
+
+                  ## Custom Instructions
+                  ${{ input.review_instructions }}
+
+                  ## Depth
+                  ${{ input.review_depth }} — cite exact file and line range for each finding.
+
+                  ## Output Format
+                  Produce a JSON object:
+                  ```json
+                  {
+                    "module": "${{ item }}",
+                    "dimension": "readability",
+                    "findings": [
+                      {
+                        "title": "short summary",
+                        "severity": "critical|high|medium|low",
+                        "file": "relative path",
+                        "line_range": "start-end",
+                        "description": "detailed explanation",
+                        "suggestion": "how to fix"
+                      }
+                    ]
+                  }
+                  ```
+                output:
+                  module: string
+                  dimension: string
+                  findings:
+                    - title: string
+                      severity: string
+                      file: string
+                      line_range: string
+                      description: string
+                      suggestion: string
+                timeout: 15m
+
+    # ── Phase 2: Synthesize findings ─────────────────────────────────────
+    - id: synthesize
+      run: agent
+      use: synthesizer
+      prompt: |
+        You are the synthesis lead for a multi-module adversarial code review.
+        Merge, deduplicate, and prioritize findings from all reviewers across
+        all modules and dimensions.
+
+        ## Modules Under Review
+        ${{ input.modules }}
+
+        ## Custom Instructions
+        ${{ input.review_instructions }}
+
+        ## Raw Review Data
+        Each module was reviewed across 4 dimensions (correctness, security,
+        performance, readability). The full results:
+        ```
+        ${{ steps.review_modules.output }}
+        ```
+
+        ## Your Tasks
+
+        1. **Deduplicate**: Merge findings that point to the same issue across
+           different dimensions. Keep the most detailed description and note
+           all dimensions where it was flagged.
+
+        2. **Cross-reference**: Findings flagged in multiple dimensions or
+           appearing across multiple modules are higher confidence — mark as
+           "confirmed". Single-dimension or single-module findings are
+           "single-report".
+
+        3. **Per-module grouping**: Group findings by module first, then sort
+           by severity within each module.
+
+        4. **Cross-module patterns**: Identify systemic issues that span
+           multiple modules (e.g. "error handling is missing across all modules",
+           "shared utility has a bug that affects every consumer").
+
+        5. **Actionable summary**: For each confirmed finding, provide a concise
+           action item. For single-report findings, note what verification is
+           needed.
+
+        ```
+      output:
+        total_findings: number
+        confirmed_count: number
+        single_report_count: number
+        severity_summary:
+          critical: number
+          high: number
+          medium: number
+          low: number
+        cross_module_issues:
+          - string
+        modules:
+          - path: string
+            findings:
+              - title: string
+                severity: string
+                confirmation: string
+                dimensions:
+                  - string
+                file: string
+                line_range: string
+                description: string
+                suggestion: string
+                verification_note: string
+      timeout: 20m
+
+    # ── Phase 3: Gate (optional human approval) ─────────────────────────
+    - id: review_gate
+      approval:
+        prompt: |
+          Adversarial review complete.
+
+          Total findings: ${{ steps.synthesize.output.total_findings }}
+          ({{ steps.synthesize.output.confirmed_count }} confirmed,
+          {{ steps.synthesize.output.single_report_count }} single-report)
+
+          Critical: ${{ steps.synthesize.output.severity_summary.critical }}
+          High: ${{ steps.synthesize.output.severity_summary.high }}
+
+          Cross-module issues: ${{ steps.synthesize.output.cross_module_issues }}
+
+          Approve to finalize?
+        timeout: 1h
+        on_timeout: approve
+
+outputs:
+  report: ${{ steps.synthesize.output }}

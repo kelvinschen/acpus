@@ -152,8 +152,8 @@ outputs:
     expect(JSON.parse(result.stdout).ok).toBe(false);
   }, 30_000);
 
-  it("rejects --background --watch as invalid combination", async () => {
-    const result = await execaNode(cliEntry, ["run", join(fixtureDir, "all-primitives.yaml"), "--background", "--watch"], {
+  it("rejects --background --visualizer as invalid combination", async () => {
+    const result = await execaNode(cliEntry, ["run", join(fixtureDir, "all-primitives.yaml"), "--background", "--visualizer"], {
       nodeOptions: ["--import", "tsx", "--conditions=development"],
       reject: false
     });
@@ -162,8 +162,8 @@ outputs:
     expect(result.exitCode).toBe(1);
   });
 
-  it("rejects --watch --json as invalid combination", async () => {
-    const result = await execaNode(cliEntry, ["run", join(fixtureDir, "all-primitives.yaml"), "--watch", "--json"], {
+  it("rejects --visualizer --json as invalid combination", async () => {
+    const result = await execaNode(cliEntry, ["run", join(fixtureDir, "all-primitives.yaml"), "--visualizer", "--json"], {
       nodeOptions: ["--import", "tsx", "--conditions=development"],
       reject: false
     });

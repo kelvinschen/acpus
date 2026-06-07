@@ -8,7 +8,7 @@
 | --- | --- |
 | `@acpus/core` | Own the YAML DSL compiler boundary: parse specs, validate JSON Schema fragments, parse CEL expressions, lint references, emit frozen IR, and project a schedule summary. |
 | `@acpus/runtime` | Own the local durable workflow runtime: interpret frozen IR, persist per-node state, manage the 6-state lifecycle, evaluate CEL expressions at runtime, execute agents and programs, store artifacts, and serve the supervisor REST API. |
-| `acpus` | Own the user-facing CLI: read files and input payloads, resolve includes, expose `lint`, `run`, `ls`, `inspect`, `pause`, `resume`, `cancel`, `retry`, `replay`, and `watch` commands. |
+| `acpus` | Own the user-facing CLI: read files and input payloads, resolve includes, expose `lint`, `run`, `ls`, `inspect`, `pause`, `resume`, `cancel`, `retry`, `replay`, and `visualizer` commands. |
 | `@acpus/mock-agent` | Own the deterministic ACP-compatible Mock Agent used to validate agent protocol behavior and serve as a test executor for the runtime. |
 
 ## Commands
@@ -30,7 +30,7 @@ pnpm acpus run packages/core/test/fixtures/all-primitives.yaml --dry-run --json
 # Runtime execution (lazy supervisor starts automatically)
 pnpm acpus run spec.yaml                       # foreground follow with observations
 pnpm acpus run spec.yaml --background          # submit and return immediately
-pnpm acpus run spec.yaml --watch               # submit and open TUI
+pnpm acpus run spec.yaml --visualizer         # submit and open visualizer
 pnpm acpus run spec.yaml --json                # JSONL observations
 
 # Inspect and control
@@ -42,7 +42,7 @@ pnpm acpus resume <runId>                      # resume a paused run
 pnpm acpus cancel <runId>                      # cancel a running run
 pnpm acpus retry <runId>                       # retry a failed run
 pnpm acpus replay <runId>                      # verify determinism
-pnpm acpus watch [runId]                       # open TUI dashboard
+pnpm acpus visualizer [runId]                  # open visualizer
 
 # Mock agent
 pnpm mock-agent --script packages/mock-agent/test/fixtures/mock.yaml

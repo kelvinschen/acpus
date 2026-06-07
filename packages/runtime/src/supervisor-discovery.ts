@@ -3,28 +3,25 @@
  *
  * `ensureWorkspaceSupervisor()` is the single entry point for CLI commands
  * that need a running supervisor. It reads metadata, health-checks an existing
- * supervisor, and spawns a new one if none is alive — with a lock file to
+ * supervisor, and spawns a new one if none is alive — with a lock to
  * serialize concurrent ensure calls.
  */
 
 import type { SupervisorMetadata } from "./types.js";
 import {
   readFileSync,
-  writeFileSync,
-  writeSync,
   rmSync,
   existsSync,
   openSync,
   closeSync,
-  renameSync,
   mkdirSync
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { acquireSupervisorLock } from "./supervisor-lock.js";
 
 const SUPERVISOR_METADATA_FILE = "supervisor.json";
-const LOCK_FILE = "supervisor.lock";
 
 /**
  * Ensure a Run Supervisor is running for the given workspace.
@@ -48,25 +45,25 @@ export async function ensureWorkspaceSupervisor(
   }
 
   // 2. Acquire lock
-  await acquireLock(stateDir);
+  const release = await acquireSupervisorLock(stateDir);
 
   // 3. Re-check metadata (another process may have started supervisor while we waited)
-  const afterLock = tryReadMetadata(metadataPath);
-  if (afterLock) {
-    const validated = await validateExistingSupervisor(afterLock, absWorkspace);
-    if (validated) {
-      releaseLock(stateDir);
-      return validated;
-    }
-    try { rmSync(metadataPath); } catch { /* ignore */ }
-  }
-
-  // 4. Spawn supervisor
   try {
+    const afterLock = tryReadMetadata(metadataPath);
+    if (afterLock) {
+      const validated = await validateExistingSupervisor(afterLock, absWorkspace);
+      if (validated) {
+        await release();
+        return validated;
+      }
+      try { rmSync(metadataPath); } catch { /* ignore */ }
+    }
+
+    // 4. Spawn supervisor
     const metadata = await spawnSupervisor(absWorkspace, stateDir, options?.idleTimeoutMs);
     return metadata;
   } finally {
-    releaseLock(stateDir);
+    await release();
   }
 }
 
@@ -104,97 +101,6 @@ async function validateExistingSupervisor(
     return meta;
   } catch {
     return undefined;
-  }
-}
-
-async function acquireLock(stateDir: string): Promise<void> {
-  mkdirSync(stateDir, { recursive: true });
-  const lockPath = join(stateDir, LOCK_FILE);
-  const maxWaitMs = 10_000;
-  const pollIntervalMs = 500;
-  const start = Date.now();
-
-  for (;;) {
-    // Try atomic create (O_EXCL) — write content via the fd to avoid an
-    // empty-file window between closeSync + writeFileSync.
-    try {
-      const content = JSON.stringify({ pid: process.pid, timestamp: Date.now() });
-      const fd = openSync(lockPath, "wx");
-      writeSync(fd, content, null, "utf8");
-      closeSync(fd);
-      return;
-    } catch (err: any) {
-      if (err.code !== "EEXIST") throw err;
-    }
-
-    // Lock file exists — check if the owning PID is alive
-    try {
-      const raw = readFileSync(lockPath, "utf8");
-      const lock = JSON.parse(raw) as { pid: number; timestamp: number };
-      if (!isProcessAlive(lock.pid)) {
-        // Stale lock — use rename-based atomic replacement to avoid TOCTOU:
-        // Create a temp lock with our PID, then rename it over the stale one.
-        // rename(2) is atomic on local filesystems.
-        const tempLockPath = join(stateDir, LOCK_FILE + ".tmp." + process.pid);
-        try {
-          const content = JSON.stringify({ pid: process.pid, timestamp: Date.now() });
-          const fd = openSync(tempLockPath, "wx");
-          writeSync(fd, content, null, "utf8");
-          closeSync(fd);
-          // Atomically replace the stale lock
-          renameSync(tempLockPath, lockPath);
-          return;
-        } catch {
-          // Another process won the race — clean up our temp and retry
-          try { rmSync(tempLockPath); } catch { /* ignore */ }
-          continue;
-        }
-      }
-    } catch {
-      // Corrupt lock file — try atomic replacement the same way
-      const tempLockPath = join(stateDir, LOCK_FILE + ".tmp." + process.pid);
-      try {
-        const content = JSON.stringify({ pid: process.pid, timestamp: Date.now() });
-        const fd = openSync(tempLockPath, "wx");
-        writeSync(fd, content, null, "utf8");
-        closeSync(fd);
-        renameSync(tempLockPath, lockPath);
-        return;
-      } catch {
-        try { rmSync(tempLockPath); } catch { /* ignore */ }
-        continue;
-      }
-    }
-
-    // Wait and retry
-    if (Date.now() - start > maxWaitMs) {
-      throw new Error(`Timed out waiting for supervisor lock at ${lockPath}`);
-    }
-    await new Promise((r) => setTimeout(r, pollIntervalMs));
-  }
-}
-
-function releaseLock(stateDir: string): void {
-  const lockPath = join(stateDir, LOCK_FILE);
-  try {
-    const raw = readFileSync(lockPath, "utf8");
-    const lock = JSON.parse(raw) as { pid: number; timestamp: number };
-    // Only delete the lock if we own it (our PID matches)
-    if (lock.pid === process.pid) {
-      rmSync(lockPath);
-    }
-  } catch {
-    // Lock file missing or corrupt — nothing to release
-  }
-}
-
-function isProcessAlive(pid: number): boolean {
-  try {
-    // Sending signal 0 checks existence without actually sending a signal
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
   }
 }
 
