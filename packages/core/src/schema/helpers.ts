@@ -1,6 +1,5 @@
 /**
- * Shared schema helpers used by both the input schema compiler (input.ts)
- * and the recursive schema DSL compiler (dsl.ts).
+ * Shared schema helpers used by the recursive schema DSL compiler (dsl.ts).
  */
 
 /** JSON Schema primitive types allowed in Acpus schema DSL shorthand. */

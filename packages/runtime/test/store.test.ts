@@ -13,7 +13,6 @@ function makeIr(name = "test-workflow"): AcpusIr {
     source: { digest: "sha256:abc123" },
     name,
     input: {},
-    defaults: {},
     agents: {},
     root: {
       id: "workflow",

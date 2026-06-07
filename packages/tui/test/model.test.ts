@@ -38,7 +38,6 @@ function ir(root: IrNode): AcpusIr {
     source: { digest: "x" },
     name: "test",
     input: {},
-    defaults: {},
     agents: {},
     root,
     outputs: {},

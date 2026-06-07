@@ -18,10 +18,6 @@ agents:
     type: mock
 input:
   files: string
-defaults:
-  files:
-    - "a.txt"
-    - "b.txt"
 workflow:
   steps:
     - id: review-files

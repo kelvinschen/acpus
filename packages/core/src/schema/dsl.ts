@@ -34,6 +34,11 @@ export interface CompileSchemaDslResult {
   errors: SchemaDslError[];
 }
 
+export interface CompileSchemaDslOptions {
+  /** When true, emitted object schemas include additionalProperties: false. Default: true. */
+  strictObjectKeys?: boolean;
+}
+
 interface ParsedField {
   property: Record<string, unknown>;
   isRequired: boolean;
@@ -46,11 +51,12 @@ const UNSUPPORTED_SCHEMA_KEY_HINTS = new Set(["items", "properties", "elements"]
 /**
  * Compile an Acpus recursive schema DSL map into JSON Schema.
  */
-export function compileSchemaDsl(schemaDsl: Record<string, unknown>): CompileSchemaDslResult {
-  return compileSchemaMap(schemaDsl, "");
+export function compileSchemaDsl(schemaDsl: Record<string, unknown>, options?: CompileSchemaDslOptions): CompileSchemaDslResult {
+  const strict = options?.strictObjectKeys ?? true;
+  return compileSchemaMap(schemaDsl, "", strict);
 }
 
-function compileSchemaMap(map: Record<string, unknown>, path: string): CompileSchemaDslResult {
+function compileSchemaMap(map: Record<string, unknown>, path: string, strict: boolean): CompileSchemaDslResult {
   const properties: Record<string, unknown> = {};
   const required: string[] = [];
   const errors: SchemaDslError[] = [];
@@ -63,12 +69,12 @@ function compileSchemaMap(map: Record<string, unknown>, path: string): CompileSc
     }
 
     const fieldPath = path ? `${path}.${name}` : name;
-    const result = parseFieldValue(name, value, optional, fieldPath);
+    const result = parseFieldValue(name, value, optional, fieldPath, strict);
     errors.push(...result.errors);
 
-    // Include the field in properties even if it has errors, so that
-    // sibling valid fields are not lost. The caller can check errors
-    // to decide whether to use the schema.
+    // Only include the field in properties when it has no errors.
+    // Sibling valid fields are preserved; the caller checks errors to
+    // decide whether to use the schema.
     if (result.errors.length === 0) {
       properties[name] = result.property;
       if (result.isRequired) {
@@ -80,8 +86,10 @@ function compileSchemaMap(map: Record<string, unknown>, path: string): CompileSc
   const schema: Record<string, unknown> = {
     type: "object",
     properties,
-    additionalProperties: false,
   };
+  if (strict) {
+    schema.additionalProperties = false;
+  }
   if (required.length > 0) {
     schema.required = required;
   }
@@ -93,21 +101,22 @@ function parseFieldValue(
   name: string,
   value: unknown,
   keyOptional: boolean,
-  path: string
+  path: string,
+  strict: boolean
 ): ParsedField {
   if (typeof value === "string") {
-    return parseStringShorthand(name, value, keyOptional, path);
+    return parseStringShorthand(name, value, keyOptional, path, strict);
   }
 
   if (Array.isArray(value)) {
-    return parseArrayShorthand(name, value, keyOptional, path);
+    return parseArrayShorthand(name, value, keyOptional, path, strict);
   }
 
   if (isRecord(value)) {
     if ("type" in value) {
-      return parseObjectForm(name, value, keyOptional, path);
+      return parseObjectForm(name, value, keyOptional, path, strict);
     }
-    return parseNestedObject(name, value, keyOptional, path);
+    return parseNestedObject(name, value, keyOptional, path, strict);
   }
 
   return {
@@ -121,7 +130,8 @@ function parseStringShorthand(
   name: string,
   value: string,
   keyOptional: boolean,
-  path: string
+  path: string,
+  strict: boolean
 ): ParsedField {
   const eqIndex = value.indexOf("=");
   let typePart: string;
@@ -143,7 +153,7 @@ function parseStringShorthand(
   }
 
   const property: Record<string, unknown> = { type: normalized };
-  if (normalized === "object") {
+  if (normalized === "object" && strict) {
     property.additionalProperties = false;
   }
   if (hasDefault) {
@@ -161,7 +171,8 @@ function parseArrayShorthand(
   name: string,
   value: unknown[],
   keyOptional: boolean,
-  path: string
+  path: string,
+  strict: boolean
 ): ParsedField {
   if (value.length !== 1) {
     return {
@@ -172,7 +183,7 @@ function parseArrayShorthand(
   }
 
   const itemSchema = value[0];
-  const itemResult = parseArrayItemSchema(`${name}[]`, itemSchema, `${path}[]`);
+  const itemResult = parseArrayItemSchema(`${name}[]`, itemSchema, `${path}[]`, strict);
   if (itemResult.errors.length > 0) {
     return { property: {}, isRequired: false, errors: itemResult.errors };
   }
@@ -187,23 +198,23 @@ function parseArrayShorthand(
   };
 }
 
-function parseArrayItemSchema(name: string, value: unknown, path: string): Pick<ParsedField, "property" | "errors"> {
+function parseArrayItemSchema(name: string, value: unknown, path: string, strict: boolean): Pick<ParsedField, "property" | "errors"> {
   if (typeof value === "string") {
-    const parsed = parseStringShorthand(name, value, false, path);
+    const parsed = parseStringShorthand(name, value, false, path, strict);
     return { property: parsed.property, errors: parsed.errors };
   }
 
   if (Array.isArray(value)) {
-    const parsed = parseArrayShorthand(name, value, false, path);
+    const parsed = parseArrayShorthand(name, value, false, path, strict);
     return { property: parsed.property, errors: parsed.errors };
   }
 
   if (isRecord(value)) {
     if ("type" in value) {
-      const parsed = parseObjectForm(name, value, false, path);
+      const parsed = parseObjectForm(name, value, false, path, strict);
       return { property: parsed.property, errors: parsed.errors };
     }
-    const nested = compileSchemaMap(value, path);
+    const nested = compileSchemaMap(value, path, strict);
     return { property: nested.schema, errors: nested.errors };
   }
 
@@ -217,9 +228,10 @@ function parseNestedObject(
   _name: string,
   value: Record<string, unknown>,
   keyOptional: boolean,
-  path: string
+  path: string,
+  strict: boolean
 ): ParsedField {
-  const nested = compileSchemaMap(value, path);
+  const nested = compileSchemaMap(value, path, strict);
   return {
     property: nested.schema,
     isRequired: !keyOptional,
@@ -231,7 +243,8 @@ function parseObjectForm(
   name: string,
   value: Record<string, unknown>,
   keyOptional: boolean,
-  path: string
+  path: string,
+  strict: boolean
 ): ParsedField {
   // Collect ALL errors before returning so the user gets a complete picture.
   const errors = validateObjectFormKeys(name, value, path);
@@ -255,7 +268,7 @@ function parseObjectForm(
   const normalized = normalizeType(rawType as string)!;
 
   const property: Record<string, unknown> = { type: normalized };
-  if (normalized === "object") {
+  if (normalized === "object" && strict) {
     property.additionalProperties = false;
   }
   if ("description" in value && typeof value.description === "string") {

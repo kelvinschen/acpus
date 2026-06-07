@@ -294,4 +294,166 @@ describe("compileSchemaDsl", () => {
     // Only 'name' is required (role and count have defaults)
     expect(result.schema.required).toEqual(["name"]);
   });
+
+  it("defaults to strictObjectKeys: true (emits additionalProperties: false)", () => {
+    const result = compileSchemaDsl({ name: "string" });
+    expect(result.errors).toEqual([]);
+    expect(result.schema.additionalProperties).toBe(false);
+  });
+
+  it("bare 'object' type defaults to strict (emits additionalProperties: false)", () => {
+    const result = compileSchemaDsl({ meta: "object" });
+    expect(result.errors).toEqual([]);
+    expect((result.schema.properties!.meta as Record<string, unknown>).additionalProperties).toBe(false);
+  });
+
+  it("object-form 'object' type defaults to strict (emits additionalProperties: false)", () => {
+    const result = compileSchemaDsl({ meta: { type: "object" } });
+    expect(result.errors).toEqual([]);
+    expect((result.schema.properties!.meta as Record<string, unknown>).additionalProperties).toBe(false);
+  });
+});
+
+describe("with strictObjectKeys: false (input mode)", () => {
+  it("compiles flat shorthand without additionalProperties: false", () => {
+    const result = compileSchemaDsl({ feature: "string" }, { strictObjectKeys: false });
+    expect(result.errors).toEqual([]);
+    expect(result.schema).toEqual({
+      type: "object",
+      properties: { feature: { type: "string" } },
+      required: ["feature"],
+    });
+  });
+
+  it("compiles optional fields with defaults", () => {
+    const result = compileSchemaDsl({
+      topic: "string",
+      "depth?": "integer = 2",
+    }, { strictObjectKeys: false });
+    expect(result.errors).toEqual([]);
+    expect(result.schema).toEqual({
+      type: "object",
+      properties: {
+        topic: { type: "string" },
+        depth: { type: "integer", default: 2 },
+      },
+      required: ["topic"],
+    });
+  });
+
+  it("compiles array shorthand [string]", () => {
+    const result = compileSchemaDsl({ modules: ["string"] }, { strictObjectKeys: false });
+    expect(result.errors).toEqual([]);
+    expect(result.schema.properties!.modules).toEqual({ type: "array", items: { type: "string" } });
+    expect(result.schema.required).toEqual(["modules"]);
+  });
+
+  it("compiles nested objects (new capability for input mode)", () => {
+    const result = compileSchemaDsl({
+      config: {
+        title: "string",
+        "count?": "integer",
+      },
+    }, { strictObjectKeys: false });
+    expect(result.errors).toEqual([]);
+    expect(result.schema.properties!.config).toEqual({
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        count: { type: "integer" },
+      },
+      required: ["title"],
+    });
+    // No additionalProperties: false on nested object
+    expect((result.schema.properties!.config as Record<string, unknown>)).not.toHaveProperty("additionalProperties");
+  });
+
+  it("bare 'object' type does NOT get additionalProperties: false", () => {
+    const result = compileSchemaDsl({ meta: "object" }, { strictObjectKeys: false });
+    expect(result.errors).toEqual([]);
+    expect(result.schema.properties!.meta).toEqual({ type: "object" });
+    expect((result.schema.properties!.meta as Record<string, unknown>)).not.toHaveProperty("additionalProperties");
+  });
+
+  it("object-form fields (description, default, required) work", () => {
+    const result = compileSchemaDsl({
+      name: { type: "string", required: true, description: "User name" },
+      role: { type: "string", default: "viewer", description: "User role" },
+      "opt?": { type: "integer", required: false, default: 0 },
+    }, { strictObjectKeys: false });
+    expect(result.errors).toEqual([]);
+    expect(result.schema.properties!.name).toEqual({
+      type: "string",
+      description: "User name",
+    });
+    expect(result.schema.properties!.role).toEqual({
+      type: "string",
+      default: "viewer",
+      description: "User role",
+    });
+    expect(result.schema.properties!.opt).toEqual({
+      type: "integer",
+      default: 0,
+    });
+    expect(result.schema.required).toEqual(["name"]);
+  });
+
+  it("rejects invalid type names", () => {
+    const result = compileSchemaDsl({ bad: "notatype" }, { strictObjectKeys: false });
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].message).toContain("Invalid type 'notatype'");
+  });
+
+  it("rejects invalid field value types", () => {
+    const result = compileSchemaDsl({ bad: 42 as unknown as string }, { strictObjectKeys: false });
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].message).toContain("must be a type string");
+  });
+
+  it("rejects object-form { type: 'array', items: ... } with DSL hint", () => {
+    const result = compileSchemaDsl({
+      list: { type: "array", items: { type: "string" } } as Record<string, unknown>,
+    }, { strictObjectKeys: false });
+    expect(result.errors.length).toBeGreaterThanOrEqual(1);
+    const itemsError = result.errors.find(e => e.message.includes("Unsupported object-form key 'items'"));
+    expect(itemsError).toBeDefined();
+    expect(itemsError!.message).toContain("recursive DSL instead of raw schema keys");
+  });
+
+  it("does not emit additionalProperties: false at top level", () => {
+    const result = compileSchemaDsl({ x: "string" }, { strictObjectKeys: false });
+    expect(result.errors).toEqual([]);
+    expect(result.schema).not.toHaveProperty("additionalProperties");
+  });
+
+  it("object-form { type: 'object' } does NOT get additionalProperties: false", () => {
+    const result = compileSchemaDsl({ meta: { type: "object" } }, { strictObjectKeys: false });
+    expect(result.errors).toEqual([]);
+    expect(result.schema.properties!.meta).toEqual({ type: "object" });
+  });
+
+  it("compiles array shorthand [integer]", () => {
+    const result = compileSchemaDsl({ scores: ["integer"] }, { strictObjectKeys: false });
+    expect(result.errors).toEqual([]);
+    expect(result.schema.properties!.scores).toEqual({ type: "array", items: { type: "integer" } });
+  });
+
+  it("compiles optional array shorthand with key suffix", () => {
+    const result = compileSchemaDsl({ "tags?": ["string"] }, { strictObjectKeys: false });
+    expect(result.errors).toEqual([]);
+    expect(result.schema.properties!.tags).toEqual({ type: "array", items: { type: "string" } });
+    expect(result.schema.required).toBeUndefined();
+  });
+
+  it("rejects multi-element array shorthand", () => {
+    const result = compileSchemaDsl({ bad: ["string", "integer"] }, { strictObjectKeys: false });
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].message).toContain("exactly one item schema");
+  });
+
+  it("rejects invalid item type in array shorthand", () => {
+    const result = compileSchemaDsl({ bad: ["notatype"] }, { strictObjectKeys: false });
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].message).toContain("Invalid type 'notatype'");
+  });
 });

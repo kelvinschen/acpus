@@ -12,7 +12,6 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - Every Node MUST declare a stable non-empty `id`.
 - Node ids MUST be unique within the Workflow Spec after includes are expanded.
 - A Workflow Spec MAY declare top-level `input`.
-- A Workflow Spec MAY declare top-level `defaults`.
 - A Workflow Spec MAY declare top-level `agents`.
 - A Workflow Spec MAY declare top-level `outputs`.
 - A Workflow Spec MAY declare `include` steps that are expanded at compile time.
@@ -33,7 +32,6 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - An Agent Step MAY omit `output` when no structured output parsing is required.
 - An Agent Step MAY declare `output` using the Acpus Schema DSL defined in [Schema Spec](schema-spec.md).
 - An Agent Step `output` declared with the Acpus Schema DSL MUST compile nested object and array item structure into the Agent Step output schema stored in the IR.
-- An Agent Step MAY declare `output.schema` as a JSON Schema escape hatch.
 - An Agent Step MUST declare `output` as an object when `output` is present.
 - An Agent Step with `output` present MUST produce a JSON object that matches the declared output schema, exposed at `steps.<id>.output`.
 - An Agent Step result MUST be exposed as an envelope `{ output }` at `steps.<id>`, so the produced object is read through `steps.<id>.output`.

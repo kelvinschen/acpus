@@ -20,8 +20,6 @@ agents:
     type: mock
 input:
   mode: string
-defaults:
-  mode: fast
 workflow:
   steps:
     - id: build

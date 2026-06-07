@@ -30,7 +30,6 @@ export interface WorkflowSpec {
   name: string;
   description?: string;
   input?: Record<string, unknown>;
-  defaults?: Record<string, unknown>;
   agents?: Record<string, AgentSpec>;
   workflow: {
     steps: WorkflowStep[];
@@ -87,7 +86,6 @@ export interface AcpusIr {
   name: string;
   description?: string;
   input: Record<string, unknown>;
-  defaults: Record<string, unknown>;
   agents: Record<string, AgentSpec>;
   root: IrNode;
   outputs: Record<string, unknown>;

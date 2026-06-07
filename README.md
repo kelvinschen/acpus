@@ -79,7 +79,7 @@ The M2 runtime (`@acpus/runtime`) implements a local durable execution engine:
 - Keep `@acpus/core` free of process, filesystem, runtime, and agent runtime side effects.
 - Keep `@acpus/runtime` as the single owner of process, filesystem, concurrency, and executor side effects.
 - Keep CLI output stable enough for tests and CI: `run --dry-run --json` emits `{ ok, diagnostics, ir, schedule }`.
-- Keep workflow specs YAML-first and use standard JSON Schema objects under `output.schema`.
+- Keep workflow specs YAML-first and use the Acpus Schema DSL for output declarations.
 - Build packages with `tsc` only; bundling is a future publishing optimization, not a compiler/runtime requirement.
 - Keep `@acpus/mock-agent` ACP-compatible and deterministic; acpx is not part of the mock-agent foundation slice.
 - Keep `@acpus/runtime` single-host local; no distributed execution, remote workers, or shared Temporal cluster.

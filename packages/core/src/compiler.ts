@@ -4,7 +4,7 @@ import { parse as parseYaml } from "yaml";
 import { DiagnosticBag } from "./diagnostics.js";
 import { createExpressionCollector } from "./expressions.js";
 import { createSchedule } from "./schedule.js";
-import { compileInputSchema, compileSchemaDsl, isFlatMap } from "./schema/index.js";
+import { compileSchemaDsl } from "./schema/index.js";
 import { parseDurationMs } from "./duration.js";
 import type {
   AcpusIr,
@@ -55,7 +55,6 @@ export function compileWorkflow(source: string, options: CompileOptions = {}): C
 
   const expressionCollector = createExpressionCollector(diagnostics, stepIds);
   expressionCollector.visit(expanded.input ?? {}, "$.input");
-  expressionCollector.visit(expanded.defaults ?? {}, "$.defaults");
   expressionCollector.visit(expanded.agents ?? {}, "$.agents");
   expressionCollector.visit(expanded.workflow.steps, "$.workflow.steps");
   expressionCollector.visit(expanded.outputs ?? {}, "$.outputs");
@@ -75,7 +74,6 @@ export function compileWorkflow(source: string, options: CompileOptions = {}): C
     name: expanded.name,
     description: expanded.description,
     input: expanded.input ?? {},
-    defaults: expanded.defaults ?? {},
     agents: expanded.agents ?? {},
     root,
     outputs: expanded.outputs ?? {},
@@ -159,7 +157,7 @@ function validateSpec(spec: WorkflowSpec, context: CompileContext): void {
 
   // Compile input flat-map to JSON Schema
   if (isRecord(spec.input)) {
-    const { schema, errors } = compileInputSchema(spec.input);
+    const { schema, errors } = compileSchemaDsl(spec.input, { strictObjectKeys: false });
     for (const err of errors) {
       diagnostics.error("INPUT_SHAPE", err.message, `$.input.${err.field}`);
     }
@@ -385,20 +383,16 @@ function validateAgentStep(step: WorkflowStep, path: string, context: CompileCon
   }
   if (isRecord(step.output)) {
     if ("schema" in step.output) {
-      // Escape hatch: explicit JSON Schema
-      validateJsonSchema(step.output.schema, `${path}.output.schema`, context);
-    } else if (isFlatMap(step.output)) {
-      // Flat-map shorthand: compile to JSON Schema
-      const { schema, errors } = compileSchemaDsl(step.output);
-      for (const err of errors) {
-        context.diagnostics.error("OUTPUT_SHAPE", err.message, `${path}.output.${err.field}`);
-      }
-      if (errors.length === 0) {
-        validateJsonSchema(schema, `${path}.output`, context);
-      }
-      // Replace step.output with compiled schema so the IR stores the JSON Schema
-      step.output = schema;
+      context.diagnostics.error("OUTPUT_SHAPE", "The 'schema' key in agent output is no longer supported as a JSON Schema escape hatch. Use the Acpus Schema DSL directly (e.g. output: { field: string }).", `${path}.output.schema`);
     }
+    const { schema, errors } = compileSchemaDsl(step.output);
+    for (const err of errors) {
+      context.diagnostics.error("OUTPUT_SHAPE", err.message, `${path}.output.${err.field}`);
+    }
+    if (errors.length === 0) {
+      validateJsonSchema(schema, `${path}.output`, context);
+    }
+    step.output = schema;
   }
 }
 
@@ -547,7 +541,7 @@ function validateStepOnError(step: Record<string, unknown>, path: string, contex
 
 function validateJsonSchema(schema: unknown, path: string, context: CompileContext): void {
   if (!isRecord(schema)) {
-    context.diagnostics.error("JSON_SCHEMA_SHAPE", "output.schema must be a JSON Schema object.", path);
+    context.diagnostics.error("JSON_SCHEMA_SHAPE", "Compiled schema must be a JSON Schema object.", path);
     return;
   }
   if (!ajv.validateSchema(schema)) {

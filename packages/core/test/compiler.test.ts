@@ -195,7 +195,7 @@ workflow:
     expect(result.diagnostics.some((d) => d.code === "INCLUDE_CYCLE")).toBe(true);
   });
 
-  it("rejects invalid JSON Schema", () => {
+  it("rejects output with unsupported DSL keys (no schema escape hatch)", () => {
     const source = `
 version: 1
 name: invalid-schema
@@ -213,7 +213,31 @@ workflow:
     const result = lintWorkflow(source);
 
     expect(result.ok).toBe(false);
-    expect(result.diagnostics.some((d) => d.code === "JSON_SCHEMA_INVALID")).toBe(true);
+    expect(result.diagnostics.some((d) => d.code === "OUTPUT_SHAPE")).toBe(true);
+  });
+
+  it("rejects output.schema key with deprecation message", () => {
+    const source = `
+version: 1
+name: schema-deprecated
+agents:
+  mock: { type: mock }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: mock
+      prompt: "x"
+      output:
+        schema: { type: object }
+`;
+    const result = lintWorkflow(source);
+
+    expect(result.ok).toBe(false);
+    const schemaDiag = result.diagnostics.find((d) => d.path === "$.workflow.steps[0].output.schema");
+    expect(schemaDiag).toBeDefined();
+    expect(schemaDiag!.message).toContain("no longer supported");
+    expect(schemaDiag!.message).toContain("escape hatch");
   });
 
   it("rejects agent steps that reference undeclared agents", () => {
@@ -979,29 +1003,6 @@ workflow:
         })
       ])
     );
-  });
-
-  it("preserves output schema escape hatch", () => {
-    const source = `
-version: 1
-name: schema-escape
-agents:
-  mock: { type: mock }
-workflow:
-  steps:
-    - id: ask
-      run: agent
-      use: mock
-      prompt: "x"
-      output:
-        schema: { type: object, required: [plan_md], properties: { plan_md: { type: string } } }
-`;
-    const result = compileWorkflow(source);
-    expect(result.ok).toBe(true);
-    const askNode = result.ir?.root.children?.[0];
-    expect(askNode?.metadata.output).toEqual({
-      schema: { type: "object", required: ["plan_md"], properties: { plan_md: { type: "string" } } }
-    });
   });
 
   it("stores program-step capture in metadata.capture (not metadata.output)", () => {
