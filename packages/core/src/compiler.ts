@@ -239,7 +239,7 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
     return {
       ...base,
       kind: "run.program",
-      metadata: pickMetadata(step, ["run", "cmd", "env", "capture", "retry", "timeout", "on_error"])
+      metadata: pickMetadata(step, ["run", "cmd", "env", "capture", "output", "retry", "timeout", "on_error"])
     };
   }
 
@@ -402,6 +402,29 @@ function validateProgramStep(step: WorkflowStep, path: string, context: CompileC
   }
   if (step.capture !== undefined) {
     validateCapture(step.capture, path, context);
+  }
+  if (step.output !== undefined && !isRecord(step.output)) {
+    context.diagnostics.error("OUTPUT_SHAPE", "run: program output must be an object when present.", `${path}.output`);
+  }
+  if (isRecord(step.output)) {
+    if ("schema" in step.output) {
+      context.diagnostics.error("OUTPUT_SHAPE", "The 'schema' key in program output is no longer supported as a JSON Schema escape hatch. Use the Acpus Schema DSL directly (e.g. output: { field: string }).", `${path}.output.schema`);
+    }
+    const { schema, errors } = compileSchemaDsl(step.output);
+    for (const err of errors) {
+      context.diagnostics.error("OUTPUT_SHAPE", err.message, `${path}.output.${err.field}`);
+    }
+    if (errors.length === 0) {
+      validateJsonSchema(schema, `${path}.output`, context);
+    }
+    step.output = schema;
+  }
+  // Enforce: output schema requires capture.parse: json
+  if (isRecord(step.output)) {
+    const capture = step.capture as Record<string, unknown> | undefined;
+    if (!capture || capture.parse !== "json") {
+      context.diagnostics.error("OUTPUT_REQUIRES_JSON", "run: program output schema requires capture.parse: json.", `${path}.output`);
+    }
   }
 }
 

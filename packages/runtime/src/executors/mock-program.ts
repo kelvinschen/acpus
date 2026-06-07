@@ -1,6 +1,7 @@
 import type { ExecutorResult, FailureKind } from "../types.js";
 import type { ExecutorAdapter, ExecutionRequest } from "./types.js";
 import { ExpressionEvaluator } from "../evaluator.js";
+import { Ajv } from "ajv";
 
 export interface MockProgramResponse {
   stdout?: string;
@@ -19,6 +20,7 @@ export interface MockProgramResponse {
 export class MockProgramExecutor implements ExecutorAdapter {
   private readonly responses: Map<string, MockProgramResponse>;
   private readonly evaluator: ExpressionEvaluator;
+  private readonly ajv = new Ajv({ allErrors: true, strict: false });
 
   constructor(responses: Record<string, MockProgramResponse>, evaluator?: ExpressionEvaluator) {
     this.responses = new Map(Object.entries(responses));
@@ -82,6 +84,15 @@ export class MockProgramExecutor implements ExecutorAdapter {
 
       if (output === undefined && response.stdout && capture?.parse === "text") {
         output = response.stdout;
+      }
+
+      // Validate output against schema when declared (mirrors real ProgramExecutor).
+      const outputSchema = node.metadata.output as Record<string, unknown> | undefined;
+      if (outputSchema && output !== undefined) {
+        const validate = this.ajv.compile(outputSchema);
+        if (!validate(output)) {
+          return { failureKind: "schema", error: `Output validation failed: ${this.ajv.errorsText(validate.errors)}`, exitCode, stdout, stderr };
+        }
       }
 
       return { output, exitCode, stdout, stderr };

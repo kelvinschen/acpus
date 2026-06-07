@@ -184,6 +184,21 @@ export interface RunSummary {
   updatedAt: string;
 }
 
+// ─── Input validation ─────────────────────────────────────────────
+
+export interface InputValidationError {
+  /** JSON pointer path, e.g. "/region" or "/tags/0" */
+  path: string;
+  /** Ajv keyword that triggered the error, e.g. "required", "type" */
+  keyword: string;
+  /** Human-readable error message */
+  message: string;
+  /** Expected type or value (when applicable) */
+  expected?: string;
+  /** Actual type or value (when applicable) */
+  actual?: string;
+}
+
 // ─── Replay ─────────────────────────────────────────────────────
 
 /** A single discrepancy found while replaying a persisted Run. */

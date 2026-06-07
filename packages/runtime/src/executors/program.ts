@@ -1,6 +1,7 @@
 import { execa } from "execa";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { Ajv } from "ajv";
 import { parseDurationMs } from "@acpus/core";
 import type { ExpressionContext, ExecutorResult } from "../types.js";
 import type { ExecutorAdapter, ExecutionRequest } from "./types.js";
@@ -16,6 +17,7 @@ import { ExpressionEvaluator } from "../evaluator.js";
  */
 export class ProgramExecutor implements ExecutorAdapter {
   private readonly evaluator: ExpressionEvaluator;
+  private readonly ajv = new Ajv({ allErrors: true, strict: false });
 
   constructor(evaluator?: ExpressionEvaluator) {
     this.evaluator = evaluator ?? new ExpressionEvaluator();
@@ -143,6 +145,21 @@ export class ProgramExecutor implements ExecutorAdapter {
       }
     } else {
       output = stdout || undefined;
+    }
+
+    // Validate output against schema when declared (mirrors agent schema validation).
+    const outputSchema = node.metadata.output as Record<string, unknown> | undefined;
+    if (outputSchema && output !== undefined) {
+      const validate = this.ajv.compile(outputSchema);
+      if (!validate(output)) {
+        return {
+          failureKind: "schema",
+          error: `Output validation failed: ${this.ajv.errorsText(validate.errors)}`,
+          exitCode,
+          stdout,
+          stderr
+        };
+      }
     }
 
     return { exitCode, output, stdout, stderr };

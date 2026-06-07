@@ -1455,4 +1455,136 @@ workflow:
     expect(diag.message).toContain("got null");
     expect(diag.message).not.toContain("got object");
   });
+
+  // ── Program output schema tests ──
+
+  it("compiles program step output schema into metadata.output", () => {
+    const source = `
+version: 1
+name: program-output
+workflow:
+  steps:
+    - id: parse_result
+      run: program
+      cmd: ["echo", '{"count": 5}']
+      capture: { from: stdout, parse: json }
+      output:
+        count: integer
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const node = result.ir?.root.children?.[0];
+    expect(node?.kind).toBe("run.program");
+    expect(node?.metadata.output).toEqual({
+      type: "object",
+      properties: { count: { type: "integer" } },
+      additionalProperties: false,
+      required: ["count"]
+    });
+  });
+
+  it("allows program step without output", () => {
+    const source = `
+version: 1
+name: program-no-output
+workflow:
+  steps:
+    - id: run_it
+      run: program
+      cmd: ["echo", "hello"]
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    expect(result.ir?.root.children?.[0]?.metadata.output).toBeUndefined();
+  });
+
+  it("rejects program step output when not an object", () => {
+    const source = `
+version: 1
+name: program-bad-output
+workflow:
+  steps:
+    - id: run_it
+      run: program
+      cmd: ["echo", "hello"]
+      capture: { from: stdout, parse: json }
+      output: nope
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "OUTPUT_SHAPE" && d.path === "$.workflow.steps[0].output")).toBe(true);
+  });
+
+  it("accepts program output with capture.parse: json", () => {
+    const source = `
+version: 1
+name: program-output-json
+workflow:
+  steps:
+    - id: parse_it
+      run: program
+      cmd: ["echo", '{"status": "ok"}']
+      capture: { from: stdout, parse: json }
+      output:
+        status: string
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects program output with capture.parse: text", () => {
+    const source = `
+version: 1
+name: program-output-text
+workflow:
+  steps:
+    - id: parse_it
+      run: program
+      cmd: ["echo", "hello"]
+      capture: { from: stdout, parse: text }
+      output:
+        status: string
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "OUTPUT_REQUIRES_JSON")).toBe(true);
+  });
+
+  it("rejects program output without capture", () => {
+    const source = `
+version: 1
+name: program-output-no-capture
+workflow:
+  steps:
+    - id: parse_it
+      run: program
+      cmd: ["echo", "hello"]
+      output:
+        status: string
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "OUTPUT_REQUIRES_JSON")).toBe(true);
+  });
+
+  it("rejects program output with schema escape hatch key", () => {
+    const source = `
+version: 1
+name: program-output-schema-key
+workflow:
+  steps:
+    - id: parse_it
+      run: program
+      cmd: ["echo", "hello"]
+      capture: { from: stdout, parse: json }
+      output:
+        schema: { type: object }
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    const schemaDiag = result.diagnostics.find((d) => d.path === "$.workflow.steps[0].output.schema");
+    expect(schemaDiag).toBeDefined();
+    expect(schemaDiag!.message).toContain("no longer supported");
+    expect(schemaDiag!.message).toContain("escape hatch");
+  });
 });

@@ -17,7 +17,7 @@ agents:
   coder:
     type: mock
 input:
-  files: string
+  files: [string]
 workflow:
   steps:
     - id: review-files

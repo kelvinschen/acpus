@@ -10,6 +10,7 @@ import { canTransition, transition, createInitialNodeState, resetFailedForRetry,
 import { ArtifactStore } from "./artifacts.js";
 import type { ExecutorAdapter } from "./executors/types.js";
 import type { NodeExecutionState, NodeState, ReplayResult, ReplayMismatch } from "./types.js";
+import { validateInput } from "./validate-input.js";
 import { randomUUID } from "node:crypto";
 import pLimit from "p-limit";
 
@@ -74,8 +75,9 @@ export class WorkflowInterpreter {
    * initial running state synchronously, without executing nodes.
    */
   initRun(ir: AcpusIr, opts: RunOptions): import("./types.js").RunState {
+    const validatedInput = validateInput(ir.input, opts.input);
     const runId = opts.runId ?? randomUUID();
-    return this.store.initRun(runId, ir, opts.input);
+    return this.store.initRun(runId, ir, validatedInput);
   }
 
   /**
@@ -1106,11 +1108,14 @@ export class WorkflowInterpreter {
       childInput[key] = this.evaluateInputValue(value, ctx);
     }
 
+    // Validate subworkflow input against the child IR's compiled input schema.
+    const validatedChildInput = validateInput(compiled.ir.input, childInput);
+
     // Execute the child root as a nested pipeline. Child node keys are nested
     // under this subworkflow's node key to stay unique within the run.
     this.subworkflowStack.add(childAbs);
     try {
-      const childCtx = this.buildContext(childInput, runId);
+      const childCtx = this.buildContext(validatedChildInput, runId);
       await this.executeNode(compiled.ir.root, childCtx, runId, dynamic, nodeKey);
       return { ...childCtx.steps };
     } finally {

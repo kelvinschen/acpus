@@ -145,4 +145,94 @@ workflow:
     expect(artifacts.read(meta.runId, "workflow/emit", "stdout.log").toString()).toBe("stdout-content");
     expect(artifacts.read(meta.runId, "workflow/emit", "stderr.log").toString()).toBe("stderr-content");
   });
+
+  it("validates captured output against program output schema", async () => {
+    const ir = compileYaml(`
+version: 1
+name: program-schema-valid
+workflow:
+  steps:
+    - id: parse_json
+      run: program
+      cmd: ["echo", '{"count": 5}']
+      capture:
+        from: stdout
+        parse: json
+      output:
+        count: integer
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: {
+        "parse_json": { parsedOutput: { count: 5 } }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+
+    const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "parse_json");
+    expect(node?.state).toBe("completed");
+    expect((node?.output as { output?: unknown })?.output).toEqual({ count: 5 });
+  });
+
+  it("fails the node when captured output does not match program output schema", async () => {
+    const ir = compileYaml(`
+version: 1
+name: program-schema-invalid
+workflow:
+  steps:
+    - id: parse_json
+      run: program
+      cmd: ["echo", '{"count": "not-a-number"}']
+      capture:
+        from: stdout
+        parse: json
+      output:
+        count: integer
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: {
+        "parse_json": { parsedOutput: { count: "not-a-number" } }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("failed");
+
+    const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "parse_json");
+    expect(node?.state).toBe("failed");
+    expect(node?.error).toContain("schema");
+  });
+
+  it("does not validate output when no output schema is declared", async () => {
+    const ir = compileYaml(`
+version: 1
+name: program-no-schema
+workflow:
+  steps:
+    - id: parse_json
+      run: program
+      cmd: ["echo", "hello"]
+      capture:
+        from: stdout
+        parse: json
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: {
+        "parse_json": { parsedOutput: { anything: "goes", number: 42 } }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+
+    const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "parse_json");
+    expect(node?.state).toBe("completed");
+  });
 });

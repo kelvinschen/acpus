@@ -62,6 +62,12 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - Non-zero Program Step exit codes MUST be treated as step data; the Node completes and carries `exit_code`.
 - A Program Step MUST fail the Node only on non-recoverable conditions: process timeout, signal kill, spawn failure, capture parse/read failure, or artifact write failure.
 - A Program Step MAY omit `capture` when no structured output parsing is required.
+- A Program Step MAY declare `output` using the Acpus Schema DSL defined in [Schema Spec](schema-spec.md).
+- A Program Step `output` declared with the Acpus Schema DSL MUST compile nested object and array item structure into the Program Step output schema stored in the IR.
+- A Program Step MUST declare `output` as an object when `output` is present.
+- A Program Step with `output` present MUST declare `capture.parse: json`; output schema validation requires parsed JSON output.
+- A Program Step with `output` present MUST produce a JSON object that matches the declared output schema.
+- Program Step output schema validation failures MUST be treated as non-recoverable failures (the Node fails with `failureKind: "schema"`).
 
 ### Composite Nodes
 

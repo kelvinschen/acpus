@@ -3,6 +3,7 @@ import type { RunStore } from "./store.js";
 import type { ExecutorAdapter } from "./executors/types.js";
 import type { SupervisorConfig, RunSummary, SupervisorHealth } from "./types.js";
 import { WorkflowInterpreter } from "./interpreter.js";
+import { InputValidationFailure } from "./validate-input.js";
 import { compileWorkflow } from "@acpus/core";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -233,10 +234,21 @@ export function createSupervisorApp(
     }
 
     const interpreter = new WorkflowInterpreter(store, agentExecutor, programExecutor, { acpxAgentExecutor });
-    const runState = interpreter.initRun(result.ir, { input: body.input ?? {} });
+    let runState: RunState;
+    try {
+      runState = interpreter.initRun(result.ir, { input: body.input ?? {} });
+    } catch (error) {
+      if (error instanceof InputValidationFailure) {
+        return c.json({ error: "Input validation failed", validationErrors: error.errors }, 400);
+      }
+      throw error;
+    }
     interpreters.set(runState.runId, interpreter);
     lastActiveAt = Date.now();
-    startRunExecution(interpreter, result.ir, body.input ?? {}, runState.runId);
+    // initRun has already validated and filled defaults; read the validated
+    // input from the store rather than re-using the raw body.input.
+    const validatedInput = store.readInput(runState.runId) ?? body.input ?? {};
+    startRunExecution(interpreter, result.ir, validatedInput, runState.runId);
 
     return c.json(runState, 201);
   });
