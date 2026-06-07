@@ -47,7 +47,7 @@ export class ProgramExecutor implements ExecutorAdapter {
     // is a user-facing error, not a spawn failure — catch and report clearly.
     let env: Record<string, string>;
     try {
-      env = { ...process.env, ...this.evaluateEnv(node.metadata.env as Record<string, unknown> | undefined, context) };
+      env = { ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined) as [string, string][]), ...this.evaluateEnv(node.metadata.env as Record<string, unknown> | undefined, context) };
     } catch (error) {
       return {
         failureKind: "capture",
@@ -87,7 +87,7 @@ export class ProgramExecutor implements ExecutorAdapter {
 
     // Timeout → non-recoverable.
     if (result.timedOut) {
-      return { failureKind: "timeout", error: `Process timed out after ${timeout}`, stdout, stderr };
+      return { failureKind: "timeout", error: `Process timed out after ${timeoutMs}ms`, stdout, stderr };
     }
 
     // Killed by signal (SIGKILL etc.) → non-recoverable.

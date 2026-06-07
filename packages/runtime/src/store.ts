@@ -30,6 +30,19 @@ import type { NodeExecutionState, RunState } from "./types.js";
  *             transcript.json
  *             stdout.txt
  */
+/**
+ * Validate a runId is safe for filesystem path construction.
+ * Rejects path traversal (..), path separators, and null bytes.
+ * Does NOT require strict UUID format — tests may use short IDs like "run-1".
+ */
+const UNSAFE_RUN_ID = /(^|\/)\.\.?(\/|$)|[\\:\0]/;
+
+function validateRunId(runId: string): void {
+  if (!runId || UNSAFE_RUN_ID.test(runId)) {
+    throw new Error(`Invalid runId: '${runId}' contains unsafe path characters`);
+  }
+}
+
 export class RunStore {
   private readonly baseDir: string;
 
@@ -41,6 +54,7 @@ export class RunStore {
 
   /** Create a new run directory and write IR + input snapshots. */
   initRun(runId: string, ir: AcpusIr, input: Record<string, unknown>): RunState {
+    validateRunId(runId);
     const runDir = this.runDir(runId);
     mkdirSync(join(runDir, "nodes"), { recursive: true });
     mkdirSync(join(runDir, "artifacts"), { recursive: true });
@@ -69,21 +83,25 @@ export class RunStore {
 
   /** Read the frozen IR snapshot for a run. */
   readIr(runId: string): AcpusIr | undefined {
+    validateRunId(runId);
     return this.readJson<AcpusIr>(join(this.runDir(runId), "ir.json"));
   }
 
   /** Read the resolved input for a run. */
   readInput(runId: string): Record<string, unknown> | undefined {
+    validateRunId(runId);
     return this.readJson<Record<string, unknown>>(join(this.runDir(runId), "input.json"));
   }
 
   // ─── Run metadata ──────────────────────────────────────────────
 
   writeRunMeta(runId: string, meta: RunState): void {
+    validateRunId(runId);
     this.atomicWriteJson(join(this.runDir(runId), "run-meta.json"), meta);
   }
 
   readRunMeta(runId: string): RunState | undefined {
+    validateRunId(runId);
     return this.readJson<RunState>(join(this.runDir(runId), "run-meta.json"));
   }
 
@@ -91,18 +109,21 @@ export class RunStore {
 
   /** Atomically write node execution state. */
   writeNodeState(runId: string, state: NodeExecutionState): void {
+    validateRunId(runId);
     const filename = encodeNodeKeyForFs(state.nodeKey);
     this.atomicWriteJson(join(this.runDir(runId), "nodes", filename), state);
   }
 
   /** Read node execution state. Returns undefined if not found. */
   readNodeState(runId: string, nodeKey: string): NodeExecutionState | undefined {
+    validateRunId(runId);
     const filename = encodeNodeKeyForFs(nodeKey);
     return this.readJson<NodeExecutionState>(join(this.runDir(runId), "nodes", filename));
   }
 
   /** List all node states for a run. */
   listNodeStates(runId: string): NodeExecutionState[] {
+    validateRunId(runId);
     const nodesDir = join(this.runDir(runId), "nodes");
     if (!existsSync(nodesDir)) return [];
 
@@ -124,6 +145,7 @@ export class RunStore {
 
   /** Get the artifacts directory for a node. */
   artifactsDir(runId: string, nodeKey: string): string {
+    validateRunId(runId);
     const dir = join(this.runDir(runId), "artifacts", encodeNodeKeyForDir(nodeKey));
     mkdirSync(dir, { recursive: true });
     return dir;
@@ -131,6 +153,7 @@ export class RunStore {
 
   /** Check if a run exists on disk. */
   hasRun(runId: string): boolean {
+    validateRunId(runId);
     return existsSync(this.runDir(runId));
   }
 
@@ -151,11 +174,19 @@ export class RunStore {
     // Format: <runId>/nodes/<safeKey>/<filename>
     if (parts.length < 4 || parts[1] !== "nodes") return undefined;
     const runId = parts[0];
+    // Validate runId from URI before using it in path construction
+    if (!runId || UNSAFE_RUN_ID.test(runId!)) return undefined;
+    // Reject path traversal in safeKey and filename segments
+    if (parts.slice(2).some((p) => p === ".." || p === "." || p === "")) return undefined;
     const filename = parts[parts.length - 1];
     const safeKey = parts.slice(2, parts.length - 1).join("/");
     if (!runId || !filename || !safeKey) return undefined;
     // safeKey is already the encoded form (slashes → colons) used on disk.
-    return resolve(join(this.runDir(runId), "artifacts", safeKey, filename));
+    const resolved = resolve(join(this.runDir(runId!), "artifacts", safeKey, filename));
+    // Defense-in-depth: verify the resolved path stays under the run directory
+    const runDir = this.runDir(runId!);
+    if (!resolved.startsWith(runDir + "/") && resolved !== runDir) return undefined;
+    return resolved;
   }
 
   // ─── Internal helpers ──────────────────────────────────────────

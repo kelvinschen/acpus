@@ -139,15 +139,32 @@ export interface RunOptions {
   runId?: string;
 }
 
-// ─── Daemon types ───────────────────────────────────────────────
+// ─── Supervisor types ────────────────────────────────────────────
 
-export interface DaemonConfig {
-  /** Port to listen on (default 3839) */
+export interface SupervisorConfig {
+  /** Port to listen on (0 = random) */
   port?: number;
   /** Host to bind (default "127.0.0.1") */
   host?: string;
   /** Base directory for .acpus/ state (default cwd) */
   stateDir?: string;
+  /** Idle shutdown timeout in milliseconds (default 5 min) */
+  idleTimeoutMs?: number;
+}
+
+export interface SupervisorMetadata {
+  schemaVersion: number;
+  workspace: string;
+  pid: number;
+  endpoint: string;
+  startedAt: string;
+  version: string;
+}
+
+export interface SupervisorHealth extends SupervisorMetadata {
+  ok: true;
+  runningCount: number;
+  activeClients: number;
 }
 
 export interface StartRunRequest {
@@ -155,6 +172,8 @@ export interface StartRunRequest {
   spec: string;
   /** Resolved input values */
   input?: Record<string, unknown>;
+  /** Absolute path to the spec file (for $include/subworkflow resolution) */
+  sourcePath?: string;
 }
 
 export interface RunSummary {

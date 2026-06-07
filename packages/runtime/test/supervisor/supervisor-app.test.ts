@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { createDaemonApp } from "../../src/daemon.js";
+import { createSupervisorApp } from "../../src/supervisor-app.js";
 import { RunStore } from "../../src/store.js";
 import { MockAgentExecutor } from "../../src/executors/mock-agent.js";
 import { MockProgramExecutor } from "../../src/executors/mock-program.js";
@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 
 const SPEC_YAML = `
 version: 1
-name: daemon-test
+name: supervisor-test
 agents:
   coder:
     type: mock
@@ -23,20 +23,20 @@ workflow:
       prompt: "Test"
 `;
 
-describe("Daemon HTTP API", () => {
+describe("Supervisor HTTP API", () => {
   let tmpDir: string;
   let server: Server;
   let baseUrl: string;
   let store: RunStore;
 
   beforeAll(async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), "acpus-daemon-"));
+    tmpDir = mkdtempSync(join(tmpdir(), "acpus-supervisor-"));
     store = new RunStore(join(tmpDir, "runs"));
     const agentExecutor = new MockAgentExecutor({
       "step-a": { output: { result: "done" }, delay: 10 }
     });
     const programExecutor = new MockProgramExecutor({});
-    const app = createDaemonApp({}, store, agentExecutor, programExecutor);
+    const { app } = createSupervisorApp({ stateDir: tmpDir }, store, agentExecutor, programExecutor);
 
     await new Promise<void>((resolve) => {
       server = serve({ fetch: app.fetch, port: 0 }, (info) => {
@@ -72,19 +72,44 @@ describe("Daemon HTTP API", () => {
     expect(res.status).toBe(201);
     const data = await res.json();
     expect(data.runId).toBeDefined();
-    // POST returns immediately with the initial running state; the run then
-    // completes in the background.
     expect(data.status).toBe("running");
-    expect(data.workflowName).toBe("daemon-test");
+    expect(data.workflowName).toBe("supervisor-test");
     expect(await pollRunStatus(data.runId)).toBe("completed");
   });
 
-  it("lists runs via GET /runs", async () => {
+  it("accepts sourcePath in POST /runs", async () => {
+    // sourcePath must be within the workspace (parent of stateDir)
+    const workspace = join(tmpDir, "..");
+    const sourcePath = join(workspace, "test.yaml");
+    const res = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: SPEC_YAML, input: {}, sourcePath })
+    });
+    expect(res.status).toBe(201);
+  });
+
+  it("returns health via GET /health", async () => {
+    const res = await fetch(`${baseUrl}/health`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.schemaVersion).toBe(1);
+    expect(data.pid).toBe(process.pid);
+    expect(typeof data.runningCount).toBe("number");
+    expect(typeof data.activeClients).toBe("number");
+  });
+
+  it("lists runs via GET /runs sorted by updatedAt descending", async () => {
     const res = await fetch(`${baseUrl}/runs`);
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(Array.isArray(data)).toBe(true);
     expect(data.length).toBeGreaterThan(0);
+    // Verify sorted by updatedAt descending
+    for (let i = 1; i < data.length; i++) {
+      expect(data[i - 1].updatedAt >= data[i].updatedAt).toBe(true);
+    }
   });
 
   it("inspects a run via GET /runs/:runId", async () => {
@@ -133,7 +158,7 @@ describe("Daemon HTTP API", () => {
     const res = await fetch(`${baseUrl}/runs/${runId}/ir`);
     expect(res.status).toBe(200);
     const ir = await res.json();
-    expect(ir.name).toBe("daemon-test");
+    expect(ir.name).toBe("supervisor-test");
     expect(ir.root).toBeDefined();
     expect(ir.root.kind).toBe("pipeline");
   });
@@ -186,7 +211,6 @@ describe("Daemon HTTP API", () => {
     });
     const { runId } = await createRes.json();
 
-    // Node keys contain "/" so must use query param
     const res = await fetch(`${baseUrl}/runs/${runId}/node?key=${encodeURIComponent("workflow/step-a")}`);
     expect(res.status).toBe(200);
     const node = await res.json();
@@ -219,8 +243,6 @@ describe("Daemon HTTP API", () => {
   });
 
   it("registers the interpreter before execution so control routes reach a running run", async () => {
-    // A run that is in flight must be controllable: the interpreter is registered
-    // synchronously at POST time, so node control does not 404 with "no interpreter".
     const createRes = await fetch(`${baseUrl}/runs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -228,23 +250,143 @@ describe("Daemon HTTP API", () => {
     });
     const { runId } = await createRes.json();
 
-    // Immediately issue a control request; it must not fail with the
-    // "No active interpreter for this run" 404.
+    // Node-level pause
     const res = await fetch(`${baseUrl}/runs/${runId}/pause?key=${encodeURIComponent("workflow/step-a")}`, { method: "POST" });
     expect(res.status).not.toBe(404);
 
     await pollRunStatus(runId);
   });
+
+  it("refreshes client leases on requests with x-acpus-client-id and x-acpus-client-kind", async () => {
+    const clientId = "test-client-123";
+    const res = await fetch(`${baseUrl}/health`, {
+      headers: {
+        "x-acpus-client-id": clientId,
+        "x-acpus-client-kind": "watcher"
+      }
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.activeClients).toBeGreaterThanOrEqual(1);
+  });
 });
 
-describe("Daemon cross-process recovery + replay", () => {
+describe("Supervisor Run-level controls", () => {
+  let tmpDir: string;
+  let server: Server;
+  let baseUrl: string;
+  let store: RunStore;
+
+  // A slow spec that stays running long enough to pause
+  const SLOW_SPEC = `
+version: 1
+name: slow-test
+agents:
+  coder:
+    type: mock
+workflow:
+  steps:
+    - id: step-a
+      run: agent
+      use: coder
+      prompt: "Test"
+    - id: step-b
+      run: agent
+      use: coder
+      prompt: "Test2"
+`;
+
+  beforeAll(async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "acpus-supervisor-ctrl-"));
+    store = new RunStore(join(tmpDir, "runs"));
+    const agentExecutor = new MockAgentExecutor({
+      "step-a": { output: { result: "done" }, delay: 200 },
+      "step-b": { output: { result: "done2" }, delay: 200 }
+    });
+    const programExecutor = new MockProgramExecutor({});
+    const { app } = createSupervisorApp({ stateDir: tmpDir }, store, agentExecutor, programExecutor);
+
+    await new Promise<void>((resolve) => {
+      server = serve({ fetch: app.fetch, port: 0 }, (info) => {
+        baseUrl = `http://127.0.0.1:${info.port}`;
+        resolve();
+      });
+    });
+  });
+
+  afterAll(() => {
+    server?.close();
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("Run-level pause without ?key= pauses the entire run", async () => {
+    const createRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: SLOW_SPEC, input: {} })
+    });
+    const { runId } = await createRes.json();
+
+    // Run-level pause (no ?key=)
+    const pauseRes = await fetch(`${baseUrl}/runs/${runId}/pause`, { method: "POST" });
+    expect(pauseRes.status).toBe(200);
+    const data = await pauseRes.json();
+    expect(data.status).toBe("paused");
+  });
+
+  it("Run-level pause returns 409 for non-running run", async () => {
+    // First create and pause a run
+    const createRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: SLOW_SPEC, input: {} })
+    });
+    const { runId } = await createRes.json();
+
+    // Pause it
+    await fetch(`${baseUrl}/runs/${runId}/pause`, { method: "POST" });
+
+    // Try to pause again → 409
+    const res = await fetch(`${baseUrl}/runs/${runId}/pause`, { method: "POST" });
+    expect(res.status).toBe(409);
+  });
+
+  it("Run-level cancel without ?key= cancels the entire run", async () => {
+    const createRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: SLOW_SPEC, input: {} })
+    });
+    const { runId } = await createRes.json();
+
+    const cancelRes = await fetch(`${baseUrl}/runs/${runId}/cancel`, { method: "POST" });
+    expect(cancelRes.status).toBe(200);
+    const data = await cancelRes.json();
+    expect(data.status).toBe("cancelled");
+  });
+
+  it("Node-level control with ?key= still works", async () => {
+    const createRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: SLOW_SPEC, input: {} })
+    });
+    const { runId } = await createRes.json();
+
+    // Node-level pause
+    const res = await fetch(`${baseUrl}/runs/${runId}/pause?key=${encodeURIComponent("workflow/step-a")}`, { method: "POST" });
+    // May succeed or 409 depending on timing; the key is it's Node-level, not Run-level
+    expect([200, 409]).toContain(res.status);
+  });
+});
+
+describe("Supervisor cross-process recovery + replay", () => {
   let tmpDir: string;
   let runsDir: string;
 
-  // A spec whose program step fails, leaving a `failed` leaf to retry.
   const FAILING_SPEC = `
 version: 1
-name: daemon-restart-test
+name: supervisor-restart-test
 agents:
   coder:
     type: mock
@@ -260,7 +402,7 @@ workflow:
 `;
 
   beforeAll(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "acpus-daemon-restart-"));
+    tmpDir = mkdtempSync(join(tmpdir(), "acpus-supervisor-restart-"));
     runsDir = join(tmpDir, "runs");
   });
 
@@ -268,14 +410,11 @@ workflow:
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  /** Boot a daemon app + server over a (possibly pre-existing) runs dir. */
-  async function bootDaemon(): Promise<{ baseUrl: string; server: Server; store: RunStore }> {
+  async function bootSupervisor(): Promise<{ baseUrl: string; server: Server; store: RunStore }> {
     const store = new RunStore(runsDir);
     const agentExecutor = new MockAgentExecutor({ "step-a": { output: { result: "done" }, delay: 10 } });
-    // The program step fails (non-recoverable) so the run ends with a `failed`
-    // leaf — a legal retry target (failed → pending) after a restart.
     const programExecutor = new MockProgramExecutor({ "step-p": { failureKind: "exit", delay: 5 } });
-    const app = createDaemonApp({}, store, agentExecutor, programExecutor);
+    const { app } = createSupervisorApp({ stateDir: tmpDir }, store, agentExecutor, programExecutor);
     const server = await new Promise<Server>((resolve) => {
       const s = serve({ fetch: app.fetch, port: 0 }, () => resolve(s as unknown as Server));
     });
@@ -295,9 +434,7 @@ workflow:
   }
 
   it("recovers an interpreter from disk after a restart so control routes do not 404", async () => {
-    // Boot #1: start a run and let it finish (with a failed program leaf), then
-    // shut the daemon down.
-    const d1 = await bootDaemon();
+    const d1 = await bootSupervisor();
     const createRes = await fetch(`${d1.baseUrl}/runs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -307,14 +444,10 @@ workflow:
     expect(await pollStatus(d1.baseUrl, runId)).toBe("failed");
     await new Promise<void>((r) => d1.server.close(() => r()));
 
-    // Boot #2: fresh daemon, empty in-memory interpreters map, same runs dir.
-    const d2 = await bootDaemon();
+    const d2 = await bootSupervisor();
     try {
-      // retry on the failed leaf must NOT 404 — the interpreter is recovered
-      // lazily from disk, and failed→pending keeps the retry transition legal.
       const res = await fetch(`${d2.baseUrl}/runs/${runId}/retry?key=${encodeURIComponent("workflow/step-p")}`, { method: "POST" });
       expect(res.status).not.toBe(404);
-      // An unknown run still 404s.
       const missing = await fetch(`${d2.baseUrl}/runs/does-not-exist/retry?key=${encodeURIComponent("x")}`, { method: "POST" });
       expect(missing.status).toBe(404);
     } finally {
@@ -323,8 +456,7 @@ workflow:
   });
 
   it("does not lazily recover for pause/cancel after a restart (no in-flight turn)", async () => {
-    // Boot #1: run to terminal, shut down.
-    const d1 = await bootDaemon();
+    const d1 = await bootSupervisor();
     const createRes = await fetch(`${d1.baseUrl}/runs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -334,10 +466,7 @@ workflow:
     await pollStatus(d1.baseUrl, runId);
     await new Promise<void>((r) => d1.server.close(() => r()));
 
-    // Boot #2: fresh daemon. pause/cancel abort an in-flight turn — there is none
-    // after a restart, so they are NOT lazily recovered. An existing run → 409,
-    // an unknown run → 404.
-    const d2 = await bootDaemon();
+    const d2 = await bootSupervisor();
     try {
       const pauseRes = await fetch(`${d2.baseUrl}/runs/${runId}/pause?key=${encodeURIComponent("workflow/step-a")}`, { method: "POST" });
       expect(pauseRes.status).toBe(409);
@@ -351,8 +480,7 @@ workflow:
   });
 
   it("replay does not mutate persisted state after a restart (read-only)", async () => {
-    // Boot #1: run to a terminal state, snapshot node states, shut down.
-    const d1 = await bootDaemon();
+    const d1 = await bootSupervisor();
     const createRes = await fetch(`${d1.baseUrl}/runs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -363,9 +491,7 @@ workflow:
     const before = d1.store.listNodeStates(runId).map((n) => ({ k: n.nodeKey, s: n.state, a: n.attempt }));
     await new Promise<void>((r) => d1.server.close(() => r()));
 
-    // Boot #2: replay over the same runs dir must not write (no running-node
-    // reset, no attempt bump) since the run finished with no stale running nodes.
-    const d2 = await bootDaemon();
+    const d2 = await bootSupervisor();
     try {
       const replayRes = await fetch(`${d2.baseUrl}/runs/${runId}/replay`, { method: "POST" });
       expect(replayRes.status).toBe(200);
@@ -377,7 +503,7 @@ workflow:
   });
 
   it("replays a completed run deterministically (ok:true) and detects tampering (ok:false)", async () => {
-    const d = await bootDaemon();
+    const d = await bootSupervisor();
     try {
       const createRes = await fetch(`${d.baseUrl}/runs`, {
         method: "POST",
@@ -387,16 +513,12 @@ workflow:
       const { runId } = await createRes.json();
       await pollStatus(d.baseUrl, runId);
 
-      // A faithful replay reproduces the node topology (reached key set).
       const okRes = await fetch(`${d.baseUrl}/runs/${runId}/replay`, { method: "POST" });
       expect(okRes.status).toBe(200);
       const ok = await okRes.json();
       expect(ok.ok).toBe(true);
       expect(ok.mismatches).toEqual([]);
 
-      // Tamper with the persisted topology: inject a recorded node that the
-      // deterministic re-walk of the frozen IR will never reach. Replay must
-      // flag it as missing-in-replay (recorded but not reproduced).
       const ghost = d.store.readNodeState(runId, "workflow/step-a")!;
       d.store.writeNodeState(runId, { ...ghost, nodeKey: "workflow/ghost-node", nodeId: "ghost-node" });
 

@@ -1,12 +1,12 @@
 /**
- * Polling data layer. The daemon is poll-only (no event stream), so the TUI
+ * Polling data layer. The supervisor is poll-only (no event stream), so the TUI
  * repeatedly fetches run status + node states. The frozen IR is immutable, so
  * it is fetched once and cached.
  */
 
 import { useEffect, useRef, useState } from "react";
 import type { AcpusIr } from "@acpus/core";
-import type { DaemonClient, NodeExecutionState, RunState } from "@acpus/runtime";
+import type { RunSupervisorClient, NodeExecutionState, RunState } from "@acpus/runtime";
 
 export interface RunSnapshot {
   ir?: AcpusIr;
@@ -30,7 +30,7 @@ export function isTerminal(status?: string): boolean {
  * (used right after a control action).
  */
 export function useRunPoller(
-  client: DaemonClient,
+  client: RunSupervisorClient,
   runId: string,
   intervalMs = 400,
   refreshNonce = 0

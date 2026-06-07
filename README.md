@@ -1,14 +1,14 @@
 # acpus
 
-`acpus` is a CLI-first TypeScript orchestrator for durable ACP agent workflows. M1 (YAML authoring, static linting, frozen IR, dry-run schedule projection) and M2 (local durable workflow runtime, daemon, CLI integration, real program and agent executors) are complete.
+`acpus` is a CLI-first TypeScript orchestrator for durable ACP agent workflows. M1 (YAML authoring, static linting, frozen IR, dry-run schedule projection) and M2 (local durable workflow runtime, lazy supervisor, CLI integration, real program and agent executors) are complete.
 
 ## Packages
 
 | Package | Goal |
 | --- | --- |
 | `@acpus/core` | Own the YAML DSL compiler boundary: parse specs, validate JSON Schema fragments, parse CEL expressions, lint references, emit frozen IR, and project a schedule summary. |
-| `@acpus/runtime` | Own the local durable workflow runtime: interpret frozen IR, persist per-node state, manage the 6-state lifecycle, evaluate CEL expressions at runtime, execute agents and programs, store artifacts, and serve the daemon REST API. |
-| `acpus` | Own the user-facing CLI: read files and input payloads, resolve includes, expose `lint`, `run`, `daemon`, `ls`, `inspect`, and node-level `pause`/`resume`/`cancel`/`retry` commands. |
+| `@acpus/runtime` | Own the local durable workflow runtime: interpret frozen IR, persist per-node state, manage the 6-state lifecycle, evaluate CEL expressions at runtime, execute agents and programs, store artifacts, and serve the supervisor REST API. |
+| `acpus` | Own the user-facing CLI: read files and input payloads, resolve includes, expose `lint`, `run`, `ls`, `inspect`, `pause`, `resume`, `cancel`, `retry`, `replay`, and `watch` commands. |
 | `@acpus/mock-agent` | Own the deterministic ACP-compatible Mock Agent used to validate agent protocol behavior and serve as a test executor for the runtime. |
 
 ## Commands
@@ -27,15 +27,22 @@ CLI examples:
 pnpm acpus lint packages/core/test/fixtures/all-primitives.yaml
 pnpm acpus run packages/core/test/fixtures/all-primitives.yaml --dry-run --json
 
-# Runtime execution (requires daemon)
-pnpm acpus daemon                              # start daemon in background
-pnpm acpus run spec.yaml                       # submit run to daemon
+# Runtime execution (lazy supervisor starts automatically)
+pnpm acpus run spec.yaml                       # foreground follow with observations
+pnpm acpus run spec.yaml --background          # submit and return immediately
+pnpm acpus run spec.yaml --watch               # submit and open TUI
+pnpm acpus run spec.yaml --json                # JSONL observations
+
+# Inspect and control
 pnpm acpus ls                                  # list runs
-pnpus acpus inspect <runId>                    # show run details and node tree
-pnpm acpus pause <runId> <nodeKey>             # pause a running node
-pnpm acpus resume <runId> <nodeKey>            # resume a paused node
-pnpm acpus cancel <runId> <nodeKey>            # cancel a node
-pnpm acpus retry <runId> <nodeKey>             # retry a failed node
+pnpm acpus inspect <runId>                     # show run details and node tree
+pnpm acpus pause <runId>                       # pause the entire run
+pnpm acpus pause <runId> --node <nodeKey>      # pause a specific node
+pnpm acpus resume <runId>                      # resume a paused run
+pnpm acpus cancel <runId>                      # cancel a running run
+pnpm acpus retry <runId>                       # retry a failed run
+pnpm acpus replay <runId>                      # verify determinism
+pnpm acpus watch [runId]                       # open TUI dashboard
 
 # Mock agent
 pnpm mock-agent --script packages/mock-agent/test/fixtures/mock.yaml
@@ -52,7 +59,7 @@ The M2 runtime (`@acpus/runtime`) implements a local durable execution engine:
 - **Concurrency**: Cooperative single-event-loop concurrency via `Promise.all`/`Promise.race` with `p-limit` for fanout and parallel node throttling.
 - **Executors**: Mock executors for testing; real `ProgramExecutor` using `execa` for subprocess management with native timeout and abort; real `AgentExecutor` spawning `acpx` via `execa` for ACP session management.
 - **Artifacts**: Local filesystem store under `.acpus/runs/<runId>/artifacts/` with directory-traversal validation and URI-based references.
-- **Daemon**: Hono HTTP server on `127.0.0.1:3839` exposing REST API for run submission, inspection, and node control. Node keys passed as `?key=` query parameters because keys contain `/`.
+- **Run Supervisor**: Lazily started per-workspace Hono HTTP server on a random port, discovered via `.acpus/supervisor.json`. No manual start command needed. Supports Run-level and Node-level controls (pause/resume/cancel/retry). Idle shutdown after 5 minutes of inactivity.
 - **Crash Recovery**: Startup recovery resets orphaned `running` nodes to `pending`; graceful shutdown persists `running` → `paused`; checkpoint resume rebuilds from persisted state.
 
 ### Directory Layout
@@ -71,7 +78,8 @@ The M2 runtime (`@acpus/runtime`) implements a local durable execution engine:
         workflow:step-a/
           transcript.json
           stdout.txt
-  daemon.pid             # daemon process ID
+  supervisor.json        # supervisor metadata (endpoint, PID)
+  supervisor.lock        # lock file during supervisor startup
 ```
 
 ## Design Targets

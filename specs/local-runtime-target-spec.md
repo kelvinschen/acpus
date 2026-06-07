@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Acpus runtime execution is a local CLI orchestration boundary for durable single-host workflows that run local ACP agents and local programs. The runtime executes the frozen IR produced by the compiler, persists per-node state for crash recovery, and exposes a daemon REST API for run control.
+Acpus runtime execution is a local CLI orchestration boundary for durable single-host workflows that run local ACP agents and local programs. The runtime executes the frozen IR produced by the compiler, persists per-node state for crash recovery, and exposes a Workspace-scoped Run Supervisor API for Run submission, observation, replay, and control.
 
 ## Requirements
 
@@ -19,6 +19,14 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - The runtime MUST NOT require cross-host workspace transfer, remote task queues, or worker affinity.
 - The runtime MUST treat acpx as the local ACP session scheduler, not as the Workflow scheduler.
 - The runtime MUST treat Acpus as the Workflow scheduler and the source of Node state, retry, timeout, pause, resume, cancel, and artifact-reference decisions.
+
+### Workspace
+
+- The runtime MUST treat the process current working directory as the Workspace for Run-facing commands.
+- The runtime MUST store Workspace state under `.acpus/` in the Workspace.
+- The runtime MUST store Runs under `.acpus/runs/<runId>/`.
+- The runtime MUST NOT infer the Workspace from the Workflow Spec path, repository root, package root, or VCS root.
+- The runtime MUST NOT support a `--workspace` override in the first version of Workspace-scoped execution.
 
 ### Node State Machine
 
@@ -54,6 +62,8 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 
 - The runtime MUST use cooperative single-event-loop concurrency (Promise.all/Promise.race).
 - The runtime MUST use `p-limit` to cap concurrency for fanout and parallel nodes.
+- The runtime MUST allow multiple Runs in the same Workspace to execute concurrently through the Run Supervisor.
+- The runtime MUST NOT enforce a Run Supervisor-level global Run queue or maximum concurrent Run limit in the first version.
 - Fanout lanes MUST receive fresh shallow copies of the steps context to prevent data races.
 - A `race` wait strategy MUST NOT cancel losing branches/lanes; their settled results MUST be consumed to avoid unhandled rejections.
 
@@ -94,32 +104,81 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - The runtime MUST guard against subworkflow cycles by tracking specs currently on the execution stack.
 - Subworkflow child Node keys MUST be prefixed with the parent subworkflow Node key to stay unique within the run.
 
-### Daemon
+### Run Supervisor
 
-- The runtime MUST expose a daemon process as a long-running Hono HTTP server.
-- The daemon MUST listen on `127.0.0.1:3839` by default.
-- The daemon MUST expose a REST API for run submission, run listing, run inspection, node state listing, node retrieval, node control (pause, resume, cancel, retry), and run replay.
-- The daemon MUST expose a read-only endpoint returning a Run's frozen IR snapshot so observers can render the workflow structure and overlay live Node states; it MUST return a not-found error when the Run does not exist on disk.
-- The daemon MUST expose a read-only endpoint that resolves an artifact URI to its absolute filesystem path so observers can render a clickable link; it MUST return a not-found error when the Run does not exist and a bad-request error when the artifact URI is malformed.
-- When a `resume`, `retry`, or `replay` request targets a Run that is not in the daemon's in-memory interpreter map (e.g. after a daemon restart), the daemon MUST lazily obtain an interpreter for that Run from persisted state, returning a not-found error only when the Run does not exist on disk; `resume`/`retry` reset stale `running` nodes, while `replay` MUST remain read-only.
-- `pause` and `cancel` abort an in-flight turn and therefore MUST require a live interpreter; the daemon MUST NOT lazily recover one for them. When no live interpreter exists, the daemon MUST return a conflict error if the Run exists on disk and a not-found error otherwise.
-- Run submission MUST execute the run in the background and return the initial `running` state immediately, rather than blocking until the run reaches a terminal state.
+- The runtime MUST expose a Workspace-scoped Run Supervisor as the local execution authority for Run-facing CLI commands.
+- The Run Supervisor MUST be lazily started by Run-facing CLI commands when no healthy supervisor exists for the current Workspace.
+- The runtime MUST allow at most one active Run Supervisor per Workspace.
+- The Run Supervisor MUST listen on `127.0.0.1` using a random available TCP port.
+- The Run Supervisor MUST expose its endpoint through `.acpus/supervisor.json` in the Workspace.
+- `.acpus/supervisor.json` MUST include `schemaVersion`, absolute `workspace`, `pid`, `endpoint`, `startedAt`, and `version` fields.
+- The runtime MUST use `.acpus/supervisor.lock` or an equivalent Workspace-local lock to prevent concurrent CLI invocations from starting multiple supervisors for the same Workspace.
+- When ensuring a supervisor, the CLI MUST verify that `.acpus/supervisor.json` matches the current Workspace and that the endpoint health check succeeds.
+- When supervisor metadata is stale, unreachable, malformed, or for a different Workspace, the CLI MUST clean or replace it before using a supervisor.
+- The Run Supervisor MUST expose an HTTP REST API for run submission, run listing, run inspection, node state listing, node retrieval, run-level control, node-level control, run replay, frozen IR retrieval, artifact path resolution, and health checks.
+- Run-facing CLI commands MUST use the Run Supervisor API rather than maintaining a separate direct-disk read path.
+- The runtime MUST NOT require a normal user-facing `acpus daemon` or `acpus supervisor` command for normal execution.
+- The Run Supervisor MUST execute submitted Runs in the background and return the initial `running` state immediately, rather than blocking until the Run reaches a terminal state.
+- The Run Supervisor MUST register a Run's interpreter before execution begins so that control operations can reach an in-flight Run.
+- The Run Supervisor MUST keep running while at least one Run is `running` or at least one watcher/follower client is actively polling.
+- The Run Supervisor MUST exit after five idle minutes when there are no `running` Runs and no active watcher/follower clients.
+- `paused`, `completed`, `failed`, and `cancelled` Runs MUST NOT by themselves keep an otherwise idle Run Supervisor alive.
+- The Run Supervisor MUST perform startup recovery: reset orphaned `running` Nodes to `pending` as a control-plane recovery operation.
+- The Run Supervisor MUST perform graceful shutdown on SIGINT/SIGTERM: persist all live `running` Nodes as `paused`, remove supervisor metadata, close the HTTP server, then exit.
+- The Run Supervisor MUST use a 5-second forced-exit fallback if the HTTP server does not close promptly.
 - Node keys MUST be passed as `?key=` query parameters in the REST API because node keys contain `/` which is incompatible with path segments.
-- The daemon MUST write a PID file at startup.
-- The daemon MUST perform startup recovery: reset orphaned `running` nodes to `pending`.
-- The daemon MUST perform graceful shutdown on SIGINT/SIGTERM: persist all `running` nodes as `paused`, remove the PID file, close the HTTP server, then exit.
-- The daemon MUST use a 5-second forced-exit fallback if the HTTP server does not close promptly.
+
+### Run Observations
+
+- The runtime MUST support human-facing Run Observations derived from persisted Run and Node state snapshots.
+- Run Observations MUST NOT be modeled as a persisted append-only event history in the first version.
+- Foreground follow clients MUST poll Run and Node state at a 400ms interval by default.
+- A follow client MUST print or emit a Node observation only when the Node is first observed or when its state changes.
+- A follow client MUST NOT repeatedly print unchanged Node states.
+- A follow client MUST NOT invent unobserved intermediate states when a Node changes faster than the polling interval.
+- A follow client MUST follow only the Run submitted by that `acpus run` invocation, not other concurrent Runs in the Workspace.
+- Run Observations MUST NOT include raw Program stdout, raw Program stderr, Agent transcript chunks, or log lines.
+
+### Run Listing and Watching
+
+- The Run Supervisor MUST list Runs sorted by `updatedAt` descending.
+- Run listing for `acpus ls` and the watch picker MUST return the most recent 50 Runs in the Workspace in the first version.
+- `acpus watch` without a Run ID MUST open a picker backed by Run listing; it MUST NOT require a multi-Run dashboard.
+- `acpus watch <runId>` and `acpus run --watch` MUST open the single-Run watch view for the selected or submitted Run.
+- The single-Run watch view MUST render the frozen IR snapshot and overlay persisted Node states.
+
+### Run-Level Control
+
+- The runtime MUST support Run-level pause, resume, cancel, and retry operations.
+- Run-level `pause` MUST be accepted only for a `running` Run.
+- Run-level `pause` MUST immediately cooperative-pause the Run by aborting currently running executable Nodes as `paused` and preventing further pending Node scheduling until the Run is resumed.
+- Run-level `cancel` MUST be accepted only for `running` or `paused` Runs.
+- Run-level `cancel` MUST make the Run terminal `cancelled`.
+- Run-level `cancel` MUST abort materialized running Nodes as `cancelled`, mark materialized pending Nodes as `cancelled`, and MUST NOT create state for unmaterialized Nodes.
+- Run-level `resume` MUST be accepted only for a `paused` Run.
+- Run-level `resume` MUST continue a paused Run from persisted paused and pending state.
+- Run-level `retry` MUST be accepted only for a `failed` Run.
+- Run-level `retry` MUST perform in-place recovery of failed materialized Nodes and MUST NOT rerun completed Nodes.
+- Run-level `retry` MUST NOT create a new Run and MUST NOT mean rerun from scratch.
+- Invalid Run-level control operations MUST be rejected with a conflict error and MUST leave persisted state unchanged.
+
+### Node-Level Control
+
+- The runtime MUST support Node-level pause, resume, cancel, and retry control operations during execution.
+- Node-level controls MUST be addressed through an explicit node key parameter in the API and through `--node <nodeKey>` in the CLI.
+- When a `resume`, `retry`, or `replay` request targets a Run that is not in the Run Supervisor's in-memory interpreter map, the Run Supervisor MUST lazily obtain an interpreter for that Run from persisted state, returning a not-found error only when the Run does not exist on disk; `resume`/`retry` reset stale `running` Nodes, while `replay` MUST remain read-only.
+- Node-level `pause` and `cancel` abort an in-flight turn and therefore MUST require a live interpreter; the Run Supervisor MUST NOT lazily recover one for them. When no live interpreter exists, the Run Supervisor MUST return a conflict error if the Run exists on disk and a not-found error otherwise.
+- On Node-level resume and retry, the runtime MUST restore the targeted Node's persisted dynamic value-context (fanout item, loop round) into the rebuilt expression context so command and prompt templates re-render identically.
+- On Node-level resume and retry, the runtime MUST resolve the targeted Node's definition from the Run's persisted IR before mutating Node state, and MUST reject the operation with an error (leaving Node state unchanged) when the definition cannot be resolved. Subworkflow child Nodes, whose IR is compiled on demand and not persisted in the parent Run, are therefore not individually resumable or retryable.
+- Operator pause and cancel both abort the in-flight Activity, but the runtime MUST resolve the node to `paused` for pause and `cancelled` for cancel; the operator intent MUST take precedence when an aborted Activity reports a partial result.
+- A cancelled Agent Step MUST still persist its partial transcript artifact, the same as a paused one.
+- When a child node is paused or cancelled, the runtime MUST propagate the state change to the parent node.
 
 ### Crash Recovery
 
-- The runtime MUST support checkpoint recovery: after an unclean shutdown, a resumed run MUST rebuild state from persisted node files and re-execute only nodes that were `pending` or `running`.
-- The runtime MUST support node-level pause, resume, cancel, and retry control operations during execution.
-- On resume and retry, the runtime MUST restore the targeted Node's persisted dynamic value-context (fanout item, loop round) into the rebuilt expression context so command and prompt templates re-render identically.
-- On resume and retry, the runtime MUST resolve the targeted Node's definition from the Run's persisted IR before mutating Node state, and MUST reject the operation with an error (leaving Node state unchanged) when the definition cannot be resolved. Subworkflow child Nodes, whose IR is compiled on demand and not persisted in the parent Run, are therefore not individually resumable or retryable.
-- Operator pause and cancel both abort the in-flight Activity, but the runtime MUST resolve the node to `paused` for pause and `cancelled` for cancel; the operator intent MUST take precedence when an aborted Activity reports a partial result.
-- A cancelled Agent Step MUST still persist its partial transcript artifact, the same as a paused one.
-- The daemon MUST register a run's interpreter before execution begins so that node-control operations can reach an in-flight run.
-- When a child node is paused or cancelled, the runtime MUST propagate the state change to the parent node.
+- The runtime MUST support checkpoint recovery: after an unclean shutdown, a resumed or retried Run MUST rebuild state from persisted node files and re-execute only nodes that were reset to `pending` or were already `pending`.
+- The runtime MUST preserve completed Node outputs during recovery, resume, and retry.
+- The runtime MUST NOT re-read mutable YAML during recovery, resume, retry, or replay.
 
 ### Replay
 
@@ -128,6 +187,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Replay MUST be self-deterministic: it MUST reuse the recorded run ID and a frozen clock (the Run's `createdAt`) so the re-walk does not depend on wall-clock time, and MUST NOT depend on random values or large artifact payloads.
 - Replay MUST feed recorded per-Node outputs back into the expression context so control-flow decisions (switch branches, loop rounds, fanout lanes) are re-derived deterministically.
 - Replay MUST report a structured result indicating success or a list of discrepancies between the recorded and replayed Node topology (the set of reached Node keys); per-Node terminal-state and output equivalence verification is out of scope for this milestone.
+- Replay MUST remain read-only even when invoked through a lazily started Run Supervisor.
 
 ## Verification
 
@@ -135,8 +195,22 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Runtime tests MUST cover a real Acpus→acpx→Mock Agent end-to-end path for: mid-turn cooperative cancel producing a partial transcript artifact and a `paused` Node; resume re-entering the paused node with the fixed continuation prompt and completing the turn; and recovery of a dead agent subprocess by re-running the Activity.
 - Runtime tests MUST cover that Program Steps execute as local subprocesses.
 - Runtime tests MUST cover that workflow retry, timeout, pause, resume, and cancel decisions remain owned by Acpus.
-- Runtime tests MUST cover that resume and retry restore a Node's persisted dynamic value-context so fanout item and loop round templates re-render correctly.
-- Runtime tests MUST cover that, after a daemon restart, `resume`/`retry` on an existing Run recover an interpreter from disk instead of failing, `pause`/`cancel` return a conflict for an existing Run with no live interpreter, and an unknown Run returns not-found.
+- Runtime tests MUST cover Workspace-scoped lazy Run Supervisor startup, stale metadata replacement, health checks, and lock-protected concurrent startup.
+- Runtime tests MUST cover that the Run Supervisor uses a random localhost port and writes `.acpus/supervisor.json` with the required fields.
+- Runtime tests MUST cover that normal Run-facing CLI commands use the Run Supervisor API and do not require a manual daemon command.
+- Runtime tests MUST cover that one Workspace has at most one active Run Supervisor and that different current working directories use different Workspace state.
+- Runtime tests MUST cover that the Run Supervisor exits after five idle minutes with no running Runs or active watcher/follower clients.
+- Runtime tests MUST cover multiple concurrent Runs in the same Workspace.
+- Runtime tests MUST cover Run-level pause, resume, cancel, and retry state validation and effects.
+- Runtime tests MUST cover that Run-level retry is in-place recovery and does not rerun completed Nodes or create a new Run.
+- Runtime tests MUST cover Node-level resume and retry restore a Node's persisted dynamic value-context so fanout item and loop round templates re-render correctly.
+- Runtime tests MUST cover that, after a Run Supervisor restart, Node-level `resume`/`retry` on an existing Run recover an interpreter from disk instead of failing, Node-level `pause`/`cancel` return a conflict for an existing Run with no live interpreter, and an unknown Run returns not-found.
+- Runtime tests MUST cover that startup recovery resets orphaned `running` Nodes to `pending`.
+- Runtime tests MUST cover graceful shutdown persisting live `running` Nodes as `paused` and removing supervisor metadata.
+- Runtime tests MUST cover checkpoint recovery after unclean shutdown.
+- Runtime tests MUST cover Run Observations generated by polling and diffing Run/Node state, including de-duplication of unchanged Nodes and no invented intermediate states.
+- Runtime tests MUST cover that follow clients do not stream raw Program stdout, Program stderr, or Agent transcript chunks as Run Observations.
+- Runtime tests MUST cover Run listing and the watch picker returning the most recent 50 Runs sorted by `updatedAt` descending.
 - Runtime tests MUST cover that replay reproduces a Run's Node topology deterministically, reports discrepancies when the persisted Run's topology is tampered with, and does not mutate persisted state.
 - Runtime tests MUST cover that acpx session names are explicit and stable enough for Node-level continuation.
 - Runtime tests MUST cover that normal runtime execution does not require remote workers, remote task queues, or a shared Temporal cluster.
@@ -146,6 +220,4 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Runtime tests MUST cover CEL expression evaluation with custom functions and loop rewriting.
 - Runtime tests MUST cover fanout lane steps isolation (no shared reference data races).
 - Runtime tests MUST cover artifact filename validation (directory traversal prevention).
-- Runtime tests MUST cover daemon REST API routes including query-parameter node key handling.
-- Runtime tests MUST cover startup recovery (running → pending reset) and graceful shutdown (running → paused persist).
-- Runtime tests MUST cover checkpoint recovery after unclean shutdown.
+- Runtime tests MUST cover Run Supervisor REST API routes including query-parameter node key handling.

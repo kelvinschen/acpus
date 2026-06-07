@@ -4,18 +4,15 @@ import { compileWorkflow, lintWorkflow } from "@acpus/core";
 import { Command } from "commander";
 import { createIncludeResolver, parseInput, readTextFile } from "./io.js";
 import { printCompile, printError, printLint } from "./output.js";
-import { DaemonClient } from "./daemon-client.js";
-import type { NodeExecutionState } from "@acpus/runtime";
+import { RunSupervisorClient } from "./supervisor-client.js";
+import { ensureSupervisor, EXIT_SUPERVISOR_ERROR, isSupervisorConnectionError } from "./supervisor.js";
+import { followRun } from "./follow.js";
+import type { RunState, NodeExecutionState, SupervisorMetadata } from "@acpus/runtime";
 
 const EXIT_DSL_STATIC_ERROR = 10;
 const EXIT_RUNTIME_ERROR = 20;
 const EXIT_USER_CANCEL = 2;
-const EXIT_DAEMON_ERROR = 40;
-
-function isDaemonConnectionError(error: unknown): boolean {
-  const msg = errorMessage(error);
-  return /ECONNREFUSED|fetch failed|connect|daemon/i.test(msg);
-}
+// EXIT_SUPERVISOR_ERROR = 40 (imported from supervisor.ts)
 
 const program = new Command();
 
@@ -51,13 +48,26 @@ program
   .argument("<spec>", "workflow YAML spec")
   .option("--dry-run", "compile to IR and print schedule without execution")
   .option("--input <value>", "inline JSON or path to YAML/JSON input object")
-  .option("--daemon <url>", "daemon URL (default http://127.0.0.1:3839)")
-  .option("--json", "write JSONL output")
+  .option("--background", "submit and return immediately (no follow)")
+  .option("--watch", "submit and open TUI")
+  .option("--json", "write JSONL observations (follow mode) or JSON (background)")
   .option("--quiet", "only write final output")
-  .action(async (spec: string, options: { dryRun?: boolean; input?: string; daemon?: string; json?: boolean; quiet?: boolean }) => {
+  .action(async (spec: string, options: { dryRun?: boolean; input?: string; background?: boolean; watch?: boolean; json?: boolean; quiet?: boolean }) => {
+    // Validate invalid combinations before any supervisor contact
+    if (options.background && options.watch) {
+      printError("--background and --watch are mutually exclusive", options);
+      process.exitCode = EXIT_DSL_STATIC_ERROR;
+      return;
+    }
+    if (options.watch && options.json) {
+      printError("--watch and --json are mutually exclusive", options);
+      process.exitCode = EXIT_DSL_STATIC_ERROR;
+      return;
+    }
+
     try {
       if (options.dryRun) {
-        // M1 behavior: compile and print schedule
+        // Dry-run: compile and print schedule, no supervisor needed
         const sourcePath = resolve(process.cwd(), spec);
         const parsedInput = parseInput(options.input);
         const result = compileWorkflow(readTextFile(sourcePath), {
@@ -70,52 +80,57 @@ program
         return;
       }
 
-      // M2: submit to daemon for execution
-      const client = new DaemonClient(options.daemon);
+      // Ensure supervisor is running
+      const client = await ensureSupervisor();
       const sourcePath = resolve(process.cwd(), spec);
       const specSource = readTextFile(sourcePath);
       const parsedInput = parseInput(options.input);
 
-      const runState = await client.startRun(specSource, parsedInput);
+      const runState = await client.startRun(specSource, parsedInput, sourcePath);
 
-      if (options.json) {
-        console.log(JSON.stringify(runState));
-      } else if (!options.quiet) {
-        console.log(`Run ${runState.runId} started: ${runState.workflowName}`);
-        console.log(`Status: ${runState.status}`);
+      if (options.background) {
+        // Background: print ID/status and exit
+        if (options.json) {
+          console.log(JSON.stringify(runState));
+        } else if (!options.quiet) {
+          console.log(`Run ${runState.runId} started: ${runState.workflowName}`);
+          console.log(`Status: ${runState.status}`);
+        }
+        process.exitCode = 0;
+        return;
       }
 
-      process.exitCode = 0;
+      if (options.watch) {
+        // Watch: submit and open TUI
+        const { runTui } = await import("@acpus/tui");
+        await runTui({ runId: runState.runId, endpoint: (client as any).baseUrl as string });
+        process.exitCode = 0;
+        return;
+      }
+
+      // Default: foreground follow
+      const terminalStatus = await followRun(client, runState.runId, { json: options.json });
+
+      // Exit code mapping
+      switch (terminalStatus) {
+        case "completed": process.exitCode = 0; break;
+        case "failed": process.exitCode = EXIT_RUNTIME_ERROR; break;
+        case "cancelled":
+        case "paused": process.exitCode = EXIT_USER_CANCEL; break;
+        default: process.exitCode = EXIT_RUNTIME_ERROR; break;
+      }
     } catch (error) {
       printError(errorMessage(error), options);
-      process.exitCode = isDaemonConnectionError(error) ? EXIT_DAEMON_ERROR : EXIT_RUNTIME_ERROR;
-    }
-  });
-
-program
-  .command("daemon")
-  .option("--port <port>", "port to listen on", "3839")
-  .option("--host <host>", "host to bind", "127.0.0.1")
-  .action(async (options: { port?: string; host?: string }) => {
-    try {
-      const { startDaemon } = await import("@acpus/runtime");
-      await startDaemon({
-        port: parseInt(options.port ?? "3839", 10),
-        host: options.host ?? "127.0.0.1"
-      });
-    } catch (error) {
-      printError(errorMessage(error), { json: false, quiet: false });
-      process.exitCode = isDaemonConnectionError(error) ? EXIT_DAEMON_ERROR : EXIT_RUNTIME_ERROR;
+      process.exitCode = isSupervisorConnectionError(error) ? EXIT_SUPERVISOR_ERROR : EXIT_RUNTIME_ERROR;
     }
   });
 
 program
   .command("ls")
-  .option("--daemon <url>", "daemon URL")
   .option("--json", "write JSON output")
-  .action(async (options: { daemon?: string; json?: boolean }) => {
+  .action(async (options: { json?: boolean }) => {
     try {
-      const client = new DaemonClient(options.daemon);
+      const client = await ensureSupervisor();
       const runs = await client.listRuns();
 
       if (options.json) {
@@ -131,18 +146,17 @@ program
       }
     } catch (error) {
       printError(errorMessage(error), { json: options.json, quiet: false });
-      process.exitCode = isDaemonConnectionError(error) ? EXIT_DAEMON_ERROR : EXIT_RUNTIME_ERROR;
+      process.exitCode = isSupervisorConnectionError(error) ? EXIT_SUPERVISOR_ERROR : EXIT_RUNTIME_ERROR;
     }
   });
 
 program
   .command("inspect")
   .argument("<runId>", "run ID to inspect")
-  .option("--daemon <url>", "daemon URL")
   .option("--json", "write JSON output")
-  .action(async (runId: string, options: { daemon?: string; json?: boolean }) => {
+  .action(async (runId: string, options: { json?: boolean }) => {
     try {
-      const client = new DaemonClient(options.daemon);
+      const client = await ensureSupervisor();
       const run = await client.getRun(runId);
 
       if (options.json) {
@@ -164,91 +178,113 @@ program
       }
     } catch (error) {
       printError(errorMessage(error), { json: options.json, quiet: false });
-      process.exitCode = isDaemonConnectionError(error) ? EXIT_DAEMON_ERROR : EXIT_RUNTIME_ERROR;
+      process.exitCode = isSupervisorConnectionError(error) ? EXIT_SUPERVISOR_ERROR : EXIT_RUNTIME_ERROR;
     }
   });
+
+// ─── Control commands ──────────────────────────────────────────────
+// Unified: Run-level by default, Node-level with --node <key>
 
 program
   .command("pause")
   .argument("<runId>", "run ID")
-  .argument("<nodeKey>", "node key to pause")
-  .option("--daemon <url>", "daemon URL")
+  .option("--node <key>", "pause a specific node instead of the whole run")
   .option("--json", "output machine-readable JSON")
-  .action(async (runId: string, nodeKey: string, options: { daemon?: string; json?: boolean }) => {
+  .action(async (runId: string, options: { node?: string; json?: boolean }) => {
     try {
-      const client = new DaemonClient(options.daemon);
-      const state = await client.pauseNode(runId, nodeKey);
-      if (options.json) console.log(JSON.stringify(state));
-      else console.log(`Node ${nodeKey} paused (state: ${state.state})`);
+      const client = await ensureSupervisor();
+      if (options.node) {
+        const state = await client.pauseNode(runId, options.node);
+        if (options.json) console.log(JSON.stringify(state));
+        else console.log(`Node ${options.node} paused (state: ${state.state})`);
+      } else {
+        const run = await client.pauseRun(runId);
+        if (options.json) console.log(JSON.stringify(run));
+        else console.log(`Run ${runId} paused (status: ${run.status})`);
+      }
     } catch (error) {
       printError(errorMessage(error), { json: Boolean(options.json), quiet: false });
-      process.exitCode = isDaemonConnectionError(error) ? EXIT_DAEMON_ERROR : EXIT_RUNTIME_ERROR;
+      process.exitCode = isSupervisorConnectionError(error) ? EXIT_SUPERVISOR_ERROR : EXIT_RUNTIME_ERROR;
     }
   });
 
 program
   .command("resume")
   .argument("<runId>", "run ID")
-  .argument("<nodeKey>", "node key to resume")
-  .option("--daemon <url>", "daemon URL")
+  .option("--node <key>", "resume a specific node instead of the whole run")
   .option("--json", "output machine-readable JSON")
-  .action(async (runId: string, nodeKey: string, options: { daemon?: string; json?: boolean }) => {
+  .action(async (runId: string, options: { node?: string; json?: boolean }) => {
     try {
-      const client = new DaemonClient(options.daemon);
-      const state = await client.resumeNode(runId, nodeKey);
-      if (options.json) console.log(JSON.stringify(state));
-      else console.log(`Node ${nodeKey} resumed (state: ${state.state})`);
+      const client = await ensureSupervisor();
+      if (options.node) {
+        const state = await client.resumeNode(runId, options.node);
+        if (options.json) console.log(JSON.stringify(state));
+        else console.log(`Node ${options.node} resumed (state: ${state.state})`);
+      } else {
+        const run = await client.resumeRun(runId);
+        if (options.json) console.log(JSON.stringify(run));
+        else console.log(`Run ${runId} resumed (status: ${run.status})`);
+      }
     } catch (error) {
       printError(errorMessage(error), { json: Boolean(options.json), quiet: false });
-      process.exitCode = isDaemonConnectionError(error) ? EXIT_DAEMON_ERROR : EXIT_RUNTIME_ERROR;
+      process.exitCode = isSupervisorConnectionError(error) ? EXIT_SUPERVISOR_ERROR : EXIT_RUNTIME_ERROR;
     }
   });
 
 program
   .command("cancel")
   .argument("<runId>", "run ID")
-  .argument("<nodeKey>", "node key to cancel")
-  .option("--daemon <url>", "daemon URL")
+  .option("--node <key>", "cancel a specific node instead of the whole run")
   .option("--json", "output machine-readable JSON")
-  .action(async (runId: string, nodeKey: string, options: { daemon?: string; json?: boolean }) => {
+  .action(async (runId: string, options: { node?: string; json?: boolean }) => {
     try {
-      const client = new DaemonClient(options.daemon);
-      const state = await client.cancelNode(runId, nodeKey);
-      if (options.json) console.log(JSON.stringify(state));
-      else console.log(`Node ${nodeKey} cancelled (state: ${state.state})`);
+      const client = await ensureSupervisor();
+      if (options.node) {
+        const state = await client.cancelNode(runId, options.node);
+        if (options.json) console.log(JSON.stringify(state));
+        else console.log(`Node ${options.node} cancelled (state: ${state.state})`);
+      } else {
+        const run = await client.cancelRun(runId);
+        if (options.json) console.log(JSON.stringify(run));
+        else console.log(`Run ${runId} cancelled (status: ${run.status})`);
+      }
     } catch (error) {
       printError(errorMessage(error), { json: Boolean(options.json), quiet: false });
-      process.exitCode = isDaemonConnectionError(error) ? EXIT_DAEMON_ERROR : EXIT_RUNTIME_ERROR;
+      process.exitCode = isSupervisorConnectionError(error) ? EXIT_SUPERVISOR_ERROR : EXIT_RUNTIME_ERROR;
     }
   });
 
 program
   .command("retry")
   .argument("<runId>", "run ID")
-  .argument("<nodeKey>", "node key to retry")
-  .option("--daemon <url>", "daemon URL")
+  .option("--node <key>", "retry a specific node instead of the whole run")
   .option("--json", "output machine-readable JSON")
-  .action(async (runId: string, nodeKey: string, options: { daemon?: string; json?: boolean }) => {
+  .action(async (runId: string, options: { node?: string; json?: boolean }) => {
     try {
-      const client = new DaemonClient(options.daemon);
-      const state = await client.retryNode(runId, nodeKey);
-      if (options.json) console.log(JSON.stringify(state));
-      else console.log(`Node ${nodeKey} retried (state: ${state.state})`);
+      const client = await ensureSupervisor();
+      if (options.node) {
+        const state = await client.retryNode(runId, options.node);
+        if (options.json) console.log(JSON.stringify(state));
+        else console.log(`Node ${options.node} retried (state: ${state.state})`);
+      } else {
+        const run = await client.retryRun(runId);
+        if (options.json) console.log(JSON.stringify(run));
+        else console.log(`Run ${runId} retried (status: ${run.status})`);
+      }
     } catch (error) {
       printError(errorMessage(error), { json: Boolean(options.json), quiet: false });
-      process.exitCode = isDaemonConnectionError(error) ? EXIT_DAEMON_ERROR : EXIT_RUNTIME_ERROR;
+      process.exitCode = isSupervisorConnectionError(error) ? EXIT_SUPERVISOR_ERROR : EXIT_RUNTIME_ERROR;
     }
   });
 
 program
   .command("replay")
   .argument("<runId>", "run ID")
-  .option("--daemon <url>", "daemon URL")
   .option("--json", "output machine-readable JSON")
   .description("deterministically replay a Run and verify its interpretation")
-  .action(async (runId: string, options: { daemon?: string; json?: boolean }) => {
+  .action(async (runId: string, options: { json?: boolean }) => {
     try {
-      const client = new DaemonClient(options.daemon);
+      const client = await ensureSupervisor();
       const result = await client.replay(runId);
       if (options.json) {
         console.log(JSON.stringify(result));
@@ -263,22 +299,23 @@ program
       if (!result.ok) process.exitCode = EXIT_RUNTIME_ERROR;
     } catch (error) {
       printError(errorMessage(error), { json: Boolean(options.json), quiet: false });
-      process.exitCode = isDaemonConnectionError(error) ? EXIT_DAEMON_ERROR : EXIT_RUNTIME_ERROR;
+      process.exitCode = isSupervisorConnectionError(error) ? EXIT_SUPERVISOR_ERROR : EXIT_RUNTIME_ERROR;
     }
   });
 
 program
   .command("watch")
   .argument("[runId]", "run ID to watch (omit to pick from a list)")
-  .option("--daemon <url>", "daemon URL")
   .description("open a terminal UI to observe and control a running workflow")
-  .action(async (runId: string | undefined, options: { daemon?: string }) => {
+  .action(async (runId: string | undefined) => {
     try {
+      const client = await ensureSupervisor();
+      const endpoint = (client as any).baseUrl as string;
       const { runTui } = await import("@acpus/tui");
-      await runTui({ runId, baseUrl: options.daemon });
+      await runTui({ runId, endpoint });
     } catch (error) {
       printError(errorMessage(error), { json: false, quiet: false });
-      process.exitCode = isDaemonConnectionError(error) ? EXIT_DAEMON_ERROR : EXIT_RUNTIME_ERROR;
+      process.exitCode = isSupervisorConnectionError(error) ? EXIT_SUPERVISOR_ERROR : EXIT_RUNTIME_ERROR;
     }
   });
 

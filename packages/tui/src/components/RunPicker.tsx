@@ -1,13 +1,13 @@
 import React, { useEffect, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
-import type { DaemonClient, RunSummary } from "@acpus/runtime";
+import type { RunSupervisorClient, RunSummary } from "@acpus/runtime";
 
-/** Run picker shown when no runId is given. Lists runs from the daemon. */
+/** Run picker shown when no runId is given. Lists runs from the supervisor. */
 export function RunPicker({
   client,
   onSelect
 }: {
-  client: DaemonClient;
+  client: RunSupervisorClient;
   onSelect: (runId: string) => void;
 }): React.ReactElement {
   const { exit } = useApp();

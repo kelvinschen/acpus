@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
-import type { DaemonClient } from "@acpus/runtime";
+import type { RunSupervisorClient } from "@acpus/runtime";
 import { useRunPoller, isTerminal } from "../poller.js";
 import { buildRenderTree, buildRows, countByState, formatElapsed } from "../model.js";
-import { applyControl, canApply, type ControlAction } from "../controls.js";
+import { applyControl, canApply, applyRunControl, canApplyRun, type ControlAction } from "../controls.js";
 import { useTerminalSize, windowSlice } from "../useTerminalSize.js";
 import { StatusOverview } from "./StatusOverview.js";
 import { GraphPane } from "./GraphPane.js";
@@ -24,7 +24,7 @@ export function App({
   client,
   runId
 }: {
-  client: DaemonClient;
+  client: RunSupervisorClient;
   runId: string;
 }): React.ReactElement {
   const { exit } = useApp();
@@ -123,21 +123,32 @@ export function App({
   });
 
   async function runControl(action: ControlAction): Promise<void> {
-    if (!selected) return;
-    if (!selected.nodeKey) {
-      setToast({ msg: `Select a runtime node instance to ${action}.`, error: true });
-      return;
-    }
-    if (!canApply(action, selected.state)) {
-      setToast({ msg: `Cannot ${action} a ${selected.state ?? "not-started"} node.`, error: true });
-      return;
-    }
-    try {
-      const state = await applyControl(client, action, runId, selected.nodeKey);
-      setToast({ msg: `${action} → ${selected.nodeKey} (${state.state})`, error: false });
-      setRefreshNonce((n) => n + 1);
-    } catch (err) {
-      setToast({ msg: err instanceof Error ? err.message : String(err), error: true });
+    if (selected && selected.nodeKey) {
+      // Node-level control
+      if (!canApply(action, selected.state)) {
+        setToast({ msg: `Cannot ${action} a ${selected.state ?? "not-started"} node.`, error: true });
+        return;
+      }
+      try {
+        const state = await applyControl(client, action, runId, selected.nodeKey);
+        setToast({ msg: `${action} → ${selected.nodeKey} (${state.state})`, error: false });
+        setRefreshNonce((n) => n + 1);
+      } catch (err) {
+        setToast({ msg: err instanceof Error ? err.message : String(err), error: true });
+      }
+    } else {
+      // Run-level control (no node selected)
+      if (!canApplyRun(action, run?.status)) {
+        setToast({ msg: `Cannot ${action} a ${run?.status ?? "unknown"} run.`, error: true });
+        return;
+      }
+      try {
+        const state = await applyRunControl(client, action, runId);
+        setToast({ msg: `${action} run → ${state.status}`, error: false });
+        setRefreshNonce((n) => n + 1);
+      } catch (err) {
+        setToast({ msg: err instanceof Error ? err.message : String(err), error: true });
+      }
     }
   }
 
@@ -195,7 +206,7 @@ export function App({
 
       {snapshot.error ? (
         <Box paddingX={1}>
-          <Text color="red">⚠ daemon poll error: {snapshot.error} (retrying)</Text>
+          <Text color="red">⚠ supervisor poll error: {snapshot.error} (retrying)</Text>
         </Box>
       ) : null}
 

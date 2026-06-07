@@ -1,13 +1,13 @@
 /**
- * Control actions — map keypresses to daemon node-control calls, guarding
- * client-side by node state so we only attempt actions that can succeed.
+ * Control actions — map keypresses to supervisor control calls, guarding
+ * client-side by state so we only attempt actions that can succeed.
  */
 
-import type { DaemonClient, NodeExecutionState, NodeState } from "@acpus/runtime";
+import type { RunSupervisorClient, NodeExecutionState, NodeState, RunStatus } from "@acpus/runtime";
 
 export type ControlAction = "pause" | "resume" | "cancel" | "retry";
 
-/** Whether an action is applicable to a node in the given state. */
+/** Whether a node-level action is applicable to a node in the given state. */
 export function canApply(action: ControlAction, state: NodeState | undefined): boolean {
   switch (action) {
     case "pause":
@@ -22,8 +22,24 @@ export function canApply(action: ControlAction, state: NodeState | undefined): b
   }
 }
 
+/** Whether a Run-level action is applicable to a Run in the given status. */
+export function canApplyRun(action: ControlAction, status: RunStatus | undefined): boolean {
+  switch (action) {
+    case "pause":
+    case "cancel":
+      return status === "running";
+    case "resume":
+      return status === "paused";
+    case "retry":
+      return status === "failed";
+    default:
+      return false;
+  }
+}
+
+/** Apply a Node-level control action. */
 export async function applyControl(
-  client: DaemonClient,
+  client: RunSupervisorClient,
   action: ControlAction,
   runId: string,
   nodeKey: string
@@ -37,5 +53,23 @@ export async function applyControl(
       return client.cancelNode(runId, nodeKey);
     case "retry":
       return client.retryNode(runId, nodeKey);
+  }
+}
+
+/** Apply a Run-level control action. */
+export async function applyRunControl(
+  client: RunSupervisorClient,
+  action: ControlAction,
+  runId: string
+): Promise<import("@acpus/runtime").RunState> {
+  switch (action) {
+    case "pause":
+      return client.pauseRun(runId);
+    case "resume":
+      return client.resumeRun(runId);
+    case "cancel":
+      return client.cancelRun(runId);
+    case "retry":
+      return client.retryRun(runId);
   }
 }

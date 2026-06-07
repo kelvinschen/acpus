@@ -1,5 +1,5 @@
 /**
- * DaemonClient — thin HTTP client for the acpus daemon.
+ * RunSupervisorClient — thin HTTP client for the acpus Run Supervisor.
  *
  * Lives in @acpus/runtime so both the CLI and the TUI can share one client
  * without a package cycle.
@@ -9,20 +9,42 @@
  */
 
 import type { AcpusIr } from "@acpus/core";
-import type { RunState, NodeExecutionState, RunSummary, ReplayResult } from "./types.js";
+import type { RunState, NodeExecutionState, RunSummary, ReplayResult, SupervisorHealth } from "./types.js";
+import { randomUUID } from "node:crypto";
 
-export class DaemonClient {
+export class RunSupervisorClient {
   private readonly baseUrl: string;
+  /** Client identity for lease tracking on the supervisor. */
+  readonly clientId: string;
+  /** When set, includes x-acpus-client-kind header to pin the supervisor alive. */
+  clientKind?: "follower" | "watcher";
 
-  constructor(baseUrl?: string) {
-    this.baseUrl = baseUrl ?? "http://127.0.0.1:3839";
+  constructor(baseUrl: string) {
+    this.baseUrl = baseUrl;
+    this.clientId = randomUUID();
   }
 
-  async startRun(spec: string, input?: Record<string, unknown>): Promise<RunState> {
+  private headers(): Record<string, string> {
+    const h: Record<string, string> = {
+      "x-acpus-client-id": this.clientId
+    };
+    if (this.clientKind) {
+      h["x-acpus-client-kind"] = this.clientKind;
+    }
+    return h;
+  }
+
+  async health(): Promise<SupervisorHealth> {
+    const res = await fetch(`${this.baseUrl}/health`, { headers: this.headers() });
+    if (!res.ok) throw new Error(`Health check failed: ${res.status}`);
+    return res.json() as Promise<SupervisorHealth>;
+  }
+
+  async startRun(spec: string, input?: Record<string, unknown>, sourcePath?: string): Promise<RunState> {
     const res = await fetch(`${this.baseUrl}/runs`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ spec, input })
+      headers: { "Content-Type": "application/json", ...this.headers() },
+      body: JSON.stringify({ spec, input, sourcePath })
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
@@ -32,39 +54,39 @@ export class DaemonClient {
   }
 
   async listRuns(): Promise<RunSummary[]> {
-    const res = await fetch(`${this.baseUrl}/runs`);
+    const res = await fetch(`${this.baseUrl}/runs`, { headers: this.headers() });
     if (!res.ok) throw new Error(`Failed to list runs: ${res.status}`);
     return res.json() as Promise<RunSummary[]>;
   }
 
   async getRun(runId: string): Promise<RunState> {
-    const res = await fetch(`${this.baseUrl}/runs/${runId}`);
+    const res = await fetch(`${this.baseUrl}/runs/${runId}`, { headers: this.headers() });
     if (!res.ok) throw new Error(`Run not found: ${runId}`);
     return res.json() as Promise<RunState>;
   }
 
   async getIr(runId: string): Promise<AcpusIr> {
-    const res = await fetch(`${this.baseUrl}/runs/${runId}/ir`);
+    const res = await fetch(`${this.baseUrl}/runs/${runId}/ir`, { headers: this.headers() });
     if (!res.ok) throw new Error(`IR not found: ${runId}`);
     return res.json() as Promise<AcpusIr>;
   }
 
-  /** Resolve an artifact:// URI to its absolute filesystem path on the daemon host. */
+  /** Resolve an artifact:// URI to its absolute filesystem path on the supervisor host. */
   async getArtifactPath(runId: string, uri: string): Promise<string> {
-    const res = await fetch(`${this.baseUrl}/runs/${runId}/artifact-path?uri=${encodeURIComponent(uri)}`);
+    const res = await fetch(`${this.baseUrl}/runs/${runId}/artifact-path?uri=${encodeURIComponent(uri)}`, { headers: this.headers() });
     if (!res.ok) throw new Error(`Failed to resolve artifact path: ${res.status}`);
     const body = (await res.json()) as { absPath: string };
     return body.absPath;
   }
 
   async getNodeStates(runId: string): Promise<NodeExecutionState[]> {
-    const res = await fetch(`${this.baseUrl}/runs/${runId}/nodes`);
+    const res = await fetch(`${this.baseUrl}/runs/${runId}/nodes`, { headers: this.headers() });
     if (!res.ok) throw new Error(`Failed to get node states: ${res.status}`);
     return res.json() as Promise<NodeExecutionState[]>;
   }
 
   async getNode(runId: string, nodeKey: string): Promise<NodeExecutionState> {
-    const res = await fetch(`${this.baseUrl}/runs/${runId}/node?key=${encodeURIComponent(nodeKey)}`);
+    const res = await fetch(`${this.baseUrl}/runs/${runId}/node?key=${encodeURIComponent(nodeKey)}`, { headers: this.headers() });
     if (!res.ok) throw new Error(`Node not found: ${nodeKey}`);
     return res.json() as Promise<NodeExecutionState>;
   }
@@ -85,20 +107,38 @@ export class DaemonClient {
     return this.controlNode(runId, nodeKey, "retry");
   }
 
+  // ─── Run-level controls ────────────────────────────────────────
+
+  async pauseRun(runId: string): Promise<RunState> {
+    return this.controlRun(runId, "pause");
+  }
+
+  async resumeRun(runId: string): Promise<RunState> {
+    return this.controlRun(runId, "resume");
+  }
+
+  async cancelRun(runId: string): Promise<RunState> {
+    return this.controlRun(runId, "cancel");
+  }
+
+  async retryRun(runId: string): Promise<RunState> {
+    return this.controlRun(runId, "retry");
+  }
+
   async getOutput(runId: string): Promise<{ status: string; output: Record<string, unknown> }> {
-    const res = await fetch(`${this.baseUrl}/runs/${runId}/output`);
+    const res = await fetch(`${this.baseUrl}/runs/${runId}/output`, { headers: this.headers() });
     if (!res.ok) throw new Error(`Failed to get output: ${res.status}`);
     return res.json() as Promise<{ status: string; output: Record<string, unknown> }>;
   }
 
   async replay(runId: string): Promise<ReplayResult> {
-    const res = await fetch(`${this.baseUrl}/runs/${runId}/replay`, { method: "POST" });
+    const res = await fetch(`${this.baseUrl}/runs/${runId}/replay`, { method: "POST", headers: this.headers() });
     if (!res.ok) throw new Error(`Failed to replay run: ${res.status}`);
     return res.json() as Promise<ReplayResult>;
   }
 
   /**
-   * Issue a node-control action. On a non-2xx response the daemon's error
+   * Issue a node-control action. On a non-2xx response the supervisor's error
    * message (e.g. the 409 "not actively executing" guard) is surfaced so
    * callers can show it inline.
    */
@@ -109,12 +149,31 @@ export class DaemonClient {
   ): Promise<NodeExecutionState> {
     const res = await fetch(
       `${this.baseUrl}/runs/${runId}/${action}?key=${encodeURIComponent(nodeKey)}`,
-      { method: "POST" }
+      { method: "POST", headers: this.headers() }
     );
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       throw new Error(body.error ?? `Failed to ${action} node: ${res.status}`);
     }
     return res.json() as Promise<NodeExecutionState>;
+  }
+
+  /**
+   * Issue a Run-level control action. No ?key= parameter — the action applies
+   * to the entire Run.
+   */
+  private async controlRun(
+    runId: string,
+    action: "pause" | "resume" | "cancel" | "retry"
+  ): Promise<RunState> {
+    const res = await fetch(
+      `${this.baseUrl}/runs/${runId}/${action}`,
+      { method: "POST", headers: this.headers() }
+    );
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(body.error ?? `Failed to ${action} run: ${res.status}`);
+    }
+    return res.json() as Promise<RunState>;
   }
 }

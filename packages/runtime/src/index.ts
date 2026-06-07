@@ -10,7 +10,9 @@ export type {
   ArtifactRef,
   InterpreterOptions,
   RunOptions,
-  DaemonConfig,
+  SupervisorConfig,
+  SupervisorMetadata,
+  SupervisorHealth,
   StartRunRequest,
   RunSummary,
   ReplayResult,
@@ -45,9 +47,10 @@ export { MockProgramExecutor } from "./executors/mock-program.js";
 export { ProgramExecutor } from "./executors/program.js";
 export { AgentExecutor } from "./executors/agent.js";
 
-// ─── Daemon ──────────────────────────────────────────────────────
-export { createDaemonApp } from "./daemon.js";
-export { startDaemon } from "./daemon-runner.js";
+// ─── Supervisor ──────────────────────────────────────────────────
+export { createSupervisorApp } from "./supervisor-app.js";
+export { startRunSupervisor } from "./supervisor-runner.js";
+export { ensureWorkspaceSupervisor } from "./supervisor-discovery.js";
 
 // ─── Client ──────────────────────────────────────────────────────
-export { DaemonClient } from "./client.js";
+export { RunSupervisorClient } from "./client.js";

@@ -1,17 +1,17 @@
 import React, { useState } from "react";
 import { render } from "ink";
-import { DaemonClient } from "@acpus/runtime";
+import { RunSupervisorClient } from "@acpus/runtime";
 import { App } from "./components/App.js";
 import { RunPicker } from "./components/RunPicker.js";
 
 export interface RunTuiOptions {
   /** Run to watch. If omitted, a picker is shown. */
   runId?: string;
-  /** Daemon base URL (default http://127.0.0.1:3839). */
-  baseUrl?: string;
+  /** Supervisor endpoint URL (required). */
+  endpoint: string;
 }
 
-function Root({ client, initialRunId }: { client: DaemonClient; initialRunId?: string }): React.ReactElement {
+function Root({ client, initialRunId }: { client: RunSupervisorClient; initialRunId?: string }): React.ReactElement {
   const [runId, setRunId] = useState<string | undefined>(initialRunId);
   if (!runId) {
     return <RunPicker client={client} onSelect={setRunId} />;
@@ -20,8 +20,9 @@ function Root({ client, initialRunId }: { client: DaemonClient; initialRunId?: s
 }
 
 /** Launch the TUI. Resolves when the user exits. */
-export async function runTui(options: RunTuiOptions = {}): Promise<void> {
-  const client = new DaemonClient(options.baseUrl);
+export async function runTui(options: RunTuiOptions): Promise<void> {
+  const client = new RunSupervisorClient(options.endpoint);
+  client.clientKind = "watcher";
   const { waitUntilExit } = render(<Root client={client} initialRunId={options.runId} />);
   await waitUntilExit();
 }

@@ -36,6 +36,11 @@ export class WorkflowInterpreter {
   /** Absolute paths of subworkflow specs currently on the execution stack (cycle guard). */
   private readonly subworkflowStack: Set<string> = new Set();
 
+  /** Scheduling guards for Run-level pause/cancel, keyed by runId.
+   *  Per-runId to prevent leakage across runs sharing the same interpreter. */
+  private readonly schedulingPaused = new Map<string, boolean>();
+  private readonly schedulingCancelled = new Map<string, boolean>();
+
   constructor(
     store: RunStore,
     agentExecutor: ExecutorAdapter,
@@ -91,6 +96,11 @@ export class WorkflowInterpreter {
         meta.status = "failed";
         void error;
       }
+    } finally {
+      // Clean up per-runId scheduling guards when the run settles,
+      // so they don't leak memory across runs.
+      this.schedulingPaused.delete(runId);
+      this.schedulingCancelled.delete(runId);
     }
 
     meta.updatedAt = new Date().toISOString();
@@ -137,7 +147,7 @@ export class WorkflowInterpreter {
 
   /**
    * Reset any nodes persisted as `running` back to `pending` (crash recovery).
-   * Safe to call when adopting a Run after a daemon restart: in-memory abort
+   * Safe to call when adopting a Run after a supervisor restart: in-memory abort
    * controllers are gone, so a node marked `running` on disk has no live
    * execution and must be re-runnable.
    */
@@ -445,6 +455,156 @@ export class WorkflowInterpreter {
     await this.executeNode(node, ctx, runId, {}, undefined, true, nodeKey);
   }
 
+  // ─── Run-level controls ─────────────────────────────────────────
+
+  /**
+   * Pause an entire Run. Validates Run is `running`, sets scheduling guard,
+   * pauses all running nodes, and updates Run metadata to `paused`.
+   */
+  pauseRun(runId: string): void {
+    const meta = this.store.readRunMeta(runId);
+    if (!meta) throw new Error(`Run ${runId} not found`);
+    if (meta.status !== "running") {
+      throw new Error(`Cannot pause a run in state '${meta.status}'`);
+    }
+
+    this.schedulingPaused.set(runId, true);
+
+    // Pause all currently running nodes
+    for (const nodeState of this.store.listNodeStates(runId)) {
+      if (nodeState.state === "running") {
+        this.pauseNode(runId, nodeState.nodeKey);
+      }
+    }
+
+    meta.status = "paused";
+    meta.updatedAt = new Date().toISOString();
+    this.store.writeRunMeta(runId, meta);
+  }
+
+  /**
+   * Cancel an entire Run. Validates Run is `running` or `paused`, sets
+   * scheduling guard, cancels running nodes, marks pending nodes as cancelled,
+   * and updates Run metadata to `cancelled`.
+   */
+  cancelRun(runId: string): void {
+    const meta = this.store.readRunMeta(runId);
+    if (!meta) throw new Error(`Run ${runId} not found`);
+    if (meta.status !== "running" && meta.status !== "paused") {
+      throw new Error(`Cannot cancel a run in state '${meta.status}'`);
+    }
+
+    this.schedulingCancelled.set(runId, true);
+
+    // Override any prior pause abort intents to "cancelled" so that
+    // runToCompletion's catch block writes "cancelled" (not "paused").
+    for (const [key, intent] of this.abortIntents) {
+      if (key.startsWith(`${runId}:`) && intent === "paused") {
+        this.abortIntents.set(key, "cancelled");
+      }
+    }
+
+    // Cancel all currently running nodes
+    for (const nodeState of this.store.listNodeStates(runId)) {
+      if (nodeState.state === "running") {
+        this.cancelNode(runId, nodeState.nodeKey);
+      }
+    }
+
+    // Also transition paused nodes to cancelled (a prior pauseRun may have
+    // left nodes in "paused" state; cancel supersedes pause).
+    for (const nodeState of this.store.listNodeStates(runId)) {
+      if (nodeState.state === "paused") {
+        if (canTransition(nodeState.state, "cancelled")) {
+          nodeState.state = transition(nodeState.state, "cancelled") as NodeState;
+          this.store.writeNodeState(runId, nodeState);
+        }
+      }
+    }
+
+    // Mark all pending nodes as cancelled (do NOT materialize unvisited nodes)
+    for (const nodeState of this.store.listNodeStates(runId)) {
+      if (nodeState.state === "pending") {
+        if (canTransition(nodeState.state, "cancelled")) {
+          nodeState.state = transition(nodeState.state, "cancelled") as NodeState;
+          this.store.writeNodeState(runId, nodeState);
+        }
+      }
+    }
+
+    meta.status = "cancelled";
+    meta.updatedAt = new Date().toISOString();
+    this.store.writeRunMeta(runId, meta);
+  }
+
+  /**
+   * Resume an entire paused Run. Validates Run is `paused`, clears scheduling
+   * guards, recovers stale nodes, and re-executes from root.
+   */
+  async resumeRun(runId: string): Promise<void> {
+    const meta = this.store.readRunMeta(runId);
+    if (!meta) throw new Error(`Run ${runId} not found`);
+    if (meta.status !== "paused") {
+      throw new Error(`Cannot resume a run in state '${meta.status}'`);
+    }
+
+    // Clear scheduling guards for this run
+    this.schedulingPaused.delete(runId);
+    this.schedulingCancelled.delete(runId);
+
+    // Recover stale running nodes back to pending
+    this.recoverStaleNodes(runId);
+
+    // Also reset paused nodes back to pending so runToCompletion can re-execute them.
+    // Without this, executeNode sees the 'paused' state and throws NodeAbortedError,
+    // making the run permanently stuck.
+    for (const nodeState of this.store.listNodeStates(runId)) {
+      if (nodeState.state === "paused") {
+        nodeState.state = "pending";
+        this.store.writeNodeState(runId, nodeState);
+      }
+    }
+
+    meta.status = "running";
+    meta.updatedAt = new Date().toISOString();
+    this.store.writeRunMeta(runId, meta);
+  }
+
+  /**
+   * Retry a failed Run. Validates Run is `failed`, resets failed materialized
+   * nodes to pending (preserving completed), clears scheduling guards, and
+   * re-executes from root. Same Run ID, no new Run.
+   */
+  retryRun(runId: string): void {
+    const meta = this.store.readRunMeta(runId);
+    if (!meta) throw new Error(`Run ${runId} not found`);
+    if (meta.status !== "failed") {
+      throw new Error(`Cannot retry a run in state '${meta.status}'`);
+    }
+
+    // Clear scheduling guards for this run
+    this.schedulingPaused.delete(runId);
+    this.schedulingCancelled.delete(runId);
+
+    // Reset failed and paused materialized nodes to pending (preserve completed).
+    // Paused nodes can exist in a "failed" run if it was paused before a sibling
+    // failed (e.g. parallel lane failure while another lane was paused).
+    for (const nodeState of this.store.listNodeStates(runId)) {
+      if (nodeState.state === "failed") {
+        nodeState.state = resetFailedForRetry(nodeState.state);
+        nodeState.error = undefined;
+        this.store.writeNodeState(runId, nodeState);
+      } else if (nodeState.state === "paused") {
+        nodeState.state = "pending";
+        this.store.writeNodeState(runId, nodeState);
+      }
+    }
+
+    meta.status = "running";
+    meta.updatedAt = new Date().toISOString();
+    this.store.writeRunMeta(runId, meta);
+  }
+
   // ─── Node execution dispatch ──────────────────────────────────
 
   private async executeNode(
@@ -476,6 +636,19 @@ export class WorkflowInterpreter {
     const state = existing ?? createInitialNodeState(nodeKey, node.id, node.kind);
     if (state.state === "failed") {
       throw new Error(`Node ${nodeKey} is in failed state`);
+    }
+
+    // Run-level scheduling guards: if this Run is paused or cancelled,
+    // don't schedule new work.
+    if (this.schedulingPaused.get(runId) && state.state === "pending") {
+      throw new NodeAbortedError(nodeKey, "paused");
+    }
+    if (this.schedulingCancelled.get(runId) && state.state === "pending") {
+      if (canTransition(state.state, "cancelled")) {
+        state.state = transition(state.state, "cancelled") as NodeState;
+        this.store.writeNodeState(runId, state);
+      }
+      throw new NodeAbortedError(nodeKey, "cancelled");
     }
 
     // Set up abort controller
@@ -888,7 +1061,7 @@ export class WorkflowInterpreter {
         signal.removeEventListener("abort", onAbort);
       };
 
-      // For now, auto-approve in non-daemon mode after a short delay
+      // For now, auto-approve in non-supervisor mode after a short delay
       if (!timeoutMs) {
         setTimeout(() => {
           cleanup();

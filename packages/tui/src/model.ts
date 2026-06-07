@@ -3,7 +3,7 @@
  * IR (static structure) and attaching the live NodeExecutionState instances for
  * each node.
  *
- * The daemon returns a flat NodeExecutionState[] keyed by node keys like
+ * The supervisor returns a flat NodeExecutionState[] keyed by node keys like
  * "workflow/mapped/item:file-a/lane:0/round:2". A single IR node id can map to
  * many runtime instances (fanout lanes, loop rounds, parallel branches), so we
  * group instances by their original IR node id (NodeExecutionState.nodeId).
