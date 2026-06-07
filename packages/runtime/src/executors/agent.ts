@@ -51,7 +51,17 @@ export class AgentExecutor implements ExecutorAdapter {
     const outputSchema = node.metadata.output as Record<string, unknown> | undefined;
     const cwd = this.resolveCwd(agent.cwd, context);
     const sessionName = this.sessionName(context.run_id, nodeKey);
-    const env = { ...process.env, ...this.stringEnv(agent.env) };
+
+    // Evaluate env templates. A bad expression is a user-facing error.
+    let env: NodeJS.ProcessEnv;
+    try {
+      env = { ...process.env, ...this.stringEnv(agent.env, context) };
+    } catch (error) {
+      return {
+        failureKind: "parse",
+        error: `Failed to evaluate env template: ${error instanceof Error ? error.message : String(error)}`
+      };
+    }
 
     // Prompt text. Base is the rendered task template on a fresh first run, or a
     // fixed continuation prompt when resuming a paused turn or auto-retrying a
@@ -204,10 +214,10 @@ export class AgentExecutor implements ExecutorAdapter {
     return process.cwd();
   }
 
-  private stringEnv(env: Record<string, unknown> | undefined): Record<string, string> {
+  private stringEnv(env: Record<string, unknown> | undefined, context: ExpressionContext): Record<string, string> {
     if (!env) return {};
     const out: Record<string, string> = {};
-    for (const [k, v] of Object.entries(env)) out[k] = String(v);
+    for (const [k, v] of Object.entries(env)) out[k] = typeof v === "string" ? this.evaluator.evaluateTemplate(v, context) : String(v);
     return out;
   }
 }

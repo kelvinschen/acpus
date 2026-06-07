@@ -112,7 +112,7 @@ workflow:
   steps:
     - id: spin
       loop:
-        until: \${{ loop.iter >= 2 }}
+        until: loop.iter >= 2
         max_iterations: 3
         do:
           - id: tick

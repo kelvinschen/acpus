@@ -32,8 +32,8 @@ workflow:
 
     - id: mapped
       fanout:
-        over: ${{ steps.discover.output.files }}
-        key: ${{ item.path }}
+        over: steps.discover.output.files
+        key: "${{ item.path }}"
         join: all
         do:
           - id: inspect_one
@@ -46,7 +46,7 @@ workflow:
     - id: route
       switch:
         cases:
-          - when: ${{ len(steps.mapped) > 0 }}
+          - when: len(steps.mapped) > 0
             do:
               - id: route_yes
                 run: program
@@ -59,7 +59,7 @@ workflow:
 
     - id: fix_loop
       loop:
-        until: ${{ loop.iter > 0 && coalesce(loop.last.output.ok, false) }}
+        until: loop.iter > 0 && coalesce(loop.last.output.ok, false)
         max_iterations: 2
         do:
           - id: fix_once

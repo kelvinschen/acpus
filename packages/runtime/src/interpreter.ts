@@ -256,9 +256,10 @@ export class WorkflowInterpreter {
         const overExpr = node.metadata.over as string | undefined;
         const items = overExpr ? evaluator.evaluateOverExpression(overExpr, ctx) : [];
         items.forEach((item, index) => {
-          const itemId = this.extractItemId(item, node.metadata.key as string | undefined, index);
+          const keyCtx: ExpressionContext = { ...ctx, item, item_index: index };
+          const itemId = this.extractItemId(item, node.metadata.key as string | undefined, index, keyCtx, evaluator);
           const itemDynamic: NodeKeyDynamic = { ...dynamic, fanoutItemId: itemId, laneId: String(index) };
-          const itemCtx: ExpressionContext = { ...ctx, steps: { ...ctx.steps }, item, item_id: itemId, item_index: index };
+          const itemCtx: ExpressionContext = { ...keyCtx, steps: { ...ctx.steps }, item_id: itemId };
           for (const child of node.children ?? []) {
             this.replayNode(child, itemCtx, runId, itemDynamic, keyPrefix, recorded, reached, evaluator);
           }
@@ -727,14 +728,13 @@ export class WorkflowInterpreter {
     // (operator pause/cancel) re-throws so it propagates to the parent.
     const lanePromises = items.map((item, index) =>
       limit(async (): Promise<LaneResult> => {
-        const itemId = this.extractItemId(item, node.metadata.key as string | undefined, index);
+        const keyCtx: ExpressionContext = { ...ctx, item, item_index: index };
+        const itemId = this.extractItemId(item, node.metadata.key as string | undefined, index, keyCtx, this.evaluator);
         const itemDynamic: NodeKeyDynamic = { ...dynamic, fanoutItemId: itemId, laneId: String(index) };
         const itemCtx: ExpressionContext = {
-          ...ctx,
+          ...keyCtx,
           steps: { ...ctx.steps },
-          item,
-          item_id: itemId,
-          item_index: index
+          item_id: itemId
         };
         try {
           let laneOutput: unknown;
@@ -1032,10 +1032,10 @@ export class WorkflowInterpreter {
     return undefined;
   }
 
-  private extractItemId(item: unknown, keyExpr?: string, index?: number): string {
-    if (keyExpr && typeof item === "object" && item !== null) {
-      const val = (item as Record<string, unknown>)[keyExpr];
-      if (typeof val === "string") return val;
+  private extractItemId(item: unknown, keyExpr: string | undefined, index: number | undefined, ctx: ExpressionContext, evaluator: ExpressionEvaluator): string {
+    if (keyExpr) {
+      const result = evaluator.evaluateTemplate(keyExpr, ctx);
+      if (result) return result;
     }
     return String(index ?? 0);
   }

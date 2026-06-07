@@ -65,4 +65,41 @@ describe("createExpressionCollector", () => {
     expect(collector.expressions[0].references).toEqual(["step_a"]);
     expect(collector.expressions[1].references).toEqual(["step_b"]);
   });
+
+  it("warns when ${{ }} appears in raw-CEL fields (over, until, when)", () => {
+    const diagnostics = new DiagnosticBag();
+    const collector = createExpressionCollector(diagnostics, new Set(["discover", "gate"]));
+
+    collector.visit("${{ steps.discover.output.files }}", "$.workflow.steps[0].fanout.over");
+    collector.visit("${{ loop.iter >= 2 }}", "$.workflow.steps[1].loop.until");
+    collector.visit("${{ steps.gate.approved }}", "$.workflow.steps[2].switch.cases[0].when");
+
+    expect(diagnostics.diagnostics).toEqual([
+      expect.objectContaining({ code: "EXPR_TEMPLATE_IN_CEL", path: expect.stringContaining("over") }),
+      expect.objectContaining({ code: "EXPR_TEMPLATE_IN_CEL", path: expect.stringContaining("until") }),
+      expect.objectContaining({ code: "EXPR_TEMPLATE_IN_CEL", path: expect.stringContaining("when") })
+    ]);
+  });
+
+  it("does not warn when raw-CEL fields lack ${{ }}", () => {
+    const diagnostics = new DiagnosticBag();
+    const collector = createExpressionCollector(diagnostics, new Set());
+
+    collector.visit("steps.discover.output.files", "$.workflow.steps[0].fanout.over");
+    collector.visit("loop.iter >= 2", "$.workflow.steps[1].loop.until");
+    collector.visit("steps.gate.approved", "$.workflow.steps[2].switch.cases[0].when");
+
+    expect(diagnostics.diagnostics).toEqual([]);
+  });
+
+  it("does not warn when key uses ${{ }} template syntax", () => {
+    const diagnostics = new DiagnosticBag();
+    const collector = createExpressionCollector(diagnostics, new Set());
+
+    collector.visit("${{ item.path }}", "$.workflow.steps[0].fanout.key");
+
+    // key is now a template field — ${{ }} is valid syntax, no warning expected
+    const warnings = diagnostics.diagnostics.filter((d) => d.code === "EXPR_TEMPLATE_IN_PROPERTY");
+    expect(warnings).toEqual([]);
+  });
 });

@@ -41,6 +41,11 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - An Agent Step MAY declare `retry` as an object with a positive integer `max` and an optional duration `backoff`.
 - When `retry` is present, Agent output parse or schema failures MUST trigger automatic re-execution until `max` attempts are exhausted.
 
+### Step Common Fields
+
+- A step MAY declare `timeout` as a duration string or number (in milliseconds).
+- A step MAY declare `on_error` as one of `fail`, `retry`, or `skip`.
+
 ### Program Steps
 
 - A Program Step MUST use `run: program`.
@@ -66,8 +71,8 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A `parallel` Node MUST produce a map keyed by branch id.
 - A `parallel` Node MAY declare `join` as `all` or `race`.
 - A `parallel` Node with `join: race` MUST produce a single-key map containing only the first branch to complete; losing branches are not cancelled.
-- A `fanout` Node MUST declare `over`.
-- A `fanout` Node MAY declare `key`.
+- A `fanout` Node MUST declare `over` as an array or a CEL expression string.
+- A `fanout` Node MAY declare `key` as a template string (supports `${{ }}` interpolation).
 - A `fanout` Node SHOULD declare `key` when items have stable identity.
 - A `fanout` Node MAY declare `max_concurrency`.
 - A `fanout` Node MAY declare `join` as `all`, `race`, or `quorum`.
@@ -81,7 +86,9 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A `fanout` Node MUST expose `item`, `item_id`, and `item_index` inside its body.
 - A `switch` Node MUST select at most one branch.
 - A `switch` Node MUST evaluate cases in order.
+- A `switch` Node case MAY declare `when` as a boolean or a CEL expression string.
 - A `switch` Node MAY declare a default branch.
+- A `loop` Node MAY declare `until` as a boolean or a CEL expression string.
 - A `loop` Node MUST declare `max_iterations`.
 - A `loop` Node MUST expose `loop.iter`.
 - A `loop` Node MAY expose prior iteration output as `loop.last`.
@@ -103,6 +110,9 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 ### Expressions
 
 - Expressions MUST use the `${{ ... }}` syntax.
+- `over`, `until`, and `when` MUST be raw CEL expression strings (no `${{ }}` wrappers).
+- When `over`, `until`, or `when` are provided as YAML arrays or booleans, the compiler coerces them to CEL expression strings before evaluation.
+- `key`, `prompt`, and `cmd` MUST be template strings (`${{ }}` interpolation is supported).
 - Expressions MUST be deterministic.
 - Expressions MUST NOT perform external I/O.
 - Expressions MUST NOT read wall-clock system time directly.

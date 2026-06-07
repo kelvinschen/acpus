@@ -21,8 +21,8 @@ workflow:
 
     - id: collect
       fanout:
-        over: ${{ steps.plan.output.leaves }}
-        key: ${{ item.text }}
+        over: steps.plan.output.leaves
+        key: "${{ item.text }}"
         max_concurrency: 8
         join: all
         do:
@@ -42,7 +42,7 @@ workflow:
 
     - id: refine
       loop:
-        until: ${{ loop.iter > 0 && coalesce(steps.replan.output.coverage, 0) >= 0.9 }}
+        until: loop.iter > 0 && coalesce(steps.replan.output.coverage, 0) >= 0.9
         max_iterations: 3
         do:
           - id: replan

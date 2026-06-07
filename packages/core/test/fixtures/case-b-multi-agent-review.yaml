@@ -18,7 +18,6 @@ workflow:
     - id: reviews
       fanout:
         over: ["security", "performance", "readability"]
-        key: ${{ item }}
         max_concurrency: 3
         join: quorum
         quorum: 2
@@ -69,7 +68,7 @@ workflow:
     - id: post_comment
       switch:
         cases:
-          - when: ${{ steps.gate.approved }}
+          - when: steps.gate.approved
             do:
               - id: do_comment
                 run: program

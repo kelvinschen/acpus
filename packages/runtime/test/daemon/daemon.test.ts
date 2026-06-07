@@ -122,6 +122,62 @@ describe("Daemon HTTP API", () => {
     expect(nodes.length).toBeGreaterThan(0);
   });
 
+  it("returns the frozen IR via GET /runs/:runId/ir", async () => {
+    const createRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: SPEC_YAML, input: {} })
+    });
+    const { runId } = await createRes.json();
+
+    const res = await fetch(`${baseUrl}/runs/${runId}/ir`);
+    expect(res.status).toBe(200);
+    const ir = await res.json();
+    expect(ir.name).toBe("daemon-test");
+    expect(ir.root).toBeDefined();
+    expect(ir.root.kind).toBe("pipeline");
+  });
+
+  it("returns 404 from GET /runs/:runId/ir for unknown run", async () => {
+    const res = await fetch(`${baseUrl}/runs/nonexistent/ir`);
+    expect(res.status).toBe(404);
+  });
+
+  it("resolves an artifact uri to an absolute path via GET /runs/:runId/artifact-path", async () => {
+    const createRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: SPEC_YAML, input: {} })
+    });
+    const { runId } = await createRes.json();
+    await pollRunStatus(runId);
+
+    const uri = `artifact://runs/${runId}/nodes/workflow:step-a/transcript.jsonl`;
+    const res = await fetch(`${baseUrl}/runs/${runId}/artifact-path?uri=${encodeURIComponent(uri)}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.absPath).toContain(`${runId}/artifacts/workflow:step-a/transcript.jsonl`);
+    expect(body.absPath.startsWith("/")).toBe(true);
+  });
+
+  it("returns 400 for a malformed artifact uri", async () => {
+    const createRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: SPEC_YAML, input: {} })
+    });
+    const { runId } = await createRes.json();
+
+    const res = await fetch(`${baseUrl}/runs/${runId}/artifact-path?uri=not-an-artifact`);
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 404 from artifact-path for unknown run", async () => {
+    const uri = "artifact://runs/nonexistent/nodes/workflow:step-a/x.txt";
+    const res = await fetch(`${baseUrl}/runs/nonexistent/artifact-path?uri=${encodeURIComponent(uri)}`);
+    expect(res.status).toBe(404);
+  });
+
   it("gets a single node via GET /runs/:runId/node?key=...", async () => {
     const createRes = await fetch(`${baseUrl}/runs`, {
       method: "POST",

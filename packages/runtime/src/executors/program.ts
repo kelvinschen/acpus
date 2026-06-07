@@ -23,7 +23,7 @@ export class ProgramExecutor implements ExecutorAdapter {
 
   async execute({ node, context, signal }: ExecutionRequest): Promise<ExecutorResult> {
     const cmdTemplate = node.metadata.cmd;
-    const timeout = node.metadata.timeout as string | undefined;
+    const timeoutRaw = node.metadata.timeout;
     const capture = node.metadata.capture as Record<string, unknown> | undefined;
 
     // Resolve cmd template
@@ -36,7 +36,26 @@ export class ProgramExecutor implements ExecutorAdapter {
     const shell = typeof cmd === "string";
     const args = Array.isArray(cmd) ? cmd.slice(1) : [];
     const command = Array.isArray(cmd) ? cmd[0] : cmd;
-    const timeoutMs = timeout ? parseDurationMs(timeout) : undefined;
+    // Numeric timeout is milliseconds directly; string timeout is a duration.
+    const timeoutMs = typeof timeoutRaw === "number" && timeoutRaw > 0
+      ? timeoutRaw
+      : typeof timeoutRaw === "string"
+        ? parseDurationMs(timeoutRaw) || undefined
+        : undefined;
+
+    // Evaluate env templates. A bad expression (e.g. referencing an unknown step)
+    // is a user-facing error, not a spawn failure — catch and report clearly.
+    let env: Record<string, string>;
+    try {
+      env = { ...process.env, ...this.evaluateEnv(node.metadata.env as Record<string, unknown> | undefined, context) };
+    } catch (error) {
+      return {
+        failureKind: "capture",
+        error: `Failed to evaluate env template: ${error instanceof Error ? error.message : String(error)}`,
+        stdout: "",
+        stderr: ""
+      };
+    }
 
     let result;
     try {
@@ -46,7 +65,7 @@ export class ProgramExecutor implements ExecutorAdapter {
         timeout: timeoutMs && timeoutMs > 0 ? timeoutMs : 0,
         killSignal: "SIGKILL",
         cancelSignal: signal,
-        env: { ...process.env, ...(node.metadata.env as Record<string, string> | undefined) },
+        env,
       });
     } catch (error) {
       // Spawn-level failure (e.g. command not found) — non-recoverable.
@@ -142,5 +161,15 @@ export class ProgramExecutor implements ExecutorAdapter {
       return this.evaluator.evaluateTemplate(cmd, context);
     }
     return String(cmd);
+  }
+
+  /** Evaluate template expressions in env values; non-strings are stringified. */
+  private evaluateEnv(env: Record<string, unknown> | undefined, context: ExpressionContext): Record<string, string> {
+    if (!env) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(env)) {
+      out[k] = typeof v === "string" ? this.evaluator.evaluateTemplate(v, context) : String(v);
+    }
+    return out;
   }
 }

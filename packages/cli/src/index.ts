@@ -267,6 +267,21 @@ program
     }
   });
 
+program
+  .command("watch")
+  .argument("[runId]", "run ID to watch (omit to pick from a list)")
+  .option("--daemon <url>", "daemon URL")
+  .description("open a terminal UI to observe and control a running workflow")
+  .action(async (runId: string | undefined, options: { daemon?: string }) => {
+    try {
+      const { runTui } = await import("@acpus/tui");
+      await runTui({ runId, baseUrl: options.daemon });
+    } catch (error) {
+      printError(errorMessage(error), { json: false, quiet: false });
+      process.exitCode = isDaemonConnectionError(error) ? EXIT_DAEMON_ERROR : EXIT_RUNTIME_ERROR;
+    }
+  });
+
 program.parse();
 
 function errorMessage(error: unknown): string {

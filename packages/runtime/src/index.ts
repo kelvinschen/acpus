@@ -48,3 +48,6 @@ export { AgentExecutor } from "./executors/agent.js";
 // ─── Daemon ──────────────────────────────────────────────────────
 export { createDaemonApp } from "./daemon.js";
 export { startDaemon } from "./daemon-runner.js";
+
+// ─── Client ──────────────────────────────────────────────────────
+export { DaemonClient } from "./client.js";

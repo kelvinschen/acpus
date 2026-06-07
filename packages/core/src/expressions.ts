@@ -3,6 +3,11 @@ import type { DiagnosticBag } from "./diagnostics.js";
 import type { IrExpression } from "./types.js";
 
 export const EXPRESSION_PATTERN = /\$\{\{\s*([\s\S]*?)\s*\}\}/g;
+
+/** Fields that are evaluated as raw CEL (evaluateExpression), not templates.
+ *  Using ${{ }} in these fields causes a runtime CEL parse error. */
+const RAW_CEL_FIELDS = new Set(["over", "until", "when"]);
+
 const STEP_REFERENCE_PATTERN = /\bsteps\.([A-Za-z_][A-Za-z0-9_-]*)\b/g;
 const ROOT_REFERENCE_PATTERN = /(?<![\w.])([A-Za-z_][A-Za-z0-9_]*)\s*(?:\.|\()/g;
 export const ALLOWED_ROOTS = new Set(["input", "steps", "loop", "item", "item_id", "item_index", "run_id"]);
@@ -17,6 +22,20 @@ export function createExpressionCollector(diagnostics: DiagnosticBag, knownStepI
   const expressions: IrExpression[] = [];
 
   function collectFromString(value: string, path: string): void {
+    const fieldName = path.split(".").pop() ?? "";
+
+    // Warn if ${{ }} appears in a raw-CEL field
+    if (RAW_CEL_FIELDS.has(fieldName) && EXPRESSION_PATTERN.test(value)) {
+      diagnostics.warning(
+        "EXPR_TEMPLATE_IN_CEL",
+        `Field '${fieldName}' is evaluated as raw CEL — remove ${{ }} wrappers or the expression will fail at runtime.`,
+        path
+      );
+    }
+
+    // Reset regex lastIndex after test() calls above (test() with /g advances it)
+    EXPRESSION_PATTERN.lastIndex = 0;
+
     for (const match of value.matchAll(EXPRESSION_PATTERN)) {
       const source = match[1]?.trim() ?? "";
       if (source.length === 0) {

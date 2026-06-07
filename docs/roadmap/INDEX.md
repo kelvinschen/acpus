@@ -21,7 +21,7 @@
 | M3 Program Activity | 完成（R1 收尾） | 原缺口（stdout/stderr artifact、`exit_code` envelope、非零退出作为 step data、`capture.from: file`）已在 R1 全部实现并测试覆盖 |
 | M4 Agent Activity via acpx | 完成（已归档） | Agent Step 经 acpx 真实驱动 ACP agent：session load/resume、固定 continuation prompt、协作式 cancel、partial transcript artifact、按 agent type 路由真实/mock executor、Acpus→acpx→Mock Agent 真实 e2e（#1/#2/#3）均已实现并测试覆盖。完成记录见 `docs/archive/R2-agent-acpx-integration.md` |
 | M5 节点级本地控制 | 完成（已归档） | pause/resume/cancel/retry/inspect/ls 全实现；daemon 执行前注册 interpreter，重启后 resume/retry 从磁盘 lazy 冷恢复、pause/cancel 无 in-flight 时返回 409；retry/recover 通过专用 control-plane reset helper 复位；resume/retry 重建动态上下文（item/loop 快照）；`acpus replay` 确定性验证节点拓扑（PRD #9）；控制命令支持 `--json`。完成记录见 `docs/archive/R3-durable-controls-and-replay.md`。后续缺口并入 R4/backlog：event-sourced history、replay per-node 终态/output 逐字比对与执行期时钟对齐、approval escalate 持久通道 |
-| M6 真实 agent 兼容矩阵 | 完成（薄范围，R4） | acpx 为 lockfile 精确 pin 的 bundled 依赖（`acpx@0.10.0`），Open Risk #2 由 pin 化解、不做运行时探测；agent/program 失败带 `node.id`(+`use`) 上下文前缀、acpx stderr 纯透传；声明 schema 时鲁棒提取 agent JSON 输出（balanced 扫描 + jsonrepair 兜底）。Open Risk #3（Temporal）当前架构不适用、关闭；#1 真实 adapter 端到端验证与 #4 artifact 压缩本轮不做。完成记录见 `R4-real-agent-compat-matrix.md` |
+| M6 真实 agent 兼容矩阵 | 完成（薄范围，R4，已归档） | acpx 为 lockfile 精确 pin 的 bundled 依赖（`acpx@0.10.0`），Open Risk #2 由 pin 化解、不做运行时探测；agent/program 失败带 `node.id`(+`use`) 上下文前缀、acpx stderr 纯透传；声明 schema 时鲁棒提取 agent JSON 输出（balanced 扫描 + jsonrepair 兜底）。Open Risk #3（Temporal）当前架构不适用、关闭；#1 真实 adapter 端到端验证与 #4 artifact 压缩本轮不做。完成记录见 `docs/archive/R4-real-agent-compat-matrix.md` |
 
 ## 里程碑概览（按缺口重排）
 
@@ -32,7 +32,7 @@
 | R1 | Runtime 原语缺口收尾（补 M2/M3 残留） | M2 / M3 | 已完成（已归档） | [docs/archive/R1-runtime-primitive-gaps.md](../archive/R1-runtime-primitive-gaps.md) |
 | R2 | Agent Activity 经 acpx 真实集成 | M4 | 已完成（已归档） | [docs/archive/R2-agent-acpx-integration.md](../archive/R2-agent-acpx-integration.md) |
 | R3 | 持久化控制与 replay 收尾 | M5 | 已完成（已归档） | [docs/archive/R3-durable-controls-and-replay.md](../archive/R3-durable-controls-and-replay.md) |
-| R4 | 真实 agent 路径收敛（薄范围） | M6 | 已完成 | [R4-real-agent-compat-matrix.md](R4-real-agent-compat-matrix.md) |
+| R4 | 真实 agent 路径收敛（薄范围） | M6 | 已完成（已归档） | [docs/archive/R4-real-agent-compat-matrix.md](../archive/R4-real-agent-compat-matrix.md) |
 
 ### 依赖与排序理由
 

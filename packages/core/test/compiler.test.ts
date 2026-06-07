@@ -429,7 +429,6 @@ workflow:
     - id: mapped
       fanout:
         over: [1, 2]
-        key: \${{ item }}
         join: diagonal
         do:
           - id: each
@@ -451,7 +450,6 @@ workflow:
     - id: mapped
       fanout:
         over: [1, 2]
-        key: \${{ item }}
         join: quorum
         do:
           - id: each
@@ -473,7 +471,6 @@ workflow:
     - id: mapped
       fanout:
         over: [1, 2]
-        key: \${{ item }}
         join: all
         success_criteria:
           min_success: 0
@@ -598,7 +595,6 @@ workflow:
     - id: mapped
       fanout:
         over: [1, 2]
-        key: \${{ item }}
         join: all
         do:
           - id: step_a
@@ -629,12 +625,12 @@ workflow:
     - id: route
       switch:
         cases:
-          - when: \${{ true }}
+          - when: true
             do:
               - id: go
                 run: program
                 cmd: ["echo", "ok"]
-          - when: \${{ false }}
+          - when: false
             do:
               - id: maybe
                 run: program
@@ -669,7 +665,7 @@ workflow:
     - id: route
       switch:
         cases:
-          - when: \${{ true }}
+          - when: true
             do:
               - id: go
                 run: program
@@ -693,7 +689,7 @@ workflow:
   steps:
     - id: fix
       loop:
-        until: \${{ true }}
+        until: true
         max_iterations: 3
         do:
           - id: step_a
@@ -1055,7 +1051,6 @@ workflow:
     - id: mapped
       fanout:
         over: [1, 2, 3]
-        key: \${{ item }}
         join: all
         success_criteria:
           min_success: 2
@@ -1080,7 +1075,6 @@ workflow:
     - id: mapped
       fanout:
         over: [1, 2, 3]
-        key: \${{ item }}
         join: quorum
         quorum: 2
         do:
@@ -1121,5 +1115,343 @@ workflow:
     expect(result.ir?.source.digest).toBeTruthy();
     expect(typeof result.ir?.source.digest).toBe("string");
     expect(result.ir?.source.path).toBe(join(fixtures, "case-a-plan-review-impl.yaml"));
+  });
+
+  // ── Expression field coercion tests ──
+
+  it("coerces boolean until to string", () => {
+    const source = `
+version: 1
+name: coerce-until-bool
+workflow:
+  steps:
+    - id: fix
+      loop:
+        until: true
+        max_iterations: 3
+        do:
+          - id: step_a
+            run: program
+            cmd: ["echo", "a"]
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const loopNode = result.ir?.root.children?.[0];
+    expect(loopNode?.kind).toBe("loop");
+    expect(loopNode?.metadata.until).toBe("true");
+  });
+
+  it("rejects non-boolean non-string until", () => {
+    const source = `
+version: 1
+name: bad-until-type
+workflow:
+  steps:
+    - id: fix
+      loop:
+        until: 42
+        max_iterations: 3
+        do:
+          - id: step_a
+            run: program
+            cmd: ["echo", "a"]
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "LOOP_UNTIL_TYPE")).toBe(true);
+  });
+
+  it("coerces boolean when to string", () => {
+    const source = `
+version: 1
+name: coerce-when-bool
+agents:
+  mock: { type: mock }
+workflow:
+  steps:
+    - id: route
+      switch:
+        cases:
+          - when: false
+            do:
+              - id: go
+                run: program
+                cmd: ["echo", "ok"]
+        default:
+          do:
+            - id: nope
+              run: program
+              cmd: ["echo", "nope"]
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const switchNode = result.ir?.root.children?.[0];
+    expect(switchNode?.kind).toBe("switch");
+    expect(switchNode?.branches?.[0]?.when).toBe("false");
+  });
+
+  it("rejects non-boolean non-string when", () => {
+    const source = `
+version: 1
+name: bad-when-type
+agents:
+  mock: { type: mock }
+workflow:
+  steps:
+    - id: route
+      switch:
+        cases:
+          - when: null
+            do:
+              - id: go
+                run: program
+                cmd: ["echo", "ok"]
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "SWITCH_WHEN_TYPE")).toBe(true);
+  });
+
+  it("coerces array over to JSON string", () => {
+    const source = `
+version: 1
+name: coerce-over-array
+workflow:
+  steps:
+    - id: mapped
+      fanout:
+        over: [1, 2, 3]
+        join: all
+        do:
+          - id: each
+            run: program
+            cmd: ["echo", "hi"]
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const fanoutNode = result.ir?.root.children?.[0];
+    expect(fanoutNode?.kind).toBe("fanout");
+    expect(fanoutNode?.metadata.over).toBe("[1,2,3]");
+  });
+
+  it("rejects non-array non-string over", () => {
+    const source = `
+version: 1
+name: bad-over-type
+workflow:
+  steps:
+    - id: mapped
+      fanout:
+        over: 42
+        join: all
+        do:
+          - id: each
+            run: program
+            cmd: ["echo", "hi"]
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "FANOUT_OVER_TYPE")).toBe(true);
+  });
+
+  // ── Step timeout and on_error validation tests ──
+
+  it("rejects string timeout that is not a valid duration", () => {
+    const source = `
+version: 1
+name: bad-timeout
+agents:
+  mock: { type: mock }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: mock
+      prompt: "x"
+      timeout: "not-a-duration"
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "STEP_TIMEOUT")).toBe(true);
+  });
+
+  it("accepts numeric timeout (milliseconds)", () => {
+    const source = `
+version: 1
+name: numeric-timeout
+agents:
+  mock: { type: mock }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: mock
+      prompt: "x"
+      timeout: 300
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const askNode = result.ir?.root.children?.[0];
+    expect(askNode?.metadata.timeout).toBe(300);
+  });
+
+  it("rejects invalid on_error value", () => {
+    const source = `
+version: 1
+name: bad-on-error
+agents:
+  mock: { type: mock }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: mock
+      prompt: "x"
+      on_error: explode
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "STEP_ON_ERROR")).toBe(true);
+  });
+
+  it("accepts valid on_error value", () => {
+    const source = `
+version: 1
+name: good-on-error
+agents:
+  mock: { type: mock }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: mock
+      prompt: "x"
+      on_error: fail
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const askNode = result.ir?.root.children?.[0];
+    expect(askNode?.metadata.on_error).toBe("fail");
+  });
+
+  it("rejects approval timeout with invalid duration format", () => {
+    const source = `
+version: 1
+name: bad-approval-timeout
+agents:
+  mock: { type: mock }
+workflow:
+  steps:
+    - id: gate
+      approval:
+        prompt: "Approve?"
+        timeout: "2d"
+        on_timeout: reject
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "APPROVAL_TIMEOUT")).toBe(true);
+  });
+
+  it("accepts program step timeout and on_error", () => {
+    const source = `
+version: 1
+name: program-timeout-onerror
+workflow:
+  steps:
+    - id: run_it
+      run: program
+      cmd: ["echo", "hello"]
+      timeout: "5m"
+      on_error: retry
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const runNode = result.ir?.root.children?.[0];
+    expect(runNode?.metadata.timeout).toBe("5m");
+    expect(runNode?.metadata.on_error).toBe("retry");
+  });
+
+  it("rejects fanout over array containing objects (not valid CEL)", () => {
+    const source = `
+version: 1
+name: over-with-objects
+workflow:
+  steps:
+    - id: mapped
+      fanout:
+        over:
+          - key: val
+        join: all
+        do:
+          - id: each
+            run: program
+            cmd: ["echo", "hi"]
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "FANOUT_OVER_TYPE")).toBe(true);
+  });
+
+  it("rejects negative numeric timeout", () => {
+    const source = `
+version: 1
+name: negative-timeout
+agents:
+  mock: { type: mock }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: mock
+      prompt: "x"
+      timeout: -500
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "STEP_TIMEOUT")).toBe(true);
+  });
+
+  it("rejects non-string on_error with clear type message", () => {
+    const source = `
+version: 1
+name: on-error-null
+agents:
+  mock: { type: mock }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: mock
+      prompt: "x"
+      on_error: null
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "STEP_ON_ERROR")).toBe(true);
+    const diag = result.diagnostics.find((d) => d.code === "STEP_ON_ERROR")!;
+    expect(diag.message).toContain("null");
+  });
+
+  it("reports 'got null' instead of 'got object' for null when/until", () => {
+    const sourceUntil = `
+version: 1
+name: until-null
+workflow:
+  steps:
+    - id: fix
+      loop:
+        until: null
+        max_iterations: 3
+        do:
+          - id: step_a
+            run: program
+            cmd: ["echo", "a"]
+`;
+    const result = lintWorkflow(sourceUntil);
+    expect(result.ok).toBe(false);
+    const diag = result.diagnostics.find((d) => d.code === "LOOP_UNTIL_TYPE")!;
+    expect(diag.message).toContain("got null");
+    expect(diag.message).not.toContain("got object");
   });
 });

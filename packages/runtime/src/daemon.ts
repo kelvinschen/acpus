@@ -115,6 +115,21 @@ export function createDaemonApp(
     return c.json(store.listNodeStates(runId));
   });
 
+  // Frozen IR snapshot for a run. Read-only: lets observers (e.g. the TUI)
+  // render the true workflow structure — composite shapes, branch order, and
+  // nodes not yet reached — and overlay live node states onto it.
+  app.get("/runs/:runId/ir", (c) => {
+    const runId = c.req.param("runId");
+    if (!store.hasRun(runId)) {
+      return c.json({ error: "Run not found" }, 404);
+    }
+    const ir = store.readIr(runId);
+    if (!ir) {
+      return c.json({ error: "IR not found" }, 404);
+    }
+    return c.json(ir);
+  });
+
   app.get("/runs/:runId/node", (c) => {
     const runId = c.req.param("runId");
     const nodeKey = c.req.query("key");
@@ -126,6 +141,24 @@ export function createDaemonApp(
       return c.json({ error: "Node not found" }, 404);
     }
     return c.json(state);
+  });
+
+  // Resolve an artifact URI to its absolute filesystem path so observers (e.g.
+  // the TUI) can render a clickable OSC 8 hyperlink. Read-only.
+  app.get("/runs/:runId/artifact-path", (c) => {
+    const runId = c.req.param("runId");
+    const uri = c.req.query("uri");
+    if (!uri) {
+      return c.json({ error: "uri query parameter is required" }, 400);
+    }
+    if (!store.hasRun(runId)) {
+      return c.json({ error: "Run not found" }, 404);
+    }
+    const absPath = store.resolveArtifactPath(uri);
+    if (!absPath) {
+      return c.json({ error: "Invalid artifact uri" }, 400);
+    }
+    return c.json({ absPath });
   });
 
   // ─── Node control ────────────────────────────────────────────────

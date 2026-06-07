@@ -216,6 +216,8 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
 
   if (step.run === "agent") {
     validateAgentStep(step, path, context);
+    validateStepTimeout(step, path, context);
+    validateStepOnError(step, path, context);
     const metadata = pickMetadata(step, ["run", "use", "prompt", "output", "retry", "timeout", "on_error"]);
     // Snapshot the referenced agent definition into the node so the runtime can
     // route to the right executor and build the acpx invocation. `type` defaults
@@ -234,6 +236,8 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
 
   if (step.run === "program") {
     validateProgramStep(step, path, context);
+    validateStepTimeout(step, path, context);
+    validateStepOnError(step, path, context);
     return {
       ...base,
       kind: "run.program",
@@ -257,7 +261,7 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
     const fanout = step.fanout;
     validateFanout(fanout, path, context);
     if (fanout.key === undefined) {
-      context.diagnostics.warning("FANOUT_KEY", "fanout.key is missing; runtime will fall back to item index identity.", `${path}.fanout.key`);
+      context.diagnostics.warning("FANOUT_KEY", "fanout.key is missing; runtime will fall back to item index identity. Use key: \"${{ item.yourProperty }}\" to set a stable identity.", `${path}.fanout.key`);
     }
     const children = Array.isArray(fanout.do) ? compileSteps(asSteps(fanout.do, `${path}.fanout.do`, context), nodePath, `${path}.fanout.do`, context) : [];
     if (!Array.isArray(fanout.do)) {
@@ -281,6 +285,15 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
         if (!isRecord(caseSpec)) {
           context.diagnostics.error("SWITCH_CASE", "switch.cases entries must be objects.", `${path}.switch.cases[${caseIndex}]`);
           return;
+        }
+        // Coerce `when`: boolean → string, string → pass through, else error.
+        if (caseSpec.when !== undefined) {
+          if (typeof caseSpec.when === "boolean") {
+            caseSpec.when = String(caseSpec.when);
+          } else if (typeof caseSpec.when !== "string") {
+            const typeDesc = caseSpec.when === null ? "null" : typeof caseSpec.when;
+            context.diagnostics.error("SWITCH_WHEN_TYPE", `switch.case.when must be a boolean or CEL expression string, got ${typeDesc}.`, `${path}.switch.cases[${caseIndex}].when`);
+          }
         }
         branches.push({
           id: `case_${caseIndex + 1}`,
@@ -308,8 +321,14 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
 
   if (isRecord(step.loop)) {
     const loop = step.loop;
-    if (typeof loop.until !== "string") {
-      context.diagnostics.error("LOOP_UNTIL", "loop.until must be an expression string.", `${path}.loop.until`);
+    // Coerce `until`: boolean → string, string → pass through, else error.
+    if (loop.until !== undefined) {
+      if (typeof loop.until === "boolean") {
+        loop.until = String(loop.until);
+      } else if (typeof loop.until !== "string") {
+        const typeDesc = loop.until === null ? "null" : typeof loop.until;
+        context.diagnostics.error("LOOP_UNTIL_TYPE", `loop.until must be a boolean or CEL expression string, got ${typeDesc}.`, `${path}.loop.until`);
+      }
     }
     if (typeof loop.max_iterations !== "number") {
       context.diagnostics.error("LOOP_MAX_ITERATIONS", "loop.max_iterations must be a number.", `${path}.loop.max_iterations`);
@@ -395,6 +414,19 @@ function validateProgramStep(step: WorkflowStep, path: string, context: CompileC
 function validateFanout(fanout: Record<string, unknown>, path: string, context: CompileContext): void {
   if (fanout.over === undefined) {
     context.diagnostics.error("FANOUT_OVER", "fanout.over is required.", `${path}.fanout.over`);
+  } else if (Array.isArray(fanout.over)) {
+    // Reject arrays containing non-primitive values (objects, nested arrays)
+    // since JSON.stringify of objects produces invalid CEL syntax.
+    for (let i = 0; i < fanout.over.length; i++) {
+      const el = fanout.over[i];
+      if (el !== null && el !== undefined && typeof el === "object") {
+        context.diagnostics.error("FANOUT_OVER_TYPE", `fanout.over array elements must be primitives (string, number, boolean, null), got ${typeof el} at index ${i}.`, `${path}.fanout.over[${i}]`);
+      }
+    }
+    // Coerce array → JSON string so the IR always stores strings
+    fanout.over = JSON.stringify(fanout.over);
+  } else if (typeof fanout.over !== "string") {
+    context.diagnostics.error("FANOUT_OVER_TYPE", `fanout.over must be an array or CEL expression string, got ${typeof fanout.over === "object" && fanout.over !== null ? "object" : typeof fanout.over}.`, `${path}.fanout.over`);
   }
   validateJoin(fanout.join, ["all", "race", "quorum"], `${path}.fanout.join`, "fanout.join", context);
 
@@ -448,6 +480,12 @@ function validateApprovalStep(approval: Record<string, unknown>, path: string, c
   }
   if (typeof approval.timeout !== "string") {
     context.diagnostics.error("APPROVAL_TIMEOUT", "approval.timeout must be a duration string.", `${path}.approval.timeout`);
+  } else {
+    try {
+      parseDurationMs(approval.timeout, { strict: true });
+    } catch {
+      context.diagnostics.error("APPROVAL_TIMEOUT", "approval.timeout must be a valid duration string (e.g. 5m, 2h, 30s).", `${path}.approval.timeout`);
+    }
   }
   if (!["fail", "escalate", "approve", "reject"].includes(String(approval.on_timeout))) {
     context.diagnostics.error("APPROVAL_ON_TIMEOUT", "approval.on_timeout must be fail, escalate, approve, or reject.", `${path}.approval.on_timeout`);
@@ -472,6 +510,38 @@ function validateRetry(retry: unknown, path: string, context: CompileContext): v
         context.diagnostics.error("RETRY_SHAPE", "retry.backoff must be a valid duration string.", `${path}.retry.backoff`);
       }
     }
+  }
+}
+
+function validateStepTimeout(step: Record<string, unknown>, path: string, context: CompileContext): void {
+  if (step.timeout === undefined) return;
+  if (typeof step.timeout === "number") {
+    if (step.timeout <= 0) {
+      context.diagnostics.error("STEP_TIMEOUT", "step.timeout number must be positive (milliseconds).", `${path}.timeout`);
+    }
+    return;
+  }
+  if (typeof step.timeout === "string") {
+    try {
+      parseDurationMs(step.timeout, { strict: true });
+    } catch {
+      context.diagnostics.error("STEP_TIMEOUT", "step.timeout must be a valid duration string or number (ms).", `${path}.timeout`);
+    }
+    return;
+  }
+  const typeDesc = step.timeout === null ? "null" : typeof step.timeout;
+  context.diagnostics.error("STEP_TIMEOUT", `step.timeout must be a duration string or number (ms), got ${typeDesc}.`, `${path}.timeout`);
+}
+
+function validateStepOnError(step: Record<string, unknown>, path: string, context: CompileContext): void {
+  if (step.on_error === undefined) return;
+  if (typeof step.on_error !== "string") {
+    const typeDesc = step.on_error === null ? "null" : typeof step.on_error;
+    context.diagnostics.error("STEP_ON_ERROR", `step.on_error must be a string, one of fail, retry, skip, got ${typeDesc}.`, `${path}.on_error`);
+    return;
+  }
+  if (!["fail", "retry", "skip"].includes(step.on_error)) {
+    context.diagnostics.error("STEP_ON_ERROR", `step.on_error must be one of fail, retry, skip, got '${step.on_error}'.`, `${path}.on_error`);
   }
 }
 

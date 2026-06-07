@@ -99,6 +99,8 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - The runtime MUST expose a daemon process as a long-running Hono HTTP server.
 - The daemon MUST listen on `127.0.0.1:3839` by default.
 - The daemon MUST expose a REST API for run submission, run listing, run inspection, node state listing, node retrieval, node control (pause, resume, cancel, retry), and run replay.
+- The daemon MUST expose a read-only endpoint returning a Run's frozen IR snapshot so observers can render the workflow structure and overlay live Node states; it MUST return a not-found error when the Run does not exist on disk.
+- The daemon MUST expose a read-only endpoint that resolves an artifact URI to its absolute filesystem path so observers can render a clickable link; it MUST return a not-found error when the Run does not exist and a bad-request error when the artifact URI is malformed.
 - When a `resume`, `retry`, or `replay` request targets a Run that is not in the daemon's in-memory interpreter map (e.g. after a daemon restart), the daemon MUST lazily obtain an interpreter for that Run from persisted state, returning a not-found error only when the Run does not exist on disk; `resume`/`retry` reset stale `running` nodes, while `replay` MUST remain read-only.
 - `pause` and `cancel` abort an in-flight turn and therefore MUST require a live interpreter; the daemon MUST NOT lazily recover one for them. When no live interpreter exists, the daemon MUST return a conflict error if the Run exists on disk and a not-found error otherwise.
 - Run submission MUST execute the run in the background and return the initial `running` state immediately, rather than blocking until the run reaches a terminal state.

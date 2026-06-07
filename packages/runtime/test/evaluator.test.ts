@@ -107,6 +107,22 @@ describe("ExpressionEvaluator", () => {
     });
   });
 
+  describe("env template evaluation", () => {
+    it("evaluates template strings in env-like values", () => {
+      const ctx = baseCtx({ input: { host: "prod.example.com", port: 8080 } });
+      // Simulates what evaluateEnv/stringEnv does with env values
+      const envValue = "https://${{ input.host }}:${{ input.port }}/api";
+      const result = evaluator.evaluateTemplate(envValue, ctx);
+      expect(result).toBe("https://prod.example.com:8080/api");
+    });
+
+    it("leaves plain env values unchanged", () => {
+      const ctx = baseCtx();
+      const result = evaluator.evaluateTemplate("static-value", ctx);
+      expect(result).toBe("static-value");
+    });
+  });
+
   describe("error handling", () => {
     it("throws on undefined variable access", () => {
       expect(() =>

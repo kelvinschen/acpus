@@ -17,8 +17,8 @@ workflow:
 
     - id: rewrite_files
       fanout:
-        over: ${{ steps.discover.output.files }}
-        key: ${{ item.path }}
+        over: steps.discover.output.files
+        key: "${{ item.path }}"
         max_concurrency: 4
         join: all
         do:
@@ -31,7 +31,7 @@ workflow:
 
     - id: fix_loop
       loop:
-        until: ${{ loop.iter > 0 && (len(steps.parse_failures.output.failures) == 0 || steps.apply_fix.output.tests_green) }}
+        until: loop.iter > 0 && (len(steps.parse_failures.output.failures) == 0 || steps.apply_fix.output.tests_green)
         max_iterations: 5
         do:
           - id: run_tests
@@ -50,7 +50,7 @@ workflow:
           - id: fix_round
             switch:
               cases:
-                - when: ${{ len(steps.parse_failures.output.failures) > 0 }}
+                - when: len(steps.parse_failures.output.failures) > 0
                   do:
                     - id: apply_fix
                       run: agent

@@ -15,8 +15,8 @@ workflow:
 
     - id: mapped
       fanout:
-        over: ${{ steps.discover.output.files }}
-        key: ${{ item.path }}
+        over: steps.discover.output.files
+        key: "${{ item.path }}"
         join: all
         do:
           - id: review_and_test

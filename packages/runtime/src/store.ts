@@ -7,7 +7,7 @@ import {
   renameSync,
   writeFileSync
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { encodeNodeKeyForFs, encodeNodeKeyForDir } from "./keys.js";
 import type { AcpusIr } from "@acpus/core";
 import type { NodeExecutionState, RunState } from "./types.js";
@@ -137,6 +137,25 @@ export class RunStore {
   /** Get the base directory. */
   getBaseDir(): string {
     return this.baseDir;
+  }
+
+  /**
+   * Resolve an `artifact://runs/<runId>/nodes/<safeKey>/<filename>` URI to its
+   * absolute filesystem path. Pure (no mkdir). Returns undefined for malformed
+   * URIs. Mirrors ArtifactStore's layout: <baseDir>/<runId>/artifacts/<safeKey>/<filename>.
+   */
+  resolveArtifactPath(uri: string): string | undefined {
+    const prefix = "artifact://runs/";
+    if (!uri.startsWith(prefix)) return undefined;
+    const parts = uri.slice(prefix.length).split("/");
+    // Format: <runId>/nodes/<safeKey>/<filename>
+    if (parts.length < 4 || parts[1] !== "nodes") return undefined;
+    const runId = parts[0];
+    const filename = parts[parts.length - 1];
+    const safeKey = parts.slice(2, parts.length - 1).join("/");
+    if (!runId || !filename || !safeKey) return undefined;
+    // safeKey is already the encoded form (slashes → colons) used on disk.
+    return resolve(join(this.runDir(runId), "artifacts", safeKey, filename));
   }
 
   // ─── Internal helpers ──────────────────────────────────────────
