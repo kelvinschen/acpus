@@ -208,7 +208,7 @@ async function spawnSupervisor(
   // Resolve entry script path and command
   const entry = resolveEntryPath();
 
-  const args = [...entry.args, "--workspace", workspace];
+  const args = [...entry.args, "--state-dir", stateDir];
   if (idleTimeoutMs !== undefined) {
     args.push("--idle-timeout", String(idleTimeoutMs));
   }

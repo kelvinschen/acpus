@@ -176,7 +176,9 @@ workflow:
 
     // The child IR is not persisted in the parent run, so its definition cannot
     // be resolved here: resume/retry must reject rather than silently no-op.
-    await expect(interpreter.resumeNode(meta.runId, childKey)).rejects.toThrow(/not.*found in the run's IR/);
+    // resumeNode rejects because the node is failed (only paused nodes are resumable).
+    await expect(interpreter.resumeNode(meta.runId, childKey)).rejects.toThrow(/only paused nodes are resumable/);
+    // retryNode rejects because the child IR definition is not found in the parent run.
     await expect(interpreter.retryNode(meta.runId, childKey)).rejects.toThrow(/not.*found in the run's IR/);
 
     // State must be untouched (no dirty running/pending left behind).

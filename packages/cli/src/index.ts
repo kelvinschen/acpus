@@ -12,6 +12,7 @@ import type { RunState, NodeExecutionState, SupervisorMetadata } from "@acpus/ru
 const EXIT_DSL_STATIC_ERROR = 10;
 const EXIT_RUNTIME_ERROR = 20;
 const EXIT_USER_CANCEL = 2;
+const EXIT_CLI_ERROR = 1;
 // EXIT_SUPERVISOR_ERROR = 40 (imported from supervisor.ts)
 
 const program = new Command();
@@ -56,12 +57,12 @@ program
     // Validate invalid combinations before any supervisor contact
     if (options.background && options.watch) {
       printError("--background and --watch are mutually exclusive", options);
-      process.exitCode = EXIT_DSL_STATIC_ERROR;
+      process.exitCode = EXIT_CLI_ERROR;
       return;
     }
     if (options.watch && options.json) {
       printError("--watch and --json are mutually exclusive", options);
-      process.exitCode = EXIT_DSL_STATIC_ERROR;
+      process.exitCode = EXIT_CLI_ERROR;
       return;
     }
 
@@ -173,6 +174,9 @@ program
           console.log(`  ${node.nodeKey}  [${node.kind}]  ${node.state}  attempt=${node.attempt}`);
           if (node.error) {
             console.log(`    Error: ${node.error}`);
+          }
+          if (node.artifactRefs?.length) {
+            console.log(`    Artifacts: ${node.artifactRefs.join(", ")}`);
           }
         }
       }

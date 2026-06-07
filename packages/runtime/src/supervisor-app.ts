@@ -511,6 +511,8 @@ export function createSupervisorApp(
     app,
     /** Expose for the runner to read idle-shutdown state. */
     getLastActiveAt: () => getLastActiveAt(),
+    /** Expose for the runner to check how many Runs are still active. */
+    runningCount: () => runningCount(),
     /** Expose for the runner to write the startedAt and endpoint after listen. */
     setHealthOverrides: (overrides: { startedAt?: string; endpoint?: string }) => {
       if (overrides.startedAt) healthStartedAt = overrides.startedAt;

@@ -351,6 +351,11 @@ export class WorkflowInterpreter {
     if (!state) {
       throw new Error(`Node ${nodeKey} not found in run ${runId}`);
     }
+    if (state.state !== "paused") {
+      throw new Error(
+        `Cannot resume node ${nodeKey} in state '${state.state}': only paused nodes are resumable (use retry for failed nodes)`
+      );
+    }
 
     const ir = this.store.readIr(runId);
     const input = this.store.readInput(runId);

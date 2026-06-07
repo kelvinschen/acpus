@@ -158,8 +158,8 @@ outputs:
       reject: false
     });
 
-    // Should fail before contacting supervisor
-    expect(result.exitCode).toBe(10);
+    // Should fail before contacting supervisor (CLI argument error, not DSL error)
+    expect(result.exitCode).toBe(1);
   });
 
   it("rejects --watch --json as invalid combination", async () => {
@@ -168,7 +168,7 @@ outputs:
       reject: false
     });
 
-    expect(result.exitCode).toBe(10);
+    expect(result.exitCode).toBe(1);
   });
 
   it("no longer has a 'daemon' command", async () => {

@@ -20,6 +20,7 @@ export async function startRunSupervisor(config: SupervisorConfig = {}): Promise
   const host = config.host ?? "127.0.0.1";
   const port = config.port ?? 0; // 0 = random port
   const stateDir = config.stateDir ?? join(process.cwd(), ".acpus");
+  config = { ...config, stateDir }; // Write computed stateDir back so createSupervisorApp resolves workspace correctly
   const idleTimeoutMs = config.idleTimeoutMs ?? 5 * 60 * 1000; // 5 min default
   const metadataFile = join(stateDir, "supervisor.json");
   const lockFile = join(stateDir, "supervisor.lock");
@@ -45,21 +46,22 @@ export async function startRunSupervisor(config: SupervisorConfig = {}): Promise
   const acpxAgentExecutor = new AgentExecutor();
   const programExecutor = new ProgramExecutor();
 
-  // Startup recovery: reset orphaned running/paused nodes to pending, set Run to paused.
-  // Graceful shutdown writes running→paused, so after a clean restart we also need
-  // to handle paused nodes. After a crash, running nodes are also reset.
+  // Startup recovery: reset orphaned running nodes to pending, set Run to paused.
+  // Only Runs with status "running" are recovered (crash, no graceful shutdown).
+  // After a graceful shutdown, paused nodes remain paused and the Run stays paused.
+  // The operator uses `acpus resume <runId>` to continue.
   for (const runId of store.listRunIds()) {
     const meta = store.readRunMeta(runId);
-    if (meta?.status === "running" || meta?.status === "paused") {
+    if (meta?.status === "running") {
       let anyReset = false;
       for (const nodeState of store.listNodeStates(runId)) {
-        if (nodeState.state === "running" || nodeState.state === "paused") {
+        if (nodeState.state === "running") {
           nodeState.state = "pending";
           store.writeNodeState(runId, nodeState);
           anyReset = true;
         }
       }
-      if (anyReset || meta.status === "running") {
+      if (anyReset) {
         meta.status = "paused";
         meta.updatedAt = new Date().toISOString();
         store.writeRunMeta(runId, meta);
@@ -67,7 +69,7 @@ export async function startRunSupervisor(config: SupervisorConfig = {}): Promise
     }
   }
 
-  const { app, getLastActiveAt, setHealthOverrides } = createSupervisorApp(
+  const { app, getLastActiveAt, runningCount, setHealthOverrides } = createSupervisorApp(
     config, store, mockAgentExecutor, programExecutor, acpxAgentExecutor
   );
 
@@ -107,7 +109,7 @@ export async function startRunSupervisor(config: SupervisorConfig = {}): Promise
   // ─── Idle shutdown ───────────────────────────────────────────────
 
   const idleCheckInterval = setInterval(() => {
-    if (Date.now() - getLastActiveAt() > idleTimeoutMs) {
+    if (Date.now() - getLastActiveAt() > idleTimeoutMs && runningCount() === 0) {
       console.log("Supervisor idle timeout — shutting down.");
       shutdown();
     }
