@@ -16,7 +16,9 @@ const KEY_TO_ACTION: Record<string, ControlAction> = {
   p: "pause",
   r: "resume",
   c: "cancel",
-  R: "retry"
+  R: "retry",
+  a: "approve",
+  x: "reject"
 };
 
 /** Main dashboard: observe + control a single run. */
@@ -46,7 +48,7 @@ export function App({
 
   const counts = useMemo(() => {
     if (!snapshot.ir) {
-      return { pending: 0, running: 0, completed: 0, failed: 0, paused: 0, cancelled: 0, total: 0 };
+      return { pending: 0, running: 0, awaiting: 0, completed: 0, failed: 0, paused: 0, cancelled: 0, total: 0 };
     }
     return countByState(buildRenderTree(snapshot.ir, snapshot.nodes));
   }, [snapshot.ir, snapshot.nodes]);
@@ -230,7 +232,7 @@ export function App({
         />
       </Box>
 
-      <Footer toast={toast?.msg} isError={toast?.error} />
+      <Footer toast={toast?.msg} isError={toast?.error} awaiting={selected?.state === "awaiting"} />
     </Box>
   );
 }

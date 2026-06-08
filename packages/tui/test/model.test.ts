@@ -108,16 +108,18 @@ describe("model overlay", () => {
 
   it("counts every runtime instance by state", () => {
     const root = node("workflow", "pipeline", {
-      children: [node("a", "run.agent"), node("b", "run.agent")]
+      children: [node("a", "run.agent"), node("b", "run.agent"), node("g", "approval")]
     });
     const states = [
       state("a", "workflow/a", "completed"),
-      state("b", "workflow/b", "running")
+      state("b", "workflow/b", "running"),
+      state("g", "workflow/g", "awaiting")
     ];
     const counts = countByState(buildRenderTree(ir(root), states));
     expect(counts.completed).toBe(1);
     expect(counts.running).toBe(1);
-    expect(counts.total).toBe(2);
+    expect(counts.awaiting).toBe(1);
+    expect(counts.total).toBe(3);
   });
 
   it("formats elapsed milliseconds as HH:MM:SS", () => {

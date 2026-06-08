@@ -6,7 +6,7 @@ import type { ExpressionContext, InterpreterOptions, NodeKeyDynamic, RunOptions 
 import { RunStore } from "./store.js";
 import { ExpressionEvaluator } from "./evaluator.js";
 import { resolveNodeKey } from "./keys.js";
-import { canTransition, transition, createInitialNodeState, resetFailedForRetry, resetRunningForCrashRecovery } from "./state-machine.js";
+import { canTransition, transition, createInitialNodeState, resetFailedForRetry, resetRunningForCrashRecovery, resetAwaitingForCrashRecovery } from "./state-machine.js";
 import { ArtifactStore } from "./artifacts.js";
 import type { ExecutorAdapter } from "./executors/types.js";
 import type { NodeExecutionState, NodeState, ReplayResult, ReplayMismatch } from "./types.js";
@@ -33,6 +33,10 @@ export class WorkflowInterpreter {
 
   /** Intent of an in-flight abort keyed by "runId:nodeKey" (pause vs cancel). */
   private readonly abortIntents: Map<string, "paused" | "cancelled"> = new Map();
+
+  /** Pending human-decision resolvers for Approval Gates awaiting a signal,
+   *  keyed by "runId:nodeKey". An entry exists only while a node is `awaiting`. */
+  private readonly approvalResolvers: Map<string, (approved: boolean) => void> = new Map();
 
   /** Absolute paths of subworkflow specs currently on the execution stack (cycle guard). */
   private readonly subworkflowStack: Set<string> = new Set();
@@ -148,15 +152,20 @@ export class WorkflowInterpreter {
   }
 
   /**
-   * Reset any nodes persisted as `running` back to `pending` (crash recovery).
-   * Safe to call when adopting a Run after a supervisor restart: in-memory abort
-   * controllers are gone, so a node marked `running` on disk has no live
-   * execution and must be re-runnable.
+   * Reset any nodes persisted as `running` (or `awaiting`) back to `pending`
+   * (crash recovery). Safe to call when adopting a Run after a supervisor
+   * restart: in-memory abort controllers and approval resolvers are gone, so a
+   * node marked `running`/`awaiting` on disk has no live execution and must be
+   * re-runnable. An `awaiting` Approval Gate re-registers its resolver and waits
+   * for a fresh human decision on re-execution.
    */
   recoverStaleNodes(runId: string): void {
     for (const nodeState of this.store.listNodeStates(runId)) {
       if (nodeState.state === "running") {
         nodeState.state = resetRunningForCrashRecovery(nodeState.state);
+        this.store.writeNodeState(runId, nodeState);
+      } else if (nodeState.state === "awaiting") {
+        nodeState.state = resetAwaitingForCrashRecovery(nodeState.state);
         this.store.writeNodeState(runId, nodeState);
       }
     }
@@ -327,20 +336,23 @@ export class WorkflowInterpreter {
   }
 
   /**
-   * Pause a running node.
+   * Pause a running node. No-op for nodes that cannot legally pause (e.g. an
+   * `awaiting` Approval Gate, which may only resolve to completed or cancel) so
+   * we never abort+misclassify a gate as `paused`.
    */
   pauseNode(runId: string, nodeKey: string): void {
+    const state = this.store.readNodeState(runId, nodeKey);
+    if (!state || !canTransition(state.state, "paused")) {
+      return;
+    }
     this.abortIntents.set(`${runId}:${nodeKey}`, "paused");
     const controller = this.abortControllers.get(`${runId}:${nodeKey}`);
     if (controller) {
       controller.abort();
     }
 
-    const state = this.store.readNodeState(runId, nodeKey);
-    if (state && canTransition(state.state, "paused")) {
-      state.state = transition(state.state, "paused") as NodeState;
-      this.store.writeNodeState(runId, state);
-    }
+    state.state = transition(state.state, "paused") as NodeState;
+    this.store.writeNodeState(runId, state);
   }
 
   /**
@@ -511,9 +523,10 @@ export class WorkflowInterpreter {
       }
     }
 
-    // Cancel all currently running nodes
+    // Cancel all currently running or awaiting nodes (abort the in-flight leaf
+    // or the pending approval wait, then transition to cancelled).
     for (const nodeState of this.store.listNodeStates(runId)) {
-      if (nodeState.state === "running") {
+      if (nodeState.state === "running" || nodeState.state === "awaiting") {
         this.cancelNode(runId, nodeState.nodeKey);
       }
     }
@@ -1038,11 +1051,23 @@ export class WorkflowInterpreter {
     const at = this.evaluator.getNow();
 
     const timeoutMs = timeout ? parseDurationMs(timeout) : undefined;
+    const resolverKey = `${runId}:${nodeKey}`;
+
+    // Enter the `awaiting` state: the gate is now blocked on a human decision.
+    // This is deliberately distinct from operator `paused` (see state machine);
+    // a human signal resolves it, a cancel aborts it.
+    const enterState = this.store.readNodeState(runId, nodeKey);
+    if (enterState && canTransition(enterState.state, "awaiting")) {
+      enterState.state = transition(enterState.state, "awaiting") as NodeState;
+      this.store.writeNodeState(runId, enterState);
+    }
 
     return new Promise<unknown>((resolve, reject) => {
       const onAbort = (): void => {
         cleanup();
-        reject(new NodeAbortedError(nodeKey, "paused"));
+        // Honor the operator intent recorded by cancelNode/pauseNode. An
+        // awaiting gate is normally cancelled (awaiting → cancelled).
+        reject(new NodeAbortedError(nodeKey, this.abortIntent(runId, nodeKey)));
       };
 
       const timer = timeoutMs
@@ -1050,7 +1075,7 @@ export class WorkflowInterpreter {
             cleanup();
             // On timeout, the resolved decision follows the configured policy.
             // `approve`/`reject` resolve; `fail`/`escalate` fail the node
-            // (escalate has no runtime channel yet — see R3).
+            // (escalate has no runtime channel yet — see roadmap).
             if (onTimeout === "approve") {
               resolve({ approved: true, decision: "timeout", at });
             } else if (onTimeout === "reject") {
@@ -1066,16 +1091,32 @@ export class WorkflowInterpreter {
       const cleanup = (): void => {
         if (timer) clearTimeout(timer);
         signal.removeEventListener("abort", onAbort);
+        this.approvalResolvers.delete(resolverKey);
       };
 
-      // For now, auto-approve in non-supervisor mode after a short delay
-      if (!timeoutMs) {
-        setTimeout(() => {
-          cleanup();
-          resolve({ approved: true, decision: "approved", at });
-        }, 100);
-      }
+      // Human-in-the-loop decision channel: an operator `signal` resolves the
+      // gate. With no `timeout` configured, the gate waits indefinitely for this
+      // (or a cancel). Whoever arrives first wins; the rest are torn down by
+      // cleanup().
+      this.approvalResolvers.set(resolverKey, (approved: boolean) => {
+        cleanup();
+        resolve({ approved, decision: approved ? "approved" : "rejected", at });
+      });
     });
+  }
+
+  /**
+   * Submit a human decision to an Approval Gate that is currently `awaiting`.
+   * Resolves the in-memory promise registered by executeApproval, which lets
+   * executeNode transition the node `awaiting → completed` with the decision
+   * output. Throws if the node is not awaiting a decision (no live resolver).
+   */
+  submitApproval(runId: string, nodeKey: string, approved: boolean): void {
+    const resolver = this.approvalResolvers.get(`${runId}:${nodeKey}`);
+    if (!resolver) {
+      throw new Error(`Node ${nodeKey} is not awaiting an approval decision`);
+    }
+    resolver(approved);
   }
 
   private async executeSubworkflow(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, nodeKey: string): Promise<unknown> {

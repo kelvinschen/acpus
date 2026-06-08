@@ -30,10 +30,11 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 
 ### Node State Machine
 
-- Every Node in a Run MUST follow a unified 6-state business lifecycle: `pending → running → {completed, failed, paused, cancelled}`.
+- Every Node in a Run MUST follow a unified 7-state business lifecycle: `pending → running → {awaiting, completed, failed, paused, cancelled}`.
 - A `paused` Node MUST be resumable (a `paused → running` lifecycle transition).
+- An `awaiting` Node (an Approval Gate blocked on a human decision) MUST transition only to `completed` (decision delivered) or `cancelled` (operator cancel). `awaiting` MUST be distinct from `paused`.
 - `completed`, `failed`, and `cancelled` MUST be terminal in the business lifecycle: they MUST NOT have any outgoing lifecycle transition, and `canTransition`/`transition` MUST reject moving out of them.
-- Recovery from a terminal or stale state MUST be modeled as an explicit control-plane reset, not as a business-lifecycle transition: operator retry MAY reset a `failed` Node to `pending`, and crash recovery MAY reset a stale `running` Node to `pending`. These resets MUST be exposed only through dedicated operations, never through the generic transition API.
+- Recovery from a terminal or stale state MUST be modeled as an explicit control-plane reset, not as a business-lifecycle transition: operator retry MAY reset a `failed` Node to `pending`, and crash recovery MAY reset a stale `running` or `awaiting` Node to `pending`. These resets MUST be exposed only through dedicated operations, never through the generic transition API.
 - `completed` and `cancelled` MUST NOT be resettable by any control-plane operation.
 - The runtime MUST persist every state change to disk immediately.
 
@@ -115,7 +116,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - The runtime MUST use `.acpus/supervisor.lock` or an equivalent Workspace-local lock to prevent concurrent CLI invocations from starting multiple supervisors for the same Workspace.
 - When ensuring a supervisor, the CLI MUST verify that `.acpus/supervisor.json` matches the current Workspace and that the endpoint health check succeeds.
 - When supervisor metadata is stale, unreachable, malformed, or for a different Workspace, the CLI MUST clean or replace it before using a supervisor.
-- The Run Supervisor MUST expose an HTTP REST API for run submission, run listing, run inspection, node state listing, node retrieval, run-level control, node-level control, run replay, frozen IR retrieval, artifact path resolution, and health checks.
+- The Run Supervisor MUST expose an HTTP REST API for run submission, run listing, run inspection, node state listing, node retrieval, run-level control, node-level control, approval signal delivery, run replay, frozen IR retrieval, artifact path resolution, and health checks.
 - Run-facing CLI commands MUST use the Run Supervisor API rather than maintaining a separate direct-disk read path.
 - The runtime MUST NOT require a normal user-facing `acpus daemon` or `acpus supervisor` command for normal execution.
 - The Run Supervisor MUST execute submitted Runs in the background and return the initial `running` state immediately, rather than blocking until the Run reaches a terminal state.
@@ -123,7 +124,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - The Run Supervisor MUST keep running while at least one Run is `running` or at least one visualizer/follower client is actively polling.
 - The Run Supervisor MUST exit after five idle minutes when there are no `running` Runs and no active visualizer/follower clients.
 - `paused`, `completed`, `failed`, and `cancelled` Runs MUST NOT by themselves keep an otherwise idle Run Supervisor alive.
-- The Run Supervisor MUST perform startup recovery: reset orphaned `running` Nodes to `pending` as a control-plane recovery operation.
+- The Run Supervisor MUST perform startup recovery: reset orphaned `running` or `awaiting` Nodes to `pending` as a control-plane recovery operation.
 - The Run Supervisor MUST perform graceful shutdown on SIGINT/SIGTERM: persist all live `running` Nodes as `paused`, remove supervisor metadata, close the HTTP server, then exit.
 - The Run Supervisor MUST use a 5-second forced-exit fallback if the HTTP server does not close promptly.
 - Node keys MUST be passed as `?key=` query parameters in the REST API because node keys contain `/` which is incompatible with path segments.
@@ -171,6 +172,8 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - On Node-level resume and retry, the runtime MUST restore the targeted Node's persisted dynamic value-context (fanout item, loop round) into the rebuilt expression context so command and prompt templates re-render identically.
 - On Node-level resume and retry, the runtime MUST resolve the targeted Node's definition from the Run's persisted IR before mutating Node state, and MUST reject the operation with an error (leaving Node state unchanged) when the definition cannot be resolved. Subworkflow child Nodes, whose IR is compiled on demand and not persisted in the parent Run, are therefore not individually resumable or retryable.
 - Operator pause and cancel both abort the in-flight Activity, but the runtime MUST resolve the node to `paused` for pause and `cancelled` for cancel; the operator intent MUST take precedence when an aborted Activity reports a partial result.
+- The runtime MUST support delivering a human approval decision to an Approval Gate that is `awaiting`, addressed through an explicit node key parameter (`--node <nodeKey>` in the CLI). The decision MUST be either approve or reject.
+- Approval signal delivery, like `pause`/`cancel`, MUST require a live interpreter (the decision channel is in-memory); the Run Supervisor MUST NOT lazily recover one. When no live interpreter exists, it MUST return a conflict error if the Run exists on disk and a not-found error otherwise, and MUST return a conflict error when the targeted Node is not `awaiting`.
 - A cancelled Agent Step MUST still persist its partial transcript artifact, the same as a paused one.
 - When a child node is paused or cancelled, the runtime MUST propagate the state change to the parent node.
 
@@ -214,7 +217,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Runtime tests MUST cover that replay reproduces a Run's Node topology deterministically, reports discrepancies when the persisted Run's topology is tampered with, and does not mutate persisted state.
 - Runtime tests MUST cover that acpx session names are explicit and stable enough for Node-level continuation.
 - Runtime tests MUST cover that normal runtime execution does not require remote workers, remote task queues, or a shared Temporal cluster.
-- Runtime tests MUST cover the 6-state node lifecycle and all legal transitions.
+- Runtime tests MUST cover the 7-state node lifecycle and all legal transitions.
 - Runtime tests MUST cover per-node JSON persistence and atomic write crash safety.
 - Runtime tests MUST cover node key resolution with dynamic dimensions (loop, fanout, parallel).
 - Runtime tests MUST cover CEL expression evaluation with custom functions and loop rewriting.

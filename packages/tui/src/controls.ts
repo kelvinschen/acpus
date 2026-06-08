@@ -5,7 +5,7 @@
 
 import type { RunSupervisorClient, NodeExecutionState, NodeState, RunStatus } from "@acpus/runtime";
 
-export type ControlAction = "pause" | "resume" | "cancel" | "retry";
+export type ControlAction = "pause" | "resume" | "cancel" | "retry" | "approve" | "reject";
 
 /** Whether a node-level action is applicable to a node in the given state. */
 export function canApply(action: ControlAction, state: NodeState | undefined): boolean {
@@ -17,6 +17,9 @@ export function canApply(action: ControlAction, state: NodeState | undefined): b
       return state === "paused";
     case "retry":
       return state === "failed";
+    case "approve":
+    case "reject":
+      return state === "awaiting";
     default:
       return false;
   }
@@ -32,6 +35,10 @@ export function canApplyRun(action: ControlAction, status: RunStatus | undefined
       return status === "paused";
     case "retry":
       return status === "failed";
+    // approve/reject are node-level only; there is no Run-level decision.
+    case "approve":
+    case "reject":
+      return false;
     default:
       return false;
   }
@@ -53,6 +60,10 @@ export async function applyControl(
       return client.cancelNode(runId, nodeKey);
     case "retry":
       return client.retryNode(runId, nodeKey);
+    case "approve":
+      return client.signalApproval(runId, nodeKey, true);
+    case "reject":
+      return client.signalApproval(runId, nodeKey, false);
   }
 }
 
@@ -71,5 +82,9 @@ export async function applyRunControl(
       return client.cancelRun(runId);
     case "retry":
       return client.retryRun(runId);
+    case "approve":
+    case "reject":
+      // Guarded out by canApplyRun; approve/reject are node-level only.
+      throw new Error(`'${action}' is not a Run-level action`);
   }
 }

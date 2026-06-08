@@ -41,7 +41,7 @@ An Executable Node that runs a local command and records command output.
 _Avoid_: shell task, script step
 
 **Approval Gate**:
-A planned human decision point inside a Workflow.
+A human decision point inside a Workflow. While blocked on a decision a Gate is `awaiting`; a human approve/reject resolves it, distinct from operator pause.
 _Avoid_: pause, manual stop
 
 **Mock Agent**:
@@ -53,7 +53,7 @@ A stable filesystem-safe string that identifies a Node within a Run, resolved fr
 _Avoid_: task id, step path
 
 **Node State Machine**:
-A unified 6-state lifecycle (pending → running → {completed, failed, paused, cancelled}) governing every Node in a Run.
+A unified 7-state lifecycle (pending → running → {awaiting, completed, failed, paused, cancelled}) governing every Node in a Run. `awaiting` is the human-decision wait used by Approval Gates.
 _Avoid_: status enum, phase tracker
 
 **Run Supervisor**:

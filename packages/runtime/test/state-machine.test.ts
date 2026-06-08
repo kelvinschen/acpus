@@ -5,7 +5,8 @@ import {
   isTerminal,
   createInitialNodeState,
   resetFailedForRetry,
-  resetRunningForCrashRecovery
+  resetRunningForCrashRecovery,
+  resetAwaitingForCrashRecovery
 } from "../src/state-machine.js";
 import type { NodeState } from "../src/types.js";
 
@@ -31,6 +32,22 @@ describe("Node State Machine", () => {
       expect(canTransition("running", "cancelled")).toBe(true);
     });
 
+    it("allows running → awaiting", () => {
+      expect(canTransition("running", "awaiting")).toBe(true);
+    });
+
+    it("allows awaiting → completed (human decision delivered)", () => {
+      expect(canTransition("awaiting", "completed")).toBe(true);
+    });
+
+    it("allows awaiting → cancelled (operator cancel)", () => {
+      expect(canTransition("awaiting", "cancelled")).toBe(true);
+    });
+
+    it("rejects awaiting → paused (awaiting is distinct from operator pause)", () => {
+      expect(canTransition("awaiting", "paused")).toBe(false);
+    });
+
     it("allows paused → running", () => {
       expect(canTransition("paused", "running")).toBe(true);
     });
@@ -52,21 +69,21 @@ describe("Node State Machine", () => {
     });
 
     it("rejects completed → any (terminal)", () => {
-      const states: NodeState[] = ["pending", "running", "completed", "failed", "paused", "cancelled"];
+      const states: NodeState[] = ["pending", "running", "awaiting", "completed", "failed", "paused", "cancelled"];
       for (const to of states) {
         expect(canTransition("completed", to)).toBe(false);
       }
     });
 
     it("rejects failed → any (terminal; retry is a control-plane reset, not a transition)", () => {
-      const states: NodeState[] = ["pending", "running", "completed", "failed", "paused", "cancelled"];
+      const states: NodeState[] = ["pending", "running", "awaiting", "completed", "failed", "paused", "cancelled"];
       for (const to of states) {
         expect(canTransition("failed", to)).toBe(false);
       }
     });
 
     it("rejects cancelled → any (terminal)", () => {
-      const states: NodeState[] = ["pending", "running", "completed", "failed", "paused", "cancelled"];
+      const states: NodeState[] = ["pending", "running", "awaiting", "completed", "failed", "paused", "cancelled"];
       for (const to of states) {
         expect(canTransition("cancelled", to)).toBe(false);
       }
@@ -98,6 +115,7 @@ describe("Node State Machine", () => {
     it("returns false for non-terminal states", () => {
       expect(isTerminal("pending")).toBe(false);
       expect(isTerminal("running")).toBe(false);
+      expect(isTerminal("awaiting")).toBe(false);
       expect(isTerminal("paused")).toBe(false);
     });
   });
@@ -119,9 +137,20 @@ describe("Node State Machine", () => {
     });
 
     it("resetRunningForCrashRecovery rejects any non-running state", () => {
-      const states: NodeState[] = ["pending", "completed", "failed", "paused", "cancelled"];
+      const states: NodeState[] = ["pending", "awaiting", "completed", "failed", "paused", "cancelled"];
       for (const from of states) {
         expect(() => resetRunningForCrashRecovery(from)).toThrow(/only running nodes can be reset/);
+      }
+    });
+
+    it("resetAwaitingForCrashRecovery resets an awaiting node to pending", () => {
+      expect(resetAwaitingForCrashRecovery("awaiting")).toBe("pending");
+    });
+
+    it("resetAwaitingForCrashRecovery rejects any non-awaiting state", () => {
+      const states: NodeState[] = ["pending", "running", "completed", "failed", "paused", "cancelled"];
+      for (const from of states) {
+        expect(() => resetAwaitingForCrashRecovery(from)).toThrow(/only awaiting nodes can be reset/);
       }
     });
   });

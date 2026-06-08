@@ -41,7 +41,10 @@ export async function startRunSupervisor(config: SupervisorConfig = {}): Promise
     if (meta?.status === "running") {
       let anyReset = false;
       for (const nodeState of store.listNodeStates(runId)) {
-        if (nodeState.state === "running") {
+        // A node persisted as `running` or `awaiting` has no live execution or
+        // approval resolver after a crash, so reset it to `pending` so the
+        // resumed Run re-executes it (an awaiting Approval Gate re-awaits).
+        if (nodeState.state === "running" || nodeState.state === "awaiting") {
           nodeState.state = "pending";
           store.writeNodeState(runId, nodeState);
           anyReset = true;

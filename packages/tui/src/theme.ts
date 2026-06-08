@@ -1,5 +1,5 @@
 /**
- * Glyphs and colors for acpus's true 6-state node lifecycle, plus kind labels
+ * Glyphs and colors for acpus's true 7-state node lifecycle, plus kind labels
  * for composite/executable nodes. Deliberately mirrors acpus semantics — NOT
  * the reference image's invented states (queued / needs-review / retried).
  */
@@ -13,10 +13,11 @@ export interface StateStyle {
   label: string;
 }
 
-/** The unified 6 states. No "queued"/"needs-review"/"retried" — those are not acpus states. */
+/** The unified 7 states. No "queued"/"needs-review"/"retried" — those are not acpus states. */
 export const STATE_STYLES: Record<NodeState, StateStyle> = {
   pending: { glyph: "○", color: "gray", label: "Pending" },
   running: { glyph: "▶", color: "yellow", label: "Running" },
+  awaiting: { glyph: "⏳", color: "blue", label: "Awaiting" },
   completed: { glyph: "✓", color: "green", label: "Completed" },
   failed: { glyph: "✗", color: "red", label: "Failed" },
   paused: { glyph: "⏸", color: "cyan", label: "Paused" },

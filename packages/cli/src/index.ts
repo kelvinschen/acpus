@@ -282,6 +282,32 @@ program
   });
 
 program
+  .command("signal")
+  .argument("<runId>", "run ID")
+  .requiredOption("--node <key>", "the Approval Gate node key to decide on")
+  .option("--approve", "approve the gate")
+  .option("--reject", "reject the gate")
+  .option("--json", "output machine-readable JSON")
+  .description("submit a human decision to an Approval Gate awaiting a decision")
+  .action(async (runId: string, options: { node: string; approve?: boolean; reject?: boolean; json?: boolean }) => {
+    if (options.approve === options.reject) {
+      printError("exactly one of --approve or --reject is required", { json: Boolean(options.json), quiet: false });
+      process.exitCode = EXIT_RUNTIME_ERROR;
+      return;
+    }
+    const approved = Boolean(options.approve);
+    try {
+      const client = await ensureSupervisor();
+      const state = await client.signalApproval(runId, options.node, approved);
+      if (options.json) console.log(JSON.stringify(state));
+      else console.log(`Node ${options.node} ${approved ? "approved" : "rejected"} (state: ${state.state})`);
+    } catch (error) {
+      printError(errorMessage(error), { json: Boolean(options.json), quiet: false });
+      process.exitCode = isSupervisorConnectionError(error) ? EXIT_SUPERVISOR_ERROR : EXIT_RUNTIME_ERROR;
+    }
+  });
+
+program
   .command("replay")
   .argument("<runId>", "run ID")
   .option("--json", "output machine-readable JSON")

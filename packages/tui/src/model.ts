@@ -193,6 +193,7 @@ export function aggregateState(node: RenderNode): NodeState | undefined {
   if (states.includes("failed")) return "failed";
   if (states.includes("cancelled")) return "cancelled";
   if (states.includes("running")) return "running";
+  if (states.includes("awaiting")) return "awaiting";
   if (states.includes("paused")) return "paused";
   if (states.includes("pending")) return "pending";
   if (states.every((s) => s === "completed")) return "completed";
@@ -204,6 +205,7 @@ export function countByState(root: RenderNode): Record<NodeState, number> & { to
   const counts = {
     pending: 0,
     running: 0,
+    awaiting: 0,
     completed: 0,
     failed: 0,
     paused: 0,

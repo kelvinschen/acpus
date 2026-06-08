@@ -85,7 +85,7 @@ function Details({
       {row.nodeKey ? <Line label="Key" value={clampInline(row.nodeKey)} /> : null}
 
       {/* ── Definition (from IR metadata) ── */}
-      <Definition kind={row.irNode.kind} meta={meta} summary={row.summary} />
+      <Definition kind={row.irNode.kind} meta={meta} summary={row.summary} state={row.state} />
 
       {/* ── Dynamic context ── */}
       {dyn ? (
@@ -143,11 +143,13 @@ function Details({
 function Definition({
   kind,
   meta,
-  summary
+  summary,
+  state
 }: {
   kind: DisplayRow["irNode"]["kind"];
   meta: Record<string, unknown>;
   summary?: string;
+  state?: DisplayRow["state"];
 }): React.ReactElement | null {
   if (kind === "run.agent") {
     const agent = (meta.agent ?? {}) as Record<string, unknown>;
@@ -192,7 +194,26 @@ function Definition({
     );
   }
 
-  // composite / approval / subworkflow: surface the summary if any.
+  if (kind === "approval") {
+    return (
+      <Box flexDirection="column" marginTop={1}>
+        <Text color="gray">Definition:</Text>
+        {meta.timeout !== undefined ? <Line label="  Timeout" value={String(meta.timeout)} /> : null}
+        {meta.on_timeout !== undefined ? <Line label="  On timeout" value={String(meta.on_timeout)} /> : null}
+        {typeof meta.prompt === "string" ? (
+          <Box flexDirection="column">
+            <Text color="gray">  Prompt:</Text>
+            <Text>{clampLines(meta.prompt, 6, 0)}</Text>
+          </Box>
+        ) : null}
+        {state === "awaiting" ? (
+          <Text color="blue">  ⏳ awaiting decision — [a] approve  [x] reject</Text>
+        ) : null}
+      </Box>
+    );
+  }
+
+  // composite / subworkflow: surface the summary if any.
   if (summary) {
     return (
       <Box flexDirection="column" marginTop={1}>

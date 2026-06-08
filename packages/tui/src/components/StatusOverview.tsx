@@ -4,10 +4,10 @@ import type { NodeState } from "@acpus/runtime";
 import { STATE_STYLES } from "../theme.js";
 
 /**
- * Left pane: aggregate dashboard. Total + per-state counts (always all 6 states,
+ * Left pane: aggregate dashboard. Total + per-state counts (always all 7 states,
  * so it doubles as the legend) + overall progress bar. Counts use the runtime
  * instance basis (fanout lanes / loop rounds each count once); Total == sum of
- * the 6 state counts, so the three numbers are always self-consistent.
+ * the 7 state counts, so the three numbers are always self-consistent.
  */
 export function StatusOverview({
   counts,

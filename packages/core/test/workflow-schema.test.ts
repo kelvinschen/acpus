@@ -139,6 +139,37 @@ workflow:
     expect(hasError(src, "STEP_SHAPE")).toBe(true);
   });
 
+  it("accepts an approval gate with only prompt (no timeout = wait indefinitely)", () => {
+    const src = `
+version: 1
+name: test
+agents:
+  mock: { type: mock }
+workflow:
+  steps:
+    - id: gate
+      approval:
+        prompt: "OK?"
+`;
+    expect(lintWorkflow(src).ok).toBe(true);
+  });
+
+  it("rejects an approval gate with timeout but no on_timeout", () => {
+    const src = `
+version: 1
+name: test
+agents:
+  mock: { type: mock }
+workflow:
+  steps:
+    - id: gate
+      approval:
+        prompt: "OK?"
+        timeout: 5m
+`;
+    expect(hasError(src, "APPROVAL_ON_TIMEOUT")).toBe(true);
+  });
+
   it("rejects unknown retry property", () => {
     const src = `
 version: 1

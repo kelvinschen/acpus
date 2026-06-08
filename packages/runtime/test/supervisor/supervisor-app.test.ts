@@ -531,3 +531,178 @@ workflow:
     }
   });
 });
+
+describe("Supervisor approval signal (human-in-the-loop)", () => {
+  let tmpDir: string;
+  let server: Server;
+  let baseUrl: string;
+  let store: RunStore;
+
+  // A gate with no timeout waits indefinitely for a human decision, then a
+  // downstream step consumes the decision so we can prove the loop closes.
+  const GATE_SPEC = `
+version: 1
+name: approval-signal-test
+agents:
+  coder:
+    type: mock
+workflow:
+  steps:
+    - id: gate
+      approval:
+        prompt: "Approve?"
+    - id: after
+      run: agent
+      use: coder
+      prompt: "approved=\${{ steps.gate.approved }}"
+`;
+
+  beforeAll(async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "acpus-supervisor-signal-"));
+    store = new RunStore(join(tmpDir, "runs"));
+    const agentExecutor = new MockAgentExecutor({ after: { output: { ok: true }, delay: 5 } });
+    const programExecutor = new MockProgramExecutor({});
+    const { app } = createSupervisorApp({ stateDir: tmpDir }, store, agentExecutor, programExecutor);
+    await new Promise<void>((resolve) => {
+      server = serve({ fetch: app.fetch, port: 0 }, (info) => {
+        baseUrl = `http://127.0.0.1:${info.port}`;
+        resolve();
+      });
+    });
+  });
+
+  afterAll(() => {
+    server?.close();
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  async function waitForNodeState(runId: string, nodeId: string, want: string, timeoutMs = 4000): Promise<void> {
+    const start = Date.now();
+    for (;;) {
+      const res = await fetch(`${baseUrl}/runs/${runId}/nodes`);
+      const nodes = (await res.json()) as Array<{ nodeId: string; state: string }>;
+      if (nodes.find((n) => n.nodeId === nodeId)?.state === want) return;
+      if (Date.now() - start > timeoutMs) throw new Error(`Timed out waiting for ${nodeId}=${want}`);
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  }
+
+  async function pollRunStatus(runId: string, timeoutMs = 4000): Promise<string> {
+    const start = Date.now();
+    for (;;) {
+      const res = await fetch(`${baseUrl}/runs/${runId}/output`);
+      const data = await res.json();
+      if (["completed", "failed", "paused", "cancelled"].includes(data.status)) return data.status as string;
+      if (Date.now() - start > timeoutMs) return data.status as string;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  }
+
+  it("delivers an approve decision end-to-end and lets downstream consume it", async () => {
+    const createRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: GATE_SPEC, input: {} })
+    });
+    const { runId } = await createRes.json();
+
+    await waitForNodeState(runId, "gate", "awaiting");
+
+    const sigRes = await fetch(`${baseUrl}/runs/${runId}/signal?key=${encodeURIComponent("workflow/gate")}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "approval", approved: true })
+    });
+    expect(sigRes.status).toBe(200);
+    const gateState = await sigRes.json();
+    expect(gateState.state).toBe("completed");
+    expect(gateState.output).toEqual({ approved: true, decision: "approved", at: expect.any(String) });
+
+    expect(await pollRunStatus(runId)).toBe("completed");
+    const out = await (await fetch(`${baseUrl}/runs/${runId}/output`)).json();
+    expect(out.output.gate.approved).toBe(true);
+    expect(out.output.after).toBeDefined();
+  });
+
+  it("a reject decision completes the gate with approved=false", async () => {
+    const createRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: GATE_SPEC, input: {} })
+    });
+    const { runId } = await createRes.json();
+    await waitForNodeState(runId, "gate", "awaiting");
+
+    const sigRes = await fetch(`${baseUrl}/runs/${runId}/signal?key=${encodeURIComponent("workflow/gate")}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "approval", approved: false })
+    });
+    expect(sigRes.status).toBe(200);
+    const gateState = await sigRes.json();
+    expect(gateState.state).toBe("completed");
+    expect(gateState.output.approved).toBe(false);
+    expect(gateState.output.decision).toBe("rejected");
+  });
+
+  it("returns 400 without ?key=", async () => {
+    const createRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: GATE_SPEC, input: {} })
+    });
+    const { runId } = await createRes.json();
+    const res = await fetch(`${baseUrl}/runs/${runId}/signal`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "approval", approved: true })
+    });
+    expect(res.status).toBe(400);
+    // cleanup: cancel the still-awaiting run
+    await fetch(`${baseUrl}/runs/${runId}/cancel`, { method: "POST" });
+  });
+
+  it("returns 400 for an unsupported signal kind", async () => {
+    const createRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: GATE_SPEC, input: {} })
+    });
+    const { runId } = await createRes.json();
+    await waitForNodeState(runId, "gate", "awaiting");
+    const res = await fetch(`${baseUrl}/runs/${runId}/signal?key=${encodeURIComponent("workflow/gate")}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "nope", approved: true })
+    });
+    expect(res.status).toBe(400);
+    await fetch(`${baseUrl}/runs/${runId}/cancel`, { method: "POST" });
+  });
+
+  it("returns 409 when the node is not awaiting a decision", async () => {
+    const createRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: GATE_SPEC, input: {} })
+    });
+    const { runId } = await createRes.json();
+    await waitForNodeState(runId, "gate", "awaiting");
+    // 'after' has not started, so it is not awaiting → 409
+    const res = await fetch(`${baseUrl}/runs/${runId}/signal?key=${encodeURIComponent("workflow/after")}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "approval", approved: true })
+    });
+    expect(res.status).toBe(409);
+    await fetch(`${baseUrl}/runs/${runId}/cancel`, { method: "POST" });
+  });
+
+  it("returns 404 for an unknown run", async () => {
+    const res = await fetch(`${baseUrl}/runs/does-not-exist/signal?key=${encodeURIComponent("workflow/gate")}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "approval", approved: true })
+    });
+    expect(res.status).toBe(404);
+  });
+});

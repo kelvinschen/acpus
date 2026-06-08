@@ -40,3 +40,8 @@
 - **R2 已完成（已归档）**：真实 acpx 集成依赖 R1 打通的 artifact 写入路径与自动 retry（agent parse/schema 失败续跑），现已落地。
 - **R3 已完成（已归档）**：replay 的拓扑验证与跨进程 resume/retry 需要先有真实 agent 执行历史可重放，现已落地。
 - **R4 已完成**：acpx 为 lockfile 精确 pin 的 bundled 依赖，Open Risk #2 由 pin 化解（不做运行时探测）；本轮交付 agent/program 失败的上下文前缀与 acpx stderr 纯透传、以及声明 schema 时的鲁棒 JSON 提取（balanced 扫描 + jsonrepair 兜底）。Open Risk #3（Temporal 内核易用性）当前自研 file-based daemon 架构不适用、关闭；#1 真实 adapter 端到端兼容验证与 #4 artifact 压缩本轮不做，留待后续按需开展。
+
+## Backlog / 能力缺口
+
+- **Approval Gate 人工回路已落地**：`awaiting` 状态、人工 approve/reject（TUI `a`/`x` 与 CLI `acpus signal`）、无 timeout 无限等待、reject→completed 已实现并测试覆盖（行为见 `specs/workflow-spec.md` Approval Gates）。
+- **Approval 决策持久化恢复（缺口）**：当前决策通道为内存 resolver，Run Supervisor 在 Gate `awaiting` 期间重启会把节点重置为 `pending` 并重新等待人工决策，down 窗口内到达的决策会丢失。持久化决策通道（与 approval `escalate` 持久通道一并）留待后续。

@@ -258,7 +258,10 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
     approvalSpec: {
       type: "object",
       additionalProperties: false,
-      required: ["prompt", "timeout", "on_timeout"],
+      required: ["prompt"],
+      // A gate with no `timeout` waits indefinitely for a human decision.
+      // When `timeout` is set, `on_timeout` must specify the timeout policy.
+      dependencies: { timeout: ["on_timeout"] },
       properties: {
         prompt: { type: "string" },
         timeout: { type: "string" },   // duration format validated by compiler

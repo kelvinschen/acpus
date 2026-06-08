@@ -53,6 +53,9 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, subm
 - Run-level retry MUST mean in-place recovery of the failed Run; it MUST NOT create a new Run and MUST NOT rerun completed Nodes.
 - Node-level controls MUST be validated against the current local Run and Node state before being accepted.
 - Run-level and Node-level control commands (`pause`, `resume`, `cancel`, `retry`) MUST support machine-readable JSON output reporting the resulting Run or Node state.
+- The CLI MUST support submitting a human approval decision to an Approval Gate through `acpus signal <run_id> --node <nodeKey> --approve` or `--reject`.
+- `acpus signal` MUST require `--node` and MUST require exactly one of `--approve` or `--reject`; supplying neither or both MUST be a usage error.
+- `acpus signal` MUST be accepted only for a Node currently `awaiting` and MUST be rejected with a conflict otherwise; it MUST support machine-readable JSON output reporting the resulting Node state.
 - The CLI MUST support `acpus replay <run_id>` to deterministically replay a local Run through the Run Supervisor and verify its reconstructed Node topology against the persisted Run.
 - `acpus replay` MUST reconstruct the Run from the frozen IR snapshot and recorded Node outcomes, and MUST NOT depend on mutable YAML, system time, random values, or large artifact payloads.
 - `acpus replay` MUST report verification results as machine-readable JSON, including any discrepancies between the recorded and replayed Node topology.

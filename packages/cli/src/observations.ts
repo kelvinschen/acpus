@@ -21,6 +21,7 @@ export interface ObservationEvent {
 const STATE_GLYPHS: Record<NodeState, string> = {
   pending: "○",
   running: "⠋",
+  awaiting: "⏳",
   completed: "✓",
   failed: "◆",
   paused: "⏸",

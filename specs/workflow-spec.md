@@ -104,12 +104,16 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 
 - An Approval Gate MUST declare `approval`.
 - An Approval Gate MUST declare `prompt`.
-- An Approval Gate MUST declare `timeout`.
-- An Approval Gate MUST declare `on_timeout`.
+- An Approval Gate MAY declare `timeout`. When `timeout` is declared, `on_timeout` MUST also be declared.
+- An Approval Gate with no `timeout` MUST wait indefinitely for a human decision (or a cancel).
+- An Approval Gate MUST enter the `awaiting` Node state while blocked on a human decision.
+- A human decision MUST be delivered through the Run Supervisor approval signal channel (`approve` or `reject`).
 - An Approval Gate MUST produce a JSON object that includes `approved`, `decision`, and `at`.
 - The `decision` field MUST be one of `approved`, `rejected`, or `timeout`, and `at` MUST be the deterministic workflow clock value.
+- A human `reject` MUST complete the Node (not fail it) with `approved: false` and `decision: rejected`, so downstream Nodes can branch on `approved`.
 - An Approval Gate with `on_timeout: fail` or `on_timeout: escalate` MUST fail the Node on timeout; full `escalate` semantics are deferred.
-- Approval Gates MUST be distinct from operator pause.
+- The `awaiting` state MUST be distinct from operator `paused`: a human decision resolves an `awaiting` gate, whereas operator pause/resume governs `paused` Nodes.
+- The approval decision channel is in-memory; if the Run Supervisor restarts while a gate is `awaiting`, the gate MUST be re-executed and wait for a fresh decision. Durable decision recovery is deferred (see roadmap).
 
 ### Expressions
 

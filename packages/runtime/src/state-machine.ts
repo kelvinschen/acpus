@@ -10,7 +10,11 @@ import type { NodeExecutionState, NodeState } from "./types.js";
 
 const TRANSITIONS: Record<NodeState, Set<NodeState>> = {
   pending: new Set(["running"]),
-  running: new Set(["completed", "failed", "paused", "cancelled"]),
+  running: new Set(["awaiting", "completed", "failed", "paused", "cancelled"]),
+  // `awaiting` is a human-in-the-loop wait (e.g. an Approval Gate blocked on an
+  // operator decision). It is distinct from `paused` (an operator-initiated
+  // pause): a decision resolves it to `completed`, a cancel to `cancelled`.
+  awaiting: new Set(["completed", "cancelled"]),
   paused: new Set(["running", "cancelled"]),
   completed: new Set(),
   failed: new Set(),
@@ -56,6 +60,19 @@ export function resetFailedForRetry(from: NodeState): NodeState {
 export function resetRunningForCrashRecovery(from: NodeState): NodeState {
   if (from !== "running") {
     throw new Error(`Cannot recover stale node in state '${from}': only running nodes can be reset`);
+  }
+  return "pending";
+}
+
+/**
+ * Control-plane reset: crash recovery of a stale awaiting node (awaiting → pending).
+ * The in-memory approval resolver does not survive a supervisor restart, so a node
+ * left in `awaiting` must be re-executed from scratch to re-register its resolver and
+ * wait for a fresh human decision.
+ */
+export function resetAwaitingForCrashRecovery(from: NodeState): NodeState {
+  if (from !== "awaiting") {
+    throw new Error(`Cannot recover stale node in state '${from}': only awaiting nodes can be reset`);
   }
   return "pending";
 }

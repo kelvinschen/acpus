@@ -194,6 +194,11 @@ function classifyError(err: ErrorObject, path: string): string {
     case "exclusiveMinimum":
       return classifyMinimum(err, path);
 
+    case "dependencies":
+    case "dependentRequired":
+      // approval gate: `timeout` present requires `on_timeout`.
+      return pathContext(path) === "approval" ? "APPROVAL_ON_TIMEOUT" : "SPEC_SHAPE";
+
     default:
       return "SPEC_SHAPE";
   }

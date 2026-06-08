@@ -2,8 +2,8 @@ import type { IrNodeKind } from "@acpus/core";
 
 // ─── Node lifecycle ──────────────────────────────────────────────
 
-/** The 6 states in the unified node state machine. */
-export type NodeState = "pending" | "running" | "completed" | "failed" | "paused" | "cancelled";
+/** The 7 states in the unified node state machine. */
+export type NodeState = "pending" | "running" | "awaiting" | "completed" | "failed" | "paused" | "cancelled";
 
 /** Run-level status (mirrors terminal node states + "running"). */
 export type RunStatus = "running" | "completed" | "failed" | "paused" | "cancelled";

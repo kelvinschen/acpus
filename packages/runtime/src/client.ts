@@ -107,6 +107,27 @@ export class RunSupervisorClient {
     return this.controlNode(runId, nodeKey, "retry");
   }
 
+  /**
+   * Deliver a human-in-the-loop approval decision to an Approval Gate that is
+   * currently `awaiting`. Node-level only. On a non-2xx response the
+   * supervisor's error message (e.g. 409 "not awaiting") is surfaced.
+   */
+  async signalApproval(runId: string, nodeKey: string, approved: boolean): Promise<NodeExecutionState> {
+    const res = await fetch(
+      `${this.baseUrl}/runs/${runId}/signal?key=${encodeURIComponent(nodeKey)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...this.headers() },
+        body: JSON.stringify({ kind: "approval", approved })
+      }
+    );
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(body.error ?? `Failed to signal approval: ${res.status}`);
+    }
+    return res.json() as Promise<NodeExecutionState>;
+  }
+
   // ─── Run-level controls ────────────────────────────────────────
 
   async pauseRun(runId: string): Promise<RunState> {

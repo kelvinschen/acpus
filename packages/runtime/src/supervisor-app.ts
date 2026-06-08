@@ -491,6 +491,53 @@ export function createSupervisorApp(
     return c.json(result);
   });
 
+  // ─── Approval signal ─────────────────────────────────────────────
+  //
+  // Deliver a human-in-the-loop decision to an Approval Gate that is currently
+  // `awaiting`. Node-level only (`?key=` required). Like pause/cancel, the
+  // resolver lives in the in-memory interpreter, so a live in-flight run is
+  // required (409 otherwise).
+
+  app.post("/runs/:runId/signal", async (c) => {
+    const runId = c.req.param("runId");
+    const nodeKey = c.req.query("key");
+    if (!nodeKey) {
+      return c.json({ error: "key query parameter is required (approval signals are node-level)" }, 400);
+    }
+
+    const body = await c.req
+      .json<{ kind?: string; approved?: boolean }>()
+      .catch(() => ({}) as { kind?: string; approved?: boolean });
+    if (body.kind !== "approval") {
+      return c.json({ error: `Unsupported signal kind '${body.kind ?? ""}'; only 'approval' is supported` }, 400);
+    }
+    if (typeof body.approved !== "boolean") {
+      return c.json({ error: "approved (boolean) is required" }, 400);
+    }
+
+    const interpreter = interpreters.get(runId);
+    if (!interpreter) {
+      return store.hasRun(runId)
+        ? c.json({ error: "Run is not actively executing; signal requires an in-flight run" }, 409)
+        : c.json({ error: "Run not found" }, 404);
+    }
+
+    try {
+      interpreter.submitApproval(runId, nodeKey, body.approved);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 409);
+    }
+    // submitApproval resolves the in-memory promise; the awaiting → completed
+    // write happens in the executeNode continuation on a later microtask. Wait
+    // briefly for the node to leave `awaiting` so we return the settled state.
+    let state = store.readNodeState(runId, nodeKey);
+    for (let i = 0; i < 100 && state?.state === "awaiting"; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+      state = store.readNodeState(runId, nodeKey);
+    }
+    return c.json(state);
+  });
+
   // ─── Output & Artifacts ──────────────────────────────────────────
 
   app.get("/runs/:runId/output", (c) => {
