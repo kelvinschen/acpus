@@ -555,31 +555,6 @@ workflow:
     }
   });
 
-  it("promotes warnings to errors under strict mode", () => {
-    // A fanout without key produces FANOUT_KEY warning; under strict it should fail
-    const source = `
-version: 1
-name: strict-test
-agents:
-  mock: { type: mock }
-workflow:
-  steps:
-    - id: mapped
-      fanout:
-        over: [1, 2, 3]
-        join: all
-        do:
-          - id: each
-            run: program
-            cmd: ["echo", "hi"]
-`;
-    const lenient = lintWorkflow(source);
-    const strict = lintWorkflow(source, { strict: true });
-
-    expect(lenient.ok).toBe(true);
-    expect(lenient.diagnostics.some((d) => d.code === "FANOUT_KEY" && d.severity === "warning")).toBe(true);
-    expect(strict.ok).toBe(false);
-  });
 
   // ── outputMerge tests ──
 

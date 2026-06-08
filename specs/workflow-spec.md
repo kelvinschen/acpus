@@ -78,8 +78,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A `parallel` Node with `join: race` MUST produce a single-key map containing only the first branch to complete; losing branches are not cancelled.
 - A `parallel` Node with `join: all` MUST fail fast on the first branch failure; when it does, its still-running or pending sibling branches in the same invocation MUST be cancelled (transition to `cancelled`) rather than left in `running`.
 - A `fanout` Node MUST declare `over` as an array or a CEL expression string.
-- A `fanout` Node MAY declare `key` as a template string (supports `${{ }}` interpolation).
-- A `fanout` Node SHOULD declare `key` when items have stable identity.
+- A `fanout` Node MAY declare `key` as a template string (supports `${{ }}` interpolation); when absent, item index is used as identity.
 - A `fanout` Node MAY declare `max_concurrency`.
 - A `fanout` Node MAY declare `join` as `all`, `race`, or `quorum`.
 - A `fanout` Node MUST declare `quorum` when `join: quorum` is used.

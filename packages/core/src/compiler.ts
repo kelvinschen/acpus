@@ -236,9 +236,6 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
   if (isRecord(step.fanout)) {
     const fanout = step.fanout;
     validateFanout(fanout, path, context);
-    if (fanout.key === undefined) {
-      context.diagnostics.warning("FANOUT_KEY", "fanout.key is missing; runtime will fall back to item index identity. Use key: \"${{ item.yourProperty }}\" to set a stable identity.", `${path}.fanout.key`);
-    }
     const children = Array.isArray(fanout.do) ? compileSteps(asSteps(fanout.do, `${path}.fanout.do`, context), nodePath, `${path}.fanout.do`, context) : [];
     if (!Array.isArray(fanout.do)) {
       context.diagnostics.error("FANOUT_DO", "fanout.do must be an array of steps.", `${path}.fanout.do`);

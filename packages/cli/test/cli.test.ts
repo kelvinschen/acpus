@@ -28,42 +28,6 @@ describe("acpus CLI", () => {
     expect(JSON.parse(result.stdout).diagnostics[0].severity).toBe("error");
   });
 
-  it("promotes warnings to errors with --strict", async () => {
-    const tempDir = join(repoRoot, ".tmp-tests");
-    mkdirSync(tempDir, { recursive: true });
-    const specPath = join(tempDir, "strict-test.yaml");
-    writeFileSync(specPath, `
-version: 1
-name: strict-test
-agents:
-  mock: { type: mock }
-workflow:
-  steps:
-    - id: mapped
-      fanout:
-        over: [1, 2, 3]
-        join: all
-        do:
-          - id: each
-            run: program
-            cmd: ["echo", "hi"]
-outputs:
-  result: \${{ steps.mapped.output }}
-`);
-
-    const lenient = await execaNode(cliEntry, ["lint", specPath, "--json"], {
-      nodeOptions: ["--import", "tsx", "--conditions=development"]
-    });
-    const strict = await execaNode(cliEntry, ["lint", specPath, "--strict", "--json"], {
-      nodeOptions: ["--import", "tsx", "--conditions=development"],
-      reject: false
-    });
-
-    expect(lenient.exitCode).toBe(0);
-    expect(JSON.parse(lenient.stdout).ok).toBe(true);
-    expect(strict.exitCode).toBe(10);
-    expect(JSON.parse(strict.stdout).ok).toBe(false);
-  });
 
   it("prints dry-run diagnostics, IR, and schedule", async () => {
     const result = await execaNode(cliEntry, ["run", join(fixtureDir, "all-primitives.yaml"), "--dry-run", "--json"], {
