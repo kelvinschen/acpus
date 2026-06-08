@@ -133,4 +133,42 @@ workflow:
     expect(slow?.artifactRefs?.every((u) => u.includes("workflow:par:slow"))).toBe(true);
     expect(fast?.artifactRefs?.every((u) => u.includes("workflow:par:fast"))).toBe(true);
   });
+
+  it("cancels still-running sibling branches when join:all fails fast", async () => {
+    // A fast branch fails almost immediately; a slow branch is still running.
+    // join:all must fail fast AND cancel the slow sibling (not leave it running).
+    const ir = compileYaml(`
+version: 1
+name: parallel-fail-fast
+workflow:
+  steps:
+    - id: par
+      join: all
+      parallel:
+        - id: boom
+          run: program
+          cmd: ["echo", "boom"]
+        - id: slow
+          run: program
+          cmd: ["echo", "slow"]
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: {
+        boom: { failureKind: "timeout", delay: 5 },
+        slow: { stdout: "slow-out", delay: 200 }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("failed");
+
+    const nodes = store.listNodeStates(meta.runId);
+    const boom = nodes.find((n) => n.nodeId === "boom");
+    const slow = nodes.find((n) => n.nodeId === "slow");
+    expect(boom?.state).toBe("failed");
+    // The key assertion: the slow sibling must NOT linger in "running".
+    expect(slow?.state).toBe("cancelled");
+  });
 });

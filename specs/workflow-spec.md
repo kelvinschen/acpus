@@ -75,6 +75,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A `parallel` Node MUST produce a map keyed by branch id.
 - A `parallel` Node MAY declare `join` as `all` or `race`.
 - A `parallel` Node with `join: race` MUST produce a single-key map containing only the first branch to complete; losing branches are not cancelled.
+- A `parallel` Node with `join: all` MUST fail fast on the first branch failure; when it does, its still-running or pending sibling branches in the same invocation MUST be cancelled (transition to `cancelled`) rather than left in `running`.
 - A `fanout` Node MUST declare `over` as an array or a CEL expression string.
 - A `fanout` Node MAY declare `key` as a template string (supports `${{ }}` interpolation).
 - A `fanout` Node SHOULD declare `key` when items have stable identity.
@@ -83,7 +84,8 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A `fanout` Node MUST declare `quorum` when `join: quorum` is used.
 - A `fanout` Node MAY declare `success_criteria.min_success` as a positive integer.
 - Node `join` MUST define the wait strategy, not the overall success criteria.
-- A failed `fanout` lane MUST be captured as a lane result rather than aborting the Node; operator pause/cancel MUST still propagate.
+- A `fanout` Node with `join: race` or `join: quorum` MUST capture a failed lane as a lane result rather than aborting the Node, so the wait strategy can still reach its target on the surviving lanes; operator pause/cancel MUST still propagate.
+- A `fanout` Node with `join: all` MUST fail fast on the first lane failure; when it does, its still-running or pending lanes (and their descendant Nodes) MUST be cancelled (transition to `cancelled`, except Nodes already `failed`) rather than left in `running`.
 - `success_criteria.min_success` MUST define how many successful fanout lanes are required for overall fanout success after the wait strategy completes.
 - When `success_criteria.min_success` is absent, the default MUST follow the wait strategy: `all` requires all lanes, `race` requires 1, and `quorum` requires `quorum`.
 - A `fanout` Node MUST produce an array of the successful lane outputs.

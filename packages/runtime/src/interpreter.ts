@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 import type { ExpressionContext, InterpreterOptions, NodeKeyDynamic, RunOptions } from "./types.js";
 import { RunStore } from "./store.js";
 import { ExpressionEvaluator } from "./evaluator.js";
-import { resolveNodeKey } from "./keys.js";
+import { resolveNodeKey, sanitizeValue } from "./keys.js";
 import { canTransition, transition, createInitialNodeState, resetFailedForRetry, resetRunningForCrashRecovery, resetAwaitingForCrashRecovery } from "./state-machine.js";
 import { ArtifactStore } from "./artifacts.js";
 import type { ExecutorAdapter } from "./executors/types.js";
@@ -422,6 +422,13 @@ export class WorkflowInterpreter {
     return this.abortIntents.get(`${runId}:${nodeKey}`) ?? "paused";
   }
 
+  /** True if the node has been persisted as terminal `cancelled` (e.g. by an
+   * external cancelNode during fail-fast). Used to avoid clobbering it when a
+   * still-running leaf later resolves/rejects. */
+  private isCancelledOnDisk(runId: string, nodeKey: string): boolean {
+    return this.store.readNodeState(runId, nodeKey)?.state === "cancelled";
+  }
+
   /**
    * Retry a failed node.
    *
@@ -736,7 +743,14 @@ export class WorkflowInterpreter {
           throw new Error(`Unknown node kind: ${node.kind}`);
       }
 
-      // Transition to completed
+      // Transition to completed — unless an external cancel (e.g. fail-fast
+      // sibling cancellation) already moved this node to a terminal `cancelled`
+      // state on disk while we were awaiting. The in-memory `state` here is a
+      // stale `running`; honor the persisted cancellation instead of clobbering.
+      if (this.isCancelledOnDisk(runId, nodeKey)) {
+        ctx.steps[node.id] = output;
+        return output;
+      }
       state.state = "completed";
       state.output = output;
       if (artifactRefs) state.artifactRefs = artifactRefs;
@@ -759,6 +773,11 @@ export class WorkflowInterpreter {
         throw error;
       }
 
+      // Don't clobber an external `cancelled` (fail-fast sibling cancellation)
+      // that landed while this node's leaf was finishing; keep it cancelled.
+      if (this.isCancelledOnDisk(runId, nodeKey)) {
+        throw error;
+      }
       state.state = "failed";
       state.error = error instanceof Error ? error.message : String(error);
       // Preserve artifacts a leaf wrote before failing (e.g. program stdout/stderr).
@@ -892,13 +911,70 @@ export class WorkflowInterpreter {
     }
 
     // join: all — collect every branch output keyed by step id.
-    const results = await Promise.all(branchPromises);
+    // fail-fast: Promise.all rejects on the first branch failure. Before
+    // rethrowing, actively cancel the still-running sibling branches so they
+    // don't linger in "running" state (they belong to a parallel that has
+    // already failed). Siblings transition to "cancelled".
+    let results: { child: IrNode; output: unknown }[];
+    try {
+      results = await Promise.all(branchPromises);
+    } catch (error) {
+      this.cancelDescendantsInScope(runId, node, dynamic);
+      branchPromises.forEach((p) => void p.catch(() => undefined));
+      throw error;
+    }
     const mapOutput: Record<string, unknown> = {};
     for (const { child, output } of results) {
       mapOutput[child.id] = output;
       ctx.steps[child.id] = output;
     }
     return mapOutput;
+  }
+
+  /**
+   * Cancel still-running/pending descendant nodes of a failed composite
+   * (parallel `join: all`, or fanout `join: all` fail-fast). Scoped to the
+   * given dynamic context: a descendant must (a) be one of the composite's
+   * descendant IR node ids and (b) share every dynamic dimension (item/lane/
+   * round) the composite already carries — so concurrent sibling fanout lanes
+   * outside this scope are not affected. Already-`failed` nodes are left as-is.
+   *
+   * NOTE: pass the composite's OWN dynamic. For a parallel this scopes to the
+   * current lane (item/lane present). For a fanout, the dynamic does NOT yet
+   * carry this fanout's lane (lanes are introduced for its children), so the
+   * scope spans ALL of the fanout's lanes — exactly the fail-fast intent.
+   */
+  private cancelDescendantsInScope(runId: string, node: IrNode, dynamic: NodeKeyDynamic): void {
+    const descendantIds = new Set<string>();
+    const collect = (n: IrNode): void => {
+      for (const c of n.children ?? []) {
+        descendantIds.add(c.id);
+        collect(c);
+      }
+      for (const b of n.branches ?? []) {
+        for (const c of b.children) {
+          descendantIds.add(c.id);
+          collect(c);
+        }
+      }
+    };
+    collect(node);
+
+    // Key segments that must be present for an instance to share this scope.
+    // Values are sanitized to match resolveNodeKey's on-disk encoding (e.g. an
+    // item id "file:alpha" is stored as "item:file_alpha").
+    const scopeSegments: string[] = [];
+    if (dynamic.fanoutItemId !== undefined) scopeSegments.push(`item:${sanitizeValue(String(dynamic.fanoutItemId))}`);
+    if (dynamic.laneId !== undefined) scopeSegments.push(`lane:${sanitizeValue(String(dynamic.laneId))}`);
+    if (dynamic.loopRound !== undefined) scopeSegments.push(`round:${dynamic.loopRound}`);
+
+    for (const ns of this.store.listNodeStates(runId)) {
+      if (ns.state !== "running" && ns.state !== "awaiting" && ns.state !== "pending") continue;
+      if (!descendantIds.has(ns.nodeId)) continue;
+      const segs = ns.nodeKey.split("/");
+      if (!scopeSegments.every((s) => segs.includes(s))) continue;
+      this.cancelNode(runId, ns.nodeKey);
+    }
   }
 
   private async executeFanout(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {
@@ -916,7 +992,20 @@ export class WorkflowInterpreter {
 
     const limit = pLimit(maxConcurrency);
 
-    // Each lane resolves to a LaneResult. A normal failure is captured (does
+    // Success target (how many lanes must succeed). Default follows join.
+    const defaultMinSuccess = join === "race" ? 1 : join === "quorum" ? (quorum ?? 1) : items.length;
+    const minSuccess = successCriteria?.min_success ?? defaultMinSuccess;
+
+    // Fail-fast: once enough lanes have failed that the success target is
+    // unreachable (failures > total - minSuccess), abort the whole fanout —
+    // cancel every still-running/pending lane subtree and reject to short
+    // circuit the wait, instead of waiting for doomed lanes to finish.
+    // race/quorum tolerate per-lane failure until their target is impossible.
+    const maxFailures = items.length - minSuccess;
+    let failures = 0;
+    let failFastTriggered = false;
+
+    // Each lane resolves to a LaneResult. A tolerable failure is captured (does
     // not reject) so the join/min_success logic can run. A NodeAbortedError
     // (operator pause/cancel) re-throws so it propagates to the parent.
     const lanePromises = items.map((item, index) =>
@@ -937,6 +1026,17 @@ export class WorkflowInterpreter {
           return { ok: true, output: laneOutput };
         } catch (error) {
           if (error instanceof NodeAbortedError) throw error;
+          failures++;
+          if (failures > maxFailures) {
+            // Success target is now unreachable → fail fast: cancel all
+            // still-running lanes of THIS fanout (scoped to the parent dynamic,
+            // so it spans every lane), then reject to short-circuit the wait.
+            if (!failFastTriggered) {
+              failFastTriggered = true;
+              this.cancelDescendantsInScope(runId, node, dynamic);
+            }
+            throw error;
+          }
           return { ok: false, error: error instanceof Error ? error.message : String(error) };
         }
       })
@@ -944,10 +1044,6 @@ export class WorkflowInterpreter {
 
     // Wait strategy.
     const settled = await this.waitForFanout(lanePromises, join, quorum);
-
-    // Success criteria. Default min_success follows the join strategy.
-    const defaultMinSuccess = join === "race" ? 1 : join === "quorum" ? (quorum ?? 1) : items.length;
-    const minSuccess = successCriteria?.min_success ?? defaultMinSuccess;
 
     const successes = settled.filter((r): r is { ok: true; output: unknown } => r.ok);
     if (successes.length < minSuccess) {
@@ -986,7 +1082,9 @@ export class WorkflowInterpreter {
       });
     }
 
-    // join: all — wait for every lane.
+    // join: all — wait for every lane. A lane only rejects under fail-fast
+    // (first failure) or NodeAbortedError; either way Promise.all short-circuits
+    // and the rejection propagates to fail the fanout immediately.
     return Promise.all(lanePromises);
   }
 

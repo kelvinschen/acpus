@@ -7,6 +7,7 @@ import {
   countByState,
   aggregateState,
   indexByNodeId,
+  parseNodeKey,
   formatElapsed
 } from "../src/model.js";
 
@@ -62,22 +63,57 @@ describe("model overlay", () => {
     expect(tree.children[1].instances[0].state).toBe("running");
   });
 
-  it("groups fanout lanes under one IR node id", () => {
+  it("expands fanout into per-lane groups; (×N) only on the fanout", () => {
     const fan = node("mapped", "fanout", { children: [node("work", "run.agent")] });
     const root = node("workflow", "pipeline", { children: [fan] });
     const states = [
-      state("work", "workflow/mapped/item:a/lane:0", "completed"),
-      state("work", "workflow/mapped/item:b/lane:1", "running")
+      state("work", "workflow/mapped/work/item:a/lane:0", "completed"),
+      state("work", "workflow/mapped/work/item:b/lane:1", "running")
     ];
     const idx = indexByNodeId(states);
     expect(idx.get("work")).toHaveLength(2);
 
     const rows = buildRows(buildRenderTree(ir(root), states));
-    // Header row for the expanded "work" node + one row per lane.
+
+    // (×N) lives only on the fanout node.
+    const mapped = rows.find((r) => r.irNode.id === "mapped");
+    expect(mapped?.label).toContain("×2");
+
+    // Two synthetic lane group rows, labeled "lane=N «item»".
+    const groups = rows.filter((r) => r.groupDim === "lane");
+    expect(groups.map((g) => g.label)).toEqual(["lane=0 «a»", "lane=1 «b»"]);
+    expect(groups.map((g) => g.groupItem)).toEqual(["a", "b"]);
+
+    // The work node appears once per lane, each a single instance, no "×".
     const workRows = rows.filter((r) => r.irNode.id === "work");
-    expect(workRows[0].isHeader).toBe(true);
-    expect(workRows[0].label).toContain("×2");
-    expect(workRows).toHaveLength(3);
+    expect(workRows).toHaveLength(2);
+    for (const w of workRows) {
+      expect(w.label).toBe("work");
+      expect(w.instance).toBeDefined();
+    }
+  });
+
+  it("does not mark parallel children with (×N) under a fanout", () => {
+    const par = node("review", "parallel", {
+      children: [node("sec", "run.agent"), node("perf", "run.agent")]
+    });
+    const fan = node("mapped", "fanout", { children: [par] });
+    const root = node("workflow", "pipeline", { children: [fan] });
+    const states = [
+      state("sec", "workflow/mapped/review/sec/item:a/lane:0/branch:0", "failed"),
+      state("perf", "workflow/mapped/review/perf/item:a/lane:0/branch:1", "failed"),
+      state("sec", "workflow/mapped/review/sec/item:b/lane:1/branch:0", "failed"),
+      state("perf", "workflow/mapped/review/perf/item:b/lane:1/branch:1", "failed")
+    ];
+    const rows = buildRows(buildRenderTree(ir(root), states));
+
+    // Only the fanout shows a count.
+    expect(rows.filter((r) => r.label.includes("×"))).toHaveLength(1);
+    expect(rows.find((r) => r.label.includes("×"))?.irNode.id).toBe("mapped");
+
+    // sec/perf appear once per lane, single instance each.
+    expect(rows.filter((r) => r.irNode.id === "sec")).toHaveLength(2);
+    expect(rows.filter((r) => r.irNode.id === "perf")).toHaveLength(2);
   });
 
   it("derives switch branch labels and predicates", () => {
@@ -98,12 +134,86 @@ describe("model overlay", () => {
     const fan = node("mapped", "fanout", { children: [node("work", "run.agent")] });
     const root = node("workflow", "pipeline", { children: [fan] });
     const states = [
-      state("work", "workflow/mapped/item:a", "completed"),
-      state("work", "workflow/mapped/item:b", "failed")
+      state("work", "workflow/mapped/work/item:a/lane:0", "completed"),
+      state("work", "workflow/mapped/work/item:b/lane:1", "failed")
     ];
     const tree = buildRenderTree(ir(root), states);
-    const workNode = tree.children[0].children[0];
-    expect(aggregateState(workNode)).toBe("failed");
+    // The fanout node aggregates the states of all its lanes.
+    const fanoutNode = tree.children[0];
+    expect(fanoutNode.irNode.id).toBe("mapped");
+    expect(aggregateState(fanoutNode)).toBe("failed");
+  });
+
+  it("parses node keys into path and dynamic dims", () => {
+    const p = parseNodeKey("workflow/mapped/work/item:file-a/lane:0/branch:1/round:2");
+    expect(p.path).toEqual(["workflow", "mapped", "work"]);
+    expect(p.dims.get("item")).toBe("file-a");
+    expect(p.dims.get("lane")).toBe("0");
+    expect(p.dims.get("branch")).toBe("1");
+    expect(p.dims.get("round")).toBe("2");
+  });
+
+  it("expands loop rounds with numeric ordering; (×N) on the loop", () => {
+    const loop = node("iter", "loop", { children: [node("body", "run.agent")] });
+    const root = node("workflow", "pipeline", { children: [loop] });
+    const states = [
+      state("body", "workflow/iter/body/round:0", "completed"),
+      state("body", "workflow/iter/body/round:2", "completed"),
+      state("body", "workflow/iter/body/round:10", "running")
+    ];
+    const rows = buildRows(buildRenderTree(ir(root), states));
+    const loopRow = rows.find((r) => r.irNode.id === "iter");
+    expect(loopRow?.label).toContain("×3");
+    const groups = rows.filter((r) => r.groupDim === "round");
+    expect(groups.map((g) => g.label)).toEqual(["round=0", "round=2", "round=10"]);
+  });
+
+  it("computes tree guide-line prefixes (├─/└─/│)", () => {
+    const root = node("workflow", "pipeline", {
+      children: [node("a", "run.agent"), node("b", "run.agent"), node("c", "run.agent")]
+    });
+    const rows = buildRows(buildRenderTree(ir(root), []));
+    const byId = (id: string) => rows.find((r) => r.irNode.id === id);
+    const prefix = (id: string) => byId(id)?.treeSegments.map((s) => s.text).join("") ?? "";
+    // Root has no prefix.
+    expect(prefix("workflow")).toBe("");
+    // First two children are non-last → "├─ ", last child → "└─ ".
+    expect(prefix("a")).toBe("├─ ");
+    expect(prefix("b")).toBe("├─ ");
+    expect(prefix("c")).toBe("└─ ");
+    // pipeline children are sequential → not parallel-colored.
+    expect(byId("a")?.treeSegments.every((s) => !s.parallel)).toBe(true);
+  });
+
+  it("draws continuation columns for deeper non-last ancestors", () => {
+    // workflow → [par(non-last), tail(last)]; par → [x, y]
+    const par = node("par", "parallel", {
+      children: [node("x", "run.agent"), node("y", "run.agent")]
+    });
+    const root = node("workflow", "pipeline", { children: [par, node("tail", "run.agent")] });
+    const rows = buildRows(buildRenderTree(ir(root), []));
+    const byId = (id: string) => rows.find((r) => r.irNode.id === id);
+    const prefix = (id: string) => byId(id)?.treeSegments.map((s) => s.text).join("") ?? "";
+    // par is a non-last child of root → its children draw a "│  " continuation.
+    expect(prefix("x")).toBe("│  ├─ ");
+    expect(prefix("y")).toBe("│  └─ ");
+    expect(prefix("tail")).toBe("└─ ");
+  });
+
+  it("colors parallel-branch guide-line columns distinctly from sequential", () => {
+    const par = node("par", "parallel", {
+      children: [node("x", "run.agent"), node("y", "run.agent")]
+    });
+    const root = node("workflow", "pipeline", { children: [par, node("tail", "run.agent")] });
+    const rows = buildRows(buildRenderTree(ir(root), []));
+    const byId = (id: string) => rows.find((r) => r.irNode.id === id);
+    // par itself is a child of the (sequential) pipeline → its own connector is sequential.
+    expect(byId("par")?.treeSegments.map((s) => s.parallel)).toEqual([false]);
+    // x/y are children of the parallel → their OWN connector column is parallel-colored.
+    expect(byId("x")?.treeSegments.map((s) => s.parallel)).toEqual([false, true]);
+    expect(byId("y")?.treeSegments.map((s) => s.parallel)).toEqual([false, true]);
+    // tail is a sequential sibling.
+    expect(byId("tail")?.treeSegments.map((s) => s.parallel)).toEqual([false]);
   });
 
   it("counts every runtime instance by state", () => {

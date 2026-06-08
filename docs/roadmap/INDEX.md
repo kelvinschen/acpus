@@ -45,3 +45,4 @@
 
 - **Approval Gate 人工回路已落地**：`awaiting` 状态、人工 approve/reject（TUI `a`/`x` 与 CLI `acpus signal`）、无 timeout 无限等待、reject→completed 已实现并测试覆盖（行为见 `specs/workflow-spec.md` Approval Gates）。
 - **Approval 决策持久化恢复（缺口）**：当前决策通道为内存 resolver，Run Supervisor 在 Gate `awaiting` 期间重启会把节点重置为 `pending` 并重新等待人工决策，down 窗口内到达的决策会丢失。持久化决策通道（与 approval `escalate` 持久通道一并）留待后续。
+- **TUI 同种 Composite 嵌套消歧（缺口）**：Node Key 的动态维度（item/lane/branch/round）按类型追加在 key 尾部，同类型维度 last-write-wins。因此 TUI 可视化器（`packages/tui/src/model.ts`）在 fanout-in-fanout / loop-in-loop 等同种 Composite 嵌套场景下，内层维度会覆盖外层，导致按维度重建的层级树无法正确消歧（fanout→parallel 等异种嵌套不受影响）。彻底修复需让 Node Key 采用带位置/复合的动态维度编码（`packages/runtime/src/keys.ts`），留待后续。

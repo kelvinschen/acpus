@@ -13,14 +13,22 @@ export interface StateStyle {
   label: string;
 }
 
-/** The unified 7 states. No "queued"/"needs-review"/"retried" — those are not acpus states. */
+/**
+ * The unified 7 states. No "queued"/"needs-review"/"retried" — those are not
+ * acpus states.
+ *
+ * IMPORTANT: every glyph MUST be a single terminal column wide. Wide (emoji /
+ * East-Asian) glyphs like ⏳/⏸/▶ render as 2 columns and break the
+ * `justifyContent="space-between"` alignment in StatusOverview (and skew the
+ * graph tree indentation). Use single-width symbols only.
+ */
 export const STATE_STYLES: Record<NodeState, StateStyle> = {
   pending: { glyph: "○", color: "gray", label: "Pending" },
-  running: { glyph: "▶", color: "yellow", label: "Running" },
-  awaiting: { glyph: "⏳", color: "blue", label: "Awaiting" },
+  running: { glyph: "▷", color: "yellow", label: "Running" },
+  awaiting: { glyph: "◷", color: "blue", label: "Awaiting" },
   completed: { glyph: "✓", color: "green", label: "Completed" },
   failed: { glyph: "✗", color: "red", label: "Failed" },
-  paused: { glyph: "⏸", color: "cyan", label: "Paused" },
+  paused: { glyph: "‖", color: "cyan", label: "Paused" },
   cancelled: { glyph: "⊘", color: "magenta", label: "Cancelled" }
 };
 
@@ -54,3 +62,14 @@ export function isComposite(kind: IrNodeKind): boolean {
 export function styleForState(state: NodeState | undefined): StateStyle {
   return state ? STATE_STYLES[state] : { glyph: "·", color: "gray", label: "Not started" };
 }
+
+/**
+ * Tree guide-line colors. Sequential (pipeline) branches use a muted gray;
+ * concurrent (parallel/fanout) branches use a bright blue so they stand out
+ * (and don't clash with the cyan pane border) — "these run in order" vs
+ * "these run at the same time".
+ */
+export const TREE_GUIDE_COLOR = {
+  sequential: "gray",
+  parallel: "blueBright"
+} as const;

@@ -5,67 +5,278 @@
  *
  * The supervisor returns a flat NodeExecutionState[] keyed by node keys like
  * "workflow/mapped/item:file-a/lane:0/round:2". A single IR node id can map to
- * many runtime instances (fanout lanes, loop rounds, parallel branches), so we
- * group instances by their original IR node id (NodeExecutionState.nodeId).
+ * many runtime instances (fanout lanes, loop rounds, parallel branches). Rather
+ * than grouping every IR node's instances globally (which mixes lanes from
+ * different fanout items together and makes every descendant appear "(×N)"),
+ * we rebuild a *real* hierarchical tree keyed by the dynamic dimensions encoded
+ * in each node key.
+ *
+ * Each composite introduces a distinct dynamic dimension:
+ *   - fanout → item + lane   (one lane per item)
+ *   - parallel → branch      (children are distinct IR ids → single instance per lane)
+ *   - loop → round
+ *
+ * So fanout/loop "expand" into one group row per lane/round, and every node
+ * underneath a group is scoped to that lane/round → it resolves to a single
+ * instance, no spurious "(×N)". The "(×N)" count therefore lives only on the
+ * fanout/loop container that actually fans.
  */
 
-import type { AcpusIr, IrNode } from "@acpus/core";
+import type { AcpusIr, IrNode, IrNodeKind } from "@acpus/core";
 import type { NodeExecutionState, NodeState } from "@acpus/runtime";
 
-/** A node in the render tree: an IR node plus its live runtime instance(s). */
+/** A dynamic dimension type encoded in node keys. */
+export type Dim = "item" | "lane" | "branch" | "round";
+
+/** A node key split into its static path segments and dynamic dimensions. */
+export interface ParsedKey {
+  path: string[];
+  dims: Map<Dim, string>;
+}
+
+/** A runtime state plus its parsed key (cached). */
+interface ParsedState {
+  state: NodeExecutionState;
+  parsed: ParsedKey;
+}
+
+/** Inherited dimension constraints from ancestors (e.g. {lane:"0", item:"a"}). */
+type Scope = Map<Dim, string>;
+
+interface BuildCtx {
+  /** IR node id → its runtime instances (with parsed keys). */
+  byId: Map<string, ParsedState[]>;
+  /** IR node id → set of all descendant IR ids (inclusive of self). */
+  descendantIds: Map<string, Set<string>>;
+}
+
+const DIM_RE = /^(item|lane|branch|round):(.*)$/;
+
+/**
+ * Parse a node key into static path segments and dynamic dimensions.
+ * Mirrors runtime/src/keys.ts: dimensions are `type:value` segments appended at
+ * the tail in a fixed order. Last-write-wins for repeated dims (documents the
+ * nested same-kind composite limitation).
+ */
+export function parseNodeKey(key: string): ParsedKey {
+  const path: string[] = [];
+  const dims = new Map<Dim, string>();
+  for (const seg of key.split("/")) {
+    const m = DIM_RE.exec(seg);
+    if (m) dims.set(m[1] as Dim, m[2]);
+    else path.push(seg);
+  }
+  return { path, dims };
+}
+
+/** An instance belongs to the current subtree iff it matches every fixed dim. */
+function matchesScope(parsed: ParsedKey, scope: Scope): boolean {
+  for (const [dim, val] of scope) {
+    if (parsed.dims.get(dim) !== val) return false;
+  }
+  return true;
+}
+
+/** The dynamic dimension a composite kind introduces (causing it to fan). */
+function dimIntroducedBy(kind: IrNodeKind): Dim | undefined {
+  if (kind === "fanout") return "lane";
+  if (kind === "loop") return "round";
+  return undefined;
+}
+
+/** A node in the render tree: an IR node (or a synthetic lane/round group). */
 export interface RenderNode {
+  /** "ir" = a real IR node; "group" = a synthetic fanout-lane/loop-round group. */
+  type: "ir" | "group";
+  /** The IR node. Group rows carry their PARENT composite IR node. */
   irNode: IrNode;
-  /** Live runtime states for this IR node, ordered by nodeKey. May be empty (not reached). */
+  /** Live runtime states scoped to this node's lane/round. Usually 0 or 1. */
   instances: NodeExecutionState[];
-  /** Child render nodes (composite children or switch-branch children). */
+  /** Child render nodes. */
   children: RenderNode[];
-  /** For switch branches: the case label (e.g. "case_1", "default") and predicate. */
+  /** For switch branches: the case label and predicate. */
   branchLabel?: string;
   branchWhen?: string;
   /** Composite summary derived from metadata (e.g. "over=files join=quorum"). */
   summary?: string;
   /** Depth in the tree (root = 0). */
   depth: number;
+  /** Set only on a fanout/loop container → drives the "(×N)" label. */
+  fannedCount?: number;
+  /** Set only on a synthetic group row. */
+  groupDim?: Dim;
+  groupValue?: string;
+  groupLabel?: string;
+  /** For lane group rows: the fanout item value (shown in DETAILS). */
+  groupItem?: string;
 }
 
 /** Build the full render tree for a run. */
 export function buildRenderTree(ir: AcpusIr, states: NodeExecutionState[]): RenderNode {
-  const byId = indexByNodeId(states);
-  return buildNode(ir.root, byId, 0);
+  const byId = indexByNodeIdParsed(states);
+  const descendantIds = new Map<string, Set<string>>();
+  collectDescendantIds(ir.root, descendantIds);
+  const ctx: BuildCtx = { byId, descendantIds };
+  return buildNode(ir.root, ctx, new Map(), 0);
+}
+
+/** Collect, for every IR node, the set of its descendant IR ids (inclusive). */
+function collectDescendantIds(node: IrNode, out: Map<string, Set<string>>): Set<string> {
+  const set = new Set<string>([node.id]);
+  const kids = node.branches
+    ? node.branches.flatMap((b) => b.children)
+    : node.children ?? [];
+  for (const child of kids) {
+    for (const id of collectDescendantIds(child, out)) set.add(id);
+  }
+  out.set(node.id, set);
+  return set;
 }
 
 function buildNode(
   irNode: IrNode,
-  byId: Map<string, NodeExecutionState[]>,
+  ctx: BuildCtx,
+  scope: Scope,
   depth: number,
   branchLabel?: string,
   branchWhen?: string
 ): RenderNode {
-  const instances = byId.get(irNode.id) ?? [];
-  const children: RenderNode[] = [];
+  const scopedInstances = (ctx.byId.get(irNode.id) ?? [])
+    .filter((p) => matchesScope(p.parsed, scope))
+    .map((p) => p.state);
 
+  const groupDim = dimIntroducedBy(irNode.kind);
+  if (groupDim) {
+    return buildExpandingNode(irNode, ctx, scope, depth, groupDim, scopedInstances, branchLabel, branchWhen);
+  }
+
+  const children: RenderNode[] = [];
   if (irNode.branches) {
-    // switch: each branch is a labeled group of children
     for (const branch of irNode.branches) {
       for (const child of branch.children) {
-        children.push(buildNode(child, byId, depth + 1, branch.id, branch.when));
+        children.push(buildNode(child, ctx, scope, depth + 1, branch.id, branch.when));
       }
     }
   } else if (irNode.children) {
     for (const child of irNode.children) {
-      children.push(buildNode(child, byId, depth + 1));
+      children.push(buildNode(child, ctx, scope, depth + 1));
     }
   }
 
   return {
+    type: "ir",
     irNode,
-    instances,
+    instances: scopedInstances,
     children,
     branchLabel,
     branchWhen,
     summary: summarize(irNode),
     depth
   };
+}
+
+/**
+ * Build a fanout/loop container that expands into one synthetic group row per
+ * lane/round value. Each group's subtree is scoped to that value, so every
+ * descendant resolves to a single instance and "(×N)" appears only here.
+ */
+function buildExpandingNode(
+  irNode: IrNode,
+  ctx: BuildCtx,
+  scope: Scope,
+  depth: number,
+  groupDim: Dim,
+  ownInstances: NodeExecutionState[],
+  branchLabel?: string,
+  branchWhen?: string
+): RenderNode {
+  const descendants = descendantInstances(irNode, ctx, scope);
+  const groupValues = [...new Set(
+    descendants
+      .map((p) => p.parsed.dims.get(groupDim))
+      .filter((v): v is string => v !== undefined)
+  )].sort((a, b) => numericCompare(a, b));
+
+  const groupRows: RenderNode[] = groupValues.map((gv) => {
+    const childScope: Scope = new Map(scope);
+    childScope.set(groupDim, gv);
+    if (groupDim === "lane") {
+      const item = itemForLane(descendants, gv);
+      if (item !== undefined) childScope.set("item", item);
+    }
+
+    const groupChildren: RenderNode[] = (irNode.children ?? []).map((child) =>
+      buildNode(child, ctx, childScope, depth + 2)
+    );
+
+    const groupInstances = descendants
+      .filter((p) => matchesScope(p.parsed, childScope))
+      .map((p) => p.state);
+
+    return {
+      type: "group" as const,
+      irNode,
+      instances: groupInstances,
+      children: groupChildren,
+      depth: depth + 1,
+      groupDim,
+      groupValue: gv,
+      groupLabel: labelForGroup(groupDim, gv, childScope),
+      groupItem: groupDim === "lane" ? childScope.get("item") : undefined
+    };
+  });
+
+  return {
+    type: "ir",
+    irNode,
+    instances: ownInstances,
+    children: groupRows,
+    branchLabel,
+    branchWhen,
+    summary: summarize(irNode),
+    depth,
+    fannedCount: groupValues.length
+  };
+}
+
+/** All runtime instances of any IR node in this subtree, scoped to `scope`. */
+function descendantInstances(irNode: IrNode, ctx: BuildCtx, scope: Scope): ParsedState[] {
+  const ids = ctx.descendantIds.get(irNode.id) ?? new Set([irNode.id]);
+  const out: ParsedState[] = [];
+  for (const id of ids) {
+    for (const p of ctx.byId.get(id) ?? []) {
+      if (matchesScope(p.parsed, scope)) out.push(p);
+    }
+  }
+  return out;
+}
+
+/** Find the fanout item value associated with a lane index. */
+function itemForLane(descendants: ParsedState[], lane: string): string | undefined {
+  for (const p of descendants) {
+    if (p.parsed.dims.get("lane") === lane) {
+      const item = p.parsed.dims.get("item");
+      if (item !== undefined) return item;
+    }
+  }
+  return undefined;
+}
+
+/** Friendly label for a lane/round group row, e.g. "lane=0 «moduleA»" or "round=2". */
+function labelForGroup(groupDim: Dim, value: string, scope: Scope): string {
+  if (groupDim === "lane") {
+    const item = scope.get("item");
+    return item !== undefined ? `lane=${value} «${item}»` : `lane=${value}`;
+  }
+  return `${groupDim}=${value}`;
+}
+
+/** Compare two dimension values numerically when possible, else lexically. */
+function numericCompare(a: string, b: string): number {
+  const na = Number(a);
+  const nb = Number(b);
+  if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
+  return a.localeCompare(b);
 }
 
 /** Group runtime states by their original IR node id, each list sorted by key. */
@@ -82,7 +293,18 @@ export function indexByNodeId(states: NodeExecutionState[]): Map<string, NodeExe
   return map;
 }
 
-/** Flatten the render tree into a linear, display-ordered list for the task list / graph panes. */
+/** Like indexByNodeId but caches each state's parsed key. */
+function indexByNodeIdParsed(states: NodeExecutionState[]): Map<string, ParsedState[]> {
+  const map = new Map<string, ParsedState[]>();
+  for (const s of [...states].sort((a, b) => a.nodeKey.localeCompare(b.nodeKey))) {
+    const list = map.get(s.nodeId) ?? [];
+    list.push({ state: s, parsed: parseNodeKey(s.nodeKey) });
+    map.set(s.nodeId, list);
+  }
+  return map;
+}
+
+/** Flatten the render tree into a linear, display-ordered list. */
 export function flatten(root: RenderNode): RenderNode[] {
   const out: RenderNode[] = [];
   const walk = (n: RenderNode) => {
@@ -94,10 +316,7 @@ export function flatten(root: RenderNode): RenderNode[] {
 }
 
 /**
- * A single selectable/displayable row. Composite or single-instance nodes
- * yield one row; nodes that expanded into multiple runtime instances (fanout
- * lanes, loop rounds, parallel branches) yield one row per instance plus a
- * header row for the composite itself.
+ * A single selectable/displayable row.
  */
 export interface DisplayRow {
   /** Stable key for React + selection. */
@@ -107,11 +326,11 @@ export interface DisplayRow {
   depth: number;
   /** The runtime instance this row represents, if any. */
   instance?: NodeExecutionState;
-  /** Representative state for this row (single instance, instance, or aggregate). */
+  /** Representative state for this row (single instance or aggregate). */
   state?: NodeState;
-  /** Display label (node id, branch label, or instance key tail). */
+  /** Display label (own node id, group label, or branch label). */
   label: string;
-  /** True if this is a composite container header row (groups instances/children). */
+  /** True if this is a container header row (groups children). */
   isHeader: boolean;
   /** node key usable for control actions, if known. */
   nodeKey?: string;
@@ -119,77 +338,136 @@ export interface DisplayRow {
   summary?: string;
   branchLabel?: string;
   branchWhen?: string;
+  /** Set on synthetic fanout-lane/loop-round group rows. */
+  groupDim?: Dim;
+  groupValue?: string;
+  /** For lane group rows: the fanout item value (shown in DETAILS). */
+  groupItem?: string;
+  /**
+   * Tree guide-line prefix split into colorable segments (one per column).
+   * Each segment is 3 chars (e.g. "│  ", "   ", "├─ ", "└─ "). `parallel`
+   * marks whether the column belongs to a parallel/fanout container, so the
+   * renderer can color concurrent branches differently from sequential ones.
+   */
+  treeSegments: TreeSegment[];
+}
+
+/** One colorable column of a tree guide-line prefix. */
+export interface TreeSegment {
+  text: string;
+  /** True if this column's owning container is parallel/fanout (concurrent). */
+  parallel: boolean;
+}
+
+/** Tree guide-line glyphs. */
+const TREE = {
+  vertical: "│  ",
+  space: "   ",
+  branch: "├─ ",
+  last: "└─ "
+} as const;
+
+/**
+ * Build the colorable guide-line segments for a node.
+ *  - `ancestorIsLast[i]`  — whether the i-th ancestor on the path is its
+ *    parent's last child (decides "│  "/"   " columns and the final connector).
+ *  - `ancestorParallel[i]` — whether the i-th column's owning container is a
+ *    parallel/fanout (concurrent) node, used purely for coloring.
+ */
+function treeSegmentsFor(ancestorIsLast: boolean[], ancestorParallel: boolean[]): TreeSegment[] {
+  const segments: TreeSegment[] = [];
+  const n = ancestorIsLast.length;
+  for (let i = 0; i < n; i++) {
+    const parallel = ancestorParallel[i] ?? false;
+    if (i < n - 1) {
+      segments.push({ text: ancestorIsLast[i] ? TREE.space : TREE.vertical, parallel });
+    } else {
+      segments.push({ text: ancestorIsLast[i] ? TREE.last : TREE.branch, parallel });
+    }
+  }
+  return segments;
+}
+
+/** True for concurrent container kinds (their children/lanes run in parallel). */
+function isParallelKind(kind: IrNodeKind): boolean {
+  return kind === "parallel" || kind === "fanout";
 }
 
 /** Build the display-ordered, selectable rows for the whole tree. */
 export function buildRows(root: RenderNode): DisplayRow[] {
   const rows: DisplayRow[] = [];
-  walkRows(root, rows);
+  walkRows(root, rows, [], []);
   return rows;
 }
 
-function walkRows(node: RenderNode, rows: DisplayRow[]): void {
-  const { irNode, depth, instances } = node;
-  const tail = (key: string): string => {
-    const segs = key.split("/");
-    return segs.slice(1).join("/") || segs[0];
-  };
+function walkRows(
+  node: RenderNode,
+  rows: DisplayRow[],
+  ancestorIsLast: boolean[],
+  ancestorParallel: boolean[]
+): void {
+  const inst = node.instances.length === 1 ? node.instances[0] : undefined;
+  const treeSegments = treeSegmentsFor(ancestorIsLast, ancestorParallel);
 
-  if (instances.length <= 1) {
-    const inst = instances[0];
+  if (node.type === "group") {
     rows.push({
-      rowKey: irNode.id + (inst ? `#${inst.nodeKey}` : ""),
-      irNode,
-      depth,
+      rowKey: `${node.irNode.id}@${node.groupDim}:${node.groupValue}`,
+      irNode: node.irNode,
+      depth: node.depth,
       instance: inst,
-      state: inst?.state,
-      label: irNode.id,
+      state: inst?.state ?? aggregateState(node),
+      label: node.groupLabel ?? `${node.groupDim}:${node.groupValue}`,
+      isHeader: true,
+      nodeKey: inst?.nodeKey,
+      groupDim: node.groupDim,
+      groupValue: node.groupValue,
+      groupItem: node.groupItem,
+      treeSegments
+    });
+  } else {
+    const label = node.fannedCount !== undefined ? `${node.irNode.id} (×${node.fannedCount})` : node.irNode.id;
+    rows.push({
+      rowKey: node.irNode.id + (inst ? `#${inst.nodeKey}` : ""),
+      irNode: node.irNode,
+      depth: node.depth,
+      instance: inst,
+      state: inst?.state ?? aggregateState(node),
+      label,
       isHeader: node.children.length > 0,
       nodeKey: inst?.nodeKey,
       summary: node.summary,
       branchLabel: node.branchLabel,
-      branchWhen: node.branchWhen
+      branchWhen: node.branchWhen,
+      treeSegments
     });
-  } else {
-    // Composite header row (aggregate), then one row per runtime instance.
-    rows.push({
-      rowKey: irNode.id,
-      irNode,
-      depth,
-      state: aggregateState(node),
-      label: `${irNode.id} (×${instances.length})`,
-      isHeader: true,
-      summary: node.summary,
-      branchLabel: node.branchLabel,
-      branchWhen: node.branchWhen
-    });
-    for (const inst of instances) {
-      rows.push({
-        rowKey: `${irNode.id}#${inst.nodeKey}`,
-        irNode,
-        depth: depth + 1,
-        instance: inst,
-        state: inst.state,
-        label: tail(inst.nodeKey),
-        isHeader: false,
-        nodeKey: inst.nodeKey
-      });
-    }
   }
 
-  for (const child of node.children) walkRows(child, rows);
-}
+  // Whether THIS node makes its children concurrent (so the children's
+  // connector column is colored as parallel): parallel/fanout IR nodes, and
+  // lane group rows (a fanout's lanes run concurrently).
+  const childrenParallel = node.type === "group"
+    ? node.groupDim === "lane"
+    : isParallelKind(node.irNode.kind);
 
+  node.children.forEach((child, i) =>
+    walkRows(
+      child,
+      rows,
+      [...ancestorIsLast, i === node.children.length - 1],
+      [...ancestorParallel, childrenParallel]
+    )
+  );
+}
 
 /**
  * The representative state for a node: the single instance if there is one,
- * else the aggregate state across instances (e.g. running if any running,
- * failed if any failed, completed only if all completed).
+ * else the aggregate state across this subtree's instances (failed if any
+ * failed, completed only if all completed, etc.).
  */
 export function aggregateState(node: RenderNode): NodeState | undefined {
-  if (node.instances.length === 0) return undefined;
-  if (node.instances.length === 1) return node.instances[0].state;
-  const states = node.instances.map((i) => i.state);
+  const states = collectStates(node);
+  if (states.length === 0) return undefined;
+  if (states.length === 1) return states[0];
   if (states.includes("failed")) return "failed";
   if (states.includes("cancelled")) return "cancelled";
   if (states.includes("running")) return "running";
@@ -200,7 +478,21 @@ export function aggregateState(node: RenderNode): NodeState | undefined {
   return states[0];
 }
 
-/** Count nodes (by representative state) across the whole tree, for the progress/legend panes. */
+/** Collect this node's own instance states plus all descendants' (deduped). */
+function collectStates(node: RenderNode): NodeState[] {
+  const seen = new Set<string>();
+  const out: NodeState[] = [];
+  for (const n of flatten(node)) {
+    for (const inst of n.instances) {
+      if (seen.has(inst.nodeKey)) continue;
+      seen.add(inst.nodeKey);
+      out.push(inst.state);
+    }
+  }
+  return out;
+}
+
+/** Count every distinct runtime instance by state, for the progress/legend panes. */
 export function countByState(root: RenderNode): Record<NodeState, number> & { total: number } {
   const counts = {
     pending: 0,
@@ -212,9 +504,11 @@ export function countByState(root: RenderNode): Record<NodeState, number> & { to
     cancelled: 0,
     total: 0
   };
+  const seen = new Set<string>();
   for (const node of flatten(root)) {
-    // Count every runtime instance so fanout lanes / loop rounds are reflected.
     for (const inst of node.instances) {
+      if (seen.has(inst.nodeKey)) continue;
+      seen.add(inst.nodeKey);
       counts[inst.state]++;
       counts.total++;
     }

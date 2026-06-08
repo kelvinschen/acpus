@@ -147,4 +147,51 @@ workflow:
     // Quorum of 2 successful lanes satisfies the default min_success.
     expect((fanout?.output as unknown[]).length).toBeGreaterThanOrEqual(2);
   });
+
+  it("join: all fails fast and cancels still-running nodes across other lanes", async () => {
+    // Two modules fan out; each lane runs a parallel of a fast-failing branch
+    // and a slow branch. When one lane's fast branch fails, the whole fanout
+    // (join:all) becomes unsatisfiable and must fail fast: every still-running
+    // node in EVERY lane is cancelled rather than left running.
+    const ir = compileYaml(`
+version: 1
+name: fanout-fail-fast
+workflow:
+  steps:
+    - id: mapped
+      fanout:
+        over: input.items
+        join: all
+        do:
+          - id: lane_work
+            join: all
+            parallel:
+              - id: boom
+                run: program
+                cmd: ["echo", "boom"]
+              - id: slow
+                run: program
+                cmd: ["echo", "slow"]
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: {
+        boom: { failureKind: "timeout", delay: 5 },
+        slow: { stdout: "slow-out", delay: 300 }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: { items: ["a", "b"] } });
+    expect(meta.status).toBe("failed");
+
+    const nodes = store.listNodeStates(meta.runId);
+    // No node may linger in a non-terminal state once the run has failed.
+    const nonTerminal = nodes.filter((n) => n.state === "running" || n.state === "pending" || n.state === "awaiting");
+    expect(nonTerminal).toEqual([]);
+    // Every `slow` branch (both lanes) must be cancelled, none completed.
+    const slows = nodes.filter((n) => n.nodeId === "slow");
+    expect(slows.length).toBeGreaterThan(0);
+    for (const s of slows) expect(s.state).toBe("cancelled");
+  });
 });

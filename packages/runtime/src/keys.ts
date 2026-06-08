@@ -45,8 +45,8 @@ export function resolveNodeKey(
   return parts.join("/");
 }
 
-/** Sanitize a dynamic value to be filesystem-safe. */
-function sanitizeValue(value: string): string {
+/** Sanitize a dynamic value to be filesystem-safe (shared with key-scope matching). */
+export function sanitizeValue(value: string): string {
   // Replace filesystem-unsafe characters with underscores
   return value.replace(/[/\\:*?"<>|]/g, "_");
 }
