@@ -15,7 +15,8 @@ version: 1
 name: checkpoint-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: step-a

@@ -47,7 +47,7 @@ workflow:
 version: 1
 name: test
 agents:
-  coder: { type: mock, modle: gpt-5 }
+  coder: { type: command, use: "echo", modle: gpt-5 }
 workflow:
   steps:
     - id: s1
@@ -63,7 +63,7 @@ workflow:
 version: 1
 name: test
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: s1
@@ -126,7 +126,7 @@ workflow:
 version: 1
 name: test
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: gate
@@ -144,7 +144,7 @@ workflow:
 version: 1
 name: test
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: gate
@@ -159,7 +159,7 @@ workflow:
 version: 1
 name: test
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: gate
@@ -175,7 +175,7 @@ workflow:
 version: 1
 name: test
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: s1
@@ -210,7 +210,7 @@ describe("Schema validation: type/enum/required", () => {
 version: 99
 name: test
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: s1
@@ -276,7 +276,7 @@ workflow:
 version: 1
 name: test
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: s1
@@ -293,7 +293,7 @@ workflow:
 version: 1
 name: test
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: gate
@@ -310,7 +310,7 @@ workflow:
 version: 1
 name: test
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: s1
@@ -327,7 +327,7 @@ workflow:
 version: 1
 name: test
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: s1
@@ -344,7 +344,7 @@ workflow:
 version: 1
 name: test
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: s1
@@ -389,7 +389,7 @@ workflow:
 version: 1
 name: test
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: s1
@@ -606,12 +606,12 @@ workflow:
     expect(hasError(src, "AGENT_SHAPE")).toBe(true);
   });
 
-  it("accepts mock agent without use", () => {
+  it("rejects command agent without use", () => {
     const src = `
 version: 1
 name: test
 agents:
-  fake: { type: mock }
+  fake: { type: command }
 workflow:
   steps:
     - id: s1
@@ -619,8 +619,9 @@ workflow:
       use: fake
       prompt: "x"
 `;
-    const r = compileWorkflow(src);
-    expect(r.ok).toBe(true);
+    const r = lintWorkflow(src);
+    expect(r.ok).toBe(false);
+    expect(r.diagnostics.some((d) => d.code === "AGENT_SHAPE")).toBe(true);
   });
 
   it("does not require quorum when join is not quorum", () => {
@@ -666,7 +667,7 @@ describe("Schema validation: step kind oneOf", () => {
 version: 1
 name: test
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: s1
@@ -681,7 +682,7 @@ workflow:
 version: 1
 name: test
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: s1
@@ -718,7 +719,7 @@ workflow:
 version: 1
 name: test
 agents:
-  coder: { type: mock, badprop: true }
+  coder: { type: command, use: "echo", badprop: true }
 workflow:
   steps:
     - id: s1
@@ -754,7 +755,7 @@ workflow:
 version: 1
 name: test
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: s1

@@ -70,11 +70,12 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 
 ### Executors
 
-- The runtime MUST support mock executor adapters for testing (MockAgentExecutor, MockProgramExecutor).
+- The runtime MUST support mock executor adapters for testing (MockProgramExecutor).
+- The runtime MUST provide a StubAgentExecutor in test helpers for fast unit tests (no acpx, no mock scripts, no Ajv validation).
 - The runtime MUST support a real ProgramExecutor using `execa` for local subprocess execution.
 - The runtime MUST support a real AgentExecutor spawning `acpx` via `execa` for ACP session management.
 - Executor adapters MUST implement a single `execute(request)` method receiving an `ExecutionRequest` `{ node, context, signal, nodeKey, resume? }`.
-- The interpreter MUST route Agent Steps by the resolved agent definition's `type`: `mock` to the in-memory MockAgentExecutor, and `builtin`/`command` to the acpx-backed AgentExecutor.
+- The interpreter MUST route all Agent Steps through the single AgentExecutor (acpx-backed); there is no `type: mock` dispatch.
 - ProgramExecutor MUST handle cmd template resolution, capture config (json/text), `capture.from: file` reads, timeout (SIGKILL), and abort signals.
 - ProgramExecutor MUST return raw stdout/stderr and classify failures via `failureKind` (parse, schema, spawn, timeout, killed, capture, exit).
 - The runtime MUST treat a non-zero program exit code as step data and fail the Node only when a `failureKind` marks the failure non-recoverable.

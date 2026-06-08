@@ -26,8 +26,7 @@ export function createSupervisorApp(
   config: SupervisorConfig,
   store: RunStore,
   agentExecutor: ExecutorAdapter,
-  programExecutor: ExecutorAdapter,
-  acpxAgentExecutor?: ExecutorAdapter
+  programExecutor: ExecutorAdapter
 ) {
   const app = new Hono();
 
@@ -95,7 +94,7 @@ export function createSupervisorApp(
 
   /** Create an interpreter bound to this supervisor's store + executors. */
   function newInterpreter(): WorkflowInterpreter {
-    return new WorkflowInterpreter(store, agentExecutor, programExecutor, { acpxAgentExecutor });
+    return new WorkflowInterpreter(store, agentExecutor, programExecutor);
   }
 
   /**
@@ -233,7 +232,7 @@ export function createSupervisorApp(
       return c.json({ error: "Compilation failed", diagnostics: result.diagnostics }, 400);
     }
 
-    const interpreter = new WorkflowInterpreter(store, agentExecutor, programExecutor, { acpxAgentExecutor });
+    const interpreter = new WorkflowInterpreter(store, agentExecutor, programExecutor);
     let runState: RunState;
     try {
       runState = interpreter.initRun(result.ir, { input: body.input ?? {} });

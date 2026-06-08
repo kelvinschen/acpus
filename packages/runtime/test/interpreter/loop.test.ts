@@ -15,7 +15,8 @@ version: 1
 name: loop-max-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: iterate
@@ -54,7 +55,8 @@ version: 1
 name: loop-context-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: iterate

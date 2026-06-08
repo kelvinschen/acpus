@@ -2,8 +2,8 @@ import { compileWorkflow } from "@acpus/core";
 import type { AcpusIr } from "@acpus/core";
 import { RunStore } from "../../src/store.js";
 import { WorkflowInterpreter } from "../../src/interpreter.js";
-import { MockAgentExecutor } from "../../src/executors/mock-agent.js";
-import type { MockAgentResponse } from "../../src/executors/mock-agent.js";
+import { StubAgentExecutor } from "../support/stub-agent.js";
+import type { StubAgentResponse } from "../support/stub-agent.js";
 import { MockProgramExecutor } from "../../src/executors/mock-program.js";
 import type { MockProgramResponse } from "../../src/executors/mock-program.js";
 import { ProgramExecutor } from "../../src/executors/program.js";
@@ -22,7 +22,7 @@ export function compileYaml(source: string): AcpusIr {
 }
 
 export function createTestInterpreter(options?: {
-  agentResponses?: Record<string, unknown | MockAgentResponse>;
+  agentResponses?: Record<string, unknown | StubAgentResponse>;
   programResponses?: Record<string, MockProgramResponse>;
   interpreterOptions?: InterpreterOptions;
   /** Use the real ProgramExecutor instead of the mock (for subprocess/timeout tests). */
@@ -33,11 +33,13 @@ export function createTestInterpreter(options?: {
   const tmpDir = mkdtempSync(join(tmpdir(), "acpus-interp-"));
   const store = new RunStore(tmpDir);
 
-  const agentExecutor = new MockAgentExecutor(
-    Object.fromEntries(
-      Object.entries(options?.agentResponses ?? {}).map(([k, v]) => [k, normalizeAgentResponse(v)])
-    )
-  );
+  const agentExecutor = options?.useRealAgentExecutor
+    ? new AgentExecutor()
+    : new StubAgentExecutor(
+        Object.fromEntries(
+          Object.entries(options?.agentResponses ?? {}).map(([k, v]) => [k, normalizeAgentResponse(v)])
+        )
+      );
   const programExecutor = options?.useRealProgramExecutor
     ? new ProgramExecutor()
     : new MockProgramExecutor(
@@ -49,7 +51,6 @@ export function createTestInterpreter(options?: {
   const interpreter = new WorkflowInterpreter(store, agentExecutor, programExecutor, {
     nowTimestamp: "2025-01-01T00:00:00Z",
     sleep: () => Promise.resolve(),
-    ...(options?.useRealAgentExecutor ? { acpxAgentExecutor: new AgentExecutor() } : {}),
     ...options?.interpreterOptions
   });
 
@@ -61,10 +62,10 @@ export function createTestInterpreter(options?: {
   };
 }
 
-/** A plain object is treated as a successful agent output; a MockAgentResponse passes through. */
-function normalizeAgentResponse(v: unknown): MockAgentResponse {
+/** A plain object is treated as a successful agent output; a StubAgentResponse passes through. */
+function normalizeAgentResponse(v: unknown): StubAgentResponse {
   if (v !== null && typeof v === "object" && ("output" in v || "sequence" in v || "failureKind" in v)) {
-    return v as MockAgentResponse;
+    return v as StubAgentResponse;
   }
   return { output: v, delay: 5 };
 }

@@ -46,7 +46,6 @@ export { InputValidationFailure, validateInput } from "./validate-input.js";
 export type { InputValidationError } from "./types.js";
 
 // ─── Executors ───────────────────────────────────────────────────
-export { MockAgentExecutor } from "./executors/mock-agent.js";
 export { MockProgramExecutor } from "./executors/mock-program.js";
 export { ProgramExecutor } from "./executors/program.js";
 export { AgentExecutor } from "./executors/agent.js";

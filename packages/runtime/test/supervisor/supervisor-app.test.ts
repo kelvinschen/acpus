@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createSupervisorApp } from "../../src/supervisor-app.js";
 import { RunStore } from "../../src/store.js";
-import { MockAgentExecutor } from "../../src/executors/mock-agent.js";
+import { StubAgentExecutor } from "../support/stub-agent.js";
 import { MockProgramExecutor } from "../../src/executors/mock-program.js";
 import type { Server } from "node:http";
 import { serve } from "@hono/node-server";
@@ -14,7 +14,8 @@ version: 1
 name: supervisor-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: step-a
@@ -32,7 +33,7 @@ describe("Supervisor HTTP API", () => {
   beforeAll(async () => {
     tmpDir = mkdtempSync(join(tmpdir(), "acpus-supervisor-"));
     store = new RunStore(join(tmpDir, "runs"));
-    const agentExecutor = new MockAgentExecutor({
+    const agentExecutor = new StubAgentExecutor({
       "step-a": { output: { result: "done" }, delay: 10 }
     });
     const programExecutor = new MockProgramExecutor({});
@@ -283,7 +284,8 @@ version: 1
 name: slow-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: step-a
@@ -299,7 +301,7 @@ workflow:
   beforeAll(async () => {
     tmpDir = mkdtempSync(join(tmpdir(), "acpus-supervisor-ctrl-"));
     store = new RunStore(join(tmpDir, "runs"));
-    const agentExecutor = new MockAgentExecutor({
+    const agentExecutor = new StubAgentExecutor({
       "step-a": { output: { result: "done" }, delay: 200 },
       "step-b": { output: { result: "done2" }, delay: 200 }
     });
@@ -389,7 +391,8 @@ version: 1
 name: supervisor-restart-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: step-a
@@ -412,7 +415,7 @@ workflow:
 
   async function bootSupervisor(): Promise<{ baseUrl: string; server: Server; store: RunStore }> {
     const store = new RunStore(runsDir);
-    const agentExecutor = new MockAgentExecutor({ "step-a": { output: { result: "done" }, delay: 10 } });
+    const agentExecutor = new StubAgentExecutor({ "step-a": { output: { result: "done" }, delay: 10 } });
     const programExecutor = new MockProgramExecutor({ "step-p": { failureKind: "exit", delay: 5 } });
     const { app } = createSupervisorApp({ stateDir: tmpDir }, store, agentExecutor, programExecutor);
     const server = await new Promise<Server>((resolve) => {
@@ -545,7 +548,8 @@ version: 1
 name: approval-signal-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: gate
@@ -560,7 +564,7 @@ workflow:
   beforeAll(async () => {
     tmpDir = mkdtempSync(join(tmpdir(), "acpus-supervisor-signal-"));
     store = new RunStore(join(tmpDir, "runs"));
-    const agentExecutor = new MockAgentExecutor({ after: { output: { ok: true }, delay: 5 } });
+    const agentExecutor = new StubAgentExecutor({ after: { output: { ok: true }, delay: 5 } });
     const programExecutor = new MockProgramExecutor({});
     const { app } = createSupervisorApp({ stateDir: tmpDir }, store, agentExecutor, programExecutor);
     await new Promise<void>((resolve) => {

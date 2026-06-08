@@ -15,9 +15,11 @@ version: 1
 name: all-primitives-e2e
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
   reviewer:
-    type: mock
+    type: command
+    use: "echo stub"
 input:
   mode: string
 workflow:

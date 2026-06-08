@@ -1,6 +1,5 @@
 import { createSupervisorApp } from "./supervisor-app.js";
 import { RunStore } from "./store.js";
-import { MockAgentExecutor } from "./executors/mock-agent.js";
 import { AgentExecutor } from "./executors/agent.js";
 import { ProgramExecutor } from "./executors/program.js";
 import type { SupervisorConfig, SupervisorMetadata } from "./types.js";
@@ -28,8 +27,7 @@ export async function startRunSupervisor(config: SupervisorConfig = {}): Promise
   mkdirSync(stateDir, { recursive: true });
 
   const store = new RunStore(join(stateDir, "runs"));
-  const mockAgentExecutor = new MockAgentExecutor({});
-  const acpxAgentExecutor = new AgentExecutor();
+  const agentExecutor = new AgentExecutor();
   const programExecutor = new ProgramExecutor();
 
   // Startup recovery: reset orphaned running nodes to pending, set Run to paused.
@@ -59,7 +57,7 @@ export async function startRunSupervisor(config: SupervisorConfig = {}): Promise
   }
 
   const { app, getLastActiveAt, runningCount, setHealthOverrides } = createSupervisorApp(
-    config, store, mockAgentExecutor, programExecutor, acpxAgentExecutor
+    config, store, agentExecutor, programExecutor
   );
 
   // Start the HTTP server on random port

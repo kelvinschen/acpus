@@ -16,9 +16,11 @@ version: 1
 name: parallel-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
   reviewer:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: parallel-group
@@ -58,7 +60,8 @@ version: 1
 name: parallel-map-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: parallel-group

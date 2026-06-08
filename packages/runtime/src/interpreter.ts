@@ -21,8 +21,7 @@ import pLimit from "p-limit";
 export class WorkflowInterpreter {
   private readonly store: RunStore;
   private readonly evaluator: ExpressionEvaluator;
-  private readonly mockAgentExecutor: ExecutorAdapter;
-  private readonly acpxAgentExecutor: ExecutorAdapter;
+  private readonly agentExecutor: ExecutorAdapter;
   private readonly programExecutor: ExecutorAdapter;
   private readonly artifactStore: ArtifactStore;
   private readonly maxConcurrency: number;
@@ -50,15 +49,11 @@ export class WorkflowInterpreter {
     store: RunStore,
     agentExecutor: ExecutorAdapter,
     programExecutor: ExecutorAdapter,
-    options?: InterpreterOptions & { acpxAgentExecutor?: ExecutorAdapter }
+    options?: InterpreterOptions
   ) {
     this.store = store;
     this.evaluator = new ExpressionEvaluator({ nowTimestamp: options?.nowTimestamp });
-    // `agentExecutor` handles `type: mock` (in-memory); `acpxAgentExecutor`
-    // handles builtin/command via acpx. When no real executor is injected,
-    // fall back to the mock for both (keeps unit tests acpx-free).
-    this.mockAgentExecutor = agentExecutor;
-    this.acpxAgentExecutor = options?.acpxAgentExecutor ?? agentExecutor;
+    this.agentExecutor = agentExecutor;
     this.programExecutor = programExecutor;
     this.artifactStore = new ArtifactStore(store.getBaseDir());
     this.maxConcurrency = options?.maxConcurrency ?? 10;
@@ -807,12 +802,8 @@ export class WorkflowInterpreter {
     const maxRetries = typeof retry?.max === "number" ? retry.max : 0;
     const backoffMs = retry?.backoff ? parseDurationMs(retry.backoff) : 0;
 
-    // Route to the in-memory mock executor or the real acpx-backed executor.
-    const agent = node.metadata.agent as { type?: string } | undefined;
-    const executor = agent?.type === "mock" ? this.mockAgentExecutor : this.acpxAgentExecutor;
-
     for (let attempt = 0; ; attempt++) {
-      const result = await executor.execute({ node, context: ctx, signal, nodeKey, resume, retry: attempt > 0 });
+      const result = await this.agentExecutor.execute({ node, context: ctx, signal, nodeKey, resume, retry: attempt > 0 });
 
       // Always persist the transcript (and stderr) as artifacts when the
       // executor produced raw output (acpx NDJSON). Mock executors return no

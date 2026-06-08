@@ -3,7 +3,7 @@ name: fanout-nested-parallel
 input:
   paths: array
 agents:
-  coder: { type: mock, model: fixture }
+  coder: { type: command, use: "echo", model: fixture }
 workflow:
   steps:
     - id: discover

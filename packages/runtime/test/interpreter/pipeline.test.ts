@@ -15,7 +15,8 @@ version: 1
 name: pipeline-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: step-a
@@ -53,7 +54,8 @@ version: 1
 name: pipeline-output-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: first
@@ -88,7 +90,8 @@ version: 1
 name: pipeline-fail-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: fail-step

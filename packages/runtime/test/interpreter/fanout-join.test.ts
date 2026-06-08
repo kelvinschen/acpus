@@ -15,7 +15,8 @@ version: 1
 name: fanout-all-fail
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: mapped
@@ -48,7 +49,8 @@ version: 1
 name: fanout-min-success
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: mapped
@@ -84,7 +86,8 @@ version: 1
 name: fanout-race
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: mapped
@@ -119,7 +122,8 @@ version: 1
 name: fanout-quorum
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: mapped

@@ -15,7 +15,8 @@ version: 1
 name: switch-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: route
@@ -69,7 +70,8 @@ version: 1
 name: switch-default-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: route

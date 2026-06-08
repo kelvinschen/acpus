@@ -15,7 +15,8 @@ version: 1
 name: parallel-race
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: branches
@@ -53,7 +54,8 @@ version: 1
 name: parallel-all
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: branches

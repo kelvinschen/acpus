@@ -15,7 +15,8 @@ version: 1
 name: agent-retry-success
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: work
@@ -47,7 +48,8 @@ version: 1
 name: agent-retry-parse
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: work
@@ -79,7 +81,8 @@ version: 1
 name: agent-retry-backoff
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: work
@@ -118,7 +121,8 @@ version: 1
 name: agent-retry-exhausted
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: work
@@ -148,7 +152,8 @@ version: 1
 name: agent-no-retry
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: work

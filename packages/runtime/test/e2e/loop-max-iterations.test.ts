@@ -15,7 +15,8 @@ version: 1
 name: loop-max-iter-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: iterate

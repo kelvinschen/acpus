@@ -15,7 +15,8 @@ version: 1
 name: loop-agent-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: fix-loop

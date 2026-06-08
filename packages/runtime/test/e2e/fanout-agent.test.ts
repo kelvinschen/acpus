@@ -15,7 +15,8 @@ version: 1
 name: fanout-agent-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: review-files

@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { compileYaml } from "./helper.js";
 import { RunStore } from "../../src/store.js";
 import { WorkflowInterpreter } from "../../src/interpreter.js";
-import { MockAgentExecutor } from "../../src/executors/mock-agent.js";
+import { StubAgentExecutor } from "../support/stub-agent.js";
 import type { ExecutorAdapter, ExecutionRequest } from "../../src/executors/types.js";
 import type { ExecutorResult, ExpressionContext } from "../../src/types.js";
 import { ExpressionEvaluator } from "../../src/evaluator.js";
@@ -44,7 +44,7 @@ class RecordingProgramExecutor implements ExecutorAdapter {
 function makeInterpreter(program: ExecutorAdapter): { interpreter: WorkflowInterpreter; store: RunStore; cleanup: () => void } {
   const tmpDir = mkdtempSync(join(tmpdir(), "acpus-dynctx-"));
   const store = new RunStore(tmpDir);
-  const agent = new MockAgentExecutor({});
+  const agent = new StubAgentExecutor({});
   const interpreter = new WorkflowInterpreter(store, agent, program, {
     nowTimestamp: "2025-01-01T00:00:00Z",
     sleep: () => Promise.resolve()

@@ -15,7 +15,8 @@ version: 1
 name: approval-timeout-approve
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: approve
@@ -42,7 +43,8 @@ version: 1
 name: approval-timeout-fail
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: approve

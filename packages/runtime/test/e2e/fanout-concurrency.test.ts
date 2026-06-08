@@ -15,7 +15,8 @@ version: 1
 name: fanout-concurrency-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: map-items

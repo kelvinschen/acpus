@@ -15,7 +15,8 @@ version: 1
 name: multi-agent-chaining-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: a

@@ -153,7 +153,7 @@ describe("@acpus/core compiler", () => {
 version: 99
 name: wrong-version
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: s1
@@ -200,7 +200,7 @@ workflow:
 version: 1
 name: invalid-schema
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: ask
@@ -221,7 +221,7 @@ workflow:
 version: 1
 name: schema-deprecated
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: ask
@@ -245,7 +245,7 @@ workflow:
 version: 1
 name: missing-agent-ref
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: ask
@@ -302,23 +302,23 @@ workflow:
     expect((agentNode.metadata.agent as { type?: string }).type).toBe("command");
   });
 
-  it("accepts a mock agent that omits use", () => {
+  it("rejects a command agent missing use", () => {
     const source = `
 version: 1
-name: agent-mock-no-use
+name: agent-command-missing-use
 agents:
-  fake: { type: mock }
+  coder: { type: command }
 workflow:
   steps:
     - id: ask
       run: agent
-      use: fake
+      use: coder
       prompt: "x"
 `;
-    const result = compileWorkflow(source);
+    const result = lintWorkflow(source);
 
-    expect(result.ok).toBe(true);
-    expect((result.ir!.root.children!.find((n) => n.id === "ask")!.metadata.agent as { type?: string }).type).toBe("mock");
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "AGENT_SHAPE")).toBe(true);
   });
 
   it("rejects a builtin/command agent missing use", () => {
@@ -384,7 +384,7 @@ workflow:
 version: 1
 name: bad-retry
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: ask
@@ -404,7 +404,7 @@ workflow:
 version: 1
 name: bad-retry-backoff
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: ask
@@ -424,7 +424,7 @@ workflow:
 version: 1
 name: good-retry
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: ask
@@ -514,7 +514,7 @@ workflow:
 version: 1
 name: bad-agent-output
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: ask
@@ -563,7 +563,7 @@ workflow:
 version: 1
 name: parallel-output
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: par
@@ -588,7 +588,7 @@ workflow:
 version: 1
 name: fanout-multi-step
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: mapped
@@ -618,7 +618,7 @@ workflow:
 version: 1
 name: switch-output
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: route
@@ -658,7 +658,7 @@ workflow:
 version: 1
 name: switch-no-default
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: route
@@ -683,7 +683,7 @@ workflow:
 version: 1
 name: loop-output
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: fix
@@ -713,7 +713,7 @@ workflow:
 version: 1
 name: sub-workflow
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: child
@@ -789,9 +789,6 @@ workflow:
       }
     });
 
-    const agent = result.ir?.root.children?.[0]?.children?.[0]?.children?.[0]?.metadata.agent as { mock_script?: string } | undefined;
-    expect(agent?.mock_script).toBe("./packages/core/test/fixtures/fanout-parallel-loop-switch-tui/mock.yaml");
-
     const fanoutNode = result.ir?.root.children?.[0];
     expect(fanoutNode?.kind).toBe("fanout");
     expect(fanoutNode?.metadata).toMatchObject({ over: "input.lanes", join: "all", max_concurrency: 1 });
@@ -848,7 +845,7 @@ workflow:
 version: 1
 name: flat-output
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: ask
@@ -879,7 +876,7 @@ workflow:
 version: 1
 name: recursive-output
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: ask
@@ -922,7 +919,7 @@ workflow:
 version: 1
 name: recursive-nested-output
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: ask
@@ -974,7 +971,7 @@ workflow:
 version: 1
 name: agent-no-output
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: ask
@@ -994,7 +991,7 @@ workflow:
 version: 1
 name: bad-output-schema-keys
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: ask
@@ -1026,7 +1023,7 @@ workflow:
 version: 1
 name: program-capture
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: run_it
@@ -1183,7 +1180,7 @@ workflow:
 version: 1
 name: coerce-when-bool
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: route
@@ -1212,7 +1209,7 @@ workflow:
 version: 1
 name: bad-when-type
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: route
@@ -1278,7 +1275,7 @@ workflow:
 version: 1
 name: bad-timeout
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: ask
@@ -1297,7 +1294,7 @@ workflow:
 version: 1
 name: numeric-timeout
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: ask
@@ -1317,7 +1314,7 @@ workflow:
 version: 1
 name: bad-on-error
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: ask
@@ -1336,7 +1333,7 @@ workflow:
 version: 1
 name: good-on-error
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: ask
@@ -1356,7 +1353,7 @@ workflow:
 version: 1
 name: bad-approval-timeout
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: gate
@@ -1415,7 +1412,7 @@ workflow:
 version: 1
 name: negative-timeout
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: ask
@@ -1434,7 +1431,7 @@ workflow:
 version: 1
 name: on-error-null
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: ask
@@ -1627,7 +1624,7 @@ workflow:
 version: 1
 name: test
 agents:
-  coder: { type: mock, modle: gpt-5 }
+  coder: { type: command, use: "echo", modle: gpt-5 }
 workflow:
   steps:
     - id: s1
@@ -1645,7 +1642,7 @@ workflow:
 version: 1
 name: test
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: s1
@@ -1680,7 +1677,7 @@ workflow:
 version: 1
 name: test
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: s1
@@ -1719,7 +1716,7 @@ workflow:
 version: 1
 name: test
 agents:
-  mock: { type: mock }
+  mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: gate

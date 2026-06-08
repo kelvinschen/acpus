@@ -15,7 +15,8 @@ version: 1
 name: fanout-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 input:
   files: [string]
 workflow:
@@ -53,7 +54,8 @@ version: 1
 name: fanout-array-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: map-items
@@ -92,7 +94,8 @@ version: 1
 name: fanout-identity
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: mapped

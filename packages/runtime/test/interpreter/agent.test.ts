@@ -15,7 +15,8 @@ version: 1
 name: agent-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: review
@@ -43,7 +44,8 @@ version: 1
 name: agent-schema-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: structured

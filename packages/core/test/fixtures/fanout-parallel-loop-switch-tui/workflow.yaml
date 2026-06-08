@@ -12,10 +12,9 @@ input:
   route_mode?: string = "default"
 agents:
   mock_agent:
-    type: mock
-    model: transcript-fixture
+    type: command
+    use: "acpus-mock-agent --script ./packages/core/test/fixtures/fanout-parallel-loop-switch-tui/mock.yaml"
     cwd: "."
-    mock_script: ./packages/core/test/fixtures/fanout-parallel-loop-switch-tui/mock.yaml
 workflow:
   steps:
     - id: fanout_parallel_loop_switch

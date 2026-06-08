@@ -291,7 +291,7 @@ function classifyEnum(err: ErrorObject, path: string): string {
   }
 
   // agent type enum
-  if (setsEqual(allowedValues, ["builtin", "command", "mock"])) {
+  if (setsEqual(allowedValues, ["builtin", "command"])) {
     return "AGENT_SHAPE";
   }
 

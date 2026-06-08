@@ -41,16 +41,15 @@ export interface WorkflowSpec {
  * How an agent definition is driven at runtime:
  * - `builtin` (default): acpx built-in adapter named by `use` (e.g. pi/claude/codex).
  * - `command`: a custom ACP server launched via acpx `--agent "<use>"` escape hatch.
- * - `mock`: the in-memory MockAgentExecutor (no acpx, fast unit tests).
  */
-export type AgentType = "builtin" | "command" | "mock";
+export type AgentType = "builtin" | "command";
 
 export interface AgentSpec {
   /** Routing kind; defaults to "builtin" when omitted. */
   type?: AgentType;
   /**
    * For `builtin`: the acpx adapter name (e.g. "pi"). For `command`: the ACP
-   * server launch command. Optional for `mock`.
+   * server launch command.
    */
   use?: string;
   model?: string;
@@ -58,7 +57,6 @@ export interface AgentSpec {
   env?: Record<string, unknown>;
   tools_allowlist?: string[];
   max_concurrency?: number;
-  mock_script?: string;
 }
 
 export type WorkflowStep = Record<string, unknown> & {

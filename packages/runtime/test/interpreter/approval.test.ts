@@ -15,7 +15,8 @@ version: 1
 name: approval-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: approve-step
@@ -42,7 +43,8 @@ version: 1
 name: approval-reject-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: approve-step
@@ -69,7 +71,8 @@ version: 1
 name: approval-fail-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: approve-step
@@ -94,7 +97,8 @@ version: 1
 name: approval-human-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: approve-step
@@ -169,7 +173,8 @@ version: 1
 name: approval-race-test
 agents:
   coder:
-    type: mock
+    type: command
+    use: "echo stub"
 workflow:
   steps:
     - id: approve-step

@@ -16,7 +16,7 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
       properties: {
         type: {
           type: "string",
-          enum: ["builtin", "command", "mock"]
+          enum: ["builtin", "command"]
         },
         use: { type: "string" },
         model: { type: "string" },
@@ -29,19 +29,9 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
         max_concurrency: {
           type: "integer",
           minimum: 1
-        },
-        mock_script: { type: "string" }
-      },
-      allOf: [
-        // builtin/command require `use`
-        {
-          if: {
-            required: ["type"],
-            properties: { type: { enum: ["builtin", "command"] } }
-          },
-          then: { required: ["use"] }
         }
-      ]
+      },
+      required: ["use"]
     },
 
     // ── Step (oneOf dispatch) ──
