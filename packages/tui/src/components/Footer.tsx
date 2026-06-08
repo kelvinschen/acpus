@@ -15,7 +15,7 @@ export function Footer({
 }): React.ReactElement {
   const nav =
     focus === "details"
-      ? "u/d scroll  ·  ↵ expand"
+      ? "u/d scroll  ·  ↑/↓ line"
       : "↑(k)/↓(j) select";
   return (
     <Box flexDirection="column">

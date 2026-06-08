@@ -396,7 +396,7 @@ function isParallelKind(kind: IrNodeKind): boolean {
 /** Build the display-ordered, selectable rows for the whole tree. */
 export function buildRows(root: RenderNode): DisplayRow[] {
   const rows: DisplayRow[] = [];
-  walkRows(root, rows, [], []);
+  walkRows(root, rows, [], [], "");
   return rows;
 }
 
@@ -404,14 +404,17 @@ function walkRows(
   node: RenderNode,
   rows: DisplayRow[],
   ancestorIsLast: boolean[],
-  ancestorParallel: boolean[]
+  ancestorParallel: boolean[],
+  pathKey: string
 ): void {
   const inst = node.instances.length === 1 ? node.instances[0] : undefined;
   const treeSegments = treeSegmentsFor(ancestorIsLast, ancestorParallel);
 
   if (node.type === "group") {
     rows.push({
-      rowKey: `${node.irNode.id}@${node.groupDim}:${node.groupValue}`,
+      // pathKey makes rowKey globally unique: the same IR node (e.g. a LOOP)
+      // appearing under multiple fanout lanes produces distinct group rows.
+      rowKey: `${pathKey}/${node.irNode.id}@${node.groupDim}:${node.groupValue}`,
       irNode: node.irNode,
       depth: node.depth,
       instance: inst,
@@ -427,7 +430,7 @@ function walkRows(
   } else {
     const label = node.fannedCount !== undefined ? `${node.irNode.id} (×${node.fannedCount})` : node.irNode.id;
     rows.push({
-      rowKey: node.irNode.id + (inst ? `#${inst.nodeKey}` : ""),
+      rowKey: `${pathKey}/${node.irNode.id}` + (inst ? `#${inst.nodeKey}` : ""),
       irNode: node.irNode,
       depth: node.depth,
       instance: inst,
@@ -454,7 +457,8 @@ function walkRows(
       child,
       rows,
       [...ancestorIsLast, i === node.children.length - 1],
-      [...ancestorParallel, childrenParallel]
+      [...ancestorParallel, childrenParallel],
+      `${pathKey}/${i}`
     )
   );
 }

@@ -7,33 +7,48 @@ import { KIND_LABELS, styleForState } from "../theme.js";
 /**
  * Right pane: details for the currently-selected node row.
  *
- * Layout order: runtime info → node Definition (from IR metadata) → error →
- * output → artifacts. When Tab-focused, the border highlights and `scrollOffset`
- * shifts the lower (output/artifacts) region so long content can be read.
- * Pressing Enter toggles `expanded`, which removes per-field truncation/line
- * limits so the full content can be scrolled with u/d.
+ * The whole pane is flattened into a single array of colored lines
+ * (`DetailLine[]`) and then windowed with direct offset slicing — `scrollOffset`
+ * is the top visible line index, NOT a selection-centric center position.
+ * This makes u/d (half-page) and ↑/↓ (line) scroll the entire content
+ * uniformly, one line per press.
  *
  * `artifactPaths` maps an artifact:// URI to its resolved absolute filesystem
- * path (pre-fetched by App). Artifacts render as "<filename>  <absPath>" in
- * plain text (no OSC 8 hyperlink — Ink's truncation mangles the escape).
+ * path (pre-fetched by App). Artifacts render as a cyan filename line followed
+ * by a gray absolute-path line (plain text — no OSC 8).
  */
+
+/** One colored segment of a detail line. */
+export interface DetailSegment {
+  text: string;
+  color?: string;
+  bold?: boolean;
+}
+
+/** One rendered line of the NODE DETAILS pane. */
+export interface DetailLine {
+  segments: DetailSegment[];
+}
+
 export function DetailsPane({
-  row,
+  lines,
   height,
   width = 38,
   focused,
-  scrollOffset = 0,
-  expanded = false,
-  artifactPaths = {}
+  scrollOffset = 0
 }: {
-  row?: DisplayRow;
+  lines: DetailLine[];
   height?: number;
   width?: number;
   focused?: boolean;
   scrollOffset?: number;
-  expanded?: boolean;
-  artifactPaths?: Record<string, string>;
 }): React.ReactElement {
+  // Content rows available = pane height minus border (2) + title (1) + the
+  // two "↑/↓ more" hint lines budget (2). Mirror GraphPane's accounting.
+  const visibleRows = Math.max(1, (height ?? 12) - 5);
+  const { start, end, moreAbove, moreBelow } = offsetWindow(lines.length, scrollOffset, visibleRows);
+  const windowed = lines.slice(start, end);
+
   return (
     <Box
       flexDirection="column"
@@ -45,264 +60,235 @@ export function DetailsPane({
       overflow="hidden"
     >
       <Text bold color="magenta">
-        NODE DETAILS{focused ? " ◂" : ""}{expanded ? " (expanded)" : ""}
+        NODE DETAILS{focused ? " ◂" : ""}
       </Text>
-      {row ? (
-        <Details
-          row={row}
-          maxHeight={height}
-          maxWidth={width}
-          scrollOffset={scrollOffset}
-          expanded={expanded}
-          artifactPaths={artifactPaths}
-        />
-      ) : (
+      {lines.length === 0 ? (
         <Text color="gray">No node selected.</Text>
+      ) : (
+        <>
+          {moreAbove > 0 ? <Text color="gray">  ↑ {moreAbove} more</Text> : null}
+          <Box flexDirection="column">
+            {windowed.map((line, i) => (
+              <Text key={start + i} wrap="truncate">
+                {line.segments.length === 0 ? (
+                  " "
+                ) : (
+                  line.segments.map((seg, j) => (
+                    <Text key={j} color={seg.color} bold={seg.bold}>
+                      {seg.text}
+                    </Text>
+                  ))
+                )}
+              </Text>
+            ))}
+          </Box>
+          {moreBelow > 0 ? <Text color="gray">  ↓ {moreBelow} more</Text> : null}
+        </>
       )}
     </Box>
   );
 }
 
-function Details({
-  row,
-  maxHeight,
-  maxWidth = 38,
-  scrollOffset,
-  expanded,
-  artifactPaths
-}: {
-  row: DisplayRow;
-  maxHeight?: number;
-  maxWidth?: number;
-  scrollOffset: number;
-  expanded: boolean;
-  artifactPaths: Record<string, string>;
-}): React.ReactElement {
+// ─── Line building (pure) ────────────────────────────────────────
+
+/** A blank spacer line. */
+function blank(): DetailLine {
+  return { segments: [] };
+}
+
+/** A "label: value" line — label gray, value in `valueColor` (default none). */
+function field(label: string, value: string, cols: number, valueColor?: string): DetailLine {
+  // Keep the gap as its own segment so truncation never eats it.
+  return {
+    segments: [
+      { text: `${label}: `, color: "gray" },
+      { text: clampInline(value, Math.max(1, cols - label.length - 2)), color: valueColor }
+    ]
+  };
+}
+
+/** A plain heading line (gray). */
+function heading(text: string): DetailLine {
+  return { segments: [{ text, color: "gray" }] };
+}
+
+/** Split a multi-line string into per-line DetailLines, each truncated to cols. */
+function textLines(s: string, cols: number, color?: string): DetailLine[] {
+  return s.split("\n").map((line) => ({
+    segments: [{ text: clampInline(line, cols), color }]
+  }));
+}
+
+/**
+ * Flatten the selected row into a single array of colored lines. Pure: callers
+ * (App) reuse it to compute the scroll bound, then pass the result to the pane.
+ */
+export function buildDetailLines(
+  row: DisplayRow | undefined,
+  width: number,
+  artifactPaths: Record<string, string>
+): DetailLine[] {
+  if (!row) return [];
+  const cols = Math.max(12, width - 4);
   const inst = row.instance;
   const style = styleForState(row.state);
   const dyn = inst?.dynamicContext;
   const meta = (row.irNode.metadata ?? {}) as Record<string, unknown>;
-  // Visible content width = pane width minus border (2) and paddingX (2).
-  const cols = Math.max(12, maxWidth - 4);
-  // In expanded mode, single-line fields wrap instead of truncating, and
-  // multi-line blocks are not line-limited (scroll with u/d to read them).
-  const inline = (s: string) => (expanded ? s : clampInline(s, cols));
-  const lineLimit = (n: number) => (expanded ? Number.MAX_SAFE_INTEGER : n);
+  const lines: DetailLine[] = [];
 
-  return (
-    <Box flexDirection="column" marginTop={1}>
-      {/* ── Runtime info ── */}
-      <Line label="Node" value={row.label} wrap={expanded} />
-      <Line label="Kind" value={KIND_LABELS[row.irNode.kind]} />
-      <Box>
-        <Text color="gray">Status: </Text>
-        <Text color={style.color}>
-          {style.glyph} {style.label}
-        </Text>
-      </Box>
-      {inst ? <Line label="Attempt" value={String(inst.attempt)} /> : null}
-      {row.groupDim === "lane" ? <Line label="Lane" value={row.groupValue ?? "?"} /> : null}
-      {row.groupDim === "lane" && row.groupItem !== undefined ? (
-        <Line label="Item" value={inline(row.groupItem)} wrap={expanded} />
-      ) : null}
-      {row.groupDim === "round" ? <Line label="Round" value={row.groupValue ?? "?"} /> : null}
-      {row.branchLabel ? <Line label="Branch" value={row.branchLabel} /> : null}
-      {row.branchWhen ? <Line label="When" value={inline(row.branchWhen)} wrap={expanded} /> : null}
-      {inst ? <Line label="Duration" value={formatDuration(inst.startedAt, inst.completedAt)} /> : null}
-      {row.nodeKey ? <Line label="Key" value={inline(row.nodeKey)} wrap={expanded} /> : null}
+  // ── Runtime info ──
+  lines.push(field("Node", row.label, cols));
+  lines.push(field("Kind", KIND_LABELS[row.irNode.kind], cols));
+  lines.push({
+    segments: [
+      { text: "Status: ", color: "gray" },
+      { text: `${style.glyph} ${style.label}`, color: style.color }
+    ]
+  });
+  if (inst) lines.push(field("Attempt", String(inst.attempt), cols));
+  if (row.groupDim === "lane") lines.push(field("Lane", row.groupValue ?? "?", cols));
+  if (row.groupDim === "lane" && row.groupItem !== undefined) lines.push(field("Item", row.groupItem, cols));
+  if (row.groupDim === "round") lines.push(field("Round", row.groupValue ?? "?", cols));
+  if (row.branchLabel) lines.push(field("Branch", row.branchLabel, cols));
+  if (row.branchWhen) lines.push(field("When", row.branchWhen, cols));
+  if (inst) lines.push(field("Duration", formatDuration(inst.startedAt, inst.completedAt), cols));
+  if (row.nodeKey) lines.push(field("Key", row.nodeKey, cols));
 
-      {/* ── Definition (from IR metadata) ── */}
-      <Definition kind={row.irNode.kind} meta={meta} summary={row.summary} state={row.state} cols={cols} expanded={expanded} />
+  // ── Definition (from IR metadata) ──
+  for (const l of definitionLines(row.irNode.kind, meta, row.summary, row.state, cols)) lines.push(l);
 
-      {/* ── Dynamic context ── */}
-      {dyn ? (
-        <Box flexDirection="column" marginTop={1}>
-          <Text color="gray">Context:</Text>
-          {dyn.item_id !== undefined ? <Line label="  item_id" value={String(dyn.item_id)} /> : null}
-          {dyn.item_index !== undefined ? <Line label="  item_idx" value={String(dyn.item_index)} /> : null}
-          {dyn.loop ? <Line label="  loop.iter" value={String(dyn.loop.iter)} /> : null}
-        </Box>
-      ) : null}
+  // ── Dynamic context ──
+  if (dyn) {
+    lines.push(blank());
+    lines.push(heading("Context:"));
+    if (dyn.item_id !== undefined) lines.push(field("  item_id", String(dyn.item_id), cols));
+    if (dyn.item_index !== undefined) lines.push(field("  item_idx", String(dyn.item_index), cols));
+    if (dyn.loop) lines.push(field("  loop.iter", String(dyn.loop.iter), cols));
+  }
 
-      {/* ── Error ── */}
-      {inst?.error ? (
-        <Box flexDirection="column" marginTop={1}>
-          <Text color="red">Error:</Text>
-          <Text color="red">{clampLines(inst.error, lineLimit(3), scrollOffset, cols, expanded)}</Text>
-        </Box>
-      ) : null}
+  // ── Error ──
+  if (inst?.error) {
+    lines.push(blank());
+    lines.push({ segments: [{ text: "Error:", color: "red" }] });
+    for (const l of textLines(inst.error, cols, "red")) lines.push(l);
+  }
 
-      {/* ── Output (scrollable) ── */}
-      {inst?.output !== undefined ? (
-        <Box flexDirection="column" marginTop={1}>
-          <Text color="gray">Output:</Text>
-          <Text>{clampLines(JSON.stringify(inst.output, null, 2), lineLimit(outputLines(maxHeight)), scrollOffset, cols, expanded)}</Text>
-        </Box>
-      ) : null}
+  // ── Output ──
+  if (inst?.output !== undefined) {
+    lines.push(blank());
+    lines.push(heading("Output:"));
+    for (const l of textLines(JSON.stringify(inst.output, null, 2), cols)) lines.push(l);
+  }
 
-      {/* ── Artifacts ("<filename>  <absPath>", plain text — no OSC 8) ── */}
-      {inst?.artifactRefs && inst.artifactRefs.length > 0 ? (
-        <Box flexDirection="column" marginTop={1}>
-          <Text color="gray">Artifacts:</Text>
-          {inst.artifactRefs.map((ref) => {
-            const absPath = artifactPaths[ref];
-            const name = ref.split("/").pop() ?? ref;
-            if (absPath) {
-              // Filename (cyan) acts as the title; the absolute path follows in
-              // gray as secondary info so the two are visually distinct.
-              return (
-                <Box key={ref} flexDirection="column">
-                  <Text color="cyan" wrap={expanded ? "wrap" : "truncate"}>
-                    {name}
-                  </Text>
-                  <Text color="gray" wrap={expanded ? "wrap" : "truncate"}>
-                    {"  "}{absPath}
-                  </Text>
-                </Box>
-              );
-            }
-            // Path not yet resolved: fall back to the raw artifact:// URI.
-            return (
-              <Text key={ref} color="gray" wrap={expanded ? "wrap" : "truncate"}>
-                {ref}
-              </Text>
-            );
-          })}
-        </Box>
-      ) : null}
-    </Box>
-  );
+  // ── Artifacts (cyan filename line + gray path line; no OSC 8) ──
+  if (inst?.artifactRefs && inst.artifactRefs.length > 0) {
+    lines.push(blank());
+    lines.push(heading("Artifacts:"));
+    for (const ref of inst.artifactRefs) {
+      const absPath = artifactPaths[ref];
+      const name = ref.split("/").pop() ?? ref;
+      if (absPath) {
+        lines.push({ segments: [{ text: clampInline(name, cols), color: "cyan" }] });
+        lines.push({ segments: [{ text: clampInline(`  ${absPath}`, cols), color: "gray" }] });
+      } else {
+        // Path not resolved yet: show the raw artifact:// URI.
+        lines.push({ segments: [{ text: clampInline(ref, cols), color: "gray" }] });
+      }
+    }
+  }
+
+  return lines;
 }
 
-/** Node Definition block, varies by kind. Reads static IR metadata. */
-function Definition({
-  kind,
-  meta,
-  summary,
-  state,
-  cols = 33,
-  expanded = false
-}: {
-  kind: DisplayRow["irNode"]["kind"];
-  meta: Record<string, unknown>;
-  summary?: string;
-  state?: DisplayRow["state"];
-  cols?: number;
-  expanded?: boolean;
-}): React.ReactElement | null {
-  const inline = (s: string) => (expanded ? s : clampInline(s, cols));
-  const promptLimit = expanded ? Number.MAX_SAFE_INTEGER : 6;
+/** Definition block lines, varying by node kind. */
+function definitionLines(
+  kind: DisplayRow["irNode"]["kind"],
+  meta: Record<string, unknown>,
+  summary: string | undefined,
+  state: DisplayRow["state"],
+  cols: number
+): DetailLine[] {
+  const out: DetailLine[] = [];
+
   if (kind === "run.agent") {
     const agent = (meta.agent ?? {}) as Record<string, unknown>;
     const retry = meta.retry as { max?: unknown; backoff?: unknown } | undefined;
-    return (
-      <Box flexDirection="column" marginTop={1}>
-        <Text color="gray">Definition:</Text>
-        {agent.use !== undefined ? <Line label="  Use" value={String(agent.use)} /> : null}
-        <Line label="  Type" value={String(agent.type ?? "builtin")} />
-        {agent.model !== undefined ? <Line label="  Model" value={String(agent.model)} /> : null}
-        {meta.timeout !== undefined ? <Line label="  Timeout" value={String(meta.timeout)} /> : null}
-        {retry ? (
-          <Line
-            label="  Retry"
-            value={`max=${String(retry.max ?? "?")}${retry.backoff !== undefined ? ` backoff=${String(retry.backoff)}` : ""}`}
-          />
-        ) : null}
-        {typeof meta.prompt === "string" ? (
-          <Box flexDirection="column">
-            <Text color="gray">  Prompt:</Text>
-            <Text>{clampLines(meta.prompt, promptLimit, 0, cols, expanded)}</Text>
-          </Box>
-        ) : null}
-      </Box>
-    );
+    out.push(blank(), heading("Definition:"));
+    if (agent.use !== undefined) out.push(field("  Use", String(agent.use), cols));
+    out.push(field("  Type", String(agent.type ?? "builtin"), cols));
+    if (agent.model !== undefined) out.push(field("  Model", String(agent.model), cols));
+    if (meta.timeout !== undefined) out.push(field("  Timeout", String(meta.timeout), cols));
+    if (retry) {
+      out.push(
+        field(
+          "  Retry",
+          `max=${String(retry.max ?? "?")}${retry.backoff !== undefined ? ` backoff=${String(retry.backoff)}` : ""}`,
+          cols
+        )
+      );
+    }
+    if (typeof meta.prompt === "string") {
+      out.push(heading("  Prompt:"));
+      for (const l of textLines(meta.prompt, cols)) out.push(l);
+    }
+    return out;
   }
 
   if (kind === "run.program") {
     const cmd = Array.isArray(meta.cmd) ? meta.cmd.map(String).join(" ") : undefined;
     const capture = meta.capture as { from?: unknown; parse?: unknown } | undefined;
-    return (
-      <Box flexDirection="column" marginTop={1}>
-        <Text color="gray">Definition:</Text>
-        {cmd ? <Line label="  Command" value={inline(cmd)} wrap={expanded} /> : null}
-        {capture ? (
-          <Line
-            label="  Capture"
-            value={`from=${String(capture.from ?? "?")}${capture.parse !== undefined ? ` parse=${String(capture.parse)}` : ""}`}
-          />
-        ) : null}
-      </Box>
-    );
+    out.push(blank(), heading("Definition:"));
+    if (cmd) out.push(field("  Command", cmd, cols));
+    if (capture) {
+      out.push(
+        field(
+          "  Capture",
+          `from=${String(capture.from ?? "?")}${capture.parse !== undefined ? ` parse=${String(capture.parse)}` : ""}`,
+          cols
+        )
+      );
+    }
+    return out;
   }
 
   if (kind === "approval") {
-    return (
-      <Box flexDirection="column" marginTop={1}>
-        <Text color="gray">Definition:</Text>
-        {meta.timeout !== undefined ? <Line label="  Timeout" value={String(meta.timeout)} /> : null}
-        {meta.on_timeout !== undefined ? <Line label="  On timeout" value={String(meta.on_timeout)} /> : null}
-        {typeof meta.prompt === "string" ? (
-          <Box flexDirection="column">
-            <Text color="gray">  Prompt:</Text>
-            <Text>{clampLines(meta.prompt, promptLimit, 0, cols, expanded)}</Text>
-          </Box>
-        ) : null}
-        {state === "awaiting" ? (
-          <Text color="blue">  ⏳ awaiting decision — [a] approve  [x] reject</Text>
-        ) : null}
-      </Box>
-    );
+    out.push(blank(), heading("Definition:"));
+    if (meta.timeout !== undefined) out.push(field("  Timeout", String(meta.timeout), cols));
+    if (meta.on_timeout !== undefined) out.push(field("  On timeout", String(meta.on_timeout), cols));
+    if (typeof meta.prompt === "string") {
+      out.push(heading("  Prompt:"));
+      for (const l of textLines(meta.prompt, cols)) out.push(l);
+    }
+    if (state === "awaiting") {
+      out.push({ segments: [{ text: "  ⏳ awaiting decision — [a] approve  [x] reject", color: "blue" }] });
+    }
+    return out;
   }
 
   // composite / subworkflow: surface the summary if any.
   if (summary) {
-    return (
-      <Box flexDirection="column" marginTop={1}>
-        <Text color="gray">Definition:</Text>
-        <Line label="  Flow" value={inline(summary)} wrap={expanded} />
-      </Box>
-    );
+    out.push(blank(), heading("Definition:"), field("  Flow", summary, cols));
   }
-  return null;
+  return out;
 }
 
-function Line({ label, value, wrap = false }: { label: string; value: string; wrap?: boolean }): React.ReactElement {
-  return (
-    <Box>
-      {/* Separate space node so the gap survives Ink's truncation layout
-          (a trailing space inside the label Text can be dropped). */}
-      <Text color="gray">{label}:</Text>
-      <Text> </Text>
-      <Text wrap={wrap ? "wrap" : "truncate"}>{value}</Text>
-    </Box>
-  );
-}
-
-/** How many output lines fit, scaled to the pane height (leave room for other fields). */
-function outputLines(maxHeight?: number): number {
-  if (!maxHeight) return 8;
-  return Math.max(3, Math.floor(maxHeight / 3));
-}
-
-/** Truncate a single-line value so it never wraps (~33 visible cols). */
+/** Truncate a single line so it never wraps (Ink would otherwise grow height). */
 function clampInline(s: string, width = 33): string {
-  return s.length > width ? s.slice(0, width - 1) + "…" : s;
+  return s.length > width ? s.slice(0, Math.max(1, width - 1)) + "…" : s;
 }
 
 /**
- * Clamp a multi-line string to at most `maxLines` lines starting at `offset`,
- * and truncate each line so it never wraps (wrapping would silently grow the
- * pane height and break Ink's frame erasure). The details pane is ~34 cols wide.
- * In `expanded` mode lines are NOT per-line truncated (full content shown);
- * Ink's pane `overflow="hidden"` clips overflow and u/d scrolls through it.
+ * Direct offset-based viewport window for the details pane.
+ * `scrollOffset` is the index of the top visible line.
+ * Returns the clamped [start, end) slice and the moreAbove/moreBelow counts.
  */
-function clampLines(s: string, maxLines: number, offset = 0, width = 33, expanded = false): string {
-  const all = expanded
-    ? s.split("\n")
-    : s.split("\n").map((line) => (line.length > width ? line.slice(0, width - 1) + "…" : line));
-  const start = Math.max(0, Math.min(offset, Math.max(0, all.length - maxLines)));
-  const slice = all.slice(start, start + maxLines);
-  const prefix = start > 0 ? "↑…\n" : "";
-  const suffix = start + maxLines < all.length ? "\n…" : "";
-  return prefix + slice.join("\n") + suffix;
+export function offsetWindow(
+  total: number,
+  scrollOffset: number,
+  visibleRows: number
+): { start: number; end: number; moreAbove: number; moreBelow: number } {
+  const maxOffset = Math.max(0, total - visibleRows);
+  const start = Math.max(0, Math.min(scrollOffset, maxOffset));
+  const end = Math.min(total, start + visibleRows);
+  return { start, end, moreAbove: start, moreBelow: total - end };
 }

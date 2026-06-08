@@ -116,6 +116,29 @@ describe("model overlay", () => {
     expect(rows.filter((r) => r.irNode.id === "perf")).toHaveLength(2);
   });
 
+  it("emits globally-unique rowKeys for the same composite under multiple fanout lanes", () => {
+    // A LOOP nested under a FANOUT: each lane expands the loop into its own
+    // round group rows. The rowKey of those group rows MUST be unique across
+    // lanes (otherwise React/Ink emits "two children with the same key" and
+    // re-renders go haywire — the bug that caused screen flicker).
+    const loop = node("loop_lane", "loop", { children: [node("body", "run.agent")] });
+    const fan = node("mapped", "fanout", { children: [loop] });
+    const root = node("workflow", "pipeline", { children: [fan] });
+    const states = [
+      state("body", "workflow/mapped/loop_lane/body/item:a/lane:0/round:0", "completed"),
+      state("body", "workflow/mapped/loop_lane/body/item:a/lane:0/round:1", "completed"),
+      state("body", "workflow/mapped/loop_lane/body/item:b/lane:1/round:0", "completed"),
+      state("body", "workflow/mapped/loop_lane/body/item:b/lane:1/round:1", "completed")
+    ];
+    const rows = buildRows(buildRenderTree(ir(root), states));
+    const keys = rows.map((r) => r.rowKey);
+    expect(new Set(keys).size).toBe(keys.length);
+    // Concretely: round=1 should appear under each lane with distinct rowKeys.
+    const round1Rows = rows.filter((r) => r.groupDim === "round" && r.groupValue === "1");
+    expect(round1Rows).toHaveLength(2);
+    expect(round1Rows[0].rowKey).not.toBe(round1Rows[1].rowKey);
+  });
+
   it("derives switch branch labels and predicates", () => {
     const sw = node("decide", "switch", {
       branches: [

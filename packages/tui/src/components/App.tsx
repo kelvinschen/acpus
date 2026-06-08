@@ -7,7 +7,7 @@ import { applyControl, canApply, applyRunControl, canApplyRun, type ControlActio
 import { useTerminalSize, windowSlice } from "../useTerminalSize.js";
 import { StatusOverview } from "./StatusOverview.js";
 import { GraphPane } from "./GraphPane.js";
-import { DetailsPane } from "./DetailsPane.js";
+import { DetailsPane, buildDetailLines } from "./DetailsPane.js";
 import { Footer } from "./Footer.js";
 
 type Focus = "graph" | "details";
@@ -33,7 +33,6 @@ export function App({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [focus, setFocus] = useState<Focus>("graph");
   const [detailsScroll, setDetailsScroll] = useState(0);
-  const [detailsExpanded, setDetailsExpanded] = useState(false);
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [toast, setToast] = useState<{ msg: string; error: boolean } | undefined>();
   const [artifactPaths, setArtifactPaths] = useState<Record<string, string>>({});
@@ -60,16 +59,37 @@ export function App({
   const clampedIndex = rows.length === 0 ? 0 : Math.min(selectedIndex, rows.length - 1);
   const selected = rows[clampedIndex];
 
-  // Upper bound for details scrolling: the longest scrollable block (output or
-  // error) of the selected node, in lines. Prevents the scroll offset from
-  // growing unboundedly when the user holds the down arrow.
-  const detailsMaxScroll = useMemo(() => {
-    const inst = selected?.instance;
-    if (!inst) return 0;
-    const outputLines = inst.output !== undefined ? JSON.stringify(inst.output, null, 2).split("\n").length : 0;
-    const errorLines = inst.error ? inst.error.split("\n").length : 0;
-    return Math.max(0, Math.max(outputLines, errorLines) - 1);
-  }, [selected]);
+  // ── Layout budget (height + width). Computed before line-building so the
+  // details lines can be wrapped to the actual pane width. ──
+  // The whole frame MUST fit within the terminal height, otherwise Ink cannot
+  // erase the previous frame and old frames linger. Chrome = top bar (3) +
+  // footer (2) + margins; the rest goes to the three equal-height panes.
+  const RESERVED = 6;
+  const paneHeight = Math.max(8, termRows - RESERVED);
+  // Box border + header consume ~4 lines for the graph; details reserves an
+  // extra line for the ↑/↓ more hints (see DetailsPane).
+  const graphVisibleRows = Math.max(3, paneHeight - 4);
+  const detailsVisibleRows = Math.max(1, paneHeight - 5);
+
+  // Width budget. STATUS OVERVIEW stays a fixed sidebar; the remaining width is
+  // split between GRAPH and DETAILS so the FOCUSED pane gets ~50% of the whole
+  // screen and the unfocused one ~25%.
+  const STATUS_WIDTH = 26;
+  const remaining = Math.max(20, termCols - STATUS_WIDTH);
+  const focusedShare = Math.round(termCols * 0.5);
+  const detailsWidth = Math.max(
+    24,
+    Math.min(remaining - 20, focus === "details" ? focusedShare : remaining - focusedShare)
+  );
+  const graphWidth = Math.max(20, remaining - detailsWidth);
+
+  // Flatten the selected node into a single array of colored lines, then derive
+  // the scroll bound from its true length (so long prompts/outputs scroll fully).
+  const detailLines = useMemo(
+    () => buildDetailLines(selected, detailsWidth, artifactPaths),
+    [selected, detailsWidth, artifactPaths]
+  );
+  const detailsMaxScroll = Math.max(0, detailLines.length - detailsVisibleRows);
 
   // Pre-fetch absolute filesystem paths for the selected node's artifacts so
   // DetailsPane can show "<filename>  <absPath>". Only fetches uris not already
@@ -105,10 +125,9 @@ export function App({
     };
   }, [client, runId, selected, artifactPaths]);
 
-  // Reset details scroll + expand when the selection changes.
+  // Reset details scroll when the selection changes.
   useEffect(() => {
     setDetailsScroll(0);
-    setDetailsExpanded(false);
   }, [clampedIndex]);
 
   useInput((input, key) => {
@@ -122,12 +141,8 @@ export function App({
     }
 
     if (focus === "details") {
-      // DETAILS pane: ↵ toggles expand; u/d half-page scroll; ↑/↓ line scroll.
-      const halfPage = Math.max(1, Math.floor(visibleRows / 2));
-      if (key.return) {
-        setDetailsExpanded((e) => !e);
-        return;
-      }
+      // DETAILS pane: u/d half-page scroll; ↑/↓ line scroll.
+      const halfPage = Math.max(1, Math.floor(detailsVisibleRows / 2));
       if (input === "d") {
         setDetailsScroll((s) => Math.min(detailsMaxScroll, s + halfPage));
         return;
@@ -209,32 +224,10 @@ export function App({
     ? formatElapsed((live ? Date.now() : Date.parse(run.updatedAt)) - Date.parse(run.createdAt))
     : "--:--:--";
 
-  // Height budget. The whole frame MUST fit within the terminal height,
-  // otherwise Ink cannot erase the previous frame and old frames linger
-  // (appearing as duplicated panels). Chrome = top bar (3) + footer (2) +
-  // margins; the rest goes to the three equal-height panes.
-  const RESERVED = 6;
-  const paneHeight = Math.max(8, termRows - RESERVED);
-  // Box border + header consume ~4 lines, so the visible content window is
-  // paneHeight - 4.
-  const visibleRows = Math.max(3, paneHeight - 4);
-  const win = windowSlice(rows.length, clampedIndex, visibleRows);
+  const win = windowSlice(rows.length, clampedIndex, graphVisibleRows);
   const windowedRows = rows.slice(win.start, win.end);
   const moreAbove = win.start;
   const moreBelow = rows.length - win.end;
-
-  // Width budget. STATUS OVERVIEW stays a fixed sidebar; the remaining width is
-  // split between GRAPH and DETAILS so the FOCUSED pane gets ~50% of the whole
-  // screen and the unfocused one ~25%. Falls back to a graph-dominant split
-  // before details has meaningful focus.
-  const STATUS_WIDTH = 26;
-  const remaining = Math.max(20, termCols - STATUS_WIDTH);
-  const focusedShare = Math.round(termCols * 0.5);
-  const detailsWidth = Math.max(
-    24,
-    Math.min(remaining - 20, focus === "details" ? focusedShare : remaining - focusedShare)
-  );
-  const graphWidth = Math.max(20, remaining - detailsWidth);
 
   if (!snapshot.loaded) {
     return (
@@ -252,7 +245,7 @@ export function App({
       <Box borderStyle="round" borderColor="cyan" paddingX={1} justifyContent="space-between">
         <Text>
           <Text bold color="cyan">
-            ⛬ Workflow Runner
+            ⛬ Acpus Workflow Runner
           </Text>
           <Text color="gray">  │  Run </Text>
           <Text>{run?.runId}</Text>
@@ -289,13 +282,11 @@ export function App({
           width={graphWidth}
         />
         <DetailsPane
-          row={selected}
+          lines={detailLines}
           height={paneHeight}
           width={detailsWidth}
           focused={focus === "details"}
           scrollOffset={detailsScroll}
-          expanded={detailsExpanded}
-          artifactPaths={artifactPaths}
         />
       </Box>
 
