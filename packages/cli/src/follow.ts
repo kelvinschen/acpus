@@ -30,7 +30,7 @@ export async function followRun(
   const intervalMs = options.intervalMs ?? 400;
 
   // Pin the supervisor alive while following
-  client.clientKind = "follower";
+  client.clientKind = "follow";
 
   const lastObserved = new Map<string, NodeExecutionState>();
   let lastRunStatus: RunStatus | undefined;

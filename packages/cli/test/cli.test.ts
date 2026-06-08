@@ -116,8 +116,8 @@ describe("acpus CLI", () => {
     expect(JSON.parse(result.stdout).ok).toBe(false);
   }, 30_000);
 
-  it("rejects --background --visualizer as invalid combination", async () => {
-    const result = await execaNode(cliEntry, ["run", join(fixtureDir, "all-primitives.yaml"), "--background", "--visualizer"], {
+  it("rejects --background --visualize as invalid combination", async () => {
+    const result = await execaNode(cliEntry, ["run", join(fixtureDir, "all-primitives.yaml"), "--background", "--visualize"], {
       nodeOptions: ["--import", "tsx", "--conditions=development"],
       reject: false
     });
@@ -126,8 +126,8 @@ describe("acpus CLI", () => {
     expect(result.exitCode).toBe(1);
   });
 
-  it("rejects --visualizer --json as invalid combination", async () => {
-    const result = await execaNode(cliEntry, ["run", join(fixtureDir, "all-primitives.yaml"), "--visualizer", "--json"], {
+  it("rejects --visualize --json as invalid combination", async () => {
+    const result = await execaNode(cliEntry, ["run", join(fixtureDir, "all-primitives.yaml"), "--visualize", "--json"], {
       nodeOptions: ["--import", "tsx", "--conditions=development"],
       reject: false
     });

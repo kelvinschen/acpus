@@ -11,10 +11,10 @@ Acpus will use one lazily started Run Supervisor per Workspace, where the Worksp
 
 ## Decision
 
-Acpus chooses the lazy Workspace-scoped Run Supervisor. `acpus run <spec>` defaults to foreground text follow, `acpus run <spec> --background` submits and exits, and `acpus run <spec> --visualizer` submits and opens the single-Run visualizer view. The ordinary CLI surface will not expose a user-facing `daemon` or `supervisor` start command.
+Acpus chooses the lazy Workspace-scoped Run Supervisor. `acpus run <spec>` defaults to foreground text follow, `acpus run <spec> --background` submits and exits, and `acpus run <spec> --visualize` submits and opens the single-Run visualizer view. The ordinary CLI surface will not expose a user-facing `daemon` or `supervisor` start command.
 
-The supervisor is discovered through `.acpus/supervisor.json`, guarded during startup by `.acpus/supervisor.lock`, and listens on a random `127.0.0.1` HTTP port. The first version uses the current working directory as the Workspace, supports one active supervisor per Workspace, keeps running Runs concurrent, and exits after five idle minutes when there are no running Runs or active visualizer/follower clients.
+The supervisor is discovered through `.acpus/supervisor.json`, guarded during startup by `.acpus/supervisor.lock`, and listens on a random `127.0.0.1` HTTP port. The first version uses the current working directory as the Workspace, supports one active supervisor per Workspace, keeps running Runs concurrent, and exits after five idle minutes when there are no running Runs or active visualize/follow clients.
 
 ## Consequences
 
-Foreground and background Runs share one execution path, so another terminal can `acpus visualizer` a foreground Run. Ctrl-C during foreground follow detaches from the Run instead of cancelling it. Run-level controls are the default (`cancel`, `pause`, `resume`, `retry`), while Node-level controls are addressed with `--node <nodeKey>`. `resume` is only for paused Runs, `retry` is only for failed Runs, and `retry` means in-place recovery rather than rerunning a completed Workflow from scratch.
+Foreground and background Runs share one execution path, so another terminal can `acpus visualize` a foreground Run. Ctrl-C during foreground follow detaches from the Run instead of cancelling it. Run-level controls are the default (`cancel`, `pause`, `resume`, `retry`), while Node-level controls are addressed with `--node <nodeKey>`. `resume` is only for paused Runs, `retry` is only for failed Runs, and `retry` means in-place recovery rather than rerunning a completed Workflow from scratch.

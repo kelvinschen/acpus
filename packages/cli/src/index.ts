@@ -50,18 +50,18 @@ program
   .option("--dry-run", "compile to IR and print schedule without execution")
   .option("--input <value>", "inline JSON or path to YAML/JSON input object")
   .option("--background", "submit and return immediately (no follow)")
-  .option("--visualizer", "submit and open visualizer")
+  .option("--visualize", "submit and open TUI visualizer")
   .option("--json", "write JSONL observations (follow mode) or JSON (background)")
   .option("--quiet", "only write final output")
-  .action(async (spec: string, options: { dryRun?: boolean; input?: string; background?: boolean; visualizer?: boolean; json?: boolean; quiet?: boolean }) => {
+  .action(async (spec: string, options: { dryRun?: boolean; input?: string; background?: boolean; visualize?: boolean; json?: boolean; quiet?: boolean }) => {
     // Validate invalid combinations before any supervisor contact
-    if (options.background && options.visualizer) {
-      printError("--background and --visualizer are mutually exclusive", options);
+    if (options.background && options.visualize) {
+      printError("--background and --visualize are mutually exclusive", options);
       process.exitCode = EXIT_CLI_ERROR;
       return;
     }
-    if (options.visualizer && options.json) {
-      printError("--visualizer and --json are mutually exclusive", options);
+    if (options.visualize && options.json) {
+      printError("--visualize and --json are mutually exclusive", options);
       process.exitCode = EXIT_CLI_ERROR;
       return;
     }
@@ -101,8 +101,8 @@ program
         return;
       }
 
-      if (options.visualizer) {
-        // Visualizer: submit and open TUI
+      if (options.visualize) {
+        // Visualize: submit and open TUI
         const { runTui } = await import("@acpus/tui");
         await runTui({ runId: runState.runId, endpoint: (client as any).baseUrl as string });
         process.exitCode = 0;
@@ -334,9 +334,9 @@ program
   });
 
 program
-  .command("visualizer")
+  .command("visualize")
   .argument("[runId]", "run ID to observe (omit to pick from a list)")
-  .description("open a visualizer to observe and control a running workflow")
+  .description("open a TUI visualizer to observe and control a running workflow")
   .action(async (runId: string | undefined) => {
     try {
       const client = await ensureSupervisor();

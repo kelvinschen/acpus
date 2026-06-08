@@ -17,7 +17,7 @@ export class RunSupervisorClient {
   /** Client identity for lease tracking on the supervisor. */
   readonly clientId: string;
   /** When set, includes x-acpus-client-kind header to pin the supervisor alive. */
-  clientKind?: "follower" | "visualizer";
+  clientKind?: "follow" | "visualize";
 
   constructor(baseUrl: string) {
     this.baseUrl = baseUrl;

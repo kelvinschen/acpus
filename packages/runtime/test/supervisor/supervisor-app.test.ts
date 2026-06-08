@@ -262,7 +262,7 @@ describe("Supervisor HTTP API", () => {
     const res = await fetch(`${baseUrl}/health`, {
       headers: {
         "x-acpus-client-id": clientId,
-        "x-acpus-client-kind": "visualizer"
+        "x-acpus-client-kind": "visualize"
       }
     });
     expect(res.status).toBe(200);
