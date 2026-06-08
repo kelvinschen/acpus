@@ -89,6 +89,9 @@ importers:
       '@acpus/core':
         specifier: workspace:*
         version: link:../core
+      '@acpus/mock-agent':
+        specifier: workspace:*
+        version: link:../mock-agent
       '@hono/node-server':
         specifier: ^1.14.0
         version: 1.19.14(hono@4.12.23)
@@ -117,9 +120,6 @@ importers:
         specifier: ^4.1.2
         version: 4.1.2
     devDependencies:
-      '@acpus/mock-agent':
-        specifier: workspace:*
-        version: link:../mock-agent
       '@types/node':
         specifier: ^22.15.30
         version: 22.19.19

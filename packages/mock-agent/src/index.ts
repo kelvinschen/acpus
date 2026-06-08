@@ -6,6 +6,7 @@ import { TraceWriter, type TraceMode } from "./trace.js";
 
 export { MockAgent } from "./agent.js";
 export {
+  loadMockScript,
   parseMockScript,
   responseText,
   selectResponse,

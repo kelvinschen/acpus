@@ -1,0 +1,70 @@
+version: 1
+agent_id: fanout-parallel-loop-switch-tui-mock
+deterministic_session_ids: true
+default_response:
+  type: json
+  payload:
+    branch: default
+    lane: fixture
+    ok: true
+rules:
+  - name: review-transcript
+    when:
+      prompt_contains: "branch=review"
+    respond:
+      type: json
+      payload:
+        branch: review
+        lane: fixture
+        ok: true
+      stream:
+        chunks: 2
+        chunk_interval: 0ms
+  - name: loop-transcript
+    when:
+      prompt_contains: "branch=loop"
+    respond:
+      type: json
+      payload:
+        branch: loop
+        round: 0
+        continue: true
+      stream:
+        chunks: 2
+        chunk_interval: 0ms
+  - name: switch-alpha-transcript
+    when:
+      prompt_contains: "branch=switch alpha"
+    respond:
+      type: json
+      payload:
+        branch: switch
+        lane: fixture
+        route: alpha
+      stream:
+        chunks: 2
+        chunk_interval: 0ms
+  - name: switch-default-transcript
+    when:
+      prompt_contains: "branch=switch default"
+    respond:
+      type: json
+      payload:
+        branch: switch
+        lane: fixture
+        route: default
+      stream:
+        chunks: 2
+        chunk_interval: 0ms
+  - name: switch-fallback-transcript
+    when:
+      prompt_contains: "branch=switch fallback"
+    respond:
+      type: json
+      payload:
+        branch: switch
+        lane: fixture
+        route: fallback
+      stream:
+        chunks: 2
+        chunk_interval: 0ms

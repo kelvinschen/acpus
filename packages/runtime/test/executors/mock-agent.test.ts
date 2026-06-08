@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { MockAgentExecutor } from "../../src/executors/mock-agent.js";
 import type { IrNode } from "@acpus/core";
 import type { ExpressionContext } from "../../src/types.js";
@@ -48,6 +51,44 @@ describe("MockAgentExecutor", () => {
 
     const result = await executor.execute({ node, context: baseCtx(), signal: controller.signal, nodeKey: node.id });
     expect(result.partial).toBe(true);
+  });
+
+  it("selects a mock_script response by rendered prompt", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-mock-script-"));
+    try {
+      const scriptPath = join(dir, "mock.yaml");
+      writeFileSync(scriptPath, `
+version: 1
+agent_id: script-test
+default_response:
+  type: json
+  payload:
+    branch: default
+rules:
+  - name: scripted
+    when:
+      prompt_contains: "lane alpha"
+    respond:
+      type: json
+      payload:
+        branch: scripted
+        ok: true
+`, "utf8");
+      const executor = new MockAgentExecutor({});
+      const node = makeAgentNode({
+        prompt: "Review lane ${{ input.lane }}",
+        agent: { type: "mock", mock_script: scriptPath }
+      });
+      const result = await executor.execute({
+        node,
+        context: { ...baseCtx(), input: { lane: "alpha" } },
+        signal: new AbortController().signal,
+        nodeKey: node.id
+      });
+      expect(result.output).toEqual({ branch: "scripted", ok: true });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("validates output against schema", async () => {

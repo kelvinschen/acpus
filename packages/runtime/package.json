@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@acpus/core": "workspace:*",
+    "@acpus/mock-agent": "workspace:*",
     "@hono/node-server": "^1.14.0",
     "@marcbachmann/cel-js": "^7.6.1",
     "acpx": "0.10.0",
@@ -32,7 +33,6 @@
     "proper-lockfile": "^4.1.2"
   },
   "devDependencies": {
-    "@acpus/mock-agent": "workspace:*",
     "@types/node": "^22.15.30",
     "@types/proper-lockfile": "^4.1.4"
   }

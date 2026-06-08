@@ -1,3 +1,6 @@
+import type { AgentSpec } from "@acpus/core";
+import { resolve } from "node:path";
+import { loadMockScript, responseText, selectResponse, type MockRespond, type MockScript } from "@acpus/mock-agent";
 import type { ExecutorResult, FailureKind } from "../types.js";
 import type { ExecutorAdapter, ExecutionRequest } from "./types.js";
 import { ExpressionEvaluator } from "../evaluator.js";
@@ -17,6 +20,7 @@ export class MockAgentExecutor implements ExecutorAdapter {
   private readonly evaluator: ExpressionEvaluator;
   private readonly ajv: Ajv;
   private readonly callCounts: Map<string, number> = new Map();
+  private readonly scriptCache: Map<string, MockScript> = new Map();
 
   constructor(responses: Record<string, MockAgentResponse>, evaluator?: ExpressionEvaluator) {
     this.responses = new Map(Object.entries(responses));
@@ -26,15 +30,27 @@ export class MockAgentExecutor implements ExecutorAdapter {
 
   async execute({ node, context, signal }: ExecutionRequest): Promise<ExecutorResult> {
     const stepId = node.id;
-    const response = this.responses.get(stepId);
+
+    // Resolve prompt template. Script-backed mock agents select responses by
+    // the rendered prompt, matching the ACP mock-agent script semantics without
+    // spawning acpx or consuming model tokens.
+    let renderedPrompt = "";
+    const promptTemplate = node.metadata.prompt as string | undefined;
+    if (promptTemplate) {
+      renderedPrompt = this.evaluator.evaluateTemplate(promptTemplate, context);
+    }
+
+    let response: MockAgentResponse | undefined;
+    try {
+      response = this.responseFor(node.metadata.agent as AgentSpec | undefined, stepId, renderedPrompt);
+    } catch (error) {
+      return { failureKind: "spawn", error: `Failed to load mock_script for step '${stepId}': ${errorMessage(error)}` };
+    }
     if (!response) {
       return { error: `No mock response configured for step '${stepId}'` };
     }
-
-    // Resolve prompt template
-    const promptTemplate = node.metadata.prompt as string | undefined;
-    if (promptTemplate) {
-      this.evaluator.evaluateTemplate(promptTemplate, context);
+    if (response.error) {
+      return { error: response.error };
     }
 
     // Check for abort before starting
@@ -79,6 +95,25 @@ export class MockAgentExecutor implements ExecutorAdapter {
     }
   }
 
+  private responseFor(agent: AgentSpec | undefined, stepId: string, prompt: string): MockAgentResponse | undefined {
+    if (agent?.mock_script) {
+      const script = this.loadScript(agent.mock_script, agent.cwd);
+      const selected = selectResponse(script, prompt);
+      return outputFromMockRespond(selected.response);
+    }
+    return this.responses.get(stepId);
+  }
+
+  private loadScript(scriptPath: string, cwd: unknown): MockScript {
+    const base = typeof cwd === "string" && cwd.length > 0 ? cwd : process.cwd();
+    const abs = resolve(base, scriptPath);
+    const cached = this.scriptCache.get(abs);
+    if (cached) return cached;
+    const script = loadMockScript(abs);
+    this.scriptCache.set(abs, script);
+    return script;
+  }
+
   /** Return the response for this call, advancing through a `sequence` if present. */
   private pickResponse(stepId: string, response: MockAgentResponse): MockAgentResponse {
     if (!response.sequence || response.sequence.length === 0) {
@@ -89,6 +124,17 @@ export class MockAgentExecutor implements ExecutorAdapter {
     // Keep returning the final element once the sequence is exhausted.
     return response.sequence[Math.min(n, response.sequence.length - 1)]!;
   }
+}
+
+function outputFromMockRespond(response: MockRespond): MockAgentResponse {
+  if (response.type === "json") return { output: response.payload };
+  if (response.type === "text") return { output: { text: responseText(response) } };
+  if (response.type === "error") return { error: response.error.message };
+  return { error: "Mock script selected a hanging response; in-memory mock_script execution does not support hangs" };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export interface MockAgentResponse {

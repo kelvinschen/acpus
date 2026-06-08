@@ -28,6 +28,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A `builtin` agent MUST declare `use` naming an acpx built-in adapter (e.g. `pi`, `claude`, `codex`); the runtime drives it as `acpx <use>`.
 - A `command` agent MUST declare `use` as the launch command for a custom ACP server; the runtime drives it through the acpx `--agent "<use>"` escape hatch.
 - A `mock` agent MAY omit `use`; it is served by the in-memory mock executor and does not require acpx.
+- A `mock` agent MAY declare `mock_script` as a path to an ACP Mock Agent script; the in-memory mock executor MUST select deterministic script responses by rendered prompt and MUST NOT spawn acpx.
 - An agent MAY declare `model`, `cwd`, and `env`, which the runtime forwards to acpx.
 - An Agent Step MAY omit `output` when no structured output parsing is required.
 - An Agent Step MAY declare `output` using the Acpus Schema DSL defined in [Schema Spec](schema-spec.md).

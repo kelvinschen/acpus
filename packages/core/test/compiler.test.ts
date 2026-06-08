@@ -797,6 +797,47 @@ workflow:
     expect(testBranch?.kind).toBe("run.program");
   });
 
+  it("compiles fanout-parallel-loop-switch TUI fixture", () => {
+    const result = compileWorkflow(fixture("fanout-parallel-loop-switch-tui/workflow.yaml"), {
+      sourcePath: join(fixtures, "fanout-parallel-loop-switch-tui/workflow.yaml")
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.diagnostics).toEqual([]);
+    expect(result.ir?.name).toBe("fanout-parallel-loop-switch-tui-fixture");
+    expect(result.ir?.input).toMatchObject({
+      type: "object",
+      properties: {
+        lanes: { type: "array", default: ["alpha", "beta", "gamma"] },
+        max_rounds: { type: "integer", default: 3 },
+        route_mode: { type: "string", default: "default" }
+      }
+    });
+
+    const agent = result.ir?.root.children?.[0]?.children?.[0]?.children?.[0]?.metadata.agent as { mock_script?: string } | undefined;
+    expect(agent?.mock_script).toBe("./packages/core/test/fixtures/fanout-parallel-loop-switch-tui/mock.yaml");
+
+    const fanoutNode = result.ir?.root.children?.[0];
+    expect(fanoutNode?.kind).toBe("fanout");
+    expect(fanoutNode?.metadata).toMatchObject({ over: "input.lanes", join: "all", max_concurrency: 1 });
+
+    const parallelNode = fanoutNode?.children?.[0];
+    expect(parallelNode?.kind).toBe("parallel");
+    expect(parallelNode?.children?.map((n) => [n.id, n.kind])).toEqual([
+      ["review_lane", "run.agent"],
+      ["loop_lane", "loop"],
+      ["switch_lane", "switch"]
+    ]);
+
+    const loopNode = parallelNode?.children?.[1];
+    expect(loopNode?.outputMerge).toBe("last");
+    expect(loopNode?.metadata.until).toBe("loop.iter >= input.max_rounds");
+
+    const switchNode = parallelNode?.children?.[2];
+    expect(switchNode?.outputMerge).toBe("selected");
+    expect(switchNode?.branches?.map((b) => b.id)).toEqual(["case_1", "case_2", "default"]);
+  });
+
   it("passes outputMerge through to schedule for all composite types", () => {
     const result = compileWorkflow(fixture("all-primitives.yaml"), {
       sourcePath: join(fixtures, "all-primitives.yaml")
