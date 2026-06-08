@@ -13,7 +13,7 @@ input:
 agents:
   mock_agent:
     type: command
-    use: "acpus-mock-agent --script ./packages/core/test/fixtures/fanout-parallel-loop-switch-tui/mock.yaml"
+    use: "node ./packages/mock-agent/dist/index.js --script ./packages/core/test/fixtures/fanout-parallel-loop-switch-tui/mock.yaml"
     cwd: "."
 workflow:
   steps:

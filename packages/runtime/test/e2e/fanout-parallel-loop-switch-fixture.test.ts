@@ -49,7 +49,7 @@ describe("E2E: fanout/parallel/loop/switch TUI fixture", () => {
     const tracePath = join(home, "mock-trace.jsonl");
     return readFileSync(fixturePath, "utf8")
       .replace(
-        /use: "acpus-mock-agent --script \.\/packages\/core\/test\/fixtures\/fanout-parallel-loop-switch-tui\/mock\.yaml"/,
+        /use: "node \.\/packages\/mock-agent\/dist\/index\.js --script \.\/packages\/core\/test\/fixtures\/fanout-parallel-loop-switch-tui\/mock\.yaml"/,
         `use: "${process.execPath} ${mockAgentEntry} --script ${mockScriptPath} --trace ${tracePath} --trace-mode overwrite"`
       )
       // Inject HOME isolation env
