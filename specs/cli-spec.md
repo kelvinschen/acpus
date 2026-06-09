@@ -60,6 +60,7 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, subm
 - `acpus visualize <run_id>` MUST open the single-Run visualizer for the specified Run.
 - `acpus visualize` without a Run ID MUST open a Run picker, not a multi-Run dashboard.
 - The Run picker MUST list the most recent 50 Runs in the current Workspace sorted by `updatedAt` descending and allow selecting a Run to open the single-Run visualizer view.
+- The Run picker MUST support vim-like `j`/`k` navigation for moving the selected Run down/up.
 - The Run picker MAY refresh the Run list while open.
 - The single-Run visualizer MUST use vim-like navigation: `h`/`l` switch graph/details focus, graph `j`/`k` selects rows, details `j`/`k` scrolls by line, and details `u`/`d` scrolls by half page.
 - The single-Run visualizer MUST use Space to collapse or expand the selected row when that row has children, with all rows expanded by default.

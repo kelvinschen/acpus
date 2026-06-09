@@ -2,6 +2,23 @@ import React, { useEffect, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import type { RunSupervisorClient, RunSummary } from "@acpus/runtime";
 
+type RunPickerAction = "up" | "down" | "select" | "quit";
+
+interface RunPickerKey {
+  upArrow?: boolean;
+  downArrow?: boolean;
+  return?: boolean;
+  ctrl?: boolean;
+}
+
+export function runPickerAction(input: string, key: RunPickerKey): RunPickerAction | undefined {
+  if (input === "q" || (key.ctrl && input === "c")) return "quit";
+  if (input === "k" || key.upArrow) return "up";
+  if (input === "j" || key.downArrow) return "down";
+  if (key.return) return "select";
+  return undefined;
+}
+
 /** Run picker shown when no runId is given. Lists runs from the supervisor. */
 export function RunPicker({
   client,
@@ -23,14 +40,15 @@ export function RunPicker({
   }, [client]);
 
   useInput((input, key) => {
-    if (input === "q" || (key.ctrl && input === "c")) {
+    const action = runPickerAction(input, key);
+    if (action === "quit") {
       exit();
       return;
     }
     if (!runs || runs.length === 0) return;
-    if (key.upArrow) setIndex((i) => Math.max(0, i - 1));
-    if (key.downArrow) setIndex((i) => Math.min(runs.length - 1, i + 1));
-    if (key.return) onSelect(runs[index].runId);
+    if (action === "up") setIndex((i) => Math.max(0, i - 1));
+    if (action === "down") setIndex((i) => Math.min(runs.length - 1, i + 1));
+    if (action === "select") onSelect(runs[index].runId);
   });
 
   if (error) {
@@ -58,7 +76,7 @@ export function RunPicker({
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1}>
       <Text bold color="magenta">
-        SELECT A RUN  <Text color="gray">(↑/↓, Enter, q)</Text>
+        SELECT A RUN  <Text color="gray">(j/k, Enter, q)</Text>
       </Text>
       <Box flexDirection="column" marginTop={1}>
         {runs.map((r, i) => (
