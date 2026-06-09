@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { join, basename } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { globSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { lintWorkflow, compileWorkflow } from "../src/index.js";
@@ -139,6 +139,22 @@ workflow:
     expect(hasError(src, "STEP_SHAPE")).toBe(true);
   });
 
+  it("rejects unknown guard property", () => {
+    const src = `
+version: 1
+name: test
+workflow:
+  steps:
+    - id: check
+      guard:
+        when: input.ok
+        then: continue
+        else: fail
+        severity: high
+`;
+    expect(hasError(src, "STEP_SHAPE")).toBe(true);
+  });
+
   it("accepts an approval gate with only prompt (no timeout = wait indefinitely)", () => {
     const src = `
 version: 1
@@ -168,6 +184,20 @@ workflow:
         timeout: 5m
 `;
     expect(hasError(src, "APPROVAL_ON_TIMEOUT")).toBe(true);
+  });
+
+  it("rejects guard missing required actions", () => {
+    const src = `
+version: 1
+name: test
+workflow:
+  steps:
+    - id: check
+      guard:
+        when: input.ok
+        then: continue
+`;
+    expect(hasError(src, "GUARD_ACTION")).toBe(true);
   });
 
   it("rejects unknown retry property", () => {
@@ -796,20 +826,23 @@ workflow:
 
 describe("Production YAML fixtures pass Schema validation", () => {
   const fixtureDir = fixtures;
-  const yamlFiles = globSync(join(fixtureDir, "*.yaml"));
+  const yamlFiles = globSync(join(fixtureDir, "**/*.yaml"));
 
   for (const file of yamlFiles) {
-    it(`passes Schema validation: ${basename(file)}`, () => {
-      const source = readFileSync(file, "utf8");
-      const result = compileWorkflow(source, { sourcePath: file });
+    const relativeName = file.slice(fixtureDir.length + 1);
+    const fileName = basename(file);
+    const expectedInvalid = fileName.startsWith("invalid-") || fileName.startsWith("include-cycle");
+    const nonWorkflowFixture = fileName === "mock.yaml";
 
-      // Skip fixtures that are intentionally invalid (contain known error codes)
-      const fileName = basename(file);
-      if (fileName.startsWith("invalid-")) {
-        // These should still not produce unknown-field errors (SPEC_SHAPE/STEP_SHAPE/AGENT_SHAPE
-        // from additionalProperties violations), only the expected structural errors
-        return;
-      }
+    if (expectedInvalid || nonWorkflowFixture) continue;
+
+    it(`passes Schema validation: ${relativeName}`, () => {
+      const source = readFileSync(file, "utf8");
+      const result = compileWorkflow(source, {
+        sourcePath: file,
+        includeResolver: (includePath, fromPath) => readFileSync(resolve(dirname(fromPath ?? file), includePath), "utf8")
+      });
+      expect(result.ok).toBe(true);
 
       // Valid fixtures should produce no schema-level unknown-field errors
       const schemaErrors = result.diagnostics.filter(

@@ -41,6 +41,7 @@ export const KIND_LABELS: Record<IrNodeKind, string> = {
   fanout: "FANOUT",
   switch: "SWITCH",
   loop: "LOOP",
+  guard: "GUARD",
   approval: "APPROVAL",
   subworkflow: "SUBWORKFLOW"
 };
@@ -60,6 +61,7 @@ export const KIND_STYLES: Record<IrNodeKind, KindStyle> = {
   fanout: { symbol: "◬", color: "magenta", label: "Fanout" },
   switch: { symbol: "◇", color: "blue", label: "Switch" },
   loop: { symbol: "↻", color: "yellowBright", label: "Loop" },
+  guard: { symbol: "◈", color: "redBright", label: "Guard" },
   approval: { symbol: "□", color: "white", label: "Approval" },
   subworkflow: { symbol: "▧", color: "gray", label: "Subworkflow" }
 };

@@ -313,6 +313,23 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
     };
   }
 
+  if (isRecord(step.guard)) {
+    const guard = step.guard;
+    if (guard.when !== undefined) {
+      if (typeof guard.when === "boolean") {
+        guard.when = String(guard.when);
+      } else if (typeof guard.when !== "string") {
+        const typeDesc = guard.when === null ? "null" : typeof guard.when;
+        context.diagnostics.error("GUARD_WHEN_TYPE", `guard.when must be a boolean or CEL expression string, got ${typeDesc}.`, `${path}.guard.when`);
+      }
+    }
+    return {
+      ...base,
+      kind: "guard",
+      metadata: pickMetadata(guard, ["when", "then", "else", "message"])
+    };
+  }
+
   if (isRecord(step.approval)) {
     validateApprovalStep(step.approval, path, context);
     return {
@@ -331,7 +348,7 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
   }
 
   // Defensive: Schema already validates step kind; keep as fallback
-  context.diagnostics.error("STEP_KIND", "Step must define one of run: agent, run: program, parallel, fanout, switch, loop, approval, subworkflow, or include.", path);
+  context.diagnostics.error("STEP_KIND", "Step must define one of run: agent, run: program, parallel, fanout, switch, loop, guard, approval, subworkflow, or include.", path);
   return {
     ...base,
     kind: "run.program",

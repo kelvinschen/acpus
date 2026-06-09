@@ -37,7 +37,7 @@ describe("acpus CLI", () => {
 
     expect(payload.ok).toBe(true);
     expect(payload.ir.name).toBe("all-primitives");
-    expect(payload.schedule.nodes).toHaveLength(8);
+    expect(payload.schedule.nodes).toHaveLength(9);
   });
 
   it("accepts input from a JSON file in dry-run mode", async () => {

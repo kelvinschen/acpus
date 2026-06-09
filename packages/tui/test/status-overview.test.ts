@@ -35,6 +35,7 @@ describe("StatusOverview", () => {
     expect(text).toContain("Node Types");
     expect(text).toContain("◉ Agent");
     expect(text).toContain("◇ Switch");
+    expect(text).toContain("◈ Guard");
     expect(text).toContain("Messages");
     expect(text).toContain("pause run -> paused");
     expect(text).toContain("Cannot resume a failed run");

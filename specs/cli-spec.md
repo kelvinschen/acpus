@@ -66,7 +66,7 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, subm
 - The single-Run visualizer MUST treat `p`, `r`, and `c` as Run-level pause, resume, and cancel controls.
 - The single-Run visualizer MUST treat `R` as Node-level retry only when the selected row is a failed executable Node; otherwise `R` MUST apply Run-level retry when the Run is failed.
 - The single-Run visualizer MUST keep control results, poll errors, and selected awaiting-gate hints in a fixed multi-line Status Overview messages area, not in the footer.
-- The single-Run visualizer MUST render a node-kind legend in Status Overview and MUST render graph node kinds with the symbols `▣`, `◉`, `▸`, `▥`, `◬`, `◇`, `↻`, `□`, and `▧` for pipeline, agent, program, parallel, fanout, switch, loop, approval, and subworkflow respectively.
+- The single-Run visualizer MUST render a node-kind legend in Status Overview and MUST render graph node kinds with the symbols `▣`, `◉`, `▸`, `▥`, `◬`, `◇`, `↻`, `◈`, `□`, and `▧` for pipeline, agent, program, parallel, fanout, switch, loop, guard, approval, and subworkflow respectively.
 - The single-Run visualizer MUST color tree guide-line segments with the same fixed color as the node kind that owns that guide-line column.
 - The single-Run visualizer MUST render switch branch labels and fanout item labels with square brackets, not guillemets.
 - The single-Run visualizer MUST show Run retry generation as `↺N` in the top bar only when the Run's `runAttempt` is greater than `1`, and MUST NOT show per-node attempt markers in graph rows.

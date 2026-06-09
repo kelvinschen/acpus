@@ -61,13 +61,14 @@ describe("@acpus/core compiler", () => {
     expect(result.ir?.name).toBe("refactor-and-fix");
     expect(result.ir?.root.children?.map((n) => n.kind)).toEqual([
       "run.program",
+      "guard",
       "fanout",
       "loop",
       "approval"
     ]);
-    expect(result.schedule?.nodes).toHaveLength(4);
+    expect(result.schedule?.nodes).toHaveLength(5);
     // Loop contains 3 steps: run_tests, parse_failures, fix_round (switch)
-    const loopNode = result.ir?.root.children?.[2];
+    const loopNode = result.ir?.root.children?.[3];
     expect(loopNode?.kind).toBe("loop");
     expect(loopNode?.children?.length).toBe(3);
   });
@@ -103,12 +104,13 @@ describe("@acpus/core compiler", () => {
       "run.agent",
       "parallel",
       "fanout",
+      "guard",
       "switch",
       "loop",
       "approval",
       "subworkflow"
     ]);
-    expect(result.schedule?.nodes).toHaveLength(8);
+    expect(result.schedule?.nodes).toHaveLength(9);
     expect(result.ir?.expressions.some((expression) => expression.source.includes("steps.discover.output.files"))).toBe(true);
 
     // parallel → outputMerge: "map"
@@ -122,12 +124,12 @@ describe("@acpus/core compiler", () => {
     expect(fanoutNode?.outputMerge).toBe("array");
 
     // switch → outputMerge: "selected"
-    const switchNode = result.ir?.root.children?.[4];
+    const switchNode = result.ir?.root.children?.[5];
     expect(switchNode?.kind).toBe("switch");
     expect(switchNode?.outputMerge).toBe("selected");
 
     // loop → outputMerge: "last"
-    const loopNode = result.ir?.root.children?.[5];
+    const loopNode = result.ir?.root.children?.[6];
     expect(loopNode?.kind).toBe("loop");
     expect(loopNode?.outputMerge).toBe("last");
   });
@@ -678,6 +680,33 @@ workflow:
     expect(switchNode?.branches?.[0]?.id).toBe("case_1");
   });
 
+  it("guard: compiles deterministic scoped control actions", () => {
+    const source = `
+version: 1
+name: guard-output
+workflow:
+  steps:
+    - id: check
+      guard:
+        when: input.ok
+        then: continue
+        else: fail
+        message: "blocked \${{ input.reason }}"
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const guardNode = result.ir?.root.children?.[0];
+    expect(guardNode?.kind).toBe("guard");
+    expect(guardNode?.metadata).toEqual({
+      when: "input.ok",
+      then: "continue",
+      else: "fail",
+      message: "blocked \${{ input.reason }}"
+    });
+    expect(result.schedule?.nodes[0]?.kind).toBe("guard");
+    expect(result.ir?.expressions.some((expr) => expr.path === "$.workflow.steps[0].guard.message")).toBe(true);
+  });
+
   it("loop: outputMerge is last; multi-step body takes last child", () => {
     const source = `
 version: 1
@@ -821,7 +850,7 @@ workflow:
     expect(result.ir?.input).toMatchObject({
       type: "object",
       properties: {
-        items: { type: "array", default: ["alpha", "beta"] },
+        items: { type: "array", default: ["alpha", "beta", "skip"] },
         max_rounds: { type: "integer", default: 2 }
       }
     });
@@ -831,7 +860,11 @@ workflow:
     expect(fanoutNode?.outputMerge).toBe("array");
     expect(fanoutNode?.metadata).toMatchObject({ over: "input.items", max_concurrency: 1 });
 
-    const loopNode = fanoutNode?.children?.[0];
+    const guardNode = fanoutNode?.children?.[0];
+    expect(guardNode?.kind).toBe("guard");
+    expect(guardNode?.metadata).toMatchObject({ when: 'item == "skip"', then: "complete", else: "continue" });
+
+    const loopNode = fanoutNode?.children?.[1];
     expect(loopNode?.kind).toBe("loop");
     expect(loopNode?.outputMerge).toBe("last");
     expect(loopNode?.metadata.until).toBe("loop.iter >= input.max_rounds");
@@ -865,16 +898,20 @@ workflow:
     expect(fanoutScheduleNode?.kind).toBe("fanout");
     expect(fanoutScheduleNode?.outputMerge).toBe("array");
 
-    const switchScheduleNode = result.schedule?.nodes[4];
+    const guardScheduleNode = result.schedule?.nodes[4];
+    expect(guardScheduleNode?.kind).toBe("guard");
+    expect(guardScheduleNode?.outputMerge).toBeUndefined();
+
+    const switchScheduleNode = result.schedule?.nodes[5];
     expect(switchScheduleNode?.kind).toBe("switch");
     expect(switchScheduleNode?.outputMerge).toBe("selected");
 
-    const loopScheduleNode = result.schedule?.nodes[5];
+    const loopScheduleNode = result.schedule?.nodes[6];
     expect(loopScheduleNode?.kind).toBe("loop");
     expect(loopScheduleNode?.outputMerge).toBe("last");
 
     // subworkflow has no outputMerge
-    const subworkflowScheduleNode = result.schedule?.nodes[7];
+    const subworkflowScheduleNode = result.schedule?.nodes[8];
     expect(subworkflowScheduleNode?.kind).toBe("subworkflow");
     expect(subworkflowScheduleNode?.outputMerge).toBeUndefined();
   });
@@ -1265,6 +1302,45 @@ workflow:
     const result = lintWorkflow(source);
     expect(result.ok).toBe(false);
     expect(result.diagnostics.some((d) => d.code === "SWITCH_WHEN_TYPE")).toBe(true);
+  });
+
+  it("coerces guard boolean when to string", () => {
+    const source = `
+version: 1
+name: guard-bool-when
+workflow:
+  steps:
+    - id: check
+      guard:
+        when: false
+        then: continue
+        else: complete
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const guardNode = result.ir?.root.children?.[0];
+    expect(guardNode?.kind).toBe("guard");
+    expect(guardNode?.metadata.when).toBe("false");
+  });
+
+  it("rejects invalid guard shape and action values", () => {
+    const source = `
+version: 1
+name: bad-guard
+workflow:
+  steps:
+    - id: check
+      guard:
+        when: 42
+        then: continue
+        else: skip
+        message: ["bad"]
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "GUARD_WHEN_TYPE")).toBe(true);
+    expect(result.diagnostics.some((d) => d.code === "GUARD_ACTION")).toBe(true);
+    expect(result.diagnostics.some((d) => d.code === "GUARD_MESSAGE")).toBe(true);
   });
 
   it("coerces array over to JSON string", () => {

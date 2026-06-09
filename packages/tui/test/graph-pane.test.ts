@@ -45,4 +45,34 @@ describe("GraphRow", () => {
     expect(text).not.toContain("[AGENT]");
     expect(text).not.toContain("↺2");
   });
+
+  it("renders guard kind symbols after the node name", () => {
+    const row: DisplayRow = {
+      rowKey: "guard",
+      irNode: {
+        id: "check",
+        kind: "guard",
+        nodePath: ["workflow", "check"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow/check" },
+        metadata: { when: "input.ok", then: "continue", else: "fail" }
+      },
+      depth: 1,
+      instance: {
+        nodeKey: "workflow/check",
+        nodeId: "check",
+        kind: "guard",
+        state: "completed",
+        attempt: 1
+      },
+      state: "completed",
+      label: "check",
+      isHeader: false,
+      nodeKey: "workflow/check",
+      treeSegments: [{ text: "└─ ", ownerKind: "pipeline" }]
+    };
+
+    const text = collectText(GraphRow({ row, selected: false }));
+    expect(text).toContain("✓ check ◈");
+    expect(text).not.toContain("✓ ◈ check");
+  });
 });

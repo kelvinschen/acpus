@@ -48,6 +48,7 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
         { $ref: "#/$defs/fanoutStep" },
         { $ref: "#/$defs/switchStep" },
         { $ref: "#/$defs/loopStep" },
+        { $ref: "#/$defs/guardStep" },
         { $ref: "#/$defs/approvalStep" },
         { $ref: "#/$defs/subworkflowStep" }
       ]
@@ -233,6 +234,38 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
         max_iterations: { type: "number" },
         do: { type: "array" }
       }
+    },
+
+    guardStep: {
+      type: "object",
+      additionalProperties: false,
+      required: ["guard"],
+      properties: {
+        id: { type: "string", minLength: 1 },
+        guard: { $ref: "#/$defs/guardSpec" }
+      }
+    },
+
+    guardSpec: {
+      type: "object",
+      additionalProperties: false,
+      required: ["when", "then", "else"],
+      properties: {
+        when: {
+          oneOf: [
+            { type: "string" },
+            { type: "boolean" }
+          ]
+        },
+        then: { $ref: "#/$defs/guardAction" },
+        else: { $ref: "#/$defs/guardAction" },
+        message: { type: "string" }
+      }
+    },
+
+    guardAction: {
+      type: "string",
+      enum: ["continue", "fail", "complete"]
     },
 
     approvalStep: {

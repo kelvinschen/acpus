@@ -71,6 +71,7 @@ export type IrNodeKind =
   | "fanout"
   | "switch"
   | "loop"
+  | "guard"
   | "approval"
   | "subworkflow";
 

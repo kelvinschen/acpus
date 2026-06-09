@@ -639,6 +639,7 @@ export class WorkflowInterpreter {
 
     try {
       let output: unknown;
+      let completeScope = false;
       // Artifact refs produced by a leaf execution in this call frame. Kept as a
       // local (not a shared field) so concurrent parallel/fanout siblings can't
       // clobber each other's refs.
@@ -673,6 +674,12 @@ export class WorkflowInterpreter {
         case "loop":
           output = await this.executeLoop(node, ctx, runId, dynamic, keyPrefix);
           break;
+        case "guard": {
+          const guard = this.executeGuard(node, ctx);
+          output = guard.output;
+          completeScope = guard.completeScope;
+          break;
+        }
         case "approval":
           output = await this.executeApproval(node, ctx, runId, controller.signal, nodeKey);
           break;
@@ -706,8 +713,16 @@ export class WorkflowInterpreter {
       // Add output to step context
       ctx.steps[node.id] = output;
 
+      if (completeScope) {
+        throw new ScopeCompleted(output);
+      }
+
       return output;
     } catch (error) {
+      if (error instanceof ScopeCompleted) {
+        throw error;
+      }
+
       if (error instanceof NodeAbortedError) {
         if (this.isStaleAttemptOnDisk(runId, nodeKey, state.attempt, state.startedAt)) {
           throw error;
@@ -740,6 +755,9 @@ export class WorkflowInterpreter {
         if (error.artifactRefs) state.artifactRefs = error.artifactRefs;
         if (error.output !== undefined) state.output = error.output;
       }
+      if (error instanceof GuardFailureError) {
+        state.output = error.output;
+      }
       state.completedAt = new Date().toISOString();
       this.store.writeNodeState(runId, state);
       throw error;
@@ -754,7 +772,12 @@ export class WorkflowInterpreter {
   private async executePipeline(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {
     const children = node.children ?? [];
     for (const child of children) {
-      await this.executeNode(child, ctx, runId, dynamic, keyPrefix);
+      try {
+        await this.executeNode(child, ctx, runId, dynamic, keyPrefix);
+      } catch (error) {
+        if (error instanceof ScopeCompleted) return error.output;
+        throw error;
+      }
     }
     // Pipeline output: map of step outputs
     return { ...ctx.steps };
@@ -884,7 +907,16 @@ export class WorkflowInterpreter {
     const branchPromises = children.map((child, index) =>
       limit(async () => {
         const branchDynamic: NodeKeyDynamic = { ...dynamic, parallelBranchId: String(index) };
-        const output = await this.executeNode(child, { ...ctx, steps: { ...ctx.steps } }, runId, branchDynamic, keyPrefix);
+        let output: unknown;
+        try {
+          output = await this.executeNode(child, { ...ctx, steps: { ...ctx.steps } }, runId, branchDynamic, keyPrefix);
+        } catch (error) {
+          if (error instanceof ScopeCompleted) {
+            output = error.output;
+          } else {
+            throw error;
+          }
+        }
         return { child, output };
       })
     );
@@ -1024,7 +1056,12 @@ export class WorkflowInterpreter {
         try {
           let laneOutput: unknown;
           for (const child of children) {
-            laneOutput = await this.executeNode(child, itemCtx, runId, itemDynamic, keyPrefix);
+            try {
+              laneOutput = await this.executeNode(child, itemCtx, runId, itemDynamic, keyPrefix);
+            } catch (error) {
+              if (error instanceof ScopeCompleted) return { ok: true, output: error.output };
+              throw error;
+            }
           }
           return { ok: true, output: laneOutput };
         } catch (error) {
@@ -1102,7 +1139,12 @@ export class WorkflowInterpreter {
         if (matches) {
           let lastOutput: unknown;
           for (const child of branch.children) {
-            lastOutput = await this.executeNode(child, ctx, runId, dynamic, keyPrefix);
+            try {
+              lastOutput = await this.executeNode(child, ctx, runId, dynamic, keyPrefix);
+            } catch (error) {
+              if (error instanceof ScopeCompleted) return error.output;
+              throw error;
+            }
           }
           return lastOutput;
         }
@@ -1110,7 +1152,12 @@ export class WorkflowInterpreter {
         // Default branch (no when condition)
         let lastOutput: unknown;
         for (const child of branch.children) {
-          lastOutput = await this.executeNode(child, ctx, runId, dynamic, keyPrefix);
+          try {
+            lastOutput = await this.executeNode(child, ctx, runId, dynamic, keyPrefix);
+          } catch (error) {
+            if (error instanceof ScopeCompleted) return error.output;
+            throw error;
+          }
         }
         return lastOutput;
       }
@@ -1140,12 +1187,40 @@ export class WorkflowInterpreter {
 
       // Execute loop body
       for (const child of children) {
-        lastOutput = await this.executeNode(child, loopCtx, runId, loopDynamic, keyPrefix);
+        try {
+          lastOutput = await this.executeNode(child, loopCtx, runId, loopDynamic, keyPrefix);
+        } catch (error) {
+          if (error instanceof ScopeCompleted) return error.output;
+          throw error;
+        }
       }
     }
 
     // outputMerge: "last"
     return lastOutput;
+  }
+
+  private executeGuard(node: IrNode, ctx: ExpressionContext): GuardExecutionResult {
+    const when = node.metadata.when as string | undefined;
+    if (!when) {
+      throw new Error(`guard node ${node.id} missing 'when' expression`);
+    }
+    const matched = Boolean(this.evaluator.evaluateExpression(when, ctx));
+    const action = (matched ? node.metadata.then : node.metadata.else) as GuardAction | undefined;
+    if (action !== "continue" && action !== "fail" && action !== "complete") {
+      throw new Error(`guard node ${node.id}: action must be continue, fail, or complete`);
+    }
+
+    const messageTemplate = node.metadata.message;
+    const message = typeof messageTemplate === "string" ? this.evaluator.evaluateTemplate(messageTemplate, ctx) : undefined;
+    const output: GuardOutput = { matched, action };
+    if (message !== undefined) output.message = message;
+
+    if (action === "fail") {
+      throw new GuardFailureError(message ?? `Guard '${node.id}' failed`, output);
+    }
+
+    return { output, completeScope: action === "complete" };
   }
 
   private async executeApproval(node: IrNode, ctx: ExpressionContext, runId: string, signal: AbortSignal, nodeKey: string): Promise<unknown> {
@@ -1371,6 +1446,19 @@ export class WorkflowInterpreter {
 /** Result of a single fanout lane: success carries the output, failure the message. */
 type LaneResult = { ok: true; output: unknown } | { ok: false; error: string };
 
+type GuardAction = "continue" | "fail" | "complete";
+
+interface GuardOutput {
+  matched: boolean;
+  action: GuardAction;
+  message?: string;
+}
+
+interface GuardExecutionResult {
+  output: GuardOutput;
+  completeScope: boolean;
+}
+
 /** Output + artifact references produced by a leaf (agent/program) execution. */
 interface LeafResult {
   output: unknown;
@@ -1404,6 +1492,20 @@ class NodeAbortedError extends Error {
   ) {
     super(`Node ${nodeKey} aborted: ${state}`);
     this.name = "NodeAbortedError";
+  }
+}
+
+class ScopeCompleted extends Error {
+  constructor(public readonly output: unknown) {
+    super("Scope completed by guard");
+    this.name = "ScopeCompleted";
+  }
+}
+
+class GuardFailureError extends Error {
+  constructor(message: string, public readonly output: GuardOutput) {
+    super(message);
+    this.name = "GuardFailureError";
   }
 }
 

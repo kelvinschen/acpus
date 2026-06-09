@@ -4,7 +4,7 @@ description: "Lightweight fixture for real-acpx E2E: fanout->loop only"
 input:
   items?:
     type: array
-    default: ["alpha", "beta"]
+    default: ["alpha", "beta", "skip"]
   max_rounds?: integer = 2
 agents:
   mock:
@@ -19,6 +19,12 @@ workflow:
         key: "${{ item }}"
         max_concurrency: 1
         do:
+          - id: skip_lane
+            guard:
+              when: item == "skip"
+              then: complete
+              else: continue
+              message: "Skipping lane ${{ item_id }}"
           - id: loop_body
             loop:
               until: loop.iter >= input.max_rounds

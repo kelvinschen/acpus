@@ -448,10 +448,20 @@ rules:
         expect(transcript).toContain("agent_message_chunk");
       }
 
-      // 4. Fanout node completed with 2 items
+      // 4. The guard early-completed the skip lane without running agent work.
+      const skippedGuard = nodes.find((n) => n.nodeId === "skip_lane" && n.nodeKey.includes("item:skip"));
+      expect(skippedGuard?.state).toBe("completed");
+      expect(skippedGuard?.output).toEqual({
+        matched: true,
+        action: "complete",
+        message: "Skipping lane skip"
+      });
+      expect(nodes.some((n) => n.nodeId === "work" && n.nodeKey.includes("item:skip"))).toBe(false);
+
+      // 5. Fanout node completed with 3 lane outputs (2 work lanes + 1 guard-completed lane)
       const fanoutNode = nodes.find((n) => n.nodeId === "composite");
       expect(fanoutNode?.state).toBe("completed");
-      expect(fanoutNode?.output).toHaveLength(2);
+      expect(fanoutNode?.output).toHaveLength(3);
     }, 30_000);
   });
 });

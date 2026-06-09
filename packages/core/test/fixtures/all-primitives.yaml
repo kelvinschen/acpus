@@ -43,6 +43,13 @@ workflow:
             output:
               ok: boolean
 
+    - id: require_mapped
+      guard:
+        when: len(steps.mapped) > 0
+        then: continue
+        else: fail
+        message: "No files were mapped for inspection"
+
     - id: route
       switch:
         cases:

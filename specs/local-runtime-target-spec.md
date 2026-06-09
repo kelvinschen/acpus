@@ -203,6 +203,15 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Replay MUST report a structured result indicating success or a list of discrepancies between the recorded and replayed Node topology (the set of reached Node keys); per-Node terminal-state and output equivalence verification is out of scope for this milestone.
 - Replay MUST remain read-only even when invoked through a lazily started Run Supervisor.
 
+### Guard Nodes
+
+- The runtime MUST execute Guard Nodes as deterministic condition checks against the current expression context.
+- A Guard Node action of `continue` MUST complete the Guard Node and allow the current scope to continue.
+- A Guard Node action of `fail` MUST fail the Guard Node, persist its structured output, and propagate failure through existing parent composite failure semantics.
+- A Guard Node action of `complete` MUST complete the Guard Node and stop executing later sibling Nodes in the current scope.
+- A Guard Node `complete` action MUST NOT directly terminate outer scopes except when the current scope is the Workflow root.
+- A completed or failed Guard Node MUST persist output containing `matched` and `action`, and MUST include `message` when a Guard message template is declared.
+
 ## Verification
 
 - Runtime tests MUST cover that Agent Steps are invoked through acpx rather than direct ACP session management by Acpus.
@@ -231,6 +240,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Runtime tests MUST cover that follow clients do not stream raw Program stdout, Program stderr, or Agent transcript chunks as Run Observations.
 - Runtime tests MUST cover Run listing and the visualize picker returning the most recent 50 Runs sorted by `updatedAt` descending.
 - Runtime tests MUST cover that replay reproduces a Run's Node topology deterministically, reports discrepancies when the persisted Run's topology is tampered with, and does not mutate persisted state.
+- Runtime tests MUST cover Guard Node continue, fail, and complete actions, including scoped early completion inside fanout lanes or parallel branches.
 - Runtime tests MUST cover that acpx session names are explicit and stable enough for Run-level continuation and Node-level retry.
 - Runtime tests MUST cover that normal runtime execution does not require remote workers, remote task queues, or a shared Temporal cluster.
 - Runtime tests MUST cover the 7-state node lifecycle and all legal transitions.

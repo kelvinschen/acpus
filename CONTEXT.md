@@ -28,6 +28,10 @@ _Avoid_: task, stage
 A Node that controls other Nodes, such as parallel, fanout, switch, loop, or subworkflow.
 _Avoid_: container step, control block
 
+**Guard Node**:
+An automatic deterministic decision point that evaluates a condition and either continues, fails, or completes the current Workflow scope. A Guard Node is distinct from an Approval Gate because it does not wait for a human decision, and distinct from Run Control because it is declared business flow inside the Workflow.
+_Avoid_: approval gate, pause, cancel, manual checkpoint
+
 **Executable Node**:
 A Node that performs external work through an Agent Step or Program Step.
 _Avoid_: leaf task, action

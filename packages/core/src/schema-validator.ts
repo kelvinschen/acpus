@@ -141,7 +141,7 @@ function mapErrors(errors: ErrorObject[], diagnostics: DiagnosticBag): void {
       }
     } else {
       // No classifiable sub-error — step truly has no matching kind
-      diagnostics.error("STEP_KIND", "Step must define one of run: agent, run: program, parallel, fanout, switch, loop, approval, subworkflow, or include.", toPath(stepPath));
+      diagnostics.error("STEP_KIND", "Step must define one of run: agent, run: program, parallel, fanout, switch, loop, guard, approval, subworkflow, or include.", toPath(stepPath));
     }
   }
 
@@ -218,6 +218,8 @@ function classifyAdditionalProperties(err: ErrorObject, path: string): string {
       return "STEP_SHAPE";
     case "switch-spec":
       return "STEP_SHAPE";
+    case "guard":
+      return "STEP_SHAPE";
     case "approval":
       return "STEP_SHAPE";
     case "capture":
@@ -267,6 +269,11 @@ function classifyRequired(missing: string, path: string): string {
       return "APPROVAL_ON_TIMEOUT";
     case "max_iterations":
       return "LOOP_MAX_ITERATIONS";
+    case "when":
+      return ctx === "guard" ? "GUARD_WHEN" : "SPEC_SHAPE";
+    case "then":
+    case "else":
+      return ctx === "guard" ? "GUARD_ACTION" : "SPEC_SHAPE";
     case "max":
       return "RETRY_SHAPE";
     case "steps":
@@ -323,6 +330,11 @@ function classifyEnum(err: ErrorObject, path: string): string {
     return "CAPTURE_PARSE";
   }
 
+  // guard action enum
+  if (setsEqual(allowedValues, ["continue", "fail", "complete"])) {
+    return "GUARD_ACTION";
+  }
+
   return "SPEC_SHAPE";
 }
 
@@ -358,6 +370,14 @@ function classifyType(err: ErrorObject, path: string): string {
   // fanout.over type error (not string, not array)
   if (/\.fanout\.over$/.test(path)) {
     return "FANOUT_OVER_TYPE";
+  }
+
+  if (/\.guard\.when$/.test(path)) {
+    return "GUARD_WHEN_TYPE";
+  }
+
+  if (/\.guard\.message$/.test(path)) {
+    return "GUARD_MESSAGE";
   }
 
   // Agent type errors
@@ -471,6 +491,10 @@ function formatRequiredMessage(missing: string, code: string, _path: string): st
       return "approval.on_timeout must be fail, escalate, approve, or reject.";
     case "LOOP_MAX_ITERATIONS":
       return "loop.max_iterations must be a number.";
+    case "GUARD_WHEN":
+      return "guard.when is required.";
+    case "GUARD_ACTION":
+      return "guard.then and guard.else must be one of continue, fail, or complete.";
     case "RETRY_SHAPE":
       return "retry.max must be a positive integer.";
     default:
@@ -493,6 +517,10 @@ function formatTypeMessage(code: string, path: string, expectedType: string): st
       return `run: program output must be an object when present.`;
     case "FANOUT_OVER_TYPE":
       return `fanout.over must be an array or CEL expression string.`;
+    case "GUARD_WHEN_TYPE":
+      return `guard.when must be a boolean or CEL expression string.`;
+    case "GUARD_MESSAGE":
+      return `guard.message must be a string template.`;
     default:
       return `Must be of type ${expectedType}.`;
   }
@@ -560,6 +588,9 @@ function pathContext(path: string): string {
   }
   if (/\.switch\b/.test(path)) {
     return "switch-spec";
+  }
+  if (/\.guard\b/.test(path)) {
+    return "guard";
   }
   if (/\.loop\b/.test(path)) {
     return "loop";
