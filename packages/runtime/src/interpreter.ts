@@ -33,6 +33,12 @@ export class WorkflowInterpreter {
   /** Intent of an in-flight abort keyed by "runId:nodeKey" (pause vs cancel). */
   private readonly abortIntents: Map<string, "paused" | "cancelled"> = new Map();
 
+  /** Execution generation counter keyed by runId. Incremented when resumeNode's
+   *  composite-resume path resets states and re-executes from root. Stale
+   *  in-flight executions from the prior generation detect the bump and skip
+   *  writing their (now-obsolete) state to disk, preventing race conditions. */
+  private readonly executionGeneration: Map<string, number> = new Map();
+
   /** Pending human-decision resolvers for Approval Gates awaiting a signal,
    *  keyed by "runId:nodeKey". An entry exists only while a node is `awaiting`. */
   private readonly approvalResolvers: Map<string, (approved: boolean) => void> = new Map();
@@ -102,6 +108,7 @@ export class WorkflowInterpreter {
       // so they don't leak memory across runs.
       this.schedulingPaused.delete(runId);
       this.schedulingCancelled.delete(runId);
+      this.executionGeneration.delete(runId);
     }
 
     meta.updatedAt = new Date().toISOString();
@@ -122,28 +129,7 @@ export class WorkflowInterpreter {
     // Reset any running nodes back to pending (crash recovery)
     this.recoverStaleNodes(runId);
 
-    const meta = this.store.readRunMeta(runId)!;
-    meta.status = "running";
-    meta.updatedAt = new Date().toISOString();
-    this.store.writeRunMeta(runId, meta);
-
-    try {
-      await this.executeNode(ir.root, this.buildContext(input, runId), runId, {});
-      meta.status = "completed";
-    } catch {
-      const rootState = this.store.readNodeState(runId, resolveNodeKey(ir.root.keyTemplate));
-      if (rootState?.state === "paused") {
-        meta.status = "paused";
-      } else if (rootState?.state === "cancelled") {
-        meta.status = "cancelled";
-      } else {
-        meta.status = "failed";
-      }
-    }
-
-    meta.updatedAt = new Date().toISOString();
-    this.store.writeRunMeta(runId, meta);
-    return meta;
+    return this.resetPausedAndExecuteFromRoot(runId);
   }
 
   /**
@@ -381,18 +367,32 @@ export class WorkflowInterpreter {
       );
     }
 
-    state.state = transition(state.state, "running") as NodeState;
-    this.store.writeNodeState(runId, state);
+    // When a paused node has paused siblings (e.g. other parallel branches or
+    // fanout lanes that were paused as a group), propagate the resume to all of
+    // them and re-execute from the root. Already-completed nodes are skipped by
+    // executeNode's existing-state check.
+    const hasPausedSiblings = this.hasPausedSiblingsInScope(runId, nodeKey);
 
-    const ctx = this.buildContext(input, runId);
-    this.populateStepOutputs(runId, ctx);
-    // Restore the parent dynamic value-context (fanout item / loop round)
-    // captured at first execution so command/prompt re-rendering sees item/loop.
-    this.restoreDynamicContext(ctx, state.dynamicContext);
-    // Resume re-enters the node as a continuation (continuation prompt for
-    // agents), preserving the original full node key for stable identity.
-    // `attempt` is incremented by executeNode (single source of truth).
-    await this.executeNode(node, ctx, runId, {}, undefined, true, nodeKey);
+    if (hasPausedSiblings) {
+      // Composite resume: reset all paused nodes, re-execute from root.
+      // recoverStaleNodes is not needed here because the paused nodes were
+      // actively transitioned (not left running from a crash).
+      await this.resetPausedAndExecuteFromRoot(runId);
+    } else {
+      // Simple single-node resume (existing logic)
+      state.state = transition(state.state, "running") as NodeState;
+      this.store.writeNodeState(runId, state);
+
+      const ctx = this.buildContext(input, runId);
+      this.populateStepOutputs(runId, ctx);
+      // Restore the parent dynamic value-context (fanout item / loop round)
+      // captured at first execution so command/prompt re-rendering sees item/loop.
+      this.restoreDynamicContext(ctx, state.dynamicContext);
+      // Resume re-enters the node as a continuation (continuation prompt for
+      // agents), preserving the original full node key for stable identity.
+      // `attempt` is incremented by executeNode (single source of truth).
+      await this.executeNode(node, ctx, runId, {}, undefined, true, nodeKey);
+    }
   }
 
   /**
@@ -422,6 +422,12 @@ export class WorkflowInterpreter {
    * still-running leaf later resolves/rejects. */
   private isCancelledOnDisk(runId: string, nodeKey: string): boolean {
     return this.store.readNodeState(runId, nodeKey)?.state === "cancelled";
+  }
+
+  /** True if the execution generation has been bumped since the given generation.
+   * Used to prevent stale in-flight executions from writing obsolete state. */
+  private isGenerationStale(runId: string, generation: number): boolean {
+    return (this.executionGeneration.get(runId) ?? 0) > generation;
   }
 
   /**
@@ -627,6 +633,61 @@ export class WorkflowInterpreter {
     this.store.writeRunMeta(runId, meta);
   }
 
+  /**
+   * Reset paused nodes to pending, bump execution generation, clear scheduling
+   * guards and stale abort state, then re-execute from root. Shared by
+   * `resume()` (run-level) and `resumeNode()` (composite-resume path).
+   * Returns the updated RunState.
+   */
+  private async resetPausedAndExecuteFromRoot(runId: string): Promise<import("./types.js").RunState> {
+    const ir = this.store.readIr(runId);
+    const input = this.store.readInput(runId);
+    if (!ir || !input) throw new Error(`Run ${runId} has no persisted IR or input`);
+
+    // Bump execution generation so stale in-flight executions skip writing
+    const currentGen = this.executionGeneration.get(runId) ?? 0;
+    this.executionGeneration.set(runId, currentGen + 1);
+
+    // Reset paused → pending
+    for (const ns of this.store.listNodeStates(runId)) {
+      if (ns.state === "paused") {
+        ns.state = "pending";
+        this.store.writeNodeState(runId, ns);
+      }
+    }
+
+    const meta = this.store.readRunMeta(runId)!;
+    meta.status = "running";
+    meta.updatedAt = new Date().toISOString();
+    this.store.writeRunMeta(runId, meta);
+
+    // Clear scheduling guards and stale abort state
+    this.schedulingPaused.delete(runId);
+    this.schedulingCancelled.delete(runId);
+    for (const [key] of this.abortControllers) {
+      if (key.startsWith(`${runId}:`)) this.abortControllers.delete(key);
+    }
+    for (const [key] of this.abortIntents) {
+      if (key.startsWith(`${runId}:`)) this.abortIntents.delete(key);
+    }
+
+    try {
+      await this.executeNode(ir.root, this.buildContext(input, runId), runId, {});
+      meta.status = "completed";
+    } catch (error) {
+      const rootState = this.store.readNodeState(runId, resolveNodeKey(ir.root.keyTemplate));
+      if (rootState?.state === "paused") meta.status = "paused";
+      else if (rootState?.state === "cancelled") meta.status = "cancelled";
+      else meta.status = "failed";
+    } finally {
+      this.executionGeneration.delete(runId);
+      meta.updatedAt = new Date().toISOString();
+      this.store.writeRunMeta(runId, meta);
+    }
+
+    return meta;
+  }
+
   // ─── Node execution dispatch ──────────────────────────────────
 
   private async executeNode(
@@ -638,6 +699,10 @@ export class WorkflowInterpreter {
     resume?: boolean,
     overrideNodeKey?: string
   ): Promise<unknown> {
+    // Capture the execution generation at entry. If a composite-resume bumps
+    // the generation while this execution is awaiting, we detect it and skip
+    // writing stale state to disk.
+    const generationAtEntry = this.executionGeneration.get(runId) ?? 0;
     // On resume/retry the full resolved node key is supplied directly so the
     // node's stable identity (and thus the agent's acpx session name) survives
     // across loop/fanout/lane/subworkflow dynamics that are not re-derived here.
@@ -739,10 +804,11 @@ export class WorkflowInterpreter {
       }
 
       // Transition to completed — unless an external cancel (e.g. fail-fast
-      // sibling cancellation) already moved this node to a terminal `cancelled`
-      // state on disk while we were awaiting. The in-memory `state` here is a
-      // stale `running`; honor the persisted cancellation instead of clobbering.
-      if (this.isCancelledOnDisk(runId, nodeKey)) {
+      // sibling cancellation) or a composite-resume generation bump already
+      // changed this node's state on disk while we were awaiting. The
+      // in-memory `state` here is a stale `running`; honor the persisted
+      // state instead of clobbering.
+      if (this.isCancelledOnDisk(runId, nodeKey) || this.isGenerationStale(runId, generationAtEntry)) {
         ctx.steps[node.id] = output;
         return output;
       }
@@ -758,6 +824,13 @@ export class WorkflowInterpreter {
       return output;
     } catch (error) {
       if (error instanceof NodeAbortedError) {
+        // If the execution generation has been bumped (by a composite-resume
+        // resetting states and re-executing from root), this is a stale
+        // in-flight execution whose result is obsolete. Return early without
+        // writing state or re-throwing — the re-execution handles the node.
+        if (this.isGenerationStale(runId, generationAtEntry)) {
+          return undefined;
+        }
         // Transition this node to the same state as the child that was aborted.
         state.state = error.state === "paused" ? "paused" : "cancelled";
         state.error = `Aborted: ${error.state}`;
@@ -892,13 +965,23 @@ export class WorkflowInterpreter {
     );
 
     if (join === "race") {
-      // First branch to settle wins; losers are not cancelled but silently
-      // consumed so their later rejection doesn't surface as unhandled.
-      const winner = await Promise.race(branchPromises);
-      branchPromises.forEach((p) => void p.catch(() => undefined));
-      const mapOutput: Record<string, unknown> = { [winner.child.id]: winner.output };
-      ctx.steps[winner.child.id] = winner.output;
-      return mapOutput;
+      try {
+        // First branch to settle wins; losers are not cancelled but silently
+        // consumed so their later rejection doesn't surface as unhandled.
+        const winner = await Promise.race(branchPromises);
+        branchPromises.forEach((p) => void p.catch(() => undefined));
+        const mapOutput: Record<string, unknown> = { [winner.child.id]: winner.output };
+        ctx.steps[winner.child.id] = winner.output;
+        return mapOutput;
+      } catch (error) {
+        if (error instanceof NodeAbortedError && error.state === "paused") {
+          this.pauseDescendantsInScope(runId, node, dynamic);
+        } else {
+          this.cancelDescendantsInScope(runId, node, dynamic);
+        }
+        branchPromises.forEach((p) => void p.catch(() => undefined));
+        throw error;
+      }
     }
 
     // join: all — collect every branch output keyed by step id.
@@ -910,7 +993,13 @@ export class WorkflowInterpreter {
     try {
       results = await Promise.all(branchPromises);
     } catch (error) {
-      this.cancelDescendantsInScope(runId, node, dynamic);
+      if (error instanceof NodeAbortedError && error.state === "paused") {
+        // Pause siblings (reversible), not cancel (irreversible)
+        this.pauseDescendantsInScope(runId, node, dynamic);
+      } else {
+        // Genuine failure or cancel — fast-stop: cancel still-running siblings
+        this.cancelDescendantsInScope(runId, node, dynamic);
+      }
       branchPromises.forEach((p) => void p.catch(() => undefined));
       throw error;
     }
@@ -923,31 +1012,26 @@ export class WorkflowInterpreter {
   }
 
   /**
-   * Cancel still-running/pending descendant nodes of a failed composite
-   * (parallel `join: all`, or fanout `join: all` fail-fast). Scoped to the
-   * given dynamic context: a descendant must (a) be one of the composite's
+   * Apply an action (cancel or pause) to still-running/pending/awaiting
+   * descendant nodes of a composite (parallel or fanout), scoped to the
+   * given dynamic context. A descendant must (a) be one of the composite's
    * descendant IR node ids and (b) share every dynamic dimension (item/lane/
    * round) the composite already carries — so concurrent sibling fanout lanes
-   * outside this scope are not affected. Already-`failed` nodes are left as-is.
+   * outside this scope are not affected.
    *
    * NOTE: pass the composite's OWN dynamic. For a parallel this scopes to the
    * current lane (item/lane present). For a fanout, the dynamic does NOT yet
    * carry this fanout's lane (lanes are introduced for its children), so the
    * scope spans ALL of the fanout's lanes — exactly the fail-fast intent.
    */
-  private cancelDescendantsInScope(runId: string, node: IrNode, dynamic: NodeKeyDynamic): void {
+  private descendantsInScope(
+    runId: string, node: IrNode, dynamic: NodeKeyDynamic,
+    action: (runId: string, nodeKey: string) => void
+  ): void {
     const descendantIds = new Set<string>();
     const collect = (n: IrNode): void => {
-      for (const c of n.children ?? []) {
-        descendantIds.add(c.id);
-        collect(c);
-      }
-      for (const b of n.branches ?? []) {
-        for (const c of b.children) {
-          descendantIds.add(c.id);
-          collect(c);
-        }
-      }
+      for (const c of n.children ?? []) { descendantIds.add(c.id); collect(c); }
+      for (const b of n.branches ?? []) { for (const c of b.children) { descendantIds.add(c.id); collect(c); } }
     };
     collect(node);
 
@@ -964,8 +1048,93 @@ export class WorkflowInterpreter {
       if (!descendantIds.has(ns.nodeId)) continue;
       const segs = ns.nodeKey.split("/");
       if (!scopeSegments.every((s) => segs.includes(s))) continue;
-      this.cancelNode(runId, ns.nodeKey);
+      action(runId, ns.nodeKey);
     }
+  }
+
+  /**
+   * Cancel still-running/pending descendant nodes of a failed composite
+   * (parallel `join: all`, or fanout `join: all` fail-fast).
+   */
+  private cancelDescendantsInScope(runId: string, node: IrNode, dynamic: NodeKeyDynamic): void {
+    this.descendantsInScope(runId, node, dynamic, (rid, key) => this.cancelNode(rid, key));
+  }
+
+  /**
+   * Pause still-running/pending descendant nodes of a paused composite
+   * (parallel or fanout). Mirrors cancelDescendantsInScope but transitions
+   * siblings to `paused` (reversible) instead of `cancelled` (terminal).
+   */
+  private pauseDescendantsInScope(runId: string, node: IrNode, dynamic: NodeKeyDynamic): void {
+    this.descendantsInScope(runId, node, dynamic, (rid, key) => this.pauseNode(rid, key));
+  }
+
+  /**
+   * Check whether the paused node at `nodeKey` has any paused siblings within
+   * its innermost composite scope (parallel branches or fanout lanes).
+   *
+   * Strategy: scan all paused nodes in the run. If any other paused node shares
+   * the same composite scope (identified by key prefix up to and including the
+   * composite node ID), then there are paused siblings and resume should propagate.
+   *
+   * The composite scope prefix is computed from the innermost (rightmost) dynamic
+   * dimension in the key:
+   * - For branch: (parallel): the child-id sits between the composite node and
+   *   branch:, so exclude it. E.g. workflow/par/branch-a/branch:0 → workflow/par
+   * - For item: (fanout): item: sits directly after the composite node.
+   *   E.g. workflow/review-files/item:a_txt → workflow/review-files
+   * - For lane: / round: (nested composites): no child-id adjustment.
+   *
+   * A simple startsWith check on the composite prefix handles nested composites
+   * correctly because the innermost dynamic determines the scope.
+   */
+  private hasPausedSiblingsInScope(runId: string, nodeKey: string): boolean {
+    const allPaused = this.store.listNodeStates(runId).filter((n) => n.state === "paused");
+    if (allPaused.length <= 1) return false;
+
+    // Find the innermost (rightmost) dynamic dimension in the node key.
+    // Dynamic segments are branch:, item:, lane:, round:.
+    const segments = nodeKey.split("/");
+    let dynamicIdx = -1;
+    for (let i = segments.length - 1; i >= 0; i--) {
+      if (/^(branch|item|lane|round):/.test(segments[i]!)) {
+        dynamicIdx = i;
+        break;
+      }
+    }
+    if (dynamicIdx === -1) return false;
+
+    // Compute the composite scope prefix. Skip backward over ALL consecutive
+    // dynamic segments (e.g. item:0/lane:0 from the same fanout composite) to
+    // find the composite boundary. Then handle the parallel child-id exclusion:
+    // for branch:, the child-id sits between the composite and the first dynamic.
+    let compositeEndIdx = dynamicIdx;
+    // Skip all consecutive dynamic segments before the innermost one.
+    while (compositeEndIdx > 0 && /^(branch|item|lane|round):/.test(segments[compositeEndIdx - 1]!)) {
+      compositeEndIdx--;
+    }
+    // For parallel (branch:), exclude the child-id before the dynamic cluster.
+    // E.g. workflow/par/branch-a/branch:0 → compositeEndIdx points to branch-a → exclude it.
+    // Use a positive check for dynamic segments (rather than !includes(":")) so
+    // step IDs containing colons are handled correctly.
+    if (segments[dynamicIdx]!.startsWith("branch:") && compositeEndIdx > 0 && !/^(branch|item|lane|round):/.test(segments[compositeEndIdx - 1]!)) {
+      compositeEndIdx--;
+    }
+    const compositePrefix = segments.slice(0, compositeEndIdx).join("/") + "/";
+
+    // Check if any OTHER paused node shares the same composite scope.
+    // Use segment-boundary-aware matching: after the shared prefix, the next
+    // segment in the other key must exist (i.e. the other key is at least as
+    // deep as the prefix implies), preventing false positives when unrelated
+    // composite node IDs share a prefix (e.g. par-a vs par-a-deep).
+    return allPaused.some((ns) => {
+      if (ns.nodeKey === nodeKey) return false;
+      if (!ns.nodeKey.startsWith(compositePrefix)) return false;
+      // Verify segment boundary: the key must continue past the prefix
+      // (the prefix always ends with "/", so a match at the prefix boundary
+      // means the next character is a segment, not a partial match).
+      return ns.nodeKey.length > compositePrefix.length;
+    });
   }
 
   private async executeFanout(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {
@@ -1016,7 +1185,13 @@ export class WorkflowInterpreter {
           }
           return { ok: true, output: laneOutput };
         } catch (error) {
-          if (error instanceof NodeAbortedError) throw error;
+          if (error instanceof NodeAbortedError) {
+            if (error.state === "paused") {
+              // Pause sibling lanes (reversible), not cancel (irreversible)
+              this.pauseDescendantsInScope(runId, node, dynamic);
+            }
+            throw error;
+          }
           failures++;
           if (failures > maxFailures) {
             // Success target is now unreachable → fail fast: cancel all

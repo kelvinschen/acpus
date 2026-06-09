@@ -8,7 +8,7 @@ import { MockProgramExecutor } from "../../src/executors/mock-program.js";
 import type { MockProgramResponse } from "../../src/executors/mock-program.js";
 import { ProgramExecutor } from "../../src/executors/program.js";
 import { AgentExecutor } from "../../src/executors/agent.js";
-import type { InterpreterOptions } from "../../src/types.js";
+import type { InterpreterOptions, NodeExecutionState, NodeState } from "../../src/types.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -68,4 +68,21 @@ function normalizeAgentResponse(v: unknown): StubAgentResponse {
     return v as StubAgentResponse;
   }
   return { output: v, delay: 5 };
+}
+
+/**
+ * Poll until a node reaches the expected state, with a timeout.
+ * Replaces fragile setTimeout + if-checks with a robust polling loop.
+ */
+export async function waitForNodeState(
+  store: RunStore, runId: string, nodeId: string, state: NodeState, timeoutMs: number
+): Promise<NodeExecutionState> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const nodes = store.listNodeStates(runId);
+    const found = nodes.find((n) => n.nodeId === nodeId && n.state === state);
+    if (found) return found;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error(`Node ${nodeId} did not reach state ${state} within ${timeoutMs}ms`);
 }

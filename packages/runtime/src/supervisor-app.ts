@@ -366,7 +366,11 @@ export function createSupervisorApp(
       // Node-level resume
       const interpreter = getOrRecoverInterpreter(runId);
       if (!interpreter) return c.json({ error: "Run not found" }, 404);
-      await interpreter.resumeNode(runId, nodeKey);
+      try {
+        await interpreter.resumeNode(runId, nodeKey);
+      } catch (err) {
+        return c.json({ error: err instanceof Error ? err.message : String(err) }, 409);
+      }
       const state = store.readNodeState(runId, nodeKey);
       return c.json(state);
     }
@@ -445,7 +449,11 @@ export function createSupervisorApp(
       // Node-level retry
       const interpreter = getOrRecoverInterpreter(runId);
       if (!interpreter) return c.json({ error: "Run not found" }, 404);
-      await interpreter.retryNode(runId, nodeKey);
+      try {
+        await interpreter.retryNode(runId, nodeKey);
+      } catch (err) {
+        return c.json({ error: err instanceof Error ? err.message : String(err) }, 409);
+      }
       const state = store.readNodeState(runId, nodeKey);
       return c.json(state);
     }

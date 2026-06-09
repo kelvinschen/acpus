@@ -380,6 +380,51 @@ workflow:
     // May succeed or 409 depending on timing; the key is it's Node-level, not Run-level
     expect([200, 409]).toContain(res.status);
   });
+
+  it("Node-level resume returns 409 (not 500) when node is not paused", async () => {
+    // Create a run that completes quickly
+    const createRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: SPEC_YAML, input: {} })
+    });
+    const { runId } = await createRes.json();
+    // Wait for completion
+    for (let i = 0; i < 100; i++) {
+      const r = await fetch(`${baseUrl}/runs/${runId}/output`);
+      const d = await r.json();
+      if (d.status === "completed" || d.status === "failed") break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    // Trying to resume a completed node should return 409 with a clear message, not 500
+    const res = await fetch(`${baseUrl}/runs/${runId}/resume?key=${encodeURIComponent("workflow/step-a")}`, { method: "POST" });
+    expect(res.status).toBe(409);
+    const data = await res.json();
+    expect(data.error).toContain("only paused nodes are resumable");
+  });
+
+  it("Node-level retry returns 409 (not 500) when node is not failed", async () => {
+    const createRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: SPEC_YAML, input: {} })
+    });
+    const { runId } = await createRes.json();
+    // Wait for completion
+    for (let i = 0; i < 100; i++) {
+      const r = await fetch(`${baseUrl}/runs/${runId}/output`);
+      const d = await r.json();
+      if (d.status === "completed" || d.status === "failed") break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    // Trying to retry a completed node should return 409 with a clear message, not 500
+    const res = await fetch(`${baseUrl}/runs/${runId}/retry?key=${encodeURIComponent("workflow/step-a")}`, { method: "POST" });
+    expect(res.status).toBe(409);
+    const data = await res.json();
+    expect(data.error).toContain("only failed nodes are retryable");
+  });
 });
 
 describe("Supervisor cross-process recovery + replay", () => {
