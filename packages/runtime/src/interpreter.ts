@@ -773,6 +773,7 @@ export class WorkflowInterpreter {
           const leaf = await this.executeAgent(node, ctx, runId, controller.signal, nodeKey, resume);
           output = leaf.output;
           artifactRefs = leaf.artifactRefs;
+          if (leaf.renderedPrompt) state.renderedPrompt = leaf.renderedPrompt;
           break;
         }
         case "run.program": {
@@ -910,7 +911,7 @@ export class WorkflowInterpreter {
       }
 
       // Agent output is wrapped in an envelope for parity with program steps.
-      return { output: { output: result.output }, artifactRefs };
+      return { output: { output: result.output }, artifactRefs, renderedPrompt: result.renderedPrompt };
     }
   }
 
@@ -1536,6 +1537,8 @@ type LaneResult = { ok: true; output: unknown } | { ok: false; error: string };
 interface LeafResult {
   output: unknown;
   artifactRefs?: string[];
+  /** The prompt after template evaluation at runtime. */
+  renderedPrompt?: string;
 }
 
 class NodeAbortedError extends Error {

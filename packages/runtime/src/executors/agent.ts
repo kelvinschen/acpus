@@ -72,7 +72,7 @@ export class AgentExecutor implements ExecutorAdapter {
     const prompt = buildAgentPrompt(renderedTask, outputSchema, Boolean(resume), Boolean(retry));
 
     if (signal.aborted) {
-      return { partial: true, error: "Aborted before execution" };
+      return { partial: true, error: "Aborted before execution", renderedPrompt: renderedTask };
     }
 
     const invoker = this.resolveInvoker();
@@ -90,7 +90,7 @@ export class AgentExecutor implements ExecutorAdapter {
         const exitCode = ensureResult.exitCode ?? 1;
         const stderr = ensureResult.stderr ?? "";
         const detail = stderr || ensureResult.shortMessage || `acpx sessions ensure exited with code ${exitCode}`;
-        return { failureKind: "spawn", exitCode, error: detail, stdout: ensureResult.stdout ?? "", stderr };
+        return { failureKind: "spawn", exitCode, error: detail, stdout: ensureResult.stdout ?? "", stderr, renderedPrompt: renderedTask };
       }
 
       if (signal.aborted) {
@@ -99,7 +99,7 @@ export class AgentExecutor implements ExecutorAdapter {
           reject: false,
           env
         }).catch(() => undefined);
-        return { partial: true, error: "Aborted before prompt" };
+        return { partial: true, error: "Aborted before prompt", renderedPrompt: renderedTask };
       }
 
       // Run the prompt, streaming the ACP protocol as NDJSON.
@@ -117,17 +117,17 @@ export class AgentExecutor implements ExecutorAdapter {
 
       // Cooperative cancel (or any cancelled turn) → paused with partial transcript.
       if (cancellation.cancelled || stopReason === "cancelled") {
-        return { partial: true, output: { text }, stdout, stderr, error: "Aborted" };
+        return { partial: true, output: { text }, stdout, stderr, error: "Aborted", renderedPrompt: renderedTask };
       }
 
       // Spawn failure (no exit code) → non-recoverable.
       if (result.failed && (result.exitCode === undefined || result.exitCode === null)) {
-        return { failureKind: "spawn", error: result.shortMessage || "Failed to spawn acpx", stdout, stderr };
+        return { failureKind: "spawn", error: result.shortMessage || "Failed to spawn acpx", stdout, stderr, renderedPrompt: renderedTask };
       }
 
       // Non-zero exit (and not cancelled) → non-recoverable agent failure.
       if (result.exitCode !== 0) {
-        return { failureKind: "exit", exitCode: result.exitCode ?? 1, error: stderr || `acpx exited with code ${result.exitCode}`, stdout, stderr };
+        return { failureKind: "exit", exitCode: result.exitCode ?? 1, error: stderr || `acpx exited with code ${result.exitCode}`, stdout, stderr, renderedPrompt: renderedTask };
       }
 
       // Assemble structured output. When a schema is declared, extract a JSON
@@ -137,20 +137,20 @@ export class AgentExecutor implements ExecutorAdapter {
       if (outputSchema) {
         const parsed = extractJson(text);
         if (parsed === undefined) {
-          return { failureKind: "parse", error: "Failed to parse agent output as JSON", output: { text }, stdout, stderr };
+          return { failureKind: "parse", error: "Failed to parse agent output as JSON", output: { text }, stdout, stderr, renderedPrompt: renderedTask };
         }
         const validate = this.ajv.compile(outputSchema);
         if (!validate(parsed)) {
-          return { failureKind: "schema", error: `Output validation failed: ${this.ajv.errorsText(validate.errors)}`, output: parsed, stdout, stderr };
+          return { failureKind: "schema", error: `Output validation failed: ${this.ajv.errorsText(validate.errors)}`, output: parsed, stdout, stderr, renderedPrompt: renderedTask };
         }
         output = parsed;
       } else {
         output = { text };
       }
 
-      return { exitCode: 0, output, stdout, stderr };
+      return { exitCode: 0, output, stdout, stderr, renderedPrompt: renderedTask };
     } catch (error) {
-      return { failureKind: "spawn", error: error instanceof Error ? error.message : String(error) };
+      return { failureKind: "spawn", error: error instanceof Error ? error.message : String(error), renderedPrompt: renderedTask };
     }
   }
 

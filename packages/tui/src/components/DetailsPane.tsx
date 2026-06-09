@@ -166,6 +166,14 @@ export function buildDetailLines(
     if (dyn.loop) lines.push(field("  loop.iter", String(dyn.loop.iter), cols));
   }
 
+  // ── Prompt (prefer runtime-rendered, fall back to IR template) ──
+  const prompt = inst?.renderedPrompt ?? (typeof meta.prompt === "string" ? meta.prompt : undefined);
+  if (prompt) {
+    lines.push(blank());
+    lines.push(heading("Prompt:"));
+    for (const l of textLines(prompt, cols)) lines.push(l);
+  }
+
   // ── Error ──
   if (inst?.error) {
     lines.push(blank());
@@ -227,10 +235,6 @@ function definitionLines(
         )
       );
     }
-    if (typeof meta.prompt === "string") {
-      out.push(heading("  Prompt:"));
-      for (const l of textLines(meta.prompt, cols)) out.push(l);
-    }
     return out;
   }
 
@@ -255,10 +259,6 @@ function definitionLines(
     out.push(blank(), heading("Definition:"));
     if (meta.timeout !== undefined) out.push(field("  Timeout", String(meta.timeout), cols));
     if (meta.on_timeout !== undefined) out.push(field("  On timeout", String(meta.on_timeout), cols));
-    if (typeof meta.prompt === "string") {
-      out.push(heading("  Prompt:"));
-      for (const l of textLines(meta.prompt, cols)) out.push(l);
-    }
     if (state === "awaiting") {
       out.push({ segments: [{ text: "  ⏳ awaiting decision — [a] approve  [x] reject", color: "blue" }] });
     }

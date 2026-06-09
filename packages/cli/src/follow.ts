@@ -72,13 +72,12 @@ export async function followRun(
 
       runName = run.workflowName;
 
-      // Emit Run-level observation on first poll or status change
+      // Emit Run-level observation on first poll or status change.
+      // Terminal states are handled by formatTerminalSummary below; skip here
+      // to avoid duplicate "Run ... completed" lines with different glyphs.
       if (lastRunStatus === undefined || run.status !== lastRunStatus) {
-        const event: ObservationEvent = { type: "run", runId, status: run.status };
-        if (lastRunStatus === undefined) {
-          // First observation
-          emit(formatObservation(event, runName, options.json));
-        } else if (run.status !== lastRunStatus) {
+        if (!isTerminal(run.status)) {
+          const event: ObservationEvent = { type: "run", runId, status: run.status };
           emit(formatObservation(event, runName, options.json));
         }
         lastRunStatus = run.status;

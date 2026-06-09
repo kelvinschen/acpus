@@ -48,6 +48,8 @@ export interface NodeExecutionState {
    * stored — never large artifact payloads.
    */
   dynamicContext?: NodeDynamicContext;
+  /** The prompt after template evaluation at runtime (persisted for TUI display). */
+  renderedPrompt?: string;
 }
 
 /** Persisted parent value-context for a leaf node (fanout item / loop round). */
@@ -109,6 +111,8 @@ export interface ExecutorResult {
   failureKind?: FailureKind;
   /** True if the executor was aborted mid-execution */
   partial?: boolean;
+  /** The prompt after template evaluation at runtime. */
+  renderedPrompt?: string;
 }
 
 // ─── Artifact references ────────────────────────────────────────

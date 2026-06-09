@@ -772,14 +772,14 @@ workflow:
     expect(testBranch?.kind).toBe("run.program");
   });
 
-  it("compiles fanout-parallel-loop-switch TUI fixture", () => {
-    const result = compileWorkflow(fixture("fanout-parallel-loop-switch-tui/workflow.yaml"), {
-      sourcePath: join(fixtures, "fanout-parallel-loop-switch-tui/workflow.yaml")
+  it("compiles fanout-parallel-loop-switch fixture", () => {
+    const result = compileWorkflow(fixture("fanout-parallel-loop-switch/workflow.yaml"), {
+      sourcePath: join(fixtures, "fanout-parallel-loop-switch/workflow.yaml")
     });
 
     expect(result.ok).toBe(true);
     expect(result.diagnostics).toEqual([]);
-    expect(result.ir?.name).toBe("fanout-parallel-loop-switch-tui-fixture");
+    expect(result.ir?.name).toBe("fanout-parallel-loop-switch");
     expect(result.ir?.input).toMatchObject({
       type: "object",
       properties: {
@@ -808,6 +808,47 @@ workflow:
     const switchNode = parallelNode?.children?.[2];
     expect(switchNode?.outputMerge).toBe("selected");
     expect(switchNode?.branches?.map((b) => b.id)).toEqual(["case_1", "case_2", "default"]);
+  });
+
+  it("compiles composite-e2e fixture (fanout→loop, lightweight)", () => {
+    const result = compileWorkflow(fixture("composite-e2e/workflow.yaml"), {
+      sourcePath: join(fixtures, "composite-e2e/workflow.yaml")
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.diagnostics).toEqual([]);
+    expect(result.ir?.name).toBe("composite-e2e");
+    expect(result.ir?.input).toMatchObject({
+      type: "object",
+      properties: {
+        items: { type: "array", default: ["alpha", "beta"] },
+        max_rounds: { type: "integer", default: 2 }
+      }
+    });
+
+    const fanoutNode = result.ir?.root.children?.[0];
+    expect(fanoutNode?.kind).toBe("fanout");
+    expect(fanoutNode?.outputMerge).toBe("array");
+    expect(fanoutNode?.metadata).toMatchObject({ over: "input.items", max_concurrency: 1 });
+
+    const loopNode = fanoutNode?.children?.[0];
+    expect(loopNode?.kind).toBe("loop");
+    expect(loopNode?.outputMerge).toBe("last");
+    expect(loopNode?.metadata.until).toBe("loop.iter >= input.max_rounds");
+
+    const workNode = loopNode?.children?.[0];
+    expect(workNode?.kind).toBe("run.agent");
+    expect(workNode?.id).toBe("work");
+    expect(workNode?.metadata.output).toEqual({
+      type: "object",
+      properties: {
+        item: { type: "string" },
+        round: { type: "integer" },
+        ok: { type: "boolean" }
+      },
+      additionalProperties: false,
+      required: ["item", "round", "ok"]
+    });
   });
 
   it("passes outputMerge through to schedule for all composite types", () => {
