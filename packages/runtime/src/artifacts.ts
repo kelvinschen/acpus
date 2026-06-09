@@ -1,4 +1,5 @@
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -35,6 +36,27 @@ export class ArtifactStore {
     writeFileSync(tmpPath, content);
     renameSync(tmpPath, filePath);
 
+    return this.makeRef(runId, nodeKey, filename);
+  }
+
+  /**
+   * Create or truncate an artifact file and return its reference.
+   * Used for artifacts that will be appended while an execution is still live.
+   */
+  create(runId: string, nodeKey: string, filename: string): ArtifactRef {
+    validateArtifactFilename(filename);
+    const dir = this.nodeDir(runId, nodeKey);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, filename), "");
+    return this.makeRef(runId, nodeKey, filename);
+  }
+
+  /** Append content to an existing artifact, creating it if needed. */
+  append(runId: string, nodeKey: string, filename: string, content: string | Buffer): ArtifactRef {
+    validateArtifactFilename(filename);
+    const dir = this.nodeDir(runId, nodeKey);
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(join(dir, filename), content);
     return this.makeRef(runId, nodeKey, filename);
   }
 

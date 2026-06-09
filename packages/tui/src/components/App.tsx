@@ -1,6 +1,8 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import type { RunSupervisorClient } from "@acpus/runtime";
+import { open, stat } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import { useRunPoller, isTerminal } from "../poller.js";
 import { buildRenderTree, buildRows, countByState, formatElapsed } from "../model.js";
 import { applyControl, canApply, applyRunControl, canApplyRun, type ControlAction } from "../controls.js";
@@ -10,9 +12,28 @@ import { GraphPane } from "./GraphPane.js";
 import { DetailsPane, buildDetailLines, formatDetailLinesPlainText } from "./DetailsPane.js";
 import { Footer } from "./Footer.js";
 import { copyToClipboard } from "../osc52.js";
+import {
+  AgentTranscriptAccumulator,
+  emptyAgentExecutionSummary,
+  mergeAgentExecutionSummaries,
+  type AgentExecutionSummary
+} from "../agentTranscript.js";
 
 type Focus = "graph" | "details";
 type OverviewMessage = { text: string; level: "info" | "error" };
+type TranscriptCache = {
+  path?: string;
+  offset: number;
+  targetSize?: number;
+  accumulator: AgentTranscriptAccumulator;
+  summary: AgentExecutionSummary;
+  inFlight: boolean;
+};
+
+const AGENT_TRANSCRIPT_REFRESH_MS = 3000;
+const AGENT_TRANSCRIPT_CATCHUP_REFRESH_MS = 25;
+const AGENT_TRANSCRIPT_READ_CHUNK_BYTES = 2 * 1024 * 1024;
+const AGENT_TRANSCRIPT_READ_BUDGET_BYTES = 4 * 1024 * 1024;
 
 const KEY_TO_ACTION: Record<string, ControlAction> = {
   p: "pause",
@@ -39,6 +60,8 @@ export function App({
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [messages, setMessages] = useState<OverviewMessage[]>([]);
   const [artifactPaths, setArtifactPaths] = useState<Record<string, string>>({});
+  const [agentExecution, setAgentExecution] = useState<AgentExecutionSummary | undefined>(undefined);
+  const transcriptCacheRef = useRef(new Map<string, TranscriptCache>());
 
   const snapshot = useRunPoller(client, runId, 400, refreshNonce);
   const { rows: termRows, columns: termCols } = useTerminalSize();
@@ -62,6 +85,14 @@ export function App({
 
   const clampedIndex = rows.length === 0 ? 0 : Math.min(selectedIndex, rows.length - 1);
   const selected = rows[clampedIndex];
+  const selectedArtifactRefs = selected?.instance?.artifactRefs ?? [];
+  const selectedArtifactRefsKey = selectedArtifactRefs.join("\n");
+  const selectedTranscriptRefs = useMemo(
+    () => selected?.irNode.kind === "run.agent" ? attemptTranscriptRefs(selectedArtifactRefs) : [],
+    [selected?.irNode.kind, selectedArtifactRefsKey]
+  );
+  const selectedTranscriptRefsKey = selectedTranscriptRefs.join("\n");
+  const selectedTranscriptPathsKey = selectedTranscriptRefs.map((ref) => artifactPaths[ref] ?? "").join("\n");
 
   // ── Layout budget (height + width). Computed before line-building so the
   // details lines can be wrapped to the actual pane width. ──
@@ -91,18 +122,17 @@ export function App({
   // Flatten the selected node into a single array of colored lines, then derive
   // the scroll bound from its true length (so long prompts/outputs scroll fully).
   const detailLines = useMemo(
-    () => buildDetailLines(selected, detailsWidth, artifactPaths, freezeAt),
-    [selected, detailsWidth, artifactPaths, freezeAt]
+    () => buildDetailLines(selected, detailsWidth, artifactPaths, freezeAt, agentExecution),
+    [selected, detailsWidth, artifactPaths, freezeAt, agentExecution]
   );
   const detailsMaxScroll = Math.max(0, detailLines.length - detailsVisibleRows);
 
   // Pre-fetch absolute filesystem paths for the selected node's artifacts so
-  // DetailsPane can show "<filename>  <absPath>". Only fetches uris not already
-  // cached. On failure we cache an empty path (so we don't refetch) and surface
-  // a toast; DetailsPane then falls back to showing the raw artifact:// URI.
+  // DetailsPane can show "<filename>  <absPath>". Only successful resolutions are
+  // cached; transient misses are retried when the selected node's refs change.
   useEffect(() => {
-    const refs = selected?.instance?.artifactRefs;
-    if (!refs || refs.length === 0) return;
+    const refs = selectedArtifactRefs;
+    if (refs.length === 0) return;
     const missing = refs.filter((r) => !(r in artifactPaths));
     if (missing.length === 0) return;
     let cancelled = false;
@@ -111,24 +141,69 @@ export function App({
         try {
           return [uri, await client.getArtifactPath(runId, uri), undefined] as const;
         } catch (err) {
-          return [uri, "", err instanceof Error ? err.message : String(err)] as const;
+          return [uri, undefined, err instanceof Error ? err.message : String(err)] as const;
         }
       })
     ).then((triples) => {
       if (cancelled) return;
       const firstError = triples.find(([, , error]) => error !== undefined)?.[2];
       if (firstError) pushMessage(`artifact path unresolved: ${firstError}`, "error");
-      setArtifactPaths((prev) => {
-        const next = { ...prev };
-        // Cache every result (incl. "" on failure) so we don't refetch.
-        for (const [uri, abs] of triples) next[uri] = abs;
-        return next;
-      });
+      const resolved = triples.filter((entry): entry is readonly [string, string, undefined] => entry[1] !== undefined);
+      if (resolved.length > 0) {
+        setArtifactPaths((prev) => {
+          const next = { ...prev };
+          for (const [uri, abs] of resolved) next[uri] = abs;
+          return next;
+        });
+      }
     });
     return () => {
       cancelled = true;
     };
-  }, [client, runId, selected, artifactPaths]);
+  }, [client, runId, selectedArtifactRefsKey, artifactPaths]);
+
+  // Read only the selected Agent node's attempt transcripts. Each artifact is
+  // cached by URI and read incrementally so switching nodes can render cached
+  // activity immediately without synchronously reparsing large transcript files.
+  useEffect(() => {
+    if (selected?.irNode.kind !== "run.agent") {
+      setAgentExecution(undefined);
+      return;
+    }
+    if (selectedTranscriptRefs.length === 0) {
+      setAgentExecution(emptyAgentExecutionSummary());
+      return;
+    }
+
+    setAgentExecution(summaryFromTranscriptCache(transcriptCacheRef.current, selectedTranscriptRefs));
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = async () => {
+      await refreshTranscriptCaches(transcriptCacheRef.current, selectedTranscriptRefs, artifactPaths, () => {
+        if (!cancelled) setAgentExecution(summaryFromTranscriptCache(transcriptCacheRef.current, selectedTranscriptRefs));
+      });
+      if (!cancelled) setAgentExecution(summaryFromTranscriptCache(transcriptCacheRef.current, selectedTranscriptRefs));
+      const hasPendingReads = hasPendingTranscriptReads(transcriptCacheRef.current, selectedTranscriptRefs, artifactPaths);
+      if (!cancelled && (snapshot.run?.status === "running" || hasPendingReads)) {
+        timer = setTimeout(() => {
+          void refresh();
+        }, hasPendingReads ? AGENT_TRANSCRIPT_CATCHUP_REFRESH_MS : AGENT_TRANSCRIPT_REFRESH_MS);
+      }
+    };
+    void refresh();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [
+    artifactPaths,
+    selected?.irNode.kind,
+    selected?.rowKey,
+    selectedTranscriptRefsKey,
+    selectedTranscriptPathsKey,
+    snapshot.run?.status
+  ]);
 
   // Reset details scroll when the selection changes.
   useEffect(() => {
@@ -355,4 +430,135 @@ export function visibleRows<T extends { rowKey: string; depth: number }>(rows: T
     }
   }
   return visible;
+}
+
+function attemptTranscriptRefs(refs: string[] | undefined): string[] {
+  return [...new Set(refs ?? [])]
+    .map((ref) => ({ ref, attempt: attemptNumber(ref) }))
+    .filter((entry): entry is { ref: string; attempt: number } => entry.attempt !== undefined)
+    .sort((a, b) => a.attempt - b.attempt)
+    .map((entry) => entry.ref);
+}
+
+function attemptNumber(ref: string): number | undefined {
+  const match = /attempt-(\d+)\.transcript\.jsonl$/.exec(ref);
+  return match ? Number(match[1]) : undefined;
+}
+
+function summaryFromTranscriptCache(cache: Map<string, TranscriptCache>, refs: string[]): AgentExecutionSummary {
+  const summaries = refs.map((ref) => cache.get(ref)?.summary).filter((summary): summary is AgentExecutionSummary => summary !== undefined);
+  return summaries.length > 0 ? mergeAgentExecutionSummaries(summaries) : emptyAgentExecutionSummary();
+}
+
+async function refreshTranscriptCaches(
+  cache: Map<string, TranscriptCache>,
+  refs: string[],
+  artifactPaths: Record<string, string>,
+  onProgress?: () => void
+): Promise<void> {
+  await Promise.all(refs.map((ref, index) => refreshTranscriptCache(cache, ref, artifactPaths[ref], index, onProgress)));
+}
+
+export async function refreshTranscriptCacheForTest(
+  cache: Map<string, TranscriptCache>,
+  ref: string,
+  path: string | undefined,
+  index: number,
+  onProgress?: () => void
+): Promise<void> {
+  await refreshTranscriptCache(cache, ref, path, index, onProgress);
+}
+
+async function refreshTranscriptCache(
+  cache: Map<string, TranscriptCache>,
+  ref: string,
+  path: string | undefined,
+  index: number,
+  onProgress?: () => void
+): Promise<void> {
+  if (!path) return;
+  const orderOffset = (index + 1) * 1_000_000_000;
+  const existing = cache.get(ref);
+  const entry: TranscriptCache = existing ?? {
+    offset: 0,
+    accumulator: new AgentTranscriptAccumulator(),
+    summary: emptyAgentExecutionSummary(),
+    inFlight: false
+  };
+  if (entry.path !== path) {
+    entry.path = path;
+    entry.offset = 0;
+    entry.targetSize = undefined;
+    entry.accumulator.reset();
+    entry.summary = emptyAgentExecutionSummary();
+  }
+  cache.set(ref, entry);
+  if (entry.inFlight) return;
+
+  entry.inFlight = true;
+  try {
+    const info = await stat(path);
+    entry.targetSize = info.size;
+    if (info.size < entry.offset) {
+      entry.offset = 0;
+      entry.targetSize = info.size;
+      entry.accumulator.reset();
+    }
+    if (info.size === entry.offset) return;
+
+    const handle = await open(path, "r");
+    try {
+      await readTranscriptChunks(handle, entry, info.size, orderOffset, onProgress);
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    entry.summary = entry.summary ?? emptyAgentExecutionSummary();
+  } finally {
+    entry.inFlight = false;
+  }
+}
+
+function hasPendingTranscriptReads(
+  cache: Map<string, TranscriptCache>,
+  refs: string[],
+  artifactPaths: Record<string, string>
+): boolean {
+  return refs.some((ref) => {
+    const path = artifactPaths[ref];
+    if (!path) return false;
+    const entry = cache.get(ref);
+    if (!entry || entry.path !== path) return true;
+    return entry.targetSize !== undefined && entry.offset < entry.targetSize;
+  });
+}
+
+async function readTranscriptChunks(
+  handle: FileHandle,
+  entry: TranscriptCache,
+  targetSize: number,
+  orderOffset: number,
+  onProgress?: () => void
+): Promise<void> {
+  let bytesReadThisPass = 0;
+  while (entry.offset < targetSize && bytesReadThisPass < AGENT_TRANSCRIPT_READ_BUDGET_BYTES) {
+    const length = Math.min(
+      AGENT_TRANSCRIPT_READ_CHUNK_BYTES,
+      targetSize - entry.offset,
+      AGENT_TRANSCRIPT_READ_BUDGET_BYTES - bytesReadThisPass
+    );
+    const buffer = Buffer.alloc(length);
+    const result = await handle.read(buffer, 0, length, entry.offset);
+    if (result.bytesRead <= 0) break;
+    entry.offset += result.bytesRead;
+    bytesReadThisPass += result.bytesRead;
+    entry.accumulator.append(buffer.subarray(0, result.bytesRead).toString("utf8"));
+    entry.summary = entry.accumulator.summary(orderOffset);
+    onProgress?.();
+    await yieldToEventLoop();
+  }
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
 }

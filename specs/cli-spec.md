@@ -75,6 +75,9 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, subm
 - The single-Run visualizer MUST hide the internal paused-abort reason `Aborted: paused` from the Details error block.
 - The single-Run visualizer MUST support copying the full selected-node details text through OSC 52 with `y` while the details pane is focused.
 - The single-Run visualizer MUST render artifact filenames and absolute artifact paths as plain wrapped text without OSC 8 links.
+- The single-Run visualizer MUST show an Agent Step execution block before the prompt when transcript telemetry is available for the selected Agent Step. This block MUST show exact output tokens when available, MUST show estimated output tokens with a `~` prefix when exact usage is unavailable but structured Agent message text is available, and MUST show `unknown` only when neither source is available.
+- The Agent Step execution block MUST aggregate all `attempt-NNN.transcript.jsonl` artifacts for the selected Agent Step, MUST count unique tool calls by `toolCallId`, and MUST show the three unique tool calls with the most recent structured update across attempts.
+- The single-Run visualizer MUST read only the currently selected Agent Step's transcript artifacts, MUST cache parsed transcript state by artifact URI, MUST show cached telemetry immediately when switching back to a previously selected Agent Step, and MUST update live transcript telemetry with non-blocking incremental reads rather than synchronous full-file reads in the render path.
 - The single-Run visualizer MUST wrap long node keys, long definition fields, artifact paths, prompts, outputs, and errors across multiple lines instead of truncating them.
 - The single-Run visualizer MUST clear the terminal viewport after exiting when stdout is a TTY, and MUST NOT emit clear-screen control sequences when stdout is not a TTY.
 - The CLI MUST route Agent Step execution through acpx once Agent Step runtime execution exists.
@@ -102,5 +105,5 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, subm
 - Runtime CLI tests MUST cover `acpus replay` reproducing a Run's Node topology deterministically and reporting discrepancies when the persisted Run's topology is tampered with.
 - Runtime CLI tests MUST cover `acpus visualize` without a Run ID opening a picker and `acpus visualize <run_id>` opening the single-Run view.
 - Runtime CLI tests MUST cover `acpus ls` and the visualize picker listing the most recent 50 Runs sorted by `updatedAt` descending.
-- TUI tests MUST cover single-Run visualizer wrapping, plain-text artifact rendering, plain-text details copy formatting, node-kind symbols, Status Overview messages, frozen durations, hidden paused-abort details, exit viewport clearing, and collapse filtering.
+- TUI tests MUST cover single-Run visualizer wrapping, plain-text artifact rendering, Agent Step execution telemetry including estimated token formatting and retry-attempt aggregation, plain-text details copy formatting, node-kind symbols, Status Overview messages, frozen durations, hidden paused-abort details, exit viewport clearing, and collapse filtering.
 - Runtime CLI tests MUST cover Agent Step execution through acpx once Agent Activity integration exists.

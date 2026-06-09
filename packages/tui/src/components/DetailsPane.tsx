@@ -3,6 +3,7 @@ import { Box, Text } from "ink";
 import type { DisplayRow } from "../model.js";
 import { formatDuration } from "../model.js";
 import { KIND_LABELS, styleForState } from "../theme.js";
+import type { AgentExecutionSummary, AgentToolCallSummary } from "../agentTranscript.js";
 
 /**
  * Right pane: details for the currently-selected node row.
@@ -140,7 +141,8 @@ export function buildDetailLines(
   row: DisplayRow | undefined,
   width: number,
   artifactPaths: Record<string, string>,
-  freezeAt?: string | number
+  freezeAt?: string | number,
+  agentExecution?: AgentExecutionSummary
 ): DetailLine[] {
   if (!row) return [];
   const cols = Math.max(12, width - 4);
@@ -178,6 +180,20 @@ export function buildDetailLines(
     if (dyn.item_id !== undefined) lines.push(field("  item_id", String(dyn.item_id), cols));
     if (dyn.item_index !== undefined) lines.push(field("  item_idx", String(dyn.item_index), cols));
     if (dyn.loop) lines.push(field("  loop.iter", String(dyn.loop.iter), cols));
+  }
+
+  // ── Agent execution telemetry from the live/current attempt transcript ──
+  if (row.irNode.kind === "run.agent" && agentExecution) {
+    lines.push(blank());
+    lines.push(heading("Execution:"));
+    lines.push(field("  Output tokens", formatOutputTokens(agentExecution), cols));
+    lines.push(field("  Tool calls", String(agentExecution.toolCallCount), cols));
+    if (agentExecution.recentToolCalls.length > 0) {
+      lines.push(heading("  Last tools:"));
+      for (const tool of agentExecution.recentToolCalls) {
+        lines.push(...textLines(`  - ${formatToolCall(tool)}`, cols));
+      }
+    }
   }
 
   // ── Prompt (prefer runtime-rendered, fall back to IR template) ──
@@ -311,6 +327,20 @@ function wrapText(s: string, width: number): string[] {
   }
   lines.push(rest);
   return lines;
+}
+
+function formatToolCall(tool: AgentToolCallSummary): string {
+  const status = tool.status ?? "unknown";
+  const name = tool.title ?? tool.toolName ?? tool.kind ?? tool.toolCallId;
+  const suffix = [tool.toolName, tool.kind]
+    .filter((v): v is string => v !== undefined && v !== name)
+    .join(" / ");
+  return suffix ? `${status} ${name} (${suffix})` : `${status} ${name}`;
+}
+
+function formatOutputTokens(summary: AgentExecutionSummary): string {
+  if (summary.outputTokens === undefined) return "unknown";
+  return summary.outputTokenSource === "estimated" ? `~${summary.outputTokens}` : String(summary.outputTokens);
 }
 
 /** Plain text form used for clipboard copy; strips colors. */

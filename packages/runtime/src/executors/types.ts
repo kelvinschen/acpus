@@ -12,10 +12,14 @@ export interface ExecutionRequest {
   signal: AbortSignal;
   /** Resolved node key (includes loop/fanout/lane/subworkflow dimensions). */
   nodeKey: string;
+  /** Fully prepared prompt/request text for this executor call. */
+  prompt?: string;
   /** True when continuing a previously paused node (continuation prompt). */
   continuation?: boolean;
   /** True when this is a parse/schema auto-retry iteration (continuation prompt + schema section). */
   retry?: boolean;
+  /** Called with raw stdout/stderr chunks while the executor is still running. */
+  onStream?: (stream: "stdout" | "stderr", chunk: string) => void;
 }
 
 export interface ExecutorAdapter {

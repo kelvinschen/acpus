@@ -9,6 +9,7 @@ import { resolveNodeKey, sanitizeValue } from "./keys.js";
 import { canTransition, transition, createInitialNodeState, resetFailedForRetry, resetRunningForCrashRecovery, resetAwaitingForCrashRecovery, resetPausedForRunResume } from "./state-machine.js";
 import { ArtifactStore } from "./artifacts.js";
 import type { ExecutorAdapter } from "./executors/types.js";
+import { renderAgentRequestPrompt } from "./executors/agent.js";
 import type { NodeExecutionState, NodeState, ReplayResult, ReplayMismatch } from "./types.js";
 import { validateInput } from "./validate-input.js";
 import { randomBytes } from "node:crypto";
@@ -22,6 +23,43 @@ function abortedNodeError(state: "paused" | "cancelled"): string {
 
 function isPausedContinuationState(state: NodeExecutionState | undefined): boolean {
   return state?.state === "pending" && state.attempt > 0 && state.error === PAUSED_ABORT_ERROR;
+}
+
+function pushUnique(target: string[], refs: string[] | undefined): void {
+  if (!refs) return;
+  const seen = new Set(target);
+  for (const ref of refs) {
+    if (!seen.has(ref)) {
+      target.push(ref);
+      seen.add(ref);
+    }
+  }
+  target.sort(compareAttemptArtifactRefs);
+}
+
+function mergeStderrDiagnostics(stderr: string | undefined, diagnostics: string[]): string | undefined {
+  if (diagnostics.length === 0) return stderr;
+  const diagnosticText = diagnostics.map((line) => `[acpus] ${line}`).join("\n");
+  return stderr && stderr.length > 0 ? `${stderr}\n${diagnosticText}` : diagnosticText;
+}
+
+function compareAttemptArtifactRefs(a: string, b: string): number {
+  const left = attemptArtifactSortKey(a);
+  const right = attemptArtifactSortKey(b);
+  if (!left || !right) return 0;
+  return left.attempt - right.attempt || left.kind - right.kind;
+}
+
+function attemptArtifactSortKey(ref: string): { attempt: number; kind: number } | undefined {
+  const match = /attempt-(\d+)\.(prompt\.md|transcript\.jsonl|response\.md|stderr\.log)$/.exec(ref);
+  if (!match) return undefined;
+  const kindOrder: Record<string, number> = {
+    "prompt.md": 0,
+    "transcript.jsonl": 1,
+    "response.md": 2,
+    "stderr.log": 3
+  };
+  return { attempt: Number(match[1]), kind: kindOrder[match[2]] ?? 99 };
 }
 
 /**
@@ -794,21 +832,52 @@ export class WorkflowInterpreter {
     // auto-retry. The persisted `state.attempt` is the durable attempt sequence
     // used for node state and artifact filenames across pause/resume/manual retry.
     for (let attempt = 0; ; attempt++) {
-      const result = await this.agentExecutor.execute({ node, context: ctx, signal, nodeKey, continuation, retry: attempt > 0 });
       const attemptNo = this.store.readNodeState(runId, nodeKey)?.attempt ?? attempt + 1;
+      let preparedPrompt: string;
+      try {
+        preparedPrompt = renderAgentRequestPrompt(node, ctx, this.evaluator, Boolean(continuation), attempt > 0);
+      } catch (error) {
+        const use = (node.metadata.agent as { use?: string } | undefined)?.use ?? "?";
+        throw new LeafExecutionError(
+          `Agent step '${node.id}' (use: ${use}) failed (config): Failed to evaluate agent configuration template: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+
+      const liveRefs = this.startAgentAttemptArtifacts(runId, nodeKey, attemptNo, preparedPrompt);
+      pushUnique(allArtifactRefs, liveRefs);
+      this.publishRunningAgentAttempt(runId, nodeKey, preparedPrompt, allArtifactRefs);
+
+      const streamDiagnostics: string[] = [];
+      const result = await this.agentExecutor.execute({
+        node,
+        context: ctx,
+        signal,
+        nodeKey,
+        prompt: preparedPrompt,
+        continuation,
+        retry: attempt > 0,
+        onStream: (stream, chunk) => {
+          if (stream === "stdout" && chunk.length > 0) {
+            try {
+              this.appendAgentTranscript(runId, nodeKey, attemptNo, chunk);
+            } catch (error) {
+              streamDiagnostics.push(`failed to append live agent transcript: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          }
+        }
+      });
 
       // Persist per-attempt human-readable agent IO plus raw protocol artifacts
       // when the executor exposed them. Refs flow back to executeNode via the
       // return value / thrown error (no shared mutable field).
-      const artifactRefs = result.prompt !== undefined || result.responseText !== undefined || result.stdout !== undefined || result.stderr !== undefined
+      const artifactRefs = result.responseText !== undefined || result.stdout !== undefined || result.stderr !== undefined
         ? this.writeAgentArtifacts(runId, nodeKey, attemptNo, {
-          prompt: result.prompt,
           responseText: result.responseText,
           transcript: result.stdout,
-          stderr: result.stderr
+          stderr: mergeStderrDiagnostics(result.stderr, streamDiagnostics)
         })
         : result.artifactRefs;
-      if (artifactRefs) allArtifactRefs.push(...artifactRefs);
+      if (artifactRefs) pushUnique(allArtifactRefs, artifactRefs);
 
       if (result.partial) {
         // Operator abort → carry output + transcript refs on the abort error;
@@ -874,14 +943,14 @@ export class WorkflowInterpreter {
     return [out.uri, err.uri];
   }
 
-  /** Write per-attempt agent prompt/response/protocol artifacts; returns their URIs. */
+  /** Write per-attempt agent response/protocol artifacts; returns their URIs. */
   private writeAgentArtifacts(
     runId: string,
     nodeKey: string,
     attemptNo: number,
     content: { prompt?: string; responseText?: string; transcript?: string; stderr?: string }
   ): string[] {
-    const prefix = `attempt-${String(Math.max(0, attemptNo)).padStart(3, "0")}`;
+    const prefix = this.agentAttemptPrefix(attemptNo);
     const refs: string[] = [];
     if (content.prompt !== undefined) {
       refs.push(this.artifactStore.write(runId, nodeKey, `${prefix}.prompt.md`, content.prompt).uri);
@@ -890,12 +959,38 @@ export class WorkflowInterpreter {
       refs.push(this.artifactStore.write(runId, nodeKey, `${prefix}.response.md`, content.responseText).uri);
     }
     if (content.transcript !== undefined) {
-      refs.push(this.artifactStore.write(runId, nodeKey, `${prefix}.transcript.jsonl`, content.transcript).uri);
+      // Transcript is pre-created and append-built while acpx runs. Finalization
+      // returns the live artifact ref without overwriting accumulated NDJSON.
+      refs.push(this.artifactStore.append(runId, nodeKey, `${prefix}.transcript.jsonl`, "").uri);
     }
     if (content.stderr !== undefined) {
       refs.push(this.artifactStore.write(runId, nodeKey, `${prefix}.stderr.log`, content.stderr).uri);
     }
     return refs;
+  }
+
+  /** Pre-create live Agent attempt artifacts and return their refs immediately. */
+  private startAgentAttemptArtifacts(runId: string, nodeKey: string, attemptNo: number, prompt: string): string[] {
+    const prefix = this.agentAttemptPrefix(attemptNo);
+    const promptRef = this.artifactStore.write(runId, nodeKey, `${prefix}.prompt.md`, prompt);
+    const transcriptRef = this.artifactStore.create(runId, nodeKey, `${prefix}.transcript.jsonl`);
+    return [promptRef.uri, transcriptRef.uri];
+  }
+
+  private appendAgentTranscript(runId: string, nodeKey: string, attemptNo: number, chunk: string): void {
+    this.artifactStore.append(runId, nodeKey, `${this.agentAttemptPrefix(attemptNo)}.transcript.jsonl`, chunk);
+  }
+
+  private publishRunningAgentAttempt(runId: string, nodeKey: string, prompt: string, artifactRefs: string[]): void {
+    const state = this.store.readNodeState(runId, nodeKey);
+    if (!state || state.state !== "running") return;
+    state.renderedPrompt = prompt;
+    state.artifactRefs = [...artifactRefs];
+    this.store.writeNodeState(runId, state);
+  }
+
+  private agentAttemptPrefix(attemptNo: number): string {
+    return `attempt-${String(Math.max(0, attemptNo)).padStart(3, "0")}`;
   }
 
   private async executeParallel(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {

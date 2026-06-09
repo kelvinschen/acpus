@@ -18,10 +18,10 @@ export class StubAgentExecutor implements ExecutorAdapter {
     this.responses = new Map(Object.entries(responses));
   }
 
-  async execute({ node, signal }: ExecutionRequest): Promise<ExecutorResult> {
+  async execute({ node, signal, prompt: preparedPrompt, onStream }: ExecutionRequest): Promise<ExecutorResult> {
     const stepId = node.id;
     const response = this.responses.get(stepId);
-    const prompt = String(node.metadata.prompt ?? "");
+    const prompt = preparedPrompt ?? String(node.metadata.prompt ?? "");
 
     if (!response) {
       return { error: `No stub response configured for step '${stepId}'`, prompt, responseText: "" };
@@ -53,15 +53,18 @@ export class StubAgentExecutor implements ExecutorAdapter {
 
       // Simulate a classified failure (e.g. parse/schema for retry).
       if (effective.failureKind) {
+        onStream?.("stdout", effective.streamTranscript ?? effective.transcript ?? "");
         return {
           failureKind: effective.failureKind,
           error: `Simulated ${effective.failureKind} failure`,
           prompt,
+          stdout: effective.transcript,
           responseText: effective.responseText ?? `Simulated ${effective.failureKind} failure`
         };
       }
 
-      return { output: effective.output, prompt, responseText: effective.responseText ?? stringifyResponse(effective.output) };
+      onStream?.("stdout", effective.streamTranscript ?? effective.transcript ?? "");
+      return { output: effective.output, prompt, responseText: effective.responseText ?? stringifyResponse(effective.output), stdout: effective.transcript };
     } finally {
       signal.removeEventListener("abort", onAbort);
     }
@@ -92,6 +95,10 @@ export interface StubAgentResponse {
   failureKind?: FailureKind;
   /** Human-readable agent response text for artifact tests. */
   responseText?: string;
+  /** Raw ACP NDJSON transcript for streaming/artifact tests. */
+  transcript?: string;
+  /** Raw transcript chunks delivered through the live stream callback. */
+  streamTranscript?: string;
   /** Ordered responses returned on successive calls (for retry tests). */
   sequence?: StubAgentResponse[];
   delay?: number;

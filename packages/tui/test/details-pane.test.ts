@@ -132,6 +132,61 @@ describe("buildDetailLines", () => {
     expect(text).toContain("Output:");
   });
 
+  it("renders agent execution details before prompt", () => {
+    const row = makeRow({
+      irNode: {
+        id: "test-node",
+        kind: "run.agent",
+        nodePath: ["workflow", "test-node"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow/test-node" },
+        metadata: { prompt: "template" }
+      },
+      instance: {
+        nodeKey: "workflow/test",
+        nodeId: "test-node",
+        kind: "run.agent",
+        state: "running",
+        attempt: 1,
+        renderedPrompt: "rendered prompt"
+      }
+    });
+
+    const text = formatDetailLinesPlainText(buildDetailLines(row, 80, {}, undefined, {
+      outputTokenSource: "unknown",
+      toolCallCount: 4,
+      recentToolCalls: [
+        { toolCallId: "call-1", title: "Read file", status: "completed", kind: "read", toolName: "Read" }
+      ]
+    }));
+
+    expect(text).toContain("Execution:");
+    expect(text).toContain("  Output tokens: unknown");
+    expect(text).toContain("  Tool calls: 4");
+    expect(text).toContain("completed Read file");
+    expect(text.indexOf("Execution:")).toBeLessThan(text.indexOf("Prompt:"));
+  });
+
+  it("marks estimated agent output tokens", () => {
+    const row = makeRow({
+      irNode: {
+        id: "test-node",
+        kind: "run.agent",
+        nodePath: ["workflow", "test-node"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow/test-node" },
+        metadata: {}
+      }
+    });
+
+    const text = formatDetailLinesPlainText(buildDetailLines(row, 80, {}, undefined, {
+      outputTokens: 42,
+      outputTokenSource: "estimated",
+      toolCallCount: 0,
+      recentToolCalls: []
+    }));
+
+    expect(text).toContain("  Output tokens: ~42");
+  });
+
   it("exposes enough lines that scrolling is needed for long content", () => {
     // Build a row with a long prompt to produce many wrapped lines.
     const irNode: IrNode = {

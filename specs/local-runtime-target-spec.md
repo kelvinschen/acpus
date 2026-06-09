@@ -90,12 +90,15 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - AgentExecutor MUST, on first execution, render the Agent Step prompt template; on Run-level resume of a paused Agent Step or manual Node-level retry of a failed Agent Step it MUST send only a fixed runtime continuation prompt and rely on acpx to load the same session; on a parse/schema auto-retry it MUST send the fixed continuation prompt.
 - When an output schema is declared, AgentExecutor MUST append it to the prompt as an explicit `# OUTPUT SCHEMA` section on the first execution and on parse/schema auto-retries, but MUST NOT append it on Run-level resume of a paused Agent Step or manual Node-level retry of a failed Agent Step.
 - The `# OUTPUT SCHEMA` section MUST include the instruction `After completing the task, your final response MUST be exactly one JSON object that conforms to this schema, with no Markdown, prose, or extra keys.` before the schema serialized as pretty JSON.
+- The interpreter MUST persist the exact Agent request prompt on `NodeExecutionState.renderedPrompt` before the Agent Step awaits acpx, so a `running` Agent Step exposes the same prompt that was sent to acpx.
 - AgentExecutor MUST treat the acpx `--format json` ACP NDJSON stream as the transcript: the agent reply is the concatenation of `agent_message_chunk` text, and the final `result.stopReason` classifies the turn.
 - When an output schema is declared, AgentExecutor MUST extract a JSON value from the reply before validation, tolerating prose and Markdown code fences around it: it MUST try the whole reply first, then scan for balanced `{...}`/`[...]` substrings and take the last one that parses, then fall back to `jsonrepair` on that candidate (or the whole reply) as a last resort. It MUST classify a reply from which no JSON can be extracted as `parse`, and validate the extracted value against the schema with Ajv, classifying a schema mismatch as `schema`. Without a schema it MUST wrap the reply as `{ text }` without attempting extraction.
 - AgentExecutor MUST return the full ACP NDJSON stream as `stdout` and MUST NOT write artifacts itself; the interpreter owns artifact writes.
 - The interpreter MUST write Agent Step artifacts per attempt using the filenames `attempt-NNN.prompt.md`, `attempt-NNN.response.md`, `attempt-NNN.transcript.jsonl`, and `attempt-NNN.stderr.log` when the corresponding content is available.
 - `attempt-NNN.prompt.md` MUST contain the fully rendered prompt/request prepared for that Agent executor call.
 - `attempt-NNN.response.md` MUST contain the human-readable agent response text reconstructed from the ACP transcript, not a duplicate of structured `node.output`.
+- The interpreter MUST create `attempt-NNN.prompt.md` and `attempt-NNN.transcript.jsonl` before awaiting the Agent executor and MUST record those artifact references on the running Node. While acpx is running, the interpreter MUST append raw stdout chunks to `attempt-NNN.transcript.jsonl`.
+- `attempt-NNN.transcript.jsonl` MUST be an append-built live artifact. Agent Step finalization MUST NOT overwrite it with the executor's accumulated stdout.
 - Agent attempt artifact numbering MUST use one monotonically increasing attempt sequence for first execution, automatic retry, manual retry, and Run-level resume.
 - The interpreter MUST record all Agent attempt artifact references on the Node so visualizers can show prior failed/retried attempts.
 - The interpreter MUST NOT write fixed-name Agent artifacts such as `transcript.jsonl` or `stderr.log` that would be overwritten by later attempts.
@@ -160,6 +163,9 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - `acpus visualize` without a Run ID MUST open a picker backed by Run listing; it MUST NOT require a multi-Run dashboard.
 - `acpus visualize <runId>` and `acpus run --visualize` MUST open the single-Run visualizer view for the selected or submitted Run.
 - The single-Run visualizer view MUST render the frozen IR snapshot and overlay persisted Node states.
+- For a selected Agent Step, the single-Run visualizer MAY read the selected Node's `attempt-NNN.transcript.jsonl` artifacts from the local filesystem and derive display-only execution telemetry from structured acpx/ACP events.
+- Agent execution telemetry MUST count unique `toolCallId` values from `tool_call` and `tool_call_update` events. The "last tools" display MUST show the three unique tool calls with the most recent update.
+- Agent execution telemetry MUST show exact output tokens when a structured usage event provides `output_tokens` or `outputTokens`. When exact usage is unavailable, the visualizer MUST estimate output tokens from structured Agent message text using `tokenx` and MUST mark the value as estimated. It MUST NOT count prompt text, tool output, Agent thought chunks, or context `used`/`size` as output tokens.
 
 ### Run-Level Control
 
@@ -220,7 +226,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 
 - Runtime tests MUST cover that Agent Steps are invoked through acpx rather than direct ACP session management by Acpus.
 - Runtime tests MUST cover default Run ID generation using a local-time sortable timestamp prefix and uppercase random suffix.
-- Runtime tests MUST cover that Agent Step attempts write per-attempt prompt/response artifacts and preserve earlier attempt artifact references across automatic retry.
+- Runtime tests MUST cover that Agent Step attempts publish the rendered prompt and live prompt/transcript artifact references while the Node is running, preserve append-built transcript contents at finalization, write per-attempt prompt/response artifacts, and preserve earlier attempt artifact references across automatic retry.
 - Runtime tests MUST cover a real Acpus→acpx→Mock Agent end-to-end path for: Run-level pause producing a partial transcript artifact and a `paused` Agent Step; Run-level resume re-entering the paused Agent Step with the fixed continuation prompt and completing the turn; and Node-level retry recovering a dead agent subprocess by re-running the Activity.
 - Runtime tests MUST cover that Program Steps execute as local subprocesses.
 - Runtime tests MUST cover that workflow retry, timeout, pause, resume, and cancel decisions remain owned by Acpus.

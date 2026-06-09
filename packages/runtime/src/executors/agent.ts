@@ -42,7 +42,7 @@ export class AgentExecutor implements ExecutorAdapter {
     this.cancelGraceMs = options?.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS;
   }
 
-  async execute({ node, context, signal, nodeKey, continuation, retry }: ExecutionRequest): Promise<ExecutorResult> {
+  async execute({ node, context, signal, nodeKey, prompt: preparedPrompt, continuation, retry, onStream }: ExecutionRequest): Promise<ExecutorResult> {
     const agent = node.metadata.agent as AgentSpec | undefined;
     if (!agent) {
       return { failureKind: "spawn", error: `Agent step '${node.id}' has no resolved agent definition` };
@@ -56,24 +56,17 @@ export class AgentExecutor implements ExecutorAdapter {
     // config errors and must not consume output-retry attempts.
     let cwd: string | undefined;
     let env: NodeJS.ProcessEnv;
-    let renderedTask: string;
+    let prompt: string;
     try {
       cwd = this.resolveCwd(agent.cwd, context);
       env = { ...process.env, ...this.stringEnv(agent.env, context) };
-      renderedTask = this.evaluator.evaluateTemplate((node.metadata.prompt as string) ?? "", context);
+      prompt = preparedPrompt ?? renderAgentRequestPrompt(node, context, this.evaluator, Boolean(continuation), Boolean(retry));
     } catch (error) {
       return {
         failureKind: "config",
         error: `Failed to evaluate agent configuration template: ${error instanceof Error ? error.message : String(error)}`
       };
     }
-
-    // Prompt text. Base is the rendered task template on a fresh first run, or a
-    // fixed continuation prompt when continuing a paused turn or auto-retrying a
-    // parse/schema failure. When an output schema is declared we append it as an
-    // explicit contract on the first run and on retries; a plain continuation
-    // relies on the original task already stored in the acpx session.
-    const prompt = buildAgentPrompt(renderedTask, outputSchema, Boolean(continuation), Boolean(retry));
 
     if (signal.aborted) {
       return { partial: true, error: "Aborted before execution", prompt, responseText: "" };
@@ -110,6 +103,8 @@ export class AgentExecutor implements ExecutorAdapter {
       const promptGlobalArgs = [...(timeoutSeconds ? ["--timeout", timeoutSeconds] : []), "--format", "json"];
       const promptArgs = [...invoker.prefixArgs, ...build(promptGlobalArgs, ["prompt", "-s", sessionName, prompt])];
       const proc = execa(invoker.command, promptArgs, { reject: false, env });
+      proc.stdout?.on("data", (chunk) => onStream?.("stdout", String(chunk)));
+      proc.stderr?.on("data", (chunk) => onStream?.("stderr", String(chunk)));
 
       const cancellation = this.wireCooperativeCancel(proc, signal, invoker, build, sessionName, env);
 
@@ -285,6 +280,19 @@ export function buildAgentPrompt(
     return CONTINUATION_PROMPT;
   }
   return outputSchema ? renderedTask + schemaSection(outputSchema) : renderedTask;
+}
+
+/** Render the exact Agent request prompt that will be sent to acpx. */
+export function renderAgentRequestPrompt(
+  node: { metadata: Record<string, unknown> },
+  context: ExpressionContext,
+  evaluator: ExpressionEvaluator,
+  continuation: boolean,
+  retry: boolean
+): string {
+  const renderedTask = evaluator.evaluateTemplate((node.metadata.prompt as string) ?? "", context);
+  const outputSchema = node.metadata.output as Record<string, unknown> | undefined;
+  return buildAgentPrompt(renderedTask, outputSchema, continuation, retry);
 }
 
 /**
