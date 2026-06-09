@@ -2,7 +2,7 @@ import { execa, type ResultPromise } from "execa";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import type { AgentSpec } from "@acpus/core";
+import { parseDurationMs, type AgentSpec } from "@acpus/core";
 import type { ExpressionContext, ExecutorResult } from "../types.js";
 import type { ExecutorAdapter, ExecutionRequest } from "./types.js";
 import { ExpressionEvaluator } from "../evaluator.js";
@@ -50,6 +50,7 @@ export class AgentExecutor implements ExecutorAdapter {
 
     const outputSchema = node.metadata.output as Record<string, unknown> | undefined;
     const sessionName = this.sessionName(context.run_id, nodeKey);
+    const timeoutSeconds = this.resolveTimeoutSeconds(node.metadata.timeout);
 
     // Evaluate local templates before touching acpx. These are deterministic
     // config errors and must not consume output-retry attempts.
@@ -106,7 +107,8 @@ export class AgentExecutor implements ExecutorAdapter {
       }
 
       // Run the prompt, streaming the ACP protocol as NDJSON.
-      const promptArgs = [...invoker.prefixArgs, ...build(["--format", "json"], ["prompt", "-s", sessionName, prompt])];
+      const promptGlobalArgs = [...(timeoutSeconds ? ["--timeout", timeoutSeconds] : []), "--format", "json"];
+      const promptArgs = [...invoker.prefixArgs, ...build(promptGlobalArgs, ["prompt", "-s", sessionName, prompt])];
       const proc = execa(invoker.command, promptArgs, { reject: false, env });
 
       const cancellation = this.wireCooperativeCancel(proc, signal, invoker, build, sessionName, env);
@@ -198,7 +200,11 @@ export class AgentExecutor implements ExecutorAdapter {
    * adapter name is the command prefix.
    */
   private argsBuilder(agent: AgentSpec, cwd: string): (global: string[], sub: string[]) => string[] {
-    const globalBase = ["--cwd", cwd, ...(agent.model ? ["--model", agent.model] : [])];
+    const globalBase = [
+      "--cwd",
+      cwd,
+      ...(agent.model ? ["--model", agent.model] : [])
+    ];
     if (agent.type === "command") {
       const command = agent.use ?? "";
       return (global, sub) => ["--agent", command, ...globalBase, ...global, ...sub];
@@ -227,6 +233,16 @@ export class AgentExecutor implements ExecutorAdapter {
       return resolve(this.evaluator.evaluateTemplate(cwd, context));
     }
     return process.cwd();
+  }
+
+  private resolveTimeoutSeconds(timeout: unknown): string | undefined {
+    const milliseconds = typeof timeout === "number"
+      ? timeout
+      : typeof timeout === "string"
+        ? parseDurationMs(timeout)
+        : undefined;
+    if (milliseconds === undefined || milliseconds <= 0) return undefined;
+    return String(milliseconds / 1000);
   }
 
   private stringEnv(env: Record<string, unknown> | undefined, context: ExpressionContext): Record<string, string> {

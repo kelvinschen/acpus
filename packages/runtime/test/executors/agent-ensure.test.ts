@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { AgentExecutor } from "../../src/executors/agent.js";
 import type { IrNode } from "@acpus/core";
 import type { ExpressionContext } from "../../src/types.js";
-import { mkdtempSync, writeFileSync, unlinkSync, chmodSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, unlinkSync, chmodSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -48,6 +48,27 @@ exit 0
 `);
   chmodSync(script, 0o755);
   return script;
+}
+
+function writeRecordingAcpxScript(dir: string): { script: string; logPath: string } {
+  const script = join(dir, "mock-acpx-record.js");
+  const logPath = join(dir, "argv.log");
+  writeFileSync(script, `#!/usr/bin/env node
+const fs = require("node:fs");
+fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(process.argv.slice(2)) + "\\n");
+console.log(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } } } }));
+console.log(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } }));
+`);
+  chmodSync(script, 0o755);
+  return { script, logPath };
+}
+
+function readRecordedPromptArgs(logPath: string): string[] {
+  const lines = readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean);
+  const calls = lines.map((line) => JSON.parse(line) as string[]);
+  const promptArgs = calls.find((args) => args.includes("prompt"));
+  if (!promptArgs) throw new Error("No prompt invocation was recorded");
+  return promptArgs;
 }
 
 describe("AgentExecutor: sessions ensure failure", () => {
@@ -103,5 +124,76 @@ exit 0
     expect(result.failureKind).toBe("spawn");
     expect(result.exitCode).toBe(42);
     expect(result.error).toBeTruthy();
+  });
+});
+
+describe("AgentExecutor: acpx timeout", () => {
+  it("passes string Agent Step timeout to acpx as seconds", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-agent-test-"));
+    tmpDirs.push(dir);
+    const { script, logPath } = writeRecordingAcpxScript(dir);
+
+    const executor = new AgentExecutor({ acpxPath: script });
+    const node = makeAgentNode({
+      agent: { type: "builtin", use: "mock", model: "test-model" },
+      prompt: "Hello",
+      timeout: "20m"
+    });
+    await executor.execute({
+      node,
+      context: baseCtx(),
+      signal: new AbortController().signal,
+      nodeKey: "workflow/test-agent"
+    });
+
+    const promptArgs = readRecordedPromptArgs(logPath);
+    const timeoutIndex = promptArgs.indexOf("--timeout");
+    expect(timeoutIndex).toBeGreaterThanOrEqual(0);
+    expect(promptArgs[timeoutIndex + 1]).toBe("1200");
+  });
+
+  it("passes numeric Agent Step timeout to acpx as seconds", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-agent-test-"));
+    tmpDirs.push(dir);
+    const { script, logPath } = writeRecordingAcpxScript(dir);
+
+    const executor = new AgentExecutor({ acpxPath: script });
+    const node = makeAgentNode({
+      agent: { type: "builtin", use: "mock", model: "test-model" },
+      prompt: "Hello",
+      timeout: 300
+    });
+    await executor.execute({
+      node,
+      context: baseCtx(),
+      signal: new AbortController().signal,
+      nodeKey: "workflow/test-agent"
+    });
+
+    const promptArgs = readRecordedPromptArgs(logPath);
+    const timeoutIndex = promptArgs.indexOf("--timeout");
+    expect(timeoutIndex).toBeGreaterThanOrEqual(0);
+    expect(promptArgs[timeoutIndex + 1]).toBe("0.3");
+  });
+
+  it("omits acpx timeout when Agent Step timeout is absent", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-agent-test-"));
+    tmpDirs.push(dir);
+    const { script, logPath } = writeRecordingAcpxScript(dir);
+
+    const executor = new AgentExecutor({ acpxPath: script });
+    const node = makeAgentNode({
+      agent: { type: "builtin", use: "mock", model: "test-model" },
+      prompt: "Hello"
+    });
+    await executor.execute({
+      node,
+      context: baseCtx(),
+      signal: new AbortController().signal,
+      nodeKey: "workflow/test-agent"
+    });
+
+    const promptArgs = readRecordedPromptArgs(logPath);
+    expect(promptArgs).not.toContain("--timeout");
   });
 });
