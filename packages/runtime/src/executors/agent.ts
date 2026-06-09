@@ -49,17 +49,21 @@ export class AgentExecutor implements ExecutorAdapter {
     }
 
     const outputSchema = node.metadata.output as Record<string, unknown> | undefined;
-    const cwd = this.resolveCwd(agent.cwd, context);
     const sessionName = this.sessionName(context.run_id, nodeKey);
 
-    // Evaluate env templates. A bad expression is a user-facing error.
+    // Evaluate local templates before touching acpx. These are deterministic
+    // config errors and must not consume output-retry attempts.
+    let cwd: string | undefined;
     let env: NodeJS.ProcessEnv;
+    let renderedTask: string;
     try {
+      cwd = this.resolveCwd(agent.cwd, context);
       env = { ...process.env, ...this.stringEnv(agent.env, context) };
+      renderedTask = this.evaluator.evaluateTemplate((node.metadata.prompt as string) ?? "", context);
     } catch (error) {
       return {
-        failureKind: "parse",
-        error: `Failed to evaluate env template: ${error instanceof Error ? error.message : String(error)}`
+        failureKind: "config",
+        error: `Failed to evaluate agent configuration template: ${error instanceof Error ? error.message : String(error)}`
       };
     }
 
@@ -68,7 +72,6 @@ export class AgentExecutor implements ExecutorAdapter {
     // parse/schema failure. When an output schema is declared we append it as an
     // explicit contract on the first run and on retries; a plain continuation
     // relies on the original task already stored in the acpx session.
-    const renderedTask = this.evaluator.evaluateTemplate((node.metadata.prompt as string) ?? "", context);
     const prompt = buildAgentPrompt(renderedTask, outputSchema, Boolean(continuation), Boolean(retry));
 
     if (signal.aborted) {
@@ -241,7 +244,7 @@ function sanitizeSession(nodeKey: string): string {
 
 /** Render the declared output schema as an explicit contract section appended to the prompt. */
 function schemaSection(outputSchema: Record<string, unknown>): string {
-  return `\n\n# OUTPUT SCHEMA\n${JSON.stringify(outputSchema, null, 2)}`;
+  return `\n\n# OUTPUT SCHEMA\n**After completing the task, your final response MUST be exactly one JSON object that conforms to this schema, with no Markdown, prose, or extra keys.**\n${JSON.stringify(outputSchema, null, 2)}`;
 }
 
 /**

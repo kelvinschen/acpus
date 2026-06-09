@@ -496,7 +496,7 @@ function formatRequiredMessage(missing: string, code: string, _path: string): st
     case "GUARD_ACTION":
       return "guard.then and guard.else must be one of continue, fail, or complete.";
     case "RETRY_SHAPE":
-      return "retry.max must be a positive integer.";
+      return "retry.max must be a non-negative integer.";
     default:
       return `Missing required property '${missing}'.`;
   }
@@ -529,7 +529,7 @@ function formatTypeMessage(code: string, path: string, expectedType: string): st
 function formatMinimumMessage(code: string, _path: string): string {
   switch (code) {
     case "RETRY_SHAPE":
-      return "retry.max must be a positive integer.";
+      return "retry.max must be a non-negative integer.";
     case "FANOUT_SUCCESS_CRITERIA":
       return "fanout.success_criteria.min_success must be a positive integer.";
     case "STEP_TIMEOUT":

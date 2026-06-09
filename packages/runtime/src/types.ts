@@ -95,10 +95,10 @@ export interface ExpressionContext {
 
 /**
  * Classification of an executor failure. Used by the interpreter to decide
- * whether a node is non-recoverable (→ failed) and whether an agent failure
- * is retryable (parse/schema).
+ * whether a node is non-recoverable (→ failed) and whether an agent response
+ * failure is retryable (parse/schema).
  */
-export type FailureKind = "parse" | "schema" | "spawn" | "timeout" | "killed" | "capture" | "exit";
+export type FailureKind = "parse" | "schema" | "spawn" | "timeout" | "killed" | "capture" | "exit" | "config";
 
 export interface ExecutorResult {
   output?: unknown;

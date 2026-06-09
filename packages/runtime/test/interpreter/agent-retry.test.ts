@@ -18,6 +18,42 @@ describe("Agent automatic retry", () => {
     cleanups.length = 0;
   });
 
+  it("defaults schema-backed agent steps to two output retries", async () => {
+    const ir = compileYaml(`
+version: 1
+name: agent-default-retry
+agents:
+  coder:
+    type: command
+    use: "echo stub"
+workflow:
+  steps:
+    - id: work
+      run: agent
+      use: coder
+      prompt: "do"
+      output:
+        ok: boolean
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      agentResponses: {
+        work: { sequence: [{ failureKind: "schema" }, { failureKind: "parse" }, { output: { ok: true } }] }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+
+    const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "work");
+    expect(node?.state).toBe("completed");
+    expect(node?.output).toEqual({ output: { ok: true } });
+    expect(node?.artifactRefs?.some((ref) => ref.endsWith("attempt-001.response.md"))).toBe(true);
+    expect(node?.artifactRefs?.some((ref) => ref.endsWith("attempt-002.response.md"))).toBe(true);
+    expect(node?.artifactRefs?.some((ref) => ref.endsWith("attempt-003.response.md"))).toBe(true);
+  });
+
   it("retries a schema failure and succeeds within max attempts", async () => {
     const ir = compileYaml(`
 version: 1
@@ -148,11 +184,13 @@ workflow:
       use: coder
       prompt: "do"
       retry: { max: 1 }
+      output:
+        ok: boolean
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
       agentResponses: {
-        work: { sequence: [{ failureKind: "schema" }, { failureKind: "schema" }] }
+        work: { sequence: [{ failureKind: "schema" }, { failureKind: "schema" }, { output: { ok: true } }] }
       }
     });
     cleanups.push(cleanup);
@@ -162,12 +200,47 @@ workflow:
 
     const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "work");
     expect(node?.state).toBe("failed");
+    expect(node?.artifactRefs?.some((ref) => ref.endsWith("attempt-003.response.md"))).toBe(false);
   });
 
-  it("does not retry without a retry policy", async () => {
+  it("honors retry max zero as an opt-out for schema-backed agent steps", async () => {
     const ir = compileYaml(`
 version: 1
-name: agent-no-retry
+name: agent-retry-opt-out
+agents:
+  coder:
+    type: command
+    use: "echo stub"
+workflow:
+  steps:
+    - id: work
+      run: agent
+      use: coder
+      prompt: "do"
+      retry: { max: 0 }
+      output:
+        ok: boolean
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      agentResponses: {
+        work: { sequence: [{ failureKind: "schema" }, { output: { ok: true } }] }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("failed");
+
+    const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "work");
+    expect(node?.state).toBe("failed");
+    expect(node?.artifactRefs?.some((ref) => ref.endsWith("attempt-002.response.md"))).toBe(false);
+  });
+
+  it("does not apply a default retry when no output schema is declared", async () => {
+    const ir = compileYaml(`
+version: 1
+name: agent-no-schema-default-retry
 agents:
   coder:
     type: command
@@ -189,5 +262,37 @@ workflow:
 
     const meta = await interpreter.start(ir, { input: {} });
     expect(meta.status).toBe("failed");
+  });
+
+  it("does not retry deterministic agent configuration template failures", async () => {
+    const ir = compileYaml(`
+version: 1
+name: agent-config-failure-no-retry
+agents:
+  coder:
+    type: command
+    use: "echo stub"
+    env:
+      BROKEN: "\${{ missing_var }}"
+workflow:
+  steps:
+    - id: work
+      run: agent
+      use: coder
+      prompt: "do"
+      output:
+        ok: boolean
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({ useRealAgentExecutor: true });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("failed");
+
+    const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "work");
+    expect(node?.state).toBe("failed");
+    expect(node?.attempt).toBe(1);
+    expect(node?.error).toContain("(config)");
   });
 });

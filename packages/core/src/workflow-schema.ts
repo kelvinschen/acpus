@@ -340,7 +340,7 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
       properties: {
         max: {
           type: "integer",
-          minimum: 1
+          minimum: 0
         },
         backoff: { type: "string" }    // duration format validated by compiler
       }

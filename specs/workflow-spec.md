@@ -35,9 +35,13 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - An Agent Step MUST declare `output` as an object when `output` is present.
 - An Agent Step with `output` present MUST produce a JSON object that matches the declared output schema, exposed at `steps.<id>.output`.
 - An Agent Step result MUST be exposed as an envelope `{ output }` at `steps.<id>`, so the produced object is read through `steps.<id>.output`.
-- Agent output parse failures and schema failures MUST be handled as continuation retries when retry attempts remain.
-- An Agent Step MAY declare `retry` as an object with a positive integer `max` and an optional duration `backoff`.
-- When `retry` is present, Agent output parse or schema failures MUST trigger automatic re-execution until `max` attempts are exhausted.
+- Agent response output parse failures and schema failures MUST be handled as continuation retries when retry attempts remain.
+- An Agent Step MAY declare `retry` as an object with a non-negative integer `max` and an optional duration `backoff`.
+- `retry.max` MUST count extra retry attempts after the initial execution.
+- An Agent Step with `output` present and no explicit `retry.max` MUST default to `retry.max: 2` for Agent response output parse and schema failures.
+- `retry.max: 0` MUST disable automatic Agent response output retry.
+- Agent deterministic configuration or template failures MUST NOT be treated as Agent response output parse failures and MUST NOT trigger automatic output retry.
+- When retry attempts remain, Agent response output parse or schema failures MUST trigger automatic re-execution until `max` attempts are exhausted.
 
 ### Step Common Fields
 

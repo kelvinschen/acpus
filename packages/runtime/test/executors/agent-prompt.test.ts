@@ -7,7 +7,8 @@ const SCHEMA = {
   properties: { approved: { type: "boolean" }, score: { type: "integer" } },
   required: ["approved", "score"]
 };
-const SCHEMA_SECTION = `\n\n# OUTPUT SCHEMA\n${JSON.stringify(SCHEMA, null, 2)}`;
+const SCHEMA_INSTRUCTION = "**After completing the task, your final response MUST be exactly one JSON object that conforms to this schema, with no Markdown, prose, or extra keys.**";
+const SCHEMA_SECTION = `\n\n# OUTPUT SCHEMA\n${SCHEMA_INSTRUCTION}\n${JSON.stringify(SCHEMA, null, 2)}`;
 
 describe("buildAgentPrompt", () => {
   it("first run with schema: task prompt + OUTPUT SCHEMA section", () => {

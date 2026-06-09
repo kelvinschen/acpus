@@ -335,7 +335,7 @@ workflow:
     expect(hasError(src, "APPROVAL_ON_TIMEOUT")).toBe(true);
   });
 
-  it("rejects non-positive retry max", () => {
+  it("accepts zero retry max", () => {
     const src = `
 version: 1
 name: test
@@ -348,6 +348,23 @@ workflow:
       use: mock
       prompt: "x"
       retry: { max: 0 }
+`;
+    expect(hasError(src, "RETRY_SHAPE")).toBe(false);
+  });
+
+  it("rejects negative retry max", () => {
+    const src = `
+version: 1
+name: test
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: s1
+      run: agent
+      use: mock
+      prompt: "x"
+      retry: { max: -1 }
 `;
     expect(hasError(src, "RETRY_SHAPE")).toBe(true);
   });

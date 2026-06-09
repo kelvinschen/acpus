@@ -381,10 +381,10 @@ workflow:
     expect(result.diagnostics.some((d) => d.code === "FANOUT_OVER")).toBe(true);
   });
 
-  it("rejects an agent retry with a non-positive max", () => {
+  it("accepts an agent retry max of zero", () => {
     const source = `
 version: 1
-name: bad-retry
+name: zero-retry
 agents:
   mock: { type: command, use: "echo stub" }
 workflow:
@@ -397,8 +397,27 @@ workflow:
 `;
     const result = lintWorkflow(source);
 
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects an agent retry with a negative max", () => {
+    const source = `
+version: 1
+name: bad-retry
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: mock
+      prompt: "x"
+      retry: { max: -1 }
+`;
+    const result = lintWorkflow(source);
+
     expect(result.ok).toBe(false);
-    expect(result.diagnostics.some((d) => d.code === "RETRY_SHAPE")).toBe(true);
+    expect(result.diagnostics.some((d) => d.code === "RETRY_SHAPE" && d.message.includes("non-negative"))).toBe(true);
   });
 
   it("rejects an agent retry with an invalid backoff", () => {

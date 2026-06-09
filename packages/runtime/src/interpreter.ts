@@ -785,7 +785,8 @@ export class WorkflowInterpreter {
 
   private async executeAgent(node: IrNode, ctx: ExpressionContext, runId: string, signal: AbortSignal, nodeKey: string, continuation?: boolean): Promise<LeafResult> {
     const retry = node.metadata.retry as { max?: number; backoff?: string } | undefined;
-    const maxRetries = typeof retry?.max === "number" ? retry.max : 0;
+    const hasOutputSchema = node.metadata.output !== undefined;
+    const maxRetries = typeof retry?.max === "number" ? retry.max : hasOutputSchema ? 2 : 0;
     const backoffMs = retry?.backoff ? parseDurationMs(retry.backoff) : 0;
     const allArtifactRefs: string[] = [...(this.store.readNodeState(runId, nodeKey)?.artifactRefs ?? [])];
 
