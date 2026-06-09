@@ -262,11 +262,11 @@ function itemForLane(descendants: ParsedState[], lane: string): string | undefin
   return undefined;
 }
 
-/** Friendly label for a lane/round group row, e.g. "lane=0 «moduleA»" or "round=2". */
+/** Friendly label for a lane/round group row, e.g. "lane=0 [moduleA]" or "round=2". */
 function labelForGroup(groupDim: Dim, value: string, scope: Scope): string {
   if (groupDim === "lane") {
     const item = scope.get("item");
-    return item !== undefined ? `lane=${value} «${item}»` : `lane=${value}`;
+    return item !== undefined ? `lane=${value} [${item}]` : `lane=${value}`;
   }
   return `${groupDim}=${value}`;
 }
@@ -345,9 +345,9 @@ export interface DisplayRow {
   groupItem?: string;
   /**
    * Tree guide-line prefix split into colorable segments (one per column).
-   * Each segment is 3 chars (e.g. "│  ", "   ", "├─ ", "└─ "). `parallel`
-   * marks whether the column belongs to a parallel/fanout container, so the
-   * renderer can color concurrent branches differently from sequential ones.
+   * Each segment is 3 chars (e.g. "│  ", "   ", "├─ ", "└─ "). `ownerKind`
+   * marks the container kind that owns the column, so guide-line colors match
+   * the node-kind legend.
    */
   treeSegments: TreeSegment[];
 }
@@ -355,8 +355,8 @@ export interface DisplayRow {
 /** One colorable column of a tree guide-line prefix. */
 export interface TreeSegment {
   text: string;
-  /** True if this column's owning container is parallel/fanout (concurrent). */
-  parallel: boolean;
+  /** The node kind whose child column this segment belongs to. */
+  ownerKind: IrNodeKind;
 }
 
 /** Tree guide-line glyphs. */
@@ -371,26 +371,20 @@ const TREE = {
  * Build the colorable guide-line segments for a node.
  *  - `ancestorIsLast[i]`  — whether the i-th ancestor on the path is its
  *    parent's last child (decides "│  "/"   " columns and the final connector).
- *  - `ancestorParallel[i]` — whether the i-th column's owning container is a
- *    parallel/fanout (concurrent) node, used purely for coloring.
+ *  - `ancestorKinds[i]` — the kind of the container that owns this column.
  */
-function treeSegmentsFor(ancestorIsLast: boolean[], ancestorParallel: boolean[]): TreeSegment[] {
+function treeSegmentsFor(ancestorIsLast: boolean[], ancestorKinds: IrNodeKind[]): TreeSegment[] {
   const segments: TreeSegment[] = [];
   const n = ancestorIsLast.length;
   for (let i = 0; i < n; i++) {
-    const parallel = ancestorParallel[i] ?? false;
+    const ownerKind = ancestorKinds[i] ?? "pipeline";
     if (i < n - 1) {
-      segments.push({ text: ancestorIsLast[i] ? TREE.space : TREE.vertical, parallel });
+      segments.push({ text: ancestorIsLast[i] ? TREE.space : TREE.vertical, ownerKind });
     } else {
-      segments.push({ text: ancestorIsLast[i] ? TREE.last : TREE.branch, parallel });
+      segments.push({ text: ancestorIsLast[i] ? TREE.last : TREE.branch, ownerKind });
     }
   }
   return segments;
-}
-
-/** True for concurrent container kinds (their children/lanes run in parallel). */
-function isParallelKind(kind: IrNodeKind): boolean {
-  return kind === "parallel" || kind === "fanout";
 }
 
 /** Build the display-ordered, selectable rows for the whole tree. */
@@ -404,11 +398,11 @@ function walkRows(
   node: RenderNode,
   rows: DisplayRow[],
   ancestorIsLast: boolean[],
-  ancestorParallel: boolean[],
+  ancestorKinds: IrNodeKind[],
   pathKey: string
 ): void {
   const inst = node.instances.length === 1 ? node.instances[0] : undefined;
-  const treeSegments = treeSegmentsFor(ancestorIsLast, ancestorParallel);
+  const treeSegments = treeSegmentsFor(ancestorIsLast, ancestorKinds);
 
   if (node.type === "group") {
     rows.push({
@@ -445,19 +439,12 @@ function walkRows(
     });
   }
 
-  // Whether THIS node makes its children concurrent (so the children's
-  // connector column is colored as parallel): parallel/fanout IR nodes, and
-  // lane group rows (a fanout's lanes run concurrently).
-  const childrenParallel = node.type === "group"
-    ? node.groupDim === "lane"
-    : isParallelKind(node.irNode.kind);
-
   node.children.forEach((child, i) =>
     walkRows(
       child,
       rows,
       [...ancestorIsLast, i === node.children.length - 1],
-      [...ancestorParallel, childrenParallel],
+      [...ancestorKinds, node.irNode.kind],
       `${pathKey}/${i}`
     )
   );
@@ -554,10 +541,11 @@ function summarize(node: IrNode): string | undefined {
 }
 
 /** Format a duration between two ISO timestamps as HH:MM:SS. */
-export function formatDuration(startedAt?: string, completedAt?: string): string {
+export function formatDuration(startedAt?: string, completedAt?: string, freezeAt?: string | number): string {
   if (!startedAt) return "--:--:--";
   const start = Date.parse(startedAt);
-  const end = completedAt ? Date.parse(completedAt) : Date.now();
+  const frozen = typeof freezeAt === "number" ? freezeAt : freezeAt ? Date.parse(freezeAt) : undefined;
+  const end = completedAt ? Date.parse(completedAt) : frozen ?? Date.now();
   if (Number.isNaN(start) || Number.isNaN(end) || end < start) return "--:--:--";
   return formatElapsed(end - start);
 }

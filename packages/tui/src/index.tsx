@@ -24,5 +24,16 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
   const client = new RunSupervisorClient(options.endpoint);
   client.clientKind = "visualize";
   const { waitUntilExit } = render(<Root client={client} initialRunId={options.runId} />);
-  await waitUntilExit();
+  try {
+    await waitUntilExit();
+  } finally {
+    clearTerminalViewport();
+  }
+}
+
+/** Clear the TUI frame after exit without touching non-interactive output. */
+export function clearTerminalViewport(stdout: NodeJS.WriteStream = process.stdout): boolean {
+  if (!stdout.isTTY) return false;
+  stdout.write("\x1b[2J\x1b[H");
+  return true;
 }

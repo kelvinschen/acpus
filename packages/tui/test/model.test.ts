@@ -8,6 +8,7 @@ import {
   aggregateState,
   indexByNodeId,
   parseNodeKey,
+  formatDuration,
   formatElapsed
 } from "../src/model.js";
 import { visibleRows } from "../src/components/App.js";
@@ -80,9 +81,9 @@ describe("model overlay", () => {
     const mapped = rows.find((r) => r.irNode.id === "mapped");
     expect(mapped?.label).toContain("×2");
 
-    // Two synthetic lane group rows, labeled "lane=N «item»".
+    // Two synthetic lane group rows, labeled "lane=N [item]".
     const groups = rows.filter((r) => r.groupDim === "lane");
-    expect(groups.map((g) => g.label)).toEqual(["lane=0 «a»", "lane=1 «b»"]);
+    expect(groups.map((g) => g.label)).toEqual(["lane=0 [a]", "lane=1 [b]"]);
     expect(groups.map((g) => g.groupItem)).toEqual(["a", "b"]);
 
     // The work node appears once per lane, each a single instance, no "×".
@@ -205,8 +206,8 @@ describe("model overlay", () => {
     expect(prefix("a")).toBe("├─ ");
     expect(prefix("b")).toBe("├─ ");
     expect(prefix("c")).toBe("└─ ");
-    // pipeline children are sequential → not parallel-colored.
-    expect(byId("a")?.treeSegments.every((s) => !s.parallel)).toBe(true);
+    // pipeline children inherit the pipeline guide-line color.
+    expect(byId("a")?.treeSegments.every((s) => s.ownerKind === "pipeline")).toBe(true);
   });
 
   it("draws continuation columns for deeper non-last ancestors", () => {
@@ -224,20 +225,17 @@ describe("model overlay", () => {
     expect(prefix("tail")).toBe("└─ ");
   });
 
-  it("colors parallel-branch guide-line columns distinctly from sequential", () => {
+  it("tracks the owning node kind for guide-line columns", () => {
     const par = node("par", "parallel", {
       children: [node("x", "run.agent"), node("y", "run.agent")]
     });
     const root = node("workflow", "pipeline", { children: [par, node("tail", "run.agent")] });
     const rows = buildRows(buildRenderTree(ir(root), []));
     const byId = (id: string) => rows.find((r) => r.irNode.id === id);
-    // par itself is a child of the (sequential) pipeline → its own connector is sequential.
-    expect(byId("par")?.treeSegments.map((s) => s.parallel)).toEqual([false]);
-    // x/y are children of the parallel → their OWN connector column is parallel-colored.
-    expect(byId("x")?.treeSegments.map((s) => s.parallel)).toEqual([false, true]);
-    expect(byId("y")?.treeSegments.map((s) => s.parallel)).toEqual([false, true]);
-    // tail is a sequential sibling.
-    expect(byId("tail")?.treeSegments.map((s) => s.parallel)).toEqual([false]);
+    expect(byId("par")?.treeSegments.map((s) => s.ownerKind)).toEqual(["pipeline"]);
+    expect(byId("x")?.treeSegments.map((s) => s.ownerKind)).toEqual(["pipeline", "parallel"]);
+    expect(byId("y")?.treeSegments.map((s) => s.ownerKind)).toEqual(["pipeline", "parallel"]);
+    expect(byId("tail")?.treeSegments.map((s) => s.ownerKind)).toEqual(["pipeline"]);
   });
 
   it("counts every runtime instance by state", () => {
@@ -259,6 +257,10 @@ describe("model overlay", () => {
   it("formats elapsed milliseconds as HH:MM:SS", () => {
     expect(formatElapsed(0)).toBe("00:00:00");
     expect(formatElapsed(3661_000)).toBe("01:01:01");
+  });
+
+  it("freezes open-ended durations at a supplied timestamp", () => {
+    expect(formatDuration("2026-06-09T00:00:00.000Z", undefined, "2026-06-09T00:00:05.000Z")).toBe("00:00:05");
   });
 
   it("filters descendants of collapsed rows", () => {

@@ -1,7 +1,12 @@
 import React from "react";
 import { Box, Text } from "ink";
 import type { NodeState } from "@acpus/runtime";
-import { STATE_STYLES } from "../theme.js";
+import { KIND_STYLES, STATE_STYLES } from "../theme.js";
+
+export interface OverviewMessage {
+  text: string;
+  level: "info" | "error";
+}
 
 /**
  * Left pane: aggregate dashboard. Total + per-state counts (always all 7 states,
@@ -11,9 +16,11 @@ import { STATE_STYLES } from "../theme.js";
  */
 export function StatusOverview({
   counts,
+  messages,
   height
 }: {
   counts: Record<NodeState, number> & { total: number };
+  messages?: OverviewMessage[];
   height?: number;
 }): React.ReactElement {
   const done = counts.completed;
@@ -29,7 +36,7 @@ export function StatusOverview({
       borderStyle="round"
       borderColor="gray"
       paddingX={1}
-      width={26}
+      width={28}
       height={height}
       overflow="hidden"
     >
@@ -62,6 +69,30 @@ export function StatusOverview({
         <Text color="gray">
           {done} / {counts.total} completed
         </Text>
+      </Box>
+
+      <Box flexDirection="column" marginTop={1}>
+        <Text color="gray">Node Types</Text>
+        <Box flexDirection="column">
+          {Object.entries(KIND_STYLES).map(([kind, style]) => (
+            <Text key={kind} color={style.color} wrap="truncate">
+              {style.symbol} {style.label}
+            </Text>
+          ))}
+        </Box>
+      </Box>
+
+      <Box flexDirection="column" marginTop={1}>
+        <Text color="gray">Messages</Text>
+        {(messages ?? []).length === 0 ? (
+          <Text color="gray">-</Text>
+        ) : (
+          (messages ?? []).map((msg, i) => (
+            <Text key={i} color={msg.level === "error" ? "red" : "green"} wrap="wrap">
+              {msg.text}
+            </Text>
+          ))
+        )}
       </Box>
     </Box>
   );

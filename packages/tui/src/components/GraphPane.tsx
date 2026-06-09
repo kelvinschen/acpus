@@ -2,7 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import type { DisplayRow } from "../model.js";
 import { formatDuration } from "../model.js";
-import { KIND_LABELS, isComposite, styleForState, TREE_GUIDE_COLOR } from "../theme.js";
+import { isComposite, styleForKind, styleForState } from "../theme.js";
 
 /**
  * Workflow graph rendered as a nested tree/outline. Composite nodes
@@ -18,7 +18,8 @@ export function GraphPane({
   moreAbove = 0,
   moreBelow = 0,
   height,
-  width
+  width,
+  freezeAt
 }: {
   rows: DisplayRow[];
   selectedIndex: number;
@@ -27,6 +28,7 @@ export function GraphPane({
   moreBelow?: number;
   height?: number;
   width?: number;
+  freezeAt?: string | number;
 }): React.ReactElement {
   return (
     <Box
@@ -45,7 +47,7 @@ export function GraphPane({
       {moreAbove > 0 ? <Text color="gray">  ↑ {moreAbove} more</Text> : null}
       <Box flexDirection="column">
         {rows.map((row, i) => (
-          <GraphRow key={row.rowKey} row={row} selected={i === selectedIndex} />
+          <GraphRow key={row.rowKey} row={row} selected={i === selectedIndex} freezeAt={freezeAt} />
         ))}
       </Box>
       {moreBelow > 0 ? <Text color="gray">  ↓ {moreBelow} more</Text> : null}
@@ -53,27 +55,29 @@ export function GraphPane({
   );
 }
 
-function GraphRow({ row, selected }: { row: DisplayRow; selected: boolean }): React.ReactElement {
+export function GraphRow({
+  row,
+  selected,
+  freezeAt
+}: {
+  row: DisplayRow;
+  selected: boolean;
+  freezeAt?: string | number;
+}): React.ReactElement {
   const style = styleForState(row.state);
+  const kindStyle = styleForKind(row.irNode.kind);
   const isGroup = row.groupDim !== undefined;
   const composite = !isGroup && isComposite(row.irNode.kind);
 
-  // Synthetic lane/round group rows show their label as-is, never a kind tag.
-  const kindTag = !isGroup && (composite || row.irNode.kind.startsWith("run."))
-    ? `[${KIND_LABELS[row.irNode.kind]}]`
-    : "";
-
-  const dur = row.instance ? formatDuration(row.instance.startedAt, row.instance.completedAt) : "";
+  const dur = row.instance ? formatDuration(row.instance.startedAt, row.instance.completedAt, freezeAt) : "";
 
   // Single-line row: render everything (incl. duration) inside one truncating
-  // Text so Ink never wraps the duration onto a second line (which produced
-  // intermittent blank lines between leaf rows). The tree guide-line segments
-  // are rendered OUTSIDE the selection highlight so connectors stay visible,
-  // each colored by whether its column belongs to a parallel/sequential branch.
+  // Text so Ink never wraps the duration onto a second line. Tree guide-line
+  // segments stay outside the selection highlight and use the owning kind color.
   return (
     <Text wrap="truncate">
       {row.treeSegments.map((seg, i) => (
-        <Text key={i} color={seg.parallel ? TREE_GUIDE_COLOR.parallel : TREE_GUIDE_COLOR.sequential}>
+        <Text key={i} color={styleForKind(seg.ownerKind).color}>
           {seg.text}
         </Text>
       ))}
@@ -86,11 +90,8 @@ function GraphRow({ row, selected }: { row: DisplayRow; selected: boolean }): Re
         ) : (
           <Text bold={composite}>{row.label}</Text>
         )}
-        {kindTag ? <Text color="blue"> {kindTag}</Text> : null}
-        {row.branchLabel ? <Text color="yellow"> «{row.branchLabel}»</Text> : null}
-        {row.instance && row.instance.attempt > 1 ? (
-          <Text color="yellow"> ↺{row.instance.attempt}</Text>
-        ) : null}
+        <Text color={kindStyle.color}> {kindStyle.symbol}</Text>
+        {row.branchLabel ? <Text color="yellow"> [{row.branchLabel}]</Text> : null}
         {row.summary ? <Text color="gray"> ({row.summary})</Text> : null}
       </Text>
       {dur ? <Text color="gray">  {dur}</Text> : null}

@@ -45,6 +45,25 @@ export const KIND_LABELS: Record<IrNodeKind, string> = {
   subworkflow: "SUBWORKFLOW"
 };
 
+export interface KindStyle {
+  symbol: string;
+  color: string;
+  label: string;
+}
+
+/** Single-width node-kind symbols and colors shared by graph rows and legends. */
+export const KIND_STYLES: Record<IrNodeKind, KindStyle> = {
+  pipeline: { symbol: "▣", color: "green", label: "Pipeline" },
+  "run.agent": { symbol: "◉", color: "cyan", label: "Agent" },
+  "run.program": { symbol: "▸", color: "yellow", label: "Program" },
+  parallel: { symbol: "▥", color: "blueBright", label: "Parallel" },
+  fanout: { symbol: "◬", color: "magenta", label: "Fanout" },
+  switch: { symbol: "◇", color: "blue", label: "Switch" },
+  loop: { symbol: "↻", color: "yellowBright", label: "Loop" },
+  approval: { symbol: "□", color: "white", label: "Approval" },
+  subworkflow: { symbol: "▧", color: "gray", label: "Subworkflow" }
+};
+
 /** Composite kinds control other nodes; the rest are executable leaves. */
 export const COMPOSITE_KINDS: ReadonlySet<IrNodeKind> = new Set<IrNodeKind>([
   "pipeline",
@@ -63,13 +82,6 @@ export function styleForState(state: NodeState | undefined): StateStyle {
   return state ? STATE_STYLES[state] : { glyph: "·", color: "gray", label: "Not started" };
 }
 
-/**
- * Tree guide-line colors. Sequential (pipeline) branches use a muted gray;
- * concurrent (parallel/fanout) branches use a bright blue so they stand out
- * (and don't clash with the cyan pane border) — "these run in order" vs
- * "these run at the same time".
- */
-export const TREE_GUIDE_COLOR = {
-  sequential: "gray",
-  parallel: "blueBright"
-} as const;
+export function styleForKind(kind: IrNodeKind): KindStyle {
+  return KIND_STYLES[kind];
+}

@@ -249,7 +249,9 @@ rules:
       interpreter.pauseRun(runId);
       const paused = await runPromise;
       expect(paused.status).toBe("paused");
-      expect(store.readNodeState(runId, NODE_KEY)?.state).toBe("paused");
+      const pausedTask = store.readNodeState(runId, NODE_KEY);
+      expect(pausedTask?.state).toBe("paused");
+      expect(pausedTask?.error).toBe("Aborted: paused");
 
       // Run-level resume sends the fixed continuation prompt for the paused Agent Step.
       await interpreter.resumeRun(runId);
@@ -257,6 +259,8 @@ rules:
       expect(resumed.status).toBe("completed");
       const task = store.readNodeState(runId, NODE_KEY);
       expect(task?.state).toBe("completed");
+      expect(task?.error).toBeUndefined();
+      expect(task?.attempt).toBe(2);
       expect((task?.output as { output: { text: string } }).output.text).toContain("resumed and finished");
 
       // The continuation prompt artifact proves the fixed continuation prompt was sent.

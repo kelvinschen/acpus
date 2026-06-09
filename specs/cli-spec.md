@@ -65,9 +65,17 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, subm
 - The single-Run visualizer MUST use Space to collapse or expand the selected row when that row has children, with all rows expanded by default.
 - The single-Run visualizer MUST treat `p`, `r`, and `c` as Run-level pause, resume, and cancel controls.
 - The single-Run visualizer MUST treat `R` as Node-level retry only when the selected row is a failed executable Node; otherwise `R` MUST apply Run-level retry when the Run is failed.
+- The single-Run visualizer MUST keep control results, poll errors, and selected awaiting-gate hints in a fixed multi-line Status Overview messages area, not in the footer.
+- The single-Run visualizer MUST render a node-kind legend in Status Overview and MUST render graph node kinds with the symbols `▣`, `◉`, `▸`, `▥`, `◬`, `◇`, `↻`, `□`, and `▧` for pipeline, agent, program, parallel, fanout, switch, loop, approval, and subworkflow respectively.
+- The single-Run visualizer MUST color tree guide-line segments with the same fixed color as the node kind that owns that guide-line column.
+- The single-Run visualizer MUST render switch branch labels and fanout item labels with square brackets, not guillemets.
+- The single-Run visualizer MUST show Run retry generation as `↺N` in the top bar only when the Run's `runAttempt` is greater than `1`, and MUST NOT show per-node attempt markers in graph rows.
+- The single-Run visualizer MUST freeze open-ended Node durations at the Run's `updatedAt` when the Run is not `running`.
+- The single-Run visualizer MUST hide the internal paused-abort reason `Aborted: paused` from the Details error block.
 - The single-Run visualizer MUST support copying the full selected-node details text through OSC 52 with `y` while the details pane is focused.
-- The single-Run visualizer MUST render artifact filenames as OSC 8 links to local `file://` targets while rendering absolute artifact paths as plain wrapped text.
+- The single-Run visualizer MUST render artifact filenames and absolute artifact paths as plain wrapped text without OSC 8 links.
 - The single-Run visualizer MUST wrap long node keys, long definition fields, artifact paths, prompts, outputs, and errors across multiple lines instead of truncating them.
+- The single-Run visualizer MUST clear the terminal viewport after exiting when stdout is a TTY, and MUST NOT emit clear-screen control sequences when stdout is not a TTY.
 - The CLI MUST route Agent Step execution through acpx once Agent Step runtime execution exists.
 - The CLI MUST NOT expose `acpus worker` as a normal runtime command.
 - The CLI MUST NOT expose `--server` or `--task-queue` as normal runtime flags.
@@ -93,5 +101,5 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, subm
 - Runtime CLI tests MUST cover `acpus replay` reproducing a Run's Node topology deterministically and reporting discrepancies when the persisted Run's topology is tampered with.
 - Runtime CLI tests MUST cover `acpus visualize` without a Run ID opening a picker and `acpus visualize <run_id>` opening the single-Run view.
 - Runtime CLI tests MUST cover `acpus ls` and the visualize picker listing the most recent 50 Runs sorted by `updatedAt` descending.
-- TUI tests MUST cover single-Run visualizer wrapping, artifact OSC 8 link metadata, plain-text details copy formatting, and collapse filtering.
+- TUI tests MUST cover single-Run visualizer wrapping, plain-text artifact rendering, plain-text details copy formatting, node-kind symbols, Status Overview messages, frozen durations, hidden paused-abort details, exit viewport clearing, and collapse filtering.
 - Runtime CLI tests MUST cover Agent Step execution through acpx once Agent Activity integration exists.

@@ -75,7 +75,8 @@ export class RunStore {
       irDigest,
       inputDigest,
       createdAt: now,
-      updatedAt: now
+      updatedAt: now,
+      runAttempt: 1
     };
     this.writeRunMeta(runId, meta);
     return meta;

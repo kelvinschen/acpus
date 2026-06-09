@@ -168,7 +168,7 @@ describe("buildDetailLines", () => {
     expect(text).not.toContain("…");
   });
 
-  it("links artifact filenames but keeps absolute paths as plain wrapped text", () => {
+  it("renders artifact filenames and absolute paths as plain wrapped text", () => {
     const uri = "artifact://runs/run-1/nodes/workflow:test/attempt-001.prompt.md";
     const absPath = "/Users/bytedance/KProjects/acpus_alpha/.acpus/runs/run-1/artifacts/workflow:test/attempt-001.prompt.md";
     const row = makeRow({
@@ -184,11 +184,42 @@ describe("buildDetailLines", () => {
 
     const lines = buildDetailLines(row, 44, { [uri]: absPath });
     const filename = lines.find((line) => line.segments.some((seg) => seg.text === "attempt-001.prompt.md"));
-    expect(filename?.segments[0]?.href).toBe("file:///Users/bytedance/KProjects/acpus_alpha/.acpus/runs/run-1/artifacts/workflow:test/attempt-001.prompt.md");
+    expect(filename?.segments[0]).toEqual({ text: "attempt-001.prompt.md", color: "cyan" });
 
     const plain = formatDetailLinesPlainText(lines);
     expect(plain).toContain("attempt-001.prompt.md");
     expect(plain).toContain("/Users/bytedance/KProjects");
     expect(plain).not.toContain("\u001b]8");
+  });
+
+  it("hides the internal paused abort reason from details", () => {
+    const row = makeRow({
+      instance: {
+        nodeKey: "workflow/test",
+        nodeId: "test-node",
+        kind: "run.agent",
+        state: "paused",
+        attempt: 1,
+        error: "Aborted: paused"
+      }
+    });
+    const text = formatDetailLinesPlainText(buildDetailLines(row, 60, {}));
+    expect(text).not.toContain("Error:");
+    expect(text).not.toContain("Aborted: paused");
+  });
+
+  it("uses a frozen clock for open-ended durations", () => {
+    const row = makeRow({
+      instance: {
+        nodeKey: "workflow/test",
+        nodeId: "test-node",
+        kind: "run.agent",
+        state: "paused",
+        attempt: 1,
+        startedAt: "2026-06-09T00:00:00.000Z"
+      }
+    });
+    const text = formatDetailLinesPlainText(buildDetailLines(row, 60, {}, "2026-06-09T00:00:07.000Z"));
+    expect(text).toContain("Duration: 00:00:07");
   });
 });

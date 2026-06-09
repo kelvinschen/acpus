@@ -49,6 +49,7 @@ describe("RunStore", () => {
       expect(meta.runId).toBe("run-001");
       expect(meta.workflowName).toBe("test-workflow");
       expect(meta.status).toBe("running");
+      expect(meta.runAttempt).toBe(1);
       expect(meta.irDigest).toMatch(/^sha256:/);
       expect(meta.inputDigest).toMatch(/^sha256:/);
 

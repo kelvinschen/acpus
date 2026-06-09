@@ -41,7 +41,9 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 ### State Persistence
 
 - The runtime MUST persist per-node state as individual JSON files with atomic write (temp file + rename) for crash safety.
-- The runtime MUST persist run-level metadata (run ID, workflow name, status, IR digest, input digest) separately from node state.
+- The runtime MUST persist run-level metadata (run ID, workflow name, status, IR digest, input digest, retry generation) separately from node state.
+- Run metadata MUST include `runAttempt`, starting at `1` for a new Run and incrementing by `1` only when a Run-level retry is accepted.
+- A Node persisted as `completed` MUST NOT retain an `error` value from an earlier failed, paused, or cancelled attempt.
 - When a caller does not provide a Run ID, the runtime MUST generate a local-time-sortable Run ID using `yyyyMMddHHmmss` followed by 20 uppercase hexadecimal random characters.
 - The runtime MUST persist a frozen IR snapshot at run creation and MUST NOT re-read mutable YAML during replay or resume.
 - The runtime MUST persist, for each executable leaf Node, a snapshot of its parent dynamic value-context (fanout item, loop round) so retry can rebuild the expression context without re-deriving ancestor scopes; the snapshot MUST contain only value context, never large artifact payloads.
@@ -169,6 +171,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Run-level `resume` MUST send the fixed continuation prompt when it re-enters a paused Agent Step.
 - Run-level `retry` MUST be accepted only for a `failed` Run.
 - Run-level `retry` MUST perform in-place recovery of failed materialized Nodes and MUST NOT rerun completed Nodes.
+- Run-level `retry` MUST increment the Run's `runAttempt`.
 - Run-level `retry` MUST NOT create a new Run and MUST NOT mean rerun from scratch.
 - Invalid Run-level control operations MUST be rejected with a conflict error and MUST leave persisted state unchanged.
 
@@ -216,6 +219,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Runtime tests MUST cover multiple concurrent Runs in the same Workspace.
 - Runtime tests MUST cover Run-level pause, resume, cancel, and retry state validation and effects.
 - Runtime tests MUST cover that Run-level retry is in-place recovery and does not rerun completed Nodes or create a new Run.
+- Runtime tests MUST cover that new Runs start with `runAttempt: 1` and Run-level retry persists an incremented `runAttempt`.
 - Runtime tests MUST cover that Run-level resume resets paused materialized Nodes to `pending` and re-executes without rerunning completed Nodes.
 - Runtime tests MUST cover that Node-level retry restores a failed executable Node's persisted dynamic value-context so fanout item and loop round templates re-render correctly.
 - Runtime tests MUST cover that Node-level retry returns promptly while retried execution continues in the background.

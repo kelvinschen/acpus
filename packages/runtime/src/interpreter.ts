@@ -563,6 +563,7 @@ export class WorkflowInterpreter {
     }
 
     meta.status = "running";
+    meta.runAttempt++;
     meta.updatedAt = new Date().toISOString();
     this.store.writeRunMeta(runId, meta);
   }
@@ -696,6 +697,7 @@ export class WorkflowInterpreter {
         throw new NodeAbortedError(nodeKey, abortedState, artifactRefs, output);
       }
       state.state = "completed";
+      state.error = undefined;
       state.output = output;
       if (artifactRefs) state.artifactRefs = artifactRefs;
       state.completedAt = new Date().toISOString();

@@ -166,7 +166,16 @@ export function createSupervisorApp(
         // runToCompletion always resolves with the RunState (never rejects
         // with undefined), but the catch silences any unexpected throw.
         const meta = store.readRunMeta(runId);
-        return meta ?? { runId, workflowName: "", status: "failed" as const, irDigest: "", inputDigest: "", createdAt: "", updatedAt: "" };
+        return meta ?? {
+          runId,
+          workflowName: "",
+          status: "failed" as const,
+          irDigest: "",
+          inputDigest: "",
+          createdAt: "",
+          updatedAt: "",
+          runAttempt: 1
+        };
       })
       .finally(() => {
         inFlightRuns.delete(runId);

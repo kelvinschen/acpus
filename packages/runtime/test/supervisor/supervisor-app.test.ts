@@ -464,6 +464,29 @@ workflow:
     }
   });
 
+  it("returns incremented runAttempt for Run-level retry", async () => {
+    const d = await bootSupervisor();
+    try {
+      const createRes = await fetch(`${d.baseUrl}/runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ spec: FAILING_SPEC, input: {} })
+      });
+      const { runId, runAttempt } = await createRes.json();
+      expect(runAttempt).toBe(1);
+      expect(await pollStatus(d.baseUrl, runId)).toBe("failed");
+
+      const retryRes = await fetch(`${d.baseUrl}/runs/${runId}/retry`, { method: "POST" });
+      expect(retryRes.status).toBe(200);
+      const retry = await retryRes.json();
+      expect(retry.runAttempt).toBe(2);
+      expect(d.store.readRunMeta(runId)?.runAttempt).toBe(2);
+      expect(await pollStatus(d.baseUrl, runId)).toBe("failed");
+    } finally {
+      await new Promise<void>((r) => d.server.close(() => r()));
+    }
+  });
+
   it("replay does not mutate persisted state after a restart (read-only)", async () => {
     const d1 = await bootSupervisor();
     const createRes = await fetch(`${d1.baseUrl}/runs`, {

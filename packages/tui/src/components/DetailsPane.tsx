@@ -1,9 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
-import { pathToFileURL } from "node:url";
 import type { DisplayRow } from "../model.js";
 import { formatDuration } from "../model.js";
-import { hyperlink } from "../osc8.js";
 import { KIND_LABELS, styleForState } from "../theme.js";
 
 /**
@@ -16,8 +14,8 @@ import { KIND_LABELS, styleForState } from "../theme.js";
  * uniformly, one line per press.
  *
  * `artifactPaths` maps an artifact:// URI to its resolved absolute filesystem
- * path (pre-fetched by App). Artifacts render as an OSC 8-linked cyan filename
- * line followed by a gray absolute-path line in plain wrapped text.
+ * path (pre-fetched by App). Artifacts render as a cyan filename line followed
+ * by a gray absolute-path line in plain wrapped text.
  */
 
 /** One colored segment of a detail line. */
@@ -25,7 +23,6 @@ export interface DetailSegment {
   text: string;
   color?: string;
   bold?: boolean;
-  href?: string;
 }
 
 /** One rendered line of the NODE DETAILS pane. */
@@ -77,9 +74,7 @@ export function DetailsPane({
                   " "
                 ) : (
                   line.segments.map((seg, j) => (
-                    <Text key={j} color={seg.color} bold={seg.bold}>
-                      {seg.href ? hyperlink(seg.text, seg.href) : seg.text}
-                    </Text>
+                    <Text key={j} color={seg.color} bold={seg.bold}>{seg.text}</Text>
                   ))
                 )}
               </Text>
@@ -144,7 +139,8 @@ function textLines(s: string, cols: number, color?: string): DetailLine[] {
 export function buildDetailLines(
   row: DisplayRow | undefined,
   width: number,
-  artifactPaths: Record<string, string>
+  artifactPaths: Record<string, string>,
+  freezeAt?: string | number
 ): DetailLine[] {
   if (!row) return [];
   const cols = Math.max(12, width - 4);
@@ -169,7 +165,7 @@ export function buildDetailLines(
   if (row.groupDim === "round") lines.push(field("Round", row.groupValue ?? "?", cols));
   if (row.branchLabel) lines.push(field("Branch", row.branchLabel, cols));
   if (row.branchWhen) lines.push(...wrappedField("When", row.branchWhen, cols));
-  if (inst) lines.push(field("Duration", formatDuration(inst.startedAt, inst.completedAt), cols));
+  if (inst) lines.push(field("Duration", formatDuration(inst.startedAt, inst.completedAt, freezeAt), cols));
   if (row.nodeKey) lines.push(...wrappedField("Key", row.nodeKey, cols));
 
   // ── Definition (from IR metadata) ──
@@ -193,7 +189,7 @@ export function buildDetailLines(
   }
 
   // ── Error ──
-  if (inst?.error) {
+  if (inst?.error && inst.error !== "Aborted: paused") {
     lines.push(blank());
     lines.push({ segments: [{ text: "Error:", color: "red" }] });
     for (const l of textLines(inst.error, cols, "red")) lines.push(l);
@@ -214,7 +210,7 @@ export function buildDetailLines(
       const absPath = artifactPaths[ref];
       const name = ref.split("/").pop() ?? ref;
       if (absPath) {
-        lines.push({ segments: [{ text: clampInline(name, cols), color: "cyan", href: pathToFileURL(absPath).href }] });
+        lines.push({ segments: [{ text: clampInline(name, cols), color: "cyan" }] });
         for (const l of textLines(`  ${absPath}`, cols, "gray")) lines.push(l);
       } else {
         // Path not resolved yet: show the raw artifact:// URI.
@@ -317,7 +313,7 @@ function wrapText(s: string, width: number): string[] {
   return lines;
 }
 
-/** Plain text form used for clipboard copy; strips colors and OSC links. */
+/** Plain text form used for clipboard copy; strips colors. */
 export function formatDetailLinesPlainText(lines: DetailLine[]): string {
   return lines.map((line) => line.segments.map((seg) => seg.text).join("")).join("\n");
 }

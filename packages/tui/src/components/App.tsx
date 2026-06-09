@@ -12,6 +12,7 @@ import { Footer } from "./Footer.js";
 import { copyToClipboard } from "../osc52.js";
 
 type Focus = "graph" | "details";
+type OverviewMessage = { text: string; level: "info" | "error" };
 
 const KEY_TO_ACTION: Record<string, ControlAction> = {
   p: "pause",
@@ -36,7 +37,7 @@ export function App({
   const [detailsScroll, setDetailsScroll] = useState(0);
   const [collapsedRows, setCollapsedRows] = useState<Set<string>>(() => new Set());
   const [refreshNonce, setRefreshNonce] = useState(0);
-  const [toast, setToast] = useState<{ msg: string; error: boolean } | undefined>();
+  const [messages, setMessages] = useState<OverviewMessage[]>([]);
   const [artifactPaths, setArtifactPaths] = useState<Record<string, string>>({});
 
   const snapshot = useRunPoller(client, runId, 400, refreshNonce);
@@ -77,7 +78,7 @@ export function App({
   // Width budget. STATUS OVERVIEW stays a fixed sidebar; the remaining width is
   // split between GRAPH and DETAILS so the FOCUSED pane gets ~50% of the whole
   // screen and the unfocused one ~25%.
-  const STATUS_WIDTH = 26;
+  const STATUS_WIDTH = 28;
   const remaining = Math.max(20, termCols - STATUS_WIDTH);
   const focusedShare = Math.round(termCols * 0.5);
   const detailsWidth = Math.max(
@@ -85,12 +86,13 @@ export function App({
     Math.min(remaining - 20, focus === "details" ? focusedShare : remaining - focusedShare)
   );
   const graphWidth = Math.max(20, remaining - detailsWidth);
+  const freezeAt = snapshot.run?.status === "running" ? undefined : snapshot.run?.updatedAt;
 
   // Flatten the selected node into a single array of colored lines, then derive
   // the scroll bound from its true length (so long prompts/outputs scroll fully).
   const detailLines = useMemo(
-    () => buildDetailLines(selected, detailsWidth, artifactPaths),
-    [selected, detailsWidth, artifactPaths]
+    () => buildDetailLines(selected, detailsWidth, artifactPaths, freezeAt),
+    [selected, detailsWidth, artifactPaths, freezeAt]
   );
   const detailsMaxScroll = Math.max(0, detailLines.length - detailsVisibleRows);
 
@@ -115,7 +117,7 @@ export function App({
     ).then((triples) => {
       if (cancelled) return;
       const firstError = triples.find(([, , error]) => error !== undefined)?.[2];
-      if (firstError) setToast({ msg: `artifact path unresolved: ${firstError}`, error: true });
+      if (firstError) pushMessage(`artifact path unresolved: ${firstError}`, "error");
       setArtifactPaths((prev) => {
         const next = { ...prev };
         // Cache every result (incl. "" on failure) so we don't refetch.
@@ -168,7 +170,7 @@ export function App({
       }
       if (input === "y") {
         copyToClipboard(formatDetailLinesPlainText(detailLines));
-        setToast({ msg: "details copied via OSC52", error: false });
+        pushMessage("details copied via OSC52", "info");
         return;
       }
       // Fall through to run/node controls (p/r/c/R/a/x) below.
@@ -215,35 +217,39 @@ export function App({
 
     if ((nodeRetry || nodeDecision) && selected && selectedNodeKey) {
       if (!canApply(action, selected.state)) {
-        setToast({ msg: `Cannot ${action} a ${selected.state ?? "not-started"} node.`, error: true });
+        pushMessage(`Cannot ${action} a ${selected.state ?? "not-started"} node.`, "error");
         return;
       }
       try {
         const state = await applyControl(client, action, runId, selectedNodeKey);
-        setToast({ msg: `${action} → ${selectedNodeKey} (${state.state})`, error: false });
+        pushMessage(`${action} → ${selectedNodeKey} (${state.state})`, "info");
         setRefreshNonce((n) => n + 1);
       } catch (err) {
-        setToast({ msg: err instanceof Error ? err.message : String(err), error: true });
+        pushMessage(err instanceof Error ? err.message : String(err), "error");
       }
       return;
     }
 
     if (action === "approve" || action === "reject") {
-      setToast({ msg: `Select an awaiting approval node to ${action}.`, error: true });
+      pushMessage(`Select an awaiting approval node to ${action}.`, "error");
       return;
     }
 
     if (!canApplyRun(action, run?.status)) {
-      setToast({ msg: `Cannot ${action} a ${run?.status ?? "unknown"} run.`, error: true });
+      pushMessage(`Cannot ${action} a ${run?.status ?? "unknown"} run.`, "error");
       return;
     }
     try {
       const state = await applyRunControl(client, action, runId);
-      setToast({ msg: `${action} run → ${state.status}`, error: false });
+      pushMessage(`${action} run → ${state.status}`, "info");
       setRefreshNonce((n) => n + 1);
     } catch (err) {
-      setToast({ msg: err instanceof Error ? err.message : String(err), error: true });
+      pushMessage(err instanceof Error ? err.message : String(err), "error");
     }
+  }
+
+  function pushMessage(text: string, level: OverviewMessage["level"]): void {
+    setMessages((prev) => [...prev, { text, level }].slice(-3));
   }
 
   const run = snapshot.run;
@@ -253,6 +259,13 @@ export function App({
   const elapsed = run
     ? formatElapsed((live ? Date.now() : Date.parse(run.updatedAt)) - Date.parse(run.createdAt))
     : "--:--:--";
+  const overviewMessages = [
+    ...messages,
+    ...(snapshot.error ? [{ text: `supervisor poll error: ${snapshot.error} (retrying)`, level: "error" as const }] : []),
+    ...(selected?.state === "awaiting"
+      ? [{ text: "selected gate is awaiting: a approve, x reject", level: "info" as const }]
+      : [])
+  ].slice(-3);
 
   const win = windowSlice(rows.length, clampedIndex, graphVisibleRows);
   const windowedRows = rows.slice(win.start, win.end);
@@ -283,6 +296,12 @@ export function App({
           <Text color="green">{run?.workflowName}</Text>
           <Text color="gray">  │  Status </Text>
           <Text color={live ? "yellow" : "white"}>{run?.status}</Text>
+          {run && run.runAttempt > 1 ? (
+            <>
+              <Text color="gray">  │  </Text>
+              <Text color="yellow">↺{run.runAttempt}</Text>
+            </>
+          ) : null}
         </Text>
         <Text>
           <Text color="gray">Elapsed </Text>
@@ -293,15 +312,9 @@ export function App({
         </Text>
       </Box>
 
-      {snapshot.error ? (
-        <Box paddingX={1}>
-          <Text color="red">⚠ supervisor poll error: {snapshot.error} (retrying)</Text>
-        </Box>
-      ) : null}
-
       {/* Main 3-pane row: STATUS OVERVIEW | WORKFLOW GRAPH | NODE DETAILS */}
       <Box height={paneHeight}>
-        <StatusOverview counts={counts} height={paneHeight} />
+        <StatusOverview counts={counts} messages={overviewMessages} height={paneHeight} />
         <GraphPane
           rows={windowedRows}
           selectedIndex={clampedIndex - win.start}
@@ -310,6 +323,7 @@ export function App({
           moreBelow={moreBelow}
           height={paneHeight}
           width={graphWidth}
+          freezeAt={freezeAt}
         />
         <DetailsPane
           lines={detailLines}
@@ -321,9 +335,6 @@ export function App({
       </Box>
 
       <Footer
-        toast={toast?.msg}
-        isError={toast?.error}
-        awaiting={selected?.state === "awaiting"}
         focus={focus}
       />
     </Box>

@@ -72,6 +72,8 @@ export interface RunState {
   inputDigest: string;
   createdAt: string;
   updatedAt: string;
+  /** Run generation: starts at 1 and increments on each Run-level retry. */
+  runAttempt: number;
   /** Node states included when inspecting a specific run (GET /runs/:runId) */
   nodes?: NodeExecutionState[];
 }
