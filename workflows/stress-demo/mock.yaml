@@ -1,6 +1,7 @@
 version: 1
 agent_id: fanout-parallel-loop-switch-tui-mock
 deterministic_session_ids: true
+allow_unknown_session_load: true
 default_response:
   type: json
   payload:
@@ -19,7 +20,7 @@ rules:
         ok: true
       stream:
         chunks: 2
-        chunk_interval: 0ms
+        chunk_interval: 10s
   - name: loop-transcript
     when:
       prompt_contains: "branch=loop"
@@ -31,7 +32,19 @@ rules:
         continue: true
       stream:
         chunks: 2
-        chunk_interval: 0ms
+        chunk_interval: 10s
+  - name: loop-continuation
+    when:
+      prompt_contains: "Continue the previous task"
+    respond:
+      type: json
+      payload:
+        branch: loop
+        round: 0
+        continue: true
+      stream:
+        chunks: 2
+        chunk_interval: 10s
   - name: switch-alpha-transcript
     when:
       prompt_contains: "branch=switch alpha"
@@ -43,7 +56,7 @@ rules:
         route: alpha
       stream:
         chunks: 2
-        chunk_interval: 0ms
+        chunk_interval: 10s
   - name: switch-default-transcript
     when:
       prompt_contains: "branch=switch default"
@@ -55,7 +68,7 @@ rules:
         route: default
       stream:
         chunks: 2
-        chunk_interval: 0ms
+        chunk_interval: 10s
   - name: switch-fallback-transcript
     when:
       prompt_contains: "branch=switch fallback"
@@ -67,4 +80,4 @@ rules:
         route: fallback
       stream:
         chunks: 2
-        chunk_interval: 0ms
+        chunk_interval: 10s

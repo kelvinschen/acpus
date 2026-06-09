@@ -1,9 +1,12 @@
 version: 1
-name: fanout-parallel-loop-switch-tui-fixture
+name: stress-demo
 description: |
-  TUI stress fixture: nested fanout → parallel → loop → switch using the ACP
-  mock-agent script fixture. Designed to create many runtime node keys quickly
-  without real token spend or long-running work.
+  TUI stress workflow: nested fanout → parallel → loop → switch using the ACP
+  mock-agent. Designed to create many runtime node keys quickly without real
+  token spend or long-running work.
+
+  Usage:
+    pnpm acpus run workflows/stress-demo/workflow.yaml
 input:
   lanes?:
     type: array
@@ -13,7 +16,7 @@ input:
 agents:
   mock_agent:
     type: command
-    use: "node ./packages/mock-agent/dist/index.js --script ./packages/core/test/fixtures/fanout-parallel-loop-switch-tui/mock.yaml"
+    use: "node ./packages/mock-agent/dist/index.js --script ./workflows/stress-demo/mock.yaml"
     cwd: "."
 workflow:
   steps:
