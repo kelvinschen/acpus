@@ -21,17 +21,18 @@ export class StubAgentExecutor implements ExecutorAdapter {
   async execute({ node, signal }: ExecutionRequest): Promise<ExecutorResult> {
     const stepId = node.id;
     const response = this.responses.get(stepId);
+    const prompt = String(node.metadata.prompt ?? "");
 
     if (!response) {
-      return { error: `No stub response configured for step '${stepId}'` };
+      return { error: `No stub response configured for step '${stepId}'`, prompt, responseText: "" };
     }
     if (response.error) {
-      return { error: response.error };
+      return { error: response.error, prompt, responseText: response.error };
     }
 
     // Check for abort before starting
     if (signal.aborted) {
-      return { partial: true, error: "Aborted before execution" };
+      return { partial: true, error: "Aborted before execution", prompt, responseText: "" };
     }
 
     // Simulate abort listener
@@ -44,7 +45,7 @@ export class StubAgentExecutor implements ExecutorAdapter {
       await new Promise((resolve) => setTimeout(resolve, response.delay ?? 10));
 
       if (aborted || signal.aborted) {
-        return { partial: true, error: "Aborted during execution" };
+        return { partial: true, error: "Aborted during execution", prompt, responseText: "" };
       }
 
       // Pick this call's effective response (sequence supports retry tests).
@@ -52,10 +53,15 @@ export class StubAgentExecutor implements ExecutorAdapter {
 
       // Simulate a classified failure (e.g. parse/schema for retry).
       if (effective.failureKind) {
-        return { failureKind: effective.failureKind, error: `Simulated ${effective.failureKind} failure` };
+        return {
+          failureKind: effective.failureKind,
+          error: `Simulated ${effective.failureKind} failure`,
+          prompt,
+          responseText: effective.responseText ?? `Simulated ${effective.failureKind} failure`
+        };
       }
 
-      return { output: effective.output };
+      return { output: effective.output, prompt, responseText: effective.responseText ?? stringifyResponse(effective.output) };
     } finally {
       signal.removeEventListener("abort", onAbort);
     }
@@ -73,11 +79,19 @@ export class StubAgentExecutor implements ExecutorAdapter {
   }
 }
 
+function stringifyResponse(output: unknown): string {
+  if (typeof output === "string") return output;
+  if (output === undefined) return "";
+  return JSON.stringify(output, null, 2);
+}
+
 export interface StubAgentResponse {
   output?: unknown;
   error?: string;
   /** Simulate a classified failure (parse/schema are retryable). */
   failureKind?: FailureKind;
+  /** Human-readable agent response text for artifact tests. */
+  responseText?: string;
   /** Ordered responses returned on successive calls (for retry tests). */
   sequence?: StubAgentResponse[];
   delay?: number;

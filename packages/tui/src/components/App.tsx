@@ -7,8 +7,9 @@ import { applyControl, canApply, applyRunControl, canApplyRun, type ControlActio
 import { useTerminalSize, windowSlice } from "../useTerminalSize.js";
 import { StatusOverview } from "./StatusOverview.js";
 import { GraphPane } from "./GraphPane.js";
-import { DetailsPane, buildDetailLines } from "./DetailsPane.js";
+import { DetailsPane, buildDetailLines, formatDetailLinesPlainText } from "./DetailsPane.js";
 import { Footer } from "./Footer.js";
+import { copyToClipboard } from "../osc52.js";
 
 type Focus = "graph" | "details";
 
@@ -33,6 +34,7 @@ export function App({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [focus, setFocus] = useState<Focus>("graph");
   const [detailsScroll, setDetailsScroll] = useState(0);
+  const [collapsedRows, setCollapsedRows] = useState<Set<string>>(() => new Set());
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [toast, setToast] = useState<{ msg: string; error: boolean } | undefined>();
   const [artifactPaths, setArtifactPaths] = useState<Record<string, string>>({});
@@ -46,7 +48,8 @@ export function App({
     [snapshot.ir, snapshot.nodes]
   );
 
-  const rows = useMemo(() => (tree ? buildRows(tree) : []), [tree]);
+  const allRows = useMemo(() => (tree ? buildRows(tree) : []), [tree]);
+  const rows = useMemo(() => visibleRows(allRows, collapsedRows), [allRows, collapsedRows]);
 
   const counts = useMemo(
     () =>
@@ -128,21 +131,33 @@ export function App({
   // Reset details scroll when the selection changes.
   useEffect(() => {
     setDetailsScroll(0);
-  }, [clampedIndex]);
+  }, [selected?.rowKey]);
 
   useInput((input, key) => {
     if (input === "q" || (key.ctrl && input === "c")) {
       exit();
       return;
     }
-    if (key.tab) {
-      setFocus((f) => (f === "graph" ? "details" : "graph"));
+    if (input === "h") {
+      setFocus("graph");
+      return;
+    }
+    if (input === "l") {
+      setFocus("details");
       return;
     }
 
     if (focus === "details") {
-      // DETAILS pane: u/d half-page scroll; ↑/↓ line scroll.
+      // DETAILS pane: j/k line scroll; u/d half-page scroll; y copy all.
       const halfPage = Math.max(1, Math.floor(detailsVisibleRows / 2));
+      if (input === "j") {
+        setDetailsScroll((s) => Math.min(detailsMaxScroll, s + 1));
+        return;
+      }
+      if (input === "k") {
+        setDetailsScroll((s) => Math.max(0, s - 1));
+        return;
+      }
       if (input === "d") {
         setDetailsScroll((s) => Math.min(detailsMaxScroll, s + halfPage));
         return;
@@ -151,23 +166,20 @@ export function App({
         setDetailsScroll((s) => Math.max(0, s - halfPage));
         return;
       }
-      if (key.upArrow) {
-        setDetailsScroll((s) => Math.max(0, s - 1));
-        return;
-      }
-      if (key.downArrow) {
-        setDetailsScroll((s) => Math.min(detailsMaxScroll, s + 1));
+      if (input === "y") {
+        copyToClipboard(formatDetailLinesPlainText(detailLines));
+        setToast({ msg: "details copied via OSC52", error: false });
         return;
       }
       // Fall through to run/node controls (p/r/c/R/a/x) below.
     } else {
-      // GRAPH pane: ↑/k select up, ↓/j select down.
-      if (key.upArrow || input === "k") {
+      // GRAPH pane: k/j select, space folds headers.
+      if (input === "k") {
         setSelectedIndex((i) => Math.max(0, i - 1));
         return;
       }
-      if (key.downArrow || input === "j") {
-        setSelectedIndex((i) => Math.min(rows.length - 1, i + 1));
+      if (input === "j") {
+        setSelectedIndex((i) => rows.length === 0 ? 0 : Math.min(rows.length - 1, i + 1));
         return;
       }
       if (input === "g") {
@@ -175,7 +187,16 @@ export function App({
         return;
       }
       if (input === "G") {
-        setSelectedIndex(rows.length - 1);
+        setSelectedIndex(rows.length === 0 ? 0 : rows.length - 1);
+        return;
+      }
+      if (input === " " && selected?.isHeader) {
+        setCollapsedRows((prev) => {
+          const next = new Set(prev);
+          if (next.has(selected.rowKey)) next.delete(selected.rowKey);
+          else next.add(selected.rowKey);
+          return next;
+        });
         return;
       }
     }
@@ -298,4 +319,20 @@ export function App({
       />
     </Box>
   );
+}
+
+export function visibleRows<T extends { rowKey: string; depth: number }>(rows: T[], collapsed: Set<string>): T[] {
+  const visible: T[] = [];
+  let hiddenUntilDepth: number | undefined;
+  for (const row of rows) {
+    if (hiddenUntilDepth !== undefined) {
+      if (row.depth > hiddenUntilDepth) continue;
+      hiddenUntilDepth = undefined;
+    }
+    visible.push(row);
+    if (collapsed.has(row.rowKey)) {
+      hiddenUntilDepth = row.depth;
+    }
+  }
+  return visible;
 }

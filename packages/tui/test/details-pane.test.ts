@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { offsetWindow, buildDetailLines } from "../src/components/DetailsPane.js";
+import { offsetWindow, buildDetailLines, formatDetailLinesPlainText } from "../src/components/DetailsPane.js";
 import type { DisplayRow } from "../src/model.js";
 import type { IrNode } from "@acpus/core";
 
@@ -155,5 +155,40 @@ describe("buildDetailLines", () => {
     const lines = buildDetailLines(row, 40, {});
     // Should have enough lines to require scrolling in a typical pane.
     expect(lines.length).toBeGreaterThan(20);
+  });
+
+  it("wraps long node keys instead of truncating them", () => {
+    const row = makeRow({
+      nodeKey: "workflow/fanout_parallel_loop_switch/lane_parallel/loop_lane/round:1234567890/loop_agent"
+    });
+    const lines = buildDetailLines(row, 40, {});
+    const text = formatDetailLinesPlainText(lines);
+    expect(text).toContain("Key: workflow/fanout_parallel_");
+    expect(text).toContain("round:1234567890");
+    expect(text).not.toContain("…");
+  });
+
+  it("links artifact filenames but keeps absolute paths as plain wrapped text", () => {
+    const uri = "artifact://runs/run-1/nodes/workflow:test/attempt-001.prompt.md";
+    const absPath = "/Users/bytedance/KProjects/acpus_alpha/.acpus/runs/run-1/artifacts/workflow:test/attempt-001.prompt.md";
+    const row = makeRow({
+      instance: {
+        nodeKey: "workflow/test",
+        nodeId: "test-node",
+        kind: "run.agent",
+        state: "completed",
+        attempt: 1,
+        artifactRefs: [uri]
+      }
+    });
+
+    const lines = buildDetailLines(row, 44, { [uri]: absPath });
+    const filename = lines.find((line) => line.segments.some((seg) => seg.text === "attempt-001.prompt.md"));
+    expect(filename?.segments[0]?.href).toBe("file:///Users/bytedance/KProjects/acpus_alpha/.acpus/runs/run-1/artifacts/workflow:test/attempt-001.prompt.md");
+
+    const plain = formatDetailLinesPlainText(lines);
+    expect(plain).toContain("attempt-001.prompt.md");
+    expect(plain).toContain("/Users/bytedance/KProjects");
+    expect(plain).not.toContain("\u001b]8");
   });
 });

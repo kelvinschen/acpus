@@ -10,6 +10,7 @@ import {
   parseNodeKey,
   formatElapsed
 } from "../src/model.js";
+import { visibleRows } from "../src/components/App.js";
 
 function node(id: string, kind: IrNode["kind"], extra: Partial<IrNode> = {}): IrNode {
   return {
@@ -258,5 +259,19 @@ describe("model overlay", () => {
   it("formats elapsed milliseconds as HH:MM:SS", () => {
     expect(formatElapsed(0)).toBe("00:00:00");
     expect(formatElapsed(3661_000)).toBe("01:01:01");
+  });
+
+  it("filters descendants of collapsed rows", () => {
+    const rows = [
+      { rowKey: "root", depth: 0 },
+      { rowKey: "child-a", depth: 1 },
+      { rowKey: "grandchild", depth: 2 },
+      { rowKey: "child-b", depth: 1 }
+    ];
+    expect(visibleRows(rows, new Set(["child-a"])).map((r) => r.rowKey)).toEqual([
+      "root",
+      "child-a",
+      "child-b"
+    ]);
   });
 });

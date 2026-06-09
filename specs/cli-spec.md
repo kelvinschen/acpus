@@ -64,6 +64,11 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, subm
 - `acpus visualize` without a Run ID MUST open a Run picker, not a multi-Run dashboard.
 - The Run picker MUST list the most recent 50 Runs in the current Workspace sorted by `updatedAt` descending and allow selecting a Run to open the single-Run visualizer view.
 - The Run picker MAY refresh the Run list while open.
+- The single-Run visualizer MUST use vim-like navigation: `h`/`l` switch graph/details focus, graph `j`/`k` selects rows, details `j`/`k` scrolls by line, and details `u`/`d` scrolls by half page.
+- The single-Run visualizer MUST use Space to collapse or expand the selected row when that row has children, with all rows expanded by default.
+- The single-Run visualizer MUST support copying the full selected-node details text through OSC 52 with `y` while the details pane is focused.
+- The single-Run visualizer MUST render artifact filenames as OSC 8 links to local `file://` targets while rendering absolute artifact paths as plain wrapped text.
+- The single-Run visualizer MUST wrap long node keys, long definition fields, artifact paths, prompts, outputs, and errors across multiple lines instead of truncating them.
 - The CLI MUST route Agent Step execution through acpx once Agent Step runtime execution exists.
 - The CLI MUST NOT expose `acpus worker` as a normal runtime command.
 - The CLI MUST NOT expose `--server` or `--task-queue` as normal runtime flags.
@@ -89,4 +94,5 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, subm
 - Runtime CLI tests MUST cover `acpus replay` reproducing a Run's Node topology deterministically and reporting discrepancies when the persisted Run's topology is tampered with.
 - Runtime CLI tests MUST cover `acpus visualize` without a Run ID opening a picker and `acpus visualize <run_id>` opening the single-Run view.
 - Runtime CLI tests MUST cover `acpus ls` and the visualize picker listing the most recent 50 Runs sorted by `updatedAt` descending.
+- TUI tests MUST cover single-Run visualizer wrapping, artifact OSC 8 link metadata, plain-text details copy formatting, and collapse filtering.
 - Runtime CLI tests MUST cover Agent Step execution through acpx once Agent Activity integration exists.

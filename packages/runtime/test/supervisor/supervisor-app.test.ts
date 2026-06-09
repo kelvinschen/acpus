@@ -321,6 +321,17 @@ workflow:
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  async function waitForNodeState(runId: string, nodeKey: string, state: string, timeoutMs = 2000): Promise<void> {
+    const start = Date.now();
+    for (;;) {
+      if (store.readNodeState(runId, nodeKey)?.state === state) return;
+      if (Date.now() - start > timeoutMs) {
+        throw new Error(`Timed out waiting for ${nodeKey} to become ${state}`);
+      }
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  }
+
   it("Run-level pause without ?key= pauses the entire run", async () => {
     const createRes = await fetch(`${baseUrl}/runs`, {
       method: "POST",
@@ -379,6 +390,34 @@ workflow:
     const res = await fetch(`${baseUrl}/runs/${runId}/pause?key=${encodeURIComponent("workflow/step-a")}`, { method: "POST" });
     // May succeed or 409 depending on timing; the key is it's Node-level, not Run-level
     expect([200, 409]).toContain(res.status);
+  });
+
+  it("Node-level resume returns immediately while execution continues in the background", async () => {
+    const createRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: SLOW_SPEC, input: {} })
+    });
+    const { runId } = await createRes.json();
+    const nodeKey = "workflow/step-a";
+
+    await waitForNodeState(runId, nodeKey, "running");
+    const pauseRes = await fetch(`${baseUrl}/runs/${runId}/pause?key=${encodeURIComponent(nodeKey)}`, { method: "POST" });
+    expect(pauseRes.status).toBe(200);
+    await waitForNodeState(runId, nodeKey, "paused");
+
+    const resumePromise = fetch(`${baseUrl}/runs/${runId}/resume?key=${encodeURIComponent(nodeKey)}`, { method: "POST" });
+    const timed = await Promise.race([
+      resumePromise.then((res) => ({ kind: "response" as const, res })),
+      new Promise<{ kind: "timeout" }>((resolve) => setTimeout(() => resolve({ kind: "timeout" }), 100))
+    ]);
+
+    expect(timed.kind).toBe("response");
+    if (timed.kind === "response") {
+      expect(timed.res.status).toBe(200);
+      const state = await timed.res.json();
+      expect(["running", "completed"]).toContain(state.state);
+    }
   });
 
   it("Node-level resume returns 409 (not 500) when node is not paused", async () => {

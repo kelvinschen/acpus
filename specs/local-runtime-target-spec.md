@@ -42,6 +42,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 
 - The runtime MUST persist per-node state as individual JSON files with atomic write (temp file + rename) for crash safety.
 - The runtime MUST persist run-level metadata (run ID, workflow name, status, IR digest, input digest) separately from node state.
+- When a caller does not provide a Run ID, the runtime MUST generate a local-time-sortable Run ID using `yyyyMMddHHmmss` followed by 20 uppercase hexadecimal random characters.
 - The runtime MUST persist a frozen IR snapshot at run creation and MUST NOT re-read mutable YAML during replay or resume.
 - The runtime MUST persist, for each executable leaf Node, a snapshot of its parent dynamic value-context (fanout item, loop round) so resume and retry can rebuild the expression context without re-deriving ancestor scopes; the snapshot MUST contain only value context, never large artifact payloads.
 - The runtime MUST write node keys as filesystem-safe filenames by replacing `/` with `:`.
@@ -88,7 +89,12 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - AgentExecutor MUST treat the acpx `--format json` ACP NDJSON stream as the transcript: the agent reply is the concatenation of `agent_message_chunk` text, and the final `result.stopReason` classifies the turn.
 - When an output schema is declared, AgentExecutor MUST extract a JSON value from the reply before validation, tolerating prose and Markdown code fences around it: it MUST try the whole reply first, then scan for balanced `{...}`/`[...]` substrings and take the last one that parses, then fall back to `jsonrepair` on that candidate (or the whole reply) as a last resort. It MUST classify a reply from which no JSON can be extracted as `parse`, and validate the extracted value against the schema with Ajv, classifying a schema mismatch as `schema`. Without a schema it MUST wrap the reply as `{ text }` without attempting extraction.
 - AgentExecutor MUST return the full ACP NDJSON stream as `stdout` and MUST NOT write artifacts itself; the interpreter owns artifact writes.
-- The interpreter MUST always write the agent transcript as a `transcript.jsonl` artifact (and `stderr.log`) and record their references on the Node, on both success and pause.
+- The interpreter MUST write Agent Step artifacts per attempt using the filenames `attempt-NNN.prompt.md`, `attempt-NNN.response.md`, `attempt-NNN.transcript.jsonl`, and `attempt-NNN.stderr.log` when the corresponding content is available.
+- `attempt-NNN.prompt.md` MUST contain the fully rendered prompt/request prepared for that Agent executor call.
+- `attempt-NNN.response.md` MUST contain the human-readable agent response text reconstructed from the ACP transcript, not a duplicate of structured `node.output`.
+- Agent attempt artifact numbering MUST use one monotonically increasing attempt sequence for first execution, automatic retry, manual retry, and resume.
+- The interpreter MUST record all Agent attempt artifact references on the Node so visualizers can show prior failed/retried attempts.
+- The interpreter MUST NOT write fixed-name Agent artifacts such as `transcript.jsonl` or `stderr.log` that would be overwritten by later attempts.
 - On operator pause of a running Agent Step, AgentExecutor MUST request a cooperative ACP cancel via `acpx … cancel -s <session>`, wait for the in-flight turn to settle, and SIGKILL only as a last resort; the interpreter MUST mark the Node `paused` and persist the partial transcript artifact.
 - The interpreter MUST resume a paused Agent Step against the same acpx-managed session using the fixed continuation prompt, and MUST recover a dead agent subprocess by re-running the Activity (acpx reloads or resumes the saved ACP session).
 - The interpreter MUST automatically retry an Agent Step on parse/schema `failureKind` while the node's `retry.max` budget remains, sleeping `retry.backoff` between attempts.
@@ -172,6 +178,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Node-level `pause` and `cancel` abort an in-flight turn and therefore MUST require a live interpreter; the Run Supervisor MUST NOT lazily recover one for them. When no live interpreter exists, the Run Supervisor MUST return a conflict error if the Run exists on disk and a not-found error otherwise.
 - On Node-level resume and retry, the runtime MUST restore the targeted Node's persisted dynamic value-context (fanout item, loop round) into the rebuilt expression context so command and prompt templates re-render identically.
 - On Node-level resume and retry, the runtime MUST resolve the targeted Node's definition from the Run's persisted IR before mutating Node state, and MUST reject the operation with an error (leaving Node state unchanged) when the definition cannot be resolved. Subworkflow child Nodes, whose IR is compiled on demand and not persisted in the parent Run, are therefore not individually resumable or retryable.
+- Node-level resume and retry HTTP requests MUST return after validation and execution startup; they MUST NOT hold the client request open until the resumed or retried Node finishes executing.
 - Operator pause and cancel both abort the in-flight Activity, but the runtime MUST resolve the node to `paused` for pause and `cancelled` for cancel; the operator intent MUST take precedence when an aborted Activity reports a partial result.
 - The runtime MUST support delivering a human approval decision to an Approval Gate that is `awaiting`, addressed through an explicit node key parameter (`--node <nodeKey>` in the CLI). The decision MUST be either approve or reject.
 - Approval signal delivery, like `pause`/`cancel`, MUST require a live interpreter (the decision channel is in-memory); the Run Supervisor MUST NOT lazily recover one. When no live interpreter exists, it MUST return a conflict error if the Run exists on disk and a not-found error otherwise, and MUST return a conflict error when the targeted Node is not `awaiting`.
@@ -196,6 +203,8 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 ## Verification
 
 - Runtime tests MUST cover that Agent Steps are invoked through acpx rather than direct ACP session management by Acpus.
+- Runtime tests MUST cover default Run ID generation using a local-time sortable timestamp prefix and uppercase random suffix.
+- Runtime tests MUST cover that Agent Step attempts write per-attempt prompt/response artifacts and preserve earlier attempt artifact references across automatic retry.
 - Runtime tests MUST cover a real Acpus→acpx→Mock Agent end-to-end path for: mid-turn cooperative cancel producing a partial transcript artifact and a `paused` Node; resume re-entering the paused node with the fixed continuation prompt and completing the turn; and recovery of a dead agent subprocess by re-running the Activity.
 - Runtime tests MUST cover that Program Steps execute as local subprocesses.
 - Runtime tests MUST cover that workflow retry, timeout, pause, resume, and cancel decisions remain owned by Acpus.
@@ -208,6 +217,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Runtime tests MUST cover Run-level pause, resume, cancel, and retry state validation and effects.
 - Runtime tests MUST cover that Run-level retry is in-place recovery and does not rerun completed Nodes or create a new Run.
 - Runtime tests MUST cover Node-level resume and retry restore a Node's persisted dynamic value-context so fanout item and loop round templates re-render correctly.
+- Runtime tests MUST cover that Node-level resume returns promptly while resumed execution continues in the background.
 - Runtime tests MUST cover that, after a Run Supervisor restart, Node-level `resume`/`retry` on an existing Run recover an interpreter from disk instead of failing, Node-level `pause`/`cancel` return a conflict for an existing Run with no live interpreter, and an unknown Run returns not-found.
 - Runtime tests MUST cover that startup recovery resets orphaned `running` Nodes to `pending`.
 - Runtime tests MUST cover graceful shutdown persisting live `running` Nodes as `paused` and removing supervisor metadata.

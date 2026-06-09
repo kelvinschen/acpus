@@ -11,7 +11,7 @@ import { ArtifactStore } from "./artifacts.js";
 import type { ExecutorAdapter } from "./executors/types.js";
 import type { NodeExecutionState, NodeState, ReplayResult, ReplayMismatch } from "./types.js";
 import { validateInput } from "./validate-input.js";
-import { randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import pLimit from "p-limit";
 
 /**
@@ -81,7 +81,7 @@ export class WorkflowInterpreter {
    */
   initRun(ir: AcpusIr, opts: RunOptions): import("./types.js").RunState {
     const validatedInput = validateInput(ir.input, opts.input);
-    const runId = opts.runId ?? randomUUID();
+    const runId = opts.runId ?? generateRunId();
     return this.store.initRun(runId, ir, validatedInput);
   }
 
@@ -875,22 +875,29 @@ export class WorkflowInterpreter {
     const retry = node.metadata.retry as { max?: number; backoff?: string } | undefined;
     const maxRetries = typeof retry?.max === "number" ? retry.max : 0;
     const backoffMs = retry?.backoff ? parseDurationMs(retry.backoff) : 0;
+    const allArtifactRefs: string[] = [...(this.store.readNodeState(runId, nodeKey)?.artifactRefs ?? [])];
 
     for (let attempt = 0; ; attempt++) {
       const result = await this.agentExecutor.execute({ node, context: ctx, signal, nodeKey, resume, retry: attempt > 0 });
+      const attemptNo = this.store.readNodeState(runId, nodeKey)?.attempt ?? attempt + 1;
 
-      // Always persist the transcript (and stderr) as artifacts when the
-      // executor produced raw output (acpx NDJSON). Mock executors return no
-      // stdout, so nothing is written for them. Refs flow back to executeNode
-      // via the return value / thrown error (no shared mutable field).
-      const artifactRefs = (result.stdout !== undefined || result.stderr !== undefined)
-        ? this.writeAgentArtifacts(runId, nodeKey, result.stdout ?? "", result.stderr ?? "")
+      // Persist per-attempt human-readable agent IO plus raw protocol artifacts
+      // when the executor exposed them. Refs flow back to executeNode via the
+      // return value / thrown error (no shared mutable field).
+      const artifactRefs = result.prompt !== undefined || result.responseText !== undefined || result.stdout !== undefined || result.stderr !== undefined
+        ? this.writeAgentArtifacts(runId, nodeKey, attemptNo, {
+          prompt: result.prompt,
+          responseText: result.responseText,
+          transcript: result.stdout,
+          stderr: result.stderr
+        })
         : result.artifactRefs;
+      if (artifactRefs) allArtifactRefs.push(...artifactRefs);
 
       if (result.partial) {
         // Operator abort → carry output + transcript refs on the abort error;
         // executeNode persists the paused/cancelled state.
-        throw new NodeAbortedError(nodeKey, this.abortIntent(runId, nodeKey), artifactRefs, result.output);
+        throw new NodeAbortedError(nodeKey, this.abortIntent(runId, nodeKey), allArtifactRefs.length > 0 ? allArtifactRefs : undefined, result.output);
       }
 
       // parse/schema failures are retryable while attempts remain.
@@ -907,11 +914,15 @@ export class WorkflowInterpreter {
 
       if (result.failureKind || (result.error && !result.partial)) {
         const use = (node.metadata.agent as { use?: string } | undefined)?.use ?? "?";
-        throw new LeafExecutionError(`Agent step '${node.id}' (use: ${use}) failed${result.failureKind ? ` (${result.failureKind})` : ""}: ${result.error ?? "unknown"}`, artifactRefs);
+        throw new LeafExecutionError(`Agent step '${node.id}' (use: ${use}) failed${result.failureKind ? ` (${result.failureKind})` : ""}: ${result.error ?? "unknown"}`, allArtifactRefs.length > 0 ? allArtifactRefs : artifactRefs);
       }
 
       // Agent output is wrapped in an envelope for parity with program steps.
-      return { output: { output: result.output }, artifactRefs, renderedPrompt: result.renderedPrompt };
+      return {
+        output: { output: result.output },
+        artifactRefs: allArtifactRefs.length > 0 ? allArtifactRefs : artifactRefs,
+        renderedPrompt: result.prompt ?? result.renderedPrompt
+      };
     }
   }
 
@@ -943,11 +954,28 @@ export class WorkflowInterpreter {
     return [out.uri, err.uri];
   }
 
-  /** Write the agent transcript (ACP NDJSON) and stderr as artifacts; returns their URIs. */
-  private writeAgentArtifacts(runId: string, nodeKey: string, transcript: string, stderr: string): string[] {
-    const out = this.artifactStore.write(runId, nodeKey, "transcript.jsonl", transcript);
-    const err = this.artifactStore.write(runId, nodeKey, "stderr.log", stderr);
-    return [out.uri, err.uri];
+  /** Write per-attempt agent prompt/response/protocol artifacts; returns their URIs. */
+  private writeAgentArtifacts(
+    runId: string,
+    nodeKey: string,
+    attemptNo: number,
+    content: { prompt?: string; responseText?: string; transcript?: string; stderr?: string }
+  ): string[] {
+    const prefix = `attempt-${String(Math.max(0, attemptNo)).padStart(3, "0")}`;
+    const refs: string[] = [];
+    if (content.prompt !== undefined) {
+      refs.push(this.artifactStore.write(runId, nodeKey, `${prefix}.prompt.md`, content.prompt).uri);
+    }
+    if (content.responseText !== undefined) {
+      refs.push(this.artifactStore.write(runId, nodeKey, `${prefix}.response.md`, content.responseText).uri);
+    }
+    if (content.transcript !== undefined) {
+      refs.push(this.artifactStore.write(runId, nodeKey, `${prefix}.transcript.jsonl`, content.transcript).uri);
+    }
+    if (content.stderr !== undefined) {
+      refs.push(this.artifactStore.write(runId, nodeKey, `${prefix}.stderr.log`, content.stderr).uri);
+    }
+    return refs;
   }
 
   private async executeParallel(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {
@@ -1539,6 +1567,20 @@ interface LeafResult {
   artifactRefs?: string[];
   /** The prompt after template evaluation at runtime. */
   renderedPrompt?: string;
+}
+
+/** Generate a locally sortable run ID: yyyyMMddHHmmss + 20 uppercase hex chars. */
+export function generateRunId(now = new Date()): string {
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  const timestamp = [
+    now.getFullYear(),
+    pad(now.getMonth() + 1),
+    pad(now.getDate()),
+    pad(now.getHours()),
+    pad(now.getMinutes()),
+    pad(now.getSeconds())
+  ].join("");
+  return `${timestamp}${randomBytes(10).toString("hex").toUpperCase()}`;
 }
 
 class NodeAbortedError extends Error {

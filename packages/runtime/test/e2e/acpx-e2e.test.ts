@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { compileWorkflow } from "@acpus/core";
 import { compileYaml, createTestInterpreter } from "../interpreter/helper.js";
 import { ArtifactStore } from "../../src/artifacts.js";
+import type { NodeExecutionState } from "../../src/types.js";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -41,6 +42,17 @@ async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<voi
     await new Promise((r) => setTimeout(r, 20));
   }
   throw new Error("waitFor timed out");
+}
+
+function readArtifactBySuffix(
+  store: { getBaseDir(): string },
+  runId: string,
+  node: NodeExecutionState,
+  suffix: string
+): string {
+  const ref = node.artifactRefs?.find((u) => u.endsWith(suffix));
+  expect(ref).toBeDefined();
+  return new ArtifactStore(store.getBaseDir()).read(runId, node.nodeKey, suffix).toString();
 }
 
 // ---------------------------------------------------------------------------
@@ -156,9 +168,8 @@ rules:
       // Envelope: { output: { text } }.
       expect((task?.output as { output: { text: string } }).output.text).toContain("hi there");
 
-      // A transcript artifact (ACP NDJSON) is always written.
-      expect(task?.artifactRefs?.some((u) => u.endsWith("transcript.jsonl"))).toBe(true);
-      const transcript = new ArtifactStore(store.getBaseDir()).read(meta.runId, task!.nodeKey, "transcript.jsonl").toString();
+      // Attempt-scoped transcript artifact (ACP NDJSON) is always written.
+      const transcript = readArtifactBySuffix(store, meta.runId, task!, "attempt-001.transcript.jsonl");
       expect(transcript).toContain("agent_message_chunk");
       expect(transcript).toContain('"stopReason":"end_turn"');
     });
@@ -197,9 +208,8 @@ rules:
       const task = store.listNodeStates(runId).find((n) => n.nodeId === "task");
       expect(task?.state).toBe("paused");
 
-      // Partial transcript artifact records the cooperative cancel.
-      expect(task?.artifactRefs?.some((u) => u.endsWith("transcript.jsonl"))).toBe(true);
-      const transcript = new ArtifactStore(store.getBaseDir()).read(runId, task!.nodeKey, "transcript.jsonl").toString();
+      // Partial attempt-scoped transcript artifact records the cooperative cancel.
+      const transcript = readArtifactBySuffix(store, runId, task!, "attempt-001.transcript.jsonl");
       expect(transcript).toContain("session/cancel");
       expect(transcript).toContain('"stopReason":"cancelled"');
     }, 20000);
@@ -247,9 +257,10 @@ rules:
       expect(task?.state).toBe("completed");
       expect((task?.output as { output: { text: string } }).output.text).toContain("resumed and finished");
 
-      // The continuation transcript proves the fixed continuation prompt was sent.
-      const transcript = new ArtifactStore(store.getBaseDir()).read(runId, task!.nodeKey, "transcript.jsonl").toString();
-      expect(transcript).toContain("Continue the previous task from where you left off.");
+      // The continuation prompt artifact proves the fixed continuation prompt was sent.
+      const prompt = readArtifactBySuffix(store, runId, task!, "attempt-002.prompt.md");
+      expect(prompt).toContain("Continue the previous task from where you left off.");
+      const transcript = readArtifactBySuffix(store, runId, task!, "attempt-002.transcript.jsonl");
       expect(transcript).toContain('"stopReason":"end_turn"');
     }, 25000);
 
@@ -339,11 +350,9 @@ rules:
         expect(n.output).toEqual({ output: { item: "fixture", round: 0, ok: true } });
       }
 
-      // 3. Each work node has a transcript artifact (transcript.jsonl)
-      const artifactStore = new ArtifactStore(store.getBaseDir());
+      // 3. Each work node has an attempt-scoped transcript artifact.
       for (const n of workNodes) {
-        expect(n.artifactRefs?.some((u) => u.endsWith("transcript.jsonl"))).toBe(true);
-        const transcript = artifactStore.read(meta.runId, n.nodeKey, "transcript.jsonl").toString();
+        const transcript = readArtifactBySuffix(store, meta.runId, n, "attempt-001.transcript.jsonl");
         expect(transcript.length).toBeGreaterThan(0);
         // Transcript should contain ACP protocol messages
         expect(transcript).toContain("agent_message_chunk");

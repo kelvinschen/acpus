@@ -26,7 +26,7 @@ workflow:
       prompt: "Produce output"
 `);
 
-    const { interpreter, store, tmpDir, cleanup } = createTestInterpreter({
+    const { interpreter, store, cleanup } = createTestInterpreter({
       agentResponses: { "step-a": { result: "done" } }
     });
     cleanups.push(cleanup);
@@ -43,6 +43,10 @@ workflow:
     expect(JSON.parse(content.toString())).toEqual({ turns: [] });
 
     const refs = artifactStore.list(meta.runId, "workflow/step-a");
-    expect(refs.length).toBe(1);
+    expect(refs.map((r) => r.filename).sort()).toEqual([
+      "attempt-001.prompt.md",
+      "attempt-001.response.md",
+      "transcript.json"
+    ]);
   });
 });

@@ -103,6 +103,10 @@ export interface ExecutorResult {
   exitCode?: number;
   artifactRefs?: string[];
   error?: string;
+  /** Fully rendered prompt/request text prepared for this executor call. */
+  prompt?: string;
+  /** Human-readable response text reconstructed from the executor protocol/output. */
+  responseText?: string;
   /** Raw process stdout, captured as an artifact by the interpreter. */
   stdout?: string;
   /** Raw process stderr, captured as an artifact by the interpreter. */

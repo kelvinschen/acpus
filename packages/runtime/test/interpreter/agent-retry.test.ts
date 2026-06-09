@@ -1,5 +1,14 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { compileYaml, createTestInterpreter } from "./helper.js";
+import { ArtifactStore } from "../../src/artifacts.js";
+import { generateRunId } from "../../src/interpreter.js";
+
+describe("run ID generation", () => {
+  it("generates local-time sortable IDs with an uppercase random suffix", () => {
+    const id = generateRunId(new Date(2026, 5, 8, 23, 12, 39));
+    expect(id).toMatch(/^20260608231239[A-F0-9]{20}$/);
+  });
+});
 
 describe("Agent automatic retry", () => {
   const cleanups: Array<() => void> = [];
@@ -40,6 +49,15 @@ workflow:
     expect(node?.state).toBe("completed");
     // Success after an initial schema failure proves the retry fired.
     expect(node?.output).toEqual({ output: { ok: true } });
+    expect(node?.artifactRefs?.some((ref) => ref.endsWith("attempt-001.prompt.md"))).toBe(true);
+    expect(node?.artifactRefs?.some((ref) => ref.endsWith("attempt-001.response.md"))).toBe(true);
+    expect(node?.artifactRefs?.some((ref) => ref.endsWith("attempt-002.prompt.md"))).toBe(true);
+    expect(node?.artifactRefs?.some((ref) => ref.endsWith("attempt-002.response.md"))).toBe(true);
+
+    const artifacts = new ArtifactStore(store.getBaseDir());
+    expect(artifacts.read(meta.runId, node!.nodeKey, "attempt-001.prompt.md").toString()).toBe("do");
+    expect(artifacts.read(meta.runId, node!.nodeKey, "attempt-001.response.md").toString()).toContain("schema");
+    expect(artifacts.read(meta.runId, node!.nodeKey, "attempt-002.response.md").toString()).toContain("\"ok\": true");
   });
 
   it("retries a parse failure and succeeds within max attempts", async () => {

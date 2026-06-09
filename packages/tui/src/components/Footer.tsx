@@ -15,8 +15,8 @@ export function Footer({
 }): React.ReactElement {
   const nav =
     focus === "details"
-      ? "u/d scroll  ·  ↑/↓ line"
-      : "↑(k)/↓(j) select";
+      ? "j/k line  ·  u/d half-page  ·  y copy"
+      : "j/k select  ·  g/G top/bottom  ·  Space fold";
   return (
     <Box flexDirection="column">
       {toast ? (
@@ -31,7 +31,7 @@ export function Footer({
       ) : null}
       <Box>
         <Text color="gray">
-          {nav}  ·  Tab graph/details  ·  p pause  ·  r resume  ·  c cancel  ·  R retry  ·  q quit
+          {nav}  ·  h/l graph/details  ·  p pause  ·  r resume  ·  c cancel  ·  R retry  ·  q quit
         </Text>
       </Box>
     </Box>

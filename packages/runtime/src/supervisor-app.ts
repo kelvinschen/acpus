@@ -172,8 +172,29 @@ export function createSupervisorApp(
         inFlightRuns.delete(runId);
         pruneTerminalInterpreters();
         if (runningCount() === 0) lastActiveAt = Date.now();
-      });
+    });
     inFlightRuns.set(runId, promise);
+  }
+
+  type ImmediateControlResult<T> =
+    | { kind: "settled"; value: T }
+    | { kind: "rejected"; error: unknown }
+    | { kind: "pending" };
+
+  /**
+   * Node-level resume/retry may run for a long time. Wait one event-loop turn so
+   * synchronous validation errors surface as 409s, then detach once execution
+   * has started so interactive clients are not kept alive by the request.
+   */
+  function settleImmediate<T>(promise: Promise<T>): Promise<ImmediateControlResult<T>> {
+    return Promise.race([
+      promise.then((value) => ({ kind: "settled" as const, value })).catch((error) => ({ kind: "rejected" as const, error })),
+      new Promise<{ kind: "pending" }>((resolve) => setImmediate(() => resolve({ kind: "pending" })))
+    ]);
+  }
+
+  function consumeDetachedControl(promise: Promise<unknown>): void {
+    void promise.catch(() => undefined);
   }
 
   // ─── Health ──────────────────────────────────────────────────────
@@ -366,11 +387,14 @@ export function createSupervisorApp(
       // Node-level resume
       const interpreter = getOrRecoverInterpreter(runId);
       if (!interpreter) return c.json({ error: "Run not found" }, 404);
-      try {
-        await interpreter.resumeNode(runId, nodeKey);
-      } catch (err) {
+      const resume = interpreter.resumeNode(runId, nodeKey);
+      const immediate = await settleImmediate(resume);
+      if (immediate.kind === "rejected") {
+        const err = immediate.error;
         return c.json({ error: err instanceof Error ? err.message : String(err) }, 409);
       }
+      if (immediate.kind === "pending") consumeDetachedControl(resume);
+      lastActiveAt = Date.now();
       const state = store.readNodeState(runId, nodeKey);
       return c.json(state);
     }
@@ -449,11 +473,14 @@ export function createSupervisorApp(
       // Node-level retry
       const interpreter = getOrRecoverInterpreter(runId);
       if (!interpreter) return c.json({ error: "Run not found" }, 404);
-      try {
-        await interpreter.retryNode(runId, nodeKey);
-      } catch (err) {
+      const retry = interpreter.retryNode(runId, nodeKey);
+      const immediate = await settleImmediate(retry);
+      if (immediate.kind === "rejected") {
+        const err = immediate.error;
         return c.json({ error: err instanceof Error ? err.message : String(err) }, 409);
       }
+      if (immediate.kind === "pending") consumeDetachedControl(retry);
+      lastActiveAt = Date.now();
       const state = store.readNodeState(runId, nodeKey);
       return c.json(state);
     }
