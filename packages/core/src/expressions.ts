@@ -9,7 +9,12 @@ export const EXPRESSION_PATTERN = /\$\{\{\s*([\s\S]*?)\s*\}\}/g;
 const RAW_CEL_FIELDS = new Set(["over", "until", "when"]);
 
 const STEP_REFERENCE_PATTERN = /\bsteps\.([A-Za-z_][A-Za-z0-9_-]*)\b/g;
+const STEP_PATH_PATTERN = /\bsteps\.([A-Za-z_][A-Za-z0-9_-]*)((?:\.[A-Za-z_][A-Za-z0-9_]*|\[\d+\])*)/g;
 const ROOT_REFERENCE_PATTERN = /(?<![\w.])([A-Za-z_][A-Za-z0-9_]*)\s*(?:\.|\()/g;
+
+/** Step kinds that are composite (no .output envelope on the step itself). */
+const COMPOSITE_KINDS = new Set(["parallel", "fanout", "loop", "switch", "subworkflow"]);
+
 export const ALLOWED_ROOTS = new Set(["input", "steps", "loop", "item", "item_id", "item_index", "run_id"]);
 export const ALLOWED_FUNCTIONS = new Set(["now", "len", "startsWith", "matches", "coalesce"]);
 
@@ -18,7 +23,7 @@ export interface ExpressionCollector {
   visit(value: unknown, path: string): void;
 }
 
-export function createExpressionCollector(diagnostics: DiagnosticBag, knownStepIds: Set<string>): ExpressionCollector {
+export function createExpressionCollector(diagnostics: DiagnosticBag, knownStepIds: Set<string>, stepKinds: Map<string, string>): ExpressionCollector {
   const expressions: IrExpression[] = [];
 
   function collectFromString(value: string, path: string): void {
@@ -54,6 +59,16 @@ export function createExpressionCollector(diagnostics: DiagnosticBag, knownStepI
         if (!knownStepIds.has(reference)) {
           diagnostics.error("EXPR_UNKNOWN_STEP", `Expression references unknown step '${reference}'.`, path);
         }
+      }
+
+      // Check for .output access on composite nodes (parallel, fanout, loop, switch, subworkflow)
+      for (const pathMatch of source.matchAll(STEP_PATH_PATTERN)) {
+        const stepId = pathMatch[1] as string;
+        const pathChain = pathMatch[2] ?? "";
+        if (!pathChain.startsWith(".output")) continue;
+        const kind = stepKinds.get(stepId);
+        if (!kind || !COMPOSITE_KINDS.has(kind)) continue;
+        diagnostics.error("EXPR_COMPOSITE_OUTPUT", compositeOutputHint(stepId, kind), path);
       }
 
       for (const root of source.matchAll(ROOT_REFERENCE_PATTERN)) {
@@ -104,4 +119,15 @@ export function toCelParseSource(source: string): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function compositeOutputHint(stepId: string, kind: string): string {
+  if (kind === "fanout") {
+    return `Step '${stepId}' is a fanout node — its output is an array. Use steps.${stepId}[<index>].output.<field> to access a specific lane instead of steps.${stepId}.output.`;
+  }
+  if (kind === "parallel" || kind === "subworkflow") {
+    return `Step '${stepId}' is a ${kind} node — use steps.${stepId}.<child_id>.output.<field> instead of steps.${stepId}.output.`;
+  }
+  // loop, switch
+  return `Step '${stepId}' is a ${kind} node — its output does not have an '.output' envelope.`;
 }

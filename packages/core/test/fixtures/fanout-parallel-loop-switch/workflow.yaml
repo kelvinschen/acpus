@@ -80,4 +80,4 @@ workflow:
                           lane: string
                           route: string
 outputs:
-  lanes: "${{ steps.fanout_parallel_loop_switch.output }}"
+  lanes: "${{ steps.fanout_parallel_loop_switch }}"

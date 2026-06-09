@@ -49,7 +49,7 @@ workflow:
             run: agent
             use: planner
             prompt: |
-              Given findings ${{ steps.collect.output }} and previous gaps
+              Given findings ${{ steps.collect }} and previous gaps
               ${{ loop.iter == 0 ? [] : steps.replan.output.gaps }}, propose follow-up sub-questions and an outline.
             output:
               gaps:

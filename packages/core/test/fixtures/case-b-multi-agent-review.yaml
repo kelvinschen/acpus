@@ -51,7 +51,7 @@ workflow:
 
     - id: aggregate
       run: program
-      cmd: ["acpus-tool", "vote", "--input", "${{ steps.reviews.output }}"]
+      cmd: ["acpus-tool", "vote", "--input", "${{ steps.reviews }}"]
       capture:
         from: stdout
         parse: json
