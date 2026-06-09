@@ -200,7 +200,7 @@ rules:
       // the hanging prompt turn before cooperatively pausing it mid-turn.
       await waitFor(() => store.readNodeState(runId, NODE_KEY)?.state === "running", 8000);
       await new Promise((r) => setTimeout(r, 1500));
-      interpreter.pauseNode(runId, NODE_KEY);
+      interpreter.pauseRun(runId);
 
       const meta = await runPromise;
       expect(meta.status).toBe("paused");
@@ -246,13 +246,15 @@ rules:
       // Pause mid-turn → node paused.
       await waitFor(() => store.readNodeState(runId, NODE_KEY)?.state === "running", 8000);
       await new Promise((r) => setTimeout(r, 1500));
-      interpreter.pauseNode(runId, NODE_KEY);
+      interpreter.pauseRun(runId);
       const paused = await runPromise;
       expect(paused.status).toBe("paused");
       expect(store.readNodeState(runId, NODE_KEY)?.state).toBe("paused");
 
-      // Resume: sends the fixed continuation prompt; the node completes.
-      await interpreter.resumeNode(runId, NODE_KEY);
+      // Run-level resume sends the fixed continuation prompt for the paused Agent Step.
+      await interpreter.resumeRun(runId);
+      const resumed = await interpreter.runToCompletion(ir, { input: {}, runId }, runId);
+      expect(resumed.status).toBe("completed");
       const task = store.readNodeState(runId, NODE_KEY);
       expect(task?.state).toBe("completed");
       expect((task?.output as { output: { text: string } }).output.text).toContain("resumed and finished");
@@ -264,7 +266,91 @@ rules:
       expect(transcript).toContain('"stopReason":"end_turn"');
     }, 25000);
 
-    it("scenario #3: dead agent subprocess is recovered by acpx on resume", async () => {
+    it("scenario #2b: continuation prompt uses mock session history for schema-correct output", async () => {
+      const sandbox = makeSandbox(`
+version: 1
+agent_id: e2e-review-continuation
+default_response:
+  type: text
+  text: "default"
+rules:
+  - name: review
+    when:
+      prompt_contains: "branch=review"
+    respond:
+      type: json
+      payload:
+        branch: review
+        lane: fixture
+        ok: true
+      stream:
+        chunks: 2
+        chunk_interval: 1s
+  - name: loop-continuation
+    when:
+      prompt_contains: "Continue the previous task"
+      previous_rule: loop
+    respond:
+      type: json
+      payload:
+        branch: loop
+        round: 0
+        continue: true
+  - name: review-continuation
+    when:
+      prompt_contains: "Continue the previous task"
+      previous_rule: review
+    respond:
+      type: json
+      payload:
+        branch: review
+        lane: fixture
+        ok: true
+`);
+      const ir = compileYaml(`
+version: 1
+name: e2e-review-continuation
+agents:
+  worker:
+    type: command
+    use: "${agentCommand(sandbox.scriptPath)}"
+    cwd: "${sandbox.work}"
+    env:
+      HOME: "${sandbox.home}"
+workflow:
+  steps:
+    - id: task
+      run: agent
+      use: worker
+      prompt: "Transcript branch=review"
+      output:
+        branch: string
+        lane: string
+        ok: boolean
+`);
+      const { interpreter, store, cleanup } = createTestInterpreter({ useRealAgentExecutor: true });
+      cleanups.push(cleanup);
+
+      const runId = "e2e-review-continuation-run";
+      const runPromise = interpreter.start(ir, { input: {}, runId });
+      await waitFor(() => store.readNodeState(runId, NODE_KEY)?.state === "running", 8000);
+      await new Promise((r) => setTimeout(r, 1500));
+      interpreter.pauseRun(runId);
+      const paused = await runPromise;
+      expect(paused.status).toBe("paused");
+
+      await interpreter.resumeRun(runId);
+      const resumed = await interpreter.runToCompletion(ir, { input: {}, runId }, runId);
+      expect(resumed.status).toBe("completed");
+      const task = store.readNodeState(runId, NODE_KEY);
+      expect(task?.state).toBe("completed");
+      expect(task?.output).toEqual({ output: { branch: "review", lane: "fixture", ok: true } });
+
+      const response = readArtifactBySuffix(store, runId, task!, "attempt-002.response.md");
+      expect(response).toBe('{"branch":"review","lane":"fixture","ok":true}');
+    }, 25000);
+
+    it("scenario #3: dead agent subprocess is recovered by acpx on Node-level retry", async () => {
       const sandbox = makeSandbox(`
 version: 1
 agent_id: e2e-crash
@@ -295,7 +381,7 @@ rules:
       expect(meta.status).toBe("failed");
       expect(store.readNodeState(runId, NODE_KEY)?.state).toBe("failed");
 
-      // Retry re-runs the Activity; acpx respawns and resumes the saved session,
+      // Retry re-runs the Activity; acpx respawns and loads the saved session,
       // and the continuation prompt completes against the recovered agent.
       await interpreter.retryNode(runId, NODE_KEY);
       const task = store.readNodeState(runId, NODE_KEY);

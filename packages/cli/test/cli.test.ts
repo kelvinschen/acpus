@@ -105,8 +105,8 @@ describe("acpus CLI", () => {
     expect(JSON.parse(result.stdout).ok).toBe(false);
   }, 30_000);
 
-  it("accepts --json on node control commands (pause with --node)", async () => {
-    const result = await execaNode(cliEntry, ["pause", "some-run-id", "--node", "workflow/step-a", "--json"], {
+  it("accepts --json on Node-level retry", async () => {
+    const result = await execaNode(cliEntry, ["retry", "some-run-id", "--node", "workflow/step-a", "--json"], {
       nodeOptions: ["--import", "tsx", "--conditions=development"],
       reject: false
     });

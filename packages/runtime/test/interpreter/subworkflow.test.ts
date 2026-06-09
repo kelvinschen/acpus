@@ -135,7 +135,7 @@ workflow:
     expect(sub?.state).toBe("failed");
   });
 
-  it("rejects resume/retry of a subworkflow child node without mutating its state", async () => {
+  it("rejects retry of a subworkflow child node without mutating its state", async () => {
     const dir = mkdtempSync(join(tmpdir(), "acpus-subwf-resume-"));
     const childPath = join(dir, "child.yaml");
     writeFileSync(childPath, `
@@ -175,10 +175,7 @@ workflow:
     const childKey = childNode!.nodeKey;
 
     // The child IR is not persisted in the parent run, so its definition cannot
-    // be resolved here: resume/retry must reject rather than silently no-op.
-    // resumeNode rejects because the node is failed (only paused nodes are resumable).
-    await expect(interpreter.resumeNode(meta.runId, childKey)).rejects.toThrow(/only paused nodes are resumable/);
-    // retryNode rejects because the child IR definition is not found in the parent run.
+    // be resolved here: retry must reject rather than silently no-op.
     await expect(interpreter.retryNode(meta.runId, childKey)).rejects.toThrow(/not.*found in the run's IR/);
 
     // State must be untouched (no dirty running/pending left behind).

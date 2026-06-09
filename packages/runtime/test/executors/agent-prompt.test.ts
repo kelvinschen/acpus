@@ -20,7 +20,7 @@ describe("buildAgentPrompt", () => {
     expect(buildAgentPrompt("Review PR #42.", undefined, false, false)).toBe("Review PR #42.");
   });
 
-  it("operator resume (not retry): continuation prompt only, no schema section", () => {
+  it("plain continuation: continuation prompt only, no schema section", () => {
     expect(buildAgentPrompt("Review PR #42.", SCHEMA, true, false)).toBe(CONTINUATION);
   });
 
@@ -30,7 +30,7 @@ describe("buildAgentPrompt", () => {
     );
   });
 
-  it("retry that is also a resumed node: continuation + schema (retry wins over plain resume)", () => {
+  it("retry continuation: continuation + schema", () => {
     expect(buildAgentPrompt("Review PR #42.", SCHEMA, true, true)).toBe(
       CONTINUATION + SCHEMA_SECTION
     );

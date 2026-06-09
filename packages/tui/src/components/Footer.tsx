@@ -31,7 +31,7 @@ export function Footer({
       ) : null}
       <Box>
         <Text color="gray">
-          {nav}  ·  h/l graph/details  ·  p pause  ·  r resume  ·  c cancel  ·  R retry  ·  q quit
+          {nav}  ·  h/l graph/details  ·  p pause run  ·  r resume run  ·  c cancel run  ·  R retry  ·  q quit
         </Text>
       </Box>
     </Box>

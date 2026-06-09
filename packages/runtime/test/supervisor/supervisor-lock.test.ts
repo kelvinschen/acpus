@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, statSync, utimesSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, statSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { acquireSupervisorLock } from "../../src/supervisor-lock.js";
@@ -60,20 +60,6 @@ describe("acquireSupervisorLock", () => {
     // Should be able to acquire despite stale lock existing
     const release = await acquireSupervisorLock(tmpDir);
     expect(() => statSync(lockPath)).not.toThrow();
-    await release();
-  });
-
-  it("migrates old file-based lock to directory lock", async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), "acpus-lock-test-"));
-    const lockPath = join(tmpDir, "supervisor.lock");
-
-    // Create a plain file at the lock path (old format)
-    writeFileSync(lockPath, JSON.stringify({ pid: 12345, timestamp: Date.now() }), "utf8");
-    expect(statSync(lockPath).isFile()).toBe(true);
-
-    // Acquiring should remove the file and create a directory lock
-    const release = await acquireSupervisorLock(tmpDir);
-    expect(statSync(lockPath).isDirectory()).toBe(true);
     await release();
   });
 

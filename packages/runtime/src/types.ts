@@ -43,7 +43,7 @@ export interface NodeExecutionState {
   artifactRefs?: string[];
   /**
    * Snapshot of the parent dynamic value-context this node executed under
-   * (fanout item / loop round). Persisted so resume/retry can rebuild the
+   * (fanout item / loop round). Persisted so retry/continuation can rebuild the
    * expression context for command/prompt re-rendering. Only value context is
    * stored — never large artifact payloads.
    */

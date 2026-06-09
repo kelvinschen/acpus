@@ -12,9 +12,9 @@ import { tmpdir } from "node:os";
 
 /**
  * A program executor that records the resolved cmd template it received on each
- * call (so a test can assert that resume/retry re-rendered with the parent's
+ * call (so a test can assert that retry re-rendered with the parent's
  * dynamic item/loop context). It can be told to fail on the first call to a
- * given step so retry/resume re-enters the leaf.
+ * given step so retry re-enters the leaf.
  */
 class RecordingProgramExecutor implements ExecutorAdapter {
   readonly renders: Array<{ nodeKey: string; cmd: string; ctx: ExpressionContext }> = [];
@@ -52,7 +52,7 @@ function makeInterpreter(program: ExecutorAdapter): { interpreter: WorkflowInter
   return { interpreter, store, cleanup: () => rmSync(tmpDir, { recursive: true, force: true }) };
 }
 
-describe("Dynamic context persistence (resume/retry)", () => {
+describe("Dynamic context persistence (retry)", () => {
   const cleanups: Array<() => void> = [];
   afterEach(() => {
     cleanups.forEach((c) => c());
@@ -142,7 +142,7 @@ workflow:
   });
 });
 
-describe("Control-plane retry/resume semantics", () => {
+describe("Control-plane retry semantics", () => {
   const cleanups: Array<() => void> = [];
   afterEach(() => {
     cleanups.forEach((c) => c());
@@ -173,8 +173,8 @@ workflow:
 
     await interpreter.retryNode(meta.runId, failed!.nodeKey);
     const afterRetry = store.readNodeState(meta.runId, failed!.nodeKey);
-    // Exactly +1 from the single executeNode increment (resumeNode/retryNode no
-    // longer pre-increment).
+    // Exactly +1 from the single executeNode increment (retryNode does not
+    // pre-increment).
     expect(afterRetry!.attempt).toBe(attemptAfterFirst + 1);
   });
 
@@ -196,6 +196,6 @@ workflow:
     const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "ok");
     expect(node?.state).toBe("completed");
 
-    await expect(interpreter.retryNode(meta.runId, node!.nodeKey)).rejects.toThrow(/only failed nodes are retryable/);
+    await expect(interpreter.retryNode(meta.runId, node!.nodeKey)).rejects.toThrow(/only failed executable nodes are retryable/);
   });
 });

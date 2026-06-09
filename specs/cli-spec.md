@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The Acpus CLI is the local command-line surface for linting Workflow Specs, submitting and following local durable Workflow Runs, controlling local Runs and Nodes, inspecting local Runs, replaying persisted Runs, and observing Runs through a visualizer.
+The Acpus CLI is the local command-line surface for linting Workflow Specs, submitting and following local durable Workflow Runs, controlling Runs, retrying failed executable Nodes, inspecting local Runs, replaying persisted Runs, and observing Runs through a visualizer.
 
 ## Requirements
 
@@ -42,17 +42,14 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, subm
 - The CLI MUST support Run-level resume through `acpus resume <run_id>`.
 - The CLI MUST support Run-level cancel through `acpus cancel <run_id>`.
 - The CLI MUST support Run-level retry through `acpus retry <run_id>`.
-- The CLI MUST support Node-level pause through `acpus pause <run_id> --node <nodeKey>`.
-- The CLI MUST support Node-level resume through `acpus resume <run_id> --node <nodeKey>`.
-- The CLI MUST support Node-level cancel through `acpus cancel <run_id> --node <nodeKey>`.
-- The CLI MUST support Node-level retry through `acpus retry <run_id> --node <nodeKey>`.
+- The CLI MUST support Node-level retry only through `acpus retry <run_id> --node <nodeKey>`, and only for failed executable Nodes.
 - Run-level `pause` MUST be accepted only for `running` Runs and rejected with a conflict for `completed`, `failed`, `paused`, or `cancelled` Runs.
 - Run-level `cancel` MUST be accepted only for `running` or `paused` Runs and rejected with a conflict for `completed`, `failed`, or `cancelled` Runs.
 - Run-level `resume` MUST be accepted only for `paused` Runs and rejected with a conflict for `running`, `completed`, `failed`, or `cancelled` Runs.
 - Run-level `retry` MUST be accepted only for `failed` Runs and rejected with a conflict for `running`, `completed`, `paused`, or `cancelled` Runs.
 - Run-level retry MUST mean in-place recovery of the failed Run; it MUST NOT create a new Run and MUST NOT rerun completed Nodes.
-- Node-level controls MUST be validated against the current local Run and Node state before being accepted.
-- Run-level and Node-level control commands (`pause`, `resume`, `cancel`, `retry`) MUST support machine-readable JSON output reporting the resulting Run or Node state.
+- Node-level retry MUST be validated against the current local Run and Node state before being accepted.
+- Run-level control commands (`pause`, `resume`, `cancel`, `retry`) and Node-level retry MUST support machine-readable JSON output reporting the resulting Run or Node state.
 - The CLI MUST support submitting a human approval decision to an Approval Gate through `acpus signal <run_id> --node <nodeKey> --approve` or `--reject`.
 - `acpus signal` MUST require `--node` and MUST require exactly one of `--approve` or `--reject`; supplying neither or both MUST be a usage error.
 - `acpus signal` MUST be accepted only for a Node currently `awaiting` and MUST be rejected with a conflict otherwise; it MUST support machine-readable JSON output reporting the resulting Node state.
@@ -66,6 +63,8 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, subm
 - The Run picker MAY refresh the Run list while open.
 - The single-Run visualizer MUST use vim-like navigation: `h`/`l` switch graph/details focus, graph `j`/`k` selects rows, details `j`/`k` scrolls by line, and details `u`/`d` scrolls by half page.
 - The single-Run visualizer MUST use Space to collapse or expand the selected row when that row has children, with all rows expanded by default.
+- The single-Run visualizer MUST treat `p`, `r`, and `c` as Run-level pause, resume, and cancel controls.
+- The single-Run visualizer MUST treat `R` as Node-level retry only when the selected row is a failed executable Node; otherwise `R` MUST apply Run-level retry when the Run is failed.
 - The single-Run visualizer MUST support copying the full selected-node details text through OSC 52 with `y` while the details pane is focused.
 - The single-Run visualizer MUST render artifact filenames as OSC 8 links to local `file://` targets while rendering absolute artifact paths as plain wrapped text.
 - The single-Run visualizer MUST wrap long node keys, long definition fields, artifact paths, prompts, outputs, and errors across multiple lines instead of truncating them.
@@ -88,8 +87,8 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, subm
 - CLI tests MUST cover Ctrl-C detaching foreground follow without cancelling the Run.
 - Runtime CLI tests MUST cover local Run execution without remote workers, remote task queues, or a shared Temporal cluster.
 - Runtime CLI tests MUST cover Run-level pause, resume, cancel, and retry validation.
-- Runtime CLI tests MUST cover Node-level pause, resume, cancel, and retry validation through `--node`.
-- Runtime CLI tests MUST cover Run-level and Node-level control commands producing machine-readable JSON output.
+- Runtime CLI tests MUST cover Node-level retry validation through `--node`.
+- Runtime CLI tests MUST cover Run-level control commands and Node-level retry producing machine-readable JSON output.
 - Runtime CLI tests MUST cover `acpus replay` producing machine-readable JSON output.
 - Runtime CLI tests MUST cover `acpus replay` reproducing a Run's Node topology deterministically and reporting discrepancies when the persisted Run's topology is tampered with.
 - Runtime CLI tests MUST cover `acpus visualize` without a Run ID opening a picker and `acpus visualize <run_id>` opening the single-Run view.

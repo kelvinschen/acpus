@@ -33,15 +33,68 @@ rules:
       stream:
         chunks: 2
         chunk_interval: 10s
+  - name: review-continuation
+    when:
+      prompt_contains: "Continue the previous task"
+      previous_rule: review-transcript
+    respond:
+      type: json
+      payload:
+        branch: review
+        lane: fixture
+        ok: true
+      stream:
+        chunks: 2
+        chunk_interval: 10s
   - name: loop-continuation
     when:
       prompt_contains: "Continue the previous task"
+      previous_rule: loop-transcript
     respond:
       type: json
       payload:
         branch: loop
         round: 0
         continue: true
+      stream:
+        chunks: 2
+        chunk_interval: 10s
+  - name: switch-alpha-continuation
+    when:
+      prompt_contains: "Continue the previous task"
+      previous_rule: switch-alpha-transcript
+    respond:
+      type: json
+      payload:
+        branch: switch
+        lane: fixture
+        route: alpha
+      stream:
+        chunks: 2
+        chunk_interval: 10s
+  - name: switch-default-continuation
+    when:
+      prompt_contains: "Continue the previous task"
+      previous_rule: switch-default-transcript
+    respond:
+      type: json
+      payload:
+        branch: switch
+        lane: fixture
+        route: default
+      stream:
+        chunks: 2
+        chunk_interval: 10s
+  - name: switch-fallback-continuation
+    when:
+      prompt_contains: "Continue the previous task"
+      previous_rule: switch-fallback-transcript
+    respond:
+      type: json
+      payload:
+        branch: switch
+        lane: fixture
+        route: fallback
       stream:
         chunks: 2
         chunk_interval: 10s

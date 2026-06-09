@@ -9,7 +9,7 @@ import { ExpressionEvaluator } from "../evaluator.js";
 import { Ajv } from "ajv";
 import { jsonrepair } from "jsonrepair";
 
-/** Fixed runtime prompt used when resuming a paused agent turn. */
+/** Fixed runtime prompt used when continuing an existing agent session. */
 const CONTINUATION_PROMPT = "Continue the previous task from where you left off.";
 
 /** Grace period (ms) to wait for a cooperative cancel before SIGKILL. */
@@ -17,12 +17,12 @@ const DEFAULT_CANCEL_GRACE_MS = 5000;
 
 /**
  * Drives an ACP agent through the `acpx` CLI. Acpus owns scheduling/state;
- * acpx owns the ACP session lifecycle (load/resume/cancel, dead-pid recovery).
+ * acpx owns the ACP saved-session lifecycle and dead-pid recovery.
  *
  * - Session name is derived from the resolved node key (stable, unique per
  *   loop round / fanout lane / subworkflow nesting).
  * - First run: `sessions ensure` then `prompt -s <session>` with the rendered
- *   prompt; resume: same session with a fixed continuation prompt.
+ *   prompt; continuation: same session with a fixed continuation prompt.
  * - Cancel is cooperative: on abort we run `acpx cancel -s <session>` and wait
  *   for the in-flight prompt to settle (SIGKILL only as a last resort).
  * - Output is the concatenation of `agent_message_chunk` text from the ACP
@@ -42,7 +42,7 @@ export class AgentExecutor implements ExecutorAdapter {
     this.cancelGraceMs = options?.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS;
   }
 
-  async execute({ node, context, signal, nodeKey, resume, retry }: ExecutionRequest): Promise<ExecutorResult> {
+  async execute({ node, context, signal, nodeKey, continuation, retry }: ExecutionRequest): Promise<ExecutorResult> {
     const agent = node.metadata.agent as AgentSpec | undefined;
     if (!agent) {
       return { failureKind: "spawn", error: `Agent step '${node.id}' has no resolved agent definition` };
@@ -64,12 +64,12 @@ export class AgentExecutor implements ExecutorAdapter {
     }
 
     // Prompt text. Base is the rendered task template on a fresh first run, or a
-    // fixed continuation prompt when resuming a paused turn or auto-retrying a
+    // fixed continuation prompt when continuing a paused turn or auto-retrying a
     // parse/schema failure. When an output schema is declared we append it as an
-    // explicit contract — on the first run and on retries, but NOT on a plain
-    // operator resume (the agent already has the original task in-session there).
+    // explicit contract on the first run and on retries; a plain continuation
+    // relies on the original task already stored in the acpx session.
     const renderedTask = this.evaluator.evaluateTemplate((node.metadata.prompt as string) ?? "", context);
-    const prompt = buildAgentPrompt(renderedTask, outputSchema, Boolean(resume), Boolean(retry));
+    const prompt = buildAgentPrompt(renderedTask, outputSchema, Boolean(continuation), Boolean(retry));
 
     if (signal.aborted) {
       return { partial: true, error: "Aborted before execution", prompt, responseText: "" };
@@ -247,20 +247,25 @@ function schemaSection(outputSchema: Record<string, unknown>): string {
 /**
  * Decide the prompt text for an agent turn:
  *   - first run        → rendered task template
- *   - operator resume  → fixed continuation prompt
+ *   - continuation     → fixed continuation prompt
  *   - parse/schema retry→ fixed continuation prompt
  * When an output schema is declared it is appended as a `# OUTPUT SCHEMA`
- * section on the first run and on retries, but NOT on a plain operator resume
+ * section on the first run and on retries, but NOT on a plain continuation
  * (the original task is still live in the acpx session there).
  */
 export function buildAgentPrompt(
   renderedTask: string,
   outputSchema: Record<string, unknown> | undefined,
-  resume: boolean,
+  continuation: boolean,
   retry: boolean
 ): string {
-  const base = resume || retry ? CONTINUATION_PROMPT : renderedTask;
-  return outputSchema && !(resume && !retry) ? base + schemaSection(outputSchema) : base;
+  if (retry) {
+    return outputSchema ? CONTINUATION_PROMPT + schemaSection(outputSchema) : CONTINUATION_PROMPT;
+  }
+  if (continuation) {
+    return CONTINUATION_PROMPT;
+  }
+  return outputSchema ? renderedTask + schemaSection(outputSchema) : renderedTask;
 }
 
 /**

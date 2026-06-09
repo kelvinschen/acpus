@@ -4,7 +4,7 @@ import type { IrNode } from "@acpus/core";
 /**
  * A single execution request handed to an executor. Carries the resolved
  * `nodeKey` (stable node identity, used e.g. to derive an acpx session name)
- * and a `resume` flag distinguishing a fresh run from a continuation.
+ * and a `continuation` flag distinguishing a fresh turn from an existing-session turn.
  */
 export interface ExecutionRequest {
   node: IrNode;
@@ -13,7 +13,7 @@ export interface ExecutionRequest {
   /** Resolved node key (includes loop/fanout/lane/subworkflow dimensions). */
   nodeKey: string;
   /** True when continuing a previously paused node (continuation prompt). */
-  resume?: boolean;
+  continuation?: boolean;
   /** True when this is a parse/schema auto-retry iteration (continuation prompt + schema section). */
   retry?: boolean;
 }

@@ -7,14 +7,9 @@ import type { RunSupervisorClient, NodeExecutionState, NodeState, RunStatus } fr
 
 export type ControlAction = "pause" | "resume" | "cancel" | "retry" | "approve" | "reject";
 
-/** Whether a node-level action is applicable to a node in the given state. */
+/** Whether a node-addressed action is applicable to a node in the given state. */
 export function canApply(action: ControlAction, state: NodeState | undefined): boolean {
   switch (action) {
-    case "pause":
-    case "cancel":
-      return state === "running";
-    case "resume":
-      return state === "paused";
     case "retry":
       return state === "failed";
     case "approve":
@@ -29,8 +24,9 @@ export function canApply(action: ControlAction, state: NodeState | undefined): b
 export function canApplyRun(action: ControlAction, status: RunStatus | undefined): boolean {
   switch (action) {
     case "pause":
-    case "cancel":
       return status === "running";
+    case "cancel":
+      return status === "running" || status === "paused";
     case "resume":
       return status === "paused";
     case "retry":
@@ -44,7 +40,7 @@ export function canApplyRun(action: ControlAction, status: RunStatus | undefined
   }
 }
 
-/** Apply a Node-level control action. */
+/** Apply a node-addressed action. */
 export async function applyControl(
   client: RunSupervisorClient,
   action: ControlAction,
@@ -52,18 +48,16 @@ export async function applyControl(
   nodeKey: string
 ): Promise<NodeExecutionState> {
   switch (action) {
-    case "pause":
-      return client.pauseNode(runId, nodeKey);
-    case "resume":
-      return client.resumeNode(runId, nodeKey);
-    case "cancel":
-      return client.cancelNode(runId, nodeKey);
     case "retry":
       return client.retryNode(runId, nodeKey);
     case "approve":
       return client.signalApproval(runId, nodeKey, true);
     case "reject":
       return client.signalApproval(runId, nodeKey, false);
+    case "pause":
+    case "resume":
+    case "cancel":
+      throw new Error(`'${action}' is not a Node-level action`);
   }
 }
 

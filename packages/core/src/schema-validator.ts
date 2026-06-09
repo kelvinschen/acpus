@@ -242,8 +242,6 @@ function classifyRequired(missing: string, path: string): string {
     case "id":
       return "STEP_ID";
     case "use":
-      // Map to AGENT_SHAPE for backward compatibility with existing tests
-      if (ctx === "agent") return "AGENT_SHAPE";
       return "AGENT_SHAPE";
     case "prompt":
       if (ctx === "approval") return "APPROVAL_PROMPT";

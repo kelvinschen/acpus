@@ -6,7 +6,8 @@ import {
   createInitialNodeState,
   resetFailedForRetry,
   resetRunningForCrashRecovery,
-  resetAwaitingForCrashRecovery
+  resetAwaitingForCrashRecovery,
+  resetPausedForRunResume
 } from "../src/state-machine.js";
 import type { NodeState } from "../src/types.js";
 
@@ -48,8 +49,8 @@ describe("Node State Machine", () => {
       expect(canTransition("awaiting", "paused")).toBe(false);
     });
 
-    it("allows paused → running", () => {
-      expect(canTransition("paused", "running")).toBe(true);
+    it("rejects paused → running (Run resume is a control-plane reset)", () => {
+      expect(canTransition("paused", "running")).toBe(false);
     });
 
     it("allows paused → cancelled", () => {
@@ -95,7 +96,7 @@ describe("Node State Machine", () => {
       expect(transition("pending", "running")).toBe("running");
       expect(transition("running", "completed")).toBe("completed");
       expect(transition("running", "paused")).toBe("paused");
-      expect(transition("paused", "running")).toBe("running");
+      expect(transition("paused", "cancelled")).toBe("cancelled");
     });
 
     it("throws on illegal transitions", () => {
@@ -151,6 +152,17 @@ describe("Node State Machine", () => {
       const states: NodeState[] = ["pending", "running", "completed", "failed", "paused", "cancelled"];
       for (const from of states) {
         expect(() => resetAwaitingForCrashRecovery(from)).toThrow(/only awaiting nodes can be reset/);
+      }
+    });
+
+    it("resetPausedForRunResume resets a paused node to pending", () => {
+      expect(resetPausedForRunResume("paused")).toBe("pending");
+    });
+
+    it("resetPausedForRunResume rejects any non-paused state", () => {
+      const states: NodeState[] = ["pending", "running", "awaiting", "completed", "failed", "cancelled"];
+      for (const from of states) {
+        expect(() => resetPausedForRunResume(from)).toThrow(/only paused nodes can be reset/);
       }
     });
   });

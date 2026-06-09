@@ -216,25 +216,4 @@ workflow:
     expect(node?.state).toBe("cancelled");
   });
 
-  it("pausing an awaiting gate is a no-op (it stays awaiting, never paused)", async () => {
-    const ir = humanGateIr();
-    const { interpreter, store, cleanup } = createTestInterpreter({});
-    cleanups.push(cleanup);
-
-    const meta = interpreter.initRun(ir, { input: {} });
-    const done = interpreter.runToCompletion(ir, { input: {} }, meta.runId);
-
-    await waitForNode(store, meta.runId, "approve-step", (s) => s === "awaiting");
-    const nodeKey = store.listNodeStates(meta.runId).find((n) => n.nodeId === "approve-step")!.nodeKey;
-
-    // pause must not drive an awaiting gate into paused (illegal transition)
-    interpreter.pauseNode(meta.runId, nodeKey);
-    expect(store.readNodeState(meta.runId, nodeKey)?.state).toBe("awaiting");
-
-    // the gate is still resolvable by a human decision
-    interpreter.submitApproval(meta.runId, nodeKey, true);
-    const finalMeta = await done;
-    expect(finalMeta.status).toBe("completed");
-    expect(store.readNodeState(meta.runId, nodeKey)?.state).toBe("completed");
-  });
 });

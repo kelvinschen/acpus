@@ -208,32 +208,41 @@ export function App({
   });
 
   async function runControl(action: ControlAction): Promise<void> {
-    if (selected && selected.nodeKey) {
-      // Node-level control
+    const isSelectedExecutable = selected?.irNode.kind === "run.agent" || selected?.irNode.kind === "run.program";
+    const selectedNodeKey = selected?.nodeKey;
+    const nodeRetry = action === "retry" && selectedNodeKey && isSelectedExecutable && selected?.state === "failed";
+    const nodeDecision = (action === "approve" || action === "reject") && selectedNodeKey;
+
+    if ((nodeRetry || nodeDecision) && selected && selectedNodeKey) {
       if (!canApply(action, selected.state)) {
         setToast({ msg: `Cannot ${action} a ${selected.state ?? "not-started"} node.`, error: true });
         return;
       }
       try {
-        const state = await applyControl(client, action, runId, selected.nodeKey);
-        setToast({ msg: `${action} → ${selected.nodeKey} (${state.state})`, error: false });
+        const state = await applyControl(client, action, runId, selectedNodeKey);
+        setToast({ msg: `${action} → ${selectedNodeKey} (${state.state})`, error: false });
         setRefreshNonce((n) => n + 1);
       } catch (err) {
         setToast({ msg: err instanceof Error ? err.message : String(err), error: true });
       }
-    } else {
-      // Run-level control (no node selected)
-      if (!canApplyRun(action, run?.status)) {
-        setToast({ msg: `Cannot ${action} a ${run?.status ?? "unknown"} run.`, error: true });
-        return;
-      }
-      try {
-        const state = await applyRunControl(client, action, runId);
-        setToast({ msg: `${action} run → ${state.status}`, error: false });
-        setRefreshNonce((n) => n + 1);
-      } catch (err) {
-        setToast({ msg: err instanceof Error ? err.message : String(err), error: true });
-      }
+      return;
+    }
+
+    if (action === "approve" || action === "reject") {
+      setToast({ msg: `Select an awaiting approval node to ${action}.`, error: true });
+      return;
+    }
+
+    if (!canApplyRun(action, run?.status)) {
+      setToast({ msg: `Cannot ${action} a ${run?.status ?? "unknown"} run.`, error: true });
+      return;
+    }
+    try {
+      const state = await applyRunControl(client, action, runId);
+      setToast({ msg: `${action} run → ${state.status}`, error: false });
+      setRefreshNonce((n) => n + 1);
+    } catch (err) {
+      setToast({ msg: err instanceof Error ? err.message : String(err), error: true });
     }
   }
 

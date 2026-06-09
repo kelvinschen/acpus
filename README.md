@@ -7,7 +7,7 @@
 | Package | Goal |
 | --- | --- |
 | `@acpus/core` | Own the YAML DSL compiler boundary: parse specs, validate JSON Schema fragments, parse CEL expressions, lint references, emit frozen IR, and project a schedule summary. |
-| `@acpus/runtime` | Own the local durable workflow runtime: interpret frozen IR, persist per-node state, manage the 6-state lifecycle, evaluate CEL expressions at runtime, execute agents and programs, store artifacts, and serve the supervisor REST API. |
+| `@acpus/runtime` | Own the local durable workflow runtime: interpret frozen IR, persist per-node state, manage the 7-state lifecycle, evaluate CEL expressions at runtime, execute agents and programs, store artifacts, and serve the supervisor REST API. |
 | `acpus` | Own the user-facing CLI: read files and input payloads, resolve includes, expose `lint`, `run`, `ls`, `inspect`, `pause`, `resume`, `cancel`, `retry`, `replay`, and `visualize` commands. |
 | `@acpus/mock-agent` | Own the deterministic ACP-compatible Mock Agent used to validate agent protocol behavior and serve as a test executor for the runtime. |
 
@@ -37,10 +37,10 @@ pnpm acpus run spec.yaml --json                # JSONL observations
 pnpm acpus ls                                  # list runs
 pnpm acpus inspect <runId>                     # show run details and node tree
 pnpm acpus pause <runId>                       # pause the entire run
-pnpm acpus pause <runId> --node <nodeKey>      # pause a specific node
 pnpm acpus resume <runId>                      # resume a paused run
 pnpm acpus cancel <runId>                      # cancel a running run
 pnpm acpus retry <runId>                       # retry a failed run
+pnpm acpus retry <runId> --node <nodeKey>      # retry a failed executable node
 pnpm acpus replay <runId>                      # verify determinism
 pnpm acpus visualize [runId]                  # open visualizer
 
@@ -53,13 +53,13 @@ pnpm mock-agent --script packages/mock-agent/test/fixtures/mock.yaml
 The M2 runtime (`@acpus/runtime`) implements a local durable execution engine:
 
 - **Interpreter**: Walks the frozen IR, executes each node kind (pipeline, parallel, fanout, switch, loop, approval, agent, program), and persists state transitions to per-node JSON files using atomic write (temp + rename) for crash safety.
-- **State Machine**: Unified 6-state lifecycle across all node types: `pending → running → {completed, failed, paused, cancelled}`. Paused nodes can resume; failed nodes can retry.
+- **State Machine**: Unified lifecycle across all node types: `pending → running → {awaiting, completed, failed, paused, cancelled}`. Run-level resume re-enters paused Nodes; failed executable Nodes can retry.
 - **Node Keys**: Resolved from `NodeKeyTemplate + dynamic context` (loop round, fanout item, parallel branch) into stable filesystem-safe key strings.
 - **CEL Evaluator**: Evaluates `${{ ... }}` expression templates at runtime using `@marcbachmann/cel-js`, with `loop.` → `loop_ctx.` rewriting and registered custom functions (`now`, `len`, `startsWith`, `matches`, `coalesce`).
 - **Concurrency**: Cooperative single-event-loop concurrency via `Promise.all`/`Promise.race` with `p-limit` for fanout and parallel node throttling.
 - **Executors**: Mock executors for testing; real `ProgramExecutor` using `execa` for subprocess management with native timeout and abort; real `AgentExecutor` spawning `acpx` via `execa` for ACP session management.
 - **Artifacts**: Local filesystem store under `.acpus/runs/<runId>/artifacts/` with directory-traversal validation and URI-based references.
-- **Run Supervisor**: Lazily started per-workspace Hono HTTP server on a random port, discovered via `.acpus/supervisor.json`. No manual start command needed. Supports Run-level and Node-level controls (pause/resume/cancel/retry). Idle shutdown after 5 minutes of inactivity.
+- **Run Supervisor**: Lazily started per-workspace Hono HTTP server on a random port, discovered via `.acpus/supervisor.json`. No manual start command needed. Supports Run-level pause/resume/cancel/retry and Node-level retry. Idle shutdown after 5 minutes of inactivity.
 - **Crash Recovery**: Startup recovery resets orphaned `running` nodes to `pending`; graceful shutdown persists `running` → `paused`; checkpoint resume rebuilds from persisted state.
 
 ### Directory Layout
@@ -76,10 +76,12 @@ The M2 runtime (`@acpus/runtime`) implements a local durable execution engine:
         workflow:mapped:item:0:lane:0.json
       artifacts/
         workflow:step-a/
-          transcript.json
-          stdout.txt
+          attempt-001.prompt.md
+          attempt-001.response.md
+          attempt-001.transcript.jsonl
+          attempt-001.stderr.log
   supervisor.json        # supervisor metadata (endpoint, PID)
-  supervisor.lock        # lock file during supervisor startup
+  supervisor.lock        # lock directory during supervisor startup
 ```
 
 ## Design Targets

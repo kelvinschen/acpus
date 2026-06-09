@@ -187,25 +187,19 @@ program
   });
 
 // ─── Control commands ──────────────────────────────────────────────
-// Unified: Run-level by default, Node-level with --node <key>
+// pause/resume/cancel are Run-level. retry is Run-level by default and supports
+// --node for failed executable Node repair.
 
 program
   .command("pause")
   .argument("<runId>", "run ID")
-  .option("--node <key>", "pause a specific node instead of the whole run")
   .option("--json", "output machine-readable JSON")
-  .action(async (runId: string, options: { node?: string; json?: boolean }) => {
+  .action(async (runId: string, options: { json?: boolean }) => {
     try {
       const client = await ensureSupervisor();
-      if (options.node) {
-        const state = await client.pauseNode(runId, options.node);
-        if (options.json) console.log(JSON.stringify(state));
-        else console.log(`Node ${options.node} paused (state: ${state.state})`);
-      } else {
-        const run = await client.pauseRun(runId);
-        if (options.json) console.log(JSON.stringify(run));
-        else console.log(`Run ${runId} paused (status: ${run.status})`);
-      }
+      const run = await client.pauseRun(runId);
+      if (options.json) console.log(JSON.stringify(run));
+      else console.log(`Run ${runId} paused (status: ${run.status})`);
     } catch (error) {
       printError(errorMessage(error), { json: Boolean(options.json), quiet: false });
       process.exitCode = isSupervisorConnectionError(error) ? EXIT_SUPERVISOR_ERROR : EXIT_RUNTIME_ERROR;
@@ -215,20 +209,13 @@ program
 program
   .command("resume")
   .argument("<runId>", "run ID")
-  .option("--node <key>", "resume a specific node instead of the whole run")
   .option("--json", "output machine-readable JSON")
-  .action(async (runId: string, options: { node?: string; json?: boolean }) => {
+  .action(async (runId: string, options: { json?: boolean }) => {
     try {
       const client = await ensureSupervisor();
-      if (options.node) {
-        const state = await client.resumeNode(runId, options.node);
-        if (options.json) console.log(JSON.stringify(state));
-        else console.log(`Node ${options.node} resumed (state: ${state.state})`);
-      } else {
-        const run = await client.resumeRun(runId);
-        if (options.json) console.log(JSON.stringify(run));
-        else console.log(`Run ${runId} resumed (status: ${run.status})`);
-      }
+      const run = await client.resumeRun(runId);
+      if (options.json) console.log(JSON.stringify(run));
+      else console.log(`Run ${runId} resumed (status: ${run.status})`);
     } catch (error) {
       printError(errorMessage(error), { json: Boolean(options.json), quiet: false });
       process.exitCode = isSupervisorConnectionError(error) ? EXIT_SUPERVISOR_ERROR : EXIT_RUNTIME_ERROR;
@@ -238,20 +225,13 @@ program
 program
   .command("cancel")
   .argument("<runId>", "run ID")
-  .option("--node <key>", "cancel a specific node instead of the whole run")
   .option("--json", "output machine-readable JSON")
-  .action(async (runId: string, options: { node?: string; json?: boolean }) => {
+  .action(async (runId: string, options: { json?: boolean }) => {
     try {
       const client = await ensureSupervisor();
-      if (options.node) {
-        const state = await client.cancelNode(runId, options.node);
-        if (options.json) console.log(JSON.stringify(state));
-        else console.log(`Node ${options.node} cancelled (state: ${state.state})`);
-      } else {
-        const run = await client.cancelRun(runId);
-        if (options.json) console.log(JSON.stringify(run));
-        else console.log(`Run ${runId} cancelled (status: ${run.status})`);
-      }
+      const run = await client.cancelRun(runId);
+      if (options.json) console.log(JSON.stringify(run));
+      else console.log(`Run ${runId} cancelled (status: ${run.status})`);
     } catch (error) {
       printError(errorMessage(error), { json: Boolean(options.json), quiet: false });
       process.exitCode = isSupervisorConnectionError(error) ? EXIT_SUPERVISOR_ERROR : EXIT_RUNTIME_ERROR;

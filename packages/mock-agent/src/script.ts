@@ -20,6 +20,7 @@ export interface MockRuleWhen {
   prompt_matches?: string;
   promptMatchesRegex?: RegExp;
   prompt_count?: number;
+  previous_rule?: string;
 }
 
 export interface MockRule {
@@ -41,6 +42,7 @@ export interface MockScript {
 export interface ResponseSelectionContext {
   promptCount?: number;
   ruleAttempts?: ReadonlyMap<string, number>;
+  previousRule?: string;
 }
 
 export interface SelectedResponse {
@@ -83,7 +85,7 @@ export function parseMockScript(source: string): MockScript {
 
 export function selectResponse(script: MockScript, prompt: string, context: ResponseSelectionContext = {}): SelectedResponse {
   for (const rule of script.rules) {
-    if (matchesRule(rule, prompt, context.promptCount)) {
+    if (matchesRule(rule, prompt, context)) {
       const attempt = context.ruleAttempts?.get(rule.name) ?? 0;
       const sequence = rule.sequence ?? [rule.respond];
       const responseIndex = Math.min(attempt, sequence.length - 1);
@@ -129,10 +131,16 @@ function parseRule(value: unknown, path: string): MockRule {
   const when: MockRuleWhen = {
     prompt_contains: stringOrUndefined(value.when.prompt_contains),
     prompt_matches: stringOrUndefined(value.when.prompt_matches),
-    prompt_count: positiveIntegerOrUndefined(value.when.prompt_count, `${path}.when.prompt_count`)
+    prompt_count: positiveIntegerOrUndefined(value.when.prompt_count, `${path}.when.prompt_count`),
+    previous_rule: stringOrUndefined(value.when.previous_rule)
   };
-  if (when.prompt_contains === undefined && when.prompt_matches === undefined && when.prompt_count === undefined) {
-    throw new Error(`${path}.when must define prompt_contains, prompt_matches, or prompt_count.`);
+  if (
+    when.prompt_contains === undefined &&
+    when.prompt_matches === undefined &&
+    when.prompt_count === undefined &&
+    when.previous_rule === undefined
+  ) {
+    throw new Error(`${path}.when must define prompt_contains, prompt_matches, prompt_count, or previous_rule.`);
   }
   if (when.prompt_matches !== undefined) {
     try {
@@ -231,17 +239,21 @@ function parseStream(value: unknown, path: string): MockStream | undefined {
   return { chunks: value.chunks, chunk_interval };
 }
 
-function matchesRule(rule: MockRule, prompt: string, promptCount: number | undefined): boolean {
-  if (rule.when.prompt_count !== undefined && promptCount !== rule.when.prompt_count) {
+function matchesRule(rule: MockRule, prompt: string, context: ResponseSelectionContext): boolean {
+  if (rule.when.prompt_count !== undefined && context.promptCount !== rule.when.prompt_count) {
     return false;
   }
+  if (rule.when.previous_rule !== undefined && context.previousRule !== rule.when.previous_rule) {
+    return false;
+  }
+  let matched = false;
   if (rule.when.prompt_contains !== undefined && prompt.includes(rule.when.prompt_contains)) {
-    return true;
+    matched = true;
   }
   if (rule.when.promptMatchesRegex !== undefined && rule.when.promptMatchesRegex.test(prompt)) {
-    return true;
+    matched = true;
   }
-  return rule.when.prompt_count !== undefined && rule.when.prompt_contains === undefined && rule.when.prompt_matches === undefined;
+  return matched || (rule.when.prompt_contains === undefined && rule.when.prompt_matches === undefined);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

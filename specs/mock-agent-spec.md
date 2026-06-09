@@ -12,7 +12,8 @@ The Mock Agent is an ACP-compatible stdio Agent used to produce deterministic re
 - The script MUST support `version`, `agent_id`, `default_response`, and ordered `rules`.
 - The script MAY support `deterministic_session_ids`; when enabled, `session/new` MUST return stable incrementing ids for that process.
 - The script MAY support `allow_unknown_session_load`; unknown `session/load` requests MUST fail unless this option is enabled.
-- Rules MUST match prompts by `when.prompt_contains`, `when.prompt_matches`, or `when.prompt_count`.
+- Rules MUST match prompts by `when.prompt_contains`, `when.prompt_matches`, `when.prompt_count`, or `when.previous_rule`.
+- `when.previous_rule` MUST match only when the previous prompt in the same ACP session selected the named rule, allowing fixed continuation prompts to simulate session-aware agent behavior.
 - Rules MUST define exactly one of `respond` or `sequence`.
 - A `sequence` response MUST select the next response each time that rule matches in a session and MUST keep returning the final response after the sequence is exhausted.
 - Responses MUST support `type: text`, `type: json`, `type: error`, and `type: hang`.
@@ -28,5 +29,5 @@ The Mock Agent is an ACP-compatible stdio Agent used to produce deterministic re
 
 ## Verification
 
-- Unit tests MUST cover script parsing, ordered rule matching, regex matching, default response fallback, invalid scripts, deterministic chunking, stateful sequences, prompt-count rules, and session-control options.
+- Unit tests MUST cover script parsing, ordered rule matching, regex matching, default response fallback, invalid scripts, deterministic chunking, stateful sequences, prompt-count rules, previous-rule rules, and session-control options.
 - Protocol tests MUST cover initialize, session creation, prompt streaming, session loading, unknown-session load failure, deterministic session ids, response sequences, cancellation, hanging prompt cancellation, scripted process crash, and invalid-script process failure.

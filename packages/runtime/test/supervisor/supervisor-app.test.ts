@@ -251,8 +251,7 @@ describe("Supervisor HTTP API", () => {
     });
     const { runId } = await createRes.json();
 
-    // Node-level pause
-    const res = await fetch(`${baseUrl}/runs/${runId}/pause?key=${encodeURIComponent("workflow/step-a")}`, { method: "POST" });
+    const res = await fetch(`${baseUrl}/runs/${runId}/pause`, { method: "POST" });
     expect(res.status).not.toBe(404);
 
     await pollRunStatus(runId);
@@ -321,18 +320,7 @@ workflow:
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  async function waitForNodeState(runId: string, nodeKey: string, state: string, timeoutMs = 2000): Promise<void> {
-    const start = Date.now();
-    for (;;) {
-      if (store.readNodeState(runId, nodeKey)?.state === state) return;
-      if (Date.now() - start > timeoutMs) {
-        throw new Error(`Timed out waiting for ${nodeKey} to become ${state}`);
-      }
-      await new Promise((r) => setTimeout(r, 20));
-    }
-  }
-
-  it("Run-level pause without ?key= pauses the entire run", async () => {
+  it("Run-level pause pauses the entire run", async () => {
     const createRes = await fetch(`${baseUrl}/runs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -340,7 +328,6 @@ workflow:
     });
     const { runId } = await createRes.json();
 
-    // Run-level pause (no ?key=)
     const pauseRes = await fetch(`${baseUrl}/runs/${runId}/pause`, { method: "POST" });
     expect(pauseRes.status).toBe(200);
     const data = await pauseRes.json();
@@ -364,7 +351,7 @@ workflow:
     expect(res.status).toBe(409);
   });
 
-  it("Run-level cancel without ?key= cancels the entire run", async () => {
+  it("Run-level cancel cancels the entire run", async () => {
     const createRes = await fetch(`${baseUrl}/runs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -376,71 +363,6 @@ workflow:
     expect(cancelRes.status).toBe(200);
     const data = await cancelRes.json();
     expect(data.status).toBe("cancelled");
-  });
-
-  it("Node-level control with ?key= still works", async () => {
-    const createRes = await fetch(`${baseUrl}/runs`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ spec: SLOW_SPEC, input: {} })
-    });
-    const { runId } = await createRes.json();
-
-    // Node-level pause
-    const res = await fetch(`${baseUrl}/runs/${runId}/pause?key=${encodeURIComponent("workflow/step-a")}`, { method: "POST" });
-    // May succeed or 409 depending on timing; the key is it's Node-level, not Run-level
-    expect([200, 409]).toContain(res.status);
-  });
-
-  it("Node-level resume returns immediately while execution continues in the background", async () => {
-    const createRes = await fetch(`${baseUrl}/runs`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ spec: SLOW_SPEC, input: {} })
-    });
-    const { runId } = await createRes.json();
-    const nodeKey = "workflow/step-a";
-
-    await waitForNodeState(runId, nodeKey, "running");
-    const pauseRes = await fetch(`${baseUrl}/runs/${runId}/pause?key=${encodeURIComponent(nodeKey)}`, { method: "POST" });
-    expect(pauseRes.status).toBe(200);
-    await waitForNodeState(runId, nodeKey, "paused");
-
-    const resumePromise = fetch(`${baseUrl}/runs/${runId}/resume?key=${encodeURIComponent(nodeKey)}`, { method: "POST" });
-    const timed = await Promise.race([
-      resumePromise.then((res) => ({ kind: "response" as const, res })),
-      new Promise<{ kind: "timeout" }>((resolve) => setTimeout(() => resolve({ kind: "timeout" }), 100))
-    ]);
-
-    expect(timed.kind).toBe("response");
-    if (timed.kind === "response") {
-      expect(timed.res.status).toBe(200);
-      const state = await timed.res.json();
-      expect(["running", "completed"]).toContain(state.state);
-    }
-  });
-
-  it("Node-level resume returns 409 (not 500) when node is not paused", async () => {
-    // Create a run that completes quickly
-    const createRes = await fetch(`${baseUrl}/runs`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ spec: SPEC_YAML, input: {} })
-    });
-    const { runId } = await createRes.json();
-    // Wait for completion
-    for (let i = 0; i < 100; i++) {
-      const r = await fetch(`${baseUrl}/runs/${runId}/output`);
-      const d = await r.json();
-      if (d.status === "completed" || d.status === "failed") break;
-      await new Promise((r) => setTimeout(r, 20));
-    }
-
-    // Trying to resume a completed node should return 409 with a clear message, not 500
-    const res = await fetch(`${baseUrl}/runs/${runId}/resume?key=${encodeURIComponent("workflow/step-a")}`, { method: "POST" });
-    expect(res.status).toBe(409);
-    const data = await res.json();
-    expect(data.error).toContain("only paused nodes are resumable");
   });
 
   it("Node-level retry returns 409 (not 500) when node is not failed", async () => {
@@ -462,7 +384,7 @@ workflow:
     const res = await fetch(`${baseUrl}/runs/${runId}/retry?key=${encodeURIComponent("workflow/step-a")}`, { method: "POST" });
     expect(res.status).toBe(409);
     const data = await res.json();
-    expect(data.error).toContain("only failed nodes are retryable");
+    expect(data.error).toContain("only failed executable nodes are retryable");
   });
 });
 
@@ -537,30 +459,6 @@ workflow:
       expect(res.status).not.toBe(404);
       const missing = await fetch(`${d2.baseUrl}/runs/does-not-exist/retry?key=${encodeURIComponent("x")}`, { method: "POST" });
       expect(missing.status).toBe(404);
-    } finally {
-      await new Promise<void>((r) => d2.server.close(() => r()));
-    }
-  });
-
-  it("does not lazily recover for pause/cancel after a restart (no in-flight turn)", async () => {
-    const d1 = await bootSupervisor();
-    const createRes = await fetch(`${d1.baseUrl}/runs`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ spec: FAILING_SPEC, input: {} })
-    });
-    const { runId } = await createRes.json();
-    await pollStatus(d1.baseUrl, runId);
-    await new Promise<void>((r) => d1.server.close(() => r()));
-
-    const d2 = await bootSupervisor();
-    try {
-      const pauseRes = await fetch(`${d2.baseUrl}/runs/${runId}/pause?key=${encodeURIComponent("workflow/step-a")}`, { method: "POST" });
-      expect(pauseRes.status).toBe(409);
-      const cancelRes = await fetch(`${d2.baseUrl}/runs/${runId}/cancel?key=${encodeURIComponent("workflow/step-a")}`, { method: "POST" });
-      expect(cancelRes.status).toBe(409);
-      const pauseMissing = await fetch(`${d2.baseUrl}/runs/does-not-exist/pause?key=${encodeURIComponent("x")}`, { method: "POST" });
-      expect(pauseMissing.status).toBe(404);
     } finally {
       await new Promise<void>((r) => d2.server.close(() => r()));
     }
@@ -733,7 +631,7 @@ workflow:
     expect(gateState.output.decision).toBe("rejected");
   });
 
-  it("returns 400 without ?key=", async () => {
+  it("requires a node key", async () => {
     const createRes = await fetch(`${baseUrl}/runs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

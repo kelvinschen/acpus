@@ -91,20 +91,16 @@ export class RunSupervisorClient {
     return res.json() as Promise<NodeExecutionState>;
   }
 
-  async pauseNode(runId: string, nodeKey: string): Promise<NodeExecutionState> {
-    return this.controlNode(runId, nodeKey, "pause");
-  }
-
-  async resumeNode(runId: string, nodeKey: string): Promise<NodeExecutionState> {
-    return this.controlNode(runId, nodeKey, "resume");
-  }
-
-  async cancelNode(runId: string, nodeKey: string): Promise<NodeExecutionState> {
-    return this.controlNode(runId, nodeKey, "cancel");
-  }
-
   async retryNode(runId: string, nodeKey: string): Promise<NodeExecutionState> {
-    return this.controlNode(runId, nodeKey, "retry");
+    const res = await fetch(
+      `${this.baseUrl}/runs/${runId}/retry?key=${encodeURIComponent(nodeKey)}`,
+      { method: "POST", headers: this.headers() }
+    );
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(body.error ?? `Failed to retry node: ${res.status}`);
+    }
+    return res.json() as Promise<NodeExecutionState>;
   }
 
   /**
@@ -156,27 +152,6 @@ export class RunSupervisorClient {
     const res = await fetch(`${this.baseUrl}/runs/${runId}/replay`, { method: "POST", headers: this.headers() });
     if (!res.ok) throw new Error(`Failed to replay run: ${res.status}`);
     return res.json() as Promise<ReplayResult>;
-  }
-
-  /**
-   * Issue a node-control action. On a non-2xx response the supervisor's error
-   * message (e.g. the 409 "not actively executing" guard) is surfaced so
-   * callers can show it inline.
-   */
-  private async controlNode(
-    runId: string,
-    nodeKey: string,
-    action: "pause" | "resume" | "cancel" | "retry"
-  ): Promise<NodeExecutionState> {
-    const res = await fetch(
-      `${this.baseUrl}/runs/${runId}/${action}?key=${encodeURIComponent(nodeKey)}`,
-      { method: "POST", headers: this.headers() }
-    );
-    if (!res.ok) {
-      const body = (await res.json().catch(() => ({}))) as { error?: string };
-      throw new Error(body.error ?? `Failed to ${action} node: ${res.status}`);
-    }
-    return res.json() as Promise<NodeExecutionState>;
   }
 
   /**

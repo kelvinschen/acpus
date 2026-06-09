@@ -5,14 +5,12 @@
  * `proper-lockfile.lock()` with the correct configuration for
  * serializing concurrent `ensureWorkspaceSupervisor()` calls.
  *
- * The lock targets the `.acpus` directory (which always exists) and
- * creates a `.acpus/supervisor.lock` directory as the lock marker.
- * This replaces the old file-based lock which had race conditions
- * and inconsistent semantics between CLI and child process.
+ * The lock targets the `.acpus` directory (which always exists) and creates a
+ * `.acpus/supervisor.lock` directory as the lock marker.
  */
 
 import lockfile from "proper-lockfile";
-import { mkdirSync, rmSync, statSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 const LOCK_NAME = "supervisor.lock";
@@ -30,9 +28,6 @@ const LOCK_NAME = "supervisor.lock";
  * - `update: 2_000` — mtime updated every 2s while lock is held
  * - `retries: 30 × 500ms` — total wait up to 15s for competing processes
  * - `onCompromised: 'warn'` — log but don't throw if lock is tampered
- *
- * Migration: if `.acpus/supervisor.lock` exists as a plain file
- * (legacy format), it is automatically deleted before acquiring.
  */
 export async function acquireSupervisorLock(
   stateDir: string
@@ -41,16 +36,6 @@ export async function acquireSupervisorLock(
   mkdirSync(stateDir, { recursive: true });
 
   const lockPath = join(stateDir, LOCK_NAME);
-
-  // Migration: remove old file-based lock if it exists
-  try {
-    const stat = statSync(lockPath);
-    if (stat.isFile()) {
-      rmSync(lockPath);
-    }
-  } catch {
-    // Doesn't exist or can't stat — that's fine
-  }
 
   const release = await lockfile.lock(stateDir, {
     stale: 20_000,

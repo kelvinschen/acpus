@@ -61,6 +61,48 @@ describe("@acpus/mock-agent script", () => {
     expect(responseText(selected.response)).toBe("second prompt");
   });
 
+  it("supports previous-rule matching for continuation prompts", () => {
+    const script = parseMockScript(`
+version: 1
+agent_id: continuation-test
+default_response:
+  type: text
+  text: default
+rules:
+  - name: review
+    when:
+      prompt_contains: "branch=review"
+    respond:
+      type: json
+      payload:
+        branch: review
+  - name: loop-continuation
+    when:
+      prompt_contains: "Continue"
+      previous_rule: loop
+    respond:
+      type: json
+      payload:
+        branch: loop
+  - name: review-continuation
+    when:
+      prompt_contains: "Continue"
+      previous_rule: review
+    respond:
+      type: json
+      payload:
+        branch: review
+        continued: true
+`);
+
+    const continuation = selectResponse(script, "Continue the previous task", {
+      previousRule: "review"
+    });
+
+    expect(continuation.ruleName).toBe("review-continuation");
+    expect(responseText(continuation.response)).toBe(JSON.stringify({ branch: "review", continued: true }));
+  });
+
   it("parses integration-test session controls", () => {
     const script = parseMockScript(fixture("integration.yaml"));
 

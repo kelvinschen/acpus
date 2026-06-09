@@ -6,13 +6,23 @@ import type { ExpressionContext, InterpreterOptions, NodeKeyDynamic, RunOptions 
 import { RunStore } from "./store.js";
 import { ExpressionEvaluator } from "./evaluator.js";
 import { resolveNodeKey, sanitizeValue } from "./keys.js";
-import { canTransition, transition, createInitialNodeState, resetFailedForRetry, resetRunningForCrashRecovery, resetAwaitingForCrashRecovery } from "./state-machine.js";
+import { canTransition, transition, createInitialNodeState, resetFailedForRetry, resetRunningForCrashRecovery, resetAwaitingForCrashRecovery, resetPausedForRunResume } from "./state-machine.js";
 import { ArtifactStore } from "./artifacts.js";
 import type { ExecutorAdapter } from "./executors/types.js";
 import type { NodeExecutionState, NodeState, ReplayResult, ReplayMismatch } from "./types.js";
 import { validateInput } from "./validate-input.js";
 import { randomBytes } from "node:crypto";
 import pLimit from "p-limit";
+
+const PAUSED_ABORT_ERROR = "Aborted: paused";
+
+function abortedNodeError(state: "paused" | "cancelled"): string {
+  return state === "paused" ? PAUSED_ABORT_ERROR : "Aborted: cancelled";
+}
+
+function isPausedContinuationState(state: NodeExecutionState | undefined): boolean {
+  return state?.state === "pending" && state.attempt > 0 && state.error === PAUSED_ABORT_ERROR;
+}
 
 /**
  * The core IR interpreter that drives state transitions, orchestrates
@@ -32,12 +42,6 @@ export class WorkflowInterpreter {
 
   /** Intent of an in-flight abort keyed by "runId:nodeKey" (pause vs cancel). */
   private readonly abortIntents: Map<string, "paused" | "cancelled"> = new Map();
-
-  /** Execution generation counter keyed by runId. Incremented when resumeNode's
-   *  composite-resume path resets states and re-executes from root. Stale
-   *  in-flight executions from the prior generation detect the bump and skip
-   *  writing their (now-obsolete) state to disk, preventing race conditions. */
-  private readonly executionGeneration: Map<string, number> = new Map();
 
   /** Pending human-decision resolvers for Approval Gates awaiting a signal,
    *  keyed by "runId:nodeKey". An entry exists only while a node is `awaiting`. */
@@ -108,28 +112,11 @@ export class WorkflowInterpreter {
       // so they don't leak memory across runs.
       this.schedulingPaused.delete(runId);
       this.schedulingCancelled.delete(runId);
-      this.executionGeneration.delete(runId);
     }
 
     meta.updatedAt = new Date().toISOString();
     this.store.writeRunMeta(runId, meta);
     return meta;
-  }
-
-  /**
-   * Resume a run from persisted state.
-   */
-  async resume(runId: string): Promise<import("./types.js").RunState> {
-    const ir = this.store.readIr(runId);
-    const input = this.store.readInput(runId);
-    if (!ir || !input) {
-      throw new Error(`Run ${runId} not found`);
-    }
-
-    // Reset any running nodes back to pending (crash recovery)
-    this.recoverStaleNodes(runId);
-
-    return this.resetPausedAndExecuteFromRoot(runId);
   }
 
   /**
@@ -316,12 +303,8 @@ export class WorkflowInterpreter {
     }
   }
 
-  /**
-   * Pause a running node. No-op for nodes that cannot legally pause (e.g. an
-   * `awaiting` Approval Gate, which may only resolve to completed or cancel) so
-   * we never abort+misclassify a gate as `paused`.
-   */
-  pauseNode(runId: string, nodeKey: string): void {
+  /** Pause one running node as part of a Run-level pause operation. */
+  private pauseRunningNode(runId: string, nodeKey: string): void {
     const state = this.store.readNodeState(runId, nodeKey);
     if (!state || !canTransition(state.state, "paused")) {
       return;
@@ -336,69 +319,8 @@ export class WorkflowInterpreter {
     this.store.writeNodeState(runId, state);
   }
 
-  /**
-   * Resume a paused node.
-   */
-  async resumeNode(runId: string, nodeKey: string): Promise<void> {
-    const state = this.store.readNodeState(runId, nodeKey);
-    if (!state) {
-      throw new Error(`Node ${nodeKey} not found in run ${runId}`);
-    }
-    if (state.state !== "paused") {
-      throw new Error(
-        `Cannot resume node ${nodeKey} in state '${state.state}': only paused nodes are resumable (use retry for failed nodes)`
-      );
-    }
-
-    const ir = this.store.readIr(runId);
-    const input = this.store.readInput(runId);
-    if (!ir || !input) {
-      throw new Error(`Cannot resume node ${nodeKey}: run ${runId} has no persisted IR or input`);
-    }
-
-    // Resolve the node IR *before* mutating state. Subworkflow child IR is
-    // compiled on demand and never persisted, so a child key like
-    // `workflow/sub/child` is unresolvable here; reject explicitly rather than
-    // silently no-op and leave the node stuck in a running/pending state.
-    const node = this.findNodeByKey(ir.root, nodeKey);
-    if (!node) {
-      throw new Error(
-        `Cannot resume node ${nodeKey}: its definition was not found in the run's IR (subworkflow child nodes are not individually resumable)`
-      );
-    }
-
-    // When a paused node has paused siblings (e.g. other parallel branches or
-    // fanout lanes that were paused as a group), propagate the resume to all of
-    // them and re-execute from the root. Already-completed nodes are skipped by
-    // executeNode's existing-state check.
-    const hasPausedSiblings = this.hasPausedSiblingsInScope(runId, nodeKey);
-
-    if (hasPausedSiblings) {
-      // Composite resume: reset all paused nodes, re-execute from root.
-      // recoverStaleNodes is not needed here because the paused nodes were
-      // actively transitioned (not left running from a crash).
-      await this.resetPausedAndExecuteFromRoot(runId);
-    } else {
-      // Simple single-node resume (existing logic)
-      state.state = transition(state.state, "running") as NodeState;
-      this.store.writeNodeState(runId, state);
-
-      const ctx = this.buildContext(input, runId);
-      this.populateStepOutputs(runId, ctx);
-      // Restore the parent dynamic value-context (fanout item / loop round)
-      // captured at first execution so command/prompt re-rendering sees item/loop.
-      this.restoreDynamicContext(ctx, state.dynamicContext);
-      // Resume re-enters the node as a continuation (continuation prompt for
-      // agents), preserving the original full node key for stable identity.
-      // `attempt` is incremented by executeNode (single source of truth).
-      await this.executeNode(node, ctx, runId, {}, undefined, true, nodeKey);
-    }
-  }
-
-  /**
-   * Cancel a node.
-   */
-  cancelNode(runId: string, nodeKey: string): void {
+  /** Cancel one materialized node as part of Run-level cancel or fail-fast. */
+  private cancelMaterializedNode(runId: string, nodeKey: string): void {
     this.abortIntents.set(`${runId}:${nodeKey}`, "cancelled");
     const controller = this.abortControllers.get(`${runId}:${nodeKey}`);
     if (controller) {
@@ -417,25 +339,30 @@ export class WorkflowInterpreter {
     return this.abortIntents.get(`${runId}:${nodeKey}`) ?? "paused";
   }
 
-  /** True if the node has been persisted as terminal `cancelled` (e.g. by an
-   * external cancelNode during fail-fast). Used to avoid clobbering it when a
-   * still-running leaf later resolves/rejects. */
-  private isCancelledOnDisk(runId: string, nodeKey: string): boolean {
-    return this.store.readNodeState(runId, nodeKey)?.state === "cancelled";
+  /** True if the node has been persisted as terminal `cancelled` (e.g. by
+   * fail-fast). Used to avoid clobbering it when a still-running leaf later
+   * resolves/rejects. */
+  private readAbortedStateOnDisk(runId: string, nodeKey: string): "paused" | "cancelled" | undefined {
+    const state = this.store.readNodeState(runId, nodeKey)?.state;
+    return state === "paused" || state === "cancelled" ? state : undefined;
   }
 
-  /** True if the execution generation has been bumped since the given generation.
-   * Used to prevent stale in-flight executions from writing obsolete state. */
-  private isGenerationStale(runId: string, generation: number): boolean {
-    return (this.executionGeneration.get(runId) ?? 0) > generation;
+  private isStaleAttemptOnDisk(runId: string, nodeKey: string, attempt: number, startedAt: string | undefined): boolean {
+    const current = this.store.readNodeState(runId, nodeKey);
+    return current !== undefined && current.attempt > attempt && current.startedAt !== startedAt;
+  }
+
+  private syncInFrameAttemptFromDisk(runId: string, nodeKey: string, state: NodeExecutionState): void {
+    const current = this.store.readNodeState(runId, nodeKey);
+    if (current !== undefined && current.startedAt === state.startedAt && current.attempt > state.attempt) {
+      state.attempt = current.attempt;
+    }
   }
 
   /**
-   * Retry a failed node.
-   *
-   * Only a `failed` Node is retryable. A `paused` Node must be resumed (not
-   * retried) and `completed`/`cancelled` are terminal — those are rejected with
-   * a clear message rather than an opaque illegal-transition error.
+   * Retry a failed executable Node. This is a local repair operation for the
+   * target executable only; Run-level retry remains the operation that restores
+   * Workflow progress from failed composite ancestors.
    */
   async retryNode(runId: string, nodeKey: string): Promise<void> {
     const state = this.store.readNodeState(runId, nodeKey);
@@ -444,8 +371,16 @@ export class WorkflowInterpreter {
     }
     if (state.state !== "failed") {
       throw new Error(
-        `Cannot retry node ${nodeKey} in state '${state.state}': only failed nodes are retryable (use resume for paused nodes)`
+        `Cannot retry node ${nodeKey} in state '${state.state}': only failed executable nodes are retryable`
       );
+    }
+    if (state.kind !== "run.agent" && state.kind !== "run.program") {
+      throw new Error(`Cannot retry node ${nodeKey}: only failed executable nodes are retryable`);
+    }
+    const meta = this.store.readRunMeta(runId);
+    if (!meta) throw new Error(`Run ${runId} not found`);
+    if (meta.status !== "failed") {
+      throw new Error(`Cannot retry node ${nodeKey}: node retry is accepted only when the Run is failed`);
     }
 
     const ir = this.store.readIr(runId);
@@ -475,10 +410,9 @@ export class WorkflowInterpreter {
     this.populateStepOutputs(runId, ctx);
     // Restore the parent dynamic value-context captured at first execution.
     this.restoreDynamicContext(ctx, state.dynamicContext);
-    // Retry re-runs the Activity as a continuation: for agents this resumes
-    // the same acpx session (recovering a dead subprocess) via the fixed
-    // continuation prompt rather than replaying the original turn. The
-    // original full node key is preserved for stable identity.
+    // Retry re-runs the executable as a continuation: agents keep the same acpx
+    // session name and receive the fixed continuation prompt. The original full
+    // node key is preserved for stable identity.
     await this.executeNode(node, ctx, runId, {}, undefined, true, nodeKey);
   }
 
@@ -500,7 +434,7 @@ export class WorkflowInterpreter {
     // Pause all currently running nodes
     for (const nodeState of this.store.listNodeStates(runId)) {
       if (nodeState.state === "running") {
-        this.pauseNode(runId, nodeState.nodeKey);
+        this.pauseRunningNode(runId, nodeState.nodeKey);
       }
     }
 
@@ -535,7 +469,7 @@ export class WorkflowInterpreter {
     // or the pending approval wait, then transition to cancelled).
     for (const nodeState of this.store.listNodeStates(runId)) {
       if (nodeState.state === "running" || nodeState.state === "awaiting") {
-        this.cancelNode(runId, nodeState.nodeKey);
+        this.cancelMaterializedNode(runId, nodeState.nodeKey);
       }
     }
 
@@ -588,7 +522,7 @@ export class WorkflowInterpreter {
     // making the run permanently stuck.
     for (const nodeState of this.store.listNodeStates(runId)) {
       if (nodeState.state === "paused") {
-        nodeState.state = "pending";
+        nodeState.state = resetPausedForRunResume(nodeState.state);
         this.store.writeNodeState(runId, nodeState);
       }
     }
@@ -623,7 +557,7 @@ export class WorkflowInterpreter {
         nodeState.error = undefined;
         this.store.writeNodeState(runId, nodeState);
       } else if (nodeState.state === "paused") {
-        nodeState.state = "pending";
+        nodeState.state = resetPausedForRunResume(nodeState.state);
         this.store.writeNodeState(runId, nodeState);
       }
     }
@@ -631,61 +565,6 @@ export class WorkflowInterpreter {
     meta.status = "running";
     meta.updatedAt = new Date().toISOString();
     this.store.writeRunMeta(runId, meta);
-  }
-
-  /**
-   * Reset paused nodes to pending, bump execution generation, clear scheduling
-   * guards and stale abort state, then re-execute from root. Shared by
-   * `resume()` (run-level) and `resumeNode()` (composite-resume path).
-   * Returns the updated RunState.
-   */
-  private async resetPausedAndExecuteFromRoot(runId: string): Promise<import("./types.js").RunState> {
-    const ir = this.store.readIr(runId);
-    const input = this.store.readInput(runId);
-    if (!ir || !input) throw new Error(`Run ${runId} has no persisted IR or input`);
-
-    // Bump execution generation so stale in-flight executions skip writing
-    const currentGen = this.executionGeneration.get(runId) ?? 0;
-    this.executionGeneration.set(runId, currentGen + 1);
-
-    // Reset paused → pending
-    for (const ns of this.store.listNodeStates(runId)) {
-      if (ns.state === "paused") {
-        ns.state = "pending";
-        this.store.writeNodeState(runId, ns);
-      }
-    }
-
-    const meta = this.store.readRunMeta(runId)!;
-    meta.status = "running";
-    meta.updatedAt = new Date().toISOString();
-    this.store.writeRunMeta(runId, meta);
-
-    // Clear scheduling guards and stale abort state
-    this.schedulingPaused.delete(runId);
-    this.schedulingCancelled.delete(runId);
-    for (const [key] of this.abortControllers) {
-      if (key.startsWith(`${runId}:`)) this.abortControllers.delete(key);
-    }
-    for (const [key] of this.abortIntents) {
-      if (key.startsWith(`${runId}:`)) this.abortIntents.delete(key);
-    }
-
-    try {
-      await this.executeNode(ir.root, this.buildContext(input, runId), runId, {});
-      meta.status = "completed";
-    } catch (error) {
-      const rootState = this.store.readNodeState(runId, resolveNodeKey(ir.root.keyTemplate));
-      if (rootState?.state === "paused") meta.status = "paused";
-      else if (rootState?.state === "cancelled") meta.status = "cancelled";
-      else meta.status = "failed";
-    } finally {
-      this.executionGeneration.delete(runId);
-      meta.updatedAt = new Date().toISOString();
-      this.store.writeRunMeta(runId, meta);
-    }
-
-    return meta;
   }
 
   // ─── Node execution dispatch ──────────────────────────────────
@@ -696,14 +575,10 @@ export class WorkflowInterpreter {
     runId: string,
     dynamic: NodeKeyDynamic,
     keyPrefix?: string,
-    resume?: boolean,
+    isContinuation?: boolean,
     overrideNodeKey?: string
   ): Promise<unknown> {
-    // Capture the execution generation at entry. If a composite-resume bumps
-    // the generation while this execution is awaiting, we detect it and skip
-    // writing stale state to disk.
-    const generationAtEntry = this.executionGeneration.get(runId) ?? 0;
-    // On resume/retry the full resolved node key is supplied directly so the
+    // On continuation/retry the full resolved node key is supplied directly so the
     // node's stable identity (and thus the agent's acpx session name) survives
     // across loop/fanout/lane/subworkflow dynamics that are not re-derived here.
     const resolved = resolveNodeKey(node.keyTemplate, dynamic);
@@ -718,6 +593,9 @@ export class WorkflowInterpreter {
     if (existing?.state === "cancelled" || existing?.state === "paused") {
       throw new NodeAbortedError(nodeKey, existing.state);
     }
+    const continuation = Boolean(
+      isContinuation || isPausedContinuationState(existing)
+    );
 
     // Initialize state
     const state = existing ?? createInitialNodeState(nodeKey, node.id, node.kind);
@@ -749,10 +627,10 @@ export class WorkflowInterpreter {
     state.attempt++;
     state.startedAt = new Date().toISOString();
     // Snapshot the parent dynamic value-context (fanout item / loop round) for
-    // executable leaves so resume/retry can re-render their command/prompt
-    // without the parent re-deriving item/loop. Only captured on first run
-    // (not on resume/retry, which restore it from disk into ctx).
-    if (!resume && (node.kind === "run.agent" || node.kind === "run.program")) {
+    // executable leaves so retry/continuation can re-render their command/prompt
+    // without the parent re-deriving item/loop. Only captured on fresh entry
+    // (retry/continuation restore it from disk into ctx).
+    if (!continuation && (node.kind === "run.agent" || node.kind === "run.program")) {
       const snapshot = this.captureDynamicContext(ctx);
       if (snapshot) state.dynamicContext = snapshot;
     }
@@ -770,7 +648,7 @@ export class WorkflowInterpreter {
           output = await this.executePipeline(node, ctx, runId, dynamic, keyPrefix);
           break;
         case "run.agent": {
-          const leaf = await this.executeAgent(node, ctx, runId, controller.signal, nodeKey, resume);
+          const leaf = await this.executeAgent(node, ctx, runId, controller.signal, nodeKey, continuation);
           output = leaf.output;
           artifactRefs = leaf.artifactRefs;
           if (leaf.renderedPrompt) state.renderedPrompt = leaf.renderedPrompt;
@@ -804,14 +682,18 @@ export class WorkflowInterpreter {
           throw new Error(`Unknown node kind: ${node.kind}`);
       }
 
-      // Transition to completed — unless an external cancel (e.g. fail-fast
-      // sibling cancellation) or a composite-resume generation bump already
-      // changed this node's state on disk while we were awaiting. The
-      // in-memory `state` here is a stale `running`; honor the persisted
-      // state instead of clobbering.
-      if (this.isCancelledOnDisk(runId, nodeKey) || this.isGenerationStale(runId, generationAtEntry)) {
-        ctx.steps[node.id] = output;
+      // If a Run-level resume already re-entered this node, a late result from
+      // the old attempt must not overwrite the newer attempt's state.
+      if (this.isStaleAttemptOnDisk(runId, nodeKey, state.attempt, state.startedAt)) {
         return output;
+      }
+      this.syncInFrameAttemptFromDisk(runId, nodeKey, state);
+
+      // Transition to completed unless an external pause/cancel already changed
+      // this node's state on disk while we were awaiting the leaf.
+      const abortedState = this.readAbortedStateOnDisk(runId, nodeKey);
+      if (abortedState) {
+        throw new NodeAbortedError(nodeKey, abortedState, artifactRefs, output);
       }
       state.state = "completed";
       state.output = output;
@@ -825,16 +707,13 @@ export class WorkflowInterpreter {
       return output;
     } catch (error) {
       if (error instanceof NodeAbortedError) {
-        // If the execution generation has been bumped (by a composite-resume
-        // resetting states and re-executing from root), this is a stale
-        // in-flight execution whose result is obsolete. Return early without
-        // writing state or re-throwing — the re-execution handles the node.
-        if (this.isGenerationStale(runId, generationAtEntry)) {
-          return undefined;
+        if (this.isStaleAttemptOnDisk(runId, nodeKey, state.attempt, state.startedAt)) {
+          throw error;
         }
+        this.syncInFrameAttemptFromDisk(runId, nodeKey, state);
         // Transition this node to the same state as the child that was aborted.
         state.state = error.state === "paused" ? "paused" : "cancelled";
-        state.error = `Aborted: ${error.state}`;
+        state.error = abortedNodeError(error.state);
         // Preserve any output + partial transcript artifacts from the aborted leaf.
         if (error.output !== undefined) state.output = error.output;
         if (error.artifactRefs) state.artifactRefs = error.artifactRefs;
@@ -842,15 +721,23 @@ export class WorkflowInterpreter {
         throw error;
       }
 
-      // Don't clobber an external `cancelled` (fail-fast sibling cancellation)
-      // that landed while this node's leaf was finishing; keep it cancelled.
-      if (this.isCancelledOnDisk(runId, nodeKey)) {
+      // Don't clobber an external pause/cancel that landed while this node's
+      // leaf was failing; keep the control-plane abort as the observed outcome.
+      if (this.isStaleAttemptOnDisk(runId, nodeKey, state.attempt, state.startedAt)) {
         throw error;
+      }
+      this.syncInFrameAttemptFromDisk(runId, nodeKey, state);
+      const abortedState = this.readAbortedStateOnDisk(runId, nodeKey);
+      if (abortedState) {
+        throw new NodeAbortedError(nodeKey, abortedState);
       }
       state.state = "failed";
       state.error = error instanceof Error ? error.message : String(error);
-      // Preserve artifacts a leaf wrote before failing (e.g. program stdout/stderr).
-      if (error instanceof LeafExecutionError && error.artifactRefs) state.artifactRefs = error.artifactRefs;
+      // Preserve artifacts and invalid output a leaf produced before failing.
+      if (error instanceof LeafExecutionError) {
+        if (error.artifactRefs) state.artifactRefs = error.artifactRefs;
+        if (error.output !== undefined) state.output = error.output;
+      }
       state.completedAt = new Date().toISOString();
       this.store.writeNodeState(runId, state);
       throw error;
@@ -871,14 +758,17 @@ export class WorkflowInterpreter {
     return { ...ctx.steps };
   }
 
-  private async executeAgent(node: IrNode, ctx: ExpressionContext, runId: string, signal: AbortSignal, nodeKey: string, resume?: boolean): Promise<LeafResult> {
+  private async executeAgent(node: IrNode, ctx: ExpressionContext, runId: string, signal: AbortSignal, nodeKey: string, continuation?: boolean): Promise<LeafResult> {
     const retry = node.metadata.retry as { max?: number; backoff?: string } | undefined;
     const maxRetries = typeof retry?.max === "number" ? retry.max : 0;
     const backoffMs = retry?.backoff ? parseDurationMs(retry.backoff) : 0;
     const allArtifactRefs: string[] = [...(this.store.readNodeState(runId, nodeKey)?.artifactRefs ?? [])];
 
+    // `attempt` is local to this executor call and controls parse/schema
+    // auto-retry. The persisted `state.attempt` is the durable attempt sequence
+    // used for node state and artifact filenames across pause/resume/manual retry.
     for (let attempt = 0; ; attempt++) {
-      const result = await this.agentExecutor.execute({ node, context: ctx, signal, nodeKey, resume, retry: attempt > 0 });
+      const result = await this.agentExecutor.execute({ node, context: ctx, signal, nodeKey, continuation, retry: attempt > 0 });
       const attemptNo = this.store.readNodeState(runId, nodeKey)?.attempt ?? attempt + 1;
 
       // Persist per-attempt human-readable agent IO plus raw protocol artifacts
@@ -914,7 +804,11 @@ export class WorkflowInterpreter {
 
       if (result.failureKind || (result.error && !result.partial)) {
         const use = (node.metadata.agent as { use?: string } | undefined)?.use ?? "?";
-        throw new LeafExecutionError(`Agent step '${node.id}' (use: ${use}) failed${result.failureKind ? ` (${result.failureKind})` : ""}: ${result.error ?? "unknown"}`, allArtifactRefs.length > 0 ? allArtifactRefs : artifactRefs);
+        throw new LeafExecutionError(
+          `Agent step '${node.id}' (use: ${use}) failed${result.failureKind ? ` (${result.failureKind})` : ""}: ${result.error ?? "unknown"}`,
+          allArtifactRefs.length > 0 ? allArtifactRefs : artifactRefs,
+          result.output
+        );
       }
 
       // Agent output is wrapped in an envelope for parity with program steps.
@@ -1003,9 +897,7 @@ export class WorkflowInterpreter {
         ctx.steps[winner.child.id] = winner.output;
         return mapOutput;
       } catch (error) {
-        if (error instanceof NodeAbortedError && error.state === "paused") {
-          this.pauseDescendantsInScope(runId, node, dynamic);
-        } else {
+        if (!(error instanceof NodeAbortedError)) {
           this.cancelDescendantsInScope(runId, node, dynamic);
         }
         branchPromises.forEach((p) => void p.catch(() => undefined));
@@ -1022,10 +914,7 @@ export class WorkflowInterpreter {
     try {
       results = await Promise.all(branchPromises);
     } catch (error) {
-      if (error instanceof NodeAbortedError && error.state === "paused") {
-        // Pause siblings (reversible), not cancel (irreversible)
-        this.pauseDescendantsInScope(runId, node, dynamic);
-      } else {
+      if (!(error instanceof NodeAbortedError)) {
         // Genuine failure or cancel — fast-stop: cancel still-running siblings
         this.cancelDescendantsInScope(runId, node, dynamic);
       }
@@ -1041,12 +930,12 @@ export class WorkflowInterpreter {
   }
 
   /**
-   * Apply an action (cancel or pause) to still-running/pending/awaiting
-   * descendant nodes of a composite (parallel or fanout), scoped to the
-   * given dynamic context. A descendant must (a) be one of the composite's
-   * descendant IR node ids and (b) share every dynamic dimension (item/lane/
-   * round) the composite already carries — so concurrent sibling fanout lanes
-   * outside this scope are not affected.
+   * Cancel still-running/pending/awaiting descendant nodes of a failed
+   * composite (parallel or fanout), scoped to the given dynamic context. A
+   * descendant must (a) be one of the composite's descendant IR node ids and
+   * (b) share every dynamic dimension (item/lane/round) the composite already
+   * carries — so concurrent sibling fanout lanes outside this scope are not
+   * affected.
    *
    * NOTE: pass the composite's OWN dynamic. For a parallel this scopes to the
    * current lane (item/lane present). For a fanout, the dynamic does NOT yet
@@ -1086,84 +975,7 @@ export class WorkflowInterpreter {
    * (parallel `join: all`, or fanout `join: all` fail-fast).
    */
   private cancelDescendantsInScope(runId: string, node: IrNode, dynamic: NodeKeyDynamic): void {
-    this.descendantsInScope(runId, node, dynamic, (rid, key) => this.cancelNode(rid, key));
-  }
-
-  /**
-   * Pause still-running/pending descendant nodes of a paused composite
-   * (parallel or fanout). Mirrors cancelDescendantsInScope but transitions
-   * siblings to `paused` (reversible) instead of `cancelled` (terminal).
-   */
-  private pauseDescendantsInScope(runId: string, node: IrNode, dynamic: NodeKeyDynamic): void {
-    this.descendantsInScope(runId, node, dynamic, (rid, key) => this.pauseNode(rid, key));
-  }
-
-  /**
-   * Check whether the paused node at `nodeKey` has any paused siblings within
-   * its innermost composite scope (parallel branches or fanout lanes).
-   *
-   * Strategy: scan all paused nodes in the run. If any other paused node shares
-   * the same composite scope (identified by key prefix up to and including the
-   * composite node ID), then there are paused siblings and resume should propagate.
-   *
-   * The composite scope prefix is computed from the innermost (rightmost) dynamic
-   * dimension in the key:
-   * - For branch: (parallel): the child-id sits between the composite node and
-   *   branch:, so exclude it. E.g. workflow/par/branch-a/branch:0 → workflow/par
-   * - For item: (fanout): item: sits directly after the composite node.
-   *   E.g. workflow/review-files/item:a_txt → workflow/review-files
-   * - For lane: / round: (nested composites): no child-id adjustment.
-   *
-   * A simple startsWith check on the composite prefix handles nested composites
-   * correctly because the innermost dynamic determines the scope.
-   */
-  private hasPausedSiblingsInScope(runId: string, nodeKey: string): boolean {
-    const allPaused = this.store.listNodeStates(runId).filter((n) => n.state === "paused");
-    if (allPaused.length <= 1) return false;
-
-    // Find the innermost (rightmost) dynamic dimension in the node key.
-    // Dynamic segments are branch:, item:, lane:, round:.
-    const segments = nodeKey.split("/");
-    let dynamicIdx = -1;
-    for (let i = segments.length - 1; i >= 0; i--) {
-      if (/^(branch|item|lane|round):/.test(segments[i]!)) {
-        dynamicIdx = i;
-        break;
-      }
-    }
-    if (dynamicIdx === -1) return false;
-
-    // Compute the composite scope prefix. Skip backward over ALL consecutive
-    // dynamic segments (e.g. item:0/lane:0 from the same fanout composite) to
-    // find the composite boundary. Then handle the parallel child-id exclusion:
-    // for branch:, the child-id sits between the composite and the first dynamic.
-    let compositeEndIdx = dynamicIdx;
-    // Skip all consecutive dynamic segments before the innermost one.
-    while (compositeEndIdx > 0 && /^(branch|item|lane|round):/.test(segments[compositeEndIdx - 1]!)) {
-      compositeEndIdx--;
-    }
-    // For parallel (branch:), exclude the child-id before the dynamic cluster.
-    // E.g. workflow/par/branch-a/branch:0 → compositeEndIdx points to branch-a → exclude it.
-    // Use a positive check for dynamic segments (rather than !includes(":")) so
-    // step IDs containing colons are handled correctly.
-    if (segments[dynamicIdx]!.startsWith("branch:") && compositeEndIdx > 0 && !/^(branch|item|lane|round):/.test(segments[compositeEndIdx - 1]!)) {
-      compositeEndIdx--;
-    }
-    const compositePrefix = segments.slice(0, compositeEndIdx).join("/") + "/";
-
-    // Check if any OTHER paused node shares the same composite scope.
-    // Use segment-boundary-aware matching: after the shared prefix, the next
-    // segment in the other key must exist (i.e. the other key is at least as
-    // deep as the prefix implies), preventing false positives when unrelated
-    // composite node IDs share a prefix (e.g. par-a vs par-a-deep).
-    return allPaused.some((ns) => {
-      if (ns.nodeKey === nodeKey) return false;
-      if (!ns.nodeKey.startsWith(compositePrefix)) return false;
-      // Verify segment boundary: the key must continue past the prefix
-      // (the prefix always ends with "/", so a match at the prefix boundary
-      // means the next character is a segment, not a partial match).
-      return ns.nodeKey.length > compositePrefix.length;
-    });
+    this.descendantsInScope(runId, node, dynamic, (rid, key) => this.cancelMaterializedNode(rid, key));
   }
 
   private async executeFanout(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {
@@ -1215,10 +1027,6 @@ export class WorkflowInterpreter {
           return { ok: true, output: laneOutput };
         } catch (error) {
           if (error instanceof NodeAbortedError) {
-            if (error.state === "paused") {
-              // Pause sibling lanes (reversible), not cancel (irreversible)
-              this.pauseDescendantsInScope(runId, node, dynamic);
-            }
             throw error;
           }
           failures++;
@@ -1358,7 +1166,7 @@ export class WorkflowInterpreter {
     return new Promise<unknown>((resolve, reject) => {
       const onAbort = (): void => {
         cleanup();
-        // Honor the operator intent recorded by cancelNode/pauseNode. An
+        // Honor the operator intent recorded by Run-level pause/cancel. An
         // awaiting gate is normally cancelled (awaiting → cancelled).
         reject(new NodeAbortedError(nodeKey, this.abortIntent(runId, nodeKey)));
       };
@@ -1497,7 +1305,7 @@ export class WorkflowInterpreter {
     return has ? snapshot : undefined;
   }
 
-  /** Merge a persisted dynamic value-context back into a rebuilt context (resume/retry). */
+  /** Merge a persisted dynamic value-context back into a rebuilt context (retry/continuation). */
   private restoreDynamicContext(ctx: ExpressionContext, snapshot: import("./types.js").NodeDynamicContext | undefined): void {
     if (!snapshot) return;
     if (snapshot.item !== undefined) ctx.item = snapshot.item;
@@ -1601,7 +1409,9 @@ class NodeAbortedError extends Error {
 class LeafExecutionError extends Error {
   constructor(
     message: string,
-    public readonly artifactRefs?: string[]
+    public readonly artifactRefs?: string[],
+    /** Invalid output captured before the leaf failed validation/execution. */
+    public readonly output?: unknown
   ) {
     super(message);
     this.name = "LeafExecutionError";

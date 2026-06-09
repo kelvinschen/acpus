@@ -21,6 +21,7 @@ interface SessionState {
   pendingPrompt: AbortController | null;
   promptCount: number;
   ruleAttempts: Map<string, number>;
+  previousRule: string | null;
 }
 
 export class MockAgent {
@@ -81,10 +82,12 @@ export class MockAgent {
     const promptText = extractPromptText(params.prompt);
     const selected = selectResponse(this.script, promptText, {
       promptCount: session.promptCount,
-      ruleAttempts: session.ruleAttempts
+      ruleAttempts: session.ruleAttempts,
+      previousRule: session.previousRule ?? undefined
     });
     const priorAttempts = session.ruleAttempts.get(selected.ruleName) ?? 0;
     session.ruleAttempts.set(selected.ruleName, priorAttempts + 1);
+    session.previousRule = selected.ruleName;
     this.trace.write({
       event: "session/prompt",
       sessionId: params.sessionId,
@@ -195,7 +198,8 @@ export class MockAgent {
       cwd,
       pendingPrompt: null,
       promptCount: 0,
-      ruleAttempts: new Map()
+      ruleAttempts: new Map(),
+      previousRule: null
     };
   }
 }

@@ -15,9 +15,9 @@ const UNSAFE_RUN_ID = /(^|\/)\.\.?(\/|$)|[\\:\0]/;
 /**
  * Creates a Hono HTTP app for the acpus Run Supervisor.
  *
- * Note: Node keys contain "/" characters (e.g. "workflow/step-a"),
- * which are incompatible with URL path segments. All node-control
- * routes accept the nodeKey as a query parameter instead.
+ * Note: Node keys contain "/" characters (e.g. "workflow/step-a"), which are
+ * incompatible with URL path segments. Node-addressed routes accept the nodeKey
+ * as a query parameter instead.
  *
  * Returns the Hono app plus control handles for the runner to query
  * idle-shutdown state and inject health-overrides after listen.
@@ -34,11 +34,11 @@ export function createSupervisorApp(
   const interpreters = new Map<string, WorkflowInterpreter>();
 
   // In-flight runToCompletion promises, keyed by runId, to prevent concurrent
-  // execution races during Run-level resume/retry.
+  // execution races during Run-level resume or retry.
   const inFlightRuns = new Map<string, Promise<import("./types.js").RunState>>();
 
-  // Mutex guard: runIds currently being resumed/retried. Prevents concurrent
-  // resume/retry requests from starting duplicate runToCompletion executions.
+  // Mutex guard: runIds currently being resumed or retried. Prevents concurrent
+  // resume or retry requests from starting duplicate runToCompletion executions.
   const resumingRunIds = new Set<string>();
 
   // Lease tracking for idle shutdown
@@ -98,7 +98,7 @@ export function createSupervisorApp(
   }
 
   /**
-   * Interpreter for a forward-progress control action (resume / retry). When the
+   * Interpreter for a forward-progress control action (resume or retry). When the
    * supervisor has restarted (in-memory map empty) but the Run persists, lazily
    * recover one and reset stale `running` nodes so the action can proceed.
    * Returns `undefined` only when the Run does not exist on disk.
@@ -172,8 +172,16 @@ export function createSupervisorApp(
         inFlightRuns.delete(runId);
         pruneTerminalInterpreters();
         if (runningCount() === 0) lastActiveAt = Date.now();
-    });
+      });
     inFlightRuns.set(runId, promise);
+  }
+
+  function startPersistedRunExecution(interpreter: WorkflowInterpreter, runId: string): void {
+    const ir = store.readIr(runId);
+    const input = store.readInput(runId);
+    if (ir && input) {
+      startRunExecution(interpreter, ir, input, runId);
+    }
   }
 
   type ImmediateControlResult<T> =
@@ -182,7 +190,7 @@ export function createSupervisorApp(
     | { kind: "pending" };
 
   /**
-   * Node-level resume/retry may run for a long time. Wait one event-loop turn so
+   * Node-level retry may run for a long time. Wait one event-loop turn so
    * synchronous validation errors surface as 409s, then detach once execution
    * has started so interactive clients are not kept alive by the request.
    */
@@ -349,24 +357,10 @@ export function createSupervisorApp(
     return c.json({ absPath });
   });
 
-  // ─── Control (unified: Run-level when ?key absent, Node-level when ?key present) ────
+  // ─── Control ────────────────────────────────────────────────────
 
   app.post("/runs/:runId/pause", async (c) => {
     const runId = c.req.param("runId");
-    const nodeKey = c.req.query("key");
-
-    if (nodeKey) {
-      // Node-level pause
-      const interpreter = interpreters.get(runId);
-      if (!interpreter) {
-        return store.hasRun(runId)
-          ? c.json({ error: "Run is not actively executing; pause requires an in-flight run" }, 409)
-          : c.json({ error: "Run not found" }, 404);
-      }
-      interpreter.pauseNode(runId, nodeKey);
-      const state = store.readNodeState(runId, nodeKey);
-      return c.json(state);
-    }
 
     // Run-level pause
     const meta = store.readRunMeta(runId);
@@ -381,23 +375,6 @@ export function createSupervisorApp(
 
   app.post("/runs/:runId/resume", async (c) => {
     const runId = c.req.param("runId");
-    const nodeKey = c.req.query("key");
-
-    if (nodeKey) {
-      // Node-level resume
-      const interpreter = getOrRecoverInterpreter(runId);
-      if (!interpreter) return c.json({ error: "Run not found" }, 404);
-      const resume = interpreter.resumeNode(runId, nodeKey);
-      const immediate = await settleImmediate(resume);
-      if (immediate.kind === "rejected") {
-        const err = immediate.error;
-        return c.json({ error: err instanceof Error ? err.message : String(err) }, 409);
-      }
-      if (immediate.kind === "pending") consumeDetachedControl(resume);
-      lastActiveAt = Date.now();
-      const state = store.readNodeState(runId, nodeKey);
-      return c.json(state);
-    }
 
     // Run-level resume
     if (resumingRunIds.has(runId)) {
@@ -417,13 +394,9 @@ export function createSupervisorApp(
       await interpreter.resumeRun(runId);
       interpreters.set(runId, interpreter);
       lastActiveAt = Date.now();
-      const ir = store.readIr(runId);
-      const input = store.readInput(runId);
-    if (ir && input) {
-      startRunExecution(interpreter, ir, input, runId);
-    }
-    const updated = store.readRunMeta(runId);
-    return c.json(updated);
+      startPersistedRunExecution(interpreter, runId);
+      const updated = store.readRunMeta(runId);
+      return c.json(updated);
     } finally {
       resumingRunIds.delete(runId);
     }
@@ -431,20 +404,6 @@ export function createSupervisorApp(
 
   app.post("/runs/:runId/cancel", async (c) => {
     const runId = c.req.param("runId");
-    const nodeKey = c.req.query("key");
-
-    if (nodeKey) {
-      // Node-level cancel
-      const interpreter = interpreters.get(runId);
-      if (!interpreter) {
-        return store.hasRun(runId)
-          ? c.json({ error: "Run is not actively executing; cancel requires an in-flight run" }, 409)
-          : c.json({ error: "Run not found" }, 404);
-      }
-      interpreter.cancelNode(runId, nodeKey);
-      const state = store.readNodeState(runId, nodeKey);
-      return c.json(state);
-    }
 
     // Run-level cancel
     const meta = store.readRunMeta(runId);
@@ -470,7 +429,6 @@ export function createSupervisorApp(
     const nodeKey = c.req.query("key");
 
     if (nodeKey) {
-      // Node-level retry
       const interpreter = getOrRecoverInterpreter(runId);
       if (!interpreter) return c.json({ error: "Run not found" }, 404);
       const retry = interpreter.retryNode(runId, nodeKey);
@@ -498,18 +456,14 @@ export function createSupervisorApp(
     if (inFlight) await inFlight;
     resumingRunIds.add(runId);
     try {
-    const interpreter = getOrRecoverInterpreter(runId);
-    if (!interpreter) return c.json({ error: "Run not found" }, 404);
-    interpreter.retryRun(runId);
-    interpreters.set(runId, interpreter);
-    lastActiveAt = Date.now();
-    const ir = store.readIr(runId);
-    const input = store.readInput(runId);
-    if (ir && input) {
-      startRunExecution(interpreter, ir, input, runId);
-    }
-    const updated = store.readRunMeta(runId);
-    return c.json(updated);
+      const interpreter = getOrRecoverInterpreter(runId);
+      if (!interpreter) return c.json({ error: "Run not found" }, 404);
+      interpreter.retryRun(runId);
+      interpreters.set(runId, interpreter);
+      lastActiveAt = Date.now();
+      startPersistedRunExecution(interpreter, runId);
+      const updated = store.readRunMeta(runId);
+      return c.json(updated);
     } finally {
       resumingRunIds.delete(runId);
     }
@@ -528,9 +482,9 @@ export function createSupervisorApp(
   // ─── Approval signal ─────────────────────────────────────────────
   //
   // Deliver a human-in-the-loop decision to an Approval Gate that is currently
-  // `awaiting`. Node-level only (`?key=` required). Like pause/cancel, the
-  // resolver lives in the in-memory interpreter, so a live in-flight run is
-  // required (409 otherwise).
+  // `awaiting`. Node-addressed only (`?key=` required). The resolver lives in
+  // the in-memory interpreter, so a live in-flight run is required (409
+  // otherwise).
 
   app.post("/runs/:runId/signal", async (c) => {
     const runId = c.req.param("runId");

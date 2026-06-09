@@ -56,6 +56,18 @@ _Avoid_: task id, step path
 A unified 7-state lifecycle (pending → running → {awaiting, completed, failed, paused, cancelled}) governing every Node in a Run. `awaiting` is the human-decision wait used by Approval Gates.
 _Avoid_: status enum, phase tracker
 
+**Run Control**:
+An operator action that applies to the whole Run, such as pause, resume, cancel, or retry.
+_Avoid_: node control, task control
+
+**Node Retry**:
+An operator repair action that re-executes one failed Executable Node without implying broader Workflow progress.
+_Avoid_: node resume, node pause, task retry
+
+**Continuation**:
+The Agent Step execution mode that re-enters the same acpx-managed ACP session with a fixed runtime prompt, used by Run-level resume and Node Retry.
+_Avoid_: node resume, rerun prompt
+
 **Run Supervisor**:
 A Workspace-scoped local execution authority that owns active Run interpreters, persists Node state, and lets other terminals observe or control Runs. It is an implementation detail of Run execution, not a prerequisite the user must manually start.
 _Avoid_: daemon, server, service

@@ -15,7 +15,9 @@ const TRANSITIONS: Record<NodeState, Set<NodeState>> = {
   // operator decision). It is distinct from `paused` (an operator-initiated
   // pause): a decision resolves it to `completed`, a cancel to `cancelled`.
   awaiting: new Set(["completed", "cancelled"]),
-  paused: new Set(["running", "cancelled"]),
+  // A paused Node is resumed by a Run-level control-plane reset back to
+  // `pending`, not by a direct lifecycle transition to `running`.
+  paused: new Set(["cancelled"]),
   completed: new Set(),
   failed: new Set(),
   cancelled: new Set()
@@ -52,6 +54,14 @@ export function isTerminal(state: NodeState): boolean {
 export function resetFailedForRetry(from: NodeState): NodeState {
   if (from !== "failed") {
     throw new Error(`Cannot retry node in state '${from}': only failed nodes are retryable`);
+  }
+  return "pending";
+}
+
+/** Control-plane reset: Run-level resume of a paused node (paused → pending). */
+export function resetPausedForRunResume(from: NodeState): NodeState {
+  if (from !== "paused") {
+    throw new Error(`Cannot reset node in state '${from}': only paused nodes can be reset`);
   }
   return "pending";
 }
