@@ -125,8 +125,11 @@ function compositeOutputHint(stepId: string, kind: string): string {
   if (kind === "fanout") {
     return `Step '${stepId}' is a fanout node — its output is an array. Use steps.${stepId}[<index>].output.<field> to access a specific lane instead of steps.${stepId}.output.`;
   }
-  if (kind === "parallel" || kind === "subworkflow") {
+  if (kind === "parallel") {
     return `Step '${stepId}' is a ${kind} node — use steps.${stepId}.<child_id>.output.<field> instead of steps.${stepId}.output.`;
+  }
+  if (kind === "subworkflow") {
+    return `Step '${stepId}' is a ${kind} node — its output does not have an '.output' envelope. Access its fields directly as steps.${stepId}.<field>.`;
   }
   // loop, switch
   return `Step '${stepId}' is a ${kind} node — its output does not have an '.output' envelope.`;

@@ -151,4 +151,31 @@ describe("createExpressionCollector", () => {
     collector.visit("${{ steps.research }}", "$.test");
     expect(diagnostics.diagnostics).toEqual([]);
   });
+
+  it("errors when .output is accessed on a subworkflow step", () => {
+    const diagnostics = new DiagnosticBag();
+    const kinds = new Map([["sub", "subworkflow"]]);
+    const collector = createExpressionCollector(diagnostics, new Set(["sub"]), kinds);
+    collector.visit("${{ steps.sub.output.result }}", "$.test");
+    expect(diagnostics.diagnostics).toEqual([
+      expect.objectContaining({ code: "EXPR_COMPOSITE_OUTPUT", message: expect.stringContaining("subworkflow") })
+    ]);
+  });
+
+  it("does not error when fanout uses bracket-index path", () => {
+    const diagnostics = new DiagnosticBag();
+    const kinds = new Map([["research", "fanout"]]);
+    const collector = createExpressionCollector(diagnostics, new Set(["research"]), kinds);
+    collector.visit("${{ steps.research[0].output.filepath }}", "$.test");
+    expect(diagnostics.diagnostics).toEqual([]);
+  });
+
+  it("does not error when step kind is unknown (not in stepKinds)", () => {
+    const diagnostics = new DiagnosticBag();
+    const kinds = new Map(); // no kind for "mystery"
+    const collector = createExpressionCollector(diagnostics, new Set(["mystery"]), kinds);
+    collector.visit("${{ steps.mystery.output.x }}", "$.test");
+    const compositeErrors = diagnostics.diagnostics.filter((d) => d.code === "EXPR_COMPOSITE_OUTPUT");
+    expect(compositeErrors).toEqual([]);
+  });
 });
