@@ -1,88 +1,119 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 430" role="img" aria-labelledby="title desc">
-  <title id="title">Acpus user workflow: Workflow Spec to Run to reusable agent and program nodes</title>
-  <desc id="desc">A user writes a Workflow Spec, starts a Run, collects context with a program node, fans out review and test work, loops repair attempts, checks a guard, and ships structured output.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="580" viewBox="0 0 980 580" role="img" aria-labelledby="title desc">
+  <title id="title">Example Run Pattern: adversarial review</title>
+  <desc id="desc">A YAML spec creates a durable Acpus Run; the Run executes a workflow block with programs, guards, parallel agents, and outputs.</desc>
   <defs>
     <marker id="arrow" markerHeight="8" markerWidth="8" orient="auto" refX="7" refY="4">
-      <path d="M0,0 L8,4 L0,8 Z" fill="#8f6b22" />
+      <path d="M0,0 L8,4 L0,8 Z" fill="#b68117" />
     </marker>
     <style>
       .bg { fill: #fbf8ef; }
-      .rule { stroke: #c8b98a; stroke-width: 1.4; }
-      .arrow { fill: none; stroke: #8f6b22; stroke-width: 1.7; marker-end: url(#arrow); }
-      .box { fill: #f5f1e6; stroke: #1a1a1a; stroke-width: 1.4; }
-      .soft { fill: #fffaf0; stroke: #c8b98a; stroke-width: 1.2; }
-      .pill { fill: #1a1a1a; }
-      .gold { fill: #b7892c; }
-      .ink { fill: #1a1a1a; }
-      .muted { fill: #555; }
-      .title { font: 600 18px Georgia, serif; }
-      .label { font: 600 13px Arial, sans-serif; }
-      .small { font: 11px Arial, sans-serif; }
-      .mono { font: 500 10px "IBM Plex Mono", ui-monospace, monospace; letter-spacing: 0; }
+      .outer-rule { fill: none; stroke: #b68117; stroke-width: 1.3; }
+      .inner-rule { fill: none; stroke: #c8b98a; stroke-width: 1; }
+      .workflow { fill: rgba(255, 250, 240, 0.6); stroke: #b68117; stroke-width: 1.2; }
+      .box { fill: #f5f1e6; stroke: #191919; stroke-width: 1.2; }
+      .soft { fill: #fffaf0; stroke: #b68117; stroke-width: 1.2; }
+      .tag { fill: none; stroke: #b68117; stroke-width: 1; }
+      .guard { fill: #f5f1e6; stroke: #191919; stroke-width: 1.2; }
+      .ink { fill: #191919; }
+      .gold { fill: #b68117; }
+      .arrow { fill: none; stroke: #b68117; stroke-width: 1.5; marker-end: url(#arrow); }
+      .line { fill: none; stroke: #b68117; stroke-width: 1.4; }
+      text { font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace; letter-spacing: 0; }
+      .title { font-size: 20px; font-weight: 700; }
+      .subtitle { font-size: 10.5px; font-weight: 400; }
+      .section { font-size: 13px; font-weight: 700; }
+      .label { font-size: 8.5px; font-weight: 700; }
+      .main { font-size: 12px; font-weight: 700; }
+      .body { font-size: 8.8px; font-weight: 400; }
+      .tiny { font-size: 7.5px; font-weight: 400; }
     </style>
   </defs>
 
-  <rect class="bg" x="0" y="0" width="980" height="430" />
-  <rect class="rule" x="16" y="16" width="948" height="398" fill="none" />
+  <rect class="bg" x="0" y="0" width="980" height="580" />
+  <rect class="outer-rule" x="1" y="1" width="978" height="578" />
+  <rect class="inner-rule" x="14" y="14" width="952" height="552" />
 
-  <text class="title ink" x="42" y="55">Ship a change with agent-orchestrated workflow</text>
-  <text class="small muted" x="42" y="78">Acpus turns one YAML spec into a durable local run with agent steps, program steps, parallel work, loops, guards, and inspectable output.</text>
+  <text class="title ink" x="28" y="43">Example Pattern: Adversarial Review</text>
+  <text class="subtitle ink" x="28" y="66">A YAML spec starts a durable Run; the Run executes a workflow block with programs, guards, parallel agents, and outputs.</text>
 
-  <rect class="box" x="42" y="122" width="128" height="78" rx="4" />
-  <text class="mono gold" x="62" y="147">YAML</text>
-  <text class="label ink" x="62" y="169">Workflow Spec</text>
-  <text class="small muted" x="62" y="188">intent + agents</text>
+  <rect class="box" x="405" y="88" width="170" height="68" rx="4" />
+  <rect class="tag" x="470" y="100" width="40" height="17" />
+  <text class="label gold" x="490" y="112" text-anchor="middle">YAML</text>
+  <text class="main ink" x="490" y="133" text-anchor="middle">Review Spec</text>
+  <text class="body ink" x="490" y="150" text-anchor="middle">goal + inputs</text>
 
-  <rect class="box" x="216" y="122" width="112" height="78" rx="4" />
-  <text class="mono gold" x="245" y="147">RUN</text>
-  <text class="label ink" x="244" y="169">Acpus Run</text>
-  <text class="small muted" x="239" y="188">durable state</text>
+  <path class="arrow" d="M490 156 V178" />
 
-  <path class="arrow" d="M170 161 H207" />
-  <path class="arrow" d="M328 161 H374" />
+  <rect class="box" x="405" y="184" width="170" height="68" rx="4" />
+  <rect class="tag" x="473" y="196" width="34" height="17" />
+  <text class="label gold" x="490" y="208" text-anchor="middle">RUN</text>
+  <text class="main ink" x="490" y="229" text-anchor="middle">Acpus Run</text>
+  <text class="body ink" x="490" y="246" text-anchor="middle">durable local state</text>
 
-  <rect class="soft" x="382" y="104" width="146" height="114" rx="4" />
-  <rect class="pill" x="404" y="124" width="68" height="20" rx="10" />
-  <text class="mono" x="418" y="138" fill="#f5f1e6">PROGRAM</text>
-  <text class="label ink" x="404" y="169">Collect context</text>
-  <text class="small muted" x="404" y="188">git status, tests, files</text>
-  <text class="small muted" x="404" y="204">deterministic inputs</text>
+  <path class="arrow" d="M490 252 V277" />
+  <text class="label gold" x="507" y="264">execute workflow</text>
 
-  <path class="arrow" d="M528 161 H578" />
+  <rect class="workflow" x="42" y="282" width="896" height="226" rx="5" />
+  <text class="section gold" x="62" y="310">WORKFLOW</text>
 
-  <rect class="soft" x="588" y="64" width="170" height="154" rx="4" />
-  <text class="mono gold" x="610" y="90">PARALLEL</text>
-  <rect class="box" x="610" y="108" width="126" height="42" rx="4" />
-  <text class="label ink" x="629" y="134">Agent review</text>
-  <rect class="box" x="610" y="160" width="126" height="42" rx="4" />
-  <text class="label ink" x="630" y="186">Program test</text>
+  <rect class="box" x="54" y="356" width="132" height="86" rx="4" />
+  <rect class="tag" x="91" y="370" width="58" height="17" />
+  <text class="label gold" x="120" y="382" text-anchor="middle">PROGRAM</text>
+  <text class="main ink" x="120" y="406" text-anchor="middle">Collect context</text>
+  <text class="body ink" x="120" y="426" text-anchor="middle">shared evidence</text>
 
-  <path class="arrow" d="M758 141 H806" />
-  <path class="arrow" d="M758 181 C778 181 786 181 806 181" />
+  <path class="arrow" d="M186 399 H218" />
 
-  <rect class="soft" x="816" y="104" width="122" height="114" rx="4" />
-  <text class="mono gold" x="846" y="130">LOOP</text>
-  <text class="label ink" x="845" y="156">Repair</text>
-  <text class="small muted" x="842" y="176">agent attempts</text>
-  <text class="small muted" x="836" y="194">until checks pass</text>
-  <path class="arrow" d="M906 214 C924 246 813 250 834 214" />
+  <path class="guard" d="M282 336 L346 399 L282 462 L218 399 Z" />
+  <rect class="tag" x="258" y="371" width="48" height="17" />
+  <text class="label gold" x="282" y="383" text-anchor="middle">GUARD</text>
+  <text class="main ink" x="282" y="407" text-anchor="middle">Changes?</text>
 
-  <path class="arrow" d="M877 218 V264" />
+  <path class="arrow" d="M282 462 V486" />
+  <text class="tiny ink" x="301" y="480">stop: no changes</text>
+  <circle cx="282" cy="493" r="7" fill="none" stroke="#b68117" stroke-width="2.2" />
+  <circle cx="282" cy="493" r="3" fill="#b68117" />
 
-  <rect class="box" x="586" y="278" width="170" height="78" rx="4" />
-  <text class="mono gold" x="645" y="303">GUARD</text>
-  <text class="label ink" x="621" y="326">Approve or fail</text>
-  <text class="small muted" x="617" y="344">human gate, policy, signal</text>
+  <path class="arrow" d="M346 399 H370" />
 
-  <path class="arrow" d="M816 317 H766" />
-  <path class="arrow" d="M586 317 H522" />
+  <rect class="soft" x="376" y="318" width="314" height="160" rx="4" />
+  <text class="label gold" x="444" y="340">PARALLEL: adversarial reviews</text>
 
-  <rect class="box" x="374" y="278" width="148" height="78" rx="4" />
-  <text class="mono gold" x="418" y="303">OUTPUT</text>
-  <text class="label ink" x="409" y="326">Ship result</text>
-  <text class="small muted" x="401" y="344">JSON, artifacts, replay</text>
+  <rect class="box" x="392" y="350" width="132" height="54" rx="4" />
+  <rect class="tag" x="437" y="360" width="42" height="17" />
+  <text class="label gold" x="444" y="372">AGENT</text>
+  <text class="main ink" x="431" y="394">Contract</text>
 
-  <path class="arrow" d="M374 317 C290 317 272 238 272 210" />
+  <rect class="box" x="540" y="350" width="132" height="54" rx="4" />
+  <rect class="tag" x="585" y="360" width="42" height="17" />
+  <text class="label gold" x="592" y="372">AGENT</text>
+  <text class="main ink" x="562" y="394">Correctness</text>
 
-  <text class="small muted" x="42" y="388">Inspect and control the Run at any point: visualize, pause, resume, retry a node, signal approval, or replay from the frozen snapshot.</text>
+  <rect class="box" x="392" y="412" width="132" height="54" rx="4" />
+  <rect class="tag" x="437" y="422" width="42" height="17" />
+  <text class="label gold" x="444" y="434">AGENT</text>
+  <text class="main ink" x="442" y="456">Tests</text>
+
+  <rect class="box" x="540" y="412" width="132" height="54" rx="4" />
+  <rect class="tag" x="585" y="422" width="42" height="17" />
+  <text class="label gold" x="592" y="434">AGENT</text>
+  <text class="main ink" x="548" y="456">Maintainability</text>
+
+  <path class="arrow" d="M690 399 H728" />
+
+  <rect class="box" x="734" y="356" width="126" height="86" rx="4" />
+  <rect class="tag" x="776" y="370" width="42" height="17" />
+  <text class="label gold" x="783" y="382">AGENT</text>
+  <text class="main ink" x="757" y="407">Synthesize</text>
+  <text class="body ink" x="759" y="427">rank findings</text>
+
+  <path class="arrow" d="M860 399 H872" />
+
+  <rect class="box" x="878" y="356" width="60" height="86" rx="4" />
+  <rect class="tag" x="886" y="370" width="46" height="17" />
+  <text class="label gold" x="893" y="382">OUTPUT</text>
+  <text class="main ink" x="886" y="407">Report</text>
+  <text class="tiny ink" x="893" y="426">verdict</text>
+
+  <text class="subtitle ink" x="28" y="540">Programs prepare shared evidence. Agents review independently and synthesize the verdict.</text>
 </svg>

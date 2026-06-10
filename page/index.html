@@ -60,6 +60,10 @@
         color: var(--muted);
         font-size: 17px;
       }
+      .opus-line {
+        display: block;
+        margin-top: 10px;
+      }
       .actions {
         display: flex;
         justify-content: center;
@@ -271,10 +275,13 @@
       <h1>Acpus</h1>
       <p class="tagline">Every run is an opus.</p>
       <p class="positioning">
-        A local durable workflow runner for ACP agents. Give your agent a
-        Workflow Spec, let Acpus run agents and programs as a replayable local
-        Run, then inspect outputs, artifacts, controls, and retries in the
-        terminal.
+        A local durable workflow runner for humans and agents. Prompt your
+        agent to orchestrate a complex Workflow Spec with any acpx-supported
+        agent you like, then run it with Acpus.
+        <span class="opus-line">
+          Since a single workflow can conduct a substantial cast of agents,
+          <em>every run is an opus</em>.
+        </span>
       </p>
       <div class="actions">
         <a class="button primary" href="https://github.com/kelvinschen/acpus">View GitHub</a>
@@ -323,16 +330,17 @@ outputs:
       </section>
 
       <section>
-        <h2><small>Run Pattern</small>From spec to shipped output</h2>
+        <h2><small>Run Pattern</small>A workflow run, by example</h2>
         <div class="rule"></div>
         <p class="lede">
-          Acpus lets a workflow mix agent judgment with deterministic local
-          programs, then keeps the whole run inspectable and replayable.
+          Acpus separates the YAML spec and durable Run from the workflow block.
+          This example uses adversarial review to show programs, guards,
+          parallel agents, synthesis, and output in one Run.
         </p>
         <img
           class="diagram"
           src="./img/acpus-user-flow.svg"
-          alt="Workflow Spec to Run, program context collection, parallel review and tests, loop repair, guard approval, and shipped output" />
+          alt="YAML review spec and durable Acpus Run feeding a workflow block with shared context, a change gate, parallel adversarial reviews, synthesis, and final report output" />
       </section>
 
       <section>
@@ -389,19 +397,19 @@ outputs:
         </p>
         <div class="playbooks">
           <div class="template">
-            <a href="https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/dynamic-workflow-designer.workflow.spec.yaml">project:dynamic-workflow-designer</a>
+            <a href="https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/dynamic-workflow-designer.workflow.spec.yaml">dynamic-workflow-designer</a>
             <p>Classify a maintainer task and install a generated Workflow Spec into the catalog.</p>
           </div>
           <div class="template">
-            <a href="https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/codebase-deep-research.workflow.spec.yaml">project:codebase-deep-research</a>
+            <a href="https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/codebase-deep-research.workflow.spec.yaml">codebase-deep-research</a>
             <p>Fan out independent research agents and synthesize a final report.</p>
           </div>
           <div class="template">
-            <a href="https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/worktree-implementation-tournament.workflow.spec.yaml">project:worktree-implementation-tournament</a>
+            <a href="https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/worktree-implementation-tournament.workflow.spec.yaml">worktree-implementation-tournament</a>
             <p>Run competing implementations in isolated worktrees and apply the winner.</p>
           </div>
           <div class="template">
-            <a href="https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/loop-until-green-fix.workflow.spec.yaml">project:loop-until-green-fix</a>
+            <a href="https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/loop-until-green-fix.workflow.spec.yaml">loop-until-green-fix</a>
             <p>Iterate agent repair attempts until verification passes, then apply the passing patch.</p>
           </div>
         </div>

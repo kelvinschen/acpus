@@ -22,6 +22,13 @@ It is built for agent work that needs structure: fanout, loops, switches, human 
 
 ## Quick Start
 
+> [!TIP]
+> In case you don't want to install it manually, copy this prompt into your agent:
+>
+> ```text
+> Read github.com/kelvinschen/acpus to understand Acpus. Follow the README to install the Acpus skill, then inspect the available Workflow Specs, choose or draft a workflow for my task, lint it, run it with Acpus, and report the Run status, artifacts, outputs, and useful next controls.
+> ```
+
 Install the CLI:
 
 ```sh
@@ -136,6 +143,14 @@ acpus runs clean --dry-run
 
 Run-facing commands lazily start a Workspace-scoped local Run Supervisor. You do not start a daemon manually; the supervisor is discovered through `.acpus/state/supervisor.json` and exits after it becomes idle.
 
+## Run Pattern
+
+The `project:adversarial-feature-implementation-review` playbook is one example of the split between a Workflow Spec, a durable Run, and the workflow nodes inside that Run. It shows how Program Steps, Guard Nodes, parallel Agent Steps, synthesis, and output can fit together in one local Run.
+
+<p align="center">
+  <img src="page/img/acpus-user-flow.svg" alt="YAML Workflow Spec and Acpus Run feeding an adversarial feature implementation review workflow" width="1000">
+</p>
+
 ## Agent Workflow Playbooks
 
 The project catalog includes runnable playbooks for larger agent workflows. The playbooks are not the dynamic part by themselves; they are starting points your agent can inspect, adapt, and extend into task-specific Workflow Specs.
@@ -144,12 +159,12 @@ They keep agents responsible for judgment, synthesis, implementation, and repair
 
 | Pattern | Workflow ref | Use case | Mutates workspace |
 | --- | --- | --- | --- |
-| Classify and act | [`project:dynamic-workflow-designer`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/dynamic-workflow-designer.workflow.spec.yaml) | Classify a maintainer task and install a generated Workflow Spec into the catalog. | Yes |
-| Fanout and synthesize | [`project:codebase-deep-research`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/codebase-deep-research.workflow.spec.yaml) | Run independent research agents and synthesize a final report. | No |
-| Adversarial verification | [`project:adversarial-feature-implementation-review`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/adversarial-feature-implementation-review.workflow.spec.yaml) | Review a feature through contract, correctness, test, and maintainability lenses. | No |
-| Generate and filter | [`project:solution-generate-filter`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/solution-generate-filter.workflow.spec.yaml) | Generate multiple solution directions, critique them, and rank a recommendation. | No |
-| Tournament | [`project:worktree-implementation-tournament`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/worktree-implementation-tournament.workflow.spec.yaml) | Let multiple agents implement candidates in isolated worktrees and apply the winning patch. | Yes |
-| Loop until done | [`project:loop-until-green-fix`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/loop-until-green-fix.workflow.spec.yaml) | Iterate agent repair attempts until verification passes, then apply the passing patch. | Yes |
+| Classify and act | [`dynamic-workflow-designer`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/dynamic-workflow-designer.workflow.spec.yaml) | Classify a maintainer task and install a generated Workflow Spec into the catalog. | Yes |
+| Fanout and synthesize | [`codebase-deep-research`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/codebase-deep-research.workflow.spec.yaml) | Run independent research agents and synthesize a final report. | No |
+| Adversarial verification | [`adversarial-feature-implementation-review`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/adversarial-feature-implementation-review.workflow.spec.yaml) | Review a feature through contract, correctness, test, and maintainability lenses. | No |
+| Generate and filter | [`solution-generate-filter`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/solution-generate-filter.workflow.spec.yaml) | Generate multiple solution directions, critique them, and rank a recommendation. | No |
+| Tournament | [`worktree-implementation-tournament`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/worktree-implementation-tournament.workflow.spec.yaml) | Let multiple agents implement candidates in isolated worktrees and apply the winning patch. | Yes |
+| Loop until done | [`loop-until-green-fix`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/loop-until-green-fix.workflow.spec.yaml) | Iterate agent repair attempts until verification passes, then apply the passing patch. | Yes |
 
 Examples:
 
