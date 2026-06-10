@@ -18,8 +18,9 @@ import { serve } from "@hono/node-server";
 export async function startRunSupervisor(config: SupervisorConfig = {}): Promise<SupervisorMetadata> {
   const host = config.host ?? "127.0.0.1";
   const port = config.port ?? 0; // 0 = random port
-  const stateDir = config.stateDir ?? join(process.cwd(), ".acpus");
-  config = { ...config, stateDir }; // Write computed stateDir back so createSupervisorApp resolves workspace correctly
+  const workspace = resolve(config.workspace ?? process.cwd());
+  const stateDir = config.stateDir ?? join(workspace, ".acpus", "state");
+  config = { ...config, stateDir, workspace }; // Write computed paths back for createSupervisorApp.
   const idleTimeoutMs = config.idleTimeoutMs ?? 5 * 60 * 1000; // 5 min default
   const metadataFile = join(stateDir, "supervisor.json");
 
@@ -33,7 +34,7 @@ export async function startRunSupervisor(config: SupervisorConfig = {}): Promise
   // Startup recovery: reset orphaned running nodes to pending, set Run to paused.
   // Only Runs with status "running" are recovered (crash, no graceful shutdown).
   // After a graceful shutdown, paused nodes remain paused and the Run stays paused.
-  // The operator uses `acpus resume <runId>` to continue.
+  // The operator uses `acpus runs resume <runId>` to continue.
   for (const runId of store.listRunIds()) {
     const meta = store.readRunMeta(runId);
     if (meta?.status === "running") {
@@ -74,7 +75,6 @@ export async function startRunSupervisor(config: SupervisorConfig = {}): Promise
   });
 
   const endpoint = `http://127.0.0.1:${boundPort}`;
-  const workspace = resolve(stateDir, "..");
 
   // Write supervisor metadata for discovery
   const metadata: SupervisorMetadata = {

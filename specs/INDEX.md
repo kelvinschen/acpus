@@ -31,3 +31,4 @@ One short paragraph describing the current feature boundary.
 - [Mock Agent Spec](mock-agent-spec.md)
 - [Schema Spec](schema-spec.md)
 - [Workflow Spec](workflow-spec.md)
+- [Workflow Catalog Spec](workflow-catalog-spec.md)

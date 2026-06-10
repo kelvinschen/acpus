@@ -8,7 +8,7 @@
 | --- | --- |
 | `@acpus/core` | Own the YAML DSL compiler boundary: parse specs, validate JSON Schema fragments, parse CEL expressions, lint references, emit frozen IR, and project a schedule summary. |
 | `@acpus/runtime` | Own the local durable workflow runtime: interpret frozen IR, persist per-node state, manage the 7-state lifecycle, evaluate CEL expressions at runtime, execute agents and programs, store artifacts, and serve the supervisor REST API. |
-| `acpus` | Own the user-facing CLI: read files and input payloads, resolve includes, expose `lint`, `run`, `ls`, `inspect`, `pause`, `resume`, `cancel`, `retry`, `replay`, and `visualize` commands. |
+| `acpus` | Own the user-facing CLI: read files and input payloads, resolve includes, expose `workflows`/`wf` and `runs` resource commands. |
 | `@acpus/mock-agent` | Own the deterministic ACP-compatible Mock Agent used to validate agent protocol behavior and serve as a test executor for the runtime. |
 
 ## Commands
@@ -24,25 +24,30 @@ CLI examples:
 
 ```sh
 # Lint and dry-run
-pnpm acpus lint packages/core/test/fixtures/all-primitives.yaml
-pnpm acpus run packages/core/test/fixtures/all-primitives.yaml --dry-run --json
+pnpm acpus workflows lint packages/core/test/fixtures/all-primitives.yaml
+pnpm acpus workflows run packages/core/test/fixtures/all-primitives.yaml --dry-run --json
+
+# Workflow Catalog
+pnpm acpus workflows list
+pnpm acpus wf show project:stress-demo
 
 # Runtime execution (lazy supervisor starts automatically)
-pnpm acpus run spec.yaml                       # foreground follow with observations
-pnpm acpus run spec.yaml --background          # submit and return immediately
-pnpm acpus run spec.yaml --visualize          # submit and open visualizer
-pnpm acpus run spec.yaml --json                # JSONL observations
+pnpm acpus workflows run spec.yaml                       # foreground follow with observations
+pnpm acpus workflows run spec.yaml --background          # submit and return immediately
+pnpm acpus workflows run spec.yaml --visualize           # submit and open visualizer
+pnpm acpus workflows run spec.yaml --json                # JSONL observations
 
 # Inspect and control
-pnpm acpus ls                                  # list runs
-pnpm acpus inspect <runId>                     # show run details and node tree
-pnpm acpus pause <runId>                       # pause the entire run
-pnpm acpus resume <runId>                      # resume a paused run
-pnpm acpus cancel <runId>                      # cancel a running run
-pnpm acpus retry <runId>                       # retry a failed run
-pnpm acpus retry <runId> --node <nodeKey>      # retry a failed executable node
-pnpm acpus replay <runId>                      # verify determinism
-pnpm acpus visualize [runId]                  # open visualizer
+pnpm acpus runs list                                  # list runs
+pnpm acpus runs show <runId>                          # show run details and node tree
+pnpm acpus runs pause <runId>                         # pause the entire run
+pnpm acpus runs resume <runId>                        # resume a paused run
+pnpm acpus runs cancel <runId>                        # cancel a running run
+pnpm acpus runs retry <runId>                         # retry a failed run
+pnpm acpus runs retry <runId> --node <nodeKey>        # retry a failed executable node
+pnpm acpus runs replay <runId>                        # verify determinism
+pnpm acpus runs visualize [runId]                     # open visualizer
+pnpm acpus runs clean --dry-run                       # preview terminal Run cleanup
 
 # Mock agent
 pnpm mock-agent --script packages/mock-agent/test/fixtures/mock.yaml
@@ -58,30 +63,25 @@ The M2 runtime (`@acpus/runtime`) implements a local durable execution engine:
 - **CEL Evaluator**: Evaluates `${{ ... }}` expression templates at runtime using `@marcbachmann/cel-js`, with `loop.` → `loop_ctx.` rewriting and registered custom functions (`now`, `len`, `startsWith`, `matches`, `coalesce`).
 - **Concurrency**: Cooperative single-event-loop concurrency via `Promise.all`/`Promise.race` with `p-limit` for fanout and parallel node throttling.
 - **Executors**: Mock executors for testing; real `ProgramExecutor` using `execa` for subprocess management with native timeout and abort; real `AgentExecutor` spawning `acpx` via `execa` for ACP session management.
-- **Artifacts**: Local filesystem store under `.acpus/runs/<runId>/artifacts/` with directory-traversal validation and URI-based references.
-- **Run Supervisor**: Lazily started per-workspace Hono HTTP server on a random port, discovered via `.acpus/supervisor.json`. No manual start command needed. Supports Run-level pause/resume/cancel/retry and Node-level retry. Idle shutdown after 5 minutes of inactivity.
+- **Artifacts**: Local filesystem store under `.acpus/state/runs/<runId>/artifacts/` with directory-traversal validation and URI-based references.
+- **Run Supervisor**: Lazily started per-workspace Hono HTTP server on a random port, discovered via `.acpus/state/supervisor.json`. No manual start command needed. Supports Run-level pause/resume/cancel/retry and Node-level retry. Idle shutdown after 5 minutes of inactivity.
 - **Crash Recovery**: Startup recovery resets orphaned `running` nodes to `pending`; graceful shutdown persists `running` → `paused`; checkpoint resume rebuilds from persisted state.
 
 ### Directory Layout
 
 ```
 .acpus/
-  runs/
-    <run_id>/
-      ir.json            # frozen IR snapshot
-      input.json         # resolved input
-      run-meta.json      # RunState metadata
-      nodes/
-        workflow:step-a.json      # NodeExecutionState
-        workflow:mapped:item:0:lane:0.json
-      artifacts/
-        workflow:step-a/
-          attempt-001.prompt.md
-          attempt-001.response.md
-          attempt-001.transcript.jsonl
-          attempt-001.stderr.log
-  supervisor.json        # supervisor metadata (endpoint, PID)
-  supervisor.lock        # lock directory during supervisor startup
+  workflows/             # tracked project Workflow Catalog entries
+  state/                 # ignored runtime state
+    runs/
+      <run_id>/
+        ir.json
+        input.json
+        run-meta.json
+        nodes/
+        artifacts/
+    supervisor.json
+    supervisor.lock
 ```
 
 ## Design Targets

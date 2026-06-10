@@ -8,6 +8,10 @@ Acpus is a workflow authoring and orchestration context for durable ACP agent wo
 A YAML document that declares a workflow, its inputs, agents, steps, and outputs.
 _Avoid_: config file, script
 
+**Workflow Catalog**:
+A discoverable collection of Workflow Specs that Acpus can list, inspect, lint, and run by reference. The Catalog contains Workflow definitions, not Run history or runtime state.
+_Avoid_: run list, registry database, saved run
+
 **Workflow**:
 The logical process described by a Workflow Spec.
 _Avoid_: job, pipeline

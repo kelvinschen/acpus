@@ -6,7 +6,7 @@ description: |
   token spend or long-running work.
 
   Usage:
-    pnpm acpus run workflows/stress-demo/workflow.yaml
+    pnpm acpus workflows run project:stress-demo
 input:
   lanes?:
     type: array
@@ -16,7 +16,7 @@ input:
 agents:
   mock_agent:
     type: command
-    use: "node ./packages/mock-agent/dist/index.js --script ./workflows/stress-demo/mock.yaml"
+    use: "node ./packages/mock-agent/dist/index.js --script ./.acpus/workflows/stress-demo/mock.yaml"
     cwd: "."
 workflow:
   steps:
@@ -85,4 +85,4 @@ workflow:
                           lane: string
                           route: string
 outputs:
-  lanes: "${{ steps.fanout_parallel_loop_switch.output }}"
+  lanes: "${{ steps.fanout_parallel_loop_switch }}"

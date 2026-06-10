@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execaNode } from "execa";
@@ -10,7 +10,7 @@ const fixtureDir = join(repoRoot, "packages/core/test/fixtures");
 
 describe("acpus CLI", () => {
   it("lints a valid workflow as JSON", async () => {
-    const result = await execaNode(cliEntry, ["lint", join(fixtureDir, "all-primitives.yaml"), "--json"], {
+    const result = await execaNode(cliEntry, ["workflows", "lint", join(fixtureDir, "all-primitives.yaml"), "--json"], {
       nodeOptions: ["--import", "tsx", "--conditions=development"]
     });
 
@@ -19,7 +19,7 @@ describe("acpus CLI", () => {
   });
 
   it("returns exit code 10 for static lint errors", async () => {
-    const result = await execaNode(cliEntry, ["lint", join(fixtureDir, "invalid-reference.yaml"), "--json"], {
+    const result = await execaNode(cliEntry, ["workflows", "lint", join(fixtureDir, "invalid-reference.yaml"), "--json"], {
       nodeOptions: ["--import", "tsx", "--conditions=development"],
       reject: false
     });
@@ -30,7 +30,7 @@ describe("acpus CLI", () => {
 
 
   it("prints dry-run diagnostics, IR, and schedule", async () => {
-    const result = await execaNode(cliEntry, ["run", join(fixtureDir, "all-primitives.yaml"), "--dry-run", "--json"], {
+    const result = await execaNode(cliEntry, ["workflows", "run", join(fixtureDir, "all-primitives.yaml"), "--dry-run", "--json"], {
       nodeOptions: ["--import", "tsx", "--conditions=development"]
     });
     const payload = JSON.parse(result.stdout);
@@ -46,7 +46,7 @@ describe("acpus CLI", () => {
     const inputPath = join(tempDir, "input.json");
     writeFileSync(inputPath, JSON.stringify({ files: ["a.ts"] }));
 
-    const result = await execaNode(cliEntry, ["run", join(fixtureDir, "all-primitives.yaml"), "--dry-run", "--json", "--input", inputPath], {
+    const result = await execaNode(cliEntry, ["workflows", "run", join(fixtureDir, "all-primitives.yaml"), "--dry-run", "--json", "--input", inputPath], {
       nodeOptions: ["--import", "tsx", "--conditions=development"]
     });
     const payload = JSON.parse(result.stdout);
@@ -56,7 +56,7 @@ describe("acpus CLI", () => {
 
   it("accepts inline JSON via --input in dry-run mode", async () => {
     const result = await execaNode(cliEntry, [
-      "run", join(fixtureDir, "all-primitives.yaml"),
+      "workflows", "run", join(fixtureDir, "all-primitives.yaml"),
       "--dry-run", "--json", "--input", '{"files":["inline.ts"]}'
     ], {
       nodeOptions: ["--import", "tsx", "--conditions=development"]
@@ -68,7 +68,7 @@ describe("acpus CLI", () => {
   });
 
   it("non-dry-run execution requires supervisor and returns non-zero on error", async () => {
-    const result = await execaNode(cliEntry, ["run", join(fixtureDir, "all-primitives.yaml"), "--json"], {
+    const result = await execaNode(cliEntry, ["workflows", "run", join(fixtureDir, "all-primitives.yaml"), "--json"], {
       nodeOptions: ["--import", "tsx", "--conditions=development"],
       reject: false
     });
@@ -85,7 +85,7 @@ describe("acpus CLI", () => {
     // This test requires no supervisor to be running. Since other tests may have
     // started one, we verify the exit code is either 40 (connection error) or
     // a non-zero runtime error if the supervisor is actually reachable.
-    const result = await execaNode(cliEntry, ["inspect", "nonexistent-run-id", "--json"], {
+    const result = await execaNode(cliEntry, ["runs", "show", "nonexistent-run-id", "--json"], {
       nodeOptions: ["--import", "tsx", "--conditions=development"],
       reject: false
     });
@@ -95,7 +95,7 @@ describe("acpus CLI", () => {
   }, 30_000);
 
   it("exposes a replay command that returns an error when run is not found", async () => {
-    const result = await execaNode(cliEntry, ["replay", "some-run-id", "--json"], {
+    const result = await execaNode(cliEntry, ["runs", "replay", "some-run-id", "--json"], {
       nodeOptions: ["--import", "tsx", "--conditions=development"],
       reject: false
     });
@@ -106,7 +106,7 @@ describe("acpus CLI", () => {
   }, 30_000);
 
   it("accepts --json on Node-level retry", async () => {
-    const result = await execaNode(cliEntry, ["retry", "some-run-id", "--node", "workflow/step-a", "--json"], {
+    const result = await execaNode(cliEntry, ["runs", "retry", "some-run-id", "--node", "workflow/step-a", "--json"], {
       nodeOptions: ["--import", "tsx", "--conditions=development"],
       reject: false
     });
@@ -117,7 +117,7 @@ describe("acpus CLI", () => {
   }, 30_000);
 
   it("rejects --background --visualize as invalid combination", async () => {
-    const result = await execaNode(cliEntry, ["run", join(fixtureDir, "all-primitives.yaml"), "--background", "--visualize"], {
+    const result = await execaNode(cliEntry, ["workflows", "run", join(fixtureDir, "all-primitives.yaml"), "--background", "--visualize"], {
       nodeOptions: ["--import", "tsx", "--conditions=development"],
       reject: false
     });
@@ -127,7 +127,7 @@ describe("acpus CLI", () => {
   });
 
   it("rejects --visualize --json as invalid combination", async () => {
-    const result = await execaNode(cliEntry, ["run", join(fixtureDir, "all-primitives.yaml"), "--visualize", "--json"], {
+    const result = await execaNode(cliEntry, ["workflows", "run", join(fixtureDir, "all-primitives.yaml"), "--visualize", "--json"], {
       nodeOptions: ["--import", "tsx", "--conditions=development"],
       reject: false
     });
@@ -135,8 +135,81 @@ describe("acpus CLI", () => {
     expect(result.exitCode).toBe(1);
   });
 
-  it("no longer has a 'daemon' command", async () => {
-    const result = await execaNode(cliEntry, ["daemon"], {
+  it("lists project Workflow Catalog entries as JSON", async () => {
+    const result = await execaNode(cliEntry, ["workflows", "list", "--json"], {
+      nodeOptions: ["--import", "tsx", "--conditions=development"]
+    });
+    const payload = JSON.parse(result.stdout);
+
+    expect(payload.some((entry: { ref?: string }) => entry.ref === "project:codebase-deep-research")).toBe(true);
+  });
+
+  it("supports the wf shorthand alias", async () => {
+    const result = await execaNode(cliEntry, ["wf", "show", "project:codebase-deep-research", "--json"], {
+      nodeOptions: ["--import", "tsx", "--conditions=development"]
+    });
+    const payload = JSON.parse(result.stdout);
+
+    expect(payload.name).toBe("codebase-deep-research");
+    expect(payload.status).toBe("ready");
+  });
+
+  it("lints a workflow resolved from a catalog ref", async () => {
+    const tempDir = join(repoRoot, ".tmp-tests", "lint-catalog-ref");
+    rmSync(tempDir, { recursive: true, force: true });
+    mkdirSync(join(tempDir, ".acpus", "workflows"), { recursive: true });
+    writeFileSync(join(tempDir, ".acpus", "workflows", "lint-me.workflow.yaml"), SIMPLE_WORKFLOW("lint-me"));
+
+    const result = await execaNode(cliEntry, ["workflows", "lint", "project:lint-me", "--json"], {
+      cwd: tempDir,
+      nodeOptions: ["--import", "tsx", "--conditions=development"]
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout).ok).toBe(true);
+  });
+
+  it("returns structured JSON for runs clean dry-run", async () => {
+    const tempDir = join(repoRoot, ".tmp-tests", "runs-clean-json");
+    rmSync(tempDir, { recursive: true, force: true });
+    mkdirSync(tempDir, { recursive: true });
+
+    const result = await execaNode(cliEntry, ["runs", "clean", "--dry-run", "--json"], {
+      cwd: tempDir,
+      nodeOptions: ["--import", "tsx", "--conditions=development"],
+      reject: false
+    });
+
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload).toMatchObject({
+      dryRun: true,
+      deletedCount: 0,
+      skippedCount: 0,
+      bytesReclaimed: 0
+    });
+    expect(Array.isArray(payload.deleted)).toBe(true);
+    expect(Array.isArray(payload.skipped)).toBe(true);
+  }, 30_000);
+
+  it("rejects ambiguous short workflow names", async () => {
+    const tempDir = join(repoRoot, ".tmp-tests", "ambiguous-catalog");
+    mkdirSync(join(tempDir, ".acpus", "workflows"), { recursive: true });
+    writeFileSync(join(tempDir, ".acpus", "workflows", "one.workflow.yaml"), SIMPLE_WORKFLOW("duplicate"));
+    writeFileSync(join(tempDir, ".acpus", "workflows", "two.workflow.yaml"), SIMPLE_WORKFLOW("duplicate"));
+
+    const result = await execaNode(cliEntry, ["workflows", "run", "duplicate", "--dry-run", "--json"], {
+      cwd: tempDir,
+      nodeOptions: ["--import", "tsx", "--conditions=development"],
+      reject: false
+    });
+
+    expect(result.exitCode).toBe(20);
+    expect(JSON.parse(result.stdout).diagnostics[0].message).toMatch(/ambiguous|conflict/i);
+  });
+
+  it("no longer has a top-level 'run' command", async () => {
+    const result = await execaNode(cliEntry, ["run", join(fixtureDir, "all-primitives.yaml"), "--dry-run"], {
       nodeOptions: ["--import", "tsx", "--conditions=development"],
       reject: false
     });
@@ -146,7 +219,7 @@ describe("acpus CLI", () => {
   });
 
   it("no longer has a --daemon flag on run command", async () => {
-    const result = await execaNode(cliEntry, ["run", join(fixtureDir, "all-primitives.yaml"), "--daemon", "http://localhost:3839"], {
+    const result = await execaNode(cliEntry, ["workflows", "run", join(fixtureDir, "all-primitives.yaml"), "--daemon", "http://localhost:3839"], {
       nodeOptions: ["--import", "tsx", "--conditions=development"],
       reject: false
     });
@@ -157,3 +230,15 @@ describe("acpus CLI", () => {
     expect(output).toMatch(/unknown.*option|--daemon/i);
   });
 });
+
+function SIMPLE_WORKFLOW(name: string): string {
+  return `
+version: 1
+name: ${name}
+workflow:
+  steps:
+    - id: ok
+      run: program
+      cmd: "echo ok"
+`;
+}

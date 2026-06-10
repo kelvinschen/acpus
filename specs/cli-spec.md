@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The Acpus CLI is the local command-line surface for linting Workflow Specs, submitting and following local durable Workflow Runs, controlling Runs, retrying failed executable Nodes, inspecting local Runs, replaying persisted Runs, and observing Runs through a visualizer.
+The Acpus CLI is the local command-line surface for discovering Workflow Specs, linting Workflow Specs, submitting and following local durable Workflow Runs, controlling Runs, retrying failed executable Nodes, inspecting local Runs, cleaning stored Run records, replaying persisted Runs, and observing Runs through a visualizer.
 
 ## Requirements
 
@@ -10,18 +10,22 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, subm
 - The CLI MUST treat the process current working directory as the Workspace for all Run-facing commands.
 - The CLI MUST NOT support `--workspace` in the first version of Workspace-scoped execution.
 - The CLI MUST NOT require users to manually start a daemon, supervisor, remote worker, remote task queue, or shared Temporal cluster for normal runtime execution.
-- The CLI MUST support `acpus lint <spec>` for static Workflow Spec validation.
-- The CLI MUST support `acpus run <spec>` for local Workflow Run execution through the Workspace Run Supervisor.
-- `acpus run <spec>` MUST lazily ensure the Workspace Run Supervisor exists, submit one Run, then foreground-follow only that submitted Run until it reaches a terminal status.
-- `acpus run <spec>` MUST emit concise human-readable Run Observations derived from Run and Node state changes, not raw Program stdout, raw Program stderr, Agent transcripts, or log streams.
-- `acpus run <spec> --json` MUST emit newline-delimited JSON Run Observations until the submitted Run reaches a terminal status, followed by a terminal Run summary observation.
-- `acpus run <spec> --background` MUST submit a Run through the Workspace Run Supervisor, print the submitted Run identity in human-readable form, and exit without following the Run.
-- `acpus run <spec> --background --json` MUST submit a Run through the Workspace Run Supervisor, print the submitted Run state as JSON, and exit without following the Run.
-- `acpus run <spec> --visualize` MUST submit a Run through the Workspace Run Supervisor and immediately open the single-Run visualizer view for that Run.
-- `acpus run <spec> --background --visualize` MUST be rejected as invalid because background submission and immediate visualizer attachment are mutually exclusive.
-- `acpus run <spec> --visualize --json` MUST be rejected as invalid because the visualizer and JSONL observation stream are mutually exclusive.
+- The CLI MUST expose Workflow definition commands under `acpus workflows`.
+- The CLI MUST expose `acpus wf` as an exact alias for `acpus workflows`.
+- The CLI MUST support `acpus workflows list` and `acpus wf list` for Workflow Catalog listing.
+- The CLI MUST support `acpus workflows show <ref-or-name>` and `acpus wf show <ref-or-name>` for Workflow Catalog entry inspection.
+- The CLI MUST support `acpus workflows lint <ref-or-path>` and `acpus wf lint <ref-or-path>` for static Workflow Spec validation.
+- The CLI MUST support `acpus workflows run <ref-or-path>` and `acpus wf run <ref-or-path>` for local Workflow Run execution through the Workspace Run Supervisor.
+- `acpus workflows run <ref-or-path>` MUST lazily ensure the Workspace Run Supervisor exists, submit one Run, then foreground-follow only that submitted Run until it reaches a terminal status.
+- `acpus workflows run <ref-or-path>` MUST emit concise human-readable Run Observations derived from Run and Node state changes, not raw Program stdout, raw Program stderr, Agent transcripts, or log streams.
+- `acpus workflows run <ref-or-path> --json` MUST emit newline-delimited JSON Run Observations until the submitted Run reaches a terminal status, followed by a terminal Run summary observation.
+- `acpus workflows run <ref-or-path> --background` MUST submit a Run through the Workspace Run Supervisor, print the submitted Run identity in human-readable form, and exit without following the Run.
+- `acpus workflows run <ref-or-path> --background --json` MUST submit a Run through the Workspace Run Supervisor, print the submitted Run state as JSON, and exit without following the Run.
+- `acpus workflows run <ref-or-path> --visualize` MUST submit a Run through the Workspace Run Supervisor and immediately open the single-Run visualizer view for that Run.
+- `acpus workflows run <ref-or-path> --background --visualize` MUST be rejected as invalid because background submission and immediate visualizer attachment are mutually exclusive.
+- `acpus workflows run <ref-or-path> --visualize --json` MUST be rejected as invalid because the visualizer and JSONL observation stream are mutually exclusive.
 - During foreground follow or `--visualize`, Ctrl-C MUST detach the CLI from the Run without cancelling the Run, and the CLI MUST exit successfully.
-- `acpus run <spec> --dry-run` MUST compile to IR and print schedule projection without ensuring a Run Supervisor and without executing Agent Steps or Program Steps.
+- `acpus workflows run <ref-or-path> --dry-run` MUST compile to IR and print schedule projection without ensuring a Run Supervisor and without executing Agent Steps or Program Steps.
 - The CLI MUST accept `--input <value>` for `run`, where `<value>` is either inline JSON or a path to a `.json`, `.yaml`, or `.yml` input file.
 - The CLI MUST support machine-readable JSON output for automation where a command exposes `--json`.
 - The CLI MAY support human-readable output for interactive use.
@@ -29,20 +33,21 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, subm
 - The CLI MUST report runtime failures with exit code `20`.
 - The CLI MUST report user cancellation or pause of a foreground-followed Run with exit code `2`.
 - The CLI MUST report Run Supervisor connection or startup failures with exit code `40`.
-- `acpus run <spec>` MUST exit `0` when the followed Run completes, `20` when it fails, and `2` when it reaches `cancelled` or `paused`.
-- `acpus run <spec>` MUST exit `0` when Ctrl-C detaches from the followed Run without cancellation.
-- `acpus run <spec> --background` MUST exit `0` when submission succeeds, regardless of the Run's later terminal status.
+- `acpus workflows run <ref-or-path>` MUST exit `0` when the followed Run completes, `20` when it fails, and `2` when it reaches `cancelled` or `paused`.
+- `acpus workflows run <ref-or-path>` MUST exit `0` when Ctrl-C detaches from the followed Run without cancellation.
+- `acpus workflows run <ref-or-path> --background` MUST exit `0` when submission succeeds, regardless of the Run's later terminal status.
 - The CLI MUST NOT expose `acpus daemon` or `acpus supervisor` as normal user-facing commands.
-- The CLI MUST support `acpus ls` to list Runs in the current Workspace through the Run Supervisor.
-- `acpus ls` MUST list the most recent 50 Runs sorted by `updatedAt` descending.
-- The CLI MUST support local Run inspection through `acpus inspect <run_id>`.
-- Human-readable `inspect` output MUST show Run metadata and Node states/errors/artifact references without dumping large Node outputs by default.
-- `acpus inspect <run_id> --json` MUST output the full structured Run state including Node outputs and artifact references.
-- The CLI MUST support Run-level pause through `acpus pause <run_id>`.
-- The CLI MUST support Run-level resume through `acpus resume <run_id>`.
-- The CLI MUST support Run-level cancel through `acpus cancel <run_id>`.
-- The CLI MUST support Run-level retry through `acpus retry <run_id>`.
-- The CLI MUST support Node-level retry only through `acpus retry <run_id> --node <nodeKey>`, and only for failed executable Nodes.
+- The CLI MUST expose Run commands under `acpus runs`.
+- The CLI MUST support `acpus runs list` to list Runs in the current Workspace through the Run Supervisor.
+- `acpus runs list` MUST list the most recent 50 Runs sorted by `updatedAt` descending.
+- The CLI MUST support local Run inspection through `acpus runs show <run_id>`.
+- Human-readable `runs show` output MUST show Run metadata and Node states/errors/artifact references without dumping large Node outputs by default.
+- `acpus runs show <run_id> --json` MUST output the full structured Run state including Node outputs and artifact references.
+- The CLI MUST support Run-level pause through `acpus runs pause <run_id>`.
+- The CLI MUST support Run-level resume through `acpus runs resume <run_id>`.
+- The CLI MUST support Run-level cancel through `acpus runs cancel <run_id>`.
+- The CLI MUST support Run-level retry through `acpus runs retry <run_id>`.
+- The CLI MUST support Node-level retry only through `acpus runs retry <run_id> --node <nodeKey>`, and only for failed executable Nodes.
 - Run-level `pause` MUST be accepted only for `running` Runs and rejected with a conflict for `completed`, `failed`, `paused`, or `cancelled` Runs.
 - Run-level `cancel` MUST be accepted only for `running` or `paused` Runs and rejected with a conflict for `completed`, `failed`, or `cancelled` Runs.
 - Run-level `resume` MUST be accepted only for `paused` Runs and rejected with a conflict for `running`, `completed`, `failed`, or `cancelled` Runs.
@@ -50,15 +55,21 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, subm
 - Run-level retry MUST mean in-place recovery of the failed Run; it MUST NOT create a new Run and MUST NOT rerun completed Nodes.
 - Node-level retry MUST be validated against the current local Run and Node state before being accepted.
 - Run-level control commands (`pause`, `resume`, `cancel`, `retry`) and Node-level retry MUST support machine-readable JSON output reporting the resulting Run or Node state.
-- The CLI MUST support submitting a human approval decision to an Approval Gate through `acpus signal <run_id> --node <nodeKey> --approve` or `--reject`.
-- `acpus signal` MUST require `--node` and MUST require exactly one of `--approve` or `--reject`; supplying neither or both MUST be a usage error.
-- `acpus signal` MUST be accepted only for a Node currently `awaiting` and MUST be rejected with a conflict otherwise; it MUST support machine-readable JSON output reporting the resulting Node state.
-- The CLI MUST support `acpus replay <run_id>` to deterministically replay a local Run through the Run Supervisor and verify its reconstructed Node topology against the persisted Run.
-- `acpus replay` MUST reconstruct the Run from the frozen IR snapshot and recorded Node outcomes, and MUST NOT depend on mutable YAML, system time, random values, or large artifact payloads.
-- `acpus replay` MUST report verification results as machine-readable JSON, including any discrepancies between the recorded and replayed Node topology.
-- The CLI MUST support `acpus visualize [run_id]`.
-- `acpus visualize <run_id>` MUST open the single-Run visualizer for the specified Run.
-- `acpus visualize` without a Run ID MUST open a Run picker, not a multi-Run dashboard.
+- The CLI MUST support submitting a human approval decision to an Approval Gate through `acpus runs signal <run_id> --node <nodeKey> --approve` or `--reject`.
+- `acpus runs signal` MUST require `--node` and MUST require exactly one of `--approve` or `--reject`; supplying neither or both MUST be a usage error.
+- `acpus runs signal` MUST be accepted only for a Node currently `awaiting` and MUST be rejected with a conflict otherwise; it MUST support machine-readable JSON output reporting the resulting Node state.
+- The CLI MUST support `acpus runs replay <run_id>` to deterministically replay a local Run through the Run Supervisor and verify its reconstructed Node topology against the persisted Run.
+- `acpus runs replay` MUST reconstruct the Run from the frozen IR snapshot and recorded Node outcomes, and MUST NOT depend on mutable YAML, system time, random values, or large artifact payloads.
+- `acpus runs replay` MUST report verification results as machine-readable JSON, including any discrepancies between the recorded and replayed Node topology.
+- The CLI MUST support `acpus runs visualize [run_id]`.
+- `acpus runs visualize <run_id>` MUST open the single-Run visualizer for the specified Run.
+- `acpus runs visualize` without a Run ID MUST open a Run picker, not a multi-Run dashboard.
+- The CLI MUST support `acpus runs clean` to delete stored terminal Runs.
+- `acpus runs clean` MUST delete only Runs whose status is `completed`, `failed`, or `cancelled`.
+- `acpus runs clean` MUST keep Runs whose status is `running` or `paused`.
+- `acpus runs clean --dry-run` MUST report what would be deleted without deleting Run directories.
+- `acpus runs clean --json` MUST report structured deleted/skipped Run IDs, statuses, counts, and estimated reclaimed bytes.
+- `acpus runs clean` MUST skip corrupt or unreadable Run metadata and report those Runs as skipped.
 - The Run picker MUST list the most recent 50 Runs in the current Workspace sorted by `updatedAt` descending and allow selecting a Run to open the single-Run visualizer view.
 - The Run picker MUST support vim-like `j`/`k` navigation for moving the selected Run down/up.
 - The Run picker MAY refresh the Run list while open.
@@ -96,23 +107,26 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, subm
 
 ## Verification
 
-- CLI tests MUST cover `lint` success and failure output.
-- CLI tests MUST cover `run --dry-run` JSON output.
+- CLI tests MUST cover `workflows lint` success and failure output.
+- CLI tests MUST cover `workflows list` and `wf list`.
+- CLI tests MUST cover `workflows show` entry details and diagnostics.
+- CLI tests MUST cover `workflows run --dry-run` JSON output.
 - CLI tests MUST cover inline JSON input and file input.
 - CLI tests MUST cover lazy Run Supervisor startup for Run-facing commands.
-- CLI tests MUST cover `run` foreground human follow output reaching completed, failed, cancelled, and paused exit codes.
-- CLI tests MUST cover `run --json` emitting JSONL Run Observations and a terminal summary.
-- CLI tests MUST cover `run --background` and `run --background --json` returning after submission.
-- CLI tests MUST cover `run --visualize` opening the single-Run visualizer view for the submitted Run.
-- CLI tests MUST cover invalid `run --background --visualize` and `run --visualize --json` combinations.
+- CLI tests MUST cover `workflows run` foreground human follow output reaching completed, failed, cancelled, and paused exit codes.
+- CLI tests MUST cover `workflows run --json` emitting JSONL Run Observations and a terminal summary.
+- CLI tests MUST cover `workflows run --background` and `workflows run --background --json` returning after submission.
+- CLI tests MUST cover `workflows run --visualize` opening the single-Run visualizer view for the submitted Run.
+- CLI tests MUST cover invalid `workflows run --background --visualize` and `workflows run --visualize --json` combinations.
 - CLI tests MUST cover Ctrl-C detaching foreground follow without cancelling the Run.
 - Runtime CLI tests MUST cover local Run execution without remote workers, remote task queues, or a shared Temporal cluster.
 - Runtime CLI tests MUST cover Run-level pause, resume, cancel, and retry validation.
 - Runtime CLI tests MUST cover Node-level retry validation through `--node`.
 - Runtime CLI tests MUST cover Run-level control commands and Node-level retry producing machine-readable JSON output.
-- Runtime CLI tests MUST cover `acpus replay` producing machine-readable JSON output.
-- Runtime CLI tests MUST cover `acpus replay` reproducing a Run's Node topology deterministically and reporting discrepancies when the persisted Run's topology is tampered with.
-- Runtime CLI tests MUST cover `acpus visualize` without a Run ID opening a picker and `acpus visualize <run_id>` opening the single-Run view.
-- Runtime CLI tests MUST cover `acpus ls` and the visualize picker listing the most recent 50 Runs sorted by `updatedAt` descending.
+- Runtime CLI tests MUST cover `acpus runs replay` producing machine-readable JSON output.
+- Runtime CLI tests MUST cover `acpus runs replay` reproducing a Run's Node topology deterministically and reporting discrepancies when the persisted Run's topology is tampered with.
+- Runtime CLI tests MUST cover `acpus runs visualize` without a Run ID opening a picker and `acpus runs visualize <run_id>` opening the single-Run view.
+- Runtime CLI tests MUST cover `acpus runs list` and the visualize picker listing the most recent 50 Runs sorted by `updatedAt` descending.
+- Runtime CLI tests MUST cover `acpus runs clean` deleting terminal Runs, preserving running and paused Runs, skipping corrupt metadata, and supporting `--dry-run` and `--json`.
 - TUI tests MUST cover single-Run visualizer wrapping, detail tabs, Markdown prompt rendering, JSON output rendering, controlled details scrolling, key hints, live indicator behavior, plain-text artifact rendering, Agent Step execution telemetry including estimated token formatting and retry-attempt aggregation, plain-text details copy formatting, node-kind symbols, Status Overview messages, frozen durations, hidden paused-abort details, exit viewport clearing, and collapse filtering.
 - Runtime CLI tests MUST cover Agent Step execution through acpx once Agent Activity integration exists.

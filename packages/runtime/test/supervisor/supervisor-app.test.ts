@@ -37,7 +37,7 @@ describe("Supervisor HTTP API", () => {
       "step-a": { output: { result: "done" }, delay: 10 }
     });
     const programExecutor = new MockProgramExecutor({});
-    const { app } = createSupervisorApp({ stateDir: tmpDir }, store, agentExecutor, programExecutor);
+    const { app } = createSupervisorApp({ stateDir: tmpDir, workspace: tmpDir }, store, agentExecutor, programExecutor);
 
     await new Promise<void>((resolve) => {
       server = serve({ fetch: app.fetch, port: 0 }, (info) => {
@@ -79,8 +79,8 @@ describe("Supervisor HTTP API", () => {
   });
 
   it("accepts sourcePath in POST /runs", async () => {
-    // sourcePath must be within the workspace (parent of stateDir)
-    const workspace = join(tmpDir, "..");
+    // sourcePath must be within the workspace.
+    const workspace = tmpDir;
     const sourcePath = join(workspace, "test.yaml");
     const res = await fetch(`${baseUrl}/runs`, {
       method: "POST",
@@ -88,6 +88,19 @@ describe("Supervisor HTTP API", () => {
       body: JSON.stringify({ spec: SPEC_YAML, input: {}, sourcePath })
     });
     expect(res.status).toBe(201);
+  });
+
+  it("rejects sourcePath outside workspace and global Workflow Catalog roots", async () => {
+    const sourcePath = join(tmpdir(), "acpus-outside-workspace.yaml");
+    const res = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: SPEC_YAML, input: {}, sourcePath })
+    });
+
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toMatch(/sourcePath must be within/);
   });
 
   it("returns health via GET /health", async () => {
@@ -111,6 +124,33 @@ describe("Supervisor HTTP API", () => {
     for (let i = 1; i < data.length; i++) {
       expect(data[i - 1].updatedAt >= data[i].updatedAt).toBe(true);
     }
+  });
+
+  it("cleans terminal runs via POST /runs/clean", async () => {
+    const createRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: SPEC_YAML, input: {} })
+    });
+    const { runId } = await createRes.json();
+    expect(await pollRunStatus(runId)).toBe("completed");
+
+    const cleanRes = await fetch(`${baseUrl}/runs/clean`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dryRun: true })
+    });
+    expect(cleanRes.status).toBe(200);
+    const dryRun = await cleanRes.json();
+    expect(dryRun.dryRun).toBe(true);
+    expect(dryRun.deleted.some((item: { runId: string }) => item.runId === runId)).toBe(true);
+    expect(store.hasRun(runId)).toBe(true);
+
+    const deleteRes = await fetch(`${baseUrl}/runs/clean`, { method: "POST" });
+    expect(deleteRes.status).toBe(200);
+    const deleted = await deleteRes.json();
+    expect(deleted.deleted.some((item: { runId: string }) => item.runId === runId)).toBe(true);
+    expect(store.hasRun(runId)).toBe(false);
   });
 
   it("inspects a run via GET /runs/:runId", async () => {
@@ -305,7 +345,7 @@ workflow:
       "step-b": { output: { result: "done2" }, delay: 200 }
     });
     const programExecutor = new MockProgramExecutor({});
-    const { app } = createSupervisorApp({ stateDir: tmpDir }, store, agentExecutor, programExecutor);
+    const { app } = createSupervisorApp({ stateDir: tmpDir, workspace: tmpDir }, store, agentExecutor, programExecutor);
 
     await new Promise<void>((resolve) => {
       server = serve({ fetch: app.fetch, port: 0 }, (info) => {
@@ -423,7 +463,7 @@ workflow:
     const store = new RunStore(runsDir);
     const agentExecutor = new StubAgentExecutor({ "step-a": { output: { result: "done" }, delay: 10 } });
     const programExecutor = new MockProgramExecutor({ "step-p": { failureKind: "exit", delay: 5 } });
-    const { app } = createSupervisorApp({ stateDir: tmpDir }, store, agentExecutor, programExecutor);
+    const { app } = createSupervisorApp({ stateDir: tmpDir, workspace: tmpDir }, store, agentExecutor, programExecutor);
     const server = await new Promise<Server>((resolve) => {
       const s = serve({ fetch: app.fetch, port: 0 }, () => resolve(s as unknown as Server));
     });
@@ -571,7 +611,7 @@ workflow:
     store = new RunStore(join(tmpDir, "runs"));
     const agentExecutor = new StubAgentExecutor({ after: { output: { ok: true }, delay: 5 } });
     const programExecutor = new MockProgramExecutor({});
-    const { app } = createSupervisorApp({ stateDir: tmpDir }, store, agentExecutor, programExecutor);
+    const { app } = createSupervisorApp({ stateDir: tmpDir, workspace: tmpDir }, store, agentExecutor, programExecutor);
     await new Promise<void>((resolve) => {
       server = serve({ fetch: app.fetch, port: 0 }, (info) => {
         baseUrl = `http://127.0.0.1:${info.port}`;

@@ -12,14 +12,14 @@ import { resolveNodeKey, encodeNodeKeyForDir } from "./keys.js";
 import type { ArtifactRef } from "./types.js";
 
 /**
- * Local filesystem artifact store under .acpus/runs/<run_id>/artifacts/.
+ * Local filesystem artifact store under .acpus/state/runs/<run_id>/artifacts/.
  * Artifact URIs follow the format: artifact://runs/<runId>/nodes/<nodeKey>/<filename>
  */
 export class ArtifactStore {
   private readonly baseDir: string;
 
   constructor(baseDir?: string) {
-    this.baseDir = baseDir ?? join(process.cwd(), ".acpus", "runs");
+    this.baseDir = baseDir ?? join(process.cwd(), ".acpus", "state", "runs");
   }
 
   /**

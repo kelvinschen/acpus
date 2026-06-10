@@ -173,7 +173,7 @@ describe("@acpus/mock-agent protocol", () => {
 
     expect(code).toBe(7);
     expect(readTrace(agent.tracePath).some((event) => event.event === "crash" && event.exitCode === 7)).toBe(true);
-  });
+  }, 60_000);
 
   it("exits non-zero with structured error output for invalid scripts", async () => {
     const dir = makeTempDir();

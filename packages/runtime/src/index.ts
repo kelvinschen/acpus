@@ -15,6 +15,8 @@ export type {
   SupervisorHealth,
   StartRunRequest,
   RunSummary,
+  RunCleanItem,
+  RunCleanResult,
   ReplayResult,
   ReplayMismatch,
   NodeDynamicContext

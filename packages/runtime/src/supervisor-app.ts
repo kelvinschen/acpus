@@ -6,7 +6,8 @@ import { WorkflowInterpreter } from "./interpreter.js";
 import { InputValidationFailure } from "./validate-input.js";
 import { compileWorkflow } from "@acpus/core";
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import type { RunState } from "./types.js";
 
 /** Pattern that matches unsafe runId characters (path traversal, separators, null). */
@@ -48,6 +49,9 @@ export function createSupervisorApp(
   // Health overrides set by the runner after the server binds to a port
   let healthStartedAt = "";
   let healthEndpoint = "";
+  const workspaceRoot = resolve(config.workspace ?? process.cwd());
+  const globalWorkflowRoot = resolve(join(homedir(), ".acpus", "workflows"));
+  const allowedSourceRoots = [workspaceRoot, globalWorkflowRoot];
 
   /** Refresh lease on every request with client headers. */
   function refreshLease(clientId: string | undefined, clientKind: string | undefined): void {
@@ -94,7 +98,7 @@ export function createSupervisorApp(
 
   /** Create an interpreter bound to this supervisor's store + executors. */
   function newInterpreter(): WorkflowInterpreter {
-    return new WorkflowInterpreter(store, agentExecutor, programExecutor);
+    return new WorkflowInterpreter(store, agentExecutor, programExecutor, { allowedSourceRoots });
   }
 
   /**
@@ -220,7 +224,7 @@ export function createSupervisorApp(
     const health: SupervisorHealth = {
       ok: true,
       schemaVersion: 1,
-      workspace: config.stateDir ?? process.cwd(),
+      workspace: workspaceRoot,
       pid: process.pid,
       endpoint: healthEndpoint,
       startedAt: healthStartedAt,
@@ -234,30 +238,28 @@ export function createSupervisorApp(
   // ─── Runs ────────────────────────────────────────────────────────
 
   app.post("/runs", async (c) => {
-    const body = await c.req.json<{ spec?: string; input?: Record<string, unknown>; sourcePath?: string }>();
+    const body = await c.req.json<{ spec?: string; input?: Record<string, unknown>; sourcePath?: string; workflowRef?: string }>();
     if (!body.spec) {
       return c.json({ error: "spec is required" }, 400);
     }
 
-    // Validate sourcePath is within the workspace if provided
+    // Validate sourcePath is within the workspace or the global Workflow Catalog.
     let sourcePath: string | undefined;
     if (body.sourcePath) {
-      const workspace = resolve(config.stateDir ?? process.cwd(), "..");
       const resolved = resolve(body.sourcePath);
-      if (!resolved.startsWith(workspace + "/") && resolved !== workspace) {
-        return c.json({ error: "sourcePath must be within the workspace" }, 400);
+      if (!isInsideAnyRoot(resolved, allowedSourceRoots)) {
+        return c.json({ error: "sourcePath must be within the workspace or global Workflow Catalog" }, 400);
       }
       sourcePath = resolved;
     }
 
-    // Include resolver: restrict resolution to paths under the sourcePath's directory
-    // (or workspace root if no sourcePath) to prevent arbitrary file reads.
-    const workspaceRoot = resolve(config.stateDir ?? process.cwd(), "..");
+    // Include resolver: resolve relative to the including file and restrict reads
+    // to the workspace or global Workflow Catalog roots.
     const includeResolver = (includePath: string, fromPath?: string): string => {
-      const baseDir = fromPath ? dirname(resolve(fromPath)) : (sourcePath ? dirname(sourcePath) : process.cwd());
+      const baseDir = fromPath ? dirname(resolve(fromPath)) : (sourcePath ? dirname(sourcePath) : workspaceRoot);
       const resolvedInclude = resolve(baseDir, includePath);
-      if (!resolvedInclude.startsWith(workspaceRoot + "/") && resolvedInclude !== workspaceRoot) {
-        throw new Error(`Include path '${includePath}' resolves outside the workspace`);
+      if (!isInsideAnyRoot(resolvedInclude, allowedSourceRoots)) {
+        throw new Error(`Include path '${includePath}' resolves outside allowed Workflow Spec roots`);
       }
       return readFileSync(resolvedInclude, "utf8");
     };
@@ -270,10 +272,14 @@ export function createSupervisorApp(
       return c.json({ error: "Compilation failed", diagnostics: result.diagnostics }, 400);
     }
 
-    const interpreter = new WorkflowInterpreter(store, agentExecutor, programExecutor);
+    const interpreter = new WorkflowInterpreter(store, agentExecutor, programExecutor, { allowedSourceRoots });
     let runState: RunState;
     try {
-      runState = interpreter.initRun(result.ir, { input: body.input ?? {} });
+      runState = interpreter.initRun(result.ir, {
+        input: body.input ?? {},
+        workflowRef: body.workflowRef,
+        workflowSourcePath: sourcePath
+      });
     } catch (error) {
       if (error instanceof InputValidationFailure) {
         return c.json({ error: "Input validation failed", validationErrors: error.errors }, 400);
@@ -296,7 +302,15 @@ export function createSupervisorApp(
     for (const id of runIds) {
       const meta = store.readRunMeta(id);
       if (meta) {
-        summaries.push({ runId: meta.runId, workflowName: meta.workflowName, status: meta.status, createdAt: meta.createdAt, updatedAt: meta.updatedAt });
+        summaries.push({
+          runId: meta.runId,
+          workflowName: meta.workflowName,
+          workflowRef: meta.workflowRef,
+          workflowSourcePath: meta.workflowSourcePath,
+          status: meta.status,
+          createdAt: meta.createdAt,
+          updatedAt: meta.updatedAt
+        });
       }
       // Skip corrupt Run metadata deterministically (don't crash)
     }
@@ -313,6 +327,19 @@ export function createSupervisorApp(
     }
     const nodes = store.listNodeStates(runId);
     return c.json({ ...meta, nodes });
+  });
+
+  app.post("/runs/clean", async (c) => {
+    pruneTerminalInterpreters();
+    const body = await c.req.json<{ dryRun?: boolean }>().catch((): { dryRun?: boolean } => ({}));
+    const result = store.cleanTerminalRuns({ dryRun: Boolean(body.dryRun) });
+    if (!body.dryRun) {
+      for (const item of result.deleted) {
+        interpreters.delete(item.runId);
+      }
+    }
+    lastActiveAt = Date.now();
+    return c.json(result);
   });
 
   // ─── Nodes ───────────────────────────────────────────────────────
@@ -563,4 +590,8 @@ export function createSupervisorApp(
       if (overrides.endpoint) healthEndpoint = overrides.endpoint;
     }
   };
+}
+
+function isInsideAnyRoot(path: string, roots: string[]): boolean {
+  return roots.some((root) => path === root || path.startsWith(root + "/"));
 }

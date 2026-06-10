@@ -23,8 +23,9 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 ### Workspace
 
 - The runtime MUST treat the process current working directory as the Workspace for Run-facing commands.
-- The runtime MUST store Workspace state under `.acpus/` in the Workspace.
-- The runtime MUST store Runs under `.acpus/runs/<runId>/`.
+- The runtime MUST store Workspace runtime state under `.acpus/state/` in the Workspace.
+- The runtime MUST store Runs under `.acpus/state/runs/<runId>/`.
+- The runtime MUST keep the Workspace as the process current working directory even when runtime state is nested under `.acpus/state/`.
 - The runtime MUST NOT infer the Workspace from the Workflow Spec path, repository root, package root, or VCS root.
 - The runtime MUST NOT support a `--workspace` override in the first version of Workspace-scoped execution.
 
@@ -41,7 +42,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 ### State Persistence
 
 - The runtime MUST persist per-node state as individual JSON files with atomic write (temp file + rename) for crash safety.
-- The runtime MUST persist run-level metadata (run ID, workflow name, status, IR digest, input digest, retry generation) separately from node state.
+- The runtime MUST persist run-level metadata (run ID, workflow name, optional workflow ref, workflow source path, status, IR digest, input digest, retry generation) separately from node state.
 - Run metadata MUST include `runAttempt`, starting at `1` for a new Run and incrementing by `1` only when a Run-level retry is accepted.
 - A Node persisted as `completed` MUST NOT retain an `error` value from an earlier failed, paused, or cancelled attempt.
 - When a caller does not provide a Run ID, the runtime MUST generate a local-time-sortable Run ID using `yyyyMMddHHmmss` followed by 20 uppercase hexadecimal random characters.
@@ -110,13 +111,15 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 
 ### Artifacts
 
-- The runtime MUST store node artifacts on the local filesystem under `.acpus/runs/<runId>/artifacts/`.
+- The runtime MUST store node artifacts on the local filesystem under `.acpus/state/runs/<runId>/artifacts/`.
 - Artifact references MUST use the URI format `artifact://runs/<runId>/nodes/<nodeKey>/<filename>`.
 - The runtime MUST reject artifact filenames containing `/`, `\`, or `..` to prevent directory traversal.
 
 ### Subworkflows
 
 - The runtime MUST resolve a `subworkflow` path relative to the parent spec's source path, compile it with `compileWorkflow`, and execute its root as a nested run.
+- The runtime MUST allow Workflow Spec source paths under the current Workspace or `$HOME/.acpus/workflows/`.
+- The runtime MUST reject Workflow Spec source paths outside the current Workspace and `$HOME/.acpus/workflows/`.
 - Subworkflow file reads and compilation MUST occur in the runtime layer, never in `@acpus/core`.
 - The runtime MUST guard against subworkflow cycles by tracking specs currently on the execution stack.
 - Subworkflow child Node keys MUST be prefixed with the parent subworkflow Node key to stay unique within the run.
@@ -127,10 +130,10 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - The Run Supervisor MUST be lazily started by Run-facing CLI commands when no healthy supervisor exists for the current Workspace.
 - The runtime MUST allow at most one active Run Supervisor per Workspace.
 - The Run Supervisor MUST listen on `127.0.0.1` using a random available TCP port.
-- The Run Supervisor MUST expose its endpoint through `.acpus/supervisor.json` in the Workspace.
-- `.acpus/supervisor.json` MUST include `schemaVersion`, absolute `workspace`, `pid`, `endpoint`, `startedAt`, and `version` fields.
-- The runtime MUST use `.acpus/supervisor.lock` or an equivalent Workspace-local lock to prevent concurrent CLI invocations from starting multiple supervisors for the same Workspace.
-- When ensuring a supervisor, the CLI MUST verify that `.acpus/supervisor.json` matches the current Workspace and that the endpoint health check succeeds.
+- The Run Supervisor MUST expose its endpoint through `.acpus/state/supervisor.json` in the Workspace.
+- `.acpus/state/supervisor.json` MUST include `schemaVersion`, absolute `workspace`, `pid`, `endpoint`, `startedAt`, and `version` fields.
+- The runtime MUST use `.acpus/state/supervisor.lock` or an equivalent Workspace-local lock to prevent concurrent CLI invocations from starting multiple supervisors for the same Workspace.
+- When ensuring a supervisor, the CLI MUST verify that `.acpus/state/supervisor.json` matches the current Workspace and that the endpoint health check succeeds.
 - When supervisor metadata is stale, unreachable, malformed, or for a different Workspace, the CLI MUST clean or replace it before using a supervisor.
 - The Run Supervisor MUST expose an HTTP REST API for run submission, run listing, run inspection, node state listing, node retrieval, Run-level control, Node-level retry, approval signal delivery, run replay, frozen IR retrieval, artifact path resolution, and health checks.
 - Run-facing CLI commands MUST use the Run Supervisor API rather than maintaining a separate direct-disk read path.
@@ -153,15 +156,15 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - A follow client MUST print or emit a Node observation only when the Node is first observed or when its state changes.
 - A follow client MUST NOT repeatedly print unchanged Node states.
 - A follow client MUST NOT invent unobserved intermediate states when a Node changes faster than the polling interval.
-- A follow client MUST follow only the Run submitted by that `acpus run` invocation, not other concurrent Runs in the Workspace.
+- A follow client MUST follow only the Run submitted by that `acpus workflows run` invocation, not other concurrent Runs in the Workspace.
 - Run Observations MUST NOT include raw Program stdout, raw Program stderr, Agent transcript chunks, or log lines.
 
 ### Run Listing and Watching
 
 - The Run Supervisor MUST list Runs sorted by `updatedAt` descending.
-- Run listing for `acpus ls` and the visualizer picker MUST return the most recent 50 Runs in the Workspace in the first version.
-- `acpus visualize` without a Run ID MUST open a picker backed by Run listing; it MUST NOT require a multi-Run dashboard.
-- `acpus visualize <runId>` and `acpus run --visualize` MUST open the single-Run visualizer view for the selected or submitted Run.
+- Run listing for `acpus runs list` and the visualizer picker MUST return the most recent 50 Runs in the Workspace in the first version.
+- `acpus runs visualize` without a Run ID MUST open a picker backed by Run listing; it MUST NOT require a multi-Run dashboard.
+- `acpus runs visualize <runId>` and `acpus workflows run --visualize` MUST open the single-Run visualizer view for the selected or submitted Run.
 - The single-Run visualizer view MUST render the frozen IR snapshot and overlay persisted Node states.
 - For a selected Agent Step, the single-Run visualizer MAY read the selected Node's `attempt-NNN.transcript.jsonl` artifacts from the local filesystem and derive display-only execution telemetry from structured acpx/ACP events.
 - Agent execution telemetry MUST count unique `toolCallId` values from `tool_call` and `tool_call_update` events. The "last tools" display MUST show the three unique tool calls with the most recent update.
@@ -170,6 +173,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 ### Run-Level Control
 
 - The runtime MUST support Run-level pause, resume, cancel, and retry operations.
+- The runtime MUST support Run cleanup for deleting stored terminal Run directories.
 - Run-level `pause` MUST be accepted only for a `running` Run.
 - Run-level `pause` MUST immediately cooperative-pause the Run by aborting currently running executable Nodes as `paused` and preventing further pending Node scheduling until the Run is resumed.
 - Run-level `cancel` MUST be accepted only for `running` or `paused` Runs.
@@ -184,11 +188,16 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Run-level `retry` MUST increment the Run's `runAttempt`.
 - Run-level `retry` MUST NOT create a new Run and MUST NOT mean rerun from scratch.
 - Invalid Run-level control operations MUST be rejected with a conflict error and MUST leave persisted state unchanged.
+- Run cleanup MUST delete only Run directories whose Run metadata status is `completed`, `failed`, or `cancelled`.
+- Run cleanup MUST preserve Run directories whose Run metadata status is `running` or `paused`.
+- Run cleanup MUST skip Run directories whose metadata is unreadable or corrupt.
+- Run cleanup dry-run MUST report the same deletion candidates without deleting files.
+- Run cleanup results MUST include deleted and skipped Run IDs, counts, statuses when known, and estimated bytes reclaimed.
 
 ### Node-Level Retry And Approval
 
 - The runtime MUST support Node-level retry only for failed executable Nodes (`run.agent` and `run.program`).
-- Node-level retry MUST be addressed through an explicit node key parameter in the API and through `acpus retry <run_id> --node <nodeKey>` in the CLI.
+- Node-level retry MUST be addressed through an explicit node key parameter in the API and through `acpus runs retry <run_id> --node <nodeKey>` in the CLI.
 - Node-level retry MUST be accepted only when the target Node is `failed`, the target Node is executable, and the Run is `failed`.
 - Node-level retry MUST restore the targeted executable Node's persisted dynamic value-context (fanout item, loop round) into the rebuilt expression context so command and prompt templates re-render identically.
 - Node-level retry MUST resolve the targeted Node's definition from the Run's persisted IR before mutating Node state, and MUST reject the operation with an error (leaving Node state unchanged) when the definition cannot be resolved. Subworkflow child Nodes, whose IR is compiled on demand and not persisted in the parent Run, are therefore not individually retryable.
@@ -231,12 +240,13 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Runtime tests MUST cover that Program Steps execute as local subprocesses.
 - Runtime tests MUST cover that workflow retry, timeout, pause, resume, and cancel decisions remain owned by Acpus.
 - Runtime tests MUST cover Workspace-scoped lazy Run Supervisor startup, stale metadata replacement, health checks, and lock-protected concurrent startup.
-- Runtime tests MUST cover that the Run Supervisor uses a random localhost port and writes `.acpus/supervisor.json` with the required fields.
+- Runtime tests MUST cover that the Run Supervisor uses a random localhost port and writes `.acpus/state/supervisor.json` with the required fields.
 - Runtime tests MUST cover that normal Run-facing CLI commands use the Run Supervisor API and do not require a manual daemon command.
 - Runtime tests MUST cover that one Workspace has at most one active Run Supervisor and that different current working directories use different Workspace state.
 - Runtime tests MUST cover that the Run Supervisor exits after five idle minutes with no running Runs or active follow/visualize clients.
 - Runtime tests MUST cover multiple concurrent Runs in the same Workspace.
 - Runtime tests MUST cover Run-level pause, resume, cancel, and retry state validation and effects.
+- Runtime tests MUST cover Run cleanup deleting terminal Runs, preserving running and paused Runs, skipping corrupt metadata, and dry-run behavior.
 - Runtime tests MUST cover that Run-level retry is in-place recovery and does not rerun completed Nodes or create a new Run.
 - Runtime tests MUST cover that new Runs start with `runAttempt: 1` and Run-level retry persists an incremented `runAttempt`.
 - Runtime tests MUST cover that Run-level resume resets paused materialized Nodes to `pending` and re-executes without rerunning completed Nodes.

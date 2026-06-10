@@ -390,7 +390,7 @@ describe("buildDetailLines", () => {
 
   it("renders artifact filenames and absolute paths as plain wrapped text", () => {
     const uri = "artifact://runs/run-1/nodes/workflow:test/attempt-001.prompt.md";
-    const absPath = "/Users/bytedance/KProjects/acpus_alpha/.acpus/runs/run-1/artifacts/workflow:test/attempt-001.prompt.md";
+    const absPath = "/Users/bytedance/KProjects/acpus_alpha/.acpus/state/runs/run-1/artifacts/workflow:test/attempt-001.prompt.md";
     const row = makeRow({
       instance: {
         nodeKey: "workflow/test",

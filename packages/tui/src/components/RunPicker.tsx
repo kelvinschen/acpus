@@ -68,7 +68,7 @@ export function RunPicker({
   if (runs.length === 0) {
     return (
       <Box padding={1}>
-        <Text color="gray">No runs found. Start one with `acpus run &lt;spec&gt;`.</Text>
+        <Text color="gray">No runs found. Start one with `acpus workflows run &lt;spec&gt;`.</Text>
       </Box>
     );
   }

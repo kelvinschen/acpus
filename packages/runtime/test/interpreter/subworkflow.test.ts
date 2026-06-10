@@ -76,6 +76,44 @@ workflow:
     expect(sub?.state).toBe("failed");
   });
 
+  it("rejects subworkflow specs outside allowed source roots", async () => {
+    const allowedDir = mkdtempSync(join(tmpdir(), "acpus-subwf-allowed-"));
+    const outsideDir = mkdtempSync(join(tmpdir(), "acpus-subwf-outside-"));
+    const childPath = join(outsideDir, "child.yaml");
+    writeFileSync(childPath, `
+version: 1
+name: child-outside
+workflow:
+  steps:
+    - id: child-step
+      run: program
+      cmd: ["echo", "hi"]
+`);
+
+    const ir = compileYaml(`
+version: 1
+name: parent-outside-child
+workflow:
+  steps:
+    - id: sub
+      subworkflow: ${childPath}
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      interpreterOptions: { allowedSourceRoots: [allowedDir] }
+    });
+    cleanups.push(cleanup);
+    cleanups.push(() => rmSync(allowedDir, { recursive: true, force: true }));
+    cleanups.push(() => rmSync(outsideDir, { recursive: true, force: true }));
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("failed");
+
+    const sub = store.listNodeStates(meta.runId).find((n) => n.nodeId === "sub");
+    expect(sub?.state).toBe("failed");
+    expect(sub?.error).toMatch(/outside allowed Workflow Spec roots/);
+  });
+
   it("fails when the child spec does not compile", async () => {
     const dir = mkdtempSync(join(tmpdir(), "acpus-subwf-bad-"));
     const childPath = join(dir, "child.yaml");

@@ -1,7 +1,8 @@
 /**
  * FollowLoop — polls a running Run and emits observations to stdout.
  *
- * Used by `acpus run <spec>` (foreground follow mode) and `acpus run <spec> --json`.
+ * Used by `acpus workflows run <spec>` (foreground follow mode) and
+ * `acpus workflows run <spec> --json`.
  * Tracks node state changes and deduplicates: only emits when a node is first
  * observed or when its state changes.
  *
@@ -120,9 +121,7 @@ function emit(line: string): void {
 }
 
 function isTerminal(status: RunStatus): boolean {
-  // 'paused' is NOT terminal — a paused Run may be resumed, so the follow
-  // loop must keep polling. Only truly terminal states exit the loop.
-  return status === "completed" || status === "failed" || status === "cancelled";
+  return status === "completed" || status === "failed" || status === "cancelled" || status === "paused";
 }
 
 function computeDuration(node: NodeExecutionState): number | undefined {

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { RunStore } from "../src/store.js";
@@ -164,6 +164,68 @@ describe("RunStore", () => {
 
     it("returns empty array when no runs", () => {
       expect(store.listRunIds()).toEqual([]);
+    });
+  });
+
+  describe("cleanTerminalRuns", () => {
+    it("deletes terminal runs and preserves running and paused runs", () => {
+      const completed = store.initRun("completed-run", makeIr("done"), {});
+      completed.status = "completed";
+      store.writeRunMeta(completed.runId, completed);
+
+      const failed = store.initRun("failed-run", makeIr("failed"), {});
+      failed.status = "failed";
+      store.writeRunMeta(failed.runId, failed);
+
+      store.initRun("running-run", makeIr("running"), {});
+
+      const paused = store.initRun("paused-run", makeIr("paused"), {});
+      paused.status = "paused";
+      store.writeRunMeta(paused.runId, paused);
+
+      const result = store.cleanTerminalRuns();
+
+      expect(result.deleted.map((item) => item.runId).sort()).toEqual(["completed-run", "failed-run"]);
+      expect(result.skipped.map((item) => item.runId).sort()).toEqual(["paused-run", "running-run"]);
+      expect(store.hasRun("running-run")).toBe(true);
+      expect(store.hasRun("paused-run")).toBe(true);
+      expect(existsSync(join(tmpDir, "completed-run"))).toBe(false);
+      expect(existsSync(join(tmpDir, "failed-run"))).toBe(false);
+    });
+
+    it("supports dry-run without deleting", () => {
+      const meta = store.initRun("completed-run", makeIr("done"), {});
+      meta.status = "completed";
+      store.writeRunMeta(meta.runId, meta);
+
+      const result = store.cleanTerminalRuns({ dryRun: true });
+
+      expect(result.dryRun).toBe(true);
+      expect(result.deletedCount).toBe(1);
+      expect(store.hasRun("completed-run")).toBe(true);
+    });
+
+    it("skips corrupt run metadata", () => {
+      mkdirSync(join(tmpDir, "corrupt-run"), { recursive: true });
+      writeFileSync(join(tmpDir, "corrupt-run", "run-meta.json"), "{ nope", "utf8");
+
+      const result = store.cleanTerminalRuns();
+
+      expect(result.deletedCount).toBe(0);
+      expect(result.skipped[0]).toMatchObject({ runId: "corrupt-run", reason: "corrupt-metadata" });
+      expect(existsSync(join(tmpDir, "corrupt-run"))).toBe(true);
+    });
+
+    it("does not follow symlinks when estimating bytes", () => {
+      const meta = store.initRun("completed-run", makeIr("done"), {});
+      meta.status = "completed";
+      store.writeRunMeta(meta.runId, meta);
+      symlinkSync(join(tmpDir, "completed-run"), join(tmpDir, "completed-run", "self"), "dir");
+
+      const result = store.cleanTerminalRuns({ dryRun: true });
+
+      expect(result.deletedCount).toBe(1);
+      expect(result.deleted[0]?.bytes).toBeGreaterThan(0);
     });
   });
 });

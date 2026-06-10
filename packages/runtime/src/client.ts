@@ -9,7 +9,7 @@
  */
 
 import type { AcpusIr } from "@acpus/core";
-import type { RunState, NodeExecutionState, RunSummary, ReplayResult, SupervisorHealth } from "./types.js";
+import type { RunCleanResult, RunState, NodeExecutionState, RunSummary, ReplayResult, SupervisorHealth } from "./types.js";
 import { randomUUID } from "node:crypto";
 
 export class RunSupervisorClient {
@@ -40,11 +40,11 @@ export class RunSupervisorClient {
     return res.json() as Promise<SupervisorHealth>;
   }
 
-  async startRun(spec: string, input?: Record<string, unknown>, sourcePath?: string): Promise<RunState> {
+  async startRun(spec: string, input?: Record<string, unknown>, sourcePath?: string, workflowRef?: string): Promise<RunState> {
     const res = await fetch(`${this.baseUrl}/runs`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...this.headers() },
-      body: JSON.stringify({ spec, input, sourcePath })
+      body: JSON.stringify({ spec, input, sourcePath, workflowRef })
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
@@ -57,6 +57,16 @@ export class RunSupervisorClient {
     const res = await fetch(`${this.baseUrl}/runs`, { headers: this.headers() });
     if (!res.ok) throw new Error(`Failed to list runs: ${res.status}`);
     return res.json() as Promise<RunSummary[]>;
+  }
+
+  async cleanRuns(options: { dryRun?: boolean } = {}): Promise<RunCleanResult> {
+    const res = await fetch(`${this.baseUrl}/runs/clean`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...this.headers() },
+      body: JSON.stringify({ dryRun: Boolean(options.dryRun) })
+    });
+    if (!res.ok) throw new Error(`Failed to clean runs: ${res.status}`);
+    return res.json() as Promise<RunCleanResult>;
   }
 
   async getRun(runId: string): Promise<RunState> {

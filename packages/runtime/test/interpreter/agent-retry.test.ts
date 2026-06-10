@@ -58,6 +58,46 @@ workflow:
     await runPromise;
   });
 
+  it("preserves rendered prompt and prompt artifact when an agent is paused", async () => {
+    const ir = compileYaml(`
+version: 1
+name: agent-paused-details
+agents:
+  coder:
+    type: command
+    use: "echo stub"
+workflow:
+  steps:
+    - id: work
+      run: agent
+      use: coder
+      prompt: "pause me \${{ input.name }}"
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      agentResponses: {
+        work: { output: { ok: true }, delay: 80, transcript: "{\"jsonrpc\":\"2.0\"}\n" }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const initial = interpreter.initRun(ir, { input: { name: "Ada" } });
+    const runPromise = interpreter.runToCompletion(ir, { input: { name: "Ada" } }, initial.runId);
+
+    const running = await waitForNodeState(store, initial.runId, "work", "running", 500);
+    interpreter.pauseRun(initial.runId);
+    const paused = await runPromise;
+
+    expect(paused.status).toBe("paused");
+    const node = store.readNodeState(initial.runId, running.nodeKey);
+    expect(node?.state).toBe("paused");
+    expect(node?.renderedPrompt).toContain("pause me Ada");
+    expect(node?.artifactRefs?.filter((ref) => ref.endsWith("attempt-001.prompt.md"))).toHaveLength(1);
+
+    const artifacts = new ArtifactStore(store.getBaseDir());
+    expect(artifacts.read(initial.runId, running.nodeKey, "attempt-001.prompt.md").toString()).toContain("pause me Ada");
+  });
+
   it("does not overwrite the live transcript artifact when the agent completes", async () => {
     const ir = compileYaml(`
 version: 1

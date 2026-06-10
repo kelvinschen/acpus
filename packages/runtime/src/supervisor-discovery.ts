@@ -32,7 +32,7 @@ export async function ensureWorkspaceSupervisor(
   options?: { idleTimeoutMs?: number }
 ): Promise<SupervisorMetadata> {
   const absWorkspace = resolve(workspace);
-  const stateDir = join(absWorkspace, ".acpus");
+  const stateDir = join(absWorkspace, ".acpus", "state");
   const metadataPath = join(stateDir, SUPERVISOR_METADATA_FILE);
 
   // 1. Try existing metadata
@@ -114,7 +114,7 @@ async function spawnSupervisor(
   // Resolve entry script path and command
   const entry = resolveEntryPath();
 
-  const args = [...entry.args, "--state-dir", stateDir];
+  const args = [...entry.args, "--state-dir", stateDir, "--workspace", workspace];
   if (idleTimeoutMs !== undefined) {
     args.push("--idle-timeout", String(idleTimeoutMs));
   }

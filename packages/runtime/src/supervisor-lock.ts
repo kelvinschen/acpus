@@ -5,8 +5,8 @@
  * `proper-lockfile.lock()` with the correct configuration for
  * serializing concurrent `ensureWorkspaceSupervisor()` calls.
  *
- * The lock targets the `.acpus` directory (which always exists) and creates a
- * `.acpus/supervisor.lock` directory as the lock marker.
+ * The lock targets the Workspace state directory and creates a
+ * `supervisor.lock` directory as the lock marker.
  */
 
 import lockfile from "proper-lockfile";

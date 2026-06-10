@@ -73,6 +73,7 @@ export class WorkflowInterpreter {
   private readonly programExecutor: ExecutorAdapter;
   private readonly artifactStore: ArtifactStore;
   private readonly maxConcurrency: number;
+  private readonly allowedSourceRoots: string[];
   private readonly sleep: (ms: number) => Promise<void>;
 
   /** Active abort controllers keyed by "runId:nodeKey" for pause/cancel support */
@@ -105,6 +106,7 @@ export class WorkflowInterpreter {
     this.programExecutor = programExecutor;
     this.artifactStore = new ArtifactStore(store.getBaseDir());
     this.maxConcurrency = options?.maxConcurrency ?? 10;
+    this.allowedSourceRoots = options?.allowedSourceRoots?.map((root) => resolve(root)) ?? [];
     this.sleep = options?.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   }
 
@@ -124,7 +126,10 @@ export class WorkflowInterpreter {
   initRun(ir: AcpusIr, opts: RunOptions): import("./types.js").RunState {
     const validatedInput = validateInput(ir.input, opts.input);
     const runId = opts.runId ?? generateRunId();
-    return this.store.initRun(runId, ir, validatedInput);
+    return this.store.initRun(runId, ir, validatedInput, {
+      workflowRef: opts.workflowRef,
+      workflowSourcePath: opts.workflowSourcePath
+    });
   }
 
   /**
@@ -739,7 +744,7 @@ export class WorkflowInterpreter {
       // this node's state on disk while we were awaiting the leaf.
       const abortedState = this.readAbortedStateOnDisk(runId, nodeKey);
       if (abortedState) {
-        throw new NodeAbortedError(nodeKey, abortedState, artifactRefs, output);
+        throw new NodeAbortedError(nodeKey, abortedState, artifactRefs, output, state.renderedPrompt);
       }
       state.state = "completed";
       state.error = undefined;
@@ -772,6 +777,7 @@ export class WorkflowInterpreter {
         // Preserve any output + partial transcript artifacts from the aborted leaf.
         if (error.output !== undefined) state.output = error.output;
         if (error.artifactRefs) state.artifactRefs = error.artifactRefs;
+        state.renderedPrompt = error.renderedPrompt ?? state.renderedPrompt ?? this.store.readNodeState(runId, nodeKey)?.renderedPrompt;
         this.store.writeNodeState(runId, state);
         throw error;
       }
@@ -882,7 +888,7 @@ export class WorkflowInterpreter {
       if (result.partial) {
         // Operator abort → carry output + transcript refs on the abort error;
         // executeNode persists the paused/cancelled state.
-        throw new NodeAbortedError(nodeKey, this.abortIntent(runId, nodeKey), allArtifactRefs.length > 0 ? allArtifactRefs : undefined, result.output);
+        throw new NodeAbortedError(nodeKey, this.abortIntent(runId, nodeKey), allArtifactRefs.length > 0 ? allArtifactRefs : undefined, result.output, preparedPrompt);
       }
 
       // parse/schema failures are retryable while attempts remain.
@@ -983,7 +989,7 @@ export class WorkflowInterpreter {
 
   private publishRunningAgentAttempt(runId: string, nodeKey: string, prompt: string, artifactRefs: string[]): void {
     const state = this.store.readNodeState(runId, nodeKey);
-    if (!state || state.state !== "running") return;
+    if (!state) return;
     state.renderedPrompt = prompt;
     state.artifactRefs = [...artifactRefs];
     this.store.writeNodeState(runId, state);
@@ -1401,6 +1407,7 @@ export class WorkflowInterpreter {
     const parentIr = this.store.readIr(runId);
     const baseDir = parentIr?.source.path ? dirname(parentIr.source.path) : process.cwd();
     const childAbs = resolve(baseDir, specPath);
+    this.assertAllowedSourcePath(childAbs, `Subworkflow path '${specPath}' resolves outside allowed Workflow Spec roots`);
 
     // Cycle guard across nested subworkflows.
     if (this.subworkflowStack.has(childAbs)) {
@@ -1413,7 +1420,9 @@ export class WorkflowInterpreter {
       sourcePath: childAbs,
       includeResolver: (includePath, fromPath) => {
         const dir = fromPath ? dirname(resolve(fromPath)) : process.cwd();
-        return readFileSync(resolve(dir, includePath), "utf8");
+        const includeAbs = resolve(dir, includePath);
+        this.assertAllowedSourcePath(includeAbs, `Include path '${includePath}' resolves outside allowed Workflow Spec roots`);
+        return readFileSync(includeAbs, "utf8");
       }
     });
     if (!compiled.ok || !compiled.ir) {
@@ -1441,6 +1450,12 @@ export class WorkflowInterpreter {
     } finally {
       this.subworkflowStack.delete(childAbs);
     }
+  }
+
+  private assertAllowedSourcePath(path: string, message: string): void {
+    if (this.allowedSourceRoots.length === 0) return;
+    if (this.allowedSourceRoots.some((root) => path === root || path.startsWith(root + "/"))) return;
+    throw new Error(message);
   }
 
   /** Evaluate a subworkflow input value, preserving native type for single expressions. */
@@ -1584,7 +1599,9 @@ class NodeAbortedError extends Error {
     /** Artifact refs (e.g. partial transcript) to persist on the aborted node. */
     public readonly artifactRefs?: string[],
     /** Partial output captured before the abort. */
-    public readonly output?: unknown
+    public readonly output?: unknown,
+    /** Rendered Agent prompt to preserve when abort overwrites node state. */
+    public readonly renderedPrompt?: string
   ) {
     super(`Node ${nodeKey} aborted: ${state}`);
     this.name = "NodeAbortedError";

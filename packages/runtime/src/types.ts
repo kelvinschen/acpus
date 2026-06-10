@@ -65,6 +65,10 @@ export interface NodeDynamicContext {
 export interface RunState {
   runId: string;
   workflowName: string;
+  /** Catalog ref used to start this Run, when started from the Workflow Catalog. */
+  workflowRef?: string;
+  /** Absolute Workflow Spec path used to compile this Run. */
+  workflowSourcePath?: string;
   status: RunStatus;
   /** SHA-256 digest of the frozen IR JSON */
   irDigest: string;
@@ -136,6 +140,8 @@ export interface ArtifactRef {
 export interface InterpreterOptions {
   /** Maximum concurrent node executions across the interpreter */
   maxConcurrency?: number;
+  /** Absolute source roots that Workflow Spec file reads may resolve under. */
+  allowedSourceRoots?: string[];
   /** Deterministic timestamp for now() in expressions (ISO string) */
   nowTimestamp?: string;
   /** Injectable sleep used for retry backoff (default: real setTimeout). */
@@ -147,6 +153,10 @@ export interface RunOptions {
   input: Record<string, unknown>;
   /** Unique run identifier (generated if not provided) */
   runId?: string;
+  /** Catalog ref used to start this Run, when applicable. */
+  workflowRef?: string;
+  /** Absolute Workflow Spec path used to compile this Run. */
+  workflowSourcePath?: string;
 }
 
 // ─── Supervisor types ────────────────────────────────────────────
@@ -158,6 +168,8 @@ export interface SupervisorConfig {
   host?: string;
   /** Base directory for .acpus/ state (default cwd) */
   stateDir?: string;
+  /** Workspace root for Run execution and source-path validation. */
+  workspace?: string;
   /** Idle shutdown timeout in milliseconds (default 5 min) */
   idleTimeoutMs?: number;
 }
@@ -184,14 +196,34 @@ export interface StartRunRequest {
   input?: Record<string, unknown>;
   /** Absolute path to the spec file (for $include/subworkflow resolution) */
   sourcePath?: string;
+  /** Catalog ref used to start this Run, when applicable. */
+  workflowRef?: string;
 }
 
 export interface RunSummary {
   runId: string;
   workflowName: string;
+  workflowRef?: string;
+  workflowSourcePath?: string;
   status: RunStatus;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface RunCleanItem {
+  runId: string;
+  status?: RunStatus;
+  bytes: number;
+  reason?: string;
+}
+
+export interface RunCleanResult {
+  dryRun: boolean;
+  deletedCount: number;
+  skippedCount: number;
+  bytesReclaimed: number;
+  deleted: RunCleanItem[];
+  skipped: RunCleanItem[];
 }
 
 // ─── Input validation ─────────────────────────────────────────────

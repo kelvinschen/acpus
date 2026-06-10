@@ -1,19 +1,26 @@
 #!/usr/bin/env node
-import { resolve } from "node:path";
 import { compileWorkflow, lintWorkflow } from "@acpus/core";
 import { Command } from "commander";
+import { relative } from "node:path";
+import {
+  findWorkflowCatalogEntry,
+  globalWorkflowRoot,
+  listWorkflowCatalog,
+  looksLikeWorkflowPath,
+  resolveWorkflowPath,
+  resolveWorkflowTarget,
+  type WorkflowCatalogEntry
+} from "./catalog.js";
 import { createIncludeResolver, parseInput, readTextFile } from "./io.js";
 import { printCompile, printError, printLint } from "./output.js";
-import { RunSupervisorClient } from "./supervisor-client.js";
 import { ensureSupervisor, EXIT_SUPERVISOR_ERROR, isSupervisorConnectionError } from "./supervisor.js";
 import { followRun } from "./follow.js";
-import type { RunState, NodeExecutionState, SupervisorMetadata } from "@acpus/runtime";
+import type { RunCleanResult, RunStatus } from "@acpus/runtime";
 
 const EXIT_DSL_STATIC_ERROR = 10;
 const EXIT_RUNTIME_ERROR = 20;
 const EXIT_USER_CANCEL = 2;
 const EXIT_CLI_ERROR = 1;
-// EXIT_SUPERVISOR_ERROR = 40 (imported from supervisor.ts)
 
 const program = new Command();
 
@@ -22,19 +29,58 @@ program
   .description("Local durable ACP workflow runner")
   .version("0.1.0");
 
-program
-  .command("lint")
-  .argument("<spec>", "workflow YAML spec")
-  .option("--strict", "treat warnings as errors")
-  .option("--json", "write JSONL output")
-  .option("--quiet", "only write final output")
-  .action((spec: string, options: { strict?: boolean; json?: boolean; quiet?: boolean }) => {
+const workflows = new Command("workflows")
+  .alias("wf")
+  .description("discover, inspect, lint, and run Workflow Specs");
+
+workflows
+  .command("list")
+  .option("--json", "write JSON output")
+  .action((options: { json?: boolean }) => {
     try {
-      const sourcePath = resolve(process.cwd(), spec);
+      const entries = listWorkflowCatalog();
+      if (options.json) {
+        console.log(JSON.stringify(entries));
+        return;
+      }
+      printWorkflowList(entries);
+    } catch (error) {
+      printError(errorMessage(error), { json: options.json, quiet: false });
+      process.exitCode = EXIT_RUNTIME_ERROR;
+    }
+  });
+
+workflows
+  .command("show")
+  .argument("<refOrName>", "Workflow Catalog ref or unique workflow name")
+  .option("--json", "write JSON output")
+  .action((refOrName: string, options: { json?: boolean }) => {
+    try {
+      const entry = findWorkflowCatalogEntry(refOrName);
+      if (options.json) {
+        console.log(JSON.stringify(entry));
+        return;
+      }
+      printWorkflowDetails(entry);
+    } catch (error) {
+      printError(errorMessage(error), { json: options.json, quiet: false });
+      process.exitCode = EXIT_RUNTIME_ERROR;
+    }
+  });
+
+workflows
+  .command("lint")
+  .argument("<refOrPath>", "Workflow Catalog ref/name or workflow YAML spec path")
+  .option("--strict", "treat warnings as errors")
+  .option("--json", "write JSON output")
+  .option("--quiet", "only write final output")
+  .action((refOrPath: string, options: { strict?: boolean; json?: boolean; quiet?: boolean }) => {
+    try {
+      const sourcePath = resolveLintTarget(refOrPath);
       const result = lintWorkflow(readTextFile(sourcePath), {
         sourcePath,
         strict: options.strict,
-        includeResolver: createIncludeResolver()
+        includeResolver: createWorkspaceIncludeResolver()
       });
       printLint(result, options);
       process.exitCode = result.ok ? 0 : EXIT_DSL_STATIC_ERROR;
@@ -44,17 +90,19 @@ program
     }
   });
 
-program
+workflows
   .command("run")
-  .argument("<spec>", "workflow YAML spec")
+  .argument("<refOrPath>", "Workflow Catalog ref/name or workflow YAML spec path")
   .option("--dry-run", "compile to IR and print schedule without execution")
   .option("--input <value>", "inline JSON or path to YAML/JSON input object")
   .option("--background", "submit and return immediately (no follow)")
   .option("--visualize", "submit and open TUI visualizer")
   .option("--json", "write JSONL observations (follow mode) or JSON (background)")
   .option("--quiet", "only write final output")
-  .action(async (spec: string, options: { dryRun?: boolean; input?: string; background?: boolean; visualize?: boolean; json?: boolean; quiet?: boolean }) => {
-    // Validate invalid combinations before any supervisor contact
+  .action(async (
+    refOrPath: string,
+    options: { dryRun?: boolean; input?: string; background?: boolean; visualize?: boolean; json?: boolean; quiet?: boolean }
+  ) => {
     if (options.background && options.visualize) {
       printError("--background and --visualize are mutually exclusive", options);
       process.exitCode = EXIT_CLI_ERROR;
@@ -67,34 +115,31 @@ program
     }
 
     try {
+      const target = resolveWorkflowTarget(refOrPath);
+      const parsedInput = parseInput(options.input);
+
       if (options.dryRun) {
-        // Dry-run: compile and print schedule, no supervisor needed
-        const sourcePath = resolve(process.cwd(), spec);
-        const parsedInput = parseInput(options.input);
-        const result = compileWorkflow(readTextFile(sourcePath), {
-          sourcePath,
-          includeResolver: createIncludeResolver()
+        const result = compileWorkflow(target.source, {
+          sourcePath: target.sourcePath,
+          includeResolver: createWorkspaceIncludeResolver()
         });
-        const output = parsedInput === undefined || !result.ir ? result : { ...result, ir: { ...result.ir, runtimeInput: parsedInput } };
+        const output = parsedInput === undefined || !result.ir
+          ? result
+          : { ...result, ir: { ...result.ir, runtimeInput: parsedInput } };
         printCompile(output, options);
         process.exitCode = result.ok ? 0 : EXIT_DSL_STATIC_ERROR;
         return;
       }
 
-      // Ensure supervisor is running
       const client = await ensureSupervisor();
-      const sourcePath = resolve(process.cwd(), spec);
-      const specSource = readTextFile(sourcePath);
-      const parsedInput = parseInput(options.input);
-
-      const runState = await client.startRun(specSource, parsedInput, sourcePath);
+      const runState = await client.startRun(target.source, parsedInput, target.sourcePath, target.workflowRef);
 
       if (options.background) {
-        // Background: print ID/status and exit
         if (options.json) {
           console.log(JSON.stringify(runState));
         } else if (!options.quiet) {
           console.log(`Run ${runState.runId} started: ${runState.workflowName}`);
+          if (runState.workflowRef) console.log(`Workflow: ${runState.workflowRef}`);
           console.log(`Status: ${runState.status}`);
         }
         process.exitCode = 0;
@@ -102,47 +147,40 @@ program
       }
 
       if (options.visualize) {
-        // Visualize: submit and open TUI
         const { runTui } = await import("@acpus/tui");
         await runTui({ runId: runState.runId, endpoint: (client as any).baseUrl as string });
         process.exitCode = 0;
         return;
       }
 
-      // Default: foreground follow
       const terminalStatus = await followRun(client, runState.runId, { json: options.json });
-
-      // Exit code mapping
-      switch (terminalStatus) {
-        case "completed": process.exitCode = 0; break;
-        case "failed": process.exitCode = EXIT_RUNTIME_ERROR; break;
-        case "cancelled":
-        case "paused": process.exitCode = EXIT_USER_CANCEL; break;
-        default: process.exitCode = EXIT_RUNTIME_ERROR; break;
-      }
+      process.exitCode = exitCodeForRunStatus(terminalStatus);
     } catch (error) {
       printError(errorMessage(error), options);
       process.exitCode = isSupervisorConnectionError(error) ? EXIT_SUPERVISOR_ERROR : EXIT_RUNTIME_ERROR;
     }
   });
 
-program
-  .command("ls")
+program.addCommand(workflows);
+
+const runs = new Command("runs")
+  .description("list, inspect, clean, visualize, and control Workflow Runs");
+
+runs
+  .command("list")
   .option("--json", "write JSON output")
   .action(async (options: { json?: boolean }) => {
     try {
       const client = await ensureSupervisor();
-      const runs = await client.listRuns();
-
+      const runList = await client.listRuns();
       if (options.json) {
-        console.log(JSON.stringify(runs));
+        console.log(JSON.stringify(runList));
+      } else if (runList.length === 0) {
+        console.log("No runs found.");
       } else {
-        if (runs.length === 0) {
-          console.log("No runs found.");
-        } else {
-          for (const run of runs) {
-            console.log(`${run.runId}  ${run.workflowName}  ${run.status}  ${run.createdAt}`);
-          }
+        for (const run of runList) {
+          const source = run.workflowRef ?? run.workflowSourcePath ?? "-";
+          console.log(`${run.runId}  ${run.workflowName}  ${run.status}  ${run.updatedAt}  ${source}`);
         }
       }
     } catch (error) {
@@ -151,34 +189,31 @@ program
     }
   });
 
-program
-  .command("inspect")
+runs
+  .command("show")
   .argument("<runId>", "run ID to inspect")
   .option("--json", "write JSON output")
   .action(async (runId: string, options: { json?: boolean }) => {
     try {
       const client = await ensureSupervisor();
       const run = await client.getRun(runId);
-
       if (options.json) {
         console.log(JSON.stringify(run));
-      } else {
-        console.log(`Run: ${run.runId}`);
-        console.log(`Workflow: ${run.workflowName}`);
-        console.log(`Status: ${run.status}`);
-        console.log(`Created: ${run.createdAt}`);
-        console.log(`Updated: ${run.updatedAt}`);
-        console.log();
-        console.log("Nodes:");
-        for (const node of run.nodes ?? []) {
-          console.log(`  ${node.nodeKey}  [${node.kind}]  ${node.state}  attempt=${node.attempt}`);
-          if (node.error) {
-            console.log(`    Error: ${node.error}`);
-          }
-          if (node.artifactRefs?.length) {
-            console.log(`    Artifacts: ${node.artifactRefs.join(", ")}`);
-          }
-        }
+        return;
+      }
+      console.log(`Run: ${run.runId}`);
+      console.log(`Workflow: ${run.workflowName}`);
+      if (run.workflowRef) console.log(`Workflow Ref: ${run.workflowRef}`);
+      if (run.workflowSourcePath) console.log(`Workflow Source: ${run.workflowSourcePath}`);
+      console.log(`Status: ${run.status}`);
+      console.log(`Created: ${run.createdAt}`);
+      console.log(`Updated: ${run.updatedAt}`);
+      console.log();
+      console.log("Nodes:");
+      for (const node of run.nodes ?? []) {
+        console.log(`  ${node.nodeKey}  [${node.kind}]  ${node.state}  attempt=${node.attempt}`);
+        if (node.error) console.log(`    Error: ${node.error}`);
+        if (node.artifactRefs?.length) console.log(`    Artifacts: ${node.artifactRefs.join(", ")}`);
       }
     } catch (error) {
       printError(errorMessage(error), { json: options.json, quiet: false });
@@ -186,59 +221,64 @@ program
     }
   });
 
-// ─── Control commands ──────────────────────────────────────────────
-// pause/resume/cancel are Run-level. retry is Run-level by default and supports
-// --node for failed executable Node repair.
-
-program
-  .command("pause")
-  .argument("<runId>", "run ID")
-  .option("--json", "output machine-readable JSON")
-  .action(async (runId: string, options: { json?: boolean }) => {
+runs
+  .command("clean")
+  .option("--dry-run", "report deletions without removing Run directories")
+  .option("--json", "write JSON output")
+  .action(async (options: { dryRun?: boolean; json?: boolean }) => {
     try {
       const client = await ensureSupervisor();
-      const run = await client.pauseRun(runId);
-      if (options.json) console.log(JSON.stringify(run));
-      else console.log(`Run ${runId} paused (status: ${run.status})`);
+      const result = await client.cleanRuns({ dryRun: options.dryRun });
+      if (options.json) {
+        console.log(JSON.stringify(result));
+      } else {
+        printCleanResult(result);
+      }
     } catch (error) {
-      printError(errorMessage(error), { json: Boolean(options.json), quiet: false });
+      printError(errorMessage(error), { json: options.json, quiet: false });
       process.exitCode = isSupervisorConnectionError(error) ? EXIT_SUPERVISOR_ERROR : EXIT_RUNTIME_ERROR;
     }
   });
 
-program
-  .command("resume")
-  .argument("<runId>", "run ID")
-  .option("--json", "output machine-readable JSON")
-  .action(async (runId: string, options: { json?: boolean }) => {
+runs
+  .command("visualize")
+  .argument("[runId]", "run ID to observe (omit to pick from a list)")
+  .description("open a TUI visualizer to observe and control a running workflow")
+  .action(async (runId: string | undefined) => {
     try {
       const client = await ensureSupervisor();
-      const run = await client.resumeRun(runId);
-      if (options.json) console.log(JSON.stringify(run));
-      else console.log(`Run ${runId} resumed (status: ${run.status})`);
+      const endpoint = (client as any).baseUrl as string;
+      const { runTui } = await import("@acpus/tui");
+      await runTui({ runId, endpoint });
     } catch (error) {
-      printError(errorMessage(error), { json: Boolean(options.json), quiet: false });
+      printError(errorMessage(error), { json: false, quiet: false });
       process.exitCode = isSupervisorConnectionError(error) ? EXIT_SUPERVISOR_ERROR : EXIT_RUNTIME_ERROR;
     }
   });
 
-program
-  .command("cancel")
-  .argument("<runId>", "run ID")
-  .option("--json", "output machine-readable JSON")
-  .action(async (runId: string, options: { json?: boolean }) => {
-    try {
-      const client = await ensureSupervisor();
-      const run = await client.cancelRun(runId);
-      if (options.json) console.log(JSON.stringify(run));
-      else console.log(`Run ${runId} cancelled (status: ${run.status})`);
-    } catch (error) {
-      printError(errorMessage(error), { json: Boolean(options.json), quiet: false });
-      process.exitCode = isSupervisorConnectionError(error) ? EXIT_SUPERVISOR_ERROR : EXIT_RUNTIME_ERROR;
-    }
-  });
+for (const action of ["pause", "resume", "cancel"] as const) {
+  runs
+    .command(action)
+    .argument("<runId>", "run ID")
+    .option("--json", "output machine-readable JSON")
+    .action(async (runId: string, options: { json?: boolean }) => {
+      try {
+        const client = await ensureSupervisor();
+        const run = action === "pause"
+          ? await client.pauseRun(runId)
+          : action === "resume"
+            ? await client.resumeRun(runId)
+            : await client.cancelRun(runId);
+        if (options.json) console.log(JSON.stringify(run));
+        else console.log(`Run ${runId} ${pastTense(action)} (status: ${run.status})`);
+      } catch (error) {
+        printError(errorMessage(error), { json: Boolean(options.json), quiet: false });
+        process.exitCode = isSupervisorConnectionError(error) ? EXIT_SUPERVISOR_ERROR : EXIT_RUNTIME_ERROR;
+      }
+    });
+}
 
-program
+runs
   .command("retry")
   .argument("<runId>", "run ID")
   .option("--node <key>", "retry a specific node instead of the whole run")
@@ -261,7 +301,7 @@ program
     }
   });
 
-program
+runs
   .command("signal")
   .argument("<runId>", "run ID")
   .requiredOption("--node <key>", "the Approval Gate node key to decide on")
@@ -287,7 +327,7 @@ program
     }
   });
 
-program
+runs
   .command("replay")
   .argument("<runId>", "run ID")
   .option("--json", "output machine-readable JSON")
@@ -313,23 +353,85 @@ program
     }
   });
 
-program
-  .command("visualize")
-  .argument("[runId]", "run ID to observe (omit to pick from a list)")
-  .description("open a TUI visualizer to observe and control a running workflow")
-  .action(async (runId: string | undefined) => {
-    try {
-      const client = await ensureSupervisor();
-      const endpoint = (client as any).baseUrl as string;
-      const { runTui } = await import("@acpus/tui");
-      await runTui({ runId, endpoint });
-    } catch (error) {
-      printError(errorMessage(error), { json: false, quiet: false });
-      process.exitCode = isSupervisorConnectionError(error) ? EXIT_SUPERVISOR_ERROR : EXIT_RUNTIME_ERROR;
-    }
-  });
+program.addCommand(runs);
 
 program.parse();
+
+function resolveLintTarget(refOrPath: string): string {
+  if (looksLikeWorkflowPath(refOrPath)) return resolveWorkflowPath(refOrPath);
+  return findWorkflowCatalogEntry(refOrPath).path;
+}
+
+function printWorkflowList(entries: WorkflowCatalogEntry[]): void {
+  if (entries.length === 0) {
+    console.log("No workflows found.");
+    return;
+  }
+  console.log("SCOPE    STATUS    REF                  NAME                 PATH");
+  for (const entry of entries) {
+    console.log(`${pad(entry.scope, 8)} ${pad(entry.status, 9)} ${pad(entry.ref ?? "-", 20)} ${pad(entry.name ?? "-", 20)} ${displayPath(entry.path)}`);
+  }
+}
+
+function printWorkflowDetails(entry: WorkflowCatalogEntry): void {
+  console.log(`Workflow: ${entry.name ?? "-"}`);
+  console.log(`Ref: ${entry.ref ?? "-"}`);
+  console.log(`Scope: ${entry.scope}`);
+  console.log(`Status: ${entry.status}`);
+  console.log(`Path: ${entry.path}`);
+  if (entry.description) console.log(`Description: ${entry.description}`);
+  if (entry.inputKeys.length > 0) console.log(`Inputs: ${entry.inputKeys.join(", ")}`);
+  if (entry.diagnostics.length > 0) {
+    console.log();
+    console.log("Diagnostics:");
+    for (const diagnostic of entry.diagnostics) {
+      console.log(`  ${diagnostic.severity.toUpperCase()} ${diagnostic.code} ${diagnostic.path}: ${diagnostic.message}`);
+    }
+  }
+}
+
+function printCleanResult(result: RunCleanResult): void {
+  const verb = result.dryRun ? "Would delete" : "Deleted";
+  console.log(`${verb} ${result.deletedCount} terminal run(s), ${formatBytes(result.bytesReclaimed)}.`);
+  if (result.skippedCount > 0) {
+    console.log(`Skipped ${result.skippedCount} run(s).`);
+  }
+}
+
+function exitCodeForRunStatus(status: RunStatus): number {
+  switch (status) {
+    case "completed": return 0;
+    case "failed": return EXIT_RUNTIME_ERROR;
+    case "cancelled":
+    case "paused": return EXIT_USER_CANCEL;
+    default: return 0;
+  }
+}
+
+function pad(value: string, width: number): string {
+  return value.length >= width ? value : value + " ".repeat(width - value.length);
+}
+
+function displayPath(path: string): string {
+  const rel = relative(process.cwd(), path);
+  return rel && !rel.startsWith("..") && !rel.startsWith("/") ? rel : path;
+}
+
+function createWorkspaceIncludeResolver(): (path: string, fromPath?: string) => string {
+  return createIncludeResolver([process.cwd(), globalWorkflowRoot()]);
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+function pastTense(action: "pause" | "resume" | "cancel"): string {
+  if (action === "pause") return "paused";
+  if (action === "resume") return "resumed";
+  return "cancelled";
+}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

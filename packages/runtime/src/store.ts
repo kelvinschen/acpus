@@ -2,21 +2,23 @@ import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
+  rmSync,
   readdirSync,
   readFileSync,
   renameSync,
+  lstatSync,
   writeFileSync
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { encodeNodeKeyForFs, encodeNodeKeyForDir } from "./keys.js";
 import type { AcpusIr } from "@acpus/core";
-import type { NodeExecutionState, RunState } from "./types.js";
+import type { NodeExecutionState, RunCleanItem, RunCleanResult, RunState } from "./types.js";
 
 /**
  * Per-node JSON file persistence with write-to-temp-then-rename for crash safety.
  *
  * Directory layout:
- *   .acpus/
+ *   .acpus/state/
  *     runs/
  *       <run_id>/
  *         ir.json            # frozen IR snapshot
@@ -47,13 +49,13 @@ export class RunStore {
   private readonly baseDir: string;
 
   constructor(baseDir?: string) {
-    this.baseDir = baseDir ?? join(process.cwd(), ".acpus", "runs");
+    this.baseDir = baseDir ?? join(process.cwd(), ".acpus", "state", "runs");
   }
 
   // ─── Run lifecycle ─────────────────────────────────────────────
 
   /** Create a new run directory and write IR + input snapshots. */
-  initRun(runId: string, ir: AcpusIr, input: Record<string, unknown>): RunState {
+  initRun(runId: string, ir: AcpusIr, input: Record<string, unknown>, source?: { workflowRef?: string; workflowSourcePath?: string }): RunState {
     validateRunId(runId);
     const runDir = this.runDir(runId);
     mkdirSync(join(runDir, "nodes"), { recursive: true });
@@ -71,6 +73,8 @@ export class RunStore {
     const meta: RunState = {
       runId,
       workflowName: ir.name,
+      workflowRef: source?.workflowRef,
+      workflowSourcePath: source?.workflowSourcePath ?? ir.source.path,
       status: "running",
       irDigest,
       inputDigest,
@@ -158,6 +162,61 @@ export class RunStore {
     return existsSync(this.runDir(runId));
   }
 
+  cleanTerminalRuns(options: { dryRun?: boolean } = {}): RunCleanResult {
+    const dryRun = Boolean(options.dryRun);
+    const deleted: RunCleanItem[] = [];
+    const skipped: RunCleanItem[] = [];
+
+    for (const runId of this.listRunIds()) {
+      const runDir = this.runDir(runId);
+      const meta = this.readRunMeta(runId);
+      const bytes = directorySize(runDir);
+
+      if (!meta) {
+        skipped.push({ runId, bytes, reason: "corrupt-metadata" });
+        continue;
+      }
+
+      if (meta.status !== "completed" && meta.status !== "failed" && meta.status !== "cancelled") {
+        skipped.push({ runId, status: meta.status, bytes, reason: "not-terminal" });
+        continue;
+      }
+
+      let deleteStatus = meta.status;
+      if (!dryRun) {
+        const latest = this.readRunMeta(runId);
+        if (!latest) {
+          skipped.push({ runId, bytes, reason: "corrupt-metadata" });
+          continue;
+        }
+        if (latest.status !== "completed" && latest.status !== "failed" && latest.status !== "cancelled") {
+          skipped.push({ runId, status: latest.status, bytes, reason: "not-terminal" });
+          continue;
+        }
+        deleteStatus = latest.status;
+      }
+
+      deleted.push({ runId, status: deleteStatus, bytes });
+      if (!dryRun) {
+        try {
+          rmSync(runDir, { recursive: true });
+        } catch {
+          deleted.pop();
+          skipped.push({ runId, status: meta.status, bytes, reason: "delete-failed" });
+        }
+      }
+    }
+
+    return {
+      dryRun,
+      deletedCount: deleted.length,
+      skippedCount: skipped.length,
+      bytesReclaimed: deleted.reduce((sum, item) => sum + item.bytes, 0),
+      deleted,
+      skipped
+    };
+  }
+
   /** Get the base directory. */
   getBaseDir(): string {
     return this.baseDir;
@@ -219,4 +278,18 @@ export class RunStore {
 /** SHA-256 digest of a string. */
 function sha256(content: string): string {
   return `sha256:${createHash("sha256").update(content).digest("hex")}`;
+}
+
+function directorySize(path: string): number {
+  try {
+    const stat = lstatSync(path);
+    if (!stat.isDirectory()) return stat.size;
+    let total = 0;
+    for (const entry of readdirSync(path, { withFileTypes: true })) {
+      total += directorySize(join(path, entry.name));
+    }
+    return total;
+  } catch {
+    return 0;
+  }
 }

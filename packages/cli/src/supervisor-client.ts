@@ -6,4 +6,4 @@
  */
 
 export { RunSupervisorClient } from "@acpus/runtime";
-export type { RunState, NodeExecutionState, RunSummary, ReplayResult, SupervisorMetadata, SupervisorHealth } from "@acpus/runtime";
+export type { RunCleanResult, RunState, NodeExecutionState, RunSummary, ReplayResult, SupervisorMetadata, SupervisorHealth } from "@acpus/runtime";
