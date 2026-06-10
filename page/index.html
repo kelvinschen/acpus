@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Acpus — Every run is an opus.</title>
+    <title>Acpus &mdash; Every run is an opus.</title>
     <link rel="icon" href="./logo/logo-favicon.svg" />
     <link
       href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
@@ -12,6 +12,7 @@
       :root {
         --ink: #1a1a1a;
         --paper: #f5f1e6;
+        --paper-soft: #fbf8ef;
         --gold: #b7892c;
         --rule: #c8b98a;
         --muted: #555;
@@ -43,7 +44,7 @@
       }
       h1 {
         font-family: "Cormorant Garamond", Georgia, serif;
-        font-size: clamp(58px, 10vw, 92px);
+        font-size: 84px;
         font-weight: 500;
         margin: 12px 0 4px;
       }
@@ -54,7 +55,7 @@
         margin-bottom: 16px;
       }
       .positioning {
-        max-width: 660px;
+        max-width: 700px;
         margin: 0 auto 28px;
         color: var(--muted);
         font-size: 17px;
@@ -71,13 +72,12 @@
         text-decoration: none;
         font-family: "IBM Plex Mono", monospace;
         font-size: 12px;
-        letter-spacing: 1px;
+        letter-spacing: 0;
         text-transform: uppercase;
       }
       .button.primary {
         background: var(--ink);
         color: var(--paper);
-        border-color: var(--ink);
       }
       main {
         max-width: 980px;
@@ -85,7 +85,7 @@
         padding: 48px 28px 84px;
       }
       section {
-        padding: 34px 0;
+        padding: 36px 0;
         border-bottom: 1px solid var(--rule);
       }
       section:last-child {
@@ -103,29 +103,21 @@
         color: var(--gold);
         font-family: "IBM Plex Mono", monospace;
         font-size: 11px;
-        letter-spacing: 3px;
+        letter-spacing: 0;
         text-transform: uppercase;
       }
-      .rule {
-        width: 58px;
-        height: 1px;
-        background: var(--ink);
-        margin: 14px 0 28px;
-      }
-      .grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 28px;
-        align-items: start;
-      }
-      .grid > *,
-      .steps > *,
-      .templates > * {
-        min-width: 0;
+      h3 {
+        font-size: 18px;
+        margin-bottom: 8px;
       }
       p {
         color: #444;
         margin-bottom: 14px;
+      }
+      code,
+      pre,
+      summary {
+        font-family: "IBM Plex Mono", monospace;
       }
       pre {
         background: var(--ink);
@@ -134,45 +126,101 @@
         padding: 18px 20px;
         overflow-x: auto;
         border-left: 3px solid var(--gold);
-        font-family: "IBM Plex Mono", monospace;
         font-size: 13px;
         line-height: 1.65;
       }
-      code {
-        font-family: "IBM Plex Mono", monospace;
+      .rule {
+        width: 58px;
+        height: 1px;
+        background: var(--ink);
+        margin: 14px 0 28px;
+      }
+      .lede {
+        max-width: 760px;
+      }
+      .note {
+        color: var(--muted);
+        font-size: 14px;
+        margin-top: 20px;
+      }
+      .note a {
+        color: var(--blue);
+      }
+      .full-command {
+        margin-top: 18px;
+      }
+      .spec-details {
+        margin-top: 18px;
+        border-top: 1px solid var(--rule);
+        border-bottom: 1px solid var(--rule);
+        background: rgba(255, 250, 240, 0.48);
+      }
+      .spec-details summary {
+        cursor: pointer;
+        padding: 14px 0;
+        color: var(--blue);
+        font-size: 12px;
+        font-weight: 500;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+      .spec-details pre {
+        margin-bottom: 18px;
       }
       .diagram {
         width: 100%;
         border: 1px solid var(--rule);
-        background: #fbf8ef;
+        background: var(--paper-soft);
+      }
+      .steps,
+      .playbooks,
+      .agent-list {
+        display: grid;
+        gap: 20px;
       }
       .steps {
-        display: grid;
         grid-template-columns: repeat(3, 1fr);
-        gap: 20px;
+      }
+      .playbooks {
+        grid-template-columns: repeat(2, 1fr);
+        margin-top: 22px;
       }
       .step-num {
         color: var(--gold);
         font-family: "IBM Plex Mono", monospace;
         font-size: 11px;
-        letter-spacing: 2px;
+        letter-spacing: 0;
         margin-bottom: 8px;
       }
-      h3 {
-        font-size: 18px;
-        margin-bottom: 8px;
-      }
-      .templates {
-        display: grid;
-        grid-template-columns: repeat(2, 1fr);
-        gap: 16px;
-      }
-      .template {
+      .template,
+      .agent {
         border-top: 1px solid var(--rule);
         padding-top: 14px;
       }
-      .template code {
+      .template a {
         color: var(--blue);
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 13px;
+        text-decoration-thickness: 1px;
+        text-underline-offset: 3px;
+      }
+      .agent-list {
+        grid-template-columns: repeat(2, 1fr);
+        margin: 26px 0 18px;
+      }
+      .agent {
+        min-width: 0;
+      }
+      .agent strong {
+        display: block;
+        font-size: 15px;
+      }
+      .agent span {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .fine-print {
+        color: #666;
         font-size: 13px;
       }
       footer {
@@ -190,14 +238,14 @@
         font-family: "IBM Plex Mono", monospace;
         font-size: 12px;
         font-style: normal;
-        letter-spacing: 1px;
+        letter-spacing: 0;
         text-decoration: none;
         text-transform: uppercase;
       }
       @media (max-width: 760px) {
-        .grid,
         .steps,
-        .templates {
+        .playbooks,
+        .agent-list {
           grid-template-columns: 1fr;
         }
         .hero {
@@ -206,6 +254,12 @@
         .hero img.mark {
           width: 128px;
           height: 128px;
+        }
+        h1 {
+          font-size: 58px;
+        }
+        pre {
+          font-size: 12px;
         }
       }
     </style>
@@ -217,9 +271,10 @@
       <h1>Acpus</h1>
       <p class="tagline">Every run is an opus.</p>
       <p class="positioning">
-        A local durable workflow runner for ACP agents. Write a YAML Workflow Spec,
-        run agents through acpx, execute local programs, and inspect every Run
-        through replayable state, artifacts, controls, and a terminal visualizer.
+        A local durable workflow runner for ACP agents. Give your agent a
+        Workflow Spec, let Acpus run agents and programs as a replayable local
+        Run, then inspect outputs, artifacts, controls, and retries in the
+        terminal.
       </p>
       <div class="actions">
         <a class="button primary" href="https://github.com/kelvinschen/acpus">View GitHub</a>
@@ -231,19 +286,23 @@
       <section>
         <h2><small>Quick Start</small>Install and run</h2>
         <div class="rule"></div>
-        <div class="grid">
-          <div>
-            <p>Install the CLI, author a Workflow Spec with a Codex agent, and submit a durable local Run.</p>
-            <pre><code>npm install -g acpus
+        <p class="lede">
+          Install the CLI, lint a Workflow Spec, submit a durable local Run,
+          and open the terminal visualizer.
+        </p>
+        <pre class="full-command"><code>npm install -g acpus
 
 acpus workflows lint review.workflow.yaml
-acpus workflows run review.workflow.yaml \
-  --input '{"topic":"release readiness"}'
+acpus workflows run review.workflow.yaml --input '{"topic":"release readiness"}'
 acpus runs visualize</code></pre>
-          </div>
-          <div>
-            <p>Workflow Specs combine Agent Steps, Program Steps, fanout, loops, switches, guards, approvals, outputs, and replayable run state.</p>
-            <pre><code>agents:
+
+        <details class="spec-details">
+          <summary>View the Workflow Spec</summary>
+          <pre><code>version: 1
+name: quick-review
+input:
+  topic: string
+agents:
   reviewer:
     use: codex
 workflow:
@@ -251,17 +310,29 @@ workflow:
     - id: review
       run: agent
       use: reviewer
-      prompt: "Review ${{ input.topic }}"
+      prompt: |
+        Review this topic and return concise JSON:
+        ${{ input.topic }}
       output:
-        summary: string</code></pre>
-          </div>
-        </div>
+        summary: string
+        risks:
+          - description: string
+outputs:
+  summary: ${{ steps.review.output.summary }}</code></pre>
+        </details>
       </section>
 
       <section>
-        <h2><small>Run Model</small>Durable local orchestration</h2>
+        <h2><small>Run Pattern</small>From spec to shipped output</h2>
         <div class="rule"></div>
-        <img class="diagram" src="./img/acpus-run-model.svg" alt="Acpus run model: Workflow Spec to frozen IR to Run Supervisor to Agent and Program Steps" />
+        <p class="lede">
+          Acpus lets a workflow mix agent judgment with deterministic local
+          programs, then keeps the whole run inspectable and replayable.
+        </p>
+        <img
+          class="diagram"
+          src="./img/acpus-user-flow.svg"
+          alt="Workflow Spec to Run, program context collection, parallel review and tests, loop repair, guard approval, and shipped output" />
       </section>
 
       <section>
@@ -276,26 +347,68 @@ workflow:
           <div>
             <p class="step-num">02</p>
             <h3>Conduct</h3>
-            <p>Run specs by path or Catalog ref. The local supervisor persists Node state, artifacts, and frozen IR.</p>
+            <p>Run specs by path or Catalog ref. The local supervisor persists node state, artifacts, and snapshots.</p>
           </div>
           <div>
             <p class="step-num">03</p>
             <h3>Control</h3>
-            <p>Pause, resume, retry, signal approvals, replay completed Runs, and inspect details in the TUI.</p>
+            <p>Pause, resume, retry, approve, replay completed Runs, and inspect details in the visualizer.</p>
           </div>
         </div>
       </section>
 
       <section>
-        <h2><small>Catalog</small>Dynamic workflow templates</h2>
+        <h2><small>Agents</small>Use it with your agent</h2>
         <div class="rule"></div>
-        <p>Project templates show larger agent-first patterns: research, adversarial review, option generation, implementation tournaments, and loop-until-green repair.</p>
-        <div class="templates">
-          <div class="template"><code>project:codebase-deep-research</code><p>Fan out independent research agents and synthesize a final report.</p></div>
-          <div class="template"><code>project:adversarial-feature-implementation-review</code><p>Cross-examine an implementation from several review lenses.</p></div>
-          <div class="template"><code>project:solution-generate-filter</code><p>Generate minimal, balanced, and bold options, then rank them.</p></div>
-          <div class="template"><code>project:worktree-implementation-tournament</code><p>Run competing implementations in isolated worktrees and apply the winner.</p></div>
+        <p class="lede">
+          Install the Acpus skill into the agent you already use. That agent can
+          author Workflow Specs, run Acpus commands, and coordinate any worker
+          agent supported by
+          <a href="https://github.com/openclaw/acpx">acpx</a>
+          through durable local Runs.
+        </p>
+        <pre><code>npx skills add kelvinschen/acpus --skill acpus</code></pre>
+        <div class="agent-list" aria-label="Ways agents use Acpus">
+          <div class="agent">
+            <strong>Your orchestrating agent</strong>
+            <span>Claude, Codex, Pi, Trae, or any skills-capable agent can use the Acpus skill to write and run workflows.</span>
+          </div>
+          <div class="agent">
+            <strong>Your worker agents</strong>
+            <span>Any agent supported by acpx can be selected inside the Workflow Spec and executed as an Agent Step.</span>
+          </div>
         </div>
+      </section>
+
+      <section>
+        <h2><small>Catalog</small>Agent Workflow Playbooks</h2>
+        <div class="rule"></div>
+        <p class="lede">
+          Playbooks are runnable starting points. Your agent can inspect them,
+          adapt the pattern, and extend it into task-specific workflows.
+        </p>
+        <div class="playbooks">
+          <div class="template">
+            <a href="https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/dynamic-workflow-designer.workflow.spec.yaml">project:dynamic-workflow-designer</a>
+            <p>Classify a maintainer task and install a generated Workflow Spec into the catalog.</p>
+          </div>
+          <div class="template">
+            <a href="https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/codebase-deep-research.workflow.spec.yaml">project:codebase-deep-research</a>
+            <p>Fan out independent research agents and synthesize a final report.</p>
+          </div>
+          <div class="template">
+            <a href="https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/worktree-implementation-tournament.workflow.spec.yaml">project:worktree-implementation-tournament</a>
+            <p>Run competing implementations in isolated worktrees and apply the winner.</p>
+          </div>
+          <div class="template">
+            <a href="https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/loop-until-green-fix.workflow.spec.yaml">project:loop-until-green-fix</a>
+            <p>Iterate agent repair attempts until verification passes, then apply the passing patch.</p>
+          </div>
+        </div>
+        <p class="note">
+          Featured playbooks shown here. See the full catalog in
+          <a href="https://github.com/kelvinschen/acpus/tree/main/.acpus/workflows">GitHub</a>.
+        </p>
       </section>
     </main>
 

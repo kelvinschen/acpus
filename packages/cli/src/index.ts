@@ -15,6 +15,7 @@ import { createIncludeResolver, parseInput, readTextFile } from "./io.js";
 import { printCompile, printError, printLint } from "./output.js";
 import { ensureSupervisor, EXIT_SUPERVISOR_ERROR, isSupervisorConnectionError } from "./supervisor.js";
 import { followRun } from "./follow.js";
+import { formatRunShow } from "./runs-show.js";
 import type { RunCleanResult, RunStatus } from "@acpus/runtime";
 
 const EXIT_DSL_STATIC_ERROR = 10;
@@ -201,20 +202,7 @@ runs
         console.log(JSON.stringify(run));
         return;
       }
-      console.log(`Run: ${run.runId}`);
-      console.log(`Workflow: ${run.workflowName}`);
-      if (run.workflowRef) console.log(`Workflow Ref: ${run.workflowRef}`);
-      if (run.workflowSourcePath) console.log(`Workflow Source: ${run.workflowSourcePath}`);
-      console.log(`Status: ${run.status}`);
-      console.log(`Created: ${run.createdAt}`);
-      console.log(`Updated: ${run.updatedAt}`);
-      console.log();
-      console.log("Nodes:");
-      for (const node of run.nodes ?? []) {
-        console.log(`  ${node.nodeKey}  [${node.kind}]  ${node.state}  attempt=${node.attempt}`);
-        if (node.error) console.log(`    Error: ${node.error}`);
-        if (node.artifactRefs?.length) console.log(`    Artifacts: ${node.artifactRefs.join(", ")}`);
-      }
+      console.log(await formatRunShow(run, client));
     } catch (error) {
       printError(errorMessage(error), { json: options.json, quiet: false });
       process.exitCode = isSupervisorConnectionError(error) ? EXIT_SUPERVISOR_ERROR : EXIT_RUNTIME_ERROR;

@@ -1,0 +1,82 @@
+version: 1
+name: example-file-handoff-research
+description: Agents share rich research through files while outputs stay small.
+
+input:
+  target_path: string
+  question: string
+  output_root?: string = ".acpus/output/example-file-handoff-research"
+
+agents:
+  researcher:
+    use: pi
+  synthesizer:
+    use: codex
+
+workflow:
+  steps:
+    - id: prepare
+      run: program
+      cmd:
+        - bash
+        - -lc
+        - |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import pathlib
+
+          out = pathlib.Path("${{ input.output_root }}").resolve() / "${{ run_id }}"
+          out.mkdir(parents=True, exist_ok=True)
+          print(json.dumps({
+              "output_dir": str(out),
+              "research_path": str(out / "research.md"),
+              "summary_path": str(out / "summary.md"),
+          }))
+          PY
+      capture:
+        from: stdout
+        parse: json
+      output:
+        output_dir: string
+        research_path: string
+        summary_path: string
+
+    - id: research
+      run: agent
+      use: researcher
+      prompt: |
+        Research the question in the target repository. Write the full report to:
+        ${{ steps.prepare.output.research_path }}
+
+        Target repository:
+        ${{ input.target_path }}
+
+        Question:
+        ${{ input.question }}
+
+        Return only a short summary and the report path.
+      output:
+        report_path: string
+        summary: string
+        finding_count: integer
+
+    - id: synthesize
+      run: agent
+      use: synthesizer
+      prompt: |
+        Read the research report and write an executive summary to:
+        ${{ steps.prepare.output.summary_path }}
+
+        Research report:
+        ${{ steps.research.output.report_path }}
+
+        Return only the summary path and the top recommendation.
+      output:
+        summary_path: string
+        recommendation: string
+
+outputs:
+  research_report: ${{ steps.research.output.report_path }}
+  summary_report: ${{ steps.synthesize.output.summary_path }}
+  recommendation: ${{ steps.synthesize.output.recommendation }}

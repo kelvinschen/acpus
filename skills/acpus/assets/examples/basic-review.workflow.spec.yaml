@@ -1,0 +1,29 @@
+version: 1
+name: example-basic-review
+description: Minimal review workflow with compact output.
+
+input:
+  topic: string
+
+agents:
+  reviewer:
+    use: codex
+
+workflow:
+  steps:
+    - id: review
+      run: agent
+      use: reviewer
+      prompt: |
+        Review the topic and provide only the requested structured result.
+
+        Topic:
+        ${{ input.topic }}
+      output:
+        summary: string
+        risk_count: integer
+        ready: boolean
+
+outputs:
+  summary: ${{ steps.review.output.summary }}
+  ready: ${{ steps.review.output.ready }}

@@ -42,6 +42,7 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - `acpus runs list` MUST list the most recent 50 Runs sorted by `updatedAt` descending.
 - The CLI MUST support local Run inspection through `acpus runs show <run_id>`.
 - Human-readable `runs show` output MUST show Run metadata and Node states/errors/artifact references without dumping large Node outputs by default.
+- For running Agent Step Nodes with transcript artifacts, human-readable `runs show` output MUST show a compact Agent activity line derived from transcript metadata, including transcript update age and unique tool-call count, and SHOULD show recent tool names and output-token count when available.
 - `acpus runs show <run_id> --json` MUST output the full structured Run state including Node outputs and artifact references.
 - The CLI MUST support Run-level pause through `acpus runs pause <run_id>`.
 - The CLI MUST support Run-level resume through `acpus runs resume <run_id>`.

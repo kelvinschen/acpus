@@ -12,7 +12,7 @@
   <img src="https://img.shields.io/node/v/acpus?label=node" alt="Node version">
 </p>
 
-Acpus is a local durable workflow runner for ACP agents. You write a YAML Workflow Spec, Acpus validates and freezes it into an execution plan, then runs Agent Steps through `acpx`, Program Steps as local subprocesses, and records every Run under the current Workspace.
+Acpus is a local durable workflow runner for ACP agents. You write a YAML Workflow Spec, Acpus validates and freezes it into an execution plan, then runs Agent Steps through [`acpx`](https://github.com/openclaw/acpx), Program Steps as local subprocesses, and records every Run under the current Workspace.
 
 It is built for agent work that needs structure: fanout, loops, switches, human approvals, retry, replay, artifacts, and a terminal visualizer that can inspect and control a live Run.
 
@@ -76,6 +76,24 @@ acpus runs visualize
 
 `acpus wf` is an exact alias for `acpus workflows`.
 
+<p align="center">
+  <img src="page/img/acpus_visualize.webp" alt="Acpus terminal visualizer showing run status, workflow graph, node details, and structured output" width="1000">
+  <br>
+  <sup><em>Inspect a Run in Ghostty: status overview, Workflow graph, selected Node details, JSON output, artifacts, and control key hints.</em></sup>
+</p>
+
+## Use Acpus From Your Agent
+
+Install the Acpus skill into any agent supported by the open `skills` CLI:
+
+```sh
+npx skills add kelvinschen/acpus --skill acpus
+```
+
+Then ask your preferred agent to design, lint, run, visualize, and control Acpus workflows for you. The skill gives the orchestrating agent a compact operating guide for `acpus workflows`, `acpus runs`, Workflow Specs, catalog playbooks, replay, retry, and human approval signals.
+
+Acpus sits underneath that agent as the durable runner. Your agent can author a Workflow Spec, start a Run, and coordinate any worker agent supported by [`acpx`](https://github.com/openclaw/acpx), while Program Steps handle deterministic local commands such as git status, lint, build, test, and patch application.
+
 ## Workflows And Runs
 
 Acpus separates workflow definition from execution state:
@@ -118,18 +136,20 @@ acpus runs clean --dry-run
 
 Run-facing commands lazily start a Workspace-scoped local Run Supervisor. You do not start a daemon manually; the supervisor is discovered through `.acpus/state/supervisor.json` and exits after it becomes idle.
 
-## Dynamic Workflow Templates
+## Agent Workflow Playbooks
 
-The project catalog includes runnable templates for larger agent workflows. They keep agents responsible for judgment, synthesis, implementation, and repair, while Program Steps handle deterministic glue such as git status, worktree setup, lint, build, test, and patch application.
+The project catalog includes runnable playbooks for larger agent workflows. The playbooks are not the dynamic part by themselves; they are starting points your agent can inspect, adapt, and extend into task-specific Workflow Specs.
+
+They keep agents responsible for judgment, synthesis, implementation, and repair, while Program Steps handle deterministic glue such as git status, worktree setup, lint, build, test, and patch application.
 
 | Pattern | Workflow ref | Use case | Mutates workspace |
 | --- | --- | --- | --- |
-| Classify and act | `project:dynamic-workflow-designer` | Classify a maintainer task and install a generated Workflow Spec into the catalog. | Yes |
-| Fanout and synthesize | `project:codebase-deep-research` | Run independent research agents and synthesize a final report. | No |
-| Adversarial verification | `project:adversarial-feature-implementation-review` | Review a feature through contract, correctness, test, and maintainability lenses. | No |
-| Generate and filter | `project:solution-generate-filter` | Generate multiple solution directions, critique them, and rank a recommendation. | No |
-| Tournament | `project:worktree-implementation-tournament` | Let multiple agents implement candidates in isolated worktrees and apply the winning patch. | Yes |
-| Loop until done | `project:loop-until-green-fix` | Iterate agent repair attempts until verification passes, then apply the passing patch. | Yes |
+| Classify and act | [`project:dynamic-workflow-designer`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/dynamic-workflow-designer.workflow.spec.yaml) | Classify a maintainer task and install a generated Workflow Spec into the catalog. | Yes |
+| Fanout and synthesize | [`project:codebase-deep-research`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/codebase-deep-research.workflow.spec.yaml) | Run independent research agents and synthesize a final report. | No |
+| Adversarial verification | [`project:adversarial-feature-implementation-review`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/adversarial-feature-implementation-review.workflow.spec.yaml) | Review a feature through contract, correctness, test, and maintainability lenses. | No |
+| Generate and filter | [`project:solution-generate-filter`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/solution-generate-filter.workflow.spec.yaml) | Generate multiple solution directions, critique them, and rank a recommendation. | No |
+| Tournament | [`project:worktree-implementation-tournament`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/worktree-implementation-tournament.workflow.spec.yaml) | Let multiple agents implement candidates in isolated worktrees and apply the winning patch. | Yes |
+| Loop until done | [`project:loop-until-green-fix`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/loop-until-green-fix.workflow.spec.yaml) | Iterate agent repair attempts until verification passes, then apply the passing patch. | Yes |
 
 Examples:
 
@@ -182,7 +202,7 @@ workflow:
         message: "Release check did not pass"
 ```
 
-Agent Steps run through `acpx`; Program Steps run as local subprocesses. Runs are local, single-host, durable, and replayable from their frozen snapshots.
+Agent Steps run through [`acpx`](https://github.com/openclaw/acpx); Program Steps run as local subprocesses. Runs are local, single-host, durable, and replayable from their frozen snapshots.
 
 ## Packages
 

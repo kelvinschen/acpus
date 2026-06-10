@@ -1,0 +1,83 @@
+version: 1
+name: example-human-approval-gate
+description: Agent prepares approval context; a human decides the gate.
+
+input:
+  change_goal: string
+  output_root?: string = ".acpus/output/example-human-approval-gate"
+
+agents:
+  planner:
+    use: claude
+
+workflow:
+  steps:
+    - id: prepare_path
+      run: program
+      cmd:
+        - bash
+        - -lc
+        - |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import pathlib
+
+          out = pathlib.Path("${{ input.output_root }}").resolve() / "${{ run_id }}"
+          out.mkdir(parents=True, exist_ok=True)
+          print(json.dumps({"brief_path": str(out / "approval-brief.md")}))
+          PY
+      capture:
+        from: stdout
+        parse: json
+      output:
+        brief_path: string
+
+    - id: plan_change
+      run: agent
+      use: planner
+      prompt: |
+        Prepare a concise approval brief for the requested change. Write it to:
+        ${{ steps.prepare_path.output.brief_path }}
+
+        Change goal:
+        ${{ input.change_goal }}
+
+        Include risks, expected files, and verification. Do not approve the change.
+      output:
+        brief_path: string
+        risk_count: integer
+        recommendation: string
+
+    - id: human_gate
+      approval:
+        prompt: "Review ${{ steps.plan_change.output.brief_path }} and decide whether the workflow may continue."
+
+    - id: after_approval
+      switch:
+        cases:
+          - when: steps.human_gate.approved
+            do:
+              - id: approved_result
+                run: program
+                cmd: ["bash", "-lc", "printf '{\"status\":\"approved\"}'"]
+                capture:
+                  from: stdout
+                  parse: json
+                output:
+                  status: string
+        default:
+          do:
+            - id: rejected_result
+              run: program
+              cmd: ["bash", "-lc", "printf '{\"status\":\"rejected\"}'"]
+              capture:
+                from: stdout
+                parse: json
+              output:
+                status: string
+
+outputs:
+  decision: ${{ steps.human_gate.decision }}
+  approved: ${{ steps.human_gate.approved }}
+  brief: ${{ steps.plan_change.output.brief_path }}

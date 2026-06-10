@@ -29,6 +29,11 @@
       "development": "./src/index.tsx",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./agent-transcript": {
+      "development": "./src/agentTranscript.ts",
+      "types": "./dist/agentTranscript.d.ts",
+      "default": "./dist/agentTranscript.js"
     }
   },
   "main": "./dist/index.js",
