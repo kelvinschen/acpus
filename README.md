@@ -238,15 +238,6 @@ pnpm typecheck
 pnpm test
 ```
 
-Useful local commands:
-
-```sh
-pnpm acpus workflows lint packages/core/test/fixtures/all-primitives.yaml
-pnpm acpus workflows run packages/core/test/fixtures/all-primitives.yaml --dry-run --json
-pnpm acpus workflows list
-pnpm acpus runs list
-```
-
 ## Documentation
 
 - [Specs Index](specs/INDEX.md)
