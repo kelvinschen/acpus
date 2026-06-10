@@ -1,56 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { offsetWindow, buildDetailLines, formatDetailLinesPlainText } from "../src/components/DetailsPane.js";
+import {
+  buildDetailLines,
+  buildDetailSections,
+  detailContentRows,
+  detailSectionRowCount,
+  displayOutputValue,
+  formatDetailLinesPlainText
+} from "../src/components/DetailsPane.js";
 import type { DisplayRow } from "../src/model.js";
 import type { IrNode } from "@acpus/core";
-
-// ─── offsetWindow tests ─────────────────────────────────────────
-
-describe("offsetWindow", () => {
-  it("returns full range when content fits in viewport", () => {
-    const result = offsetWindow(5, 0, 10);
-    expect(result).toEqual({ start: 0, end: 5, moreAbove: 0, moreBelow: 0 });
-  });
-
-  it("starts at scrollOffset 0 when at top", () => {
-    // 20 lines, viewport 5, scrollOffset 0 → lines 0..4
-    const result = offsetWindow(20, 0, 5);
-    expect(result).toEqual({ start: 0, end: 5, moreAbove: 0, moreBelow: 15 });
-  });
-
-  it("scrolls one line per offset increment", () => {
-    // scrollOffset 1 → lines 1..5 (NOT 0..4 like windowSlice would give)
-    const result = offsetWindow(20, 1, 5);
-    expect(result).toEqual({ start: 1, end: 6, moreAbove: 1, moreBelow: 14 });
-  });
-
-  it("scrolls to the bottom at max offset", () => {
-    // 20 lines, viewport 5: maxOffset = 15 → lines 15..19
-    const result = offsetWindow(20, 15, 5);
-    expect(result).toEqual({ start: 15, end: 20, moreAbove: 15, moreBelow: 0 });
-  });
-
-  it("clamps scrollOffset beyond max", () => {
-    // scrollOffset 100 with only 20 lines and viewport 5 → clamped to 15
-    const result = offsetWindow(20, 100, 5);
-    expect(result).toEqual({ start: 15, end: 20, moreAbove: 15, moreBelow: 0 });
-  });
-
-  it("clamps negative scrollOffset to 0", () => {
-    const result = offsetWindow(20, -3, 5);
-    expect(result).toEqual({ start: 0, end: 5, moreAbove: 0, moreBelow: 15 });
-  });
-
-  it("handles zero-length content", () => {
-    const result = offsetWindow(0, 0, 5);
-    expect(result).toEqual({ start: 0, end: 0, moreAbove: 0, moreBelow: 0 });
-  });
-
-  it("computes moreAbove and moreBelow correctly at mid-scroll", () => {
-    // 30 lines, viewport 8, scrollOffset 10 → lines 10..17
-    const result = offsetWindow(30, 10, 8);
-    expect(result).toEqual({ start: 10, end: 18, moreAbove: 10, moreBelow: 12 });
-  });
-});
 
 // ─── buildDetailLines tests ─────────────────────────────────────
 
@@ -130,6 +88,118 @@ describe("buildDetailLines", () => {
     const lines = buildDetailLines(row, 60, {});
     const text = lines.map((l) => l.segments.map((s) => s.text).join("")).join("\n");
     expect(text).toContain("Output:");
+  });
+
+  it("splits details into task-focused sections with rich prompt and output content", () => {
+    const row = makeRow({
+      irNode: {
+        id: "test-node",
+        kind: "run.agent",
+        nodePath: ["workflow", "test-node"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow/test-node" },
+        metadata: { prompt: "## Review\n- item" }
+      },
+      instance: {
+        nodeKey: "workflow/test",
+        nodeId: "test-node",
+        kind: "run.agent",
+        state: "completed",
+        attempt: 1,
+        output: { result: 42, nested: { ok: true } }
+      }
+    });
+
+    const sections = buildDetailSections(row, 60, {});
+    expect(sections.map((section) => section.key)).toEqual([
+      "summary",
+      "definition",
+      "prompt",
+      "output"
+    ]);
+    expect(sections.find((section) => section.key === "prompt")?.richContent).toEqual({
+      kind: "markdown",
+      content: "## Review\n- item"
+    });
+    expect(sections.find((section) => section.key === "output")?.richContent).toEqual({
+      kind: "json",
+      data: { result: 42, nested: { ok: true } }
+    });
+  });
+
+  it("keeps Markdown prompt and JSON output useful in plain copied details", () => {
+    const row = makeRow({
+      irNode: {
+        id: "test-node",
+        kind: "run.agent",
+        nodePath: ["workflow", "test-node"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow/test-node" },
+        metadata: { prompt: "## Review\n- check `json`" }
+      },
+      instance: {
+        nodeKey: "workflow/test",
+        nodeId: "test-node",
+        kind: "run.agent",
+        state: "completed",
+        attempt: 1,
+        output: { result: 42, nested: { ok: true } }
+      }
+    });
+
+    const text = formatDetailLinesPlainText(buildDetailLines(row, 80, {}));
+    expect(text).toContain("Prompt:");
+    expect(text).toContain("## Review");
+    expect(text).toContain("- check `json`");
+    expect(text).toContain("Output:");
+    expect(text).toContain("\"result\": 42");
+    expect(text).toContain("\"ok\": true");
+    expect(text).not.toContain("\u001b[");
+  });
+
+  it("shows the real executable output instead of the executor output envelope", () => {
+    expect(displayOutputValue("run.agent", {
+      output: { report_path: "/tmp/report.md", top_findings: [] },
+      transcript: "internal"
+    })).toEqual({ report_path: "/tmp/report.md", top_findings: [] });
+    expect(displayOutputValue("run.program", { output: ["ok"], exitCode: 0 })).toEqual(["ok"]);
+    expect(displayOutputValue("parallel", { output: { branch: "kept" } })).toEqual({ output: { branch: "kept" } });
+
+    const row = makeRow({
+      instance: {
+        nodeKey: "workflow/test",
+        nodeId: "test-node",
+        kind: "run.agent",
+        state: "completed",
+        attempt: 1,
+        output: {
+          output: { report_path: "/tmp/report.md", top_findings: [] },
+          transcript: "internal"
+        }
+      }
+    });
+
+    const output = buildDetailSections(row, 80, {}).find((section) => section.key === "output");
+    expect(output?.richContent).toEqual({
+      kind: "json",
+      data: { report_path: "/tmp/report.md", top_findings: [] }
+    });
+    expect(formatDetailLinesPlainText(output?.lines ?? [])).not.toContain("transcript");
+  });
+
+  it("counts active detail section rows from rich renderers", () => {
+    const row = makeRow({
+      instance: {
+        nodeKey: "workflow/test",
+        nodeId: "test-node",
+        kind: "run.agent",
+        state: "completed",
+        attempt: 1,
+        output: { result: 42, nested: { ok: true } }
+      }
+    });
+
+    const output = buildDetailSections(row, 40, {}).find((section) => section.key === "output");
+    expect(detailContentRows(12)).toBe(7);
+    expect(detailSectionRowCount(output, 40)).toBeGreaterThan(1);
   });
 
   it("renders agent execution details before prompt", () => {
@@ -245,6 +315,32 @@ describe("buildDetailLines", () => {
     expect(plain).toContain("attempt-001.prompt.md");
     expect(plain).toContain("/Users/bytedance/KProjects");
     expect(plain).not.toContain("\u001b]8");
+  });
+
+  it("keeps artifact filename and path adjacent while spacing separate artifacts", () => {
+    const firstUri = "artifact://runs/run-1/nodes/workflow:test/attempt-001.prompt.md";
+    const secondUri = "artifact://runs/run-1/nodes/workflow:test/attempt-001.response.md";
+    const row = makeRow({
+      instance: {
+        nodeKey: "workflow/test",
+        nodeId: "test-node",
+        kind: "run.agent",
+        state: "completed",
+        attempt: 1,
+        artifactRefs: [firstUri, secondUri]
+      }
+    });
+
+    const lines = formatDetailLinesPlainText(buildDetailLines(row, 120, {
+      [firstUri]: "/tmp/attempt-001.prompt.md",
+      [secondUri]: "/tmp/attempt-001.response.md"
+    })).split("\n");
+
+    const firstName = lines.indexOf("attempt-001.prompt.md");
+    const secondName = lines.indexOf("attempt-001.response.md");
+    expect(lines[firstName + 1]).toBe("/tmp/attempt-001.prompt.md");
+    expect(lines[secondName + 1]).toBe("/tmp/attempt-001.response.md");
+    expect(lines[secondName - 1]).toBe("");
   });
 
   it("hides the internal paused abort reason from details", () => {

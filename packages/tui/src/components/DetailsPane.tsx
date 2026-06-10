@@ -1,9 +1,12 @@
 import React from "react";
 import { Box, Text } from "ink";
+import type { IrNodeKind } from "@acpus/core";
 import type { DisplayRow } from "../model.js";
 import { formatDuration } from "../model.js";
 import { KIND_LABELS, styleForState } from "../theme.js";
 import type { AgentExecutionSummary, AgentToolCallSummary } from "../agentTranscript.js";
+import { ScrollArea, Tabs, jsonViewerRows, markdownRows } from "../ui/inkui/index.js";
+import { clampInline, wrapText } from "../ui/inkui/theme.js";
 
 /**
  * Right pane: details for the currently-selected node row.
@@ -31,24 +34,46 @@ export interface DetailLine {
   segments: DetailSegment[];
 }
 
+export type DetailSectionKey = "summary" | "definition" | "context" | "execution" | "prompt" | "error" | "output" | "artifacts";
+
+export interface DetailSection {
+  key: DetailSectionKey;
+  label: string;
+  /** Plain fallback used for OSC 52 copy and non-rich rendering. */
+  lines: DetailLine[];
+  richContent?: { kind: "markdown"; content: string } | { kind: "json"; data: unknown };
+}
+
+export interface JsonDisplayState {
+  expandedIds?: ReadonlySet<string>;
+  selectedIndex?: number;
+}
+
 export function DetailsPane({
   lines,
+  sections,
+  activeSectionKey,
   height,
   width = 38,
   focused,
-  scrollOffset = 0
+  scrollOffset = 0,
+  jsonDisplay
 }: {
-  lines: DetailLine[];
+  lines?: DetailLine[];
+  sections?: DetailSection[];
+  activeSectionKey?: DetailSectionKey;
   height?: number;
   width?: number;
   focused?: boolean;
   scrollOffset?: number;
+  jsonDisplay?: JsonDisplayState;
 }): React.ReactElement {
-  // Content rows available = pane height minus border (2) + title (1) + the
-  // two "↑/↓ more" hint lines budget (2). Mirror GraphPane's accounting.
-  const visibleRows = Math.max(1, (height ?? 12) - 5);
-  const { start, end, moreAbove, moreBelow } = offsetWindow(lines.length, scrollOffset, visibleRows);
-  const windowed = lines.slice(start, end);
+  const paneSections = sections ?? [{ key: "summary" as const, label: "Details", lines: lines ?? [] }];
+  const activeSection = paneSections.find((section) => section.key === activeSectionKey) ?? paneSections[0];
+  const cols = Math.max(12, width - 4);
+  const contentCols = Math.max(11, cols - 1);
+  const visibleRows = detailContentRows(height);
+  const rows = activeSection ? detailSectionRows(activeSection, contentCols, jsonDisplay) : [];
 
   return (
     <Box
@@ -63,29 +88,64 @@ export function DetailsPane({
       <Text bold color="magenta">
         NODE DETAILS{focused ? " ◂" : ""}
       </Text>
-      {lines.length === 0 ? (
-        <Text color="gray">No node selected.</Text>
-      ) : (
-        <>
-          {moreAbove > 0 ? <Text color="gray">  ↑ {moreAbove} more</Text> : null}
-          <Box flexDirection="column">
-            {windowed.map((line, i) => (
-              <Text key={start + i}>
-                {line.segments.length === 0 ? (
-                  " "
-                ) : (
-                  line.segments.map((seg, j) => (
-                    <Text key={j} color={seg.color} bold={seg.bold}>{seg.text}</Text>
-                  ))
-                )}
-              </Text>
-            ))}
-          </Box>
-          {moreBelow > 0 ? <Text color="gray">  ↓ {moreBelow} more</Text> : null}
-        </>
-      )}
+      {paneSections.length > 0 ? (
+        <Tabs tabs={paneSections.map((section) => ({ key: section.key, label: section.label }))} activeKey={activeSection?.key ?? ""} width={cols} />
+      ) : null}
+      <Box marginTop={1}>
+        {!activeSection || rows.length === 0 ? (
+          <Text color="gray">No node selected.</Text>
+        ) : (
+          <ScrollArea height={visibleRows} width={cols} offset={scrollOffset}>
+            {rows}
+          </ScrollArea>
+        )}
+      </Box>
     </Box>
   );
+}
+
+export function detailContentRows(height: number | undefined): number {
+  return Math.max(1, (height ?? 12) - 5);
+}
+
+export function detailSectionRowCount(section: DetailSection | undefined, width: number, jsonDisplay?: JsonDisplayState): number {
+  if (!section) return 0;
+  return detailSectionRows(section, Math.max(11, width - 5), jsonDisplay).length;
+}
+
+function detailSectionRows(section: DetailSection, cols: number, jsonDisplay?: JsonDisplayState): React.ReactElement[] {
+  if (section.richContent?.kind === "markdown") {
+    return markdownRows(section.richContent.content, cols);
+  }
+  if (section.richContent?.kind === "json") {
+    return jsonViewerRows(section.richContent.data, cols, {
+      rootLabel: "output",
+      initialDepth: 3,
+      expandedIds: jsonDisplay?.expandedIds,
+      selectedIndex: jsonDisplay?.selectedIndex
+    });
+  }
+  return trimLeadingBlanks(section.lines).map((line, i) => renderDetailLine(line, i));
+}
+
+function renderDetailLine(line: DetailLine, key: React.Key): React.ReactElement {
+  return (
+    <Text key={key}>
+      {line.segments.length === 0 ? (
+        " "
+      ) : (
+        line.segments.map((seg, j) => (
+          <Text key={j} color={seg.color} bold={seg.bold}>{seg.text}</Text>
+        ))
+      )}
+    </Text>
+  );
+}
+
+function trimLeadingBlanks(lines: DetailLine[]): DetailLine[] {
+  let firstContent = 0;
+  while (firstContent < lines.length && lines[firstContent].segments.length === 0) firstContent++;
+  return lines.slice(firstContent);
 }
 
 // ─── Line building (pure) ────────────────────────────────────────
@@ -144,98 +204,142 @@ export function buildDetailLines(
   freezeAt?: string | number,
   agentExecution?: AgentExecutionSummary
 ): DetailLine[] {
+  return buildDetailSections(row, width, artifactPaths, freezeAt, agentExecution).flatMap((section) => section.lines);
+}
+
+export function buildDetailSections(
+  row: DisplayRow | undefined,
+  width: number,
+  artifactPaths: Record<string, string>,
+  freezeAt?: string | number,
+  agentExecution?: AgentExecutionSummary
+): DetailSection[] {
   if (!row) return [];
   const cols = Math.max(12, width - 4);
   const inst = row.instance;
   const style = styleForState(row.state);
   const dyn = inst?.dynamicContext;
   const meta = (row.irNode.metadata ?? {}) as Record<string, unknown>;
-  const lines: DetailLine[] = [];
+  const sections: DetailSection[] = [];
+  const summary: DetailLine[] = [];
 
   // ── Runtime info ──
-  lines.push(field("Node", row.label, cols));
-  lines.push(field("Kind", KIND_LABELS[row.irNode.kind], cols));
-  lines.push({
+  summary.push(field("Node", row.label, cols));
+  summary.push(field("Kind", KIND_LABELS[row.irNode.kind], cols));
+  summary.push({
     segments: [
       { text: "Status: ", color: "gray" },
       { text: `${style.glyph} ${style.label}`, color: style.color }
     ]
   });
-  if (inst) lines.push(field("Attempt", String(inst.attempt), cols));
-  if (row.groupDim === "lane") lines.push(field("Lane", row.groupValue ?? "?", cols));
-  if (row.groupDim === "lane" && row.groupItem !== undefined) lines.push(field("Item", row.groupItem, cols));
-  if (row.groupDim === "round") lines.push(field("Round", row.groupValue ?? "?", cols));
-  if (row.branchLabel) lines.push(field("Branch", row.branchLabel, cols));
-  if (row.branchWhen) lines.push(...wrappedField("When", row.branchWhen, cols));
-  if (inst) lines.push(field("Duration", formatDuration(inst.startedAt, inst.completedAt, freezeAt), cols));
-  if (row.nodeKey) lines.push(...wrappedField("Key", row.nodeKey, cols));
+  if (inst) summary.push(field("Attempt", String(inst.attempt), cols));
+  if (row.groupDim === "lane") summary.push(field("Lane", row.groupValue ?? "?", cols));
+  if (row.groupDim === "lane" && row.groupItem !== undefined) summary.push(field("Item", row.groupItem, cols));
+  if (row.groupDim === "round") summary.push(field("Round", row.groupValue ?? "?", cols));
+  if (row.branchLabel) summary.push(field("Branch", row.branchLabel, cols));
+  if (row.branchWhen) summary.push(...wrappedField("When", row.branchWhen, cols));
+  if (inst) summary.push(field("Duration", formatDuration(inst.startedAt, inst.completedAt, freezeAt), cols));
+  if (row.nodeKey) summary.push(...wrappedField("Key", row.nodeKey, cols));
+  sections.push({ key: "summary", label: "Summary", lines: summary });
 
   // ── Definition (from IR metadata) ──
-  for (const l of definitionLines(row.irNode.kind, meta, row.summary, row.state, cols)) lines.push(l);
+  const definition = definitionLines(row.irNode.kind, meta, row.summary, row.state, cols);
+  if (hasContent(definition)) sections.push({ key: "definition", label: "Definition", lines: definition });
 
   // ── Dynamic context ──
   if (dyn) {
-    lines.push(blank());
-    lines.push(heading("Context:"));
-    if (dyn.item_id !== undefined) lines.push(field("  item_id", String(dyn.item_id), cols));
-    if (dyn.item_index !== undefined) lines.push(field("  item_idx", String(dyn.item_index), cols));
-    if (dyn.loop) lines.push(field("  loop.iter", String(dyn.loop.iter), cols));
+    const context: DetailLine[] = [blank(), heading("Context:")];
+    if (dyn.item_id !== undefined) context.push(field("  item_id", String(dyn.item_id), cols));
+    if (dyn.item_index !== undefined) context.push(field("  item_idx", String(dyn.item_index), cols));
+    if (dyn.loop) context.push(field("  loop.iter", String(dyn.loop.iter), cols));
+    sections.push({ key: "context", label: "Context", lines: context });
   }
 
   // ── Agent execution telemetry from the live/current attempt transcript ──
   if (row.irNode.kind === "run.agent" && agentExecution) {
-    lines.push(blank());
-    lines.push(heading("Execution:"));
-    lines.push(field("  Output tokens", formatOutputTokens(agentExecution), cols));
-    lines.push(field("  Tool calls", String(agentExecution.toolCallCount), cols));
+    const execution: DetailLine[] = [blank(), heading("Execution:")];
+    execution.push(field("  Output tokens", formatOutputTokens(agentExecution), cols));
+    execution.push(field("  Tool calls", String(agentExecution.toolCallCount), cols));
     if (agentExecution.recentToolCalls.length > 0) {
-      lines.push(heading("  Last tools:"));
+      execution.push(heading("  Last tools:"));
       for (const tool of agentExecution.recentToolCalls) {
-        lines.push(...textLines(`  - ${formatToolCall(tool)}`, cols));
+        execution.push(...textLines(`  - ${formatToolCall(tool)}`, cols));
       }
     }
+    sections.push({ key: "execution", label: "Execution", lines: execution });
   }
 
   // ── Prompt (prefer runtime-rendered, fall back to IR template) ──
   const prompt = inst?.renderedPrompt ?? (typeof meta.prompt === "string" ? meta.prompt : undefined);
   if (prompt) {
-    lines.push(blank());
-    lines.push(heading("Prompt:"));
-    for (const l of textLines(prompt, cols)) lines.push(l);
+    sections.push({
+      key: "prompt",
+      label: "Prompt",
+      lines: [blank(), heading("Prompt:"), ...textLines(prompt, cols)],
+      richContent: { kind: "markdown", content: prompt }
+    });
   }
 
   // ── Error ──
   if (inst?.error && inst.error !== "Aborted: paused") {
-    lines.push(blank());
-    lines.push({ segments: [{ text: "Error:", color: "red" }] });
-    for (const l of textLines(inst.error, cols, "red")) lines.push(l);
+    sections.push({
+      key: "error",
+      label: "Error",
+      lines: [blank(), { segments: [{ text: "Error:", color: "red" }] }, ...textLines(inst.error, cols, "red")]
+    });
   }
 
   // ── Output ──
   if (inst?.output !== undefined) {
-    lines.push(blank());
-    lines.push(heading("Output:"));
-    for (const l of textLines(JSON.stringify(inst.output, null, 2), cols)) lines.push(l);
+    const outputValue = displayOutputValue(row.irNode.kind, inst.output);
+    const outputText = JSON.stringify(outputValue, null, 2) ?? String(outputValue);
+    sections.push({
+      key: "output",
+      label: "Output",
+      lines: [blank(), heading("Output:"), ...textLines(outputText, cols)],
+      richContent: isExpandableJson(outputValue) ? { kind: "json", data: outputValue } : undefined
+    });
   }
 
   // ── Artifacts (cyan filename line + gray path line; no OSC 8) ──
   if (inst?.artifactRefs && inst.artifactRefs.length > 0) {
-    lines.push(blank());
-    lines.push(heading("Artifacts:"));
-    for (const ref of inst.artifactRefs) {
+    const artifacts: DetailLine[] = [blank(), heading("Artifacts:")];
+    for (const [index, ref] of inst.artifactRefs.entries()) {
       const absPath = artifactPaths[ref];
       const name = ref.split("/").pop() ?? ref;
+      if (index > 0) artifacts.push(blank());
+      artifacts.push({ segments: [{ text: clampInline(name, cols), color: "cyan" }] });
       if (absPath) {
-        lines.push({ segments: [{ text: clampInline(name, cols), color: "cyan" }] });
-        for (const l of textLines(`  ${absPath}`, cols, "gray")) lines.push(l);
+        for (const l of textLines(absPath, cols, "gray")) artifacts.push(l);
       } else {
         // Path not resolved yet: show the raw artifact:// URI.
-        for (const l of textLines(ref, cols, "gray")) lines.push(l);
+        for (const l of textLines(ref, cols, "gray")) artifacts.push(l);
       }
     }
+    sections.push({ key: "artifacts", label: "Artifacts", lines: artifacts });
   }
 
-  return lines;
+  return sections;
+}
+
+function hasContent(lines: DetailLine[]): boolean {
+  return lines.some((line) => line.segments.length > 0);
+}
+
+export function displayOutputValue(kind: IrNodeKind, output: unknown): unknown {
+  if ((kind === "run.agent" || kind === "run.program") && isRecord(output) && Object.prototype.hasOwnProperty.call(output, "output")) {
+    return output.output;
+  }
+  return output;
+}
+
+/** Non-null objects and arrays benefit from the JSON tree viewer. */
+function isExpandableJson(value: unknown): boolean {
+  return value !== null && typeof value === "object";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 /** Definition block lines, varying by node kind. */
@@ -302,33 +406,6 @@ function definitionLines(
   return out;
 }
 
-/** Truncate a single line so it never wraps (Ink would otherwise grow height). */
-function clampInline(s: string, width = 33): string {
-  return s.length > width ? s.slice(0, Math.max(1, width - 1)) + "…" : s;
-}
-
-function wrapText(s: string, width: number): string[] {
-  const cols = Math.max(1, width);
-  if (s.length === 0) return [""];
-  const lines: string[] = [];
-  let rest = s;
-  while (rest.length > cols) {
-    const window = rest.slice(0, cols + 1);
-    const slash = window.lastIndexOf("/");
-    const space = window.lastIndexOf(" ");
-    const breakAt = Math.max(slash, space);
-    if (breakAt > Math.floor(cols * 0.4)) {
-      lines.push(rest.slice(0, breakAt + 1));
-      rest = rest.slice(breakAt + 1);
-    } else {
-      lines.push(rest.slice(0, cols));
-      rest = rest.slice(cols);
-    }
-  }
-  lines.push(rest);
-  return lines;
-}
-
 function formatToolCall(tool: AgentToolCallSummary): string {
   const status = tool.status ?? "unknown";
   const name = tool.title ?? tool.toolName ?? tool.kind ?? tool.toolCallId;
@@ -346,20 +423,4 @@ function formatOutputTokens(summary: AgentExecutionSummary): string {
 /** Plain text form used for clipboard copy; strips colors. */
 export function formatDetailLinesPlainText(lines: DetailLine[]): string {
   return lines.map((line) => line.segments.map((seg) => seg.text).join("")).join("\n");
-}
-
-/**
- * Direct offset-based viewport window for the details pane.
- * `scrollOffset` is the index of the top visible line.
- * Returns the clamped [start, end) slice and the moreAbove/moreBelow counts.
- */
-export function offsetWindow(
-  total: number,
-  scrollOffset: number,
-  visibleRows: number
-): { start: number; end: number; moreAbove: number; moreBelow: number } {
-  const maxOffset = Math.max(0, total - visibleRows);
-  const start = Math.max(0, Math.min(scrollOffset, maxOffset));
-  const end = Math.min(total, start + visibleRows);
-  return { start, end, moreAbove: start, moreBelow: total - end };
 }

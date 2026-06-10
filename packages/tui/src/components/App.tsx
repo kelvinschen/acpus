@@ -9,9 +9,23 @@ import { applyControl, canApply, applyRunControl, canApplyRun, type ControlActio
 import { useTerminalSize, windowSlice } from "../useTerminalSize.js";
 import { StatusOverview } from "./StatusOverview.js";
 import { GraphPane } from "./GraphPane.js";
-import { DetailsPane, buildDetailLines, formatDetailLinesPlainText } from "./DetailsPane.js";
+import {
+  DetailsPane,
+  buildDetailSections,
+  detailContentRows,
+  detailSectionRowCount,
+  formatDetailLinesPlainText,
+  type DetailSection,
+  type DetailSectionKey
+} from "./DetailsPane.js";
 import { Footer } from "./Footer.js";
 import { copyToClipboard } from "../osc52.js";
+import {
+  Spinner,
+  jsonExpandedIdsForInitialDepth,
+  jsonRowDescriptors,
+  toggleJsonExpandedId
+} from "../ui/inkui/index.js";
 import {
   AgentTranscriptAccumulator,
   emptyAgentExecutionSummary,
@@ -55,7 +69,10 @@ export function App({
   const { exit } = useApp();
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [focus, setFocus] = useState<Focus>("graph");
+  const [activeDetailSectionKey, setActiveDetailSectionKey] = useState<DetailSectionKey>("summary");
   const [detailsScroll, setDetailsScroll] = useState(0);
+  const [jsonExpandedIds, setJsonExpandedIds] = useState<Set<string>>(() => new Set());
+  const [jsonCursor, setJsonCursor] = useState(0);
   const [collapsedRows, setCollapsedRows] = useState<Set<string>>(() => new Set());
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [messages, setMessages] = useState<OverviewMessage[]>([]);
@@ -102,9 +119,9 @@ export function App({
   const RESERVED = 6;
   const paneHeight = Math.max(8, termRows - RESERVED);
   // Box border + header consume ~4 lines for the graph; details reserves an
-  // extra line for the ↑/↓ more hints (see DetailsPane).
+  // extra line for the tab bar (see DetailsPane).
   const graphVisibleRows = Math.max(3, paneHeight - 4);
-  const detailsVisibleRows = Math.max(1, paneHeight - 5);
+  const detailsVisibleRows = detailContentRows(paneHeight);
 
   // Width budget. STATUS OVERVIEW stays a fixed sidebar; the remaining width is
   // split between GRAPH and DETAILS so the FOCUSED pane gets ~50% of the whole
@@ -121,11 +138,31 @@ export function App({
 
   // Flatten the selected node into a single array of colored lines, then derive
   // the scroll bound from its true length (so long prompts/outputs scroll fully).
-  const detailLines = useMemo(
-    () => buildDetailLines(selected, detailsWidth, artifactPaths, freezeAt, agentExecution),
+  const detailSections = useMemo(
+    () => buildDetailSections(selected, detailsWidth, artifactPaths, freezeAt, agentExecution),
     [selected, detailsWidth, artifactPaths, freezeAt, agentExecution]
   );
-  const detailsMaxScroll = Math.max(0, detailLines.length - detailsVisibleRows);
+  const detailLines = useMemo(() => detailSections.flatMap((section) => section.lines), [detailSections]);
+  const resolvedActiveDetailSectionKey = useMemo(
+    () =>
+      detailSections.some((section) => section.key === activeDetailSectionKey)
+        ? activeDetailSectionKey
+        : detailSections[0]?.key,
+    [activeDetailSectionKey, detailSections]
+  );
+  const activeDetailSection = detailSections.find((section) => section.key === resolvedActiveDetailSectionKey);
+  const activeJsonData = activeDetailSection?.richContent?.kind === "json" ? activeDetailSection.richContent.data : undefined;
+  const activeJsonRows = useMemo(
+    () =>
+      activeJsonData !== undefined
+        ? jsonRowDescriptors(activeJsonData, { rootLabel: "output", initialDepth: 3, expandedIds: jsonExpandedIds })
+        : [],
+    [activeJsonData, jsonExpandedIds]
+  );
+  const activeJsonDisplay = activeJsonData !== undefined
+    ? { expandedIds: jsonExpandedIds, selectedIndex: jsonCursor }
+    : undefined;
+  const detailsMaxScroll = Math.max(0, detailSectionRowCount(activeDetailSection, detailsWidth, activeJsonDisplay) - detailsVisibleRows);
 
   // Pre-fetch absolute filesystem paths for the selected node's artifacts so
   // DetailsPane can show "<filename>  <absPath>". Only successful resolutions are
@@ -208,7 +245,33 @@ export function App({
   // Reset details scroll when the selection changes.
   useEffect(() => {
     setDetailsScroll(0);
+    setJsonCursor(0);
   }, [selected?.rowKey]);
+
+  useEffect(() => {
+    if (activeJsonData === undefined) {
+      setJsonExpandedIds(new Set());
+      setJsonCursor(0);
+      return;
+    }
+    setJsonExpandedIds(jsonExpandedIdsForInitialDepth(activeJsonData, { rootLabel: "output", initialDepth: 3 }));
+    setJsonCursor(0);
+    setDetailsScroll(0);
+  }, [activeJsonData, resolvedActiveDetailSectionKey, selected?.rowKey]);
+
+  useEffect(() => {
+    if (activeJsonRows.length === 0) return;
+    setJsonCursor((cursor) => Math.min(cursor, activeJsonRows.length - 1));
+    setDetailsScroll((offset) => Math.min(offset, Math.max(0, activeJsonRows.length - detailsVisibleRows)));
+  }, [activeJsonRows.length, detailsVisibleRows]);
+
+  useEffect(() => {
+    if (!resolvedActiveDetailSectionKey) return;
+    if (resolvedActiveDetailSectionKey !== activeDetailSectionKey) {
+      setActiveDetailSectionKey(resolvedActiveDetailSectionKey);
+      setDetailsScroll(0);
+    }
+  }, [activeDetailSectionKey, resolvedActiveDetailSectionKey]);
 
   useInput((input, key) => {
     if (input === "q" || (key.ctrl && input === "c")) {
@@ -228,11 +291,26 @@ export function App({
       // DETAILS pane: j/k line scroll; u/d half-page scroll; y copy all.
       const halfPage = Math.max(1, Math.floor(detailsVisibleRows / 2));
       if (input === "j") {
+        if (activeJsonData !== undefined) {
+          moveJsonCursor(1);
+          return;
+        }
         setDetailsScroll((s) => Math.min(detailsMaxScroll, s + 1));
         return;
       }
       if (input === "k") {
+        if (activeJsonData !== undefined) {
+          moveJsonCursor(-1);
+          return;
+        }
         setDetailsScroll((s) => Math.max(0, s - 1));
+        return;
+      }
+      if ((input === " " || key.return) && activeJsonData !== undefined) {
+        const row = activeJsonRows[jsonCursor];
+        if (row?.branch) {
+          setJsonExpandedIds((prev) => toggleJsonExpandedId(prev, row.id));
+        }
         return;
       }
       if (input === "d") {
@@ -246,6 +324,12 @@ export function App({
       if (input === "y") {
         copyToClipboard(formatDetailLinesPlainText(detailLines));
         pushMessage("details copied via OSC52", "info");
+        return;
+      }
+      const detailSectionKey = detailSectionKeyForNumberInput(input, detailSections);
+      if (detailSectionKey) {
+        setActiveDetailSectionKey(detailSectionKey);
+        setDetailsScroll(0);
         return;
       }
       // Fall through to run/node controls (p/r/c/R/a/x) below.
@@ -327,6 +411,14 @@ export function App({
     setMessages((prev) => [...prev, { text, level }].slice(-3));
   }
 
+  function moveJsonCursor(delta: number): void {
+    setJsonCursor((cursor) => {
+      const next = nextJsonCursor(cursor, delta, activeJsonRows.length);
+      setDetailsScroll((offset) => scrollOffsetForCursor(next, offset, detailsVisibleRows));
+      return next;
+    });
+  }
+
   const run = snapshot.run;
   const live = run ? !isTerminal(run.status) : false;
   // While live, elapsed grows with wall-clock. Once the run reaches a terminal
@@ -381,9 +473,7 @@ export function App({
         <Text>
           <Text color="gray">Elapsed </Text>
           <Text>{elapsed}  </Text>
-          <Text color={live ? "green" : "gray"} bold>
-            {live ? "● LIVE" : "■ ENDED"}
-          </Text>
+          {live ? <Spinner label="LIVE" active={live} /> : <Text color="gray" bold>■ ENDED</Text>}
         </Text>
       </Box>
 
@@ -401,19 +491,40 @@ export function App({
           freezeAt={freezeAt}
         />
         <DetailsPane
-          lines={detailLines}
+          sections={detailSections}
+          activeSectionKey={resolvedActiveDetailSectionKey}
           height={paneHeight}
           width={detailsWidth}
           focused={focus === "details"}
           scrollOffset={detailsScroll}
+          jsonDisplay={activeJsonDisplay}
         />
       </Box>
 
       <Footer
         focus={focus}
+        tabCount={detailSections.length}
       />
     </Box>
   );
+}
+
+export function detailSectionKeyForNumberInput(input: string, sections: DetailSection[]): DetailSectionKey | undefined {
+  if (!/^[1-9]$/.test(input)) return undefined;
+  const index = Number(input) - 1;
+  return sections[index]?.key;
+}
+
+export function nextJsonCursor(current: number, delta: number, rowCount: number): number {
+  if (rowCount <= 0) return 0;
+  return Math.max(0, Math.min(rowCount - 1, current + delta));
+}
+
+export function scrollOffsetForCursor(cursor: number, currentOffset: number, visibleRows: number): number {
+  const height = Math.max(1, visibleRows);
+  if (cursor < currentOffset) return cursor;
+  if (cursor >= currentOffset + height) return cursor - height + 1;
+  return currentOffset;
 }
 
 export function visibleRows<T extends { rowKey: string; depth: number }>(rows: T[], collapsed: Set<string>): T[] {

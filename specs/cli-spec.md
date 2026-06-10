@@ -62,7 +62,8 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, subm
 - The Run picker MUST list the most recent 50 Runs in the current Workspace sorted by `updatedAt` descending and allow selecting a Run to open the single-Run visualizer view.
 - The Run picker MUST support vim-like `j`/`k` navigation for moving the selected Run down/up.
 - The Run picker MAY refresh the Run list while open.
-- The single-Run visualizer MUST use vim-like navigation: `h`/`l` switch graph/details focus, graph `j`/`k` selects rows, details `j`/`k` scrolls by line, and details `u`/`d` scrolls by half page.
+- The single-Run visualizer MUST use vim-like navigation: `h`/`l` switch graph/details focus, graph `j`/`k` selects rows, details `j`/`k` scrolls the active details tab by line, and details `u`/`d` scrolls the active details tab by half page.
+- The single-Run visualizer MUST split Node Details into task-focused tabs and MUST support numeric detail-tab selection with `1` through `9` while the details pane is focused.
 - The single-Run visualizer MUST use Space to collapse or expand the selected row when that row has children, with all rows expanded by default.
 - The single-Run visualizer MUST treat `p`, `r`, and `c` as Run-level pause, resume, and cancel controls.
 - The single-Run visualizer MUST treat `R` as Node-level retry only when the selected row is a failed executable Node; otherwise `R` MUST apply Run-level retry when the Run is failed.
@@ -71,10 +72,15 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, subm
 - The single-Run visualizer MUST color tree guide-line segments with the same fixed color as the node kind that owns that guide-line column.
 - The single-Run visualizer MUST render switch branch labels and fanout item labels with square brackets, not guillemets.
 - The single-Run visualizer MUST show Run retry generation as `↺N` in the top bar only when the Run's `runAttempt` is greater than `1`, and MUST NOT show per-node attempt markers in graph rows.
+- The single-Run visualizer MUST show an animated live indicator while the Run is running and MUST render a non-animated ended indicator when the Run is terminal.
 - The single-Run visualizer MUST freeze open-ended Node durations at the Run's `updatedAt` when the Run is not `running`.
 - The single-Run visualizer MUST hide the internal paused-abort reason `Aborted: paused` from the Details error block.
 - The single-Run visualizer MUST support copying the full selected-node details text through OSC 52 with `y` while the details pane is focused.
-- The single-Run visualizer MUST render artifact filenames and absolute artifact paths as plain wrapped text without OSC 8 links.
+- The single-Run visualizer MUST render artifact filenames and absolute artifact paths as plain wrapped text without OSC 8 links. Each artifact filename MUST be immediately followed by its path, and separate artifacts MUST be separated by a blank line.
+- The single-Run visualizer MUST render prompts in the Prompt details tab with Markdown-aware terminal formatting while preserving useful plain text for OSC 52 copy.
+- The single-Run visualizer MUST render structured object or array outputs in the Output details tab with a JSON tree view while preserving useful plain text for OSC 52 copy.
+- The Output details tab MUST show the inner `output` value for executable Agent Step and Program Step nodes whose persisted output is an executor result envelope containing an `output` field. Composite node outputs MUST be shown as persisted and MUST NOT be unwrapped solely because they contain an `output` field.
+- While the details pane is focused on a structured Output tab, `j` and `k` MUST move the JSON tree cursor, and `Space` or `Enter` MUST toggle the selected expandable JSON branch.
 - The single-Run visualizer MUST show an Agent Step execution block before the prompt when transcript telemetry is available for the selected Agent Step. This block MUST show exact output tokens when available, MUST show estimated output tokens with a `~` prefix when exact usage is unavailable but structured Agent message text is available, and MUST show `unknown` only when neither source is available.
 - The Agent Step execution block MUST aggregate all `attempt-NNN.transcript.jsonl` artifacts for the selected Agent Step, MUST count unique tool calls by `toolCallId`, and MUST show the three unique tool calls with the most recent structured update across attempts.
 - The single-Run visualizer MUST read only the currently selected Agent Step's transcript artifacts, MUST cache parsed transcript state by artifact URI, MUST show cached telemetry immediately when switching back to a previously selected Agent Step, and MUST update live transcript telemetry with non-blocking incremental reads rather than synchronous full-file reads in the render path.
@@ -105,5 +111,5 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, subm
 - Runtime CLI tests MUST cover `acpus replay` reproducing a Run's Node topology deterministically and reporting discrepancies when the persisted Run's topology is tampered with.
 - Runtime CLI tests MUST cover `acpus visualize` without a Run ID opening a picker and `acpus visualize <run_id>` opening the single-Run view.
 - Runtime CLI tests MUST cover `acpus ls` and the visualize picker listing the most recent 50 Runs sorted by `updatedAt` descending.
-- TUI tests MUST cover single-Run visualizer wrapping, plain-text artifact rendering, Agent Step execution telemetry including estimated token formatting and retry-attempt aggregation, plain-text details copy formatting, node-kind symbols, Status Overview messages, frozen durations, hidden paused-abort details, exit viewport clearing, and collapse filtering.
+- TUI tests MUST cover single-Run visualizer wrapping, detail tabs, Markdown prompt rendering, JSON output rendering, controlled details scrolling, key hints, live indicator behavior, plain-text artifact rendering, Agent Step execution telemetry including estimated token formatting and retry-attempt aggregation, plain-text details copy formatting, node-kind symbols, Status Overview messages, frozen durations, hidden paused-abort details, exit viewport clearing, and collapse filtering.
 - Runtime CLI tests MUST cover Agent Step execution through acpx once Agent Activity integration exists.
