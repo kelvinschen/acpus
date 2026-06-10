@@ -1,7 +1,30 @@
 {
   "name": "acpus",
   "version": "0.1.0",
+  "description": "Local durable workflow runner for ACP agents",
+  "keywords": [
+    "acp",
+    "acpx",
+    "agent",
+    "workflow",
+    "orchestrator",
+    "cli"
+  ],
+  "license": "MIT",
+  "author": "kkkyran",
+  "homepage": "https://github.com/kelvinschen/acpus#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kelvinschen/acpus.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/kelvinschen/acpus/issues"
+  },
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "bin": {
     "acpus": "./dist/index.js"
   },
@@ -13,7 +36,14 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json && node -e \"require('node:fs').chmodSync('dist/index.js', 0o755)\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",

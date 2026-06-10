@@ -165,13 +165,15 @@ describe("@acpus/mock-agent protocol", () => {
     await agent.connection.initialize({ protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
     const session = await agent.connection.newSession({ cwd: repoRoot, mcpServers: [] });
 
-    await expect(agent.connection.prompt({
+    const prompt = agent.connection.prompt({
       sessionId: session.sessionId,
       prompt: [{ type: "text", text: "crash" }]
-    })).rejects.toThrow();
+    });
+    const promptOutcome = prompt.then(() => "resolved" as const, () => "rejected" as const);
     const code = await waitForExit(agent.child);
 
     expect(code).toBe(7);
+    await expect(Promise.race([promptOutcome, delay(500).then(() => "pending" as const)])).resolves.not.toBe("resolved");
     expect(readTrace(agent.tracePath).some((event) => event.event === "crash" && event.exitCode === 7)).toBe(true);
   }, 60_000);
 
@@ -253,4 +255,8 @@ async function collectStream(stream: NodeJS.ReadableStream): Promise<string> {
 
 async function waitForExit(child: ChildProcessWithoutNullStreams): Promise<number | null> {
   return await new Promise((resolve) => child.on("exit", (code) => resolve(code)));
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }

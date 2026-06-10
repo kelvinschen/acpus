@@ -1,7 +1,29 @@
 {
   "name": "@acpus/runtime",
   "version": "0.1.0",
+  "description": "Local durable runtime and Run Supervisor for Acpus workflows",
+  "keywords": [
+    "acp",
+    "acpx",
+    "workflow",
+    "runtime",
+    "orchestrator"
+  ],
+  "license": "MIT",
+  "author": "kkkyran",
+  "homepage": "https://github.com/kelvinschen/acpus#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kelvinschen/acpus.git",
+    "directory": "packages/runtime"
+  },
+  "bugs": {
+    "url": "https://github.com/kelvinschen/acpus/issues"
+  },
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "exports": {
     ".": {
       "development": "./src/index.ts",
@@ -12,8 +34,13 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",

@@ -1,0 +1,48 @@
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.7.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - run: pnpm typecheck
+
+      - run: pnpm test
+
+      - name: Check npm access
+        run: pnpm publish:preflight
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish public packages
+        run: |
+          pnpm --filter @acpus/core publish --access public --provenance --no-git-checks
+          pnpm --filter @acpus/runtime publish --access public --provenance --no-git-checks
+          pnpm --filter @acpus/tui publish --access public --provenance --no-git-checks
+          pnpm --filter acpus publish --access public --provenance --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

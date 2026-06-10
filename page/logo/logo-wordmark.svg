@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 200" width="720" height="200" role="img" aria-label="Acpus horizontal wordmark — mark on left, full name on right">
+  <title>Acpus — Horizontal Wordmark</title>
+  <desc>Left: Ap swash mark on a paper plate. Right: full name "Acpus" with italic tagline and small-caps subline. A vertical rule separates the two.</desc>
+
+  <rect width="720" height="200" fill="#F5F1E6"/>
+
+  <!-- Hairlines (top/bottom) -->
+  <line x1="40" y1="32" x2="680" y2="32" stroke="#C8B98A" stroke-width="0.75"/>
+  <line x1="40" y1="168" x2="680" y2="168" stroke="#C8B98A" stroke-width="0.75"/>
+
+  <!-- ============ LEFT: Ap swash mark (mini bookplate, 140x140) ============ -->
+  <g transform="translate(50,30)">
+    <!-- Plate frame -->
+    <rect x="0" y="0" width="140" height="140" fill="none" stroke="#1A1A1A" stroke-width="1"/>
+    <rect x="5" y="5" width="130" height="130" fill="none" stroke="#1A1A1A" stroke-width="0.4"/>
+
+    <!-- Ap glyph (A roman + italic p) — shifted left for visual balance -->
+    <g transform="translate(-10,0)">
+      <g font-family="'EB Garamond','Cormorant Garamond','Times New Roman',Georgia,serif"
+         font-size="78" font-weight="500" fill="#1A1A1A">
+        <text x="58" y="98" text-anchor="middle">A</text>
+        <text x="98" y="98" text-anchor="middle" font-style="italic">p</text>
+      </g>
+
+      <!-- Swash arc -->
+      <path d="M 58 46 C 56 32 88 26 108 34 C 126 42 134 56 130 70 C 127 80 118 81 112 75"
+            fill="none" stroke="#1A1A1A" stroke-width="1.2" stroke-linecap="round"/>
+      <!-- Gilded knot -->
+      <circle cx="108" cy="34" r="2.8" fill="#B7892C"/>
+    </g>
+  </g>
+
+  <!-- ============ DIVIDER ============ -->
+  <line x1="222" y1="50" x2="222" y2="150" stroke="#1A1A1A" stroke-width="0.75"/>
+  <text x="222" y="104" text-anchor="middle"
+        font-family="'Cormorant Garamond',serif"
+        font-size="14" fill="#B7892C">✦</text>
+
+  <!-- ============ RIGHT: full name + tagline ============ -->
+  <!-- Acpus wordmark -->
+  <text x="252" y="100"
+        font-family="'Cormorant Garamond','EB Garamond','Times New Roman',Georgia,serif"
+        font-size="78" font-weight="500" fill="#1A1A1A" letter-spacing="0">
+    Acpus
+  </text>
+
+  <!-- Italic tagline -->
+  <text x="252" y="142"
+        font-family="'Cormorant Garamond',serif"
+        font-style="italic" font-size="20" fill="#1A1A1A">
+    Every run is an opus.
+  </text>
+
+  <!-- Mono subline -->
+  <text x="252" y="162"
+        font-family="'IBM Plex Mono','Courier New',monospace"
+        font-size="10" fill="#B7892C" letter-spacing="3">
+    A C P  ·  W O R K F L O W  ·  O R C H E S T R A T O R
+  </text>
+</svg>

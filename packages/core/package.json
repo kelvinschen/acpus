@@ -1,7 +1,29 @@
 {
   "name": "@acpus/core",
   "version": "0.1.0",
+  "description": "Workflow Spec compiler and validation core for Acpus",
+  "keywords": [
+    "acp",
+    "workflow",
+    "compiler",
+    "schema",
+    "orchestrator"
+  ],
+  "license": "MIT",
+  "author": "kkkyran",
+  "homepage": "https://github.com/kelvinschen/acpus#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kelvinschen/acpus.git",
+    "directory": "packages/core"
+  },
+  "bugs": {
+    "url": "https://github.com/kelvinschen/acpus/issues"
+  },
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "exports": {
     ".": {
       "development": "./src/index.ts",
@@ -12,8 +34,13 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",

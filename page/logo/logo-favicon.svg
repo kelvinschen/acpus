@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Acpus favicon Ap swash">
+  <title>Acpus favicon</title>
+  <rect width="32" height="32" rx="4" fill="#1A1A1A"/>
+
+  <!-- Roman A + italic p, scaled to fit -->
+  <text x="9.5" y="23" text-anchor="middle"
+        font-family="'EB Garamond','Cormorant Garamond','Times New Roman',Georgia,serif"
+        font-size="22" font-weight="500" fill="#F5F1E6">A</text>
+  <text x="20" y="23" text-anchor="middle"
+        font-family="'EB Garamond','Cormorant Garamond','Times New Roman',Georgia,serif"
+        font-style="italic" font-size="22" font-weight="500" fill="#F5F1E6">p</text>
+
+  <!-- Tiny swash arc -->
+  <path d="M 9.5 8 C 12 5.5 19 6.5 22 11"
+        fill="none" stroke="#F5F1E6" stroke-width="0.9" stroke-linecap="round"/>
+
+  <!-- Gilded knot -->
+  <circle cx="22" cy="11" r="1.6" fill="#B7892C"/>
+</svg>
