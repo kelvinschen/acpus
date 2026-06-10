@@ -89,7 +89,7 @@ describe("ProgramExecutor", () => {
 
   it("handles abort signal", async () => {
     const executor = new ProgramExecutor();
-    const node = makeProgramNode({ cmd: "sleep 60" });
+    const node = makeProgramNode({ cmd: [process.execPath, "-e", "setTimeout(() => {}, 60_000)"] });
     const controller = new AbortController();
 
     // Abort immediately
