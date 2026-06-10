@@ -117,13 +117,13 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A Guard Node `guard.when` MUST be a boolean or a CEL expression string.
 - A Guard Node MUST declare `guard.then` and `guard.else`.
 - `guard.then` and `guard.else` MUST each be one of `continue`, `fail`, or `complete`.
-- A Guard Node MAY declare `guard.message` as a template string.
+- A Guard Node MAY declare `guard.message` as a failure message template string.
 - A Guard Node MUST evaluate `guard.when` deterministically against the current expression context.
 - A Guard Node MUST select `guard.then` when `guard.when` evaluates truthy and `guard.else` otherwise.
 - A Guard Node action of `continue` MUST complete the Guard Node and continue to the next Node in the current scope.
 - A Guard Node action of `fail` MUST fail the Guard Node using the rendered `guard.message` as the error when present, or `Guard '<id>' failed` when absent.
 - A Guard Node action of `complete` MUST complete the Guard Node and complete the current scope without executing later sibling Nodes in that scope.
-- A Guard Node MUST persist a structured output object containing `matched` and `action`, and MUST include `message` when `guard.message` is declared.
+- A Guard Node MUST persist a structured output object containing `matched` and `action`, and MUST include `message` only when the selected action is `fail` and `guard.message` is declared.
 - A Guard Node inside a fanout lane or parallel branch MUST affect only that current lane or branch scope; outer composite success remains governed by that composite's join and success criteria.
 - A Guard Node at the Workflow root scope MAY complete or fail the whole Run.
 

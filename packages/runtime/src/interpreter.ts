@@ -1313,12 +1313,12 @@ export class WorkflowInterpreter {
       throw new Error(`guard node ${node.id}: action must be continue, fail, or complete`);
     }
 
-    const messageTemplate = node.metadata.message;
-    const message = typeof messageTemplate === "string" ? this.evaluator.evaluateTemplate(messageTemplate, ctx) : undefined;
     const output: GuardOutput = { matched, action };
-    if (message !== undefined) output.message = message;
 
     if (action === "fail") {
+      const messageTemplate = node.metadata.message;
+      const message = typeof messageTemplate === "string" ? this.evaluator.evaluateTemplate(messageTemplate, ctx) : undefined;
+      if (message !== undefined) output.message = message;
       throw new GuardFailureError(message ?? `Guard '${node.id}' failed`, output);
     }
 

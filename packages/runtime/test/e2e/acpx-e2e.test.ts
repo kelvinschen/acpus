@@ -453,8 +453,7 @@ rules:
       expect(skippedGuard?.state).toBe("completed");
       expect(skippedGuard?.output).toEqual({
         matched: true,
-        action: "complete",
-        message: "Skipping lane skip"
+        action: "complete"
       });
       expect(nodes.some((n) => n.nodeId === "work" && n.nodeKey.includes("item:skip"))).toBe(false);
 

@@ -234,7 +234,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - A Guard Node action of `fail` MUST fail the Guard Node, persist its structured output, and propagate failure through existing parent composite failure semantics.
 - A Guard Node action of `complete` MUST complete the Guard Node and stop executing later sibling Nodes in the current scope.
 - A Guard Node `complete` action MUST NOT directly terminate outer scopes except when the current scope is the Workflow root.
-- A completed or failed Guard Node MUST persist output containing `matched` and `action`, and MUST include `message` when a Guard message template is declared.
+- A completed or failed Guard Node MUST persist output containing `matched` and `action`, and MUST include `message` only when the selected action is `fail` and a Guard message template is declared.
 
 ## Verification
 

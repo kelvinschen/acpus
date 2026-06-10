@@ -103,13 +103,12 @@ workflow:
     const nodes = store.listNodeStates(meta.runId);
     expect(nodes.find((n) => n.nodeId === "no_work")?.output).toEqual({
       matched: true,
-      action: "complete",
-      message: "nothing to do"
+      action: "complete"
     });
     expect(nodes.find((n) => n.nodeId === "after")).toBeUndefined();
   });
 
-  it("continue without message supports boolean true literal", async () => {
+  it("continue with message supports boolean true literal without exposing message output", async () => {
     const ir = compileYaml(`
 version: 1
 name: guard-continue-true-test
@@ -120,6 +119,7 @@ workflow:
         when: true
         then: continue
         else: fail
+        message: "not exposed on continue"
     - id: after
       run: program
       cmd: ["echo", "after"]
@@ -229,6 +229,14 @@ workflow:
 
     const nodes = store.listNodeStates(meta.runId);
     expect(nodes.filter((n) => n.nodeId === "maybe_skip" && n.state === "completed")).toHaveLength(2);
+    expect(nodes.find((n) => n.nodeId === "maybe_skip" && n.nodeKey.includes("item:skip"))?.output).toEqual({
+      matched: true,
+      action: "complete"
+    });
+    expect(nodes.find((n) => n.nodeId === "maybe_skip" && n.nodeKey.includes("item:run"))?.output).toEqual({
+      matched: false,
+      action: "continue"
+    });
     expect(nodes.filter((n) => n.nodeId === "work" && n.state === "completed")).toHaveLength(1);
   });
 
