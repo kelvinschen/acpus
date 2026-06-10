@@ -333,12 +333,10 @@ function parseAcpStream(ndjson: string): { text: string; stopReason?: string } {
  * Extract a JSON value from an agent reply that may wrap JSON in prose and/or
  * Markdown code fences. Three tiers, strictest first:
  *   1. Strict fast path: parse the whole trimmed reply (pure-JSON response).
- *   2. Balanced strict scan: collect every top-level balanced `{...}`/`[...]`
- *      substring (backtick fences do not affect brace pairing) and parse them
- *      from last to first, returning the last valid JSON.
- *   3. jsonrepair fallback (only after strict tiers fail, so a genuinely wrong
- *      reply still routes to a retryable parse failure): repair the last
- *      balanced candidate, or the whole reply when there is no candidate.
+ *   2. Independent balanced scan: try every `{...}`/`[...]` candidate from each
+ *      opening brace/bracket so unbalanced prose/code cannot block later JSON.
+ *   3. Candidate-local jsonrepair fallback: for each later candidate, try strict
+ *      parse first, then repair that same candidate before moving earlier.
  * Returns `undefined` when no JSON can be recovered (→ retryable parse failure).
  */
 export function extractJson(text: string): unknown | undefined {
@@ -352,43 +350,63 @@ export function extractJson(text: string): unknown | undefined {
     // fall through
   }
 
-  // Tier 2: balanced strict scan, last valid JSON wins.
+  // Tier 2/3: latest balanced candidate wins; repair is candidate-local so a
+  // malformed final answer is preferred over an earlier strict-JSON draft.
   const candidates = balancedJsonCandidates(text);
   for (let i = candidates.length - 1; i >= 0; i--) {
+    const candidate = candidates[i];
     try {
-      return JSON.parse(candidates[i]);
+      return JSON.parse(candidate);
     } catch {
-      // try the next-earlier candidate
+      // try jsonrepair for this same candidate before moving earlier
+    }
+    const repaired = repairJsonCandidate(candidate);
+    if (repaired !== undefined) {
+      return repaired;
     }
   }
 
-  // Tier 3: jsonrepair fallback. Only a structured result (object/array)
-  // counts: jsonrepair will coerce arbitrary prose into a quoted string, which
-  // is not a meaningful extraction and must still route to a parse failure.
-  const repairTarget = candidates.length > 0 ? candidates[candidates.length - 1] : text;
-  try {
-    const repaired: unknown = JSON.parse(jsonrepair(repairTarget));
-    if (typeof repaired === "object" && repaired !== null) return repaired;
-  } catch {
-    // fall through
-  }
   return undefined;
 }
 
+type JsonCandidate = {
+  start: number;
+  end: number;
+  value: string;
+};
+
 /**
- * Collect top-level balanced `{...}` / `[...]` substrings from `text`, ignoring
- * braces inside JSON string literals. Nested objects are absorbed into their
- * enclosing top-level candidate; only the outermost balanced spans are returned,
- * in source order.
+ * Collect independently balanced `{...}` / `[...]` substrings from `text`.
+ * Each opening brace/bracket is treated as a potential candidate start, so a
+ * stray prose/code `{` cannot keep depth open and hide a later final JSON block.
  */
 function balancedJsonCandidates(text: string): string[] {
-  const out: string[] = [];
-  let depth = 0;
-  let start = -1;
+  const out: JsonCandidate[] = [];
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== "{" && text[i] !== "[") continue;
+    const end = balancedCandidateEnd(text, i);
+    if (end !== undefined) {
+      out.push({ start: i, end, value: text.slice(i, end) });
+    }
+  }
+
+  const outer = out.filter((candidate) => !out.some((other) =>
+    other !== candidate && other.start < candidate.start && candidate.end < other.end
+  ));
+
+  // Source order here is by candidate end position, not start position. This
+  // keeps an outer final JSON object ahead of its nested children when iterated
+  // backwards, and still lets later independent JSON blocks supersede drafts.
+  outer.sort((a, b) => a.end - b.end || a.start - b.start);
+  return outer.map((candidate) => candidate.value);
+}
+
+function balancedCandidateEnd(text: string, start: number): number | undefined {
+  const stack = [text[start] === "{" ? "}" : "]"];
   let inString = false;
   let escaped = false;
 
-  for (let i = 0; i < text.length; i++) {
+  for (let i = start + 1; i < text.length; i++) {
     const ch = text[i];
     if (inString) {
       if (escaped) escaped = false;
@@ -401,17 +419,33 @@ function balancedJsonCandidates(text: string): string[] {
       continue;
     }
     if (ch === "{" || ch === "[") {
-      if (depth === 0) start = i;
-      depth++;
+      stack.push(ch === "{" ? "}" : "]");
     } else if (ch === "}" || ch === "]") {
-      if (depth > 0) {
-        depth--;
-        if (depth === 0 && start >= 0) {
-          out.push(text.slice(start, i + 1));
-          start = -1;
-        }
+      if (stack.length === 0 || ch !== stack[stack.length - 1]) {
+        return undefined;
       }
+      stack.pop();
+      if (stack.length === 0) return i + 1;
     }
   }
-  return out;
+  return undefined;
+}
+
+function repairJsonCandidate(candidate: string): unknown | undefined {
+  if (!isRepairableJsonCandidate(candidate)) return undefined;
+  try {
+    const repaired: unknown = JSON.parse(jsonrepair(candidate));
+    if (typeof repaired === "object" && repaired !== null) return repaired;
+  } catch {
+    // fall through
+  }
+  return undefined;
+}
+
+function isRepairableJsonCandidate(candidate: string): boolean {
+  const trimmed = candidate.trim();
+  // Keep repair intentionally narrow. jsonrepair can turn prose snippets like
+  // `[1-9]` into `["1-9"]`; in this runtime, malformed final outputs we want to
+  // save are object-shaped contracts with key/value separators.
+  return trimmed.startsWith("{") && trimmed.includes(":");
 }

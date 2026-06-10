@@ -1,7 +1,7 @@
 import React from "react";
 import { describe, expect, it } from "vitest";
 import type { DisplayRow } from "../src/model.js";
-import { GraphRow } from "../src/components/GraphPane.js";
+import { GraphRow, collapseIndicatorForRow } from "../src/components/GraphPane.js";
 
 function collectText(node: unknown): string {
   if (node === null || node === undefined || typeof node === "boolean") return "";
@@ -74,5 +74,72 @@ describe("GraphRow", () => {
     const text = collectText(GraphRow({ row, selected: false }));
     expect(text).toContain("✓ check ◈");
     expect(text).not.toContain("✓ ◈ check");
+  });
+
+  it("renders program kind symbols as command markers", () => {
+    const row: DisplayRow = {
+      rowKey: "program",
+      irNode: {
+        id: "collect",
+        kind: "run.program",
+        nodePath: ["workflow", "collect"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow/collect" },
+        metadata: {}
+      },
+      depth: 0,
+      state: "completed",
+      label: "collect",
+      isHeader: false,
+      treeSegments: []
+    };
+
+    const text = collectText(GraphRow({ row, selected: false }));
+    expect(text).toContain("✓ collect $");
+    expect(text).not.toContain("✓ collect ▸");
+  });
+
+  it("renders colored disclosure indicators for collapsible graph rows", () => {
+    const row: DisplayRow = {
+      rowKey: "parallel",
+      irNode: {
+        id: "parallel",
+        kind: "parallel",
+        nodePath: ["workflow", "parallel"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow/parallel" },
+        metadata: {}
+      },
+      depth: 0,
+      state: "completed",
+      label: "parallel",
+      isHeader: true,
+      treeSegments: []
+    };
+
+    expect(collapseIndicatorForRow(row, false)).toEqual({ glyph: "▾", color: "blueBright" });
+    expect(collapseIndicatorForRow(row, true)).toEqual({ glyph: "▸", color: "blueBright" });
+    expect(collectText(GraphRow({ row, selected: false, collapsed: false }))).toContain("✓ parallel ▥ ▾");
+    expect(collectText(GraphRow({ row, selected: false, collapsed: true }))).toContain("✓ parallel ▥ ▸");
+  });
+
+  it("does not render disclosure indicators for leaf graph rows", () => {
+    const row: DisplayRow = {
+      rowKey: "agent",
+      irNode: {
+        id: "agent",
+        kind: "run.agent",
+        nodePath: ["workflow", "agent"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow/agent" },
+        metadata: {}
+      },
+      depth: 0,
+      state: "completed",
+      label: "agent",
+      isHeader: false,
+      treeSegments: []
+    };
+
+    expect(collapseIndicatorForRow(row, false)).toBeUndefined();
+    expect(collectText(GraphRow({ row, selected: false }))).toContain("✓ agent ◉");
+    expect(collectText(GraphRow({ row, selected: false }))).not.toContain("▾");
   });
 });

@@ -19,7 +19,8 @@ export function GraphPane({
   moreBelow = 0,
   height,
   width,
-  freezeAt
+  freezeAt,
+  collapsedRows
 }: {
   rows: DisplayRow[];
   selectedIndex: number;
@@ -29,6 +30,7 @@ export function GraphPane({
   height?: number;
   width?: number;
   freezeAt?: string | number;
+  collapsedRows?: ReadonlySet<string>;
 }): React.ReactElement {
   return (
     <Box
@@ -47,7 +49,13 @@ export function GraphPane({
       {moreAbove > 0 ? <Text color="gray">  ↑ {moreAbove} more</Text> : null}
       <Box flexDirection="column">
         {rows.map((row, i) => (
-          <GraphRow key={row.rowKey} row={row} selected={i === selectedIndex} freezeAt={freezeAt} />
+          <GraphRow
+            key={row.rowKey}
+            row={row}
+            selected={i === selectedIndex}
+            collapsed={collapsedRows?.has(row.rowKey) ?? false}
+            freezeAt={freezeAt}
+          />
         ))}
       </Box>
       {moreBelow > 0 ? <Text color="gray">  ↓ {moreBelow} more</Text> : null}
@@ -58,16 +66,19 @@ export function GraphPane({
 export function GraphRow({
   row,
   selected,
+  collapsed = false,
   freezeAt
 }: {
   row: DisplayRow;
   selected: boolean;
+  collapsed?: boolean;
   freezeAt?: string | number;
 }): React.ReactElement {
   const style = styleForState(row.state);
   const kindStyle = styleForKind(row.irNode.kind);
   const isGroup = row.groupDim !== undefined;
   const composite = !isGroup && isComposite(row.irNode.kind);
+  const indicator = collapseIndicatorForRow(row, collapsed);
 
   const dur = row.instance ? formatDuration(row.instance.startedAt, row.instance.completedAt, freezeAt) : "";
 
@@ -91,10 +102,19 @@ export function GraphRow({
           <Text bold={composite}>{row.label}</Text>
         )}
         <Text color={kindStyle.color}> {kindStyle.symbol}</Text>
+        {indicator ? <Text color={indicator.color}> {indicator.glyph}</Text> : null}
         {row.branchLabel ? <Text color="yellow"> [{row.branchLabel}]</Text> : null}
         {row.summary ? <Text color="gray"> ({row.summary})</Text> : null}
       </Text>
       {dur ? <Text color="gray">  {dur}</Text> : null}
     </Text>
   );
+}
+
+export function collapseIndicatorForRow(row: DisplayRow, collapsed: boolean): { glyph: "▸" | "▾"; color: string } | undefined {
+  if (!row.isHeader) return undefined;
+  return {
+    glyph: collapsed ? "▸" : "▾",
+    color: styleForKind(row.irNode.kind).color
+  };
 }

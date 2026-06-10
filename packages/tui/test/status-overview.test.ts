@@ -34,6 +34,7 @@ describe("StatusOverview", () => {
     expect(text).toContain("Running");
     expect(text).toContain("Node Types");
     expect(text).toContain("◉ Agent");
+    expect(text).toContain("$ Program");
     expect(text).toContain("◇ Switch");
     expect(text).toContain("◈ Guard");
     expect(text).toContain("Messages");

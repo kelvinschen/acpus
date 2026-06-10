@@ -65,10 +65,11 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, subm
 - The single-Run visualizer MUST use vim-like navigation: `h`/`l` switch graph/details focus, graph `j`/`k` selects rows, details `j`/`k` scrolls the active details tab by line, and details `u`/`d` scrolls the active details tab by half page.
 - The single-Run visualizer MUST split Node Details into task-focused tabs and MUST support numeric detail-tab selection with `1` through `9` while the details pane is focused.
 - The single-Run visualizer MUST use Space to collapse or expand the selected row when that row has children, with all rows expanded by default.
+- The single-Run visualizer MUST render a colored `▾` disclosure indicator for expanded collapsible graph rows and a colored `▸` disclosure indicator for collapsed collapsible graph rows.
 - The single-Run visualizer MUST treat `p`, `r`, and `c` as Run-level pause, resume, and cancel controls.
 - The single-Run visualizer MUST treat `R` as Node-level retry only when the selected row is a failed executable Node; otherwise `R` MUST apply Run-level retry when the Run is failed.
 - The single-Run visualizer MUST keep control results, poll errors, and selected awaiting-gate hints in a fixed multi-line Status Overview messages area, not in the footer.
-- The single-Run visualizer MUST render a node-kind legend in Status Overview and MUST render graph node kinds with the symbols `▣`, `◉`, `▸`, `▥`, `◬`, `◇`, `↻`, `◈`, `□`, and `▧` for pipeline, agent, program, parallel, fanout, switch, loop, guard, approval, and subworkflow respectively.
+- The single-Run visualizer MUST render a node-kind legend in Status Overview and MUST render graph node kinds with the symbols `▣`, `◉`, `$`, `▥`, `◬`, `◇`, `↻`, `◈`, `□`, and `▧` for pipeline, agent, program, parallel, fanout, switch, loop, guard, approval, and subworkflow respectively.
 - The single-Run visualizer MUST color tree guide-line segments with the same fixed color as the node kind that owns that guide-line column.
 - The single-Run visualizer MUST render switch branch labels and fanout item labels with square brackets, not guillemets.
 - The single-Run visualizer MUST show Run retry generation as `↺N` in the top bar only when the Run's `runAttempt` is greater than `1`, and MUST NOT show per-node attempt markers in graph rows.
@@ -77,9 +78,11 @@ The Acpus CLI is the local command-line surface for linting Workflow Specs, subm
 - The single-Run visualizer MUST hide the internal paused-abort reason `Aborted: paused` from the Details error block.
 - The single-Run visualizer MUST support copying the full selected-node details text through OSC 52 with `y` while the details pane is focused.
 - The single-Run visualizer MUST render artifact filenames and absolute artifact paths as plain wrapped text without OSC 8 links. Each artifact filename MUST be immediately followed by its path, and separate artifacts MUST be separated by a blank line.
+- The Node Details Definition tab MUST show Guard Node definition fields `when`, `then`, `else`, and declared `message`, wrapping long `when` and `message` values without truncation.
 - The single-Run visualizer MUST render prompts in the Prompt details tab with Markdown-aware terminal formatting while preserving useful plain text for OSC 52 copy.
 - The single-Run visualizer MUST render structured object or array outputs in the Output details tab with a JSON tree view while preserving useful plain text for OSC 52 copy.
-- The Output details tab MUST show the inner `output` value for executable Agent Step and Program Step nodes whose persisted output is an executor result envelope containing an `output` field. Composite node outputs MUST be shown as persisted and MUST NOT be unwrapped solely because they contain an `output` field.
+- The Output details JSON tree MUST use `root` for its synthetic top-level tree node and MUST NOT use the selected Node label or `output` as the synthetic root label.
+- The Output details tab MUST preserve the selected Node's persisted output shape as exposed through `steps.<node>`. Agent Step and Program Step outputs that contain an `output` field MUST show that field, while Composite Node outputs MUST show their child step map or aggregate value without adding an artificial `output` wrapper.
 - While the details pane is focused on a structured Output tab, `j` and `k` MUST move the JSON tree cursor, and `Space` or `Enter` MUST toggle the selected expandable JSON branch.
 - The single-Run visualizer MUST show an Agent Step execution block before the prompt when transcript telemetry is available for the selected Agent Step. This block MUST show exact output tokens when available, MUST show estimated output tokens with a `~` prefix when exact usage is unavailable but structured Agent message text is available, and MUST show `unknown` only when neither source is available.
 - The Agent Step execution block MUST aggregate all `attempt-NNN.transcript.jsonl` artifacts for the selected Agent Step, MUST count unique tool calls by `toolCallId`, and MUST show the three unique tool calls with the most recent structured update across attempts.

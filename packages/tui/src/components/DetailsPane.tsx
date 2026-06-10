@@ -1,6 +1,5 @@
 import React from "react";
 import { Box, Text } from "ink";
-import type { IrNodeKind } from "@acpus/core";
 import type { DisplayRow } from "../model.js";
 import { formatDuration } from "../model.js";
 import { KIND_LABELS, styleForState } from "../theme.js";
@@ -119,7 +118,7 @@ function detailSectionRows(section: DetailSection, cols: number, jsonDisplay?: J
   }
   if (section.richContent?.kind === "json") {
     return jsonViewerRows(section.richContent.data, cols, {
-      rootLabel: "output",
+      rootLabel: "root",
       initialDepth: 3,
       expandedIds: jsonDisplay?.expandedIds,
       selectedIndex: jsonDisplay?.selectedIndex
@@ -291,7 +290,7 @@ export function buildDetailSections(
 
   // ── Output ──
   if (inst?.output !== undefined) {
-    const outputValue = displayOutputValue(row.irNode.kind, inst.output);
+    const outputValue = inst.output;
     const outputText = JSON.stringify(outputValue, null, 2) ?? String(outputValue);
     sections.push({
       key: "output",
@@ -326,20 +325,9 @@ function hasContent(lines: DetailLine[]): boolean {
   return lines.some((line) => line.segments.length > 0);
 }
 
-export function displayOutputValue(kind: IrNodeKind, output: unknown): unknown {
-  if ((kind === "run.agent" || kind === "run.program") && isRecord(output) && Object.prototype.hasOwnProperty.call(output, "output")) {
-    return output.output;
-  }
-  return output;
-}
-
 /** Non-null objects and arrays benefit from the JSON tree viewer. */
 function isExpandableJson(value: unknown): boolean {
   return value !== null && typeof value === "object";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 /** Definition block lines, varying by node kind. */
@@ -386,6 +374,15 @@ function definitionLines(
         )
       );
     }
+    return out;
+  }
+
+  if (kind === "guard") {
+    out.push(blank(), heading("Definition:"));
+    if (meta.when !== undefined) out.push(...wrappedField("  When", String(meta.when), cols));
+    if (meta.then !== undefined) out.push(field("  Then", String(meta.then), cols));
+    if (meta.else !== undefined) out.push(field("  Else", String(meta.else), cols));
+    if (meta.message !== undefined) out.push(...wrappedField("  Message", String(meta.message), cols));
     return out;
   }
 

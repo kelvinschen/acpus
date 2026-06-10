@@ -115,6 +115,12 @@ describe("InkUI-adapted components", () => {
     expect(text).toContain("ok: true");
   });
 
+  it("can label the synthetic JSON root distinctly from data fields", () => {
+    const text = collectText(jsonViewerRows({ output: { ok: true } }, 80, { rootLabel: "root", initialDepth: 3 }));
+    expect(text).toContain("▾ root {1}");
+    expect(text).toContain("output {1}");
+  });
+
   it("renders JSON output from controlled expansion state", () => {
     const data = { nested: { deep: { ok: true } } };
     const initial = jsonExpandedIdsForInitialDepth(data, { initialDepth: 1 });

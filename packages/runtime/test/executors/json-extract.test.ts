@@ -17,6 +17,36 @@ describe("extractJson", () => {
     expect(extractJson(reply)).toEqual({ ok: true, score: 9 });
   });
 
+  it("extracts the final report JSON despite earlier Markdown and TSX fragments", () => {
+    const reply = [
+      "The resolved key falls back to `detailSections[0]?.key`.",
+      "The current `footerHintGroups`:",
+      "```ts",
+      "...(tabCount > 0 ? [{ key: \"1-9\", label: `tabs (${tabCount})` }] : []),",
+      "```",
+      "In `App.tsx`:",
+      "```ts",
+      "useInput((input, key) => {",
+      "    if (input === \"j\") {",
+      "        setDetailsScroll((s) => Math.min(detailsMaxScroll, s + 1));",
+      "```",
+      "A JSX example: `<Tabs tabs={...} activeKey={activeSection?.key ?? \"\"} />`.",
+      "OK, here is the final report.",
+      '{"report_path": "/tmp/contract.md", "blocking_count": 0, "top_findings": [{"title": "done", "severity": "MEDIUM"}]}'
+    ].join("\n");
+
+    expect(extractJson(reply)).toEqual({
+      report_path: "/tmp/contract.md",
+      blocking_count: 0,
+      top_findings: [{ title: "done", severity: "MEDIUM" }]
+    });
+  });
+
+  it("does not let an unbalanced prose brace block a later final JSON object", () => {
+    const reply = 'A partial code block starts here: function run() {\nFinal answer: {"ok": true}';
+    expect(extractJson(reply)).toEqual({ ok: true });
+  });
+
   it("does not treat braces inside string literals as structure", () => {
     expect(extractJson('{"note": "a } b { c"}')).toEqual({ note: "a } b { c" });
   });
@@ -24,6 +54,21 @@ describe("extractJson", () => {
   it("repairs malformed JSON (unquoted keys) via jsonrepair fallback", () => {
     const reply = "Here you go:\n```\n{ ok: true, n: 2 }\n```";
     expect(extractJson(reply)).toEqual({ ok: true, n: 2 });
+  });
+
+  it("repairs the later object candidate before accepting an earlier strict JSON object", () => {
+    const reply = 'Draft: {"ok": false, "score": 1}\nFinal answer: { ok: true, score: 9 }';
+    expect(extractJson(reply)).toEqual({ ok: true, score: 9 });
+  });
+
+  it("falls back to an earlier valid JSON object when the last candidate cannot be recovered", () => {
+    const reply = 'Draft: {"ok": true}\nBroken final: { definitely not json !!! }';
+    expect(extractJson(reply)).toEqual({ ok: true });
+  });
+
+  it("does not repair prose bracket fragments into JSON output", () => {
+    expect(extractJson("Draft: {\"ok\": true}\nSee range [1-9]")).toEqual({ ok: true });
+    expect(extractJson("Draft: {\"ok\": true}\nCode: [{ key: \"1-9\", label: `tabs (${tabCount})` }]")).toEqual({ ok: true });
   });
 
   it("returns undefined when no JSON can be recovered", () => {

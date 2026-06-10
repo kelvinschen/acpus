@@ -155,7 +155,7 @@ export function App({
   const activeJsonRows = useMemo(
     () =>
       activeJsonData !== undefined
-        ? jsonRowDescriptors(activeJsonData, { rootLabel: "output", initialDepth: 3, expandedIds: jsonExpandedIds })
+        ? jsonRowDescriptors(activeJsonData, { rootLabel: "root", initialDepth: 3, expandedIds: jsonExpandedIds })
         : [],
     [activeJsonData, jsonExpandedIds]
   );
@@ -254,7 +254,7 @@ export function App({
       setJsonCursor(0);
       return;
     }
-    setJsonExpandedIds(jsonExpandedIdsForInitialDepth(activeJsonData, { rootLabel: "output", initialDepth: 3 }));
+    setJsonExpandedIds(jsonExpandedIdsForInitialDepth(activeJsonData, { rootLabel: "root", initialDepth: 3 }));
     setJsonCursor(0);
     setDetailsScroll(0);
   }, [activeJsonData, resolvedActiveDetailSectionKey, selected?.rowKey]);
@@ -489,6 +489,7 @@ export function App({
           height={paneHeight}
           width={graphWidth}
           freezeAt={freezeAt}
+          collapsedRows={collapsedRows}
         />
         <DetailsPane
           sections={detailSections}

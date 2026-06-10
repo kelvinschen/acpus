@@ -4,7 +4,6 @@ import {
   buildDetailSections,
   detailContentRows,
   detailSectionRowCount,
-  displayOutputValue,
   formatDetailLinesPlainText
 } from "../src/components/DetailsPane.js";
 import type { DisplayRow } from "../src/model.js";
@@ -155,15 +154,8 @@ describe("buildDetailLines", () => {
     expect(text).not.toContain("\u001b[");
   });
 
-  it("shows the real executable output instead of the executor output envelope", () => {
-    expect(displayOutputValue("run.agent", {
-      output: { report_path: "/tmp/report.md", top_findings: [] },
-      transcript: "internal"
-    })).toEqual({ report_path: "/tmp/report.md", top_findings: [] });
-    expect(displayOutputValue("run.program", { output: ["ok"], exitCode: 0 })).toEqual(["ok"]);
-    expect(displayOutputValue("parallel", { output: { branch: "kept" } })).toEqual({ output: { branch: "kept" } });
-
-    const row = makeRow({
+  it("preserves executable and composite output shapes in the Output tab", () => {
+    const agentRow = makeRow({
       instance: {
         nodeKey: "workflow/test",
         nodeId: "test-node",
@@ -172,17 +164,120 @@ describe("buildDetailLines", () => {
         attempt: 1,
         output: {
           output: { report_path: "/tmp/report.md", top_findings: [] },
-          transcript: "internal"
+          exit_code: 0
         }
       }
     });
 
-    const output = buildDetailSections(row, 80, {}).find((section) => section.key === "output");
-    expect(output?.richContent).toEqual({
-      kind: "json",
-      data: { report_path: "/tmp/report.md", top_findings: [] }
+    const parallelRow = makeRow({
+      irNode: {
+        id: "parallel-node",
+        kind: "parallel",
+        nodePath: ["workflow", "parallel-node"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow/parallel-node" },
+        metadata: {}
+      },
+      label: "parallel-node",
+      instance: {
+        nodeKey: "workflow/parallel-node",
+        nodeId: "parallel-node",
+        kind: "parallel",
+        state: "completed",
+        attempt: 1,
+        output: {
+          contract: { report_path: "/tmp/contract.md" },
+          correctness: { blocking_count: 0 }
+        }
+      }
     });
-    expect(formatDetailLinesPlainText(output?.lines ?? [])).not.toContain("transcript");
+
+    const agentOutput = buildDetailSections(agentRow, 80, {}).find((section) => section.key === "output");
+    expect(agentOutput?.richContent).toEqual({
+      kind: "json",
+      data: {
+        output: { report_path: "/tmp/report.md", top_findings: [] },
+        exit_code: 0
+      }
+    });
+    expect(formatDetailLinesPlainText(agentOutput?.lines ?? [])).toContain("\"output\":");
+    expect(formatDetailLinesPlainText(agentOutput?.lines ?? [])).toContain("\"exit_code\": 0");
+
+    const parallelOutput = buildDetailSections(parallelRow, 80, {}).find((section) => section.key === "output");
+    expect(parallelOutput?.richContent).toEqual({
+      kind: "json",
+      data: {
+        contract: { report_path: "/tmp/contract.md" },
+        correctness: { blocking_count: 0 }
+      }
+    });
+    expect(formatDetailLinesPlainText(parallelOutput?.lines ?? [])).not.toContain("\"output\":");
+  });
+
+  it("renders Guard definitions with wrapped conditions and optional message", () => {
+    const longWhen = "input.changed_files.exists(path, path.endsWith('.ts') || path.endsWith('.tsx')) && steps.collect_context.output.has_changes";
+    const row = makeRow({
+      irNode: {
+        id: "require_changed_files",
+        kind: "guard",
+        nodePath: ["workflow", "require_changed_files"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow/require_changed_files" },
+        metadata: {
+          when: longWhen,
+          then: "continue",
+          else: "fail",
+          message: "No TypeScript changes were detected."
+        }
+      },
+      label: "require_changed_files",
+      instance: {
+        nodeKey: "workflow/require_changed_files",
+        nodeId: "require_changed_files",
+        kind: "guard",
+        state: "completed",
+        attempt: 1,
+        output: { matched: true, action: "continue" }
+      }
+    });
+
+    const sections = buildDetailSections(row, 44, {});
+    const summaryText = formatDetailLinesPlainText(sections.find((section) => section.key === "summary")?.lines ?? []);
+    const definitionText = formatDetailLinesPlainText(sections.find((section) => section.key === "definition")?.lines ?? []);
+
+    expect(summaryText).not.toContain("When:");
+    expect(definitionText).toContain("Definition:");
+    expect(definitionText).toContain("  When:");
+    expect(definitionText).toContain("input.changed_files.exists");
+    expect(definitionText).toContain("steps.collect_context.output.has");
+    expect(definitionText).toContain("_changes");
+    expect(definitionText).toContain("  Then: continue");
+    expect(definitionText).toContain("  Else: fail");
+    expect(definitionText).toContain("  Message:");
+    expect(definitionText).toContain("No TypeScript changes were");
+    expect(definitionText).toContain("detected.");
+    expect(definitionText).not.toContain("…");
+  });
+
+  it("omits Guard definition message when no message is declared", () => {
+    const row = makeRow({
+      irNode: {
+        id: "check",
+        kind: "guard",
+        nodePath: ["workflow", "check"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow/check" },
+        metadata: {
+          when: "true",
+          then: "continue",
+          else: "fail"
+        }
+      },
+      label: "check"
+    });
+
+    const definitionText = formatDetailLinesPlainText(buildDetailSections(row, 80, {}).find((section) => section.key === "definition")?.lines ?? []);
+    expect(definitionText).toContain("  When: true");
+    expect(definitionText).toContain("  Then: continue");
+    expect(definitionText).toContain("  Else: fail");
+    expect(definitionText).not.toContain("Message:");
   });
 
   it("counts active detail section rows from rich renderers", () => {

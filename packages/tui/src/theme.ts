@@ -56,7 +56,7 @@ export interface KindStyle {
 export const KIND_STYLES: Record<IrNodeKind, KindStyle> = {
   pipeline: { symbol: "▣", color: "green", label: "Pipeline" },
   "run.agent": { symbol: "◉", color: "cyan", label: "Agent" },
-  "run.program": { symbol: "▸", color: "yellow", label: "Program" },
+  "run.program": { symbol: "$", color: "yellow", label: "Program" },
   parallel: { symbol: "▥", color: "blueBright", label: "Parallel" },
   fanout: { symbol: "◬", color: "magenta", label: "Fanout" },
   switch: { symbol: "◇", color: "blue", label: "Switch" },
