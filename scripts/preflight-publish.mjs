@@ -30,6 +30,6 @@ try {
   run("npm", ["access", "ls-packages", "@acpus"]);
   console.log("npm @acpus scope access check completed.");
 } catch (error) {
-  console.error("Unable to verify @acpus npm scope access. Resolve npm permissions before creating a release tag.");
-  process.exit(1);
+  console.warn("Unable to verify @acpus npm scope access before first publish.");
+  console.warn("Continuing because npm authentication succeeded; npm publish will enforce scope permissions.");
 }
