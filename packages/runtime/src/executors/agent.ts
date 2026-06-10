@@ -42,14 +42,13 @@ export class AgentExecutor implements ExecutorAdapter {
     this.cancelGraceMs = options?.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS;
   }
 
-  async execute({ node, context, signal, nodeKey, prompt: preparedPrompt, continuation, retry, onStream }: ExecutionRequest): Promise<ExecutorResult> {
+  async execute({ node, context, signal, nodeKey, prompt: preparedPrompt, sessionKey: preparedSessionKey, continuation, retry, onStream }: ExecutionRequest): Promise<ExecutorResult> {
     const agent = node.metadata.agent as AgentSpec | undefined;
     if (!agent) {
       return { failureKind: "spawn", error: `Agent step '${node.id}' has no resolved agent definition` };
     }
 
     const outputSchema = node.metadata.output as Record<string, unknown> | undefined;
-    const sessionName = this.sessionName(context.run_id, nodeKey);
     const timeoutSeconds = this.resolveTimeoutSeconds(node.metadata.timeout);
 
     // Evaluate local templates before touching acpx. These are deterministic
@@ -57,10 +56,13 @@ export class AgentExecutor implements ExecutorAdapter {
     let cwd: string | undefined;
     let env: NodeJS.ProcessEnv;
     let prompt: string;
+    let sessionName: string;
     try {
       cwd = this.resolveCwd(agent.cwd, context);
       env = { ...process.env, ...this.stringEnv(agent.env, context) };
       prompt = preparedPrompt ?? renderAgentRequestPrompt(node, context, this.evaluator, Boolean(continuation), Boolean(retry));
+      const sessionKey = preparedSessionKey ?? renderAgentSessionKey(node, context, this.evaluator);
+      sessionName = this.sessionName(context.run_id, nodeKey, sessionKey);
     } catch (error) {
       return {
         failureKind: "config",
@@ -91,11 +93,6 @@ export class AgentExecutor implements ExecutorAdapter {
       }
 
       if (signal.aborted) {
-        // Best-effort cleanup of the session we just created; fire-and-forget.
-        void execa(invoker.command, [...invoker.prefixArgs, ...build([], ["sessions", "close", sessionName])], {
-          reject: false,
-          env
-        }).catch(() => undefined);
         return { partial: true, error: "Aborted before prompt", prompt, responseText: "" };
       }
 
@@ -219,8 +216,9 @@ export class AgentExecutor implements ExecutorAdapter {
     return { command: process.execPath, prefixArgs: [resolve(dirname(pkgJsonPath), bin)] };
   }
 
-  private sessionName(runId: string, nodeKey: string): string {
-    return `acpus-${runId}-${sanitizeSession(nodeKey)}`;
+  private sessionName(runId: string, nodeKey: string, sessionKey: string | undefined): string {
+    const key = sessionKey === undefined ? sanitizeNodeKeySession(nodeKey) : encodeSessionKey(sessionKey);
+    return `acpus-${runId}-${key}`;
   }
 
   private resolveCwd(cwd: unknown, context: ExpressionContext): string {
@@ -248,9 +246,17 @@ export class AgentExecutor implements ExecutorAdapter {
   }
 }
 
-/** Replace characters not safe for an acpx `-s <name>` value, reversibly enough to stay unique. */
-function sanitizeSession(nodeKey: string): string {
+/** Replace characters not safe for an acpx `-s <name>` value in generated node keys. */
+function sanitizeNodeKeySession(nodeKey: string): string {
   return nodeKey.replace(/\//g, "__").replace(/:/g, "-");
+}
+
+/** Encode author-controlled session keys without collisions from normalization. */
+function encodeSessionKey(sessionKey: string): string {
+  if (sessionKey.trim().length === 0) {
+    throw new Error("session_key must render to a non-empty string");
+  }
+  return `key-${Buffer.from(sessionKey, "utf8").toString("base64url")}`;
 }
 
 /** Render the declared output schema as an explicit contract section appended to the prompt. */
@@ -293,6 +299,21 @@ export function renderAgentRequestPrompt(
   const renderedTask = evaluator.evaluateTemplate((node.metadata.prompt as string) ?? "", context);
   const outputSchema = node.metadata.output as Record<string, unknown> | undefined;
   return buildAgentPrompt(renderedTask, outputSchema, continuation, retry);
+}
+
+/** Render the optional Agent Step session key using the workflow evaluator. */
+export function renderAgentSessionKey(
+  node: { metadata: Record<string, unknown> },
+  context: ExpressionContext,
+  evaluator: ExpressionEvaluator
+): string | undefined {
+  const sessionKey = node.metadata.session_key;
+  if (typeof sessionKey !== "string") return undefined;
+  const rendered = evaluator.evaluateTemplate(sessionKey, context);
+  if (rendered.trim().length === 0) {
+    throw new Error("session_key must render to a non-empty string");
+  }
+  return rendered;
 }
 
 /**

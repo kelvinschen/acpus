@@ -22,6 +22,24 @@ class AbortIgnoringProgramExecutor implements ExecutorAdapter {
   }
 }
 
+class ConcurrentSessionKeyAgentExecutor implements ExecutorAdapter {
+  inFlight = 0;
+  maxInFlight = 0;
+  sessionKeys: string[] = [];
+
+  async execute(request: ExecutionRequest): Promise<ExecutorResult> {
+    this.sessionKeys.push(request.sessionKey ?? "");
+    this.inFlight++;
+    this.maxInFlight = Math.max(this.maxInFlight, this.inFlight);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return { output: { ok: true } };
+    } finally {
+      this.inFlight--;
+    }
+  }
+}
+
 describe("Parallel execution", () => {
   const cleanups: Array<() => void> = [];
 
@@ -72,6 +90,46 @@ workflow:
 
     expect(branchA?.state).toBe("completed");
     expect(branchB?.state).toBe("completed");
+  });
+
+  it("does not serialize parallel agent branches that share the same session_key", async () => {
+    const ir = compileYaml(`
+version: 1
+name: parallel-shared-session-key
+agents:
+  coder:
+    type: command
+    use: "echo stub"
+workflow:
+  steps:
+    - id: parallel-group
+      max_concurrency: 2
+      parallel:
+        - id: branch-a
+          run: agent
+          use: coder
+          session_key: "shared"
+          prompt: "Task A"
+        - id: branch-b
+          run: agent
+          use: coder
+          session_key: "shared"
+          prompt: "Task B"
+`);
+
+    const tmpDir = mkdtempSync(join(tmpdir(), "acpus-parallel-session-key-"));
+    cleanups.push(() => rmSync(tmpDir, { recursive: true, force: true }));
+    const agent = new ConcurrentSessionKeyAgentExecutor();
+    const store = new RunStore(tmpDir);
+    const interpreter = new WorkflowInterpreter(store, agent, new StubAgentExecutor({}), {
+      nowTimestamp: "2025-01-01T00:00:00Z"
+    });
+
+    const meta = await interpreter.start(ir, { input: {} });
+
+    expect(meta.status).toBe("completed");
+    expect(agent.sessionKeys.sort()).toEqual(["shared", "shared"]);
+    expect(agent.maxInFlight).toBe(2);
   });
 
   it("merges parallel outputs as map", async () => {

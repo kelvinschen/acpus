@@ -63,6 +63,7 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
         run: { const: "agent" },
         use: { type: "string" },
         prompt: { type: "string" },
+        session_key: { type: "string" },
         output: { type: "object" },   // free DSL — validated by compiler
         retry: { $ref: "#/$defs/retrySpec" },
         timeout: { $ref: "#/$defs/timeoutSpec" },

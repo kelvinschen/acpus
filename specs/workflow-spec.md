@@ -24,6 +24,14 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - An Agent Step MUST declare `prompt`.
 - An Agent Step MUST reference an agent declared under `agents`.
 - An Agent Step backed by a `builtin` or `command` agent MUST run against a local ACP-compatible agent through acpx.
+- An Agent Step MAY declare `session_key` as a template string.
+- When `session_key` is absent, an Agent Step MUST use a session identity derived from the Run id and resolved Node key.
+- When `session_key` is present, an Agent Step MUST use a session identity derived from the Run id and rendered `session_key`, allowing explicit session sharing between materialized Agent Steps in the same Run.
+- A rendered `session_key` MUST NOT be empty or blank, and distinct rendered `session_key` values MUST NOT silently alias through session-name normalization.
+- `session_key` MUST NOT create cross-Run persistent memory.
+- Acpus MUST NOT automatically namespace `session_key` by agent definition; Workflow authors are responsible for avoiding unwanted sharing across different agents, models, or working directories.
+- When multiple concurrent Agent Steps render the same `session_key`, Acpus MUST NOT add runtime serialization in v1; ordering and conflict behavior are delegated to acpx.
+- Agent Steps that share a rendered `session_key` MUST still send their own rendered `prompt`; fixed runtime continuation prompts are reserved for Agent Step pause/resume, manual retry, and parse/schema retry behavior.
 - An agent declared under `agents` MAY declare `type` as one of `builtin` or `command`; `type` defaults to `builtin` when omitted.
 - A `builtin` agent MUST declare `use` naming an acpx built-in adapter (e.g. `pi`, `claude`, `codex`); the runtime drives it as `acpx <use>`.
 - A `command` agent MUST declare `use` as the launch command for a custom ACP server; the runtime drives it through the acpx `--agent "<use>"` escape hatch.
@@ -172,6 +180,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - Compiler tests MUST cover required top-level fields.
 - Compiler tests MUST cover duplicate id diagnostics.
 - Compiler tests MUST cover Agent Step shape validation.
+- Compiler tests MUST cover Agent Step `session_key` validation, expression collection, and IR preservation.
 - Compiler tests MUST cover Program Step shape validation.
 - Compiler tests MUST cover composite Node compilation.
 - Compiler tests MUST cover Guard Node shape validation, compilation, and expression collection.

@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { AgentExecutor } from "../../src/executors/agent.js";
 import type { IrNode } from "@acpus/core";
 import type { ExpressionContext } from "../../src/types.js";
-import { mkdtempSync, writeFileSync, unlinkSync, chmodSync, rmSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync, unlinkSync, chmodSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -80,12 +80,47 @@ console.log(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_t
   return { script, envPath };
 }
 
+function writeSlowEnsureRecordingAcpxScript(dir: string): { script: string; logPath: string } {
+  const script = join(dir, "mock-acpx-slow-ensure.js");
+  const logPath = join(dir, "argv.log");
+  writeFileSync(script, `#!/usr/bin/env node
+const fs = require("node:fs");
+fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(process.argv.slice(2)) + "\\n");
+if (process.argv.includes("ensure")) {
+  setTimeout(() => process.exit(0), 50);
+} else {
+  console.log(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } } } }));
+  console.log(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } }));
+}
+`);
+  chmodSync(script, 0o755);
+  return { script, logPath };
+}
+
 function readRecordedPromptArgs(logPath: string): string[] {
   const lines = readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean);
   const calls = lines.map((line) => JSON.parse(line) as string[]);
   const promptArgs = calls.find((args) => args.includes("prompt"));
   if (!promptArgs) throw new Error("No prompt invocation was recorded");
   return promptArgs;
+}
+
+function readRecordedCalls(logPath: string): string[][] {
+  if (!existsSync(logPath)) return [];
+  const lines = readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean);
+  return lines.map((line) => JSON.parse(line) as string[]);
+}
+
+function sessionFromPromptArgs(args: string[]): string {
+  const index = args.indexOf("-s");
+  if (index < 0) throw new Error("No -s argument was recorded");
+  return args[index + 1]!;
+}
+
+function sessionFromEnsureArgs(args: string[]): string {
+  const index = args.indexOf("--name");
+  if (index < 0) throw new Error("No --name argument was recorded");
+  return args[index + 1]!;
 }
 
 async function withEnv<T>(updates: Record<string, string | undefined>, fn: () => Promise<T>): Promise<T> {
@@ -164,6 +199,179 @@ exit 0
     expect(result.failureKind).toBe("spawn");
     expect(result.exitCode).toBe(42);
     expect(result.error).toBeTruthy();
+  });
+});
+
+describe("AgentExecutor: session_key", () => {
+  it("uses the node-key-derived session name when session_key is absent", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-agent-test-"));
+    tmpDirs.push(dir);
+    const { script, logPath } = writeRecordingAcpxScript(dir);
+
+    const executor = new AgentExecutor({ acpxPath: script });
+    const node = makeAgentNode({
+      agent: { type: "builtin", use: "mock", model: "test-model" },
+      prompt: "Hello"
+    });
+    await executor.execute({
+      node,
+      context: baseCtx(),
+      signal: new AbortController().signal,
+      nodeKey: "workflow/test-agent/round:0"
+    });
+
+    const calls = readRecordedCalls(logPath);
+    const ensureArgs = calls.find((args) => args.includes("sessions") && args.includes("ensure"));
+    const promptArgs = calls.find((args) => args.includes("prompt"));
+    expect(ensureArgs).toBeDefined();
+    expect(promptArgs).toBeDefined();
+    expect(sessionFromEnsureArgs(ensureArgs!)).toBe("acpus-run-001-workflow__test-agent__round-0");
+    expect(sessionFromPromptArgs(promptArgs!)).toBe("acpus-run-001-workflow__test-agent__round-0");
+  });
+
+  it("uses a fixed session_key across different node keys", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-agent-test-"));
+    tmpDirs.push(dir);
+    const { script, logPath } = writeRecordingAcpxScript(dir);
+
+    const executor = new AgentExecutor({ acpxPath: script });
+    const node = makeAgentNode({
+      agent: { type: "builtin", use: "mock", model: "test-model" },
+      prompt: "Hello",
+      session_key: "fix-loop"
+    });
+    const signal = new AbortController().signal;
+    await executor.execute({ node, context: baseCtx(), signal, nodeKey: "workflow/test-agent/round:0" });
+    await executor.execute({ node, context: baseCtx(), signal, nodeKey: "workflow/test-agent/round:1" });
+
+    const promptSessions = readRecordedCalls(logPath)
+      .filter((args) => args.includes("prompt"))
+      .map(sessionFromPromptArgs);
+    expect(promptSessions).toEqual(["acpus-run-001-key-Zml4LWxvb3A", "acpus-run-001-key-Zml4LWxvb3A"]);
+  });
+
+  it("evaluates templated session_key from execution context", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-agent-test-"));
+    tmpDirs.push(dir);
+    const { script, logPath } = writeRecordingAcpxScript(dir);
+
+    const executor = new AgentExecutor({ acpxPath: script });
+    const node = makeAgentNode({
+      agent: { type: "builtin", use: "mock", model: "test-model" },
+      prompt: "Hello",
+      session_key: "${{ input.ticket }}-${{ item_id }}-${{ loop.iter }}-${{ steps.seed.exit_code }}"
+    });
+    const ctx: ExpressionContext = {
+      input: { ticket: "T-7" },
+      steps: { seed: { exit_code: 0 } },
+      loop: { iter: 2 },
+      item_id: "file:alpha",
+      run_id: "run-001"
+    };
+    await executor.execute({
+      node,
+      context: ctx,
+      signal: new AbortController().signal,
+      nodeKey: "workflow/test-agent/round:2"
+    });
+
+    const promptArgs = readRecordedPromptArgs(logPath);
+    expect(sessionFromPromptArgs(promptArgs)).toBe("acpus-run-001-key-VC03LWZpbGU6YWxwaGEtMi0w");
+  });
+
+  it("encodes author-controlled session_key values without sanitizer aliases", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-agent-test-"));
+    tmpDirs.push(dir);
+    const { script, logPath } = writeRecordingAcpxScript(dir);
+
+    const executor = new AgentExecutor({ acpxPath: script });
+    const signal = new AbortController().signal;
+    for (const key of ["a/b", "a__b", "a:b", "a-b"]) {
+      const node = makeAgentNode({
+        agent: { type: "builtin", use: "mock", model: "test-model" },
+        prompt: "Hello",
+        session_key: key
+      });
+      await executor.execute({ node, context: baseCtx(), signal, nodeKey: `workflow/${key}` });
+    }
+
+    const sessions = readRecordedCalls(logPath)
+      .filter((args) => args.includes("prompt"))
+      .map(sessionFromPromptArgs);
+    expect(new Set(sessions).size).toBe(4);
+  });
+
+  it("returns config failure when session_key template evaluation fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-agent-test-"));
+    tmpDirs.push(dir);
+    const { script, logPath } = writeRecordingAcpxScript(dir);
+
+    const executor = new AgentExecutor({ acpxPath: script });
+    const node = makeAgentNode({
+      agent: { type: "builtin", use: "mock", model: "test-model" },
+      prompt: "Hello",
+      session_key: "${{ missing.value }}"
+    });
+    const result = await executor.execute({
+      node,
+      context: baseCtx(),
+      signal: new AbortController().signal,
+      nodeKey: "workflow/test-agent"
+    });
+
+    expect(result.failureKind).toBe("config");
+    expect(result.error).toContain("Failed to evaluate agent configuration template");
+    expect(readRecordedCalls(logPath)).toEqual([]);
+  });
+
+  it("returns config failure when session_key renders blank", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-agent-test-"));
+    tmpDirs.push(dir);
+    const { script, logPath } = writeRecordingAcpxScript(dir);
+
+    const executor = new AgentExecutor({ acpxPath: script });
+    const node = makeAgentNode({
+      agent: { type: "builtin", use: "mock", model: "test-model" },
+      prompt: "Hello",
+      session_key: "   "
+    });
+    const result = await executor.execute({
+      node,
+      context: baseCtx(),
+      signal: new AbortController().signal,
+      nodeKey: "workflow/test-agent"
+    });
+
+    expect(result.failureKind).toBe("config");
+    expect(result.error).toContain("session_key must render to a non-empty string");
+    expect(readRecordedCalls(logPath)).toEqual([]);
+  });
+
+  it("does not close a session when aborted after ensure but before prompt", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-agent-test-"));
+    tmpDirs.push(dir);
+    const { script, logPath } = writeSlowEnsureRecordingAcpxScript(dir);
+
+    const executor = new AgentExecutor({ acpxPath: script });
+    const node = makeAgentNode({
+      agent: { type: "builtin", use: "mock", model: "test-model" },
+      prompt: "Hello",
+      session_key: "shared"
+    });
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 10);
+    const result = await executor.execute({
+      node,
+      context: baseCtx(),
+      signal: controller.signal,
+      nodeKey: "workflow/test-agent"
+    });
+
+    expect(result.partial).toBe(true);
+    const calls = readRecordedCalls(logPath);
+    expect(calls.some((args) => args.includes("sessions") && args.includes("ensure"))).toBe(true);
+    expect(calls.some((args) => args.includes("sessions") && args.includes("close"))).toBe(false);
+    expect(calls.some((args) => args.includes("prompt"))).toBe(false);
   });
 });
 

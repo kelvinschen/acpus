@@ -3,6 +3,8 @@ import { createSupervisorApp } from "../../src/supervisor-app.js";
 import { RunStore } from "../../src/store.js";
 import { StubAgentExecutor } from "../support/stub-agent.js";
 import { MockProgramExecutor } from "../../src/executors/mock-program.js";
+import type { ExecutorAdapter, ExecutionRequest } from "../../src/executors/types.js";
+import type { ExecutorResult } from "../../src/types.js";
 import type { Server } from "node:http";
 import { serve } from "@hono/node-server";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -471,6 +473,17 @@ workflow:
     return { baseUrl: `http://127.0.0.1:${port}`, server, store };
   }
 
+  async function bootSupervisorWithAgent(agentExecutor: ExecutorAdapter): Promise<{ baseUrl: string; server: Server; store: RunStore }> {
+    const store = new RunStore(runsDir);
+    const programExecutor = new MockProgramExecutor({});
+    const { app } = createSupervisorApp({ stateDir: tmpDir, workspace: tmpDir }, store, agentExecutor, programExecutor);
+    const server = await new Promise<Server>((resolve) => {
+      const s = serve({ fetch: app.fetch, port: 0 }, () => resolve(s as unknown as Server));
+    });
+    const port = (server.address() as { port: number }).port;
+    return { baseUrl: `http://127.0.0.1:${port}`, server, store };
+  }
+
   async function pollStatus(baseUrl: string, runId: string, timeoutMs = 4000): Promise<string> {
     const start = Date.now();
     for (;;) {
@@ -499,6 +512,59 @@ workflow:
       expect(res.status).not.toBe(404);
       const missing = await fetch(`${d2.baseUrl}/runs/does-not-exist/retry?key=${encodeURIComponent("x")}`, { method: "POST" });
       expect(missing.status).toBe(404);
+    } finally {
+      await new Promise<void>((r) => d2.server.close(() => r()));
+    }
+  });
+
+  it("recovers interpreter now() from persisted run creation time for session_key retry", async () => {
+    const spec = `
+version: 1
+name: supervisor-session-key-now
+agents:
+  coder:
+    type: command
+    use: "echo stub"
+workflow:
+  steps:
+    - id: step-a
+      run: agent
+      use: coder
+      session_key: "clock-\${{ now() }}"
+      prompt: "Test"
+`;
+    class RecordingAgentExecutor implements ExecutorAdapter {
+      constructor(
+        private readonly results: ExecutorResult[],
+        readonly seen: string[]
+      ) {}
+
+      async execute(request: ExecutionRequest): Promise<ExecutorResult> {
+        this.seen.push(request.sessionKey ?? "");
+        return this.results.shift() ?? { output: { result: "done" } };
+      }
+    }
+
+    const firstSeen: string[] = [];
+    const d1 = await bootSupervisorWithAgent(new RecordingAgentExecutor([{ error: "fail" }], firstSeen));
+    const createRes = await fetch(`${d1.baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec, input: {} })
+    });
+    const { runId } = await createRes.json();
+    expect(await pollStatus(d1.baseUrl, runId)).toBe("failed");
+    const createdAt = d1.store.readRunMeta(runId)?.createdAt;
+    expect(createdAt).toBeDefined();
+    expect(firstSeen).toEqual([`clock-${createdAt}`]);
+    await new Promise<void>((r) => d1.server.close(() => r()));
+
+    const recoveredSeen: string[] = [];
+    const d2 = await bootSupervisorWithAgent(new RecordingAgentExecutor([{ output: { result: "done" } }], recoveredSeen));
+    try {
+      const res = await fetch(`${d2.baseUrl}/runs/${runId}/retry?key=${encodeURIComponent("workflow/step-a")}`, { method: "POST" });
+      expect(res.status).toBe(200);
+      expect(recoveredSeen).toEqual([`clock-${createdAt}`]);
     } finally {
       await new Promise<void>((r) => d2.server.close(() => r()));
     }

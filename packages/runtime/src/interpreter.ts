@@ -9,7 +9,7 @@ import { resolveNodeKey, sanitizeValue } from "./keys.js";
 import { canTransition, transition, createInitialNodeState, resetFailedForRetry, resetRunningForCrashRecovery, resetAwaitingForCrashRecovery, resetPausedForRunResume } from "./state-machine.js";
 import { ArtifactStore } from "./artifacts.js";
 import type { ExecutorAdapter } from "./executors/types.js";
-import { renderAgentRequestPrompt } from "./executors/agent.js";
+import { renderAgentRequestPrompt, renderAgentSessionKey } from "./executors/agent.js";
 import type { NodeExecutionState, NodeState, ReplayResult, ReplayMismatch } from "./types.js";
 import { validateInput } from "./validate-input.js";
 import { randomBytes } from "node:crypto";
@@ -840,8 +840,10 @@ export class WorkflowInterpreter {
     for (let attempt = 0; ; attempt++) {
       const attemptNo = this.store.readNodeState(runId, nodeKey)?.attempt ?? attempt + 1;
       let preparedPrompt: string;
+      let renderedSessionKey: string | undefined;
       try {
         preparedPrompt = renderAgentRequestPrompt(node, ctx, this.evaluator, Boolean(continuation), attempt > 0);
+        renderedSessionKey = renderAgentSessionKey(node, ctx, this.evaluator);
       } catch (error) {
         const use = (node.metadata.agent as { use?: string } | undefined)?.use ?? "?";
         throw new LeafExecutionError(
@@ -860,6 +862,7 @@ export class WorkflowInterpreter {
         signal,
         nodeKey,
         prompt: preparedPrompt,
+        sessionKey: renderedSessionKey,
         continuation,
         retry: attempt > 0,
         onStream: (stream, chunk) => {

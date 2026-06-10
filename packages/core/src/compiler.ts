@@ -193,10 +193,14 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
     keyTemplate: keyTemplate(nodePath)
   };
 
+  if ((step as Record<string, unknown>).session_key !== undefined && step.run !== "agent") {
+    context.diagnostics.error("STEP_SHAPE", "session_key is supported only on run: agent steps.", `${path}.session_key`);
+  }
+
   if (step.run === "agent") {
     validateAgentStep(step, path, context);
     validateStepTimeout(step, path, context);
-    const metadata = pickMetadata(step, ["run", "use", "prompt", "output", "retry", "timeout", "on_error"]);
+    const metadata = pickMetadata(step, ["run", "use", "prompt", "session_key", "output", "retry", "timeout", "on_error"]);
     // Snapshot the referenced agent definition into the node so the runtime can
     // route to the right executor and build the acpx invocation. `type` defaults
     // to "builtin".

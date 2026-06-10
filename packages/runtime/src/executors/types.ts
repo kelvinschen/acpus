@@ -14,6 +14,8 @@ export interface ExecutionRequest {
   nodeKey: string;
   /** Fully prepared prompt/request text for this executor call. */
   prompt?: string;
+  /** Fully rendered semantic session key for explicit same-Run session sharing. */
+  sessionKey?: string;
   /** True when continuing a previously paused node (continuation prompt). */
   continuation?: boolean;
   /** True when this is a parse/schema auto-retry iteration (continuation prompt + schema section). */

@@ -21,7 +21,7 @@ input:
 
 agents:
   reviewer:
-    use: pi
+    use: traex
 
 workflow:
   steps:

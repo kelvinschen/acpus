@@ -80,7 +80,8 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - The runtime MUST provide a StubAgentExecutor in test helpers for fast unit tests (no acpx, no mock scripts, no Ajv validation).
 - The runtime MUST support a real ProgramExecutor using `execa` for local subprocess execution.
 - The runtime MUST support a real AgentExecutor spawning `acpx` via `execa` for ACP session management.
-- Executor adapters MUST implement a single `execute(request)` method receiving an `ExecutionRequest` `{ node, context, signal, nodeKey, continuation? }`.
+- Executor adapters MUST implement a single `execute(request)` method receiving an `ExecutionRequest` with `node`, `context`, `signal`, `nodeKey`, and optional prepared execution fields including `prompt`, `sessionKey`, `continuation`, `retry`, and `onStream`.
+- When an Agent Step declares `session_key`, the interpreter MUST pass the rendered semantic key to the Agent executor as `ExecutionRequest.sessionKey`.
 - The interpreter MUST route all Agent Steps through the single AgentExecutor (acpx-backed); there is no `type: mock` dispatch.
 - ProgramExecutor MUST handle cmd template resolution, capture config (json/text), `capture.from: file` reads, timeout (SIGKILL), and abort signals.
 - ProgramExecutor MUST execute string `cmd` values with shell semantics.
@@ -88,7 +89,12 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - ProgramExecutor MUST return raw stdout/stderr and classify failures via `failureKind` (parse, schema, spawn, timeout, killed, capture, exit).
 - The runtime MUST treat a non-zero program exit code as step data and fail the Node only when a `failureKind` marks the failure non-recoverable.
 - The interpreter MUST write program stdout/stderr as `stdout.log`/`stderr.log` artifacts and record their references on the Node.
-- AgentExecutor MUST derive a stable acpx session name from the resolved node key (`acpus-<runId>-<sanitized nodeKey>`), ensuring uniqueness across loop rounds, fanout lanes, and subworkflow nesting.
+- AgentExecutor MUST derive a stable acpx session name from the resolved node key (`acpus-<runId>-<sanitized nodeKey>`) when an Agent Step does not declare `session_key`, ensuring uniqueness across loop rounds, fanout lanes, and subworkflow nesting by default.
+- AgentExecutor MUST derive a stable acpx session name from the Run id and rendered `session_key` when an Agent Step declares `session_key`, using a collision-resistant safe encoding for the rendered key and allowing explicit same-Run session sharing across materialized Agent Steps.
+- AgentExecutor MUST evaluate `session_key` as a template string using the Agent Step execution context before touching acpx, and deterministic `session_key` evaluation failures MUST be classified as configuration failures.
+- A rendered `session_key` MUST NOT be empty or blank.
+- A recovered Run interpreter MUST bind `now()` to the persisted Run creation clock so `session_key` templates remain stable across supervisor recovery, resume, and retry.
+- AgentExecutor MUST NOT automatically namespace `session_key` by agent definition and MUST NOT add Acpus-side serialization for concurrent Agent Steps that render the same `session_key`; ordering and conflict behavior are delegated to acpx.
 - AgentExecutor MUST select the underlying agent from the agent definition: a `builtin` `use` value selects an acpx built-in adapter (`acpx <use>`); a `command` `use` value launches a custom ACP server through the acpx `--agent "<use>"` escape hatch.
 - AgentExecutor MUST create the saved session via `acpx … sessions ensure --name <session>` before prompting, and run the turn via `acpx … --format json prompt -s <session> <prompt>`.
 - When an Agent Step declares `timeout`, AgentExecutor MUST convert that timeout to seconds and pass it to acpx as the global `--timeout <seconds>` option.
@@ -267,6 +273,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Runtime tests MUST cover that replay reproduces a Run's Node topology deterministically, reports discrepancies when the persisted Run's topology is tampered with, and does not mutate persisted state.
 - Runtime tests MUST cover Guard Node continue, fail, and complete actions, including scoped early completion inside fanout lanes or parallel branches.
 - Runtime tests MUST cover that acpx session names are explicit and stable enough for Run-level continuation and Node-level retry.
+- Runtime tests MUST cover Agent Step `session_key` session-name selection, template evaluation, default node-key-derived behavior, and same-Run shared-session behavior across loop materializations.
 - Runtime tests MUST cover that normal runtime execution does not require remote workers, remote task queues, or a shared Temporal cluster.
 - Runtime tests MUST cover the 7-state node lifecycle and all legal transitions.
 - Runtime tests MUST cover per-node JSON persistence and atomic write crash safety.

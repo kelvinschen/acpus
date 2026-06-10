@@ -1083,6 +1083,32 @@ workflow:
     expect(askNode?.metadata.output).toBeUndefined();
   });
 
+  it("preserves agent session_key and collects template expressions", () => {
+    const source = `
+version: 1
+name: agent-session-key
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: seed
+      run: program
+      cmd: ["echo", "seed"]
+    - id: ask
+      run: agent
+      use: mock
+      session_key: "review-\${{ input.ticket }}-\${{ steps.seed.exit_code }}"
+      prompt: "x"
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const askNode = result.ir?.root.children?.[1];
+    expect(askNode?.kind).toBe("run.agent");
+    expect(askNode?.metadata.session_key).toBe("review-${{ input.ticket }}-${{ steps.seed.exit_code }}");
+    expect(result.ir?.expressions.some((expr) => expr.path === "$.workflow.steps[1].session_key" && expr.source === "input.ticket")).toBe(true);
+    expect(result.ir?.expressions.some((expr) => expr.path === "$.workflow.steps[1].session_key" && expr.source === "steps.seed.exit_code")).toBe(true);
+  });
+
   it("rejects unsupported object-form schema keys in agent output", () => {
     const source = `
 version: 1
@@ -1790,6 +1816,41 @@ workflow:
     const result = lintWorkflow(source);
     expect(result.ok).toBe(false);
     expect(result.diagnostics.some((d) => d.code === "STEP_SHAPE" && d.message.includes("Unknown"))).toBe(true);
+  });
+
+  it("rejects session_key on non-agent steps", () => {
+    const source = `
+version: 1
+name: test
+workflow:
+  steps:
+    - id: s1
+      run: program
+      cmd: ["echo", "hi"]
+      session_key: "not-agent"
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "STEP_SHAPE" && d.message.includes("session_key"))).toBe(true);
+  });
+
+  it("rejects non-string agent session_key values", () => {
+    const source = `
+version: 1
+name: test
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: s1
+      run: agent
+      use: mock
+      prompt: "x"
+      session_key: 123
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.path.includes("session_key"))).toBe(true);
   });
 
   it("rejects unknown capture property", () => {

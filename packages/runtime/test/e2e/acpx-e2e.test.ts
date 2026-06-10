@@ -396,6 +396,78 @@ rules:
 
   // -----------------------------------------------------------------------
   describe("composite fanout→loop (session isolation + artifacts)", () => {
+    it("reuses session_key across loop materializations while keeping distinct node keys", async () => {
+      const sandbox = makeSandbox(`
+version: 1
+agent_id: e2e-session-key-loop
+default_response:
+  type: json
+  payload:
+    ok: false
+rules:
+  - name: first-round
+    when:
+      prompt_contains: "round=0"
+    respond:
+      type: json
+      payload:
+        ok: false
+  - name: second-round-same-session
+    when:
+      prompt_contains: "round=1"
+      previous_rule: first-round
+    respond:
+      type: json
+      payload:
+        ok: true
+`);
+      const ir = compileYaml(`
+version: 1
+name: e2e-session-key-loop
+agents:
+  worker:
+    type: command
+    use: "${agentCommand(sandbox.scriptPath)}"
+    cwd: "${sandbox.work}"
+    env:
+      HOME: "${sandbox.home}"
+workflow:
+  steps:
+    - id: fix_loop
+      loop:
+        until: loop.last.output.ok == true
+        max_iterations: 2
+        do:
+          - id: fix_once
+            run: agent
+            use: worker
+            session_key: "fix-loop"
+            prompt: "fix round=\${{ loop.iter }}"
+            output:
+              ok: boolean
+`);
+      const { interpreter, store, cleanup } = createTestInterpreter({ useRealAgentExecutor: true });
+      cleanups.push(cleanup);
+
+      const meta = await interpreter.start(ir, { input: {} });
+      expect(meta.status).toBe("completed");
+
+      const fixNodes = store.listNodeStates(meta.runId)
+        .filter((n) => n.nodeId === "fix_once")
+        .sort((a, b) => Number(a.nodeKey.match(/round:(\d+)/)?.[1]) - Number(b.nodeKey.match(/round:(\d+)/)?.[1]));
+      expect(fixNodes).toHaveLength(2);
+      expect(fixNodes[0]?.nodeKey).toContain("round:0");
+      expect(fixNodes[1]?.nodeKey).toContain("round:1");
+      expect(fixNodes[0]?.output).toEqual({ output: { ok: false } });
+      expect(fixNodes[1]?.output).toEqual({ output: { ok: true } });
+
+      const firstPrompt = readArtifactBySuffix(store, meta.runId, fixNodes[0]!, "attempt-001.prompt.md");
+      const secondPrompt = readArtifactBySuffix(store, meta.runId, fixNodes[1]!, "attempt-001.prompt.md");
+      expect(firstPrompt).toContain("fix round=0");
+      expect(secondPrompt).toContain("fix round=1");
+      expect(secondPrompt).not.toContain("Continue the previous task");
+    }, 30_000);
+
     it("executes fanout→loop through real acpx with session isolation", async () => {
       const home = makeIsolatedHome();
       const source = patchWorkflowSource(home);

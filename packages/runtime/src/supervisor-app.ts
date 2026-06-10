@@ -97,8 +97,9 @@ export function createSupervisorApp(
   }
 
   /** Create an interpreter bound to this supervisor's store + executors. */
-  function newInterpreter(): WorkflowInterpreter {
-    return new WorkflowInterpreter(store, agentExecutor, programExecutor, { allowedSourceRoots });
+  function newInterpreter(runId?: string): WorkflowInterpreter {
+    const nowTimestamp = runId ? store.readRunMeta(runId)?.createdAt : undefined;
+    return new WorkflowInterpreter(store, agentExecutor, programExecutor, { allowedSourceRoots, nowTimestamp });
   }
 
   /**
@@ -111,7 +112,7 @@ export function createSupervisorApp(
     const live = interpreters.get(runId);
     if (live) return live;
     if (!store.hasRun(runId)) return undefined;
-    const recovered = newInterpreter();
+    const recovered = newInterpreter(runId);
     recovered.recoverStaleNodes(runId);
     interpreters.set(runId, recovered);
     return recovered;
@@ -126,7 +127,7 @@ export function createSupervisorApp(
     const live = interpreters.get(runId);
     if (live) return live;
     if (!store.hasRun(runId)) return undefined;
-    return newInterpreter();
+    return newInterpreter(runId);
   }
 
   /** Prune interpreters for terminal Runs from the in-memory map. */
@@ -272,10 +273,10 @@ export function createSupervisorApp(
       return c.json({ error: "Compilation failed", diagnostics: result.diagnostics }, 400);
     }
 
-    const interpreter = new WorkflowInterpreter(store, agentExecutor, programExecutor, { allowedSourceRoots });
+    const initInterpreter = newInterpreter();
     let runState: RunState;
     try {
-      runState = interpreter.initRun(result.ir, {
+      runState = initInterpreter.initRun(result.ir, {
         input: body.input ?? {},
         workflowRef: body.workflowRef,
         workflowSourcePath: sourcePath
@@ -286,6 +287,7 @@ export function createSupervisorApp(
       }
       throw error;
     }
+    const interpreter = newInterpreter(runState.runId);
     interpreters.set(runState.runId, interpreter);
     lastActiveAt = Date.now();
     // initRun has already validated and filled defaults; read the validated
