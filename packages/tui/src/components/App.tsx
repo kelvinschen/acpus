@@ -79,6 +79,7 @@ export function App({
   const [artifactPaths, setArtifactPaths] = useState<Record<string, string>>({});
   const [agentExecution, setAgentExecution] = useState<AgentExecutionSummary | undefined>(undefined);
   const transcriptCacheRef = useRef(new Map<string, TranscriptCache>());
+  const jsonResetKeyRef = useRef<string | undefined>(undefined);
 
   const snapshot = useRunPoller(client, runId, 400, refreshNonce);
   const { rows: termRows, columns: termCols } = useTerminalSize();
@@ -152,6 +153,7 @@ export function App({
   );
   const activeDetailSection = detailSections.find((section) => section.key === resolvedActiveDetailSectionKey);
   const activeJsonData = activeDetailSection?.richContent?.kind === "json" ? activeDetailSection.richContent.data : undefined;
+  const activeJsonResetKey = jsonDisplayResetKey(selected?.rowKey, resolvedActiveDetailSectionKey, activeJsonData);
   const activeJsonRows = useMemo(
     () =>
       activeJsonData !== undefined
@@ -249,15 +251,20 @@ export function App({
   }, [selected?.rowKey]);
 
   useEffect(() => {
-    if (activeJsonData === undefined) {
-      setJsonExpandedIds(new Set());
-      setJsonCursor(0);
+    if (activeJsonResetKey === undefined || activeJsonData === undefined) {
+      if (jsonResetKeyRef.current !== undefined) {
+        jsonResetKeyRef.current = undefined;
+        setJsonExpandedIds(new Set());
+        setJsonCursor(0);
+      }
       return;
     }
+    if (jsonResetKeyRef.current === activeJsonResetKey) return;
+    jsonResetKeyRef.current = activeJsonResetKey;
     setJsonExpandedIds(jsonExpandedIdsForInitialDepth(activeJsonData, { rootLabel: "root", initialDepth: 3 }));
     setJsonCursor(0);
     setDetailsScroll(0);
-  }, [activeJsonData, resolvedActiveDetailSectionKey, selected?.rowKey]);
+  }, [activeJsonData, activeJsonResetKey]);
 
   useEffect(() => {
     if (activeJsonRows.length === 0) return;
@@ -526,6 +533,15 @@ export function scrollOffsetForCursor(cursor: number, currentOffset: number, vis
   if (cursor < currentOffset) return cursor;
   if (cursor >= currentOffset + height) return cursor - height + 1;
   return currentOffset;
+}
+
+export function jsonDisplayResetKey(
+  selectedRowKey: string | undefined,
+  activeSectionKey: DetailSectionKey | undefined,
+  jsonData: unknown
+): string | undefined {
+  if (selectedRowKey === undefined || activeSectionKey === undefined || jsonData === undefined) return undefined;
+  return JSON.stringify([selectedRowKey, activeSectionKey]);
 }
 
 export function visibleRows<T extends { rowKey: string; depth: number }>(rows: T[], collapsed: Set<string>): T[] {

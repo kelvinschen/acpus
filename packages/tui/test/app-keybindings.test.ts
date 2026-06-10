@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   detailSectionKeyForNumberInput,
+  jsonDisplayResetKey,
   nextJsonCursor,
   scrollOffsetForCursor
 } from "../src/components/App.js";
@@ -36,5 +37,14 @@ describe("App detail keybindings", () => {
     expect(scrollOffsetForCursor(0, 3, 5)).toBe(0);
     expect(scrollOffsetForCursor(7, 3, 5)).toBe(3);
     expect(scrollOffsetForCursor(8, 3, 5)).toBe(4);
+  });
+
+  it("keeps the JSON display identity stable across live data refreshes", () => {
+    const first = { matched: true, action: "continue" };
+    const refreshed = { matched: true, action: "continue" };
+
+    expect(jsonDisplayResetKey("workflow/check", "output", first)).toBe(
+      jsonDisplayResetKey("workflow/check", "output", refreshed)
+    );
   });
 });
