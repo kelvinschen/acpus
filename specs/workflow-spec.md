@@ -29,6 +29,8 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A `command` agent MUST declare `use` as the launch command for a custom ACP server; the runtime drives it through the acpx `--agent "<use>"` escape hatch.
 - For testing, use `acpus-mock-agent` as a `command` agent (e.g. `type: command, use: "acpus-mock-agent --script <path>"`), which provides deterministic script responses through the real acpx path.
 - An agent MAY declare `model`, `cwd`, and `env`, which the runtime forwards to acpx.
+- Agent `env` values MUST add to or override the executor process environment, and MUST be template-evaluated and stringified before being passed to acpx.
+- Agent `env` MUST NOT delete inherited environment variables.
 - An Agent Step MAY omit `output` when no structured output parsing is required.
 - An Agent Step MAY declare `output` using the Acpus Schema DSL defined in [Schema Spec](schema-spec.md).
 - An Agent Step `output` declared with the Acpus Schema DSL MUST compile nested object and array item structure into the Agent Step output schema stored in the IR.
@@ -53,7 +55,11 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A Program Step MUST use `run: program`.
 - A Program Step MUST declare `cmd`.
 - A Program Step MUST run as a local subprocess on the same host.
+- A Program Step `cmd` declared as a string MUST execute with shell semantics.
+- A Program Step `cmd` declared as an array MUST execute without shell expansion, using the first array element as the executable and remaining elements as arguments.
 - A Program Step MAY declare `env`.
+- Program Step `env` values MUST add to or override the executor process environment, and MUST be template-evaluated and stringified before subprocess execution.
+- Program Step `env` MUST NOT delete inherited environment variables.
 - A Program Step MAY declare `capture`.
 - A Program Step MUST declare `capture` as an object when `capture` is present.
 - Program Step `capture.from` MUST be `stdout` or `file`.

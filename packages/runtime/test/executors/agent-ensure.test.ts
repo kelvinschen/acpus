@@ -63,12 +63,52 @@ console.log(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_t
   return { script, logPath };
 }
 
+function writeEnvRecordingAcpxScript(dir: string): { script: string; envPath: string } {
+  const script = join(dir, "mock-acpx-env.js");
+  const envPath = join(dir, "env.log");
+  writeFileSync(script, `#!/usr/bin/env node
+const fs = require("node:fs");
+fs.writeFileSync(${JSON.stringify(envPath)}, JSON.stringify({
+  inherited: process.env.ACPUS_AGENT_INHERITED_ENV ?? null,
+  override: process.env.ACPUS_AGENT_OVERRIDE_ENV ?? null,
+  bool: process.env.ACPUS_AGENT_BOOL_ENV ?? null
+}));
+console.log(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } } } }));
+console.log(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } }));
+`);
+  chmodSync(script, 0o755);
+  return { script, envPath };
+}
+
 function readRecordedPromptArgs(logPath: string): string[] {
   const lines = readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean);
   const calls = lines.map((line) => JSON.parse(line) as string[]);
   const promptArgs = calls.find((args) => args.includes("prompt"));
   if (!promptArgs) throw new Error("No prompt invocation was recorded");
   return promptArgs;
+}
+
+async function withEnv<T>(updates: Record<string, string | undefined>, fn: () => Promise<T>): Promise<T> {
+  const previous = new Map<string, string | undefined>();
+  for (const key of Object.keys(updates)) previous.set(key, process.env[key]);
+  try {
+    for (const [key, value] of Object.entries(updates)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+    return await fn();
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
 }
 
 describe("AgentExecutor: sessions ensure failure", () => {
@@ -195,5 +235,43 @@ describe("AgentExecutor: acpx timeout", () => {
 
     const promptArgs = readRecordedPromptArgs(logPath);
     expect(promptArgs).not.toContain("--timeout");
+  });
+
+  it("passes inherited process env plus stringified agent env overrides to acpx", async () => {
+    await withEnv({
+      ACPUS_AGENT_INHERITED_ENV: "visible-to-agent",
+      ACPUS_AGENT_OVERRIDE_ENV: "inherited-value"
+    }, async () => {
+      const dir = mkdtempSync(join(tmpdir(), "acpus-agent-test-"));
+      tmpDirs.push(dir);
+      const { script, envPath } = writeEnvRecordingAcpxScript(dir);
+
+      const executor = new AgentExecutor({ acpxPath: script });
+      const node = makeAgentNode({
+        agent: {
+          type: "builtin",
+          use: "mock",
+          model: "test-model",
+          env: {
+            ACPUS_AGENT_OVERRIDE_ENV: "${{ input.override }}",
+            ACPUS_AGENT_BOOL_ENV: false
+          }
+        },
+        prompt: "Hello"
+      });
+      const ctx: ExpressionContext = { input: { override: "agent-step-value" }, steps: {}, run_id: "run-001" };
+      await executor.execute({
+        node,
+        context: ctx,
+        signal: new AbortController().signal,
+        nodeKey: "workflow/test-agent"
+      });
+
+      expect(JSON.parse(readFileSync(envPath, "utf8"))).toEqual({
+        inherited: "visible-to-agent",
+        override: "agent-step-value",
+        bool: "false"
+      });
+    });
   });
 });

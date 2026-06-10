@@ -128,23 +128,10 @@ async function spawnSupervisor(
     // If we can't open the log, use 'ignore'
   }
 
-  // Build a filtered environment: pass through everything except known
-  // sensitive keys that the supervisor child has no business inheriting.
-  const SENSITIVE_PREFIXES = [
-    "AWS_", "GCP_", "GOOGLE_", "AZURE_", "VAULT_", "KUBERNETES_",
-    "DOCKER_", "SSH_", "GPG_", "PGPASS"
-  ];
-  const filteredEnv: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value === undefined) continue;
-    if (SENSITIVE_PREFIXES.some((p) => key.startsWith(p))) continue;
-    filteredEnv[key] = value;
-  }
-
   const child = spawn(entry.cmd, args, {
     detached: true,
     stdio: ["ignore", logFd ?? "ignore", logFd ?? "ignore"],
-    env: filteredEnv
+    env: buildSupervisorEnv()
   });
   child.unref();
 
@@ -175,6 +162,14 @@ async function spawnSupervisor(
     try { child.kill("SIGKILL"); } catch { /* ignore */ }
     throw err;
   }
+}
+
+export function buildSupervisorEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
 }
 
 /**

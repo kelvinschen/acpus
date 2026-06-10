@@ -19,6 +19,8 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - The runtime MUST NOT require cross-host workspace transfer, remote task queues, or worker affinity.
 - The runtime MUST treat acpx as the local ACP session scheduler, not as the Workflow scheduler.
 - The runtime MUST treat Acpus as the Workflow scheduler and the source of Node state, retry, timeout, pause, resume, cancel, and artifact-reference decisions.
+- Agent Steps and Program Steps MUST inherit the executor process environment and MAY add or override variables through their declared `env`.
+- The runtime MUST NOT make shell aliases or shell functions available as direct Program Step executables.
 
 ### Workspace
 
@@ -81,6 +83,8 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Executor adapters MUST implement a single `execute(request)` method receiving an `ExecutionRequest` `{ node, context, signal, nodeKey, continuation? }`.
 - The interpreter MUST route all Agent Steps through the single AgentExecutor (acpx-backed); there is no `type: mock` dispatch.
 - ProgramExecutor MUST handle cmd template resolution, capture config (json/text), `capture.from: file` reads, timeout (SIGKILL), and abort signals.
+- ProgramExecutor MUST execute string `cmd` values with shell semantics.
+- ProgramExecutor MUST execute array `cmd` values without shell expansion, using the first array element as the executable and remaining elements as arguments.
 - ProgramExecutor MUST return raw stdout/stderr and classify failures via `failureKind` (parse, schema, spawn, timeout, killed, capture, exit).
 - The runtime MUST treat a non-zero program exit code as step data and fail the Node only when a `failureKind` marks the failure non-recoverable.
 - The interpreter MUST write program stdout/stderr as `stdout.log`/`stderr.log` artifacts and record their references on the Node.
@@ -128,6 +132,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 
 - The runtime MUST expose a Workspace-scoped Run Supervisor as the local execution authority for Run-facing CLI commands.
 - The Run Supervisor MUST be lazily started by Run-facing CLI commands when no healthy supervisor exists for the current Workspace.
+- A newly started Run Supervisor MUST inherit the full environment of the CLI process that starts it, excluding only variables whose value is undefined.
 - The runtime MUST allow at most one active Run Supervisor per Workspace.
 - The Run Supervisor MUST listen on `127.0.0.1` using a random available TCP port.
 - The Run Supervisor MUST expose its endpoint through `.acpus/state/supervisor.json` in the Workspace.
