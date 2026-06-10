@@ -150,6 +150,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - Expressions MAY read `steps.<id>.output.*`.
 - Expressions MAY read `steps.<id>.exit_code`.
 - Expressions MAY read fanout and loop scope variables when in scope.
+- Expressions MAY read `run_id`.
 - `now()` MUST be bound to the deterministic workflow clock.
 
 ### Local Runtime Boundary

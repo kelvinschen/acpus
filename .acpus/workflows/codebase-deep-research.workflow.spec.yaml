@@ -1,286 +1,277 @@
 version: 1
 name: codebase-deep-research
 description: |
-  Deep research workflow for codebase analysis. Fans out 5 parallel research
-  agents — each probing a different dimension (architecture, quality, security,
-  performance, API design) — each writes findings to a temp Markdown file.
-  A synthesis agent then reads all temp files, cross-references, and produces
-  a final Chinese Markdown report saved to the repo root.
+  Dynamic workflow pattern: fanout-and-synthesize.
+
+  Runs independent research agents over one Acpus codebase from several
+  viewpoints, then asks a synthesis agent to cross-check, deduplicate, and
+  write a final report. Program Steps only prepare deterministic output
+  paths; agents perform the open-ended codebase research and synthesis.
+
+  Output: .acpus/output/codebase-deep-research/<run_id>/
 
 input:
   target_path: string
   research_depth?: string = "deep"
   custom_instructions?: string = "(none)"
   include_patterns?: string = "(none)"
+  output_root?: string = ".acpus/output/codebase-deep-research"
 
 agents:
   researcher:
-    use: claude 
+    use: pi
   synthesizer:
     use: pi
 
 workflow:
   steps:
-    # ── Phase 1: Parallel research across 5 dimensions ───────────────────
+    - id: prepare_output
+      run: program
+      cmd:
+        - bash
+        - -lc
+        - |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import pathlib
+
+          out = pathlib.Path("${{ input.output_root }}").resolve() / "${{ run_id }}"
+          out.mkdir(parents=True, exist_ok=True)
+          reports = {
+              "architecture": str(out / "architecture.md"),
+              "quality": str(out / "quality.md"),
+              "security": str(out / "security.md"),
+              "performance": str(out / "performance.md"),
+              "api_design": str(out / "api-design.md"),
+              "final": str(out / "codebase-deep-research.md"),
+          }
+          print(json.dumps({"output_dir": str(out), "reports": reports}))
+          PY
+      capture:
+        from: stdout
+        parse: json
+      output:
+        output_dir: string
+        reports:
+          architecture: string
+          quality: string
+          security: string
+          performance: string
+          api_design: string
+          final: string
+
     - id: research
       parallel:
-        # ── Dimension 1: Architecture & Design ───────────────────────────
         - id: architecture
           run: agent
           use: researcher
           prompt: |
-            你是一位资深软件架构师，正在对代码仓库进行深度研究分析。
+            You are a senior software architect researching an Acpus codebase.
+            Keep code identifiers, file paths, and commands verbatim.
 
-            所有输出使用中文撰写，代码标识符和文件路径保持英文原文。
+            Target repository: `${{ input.target_path }}`
+            Include patterns: ${{ input.include_patterns }}
+            Depth: ${{ input.research_depth }}
 
-            你必须结合 Mermaid 图表来解释你的发现，使用 ```mermaid 代码块嵌入图表。
+            Research architecture and design:
+            - Package/module boundaries and dependency direction.
+            - Workflow DSL, compiler, runtime, CLI, and TUI ownership.
+            - Data flow from YAML input through IR, interpreter, artifacts, and output.
+            - Extension points and places where accidental coupling would hurt future work.
+            - Current docs/spec alignment.
 
-            ## 研究目标
-            分析代码仓库：`${{ input.target_path }}`
-            使用你的工具直接读取源文件、目录结构和配置。
-            包含模式过滤：${{ input.include_patterns }}
-
-            ## 研究维度：架构与设计
-            1. **模块结构**：代码仓库如何分解？Monorepo？多包？模块间的依赖图？边界是否清晰？
-            2. **设计模式**：使用了哪些架构模式？是否一致地应用？有没有反模式？
-            3. **关注点分离**：职责是否良好隔离？有没有上帝模块、纠缠依赖或循环导入？
-            4. **可扩展性**：添加新节点类型、新适配器、新执行器有多容易？是否有扩展机制？
-            5. **数据流**：数据如何在系统中流动？从输入→编译→执行→输出？有没有隐式耦合？
-            6. **关键架构决策**：识别最具影响力的设计选择及其权衡。是否有 ADR？
-
-            ## 自定义指令
+            Custom instructions:
             ${{ input.custom_instructions }}
 
-            ## 深度
-            ${{ input.research_depth }} — 引用具体的文件、类型和函数。
+            Write your full Markdown report to:
+            ${{ steps.prepare_output.output.reports.architecture }}
 
-            ## 产出要求
-            将你的完整研究报告（Markdown 格式，包含 Mermaid 图表）写入文件：
-            ${{ input.target_path }}/.acpus/tmp/architecture.md
+            Write boundary:
+            - Do not create, modify, or delete files in the target repository.
+            - Only write to the report path above, its parent output directory, or a system temporary directory.
 
-            写入文件后，在 output 中返回文件路径和简要统计。
+            Return a JSON object with the report path and summary.
           output:
             filepath: string
             summary: string
             findings_count: integer
-          timeout: 20m
+          timeout: 25m
 
-        # ── Dimension 2: Code Quality & Patterns ──────────────────────────
         - id: quality
           run: agent
           use: researcher
           prompt: |
-            你是一位代码质量研究员，正在对代码仓库进行深度分析。
+            You are a code quality researcher. Keep identifiers, paths, and
+            commands verbatim.
 
-            所有输出使用中文撰写，代码标识符和文件路径保持英文原文。
+            Target repository: `${{ input.target_path }}`
+            Include patterns: ${{ input.include_patterns }}
+            Depth: ${{ input.research_depth }}
 
-            你必须结合 Mermaid 图表来解释你的发现，使用 ```mermaid 代码块嵌入图表。
+            Research code quality:
+            - Test strategy and meaningful gaps.
+            - Type safety, schema validation, and error handling.
+            - Duplication, naming, local conventions, and maintainability risks.
+            - Places where implementation and specs drift.
 
-            ## 研究目标
-            分析代码仓库：`${{ input.target_path }}`
-            使用你的工具直接读取源文件。
-            包含模式过滤：${{ input.include_patterns }}
-
-            ## 研究维度：代码质量与模式
-            1. **测试策略**：使用了什么测试框架？覆盖率如何？有没有不稳定或缺失的测试类别？
-            2. **错误处理**：错误如何传播？自定义错误类型？有没有被吞掉的错误？
-            3. **类型安全**：TypeScript 如何使用？有没有 `any` 逃逸？运行时验证 vs 编译时类型？
-            4. **代码重复**：显著的复制粘贴？可以提取的共享工具？跨模块的近似重复逻辑？
-            5. **命名与规范**：命名是否一致？是否遵循项目规范？有没有误导性的名称？
-            6. **文档**：公共 API 是否有文档？规范文档与实现的偏差？
-
-            ## 自定义指令
+            Custom instructions:
             ${{ input.custom_instructions }}
 
-            ## 深度
-            ${{ input.research_depth }} — 引用具体的文件、类型和函数。
+            Write your full Markdown report to:
+            ${{ steps.prepare_output.output.reports.quality }}
 
-            ## 产出要求
-            将你的完整研究报告（Markdown 格式，包含 Mermaid 图表）写入文件：
-            ${{ input.target_path }}/.acpus/tmp/quality.md
+            Write boundary:
+            - Do not create, modify, or delete files in the target repository.
+            - Only write to the report path above, its parent output directory, or a system temporary directory.
 
-            写入文件后，在 output 中返回文件路径和简要统计。
+            Return a JSON object with the report path and summary.
           output:
             filepath: string
             summary: string
             findings_count: integer
-          timeout: 20m
+          timeout: 25m
 
-        # ── Dimension 3: Security & Robustness ────────────────────────────
         - id: security
           run: agent
           use: researcher
           prompt: |
-            你是一位安全研究员，正在对代码仓库进行深度分析。
+            You are a security and robustness researcher. Keep identifiers,
+            paths, and commands verbatim.
 
-            所有输出使用中文撰写，代码标识符和文件路径保持英文原文。
+            Target repository: `${{ input.target_path }}`
+            Include patterns: ${{ input.include_patterns }}
+            Depth: ${{ input.research_depth }}
 
-            你必须结合 Mermaid 图表来解释你的发现，使用 ```mermaid 代码块嵌入图表。
+            Research security and robustness:
+            - YAML/schema/CEL input validation boundaries.
+            - Program execution, acpx invocation, path handling, artifact storage.
+            - State persistence, crash recovery, cancellation, retry, and concurrency risks.
+            - Secret exposure, command injection, traversal, and unsafe defaults.
 
-            ## 研究目标
-            分析代码仓库：`${{ input.target_path }}`
-            使用你的工具直接读取源文件。
-            包含模式过滤：${{ input.include_patterns }}
-
-            ## 研究维度：安全与健壮性
-            1. **输入验证**：YAML 输入如何验证？CEL 表达式净化？路径遍历风险？
-            2. **命令注入**：运行时通过 execa 和 acpx 执行外部命令。是否有注入向量？
-            3. **文件系统安全**：原子写入？TOCTOU 竞态？符号链接攻击？
-            4. **状态完整性**：节点状态是否会被并发访问破坏？锁机制？崩溃恢复的正确性？
-            5. **密钥与凭证**：硬编码的密钥？API Key 处理？日志中敏感数据泄漏？
-            6. **供应链**：依赖项是否有已知漏洞？信任边界？
-            7. **健壮性**：故障下的优雅降级？资源耗尽？超时执行？取消清理？
-
-            ## 自定义指令
+            Custom instructions:
             ${{ input.custom_instructions }}
 
-            ## 深度
-            ${{ input.research_depth }} — 引用具体的文件、类型和函数。
+            Write your full Markdown report to:
+            ${{ steps.prepare_output.output.reports.security }}
 
-            ## 产出要求
-            将你的完整研究报告（Markdown 格式，包含 Mermaid 图表）写入文件：
-            ${{ input.target_path }}/.acpus/tmp/security.md
+            Write boundary:
+            - Do not create, modify, or delete files in the target repository.
+            - Only write to the report path above, its parent output directory, or a system temporary directory.
 
-            写入文件后，在 output 中返回文件路径和简要统计。
+            Return a JSON object with the report path and summary.
           output:
             filepath: string
             summary: string
             findings_count: integer
-          timeout: 20m
+          timeout: 25m
 
-        # ── Dimension 4: Performance & Scalability ────────────────────────
         - id: performance
           run: agent
           use: researcher
           prompt: |
-            你是一位性能工程师，正在对代码仓库进行深度分析。
+            You are a performance researcher. Keep identifiers, paths, and
+            commands verbatim.
 
-            所有输出使用中文撰写，代码标识符和文件路径保持英文原文。
+            Target repository: `${{ input.target_path }}`
+            Include patterns: ${{ input.include_patterns }}
+            Depth: ${{ input.research_depth }}
 
-            你必须结合 Mermaid 图表来解释你的发现，使用 ```mermaid 代码块嵌入图表。
+            Research performance and scale:
+            - Interpreter concurrency, fanout/parallel limits, and cancellation behavior.
+            - File I/O, artifact growth, JSON parsing, transcript handling, and TUI polling.
+            - Hot paths, cold starts, and measurement gaps.
 
-            ## 研究目标
-            分析代码仓库：`${{ input.target_path }}`
-            使用你的工具直接读取源文件。
-            包含模式过滤：${{ input.include_patterns }}
-
-            ## 研究维度：性能与可扩展性
-            1. **并发模型**：并发如何管理？最大并发度是多少？是否可配置？
-            2. **I/O 模式**：文件 I/O 效率？批量写入？流式处理？不必要的序列化？
-            3. **内存使用**：无限集合？缓存策略？持续运行下的内存增长？
-            4. **启动与冷路径**：首次执行时间？惰性初始化？不必要的急切加载？
-            5. **扩展瓶颈**：规模增大时什么最先出问题？锁争用？状态文件激增？
-            6. **资源管理**：子进程的正确清理？锁文件清理？临时目录增长？
-            7. **可观测性能**：是否有性能指标？基准测试？能否测量时间花在哪里？
-
-            ## 自定义指令
+            Custom instructions:
             ${{ input.custom_instructions }}
 
-            ## 深度
-            ${{ input.research_depth }} — 引用具体的文件、类型和函数。
+            Write your full Markdown report to:
+            ${{ steps.prepare_output.output.reports.performance }}
 
-            ## 产出要求
-            将你的完整研究报告（Markdown 格式，包含 Mermaid 图表）写入文件：
-            ${{ input.target_path }}/.acpus/tmp/performance.md
+            Write boundary:
+            - Do not create, modify, or delete files in the target repository.
+            - Only write to the report path above, its parent output directory, or a system temporary directory.
 
-            写入文件后，在 output 中返回文件路径和简要统计。
+            Return a JSON object with the report path and summary.
           output:
             filepath: string
             summary: string
             findings_count: integer
-          timeout: 20m
+          timeout: 25m
 
-        # ── Dimension 5: API & Interface Design ───────────────────────────
         - id: api_design
           run: agent
           use: researcher
           prompt: |
-            你是一位 API 设计研究员，正在对代码仓库进行深度分析。
+            You are an API and developer-experience researcher. Write the report
+            with identifiers, paths, and commands verbatim.
 
-            所有输出使用中文撰写，代码标识符和文件路径保持英文原文。
+            Target repository: `${{ input.target_path }}`
+            Include patterns: ${{ input.include_patterns }}
+            Depth: ${{ input.research_depth }}
 
-            你必须结合 Mermaid 图表来解释你的发现，使用 ```mermaid 代码块嵌入图表。
+            Research user-facing interfaces:
+            - CLI commands, JSON outputs, exit codes, and catalog ergonomics.
+            - Workflow DSL, Schema DSL, expression model, and examples.
+            - Runtime/TUI inspectability and operator controls.
+            - Naming clarity against CONTEXT.md.
 
-            ## 研究目标
-            分析代码仓库：`${{ input.target_path }}`
-            使用你的工具直接读取源文件。
-            包含模式过滤：${{ input.include_patterns }}
-
-            ## 研究维度：API 与接口设计
-            1. **CLI 接口**：命令结构？帮助文本质量？标志是否一致？退出码？
-            2. **工作流 DSL**：YAML Schema 的易用性？必选 vs 可选字段？合理默认值？
-            3. **Schema DSL**：自定义 Schema 语言 vs JSON Schema？表达能力？学习曲线？
-            4. **表达式语言**：CEL 作为表达式语言——是否合适？模板插值语法体验？
-            5. **运行时 API**：Supervisor REST API 设计？端点？幂等性？
-            6. **类型导出**：内部类型是否为消费方导出？判别联合？建造者模式？
-            7. **开发者体验**：上手摩擦？错误消息清晰度？TUI 有用程度？
-
-            ## 自定义指令
+            Custom instructions:
             ${{ input.custom_instructions }}
 
-            ## 深度
-            ${{ input.research_depth }} — 引用具体的文件、类型和函数。
+            Write your full Markdown report to:
+            ${{ steps.prepare_output.output.reports.api_design }}
 
-            ## 产出要求
-            将你的完整研究报告（Markdown 格式，包含 Mermaid 图表）写入文件：
-            ${{ input.target_path }}/.acpus/tmp/api_design.md
+            Write boundary:
+            - Do not create, modify, or delete files in the target repository.
+            - Only write to the report path above, its parent output directory, or a system temporary directory.
 
-            写入文件后，在 output 中返回文件路径和简要统计。
+            Return a JSON object with the report path and summary.
           output:
             filepath: string
             summary: string
             findings_count: integer
-          timeout: 20m
+          timeout: 25m
 
-    # ── Phase 2: Synthesize all research into a final report ─────────────
     - id: synthesize
       run: agent
       use: synthesizer
       prompt: |
-        你是深度代码仓库研究项目的综合负责人。
-        你的任务是读取 5 个独立研究维度的报告文件，合并、交叉验证和综合，生成一份全面的中文 Markdown 报告。
+        You are the synthesis lead for a fanout-and-synthesize codebase research
+        workflow. Keep code identifiers, file paths, and commands verbatim.
 
-        所有输出使用中文撰写，代码标识符和文件路径保持英文原文。
+        Target repository: `${{ input.target_path }}`
+        Custom instructions: ${{ input.custom_instructions }}
 
-        你必须在报告中结合 Mermaid 图表来解释关键发现，包括：
-        整体架构图、主题交叉验证关系图、安全风险热力图、优先级行动路线图、各维度发现分布图。
+        Read these independent research reports:
+        - Architecture: ${{ steps.research.architecture.output.filepath }}
+        - Quality: ${{ steps.research.quality.output.filepath }}
+        - Security: ${{ steps.research.security.output.filepath }}
+        - Performance: ${{ steps.research.performance.output.filepath }}
+        - API design: ${{ steps.research.api_design.output.filepath }}
 
-        ## 研究目标
-        `${{ input.target_path }}`
+        Synthesize by theme, not by source report. Cross-validate claims that
+        appear in multiple reports, downgrade weak evidence, identify gaps, and
+        include a prioritized action plan for Acpus maintainers.
 
-        ## 自定义指令
-        ${{ input.custom_instructions }}
+        Write the final Markdown report to:
+        ${{ steps.prepare_output.output.reports.final }}
 
-        ## 研究报告文件
-        五个研究 Agent 已将各维度分析写入以下文件，请逐个读取：
+        Write boundary:
+        - Do not create, modify, or delete files in the target repository.
+        - Only write to the final report path above, its parent output directory, or a system temporary directory.
 
-        1. **架构与设计**：${{ steps.research.architecture.output.filepath }}
-        2. **代码质量与模式**：${{ steps.research.quality.output.filepath }}
-        3. **安全与健壮性**：${{ steps.research.security.output.filepath }}
-        4. **性能与可扩展性**：${{ steps.research.performance.output.filepath }}
-        5. **API 与接口设计**：${{ steps.research.api_design.output.filepath }}
-
-        ## 你的任务
-        1. **交叉验证**：在多个维度中提及的发现置信度更高，标记为"交叉验证"。单一维度的发现标记为"单一来源"。
-        2. **主题分组**：按主题而非维度组织发现。"状态管理"主题可能汇集架构、质量和安全方面的发现。
-        3. **优先级排序**：按影响度和严重性（安全 > 正确性 > 性能 > 开发者体验 > 美观）排序。
-        4. **差距分析**：识别所有研究员都未覆盖的代码仓库方面。
-        5. **优势亮点**：突出设计良好的方面、优秀模式和卓越之处。
-        6. **可执行建议**：为每个主题提供具体下一步行动和工作量估算（小/中/大）。
-        7. **写入报告**：将完整的 Markdown 报告写入 `${{ input.target_path }}/DEEP-RESEARCH-REPORT.md`
-
-        完成后，在 output 中返回报告文件路径和统计信息。
+        Return a JSON object with the final report path and counts.
       output:
         report_filepath: string
         total_findings: integer
         cross_validated: integer
         single_source: integer
-        themes: integer
         gaps_identified: integer
-      timeout: 25m
+      timeout: 30m
 
 outputs:
   report_filepath: ${{ steps.synthesize.output.report_filepath }}
+  output_dir: ${{ steps.prepare_output.output.output_dir }}
   total_findings: ${{ steps.synthesize.output.total_findings }}
   cross_validated: ${{ steps.synthesize.output.cross_validated }}
-  themes: ${{ steps.synthesize.output.themes }}

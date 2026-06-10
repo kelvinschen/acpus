@@ -1,19 +1,23 @@
 version: 1
 name: adversarial-feature-implementation-review
 description: |
-  Adversarial workflow for reviewing one feature implementation. It collects
-  the implementation diff, runs independent hostile reviewers across contract,
-  correctness, test, and maintainability dimensions, then cross-examines the
-  reports and emits the final verdict directly.
+  Dynamic workflow pattern: adversarial verification.
+
+  Reviews one feature implementation through independent adversarial lenses,
+  then cross-examines the reports into a final verdict. Program Steps only
+  collect deterministic git context and output paths; agents perform the
+  contract, correctness, test, maintainability, and synthesis work.
+
+  Output: .acpus/output/adversarial-feature-implementation-review/<run_id>/
 
 input:
   target_path: string
   feature_goal: string
-  output_dir: string
   base_ref?: string = "HEAD~1"
   implementation_ref?: string = "HEAD"
   review_depth?: string = "deep"
   review_instructions?: string = "(none)"
+  output_root?: string = ".acpus/output/adversarial-feature-implementation-review"
 
 agents:
   reviewer:
@@ -28,38 +32,60 @@ workflow:
         - -lc
         - |
           set -euo pipefail
-
           target="${{ input.target_path }}"
-          out="$target/${{ input.output_dir }}"
-          base="${{ input.base_ref }}"
-          head="${{ input.implementation_ref }}"
-          base_sha="$(git -C "$target" rev-parse --verify "$base^{commit}")"
-          head_sha="$(git -C "$target" rev-parse --verify "$head^{commit}")"
-
-          mkdir -p "$out"
-          git -C "$target" diff --name-only "$base_sha" "$head_sha" -- > "$out/changed-files.txt"
-          git -C "$target" diff --stat "$base_sha" "$head_sha" -- > "$out/diff-stat.txt"
-          git -C "$target" diff "$base_sha" "$head_sha" -- > "$out/implementation.diff"
-
-          python3 - "$out" "$base_sha" "$head_sha" <<'PY'
+          root="${{ input.output_root }}"
+          run_id="${{ run_id }}"
+          python3 - "$target" "$root" "$run_id" "${{ input.base_ref }}" "${{ input.implementation_ref }}" <<'PY'
           import json
           import pathlib
+          import subprocess
           import sys
 
-          out, base_sha, head_sha = sys.argv[1:4]
-          changed_files = [
-              line
-              for line in pathlib.Path(out, "changed-files.txt").read_text().splitlines()
-              if line
-          ]
+          target, root, run_id, base_ref, head_ref = sys.argv[1:6]
+          target_path = pathlib.Path(target).resolve()
+          out = pathlib.Path(root).resolve() / run_id
+          out.mkdir(parents=True, exist_ok=True)
+
+          def git(*args):
+              return subprocess.run(
+                  ["git", "-C", str(target_path), *args],
+                  check=True,
+                  text=True,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.PIPE,
+              ).stdout
+
+          base_sha = git("rev-parse", "--verify", f"{base_ref}^{{commit}}").strip()
+          head_sha = git("rev-parse", "--verify", f"{head_ref}^{{commit}}").strip()
+          changed = git("diff", "--name-only", base_sha, head_sha)
+          diff_stat = git("diff", "--stat", base_sha, head_sha)
+          patch = git("diff", base_sha, head_sha)
+
+          changed_path = out / "changed-files.txt"
+          stat_path = out / "diff-stat.txt"
+          patch_path = out / "implementation.diff"
+          changed_path.write_text(changed, encoding="utf-8")
+          stat_path.write_text(diff_stat, encoding="utf-8")
+          patch_path.write_text(patch, encoding="utf-8")
+
+          changed_files = [line for line in changed.splitlines() if line.strip()]
+          reports = {
+              "contract": str(out / "contract.md"),
+              "correctness": str(out / "correctness.md"),
+              "tests": str(out / "tests.md"),
+              "maintainability": str(out / "maintainability.md"),
+              "final": str(out / "cross-examination.md"),
+          }
           print(json.dumps({
-              "output_dir": out,
+              "output_dir": str(out),
+              "target_path": str(target_path),
               "base_sha": base_sha,
               "head_sha": head_sha,
-              "changed_files_path": f"{out}/changed-files.txt",
-              "diff_stat_path": f"{out}/diff-stat.txt",
-              "patch_path": f"{out}/implementation.diff",
+              "changed_files_path": str(changed_path),
+              "diff_stat_path": str(stat_path),
+              "patch_path": str(patch_path),
               "changed_file_count": len(changed_files),
+              "reports": reports,
           }))
           PY
       capture:
@@ -67,20 +93,27 @@ workflow:
         parse: json
       output:
         output_dir: string
+        target_path: string
         base_sha: string
         head_sha: string
         changed_files_path: string
         diff_stat_path: string
         patch_path: string
         changed_file_count: integer
-      timeout: 30m
+        reports:
+          contract: string
+          correctness: string
+          tests: string
+          maintainability: string
+          final: string
+      timeout: 5m
 
     - id: require_changed_files
       guard:
         when: steps.collect_context.output.changed_file_count > 0
         then: continue
         else: fail
-        message: "Changed-files check for ${{ input.base_ref }}..${{ input.implementation_ref }}."
+        message: "No changed files found for ${{ input.base_ref }}..${{ input.implementation_ref }}."
 
     - id: adversarial_reviews
       parallel:
@@ -88,33 +121,33 @@ workflow:
           run: agent
           use: reviewer
           prompt: |
-            You are a feature contract reviewer. Your goal is not to prove the implementation is correct; your goal is to find deviations from requirements, public interfaces, and current specifications.
+            You are a feature contract reviewer. Your goal is to find deviations
+            from requirements, public interfaces, and current specs. Keep identifiers, paths, and commands verbatim.
 
-            Write all output in English. Keep code identifiers, file paths, and commands in their original form.
-
-            ## Feature Goal
+            Feature goal:
             ${{ input.feature_goal }}
 
-            ## Review Scope
-            Repository: `${{ input.target_path }}`
-            Base: `${{ input.base_ref }}`
-            Implementation: `${{ input.implementation_ref }}`
+            Repository: `${{ steps.collect_context.output.target_path }}`
             Changed files: ${{ steps.collect_context.output.changed_files_path }}
             Diff stat: ${{ steps.collect_context.output.diff_stat_path }}
             Patch: ${{ steps.collect_context.output.patch_path }}
+            Depth: ${{ input.review_depth }}
 
-            ## Adversarial Task
-            1. Read the changed files list, diff stat, and patch.
-            2. Compare the implementation against `specs/`, `CONTEXT.md`, related tests, and existing APIs.
-            3. Prioritize missing requirements, broken public contracts, wrong defaults, inconsistent state semantics, and user-visible behavior that contradicts specs.
-            4. Every finding MUST cite concrete files and line numbers. If the evidence is insufficient, classify it as `needs_verification` instead of overstating it.
-            5. Write the complete Markdown report to `${{ steps.collect_context.output.output_dir }}/contract.md`.
+            Compare the implementation with `specs/`, `CONTEXT.md`, tests, and
+            user-facing APIs. Cite files and lines. Classify uncertain claims as
+            `needs_verification`.
 
-            ## Custom Instructions
+            Custom instructions:
             ${{ input.review_instructions }}
 
-            ## Depth
-            ${{ input.review_depth }}
+            Write the complete Markdown report to:
+            ${{ steps.collect_context.output.reports.contract }}
+
+            Write boundary:
+            - Do not create, modify, or delete files in the target repository.
+            - Only write to the report path above, its parent output directory, or a system temporary directory.
+
+            Return a JSON object with counts and top findings.
           output:
             report_path: string
             blocking_count: integer
@@ -134,30 +167,32 @@ workflow:
           run: agent
           use: reviewer
           prompt: |
-            You are a correctness and edge-case reviewer. Treat the implementation as a system under malicious inputs, abnormal states, and awkward timing.
+            You are a correctness and edge-case reviewer. Treat the patch as a
+            system under malformed input, weird timing, cancellation, retry,
+            crash recovery, and partial failure. Keep
+            identifiers, paths, and commands verbatim.
 
-            Write all output in English. Keep code identifiers, file paths, and commands in their original form.
-
-            ## Feature Goal
+            Feature goal:
             ${{ input.feature_goal }}
 
-            ## Review Scope
-            Repository: `${{ input.target_path }}`
+            Repository: `${{ steps.collect_context.output.target_path }}`
             Changed files: ${{ steps.collect_context.output.changed_files_path }}
             Patch: ${{ steps.collect_context.output.patch_path }}
+            Depth: ${{ input.review_depth }}
 
-            ## Adversarial Task
-            1. Read the patch and the current implementation of changed files.
-            2. Construct failure paths: empty input, invalid input, concurrency, retry, cancellation, timeout, partial failure, dirty worktree, and missing files.
-            3. Inspect state-machine behavior, data flow, error propagation, and resource cleanup.
-            4. For each finding, provide a minimal reproduction idea or a concrete test that should be added.
-            5. Write the complete Markdown report to `${{ steps.collect_context.output.output_dir }}/correctness.md`.
+            Provide concrete reproduction ideas or tests for each finding.
 
-            ## Custom Instructions
+            Custom instructions:
             ${{ input.review_instructions }}
 
-            ## Depth
-            ${{ input.review_depth }}
+            Write the complete Markdown report to:
+            ${{ steps.collect_context.output.reports.correctness }}
+
+            Write boundary:
+            - Do not create, modify, or delete files in the target repository.
+            - Only write to the report path above, its parent output directory, or a system temporary directory.
+
+            Return a JSON object with counts and top findings.
           output:
             report_path: string
             blocking_count: integer
@@ -177,30 +212,31 @@ workflow:
           run: agent
           use: reviewer
           prompt: |
-            You are a test and verification reviewer. Your goal is to prove where the test suite fails to cover real risk, not to count tests.
+            You are a test and verification reviewer. Find whether the tests
+            cover real behavioral risk, not whether they merely exist. Keep identifiers, paths, and commands verbatim.
 
-            Write all output in English. Keep code identifiers, file paths, and commands in their original form.
-
-            ## Feature Goal
+            Feature goal:
             ${{ input.feature_goal }}
 
-            ## Review Scope
-            Repository: `${{ input.target_path }}`
+            Repository: `${{ steps.collect_context.output.target_path }}`
             Changed files: ${{ steps.collect_context.output.changed_files_path }}
             Patch: ${{ steps.collect_context.output.patch_path }}
+            Depth: ${{ input.review_depth }}
 
-            ## Adversarial Task
-            1. Read the patch, related tests, and test tooling configuration.
-            2. Decide whether key behavior is covered by unit, integration, end-to-end, or regression tests.
-            3. Look for happy-path-only tests, weak assertions, mocks that hide protocol behavior, timing instability, and missing failure cases.
-            4. For each testing gap, provide the smallest useful new test name, scenario, and assertions.
-            5. Write the complete Markdown report to `${{ steps.collect_context.output.output_dir }}/tests.md`.
+            Look for missing regression, integration, runtime, CLI, and failure
+            cases. For each gap, give the smallest useful test.
 
-            ## Custom Instructions
+            Custom instructions:
             ${{ input.review_instructions }}
 
-            ## Depth
-            ${{ input.review_depth }}
+            Write the complete Markdown report to:
+            ${{ steps.collect_context.output.reports.tests }}
+
+            Write boundary:
+            - Do not create, modify, or delete files in the target repository.
+            - Only write to the report path above, its parent output directory, or a system temporary directory.
+
+            Return a JSON object with counts and top findings.
           output:
             report_path: string
             blocking_count: integer
@@ -220,32 +256,35 @@ workflow:
           run: agent
           use: reviewer
           prompt: |
-            You are a maintainability and architecture reviewer. Your goal is to find misplaced complexity and changes that make future work brittle.
+            You are a maintainability and architecture reviewer. Find misplaced
+            complexity and changes that make future Acpus work brittle. Keep identifiers, paths, and commands verbatim.
 
-            Write all output in English. Keep code identifiers, file paths, and commands in their original form.
+            The codebase is under active iteration. Treat feature changes as
+            greenfield current behavior; do not recommend compatibility shims,
+            migration warnings, or legacy diagnostics unless explicitly asked.
 
-            The codebase is under active iteration; treat feature changes as greenfield current behavior, and should not add migration warnings, legacy-field diagnostics, or compatibility shims, or backward-compatibility unless explicitly requested.
-
-            ## Feature Goal
+            Feature goal:
             ${{ input.feature_goal }}
 
-            ## Review Scope
-            Repository: `${{ input.target_path }}`
+            Repository: `${{ steps.collect_context.output.target_path }}`
             Changed files: ${{ steps.collect_context.output.changed_files_path }}
             Patch: ${{ steps.collect_context.output.patch_path }}
+            Depth: ${{ input.review_depth }}
 
-            ## Adversarial Task
-            1. Read the patch, related module boundaries, `CONTEXT.md`, and `specs/`.
-            2. Inspect ownership boundaries, naming, abstraction level, duplication, dependency direction, and observability.
-            3. Pay special attention to global state introduced for local needs, runtime logic placed in core, compatibility shims, historical diagnostics, and spec/implementation drift.
-            4. Every finding MUST explain the long-term maintenance risk and the narrower alternative implementation.
-            5. Write the complete Markdown report to `${{ steps.collect_context.output.output_dir }}/maintainability.md`.
+            Inspect ownership boundaries, naming, abstraction level,
+            duplication, dependency direction, and spec drift.
 
-            ## Custom Instructions
+            Custom instructions:
             ${{ input.review_instructions }}
 
-            ## Depth
-            ${{ input.review_depth }}
+            Write the complete Markdown report to:
+            ${{ steps.collect_context.output.reports.maintainability }}
+
+            Write boundary:
+            - Do not create, modify, or delete files in the target repository.
+            - Only write to the report path above, its parent output directory, or a system temporary directory.
+
+            Return a JSON object with counts and top findings.
           output:
             report_path: string
             blocking_count: integer
@@ -265,41 +304,38 @@ workflow:
       run: agent
       use: reviewer
       prompt: |
-        You are the final cross-examination reviewer for an adversarial feature implementation review. Your job is to read the four reports, filter weak evidence, merge duplicates, resolve contradictions, and produce the final verdict directly.
+        You are the final cross-examination reviewer. Read all four reports,
+        filter weak evidence, merge duplicates, resolve contradictions, and
+        produce the final verdict. Keep identifiers, paths,
+        and commands verbatim.
 
-        Write all output in English. Keep code identifiers, file paths, and commands in their original form.
-
-        ## Feature Goal
+        Feature goal:
         ${{ input.feature_goal }}
 
-        ## Context Files
-        Changed files: ${{ steps.collect_context.output.changed_files_path }}
-        Diff stat: ${{ steps.collect_context.output.diff_stat_path }}
-        Patch: ${{ steps.collect_context.output.patch_path }}
+        Context:
+        - Changed files: ${{ steps.collect_context.output.changed_files_path }}
+        - Diff stat: ${{ steps.collect_context.output.diff_stat_path }}
+        - Patch: ${{ steps.collect_context.output.patch_path }}
 
-        ## Report Files
+        Reports:
         - Contract: ${{ steps.adversarial_reviews.contract.output.report_path }}
         - Correctness: ${{ steps.adversarial_reviews.correctness.output.report_path }}
         - Tests: ${{ steps.adversarial_reviews.tests.output.report_path }}
         - Maintainability: ${{ steps.adversarial_reviews.maintainability.output.report_path }}
 
-        ## Structured Counts
-        Contract blocking/high/medium: ${{ steps.adversarial_reviews.contract.output.blocking_count }}/${{ steps.adversarial_reviews.contract.output.high_count }}/${{ steps.adversarial_reviews.contract.output.medium_count }}
-        Correctness blocking/high/medium: ${{ steps.adversarial_reviews.correctness.output.blocking_count }}/${{ steps.adversarial_reviews.correctness.output.high_count }}/${{ steps.adversarial_reviews.correctness.output.medium_count }}
-        Tests blocking/high/medium: ${{ steps.adversarial_reviews.tests.output.blocking_count }}/${{ steps.adversarial_reviews.tests.output.high_count }}/${{ steps.adversarial_reviews.tests.output.medium_count }}
-        Maintainability blocking/high/medium: ${{ steps.adversarial_reviews.maintainability.output.blocking_count }}/${{ steps.adversarial_reviews.maintainability.output.high_count }}/${{ steps.adversarial_reviews.maintainability.output.medium_count }}
+        Start with one verdict: `ship`, `ship_with_fixes`, or `block`.
+        Include blocking, high, medium, and needs-verification sections, concrete
+        evidence, fix guidance, suggested tests, contradictions, and the smallest
+        useful one-day fix order.
 
-        ## Adversarial Task
-        1. Read every report and the relevant context files.
-        2. Remove findings without concrete file/line/evidence, or downgrade them to `needs_verification`.
-        3. Merge duplicate findings and keep the strongest evidence.
-        4. Mark findings that appear across multiple dimensions as `confirmed`.
-        5. Resolve contradictions between reports explicitly.
-        6. Start the report with one verdict: `ship`, `ship_with_fixes`, or `block`.
-        7. List blocking, high-priority, medium-priority, and needs-verification items.
-        8. For each issue, include evidence, impact, fix guidance, and suggested tests.
-        9. Provide the smallest useful fix order that can be completed in one day.
-        10. Write the final Markdown report to `${{ steps.collect_context.output.output_dir }}/cross-examination.md`.
+        Write the final Markdown report to:
+        ${{ steps.collect_context.output.reports.final }}
+
+        Write boundary:
+        - Do not create, modify, or delete files in the target repository.
+        - Only write to the final report path above, its parent output directory, or a system temporary directory.
+
+        Return a JSON object with verdict, final report path, counts, and next actions.
       output:
         verdict: string
         final_report_path: string
@@ -312,17 +348,11 @@ workflow:
         contradiction_count: integer
         next_actions:
           - string
-        top_confirmed_findings:
-          - title: string
-            severity: string
-            dimensions:
-              - string
-            evidence: string
-            fix: string
       timeout: 30m
 
 outputs:
   verdict: ${{ steps.cross_examine.output.verdict }}
   final_report_path: ${{ steps.cross_examine.output.final_report_path }}
+  output_dir: ${{ steps.collect_context.output.output_dir }}
   blocking_count: ${{ steps.cross_examine.output.blocking_count }}
   high_count: ${{ steps.cross_examine.output.high_count }}

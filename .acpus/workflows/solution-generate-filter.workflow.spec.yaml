@@ -1,0 +1,190 @@
+version: 1
+name: solution-generate-filter
+description: |
+  Dynamic workflow pattern: generate-and-filter.
+
+  Generates multiple solution directions for an Acpus maintainer problem, has
+  independent agents filter and critique them, then synthesizes a ranked
+  recommendation. Program Steps only prepare deterministic output paths.
+
+  Output: .acpus/output/solution-generate-filter/<run_id>/
+
+input:
+  problem: string
+  target_path?: string = "."
+  constraints?: string = "(none)"
+  output_root?: string = ".acpus/output/solution-generate-filter"
+
+agents:
+  generator:
+    use: pi
+  filter:
+    use: pi
+  synthesizer:
+    use: pi
+
+workflow:
+  steps:
+    - id: prepare_output
+      run: program
+      cmd:
+        - bash
+        - -lc
+        - |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import pathlib
+
+          out = pathlib.Path("${{ input.output_root }}").resolve() / "${{ run_id }}"
+          out.mkdir(parents=True, exist_ok=True)
+          print(json.dumps({
+              "output_dir": str(out),
+              "final_path": str(out / "recommendation.md"),
+          }))
+          PY
+      capture:
+        from: stdout
+        parse: json
+      output:
+        output_dir: string
+        final_path: string
+
+    - id: generate_options
+      fanout:
+        over: ["minimal", "balanced", "bold"]
+        key: "${{ item }}"
+        max_concurrency: 3
+        join: all
+        do:
+          - id: propose
+            run: agent
+            use: generator
+            prompt: |
+              Generate one solution option for this Acpus maintainer problem.
+              Your lane is `${{ item }}`. Keep identifiers, file paths, and
+              commands verbatim.
+
+              Problem:
+              ${{ input.problem }}
+
+              Target repository:
+              ${{ input.target_path }}
+
+              Constraints:
+              ${{ input.constraints }}
+
+              Focus:
+              - `minimal`: smallest useful change.
+              - `balanced`: pragmatic high-confidence change.
+              - `bold`: larger simplification or redesign.
+
+              Return JSON with the option, affected areas, risks, and verification.
+            output:
+              lane: string
+              title: string
+              summary: string
+              affected_areas:
+                - string
+              risks:
+                - string
+              verification:
+                - string
+            timeout: 20m
+
+    - id: filter_options
+      parallel:
+        - id: feasibility
+          run: agent
+          use: filter
+          prompt: |
+            Filter these generated options for feasibility in the current Acpus
+            codebase. Prefer evidence over taste.
+
+            Problem:
+            ${{ input.problem }}
+
+            Options:
+            ${{ steps.generate_options }}
+
+            Write boundary:
+            - Do not create, modify, or delete files in the target repository.
+            - If scratch files are needed, use only the workflow output directory or a system temporary directory.
+
+            Return JSON with rejected options, kept options, and top concerns.
+          output:
+            kept:
+              - string
+            rejected:
+              - string
+            top_concerns:
+              - string
+          timeout: 20m
+
+        - id: risk
+          run: agent
+          use: filter
+          prompt: |
+            Filter these generated options for correctness, test, and
+            maintenance risk.
+
+            Problem:
+            ${{ input.problem }}
+
+            Options:
+            ${{ steps.generate_options }}
+
+            Write boundary:
+            - Do not create, modify, or delete files in the target repository.
+            - If scratch files are needed, use only the workflow output directory or a system temporary directory.
+
+            Return JSON with risk-ranked options and disqualifying issues.
+          output:
+            ranked:
+              - string
+            disqualifying_issues:
+              - string
+            mitigation_notes:
+              - string
+          timeout: 20m
+
+    - id: synthesize_recommendation
+      run: agent
+      use: synthesizer
+      prompt: |
+        Synthesize the generated options and filters into one ranked
+        recommendation for Acpus maintainers. Keep identifiers, file paths, and
+        commands verbatim.
+
+        Problem:
+        ${{ input.problem }}
+
+        Generated options:
+        ${{ steps.generate_options }}
+
+        Feasibility filter:
+        ${{ steps.filter_options.feasibility.output }}
+
+        Risk filter:
+        ${{ steps.filter_options.risk.output }}
+
+        Write the final Markdown report to:
+        ${{ steps.prepare_output.output.final_path }}
+
+        Write boundary:
+        - Do not create, modify, or delete files in the target repository.
+        - Only write to the final report path above, its parent output directory, or a system temporary directory.
+
+        Return JSON with the chosen option and implementation outline.
+      output:
+        chosen_title: string
+        final_report_path: string
+        confidence: string
+        next_steps:
+          - string
+      timeout: 25m
+
+outputs:
+  chosen_title: ${{ steps.synthesize_recommendation.output.chosen_title }}
+  final_report_path: ${{ steps.synthesize_recommendation.output.final_report_path }}
+  output_dir: ${{ steps.prepare_output.output.output_dir }}

@@ -4,5 +4,6 @@ coverage/
 .tmp-tests/
 .DS_Store
 .acpus/state/
+.acpus/output/
 *.tsbuildinfo
 mock-trace.jsonl

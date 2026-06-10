@@ -30,6 +30,7 @@ pnpm acpus workflows run packages/core/test/fixtures/all-primitives.yaml --dry-r
 # Workflow Catalog
 pnpm acpus workflows list
 pnpm acpus wf show project:stress-demo
+pnpm acpus wf show project:worktree-implementation-tournament
 
 # Runtime execution (lazy supervisor starts automatically)
 pnpm acpus workflows run spec.yaml                       # foreground follow with observations
@@ -52,6 +53,32 @@ pnpm acpus runs clean --dry-run                       # preview terminal Run cle
 # Mock agent
 pnpm mock-agent --script packages/mock-agent/test/fixtures/mock.yaml
 ```
+
+## Dynamic Workflow Templates
+
+The project catalog includes six runnable workflow templates inspired by the
+dynamic workflow patterns described in Claude Code's "harness for every task"
+article. They follow an agent-first boundary: agents handle ambiguous reasoning,
+synthesis, judging, implementation, and repair; Program Steps handle only
+deterministic glue such as git status, worktree setup, patch generation, lint,
+build, test, file copy, and collision checks.
+
+| Pattern | Workflow ref | Use case | Mutates workspace | Key inputs | Output path | Validate |
+| --- | --- | --- | --- | --- | --- | --- |
+| Classify and act | `project:dynamic-workflow-designer` | Classify a maintainer task, design a new Acpus Workflow Spec, lint it, and install it into the project catalog. | Yes, installs a workflow file | `task`, `target_path`, `desired_name` | `.acpus/output/dynamic-workflow-designer/<run_id>/` | `pnpm acpus workflows lint project:dynamic-workflow-designer` |
+| Fanout and synthesize | `project:codebase-deep-research` | Run independent architecture, quality, security, performance, and API research, then synthesize a final report. | No | `target_path`, `research_depth`, `custom_instructions` | `.acpus/output/codebase-deep-research/<run_id>/` | `pnpm acpus workflows lint project:codebase-deep-research` |
+| Adversarial verification | `project:adversarial-feature-implementation-review` | Review a feature implementation through contract, correctness, test, and maintainability lenses, then cross-examine. | No | `target_path`, `feature_goal`, `base_ref`, `implementation_ref`, `output_root` | `.acpus/output/adversarial-feature-implementation-review/<run_id>/` | `pnpm acpus workflows lint project:adversarial-feature-implementation-review` |
+| Generate and filter | `project:solution-generate-filter` | Generate minimal, balanced, and bold solution directions, filter them, and produce a ranked recommendation. | No | `problem`, `target_path`, `constraints` | `.acpus/output/solution-generate-filter/<run_id>/` | `pnpm acpus workflows lint project:solution-generate-filter` |
+| Tournament | `project:worktree-implementation-tournament` | Create three git worktrees, let agents implement competing candidates, verify them, judge a winner, and auto-apply the winning patch. | Yes, requires clean workspace | `target_path`, `feature_goal`, `verification_cmd` | `.acpus/output/worktree-implementation-tournament/<run_id>/` | `pnpm acpus workflows lint project:worktree-implementation-tournament` |
+| Loop until done | `project:loop-until-green-fix` | Create one git worktree, let an agent repair iteratively, verify after each attempt, and auto-apply the passing patch. | Yes, requires clean workspace | `target_path`, `fix_goal`, `verification_cmd` | `.acpus/output/loop-until-green-fix/<run_id>/` | `pnpm acpus workflows lint project:loop-until-green-fix` |
+
+Mutating templates require `git status --porcelain` to be empty before they
+apply patches to the main workspace. They apply patches only; they do not stage
+or commit. They keep temporary worktrees under `.acpus/output/...` for audit;
+remove those directories and run `git worktree prune` when you no longer need
+the review material. The loop-until-green template currently uses a fixed
+three-iteration budget because the Workflow Spec schema requires
+`loop.max_iterations` to be a number, not a runtime expression.
 
 ## Runtime Architecture
 
