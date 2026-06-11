@@ -107,12 +107,14 @@ export function cancelPendingForRunCancel(from: NodeState): NodeState {
 export function createInitialNodeState(
   nodeKey: string,
   nodeId: string,
-  kind: IrNodeKind
+  kind: IrNodeKind,
+  definitionHash?: string
 ): NodeExecutionState {
   return {
     nodeKey,
     nodeId,
     kind,
+    definitionHash,
     state: "pending",
     attempt: 0
   };

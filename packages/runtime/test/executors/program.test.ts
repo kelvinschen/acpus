@@ -129,13 +129,41 @@ describe("ProgramExecutor", () => {
     expect(result.output).toEqual({ key: "value" });
   });
 
-  it("treats a non-zero exit code as data (no error)", async () => {
+  it("fails the node fast when exit code is not allow-listed (default `[0]`)", async () => {
     const executor = new ProgramExecutor();
     const node = makeProgramNode({ cmd: "exit 1" });
+    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+    expect(result.failureKind).toBe("exit");
+    expect(result.exitCode).toBe(1);
+    expect(result.error).toMatch(/exit_code=1/);
+  });
+
+  it("includes a stderr tail in the failure message", async () => {
+    const executor = new ProgramExecutor();
+    const node = makeProgramNode({ cmd: "echo 'syntax: bad' 1>&2; exit 2" });
+    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+    expect(result.failureKind).toBe("exit");
+    expect(result.error).toMatch(/syntax: bad/);
+  });
+
+  it("treats an allow-listed non-zero exit as step data, not failure", async () => {
+    const executor = new ProgramExecutor();
+    const node = makeProgramNode({ cmd: "exit 1", expect: { exit_code: [0, 1] } });
     const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
     expect(result.exitCode).toBe(1);
     expect(result.error).toBeUndefined();
     expect(result.failureKind).toBeUndefined();
+  });
+
+  it("does not run schema validation on a non-allow-listed exit failure", async () => {
+    const executor = new ProgramExecutor();
+    const node = makeProgramNode({
+      cmd: "echo 'not json'; exit 1",
+      capture: { from: "stdout", parse: "json" },
+      output: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] }
+    });
+    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+    expect(result.failureKind).toBe("exit");
   });
 
   it("classifies a missing command as a spawn failure", async () => {

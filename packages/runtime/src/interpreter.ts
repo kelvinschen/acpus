@@ -1,5 +1,5 @@
 import type { AcpusIr, IrNode, NodeKeyTemplate } from "@acpus/core";
-import { parseDurationMs, compileWorkflow } from "@acpus/core";
+import { parseDurationMs, compileWorkflow, hashIrNode } from "@acpus/core";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { ExpressionContext, InterpreterOptions, NodeKeyDynamic, RunOptions } from "./types.js";
@@ -419,7 +419,9 @@ export class WorkflowInterpreter {
     );
 
     // Initialize state
-    const state = existing ?? createInitialNodeState(nodeKey, node.id, node.kind);
+    const definitionHash = hashIrNode(node);
+    const state = existing ?? createInitialNodeState(nodeKey, node.id, node.kind, definitionHash);
+    if (!state.definitionHash) state.definitionHash = definitionHash;
     if (state.state === "failed") {
       throw new Error(`Node ${nodeKey} is in failed state`);
     }
@@ -709,7 +711,7 @@ export class WorkflowInterpreter {
       throw new LeafExecutionError(`Program step '${node.id}' failed (${result.failureKind}): ${result.error ?? "unknown"}`, artifactRefs);
     }
 
-    // A non-zero exit code is step data. Expose output + exit_code envelope.
+    // exit code is allow-listed by `expect.exit_code` (default `[0]`); other
     return { output: { output: result.output, exit_code: result.exitCode ?? 0 }, artifactRefs };
   }
 
@@ -982,7 +984,7 @@ export class WorkflowInterpreter {
     const resolved = resolveNodeKey(node.keyTemplate, dynamic);
     const nodeKey = keyPrefix ? `${keyPrefix}/${resolved}` : resolved;
     if (this.store.readNodeState(runId, nodeKey)) return;
-    this.store.writeNodeState(runId, createInitialNodeState(nodeKey, node.id, node.kind));
+    this.store.writeNodeState(runId, createInitialNodeState(nodeKey, node.id, node.kind, hashIrNode(node)));
   }
 
   private async executeSwitch(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {

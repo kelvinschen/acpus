@@ -85,8 +85,12 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A Program Step result MUST be exposed as an envelope `{ output, exit_code }` at `steps.<id>`.
 - A Program Step MUST expose `steps.<id>.exit_code`.
 - A Program Step MUST persist its stdout and stderr as artifacts (`stdout.log` and `stderr.log`) on every execution, and expose their references.
-- Non-zero Program Step exit codes MUST be treated as step data; the Node completes and carries `exit_code`.
-- A Program Step MUST fail the Node only on non-recoverable conditions: process timeout, signal kill, spawn failure, capture parse/read failure, or artifact write failure.
+- A Program Step MAY declare `expect.exit_code` as a non-empty array of non-negative integers.
+- The default `expect.exit_code` MUST be treated as `[0]` when `expect` is omitted.
+- A Program Step exit code allow-listed by `expect.exit_code` MUST be exposed as step data: the Node completes and `steps.<id>.exit_code` carries the code.
+- A Program Step exit code NOT allow-listed by `expect.exit_code` MUST fail the Node with `failureKind: "exit"`; the failure message MUST include the exit code and a tail of stderr to localize the broken script.
+- A Program Step MUST evaluate `expect.exit_code` before capture and output schema validation; a non-allow-listed exit code MUST NOT be reported as a capture or schema failure.
+- A Program Step MUST fail the Node only on non-recoverable conditions: process timeout, signal kill, spawn failure, capture parse/read failure, output schema validation failure, artifact write failure, or non-allow-listed exit code.
 - A Program Step MAY omit `capture` when no structured output parsing is required.
 - A Program Step MAY declare `output` using the Acpus Schema DSL defined in [Schema Spec](schema-spec.md).
 - A Program Step `output` declared with the Acpus Schema DSL MUST compile nested object and array item structure into the Program Step output schema stored in the IR.
@@ -190,6 +194,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - Compiler tests MUST cover Agent Step shape validation.
 - Compiler tests MUST cover Agent Step `session_key` validation, expression collection, and IR preservation.
 - Compiler tests MUST cover Program Step shape validation.
+- Compiler tests MUST cover `expect.exit_code` shape validation.
 - Compiler tests MUST cover composite Node compilation.
 - Compiler tests MUST cover Guard Node shape validation, compilation, and expression collection.
 - Compiler tests MUST cover include expansion and include cycle diagnostics.
@@ -198,4 +203,5 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - Compiler tests MUST cover Agent Step output declarations that use the Acpus Schema DSL.
 - Runtime tests MUST cover Agent Steps through acpx.
 - Runtime tests MUST cover Program Steps as local subprocesses.
+- Runtime tests MUST cover Program Step default fail-fast on non-allow-listed exit codes and `expect.exit_code` opt-out.
 - Runtime tests MUST cover deterministic replay.

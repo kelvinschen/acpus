@@ -15,6 +15,7 @@ export {
 export type { ExpressionCollector } from "./expressions.js";
 export { parseDurationMs } from "./duration.js";
 export type { ParseDurationOptions } from "./duration.js";
+export { hashIrNode } from "./hash.js";
 export type {
   AcpusIr,
   AgentSpec,

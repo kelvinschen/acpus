@@ -11,9 +11,16 @@ import { ExpressionEvaluator } from "../evaluator.js";
  * Real program executor using execa for subprocess management.
  * Handles cmd template resolution, capture config, timeout, and abort signal.
  *
- * A non-zero exit code is treated as step data (the node completes and exposes
- * exit_code). Only non-recoverable conditions — timeout, signal kill, spawn
- * failure, or capture parse failure — fail the node via `failureKind`.
+ * A non-zero exit code that is not listed in the step's `expect.exit_code`
+ * allow-list (default `[0]`) fails the node with `failureKind: "exit"`. This
+ * fail-fast policy lets dynamic shell/python script breakage (syntax errors,
+ * missing tools, unbound paths) surface at the broken Program Step rather than
+ * far downstream at a Guard Node. Authors who treat exit codes as a business
+ * signal (test runners, grep, diff) opt out by listing the expected codes in
+ * `expect.exit_code`.
+ *
+ * Other non-recoverable conditions — timeout, signal kill, spawn failure,
+ * capture parse failure — also fail the node via `failureKind`.
  */
 export class ProgramExecutor implements ExecutorAdapter {
   private readonly evaluator: ExpressionEvaluator;
@@ -110,6 +117,19 @@ export class ProgramExecutor implements ExecutorAdapter {
 
     const exitCode = result.exitCode ?? 0;
 
+    // ADR-0006: a non-zero exit not allow-listed by `expect.exit_code` fails
+    // the node fast. The default allow-list is `[0]`. This precedes capture
+    // and schema checks so a broken script never masquerades as a parse error.
+    const expect = node.metadata.expect as { exit_code?: number[] } | undefined;
+    const allowedExitCodes = expect?.exit_code ?? [0];
+    if (!allowedExitCodes.includes(exitCode)) {
+      const tail = stderrTail(stderr, 20);
+      const message = tail
+        ? `exit_code=${exitCode}; stderr (last ${tail.lines} line${tail.lines === 1 ? "" : "s"}):\n${tail.text}`
+        : `exit_code=${exitCode}`;
+      return { failureKind: "exit", error: message, exitCode, stdout, stderr };
+    }
+
     // Handle capture config.
     let output: unknown;
     if (capture) {
@@ -189,4 +209,16 @@ export class ProgramExecutor implements ExecutorAdapter {
     }
     return out;
   }
+}
+
+/**
+ * Return the last `max` non-empty lines of stderr for inclusion in a Node-failed
+ * error summary. Returns undefined when there's nothing useful to show.
+ */
+function stderrTail(stderr: string | undefined, max: number): { text: string; lines: number } | undefined {
+  if (!stderr) return undefined;
+  const lines = stderr.replace(/\s+$/u, "").split(/\r?\n/u);
+  const trimmed = lines.slice(-max);
+  if (trimmed.length === 0 || (trimmed.length === 1 && trimmed[0] === "")) return undefined;
+  return { text: trimmed.join("\n"), lines: trimmed.length };
 }

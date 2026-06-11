@@ -10,6 +10,7 @@
 
 import type { AcpusIr } from "@acpus/core";
 import type { RunCleanResult, RunState, NodeExecutionState, RunSummary, ReplayResult, SupervisorHealth } from "./types.js";
+import type { ForkPlan } from "./fork.js";
 import { randomUUID } from "node:crypto";
 
 export class RunSupervisorClient {
@@ -165,6 +166,38 @@ export class RunSupervisorClient {
   }
 
   /**
+   * Fork a terminal source Run into a new Run. Pass `dryRun: true` to receive
+   * the inheritance plan without creating a Run. Fork-specific rejections
+   * (non-terminal source, missing checkpoint index, compilation failure, plan
+   * rejection) throw a {@link ForkRejectedError} so callers can map them to a
+   * dedicated exit code.
+   */
+  async forkRun(
+    sourceRunId: string,
+    spec: string,
+    options: {
+      sourcePath?: string;
+      workflowRef?: string;
+      input?: Record<string, unknown>;
+      overrideOriginNodeKey?: string;
+      dryRun?: boolean;
+    } = {}
+  ): Promise<{ run?: RunState; plan: ForkPlan; dryRun?: boolean }> {
+    const res = await fetch(`${this.baseUrl}/runs/${sourceRunId}/fork`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...this.headers() },
+      body: JSON.stringify({ spec, ...options })
+    });
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string; kind?: string };
+      const message = body.error ?? `Failed to fork run: ${res.status}`;
+      if (body.kind === "fork-rejected") throw new ForkRejectedError(message);
+      throw new Error(message);
+    }
+    return res.json() as Promise<{ run?: RunState; plan: ForkPlan; dryRun?: boolean }>;
+  }
+
+  /**
    * Issue a Run-level control action. No ?key= parameter — the action applies
    * to the entire Run.
    */
@@ -181,5 +214,17 @@ export class RunSupervisorClient {
       throw new Error(body.error ?? `Failed to ${action} run: ${res.status}`);
     }
     return res.json() as Promise<RunState>;
+  }
+}
+
+/**
+ * Thrown by {@link RunSupervisorClient.forkRun} when the supervisor responds
+ * with `kind: "fork-rejected"`. CLI callers map this to a dedicated exit code
+ * to distinguish fork-rejection from generic runtime failures.
+ */
+export class ForkRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ForkRejectedError";
   }
 }

@@ -77,17 +77,14 @@ Use Acpus as the durable local runner underneath the user's preferred agent. Kee
 
 When a Run fails or stalls:
 
-1. Inspect the Run and failed node:
+1. `acpus runs show <runId> --json` — find the failed/awaiting nodeKey, error, artifact refs.
+2. Read referenced artifacts before guessing. `artifact://runs/<runId>/nodes/<nodeKey>/<file>` resolves to `.acpus/state/runs/<runId>/artifacts/<encoded-key>/<file>` (`/` → `:`).
+3. Pick the smallest recovery:
+   - **Spec is wrong** (script bug, schema mismatch, control-flow error): edit spec, then `acpus runs fork <runId> <fixed-spec> [--dry-run] [--from <nodeKey>]`. Inherits unaffected work.
+   - **Spec is fine, transient failure**: `acpus runs retry <runId> [--node <nodeKey>]`.
+   - **Paused / awaiting / verifying**: `acpus runs resume <runId>` / `acpus runs signal <runId> --node <nodeKey> --approve|--reject` / `acpus runs replay <runId>`.
 
-   ```sh
-   acpus runs show <runId> --json
-   ```
-
-2. Read referenced artifacts before guessing.
-   `artifact://runs/<runId>/nodes/<nodeKey>/<filename>` resolves under the workspace state directory:
-   `.acpus/state/runs/<runId>/artifacts/<encoded-node-key>/<filename>`, where `/` in the node key becomes `:`.
-3. Choose the smallest recovery: `acpus runs retry <runId>`, `acpus runs retry <runId> --node <nodeKey>`, `acpus runs resume <runId>`, `acpus runs signal <runId> --node <nodeKey> --approve/--reject`, `acpus runs replay <runId>`, or fix the spec and start a new Run.
-4. For background status tracking, follow `references/background-run-polling.md`; do not poll constantly.
+See `references/error-recovery.md` for failure-symptom decision table and fork semantics. Background polling cadence: `references/background-run-polling.md`.
 
 ## Load More When Needed
 

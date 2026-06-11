@@ -27,6 +27,8 @@ export interface NodeExecutionState {
   nodeId: string;
   /** Node kind from IR */
   kind: IrNodeKind;
+  /** Node Definition Hash (canonical hash of the IR Node + subtree). */
+  definitionHash?: string;
   /** Current state in the state machine */
   state: NodeState;
   /** How many times this node has been attempted */
@@ -60,7 +62,37 @@ export interface NodeDynamicContext {
   loop?: { iter: number; last?: unknown };
 }
 
+// ─── Run Checkpoint ─────────────────────────────────────────────
+
+/**
+ * An ordered, persisted record of one Node's terminal outcome within a Run.
+ *
+ * Run Checkpoints are the inheritance source consulted when a Forked Run
+ * decides which Nodes to reuse: the Forked Run scans checkpoints in `sequence`
+ * order, requires `state === "completed"`, and matches `definitionHash` against
+ * the new Workflow Spec's compiled IR Node.
+ */
+export interface RunCheckpoint {
+  /** Monotonically-increasing append order within this Run. */
+  sequence: number;
+  nodeKey: string;
+  state: NodeState;
+  /** Node Definition Hash from the IR at the time the Node ran. */
+  definitionHash: string;
+  /** ISO timestamp the Node entered terminal state. */
+  completedAt?: string;
+}
+
 // ─── Run-level metadata ─────────────────────────────────────────
+
+export interface RunLineage {
+  /** Run ID of the immediate prior Run this Forked Run derived from. */
+  sourceRunId: string;
+  /** Node Key chosen as Fork Origin (default boundary or operator override). */
+  forkOriginNodeKey: string;
+  /** Number of Nodes inherited from the prior Run. */
+  inheritedNodeCount: number;
+}
 
 export interface RunState {
   runId: string;
@@ -78,6 +110,8 @@ export interface RunState {
   updatedAt: string;
   /** Run generation: starts at 1 and increments on each Run-level retry. */
   runAttempt: number;
+  /** Lineage to the prior Run this Run was forked from (set on Forked Runs). */
+  lineage?: RunLineage;
   /** Node states included when inspecting a specific run (GET /runs/:runId) */
   nodes?: NodeExecutionState[];
 }
@@ -208,6 +242,7 @@ export interface RunSummary {
   status: RunStatus;
   createdAt: string;
   updatedAt: string;
+  lineage?: RunLineage;
 }
 
 export interface RunCleanItem {

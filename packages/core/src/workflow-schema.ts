@@ -89,6 +89,7 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
         },
         env: { type: "object" },
         capture: { $ref: "#/$defs/captureSpec" },
+        expect: { $ref: "#/$defs/expectSpec" },
         output: { type: "object" },   // free DSL
         retry: { $ref: "#/$defs/retrySpec" },
         timeout: { $ref: "#/$defs/timeoutSpec" },
@@ -307,7 +308,6 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
       }
     },
 
-    // ── Shared sub-schemas ──
     captureSpec: {
       type: "object",
       additionalProperties: false,
@@ -333,6 +333,19 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
           then: { required: ["path"] }
         }
       ]
+    },
+
+    expectSpec: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        exit_code: {
+          type: "array",
+          minItems: 1,
+          items: { type: "integer", minimum: 0 }
+        }
+      },
+      required: ["exit_code"]
     },
 
     retrySpec: {

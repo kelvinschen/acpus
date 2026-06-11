@@ -87,7 +87,9 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - ProgramExecutor MUST execute string `cmd` values with shell semantics.
 - ProgramExecutor MUST execute array `cmd` values without shell expansion, using the first array element as the executable and remaining elements as arguments.
 - ProgramExecutor MUST return raw stdout/stderr and classify failures via `failureKind` (parse, schema, spawn, timeout, killed, capture, exit).
-- The runtime MUST treat a non-zero program exit code as step data and fail the Node only when a `failureKind` marks the failure non-recoverable.
+- ProgramExecutor MUST treat a non-zero program exit code that is not allow-listed by the Program Step's `expect.exit_code` (default `[0]`) as `failureKind: "exit"` and MUST localize the failure in its error string with the exit code and a tail of stderr.
+- ProgramExecutor MUST evaluate `expect.exit_code` before capture parsing and output schema validation; an exit-classified failure MUST NOT be reported as a capture or schema failure.
+- The runtime MUST treat an allow-listed program exit code as step data and MUST fail the Node only when a `failureKind` marks the failure non-recoverable.
 - The interpreter MUST write program stdout/stderr as `stdout.log`/`stderr.log` artifacts and record their references on the Node.
 - AgentExecutor MUST derive a stable acpx session name from the resolved node key (`acpus-<runId>-<sanitized nodeKey>`) when an Agent Step does not declare `session_key`, ensuring uniqueness across loop rounds, fanout lanes, and subworkflow nesting by default.
 - AgentExecutor MUST derive a stable acpx session name from the Run id and rendered `session_key` when an Agent Step declares `session_key`, using a collision-resistant safe encoding for the rendered key and allowing explicit same-Run session sharing across materialized Agent Steps.
@@ -211,6 +213,22 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Run cleanup dry-run MUST report the same deletion candidates without deleting files.
 - Run cleanup results MUST include deleted and skipped Run IDs, counts, statuses when known, and estimated bytes reclaimed.
 
+### Forked Runs
+
+- The runtime MUST persist Run Checkpoints under `.acpus/state/runs/<runId>/checkpoints.index.json` as an ordered array; each entry MUST include `sequence`, `nodeKey`, terminal `state`, `definitionHash`, and `completedAt`.
+- The runtime MUST append a Run Checkpoint whenever a Node enters a terminal state (`completed`, `failed`, `cancelled`); a re-attempt of the same Node MUST update its checkpoint entry in place, preserving the original `sequence`.
+- Each persisted Node state MUST carry the Node Definition Hash that produced it; the runtime MUST treat the hash as opaque outside of fork planning.
+- The runtime MUST expose a `POST /runs/:runId/fork` Run Supervisor route accepting a Workflow Spec, optional `sourcePath`, `workflowRef`, `input`, `overrideOriginNodeKey`, and `dryRun`.
+- Fork submission MUST be rejected with a conflict error when the source Run is in a non-terminal state (`running`, `paused`, or `awaiting`) or when the source Run has no checkpoint index.
+- Fork planning MUST scan the source Run's checkpoints in `sequence` order and inherit each Node whose Node Key has a matching static counterpart in the new Spec, whose prior state is `completed`, and whose Node Definition Hash matches the new compiled IR; inheritance MUST stop at the first Node failing any of these checks (the inheritance boundary).
+- The default Fork Origin MUST be the inheritance boundary determined by the scan; an operator override MAY force an earlier Origin but MUST NOT be a Node inside a Composite (`parallel`, `fanout`, `loop`, `switch`, `subworkflow`) body.
+- A Forked Run MUST be its own Run with its own frozen IR snapshot and MUST NOT mutate the source Run.
+- Inherited Nodes MUST be materialized in the Forked Run by copying their persisted Node state and artifact directory from the source Run, rewriting artifact URIs to the new Run ID; subsequent execution MUST short-circuit on these completed Nodes.
+- A Forked Run's `run-meta.json` MUST persist `lineage` containing `sourceRunId`, `forkOriginNodeKey`, and `inheritedNodeCount`; the lineage MUST refer only to the immediate prior Run and MUST NOT carry deeper ancestry.
+- `dryRun: true` MUST return the Fork Plan (`sourceRunId`, `inheritedNodeKeys`, `defaultForkOriginNodeKey`, `forkOriginNodeKey`, `boundaryReason`) without creating a Run.
+- A Forked Run MUST treat inherited outputs as historical facts and MUST NOT recompute runtime-context values (such as `run_id` or `now()` derivations) embedded in those outputs.
+- A Forked Run MUST start fresh ACP sessions for any Agent Step it executes; Continuation MUST NOT span Runs.
+
 ### Node-Level Retry And Approval
 
 - The runtime MUST support Node-level retry only for failed executable Nodes (`run.agent` and `run.program`).
@@ -255,6 +273,8 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Runtime tests MUST cover that Agent Step attempts publish the rendered prompt and live prompt/transcript artifact references while the Node is running, preserve append-built transcript contents at finalization, write per-attempt prompt/response artifacts, and preserve earlier attempt artifact references across automatic retry.
 - Runtime tests MUST cover a real Acpus→acpx→Mock Agent end-to-end path for: Run-level pause producing a partial transcript artifact and a `paused` Agent Step; Run-level resume re-entering the paused Agent Step with the fixed continuation prompt and completing the turn; and Node-level retry recovering a dead agent subprocess by re-running the Activity.
 - Runtime tests MUST cover that Program Steps execute as local subprocesses.
+- Runtime tests MUST cover Program Step default fail-fast on a non-allow-listed exit code with a stderr-tail in the failure message, and `expect.exit_code` allow-list opt-out.
+- Runtime tests MUST cover that exit-classified failure precedes capture and schema validation.
 - Runtime tests MUST cover that workflow retry, timeout, pause, resume, and cancel decisions remain owned by Acpus.
 - Runtime tests MUST cover Workspace-scoped lazy Run Supervisor startup, stale metadata replacement, health checks, and lock-protected concurrent startup.
 - Runtime tests MUST cover that the Run Supervisor uses a random localhost port and writes `.acpus/state/supervisor.json` with the required fields.
@@ -288,3 +308,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Runtime tests MUST cover fanout lane steps isolation (no shared reference data races).
 - Runtime tests MUST cover artifact filename validation (directory traversal prevention).
 - Runtime tests MUST cover Run Supervisor REST API routes including query-parameter node key handling.
+- Runtime tests MUST cover Run Checkpoint persistence on terminal Node transitions, including in-place update on a re-attempt.
+- Runtime tests MUST cover Forked Run inheritance: completed/failed/cancelled source Run, first-divergence default origin, hash-mismatch and missing-Node truncation, operator override (including rejection inside a Composite body), input inheritance, and persisted lineage.
+- Runtime tests MUST cover that a Forked Run runs to completion using inherited Nodes without re-executing them.
+- Runtime tests MUST cover `dryRun` fork planning returning the plan without creating a Run, and the supervisor rejecting fork on non-terminal source Runs.

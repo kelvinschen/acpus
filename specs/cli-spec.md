@@ -31,6 +31,7 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - The CLI MAY support human-readable output for interactive use.
 - The CLI MUST report lint failures with exit code `10`.
 - The CLI MUST report runtime failures with exit code `20`.
+- The CLI MUST report fork rejection (non-terminal source Run, missing Spec, override inside a Composite body, missing checkpoint index) with exit code `21`.
 - The CLI MUST report user cancellation or pause of a foreground-followed Run with exit code `2`.
 - The CLI MUST report Run Supervisor connection or startup failures with exit code `40`.
 - `acpus workflows run <ref-or-path>` MUST exit `0` when the followed Run completes, `20` when it fails, and `2` when it reaches `cancelled` or `paused`.
@@ -60,6 +61,13 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - `acpus runs signal` MUST require `--node` and MUST require exactly one of `--approve` or `--reject`; supplying neither or both MUST be a usage error.
 - `acpus runs signal` MUST be accepted only for a Node currently `awaiting` and MUST be rejected with a conflict otherwise; it MUST support machine-readable JSON output reporting the resulting Node state.
 - The CLI MUST support `acpus runs replay <run_id>` to deterministically replay a local Run through the Run Supervisor and verify its reconstructed Node topology against the persisted Run.
+- The CLI MUST support `acpus runs fork <source_run_id> <ref-or-path>` to derive a new Run from a terminal source Run, where `<ref-or-path>` selects the repaired Workflow Spec.
+- `acpus runs fork` MUST be rejected when the source Run is in a non-terminal state, when the source Run has no checkpoint index, when the override `--from <nodeKey>` is inside a Composite body, or when the supplied Spec fails to compile.
+- `acpus runs fork --from <nodeKey>` MAY force the Fork Origin to a specific top-level or Composite Node Key; without `--from`, the inheritance boundary inferred from Run Checkpoint scanning MUST be used.
+- `acpus runs fork --dry-run` MUST print or emit (with `--json`) the Fork Plan including `inheritedNodeKeys`, `defaultForkOriginNodeKey`, `forkOriginNodeKey`, and `boundaryReason`, and MUST NOT create a Run.
+- `acpus runs fork` without `--background`, `--visualize`, or `--dry-run` MUST submit the Forked Run and foreground-follow it until terminal status, mirroring `workflows run`.
+- `acpus runs fork --input <value>` MAY override the inherited input; without it the Forked Run MUST inherit the source Run's frozen input.
+- `acpus runs list` MUST mark Forked Runs with their immediate prior Run ID (`forked from <id>`) when lineage is present; lineage MUST NOT carry deeper ancestry.
 - `acpus runs replay` MUST reconstruct the Run from the frozen IR snapshot and recorded Node outcomes, and MUST NOT depend on mutable YAML, system time, random values, or large artifact payloads.
 - `acpus runs replay` MUST report verification results as machine-readable JSON, including any discrepancies between the recorded and replayed Node topology.
 - The CLI MUST support `acpus runs visualize [run_id]`.
@@ -124,6 +132,7 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - Runtime CLI tests MUST cover local Run execution without remote workers, remote task queues, or a shared Temporal cluster.
 - Runtime CLI tests MUST cover Run-level pause, resume, cancel, and retry validation.
 - Runtime CLI tests MUST cover Node-level retry validation through `--node`.
+- Runtime CLI tests MUST cover `acpus runs fork` foreground follow, `--background`, `--dry-run --json`, `--from <nodeKey>` override, rejection on non-terminal source Run, and lineage display in `acpus runs list`.
 - Runtime CLI tests MUST cover Run-level control commands and Node-level retry producing machine-readable JSON output.
 - Runtime CLI tests MUST cover `acpus runs replay` producing machine-readable JSON output.
 - Runtime CLI tests MUST cover `acpus runs replay` reproducing a Run's Node topology deterministically and reporting discrepancies when the persisted Run's topology is tampered with.

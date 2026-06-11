@@ -2,11 +2,12 @@ import { Hono } from "hono";
 import type { RunStore } from "./store.js";
 import type { ExecutorAdapter } from "./executors/types.js";
 import type { SupervisorConfig, RunSummary, SupervisorHealth } from "./types.js";
-import { WorkflowInterpreter } from "./interpreter.js";
+import { WorkflowInterpreter, generateRunId } from "./interpreter.js";
 import { InputValidationFailure } from "./validate-input.js";
 import { compileWorkflow, workflowSourcePolicy } from "@acpus/core";
 import { resolve } from "node:path";
 import type { RunState } from "./types.js";
+import { ForkError, applyFork, planFork, type ForkPlan } from "./fork.js";
 
 /** Pattern that matches unsafe runId characters (path traversal, separators, null). */
 const UNSAFE_RUN_ID = /(^|\/)\.\.?(\/|$)|[\\:\0]/;
@@ -297,7 +298,8 @@ export function createSupervisorApp(
           workflowSourcePath: meta.workflowSourcePath,
           status: meta.status,
           createdAt: meta.createdAt,
-          updatedAt: meta.updatedAt
+          updatedAt: meta.updatedAt,
+          lineage: meta.lineage
         });
       }
       // Skip corrupt Run metadata deterministically (don't crash)
@@ -491,6 +493,112 @@ export function createSupervisorApp(
     } finally {
       resumingRunIds.delete(runId);
     }
+  });
+
+  // ─── Fork ────────────────────────────────────────────────────────
+  //
+  // Derive a new Run from a terminal source Run by supplying a possibly-
+  // modified Workflow Spec. Inheritance is keyed by Node Definition Hash; the
+  // first divergence becomes the default Fork Origin. `dryRun: true` returns
+  // the plan without creating a Run.
+
+  app.post("/runs/:runId/fork", async (c) => {
+    const runId = c.req.param("runId");
+    type ForkRequestBody = {
+      spec?: string;
+      sourcePath?: string;
+      workflowRef?: string;
+      input?: Record<string, unknown>;
+      overrideOriginNodeKey?: string;
+      dryRun?: boolean;
+    };
+    const body = await c.req.json<ForkRequestBody>().catch((): ForkRequestBody => ({}));
+
+    const priorMeta = store.readRunMeta(runId);
+    if (!priorMeta) return c.json({ error: "Run not found" }, 404);
+    if (priorMeta.status !== "completed" && priorMeta.status !== "failed" && priorMeta.status !== "cancelled") {
+      return c.json({ kind: "fork-rejected", error: `Cannot fork a run in state '${priorMeta.status}'` }, 409);
+    }
+    if (!store.hasCheckpointIndex(runId)) {
+      return c.json({ kind: "fork-rejected", error: "Run has no checkpoint index" }, 409);
+    }
+    if (!body.spec) {
+      return c.json({ error: "spec is required" }, 400);
+    }
+
+    let sourcePath: string | undefined;
+    if (body.sourcePath) {
+      try {
+        sourcePath = sourcePolicy.validateSourcePath(body.sourcePath);
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    }
+
+    const compileResult = compileWorkflow(body.spec, {
+      sourcePath,
+      includeResolver: sourcePolicy.createIncludeResolver(sourcePath)
+    });
+    if (!compileResult.ok || !compileResult.ir) {
+      return c.json({ kind: "fork-rejected", error: "Compilation failed", diagnostics: compileResult.diagnostics }, 400);
+    }
+
+    const checkpoints = store.readCheckpoints(runId);
+
+    let plan: ForkPlan;
+    try {
+      plan = planFork(priorMeta, checkpoints, compileResult.ir, body.overrideOriginNodeKey);
+    } catch (error) {
+      if (error instanceof ForkError) {
+        return c.json({ kind: "fork-rejected", error: error.message }, 409);
+      }
+      throw error;
+    }
+
+    if (body.dryRun) {
+      return c.json({ dryRun: true, plan });
+    }
+
+    // Inherit input from prior Run unless explicitly supplied.
+    const priorInput = store.readInput(runId) ?? {};
+    const initInterpreter = newInterpreter();
+    let runState: RunState;
+    const forkRunId = generateRunId();
+    try {
+      runState = initInterpreter.initRun(compileResult.ir, {
+        input: body.input ?? priorInput,
+        runId: forkRunId,
+        workflowRef: body.workflowRef ?? priorMeta.workflowRef,
+        workflowSourcePath: sourcePath ?? priorMeta.workflowSourcePath
+      });
+    } catch (error) {
+      if (error instanceof InputValidationFailure) {
+        return c.json({ error: "Input validation failed", validationErrors: error.errors }, 400);
+      }
+      throw error;
+    }
+
+    applyFork(store, forkRunId, plan);
+
+    // Stamp lineage onto the new Run's metadata after applyFork so the
+    // inherited count is final.
+    const meta = store.readRunMeta(forkRunId);
+    if (meta) {
+      meta.lineage = {
+        sourceRunId: plan.sourceRunId,
+        forkOriginNodeKey: plan.forkOriginNodeKey,
+        inheritedNodeCount: plan.inheritedNodeKeys.length
+      };
+      store.writeRunMeta(forkRunId, meta);
+    }
+
+    const interpreter = newInterpreter(forkRunId);
+    interpreters.set(forkRunId, interpreter);
+    lastActiveAt = Date.now();
+    const validatedInput = store.readInput(forkRunId) ?? body.input ?? priorInput;
+    startRunExecution(interpreter, compileResult.ir, validatedInput, forkRunId);
+
+    return c.json({ run: runState, plan }, 201);
   });
 
   // ─── Replay ──────────────────────────────────────────────────────

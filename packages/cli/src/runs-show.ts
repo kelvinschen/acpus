@@ -19,6 +19,9 @@ export async function formatRunShow(
   lines.push(`Workflow: ${run.workflowName}`);
   if (run.workflowRef) lines.push(`Workflow Ref: ${run.workflowRef}`);
   if (run.workflowSourcePath) lines.push(`Workflow Source: ${run.workflowSourcePath}`);
+  if (run.lineage) {
+    lines.push(`Forked From: ${run.lineage.sourceRunId} (origin=${run.lineage.forkOriginNodeKey}, inherited=${run.lineage.inheritedNodeCount})`);
+  }
   lines.push(`Status: ${run.status}`);
   lines.push(`Created: ${run.createdAt}`);
   lines.push(`Updated: ${run.updatedAt}`);

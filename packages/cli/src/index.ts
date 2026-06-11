@@ -16,9 +16,11 @@ import { ensureSupervisor, EXIT_SUPERVISOR_ERROR, isSupervisorConnectionError } 
 import { followRun } from "./follow.js";
 import { formatRunShow } from "./runs-show.js";
 import type { RunCleanResult, RunStatus } from "@acpus/runtime";
+import { ForkRejectedError } from "@acpus/runtime";
 
 const EXIT_DSL_STATIC_ERROR = 10;
 const EXIT_RUNTIME_ERROR = 20;
+const EXIT_FORK_REJECTED = 21;
 const EXIT_USER_CANCEL = 2;
 const EXIT_CLI_ERROR = 1;
 
@@ -180,7 +182,8 @@ runs
       } else {
         for (const run of runList) {
           const source = run.workflowRef ?? run.workflowSourcePath ?? "-";
-          console.log(`${run.runId}  ${run.workflowName}  ${run.status}  ${run.updatedAt}  ${source}`);
+          const lineageNote = run.lineage ? `  forked from ${run.lineage.sourceRunId}` : "";
+          console.log(`${run.runId}  ${run.workflowName}  ${run.status}  ${run.updatedAt}  ${source}${lineageNote}`);
         }
       }
     } catch (error) {
@@ -337,6 +340,99 @@ runs
     } catch (error) {
       printError(errorMessage(error), { json: Boolean(options.json), quiet: false });
       process.exitCode = isSupervisorConnectionError(error) ? EXIT_SUPERVISOR_ERROR : EXIT_RUNTIME_ERROR;
+    }
+  });
+
+runs
+  .command("fork")
+  .argument("<sourceRunId>", "terminal source Run to fork from")
+  .argument("<refOrPath>", "Workflow Catalog ref/name or workflow YAML spec path with the repaired Spec")
+  .option("--from <nodeKey>", "force the Fork Origin to a specific Node Key (default: first divergence)")
+  .option("--input <value>", "inline JSON or path to YAML/JSON input (default: inherit from source Run)")
+  .option("--dry-run", "compute the fork plan without creating a new Run")
+  .option("--background", "submit and return immediately (no follow)")
+  .option("--visualize", "submit and open TUI visualizer")
+  .option("--json", "write JSON output")
+  .option("--quiet", "only write final output")
+  .description("derive a new Run from a terminal Run, inheriting matching Run Checkpoints from the source")
+  .action(async (
+    sourceRunId: string,
+    refOrPath: string,
+    options: { from?: string; input?: string; dryRun?: boolean; background?: boolean; visualize?: boolean; json?: boolean; quiet?: boolean }
+  ) => {
+    if (options.background && options.visualize) {
+      printError("--background and --visualize are mutually exclusive", options);
+      process.exitCode = EXIT_CLI_ERROR;
+      return;
+    }
+    if (options.visualize && options.json) {
+      printError("--visualize and --json are mutually exclusive", options);
+      process.exitCode = EXIT_CLI_ERROR;
+      return;
+    }
+    try {
+      const target = resolveWorkflowTarget(refOrPath);
+      const parsedInput = parseInput(options.input);
+      const client = await ensureSupervisor();
+      const result = await client.forkRun(sourceRunId, target.source, {
+        sourcePath: target.sourcePath,
+        workflowRef: target.workflowRef,
+        input: parsedInput,
+        overrideOriginNodeKey: options.from,
+        dryRun: options.dryRun
+      });
+
+      if (options.dryRun) {
+        if (options.json) {
+          console.log(JSON.stringify(result));
+        } else if (!options.quiet) {
+          console.log(`Fork plan for ${sourceRunId}:`);
+          console.log(`  Fork Origin: ${result.plan.forkOriginNodeKey} (${result.plan.boundaryReason})`);
+          console.log(`  Inherited Nodes: ${result.plan.inheritedNodeKeys.length}`);
+          for (const key of result.plan.inheritedNodeKeys) console.log(`    + ${key}`);
+        }
+        process.exitCode = 0;
+        return;
+      }
+
+      if (!result.run) {
+        printError("Supervisor returned no Run for non-dry-run fork", options);
+        process.exitCode = EXIT_RUNTIME_ERROR;
+        return;
+      }
+
+      if (options.background) {
+        if (options.json) {
+          console.log(JSON.stringify(result));
+        } else if (!options.quiet) {
+          console.log(`Run ${result.run.runId} forked from ${sourceRunId}`);
+          console.log(`Fork Origin: ${result.plan.forkOriginNodeKey}`);
+          console.log(`Inherited: ${result.plan.inheritedNodeKeys.length} node(s)`);
+          console.log(`Status: ${result.run.status}`);
+        }
+        process.exitCode = 0;
+        return;
+      }
+
+      if (options.visualize) {
+        const { runTui } = await import("@acpus/tui");
+        await runTui({ runId: result.run.runId, endpoint: (client as any).baseUrl as string });
+        process.exitCode = 0;
+        return;
+      }
+
+      const terminalStatus = await followRun(client, result.run.runId, { json: options.json });
+      process.exitCode = exitCodeForRunStatus(terminalStatus);
+    } catch (error) {
+      const message = errorMessage(error);
+      printError(message, options);
+      if (isSupervisorConnectionError(error)) {
+        process.exitCode = EXIT_SUPERVISOR_ERROR;
+      } else if (error instanceof ForkRejectedError) {
+        process.exitCode = EXIT_FORK_REJECTED;
+      } else {
+        process.exitCode = EXIT_RUNTIME_ERROR;
+      }
     }
   });
 

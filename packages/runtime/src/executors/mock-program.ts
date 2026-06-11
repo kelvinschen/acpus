@@ -70,7 +70,21 @@ export class MockProgramExecutor implements ExecutorAdapter {
 
       const exitCode = response.exitCode ?? 0;
 
-      // Handle capture config — a non-zero exit code is still step data.
+      // Mirror ADR-0006: a non-zero exit not allow-listed by `expect.exit_code`
+      // (default `[0]`) fails the node fast and precedes capture/schema checks.
+      const expect = node.metadata.expect as { exit_code?: number[] } | undefined;
+      const allowedExitCodes = expect?.exit_code ?? [0];
+      if (!allowedExitCodes.includes(exitCode)) {
+        return {
+          failureKind: "exit",
+          error: `exit_code=${exitCode}`,
+          exitCode,
+          stdout,
+          stderr
+        };
+      }
+
+      // Handle capture config — an allow-listed exit code is step data.
       const capture = node.metadata.capture as Record<string, unknown> | undefined;
       let output: unknown = response.parsedOutput;
 

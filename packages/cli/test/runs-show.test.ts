@@ -81,4 +81,26 @@ describe("formatRunShow", () => {
 
     expect(output).not.toContain("Activity:");
   });
+
+  it("renders Forked Run lineage on the run header", async () => {
+    const run: RunState = {
+      runId: "fork-1",
+      workflowName: "demo",
+      status: "completed",
+      irDigest: "ir",
+      inputDigest: "input",
+      createdAt: "2026-06-10T09:59:00.000Z",
+      updatedAt: "2026-06-10T10:00:10.000Z",
+      runAttempt: 1,
+      lineage: {
+        sourceRunId: "source-run-1",
+        forkOriginNodeKey: "workflow/build",
+        inheritedNodeCount: 2
+      },
+      nodes: []
+    };
+
+    const output = await formatRunShow(run);
+    expect(output).toContain("Forked From: source-run-1 (origin=workflow/build, inherited=2)");
+  });
 });

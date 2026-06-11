@@ -229,10 +229,20 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
   if (step.run === "program") {
     validateProgramStep(step, path, context);
     validateStepTimeout(step, path, context);
+    const metadata = pickMetadata(step, ["run", "cmd", "env", "capture", "expect", "output", "retry", "timeout", "on_error"]);
+    // Normalize the default `expect.exit_code` so omitting it and explicitly
+    // declaring `[0]` produce the same IR (and therefore the same Node
+    // Definition Hash). Without this, authors who add `expect: { exit_code: [0] }`
+    // for clarity would silently invalidate Forked Run inheritance.
+    const expect = metadata.expect as Record<string, unknown> | undefined;
+    if (isRecord(expect) && Array.isArray(expect.exit_code) && expect.exit_code.length === 1 && expect.exit_code[0] === 0) {
+      delete (expect as { exit_code?: number[] }).exit_code;
+      if (Object.keys(expect).length === 0) delete metadata.expect;
+    }
     return {
       ...base,
       kind: "run.program",
-      metadata: pickMetadata(step, ["run", "cmd", "env", "capture", "output", "retry", "timeout", "on_error"])
+      metadata
     };
   }
 

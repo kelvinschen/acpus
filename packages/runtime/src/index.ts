@@ -5,6 +5,8 @@ export type {
   NodeKeyDynamic,
   NodeExecutionState,
   RunState,
+  RunLineage,
+  RunCheckpoint,
   ExpressionContext,
   ExecutorResult,
   ArtifactRef,
@@ -58,4 +60,8 @@ export { startRunSupervisor } from "./supervisor-runner.js";
 export { ensureWorkspaceSupervisor } from "./supervisor-discovery.js";
 
 // ─── Client ──────────────────────────────────────────────────────
-export { RunSupervisorClient } from "./client.js";
+export { RunSupervisorClient, ForkRejectedError } from "./client.js";
+
+// ─── Fork ────────────────────────────────────────────────────────
+export { planFork, applyFork, ForkError } from "./fork.js";
+export type { ForkPlan, BoundaryReason } from "./fork.js";

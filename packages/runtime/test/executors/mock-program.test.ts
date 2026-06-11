@@ -29,17 +29,27 @@ describe("MockProgramExecutor", () => {
     expect(result.exitCode).toBe(0);
   });
 
-  it("treats a non-zero exit code as data (no error)", async () => {
+  it("fails fast on a non-allow-listed exit code", async () => {
     const executor = new MockProgramExecutor({
       "test-cmd": { exitCode: 1, stdout: "failed" }
     });
     const node = makeProgramNode({ cmd: ["exit", "1"] });
     const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
 
+    expect(result.failureKind).toBe("exit");
     expect(result.exitCode).toBe(1);
-    expect(result.error).toBeUndefined();
-    expect(result.failureKind).toBeUndefined();
     expect(result.stdout).toBe("failed");
+  });
+
+  it("treats an allow-listed non-zero exit as step data", async () => {
+    const executor = new MockProgramExecutor({
+      "test-cmd": { exitCode: 1, stdout: "tests failed" }
+    });
+    const node = makeProgramNode({ cmd: ["pnpm", "test"], expect: { exit_code: [0, 1] } });
+    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.failureKind).toBeUndefined();
   });
 
   it("surfaces a simulated non-recoverable failure", async () => {

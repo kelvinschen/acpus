@@ -39,7 +39,7 @@ workflow:
     expect(node?.output).toEqual({ output: { files: ["a.txt", "b.txt"] }, exit_code: 0 });
   });
 
-  it("treats a non-zero exit code as step data", async () => {
+  it("fails the node fast on a non-allow-listed non-zero exit code", async () => {
     const ir = compileYaml(`
 version: 1
 name: program-fail-test
@@ -58,9 +58,37 @@ workflow:
     cleanups.push(cleanup);
 
     const meta = await interpreter.start(ir, { input: {} });
-    expect(meta.status).toBe("completed");
+    expect(meta.status).toBe("failed");
 
     const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "fail-cmd");
+    expect(node?.state).toBe("failed");
+    expect(node?.error).toMatch(/exit/);
+  });
+
+  it("treats an allow-listed non-zero exit as step data", async () => {
+    const ir = compileYaml(`
+version: 1
+name: program-expect-test
+workflow:
+  steps:
+    - id: tested-cmd
+      run: program
+      cmd: ["bash", "-c", "exit 1"]
+      expect:
+        exit_code: [0, 1]
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: {
+        "tested-cmd": { exitCode: 1, stdout: "test failed" }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+
+    const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "tested-cmd");
     expect(node?.state).toBe("completed");
     expect((node?.output as { exit_code: number }).exit_code).toBe(1);
   });

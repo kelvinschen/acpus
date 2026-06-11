@@ -81,8 +81,12 @@ A Workspace-scoped local execution authority that owns active Run interpreters, 
 _Avoid_: daemon, server, service
 
 **Run Observation**:
-A concise view of Run or Node state changes derived from persisted Run state for human-facing follow and watch displays. Run Observations are not an append-only event history, raw Program stdout, Agent transcripts, or logs.
+A concise view of Run or Node state changes derived from persisted Run state for human-facing follow and watch displays. Run Observations include a Run's Forked Run lineage when present. Run Observations are not an append-only event history, raw Program stdout, Agent transcripts, or logs.
 _Avoid_: event history, log line, stdout, transcript event
+
+**Served Visualizer**:
+A browser-accessible view of the existing visualizer for observing Runs from another machine. A Served Visualizer is an observation surface, not a standalone Web UI or remote Run Control surface.
+_Avoid_: Web UI, dashboard, remote control plane
 
 **Artifact**:
 A durable file produced by a Node execution (transcript, stdout capture, etc.) stored on disk and referenced by URI.
@@ -91,3 +95,19 @@ _Avoid_: output file, blob
 **Replay**:
 A read-only re-interpretation of a finished Run against its frozen snapshot and recorded Node outcomes, used to verify that the same inputs reproduce the same Node topology.
 _Avoid_: re-run, rerun, simulation
+
+**Run Checkpoint**:
+An ordered, persisted record of one Node's terminal outcome within a Run, capturing Node Key, terminal state, Node Definition Hash, output, artifact references, and error summary. Run Checkpoints are the inheritance source consulted when a Forked Run decides which Nodes to reuse.
+_Avoid_: snapshot, log entry, event
+
+**Node Definition Hash**:
+A stable canonical hash of a Node's compiled IR, including the full subtree for a Composite Node. Two Nodes with equal Node Key and equal Node Definition Hash are treated as the same Node across Runs for the purpose of Forked Run inheritance.
+_Avoid_: spec hash, yaml hash
+
+**Forked Run**:
+A new Run derived from a prior Run by supplying a possibly-modified Workflow Spec. The Forked Run scans the prior Run's Run Checkpoints in order and inherits each Node whose Node Key exists in the new Spec, whose prior state is `completed`, and whose Node Definition Hash matches; inheritance stops at the first Node that fails any of these checks (the inheritance boundary), and the boundary Node plus everything after it executes fresh. A Forked Run is its own Run with its own frozen snapshot and does not mutate the prior Run. Reused outputs and any runtime-context values they depended on (such as `run_id` or `now()` derivations) are accepted as historical facts and are not recomputed. A Forked Run records only its immediate prior Run as lineage; when a Forked Run is itself forked, the new Run treats the previous Forked Run as a standard prior Run and does not carry deeper ancestry.
+_Avoid_: rerun, replay, resumed run, branched run
+
+**Fork Origin**:
+The Node Key at which a Forked Run begins fresh execution. By default the Fork Origin is the inheritance boundary determined automatically from Run Checkpoint scanning; an operator MAY override it to force an earlier restart. A Fork Origin MUST be a top-level Node or a Composite Node, never a Node inside a Composite's body, because the dynamic context (loop round, fanout item, parallel branch) of inner Nodes is determined by the surrounding Composite at execution time.
+_Avoid_: restart point, retry node, fork point

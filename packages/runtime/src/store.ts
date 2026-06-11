@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   rmSync,
@@ -12,7 +13,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { encodeNodeKeyForFs, encodeNodeKeyForDir } from "./keys.js";
 import type { AcpusIr } from "@acpus/core";
-import type { NodeExecutionState, RunCleanItem, RunCleanResult, RunState } from "./types.js";
+import type { NodeExecutionState, RunCheckpoint, RunCleanItem, RunCleanResult, RunState } from "./types.js";
 
 /**
  * Per-node JSON file persistence with write-to-temp-then-rename for crash safety.
@@ -55,7 +56,7 @@ export class RunStore {
   // ─── Run lifecycle ─────────────────────────────────────────────
 
   /** Create a new run directory and write IR + input snapshots. */
-  initRun(runId: string, ir: AcpusIr, input: Record<string, unknown>, source?: { workflowRef?: string; workflowSourcePath?: string }): RunState {
+  initRun(runId: string, ir: AcpusIr, input: Record<string, unknown>, source?: { workflowRef?: string; workflowSourcePath?: string; lineage?: import("./types.js").RunLineage }): RunState {
     validateRunId(runId);
     const runDir = this.runDir(runId);
     mkdirSync(join(runDir, "nodes"), { recursive: true });
@@ -80,9 +81,12 @@ export class RunStore {
       inputDigest,
       createdAt: now,
       updatedAt: now,
-      runAttempt: 1
+      runAttempt: 1,
+      lineage: source?.lineage
     };
     this.writeRunMeta(runId, meta);
+    // Empty checkpoints index — appended to as Nodes reach terminal state.
+    this.atomicWriteJson(this.checkpointsIndexPath(runId), [] as RunCheckpoint[]);
     return meta;
   }
 
@@ -117,6 +121,14 @@ export class RunStore {
     validateRunId(runId);
     const filename = encodeNodeKeyForFs(state.nodeKey);
     this.atomicWriteJson(join(this.runDir(runId), "nodes", filename), state);
+    if (isTerminal(state.state) && state.definitionHash && isCheckpointableKind(state.kind)) {
+      this.appendCheckpoint(runId, {
+        nodeKey: state.nodeKey,
+        state: state.state,
+        definitionHash: state.definitionHash,
+        completedAt: state.completedAt
+      });
+    }
   }
 
   /** Read node execution state. Returns undefined if not found. */
@@ -160,6 +172,83 @@ export class RunStore {
   hasRun(runId: string): boolean {
     validateRunId(runId);
     return existsSync(this.runDir(runId));
+  }
+
+  // ─── Checkpoints ───────────────────────────────────────────────
+
+  /**
+   * Append a Run Checkpoint for a Node that has just reached a terminal state.
+   * Idempotent on `nodeKey`: if a checkpoint for this Node Key already exists,
+   * its entry is replaced in-place to reflect the latest terminal outcome
+   * (e.g., a Node Retry that flips failed → completed). Sequence numbers
+   * remain monotonic for new entries.
+   */
+  appendCheckpoint(runId: string, checkpoint: Omit<RunCheckpoint, "sequence">): void {
+    validateRunId(runId);
+    const path = this.checkpointsIndexPath(runId);
+    const entries = this.readJson<RunCheckpoint[]>(path) ?? [];
+    const existing = entries.findIndex((entry) => entry.nodeKey === checkpoint.nodeKey);
+    if (existing >= 0) {
+      entries[existing] = { ...checkpoint, sequence: entries[existing].sequence };
+    } else {
+      const nextSequence = entries.reduce((max, entry) => Math.max(max, entry.sequence), 0) + 1;
+      entries.push({ ...checkpoint, sequence: nextSequence });
+    }
+    this.atomicWriteJson(path, entries);
+  }
+
+  /**
+   * Read the ordered Run Checkpoints for a Run. Returns an empty array when
+   * the run was created before checkpoints existed (in which case the Run is
+   * not forkable — callers MUST treat absence as ineligible for fork).
+   */
+  readCheckpoints(runId: string): RunCheckpoint[] {
+    validateRunId(runId);
+    const entries = this.readJson<RunCheckpoint[]>(this.checkpointsIndexPath(runId));
+    if (!entries) return [];
+    return [...entries].sort((a, b) => a.sequence - b.sequence);
+  }
+
+  /** True when this Run has a checkpoint index file (regardless of size). */
+  hasCheckpointIndex(runId: string): boolean {
+    validateRunId(runId);
+    return existsSync(this.checkpointsIndexPath(runId));
+  }
+
+  /**
+   * Copy a Node's persisted state and artifact directory from a prior Run into
+   * a Forked Run, used when applying a fork plan. Replaces any existing entry
+   * and copies the artifact directory recursively. The caller is responsible
+   * for also calling appendCheckpoint to register the inherited Node.
+   */
+  inheritNodeFromRun(targetRunId: string, sourceRunId: string, nodeKey: string): void {
+    validateRunId(targetRunId);
+    validateRunId(sourceRunId);
+    const sourceState = this.readNodeState(sourceRunId, nodeKey);
+    if (!sourceState) {
+      throw new Error(`Cannot inherit node ${nodeKey}: no persisted state in source run ${sourceRunId}`);
+    }
+    // Rewrite artifact URIs from <sourceRunId> → <targetRunId>.
+    const inheritedRefs = sourceState.artifactRefs?.map((uri) => rewriteArtifactRunId(uri, sourceRunId, targetRunId));
+    const targetState: NodeExecutionState = {
+      ...sourceState,
+      artifactRefs: inheritedRefs
+    };
+
+    // Copy the artifact directory FIRST so a crash before the Node-state
+    // write does not leave dangling artifactRefs URIs on disk. cpSync is
+    // recursive and creates the destination; the source dir may legitimately
+    // not exist for Nodes that produced no artifacts.
+    const sourceDir = join(this.runDir(sourceRunId), "artifacts", encodeNodeKeyForDir(nodeKey));
+    const targetDir = join(this.runDir(targetRunId), "artifacts", encodeNodeKeyForDir(nodeKey));
+    if (existsSync(sourceDir)) {
+      mkdirSync(dirname(targetDir), { recursive: true });
+      cpSync(sourceDir, targetDir, { recursive: true });
+    }
+
+    // Persist Node state last; this is also what auto-appends the checkpoint,
+    // so observers never see a checkpoint before its artifacts exist.
+    this.writeNodeState(targetRunId, targetState);
   }
 
   cleanTerminalRuns(options: { dryRun?: boolean } = {}): RunCleanResult {
@@ -255,6 +344,10 @@ export class RunStore {
     return join(this.baseDir, runId);
   }
 
+  private checkpointsIndexPath(runId: string): string {
+    return join(this.runDir(runId), "checkpoints.index.json");
+  }
+
   /** Write JSON via temp file + atomic rename for crash safety. */
   private atomicWriteJson(filePath: string, data: unknown): void {
     const dir = dirname(filePath);
@@ -280,6 +373,24 @@ function sha256(content: string): string {
   return `sha256:${createHash("sha256").update(content).digest("hex")}`;
 }
 
+function isTerminal(state: NodeExecutionState["state"]): boolean {
+  return state === "completed" || state === "failed" || state === "cancelled";
+}
+
+/**
+ * Whether a Node Kind should produce a Run Checkpoint when reaching a terminal
+ * state. Composite container Nodes (pipeline, parallel, fanout, switch, loop,
+ * subworkflow) record an aggregate outcome whose meaning depends on their
+ * children; inheriting them in a Forked Run would short-circuit the container
+ * body wholesale (the interpreter treats any persisted completed as done).
+ * Only leaves and the deterministic Guard / Approval gates produce checkpoints,
+ * so a Forked Run inherits leaf outputs and re-derives container control flow
+ * against the new IR.
+ */
+function isCheckpointableKind(kind: NodeExecutionState["kind"]): boolean {
+  return kind === "run.agent" || kind === "run.program" || kind === "guard" || kind === "approval";
+}
+
 function directorySize(path: string): number {
   try {
     const stat = lstatSync(path);
@@ -292,4 +403,11 @@ function directorySize(path: string): number {
   } catch {
     return 0;
   }
+}
+
+/** Rewrite the runId path segment of an artifact URI for inheritance. */
+function rewriteArtifactRunId(uri: string, fromRunId: string, toRunId: string): string {
+  const prefix = `artifact://runs/${fromRunId}/`;
+  if (!uri.startsWith(prefix)) return uri;
+  return `artifact://runs/${toRunId}/${uri.slice(prefix.length)}`;
 }
