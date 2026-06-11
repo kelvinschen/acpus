@@ -75,6 +75,54 @@ describe("MockProgramExecutor", () => {
     expect(result.output).toEqual({ key: "value" });
   });
 
+  it("does not use stdout as the raw preview for file captures", async () => {
+    const executor = new MockProgramExecutor({
+      "test-cmd": {
+        stdout: "command stdout that was not captured",
+        parsedOutput: { count: "not-a-number" }
+      }
+    });
+    const node = makeProgramNode({
+      cmd: "echo",
+      capture: { from: "file", parse: "json", path: "out.json" },
+      output: {
+        type: "object",
+        properties: { count: { type: "integer" } },
+        required: ["count"],
+        additionalProperties: false
+      }
+    });
+    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+
+    expect(result.failureKind).toBe("schema");
+    expect(result.error).toContain('captured output preview: {"count":"not-a-number"}');
+    expect(result.error).not.toContain("command stdout that was not captured");
+  });
+
+  it("uses explicit raw captured output for file capture previews", async () => {
+    const executor = new MockProgramExecutor({
+      "test-cmd": {
+        stdout: "command stdout that was not captured",
+        capturedOutputRaw: '{"count":"not-a-number"}'
+      }
+    });
+    const node = makeProgramNode({
+      cmd: "echo",
+      capture: { from: "file", parse: "json", path: "out.json" },
+      output: {
+        type: "object",
+        properties: { count: { type: "integer" } },
+        required: ["count"],
+        additionalProperties: false
+      }
+    });
+    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+
+    expect(result.failureKind).toBe("schema");
+    expect(result.error).toContain('captured output preview: {"count":"not-a-number"}');
+    expect(result.error).not.toContain("command stdout that was not captured");
+  });
+
   it("returns partial result on abort", async () => {
     const executor = new MockProgramExecutor({
       "test-cmd": { parsedOutput: {}, delay: 1000 }

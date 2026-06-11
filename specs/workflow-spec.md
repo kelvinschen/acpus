@@ -98,6 +98,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A Program Step with `output` present MUST declare `capture.parse: json`; output schema validation requires parsed JSON output.
 - A Program Step with `output` present MUST produce a JSON object that matches the declared output schema.
 - Program Step output schema validation failures MUST be treated as non-recoverable failures (the Node fails with `failureKind: "schema"`).
+- Program Step output schema validation failure diagnostics MUST include schema validation details and SHOULD include a bounded captured-output preview.
 
 ### Composite Nodes
 

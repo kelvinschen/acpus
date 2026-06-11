@@ -129,6 +129,26 @@ describe("ProgramExecutor", () => {
     expect(result.output).toEqual({ key: "value" });
   });
 
+  it("includes captured output preview on schema validation failure", async () => {
+    const executor = new ProgramExecutor();
+    const node = makeProgramNode({
+      cmd: [process.execPath, "-e", "console.log(JSON.stringify({ count: 'not-a-number' }))"],
+      capture: { from: "stdout", parse: "json" },
+      output: {
+        type: "object",
+        properties: { count: { type: "integer" } },
+        required: ["count"],
+        additionalProperties: false
+      }
+    });
+    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+    expect(result.failureKind).toBe("schema");
+    expect(result.error).toContain("Output validation failed:");
+    expect(result.error).toContain("must be integer");
+    expect(result.error).toContain("captured output preview:");
+    expect(result.error).toContain('{"count":"not-a-number"}');
+  });
+
   it("fails the node fast when exit code is not allow-listed (default `[0]`)", async () => {
     const executor = new ProgramExecutor();
     const node = makeProgramNode({ cmd: "exit 1" });

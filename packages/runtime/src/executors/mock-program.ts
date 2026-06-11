@@ -2,12 +2,15 @@ import type { ExecutorResult, FailureKind } from "../types.js";
 import type { ExecutorAdapter, ExecutionRequest } from "./types.js";
 import { ExpressionEvaluator } from "../evaluator.js";
 import { Ajv } from "ajv";
+import { schemaValidationError } from "./output-preview.js";
 
 export interface MockProgramResponse {
   stdout?: string;
   stderr?: string;
   exitCode?: number;
   parsedOutput?: unknown;
+  /** Raw captured output used in diagnostics; useful for file captures. */
+  capturedOutputRaw?: string;
   /** Simulate a non-recoverable failure (timeout/spawn/killed/capture). */
   failureKind?: FailureKind;
   delay?: number;
@@ -87,17 +90,26 @@ export class MockProgramExecutor implements ExecutorAdapter {
       // Handle capture config — an allow-listed exit code is step data.
       const capture = node.metadata.capture as Record<string, unknown> | undefined;
       let output: unknown = response.parsedOutput;
+      let capturedOutputRaw: string | undefined = response.capturedOutputRaw;
 
-      if (output === undefined && response.stdout && capture?.parse === "json") {
+      if (capturedOutputRaw === undefined && capture?.from === "stdout") {
+        capturedOutputRaw = response.stdout;
+      }
+
+      if (output === undefined && capturedOutputRaw !== undefined && capture?.parse === "json") {
         try {
-          output = JSON.parse(response.stdout);
+          output = JSON.parse(capturedOutputRaw);
         } catch {
           return { failureKind: "capture", error: "Failed to parse stdout as JSON", exitCode, stdout, stderr };
         }
       }
 
-      if (output === undefined && response.stdout && capture?.parse === "text") {
-        output = response.stdout;
+      if (output === undefined && capturedOutputRaw !== undefined && capture?.parse === "text") {
+        output = capturedOutputRaw;
+      }
+
+      if (!capture) {
+        capturedOutputRaw = undefined;
       }
 
       // Validate output against schema when declared (mirrors real ProgramExecutor).
@@ -105,7 +117,7 @@ export class MockProgramExecutor implements ExecutorAdapter {
       if (outputSchema && output !== undefined) {
         const validate = this.ajv.compile(outputSchema);
         if (!validate(output)) {
-          return { failureKind: "schema", error: `Output validation failed: ${this.ajv.errorsText(validate.errors)}`, exitCode, stdout, stderr };
+          return { failureKind: "schema", error: schemaValidationError(this.ajv.errorsText(validate.errors), capturedOutputRaw, output), exitCode, stdout, stderr };
         }
       }
 

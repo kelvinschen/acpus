@@ -233,7 +233,48 @@ workflow:
 
     const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "parse_json");
     expect(node?.state).toBe("failed");
-    expect(node?.error).toContain("schema");
+    expect(node?.error).toContain("Program step 'parse_json' failed (schema)");
+    expect(node?.error).toContain("Output validation failed:");
+    expect(node?.error).toContain("must be integer");
+    expect(node?.error).toContain("captured output preview:");
+    expect(node?.error).toContain('{"count":"not-a-number"}');
+  });
+
+  it("truncates captured output preview for long program schema failures", async () => {
+    const longValue = "x".repeat(3000);
+    const ir = compileYaml(`
+version: 1
+name: program-schema-invalid-long
+workflow:
+  steps:
+    - id: parse_json
+      run: program
+      cmd: ["echo", "{}"]
+      capture:
+        from: stdout
+        parse: json
+      output:
+        count: integer
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: {
+        "parse_json": {
+          stdout: JSON.stringify({ count: longValue }),
+          parsedOutput: { count: longValue }
+        }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("failed");
+
+    const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "parse_json");
+    expect(node?.state).toBe("failed");
+    expect(node?.error).toContain("captured output preview:");
+    expect(node?.error).toContain("[truncated, 3012 chars total]");
+    expect(node?.error).not.toContain(longValue);
   });
 
   it("does not validate output when no output schema is declared", async () => {

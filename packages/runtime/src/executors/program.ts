@@ -6,6 +6,7 @@ import { parseDurationMs } from "@acpus/core";
 import type { ExpressionContext, ExecutorResult } from "../types.js";
 import type { ExecutorAdapter, ExecutionRequest } from "./types.js";
 import { ExpressionEvaluator } from "../evaluator.js";
+import { schemaValidationError } from "./output-preview.js";
 
 /**
  * Real program executor using execa for subprocess management.
@@ -132,6 +133,7 @@ export class ProgramExecutor implements ExecutorAdapter {
 
     // Handle capture config.
     let output: unknown;
+    let capturedOutputRaw: string | undefined;
     if (capture) {
       const from = capture.from as string;
       const parse = capture.parse as string;
@@ -153,6 +155,7 @@ export class ProgramExecutor implements ExecutorAdapter {
       } else {
         raw = stdout;
       }
+      capturedOutputRaw = raw;
 
       if (parse === "json") {
         try {
@@ -174,7 +177,7 @@ export class ProgramExecutor implements ExecutorAdapter {
       if (!validate(output)) {
         return {
           failureKind: "schema",
-          error: `Output validation failed: ${this.ajv.errorsText(validate.errors)}`,
+          error: schemaValidationError(this.ajv.errorsText(validate.errors), capturedOutputRaw, output),
           exitCode,
           stdout,
           stderr

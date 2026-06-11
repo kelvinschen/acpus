@@ -89,6 +89,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - ProgramExecutor MUST return raw stdout/stderr and classify failures via `failureKind` (parse, schema, spawn, timeout, killed, capture, exit).
 - ProgramExecutor MUST treat a non-zero program exit code that is not allow-listed by the Program Step's `expect.exit_code` (default `[0]`) as `failureKind: "exit"` and MUST localize the failure in its error string with the exit code and a tail of stderr.
 - ProgramExecutor MUST evaluate `expect.exit_code` before capture parsing and output schema validation; an exit-classified failure MUST NOT be reported as a capture or schema failure.
+- ProgramExecutor output schema validation failure diagnostics MUST include schema validation details and SHOULD include a bounded captured-output preview.
 - The runtime MUST treat an allow-listed program exit code as step data and MUST fail the Node only when a `failureKind` marks the failure non-recoverable.
 - The interpreter MUST write program stdout/stderr as `stdout.log`/`stderr.log` artifacts and record their references on the Node.
 - AgentExecutor MUST derive a stable acpx session name from the resolved node key (`acpus-<runId>-<sanitized nodeKey>`) when an Agent Step does not declare `session_key`, ensuring uniqueness across loop rounds, fanout lanes, and subworkflow nesting by default.
