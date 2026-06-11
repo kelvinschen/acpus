@@ -178,19 +178,11 @@ workflow:
 
               Do not modify source or test files in this step.
 
-              Return JSON with the selected target and verification focus.
+              Return JSON with only control fields and the plan path. Put
+              target details and verification focus in the Markdown plan.
             output:
               opportunity_found: boolean
-              target_modules:
-                - string
               plan_path: string
-              summary: string
-              expected_files:
-                - string
-              expected_test_changes:
-                - string
-              verification_focus:
-                - string
               blocker?: string
             timeout: 60m
 
@@ -206,21 +198,6 @@ workflow:
 
               Plan report:
               ${{ steps.plan.output.plan_path }}
-
-              Plan summary:
-              ${{ steps.plan.output.summary }}
-
-              Target Modules:
-              ${{ steps.plan.output.target_modules }}
-
-              Expected files:
-              ${{ steps.plan.output.expected_files }}
-
-              Expected test changes:
-              ${{ steps.plan.output.expected_test_changes }}
-
-              Verification focus:
-              ${{ steps.plan.output.verification_focus }}
 
               Round:
               ${{ loop.iter }}
@@ -248,19 +225,14 @@ workflow:
               Write an implementation note to:
               `${{ steps.setup_architecture_loop.output.reports_dir }}/round-${{ loop.iter }}-implementation.md`
 
-              Return JSON with changed files, test changes, and SPEC impact.
+              Return JSON with control fields, report path, and SPEC impact.
+              Put changed files, test changes, risks, and rationale in the
+              implementation note.
             output:
               changed: boolean
-              summary: string
-              changed_files:
-                - string
-              test_changes:
-                - string
               spec_update_required: boolean
               spec_update_reason: string
               implementation_report_path: string
-              risks:
-                - string
             timeout: 60m
 
           - id: review
@@ -277,20 +249,8 @@ workflow:
               Plan report:
               ${{ steps.plan.output.plan_path }}
 
-              Plan summary:
-              ${{ steps.plan.output.summary }}
-
               Implementation report:
               ${{ steps.implement.output.implementation_report_path }}
-
-              Implementation summary:
-              ${{ steps.implement.output.summary }}
-
-              Changed files:
-              ${{ steps.implement.output.changed_files }}
-
-              Test changes:
-              ${{ steps.implement.output.test_changes }}
 
               SPEC impact:
               required=${{ steps.implement.output.spec_update_required }}
@@ -311,20 +271,12 @@ workflow:
 
               Do not modify source or test files in this step.
 
-              Return JSON with approval and concrete findings.
+              Return JSON with approval, report path, and blocking count. Put
+              concrete findings and assessments in the Markdown review.
             output:
               approved: boolean
               report_path: string
-              blocking_findings:
-                - title: string
-                  file: string
-                  line?: string
-                  rationale: string
-                  fix: string
-              nonblocking_findings:
-                - string
-              test_quality_assessment: string
-              architecture_assessment: string
+              blocking_count: integer
             timeout: 60m
 
           - id: regression
@@ -377,7 +329,9 @@ workflow:
               Write a Markdown regression report to:
               `${{ steps.setup_architecture_loop.output.reports_dir }}/round-${{ loop.iter }}-regression.md`
 
-              Return JSON with the regression verdict.
+              Return JSON with regression control fields and artifact paths.
+              Put changed files, numstat, coverage assessment, behavior risk,
+              and follow-ups in the Markdown regression report.
             output:
               ok: boolean
               report_path: string
@@ -387,15 +341,6 @@ workflow:
               latest_patch_path: string
               round_patch_path: string
               has_patch: boolean
-              changed_files:
-                - string
-              changed_file_count: integer
-              numstat: string
-              behavior_risk: string
-              test_coverage_delta: string
-              duplicate_test_cleanup_assessment: string
-              required_followups:
-                - string
             timeout: 60m
 
           - id: verdict
@@ -414,9 +359,6 @@ workflow:
               Plan report:
               ${{ steps.plan.output.plan_path }}
 
-              Plan summary:
-              ${{ steps.plan.output.summary }}
-
               Opportunity found:
               ${{ steps.plan.output.opportunity_found }}
 
@@ -426,9 +368,6 @@ workflow:
               Implementation changed:
               ${{ steps.implement.output.changed }}
 
-              Changed files:
-              ${{ steps.implement.output.changed_files }}
-
               Review report:
               ${{ steps.review.output.report_path }}
 
@@ -436,7 +375,7 @@ workflow:
               ${{ steps.review.output.approved }}
 
               Blocking finding count:
-              ${{ len(steps.review.output.blocking_findings) }}
+              ${{ steps.review.output.blocking_count }}
 
               Regression result:
               ok=${{ steps.regression.output.ok }}
@@ -445,8 +384,6 @@ workflow:
               log=${{ steps.regression.output.verify_log_path }}
               patch=${{ steps.regression.output.latest_patch_path }}
               has_patch=${{ steps.regression.output.has_patch }}
-              changed_files=${{ steps.regression.output.changed_files }}
-              numstat=${{ steps.regression.output.numstat }}
               report=${{ steps.regression.output.report_path }}
 
               Regression report path:
@@ -454,9 +391,6 @@ workflow:
 
               Regression ok:
               ${{ steps.regression.output.ok }}
-
-              Required followups:
-              ${{ steps.regression.output.required_followups }}
 
               Stop only when:
               - deterministic regression passed,
@@ -486,7 +420,9 @@ workflow:
               Write a Markdown verdict report to:
               `${{ steps.setup_architecture_loop.output.reports_dir }}/round-${{ loop.iter }}-verdict.md`
 
-              Return JSON only.
+              Return JSON with only loop control fields and durable report or
+              handoff paths. Put remaining opportunities in the verdict report
+              and handoff document.
             output:
               done: boolean
               regression_ok: boolean
@@ -495,15 +431,13 @@ workflow:
               verdict_report_path: string
               stop_reason: string
               continue_reason: string
-              remaining_opportunities:
-                - string
             timeout: 60m
 
     - id: require_loop_verdict
       run: program
       cmd:
         - bash
-        - -lc
+        - -c
         - |
           set -euo pipefail
           python3 - "${{ run_id }}" <<'PY'
@@ -524,7 +458,6 @@ workflow:
               "verdict_report_path": str(verdict.get("verdict_report_path", "")),
               "stop_reason": str(verdict.get("stop_reason", "")),
               "continue_reason": str(verdict.get("continue_reason", "")),
-              "remaining_opportunities": verdict.get("remaining_opportunities", []),
           }))
           PY
       capture:
@@ -538,8 +471,6 @@ workflow:
         verdict_report_path: string
         stop_reason: string
         continue_reason: string
-        remaining_opportunities:
-          - string
       timeout: 5m
 
     - id: require_loop_clean_stop
@@ -564,8 +495,6 @@ workflow:
           apply_to_workspace="${{ input.apply_to_workspace }}"
           python3 - "$repo" "$patch" "$apply_log" "$verify_log" "$verify" "$apply_to_workspace" <<'PY'
           import json
-          import glob
-          import os
           import pathlib
           import subprocess
           import sys
@@ -576,33 +505,6 @@ workflow:
           apply_log_path = pathlib.Path(apply_log)
           verify_log_path = pathlib.Path(verify_log)
           apply_enabled = apply_to_workspace == "true"
-          home = pathlib.Path.home()
-          verify_env = os.environ.copy()
-          current_path = verify_env.get("PATH", "")
-          node_path_entries = []
-          for pattern in (
-              str(home / ".local" / "state" / "fnm_multishells" / "*" / "bin"),
-              str(home / ".nvm" / "versions" / "node" / "*" / "bin"),
-          ):
-              node_path_entries.extend(
-                  sorted(
-                      (entry for entry in glob.glob(pattern) if pathlib.Path(entry, "node").is_file()),
-                      key=lambda entry: pathlib.Path(entry).stat().st_mtime,
-                      reverse=True,
-                  )
-              )
-          volta_bin = home / ".volta" / "bin"
-          if (volta_bin / "node").is_file():
-              node_path_entries.insert(0, str(volta_bin))
-          path_entries = [
-              *node_path_entries,
-              str(home / ".npm-global" / "bin"),
-              str(home / "Library" / "pnpm"),
-              current_path,
-              "/usr/local/bin",
-              "/opt/homebrew/bin",
-          ]
-          verify_env["PATH"] = ":".join(entry for entry in path_entries if entry)
           has_patch = patch_path.is_file() and patch_path.stat().st_size > 0
           result = {
               "ok": False,
@@ -632,7 +534,7 @@ workflow:
                   apply_log_path.write_text(apply.stdout, encoding="utf-8")
                   result["applied"] = apply.returncode == 0
                   if result["applied"]:
-                      verify_result = subprocess.run(["bash", "-c", verify], cwd=repo_path, env=verify_env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                      verify_result = subprocess.run(["bash", "-c", verify], cwd=repo_path, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
                       verify_log_path.write_text(verify_result.stdout, encoding="utf-8")
                       result["verified"] = verify_result.returncode == 0
                       result["verify_exit_code"] = verify_result.returncode
@@ -708,7 +610,6 @@ workflow:
         accepted_current_patch=${{ steps.require_loop_verdict.output.accepted_current_patch }}
         stop_reason=${{ steps.require_loop_verdict.output.stop_reason }}
         continue_reason=${{ steps.require_loop_verdict.output.continue_reason }}
-        remaining_opportunities=${{ steps.require_loop_verdict.output.remaining_opportunities }}
         handoff_path=${{ steps.require_loop_verdict.output.handoff_path }}
         verdict_report_path=${{ steps.require_loop_verdict.output.verdict_report_path }}
 
@@ -736,22 +637,21 @@ workflow:
           - whether the patch was applied to the main workspace,
           - final regression status and verification evidence,
           - SPEC impact and why a SPEC update was or was not required,
-          - remaining opportunities or why the verdict stopped the loop.
+          - remaining opportunities from the verdict report or why the
+            verdict stopped the loop.
         - Use Acpus terminology from `CONTEXT.md` and architecture vocabulary:
           Module, Interface, Implementation, Depth, Seam, Adapter, Leverage,
           Locality.
         - Do not modify source files, tests, specs, or git state in this step.
           Only write the final change document.
 
-        Return JSON with the document path and a compact summary.
+        Return JSON with the document path and compact control fields. Put
+        remaining opportunities in the Markdown document.
       output:
         summary_path: string
-        summary: string
         applied: boolean
         no_changes: boolean
         verification_ok: boolean
-        remaining_opportunities:
-          - string
       timeout: 60m
 
 outputs:

@@ -55,11 +55,11 @@ workflow:
         Review this topic and return concise JSON:
         ${{ input.topic }}
       output:
-        summary: string
-        risks:
-          - description: string
+        risk_count: integer
+        ready: boolean
 outputs:
-  summary: ${{ steps.review.output.summary }}
+  risk_count: ${{ steps.review.output.risk_count }}
+  ready: ${{ steps.review.output.ready }}
 ```
 
 Lint and preview it:

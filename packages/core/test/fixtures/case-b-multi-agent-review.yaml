@@ -10,7 +10,7 @@ workflow:
   steps:
     - id: fetch_pr
       run: program
-      cmd: ["bash", "-lc", "gh pr checkout ${{ input.pr_url }}"]
+      cmd: ["bash", "-c", "gh pr checkout ${{ input.pr_url }}"]
       capture:
         from: stdout
         parse: text

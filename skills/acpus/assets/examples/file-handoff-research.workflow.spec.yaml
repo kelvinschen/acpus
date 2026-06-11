@@ -19,7 +19,7 @@ workflow:
       run: program
       cmd:
         - bash
-        - -lc
+        - -c
         - |
           set -euo pipefail
           python3 - <<'PY'
@@ -55,10 +55,10 @@ workflow:
         Question:
         ${{ input.question }}
 
-        Return only a short summary and the report path.
+        Return only the report path and finding count. Put summaries and
+        details in the Markdown report.
       output:
         report_path: string
-        summary: string
         finding_count: integer
 
     - id: synthesize

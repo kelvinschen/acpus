@@ -43,7 +43,7 @@ workflow:
         do:
           - id: run_tests
             run: program
-            cmd: ["bash", "-lc", "pnpm test --json"]
+            cmd: ["bash", "-c", "pnpm test --json"]
             capture:
               from: file
               path: .test.json

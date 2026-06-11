@@ -54,7 +54,7 @@ Use this when authoring workflows with control flow. Composite nodes return dire
           use: codex
           prompt: "Review ${{ item.path }}."
           output:
-            summary: string
+            report_path: string
             finding_count: integer
 ```
 

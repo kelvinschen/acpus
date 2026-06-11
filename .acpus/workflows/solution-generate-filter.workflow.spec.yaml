@@ -29,7 +29,7 @@ workflow:
       run: program
       cmd:
         - bash
-        - -lc
+        - -c
         - |
           set -euo pipefail
           python3 - <<'PY'
@@ -79,17 +79,14 @@ workflow:
               - `balanced`: pragmatic high-confidence change.
               - `bold`: larger simplification or redesign.
 
-              Return JSON with the option, affected areas, risks, and verification.
+              Write the option detail to:
+              ${{ steps.prepare_output.output.output_dir }}/${{ item }}-option.md
+
+              Return JSON with only lane, title, and report path.
             output:
               lane: string
               title: string
-              summary: string
-              affected_areas:
-                - string
-              risks:
-                - string
-              verification:
-                - string
+              report_path: string
             timeout: 20m
 
     - id: filter_options
@@ -104,21 +101,26 @@ workflow:
             Problem:
             ${{ input.problem }}
 
-            Options:
-            ${{ steps.generate_options }}
+            Generated options:
+            - minimal: title=${{ steps.generate_options[0].output.title }}, report=${{ steps.generate_options[0].output.report_path }}
+            - balanced: title=${{ steps.generate_options[1].output.title }}, report=${{ steps.generate_options[1].output.report_path }}
+            - bold: title=${{ steps.generate_options[2].output.title }}, report=${{ steps.generate_options[2].output.report_path }}
+
+            Read each option report before evaluating.
+
+            Write the full feasibility filter report to:
+            ${{ steps.prepare_output.output.output_dir }}/feasibility-filter.md
 
             Write boundary:
             - Do not create, modify, or delete files in the target repository.
-            - If scratch files are needed, use only the workflow output directory or a system temporary directory.
+            - Only write to the filter report path above, the workflow output directory, or a system temporary directory.
 
-            Return JSON with rejected options, kept options, and top concerns.
+            Return JSON with report path and compact counts. Put option-level
+            reasoning in the Markdown report.
           output:
-            kept:
-              - string
-            rejected:
-              - string
-            top_concerns:
-              - string
+            report_path: string
+            kept_count: integer
+            rejected_count: integer
           timeout: 20m
 
         - id: risk
@@ -131,21 +133,26 @@ workflow:
             Problem:
             ${{ input.problem }}
 
-            Options:
-            ${{ steps.generate_options }}
+            Generated options:
+            - minimal: title=${{ steps.generate_options[0].output.title }}, report=${{ steps.generate_options[0].output.report_path }}
+            - balanced: title=${{ steps.generate_options[1].output.title }}, report=${{ steps.generate_options[1].output.report_path }}
+            - bold: title=${{ steps.generate_options[2].output.title }}, report=${{ steps.generate_options[2].output.report_path }}
+
+            Read each option report before evaluating.
+
+            Write the full risk filter report to:
+            ${{ steps.prepare_output.output.output_dir }}/risk-filter.md
 
             Write boundary:
             - Do not create, modify, or delete files in the target repository.
-            - If scratch files are needed, use only the workflow output directory or a system temporary directory.
+            - Only write to the filter report path above, the workflow output directory, or a system temporary directory.
 
-            Return JSON with risk-ranked options and disqualifying issues.
+            Return JSON with report path and compact counts. Put option-level
+            reasoning in the Markdown report.
           output:
-            ranked:
-              - string
-            disqualifying_issues:
-              - string
-            mitigation_notes:
-              - string
+            report_path: string
+            disqualified_count: integer
+            mitigation_count: integer
           timeout: 20m
 
     - id: synthesize_recommendation
@@ -160,13 +167,17 @@ workflow:
         ${{ input.problem }}
 
         Generated options:
-        ${{ steps.generate_options }}
+        - minimal: title=${{ steps.generate_options[0].output.title }}, report=${{ steps.generate_options[0].output.report_path }}
+        - balanced: title=${{ steps.generate_options[1].output.title }}, report=${{ steps.generate_options[1].output.report_path }}
+        - bold: title=${{ steps.generate_options[2].output.title }}, report=${{ steps.generate_options[2].output.report_path }}
 
-        Feasibility filter:
-        ${{ steps.filter_options.feasibility.output }}
+        Read each option report before synthesizing.
 
-        Risk filter:
-        ${{ steps.filter_options.risk.output }}
+        Feasibility filter report:
+        ${{ steps.filter_options.feasibility.output.report_path }}
+
+        Risk filter report:
+        ${{ steps.filter_options.risk.output.report_path }}
 
         Write the final Markdown report to:
         ${{ steps.prepare_output.output.final_path }}
@@ -175,13 +186,12 @@ workflow:
         - Do not create, modify, or delete files in the target repository.
         - Only write to the final report path above, its parent output directory, or a system temporary directory.
 
-        Return JSON with the chosen option and implementation outline.
+        Return JSON with the chosen option, final report path, and confidence.
+        Put the implementation outline in the Markdown report.
       output:
         chosen_title: string
         final_report_path: string
         confidence: string
-        next_steps:
-          - string
       timeout: 25m
 
 outputs:

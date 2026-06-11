@@ -35,7 +35,7 @@ workflow:
 
     - id: test
       run: program
-      cmd: ["bash", "-lc", "make test"]
+      cmd: ["bash", "-c", "make test"]
       capture:
         from: stdout
         parse: text

@@ -17,6 +17,14 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A Workflow Spec MAY declare `include` steps that are expanded at compile time.
 - A started Workflow Run MUST execute a frozen IR snapshot and MUST NOT re-read mutable YAML during replay or resume.
 
+### Authoring Boundaries
+
+- Workflow Specs SHOULD use Program Steps only for deterministic local glue such as preparing directories, computing stable paths, running verification commands, collecting git diffs, applying patches, or evaluating simple guard data.
+- Workflow Specs SHOULD keep open-ended planning, judgment, synthesis, failure interpretation, cross-round memory, and role-specific ownership decisions in Agent Steps.
+- Workflow Specs SHOULD share rich intermediate material through durable files and SHOULD expose only control values, compact counts, decisions, and durable file paths through step `output` and top-level `outputs`.
+- Distributable single-file Workflow Specs MAY embed inline Program scripts when a separate helper script would make the template harder to copy or run, but embedded scripts SHOULD stay short, deterministic, and mechanically verifiable.
+- Inline Program scripts SHOULD avoid login shell execution such as `bash -lc`; they SHOULD prefer inherited execution environments such as `bash -c` when shell semantics are required.
+
 ### Agent Steps
 
 - An Agent Step MUST use `run: agent`.

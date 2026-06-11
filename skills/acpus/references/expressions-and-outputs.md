@@ -40,7 +40,7 @@ Do not wrap `when`, `until`, or expression-valued `over` in `${{ ... }}`.
 Agent and Program Steps expose an envelope:
 
 ```yaml
-steps.review.output.summary
+steps.review.output.ready
 steps.collect.output.report_path
 steps.collect.exit_code
 ```
@@ -49,8 +49,8 @@ Other step kinds expose their produced value directly:
 
 ```yaml
 # parallel is a record keyed by branch id
-steps.review_parallel.contract.output.summary
-steps.review_parallel.tests.output.summary
+steps.review_parallel.contract.output.report_path
+steps.review_parallel.tests.output.report_path
 
 # fanout is an array of successful lane outputs
 steps.research_lanes[0].output.report_path
@@ -73,9 +73,10 @@ Keep output schemas shallow:
 ```yaml
 output:
   report_path: string
-  summary: string
   risk_count: integer
   ready: boolean
 ```
 
-Avoid returning full reports, nested transcript fragments, or intermediate chain-of-thought-like material. Write those to files and output the file path.
+Use outputs as the workflow control surface. Keep booleans, decisions, counts, ids, and durable paths there only when another step, final output, or the user needs them.
+
+Avoid returning full reports, detailed findings, risk lists, implementation rationales, nested transcript fragments, or intermediate chain-of-thought-like material. Write those to report or handoff files and output the file path.

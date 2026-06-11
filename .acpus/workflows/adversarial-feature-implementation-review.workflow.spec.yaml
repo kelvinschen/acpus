@@ -29,7 +29,7 @@ workflow:
       run: program
       cmd:
         - bash
-        - -lc
+        - -c
         - |
           set -euo pipefail
           target="${{ input.target_path }}"
@@ -147,20 +147,14 @@ workflow:
             - Do not create, modify, or delete files in the target repository.
             - Only write to the report path above, its parent output directory, or a system temporary directory.
 
-            Return a JSON object with counts and top findings.
+            Return JSON with the report path and finding counts. Put finding
+            details in the Markdown report, not in JSON output.
           output:
             report_path: string
             blocking_count: integer
             high_count: integer
             medium_count: integer
             needs_verification_count: integer
-            top_findings:
-              - title: string
-                severity: string
-                file: string
-                line: string
-                evidence: string
-                fix: string
           timeout: 30m
 
         - id: correctness
@@ -192,20 +186,14 @@ workflow:
             - Do not create, modify, or delete files in the target repository.
             - Only write to the report path above, its parent output directory, or a system temporary directory.
 
-            Return a JSON object with counts and top findings.
+            Return JSON with the report path and finding counts. Put finding
+            details in the Markdown report, not in JSON output.
           output:
             report_path: string
             blocking_count: integer
             high_count: integer
             medium_count: integer
             needs_verification_count: integer
-            top_findings:
-              - title: string
-                severity: string
-                file: string
-                line: string
-                evidence: string
-                fix: string
           timeout: 30m
 
         - id: tests
@@ -236,20 +224,14 @@ workflow:
             - Do not create, modify, or delete files in the target repository.
             - Only write to the report path above, its parent output directory, or a system temporary directory.
 
-            Return a JSON object with counts and top findings.
+            Return JSON with the report path and finding counts. Put finding
+            details in the Markdown report, not in JSON output.
           output:
             report_path: string
             blocking_count: integer
             high_count: integer
             medium_count: integer
             needs_verification_count: integer
-            top_findings:
-              - title: string
-                severity: string
-                file: string
-                line: string
-                evidence: string
-                fix: string
           timeout: 30m
 
         - id: maintainability
@@ -284,20 +266,14 @@ workflow:
             - Do not create, modify, or delete files in the target repository.
             - Only write to the report path above, its parent output directory, or a system temporary directory.
 
-            Return a JSON object with counts and top findings.
+            Return JSON with the report path and finding counts. Put finding
+            details in the Markdown report, not in JSON output.
           output:
             report_path: string
             blocking_count: integer
             high_count: integer
             medium_count: integer
             needs_verification_count: integer
-            top_findings:
-              - title: string
-                severity: string
-                file: string
-                line: string
-                evidence: string
-                fix: string
           timeout: 30m
 
     - id: cross_examine
@@ -335,19 +311,14 @@ workflow:
         - Do not create, modify, or delete files in the target repository.
         - Only write to the final report path above, its parent output directory, or a system temporary directory.
 
-        Return a JSON object with verdict, final report path, counts, and next actions.
+        Return JSON with verdict, final report path, and release-blocking
+        counts. Put detailed counts, next actions, and findings in the
+        Markdown report.
       output:
         verdict: string
         final_report_path: string
         blocking_count: integer
         high_count: integer
-        medium_count: integer
-        needs_verification_count: integer
-        confirmed_count: integer
-        downgraded_count: integer
-        contradiction_count: integer
-        next_actions:
-          - string
       timeout: 30m
 
 outputs:

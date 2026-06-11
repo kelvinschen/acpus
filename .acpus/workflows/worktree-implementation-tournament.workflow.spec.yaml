@@ -31,7 +31,7 @@ workflow:
       run: program
       cmd:
         - bash
-        - -lc
+        - -c
         - |
           set -euo pipefail
           python3 - "${{ input.target_path }}" "${{ input.output_root }}" "${{ run_id }}" "${{ input.base_ref }}" <<'PY'
@@ -141,23 +141,20 @@ workflow:
               - Favor a distinct implementation strategy for this candidate.
               - Keep complex code decisions in this agent step.
 
-              Return JSON with summary, changed files, risks, and verification hints.
+              Write a short implementation report to:
+              ${{ steps.setup_tournament.output.output_dir }}/${{ item.id }}-implementation.md
+
+              Return JSON with only candidate id and report path.
             output:
               candidate_id: string
-              summary: string
-              changed_files:
-                - string
-              risks:
-                - string
-              verification_hints:
-                - string
+              report_path: string
             timeout: 45m
 
           - id: capture_candidate_patch
             run: program
             cmd:
               - bash
-              - -lc
+              - -c
               - |
                 set -euo pipefail
                 worktree="${{ item.worktree_path }}"
@@ -176,15 +173,13 @@ workflow:
                 log_path = pathlib.Path(log)
                 diff = subprocess.run(["git", "-C", str(wt), "diff", "--binary"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 patch_path.write_text(diff.stdout, encoding="utf-8")
-                verify_result = subprocess.run(["bash", "-lc", verify], cwd=wt, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                verify_result = subprocess.run(["bash", "-c", verify], cwd=wt, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
                 log_path.write_text(verify_result.stdout, encoding="utf-8")
-                changed = subprocess.run(["git", "-C", str(wt), "diff", "--name-only"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 print(json.dumps({
                     "ok": diff.returncode == 0 and verify_result.returncode == 0 and patch_path.stat().st_size > 0,
                     "patch_path": str(patch_path),
                     "verify_log_path": str(log_path),
                     "verify_exit_code": verify_result.returncode,
-                    "changed_files": [line for line in changed.stdout.splitlines() if line.strip()],
                 }))
                 PY
             capture:
@@ -195,8 +190,6 @@ workflow:
               patch_path: string
               verify_log_path: string
               verify_exit_code: integer
-              changed_files:
-                - string
             timeout: 30m
 
     - id: judge_winner
@@ -209,8 +202,27 @@ workflow:
         Feature goal:
         ${{ input.feature_goal }}
 
-        Candidate results:
-        ${{ steps.implement_candidates }}
+        Candidate verification and artifacts:
+        - candidate-a:
+          - implementation report: ${{ steps.setup_tournament.output.output_dir }}/candidate-a-implementation.md
+          - patch: ${{ steps.implement_candidates[0].output.patch_path }}
+          - verify log: ${{ steps.implement_candidates[0].output.verify_log_path }}
+          - verify_exit_code: ${{ steps.implement_candidates[0].output.verify_exit_code }}
+          - ok: ${{ steps.implement_candidates[0].output.ok }}
+        - candidate-b:
+          - implementation report: ${{ steps.setup_tournament.output.output_dir }}/candidate-b-implementation.md
+          - patch: ${{ steps.implement_candidates[1].output.patch_path }}
+          - verify log: ${{ steps.implement_candidates[1].output.verify_log_path }}
+          - verify_exit_code: ${{ steps.implement_candidates[1].output.verify_exit_code }}
+          - ok: ${{ steps.implement_candidates[1].output.ok }}
+        - candidate-c:
+          - implementation report: ${{ steps.setup_tournament.output.output_dir }}/candidate-c-implementation.md
+          - patch: ${{ steps.implement_candidates[2].output.patch_path }}
+          - verify log: ${{ steps.implement_candidates[2].output.verify_log_path }}
+          - verify_exit_code: ${{ steps.implement_candidates[2].output.verify_exit_code }}
+          - ok: ${{ steps.implement_candidates[2].output.ok }}
+
+        Read each implementation report, patch, and verify log before judging.
 
         Choose exactly one winner from candidates whose deterministic verification
         passed. Consider correctness, test coverage, maintainability, size of
@@ -224,20 +236,20 @@ workflow:
         - Do not create, modify, or delete files in the target repository or candidate worktrees.
         - Only write to the judging report path above, the workflow output directory, or a system temporary directory.
 
-        Return JSON with the winning candidate id and patch path.
+        Return JSON with the winning candidate id, patch path, and judging
+        report path. Put rationale in the Markdown judging report.
       output:
         acceptable: boolean
         winner_id: string
         winner_patch_path: string
         report_path: string
-        rationale: string
       timeout: 25m
 
     - id: apply_winner
       run: program
       cmd:
         - bash
-        - -lc
+        - -c
         - |
           set -euo pipefail
           repo="${{ steps.setup_tournament.output.repo_path }}"
@@ -277,7 +289,7 @@ workflow:
               apply_log_path.write_text(apply.stdout, encoding="utf-8")
               result["applied"] = apply.returncode == 0
               if result["applied"]:
-                  verify_result = subprocess.run(["bash", "-lc", verify], cwd=repo_path, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                  verify_result = subprocess.run(["bash", "-c", verify], cwd=repo_path, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
                   verify_log_path.write_text(verify_result.stdout, encoding="utf-8")
                   result["verified"] = verify_result.returncode == 0
                   result["verify_exit_code"] = verify_result.returncode

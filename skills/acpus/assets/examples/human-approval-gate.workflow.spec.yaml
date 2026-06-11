@@ -16,7 +16,7 @@ workflow:
       run: program
       cmd:
         - bash
-        - -lc
+        - -c
         - |
           set -euo pipefail
           python3 - <<'PY'
@@ -60,7 +60,7 @@ workflow:
             do:
               - id: approved_result
                 run: program
-                cmd: ["bash", "-lc", "printf '{\"status\":\"approved\"}'"]
+                cmd: ["bash", "-c", "printf '{\"status\":\"approved\"}'"]
                 capture:
                   from: stdout
                   parse: json
@@ -70,7 +70,7 @@ workflow:
           do:
             - id: rejected_result
               run: program
-              cmd: ["bash", "-lc", "printf '{\"status\":\"rejected\"}'"]
+              cmd: ["bash", "-c", "printf '{\"status\":\"rejected\"}'"]
               capture:
                 from: stdout
                 parse: json

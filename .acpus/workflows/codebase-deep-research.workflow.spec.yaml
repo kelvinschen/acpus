@@ -29,7 +29,7 @@ workflow:
       run: program
       cmd:
         - bash
-        - -lc
+        - -c
         - |
           set -euo pipefail
           python3 - <<'PY'
@@ -91,10 +91,10 @@ workflow:
             - Do not create, modify, or delete files in the target repository.
             - Only write to the report path above, its parent output directory, or a system temporary directory.
 
-            Return a JSON object with the report path and summary.
+            Return JSON with the report path and finding count. Put the
+            summary in the Markdown report.
           output:
-            filepath: string
-            summary: string
+            report_path: string
             findings_count: integer
           timeout: 25m
 
@@ -125,10 +125,10 @@ workflow:
             - Do not create, modify, or delete files in the target repository.
             - Only write to the report path above, its parent output directory, or a system temporary directory.
 
-            Return a JSON object with the report path and summary.
+            Return JSON with the report path and finding count. Put the
+            summary in the Markdown report.
           output:
-            filepath: string
-            summary: string
+            report_path: string
             findings_count: integer
           timeout: 25m
 
@@ -159,10 +159,10 @@ workflow:
             - Do not create, modify, or delete files in the target repository.
             - Only write to the report path above, its parent output directory, or a system temporary directory.
 
-            Return a JSON object with the report path and summary.
+            Return JSON with the report path and finding count. Put the
+            summary in the Markdown report.
           output:
-            filepath: string
-            summary: string
+            report_path: string
             findings_count: integer
           timeout: 25m
 
@@ -192,10 +192,10 @@ workflow:
             - Do not create, modify, or delete files in the target repository.
             - Only write to the report path above, its parent output directory, or a system temporary directory.
 
-            Return a JSON object with the report path and summary.
+            Return JSON with the report path and finding count. Put the
+            summary in the Markdown report.
           output:
-            filepath: string
-            summary: string
+            report_path: string
             findings_count: integer
           timeout: 25m
 
@@ -226,10 +226,10 @@ workflow:
             - Do not create, modify, or delete files in the target repository.
             - Only write to the report path above, its parent output directory, or a system temporary directory.
 
-            Return a JSON object with the report path and summary.
+            Return JSON with the report path and finding count. Put the
+            summary in the Markdown report.
           output:
-            filepath: string
-            summary: string
+            report_path: string
             findings_count: integer
           timeout: 25m
 
@@ -244,11 +244,11 @@ workflow:
         Custom instructions: ${{ input.custom_instructions }}
 
         Read these independent research reports:
-        - Architecture: ${{ steps.research.architecture.output.filepath }}
-        - Quality: ${{ steps.research.quality.output.filepath }}
-        - Security: ${{ steps.research.security.output.filepath }}
-        - Performance: ${{ steps.research.performance.output.filepath }}
-        - API design: ${{ steps.research.api_design.output.filepath }}
+        - Architecture: ${{ steps.research.architecture.output.report_path }}
+        - Quality: ${{ steps.research.quality.output.report_path }}
+        - Security: ${{ steps.research.security.output.report_path }}
+        - Performance: ${{ steps.research.performance.output.report_path }}
+        - API design: ${{ steps.research.api_design.output.report_path }}
 
         Synthesize by theme, not by source report. Cross-validate claims that
         appear in multiple reports, downgrade weak evidence, identify gaps, and
@@ -263,7 +263,7 @@ workflow:
 
         Return a JSON object with the final report path and counts.
       output:
-        report_filepath: string
+        report_path: string
         total_findings: integer
         cross_validated: integer
         single_source: integer
@@ -271,7 +271,7 @@ workflow:
       timeout: 30m
 
 outputs:
-  report_filepath: ${{ steps.synthesize.output.report_filepath }}
+  report_path: ${{ steps.synthesize.output.report_path }}
   output_dir: ${{ steps.prepare_output.output.output_dir }}
   total_findings: ${{ steps.synthesize.output.total_findings }}
   cross_validated: ${{ steps.synthesize.output.cross_validated }}

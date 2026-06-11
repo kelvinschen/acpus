@@ -30,7 +30,7 @@ workflow:
       run: program
       cmd:
         - bash
-        - -lc
+        - -c
         - |
           set -euo pipefail
           python3 - <<'PY'
@@ -59,7 +59,7 @@ workflow:
       run: agent
       use: fast_designer
       prompt: |
-        Classify this Acpus workflow-design task. Return JSON only.
+        Classify this Acpus workflow-design task. Return compact JSON only.
 
         Task:
         ${{ input.task }}
@@ -83,7 +83,6 @@ workflow:
         complexity: string
         recommended_pattern: string
         needs_deep_design: boolean
-        rationale: string
       timeout: 10m
 
     - id: design_route
@@ -122,13 +121,12 @@ workflow:
                   - Include a clear `description` that states the dynamic workflow pattern.
                   - Write only the candidate workflow file path above or files under its parent output directory or a system temporary directory.
                   - Do not create, modify, or delete files in the target repository.
-                  - Return JSON with the workflow name, file path, summary, and risk notes.
+                  - Put design rationale and risk notes in the candidate file
+                    comments or companion review note if needed.
+                  - Return JSON with the workflow name and file path.
                 output:
                   workflow_name: string
                   candidate_path: string
-                  summary: string
-                  risk_notes:
-                    - string
                 timeout: 30m
         default:
           do:
@@ -163,13 +161,12 @@ workflow:
                 - Include a clear `description` that states the dynamic workflow pattern.
                 - Write only the candidate workflow file path above or files under its parent output directory or a system temporary directory.
                 - Do not create, modify, or delete files in the target repository.
-                - Return JSON with the workflow name, file path, summary, and risk notes.
+                - Put design rationale and risk notes in the candidate file
+                  comments or companion review note if needed.
+                - Return JSON with the workflow name and file path.
               output:
                 workflow_name: string
                 candidate_path: string
-                summary: string
-                risk_notes:
-                  - string
               timeout: 20m
 
     - id: normalize_design
@@ -188,7 +185,9 @@ workflow:
         ${{ input.task }}
 
         Classification:
-        ${{ steps.classify.output }}
+        complexity=${{ steps.classify.output.complexity }}
+        pattern=${{ steps.classify.output.recommended_pattern }}
+        needs_deep_design=${{ steps.classify.output.needs_deep_design }}
 
         Write a Markdown review note to:
         ${{ steps.prepare_output.output.review_path }}
@@ -198,20 +197,20 @@ workflow:
         - Do not create, modify, or delete files in the target repository.
         - Any scratch files must stay under the prepared output directory or a system temporary directory.
 
-        Return JSON with final workflow name, candidate path, review path, and readiness.
+        Return JSON with final workflow name, candidate path, review path, and
+        readiness. Put review notes in the Markdown review file.
       output:
         workflow_name: string
         candidate_path: string
         review_path: string
         ready: boolean
-        notes: string
       timeout: 20m
 
     - id: install_generated_workflow
       run: program
       cmd:
         - bash
-        - -lc
+        - -c
         - |
           set -euo pipefail
           target="${{ input.target_path }}"

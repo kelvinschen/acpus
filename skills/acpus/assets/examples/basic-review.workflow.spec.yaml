@@ -1,6 +1,6 @@
 version: 1
 name: example-basic-review
-description: Minimal review workflow with compact output.
+description: Minimal review workflow with control output.
 
 input:
   topic: string
@@ -20,10 +20,9 @@ workflow:
         Topic:
         ${{ input.topic }}
       output:
-        summary: string
         risk_count: integer
         ready: boolean
 
 outputs:
-  summary: ${{ steps.review.output.summary }}
+  risk_count: ${{ steps.review.output.risk_count }}
   ready: ${{ steps.review.output.ready }}
