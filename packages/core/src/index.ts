@@ -1,8 +1,10 @@
 export { DiagnosticBag } from "./diagnostics.js";
 export { compileWorkflow, lintWorkflow } from "./compiler.js";
 export { createSchedule } from "./schedule.js";
+export { createIncludeResolver, globalWorkflowRoot, workflowSourcePolicy } from "./source-policy.js";
 export { compileSchemaDsl } from "./schema/index.js";
 export type { CompileSchemaDslResult, SchemaDslError, CompileSchemaDslOptions } from "./schema/index.js";
+export type { WorkflowSourcePolicy } from "./source-policy.js";
 export {
   EXPRESSION_PATTERN,
   ALLOWED_ROOTS,

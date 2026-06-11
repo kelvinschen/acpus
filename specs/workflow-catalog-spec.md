@@ -18,6 +18,9 @@ The Workflow Catalog is the read-only discovery surface for project and global W
 - `workflows list --json` and `workflows show --json` MUST expose scope, ref, name, description, input definition, input keys, path, status, and diagnostics.
 - Running a global Workflow Spec MUST create the Run in the current Workspace.
 - Includes and subworkflows MUST resolve relative to the Workflow Spec source path.
+- Catalog source path validation and include resolution MUST use real filesystem paths after symlink resolution.
+- Catalog source path validation and include resolution MUST reject targets whose real path is outside the current Workspace or `$HOME/.acpus/workflows/`.
+- Catalog source path validation and include resolution MUST reject targets that do not exist or cannot be read.
 - Program execution, Program `capture.path`, and default Agent cwd MUST resolve relative to the current Workspace.
 
 ## Verification

@@ -1,21 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
+export { createIncludeResolver } from "@acpus/core";
 
 export function readTextFile(path: string): string {
   return readFileSync(path, "utf8");
-}
-
-export function createIncludeResolver(allowedSourceRoots?: string[]): (path: string, fromPath?: string) => string {
-  const allowedRoots = allowedSourceRoots?.map((root) => resolve(root)) ?? [];
-  return (includePath, fromPath) => {
-    const baseDir = fromPath ? dirname(resolve(fromPath)) : process.cwd();
-    const resolved = resolve(baseDir, includePath);
-    if (allowedRoots.length > 0 && !allowedRoots.some((root) => resolved === root || resolved.startsWith(root + "/"))) {
-      throw new Error(`Include path '${includePath}' resolves outside allowed Workflow Spec roots`);
-    }
-    return readTextFile(resolved);
-  };
 }
 
 export function parseInput(value: string | undefined): Record<string, unknown> | undefined {

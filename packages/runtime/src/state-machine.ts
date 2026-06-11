@@ -58,6 +58,14 @@ export function resetFailedForRetry(from: NodeState): NodeState {
   return "pending";
 }
 
+/** Control-plane reset: Run-level retry of a cancelled node in a failed Run (cancelled → pending). */
+export function resetCancelledForRunRetry(from: NodeState): NodeState {
+  if (from !== "cancelled") {
+    throw new Error(`Cannot retry cancelled node from state '${from}': only cancelled nodes use Run-level cancelled reset`);
+  }
+  return "pending";
+}
+
 /** Control-plane reset: Run-level resume of a paused node (paused → pending). */
 export function resetPausedForRunResume(from: NodeState): NodeState {
   if (from !== "paused") {
@@ -85,6 +93,14 @@ export function resetAwaitingForCrashRecovery(from: NodeState): NodeState {
     throw new Error(`Cannot recover stale node in state '${from}': only awaiting nodes can be reset`);
   }
   return "pending";
+}
+
+/** Control-plane cancellation: Run-level cancel of a materialized pending node (pending → cancelled). */
+export function cancelPendingForRunCancel(from: NodeState): NodeState {
+  if (from !== "pending") {
+    throw new Error(`Cannot cancel pending node from state '${from}': only pending nodes use Run-level pending cancel`);
+  }
+  return "cancelled";
 }
 
 /** Create the initial NodeExecutionState for a node. */

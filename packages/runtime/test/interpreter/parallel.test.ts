@@ -253,6 +253,52 @@ workflow:
     expect(slow?.state).toBe("cancelled");
   });
 
+  it("cancels queued pending sibling branches when join:all fails fast", async () => {
+    const ir = compileYaml(`
+version: 1
+name: parallel-fail-fast-queued
+workflow:
+  steps:
+    - id: par
+      join: all
+      max_concurrency: 2
+      parallel:
+        - id: boom
+          run: program
+          cmd: ["echo", "boom"]
+        - id: slow
+          run: program
+          cmd: ["echo", "slow"]
+        - id: queued
+          run: program
+          cmd: ["echo", "queued"]
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: {
+        boom: { failureKind: "timeout", delay: 5 },
+        slow: { stdout: "slow-out", delay: 200 },
+        queued: { stdout: "queued-out", delay: 5 }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("failed");
+
+    const nodes = store.listNodeStates(meta.runId);
+    expect(nodes.find((n) => n.nodeId === "boom")?.state).toBe("failed");
+    expect(nodes.find((n) => n.nodeId === "slow")?.state).toBe("cancelled");
+    expect(nodes.find((n) => n.nodeId === "queued")?.state).toBe("cancelled");
+
+    await new Promise((resolve) => setTimeout(resolve, 230));
+    interpreter.retryRun(meta.runId);
+    const resetNodes = store.listNodeStates(meta.runId);
+    expect(resetNodes.find((n) => n.nodeId === "boom")?.state).toBe("pending");
+    expect(resetNodes.find((n) => n.nodeId === "slow")?.state).toBe("pending");
+    expect(resetNodes.find((n) => n.nodeId === "queued")?.state).toBe("pending");
+  });
+
   it("Run-level pause/resume re-executes paused parallel branches", async () => {
     const ir = compileYaml(`
 version: 1

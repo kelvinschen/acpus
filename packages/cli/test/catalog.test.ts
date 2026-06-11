@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { listWorkflowCatalog, resolveWorkflowTarget } from "../src/catalog.js";
+import { globalWorkflowRoot, listWorkflowCatalog, resolveWorkflowTarget } from "../src/catalog.js";
 
 describe("Workflow Catalog", () => {
   it("discovers ready, invalid, and conflict entries from the project catalog", () => {
@@ -75,6 +75,39 @@ workflow:
       rmSync(outside, { recursive: true, force: true });
     }
   });
+
+  it("accepts includes from project and global Workflow Catalog source roots", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "acpus-catalog-policy-"));
+    const originalHome = process.env.HOME;
+    const home = mkdtempSync(join(tmpdir(), "acpus-catalog-home-"));
+    process.env.HOME = home;
+    try {
+      const projectRoot = join(workspace, ".acpus", "workflows");
+      const globalRoot = globalWorkflowRoot();
+      mkdirSync(projectRoot, { recursive: true });
+      mkdirSync(globalRoot, { recursive: true });
+      writeFileSync(join(projectRoot, "project-child.yaml"), SIMPLE_WORKFLOW("project-child"), "utf8");
+      writeFileSync(join(projectRoot, "project-parent.workflow.yaml"), INCLUDE_WORKFLOW("project-parent", "project-child.yaml"), "utf8");
+      writeFileSync(join(globalRoot, "global-child.yaml"), SIMPLE_WORKFLOW("global-child"), "utf8");
+      writeFileSync(join(globalRoot, "global-parent.workflow.yaml"), INCLUDE_WORKFLOW("global-parent", "global-child.yaml"), "utf8");
+
+      const entries = listWorkflowCatalog(workspace);
+
+      expect(entries.find((entry) => entry.name === "project-parent")).toMatchObject({
+        scope: "project",
+        status: "ready"
+      });
+      expect(entries.find((entry) => entry.name === "global-parent")).toMatchObject({
+        scope: "global",
+        status: "ready"
+      });
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      rmSync(workspace, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
 
 function SIMPLE_WORKFLOW(name: string): string {
@@ -86,5 +119,15 @@ workflow:
     - id: ok
       run: program
       cmd: "echo ok"
+`;
+}
+
+function INCLUDE_WORKFLOW(name: string, include: string): string {
+  return `
+version: 1
+name: ${name}
+workflow:
+  steps:
+    - include: ${include}
 `;
 }

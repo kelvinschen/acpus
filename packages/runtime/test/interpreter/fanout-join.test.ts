@@ -1,5 +1,27 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { compileYaml, createTestInterpreter } from "./helper.js";
+import { WorkflowInterpreter } from "../../src/interpreter.js";
+import { RunStore } from "../../src/store.js";
+import { StubAgentExecutor } from "../support/stub-agent.js";
+import type { ExecutorAdapter, ExecutionRequest } from "../../src/executors/types.js";
+import type { ExecutorResult } from "../../src/types.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+class ItemProgramExecutor implements ExecutorAdapter {
+  async execute({ context, signal }: ExecutionRequest): Promise<ExecutorResult> {
+    if (context.item === "boom") {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return { failureKind: "timeout", error: "boom", stdout: "", stderr: "" };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    if (signal.aborted) {
+      return { partial: true, error: "aborted" };
+    }
+    return { stdout: String(context.item), stderr: "" };
+  }
+}
 
 describe("Fanout join and success criteria", () => {
   const cleanups: Array<() => void> = [];
@@ -197,5 +219,40 @@ workflow:
     const slows = nodes.filter((n) => n.nodeId === "slow");
     expect(slows.length).toBeGreaterThan(0);
     for (const s of slows) expect(s.state).toBe("cancelled");
+  });
+
+  it("join: all fails fast and cancels queued pending lanes", async () => {
+    const ir = compileYaml(`
+version: 1
+name: fanout-fail-fast-queued
+workflow:
+  steps:
+    - id: mapped
+      fanout:
+        over: input.items
+        join: all
+        max_concurrency: 2
+        do:
+          - id: work
+            run: program
+            cmd: ["echo", "work"]
+`);
+
+    const tmpDir = mkdtempSync(join(tmpdir(), "acpus-fanout-queued-"));
+    cleanups.push(() => rmSync(tmpDir, { recursive: true, force: true }));
+    const store = new RunStore(tmpDir);
+    const interpreter = new WorkflowInterpreter(store, new StubAgentExecutor({}), new ItemProgramExecutor(), {
+      maxConcurrency: 10,
+      nowTimestamp: "2025-01-01T00:00:00Z"
+    });
+
+    const meta = await interpreter.start(ir, { input: { items: ["boom", "slow", "queued"] } });
+    expect(meta.status).toBe("failed");
+
+    const workNodes = store.listNodeStates(meta.runId).filter((n) => n.nodeId === "work");
+    expect(workNodes).toHaveLength(3);
+    expect(workNodes.find((n) => n.nodeKey.includes("lane:0"))?.state).toBe("failed");
+    expect(workNodes.find((n) => n.nodeKey.includes("lane:1"))?.state).toBe("cancelled");
+    expect(workNodes.find((n) => n.nodeKey.includes("lane:2"))?.state).toBe("cancelled");
   });
 });

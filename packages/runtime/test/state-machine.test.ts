@@ -5,9 +5,11 @@ import {
   isTerminal,
   createInitialNodeState,
   resetFailedForRetry,
+  resetCancelledForRunRetry,
   resetRunningForCrashRecovery,
   resetAwaitingForCrashRecovery,
-  resetPausedForRunResume
+  resetPausedForRunResume,
+  cancelPendingForRunCancel
 } from "../src/state-machine.js";
 import type { NodeState } from "../src/types.js";
 
@@ -67,6 +69,10 @@ describe("Node State Machine", () => {
 
     it("rejects pending → completed (must go through running)", () => {
       expect(canTransition("pending", "completed")).toBe(false);
+    });
+
+    it("rejects pending → cancelled (Run cancel uses a control-plane operation)", () => {
+      expect(canTransition("pending", "cancelled")).toBe(false);
     });
 
     it("rejects completed → any (terminal)", () => {
@@ -133,6 +139,17 @@ describe("Node State Machine", () => {
       }
     });
 
+    it("resetCancelledForRunRetry resets a cancelled node to pending", () => {
+      expect(resetCancelledForRunRetry("cancelled")).toBe("pending");
+    });
+
+    it("resetCancelledForRunRetry rejects any non-cancelled state", () => {
+      const states: NodeState[] = ["pending", "running", "awaiting", "completed", "failed", "paused"];
+      for (const from of states) {
+        expect(() => resetCancelledForRunRetry(from)).toThrow(/only cancelled nodes use Run-level cancelled reset/);
+      }
+    });
+
     it("resetRunningForCrashRecovery resets a running node to pending", () => {
       expect(resetRunningForCrashRecovery("running")).toBe("pending");
     });
@@ -163,6 +180,17 @@ describe("Node State Machine", () => {
       const states: NodeState[] = ["pending", "running", "awaiting", "completed", "failed", "cancelled"];
       for (const from of states) {
         expect(() => resetPausedForRunResume(from)).toThrow(/only paused nodes can be reset/);
+      }
+    });
+
+    it("cancelPendingForRunCancel cancels a materialized pending node", () => {
+      expect(cancelPendingForRunCancel("pending")).toBe("cancelled");
+    });
+
+    it("cancelPendingForRunCancel rejects any non-pending state", () => {
+      const states: NodeState[] = ["running", "awaiting", "completed", "failed", "paused", "cancelled"];
+      for (const from of states) {
+        expect(() => cancelPendingForRunCancel(from)).toThrow(/only pending nodes use Run-level pending cancel/);
       }
     });
   });

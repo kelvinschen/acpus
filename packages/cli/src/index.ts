@@ -1,17 +1,16 @@
 #!/usr/bin/env node
-import { compileWorkflow, lintWorkflow } from "@acpus/core";
+import { compileWorkflow, lintWorkflow, workflowSourcePolicy } from "@acpus/core";
 import { Command } from "commander";
 import { relative } from "node:path";
 import {
   findWorkflowCatalogEntry,
-  globalWorkflowRoot,
   listWorkflowCatalog,
   looksLikeWorkflowPath,
   resolveWorkflowPath,
   resolveWorkflowTarget,
   type WorkflowCatalogEntry
 } from "./catalog.js";
-import { createIncludeResolver, parseInput, readTextFile } from "./io.js";
+import { parseInput, readTextFile } from "./io.js";
 import { printCompile, printError, printLint } from "./output.js";
 import { ensureSupervisor, EXIT_SUPERVISOR_ERROR, isSupervisorConnectionError } from "./supervisor.js";
 import { followRun } from "./follow.js";
@@ -406,7 +405,7 @@ function displayPath(path: string): string {
 }
 
 function createWorkspaceIncludeResolver(): (path: string, fromPath?: string) => string {
-  return createIncludeResolver([process.cwd(), globalWorkflowRoot()]);
+  return workflowSourcePolicy().createIncludeResolver();
 }
 
 function formatBytes(bytes: number): string {

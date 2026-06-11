@@ -5,25 +5,16 @@ import { dirname, resolve } from "node:path";
 import type { ExpressionContext, InterpreterOptions, NodeKeyDynamic, RunOptions } from "./types.js";
 import { RunStore } from "./store.js";
 import { ExpressionEvaluator } from "./evaluator.js";
-import { resolveNodeKey, sanitizeValue } from "./keys.js";
-import { canTransition, transition, createInitialNodeState, resetFailedForRetry, resetRunningForCrashRecovery, resetAwaitingForCrashRecovery, resetPausedForRunResume } from "./state-machine.js";
+import { resolveNodeKey } from "./keys.js";
+import { canTransition, transition, createInitialNodeState } from "./state-machine.js";
 import { ArtifactStore } from "./artifacts.js";
 import type { ExecutorAdapter } from "./executors/types.js";
 import { renderAgentRequestPrompt, renderAgentSessionKey } from "./executors/agent.js";
 import type { NodeExecutionState, NodeState, ReplayResult, ReplayMismatch } from "./types.js";
 import { validateInput } from "./validate-input.js";
+import { RunControl, abortedNodeError, isPausedContinuationState } from "./run-control.js";
 import { randomBytes } from "node:crypto";
 import pLimit from "p-limit";
-
-const PAUSED_ABORT_ERROR = "Aborted: paused";
-
-function abortedNodeError(state: "paused" | "cancelled"): string {
-  return state === "paused" ? PAUSED_ABORT_ERROR : "Aborted: cancelled";
-}
-
-function isPausedContinuationState(state: NodeExecutionState | undefined): boolean {
-  return state?.state === "pending" && state.attempt > 0 && state.error === PAUSED_ABORT_ERROR;
-}
 
 function pushUnique(target: string[], refs: string[] | undefined): void {
   if (!refs) return;
@@ -72,15 +63,10 @@ export class WorkflowInterpreter {
   private readonly agentExecutor: ExecutorAdapter;
   private readonly programExecutor: ExecutorAdapter;
   private readonly artifactStore: ArtifactStore;
+  private readonly runControl: RunControl;
   private readonly maxConcurrency: number;
   private readonly allowedSourceRoots: string[];
   private readonly sleep: (ms: number) => Promise<void>;
-
-  /** Active abort controllers keyed by "runId:nodeKey" for pause/cancel support */
-  private readonly abortControllers: Map<string, AbortController> = new Map();
-
-  /** Intent of an in-flight abort keyed by "runId:nodeKey" (pause vs cancel). */
-  private readonly abortIntents: Map<string, "paused" | "cancelled"> = new Map();
 
   /** Pending human-decision resolvers for Approval Gates awaiting a signal,
    *  keyed by "runId:nodeKey". An entry exists only while a node is `awaiting`. */
@@ -88,11 +74,6 @@ export class WorkflowInterpreter {
 
   /** Absolute paths of subworkflow specs currently on the execution stack (cycle guard). */
   private readonly subworkflowStack: Set<string> = new Set();
-
-  /** Scheduling guards for Run-level pause/cancel, keyed by runId.
-   *  Per-runId to prevent leakage across runs sharing the same interpreter. */
-  private readonly schedulingPaused = new Map<string, boolean>();
-  private readonly schedulingCancelled = new Map<string, boolean>();
 
   constructor(
     store: RunStore,
@@ -105,6 +86,7 @@ export class WorkflowInterpreter {
     this.agentExecutor = agentExecutor;
     this.programExecutor = programExecutor;
     this.artifactStore = new ArtifactStore(store.getBaseDir());
+    this.runControl = new RunControl(store);
     this.maxConcurrency = options?.maxConcurrency ?? 10;
     this.allowedSourceRoots = options?.allowedSourceRoots?.map((root) => resolve(root)) ?? [];
     this.sleep = options?.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
@@ -153,8 +135,7 @@ export class WorkflowInterpreter {
     } finally {
       // Clean up per-runId scheduling guards when the run settles,
       // so they don't leak memory across runs.
-      this.schedulingPaused.delete(runId);
-      this.schedulingCancelled.delete(runId);
+      this.runControl.clearSchedulingGuards(runId);
     }
 
     meta.updatedAt = new Date().toISOString();
@@ -171,15 +152,7 @@ export class WorkflowInterpreter {
    * for a fresh human decision on re-execution.
    */
   recoverStaleNodes(runId: string): void {
-    for (const nodeState of this.store.listNodeStates(runId)) {
-      if (nodeState.state === "running") {
-        nodeState.state = resetRunningForCrashRecovery(nodeState.state);
-        this.store.writeNodeState(runId, nodeState);
-      } else if (nodeState.state === "awaiting") {
-        nodeState.state = resetAwaitingForCrashRecovery(nodeState.state);
-        this.store.writeNodeState(runId, nodeState);
-      }
-    }
+    this.runControl.recoverStaleNodes(runId);
   }
 
   /**
@@ -346,91 +319,13 @@ export class WorkflowInterpreter {
     }
   }
 
-  /** Pause one running node as part of a Run-level pause operation. */
-  private pauseRunningNode(runId: string, nodeKey: string): void {
-    const state = this.store.readNodeState(runId, nodeKey);
-    if (!state || !canTransition(state.state, "paused")) {
-      return;
-    }
-    this.abortIntents.set(`${runId}:${nodeKey}`, "paused");
-    const controller = this.abortControllers.get(`${runId}:${nodeKey}`);
-    if (controller) {
-      controller.abort();
-    }
-
-    state.state = transition(state.state, "paused") as NodeState;
-    this.store.writeNodeState(runId, state);
-  }
-
-  /** Cancel one materialized node as part of Run-level cancel or fail-fast. */
-  private cancelMaterializedNode(runId: string, nodeKey: string): void {
-    this.abortIntents.set(`${runId}:${nodeKey}`, "cancelled");
-    const controller = this.abortControllers.get(`${runId}:${nodeKey}`);
-    if (controller) {
-      controller.abort();
-    }
-
-    const state = this.store.readNodeState(runId, nodeKey);
-    if (state && canTransition(state.state, "cancelled")) {
-      state.state = transition(state.state, "cancelled") as NodeState;
-      this.store.writeNodeState(runId, state);
-    }
-  }
-
-  /** Resolve the operator intent for an in-flight abort; defaults to paused. */
-  private abortIntent(runId: string, nodeKey: string): "paused" | "cancelled" {
-    return this.abortIntents.get(`${runId}:${nodeKey}`) ?? "paused";
-  }
-
-  /** True if the node has been persisted as terminal `cancelled` (e.g. by
-   * fail-fast). Used to avoid clobbering it when a still-running leaf later
-   * resolves/rejects. */
-  private readAbortedStateOnDisk(runId: string, nodeKey: string): "paused" | "cancelled" | undefined {
-    const state = this.store.readNodeState(runId, nodeKey)?.state;
-    return state === "paused" || state === "cancelled" ? state : undefined;
-  }
-
-  private isStaleAttemptOnDisk(runId: string, nodeKey: string, attempt: number, startedAt: string | undefined): boolean {
-    const current = this.store.readNodeState(runId, nodeKey);
-    return current !== undefined && current.attempt > attempt && current.startedAt !== startedAt;
-  }
-
-  private syncInFrameAttemptFromDisk(runId: string, nodeKey: string, state: NodeExecutionState): void {
-    const current = this.store.readNodeState(runId, nodeKey);
-    if (current !== undefined && current.startedAt === state.startedAt && current.attempt > state.attempt) {
-      state.attempt = current.attempt;
-    }
-  }
-
   /**
    * Retry a failed executable Node. This is a local repair operation for the
    * target executable only; Run-level retry remains the operation that restores
    * Workflow progress from failed composite ancestors.
    */
   async retryNode(runId: string, nodeKey: string): Promise<void> {
-    const state = this.store.readNodeState(runId, nodeKey);
-    if (!state) {
-      throw new Error(`Node ${nodeKey} not found in run ${runId}`);
-    }
-    if (state.state !== "failed") {
-      throw new Error(
-        `Cannot retry node ${nodeKey} in state '${state.state}': only failed executable nodes are retryable`
-      );
-    }
-    if (state.kind !== "run.agent" && state.kind !== "run.program") {
-      throw new Error(`Cannot retry node ${nodeKey}: only failed executable nodes are retryable`);
-    }
-    const meta = this.store.readRunMeta(runId);
-    if (!meta) throw new Error(`Run ${runId} not found`);
-    if (meta.status !== "failed") {
-      throw new Error(`Cannot retry node ${nodeKey}: node retry is accepted only when the Run is failed`);
-    }
-
-    const ir = this.store.readIr(runId);
-    const input = this.store.readInput(runId);
-    if (!ir || !input) {
-      throw new Error(`Cannot retry node ${nodeKey}: run ${runId} has no persisted IR or input`);
-    }
+    const { state, ir, input } = this.runControl.prepareNodeRetry(runId, nodeKey);
 
     // Resolve the node IR *before* mutating state. Subworkflow child IR is
     // compiled on demand and never persisted, so a child key like
@@ -445,9 +340,7 @@ export class WorkflowInterpreter {
 
     // Control-plane reset (failed → pending), not a business-lifecycle
     // transition. `attempt` is incremented by executeNode.
-    state.state = resetFailedForRetry(state.state);
-    state.error = undefined;
-    this.store.writeNodeState(runId, state);
+    this.runControl.resetNodeForRetry(runId, state);
 
     const ctx = this.buildContext(input, runId);
     this.populateStepOutputs(runId, ctx);
@@ -466,24 +359,7 @@ export class WorkflowInterpreter {
    * pauses all running nodes, and updates Run metadata to `paused`.
    */
   pauseRun(runId: string): void {
-    const meta = this.store.readRunMeta(runId);
-    if (!meta) throw new Error(`Run ${runId} not found`);
-    if (meta.status !== "running") {
-      throw new Error(`Cannot pause a run in state '${meta.status}'`);
-    }
-
-    this.schedulingPaused.set(runId, true);
-
-    // Pause all currently running nodes
-    for (const nodeState of this.store.listNodeStates(runId)) {
-      if (nodeState.state === "running") {
-        this.pauseRunningNode(runId, nodeState.nodeKey);
-      }
-    }
-
-    meta.status = "paused";
-    meta.updatedAt = new Date().toISOString();
-    this.store.writeRunMeta(runId, meta);
+    this.runControl.pauseRun(runId);
   }
 
   /**
@@ -492,54 +368,7 @@ export class WorkflowInterpreter {
    * and updates Run metadata to `cancelled`.
    */
   cancelRun(runId: string): void {
-    const meta = this.store.readRunMeta(runId);
-    if (!meta) throw new Error(`Run ${runId} not found`);
-    if (meta.status !== "running" && meta.status !== "paused") {
-      throw new Error(`Cannot cancel a run in state '${meta.status}'`);
-    }
-
-    this.schedulingCancelled.set(runId, true);
-
-    // Override any prior pause abort intents to "cancelled" so that
-    // runToCompletion's catch block writes "cancelled" (not "paused").
-    for (const [key, intent] of this.abortIntents) {
-      if (key.startsWith(`${runId}:`) && intent === "paused") {
-        this.abortIntents.set(key, "cancelled");
-      }
-    }
-
-    // Cancel all currently running or awaiting nodes (abort the in-flight leaf
-    // or the pending approval wait, then transition to cancelled).
-    for (const nodeState of this.store.listNodeStates(runId)) {
-      if (nodeState.state === "running" || nodeState.state === "awaiting") {
-        this.cancelMaterializedNode(runId, nodeState.nodeKey);
-      }
-    }
-
-    // Also transition paused nodes to cancelled (a prior pauseRun may have
-    // left nodes in "paused" state; cancel supersedes pause).
-    for (const nodeState of this.store.listNodeStates(runId)) {
-      if (nodeState.state === "paused") {
-        if (canTransition(nodeState.state, "cancelled")) {
-          nodeState.state = transition(nodeState.state, "cancelled") as NodeState;
-          this.store.writeNodeState(runId, nodeState);
-        }
-      }
-    }
-
-    // Mark all pending nodes as cancelled (do NOT materialize unvisited nodes)
-    for (const nodeState of this.store.listNodeStates(runId)) {
-      if (nodeState.state === "pending") {
-        if (canTransition(nodeState.state, "cancelled")) {
-          nodeState.state = transition(nodeState.state, "cancelled") as NodeState;
-          this.store.writeNodeState(runId, nodeState);
-        }
-      }
-    }
-
-    meta.status = "cancelled";
-    meta.updatedAt = new Date().toISOString();
-    this.store.writeRunMeta(runId, meta);
+    this.runControl.cancelRun(runId);
   }
 
   /**
@@ -547,32 +376,7 @@ export class WorkflowInterpreter {
    * guards, recovers stale nodes, and re-executes from root.
    */
   async resumeRun(runId: string): Promise<void> {
-    const meta = this.store.readRunMeta(runId);
-    if (!meta) throw new Error(`Run ${runId} not found`);
-    if (meta.status !== "paused") {
-      throw new Error(`Cannot resume a run in state '${meta.status}'`);
-    }
-
-    // Clear scheduling guards for this run
-    this.schedulingPaused.delete(runId);
-    this.schedulingCancelled.delete(runId);
-
-    // Recover stale running nodes back to pending
-    this.recoverStaleNodes(runId);
-
-    // Also reset paused nodes back to pending so runToCompletion can re-execute them.
-    // Without this, executeNode sees the 'paused' state and throws NodeAbortedError,
-    // making the run permanently stuck.
-    for (const nodeState of this.store.listNodeStates(runId)) {
-      if (nodeState.state === "paused") {
-        nodeState.state = resetPausedForRunResume(nodeState.state);
-        this.store.writeNodeState(runId, nodeState);
-      }
-    }
-
-    meta.status = "running";
-    meta.updatedAt = new Date().toISOString();
-    this.store.writeRunMeta(runId, meta);
+    this.runControl.resumeRun(runId);
   }
 
   /**
@@ -581,34 +385,7 @@ export class WorkflowInterpreter {
    * re-executes from root. Same Run ID, no new Run.
    */
   retryRun(runId: string): void {
-    const meta = this.store.readRunMeta(runId);
-    if (!meta) throw new Error(`Run ${runId} not found`);
-    if (meta.status !== "failed") {
-      throw new Error(`Cannot retry a run in state '${meta.status}'`);
-    }
-
-    // Clear scheduling guards for this run
-    this.schedulingPaused.delete(runId);
-    this.schedulingCancelled.delete(runId);
-
-    // Reset failed and paused materialized nodes to pending (preserve completed).
-    // Paused nodes can exist in a "failed" run if it was paused before a sibling
-    // failed (e.g. parallel lane failure while another lane was paused).
-    for (const nodeState of this.store.listNodeStates(runId)) {
-      if (nodeState.state === "failed") {
-        nodeState.state = resetFailedForRetry(nodeState.state);
-        nodeState.error = undefined;
-        this.store.writeNodeState(runId, nodeState);
-      } else if (nodeState.state === "paused") {
-        nodeState.state = resetPausedForRunResume(nodeState.state);
-        this.store.writeNodeState(runId, nodeState);
-      }
-    }
-
-    meta.status = "running";
-    meta.runAttempt++;
-    meta.updatedAt = new Date().toISOString();
-    this.store.writeRunMeta(runId, meta);
+    this.runControl.retryRun(runId);
   }
 
   // ─── Node execution dispatch ──────────────────────────────────
@@ -647,22 +424,14 @@ export class WorkflowInterpreter {
       throw new Error(`Node ${nodeKey} is in failed state`);
     }
 
-    // Run-level scheduling guards: if this Run is paused or cancelled,
-    // don't schedule new work.
-    if (this.schedulingPaused.get(runId) && state.state === "pending") {
-      throw new NodeAbortedError(nodeKey, "paused");
-    }
-    if (this.schedulingCancelled.get(runId) && state.state === "pending") {
-      if (canTransition(state.state, "cancelled")) {
-        state.state = transition(state.state, "cancelled") as NodeState;
-        this.store.writeNodeState(runId, state);
-      }
-      throw new NodeAbortedError(nodeKey, "cancelled");
+    const schedulingAbort = this.runControl.applySchedulingGuard(runId, state);
+    if (schedulingAbort) {
+      throw new NodeAbortedError(nodeKey, schedulingAbort);
     }
 
     // Set up abort controller
     const controller = new AbortController();
-    this.abortControllers.set(`${runId}:${nodeKey}`, controller);
+    this.runControl.registerAbortController(runId, nodeKey, controller);
 
     // Transition to running
     if (canTransition(state.state, "running")) {
@@ -735,14 +504,14 @@ export class WorkflowInterpreter {
 
       // If a Run-level resume already re-entered this node, a late result from
       // the old attempt must not overwrite the newer attempt's state.
-      if (this.isStaleAttemptOnDisk(runId, nodeKey, state.attempt, state.startedAt)) {
+      if (this.runControl.isStaleAttemptOnDisk(runId, nodeKey, state.attempt, state.startedAt)) {
         return output;
       }
-      this.syncInFrameAttemptFromDisk(runId, nodeKey, state);
+      this.runControl.syncInFrameAttemptFromDisk(runId, nodeKey, state);
 
       // Transition to completed unless an external pause/cancel already changed
       // this node's state on disk while we were awaiting the leaf.
-      const abortedState = this.readAbortedStateOnDisk(runId, nodeKey);
+      const abortedState = this.runControl.readAbortedStateOnDisk(runId, nodeKey);
       if (abortedState) {
         throw new NodeAbortedError(nodeKey, abortedState, artifactRefs, output, state.renderedPrompt);
       }
@@ -767,10 +536,10 @@ export class WorkflowInterpreter {
       }
 
       if (error instanceof NodeAbortedError) {
-        if (this.isStaleAttemptOnDisk(runId, nodeKey, state.attempt, state.startedAt)) {
+        if (this.runControl.isStaleAttemptOnDisk(runId, nodeKey, state.attempt, state.startedAt)) {
           throw error;
         }
-        this.syncInFrameAttemptFromDisk(runId, nodeKey, state);
+        this.runControl.syncInFrameAttemptFromDisk(runId, nodeKey, state);
         // Transition this node to the same state as the child that was aborted.
         state.state = error.state === "paused" ? "paused" : "cancelled";
         state.error = abortedNodeError(error.state);
@@ -784,11 +553,11 @@ export class WorkflowInterpreter {
 
       // Don't clobber an external pause/cancel that landed while this node's
       // leaf was failing; keep the control-plane abort as the observed outcome.
-      if (this.isStaleAttemptOnDisk(runId, nodeKey, state.attempt, state.startedAt)) {
+      if (this.runControl.isStaleAttemptOnDisk(runId, nodeKey, state.attempt, state.startedAt)) {
         throw error;
       }
-      this.syncInFrameAttemptFromDisk(runId, nodeKey, state);
-      const abortedState = this.readAbortedStateOnDisk(runId, nodeKey);
+      this.runControl.syncInFrameAttemptFromDisk(runId, nodeKey, state);
+      const abortedState = this.runControl.readAbortedStateOnDisk(runId, nodeKey);
       if (abortedState) {
         throw new NodeAbortedError(nodeKey, abortedState);
       }
@@ -806,8 +575,7 @@ export class WorkflowInterpreter {
       this.store.writeNodeState(runId, state);
       throw error;
     } finally {
-      this.abortControllers.delete(`${runId}:${nodeKey}`);
-      this.abortIntents.delete(`${runId}:${nodeKey}`);
+      this.runControl.clearInFlightNode(runId, nodeKey);
     }
   }
 
@@ -891,7 +659,7 @@ export class WorkflowInterpreter {
       if (result.partial) {
         // Operator abort → carry output + transcript refs on the abort error;
         // executeNode persists the paused/cancelled state.
-        throw new NodeAbortedError(nodeKey, this.abortIntent(runId, nodeKey), allArtifactRefs.length > 0 ? allArtifactRefs : undefined, result.output, preparedPrompt);
+        throw new NodeAbortedError(nodeKey, this.runControl.abortIntent(runId, nodeKey), allArtifactRefs.length > 0 ? allArtifactRefs : undefined, result.output, preparedPrompt);
       }
 
       // parse/schema failures are retryable while attempts remain.
@@ -929,7 +697,7 @@ export class WorkflowInterpreter {
 
     // Operator abort → paused/cancelled (carry output on the abort error).
     if (result.partial) {
-      throw new NodeAbortedError(nodeKey, this.abortIntent(runId, nodeKey), undefined, result.output);
+      throw new NodeAbortedError(nodeKey, this.runControl.abortIntent(runId, nodeKey), undefined, result.output);
     }
 
     // Always persist stdout/stderr as artifacts (even when empty). An artifact
@@ -1007,6 +775,12 @@ export class WorkflowInterpreter {
     const maxConcurrency = (node.metadata.max_concurrency as number) ?? this.maxConcurrency;
     const join = (node.metadata.join as string) ?? "all";
 
+    if (join === "all") {
+      children.forEach((child, index) => {
+        this.materializePendingNode(runId, child, { ...dynamic, parallelBranchId: String(index) }, keyPrefix);
+      });
+    }
+
     const limit = pLimit(maxConcurrency);
     // Each branch resolves to { child, output } so race can identify the winner.
     const branchPromises = children.map((child, index) =>
@@ -1037,7 +811,7 @@ export class WorkflowInterpreter {
         return mapOutput;
       } catch (error) {
         if (!(error instanceof NodeAbortedError)) {
-          this.cancelDescendantsInScope(runId, node, dynamic);
+          this.runControl.cancelDescendantsInScope(runId, node, dynamic);
         }
         branchPromises.forEach((p) => void p.catch(() => undefined));
         throw error;
@@ -1055,7 +829,7 @@ export class WorkflowInterpreter {
     } catch (error) {
       if (!(error instanceof NodeAbortedError)) {
         // Genuine failure or cancel — fast-stop: cancel still-running siblings
-        this.cancelDescendantsInScope(runId, node, dynamic);
+        this.runControl.cancelDescendantsInScope(runId, node, dynamic);
       }
       branchPromises.forEach((p) => void p.catch(() => undefined));
       throw error;
@@ -1066,55 +840,6 @@ export class WorkflowInterpreter {
       ctx.steps[child.id] = output;
     }
     return mapOutput;
-  }
-
-  /**
-   * Cancel still-running/pending/awaiting descendant nodes of a failed
-   * composite (parallel or fanout), scoped to the given dynamic context. A
-   * descendant must (a) be one of the composite's descendant IR node ids and
-   * (b) share every dynamic dimension (item/lane/round) the composite already
-   * carries — so concurrent sibling fanout lanes outside this scope are not
-   * affected.
-   *
-   * NOTE: pass the composite's OWN dynamic. For a parallel this scopes to the
-   * current lane (item/lane present). For a fanout, the dynamic does NOT yet
-   * carry this fanout's lane (lanes are introduced for its children), so the
-   * scope spans ALL of the fanout's lanes — exactly the fail-fast intent.
-   */
-  private descendantsInScope(
-    runId: string, node: IrNode, dynamic: NodeKeyDynamic,
-    action: (runId: string, nodeKey: string) => void
-  ): void {
-    const descendantIds = new Set<string>();
-    const collect = (n: IrNode): void => {
-      for (const c of n.children ?? []) { descendantIds.add(c.id); collect(c); }
-      for (const b of n.branches ?? []) { for (const c of b.children) { descendantIds.add(c.id); collect(c); } }
-    };
-    collect(node);
-
-    // Key segments that must be present for an instance to share this scope.
-    // Values are sanitized to match resolveNodeKey's on-disk encoding (e.g. an
-    // item id "file:alpha" is stored as "item:file_alpha").
-    const scopeSegments: string[] = [];
-    if (dynamic.fanoutItemId !== undefined) scopeSegments.push(`item:${sanitizeValue(String(dynamic.fanoutItemId))}`);
-    if (dynamic.laneId !== undefined) scopeSegments.push(`lane:${sanitizeValue(String(dynamic.laneId))}`);
-    if (dynamic.loopRound !== undefined) scopeSegments.push(`round:${dynamic.loopRound}`);
-
-    for (const ns of this.store.listNodeStates(runId)) {
-      if (ns.state !== "running" && ns.state !== "awaiting" && ns.state !== "pending") continue;
-      if (!descendantIds.has(ns.nodeId)) continue;
-      const segs = ns.nodeKey.split("/");
-      if (!scopeSegments.every((s) => segs.includes(s))) continue;
-      action(runId, ns.nodeKey);
-    }
-  }
-
-  /**
-   * Cancel still-running/pending descendant nodes of a failed composite
-   * (parallel `join: all`, or fanout `join: all` fail-fast).
-   */
-  private cancelDescendantsInScope(runId: string, node: IrNode, dynamic: NodeKeyDynamic): void {
-    this.descendantsInScope(runId, node, dynamic, (rid, key) => this.cancelMaterializedNode(rid, key));
   }
 
   private async executeFanout(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {
@@ -1136,6 +861,26 @@ export class WorkflowInterpreter {
     const defaultMinSuccess = join === "race" ? 1 : join === "quorum" ? (quorum ?? 1) : items.length;
     const minSuccess = successCriteria?.min_success ?? defaultMinSuccess;
 
+    const lanePlan = items.map((item, index) => {
+      const keyCtx: ExpressionContext = { ...ctx, item, item_index: index };
+      const itemId = this.extractItemId(item, node.metadata.key as string | undefined, index, keyCtx, this.evaluator);
+      const laneDynamic: NodeKeyDynamic = { fanoutItemId: itemId, laneId: String(index) };
+      return {
+        itemId,
+        keyCtx,
+        itemDynamic: laneDynamic
+      };
+    });
+
+    if (join === "all") {
+      for (const lane of lanePlan) {
+        const itemDynamic: NodeKeyDynamic = { ...dynamic, ...lane.itemDynamic };
+        for (const child of children) {
+          this.materializePendingNode(runId, child, itemDynamic, keyPrefix);
+        }
+      }
+    }
+
     // Fail-fast: once enough lanes have failed that the success target is
     // unreachable (failures > total - minSuccess), abort the whole fanout —
     // cancel every still-running/pending lane subtree and reject to short
@@ -1148,15 +893,13 @@ export class WorkflowInterpreter {
     // Each lane resolves to a LaneResult. A tolerable failure is captured (does
     // not reject) so the join/min_success logic can run. A NodeAbortedError
     // (operator pause/cancel) re-throws so it propagates to the parent.
-    const lanePromises = items.map((item, index) =>
+    const lanePromises = lanePlan.map((lane) =>
       limit(async (): Promise<LaneResult> => {
-        const keyCtx: ExpressionContext = { ...ctx, item, item_index: index };
-        const itemId = this.extractItemId(item, node.metadata.key as string | undefined, index, keyCtx, this.evaluator);
-        const itemDynamic: NodeKeyDynamic = { ...dynamic, fanoutItemId: itemId, laneId: String(index) };
+        const itemDynamic: NodeKeyDynamic = { ...dynamic, ...lane.itemDynamic };
         const itemCtx: ExpressionContext = {
-          ...keyCtx,
+          ...lane.keyCtx,
           steps: { ...ctx.steps },
-          item_id: itemId
+          item_id: lane.itemId
         };
         try {
           let laneOutput: unknown;
@@ -1180,7 +923,7 @@ export class WorkflowInterpreter {
             // so it spans every lane), then reject to short-circuit the wait.
             if (!failFastTriggered) {
               failFastTriggered = true;
-              this.cancelDescendantsInScope(runId, node, dynamic);
+              this.runControl.cancelDescendantsInScope(runId, node, dynamic);
             }
             throw error;
           }
@@ -1233,6 +976,13 @@ export class WorkflowInterpreter {
     // (first failure) or NodeAbortedError; either way Promise.all short-circuits
     // and the rejection propagates to fail the fanout immediately.
     return Promise.all(lanePromises);
+  }
+
+  private materializePendingNode(runId: string, node: IrNode, dynamic: NodeKeyDynamic, keyPrefix?: string): void {
+    const resolved = resolveNodeKey(node.keyTemplate, dynamic);
+    const nodeKey = keyPrefix ? `${keyPrefix}/${resolved}` : resolved;
+    if (this.store.readNodeState(runId, nodeKey)) return;
+    this.store.writeNodeState(runId, createInitialNodeState(nodeKey, node.id, node.kind));
   }
 
   private async executeSwitch(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {
@@ -1350,7 +1100,7 @@ export class WorkflowInterpreter {
         cleanup();
         // Honor the operator intent recorded by Run-level pause/cancel. An
         // awaiting gate is normally cancelled (awaiting → cancelled).
-        reject(new NodeAbortedError(nodeKey, this.abortIntent(runId, nodeKey)));
+        reject(new NodeAbortedError(nodeKey, this.runControl.abortIntent(runId, nodeKey)));
       };
 
       const timer = timeoutMs

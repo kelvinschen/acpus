@@ -37,8 +37,8 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - A `paused` Node MUST NOT transition directly to `running` through the business lifecycle. Run-level resume MUST recover paused materialized Nodes through a control-plane reset to `pending`.
 - An `awaiting` Node (an Approval Gate blocked on a human decision) MUST transition only to `completed` (decision delivered) or `cancelled` (operator cancel). `awaiting` MUST be distinct from `paused`.
 - `completed`, `failed`, and `cancelled` MUST be terminal in the business lifecycle: they MUST NOT have any outgoing lifecycle transition, and `canTransition`/`transition` MUST reject moving out of them.
-- Recovery from a terminal, paused, or stale state MUST be modeled as an explicit control-plane reset, not as a business-lifecycle transition: operator retry MAY reset a `failed` Node to `pending`, Run-level resume MAY reset a `paused` Node to `pending`, and crash recovery MAY reset a stale `running` or `awaiting` Node to `pending`. These resets MUST be exposed only through dedicated operations, never through the generic transition API.
-- `completed` and `cancelled` MUST NOT be resettable by any control-plane operation.
+- Recovery from a terminal, paused, or stale state MUST be modeled as an explicit control-plane reset, not as a business-lifecycle transition: operator retry MAY reset a `failed` Node to `pending`, Run-level retry of a failed Run MAY reset a materialized `cancelled` Node to `pending`, Run-level resume MAY reset a `paused` Node to `pending`, and crash recovery MAY reset a stale `running` or `awaiting` Node to `pending`. These resets MUST be exposed only through dedicated operations, never through the generic transition API.
+- `completed` MUST NOT be resettable by any control-plane operation. A `cancelled` Node MUST remain terminal in the business lifecycle and MUST be resettable only by Run-level retry of a failed Run.
 - The runtime MUST persist every state change to disk immediately.
 
 ### State Persistence
@@ -129,7 +129,9 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 
 - The runtime MUST resolve a `subworkflow` path relative to the parent spec's source path, compile it with `compileWorkflow`, and execute its root as a nested run.
 - The runtime MUST allow Workflow Spec source paths under the current Workspace or `$HOME/.acpus/workflows/`.
-- The runtime MUST reject Workflow Spec source paths outside the current Workspace and `$HOME/.acpus/workflows/`.
+- The runtime MUST validate Workflow Spec source paths and include targets using real filesystem paths after symlink resolution.
+- The runtime MUST reject Workflow Spec source paths and include targets whose real path is outside the current Workspace and `$HOME/.acpus/workflows/`.
+- The runtime MUST reject Workflow Spec source paths and include targets that do not exist or cannot be read.
 - Subworkflow file reads and compilation MUST occur in the runtime layer, never in `@acpus/core`.
 - The runtime MUST guard against subworkflow cycles by tracking specs currently on the execution stack.
 - Subworkflow child Node keys MUST be prefixed with the parent subworkflow Node key to stay unique within the run.
@@ -151,6 +153,8 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - The runtime MUST NOT require a normal user-facing `acpus daemon` or `acpus supervisor` command for normal execution.
 - The Run Supervisor MUST execute submitted Runs in the background and return the initial `running` state immediately, rather than blocking until the Run reaches a terminal state.
 - The Run Supervisor MUST register a Run's interpreter before execution begins so that control operations can reach an in-flight Run.
+- The Run Supervisor MUST report include/source file resolution failures as `INCLUDE_RESOLUTION` diagnostics.
+- The Run Supervisor MUST NOT report ordinary schema, YAML, or compiler validation diagnostics as `INCLUDE_RESOLUTION`.
 - The Run Supervisor MUST keep running while at least one Run is `running` or at least one follow/visualize client is actively polling.
 - The Run Supervisor MUST exit after five idle minutes when there are no `running` Runs and no active follow/visualize clients.
 - `paused`, `completed`, `failed`, and `cancelled` Runs MUST NOT by themselves keep an otherwise idle Run Supervisor alive.
@@ -195,9 +199,11 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Run-level `resume` MUST reset paused materialized Nodes to `pending` as a control-plane operation and re-execute from the frozen IR without rerunning completed Nodes.
 - Run-level `resume` MUST send the fixed continuation prompt when it re-enters a paused Agent Step.
 - Run-level `retry` MUST be accepted only for a `failed` Run.
-- Run-level `retry` MUST perform in-place recovery of failed materialized Nodes and MUST NOT rerun completed Nodes.
+- Run-level `retry` MUST perform in-place recovery of failed, paused, and cancelled materialized Nodes and MUST NOT rerun completed Nodes.
 - Run-level `retry` MUST increment the Run's `runAttempt`.
 - Run-level `retry` MUST NOT create a new Run and MUST NOT mean rerun from scratch.
+- Run-level `retry` MUST reset recovered failed, paused, and cancelled materialized Nodes to `pending`.
+- Run-level `retry` MUST clear recovered Nodes' stale attempt fields, including `startedAt`, `completedAt`, `error`, `output`, `artifactRefs`, `dynamicContext`, and `renderedPrompt`.
 - Invalid Run-level control operations MUST be rejected with a conflict error and MUST leave persisted state unchanged.
 - Run cleanup MUST delete only Run directories whose Run metadata status is `completed`, `failed`, or `cancelled`.
 - Run cleanup MUST preserve Run directories whose Run metadata status is `running` or `paused`.

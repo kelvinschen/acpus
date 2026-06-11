@@ -127,7 +127,17 @@ function expandIncludes(spec: WorkflowSpec, options: CompileOptions, diagnostics
         diagnostics.error("INCLUDE_CYCLE", `Include cycle detected for '${step.include}'.`, `$.workflow.steps[${index}].include`);
         continue;
       }
-      const includedSource = options.includeResolver(step.include, options.sourcePath);
+      let includedSource: string;
+      try {
+        includedSource = options.includeResolver(step.include, options.sourcePath);
+      } catch (error) {
+        diagnostics.error(
+          "INCLUDE_RESOLUTION",
+          errorMessage(error),
+          `$.workflow.steps[${index}].include`
+        );
+        continue;
+      }
       const includedParsed = parseSource(includedSource, diagnostics);
       if (!isWorkflowSpec(includedParsed)) {
         diagnostics.error("INCLUDE_SHAPE", `Included spec '${step.include}' is not a valid workflow spec.`, `$.workflow.steps[${index}].include`);

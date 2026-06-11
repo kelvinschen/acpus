@@ -7,7 +7,7 @@ import type { ExecutorAdapter, ExecutionRequest } from "../../src/executors/type
 import type { ExecutorResult } from "../../src/types.js";
 import type { Server } from "node:http";
 import { serve } from "@hono/node-server";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -38,7 +38,9 @@ describe("Supervisor HTTP API", () => {
     const agentExecutor = new StubAgentExecutor({
       "step-a": { output: { result: "done" }, delay: 10 }
     });
-    const programExecutor = new MockProgramExecutor({});
+    const programExecutor = new MockProgramExecutor({
+      included: { stdout: "included" }
+    });
     const { app } = createSupervisorApp({ stateDir: tmpDir, workspace: tmpDir }, store, agentExecutor, programExecutor);
 
     await new Promise<void>((resolve) => {
@@ -84,6 +86,7 @@ describe("Supervisor HTTP API", () => {
     // sourcePath must be within the workspace.
     const workspace = tmpDir;
     const sourcePath = join(workspace, "test.yaml");
+    writeFileSync(sourcePath, SPEC_YAML, "utf8");
     const res = await fetch(`${baseUrl}/runs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -94,6 +97,7 @@ describe("Supervisor HTTP API", () => {
 
   it("rejects sourcePath outside workspace and global Workflow Catalog roots", async () => {
     const sourcePath = join(tmpdir(), "acpus-outside-workspace.yaml");
+    writeFileSync(sourcePath, SPEC_YAML, "utf8");
     const res = await fetch(`${baseUrl}/runs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -103,6 +107,106 @@ describe("Supervisor HTTP API", () => {
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error).toMatch(/sourcePath must be within/);
+    rmSync(sourcePath, { force: true });
+  });
+
+  it("resolves relative includes for submitted Workflow Specs", async () => {
+    const workflowDir = join(tmpDir, ".acpus", "workflows");
+    mkdirSync(workflowDir, { recursive: true });
+    const sourcePath = join(workflowDir, "parent.workflow.yaml");
+    writeFileSync(join(workflowDir, "child.yaml"), `
+version: 1
+name: included-child
+workflow:
+  steps:
+    - id: included
+      run: program
+      cmd: "echo included"
+`, "utf8");
+    const spec = `
+version: 1
+name: include-parent
+workflow:
+  steps:
+    - include: child.yaml
+`;
+    writeFileSync(sourcePath, spec, "utf8");
+
+    const res = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec, input: {}, sourcePath })
+    });
+
+    expect(res.status).toBe(201);
+    const data = await res.json();
+    expect(await pollRunStatus(data.runId)).toBe("completed");
+  });
+
+  it("rejects submitted Workflow Specs with includes outside allowed roots", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "acpus-supervisor-outside-"));
+    try {
+      const workflowDir = join(tmpDir, ".acpus", "workflows");
+      mkdirSync(workflowDir, { recursive: true });
+      const sourcePath = join(workflowDir, "outside-include.workflow.yaml");
+      writeFileSync(join(outside, "child.yaml"), `
+version: 1
+name: outside-child
+workflow:
+  steps:
+    - id: outside
+      run: program
+      cmd: "echo outside"
+`, "utf8");
+      const spec = `
+version: 1
+name: outside-include-parent
+workflow:
+  steps:
+    - include: ${join(outside, "child.yaml")}
+`;
+      writeFileSync(sourcePath, spec, "utf8");
+
+      const res = await fetch(`${baseUrl}/runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ spec, input: {}, sourcePath })
+      });
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toBe("Compilation failed");
+      expect(data.diagnostics.map((diagnostic: { code: string }) => diagnostic.code)).toContain("INCLUDE_RESOLUTION");
+      expect(data.diagnostics.map((diagnostic: { message: string }) => diagnostic.message).join("\n")).toMatch(/outside allowed Workflow Spec roots/);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("does not report non-include compile diagnostics as include resolution failures", async () => {
+    const sourcePath = join(tmpDir, "invalid-shape.workflow.yaml");
+    const spec = `
+version: 1
+name: invalid-shape
+workflow:
+  steps:
+    - run: program
+      cmd: "echo missing id"
+`;
+    writeFileSync(sourcePath, spec, "utf8");
+
+    const res = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec, input: {}, sourcePath })
+    });
+
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toBe("Compilation failed");
+    const codes = data.diagnostics.map((diagnostic: { code: string }) => diagnostic.code);
+    expect(codes).toContain("STEP_ID");
+    expect(codes).not.toContain("INCLUDE_RESOLUTION");
   });
 
   it("returns health via GET /health", async () => {

@@ -4,10 +4,8 @@ import type { ExecutorAdapter } from "./executors/types.js";
 import type { SupervisorConfig, RunSummary, SupervisorHealth } from "./types.js";
 import { WorkflowInterpreter } from "./interpreter.js";
 import { InputValidationFailure } from "./validate-input.js";
-import { compileWorkflow } from "@acpus/core";
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { compileWorkflow, workflowSourcePolicy } from "@acpus/core";
+import { resolve } from "node:path";
 import type { RunState } from "./types.js";
 
 /** Pattern that matches unsafe runId characters (path traversal, separators, null). */
@@ -50,8 +48,8 @@ export function createSupervisorApp(
   let healthStartedAt = "";
   let healthEndpoint = "";
   const workspaceRoot = resolve(config.workspace ?? process.cwd());
-  const globalWorkflowRoot = resolve(join(homedir(), ".acpus", "workflows"));
-  const allowedSourceRoots = [workspaceRoot, globalWorkflowRoot];
+  const sourcePolicy = workflowSourcePolicy(workspaceRoot);
+  const allowedSourceRoots = sourcePolicy.allowedSourceRoots;
 
   /** Refresh lease on every request with client headers. */
   function refreshLease(clientId: string | undefined, clientKind: string | undefined): void {
@@ -244,30 +242,18 @@ export function createSupervisorApp(
       return c.json({ error: "spec is required" }, 400);
     }
 
-    // Validate sourcePath is within the workspace or the global Workflow Catalog.
     let sourcePath: string | undefined;
     if (body.sourcePath) {
-      const resolved = resolve(body.sourcePath);
-      if (!isInsideAnyRoot(resolved, allowedSourceRoots)) {
-        return c.json({ error: "sourcePath must be within the workspace or global Workflow Catalog" }, 400);
+      try {
+        sourcePath = sourcePolicy.validateSourcePath(body.sourcePath);
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
       }
-      sourcePath = resolved;
     }
-
-    // Include resolver: resolve relative to the including file and restrict reads
-    // to the workspace or global Workflow Catalog roots.
-    const includeResolver = (includePath: string, fromPath?: string): string => {
-      const baseDir = fromPath ? dirname(resolve(fromPath)) : (sourcePath ? dirname(sourcePath) : workspaceRoot);
-      const resolvedInclude = resolve(baseDir, includePath);
-      if (!isInsideAnyRoot(resolvedInclude, allowedSourceRoots)) {
-        throw new Error(`Include path '${includePath}' resolves outside allowed Workflow Spec roots`);
-      }
-      return readFileSync(resolvedInclude, "utf8");
-    };
 
     const result = compileWorkflow(body.spec, {
       sourcePath,
-      includeResolver
+      includeResolver: sourcePolicy.createIncludeResolver(sourcePath)
     });
     if (!result.ok || !result.ir) {
       return c.json({ error: "Compilation failed", diagnostics: result.diagnostics }, 400);
@@ -594,6 +580,6 @@ export function createSupervisorApp(
   };
 }
 
-function isInsideAnyRoot(path: string, roots: string[]): boolean {
-  return roots.some((root) => path === root || path.startsWith(root + "/"));
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
