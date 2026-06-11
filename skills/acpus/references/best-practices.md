@@ -26,30 +26,36 @@ Use Program Steps for deterministic glue: directory setup, stable path calculati
 
 Prefer real helper scripts over long inline shell in repository-local workflows. Public single-file templates may keep inline scripts for easy distribution, but those scripts should stay short and mechanically verifiable. Avoid `bash -lc`; use `bash -c` when shell semantics are required.
 
+Leave Program Steps at the default `expect.exit_code: [0]` unless a non-zero code is true business data (for example, tests failed but should be parsed, `grep` found nothing, or `diff` found changes). In those cases, explicitly allow the known codes, such as `expect: { exit_code: [0, 1] }`.
+
 ## 4. Do Not Put Output Schema In Prompts
 
 Declare `output:` in YAML. Acpus injects the schema prompt and automatically retries agent replies that fail JSON extraction or schema validation. In the prompt, say what to accomplish and where to write large artifacts.
 
-## 5. Approval Is Human-In-The-Loop
+## 5. Use Session Keys Sparingly
+
+Use Agent Step `session_key` only when materialized steps need shared working context, such as a loop repair agent that should remember prior failed attempts. Do not use it as a default; independent Agent Steps should keep separate sessions.
+
+## 6. Approval Is Human-In-The-Loop
 
 Use approval gates for human decisions. An agent can prepare a decision brief, risk note, or patch summary, but it must not call `acpus runs signal` unless the user explicitly gave that decision.
 
-## 6. Poll Background Runs Deliberately
+## 7. Poll Background Runs Deliberately
 
 For long background runs, inspect less often over time and prefer the compact human view until you need exact artifact refs. Use `background-run-polling.md` for the cadence. Avoid tight loops around `runs show --json`.
 
-## 7. Adapt Playbooks To The Situation
+## 8. Adapt Playbooks To The Situation
 
 When starting from a playbook, rewrite input names, prompts, file boundaries, and output fields for the actual task. Do not mechanically copy a playbook and only change the workflow name.
 
-## 8. Ask About Agents
+## 9. Ask About Agents
 
 If the user has not named worker agents, ask which acpx-supported agents to use. If the user says to choose freely, inspect `acpx --help`, then choose available agents that fit the work.
 
-## 9. Use Expressions In The Right Form
+## 10. Use Expressions In The Right Form
 
 Use raw CEL in `when`, `until`, and expression-valued `over`. Use `${{ ... }}` in prompt text, command strings, keys, and messages. See `expressions-and-outputs.md`.
 
-## 10. Recover From Failures Before Rewriting
+## 11. Recover From Failures Before Rewriting
 
 When execution fails, inspect the Run, node state, error, and artifacts first. Prefer node retry, resume, approval signal, or replay before editing the Workflow Spec.

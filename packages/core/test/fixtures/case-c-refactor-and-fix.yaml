@@ -44,6 +44,8 @@ workflow:
           - id: run_tests
             run: program
             cmd: ["bash", "-c", "pnpm test --json"]
+            expect:
+              exit_code: [0, 1]
             capture:
               from: file
               path: .test.json
