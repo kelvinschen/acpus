@@ -20,6 +20,8 @@ input:
 
 agents:
   fixer:
+    use: codex
+  reviewer:
     use: pi
 
 workflow:
@@ -94,12 +96,13 @@ workflow:
 
     - id: repair_loop
       loop:
-        until: loop.iter > 0 && coalesce(steps.verify_attempt.output.ok, false)
-        max_iterations: 3
+        until: !loop.last.output.should_continue
+        max_iterations: 5
         do:
           - id: repair_attempt
             run: agent
             use: fixer
+            session_key: "iterative-fix"
             prompt: |
               Repair the failing Acpus target in the isolated worktree. Keep
               identifiers, paths, and commands verbatim.
@@ -116,8 +119,8 @@ workflow:
               Iteration:
               ${{ loop.iter }}
 
-              Previous verification output, if available:
-              ${{ loop.iter == 0 ? "(none)" : steps.verify_attempt.output.verify_log_path }}
+              Reviewer feedback from previous iteration, if available:
+              ${{ loop.iter == 0 ? "(none)" : steps.review_attempt.output.review_summary }}
 
               Repair notes:
               ${{ input.repair_notes }}
@@ -126,6 +129,9 @@ workflow:
               - Modify only the isolated worktree.
               - Do not commit.
               - Keep complex diagnosis and repair decisions in this agent step.
+              - If this is not the first iteration, you can see your previous
+                attempt's context and reasoning. Build on it to refine the fix.
+              - Pay close attention to reviewer feedback if provided.
 
               Write a short repair report to:
               ${{ steps.setup_fix_worktree.output.output_dir }}/repair-round-${{ loop.iter }}.md
@@ -176,6 +182,48 @@ workflow:
               verify_log_path: string
               patch_path: string
             timeout: 45m
+
+          - id: review_attempt
+            run: agent
+            use: reviewer
+            prompt: |
+              Review the repair attempt and provide diagnosis and code review.
+
+              Fix goal:
+              ${{ input.fix_goal }}
+
+              Worktree:
+              ${{ steps.setup_fix_worktree.output.worktree_path }}
+
+              Verification command:
+              ${{ input.verification_cmd }}
+
+              Iteration:
+              ${{ loop.iter }}
+
+              Verification result:
+              ${{ steps.verify_attempt.output.ok ? "PASSED" : "FAILED" }}
+
+              Verification log:
+              ${{ steps.verify_attempt.output.verify_log_path }}
+
+              Requirements:
+              - If verification failed: analyze why and review the code changes
+                (git diff) in the worktree. Determine if the repair approach is
+                on the right track or needs a different direction.
+              - If verification passed: confirm success and note the fix approach.
+              - Provide a concise summary of findings and actionable suggestions
+                for the next repair attempt (if any).
+
+              Return JSON with:
+              - should_continue: boolean — false if the fix goal has been reached
+                or is unreachable / fundamentally flawed; true if there is a
+                reasonable path forward for another repair attempt.
+              - review_summary: string — concise diagnosis and suggestions.
+            output:
+              should_continue: boolean
+              review_summary: string
+            timeout: 20m
 
     - id: apply_fix
       run: program

@@ -356,6 +356,11 @@ workflow:
               Round:
               ${{ loop.iter }}
 
+              Loop control:
+              - Current loop round is `${{ loop.iter }}`. It is zero-based.
+              - Maximum loop rounds for this Run is `10`.
+              - Last allowed round index is `9`.
+
               Plan report:
               ${{ steps.plan.output.plan_path }}
 
@@ -398,6 +403,18 @@ workflow:
               - the current patch is acceptable or there was no safe opportunity,
               - and there is no remaining worthwhile behavior-preserving Module
                 deepening or test-quality improvement within the stated goal.
+              - If the current loop round is below the last allowed round
+                index, judge the remaining opportunity by actual architecture
+                value. Do not stop early merely because one useful round
+                succeeded if another clear Module deepening or core-path test
+                improvement remains.
+              - If the current loop round is the last allowed round and there
+                is still obvious high-value improvement available, return
+                `done: false` so the workflow fails visibly instead of
+                pretending the limit was a clean stop.
+              - If the current loop round is the last allowed round and only
+                minor polish, small naming/style issues, or low-leverage test
+                tweaks remain, do not block completion on those details.
 
               Continue when:
               - regression failed,
