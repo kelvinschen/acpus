@@ -5,7 +5,15 @@ import { open, stat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { useRunPoller, isTerminal } from "../poller.js";
 import { buildRenderTree, buildRows, countByState, formatElapsed } from "../model.js";
-import { applyControl, canApply, applyRunControl, canApplyRun, type ControlAction } from "../controls.js";
+import {
+  CONTROL_KEY_TO_ACTION,
+  applyControl,
+  canApply,
+  applyRunControl,
+  canApplyRun,
+  isReadOnlyControlKey,
+  type ControlAction
+} from "../controls.js";
 import { useTerminalSize, windowSlice } from "../useTerminalSize.js";
 import { StatusOverview } from "./StatusOverview.js";
 import { GraphPane } from "./GraphPane.js";
@@ -49,22 +57,15 @@ const AGENT_TRANSCRIPT_CATCHUP_REFRESH_MS = 25;
 const AGENT_TRANSCRIPT_READ_CHUNK_BYTES = 2 * 1024 * 1024;
 const AGENT_TRANSCRIPT_READ_BUDGET_BYTES = 4 * 1024 * 1024;
 
-const KEY_TO_ACTION: Record<string, ControlAction> = {
-  p: "pause",
-  r: "resume",
-  c: "cancel",
-  R: "retry",
-  a: "approve",
-  x: "reject"
-};
-
 /** Main dashboard: observe + control a single run. */
 export function App({
   client,
-  runId
+  runId,
+  readOnly = false
 }: {
   client: RunSupervisorClient;
   runId: string;
+  readOnly?: boolean;
 }): React.ReactElement {
   const { exit } = useApp();
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -369,7 +370,12 @@ export function App({
       }
     }
 
-    const action = KEY_TO_ACTION[input];
+    if (readOnly && isReadOnlyControlKey(input)) {
+      pushMessage("served visualizer is read-only; run controls are disabled", "error");
+      return;
+    }
+
+    const action = CONTROL_KEY_TO_ACTION[input];
     if (action) {
       void runControl(action);
     }
@@ -437,7 +443,12 @@ export function App({
     ...messages,
     ...(snapshot.error ? [{ text: `supervisor poll error: ${snapshot.error} (retrying)`, level: "error" as const }] : []),
     ...(selected?.state === "awaiting"
-      ? [{ text: "selected gate is awaiting: a approve, x reject", level: "info" as const }]
+      ? [{
+          text: readOnly
+            ? "selected gate is awaiting; served visualizer is read-only"
+            : "selected gate is awaiting: a approve, x reject",
+          level: "info" as const
+        }]
       : [])
   ].slice(-3);
 
@@ -480,7 +491,11 @@ export function App({
         <Text>
           <Text color="gray">Elapsed </Text>
           <Text>{elapsed}  </Text>
-          {live ? <Spinner label="LIVE" active={live} /> : <Text color="gray" bold>■ ENDED</Text>}
+          {live
+            ? readOnly
+              ? <Text color="yellow" bold>■ LIVE</Text>
+              : <Spinner label="LIVE" active={live} />
+            : <Text color="gray" bold>■ ENDED</Text>}
         </Text>
       </Box>
 
@@ -512,6 +527,7 @@ export function App({
       <Footer
         focus={focus}
         tabCount={detailSections.length}
+        readOnly={readOnly}
       />
     </Box>
   );

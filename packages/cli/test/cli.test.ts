@@ -135,6 +135,49 @@ describe("acpus CLI", () => {
     expect(result.exitCode).toBe(1);
   });
 
+  it("rejects a run id placed after --serve on runs visualize", async () => {
+    const result = await execaNode(cliEntry, ["runs", "visualize", "--serve", "run_abc"], {
+      nodeOptions: ["--import", "tsx", "--conditions=development"],
+      reject: false
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr || result.stdout).toMatch(/run id before --serve/i);
+  });
+
+  it("serves a real run visualizer through the runs visualize --serve command", async () => {
+    const tempDir = join(repoRoot, ".tmp-tests", "serve-e2e");
+    rmSync(tempDir, { recursive: true, force: true });
+    mkdirSync(tempDir, { recursive: true });
+    writeFileSync(join(tempDir, "workflow.yaml"), SIMPLE_WORKFLOW("serve-e2e"));
+
+    const run = await execaNode(cliEntry, ["workflows", "run", "workflow.yaml", "--background", "--json"], {
+      cwd: tempDir,
+      nodeOptions: ["--import", "tsx", "--conditions=development"]
+    });
+    const runId = JSON.parse(run.stdout).runId as string;
+
+    const child = execaNode(cliEntry, ["runs", "visualize", runId, "--serve", "0"], {
+      cwd: tempDir,
+      nodeOptions: ["--import", "tsx", "--conditions=development"],
+      reject: false
+    });
+    try {
+      const url = await waitForOutput(child, /Served visualizer: (http:\/\/127\.0\.0\.1:\d+\/\?token=[A-Za-z0-9_-]+)/);
+      const response = await fetch(url);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("<title>Acpus Served Visualizer</title>");
+
+      child.kill("SIGINT");
+      const result = await child;
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("Runs continue in the Run Supervisor");
+    } finally {
+      if (!child.killed) child.kill("SIGINT");
+      await child.catch(() => {});
+    }
+  }, 60_000);
+
   it("lists project Workflow Catalog entries as JSON", async () => {
     const result = await execaNode(cliEntry, ["workflows", "list", "--json"], {
       nodeOptions: ["--import", "tsx", "--conditions=development"]
@@ -241,4 +284,36 @@ workflow:
       run: program
       cmd: "echo ok"
 `;
+}
+
+function waitForOutput(child: any, pattern: RegExp, timeoutMs = 15_000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let output = "";
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out waiting for output matching ${pattern}. Output so far:\n${output}`));
+    }, timeoutMs);
+
+    const onData = (chunk: Buffer | string) => {
+      output += chunk.toString();
+      const match = output.match(pattern);
+      if (!match) return;
+      cleanup();
+      resolve(match[1]);
+    };
+    const onExit = () => {
+      cleanup();
+      reject(new Error(`Process exited before output matched ${pattern}. Output:\n${output}`));
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      child.stdout?.off("data", onData);
+      child.stderr?.off("data", onData);
+      child.off?.("exit", onExit);
+    };
+
+    child.stdout?.on("data", onData);
+    child.stderr?.on("data", onData);
+    child.once?.("exit", onExit);
+  });
 }

@@ -52,11 +52,10 @@ Use Acpus as the durable local runner underneath the user's preferred agent. Kee
 
    Use `--json` only when exact node keys, artifact refs, or machine-readable state are needed.
 
-7. (Optional) Use the visualizer only when a human wants an interactive TUI:
+7. (Optional) When the user needs to observe a background workflow themselves, serve the read-only visualizer and send them the printed URL:
 
    ```sh
-   acpus workflows run <workflow-or-ref> --visualize --input '<json>'
-   acpus runs visualize <runId>
+   acpus runs visualize <runId> --serve
    ```
 
 ## Authoring Rules

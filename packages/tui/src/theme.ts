@@ -28,7 +28,7 @@ export const STATE_STYLES: Record<NodeState, StateStyle> = {
   awaiting: { glyph: "◷", color: "blue", label: "Awaiting" },
   completed: { glyph: "✓", color: "green", label: "Completed" },
   failed: { glyph: "✗", color: "red", label: "Failed" },
-  paused: { glyph: "‖", color: "cyan", label: "Paused" },
+  paused: { glyph: "=", color: "cyan", label: "Paused" },
   cancelled: { glyph: "⊘", color: "magenta", label: "Cancelled" }
 };
 

@@ -73,6 +73,14 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - The CLI MUST support `acpus runs visualize [run_id]`.
 - `acpus runs visualize <run_id>` MUST open the single-Run visualizer for the specified Run.
 - `acpus runs visualize` without a Run ID MUST open a Run picker, not a multi-Run dashboard.
+- The CLI MUST support `acpus runs visualize [run_id] --serve [listen]` to start a read-only browser Served Visualizer bridge for the specified Run or Run picker.
+- `acpus runs visualize [run_id] --serve` MUST listen on `127.0.0.1` with a random available port and print the final local URL including the bridge token required by the browser page and WebSocket.
+- `acpus runs visualize [run_id] --serve <port>` and `--serve=<port>` MUST listen on `127.0.0.1:<port>`.
+- `acpus runs visualize [run_id] --serve <host:port>` and `--serve=<host:port>` MUST listen on the explicitly supplied host and port.
+- If `--serve <value>` is not a valid port or `host:port`, the CLI MUST reject it as invalid and tell the user to put the Run ID before `--serve`.
+- The Served Visualizer MUST be read-only: it MUST preserve visual navigation keys, and MUST disable `p`, `r`, `c`, `R`, `a`, and `x` so browser input cannot issue Run Control, Node Retry, or Approval Gate decisions.
+- The Served Visualizer browser page and WebSocket MUST reject requests that omit the bridge token, and browser WebSocket upgrades MUST reject cross-origin `Origin` headers.
+- The Served Visualizer MUST NOT automatically open a browser.
 - The CLI MUST support `acpus runs clean` to delete stored terminal Runs.
 - `acpus runs clean` MUST delete only Runs whose status is `completed`, `failed`, or `cancelled`.
 - `acpus runs clean` MUST keep Runs whose status is `running` or `paused`.
@@ -93,7 +101,7 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - The single-Run visualizer MUST color tree guide-line segments with the same fixed color as the node kind that owns that guide-line column.
 - The single-Run visualizer MUST render switch branch labels and fanout item labels with square brackets, not guillemets.
 - The single-Run visualizer MUST show Run retry generation as `↺N` in the top bar only when the Run's `runAttempt` is greater than `1`, and MUST NOT show per-node attempt markers in graph rows.
-- The single-Run visualizer MUST show an animated live indicator while the Run is running and MUST render a non-animated ended indicator when the Run is terminal.
+- The single-Run visualizer MUST show an animated live indicator while the Run is running and MUST render a non-animated ended indicator when the Run is terminal. The read-only Served Visualizer session MUST use a non-animated live indicator to reduce browser terminal repaint churn.
 - The single-Run visualizer MUST freeze open-ended Node durations at the Run's `updatedAt` when the Run is not `running`.
 - The single-Run visualizer MUST hide the internal paused-abort reason `Aborted: paused` from the Details error block.
 - The single-Run visualizer MUST support copying the full selected-node details text through OSC 52 with `y` while the details pane is focused.
@@ -129,6 +137,7 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - CLI tests MUST cover `workflows run --visualize` opening the single-Run visualizer view for the submitted Run.
 - CLI tests MUST cover invalid `workflows run --background --visualize` and `workflows run --visualize --json` combinations.
 - CLI tests MUST cover Ctrl-C detaching foreground follow without cancelling the Run.
+- CLI tests MUST cover `acpus runs visualize --serve` listen argument parsing and invalid Run ID placement after `--serve`.
 - Runtime CLI tests MUST cover local Run execution without remote workers, remote task queues, or a shared Temporal cluster.
 - Runtime CLI tests MUST cover Run-level pause, resume, cancel, and retry validation.
 - Runtime CLI tests MUST cover Node-level retry validation through `--node`.
@@ -137,7 +146,9 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - Runtime CLI tests MUST cover `acpus runs replay` producing machine-readable JSON output.
 - Runtime CLI tests MUST cover `acpus runs replay` reproducing a Run's Node topology deterministically and reporting discrepancies when the persisted Run's topology is tampered with.
 - Runtime CLI tests MUST cover `acpus runs visualize` without a Run ID opening a picker and `acpus runs visualize <run_id>` opening the single-Run view.
+- Runtime CLI tests MUST cover Served Visualizer bridge listen parsing, token-gated WebSocket access, client-limit rejection, and PTY cleanup when a browser WebSocket disconnects or the PTY exits.
 - Runtime CLI tests MUST cover `acpus runs list` and the visualize picker listing the most recent 50 Runs sorted by `updatedAt` descending.
 - Runtime CLI tests MUST cover `acpus runs clean` deleting terminal Runs, preserving running and paused Runs, skipping corrupt metadata, and supporting `--dry-run` and `--json`.
 - TUI tests MUST cover single-Run visualizer wrapping, detail tabs, Markdown prompt rendering, JSON output rendering, Output JSON cursor preservation across live data refreshes, controlled details scrolling, key hints, live indicator behavior, plain-text artifact rendering, Agent Step execution telemetry including estimated token formatting and retry-attempt aggregation, plain-text details copy formatting, node-kind symbols, Status Overview messages, frozen durations, hidden paused-abort details, exit viewport clearing, and collapse filtering.
+- TUI tests MUST cover read-only Served Visualizer footer hints and centralized disabled control keys.
 - Runtime CLI tests MUST cover Agent Step execution through acpx once Agent Activity integration exists.

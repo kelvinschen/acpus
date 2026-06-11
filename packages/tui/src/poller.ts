@@ -37,10 +37,12 @@ export function useRunPoller(
 ): RunSnapshot {
   const [snapshot, setSnapshot] = useState<RunSnapshot>({ nodes: [], loaded: false });
   const irRef = useRef<AcpusIr | undefined>(undefined);
+  const fingerprintRef = useRef<string | undefined>(undefined);
   const stopped = useRef(false);
 
   useEffect(() => {
     stopped.current = false;
+    fingerprintRef.current = undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const poll = async () => {
@@ -53,7 +55,15 @@ export function useRunPoller(
           client.getNodeStates(runId)
         ]);
         if (stopped.current) return;
-        setSnapshot({ ir: irRef.current, run, nodes, loaded: true });
+        const fingerprint = snapshotFingerprint(run, nodes);
+        if (fingerprint !== fingerprintRef.current) {
+          fingerprintRef.current = fingerprint;
+          setSnapshot({ ir: irRef.current, run, nodes, loaded: true });
+        } else {
+          setSnapshot((prev) => prev.loaded && prev.error === undefined
+            ? prev
+            : { ir: irRef.current, run, nodes, loaded: true });
+        }
         if (isTerminal(run.status)) return; // stop polling; keep last frame
       } catch (err) {
         if (stopped.current) return;
@@ -73,4 +83,26 @@ export function useRunPoller(
   }, [client, runId, intervalMs, refreshNonce]);
 
   return snapshot;
+}
+
+export function snapshotFingerprint(run: RunState, nodes: NodeExecutionState[]): string {
+  return JSON.stringify({
+    run: {
+      runId: run.runId,
+      status: run.status,
+      updatedAt: run.updatedAt,
+      runAttempt: run.runAttempt
+    },
+    nodes: nodes.map((node) => ({
+      nodeKey: node.nodeKey,
+      state: node.state,
+      attempt: node.attempt,
+      startedAt: node.startedAt,
+      completedAt: node.completedAt,
+      error: node.error,
+      output: node.output,
+      artifactRefs: node.artifactRefs,
+      renderedPrompt: node.renderedPrompt
+    }))
+  });
 }

@@ -9,6 +9,17 @@ describe("Footer hints", () => {
     expect(hints.global).toContainEqual({ key: "a/x", label: "approve/reject" });
   });
 
+  it("hides mutating controls in read-only mode", () => {
+    const hints = footerHintGroups("graph", 0, true);
+    expect(hints.global).toContainEqual({ key: "read-only", label: "controls disabled" });
+    expect(hints.global).toContainEqual({ key: "q", label: "quit" });
+    expect(hints.global.some((hint) => hint.key === "p")).toBe(false);
+    expect(hints.global.some((hint) => hint.key === "r")).toBe(false);
+    expect(hints.global.some((hint) => hint.key === "c")).toBe(false);
+    expect(hints.global.some((hint) => hint.key === "R")).toBe(false);
+    expect(hints.global.some((hint) => hint.key === "a/x")).toBe(false);
+  });
+
   it("shows details navigation with tab count", () => {
     const hints = footerHintGroups("details", 4);
     expect(hints.nav).toContainEqual({ key: "j/k", label: "scroll" });

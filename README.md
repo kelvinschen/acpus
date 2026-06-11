@@ -81,6 +81,14 @@ Open the terminal visualizer for the latest Runs:
 acpus runs visualize
 ```
 
+Serve a read-only browser visualizer from a remote devbox:
+
+```sh
+acpus runs visualize <runId> --serve 3000
+```
+
+The Served Visualizer binds to `127.0.0.1` by default and prints the local URL. Forward the port from your remote environment to view it locally; do not expose it to untrusted networks because it shows the same Run prompts, outputs, errors, and artifact paths as the terminal visualizer.
+
 `acpus wf` is an exact alias for `acpus workflows`.
 
 <p align="center">
@@ -131,6 +139,7 @@ acpus workflows run review.workflow.yaml --json
 # Run inspection and control
 acpus runs list
 acpus runs show <runId>
+acpus runs visualize <runId> --serve 3000
 acpus runs pause <runId>
 acpus runs resume <runId>
 acpus runs cancel <runId>

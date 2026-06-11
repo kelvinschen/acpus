@@ -7,6 +7,21 @@ import type { RunSupervisorClient, NodeExecutionState, NodeState, RunStatus } fr
 
 export type ControlAction = "pause" | "resume" | "cancel" | "retry" | "approve" | "reject";
 
+export const CONTROL_KEY_TO_ACTION: Readonly<Record<string, ControlAction>> = {
+  p: "pause",
+  r: "resume",
+  c: "cancel",
+  R: "retry",
+  a: "approve",
+  x: "reject"
+};
+
+export const READ_ONLY_DISABLED_CONTROL_KEYS = new Set(Object.keys(CONTROL_KEY_TO_ACTION));
+
+export function isReadOnlyControlKey(input: string): boolean {
+  return READ_ONLY_DISABLED_CONTROL_KEYS.has(input);
+}
+
 /** Whether a node-addressed action is applicable to a node in the given state. */
 export function canApply(action: ControlAction, state: NodeState | undefined): boolean {
   switch (action) {

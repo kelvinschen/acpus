@@ -1,6 +1,7 @@
 import React from "react";
 import { describe, expect, it } from "vitest";
 import { StatusOverview } from "../src/components/StatusOverview.js";
+import { STATE_STYLES } from "../src/theme.js";
 
 function collectText(node: unknown): string {
   if (node === null || node === undefined || typeof node === "boolean") return "";
@@ -11,6 +12,10 @@ function collectText(node: unknown): string {
 }
 
 describe("StatusOverview", () => {
+  it("uses an ASCII paused glyph so browser terminal renderers do not disagree on width", () => {
+    expect(STATE_STYLES.paused.glyph).toBe("=");
+  });
+
   it("renders state legend, node-kind legend, and overview messages", () => {
     const element = StatusOverview({
       counts: {

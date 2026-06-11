@@ -9,21 +9,31 @@ export interface RunTuiOptions {
   runId?: string;
   /** Supervisor endpoint URL (required). */
   endpoint: string;
+  /** Disable mutating Run controls while preserving navigation. */
+  readOnly?: boolean;
 }
 
-function Root({ client, initialRunId }: { client: RunSupervisorClient; initialRunId?: string }): React.ReactElement {
+function Root({
+  client,
+  initialRunId,
+  readOnly
+}: {
+  client: RunSupervisorClient;
+  initialRunId?: string;
+  readOnly?: boolean;
+}): React.ReactElement {
   const [runId, setRunId] = useState<string | undefined>(initialRunId);
   if (!runId) {
     return <RunPicker client={client} onSelect={setRunId} />;
   }
-  return <App client={client} runId={runId} />;
+  return <App client={client} runId={runId} readOnly={readOnly} />;
 }
 
 /** Launch the TUI. Resolves when the user exits. */
 export async function runTui(options: RunTuiOptions): Promise<void> {
   const client = new RunSupervisorClient(options.endpoint);
   client.clientKind = "visualize";
-  const { waitUntilExit } = render(<Root client={client} initialRunId={options.runId} />);
+  const { waitUntilExit } = render(<Root client={client} initialRunId={options.runId} readOnly={options.readOnly} />);
   try {
     await waitUntilExit();
   } finally {

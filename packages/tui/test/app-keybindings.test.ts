@@ -5,6 +5,7 @@ import {
   nextJsonCursor,
   scrollOffsetForCursor
 } from "../src/components/App.js";
+import { CONTROL_KEY_TO_ACTION, READ_ONLY_DISABLED_CONTROL_KEYS, isReadOnlyControlKey } from "../src/controls.js";
 import type { DetailSection } from "../src/components/DetailsPane.js";
 
 const sections: DetailSection[] = [
@@ -46,5 +47,13 @@ describe("App detail keybindings", () => {
     expect(jsonDisplayResetKey("workflow/check", "output", first)).toBe(
       jsonDisplayResetKey("workflow/check", "output", refreshed)
     );
+  });
+
+  it("derives read-only disabled keys from the control key map", () => {
+    expect([...READ_ONLY_DISABLED_CONTROL_KEYS].sort()).toEqual(Object.keys(CONTROL_KEY_TO_ACTION).sort());
+    for (const key of Object.keys(CONTROL_KEY_TO_ACTION)) {
+      expect(isReadOnlyControlKey(key)).toBe(true);
+    }
+    expect(isReadOnlyControlKey("j")).toBe(false);
   });
 });

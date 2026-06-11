@@ -30,6 +30,11 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./serve": {
+      "development": "./src/serve.ts",
+      "types": "./dist/serve.d.ts",
+      "default": "./dist/serve.js"
+    },
     "./agent-transcript": {
       "development": "./src/agentTranscript.ts",
       "types": "./dist/agentTranscript.d.ts",
@@ -54,12 +59,16 @@
   "dependencies": {
     "@acpus/core": "workspace:*",
     "@acpus/runtime": "workspace:*",
+    "@wterm/dom": "0.3.0",
     "ink": "^6.8.0",
+    "node-pty": "1.2.0-beta.13",
     "react": "^19.2.7",
-    "tokenx": "^1.3.0"
+    "tokenx": "^1.3.0",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.30",
-    "@types/react": "^19.2.17"
+    "@types/react": "^19.2.17",
+    "@types/ws": "^8.18.1"
   }
 }

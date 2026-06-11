@@ -233,9 +233,24 @@ runs
 runs
   .command("visualize")
   .argument("[runId]", "run ID to observe (omit to pick from a list)")
+  .option("--serve [listen]", "serve a read-only browser visualizer, optionally on <port> or <host:port>")
   .description("open a TUI visualizer to observe and control a running workflow")
-  .action(async (runId: string | undefined) => {
+  .action(async (runId: string | undefined, options: { serve?: boolean | string }) => {
     try {
+      if (options.serve !== undefined) {
+        const { parseListen, serveTui } = await import("@acpus/tui/serve");
+        try {
+          parseListen(options.serve);
+        } catch (error) {
+          printError(errorMessage(error), { json: false, quiet: false });
+          process.exitCode = EXIT_CLI_ERROR;
+          return;
+        }
+        const client = await ensureSupervisor();
+        const endpoint = (client as any).baseUrl as string;
+        await serveTui({ runId, endpoint, listen: options.serve });
+        return;
+      }
       const client = await ensureSupervisor();
       const endpoint = (client as any).baseUrl as string;
       const { runTui } = await import("@acpus/tui");
