@@ -1,9 +1,9 @@
 import React from "react";
 import { Box, Text } from "ink";
+import type { AgentToolCallTelemetry, AgentTelemetry } from "@acpus/runtime";
 import type { DisplayRow } from "../model.js";
 import { formatDuration } from "../model.js";
 import { KIND_LABELS, styleForState } from "../theme.js";
-import type { AgentExecutionSummary, AgentToolCallSummary } from "../agentTranscript.js";
 import { ScrollArea, Tabs, jsonViewerRows, markdownRows } from "../ui/inkui/index.js";
 import { clampInline, wrapText } from "../ui/inkui/theme.js";
 
@@ -201,9 +201,9 @@ export function buildDetailLines(
   width: number,
   artifactPaths: Record<string, string>,
   freezeAt?: string | number,
-  agentExecution?: AgentExecutionSummary
+  agentTelemetry?: AgentTelemetry
 ): DetailLine[] {
-  return buildDetailSections(row, width, artifactPaths, freezeAt, agentExecution).flatMap((section) => section.lines);
+  return buildDetailSections(row, width, artifactPaths, freezeAt, agentTelemetry).flatMap((section) => section.lines);
 }
 
 export function buildDetailSections(
@@ -211,7 +211,7 @@ export function buildDetailSections(
   width: number,
   artifactPaths: Record<string, string>,
   freezeAt?: string | number,
-  agentExecution?: AgentExecutionSummary
+  agentTelemetry?: AgentTelemetry
 ): DetailSection[] {
   if (!row) return [];
   const cols = Math.max(12, width - 4);
@@ -254,22 +254,31 @@ export function buildDetailSections(
     sections.push({ key: "context", label: "Context", lines: context });
   }
 
-  // ── Agent execution telemetry from the live/current attempt transcript ──
-  if (row.irNode.kind === "run.agent" && agentExecution) {
+  const effectiveAgentTelemetry = agentTelemetry ?? inst?.agentTelemetry;
+  const agentAttempt = effectiveAgentTelemetry?.attempts.find((attempt) => attempt.attempt === effectiveAgentTelemetry.currentAttempt)
+    ?? effectiveAgentTelemetry?.attempts[effectiveAgentTelemetry.attempts.length - 1];
+
+  // ── Agent execution telemetry from compact Node state ──
+  if (row.irNode.kind === "run.agent" && agentAttempt) {
     const execution: DetailLine[] = [blank(), heading("Execution:")];
-    execution.push(field("  Output tokens", formatOutputTokens(agentExecution), cols));
-    execution.push(field("  Tool calls", String(agentExecution.toolCallCount), cols));
-    if (agentExecution.recentToolCalls.length > 0) {
+    if (agentAttempt.context) {
+      execution.push(field("  Context", formatContextUsage(agentAttempt.context.used, agentAttempt.context.size), cols));
+    }
+    execution.push(field("  Tool calls", String(agentAttempt.tools.totalToolCallCount), cols));
+    if (agentAttempt.tools.droppedToolCallCount > 0) {
+      execution.push(field("  Dropped", String(agentAttempt.tools.droppedToolCallCount), cols));
+    }
+    if (agentAttempt.tools.recentCalls.length > 0) {
       execution.push(heading("  Last tools:"));
-      for (const tool of agentExecution.recentToolCalls) {
+      for (const tool of agentAttempt.tools.recentCalls.slice(0, 3)) {
         execution.push(...textLines(`  - ${formatToolCall(tool)}`, cols));
       }
     }
     sections.push({ key: "execution", label: "Execution", lines: execution });
   }
 
-  // ── Prompt (prefer runtime-rendered, fall back to IR template) ──
-  const prompt = inst?.renderedPrompt ?? (typeof meta.prompt === "string" ? meta.prompt : undefined);
+  // ── Prompt (prefer runtime preview, fall back to IR template) ──
+  const prompt = agentAttempt?.input?.preview ?? (typeof meta.prompt === "string" ? meta.prompt : undefined);
   if (prompt) {
     sections.push({
       key: "prompt",
@@ -289,7 +298,15 @@ export function buildDetailSections(
   }
 
   // ── Output ──
-  if (inst?.output !== undefined) {
+  if (row.irNode.kind === "run.agent" && agentAttempt?.output) {
+    const outputText = agentAttempt.output.preview;
+    sections.push({
+      key: "output",
+      label: "Output",
+      lines: [blank(), heading("Output:"), ...textLines(outputText, cols)],
+      richContent: { kind: "markdown", content: outputText }
+    });
+  } else if (inst?.output !== undefined) {
     const outputValue = inst.output;
     const outputText = JSON.stringify(outputValue, null, 2) ?? String(outputValue);
     sections.push({
@@ -403,7 +420,7 @@ function definitionLines(
   return out;
 }
 
-function formatToolCall(tool: AgentToolCallSummary): string {
+function formatToolCall(tool: AgentToolCallTelemetry): string {
   const status = tool.status ?? "unknown";
   const name = tool.title ?? tool.toolName ?? tool.kind ?? tool.toolCallId;
   const suffix = [tool.toolName, tool.kind]
@@ -412,9 +429,12 @@ function formatToolCall(tool: AgentToolCallSummary): string {
   return suffix ? `${status} ${name} (${suffix})` : `${status} ${name}`;
 }
 
-function formatOutputTokens(summary: AgentExecutionSummary): string {
-  if (summary.outputTokens === undefined) return "unknown";
-  return summary.outputTokenSource === "estimated" ? `~${summary.outputTokens}` : String(summary.outputTokens);
+export function formatContextUsage(used: number, size: number): string {
+  return `${formatContextNumber(used)}/${formatContextNumber(size)}`;
+}
+
+function formatContextNumber(value: number): string {
+  return value < 1000 ? String(value) : `${Math.floor(value / 1000)}k`;
 }
 
 /** Plain text form used for clipboard copy; strips colors. */

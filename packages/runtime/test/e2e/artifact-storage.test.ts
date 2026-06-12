@@ -46,7 +46,7 @@ workflow:
     expect(refs.map((r) => r.filename).sort()).toEqual([
       "attempt-001.prompt.md",
       "attempt-001.response.md",
-      "attempt-001.transcript.jsonl",
+      "attempt-001.telemetry.json",
       "transcript.json"
     ]);
   });

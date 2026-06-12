@@ -168,10 +168,10 @@ rules:
       // Envelope: { output: { text } }.
       expect((task?.output as { output: { text: string } }).output.text).toContain("hi there");
 
-      // Attempt-scoped transcript artifact (ACP NDJSON) is always written.
-      const transcript = readArtifactBySuffix(store, meta.runId, task!, "attempt-001.transcript.jsonl");
-      expect(transcript).toContain("agent_message_chunk");
-      expect(transcript).toContain('"stopReason":"end_turn"');
+      const telemetry = JSON.parse(readArtifactBySuffix(store, meta.runId, task!, "attempt-001.telemetry.json")) as { state: string; output?: { preview?: string } };
+      expect(telemetry.state).toBe("completed");
+      expect(telemetry.output?.preview).toContain("hi there");
+      expect(task?.agentTelemetry?.attempts[0]?.state).toBe("completed");
     });
 
     it("scenario #1: mid-turn cancel produces a partial transcript and a paused node", async () => {
@@ -208,10 +208,9 @@ rules:
       const task = store.listNodeStates(runId).find((n) => n.nodeId === "task");
       expect(task?.state).toBe("paused");
 
-      // Partial attempt-scoped transcript artifact records the cooperative cancel.
-      const transcript = readArtifactBySuffix(store, runId, task!, "attempt-001.transcript.jsonl");
-      expect(transcript).toContain("session/cancel");
-      expect(transcript).toContain('"stopReason":"cancelled"');
+      const telemetry = JSON.parse(readArtifactBySuffix(store, runId, task!, "attempt-001.telemetry.json")) as { state: string };
+      expect(telemetry.state).toBe("paused");
+      expect(task?.agentTelemetry?.attempts[0]?.state).toBe("paused");
     }, 20000);
 
     it("scenario #2: resume continues the paused agent step with a continuation prompt", async () => {
@@ -266,8 +265,9 @@ rules:
       // The continuation prompt artifact proves the fixed continuation prompt was sent.
       const prompt = readArtifactBySuffix(store, runId, task!, "attempt-002.prompt.md");
       expect(prompt).toContain("Continue the previous task from where you left off.");
-      const transcript = readArtifactBySuffix(store, runId, task!, "attempt-002.transcript.jsonl");
-      expect(transcript).toContain('"stopReason":"end_turn"');
+      const telemetry = JSON.parse(readArtifactBySuffix(store, runId, task!, "attempt-002.telemetry.json")) as { state: string; output?: { preview?: string } };
+      expect(telemetry.state).toBe("completed");
+      expect(telemetry.output?.preview).toContain("resumed and finished");
     }, 25000);
 
     it("scenario #2b: continuation prompt uses mock session history for schema-correct output", async () => {
@@ -512,12 +512,11 @@ workflow:
         expect(n.output).toEqual({ output: { item: "fixture", round: 0, ok: true } });
       }
 
-      // 3. Each work node has an attempt-scoped transcript artifact.
+      // 3. Each work node has an attempt-scoped compact telemetry artifact.
       for (const n of workNodes) {
-        const transcript = readArtifactBySuffix(store, meta.runId, n, "attempt-001.transcript.jsonl");
-        expect(transcript.length).toBeGreaterThan(0);
-        // Transcript should contain ACP protocol messages
-        expect(transcript).toContain("agent_message_chunk");
+        const telemetry = JSON.parse(readArtifactBySuffix(store, meta.runId, n, "attempt-001.telemetry.json")) as { state: string; output?: { preview?: string } };
+        expect(telemetry.state).toBe("completed");
+        expect(telemetry.output?.preview).toContain("\"ok\":true");
       }
 
       // 4. The guard early-completed the skip lane without running agent work.

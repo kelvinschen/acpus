@@ -4,6 +4,7 @@ import {
   buildDetailSections,
   detailContentRows,
   detailSectionRowCount,
+  formatContextUsage,
   formatDetailLinesPlainText
 } from "../src/components/DetailsPane.js";
 import type { DisplayRow } from "../src/model.js";
@@ -316,26 +317,50 @@ describe("buildDetailLines", () => {
         kind: "run.agent",
         state: "running",
         attempt: 1,
-        renderedPrompt: "rendered prompt"
+        agentTelemetry: {
+          currentAttempt: 1,
+          attempts: [{
+            attempt: 1,
+            state: "running",
+            startedAt: "2026-06-12T10:00:00.000Z",
+            updatedAt: "2026-06-12T10:00:00.000Z",
+            context: { used: 25293, size: 190000, updatedAt: "2026-06-12T10:00:00.000Z" },
+            input: { preview: "rendered prompt", truncated: false, originalBytes: 15, headBytes: 15 },
+            tools: {
+              totalToolCallCount: 4,
+              droppedToolCallCount: 0,
+              recentCalls: [
+                {
+                  toolCallId: "call-1",
+                  title: "Read file",
+                  status: "completed",
+                  kind: "read",
+                  toolName: "Read",
+                  startedAt: "2026-06-12T10:00:00.000Z",
+                  updatedAt: "2026-06-12T10:00:00.000Z"
+                }
+              ]
+            }
+          }]
+        }
       }
     });
 
-    const text = formatDetailLinesPlainText(buildDetailLines(row, 80, {}, undefined, {
-      outputTokenSource: "unknown",
-      toolCallCount: 4,
-      recentToolCalls: [
-        { toolCallId: "call-1", title: "Read file", status: "completed", kind: "read", toolName: "Read" }
-      ]
-    }));
+    const text = formatDetailLinesPlainText(buildDetailLines(row, 80, {}));
 
     expect(text).toContain("Execution:");
-    expect(text).toContain("  Output tokens: unknown");
+    expect(text).toContain("  Context: 25k/190k");
     expect(text).toContain("  Tool calls: 4");
     expect(text).toContain("completed Read file");
     expect(text.indexOf("Execution:")).toBeLessThan(text.indexOf("Prompt:"));
   });
 
-  it("marks estimated agent output tokens", () => {
+  it("formats context usage with compact k units", () => {
+    expect(formatContextUsage(999, 1000)).toBe("999/1k");
+    expect(formatContextUsage(25293, 190000)).toBe("25k/190k");
+  });
+
+  it("omits context when no usage update has been recorded", () => {
     const row = makeRow({
       irNode: {
         id: "test-node",
@@ -346,14 +371,33 @@ describe("buildDetailLines", () => {
       }
     });
 
-    const text = formatDetailLinesPlainText(buildDetailLines(row, 80, {}, undefined, {
-      outputTokens: 42,
-      outputTokenSource: "estimated",
-      toolCallCount: 0,
-      recentToolCalls: []
-    }));
+    row.instance = {
+      nodeKey: "workflow/test",
+      nodeId: "test-node",
+      kind: "run.agent",
+      state: "running",
+      attempt: 1,
+      agentTelemetry: {
+        currentAttempt: 1,
+        attempts: [{
+          attempt: 1,
+          state: "running",
+          startedAt: "2026-06-12T10:00:00.000Z",
+          updatedAt: "2026-06-12T10:00:00.000Z",
+          input: { preview: "prompt", truncated: false, originalBytes: 6, headBytes: 6 },
+          tools: {
+            totalToolCallCount: 0,
+            droppedToolCallCount: 0,
+            recentCalls: []
+          }
+        }]
+      }
+    };
 
-    expect(text).toContain("  Output tokens: ~42");
+    const text = formatDetailLinesPlainText(buildDetailLines(row, 80, {}));
+
+    expect(text).toContain("  Tool calls: 0");
+    expect(text).not.toContain("  Context:");
   });
 
   it("exposes enough lines that scrolling is needed for long content", () => {

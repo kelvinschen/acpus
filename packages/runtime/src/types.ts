@@ -50,8 +50,8 @@ export interface NodeExecutionState {
    * stored — never large artifact payloads.
    */
   dynamicContext?: NodeDynamicContext;
-  /** The prompt after template evaluation at runtime (persisted for TUI display). */
-  renderedPrompt?: string;
+  /** Compact live Agent telemetry for context, tool use, and bounded IO previews. */
+  agentTelemetry?: AgentTelemetry;
 }
 
 /** Persisted parent value-context for a leaf node (fanout item / loop round). */
@@ -159,8 +159,57 @@ export interface ExecutorResult {
   failureKind?: FailureKind;
   /** True if the executor was aborted mid-execution */
   partial?: boolean;
-  /** The prompt after template evaluation at runtime. */
-  renderedPrompt?: string;
+}
+
+export interface AgentContextUsage {
+  used: number;
+  size: number;
+  updatedAt: string;
+}
+
+export type AgentAttemptTelemetryState = "running" | "completed" | "failed" | "paused" | "cancelled";
+
+export interface AgentIoPreview {
+  preview: string;
+  truncated: boolean;
+  originalBytes: number;
+  headBytes: number;
+  tailBytes?: number;
+  artifactRef?: string;
+}
+
+export interface AgentToolCallTelemetry {
+  toolCallId: string;
+  title?: string;
+  status?: string;
+  kind?: string;
+  toolName?: string;
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
+export interface AgentToolsTelemetry {
+  totalToolCallCount: number;
+  droppedToolCallCount: number;
+  recentCalls: AgentToolCallTelemetry[];
+}
+
+export interface AgentAttemptTelemetry {
+  attempt: number;
+  state: AgentAttemptTelemetryState;
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  context?: AgentContextUsage;
+  input?: AgentIoPreview;
+  output?: AgentIoPreview;
+  tools: AgentToolsTelemetry;
+}
+
+export interface AgentTelemetry {
+  currentAttempt: number;
+  attempts: AgentAttemptTelemetry[];
 }
 
 // ─── Artifact references ────────────────────────────────────────

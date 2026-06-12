@@ -41,19 +41,24 @@ export class StubAgentExecutor implements ExecutorAdapter {
     signal.addEventListener("abort", onAbort, { once: true });
 
     try {
+      // Pick this call's effective response (sequence supports retry tests).
+      const effective = this.pickResponse(stepId, response);
+      if (effective.streamBeforeDelay) {
+        onStream?.("stdout", effective.streamTranscript ?? effective.transcript ?? "");
+      }
+
       // Simulate async work
-      await new Promise((resolve) => setTimeout(resolve, response.delay ?? 10));
+      await new Promise((resolve) => setTimeout(resolve, effective.delay ?? response.delay ?? 10));
 
       if (aborted || signal.aborted) {
         return { partial: true, error: "Aborted during execution", prompt, responseText: "" };
       }
 
-      // Pick this call's effective response (sequence supports retry tests).
-      const effective = this.pickResponse(stepId, response);
-
       // Simulate a classified failure (e.g. parse/schema for retry).
       if (effective.failureKind) {
-        onStream?.("stdout", effective.streamTranscript ?? effective.transcript ?? "");
+        if (!effective.streamBeforeDelay) {
+          onStream?.("stdout", effective.streamTranscript ?? effective.transcript ?? "");
+        }
         return {
           failureKind: effective.failureKind,
           error: `Simulated ${effective.failureKind} failure`,
@@ -63,8 +68,15 @@ export class StubAgentExecutor implements ExecutorAdapter {
         };
       }
 
-      onStream?.("stdout", effective.streamTranscript ?? effective.transcript ?? "");
-      return { output: effective.output, prompt, responseText: effective.responseText ?? stringifyResponse(effective.output), stdout: effective.transcript };
+      if (!effective.streamBeforeDelay) {
+        onStream?.("stdout", effective.streamTranscript ?? effective.transcript ?? "");
+      }
+      return {
+        output: effective.output,
+        prompt,
+        responseText: effective.responseText ?? stringifyResponse(effective.output),
+        stdout: effective.transcript
+      };
     } finally {
       signal.removeEventListener("abort", onAbort);
     }
@@ -99,6 +111,8 @@ export interface StubAgentResponse {
   transcript?: string;
   /** Raw transcript chunks delivered through the live stream callback. */
   streamTranscript?: string;
+  /** Emit transcript before delay so tests can inspect in-flight telemetry. */
+  streamBeforeDelay?: boolean;
   /** Ordered responses returned on successive calls (for retry tests). */
   sequence?: StubAgentResponse[];
   delay?: number;

@@ -113,19 +113,24 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - AgentExecutor MUST, on first execution, render the Agent Step prompt template; on Run-level resume of a paused Agent Step or manual Node-level retry of a failed Agent Step it MUST send only a fixed runtime continuation prompt and rely on acpx to load the same session; on a parse/schema auto-retry it MUST send the fixed continuation prompt.
 - When an output schema is declared, AgentExecutor MUST append it to the prompt as an explicit `# OUTPUT SCHEMA` section on the first execution and on parse/schema auto-retries, but MUST NOT append it on Run-level resume of a paused Agent Step or manual Node-level retry of a failed Agent Step.
 - The `# OUTPUT SCHEMA` section MUST include the instruction `After completing the task, your final response MUST be exactly one JSON object that conforms to this schema, with no Markdown, prose, or extra keys.` before the schema serialized as pretty JSON.
-- The interpreter MUST persist the exact Agent request prompt on `NodeExecutionState.renderedPrompt` before the Agent Step awaits acpx, so a `running` Agent Step exposes the same prompt that was sent to acpx.
-- AgentExecutor MUST treat the acpx `--format json` ACP NDJSON stream as the transcript: the agent reply is the concatenation of `agent_message_chunk` text, and the final `result.stopReason` classifies the turn.
+- AgentExecutor MUST treat the acpx `--format json` ACP NDJSON stream as the Agent activity source: the agent reply is the concatenation of `agent_message_chunk` text, the final `result.stopReason` classifies the turn, and `usage_update.used`/`usage_update.size` report the latest context window occupancy.
 - When an output schema is declared, AgentExecutor MUST extract a JSON value from the reply before validation, tolerating prose and Markdown code fences around it: it MUST try the whole reply first, then independently scan `{...}`/`[...]` candidates from each opening brace or bracket so unbalanced prose or code fragments cannot block later candidates. It MUST evaluate candidates by final text position from latest to earliest, trying strict JSON parse and then `jsonrepair` for the same later candidate before considering earlier candidates. It MUST NOT repair non-JSON prose fragments such as index/range expressions or TypeScript object snippets into output. It MUST classify a reply from which no JSON can be extracted as `parse`, and validate the extracted value against the schema with Ajv, classifying a schema mismatch as `schema`. Without a schema it MUST wrap the reply as `{ text }` without attempting extraction.
-- AgentExecutor MUST return the full ACP NDJSON stream as `stdout` and MUST NOT write artifacts itself; the interpreter owns artifact writes.
-- The interpreter MUST write Agent Step artifacts per attempt using the filenames `attempt-NNN.prompt.md`, `attempt-NNN.response.md`, `attempt-NNN.transcript.jsonl`, and `attempt-NNN.stderr.log` when the corresponding content is available.
+- AgentExecutor MUST NOT require the full ACP NDJSON stream to be buffered in memory before it can classify the turn or return the reconstructed response text.
+- The interpreter MUST write Agent Step artifacts per attempt using the filenames `attempt-NNN.prompt.md`, `attempt-NNN.response.md`, `attempt-NNN.telemetry.json`, and `attempt-NNN.stderr.log` when the corresponding content is available.
 - `attempt-NNN.prompt.md` MUST contain the fully rendered prompt/request prepared for that Agent executor call.
-- `attempt-NNN.response.md` MUST contain the human-readable agent response text reconstructed from the ACP transcript, not a duplicate of structured `node.output`.
-- The interpreter MUST create `attempt-NNN.prompt.md` and `attempt-NNN.transcript.jsonl` before awaiting the Agent executor and MUST record those artifact references on the running Node. While acpx is running, the interpreter MUST append raw stdout chunks to `attempt-NNN.transcript.jsonl`.
-- `attempt-NNN.transcript.jsonl` MUST be an append-built live artifact. Agent Step finalization MUST NOT overwrite it with the executor's accumulated stdout.
+- `attempt-NNN.response.md` MUST contain the human-readable agent response text reconstructed from the ACP stream, not a duplicate of structured `node.output`.
+- `attempt-NNN.telemetry.json` MUST contain the final compact per-attempt Agent telemetry summary that was published on Node state.
+- `NodeExecutionState.agentTelemetry` MUST store compact Agent telemetry as `{ currentAttempt, attempts }`. Each attempt summary MUST include attempt number, attempt state, timestamps, latest context usage when available, bounded input/output previews, and compact tool-call telemetry.
+- Agent telemetry input and output previews MUST use an 8 KiB head plus 8 KiB tail budget and MUST point to full prompt/response artifacts through artifact refs when those artifacts exist.
+- Agent telemetry tool use MUST count unique non-empty `toolCallId` values from live acpx stdout `tool_call` and `tool_call_update` ACP updates. It MUST retain at most the most recent 200 compact tool call records, MUST preserve `totalToolCallCount`, and MUST expose `droppedToolCallCount` when older tool details are discarded.
+- Agent telemetry MUST NOT infer tool calls from `agent_thought_chunk`, `agent_message_chunk`, or other natural-language ACP chunks. Agent-internal read, shell, or search activity that the ACP agent does not expose as `tool_call` / `tool_call_update` events is outside this telemetry source.
+- Compact tool call records MUST NOT persist full `rawInput` or `rawOutput`; they MAY include only `toolCallId`, `title`, `kind`, `toolName`, `status`, and timestamps.
+- While acpx is running, the interpreter MUST coalesce ordinary telemetry writes to Node state to at most once per second, but MUST publish tool starts, status changes, and final statuses immediately.
+- The interpreter MUST NOT write `attempt-NNN.transcript.jsonl` during normal execution. When `ACPUS_AGENT_RAW_ACP_DEBUG=1` is set, the interpreter MAY write `attempt-NNN.acp-debug.jsonl` as a debug artifact, and TUI/CLI behavior MUST NOT depend on that artifact.
 - Agent attempt artifact numbering MUST use one monotonically increasing attempt sequence for first execution, automatic retry, manual retry, and Run-level resume.
 - The interpreter MUST record all Agent attempt artifact references on the Node so visualizers can show prior failed/retried attempts.
-- The interpreter MUST NOT write fixed-name Agent artifacts such as `transcript.jsonl` or `stderr.log` that would be overwritten by later attempts.
-- On Run-level pause of a running Agent Step, AgentExecutor MUST request a cooperative ACP cancel via `acpx … cancel -s <session>`, wait for the in-flight turn to settle, and SIGKILL only as a last resort; the interpreter MUST mark the Node `paused` and persist the partial transcript artifact.
+- The interpreter MUST NOT write fixed-name Agent artifacts such as `telemetry.json`, `transcript.jsonl`, or `stderr.log` that would be overwritten by later attempts.
+- On Run-level pause of a running Agent Step, AgentExecutor MUST request a cooperative ACP cancel via `acpx … cancel -s <session>`, wait for the in-flight turn to settle, and SIGKILL only as a last resort; the interpreter MUST mark the Node `paused` and persist partial response/telemetry artifacts.
 - On Run-level resume, the interpreter MUST continue a paused Agent Step against the same acpx-managed session using the fixed continuation prompt. On manual Node-level retry of a failed Agent Step, the interpreter MUST recover a dead agent subprocess by re-running the Activity (acpx loads the saved ACP session).
 - The interpreter MUST automatically retry an Agent Step on Agent response output parse/schema `failureKind` while the node's effective `retry.max` budget remains, sleeping `retry.backoff` between attempts.
 - The interpreter MUST use an effective `retry.max` of `2` for Agent Steps with an output schema and no explicit `retry.max`.
@@ -207,9 +212,9 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - The Served Visualizer bridge MUST bound browser-to-bridge messages to 1 MiB and MUST clamp terminal resize requests to at most 500 columns and 200 rows.
 - The Served Visualizer bridge MUST serve browser assets only for `GET` requests, MUST return generic `404` responses for missing static assets, and MUST NOT serve source maps.
 - The single-Run visualizer view MUST render the frozen IR snapshot and overlay persisted Node states.
-- For a selected Agent Step, the single-Run visualizer MAY read the selected Node's `attempt-NNN.transcript.jsonl` artifacts from the local filesystem and derive display-only execution telemetry from structured acpx/ACP events.
-- Agent execution telemetry MUST count unique `toolCallId` values from `tool_call` and `tool_call_update` events. The "last tools" display MUST show the three unique tool calls with the most recent update.
-- Agent execution telemetry MUST show exact output tokens when a structured usage event provides `output_tokens` or `outputTokens`. When exact usage is unavailable, the visualizer MUST estimate output tokens from structured Agent message text using `tokenx` and MUST mark the value as estimated. It MUST NOT count prompt text, tool output, Agent thought chunks, or context `used`/`size` as output tokens.
+- For a selected Agent Step, the single-Run visualizer MUST derive Agent execution telemetry from `NodeExecutionState.agentTelemetry`, not from transcript artifacts.
+- Agent execution telemetry MUST show the current attempt's total tool-call count and the three retained Tool calls with the most recent structured update.
+- Agent execution telemetry MUST show latest Agent context window occupancy from the current telemetry attempt as `used/size` when available.
 
 ### Run-Level Control
 
@@ -230,7 +235,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Run-level `retry` MUST NOT create a new Run and MUST NOT mean rerun from scratch.
 - Run-level `retry` MUST reset recovered failed, paused, and cancelled materialized Nodes to `pending`.
 - Run-level `retry` MUST clear the Run metadata `output` and `error` fields before re-execution.
-- Run-level `retry` MUST clear recovered Nodes' stale attempt fields, including `startedAt`, `completedAt`, `error`, `output`, `artifactRefs`, `dynamicContext`, and `renderedPrompt`.
+- Run-level `retry` MUST clear recovered Nodes' stale attempt fields, including `startedAt`, `completedAt`, `error`, `output`, `artifactRefs`, `dynamicContext`, and `agentTelemetry`.
 - Invalid Run-level control operations MUST be rejected with a conflict error and MUST leave persisted state unchanged.
 - Run cleanup MUST delete only Run directories whose Run metadata status is `completed`, `failed`, or `cancelled`.
 - Run cleanup MUST preserve Run directories whose Run metadata status is `running` or `paused`.
@@ -265,7 +270,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Node-level retry MUST NOT mutate composite ancestor Nodes and MUST NOT change Run status; Run-level retry is the operation that restores Workflow progress after a failed Run.
 - The runtime MUST support delivering a human approval decision to an Approval Gate that is `awaiting`, addressed through an explicit node key parameter (`--node <nodeKey>` in the CLI). The decision MUST be either approve or reject.
 - Approval signal delivery MUST require a live interpreter (the decision channel is in-memory); the Run Supervisor MUST NOT lazily recover one. When no live interpreter exists, it MUST return a conflict error if the Run exists on disk and a not-found error otherwise, and MUST return a conflict error when the targeted Node is not `awaiting`.
-- A cancelled Agent Step MUST still persist its partial transcript artifact, the same as a paused one.
+- A cancelled Agent Step MUST still persist its partial response and telemetry artifacts, the same as a paused one.
 
 ### Crash Recovery
 
@@ -295,8 +300,8 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 
 - Runtime tests MUST cover that Agent Steps are invoked through acpx rather than direct ACP session management by Acpus.
 - Runtime tests MUST cover default Run ID generation using a local-time sortable timestamp prefix and uppercase random suffix.
-- Runtime tests MUST cover that Agent Step attempts publish the rendered prompt and live prompt/transcript artifact references while the Node is running, preserve append-built transcript contents at finalization, write per-attempt prompt/response artifacts, and preserve earlier attempt artifact references across automatic retry.
-- Runtime tests MUST cover a real Acpus→acpx→Mock Agent end-to-end path for: Run-level pause producing a partial transcript artifact and a `paused` Agent Step; Run-level resume re-entering the paused Agent Step with the fixed continuation prompt and completing the turn; and Node-level retry recovering a dead agent subprocess by re-running the Activity.
+- Runtime tests MUST cover that Agent Step attempts publish prompt artifacts and compact live telemetry while the Node is running, write per-attempt prompt/response/telemetry artifacts, persist latest Agent context window occupancy, and preserve earlier attempt artifact references across automatic retry.
+- Runtime tests MUST cover a real Acpus→acpx→Mock Agent end-to-end path for: Run-level pause producing partial telemetry and a `paused` Agent Step; Run-level resume re-entering the paused Agent Step with the fixed continuation prompt and completing the turn; and Node-level retry recovering a dead agent subprocess by re-running the Activity.
 - Runtime tests MUST cover that Program Steps execute as local subprocesses.
 - Runtime tests MUST cover Program Step default fail-fast on a non-allow-listed exit code with a stderr-tail in the failure message, and `expect.exit_code` allow-list opt-out.
 - Runtime tests MUST cover that exit-classified failure precedes capture and schema validation.

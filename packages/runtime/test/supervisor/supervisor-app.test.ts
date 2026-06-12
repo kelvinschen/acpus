@@ -326,7 +326,7 @@ workflow:
     const { runId } = await createRes.json();
     await pollRunStatus(runId);
 
-    const uri = `artifact://runs/${runId}/nodes/workflow%2Fstep-a/transcript.jsonl`;
+    const uri = `artifact://runs/${runId}/nodes/workflow%2Fstep-a/attempt-001.telemetry.json`;
     const res = await fetch(`${baseUrl}/runs/${runId}/artifact-path?uri=${encodeURIComponent(uri)}`);
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -370,7 +370,7 @@ workflow:
     await pollRunStatus(run2.runId);
 
     // Request artifact-path under run-a but with a URI pointing to run-b
-    const crossUri = `artifact://runs/${run2.runId}/nodes/workflow%2Fstep-a/transcript.jsonl`;
+    const crossUri = `artifact://runs/${run2.runId}/nodes/workflow%2Fstep-a/attempt-001.telemetry.json`;
     const res = await fetch(`${baseUrl}/runs/${runId}/artifact-path?uri=${encodeURIComponent(crossUri)}`);
     expect(res.status).toBe(400);
     const body = await res.json();

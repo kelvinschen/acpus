@@ -1,10 +1,22 @@
 import { ArtifactStore } from "./artifacts.js";
+import type { AgentAttemptTelemetry } from "./types.js";
 
 export interface AgentAttemptFinalArtifacts {
   responseText?: string;
-  transcript?: string;
   stderr?: string;
   diagnostics?: string[];
+}
+
+export interface AgentAttemptStartArtifacts {
+  artifactRefs: string[];
+  promptRef: string;
+  rawAcpDebugRef?: string;
+}
+
+export interface AgentAttemptFinalArtifactRefs {
+  artifactRefs: string[];
+  responseRef?: string;
+  stderrRef?: string;
 }
 
 /**
@@ -13,15 +25,27 @@ export interface AgentAttemptFinalArtifacts {
 export class AttemptArtifactRecorder {
   constructor(private readonly artifactStore: ArtifactStore) {}
 
-  startAgentAttempt(runId: string, nodeKey: string, attemptNo: number, prompt: string): string[] {
+  startAgentAttempt(
+    runId: string,
+    nodeKey: string,
+    attemptNo: number,
+    prompt: string,
+    options: { rawAcpDebug?: boolean } = {}
+  ): AgentAttemptStartArtifacts {
     const prefix = this.agentAttemptPrefix(attemptNo);
     const promptRef = this.artifactStore.write(runId, nodeKey, `${prefix}.prompt.md`, prompt);
-    const transcriptRef = this.artifactStore.create(runId, nodeKey, `${prefix}.transcript.jsonl`);
-    return [promptRef.uri, transcriptRef.uri];
+    const rawAcpDebugRef = options.rawAcpDebug
+      ? this.artifactStore.create(runId, nodeKey, `${prefix}.acp-debug.jsonl`).uri
+      : undefined;
+    return {
+      artifactRefs: rawAcpDebugRef ? [promptRef.uri, rawAcpDebugRef] : [promptRef.uri],
+      promptRef: promptRef.uri,
+      rawAcpDebugRef
+    };
   }
 
-  appendAgentTranscript(runId: string, nodeKey: string, attemptNo: number, chunk: string): void {
-    this.artifactStore.append(runId, nodeKey, `${this.agentAttemptPrefix(attemptNo)}.transcript.jsonl`, chunk);
+  appendAgentRawAcpDebug(runId: string, nodeKey: string, attemptNo: number, chunk: string): void {
+    this.artifactStore.append(runId, nodeKey, `${this.agentAttemptPrefix(attemptNo)}.acp-debug.jsonl`, chunk);
   }
 
   finalizeAgentAttempt(
@@ -29,22 +53,30 @@ export class AttemptArtifactRecorder {
     nodeKey: string,
     attemptNo: number,
     content: AgentAttemptFinalArtifacts
-  ): string[] {
+  ): AgentAttemptFinalArtifactRefs {
     const prefix = this.agentAttemptPrefix(attemptNo);
     const refs: string[] = [];
+    let responseRef: string | undefined;
     if (content.responseText !== undefined) {
-      refs.push(this.artifactStore.write(runId, nodeKey, `${prefix}.response.md`, content.responseText).uri);
-    }
-    if (content.transcript !== undefined) {
-      // Transcript is pre-created and append-built while acpx runs. Finalization
-      // returns the live artifact ref without overwriting accumulated NDJSON.
-      refs.push(this.artifactStore.append(runId, nodeKey, `${prefix}.transcript.jsonl`, "").uri);
+      responseRef = this.artifactStore.write(runId, nodeKey, `${prefix}.response.md`, content.responseText).uri;
+      refs.push(responseRef);
     }
     const stderr = this.mergeStderrDiagnostics(content.stderr, content.diagnostics ?? []);
+    let stderrRef: string | undefined;
     if (stderr !== undefined) {
-      refs.push(this.artifactStore.write(runId, nodeKey, `${prefix}.stderr.log`, stderr).uri);
+      stderrRef = this.artifactStore.write(runId, nodeKey, `${prefix}.stderr.log`, stderr).uri;
+      refs.push(stderrRef);
     }
-    return refs;
+    return { artifactRefs: refs, responseRef, stderrRef };
+  }
+
+  writeAgentTelemetry(runId: string, nodeKey: string, attemptNo: number, telemetry: AgentAttemptTelemetry): string {
+    return this.artifactStore.write(
+      runId,
+      nodeKey,
+      `${this.agentAttemptPrefix(attemptNo)}.telemetry.json`,
+      `${JSON.stringify(telemetry, null, 2)}\n`
+    ).uri;
   }
 
   writeProgramArtifacts(runId: string, nodeKey: string, stdout: string, stderr: string): string[] {
@@ -84,13 +116,14 @@ function compareAttemptArtifactRefs(a: string, b: string): number {
 }
 
 function attemptArtifactSortKey(ref: string): { attempt: number; kind: number } | undefined {
-  const match = /attempt-(\d+)\.(prompt\.md|transcript\.jsonl|response\.md|stderr\.log)$/.exec(ref);
+  const match = /attempt-(\d+)\.(prompt\.md|response\.md|telemetry\.json|stderr\.log|acp-debug\.jsonl)$/.exec(ref);
   if (!match) return undefined;
   const kindOrder: Record<string, number> = {
     "prompt.md": 0,
-    "transcript.jsonl": 1,
-    "response.md": 2,
-    "stderr.log": 3
+    "response.md": 1,
+    "telemetry.json": 2,
+    "stderr.log": 3,
+    "acp-debug.jsonl": 4
   };
   return { attempt: Number(match[1]), kind: kindOrder[match[2]] ?? 99 };
 }

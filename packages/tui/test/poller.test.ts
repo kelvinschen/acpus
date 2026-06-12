@@ -37,4 +37,47 @@ describe("snapshotFingerprint", () => {
     expect(snapshotFingerprint({ ...run, status: "completed" }, nodes)).not.toBe(base);
     expect(snapshotFingerprint(run, [{ ...nodes[0], state: "completed", output: { ok: true } }])).not.toBe(base);
   });
+
+  it("changes when agent telemetry changes", () => {
+    const agentNode: NodeExecutionState = {
+      nodeKey: "workflow/agent",
+      nodeId: "agent",
+      kind: "run.agent",
+      state: "running",
+      attempt: 1,
+      agentTelemetry: {
+        currentAttempt: 1,
+        attempts: [{
+          attempt: 1,
+          state: "running",
+          startedAt: "2026-06-11T00:00:01.000Z",
+          updatedAt: "2026-06-11T00:00:01.000Z",
+          input: { preview: "prompt", truncated: false, originalBytes: 6, headBytes: 6 },
+          tools: {
+            totalToolCallCount: 0,
+            droppedToolCallCount: 0,
+            recentCalls: []
+          }
+        }]
+      }
+    };
+    const base = snapshotFingerprint(run, [agentNode]);
+    const changed = {
+      ...agentNode,
+      agentTelemetry: {
+        currentAttempt: 1,
+        attempts: [{
+          ...agentNode.agentTelemetry!.attempts[0],
+          updatedAt: "2026-06-11T00:00:02.000Z",
+          tools: {
+            totalToolCallCount: 1,
+            droppedToolCallCount: 0,
+            recentCalls: []
+          }
+        }]
+      }
+    };
+
+    expect(snapshotFingerprint(run, [changed])).not.toBe(base);
+  });
 });

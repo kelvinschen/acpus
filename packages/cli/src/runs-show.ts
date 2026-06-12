@@ -1,11 +1,4 @@
-import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
-import type { NodeExecutionState, RunState, RunSupervisorClient } from "@acpus/runtime";
-import {
-  AgentTranscriptAccumulator,
-  mergeAgentExecutionSummaries,
-  type AgentExecutionSummary
-} from "@acpus/tui/agent-transcript";
+import type { AgentToolCallTelemetry, NodeExecutionState, RunState, RunSupervisorClient } from "@acpus/runtime";
 
 type ArtifactPathResolver = Pick<RunSupervisorClient, "getArtifactPath">;
 
@@ -32,7 +25,7 @@ export async function formatRunShow(
     lines.push(`  ${node.nodeKey}  [${node.kind}]  ${node.state}  attempt=${node.attempt}`);
     if (node.error) lines.push(`    Error: ${node.error}`);
     if (node.artifactRefs?.length) lines.push(`    Artifacts: ${node.artifactRefs.join(", ")}`);
-    const activity = client ? await summarizeRunningAgentActivity(run.runId, node, client, nowMs) : undefined;
+    const activity = await summarizeRunningAgentActivity(run.runId, node, client, nowMs);
     if (activity) lines.push(`    Activity: ${activity}`);
   }
 
@@ -42,60 +35,40 @@ export async function formatRunShow(
 async function summarizeRunningAgentActivity(
   runId: string,
   node: NodeExecutionState,
-  client: ArtifactPathResolver,
+  client: ArtifactPathResolver | undefined,
   nowMs: number
 ): Promise<string | undefined> {
+  void runId;
+  void client;
   if (node.kind !== "run.agent" || node.state !== "running") return undefined;
-  const transcriptRefs = (node.artifactRefs ?? []).filter((ref) => ref.endsWith(".transcript.jsonl"));
-  if (transcriptRefs.length === 0) return undefined;
+  const telemetry = node.agentTelemetry;
+  const attempt = telemetry?.attempts.find((item) => item.attempt === telemetry.currentAttempt)
+    ?? telemetry?.attempts[telemetry.attempts.length - 1];
+  if (!attempt) return undefined;
 
-  const parsed = await Promise.all(transcriptRefs.map((ref) => readTranscriptSummary(runId, ref, client)));
-  const available = parsed.filter((item): item is TranscriptRead => item !== undefined);
-  if (available.length === 0) return undefined;
-
-  const summary = mergeAgentExecutionSummaries(available.map((item) => item.summary));
-  const updatedMs = Math.max(...available.map((item) => item.updatedMs));
-  const parts = [`updated=${formatAge(nowMs - updatedMs)} ago`, `tool_calls=${summary.toolCallCount}`];
-  const recent = summary.recentToolCalls.map(formatToolName).filter(Boolean);
+  const parts = [`updated=${formatAge(nowMs - Date.parse(attempt.updatedAt))} ago`, `tool_calls=${attempt.tools.totalToolCallCount}`];
+  const recent = attempt.tools.recentCalls.slice(0, 3).map(formatToolName).filter(Boolean);
   if (recent.length > 0) parts.push(`recent=${recent.join(", ")}`);
-  if (summary.outputTokens !== undefined) {
-    const prefix = summary.outputTokenSource === "estimated" ? "~" : "";
-    parts.push(`output_tokens=${prefix}${summary.outputTokens}`);
-  }
+  if (attempt.tools.droppedToolCallCount > 0) parts.push(`dropped=${attempt.tools.droppedToolCallCount}`);
+  if (attempt.context) parts.push(`context=${formatContextUsage(attempt.context.used, attempt.context.size)}`);
   return parts.join("; ");
 }
 
-interface TranscriptRead {
-  summary: AgentExecutionSummary;
-  updatedMs: number;
+function formatContextUsage(used: number, size: number): string {
+  return `${formatContextNumber(used)}/${formatContextNumber(size)}`;
 }
 
-async function readTranscriptSummary(
-  runId: string,
-  ref: string,
-  client: ArtifactPathResolver
-): Promise<TranscriptRead | undefined> {
-  try {
-    const absPath = await client.getArtifactPath(runId, ref);
-    const fileStat = await stat(absPath);
-    const accumulator = new AgentTranscriptAccumulator();
-    for await (const chunk of createReadStream(absPath, { encoding: "utf8" })) {
-      accumulator.append(chunk);
-    }
-    accumulator.flush();
-    return { summary: accumulator.summary(), updatedMs: fileStat.mtimeMs };
-  } catch {
-    return undefined;
-  }
+function formatContextNumber(value: number): string {
+  return value < 1000 ? String(value) : `${Math.floor(value / 1000)}k`;
 }
 
-function formatToolName(tool: { title?: string; toolName?: string; kind?: string; toolCallId: string }): string {
+function formatToolName(tool: AgentToolCallTelemetry): string {
   const raw = tool.title ?? tool.toolName ?? tool.kind ?? tool.toolCallId;
   return raw.replace(/\s+/g, " ").trim();
 }
 
 function formatAge(deltaMs: number): string {
-  const safeMs = Math.max(0, deltaMs);
+  const safeMs = Number.isFinite(deltaMs) ? Math.max(0, deltaMs) : 0;
   const seconds = Math.floor(safeMs / 1000);
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);

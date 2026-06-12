@@ -21,7 +21,14 @@ export type {
   RunCleanResult,
   ReplayResult,
   ReplayMismatch,
-  NodeDynamicContext
+  NodeDynamicContext,
+  AgentContextUsage,
+  AgentAttemptTelemetryState,
+  AgentIoPreview,
+  AgentToolCallTelemetry,
+  AgentToolsTelemetry,
+  AgentAttemptTelemetry,
+  AgentTelemetry
 } from "./types.js";
 
 // ─── Executor contract ───────────────────────────────────────────

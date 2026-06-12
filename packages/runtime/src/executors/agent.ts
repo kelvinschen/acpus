@@ -8,6 +8,7 @@ import type { ExecutorAdapter, ExecutionRequest } from "./types.js";
 import { ExpressionEvaluator } from "../evaluator.js";
 import { Ajv } from "ajv";
 import { jsonrepair } from "jsonrepair";
+import { AgentTelemetryAccumulator } from "../agent-telemetry.js";
 
 /** Fixed runtime prompt used when continuing an existing agent session. */
 const CONTINUATION_PROMPT = "Continue the previous task from where you left off.";
@@ -26,8 +27,8 @@ const DEFAULT_CANCEL_GRACE_MS = 5000;
  * - Cancel is cooperative: on abort we run `acpx cancel -s <session>` and wait
  *   for the in-flight prompt to settle (SIGKILL only as a last resort).
  * - Output is the concatenation of `agent_message_chunk` text from the ACP
- *   NDJSON stream; the full stream is returned as `stdout` for transcript
- *   capture by the interpreter.
+ *   NDJSON stream; stdout buffering is disabled so the full stream is not
+ *   retained in memory.
  */
 export class AgentExecutor implements ExecutorAdapter {
   private readonly evaluator: ExpressionEvaluator;
@@ -96,35 +97,51 @@ export class AgentExecutor implements ExecutorAdapter {
         return { partial: true, error: "Aborted before prompt", prompt, responseText: "" };
       }
 
-      // Run the prompt, streaming the ACP protocol as NDJSON.
+      // Run the prompt, streaming the ACP protocol as NDJSON. Stdout buffering
+      // is disabled so execa does not retain the full stream in memory.
       const promptGlobalArgs = [...(timeoutSeconds ? ["--timeout", timeoutSeconds] : []), "--format", "json"];
       const promptArgs = [...invoker.prefixArgs, ...build(promptGlobalArgs, ["prompt", "-s", sessionName, prompt])];
-      const proc = execa(invoker.command, promptArgs, { reject: false, env });
-      proc.stdout?.on("data", (chunk) => onStream?.("stdout", String(chunk)));
-      proc.stderr?.on("data", (chunk) => onStream?.("stderr", String(chunk)));
+      const accumulator = new AgentTelemetryAccumulator({ attempt: 1, inputText: prompt });
+      const proc = execa(invoker.command, promptArgs, {
+        reject: false,
+        env,
+        buffer: { stdout: false }
+      });
+      let stderrText = "";
+      proc.stdout?.on("data", (chunk) => {
+        const text = String(chunk);
+        onStream?.("stdout", text);
+        accumulator.append(text);
+      });
+      proc.stderr?.on("data", (chunk) => {
+        const text = String(chunk);
+        stderrText += text;
+        onStream?.("stderr", text);
+      });
 
       const cancellation = this.wireCooperativeCancel(proc, signal, invoker, build, sessionName, env);
 
       const result = await proc;
       cancellation.cleanup();
 
-      const stdout = result.stdout ?? "";
-      const stderr = result.stderr ?? "";
-      const { text, stopReason } = parseAcpStream(stdout);
+      const stderr = result.stderr ?? stderrText;
+      accumulator.flush();
+      const text = accumulator.responseText();
+      const stopReason = accumulator.finalStopReason();
 
-      // Cooperative cancel (or any cancelled turn) → paused with partial transcript.
+      // Cooperative cancel (or any cancelled turn) → paused with partial response.
       if (cancellation.cancelled || stopReason === "cancelled") {
-        return { partial: true, output: { text }, prompt, responseText: text, stdout, stderr, error: "Aborted" };
+        return { partial: true, output: { text }, prompt, responseText: text, stderr, error: "Aborted" };
       }
 
       // Spawn failure (no exit code) → non-recoverable.
       if (result.failed && (result.exitCode === undefined || result.exitCode === null)) {
-        return { failureKind: "spawn", error: result.shortMessage || "Failed to spawn acpx", prompt, responseText: text, stdout, stderr };
+        return { failureKind: "spawn", error: result.shortMessage || "Failed to spawn acpx", prompt, responseText: text, stderr };
       }
 
       // Non-zero exit (and not cancelled) → non-recoverable agent failure.
       if (result.exitCode !== 0) {
-        return { failureKind: "exit", exitCode: result.exitCode ?? 1, error: stderr || `acpx exited with code ${result.exitCode}`, prompt, responseText: text, stdout, stderr };
+        return { failureKind: "exit", exitCode: result.exitCode ?? 1, error: stderr || `acpx exited with code ${result.exitCode}`, prompt, responseText: text, stderr };
       }
 
       // Assemble structured output. When a schema is declared, extract a JSON
@@ -134,18 +151,18 @@ export class AgentExecutor implements ExecutorAdapter {
       if (outputSchema) {
         const parsed = extractJson(text);
         if (parsed === undefined) {
-          return { failureKind: "parse", error: "Failed to parse agent output as JSON", output: { text }, prompt, responseText: text, stdout, stderr };
+          return { failureKind: "parse", error: "Failed to parse agent output as JSON", output: { text }, prompt, responseText: text, stderr };
         }
         const validate = this.ajv.compile(outputSchema);
         if (!validate(parsed)) {
-          return { failureKind: "schema", error: `Output validation failed: ${this.ajv.errorsText(validate.errors)}`, output: parsed, prompt, responseText: text, stdout, stderr };
+          return { failureKind: "schema", error: `Output validation failed: ${this.ajv.errorsText(validate.errors)}`, output: parsed, prompt, responseText: text, stderr };
         }
         output = parsed;
       } else {
         output = { text };
       }
 
-      return { exitCode: 0, output, prompt, responseText: text, stdout, stderr };
+      return { exitCode: 0, output, prompt, responseText: text, stderr };
     } catch (error) {
       return { failureKind: "spawn", error: error instanceof Error ? error.message : String(error), prompt, responseText: "" };
     }
@@ -314,40 +331,6 @@ export function renderAgentSessionKey(
     throw new Error("session_key must render to a non-empty string");
   }
   return rendered;
-}
-
-/**
- * Parse an ACP NDJSON stream: concatenate `agent_message_chunk` text and
- * surface the final turn `stopReason`. Unparseable lines are ignored.
- */
-function parseAcpStream(ndjson: string): { text: string; stopReason?: string } {
-  let text = "";
-  let stopReason: string | undefined;
-  for (const line of ndjson.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    let msg: unknown;
-    try {
-      msg = JSON.parse(trimmed);
-    } catch {
-      continue;
-    }
-    if (typeof msg !== "object" || msg === null) continue;
-    const obj = msg as Record<string, unknown>;
-    const params = obj.params as Record<string, unknown> | undefined;
-    const update = params?.update as Record<string, unknown> | undefined;
-    if (update?.sessionUpdate === "agent_message_chunk") {
-      const content = update.content as Record<string, unknown> | undefined;
-      if (content?.type === "text" && typeof content.text === "string") {
-        text += content.text;
-      }
-    }
-    const result = obj.result as Record<string, unknown> | undefined;
-    if (result && typeof result.stopReason === "string") {
-      stopReason = result.stopReason;
-    }
-  }
-  return { text, stopReason };
 }
 
 /**

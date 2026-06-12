@@ -102,7 +102,7 @@ export function snapshotFingerprint(run: RunState, nodes: NodeExecutionState[]):
       error: node.error,
       output: node.output,
       artifactRefs: node.artifactRefs,
-      renderedPrompt: node.renderedPrompt
+      agentTelemetry: node.agentTelemetry
     }))
   });
 }

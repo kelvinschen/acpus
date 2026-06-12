@@ -2,6 +2,25 @@ import { describe, it, expect, afterEach } from "vitest";
 import { compileYaml, createTestInterpreter, waitForNodeState } from "./helper.js";
 import { ArtifactStore } from "../../src/artifacts.js";
 import { generateRunId } from "../../src/interpreter.js";
+import type { RunStore } from "../../src/store.js";
+import type { NodeExecutionState } from "../../src/types.js";
+
+async function waitForToolTelemetry(
+  store: RunStore,
+  runId: string,
+  nodeId: string,
+  timeoutMs: number
+): Promise<NodeExecutionState> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const found = store.listNodeStates(runId).find((node) =>
+      node.nodeId === nodeId && (node.agentTelemetry?.attempts[0]?.tools.totalToolCallCount ?? 0) > 0
+    );
+    if (found) return found;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Node ${nodeId} did not publish tool telemetry within ${timeoutMs}ms`);
+}
 
 describe("run ID generation", () => {
   it("generates local-time sortable IDs with an uppercase random suffix", () => {
@@ -18,7 +37,7 @@ describe("Agent automatic retry", () => {
     cleanups.length = 0;
   });
 
-  it("publishes rendered prompt and live attempt artifacts while an agent is running", async () => {
+  it("publishes prompt artifact and live telemetry while an agent is running", async () => {
     const ir = compileYaml(`
 version: 1
 name: agent-live-details
@@ -47,10 +66,11 @@ workflow:
     const runPromise = interpreter.runToCompletion(ir, { input: { name: "Ada" } }, initial.runId);
 
     const running = await waitForNodeState(store, initial.runId, "work", "running", 500);
-    expect(running.renderedPrompt).toContain("hello Ada");
-    expect(running.renderedPrompt).toContain("# OUTPUT SCHEMA");
     expect(running.artifactRefs?.filter((ref) => ref.endsWith("attempt-001.prompt.md"))).toHaveLength(1);
-    expect(running.artifactRefs?.filter((ref) => ref.endsWith("attempt-001.transcript.jsonl"))).toHaveLength(1);
+    expect(running.artifactRefs?.filter((ref) => ref.endsWith("attempt-001.transcript.jsonl"))).toHaveLength(0);
+    expect(running.agentTelemetry?.currentAttempt).toBe(1);
+    expect(running.agentTelemetry?.attempts[0]?.input?.preview).toContain("hello Ada");
+    expect(running.agentTelemetry?.attempts[0]?.input?.preview).toContain("# OUTPUT SCHEMA");
 
     const artifacts = new ArtifactStore(store.getBaseDir());
     expect(artifacts.read(initial.runId, running.nodeKey, "attempt-001.prompt.md").toString()).toContain("hello Ada");
@@ -58,7 +78,56 @@ workflow:
     await runPromise;
   });
 
-  it("preserves rendered prompt and prompt artifact when an agent is paused", async () => {
+  it("publishes streamed tool call telemetry before the agent turn completes", async () => {
+    const ir = compileYaml(`
+version: 1
+name: agent-live-tool-telemetry
+agents:
+  coder:
+    type: command
+    use: "echo stub"
+workflow:
+  steps:
+    - id: work
+      run: agent
+      use: coder
+      prompt: "inspect"
+`);
+
+    const toolStream = [
+      JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "tool_call", toolCallId: "call-1", title: "List files", kind: "search", status: "in_progress", rawInput: { omitted: true } } } }),
+      JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "tool_call_update", toolCallId: "call-1", status: "completed", rawOutput: { omitted: true } } } })
+    ].join("\n") + "\n";
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      agentResponses: {
+        work: {
+          output: { ok: true },
+          responseText: "done",
+          streamTranscript: toolStream,
+          streamBeforeDelay: true,
+          delay: 80
+        }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const initial = interpreter.initRun(ir, { input: {} });
+    const runPromise = interpreter.runToCompletion(ir, { input: {} }, initial.runId);
+
+    const live = await waitForToolTelemetry(store, initial.runId, "work", 500);
+    expect(live.agentTelemetry?.attempts[0]?.tools).toMatchObject({
+      totalToolCallCount: 1,
+      droppedToolCallCount: 0,
+      recentCalls: [{ toolCallId: "call-1", title: "List files", kind: "search", status: "completed" }]
+    });
+    const retainedTool = live.agentTelemetry?.attempts[0]?.tools.recentCalls[0] as Record<string, unknown> | undefined;
+    expect(retainedTool?.rawInput).toBeUndefined();
+    expect(retainedTool?.rawOutput).toBeUndefined();
+
+    await runPromise;
+  });
+
+  it("preserves prompt telemetry and prompt artifact when an agent is paused", async () => {
     const ir = compileYaml(`
 version: 1
 name: agent-paused-details
@@ -91,14 +160,15 @@ workflow:
     expect(paused.status).toBe("paused");
     const node = store.readNodeState(initial.runId, running.nodeKey);
     expect(node?.state).toBe("paused");
-    expect(node?.renderedPrompt).toContain("pause me Ada");
+    expect(node?.agentTelemetry?.attempts[0]?.input?.preview).toContain("pause me Ada");
+    expect(node?.agentTelemetry?.attempts[0]?.state).toBe("paused");
     expect(node?.artifactRefs?.filter((ref) => ref.endsWith("attempt-001.prompt.md"))).toHaveLength(1);
 
     const artifacts = new ArtifactStore(store.getBaseDir());
     expect(artifacts.read(initial.runId, running.nodeKey, "attempt-001.prompt.md").toString()).toContain("pause me Ada");
   });
 
-  it("does not overwrite the live transcript artifact when the agent completes", async () => {
+  it("writes compact telemetry artifacts instead of transcript artifacts", async () => {
     const ir = compileYaml(`
 version: 1
 name: agent-live-transcript-finalization
@@ -130,11 +200,14 @@ workflow:
 
     const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "work");
     const artifacts = new ArtifactStore(store.getBaseDir());
-    expect(artifacts.read(meta.runId, node!.nodeKey, "attempt-001.transcript.jsonl").toString()).toBe("{\"live\":true}\n");
-    expect(node?.artifactRefs?.filter((ref) => ref.endsWith("attempt-001.transcript.jsonl"))).toHaveLength(1);
+    const telemetry = JSON.parse(artifacts.read(meta.runId, node!.nodeKey, "attempt-001.telemetry.json").toString()) as { output?: { preview?: string }; state?: string };
+    expect(telemetry.state).toBe("completed");
+    expect(telemetry.output?.preview).toContain("\"ok\": true");
+    expect(node?.artifactRefs?.filter((ref) => ref.endsWith("attempt-001.telemetry.json"))).toHaveLength(1);
+    expect(node?.artifactRefs?.filter((ref) => ref.endsWith("attempt-001.transcript.jsonl"))).toHaveLength(0);
   });
 
-  it("captures live transcript append errors without interrupting agent execution", async () => {
+  it("does not write raw ACP debug artifacts by default", async () => {
     const ir = compileYaml(`
 version: 1
 name: agent-live-transcript-append-error
@@ -157,24 +230,47 @@ workflow:
     });
     cleanups.push(cleanup);
 
-    const artifactStore = (interpreter as unknown as { artifactStore: ArtifactStore }).artifactStore;
-    const originalAppend = artifactStore.append.bind(artifactStore);
-    let failedOnce = false;
-    artifactStore.append = ((runId, nodeKey, filename, content) => {
-      if (!failedOnce && filename.endsWith(".transcript.jsonl") && String(content).length > 0) {
-        failedOnce = true;
-        throw new Error("append failed");
-      }
-      return originalAppend(runId, nodeKey, filename, content);
-    }) as ArtifactStore["append"];
-
     const meta = await interpreter.start(ir, { input: {} });
     expect(meta.status).toBe("completed");
 
     const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "work");
     expect(node?.state).toBe("completed");
-    const artifacts = new ArtifactStore(store.getBaseDir());
-    expect(artifacts.read(meta.runId, node!.nodeKey, "attempt-001.stderr.log").toString()).toContain("failed to append live agent transcript");
+    expect(node?.artifactRefs?.some((ref) => ref.endsWith("attempt-001.acp-debug.jsonl"))).toBe(false);
+  });
+
+  it("persists latest agent context usage from ACP usage updates", async () => {
+    const ir = compileYaml(`
+version: 1
+name: agent-context-usage
+agents:
+  coder:
+    type: command
+    use: "echo stub"
+workflow:
+  steps:
+    - id: work
+      run: agent
+      use: coder
+      prompt: "do"
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      agentResponses: {
+        work: {
+          output: { ok: true },
+          transcript: [
+            JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "usage_update", used: 10, size: 100 } } }),
+            JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "usage_update", used: 25, size: 100 } } })
+          ].join("\n") + "\n"
+        }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+    const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "work");
+    expect(node?.agentTelemetry?.attempts[0]?.context).toMatchObject({ used: 25, size: 100 });
   });
 
   it("defaults schema-backed agent steps to two output retries", async () => {
@@ -249,7 +345,8 @@ workflow:
     expect(node?.artifactRefs?.some((ref) => ref.endsWith("attempt-002.prompt.md"))).toBe(true);
     expect(node?.artifactRefs?.some((ref) => ref.endsWith("attempt-002.response.md"))).toBe(true);
     expect(new Set(node?.artifactRefs).size).toBe(node?.artifactRefs?.length);
-    expect(node?.artifactRefs?.filter((ref) => ref.endsWith(".transcript.jsonl"))).toHaveLength(2);
+    expect(node?.artifactRefs?.filter((ref) => ref.endsWith(".telemetry.json"))).toHaveLength(2);
+    expect(node?.artifactRefs?.filter((ref) => ref.endsWith(".transcript.jsonl"))).toHaveLength(0);
 
     const artifacts = new ArtifactStore(store.getBaseDir());
     expect(artifacts.read(meta.runId, node!.nodeKey, "attempt-001.prompt.md").toString()).toBe("do");

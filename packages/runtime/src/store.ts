@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import { encodeNodeKeyForFs, encodeNodeKeyForDir } from "./keys.js";
 import { ArtifactReferences } from "./artifacts.js";
 import type { AcpusIr } from "@acpus/core";
-import type { NodeExecutionState, RunCheckpoint, RunCleanItem, RunCleanResult, RunState } from "./types.js";
+import type { AgentTelemetry, NodeExecutionState, RunCheckpoint, RunCleanItem, RunCleanResult, RunState } from "./types.js";
 
 /**
  * Per-node JSON file persistence with write-to-temp-then-rename for crash safety.
@@ -233,7 +233,8 @@ export class RunStore {
     const inheritedRefs = sourceState.artifactRefs?.map((uri) => ArtifactReferences.rewriteRunId(uri, sourceRunId, targetRunId));
     const targetState: NodeExecutionState = {
       ...sourceState,
-      artifactRefs: inheritedRefs
+      artifactRefs: inheritedRefs,
+      agentTelemetry: rewriteAgentTelemetryArtifactRefs(sourceState.agentTelemetry, sourceRunId, targetRunId)
     };
 
     // Copy the artifact directory FIRST so a crash before the Node-state
@@ -372,6 +373,30 @@ function isTerminal(state: NodeExecutionState["state"]): boolean {
  */
 function isCheckpointableKind(kind: NodeExecutionState["kind"]): boolean {
   return kind === "run.agent" || kind === "run.program" || kind === "guard" || kind === "approval";
+}
+
+function rewriteAgentTelemetryArtifactRefs(
+  telemetry: AgentTelemetry | undefined,
+  sourceRunId: string,
+  targetRunId: string
+): AgentTelemetry | undefined {
+  if (!telemetry) return undefined;
+  return {
+    ...telemetry,
+    attempts: telemetry.attempts.map((attempt) => ({
+      ...attempt,
+      input: attempt.input
+        ? { ...attempt.input, artifactRef: rewriteOptionalArtifactRef(attempt.input.artifactRef, sourceRunId, targetRunId) }
+        : undefined,
+      output: attempt.output
+        ? { ...attempt.output, artifactRef: rewriteOptionalArtifactRef(attempt.output.artifactRef, sourceRunId, targetRunId) }
+        : undefined
+    }))
+  };
+}
+
+function rewriteOptionalArtifactRef(value: string | undefined, sourceRunId: string, targetRunId: string): string | undefined {
+  return value === undefined ? undefined : ArtifactReferences.rewriteRunId(value, sourceRunId, targetRunId);
 }
 
 function directorySize(path: string): number {

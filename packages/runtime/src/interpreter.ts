@@ -2,7 +2,7 @@ import type { AcpusIr, IrNode, NodeKeyTemplate } from "@acpus/core";
 import { parseDurationMs, compileWorkflow, hashIrNode } from "@acpus/core";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import type { ExpressionContext, InterpreterOptions, NodeKeyDynamic, RunOptions } from "./types.js";
+import type { AgentAttemptTelemetry, AgentAttemptTelemetryState, ExpressionContext, InterpreterOptions, NodeKeyDynamic, RunOptions } from "./types.js";
 import { RunStore } from "./store.js";
 import { ExpressionEvaluator } from "./evaluator.js";
 import { resolveNodeKey, staticNodePathFromKey, withNodeKeyPrefix } from "./keys.js";
@@ -17,6 +17,7 @@ import { RunControl, abortedNodeError, isPausedContinuationState } from "./run-c
 import { evaluateTemplatedValue, evaluateWorkflowOutputs } from "./workflow-outputs.js";
 import { randomBytes } from "node:crypto";
 import pLimit from "p-limit";
+import { AgentTelemetryAccumulator, upsertAgentAttemptTelemetry } from "./agent-telemetry.js";
 
 /**
  * The core IR interpreter that drives state transitions, orchestrates
@@ -444,7 +445,6 @@ export class WorkflowInterpreter {
           const leaf = await this.executeAgent(node, ctx, runId, controller.signal, nodeKey, continuation);
           output = leaf.output;
           artifactRefs = leaf.artifactRefs;
-          if (leaf.renderedPrompt) state.renderedPrompt = leaf.renderedPrompt;
           break;
         }
         case "run.program": {
@@ -487,12 +487,13 @@ export class WorkflowInterpreter {
         return output;
       }
       this.runControl.syncInFrameAttemptFromDisk(runId, nodeKey, state);
+      this.syncAgentTelemetryFromDisk(runId, nodeKey, state);
 
       // Transition to completed unless an external pause/cancel already changed
       // this node's state on disk while we were awaiting the leaf.
       const abortedState = this.runControl.readAbortedStateOnDisk(runId, nodeKey);
       if (abortedState) {
-        throw new NodeAbortedError(nodeKey, abortedState, artifactRefs, output, state.renderedPrompt);
+        throw new NodeAbortedError(nodeKey, abortedState, artifactRefs, output);
       }
       state.state = "completed";
       state.error = undefined;
@@ -522,10 +523,10 @@ export class WorkflowInterpreter {
         // Transition this node to the same state as the child that was aborted.
         state.state = error.state === "paused" ? "paused" : "cancelled";
         state.error = abortedNodeError(error.state);
-        // Preserve any output + partial transcript artifacts from the aborted leaf.
+        // Preserve any output + partial Agent artifacts from the aborted leaf.
         if (error.output !== undefined) state.output = error.output;
         if (error.artifactRefs) state.artifactRefs = error.artifactRefs;
-        state.renderedPrompt = error.renderedPrompt ?? state.renderedPrompt ?? this.store.readNodeState(runId, nodeKey)?.renderedPrompt;
+        this.syncAgentTelemetryFromDisk(runId, nodeKey, state);
         this.store.writeNodeState(runId, state);
         throw error;
       }
@@ -550,6 +551,7 @@ export class WorkflowInterpreter {
       if (error instanceof GuardFailureError) {
         state.output = error.output;
       }
+      this.syncAgentTelemetryFromDisk(runId, nodeKey, state);
       state.completedAt = new Date().toISOString();
       this.store.writeNodeState(runId, state);
       throw error;
@@ -598,11 +600,22 @@ export class WorkflowInterpreter {
         );
       }
 
-      const liveRefs = this.attemptArtifacts.startAgentAttempt(runId, nodeKey, attemptNo, preparedPrompt);
-      this.attemptArtifacts.mergeAttemptRefs(allArtifactRefs, liveRefs);
-      this.publishRunningAgentAttempt(runId, nodeKey, preparedPrompt, allArtifactRefs);
+      const rawAcpDebug = process.env.ACPUS_AGENT_RAW_ACP_DEBUG === "1";
+      const liveArtifacts = this.attemptArtifacts.startAgentAttempt(runId, nodeKey, attemptNo, preparedPrompt, { rawAcpDebug });
+      this.attemptArtifacts.mergeAttemptRefs(allArtifactRefs, liveArtifacts.artifactRefs);
 
       const streamDiagnostics: string[] = [];
+      let sawStdoutStream = false;
+      const activity = new AgentTelemetryAccumulator({
+        attempt: attemptNo,
+        inputText: preparedPrompt,
+        inputArtifactRef: liveArtifacts.promptRef,
+        onTelemetry: (attemptTelemetry) => {
+          this.publishAgentTelemetry(runId, nodeKey, attemptTelemetry);
+        }
+      });
+      this.publishRunningAgentAttempt(runId, nodeKey, allArtifactRefs, activity.snapshot("running"));
+
       const result = await this.agentExecutor.execute({
         node,
         context: ctx,
@@ -614,32 +627,58 @@ export class WorkflowInterpreter {
         retry: attempt > 0,
         onStream: (stream, chunk) => {
           if (stream === "stdout" && chunk.length > 0) {
+            sawStdoutStream = true;
+            if (rawAcpDebug) {
+              try {
+                this.attemptArtifacts.appendAgentRawAcpDebug(runId, nodeKey, attemptNo, chunk);
+              } catch (error) {
+                streamDiagnostics.push(`failed to append raw ACP debug stream: ${error instanceof Error ? error.message : String(error)}`);
+              }
+            }
             try {
-              this.attemptArtifacts.appendAgentTranscript(runId, nodeKey, attemptNo, chunk);
+              activity.append(chunk);
             } catch (error) {
-              streamDiagnostics.push(`failed to append live agent transcript: ${error instanceof Error ? error.message : String(error)}`);
+              streamDiagnostics.push(`failed to parse live agent telemetry: ${error instanceof Error ? error.message : String(error)}`);
             }
           }
         }
       });
+      try {
+        if (!sawStdoutStream && result.stdout !== undefined) activity.append(result.stdout);
+        activity.flush();
+      } catch (error) {
+        streamDiagnostics.push(`failed to parse live agent telemetry: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      if (result.responseText !== undefined) activity.setResponseText(result.responseText);
 
-      // Persist per-attempt human-readable agent IO plus raw protocol artifacts
+      const abortIntent = result.partial ? this.runControl.abortIntent(runId, nodeKey) : undefined;
+      const finalAttemptState: AgentAttemptTelemetryState = abortIntent
+        ?? (result.failureKind || (result.error && !result.partial) ? "failed" : "completed");
+      const completedAt = new Date().toISOString();
+
+      // Persist per-attempt human-readable agent IO plus diagnostics
       // when the executor exposed them. Refs flow back to executeNode via the
       // return value / thrown error (no shared mutable field).
-      const artifactRefs = result.responseText !== undefined || result.stdout !== undefined || result.stderr !== undefined
+      const finalized = result.responseText !== undefined || result.stderr !== undefined
         ? this.attemptArtifacts.finalizeAgentAttempt(runId, nodeKey, attemptNo, {
           responseText: result.responseText,
-          transcript: result.stdout,
           stderr: result.stderr,
           diagnostics: streamDiagnostics
         })
         : result.artifactRefs;
+      const artifactRefs = Array.isArray(finalized) ? finalized : finalized?.artifactRefs;
+      const responseRef = !Array.isArray(finalized) ? finalized?.responseRef : undefined;
+      if (responseRef) activity.setOutputArtifactRef(responseRef);
+      const finalTelemetry = activity.snapshot(finalAttemptState, completedAt);
+      const telemetryRef = this.attemptArtifacts.writeAgentTelemetry(runId, nodeKey, attemptNo, finalTelemetry);
+      this.publishAgentTelemetry(runId, nodeKey, finalTelemetry);
       if (artifactRefs) this.attemptArtifacts.mergeAttemptRefs(allArtifactRefs, artifactRefs);
+      this.attemptArtifacts.mergeAttemptRefs(allArtifactRefs, [telemetryRef]);
 
       if (result.partial) {
-        // Operator abort → carry output + transcript refs on the abort error;
+        // Operator abort → carry output + partial Agent artifact refs on the abort error;
         // executeNode persists the paused/cancelled state.
-        throw new NodeAbortedError(nodeKey, this.runControl.abortIntent(runId, nodeKey), allArtifactRefs.length > 0 ? allArtifactRefs : undefined, result.output, preparedPrompt);
+        throw new NodeAbortedError(nodeKey, abortIntent ?? "paused", allArtifactRefs.length > 0 ? allArtifactRefs : undefined, result.output);
       }
 
       // parse/schema failures are retryable while attempts remain.
@@ -666,8 +705,7 @@ export class WorkflowInterpreter {
       // Agent output is wrapped in an envelope for parity with program steps.
       return {
         output: { output: result.output },
-        artifactRefs: allArtifactRefs.length > 0 ? allArtifactRefs : artifactRefs,
-        renderedPrompt: result.prompt ?? result.renderedPrompt
+        artifactRefs: allArtifactRefs.length > 0 ? allArtifactRefs : artifactRefs
       };
     }
   }
@@ -693,12 +731,23 @@ export class WorkflowInterpreter {
     return { output: { output: result.output, exit_code: result.exitCode ?? 0 }, artifactRefs };
   }
 
-  private publishRunningAgentAttempt(runId: string, nodeKey: string, prompt: string, artifactRefs: string[]): void {
+  private publishRunningAgentAttempt(runId: string, nodeKey: string, artifactRefs: string[], attemptTelemetry: AgentAttemptTelemetry): void {
     const state = this.store.readNodeState(runId, nodeKey);
     if (!state) return;
-    state.renderedPrompt = prompt;
     state.artifactRefs = [...artifactRefs];
+    state.agentTelemetry = upsertAgentAttemptTelemetry(state.agentTelemetry, attemptTelemetry);
     this.store.writeNodeState(runId, state);
+  }
+
+  private publishAgentTelemetry(runId: string, nodeKey: string, attemptTelemetry: AgentAttemptTelemetry): void {
+    const state = this.store.readNodeState(runId, nodeKey);
+    if (!state) return;
+    state.agentTelemetry = upsertAgentAttemptTelemetry(state.agentTelemetry, attemptTelemetry);
+    this.store.writeNodeState(runId, state);
+  }
+
+  private syncAgentTelemetryFromDisk(runId: string, nodeKey: string, state: NodeExecutionState): void {
+    state.agentTelemetry = this.store.readNodeState(runId, nodeKey)?.agentTelemetry ?? state.agentTelemetry;
   }
 
   private async executeParallel(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, nodeKey: string, keyPrefix?: string): Promise<unknown> {
@@ -1239,8 +1288,6 @@ interface GuardExecutionResult {
 interface LeafResult {
   output: unknown;
   artifactRefs?: string[];
-  /** The prompt after template evaluation at runtime. */
-  renderedPrompt?: string;
 }
 
 /** Generate a locally sortable run ID: yyyyMMddHHmmss + 20 uppercase hex chars. */
@@ -1270,12 +1317,10 @@ class NodeAbortedError extends Error {
   constructor(
     public readonly nodeKey: string,
     public readonly state: "paused" | "cancelled",
-    /** Artifact refs (e.g. partial transcript) to persist on the aborted node. */
+    /** Artifact refs (e.g. partial Agent response/telemetry) to persist on the aborted node. */
     public readonly artifactRefs?: string[],
     /** Partial output captured before the abort. */
-    public readonly output?: unknown,
-    /** Rendered Agent prompt to preserve when abort overwrites node state. */
-    public readonly renderedPrompt?: string
+    public readonly output?: unknown
   ) {
     super(`Node ${nodeKey} aborted: ${state}`);
     this.name = "NodeAbortedError";

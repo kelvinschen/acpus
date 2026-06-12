@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import type { IrNodeKind } from "@acpus/core";
-import type { NodeExecutionState, NodeState } from "../../src/types.js";
+import type { AgentTelemetry, NodeExecutionState, NodeState } from "../../src/types.js";
 import type { RunStore } from "../../src/store.js";
 import { compileYaml, createTestInterpreter, waitForNodeState } from "./helper.js";
 
@@ -129,7 +129,7 @@ workflow:
       error: "boom",
       output: { stale: true },
       artifactRefs: ["artifact://runs/run/nodes/workflow/failed/stdout.log"],
-      renderedPrompt: "old prompt",
+      agentTelemetry: staleAgentTelemetry(),
       completedAt: "2025-01-01T00:01:00Z",
       startedAt: "2025-01-01T00:00:00Z",
       dynamicContext: { item: "old" }
@@ -139,7 +139,7 @@ workflow:
       error: "Aborted: paused",
       output: { stale: true },
       artifactRefs: ["artifact://runs/run/nodes/workflow/paused/stdout.log"],
-      renderedPrompt: "old prompt",
+      agentTelemetry: staleAgentTelemetry(),
       completedAt: "2025-01-01T00:01:00Z",
       startedAt: "2025-01-01T00:00:00Z",
       dynamicContext: { item: "old" }
@@ -149,7 +149,7 @@ workflow:
       error: "Aborted: cancelled",
       output: { stale: true },
       artifactRefs: ["artifact://runs/run/nodes/workflow/cancelled/stdout.log"],
-      renderedPrompt: "old prompt",
+      agentTelemetry: staleAgentTelemetry(),
       completedAt: "2025-01-01T00:01:00Z",
       startedAt: "2025-01-01T00:00:00Z",
       dynamicContext: { item: "old" }
@@ -170,10 +170,10 @@ workflow:
       expect(reset?.error).toBeUndefined();
       expect(reset?.output).toBeUndefined();
       expect(reset?.artifactRefs).toBeUndefined();
-      expect(reset?.renderedPrompt).toBeUndefined();
       expect(reset?.completedAt).toBeUndefined();
       expect(reset?.startedAt).toBeUndefined();
       expect(reset?.dynamicContext).toBeUndefined();
+      expect(reset?.agentTelemetry).toBeUndefined();
     }
   });
 
@@ -246,4 +246,23 @@ function writeNode(
     attempt: 1,
     ...extra
   });
+}
+
+function staleAgentTelemetry(): AgentTelemetry {
+  return {
+    currentAttempt: 1,
+    attempts: [{
+      attempt: 1,
+      state: "completed",
+      startedAt: "2025-01-01T00:00:00Z",
+      updatedAt: "2025-01-01T00:00:30Z",
+      context: { used: 10, size: 100, updatedAt: "2025-01-01T00:00:30Z" },
+      input: { preview: "old prompt", truncated: false, originalBytes: 10, headBytes: 10 },
+      tools: {
+        totalToolCallCount: 0,
+        droppedToolCallCount: 0,
+        recentCalls: []
+      }
+    }]
+  };
 }
