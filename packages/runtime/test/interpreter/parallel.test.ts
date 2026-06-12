@@ -299,6 +299,56 @@ workflow:
     expect(resetNodes.find((n) => n.nodeId === "queued")?.state).toBe("pending");
   });
 
+  it("keeps nested join:all fail-fast cancellation inside the inner branch scope", async () => {
+    const ir = compileYaml(`
+version: 1
+name: nested-parallel-fail-fast-scope
+workflow:
+  steps:
+    - id: outer
+      join: race
+      max_concurrency: 2
+      parallel:
+        - id: inner
+          join: all
+          parallel:
+            - id: boom
+              run: program
+              cmd: ["echo", "boom"]
+            - id: inner-slow
+              run: program
+              cmd: ["echo", "inner-slow"]
+        - id: outer-winner
+          run: program
+          cmd: ["echo", "outer-winner"]
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: {
+        boom: { failureKind: "timeout", delay: 40 },
+        "inner-slow": { stdout: "inner-slow-out", delay: 200 },
+        "outer-winner": { stdout: "outer-winner-out", delay: 5 }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+
+    await waitForNodeState(store, meta.runId, "inner-slow", "cancelled", 2000);
+
+    const nodes = store.listNodeStates(meta.runId);
+    const boom = nodes.find((n) => n.nodeId === "boom");
+    const innerSlow = nodes.find((n) => n.nodeId === "inner-slow");
+    const outerWinner = nodes.find((n) => n.nodeId === "outer-winner");
+
+    expect(boom?.state).toBe("failed");
+    expect(innerSlow?.state).toBe("cancelled");
+    expect(innerSlow?.nodeKey).toContain("branch:0.1");
+    expect(outerWinner?.state).toBe("completed");
+    expect(outerWinner?.nodeKey).toContain("branch:1");
+  });
+
   it("Run-level pause/resume re-executes paused parallel branches", async () => {
     const ir = compileYaml(`
 version: 1

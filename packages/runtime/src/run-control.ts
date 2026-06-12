@@ -1,6 +1,6 @@
 import type { AcpusIr, IrNode } from "@acpus/core";
 import type { NodeExecutionState, NodeKeyDynamic, NodeState } from "./types.js";
-import { sanitizeValue } from "./keys.js";
+import { isNodeKeyInDynamicScope } from "./keys.js";
 import { RunStore } from "./store.js";
 import {
   canTransition,
@@ -23,6 +23,10 @@ export function abortedNodeError(state: RunControlAbortState): string {
 
 export function isPausedContinuationState(state: NodeExecutionState | undefined): boolean {
   return state?.state === "pending" && state.attempt > 0 && state.error === PAUSED_ABORT_ERROR;
+}
+
+function isBelowAnyAnchor(nodeKey: string, anchorKeys: string[]): boolean {
+  return anchorKeys.some((anchorKey) => nodeKey.startsWith(`${anchorKey}/`));
 }
 
 export interface NodeRetryPreparation {
@@ -301,16 +305,16 @@ export class RunControl {
     };
     collect(node);
 
-    const scopeSegments: string[] = [];
-    if (dynamic.fanoutItemId !== undefined) scopeSegments.push(`item:${sanitizeValue(String(dynamic.fanoutItemId))}`);
-    if (dynamic.laneId !== undefined) scopeSegments.push(`lane:${sanitizeValue(String(dynamic.laneId))}`);
-    if (dynamic.loopRound !== undefined) scopeSegments.push(`round:${dynamic.loopRound}`);
+    const states = this.store.listNodeStates(runId);
+    const anchorKeys = states
+      .filter((nodeState) => descendantIds.has(nodeState.nodeId))
+      .filter((nodeState) => isNodeKeyInDynamicScope(nodeState.nodeKey, dynamic))
+      .map((nodeState) => nodeState.nodeKey);
 
-    for (const nodeState of this.store.listNodeStates(runId)) {
+    for (const nodeState of states) {
       if (nodeState.state !== "running" && nodeState.state !== "awaiting" && nodeState.state !== "pending") continue;
-      if (!descendantIds.has(nodeState.nodeId)) continue;
-      const segments = nodeState.nodeKey.split("/");
-      if (!scopeSegments.every((segment) => segments.includes(segment))) continue;
+      if (!isNodeKeyInDynamicScope(nodeState.nodeKey, dynamic)) continue;
+      if (!descendantIds.has(nodeState.nodeId) && !isBelowAnyAnchor(nodeState.nodeKey, anchorKeys)) continue;
       action(runId, nodeState.nodeKey);
     }
   }

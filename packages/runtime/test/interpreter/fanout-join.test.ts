@@ -5,7 +5,7 @@ import { RunStore } from "../../src/store.js";
 import { StubAgentExecutor } from "../support/stub-agent.js";
 import type { ExecutorAdapter, ExecutionRequest } from "../../src/executors/types.js";
 import type { ExecutorResult } from "../../src/types.js";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -254,5 +254,73 @@ workflow:
     expect(workNodes.find((n) => n.nodeKey.includes("lane:0"))?.state).toBe("failed");
     expect(workNodes.find((n) => n.nodeKey.includes("lane:1"))?.state).toBe("cancelled");
     expect(workNodes.find((n) => n.nodeKey.includes("lane:2"))?.state).toBe("cancelled");
+  });
+
+  it("join: all fail-fast cancels repeated-dynamic descendants under subworkflow prefixes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-fanout-subwf-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const childPath = join(dir, "child.yaml");
+    writeFileSync(childPath, `
+version: 1
+name: child-fanout
+workflow:
+  steps:
+    - id: child_mapped
+      fanout:
+        over: input.inner_items
+        key: ${"${{ item }}"}
+        join: all
+        do:
+          - id: child_slow
+            run: program
+            cmd: ["echo", "child-slow"]
+`);
+
+    const ir = compileYaml(`
+version: 1
+name: fanout-subworkflow-fail-fast
+workflow:
+  steps:
+    - id: mapped
+      fanout:
+        over: input.items
+        key: ${"${{ item }}"}
+        join: all
+        do:
+          - id: route
+            switch:
+              cases:
+                - when: item == "boom"
+                  do:
+                    - id: boom
+                      run: program
+                      cmd: ["echo", "boom"]
+              default:
+                do:
+                  - id: sub
+                    subworkflow: ${childPath}
+                    input:
+                      inner_items: ${"${{ input.inner_items }}"}
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: {
+        boom: { failureKind: "timeout", delay: 5 },
+        child_slow: { stdout: "child-slow-out", delay: 300 }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: { items: ["slow", "boom"], inner_items: ["inner"] } });
+    expect(meta.status).toBe("failed");
+
+    const nodes = store.listNodeStates(meta.runId);
+    expect(nodes.filter((n) => n.state === "running" || n.state === "pending" || n.state === "awaiting")).toEqual([]);
+
+    const childSlow = nodes.find((n) => n.nodeId === "child_slow");
+    expect(childSlow?.state).toBe("cancelled");
+    expect(childSlow?.nodeKey).toContain("workflow/mapped/route/sub/");
+    expect(childSlow?.nodeKey).toContain("item:slow/lane:0");
+    expect(childSlow?.nodeKey).toContain("item:inner/lane:0");
   });
 });

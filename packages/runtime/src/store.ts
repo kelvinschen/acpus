@@ -10,8 +10,9 @@ import {
   lstatSync,
   writeFileSync
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { encodeNodeKeyForFs, encodeNodeKeyForDir } from "./keys.js";
+import { ArtifactReferences } from "./artifacts.js";
 import type { AcpusIr } from "@acpus/core";
 import type { NodeExecutionState, RunCheckpoint, RunCleanItem, RunCleanResult, RunState } from "./types.js";
 
@@ -229,7 +230,7 @@ export class RunStore {
       throw new Error(`Cannot inherit node ${nodeKey}: no persisted state in source run ${sourceRunId}`);
     }
     // Rewrite artifact URIs from <sourceRunId> → <targetRunId>.
-    const inheritedRefs = sourceState.artifactRefs?.map((uri) => rewriteArtifactRunId(uri, sourceRunId, targetRunId));
+    const inheritedRefs = sourceState.artifactRefs?.map((uri) => ArtifactReferences.rewriteRunId(uri, sourceRunId, targetRunId));
     const targetState: NodeExecutionState = {
       ...sourceState,
       artifactRefs: inheritedRefs
@@ -317,25 +318,7 @@ export class RunStore {
    * URIs. Mirrors ArtifactStore's layout: <baseDir>/<runId>/artifacts/<safeKey>/<filename>.
    */
   resolveArtifactPath(uri: string): string | undefined {
-    const prefix = "artifact://runs/";
-    if (!uri.startsWith(prefix)) return undefined;
-    const parts = uri.slice(prefix.length).split("/");
-    // Format: <runId>/nodes/<safeKey>/<filename>
-    if (parts.length < 4 || parts[1] !== "nodes") return undefined;
-    const runId = parts[0];
-    // Validate runId from URI before using it in path construction
-    if (!runId || UNSAFE_RUN_ID.test(runId!)) return undefined;
-    // Reject path traversal in safeKey and filename segments
-    if (parts.slice(2).some((p) => p === ".." || p === "." || p === "")) return undefined;
-    const filename = parts[parts.length - 1];
-    const safeKey = parts.slice(2, parts.length - 1).join("/");
-    if (!runId || !filename || !safeKey) return undefined;
-    // safeKey is already the encoded form (slashes → colons) used on disk.
-    const resolved = resolve(join(this.runDir(runId!), "artifacts", safeKey, filename));
-    // Defense-in-depth: verify the resolved path stays under the run directory
-    const runDir = this.runDir(runId!);
-    if (!resolved.startsWith(runDir + "/") && resolved !== runDir) return undefined;
-    return resolved;
+    return ArtifactReferences.resolvePath(this.baseDir, uri, (runId) => !runId || UNSAFE_RUN_ID.test(runId));
   }
 
   // ─── Internal helpers ──────────────────────────────────────────
@@ -403,11 +386,4 @@ function directorySize(path: string): number {
   } catch {
     return 0;
   }
-}
-
-/** Rewrite the runId path segment of an artifact URI for inheritance. */
-function rewriteArtifactRunId(uri: string, fromRunId: string, toRunId: string): string {
-  const prefix = `artifact://runs/${fromRunId}/`;
-  if (!uri.startsWith(prefix)) return uri;
-  return `artifact://runs/${toRunId}/${uri.slice(prefix.length)}`;
 }

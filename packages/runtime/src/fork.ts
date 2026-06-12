@@ -2,6 +2,8 @@ import type { AcpusIr, IrNode } from "@acpus/core";
 import { hashIrNode } from "@acpus/core";
 import type { RunCheckpoint, RunState } from "./types.js";
 import type { RunStore } from "./store.js";
+import { isNodeKeyAtOrBelow, staticNodePathFromKey } from "./keys.js";
+import { validateInput } from "./validate-input.js";
 
 /**
  * Plan describing how a Forked Run will inherit Nodes from a prior Run.
@@ -33,17 +35,26 @@ export type BoundaryReason =
   | "non-completed"        // checkpoint's prior state was not `completed`
   | "operator-override";   // operator forced an earlier origin via override
 
-/**
- * A Node Key segment matches a dynamic-context tag (item:/lane:/round:/branch:).
- * The remaining segments form the static `nodePath` joined with "/".
- */
-const DYNAMIC_SEGMENT = /^(item|lane|round|branch):/u;
+export interface MaterializeForkOptions {
+  /** Run ID to assign to the new Forked Run. */
+  forkRunId: string;
+  /** Frozen IR snapshot for the new Forked Run. */
+  ir: AcpusIr;
+  /** Explicit input override. When omitted, the source Run input is inherited. */
+  input?: Record<string, unknown>;
+  /** Catalog ref used to start this Forked Run, when applicable. */
+  workflowRef?: string;
+  /** Absolute Workflow Spec path used to compile this Forked Run. */
+  workflowSourcePath?: string;
+}
 
-function staticNodePathFromKey(nodeKey: string): string {
-  return nodeKey
-    .split("/")
-    .filter((segment) => !DYNAMIC_SEGMENT.test(segment))
-    .join("/");
+export interface MaterializedFork {
+  /** Initial persisted state of the new Forked Run. */
+  run: RunState;
+  /** Fork Plan used to materialize the Run. */
+  plan: ForkPlan;
+  /** Validated input snapshot written for the new Forked Run. */
+  input: Record<string, unknown>;
 }
 
 /**
@@ -158,7 +169,8 @@ export function planFork(
     defaultOrigin = newIr.root.nodePath.join("/");
   }
 
-  const forkOriginNodeKey = overrideOriginNodeKey ?? defaultOrigin;
+  const defaultForkOriginNodeKey = defaultOrigin;
+  const forkOriginNodeKey = overrideOriginNodeKey ?? defaultForkOriginNodeKey;
   const reason: BoundaryReason = overrideOriginNodeKey ? "operator-override" : boundaryReason;
 
   // Validate operator override: it MUST address a Node that exists in the new
@@ -182,8 +194,7 @@ export function planFork(
     // re-executed. Independent siblings that happened to complete before the
     // override remain inherited.
     const overrideIndex = inheritedNodeKeys.findIndex((key) => {
-      const staticPath = staticNodePathFromKey(key);
-      return staticPath === overrideStatic || staticPath.startsWith(`${overrideStatic}/`);
+      return isNodeKeyAtOrBelow(key, overrideStatic);
     });
     if (overrideIndex >= 0) {
       inheritedNodeKeys.splice(overrideIndex);
@@ -193,7 +204,7 @@ export function planFork(
   return {
     sourceRunId: prior.runId,
     inheritedNodeKeys,
-    defaultForkOriginNodeKey: defaultOrigin,
+    defaultForkOriginNodeKey,
     forkOriginNodeKey,
     boundaryReason: reason
   };
@@ -214,6 +225,41 @@ export function applyFork(
   for (const nodeKey of plan.inheritedNodeKeys) {
     store.inheritNodeFromRun(forkRunId, plan.sourceRunId, nodeKey);
   }
+}
+
+/**
+ * Materialize a Forked Run on disk from a previously computed Fork Plan.
+ *
+ * This is the stateful counterpart to {@link planFork}: it creates the new Run,
+ * inherits the source input unless the operator supplied an override, copies
+ * inherited Node states and artifacts through RunStore, and persists immediate
+ * prior lineage on the new Run.
+ */
+export function materializeFork(
+  store: RunStore,
+  plan: ForkPlan,
+  options: MaterializeForkOptions
+): MaterializedFork {
+  const sourceInput = store.readInput(plan.sourceRunId) ?? {};
+  const input = validateInput(options.ir.input, options.input ?? sourceInput);
+  const run = store.initRun(options.forkRunId, options.ir, input, {
+    workflowRef: options.workflowRef,
+    workflowSourcePath: options.workflowSourcePath
+  });
+
+  applyFork(store, options.forkRunId, plan);
+
+  const meta = store.readRunMeta(options.forkRunId);
+  if (meta) {
+    meta.lineage = {
+      sourceRunId: plan.sourceRunId,
+      forkOriginNodeKey: plan.forkOriginNodeKey,
+      inheritedNodeCount: plan.inheritedNodeKeys.length
+    };
+    store.writeRunMeta(options.forkRunId, meta);
+  }
+
+  return { run, plan, input };
 }
 
 export class ForkError extends Error {

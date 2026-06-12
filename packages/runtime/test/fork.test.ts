@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { existsSync } from "node:fs";
 import { compileYaml, createTestInterpreter } from "./interpreter/helper.js";
-import { applyFork, ForkError, planFork } from "../src/fork.js";
+import { ForkError, materializeFork, planFork } from "../src/fork.js";
 
 const SPEC_V1 = `
 version: 1
@@ -42,6 +42,21 @@ workflow:
       run: program
       cmd: ["echo", "publish"]
 `;
+
+const SPEC_WITH_INPUT_DEFAULT = [
+  "version: 1",
+  "name: fork-input-demo",
+  "input:",
+  "  branch?: string = \"inherited-default\"",
+  "workflow:",
+  "  steps:",
+  "    - id: gather",
+  "      run: program",
+  "      cmd: [\"echo\", \"${{ input.branch }}\"]",
+  "      capture:",
+  "        from: stdout",
+  "        parse: text"
+].join("\n");
 
 describe("Forked Run", () => {
   const cleanups: Array<() => void> = [];
@@ -179,7 +194,55 @@ workflow:
     ).toThrow(ForkError);
   });
 
-  it("applyFork copies inherited node state and artifacts into the new Run", async () => {
+  it("materializeFork inherits source input and persists immediate lineage", async () => {
+    const ir = compileYaml(SPEC_WITH_INPUT_DEFAULT);
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: {
+        gather: { parsedOutput: "source" }
+      }
+    });
+    cleanups.push(cleanup);
+    const sourceMeta = await interpreter.start(ir, { input: { branch: "source" } });
+    expect(sourceMeta.status).toBe("completed");
+
+    const plan = planFork(store.readRunMeta(sourceMeta.runId)!, store.readCheckpoints(sourceMeta.runId), ir);
+    const materialized = materializeFork(store, plan, {
+      forkRunId: "fork-run-input-inherited",
+      ir
+    });
+
+    expect(materialized.input).toEqual({ branch: "source" });
+    expect(store.readInput("fork-run-input-inherited")).toEqual({ branch: "source" });
+    expect(store.readRunMeta("fork-run-input-inherited")?.lineage).toEqual({
+      sourceRunId: sourceMeta.runId,
+      forkOriginNodeKey: plan.forkOriginNodeKey,
+      inheritedNodeCount: plan.inheritedNodeKeys.length
+    });
+  });
+
+  it("materializeFork validates and persists explicit input overrides", async () => {
+    const ir = compileYaml(SPEC_WITH_INPUT_DEFAULT);
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: {
+        gather: { parsedOutput: "source" }
+      }
+    });
+    cleanups.push(cleanup);
+    const sourceMeta = await interpreter.start(ir, { input: { branch: "source" } });
+    expect(sourceMeta.status).toBe("completed");
+
+    const plan = planFork(store.readRunMeta(sourceMeta.runId)!, store.readCheckpoints(sourceMeta.runId), ir);
+    const materialized = materializeFork(store, plan, {
+      forkRunId: "fork-run-input-override",
+      ir,
+      input: {}
+    });
+
+    expect(materialized.input).toEqual({ branch: "inherited-default" });
+    expect(store.readInput("fork-run-input-override")).toEqual({ branch: "inherited-default" });
+  });
+
+  it("materializeFork copies inherited node state and rewrites artifact URIs", async () => {
     const ir = compileYaml(SPEC_V1);
     const { interpreter, store, cleanup } = createTestInterpreter({
       programResponses: {
@@ -195,13 +258,14 @@ workflow:
     const checkpoints = store.readCheckpoints(sourceMeta.runId);
     const plan = planFork(store.readRunMeta(sourceMeta.runId)!, checkpoints, ir);
 
-    // Initialize the fork Run, then apply.
     const forkRunId = "fork-run-1";
-    store.initRun(forkRunId, ir, {});
-    applyFork(store, forkRunId, plan);
+    materializeFork(store, plan, { forkRunId, ir });
 
     const inheritedBuild = store.readNodeState(forkRunId, "workflow/build");
     expect(inheritedBuild?.state).toBe("completed");
+    expect(inheritedBuild?.artifactRefs?.length).toBeGreaterThan(0);
+    expect(inheritedBuild?.artifactRefs?.every((uri) => uri.includes(`artifact://runs/${forkRunId}/`))).toBe(true);
+    expect(inheritedBuild?.artifactRefs?.some((uri) => uri.includes(`artifact://runs/${sourceMeta.runId}/`))).toBe(false);
     // Artifact directory must exist for the fork Run.
     const buildArtifactDir = store.artifactsDir(forkRunId, "workflow/build");
     expect(existsSync(buildArtifactDir)).toBe(true);
@@ -332,14 +396,8 @@ workflow:
     const checkpointsA = store.readCheckpoints(sourceMeta.runId);
     const planA = planFork(store.readRunMeta(sourceMeta.runId)!, checkpointsA, ir);
     const forkAId = "fork-a";
-    store.initRun(forkAId, ir, {});
-    applyFork(store, forkAId, planA);
+    materializeFork(store, planA, { forkRunId: forkAId, ir });
     const metaA = store.readRunMeta(forkAId)!;
-    metaA.lineage = {
-      sourceRunId: planA.sourceRunId,
-      forkOriginNodeKey: planA.forkOriginNodeKey,
-      inheritedNodeCount: planA.inheritedNodeKeys.length
-    };
     metaA.status = "completed";
     store.writeRunMeta(forkAId, metaA);
 
@@ -347,15 +405,7 @@ workflow:
     const planB = planFork(store.readRunMeta(forkAId)!, checkpointsB, ir);
     expect(planB.sourceRunId).toBe(forkAId);
     const forkBId = "fork-b";
-    store.initRun(forkBId, ir, {});
-    applyFork(store, forkBId, planB);
-    const metaB = store.readRunMeta(forkBId)!;
-    metaB.lineage = {
-      sourceRunId: planB.sourceRunId,
-      forkOriginNodeKey: planB.forkOriginNodeKey,
-      inheritedNodeCount: planB.inheritedNodeKeys.length
-    };
-    store.writeRunMeta(forkBId, metaB);
+    materializeFork(store, planB, { forkRunId: forkBId, ir });
     const finalB = store.readRunMeta(forkBId)!;
     expect(finalB.lineage?.sourceRunId).toBe(forkAId);
     expect(finalB.lineage?.sourceRunId).not.toBe(sourceMeta.runId);

@@ -28,7 +28,17 @@ export type {
 export type { ExecutorAdapter, ExecutionRequest } from "./executors/types.js";
 
 // ─── Keys ────────────────────────────────────────────────────────
-export { resolveNodeKey, encodeNodeKeyForFs, encodeNodeKeyForDir } from "./keys.js";
+export {
+  resolveNodeKey,
+  parseNodeKey,
+  staticNodePathFromKey,
+  isNodeKeyAtOrBelow,
+  isNodeKeyInDynamicScope,
+  withNodeKeyPrefix,
+  encodeNodeKeyForFs,
+  encodeNodeKeyForDir
+} from "./keys.js";
+export type { ParsedNodeKey } from "./keys.js";
 
 // ─── Evaluator ───────────────────────────────────────────────────
 export { ExpressionEvaluator } from "./evaluator.js";
@@ -63,5 +73,5 @@ export { ensureWorkspaceSupervisor } from "./supervisor-discovery.js";
 export { RunSupervisorClient, ForkRejectedError } from "./client.js";
 
 // ─── Fork ────────────────────────────────────────────────────────
-export { planFork, applyFork, ForkError } from "./fork.js";
-export type { ForkPlan, BoundaryReason } from "./fork.js";
+export { planFork, applyFork, materializeFork, ForkError } from "./fork.js";
+export type { ForkPlan, BoundaryReason, MaterializeForkOptions, MaterializedFork } from "./fork.js";

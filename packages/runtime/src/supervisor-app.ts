@@ -7,7 +7,7 @@ import { InputValidationFailure } from "./validate-input.js";
 import { compileWorkflow, workflowSourcePolicy } from "@acpus/core";
 import { resolve } from "node:path";
 import type { RunState } from "./types.js";
-import { ForkError, applyFork, planFork, type ForkPlan } from "./fork.js";
+import { ForkError, materializeFork, planFork, type ForkPlan } from "./fork.js";
 
 /** Pattern that matches unsafe runId characters (path traversal, separators, null). */
 const UNSAFE_RUN_ID = /(^|\/)\.\.?(\/|$)|[\\:\0]/;
@@ -559,15 +559,13 @@ export function createSupervisorApp(
       return c.json({ dryRun: true, plan });
     }
 
-    // Inherit input from prior Run unless explicitly supplied.
-    const priorInput = store.readInput(runId) ?? {};
-    const initInterpreter = newInterpreter();
-    let runState: RunState;
     const forkRunId = generateRunId();
+    let materialized: ReturnType<typeof materializeFork>;
     try {
-      runState = initInterpreter.initRun(compileResult.ir, {
-        input: body.input ?? priorInput,
-        runId: forkRunId,
+      materialized = materializeFork(store, plan, {
+        forkRunId,
+        ir: compileResult.ir,
+        input: body.input,
         workflowRef: body.workflowRef ?? priorMeta.workflowRef,
         workflowSourcePath: sourcePath ?? priorMeta.workflowSourcePath
       });
@@ -578,27 +576,12 @@ export function createSupervisorApp(
       throw error;
     }
 
-    applyFork(store, forkRunId, plan);
-
-    // Stamp lineage onto the new Run's metadata after applyFork so the
-    // inherited count is final.
-    const meta = store.readRunMeta(forkRunId);
-    if (meta) {
-      meta.lineage = {
-        sourceRunId: plan.sourceRunId,
-        forkOriginNodeKey: plan.forkOriginNodeKey,
-        inheritedNodeCount: plan.inheritedNodeKeys.length
-      };
-      store.writeRunMeta(forkRunId, meta);
-    }
-
     const interpreter = newInterpreter(forkRunId);
     interpreters.set(forkRunId, interpreter);
     lastActiveAt = Date.now();
-    const validatedInput = store.readInput(forkRunId) ?? body.input ?? priorInput;
-    startRunExecution(interpreter, compileResult.ir, validatedInput, forkRunId);
+    startRunExecution(interpreter, compileResult.ir, materialized.input, forkRunId);
 
-    return c.json({ run: runState, plan }, 201);
+    return c.json({ run: materialized.run, plan: materialized.plan }, 201);
   });
 
   // ─── Replay ──────────────────────────────────────────────────────

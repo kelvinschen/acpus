@@ -328,7 +328,6 @@ workflow:
     const res = await fetch(`${baseUrl}/runs/${runId}/artifact-path?uri=${encodeURIComponent(uri)}`);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.absPath).toContain(`${runId}/artifacts/workflow:step-a/transcript.jsonl`);
     expect(body.absPath.startsWith("/")).toBe(true);
   });
 

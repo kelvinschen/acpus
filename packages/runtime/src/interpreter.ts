@@ -5,9 +5,10 @@ import { dirname, resolve } from "node:path";
 import type { ExpressionContext, InterpreterOptions, NodeKeyDynamic, RunOptions } from "./types.js";
 import { RunStore } from "./store.js";
 import { ExpressionEvaluator } from "./evaluator.js";
-import { resolveNodeKey } from "./keys.js";
+import { resolveNodeKey, staticNodePathFromKey, withNodeKeyPrefix } from "./keys.js";
 import { canTransition, transition, createInitialNodeState } from "./state-machine.js";
 import { ArtifactStore } from "./artifacts.js";
+import { AttemptArtifactRecorder } from "./attempt-artifacts.js";
 import type { ExecutorAdapter } from "./executors/types.js";
 import { renderAgentRequestPrompt, renderAgentSessionKey } from "./executors/agent.js";
 import type { NodeExecutionState, NodeState, ReplayResult, ReplayMismatch } from "./types.js";
@@ -15,43 +16,6 @@ import { validateInput } from "./validate-input.js";
 import { RunControl, abortedNodeError, isPausedContinuationState } from "./run-control.js";
 import { randomBytes } from "node:crypto";
 import pLimit from "p-limit";
-
-function pushUnique(target: string[], refs: string[] | undefined): void {
-  if (!refs) return;
-  const seen = new Set(target);
-  for (const ref of refs) {
-    if (!seen.has(ref)) {
-      target.push(ref);
-      seen.add(ref);
-    }
-  }
-  target.sort(compareAttemptArtifactRefs);
-}
-
-function mergeStderrDiagnostics(stderr: string | undefined, diagnostics: string[]): string | undefined {
-  if (diagnostics.length === 0) return stderr;
-  const diagnosticText = diagnostics.map((line) => `[acpus] ${line}`).join("\n");
-  return stderr && stderr.length > 0 ? `${stderr}\n${diagnosticText}` : diagnosticText;
-}
-
-function compareAttemptArtifactRefs(a: string, b: string): number {
-  const left = attemptArtifactSortKey(a);
-  const right = attemptArtifactSortKey(b);
-  if (!left || !right) return 0;
-  return left.attempt - right.attempt || left.kind - right.kind;
-}
-
-function attemptArtifactSortKey(ref: string): { attempt: number; kind: number } | undefined {
-  const match = /attempt-(\d+)\.(prompt\.md|transcript\.jsonl|response\.md|stderr\.log)$/.exec(ref);
-  if (!match) return undefined;
-  const kindOrder: Record<string, number> = {
-    "prompt.md": 0,
-    "transcript.jsonl": 1,
-    "response.md": 2,
-    "stderr.log": 3
-  };
-  return { attempt: Number(match[1]), kind: kindOrder[match[2]] ?? 99 };
-}
 
 /**
  * The core IR interpreter that drives state transitions, orchestrates
@@ -63,6 +27,7 @@ export class WorkflowInterpreter {
   private readonly agentExecutor: ExecutorAdapter;
   private readonly programExecutor: ExecutorAdapter;
   private readonly artifactStore: ArtifactStore;
+  private readonly attemptArtifacts: AttemptArtifactRecorder;
   private readonly runControl: RunControl;
   private readonly maxConcurrency: number;
   private readonly allowedSourceRoots: string[];
@@ -86,6 +51,7 @@ export class WorkflowInterpreter {
     this.agentExecutor = agentExecutor;
     this.programExecutor = programExecutor;
     this.artifactStore = new ArtifactStore(store.getBaseDir());
+    this.attemptArtifacts = new AttemptArtifactRecorder(this.artifactStore);
     this.runControl = new RunControl(store);
     this.maxConcurrency = options?.maxConcurrency ?? 10;
     this.allowedSourceRoots = options?.allowedSourceRoots?.map((root) => resolve(root)) ?? [];
@@ -232,7 +198,7 @@ export class WorkflowInterpreter {
     evaluator: ExpressionEvaluator
   ): void {
     const resolved = resolveNodeKey(node.keyTemplate, dynamic);
-    const nodeKey = keyPrefix ? `${keyPrefix}/${resolved}` : resolved;
+    const nodeKey = withNodeKeyPrefix(keyPrefix, resolved);
     const rec = recorded.get(nodeKey);
 
     // A node absent from the recording was never reached on the original walk
@@ -253,7 +219,7 @@ export class WorkflowInterpreter {
         break;
       case "parallel":
         (node.children ?? []).forEach((child, index) => {
-          const branchDynamic: NodeKeyDynamic = { ...dynamic, parallelBranchId: String(index) };
+          const branchDynamic = nestedParallelBranchDynamic(dynamic, index);
           this.replayNode(child, ctx, runId, branchDynamic, keyPrefix, recorded, reached, evaluator);
         });
         break;
@@ -296,7 +262,7 @@ export class WorkflowInterpreter {
             const before = reached.size;
             this.replayNode(child, loopCtx, runId, loopDynamic, keyPrefix, recorded, reached, evaluator);
             if (reached.size > before) anyChildReached = true;
-            const childKey = `${keyPrefix ? `${keyPrefix}/` : ""}${resolveNodeKey(child.keyTemplate, loopDynamic)}`;
+            const childKey = withNodeKeyPrefix(keyPrefix, resolveNodeKey(child.keyTemplate, loopDynamic));
             lastOutput = recorded.get(childKey)?.output ?? lastOutput;
           }
           if (!anyChildReached) break;
@@ -403,7 +369,7 @@ export class WorkflowInterpreter {
     // node's stable identity (and thus the agent's acpx session name) survives
     // across loop/fanout/lane/subworkflow dynamics that are not re-derived here.
     const resolved = resolveNodeKey(node.keyTemplate, dynamic);
-    const nodeKey = overrideNodeKey ?? (keyPrefix ? `${keyPrefix}/${resolved}` : resolved);
+    const nodeKey = overrideNodeKey ?? withNodeKeyPrefix(keyPrefix, resolved);
 
     // Check if already completed (from prior run)
     const existing = this.store.readNodeState(runId, nodeKey);
@@ -621,8 +587,8 @@ export class WorkflowInterpreter {
         );
       }
 
-      const liveRefs = this.startAgentAttemptArtifacts(runId, nodeKey, attemptNo, preparedPrompt);
-      pushUnique(allArtifactRefs, liveRefs);
+      const liveRefs = this.attemptArtifacts.startAgentAttempt(runId, nodeKey, attemptNo, preparedPrompt);
+      this.attemptArtifacts.mergeAttemptRefs(allArtifactRefs, liveRefs);
       this.publishRunningAgentAttempt(runId, nodeKey, preparedPrompt, allArtifactRefs);
 
       const streamDiagnostics: string[] = [];
@@ -638,7 +604,7 @@ export class WorkflowInterpreter {
         onStream: (stream, chunk) => {
           if (stream === "stdout" && chunk.length > 0) {
             try {
-              this.appendAgentTranscript(runId, nodeKey, attemptNo, chunk);
+              this.attemptArtifacts.appendAgentTranscript(runId, nodeKey, attemptNo, chunk);
             } catch (error) {
               streamDiagnostics.push(`failed to append live agent transcript: ${error instanceof Error ? error.message : String(error)}`);
             }
@@ -650,13 +616,14 @@ export class WorkflowInterpreter {
       // when the executor exposed them. Refs flow back to executeNode via the
       // return value / thrown error (no shared mutable field).
       const artifactRefs = result.responseText !== undefined || result.stdout !== undefined || result.stderr !== undefined
-        ? this.writeAgentArtifacts(runId, nodeKey, attemptNo, {
+        ? this.attemptArtifacts.finalizeAgentAttempt(runId, nodeKey, attemptNo, {
           responseText: result.responseText,
           transcript: result.stdout,
-          stderr: mergeStderrDiagnostics(result.stderr, streamDiagnostics)
+          stderr: result.stderr,
+          diagnostics: streamDiagnostics
         })
         : result.artifactRefs;
-      if (artifactRefs) pushUnique(allArtifactRefs, artifactRefs);
+      if (artifactRefs) this.attemptArtifacts.mergeAttemptRefs(allArtifactRefs, artifactRefs);
 
       if (result.partial) {
         // Operator abort → carry output + transcript refs on the abort error;
@@ -704,7 +671,7 @@ export class WorkflowInterpreter {
 
     // Always persist stdout/stderr as artifacts (even when empty). An artifact
     // write failure is itself non-recoverable.
-    const artifactRefs = this.writeProgramArtifacts(runId, nodeKey, result.stdout ?? "", result.stderr ?? "");
+    const artifactRefs = this.attemptArtifacts.writeProgramArtifacts(runId, nodeKey, result.stdout ?? "", result.stderr ?? "");
 
     // Non-recoverable failures fail the node.
     if (result.failureKind) {
@@ -715,61 +682,12 @@ export class WorkflowInterpreter {
     return { output: { output: result.output, exit_code: result.exitCode ?? 0 }, artifactRefs };
   }
 
-  /** Write stdout.log/stderr.log artifacts; returns their URIs. */
-  private writeProgramArtifacts(runId: string, nodeKey: string, stdout: string, stderr: string): string[] {
-    const out = this.artifactStore.write(runId, nodeKey, "stdout.log", stdout);
-    const err = this.artifactStore.write(runId, nodeKey, "stderr.log", stderr);
-    return [out.uri, err.uri];
-  }
-
-  /** Write per-attempt agent response/protocol artifacts; returns their URIs. */
-  private writeAgentArtifacts(
-    runId: string,
-    nodeKey: string,
-    attemptNo: number,
-    content: { prompt?: string; responseText?: string; transcript?: string; stderr?: string }
-  ): string[] {
-    const prefix = this.agentAttemptPrefix(attemptNo);
-    const refs: string[] = [];
-    if (content.prompt !== undefined) {
-      refs.push(this.artifactStore.write(runId, nodeKey, `${prefix}.prompt.md`, content.prompt).uri);
-    }
-    if (content.responseText !== undefined) {
-      refs.push(this.artifactStore.write(runId, nodeKey, `${prefix}.response.md`, content.responseText).uri);
-    }
-    if (content.transcript !== undefined) {
-      // Transcript is pre-created and append-built while acpx runs. Finalization
-      // returns the live artifact ref without overwriting accumulated NDJSON.
-      refs.push(this.artifactStore.append(runId, nodeKey, `${prefix}.transcript.jsonl`, "").uri);
-    }
-    if (content.stderr !== undefined) {
-      refs.push(this.artifactStore.write(runId, nodeKey, `${prefix}.stderr.log`, content.stderr).uri);
-    }
-    return refs;
-  }
-
-  /** Pre-create live Agent attempt artifacts and return their refs immediately. */
-  private startAgentAttemptArtifacts(runId: string, nodeKey: string, attemptNo: number, prompt: string): string[] {
-    const prefix = this.agentAttemptPrefix(attemptNo);
-    const promptRef = this.artifactStore.write(runId, nodeKey, `${prefix}.prompt.md`, prompt);
-    const transcriptRef = this.artifactStore.create(runId, nodeKey, `${prefix}.transcript.jsonl`);
-    return [promptRef.uri, transcriptRef.uri];
-  }
-
-  private appendAgentTranscript(runId: string, nodeKey: string, attemptNo: number, chunk: string): void {
-    this.artifactStore.append(runId, nodeKey, `${this.agentAttemptPrefix(attemptNo)}.transcript.jsonl`, chunk);
-  }
-
   private publishRunningAgentAttempt(runId: string, nodeKey: string, prompt: string, artifactRefs: string[]): void {
     const state = this.store.readNodeState(runId, nodeKey);
     if (!state) return;
     state.renderedPrompt = prompt;
     state.artifactRefs = [...artifactRefs];
     this.store.writeNodeState(runId, state);
-  }
-
-  private agentAttemptPrefix(attemptNo: number): string {
-    return `attempt-${String(Math.max(0, attemptNo)).padStart(3, "0")}`;
   }
 
   private async executeParallel(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {
@@ -779,7 +697,7 @@ export class WorkflowInterpreter {
 
     if (join === "all") {
       children.forEach((child, index) => {
-        this.materializePendingNode(runId, child, { ...dynamic, parallelBranchId: String(index) }, keyPrefix);
+        this.materializePendingNode(runId, child, nestedParallelBranchDynamic(dynamic, index), keyPrefix);
       });
     }
 
@@ -787,7 +705,7 @@ export class WorkflowInterpreter {
     // Each branch resolves to { child, output } so race can identify the winner.
     const branchPromises = children.map((child, index) =>
       limit(async () => {
-        const branchDynamic: NodeKeyDynamic = { ...dynamic, parallelBranchId: String(index) };
+        const branchDynamic = nestedParallelBranchDynamic(dynamic, index);
         let output: unknown;
         try {
           output = await this.executeNode(child, { ...ctx, steps: { ...ctx.steps } }, runId, branchDynamic, keyPrefix);
@@ -982,7 +900,7 @@ export class WorkflowInterpreter {
 
   private materializePendingNode(runId: string, node: IrNode, dynamic: NodeKeyDynamic, keyPrefix?: string): void {
     const resolved = resolveNodeKey(node.keyTemplate, dynamic);
-    const nodeKey = keyPrefix ? `${keyPrefix}/${resolved}` : resolved;
+    const nodeKey = withNodeKeyPrefix(keyPrefix, resolved);
     if (this.store.readNodeState(runId, nodeKey)) return;
     this.store.writeNodeState(runId, createInitialNodeState(nodeKey, node.id, node.kind, hashIrNode(node)));
   }
@@ -1269,17 +1187,8 @@ export class WorkflowInterpreter {
 
   /** Extract the step ID from a resolved node key. The ID is the last path segment before dynamic dims. */
   private extractNodeIdFromKey(nodeKey: string): string {
-    // Key format: "workflow/step-a" or "workflow/mapped/item:0/lane:0"
-    // The node id is the second segment (after "workflow/") for top-level steps
-    // For nested, it's the segment before any "type:value" segments
-    const segments = nodeKey.split("/");
-    // Find the last segment that is NOT a "type:value" dynamic segment
-    for (let i = segments.length - 1; i >= 0; i--) {
-      if (!segments[i]!.includes(":")) {
-        return segments[i]!;
-      }
-    }
-    return segments[segments.length - 1]!;
+    const staticPath = staticNodePathFromKey(nodeKey);
+    return staticPath.split("/").at(-1) ?? nodeKey;
   }
 
   private findNodeById(root: IrNode, nodeId: string): IrNode | undefined {
@@ -1345,6 +1254,15 @@ export function generateRunId(now = new Date()): string {
     pad(now.getSeconds())
   ].join("");
   return `${timestamp}${randomBytes(10).toString("hex").toUpperCase()}`;
+}
+
+function nestedParallelBranchDynamic(dynamic: NodeKeyDynamic, branchIndex: number): NodeKeyDynamic {
+  const branchId = String(branchIndex);
+  return {
+    ...dynamic,
+    parallelBranchId:
+      dynamic.parallelBranchId === undefined ? branchId : `${dynamic.parallelBranchId}.${branchId}`
+  };
 }
 
 class NodeAbortedError extends Error {
