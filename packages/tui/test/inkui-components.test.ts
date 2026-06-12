@@ -109,7 +109,7 @@ describe("InkUI-adapted components", () => {
 
   it("turns JSON output into expandable-looking structured rows", () => {
     const text = collectText(jsonViewerRows({ result: 42, nested: { ok: true } }, 80, { initialDepth: 3 }));
-    expect(text).toContain("▾ output {2}");
+    expect(text).toContain("▾ root {2}");
     expect(text).toContain("result: 42");
     expect(text).toContain("nested {1}");
     expect(text).toContain("ok: true");

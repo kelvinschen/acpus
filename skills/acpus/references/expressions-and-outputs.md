@@ -13,14 +13,14 @@ Use raw CEL where Acpus expects an expression:
 
 - id: repair
   loop:
-    until: loop.iter > 0 && loop.last.ok
-    steps: [...]
+    until: loop.iter > 0 && loop.last.output.ok
+    do: [...]
 
 - id: review_files
   fanout:
     over: steps.plan.output.items
     key: "${{ item.id }}"
-    steps: [...]
+    do: [...]
 ```
 
 Use `${{ ... }}` inside text templates:
@@ -37,7 +37,7 @@ Do not wrap `when`, `until`, or expression-valued `over` in `${{ ... }}`.
 
 ## Step Output Shapes
 
-Agent and Program Steps expose an envelope:
+All Nodes expose their primary produced value through an `output` envelope:
 
 ```yaml
 steps.review.output.ready
@@ -45,26 +45,24 @@ steps.collect.output.report_path
 steps.collect.exit_code
 ```
 
-Other step kinds expose their produced value directly:
-
 ```yaml
 # parallel is a record keyed by branch id
-steps.review_parallel.contract.output.report_path
-steps.review_parallel.tests.output.report_path
+steps.review_parallel.output.contract.output.report_path
+steps.review_parallel.output.tests.output.report_path
 
 # fanout is an array of successful lane outputs
-steps.research_lanes[0].output.report_path
+steps.research_lanes.output[0].output.report_path
 
-# guard is direct
-steps.require_ready.matched
-steps.require_ready.action
+# guard decision fields are inside output
+steps.require_ready.output.matched
+steps.require_ready.output.action
 
-# approval is direct
-steps.human_gate.approved
-steps.human_gate.decision
+# approval decision fields are inside output
+steps.human_gate.output.approved
+steps.human_gate.output.decision
 ```
 
-Avoid `steps.<composite>.output`; composites do not add an `output` wrapper.
+Use `steps.<id>.output` consistently for every Node's primary produced value. Program Steps also expose `steps.<id>.exit_code`.
 
 ## Output Schema Shape
 

@@ -12,7 +12,7 @@ export interface JsonRowDescriptor {
 export function JSONViewer({
   data,
   width,
-  rootLabel = "output",
+  rootLabel = "root",
   initialDepth = 2,
   expandedIds,
   selectedIndex,
@@ -33,7 +33,7 @@ export function jsonViewerRows(
   data: unknown,
   width: number,
   {
-    rootLabel = "output",
+    rootLabel = "root",
     initialDepth = 2,
     expandedIds,
     selectedIndex,
@@ -56,14 +56,14 @@ export function jsonViewerRows(
     );
 }
 
-export function jsonPlainText(data: unknown, rootLabel = "output", initialDepth = Number.POSITIVE_INFINITY): string {
+export function jsonPlainText(data: unknown, rootLabel = "root", initialDepth = Number.POSITIVE_INFINITY): string {
   return jsonRowDescriptors(data, { rootLabel, initialDepth }).map((row) => row.text).join("\n");
 }
 
 export function jsonRowDescriptors(
   data: unknown,
   {
-    rootLabel = "output",
+    rootLabel = "root",
     initialDepth = 2,
     expandedIds,
     theme = acpusInkUiTheme
@@ -118,7 +118,7 @@ export function jsonRowDescriptors(
 export function jsonExpandedIdsForInitialDepth(
   data: unknown,
   {
-    rootLabel = "output",
+    rootLabel = "root",
     initialDepth = 2
   }: {
     rootLabel?: string;

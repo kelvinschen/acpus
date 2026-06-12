@@ -22,7 +22,7 @@ input:
   topic: string
 workflow:
   steps:
-    - id: child-step
+    - id: child_step
       run: program
       cmd: ["echo", "hi"]
 `);
@@ -39,7 +39,7 @@ workflow:
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
-      programResponses: { "child-step": { parsedOutput: { done: true }, stdout: "hi" } }
+      programResponses: { child_step: { parsedOutput: { done: true }, stdout: "hi" } }
     });
     cleanups.push(cleanup);
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
@@ -49,11 +49,54 @@ workflow:
 
     const sub = store.listNodeStates(meta.runId).find((n) => n.nodeId === "sub");
     expect(sub?.state).toBe("completed");
+    expect(sub?.output).toEqual({ output: {} });
 
     // The child node key is nested under the parent subworkflow node key.
-    const childNode = store.listNodeStates(meta.runId).find((n) => n.nodeId === "child-step");
+    const childNode = store.listNodeStates(meta.runId).find((n) => n.nodeId === "child_step");
     expect(childNode?.state).toBe("completed");
     expect(childNode?.nodeKey.startsWith("workflow/sub/")).toBe(true);
+  });
+
+  it("exposes the child workflow's declared outputs projection", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-subwf-output-"));
+    const childPath = join(dir, "child.yaml");
+    writeFileSync(childPath, `
+version: 1
+name: child-output
+workflow:
+  steps:
+    - id: child_step
+      run: program
+      cmd: ["echo", "{}"]
+      capture:
+        from: stdout
+        parse: json
+      output:
+        value: string
+outputs:
+  result: \${{ steps.child_step.output.value }}
+`);
+
+    const ir = compileYaml(`
+version: 1
+name: parent-output
+workflow:
+  steps:
+    - id: sub
+      subworkflow: ${childPath}
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: { child_step: { parsedOutput: { value: "projected" }, stdout: "{\"value\":\"projected\"}" } }
+    });
+    cleanups.push(cleanup);
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+
+    const sub = store.listNodeStates(meta.runId).find((n) => n.nodeId === "sub");
+    expect(sub?.output).toEqual({ output: { result: "projected" } });
   });
 
   it("fails when the child spec cannot be found", async () => {

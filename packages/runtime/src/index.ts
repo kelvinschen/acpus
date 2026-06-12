@@ -43,6 +43,7 @@ export type { ParsedNodeKey } from "./keys.js";
 
 // ─── Evaluator ───────────────────────────────────────────────────
 export { ExpressionEvaluator } from "./evaluator.js";
+export { buildCompletedStepContext, evaluateWorkflowOutputs, evaluateOutputObject, evaluateTemplatedValue } from "./workflow-outputs.js";
 
 // ─── Store ───────────────────────────────────────────────────────
 export { RunStore } from "./store.js";

@@ -45,7 +45,7 @@ workflow:
 
     - id: require_mapped
       guard:
-        when: len(steps.mapped) > 0
+        when: len(steps.mapped.output) > 0
         then: continue
         else: fail
         message: "No files were mapped for inspection"
@@ -53,7 +53,7 @@ workflow:
     - id: route
       switch:
         cases:
-          - when: len(steps.mapped) > 0
+          - when: len(steps.mapped.output) > 0
             do:
               - id: route_yes
                 run: program
@@ -87,4 +87,4 @@ workflow:
       input:
         file: ${{ steps.discover.output.files[0].path }}
 outputs:
-  approved: ${{ steps.human_gate.approved }}
+  approved: ${{ steps.human_gate.output.approved }}

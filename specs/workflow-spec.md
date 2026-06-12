@@ -14,6 +14,8 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A Workflow Spec MAY declare top-level `input`.
 - A Workflow Spec MAY declare top-level `agents`.
 - A Workflow Spec MAY declare top-level `outputs`.
+- Top-level `outputs` MUST be evaluated as the Workflow Run's public output projection after the root Workflow scope completes successfully.
+- A Workflow Run MUST fail when top-level `outputs` evaluation fails after Node execution completes.
 - A Workflow Spec MAY declare `include` steps that are expanded at compile time.
 - A started Workflow Run MUST execute a frozen IR snapshot and MUST NOT re-read mutable YAML during replay or resume.
 
@@ -103,9 +105,12 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 ### Composite Nodes
 
 - A `parallel` Node MUST contain named child Nodes.
-- A `parallel` Node MUST produce a map keyed by branch id.
+- Every Node result MUST be a step value envelope that exposes its primary produced value at `steps.<id>.output`.
+- Nested composite outputs MUST preserve child step values; for example, a parallel branch value, fanout lane value, switch selected value, or loop last value that comes from an Agent Step includes that Agent Step's own `output` field.
+- The root pipeline Node MUST persist an output envelope whose `output` field is a map keyed by direct child step id, where each value is that child step's full step value.
+- A `parallel` Node MUST produce `steps.<id>.output` as a map keyed by branch id.
 - A `parallel` Node MAY declare `join` as `all` or `race`.
-- A `parallel` Node with `join: race` MUST produce a single-key map containing only the first branch to complete; losing branches are not cancelled.
+- A `parallel` Node with `join: race` MUST produce `steps.<id>.output` as a single-key map containing only the first branch to complete; losing branches are not cancelled.
 - A `parallel` Node with `join: all` MUST fail fast on the first branch failure; when it does, its still-running or pending sibling branches in the same invocation MUST be cancelled (transition to `cancelled`) rather than left in `running`.
 - A `fanout` Node MUST declare `over` as an array or a CEL expression string.
 - A `fanout` Node MAY declare `key` as a template string (supports `${{ }}` interpolation); when absent, item index is used as identity.
@@ -118,19 +123,23 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A `fanout` Node with `join: all` MUST fail fast on the first lane failure; when it does, its still-running or pending lanes (and their descendant Nodes) MUST be cancelled (transition to `cancelled`, except Nodes already `failed`) rather than left in `running`.
 - `success_criteria.min_success` MUST define how many successful fanout lanes are required for overall fanout success after the wait strategy completes.
 - When `success_criteria.min_success` is absent, the default MUST follow the wait strategy: `all` requires all lanes, `race` requires 1, and `quorum` requires `quorum`.
-- A `fanout` Node MUST produce an array of the successful lane outputs.
+- A `fanout` Node MUST produce `steps.<id>.output` as an array of the successful lane outputs.
 - A `fanout` Node MUST expose `item`, `item_id`, and `item_index` inside its body.
 - A `switch` Node MUST select at most one branch.
 - A `switch` Node MUST evaluate cases in order.
 - A `switch` Node case MAY declare `when` as a boolean or a CEL expression string.
 - A `switch` Node MAY declare a default branch.
+- A `switch` Node MUST produce `steps.<id>.output` as the selected branch's final child step value.
 - A `loop` Node MAY declare `until` as a boolean or a CEL expression string.
 - A `loop` Node MUST declare `max_iterations`.
 - A `loop` Node MUST expose `loop.iter`.
-- A `loop` Node MAY expose prior iteration output as `loop.last`.
+- A `loop` Node MAY expose prior iteration output as `loop.last`; `loop.last` MUST be the previous iteration body final child step value, including that child's output envelope.
+- A `loop` Node MUST produce `steps.<id>.output` as the final executed iteration body's final child step value.
 - A `subworkflow` Node MUST reference another Workflow Spec path.
 - A `subworkflow` Node MUST be compiled and executed at runtime, with its `input` expressions evaluated against the current context.
 - A `subworkflow` Node MUST nest child Node keys under its own Node key, and MUST be awaited.
+- A `subworkflow` Node MUST produce `steps.<id>.output` as the referenced Workflow Spec's evaluated top-level `outputs`.
+- A `subworkflow` Node referencing a Workflow Spec with no top-level `outputs` MUST produce `{}` at `steps.<id>.output`.
 
 ### Guard Nodes
 
@@ -144,7 +153,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A Guard Node action of `continue` MUST complete the Guard Node and continue to the next Node in the current scope.
 - A Guard Node action of `fail` MUST fail the Guard Node using the rendered `guard.message` as the error when present, or `Guard '<id>' failed` when absent.
 - A Guard Node action of `complete` MUST complete the Guard Node and complete the current scope without executing later sibling Nodes in that scope.
-- A Guard Node MUST persist a structured output object containing `matched` and `action`, and MUST include `message` only when the selected action is `fail` and `guard.message` is declared.
+- A Guard Node MUST persist an output envelope whose `output` field contains `matched` and `action`, and MUST include `message` only when the selected action is `fail` and `guard.message` is declared.
 - A Guard Node inside a fanout lane or parallel branch MUST affect only that current lane or branch scope; outer composite success remains governed by that composite's join and success criteria.
 - A Guard Node at the Workflow root scope MAY complete or fail the whole Run.
 
@@ -156,7 +165,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - An Approval Gate with no `timeout` MUST wait indefinitely for a human decision (or a cancel).
 - An Approval Gate MUST enter the `awaiting` Node state while blocked on a human decision.
 - A human decision MUST be delivered through the Run Supervisor approval signal channel (`approve` or `reject`).
-- An Approval Gate MUST produce a JSON object that includes `approved`, `decision`, and `at`.
+- An Approval Gate MUST produce an output envelope whose `output` field includes `approved`, `decision`, and `at`.
 - The `decision` field MUST be one of `approved`, `rejected`, or `timeout`, and `at` MUST be the deterministic workflow clock value.
 - A human `reject` MUST complete the Node (not fail it) with `approved: false` and `decision: rejected`, so downstream Nodes can branch on `approved`.
 - An Approval Gate with `on_timeout: fail` or `on_timeout: escalate` MUST fail the Node on timeout; full `escalate` semantics are deferred.
@@ -174,7 +183,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - Expressions MUST NOT read wall-clock system time directly.
 - Expressions MUST NOT use randomness.
 - Expressions MAY read `input.*`.
-- Expressions MAY read `steps.<id>.output.*`.
+- Expressions MAY read a Node's primary produced value through `steps.<id>.output.*`.
 - Expressions MAY read `steps.<id>.exit_code`.
 - Expressions MAY read fanout and loop scope variables when in scope.
 - Expressions MAY read `run_id`.
@@ -206,3 +215,4 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - Runtime tests MUST cover Program Steps as local subprocesses.
 - Runtime tests MUST cover Program Step default fail-fast on non-allow-listed exit codes and `expect.exit_code` opt-out.
 - Runtime tests MUST cover deterministic replay.
+- Runtime tests MUST cover top-level `outputs` projection and failure when declared `outputs` cannot be evaluated.

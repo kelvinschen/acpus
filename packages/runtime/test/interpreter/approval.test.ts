@@ -34,7 +34,7 @@ workflow:
 
     const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "approve-step");
     expect(node?.state).toBe("completed");
-    expect(node?.output).toEqual({ approved: true, decision: "timeout", at: "2025-01-01T00:00:00Z" });
+    expect(node?.output).toEqual({ output: { approved: true, decision: "timeout", at: "2025-01-01T00:00:00Z" } });
   });
 
   it("resolves approval with timeout and on_timeout=reject", async () => {
@@ -62,7 +62,7 @@ workflow:
 
     const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "approve-step");
     expect(node?.state).toBe("completed");
-    expect(node?.output).toEqual({ approved: false, decision: "timeout", at: "2025-01-01T00:00:00Z" });
+    expect(node?.output).toEqual({ output: { approved: false, decision: "timeout", at: "2025-01-01T00:00:00Z" } });
   });
 
   it("fails on timeout with on_timeout=fail", async () => {
@@ -137,7 +137,7 @@ workflow:
     expect(finalMeta.status).toBe("completed");
     const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "approve-step");
     expect(node?.state).toBe("completed");
-    expect(node?.output).toEqual({ approved: true, decision: "approved", at: "2025-01-01T00:00:00Z" });
+    expect(node?.output).toEqual({ output: { approved: true, decision: "approved", at: "2025-01-01T00:00:00Z" } });
   });
 
   it("completes with approved=false (not failed) on human reject", async () => {
@@ -156,7 +156,7 @@ workflow:
     expect(finalMeta.status).toBe("completed");
     const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "approve-step");
     expect(node?.state).toBe("completed");
-    expect(node?.output).toEqual({ approved: false, decision: "rejected", at: "2025-01-01T00:00:00Z" });
+    expect(node?.output).toEqual({ output: { approved: false, decision: "rejected", at: "2025-01-01T00:00:00Z" } });
   });
 
   it("submitApproval throws when the node is not awaiting", async () => {
@@ -196,7 +196,7 @@ workflow:
     const finalMeta = await done;
     expect(finalMeta.status).toBe("completed");
     const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "approve-step");
-    expect(node?.output).toEqual({ approved: true, decision: "approved", at: "2025-01-01T00:00:00Z" });
+    expect(node?.output).toEqual({ output: { approved: true, decision: "approved", at: "2025-01-01T00:00:00Z" } });
   });
 
   it("cancelling an awaiting gate transitions it to cancelled", async () => {

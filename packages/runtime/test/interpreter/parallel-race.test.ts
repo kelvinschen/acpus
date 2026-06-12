@@ -45,7 +45,7 @@ workflow:
 
     const branches = store.listNodeStates(meta.runId).find((n) => n.nodeId === "branches");
     expect(branches?.state).toBe("completed");
-    expect(branches?.output).toEqual({ fast: { output: { who: "fast" } } });
+    expect(branches?.output).toEqual({ output: { fast: { output: { who: "fast" } } } });
   });
 
   it("join: all returns every branch keyed by id", async () => {
@@ -80,9 +80,9 @@ workflow:
     expect(meta.status).toBe("completed");
 
     const branches = store.listNodeStates(meta.runId).find((n) => n.nodeId === "branches");
-    expect(branches?.output).toEqual({
+    expect(branches?.output).toEqual({ output: {
       a: { output: { x: 1 } },
       b: { output: { x: 2 } }
-    });
+    } });
   });
 });

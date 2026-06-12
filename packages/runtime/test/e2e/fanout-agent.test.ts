@@ -50,8 +50,11 @@ workflow:
     // Fanout parent node completed with array output (3 items)
     const fanoutNode = nodes.find((n) => n.nodeId === "review-files");
     expect(fanoutNode?.state).toBe("completed");
-    expect(Array.isArray(fanoutNode?.output)).toBe(true);
-    expect(fanoutNode?.output).toHaveLength(3);
+    expect(fanoutNode?.output).toEqual({ output: [
+      { output: { verdict: "ok" } },
+      { output: { verdict: "ok" } },
+      { output: { verdict: "ok" } }
+    ] });
 
     // 3 review-one nodes, each with composite nodeKey containing item: and lane:
     const reviewNodes = nodes.filter((n) => n.nodeId === "review-one");

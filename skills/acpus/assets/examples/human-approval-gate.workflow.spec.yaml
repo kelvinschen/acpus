@@ -56,7 +56,7 @@ workflow:
     - id: after_approval
       switch:
         cases:
-          - when: steps.human_gate.approved
+          - when: steps.human_gate.output.approved
             do:
               - id: approved_result
                 run: program
@@ -78,6 +78,6 @@ workflow:
                 status: string
 
 outputs:
-  decision: ${{ steps.human_gate.decision }}
-  approved: ${{ steps.human_gate.approved }}
+  decision: ${{ steps.human_gate.output.decision }}
+  approved: ${{ steps.human_gate.output.approved }}
   brief: ${{ steps.plan_change.output.brief_path }}

@@ -212,6 +212,8 @@ export class RunControl {
     }
 
     meta.status = "running";
+    meta.output = undefined;
+    meta.error = undefined;
     meta.runAttempt++;
     meta.updatedAt = new Date().toISOString();
     this.store.writeRunMeta(runId, meta);

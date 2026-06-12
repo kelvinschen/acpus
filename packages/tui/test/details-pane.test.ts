@@ -154,7 +154,7 @@ describe("buildDetailLines", () => {
     expect(text).not.toContain("\u001b[");
   });
 
-  it("preserves executable and composite output shapes in the Output tab", () => {
+  it("preserves persisted output envelopes in the Output tab", () => {
     const agentRow = makeRow({
       instance: {
         nodeKey: "workflow/test",
@@ -185,8 +185,10 @@ describe("buildDetailLines", () => {
         state: "completed",
         attempt: 1,
         output: {
-          contract: { report_path: "/tmp/contract.md" },
-          correctness: { blocking_count: 0 }
+          output: {
+            contract: { report_path: "/tmp/contract.md" },
+            correctness: { blocking_count: 0 }
+          }
         }
       }
     });
@@ -206,11 +208,13 @@ describe("buildDetailLines", () => {
     expect(parallelOutput?.richContent).toEqual({
       kind: "json",
       data: {
-        contract: { report_path: "/tmp/contract.md" },
-        correctness: { blocking_count: 0 }
+        output: {
+          contract: { report_path: "/tmp/contract.md" },
+          correctness: { blocking_count: 0 }
+        }
       }
     });
-    expect(formatDetailLinesPlainText(parallelOutput?.lines ?? [])).not.toContain("\"output\":");
+    expect(formatDetailLinesPlainText(parallelOutput?.lines ?? [])).toContain("\"output\":");
   });
 
   it("renders Guard definitions with wrapped conditions and optional message", () => {
@@ -235,7 +239,7 @@ describe("buildDetailLines", () => {
         kind: "guard",
         state: "completed",
         attempt: 1,
-        output: { matched: true, action: "continue" }
+        output: { output: { matched: true, action: "continue" } }
       }
     });
 

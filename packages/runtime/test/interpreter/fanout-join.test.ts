@@ -113,7 +113,7 @@ workflow:
     const fanout = store.listNodeStates(meta.runId).find((n) => n.nodeId === "mapped");
     expect(fanout?.state).toBe("completed");
     // Output is the array of successful lane outputs (one success).
-    expect(fanout?.output).toEqual([{ output: { ok: true } }]);
+    expect(fanout?.output).toEqual({ output: [{ output: { ok: true } }] });
   });
 
   it("join: race completes on the first lane and outputs a single success (default min_success = 1)", async () => {
@@ -148,8 +148,7 @@ workflow:
 
     const fanout = store.listNodeStates(meta.runId).find((n) => n.nodeId === "mapped");
     expect(fanout?.state).toBe("completed");
-    expect(Array.isArray(fanout?.output)).toBe(true);
-    expect((fanout?.output as unknown[]).length).toBe(1);
+    expect(fanout?.output).toEqual({ output: [{ output: { who: "fast" } }] });
   });
 
   it("join: quorum completes once the quorum count of lanes settle (default min_success = quorum)", async () => {
@@ -185,7 +184,7 @@ workflow:
     const fanout = store.listNodeStates(meta.runId).find((n) => n.nodeId === "mapped");
     expect(fanout?.state).toBe("completed");
     // Quorum of 2 successful lanes satisfies the default min_success.
-    expect((fanout?.output as unknown[]).length).toBeGreaterThanOrEqual(2);
+    expect(fanout?.output).toEqual({ output: [{ output: { ok: true } }, { output: { ok: true } }] });
   });
 
   it("join: all fails fast and cancels still-running nodes across other lanes", async () => {

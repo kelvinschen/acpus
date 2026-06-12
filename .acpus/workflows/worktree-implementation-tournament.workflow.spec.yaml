@@ -205,22 +205,22 @@ workflow:
         Candidate verification and artifacts:
         - candidate-a:
           - implementation report: ${{ steps.setup_tournament.output.output_dir }}/candidate-a-implementation.md
-          - patch: ${{ steps.implement_candidates[0].output.patch_path }}
-          - verify log: ${{ steps.implement_candidates[0].output.verify_log_path }}
-          - verify_exit_code: ${{ steps.implement_candidates[0].output.verify_exit_code }}
-          - ok: ${{ steps.implement_candidates[0].output.ok }}
+          - patch: ${{ steps.implement_candidates.output[0].output.patch_path }}
+          - verify log: ${{ steps.implement_candidates.output[0].output.verify_log_path }}
+          - verify_exit_code: ${{ steps.implement_candidates.output[0].output.verify_exit_code }}
+          - ok: ${{ steps.implement_candidates.output[0].output.ok }}
         - candidate-b:
           - implementation report: ${{ steps.setup_tournament.output.output_dir }}/candidate-b-implementation.md
-          - patch: ${{ steps.implement_candidates[1].output.patch_path }}
-          - verify log: ${{ steps.implement_candidates[1].output.verify_log_path }}
-          - verify_exit_code: ${{ steps.implement_candidates[1].output.verify_exit_code }}
-          - ok: ${{ steps.implement_candidates[1].output.ok }}
+          - patch: ${{ steps.implement_candidates.output[1].output.patch_path }}
+          - verify log: ${{ steps.implement_candidates.output[1].output.verify_log_path }}
+          - verify_exit_code: ${{ steps.implement_candidates.output[1].output.verify_exit_code }}
+          - ok: ${{ steps.implement_candidates.output[1].output.ok }}
         - candidate-c:
           - implementation report: ${{ steps.setup_tournament.output.output_dir }}/candidate-c-implementation.md
-          - patch: ${{ steps.implement_candidates[2].output.patch_path }}
-          - verify log: ${{ steps.implement_candidates[2].output.verify_log_path }}
-          - verify_exit_code: ${{ steps.implement_candidates[2].output.verify_exit_code }}
-          - ok: ${{ steps.implement_candidates[2].output.ok }}
+          - patch: ${{ steps.implement_candidates.output[2].output.patch_path }}
+          - verify log: ${{ steps.implement_candidates.output[2].output.verify_log_path }}
+          - verify_exit_code: ${{ steps.implement_candidates.output[2].output.verify_exit_code }}
+          - ok: ${{ steps.implement_candidates.output[2].output.ok }}
 
         Read each implementation report, patch, and verify log before judging.
 

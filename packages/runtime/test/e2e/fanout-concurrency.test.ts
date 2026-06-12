@@ -41,7 +41,13 @@ workflow:
     const fanoutNode = store.listNodeStates(meta.runId).find((n) => n.nodeId === "map-items");
     expect(fanoutNode?.state).toBe("completed");
     // outputMerge: "array" — should have 4 results
-    expect(Array.isArray(fanoutNode?.output)).toBe(true);
-    expect(fanoutNode?.output).toHaveLength(4);
+    expect(fanoutNode?.output).toEqual({
+      output: [
+        { output: { done: true } },
+        { output: { done: true } },
+        { output: { done: true } },
+        { output: { done: true } }
+      ]
+    });
   });
 });

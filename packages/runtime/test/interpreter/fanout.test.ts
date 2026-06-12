@@ -81,7 +81,7 @@ workflow:
     const fanoutNode = store.listNodeStates(meta.runId).find((n) => n.nodeId === "map-items");
     expect(fanoutNode?.state).toBe("completed");
     // outputMerge: "array"
-    expect(Array.isArray(fanoutNode?.output)).toBe(true);
+    expect(fanoutNode?.output).toEqual({ output: [{ output: { done: true } }, { output: { done: true } }] });
   });
 
   it("retry preserves a fanout lane's composite node key (stable identity)", async () => {

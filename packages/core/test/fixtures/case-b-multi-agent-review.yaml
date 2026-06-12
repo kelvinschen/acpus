@@ -51,7 +51,7 @@ workflow:
 
     - id: aggregate
       run: program
-      cmd: ["acpus-tool", "vote", "--input", "${{ steps.reviews }}"]
+      cmd: ["acpus-tool", "vote", "--input", "${{ steps.reviews.output }}"]
       capture:
         from: stdout
         parse: json
@@ -68,7 +68,7 @@ workflow:
     - id: post_comment
       switch:
         cases:
-          - when: steps.gate.approved
+          - when: steps.gate.output.approved
             do:
               - id: do_comment
                 run: program

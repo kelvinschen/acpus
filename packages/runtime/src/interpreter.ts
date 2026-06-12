@@ -14,6 +14,7 @@ import { renderAgentRequestPrompt, renderAgentSessionKey } from "./executors/age
 import type { NodeExecutionState, NodeState, ReplayResult, ReplayMismatch } from "./types.js";
 import { validateInput } from "./validate-input.js";
 import { RunControl, abortedNodeError, isPausedContinuationState } from "./run-control.js";
+import { evaluateTemplatedValue, evaluateWorkflowOutputs } from "./workflow-outputs.js";
 import { randomBytes } from "node:crypto";
 import pLimit from "p-limit";
 
@@ -86,7 +87,10 @@ export class WorkflowInterpreter {
   async runToCompletion(ir: AcpusIr, opts: RunOptions, runId: string): Promise<import("./types.js").RunState> {
     const meta = this.store.readRunMeta(runId)!;
     try {
-      await this.executeNode(ir.root, this.buildContext(opts.input, runId), runId, {});
+      const ctx = this.buildContext(opts.input, runId);
+      await this.executeNode(ir.root, ctx, runId, {});
+      meta.output = evaluateWorkflowOutputs(ir, ctx, this.evaluator);
+      meta.error = undefined;
       meta.status = "completed";
     } catch (error) {
       const rootState = this.store.readNodeState(runId, resolveNodeKey(ir.root.keyTemplate));
@@ -96,7 +100,14 @@ export class WorkflowInterpreter {
         meta.status = "cancelled";
       } else {
         meta.status = "failed";
-        void error;
+        meta.output = undefined;
+        meta.error = errorMessage(error);
+        if (rootState?.state === "completed") {
+          rootState.state = "failed";
+          rootState.error = meta.error;
+          rootState.completedAt = new Date().toISOString();
+          this.store.writeNodeState(runId, rootState);
+        }
       }
     } finally {
       // Clean up per-runId scheduling guards when the run settles,
@@ -555,12 +566,12 @@ export class WorkflowInterpreter {
       try {
         await this.executeNode(child, ctx, runId, dynamic, keyPrefix);
       } catch (error) {
-        if (error instanceof ScopeCompleted) return error.output;
+        if (error instanceof ScopeCompleted) return { output: error.output };
         throw error;
       }
     }
     // Pipeline output: map of step outputs
-    return { ...ctx.steps };
+    return { output: { ...ctx.steps } };
   }
 
   private async executeAgent(node: IrNode, ctx: ExpressionContext, runId: string, signal: AbortSignal, nodeKey: string, continuation?: boolean): Promise<LeafResult> {
@@ -728,7 +739,7 @@ export class WorkflowInterpreter {
         branchPromises.forEach((p) => void p.catch(() => undefined));
         const mapOutput: Record<string, unknown> = { [winner.child.id]: winner.output };
         ctx.steps[winner.child.id] = winner.output;
-        return mapOutput;
+        return { output: mapOutput };
       } catch (error) {
         if (!(error instanceof NodeAbortedError)) {
           this.runControl.cancelDescendantsInScope(runId, nodeKey);
@@ -759,7 +770,7 @@ export class WorkflowInterpreter {
       mapOutput[child.id] = output;
       ctx.steps[child.id] = output;
     }
-    return mapOutput;
+    return { output: mapOutput };
   }
 
   private async executeFanout(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, nodeKey: string, keyPrefix?: string): Promise<unknown> {
@@ -861,7 +872,7 @@ export class WorkflowInterpreter {
     }
 
     // outputMerge: "array" of successful lane outputs.
-    return successes.map((r) => r.output);
+    return { output: successes.map((r) => r.output) };
   }
 
   /**
@@ -917,11 +928,11 @@ export class WorkflowInterpreter {
             try {
               lastOutput = await this.executeNode(child, ctx, runId, dynamic, keyPrefix);
             } catch (error) {
-              if (error instanceof ScopeCompleted) return error.output;
+              if (error instanceof ScopeCompleted) return { output: error.output };
               throw error;
             }
           }
-          return lastOutput;
+          return { output: lastOutput };
         }
       } else {
         // Default branch (no when condition)
@@ -930,11 +941,11 @@ export class WorkflowInterpreter {
           try {
             lastOutput = await this.executeNode(child, ctx, runId, dynamic, keyPrefix);
           } catch (error) {
-            if (error instanceof ScopeCompleted) return error.output;
+            if (error instanceof ScopeCompleted) return { output: error.output };
             throw error;
           }
         }
-        return lastOutput;
+        return { output: lastOutput };
       }
     }
 
@@ -965,14 +976,14 @@ export class WorkflowInterpreter {
         try {
           lastOutput = await this.executeNode(child, loopCtx, runId, loopDynamic, keyPrefix);
         } catch (error) {
-          if (error instanceof ScopeCompleted) return error.output;
+          if (error instanceof ScopeCompleted) return { output: error.output };
           throw error;
         }
       }
     }
 
     // outputMerge: "last"
-    return lastOutput;
+    return { output: lastOutput };
   }
 
   private executeGuard(node: IrNode, ctx: ExpressionContext): GuardExecutionResult {
@@ -986,16 +997,16 @@ export class WorkflowInterpreter {
       throw new Error(`guard node ${node.id}: action must be continue, fail, or complete`);
     }
 
-    const output: GuardOutput = { matched, action };
+    const guardOutput: GuardOutput = { matched, action };
 
     if (action === "fail") {
       const messageTemplate = node.metadata.message;
       const message = typeof messageTemplate === "string" ? this.evaluator.evaluateTemplate(messageTemplate, ctx) : undefined;
-      if (message !== undefined) output.message = message;
-      throw new GuardFailureError(message ?? `Guard '${node.id}' failed`, output);
+      if (message !== undefined) guardOutput.message = message;
+      throw new GuardFailureError(message ?? `Guard '${node.id}' failed`, { output: guardOutput });
     }
 
-    return { output, completeScope: action === "complete" };
+    return { output: { output: guardOutput }, completeScope: action === "complete" };
   }
 
   private async executeApproval(node: IrNode, ctx: ExpressionContext, runId: string, signal: AbortSignal, nodeKey: string): Promise<unknown> {
@@ -1030,9 +1041,9 @@ export class WorkflowInterpreter {
             // `approve`/`reject` resolve; `fail`/`escalate` fail the node
             // (escalate has no runtime channel yet — see roadmap).
             if (onTimeout === "approve") {
-              resolve({ approved: true, decision: "timeout", at });
+              resolve({ output: { approved: true, decision: "timeout", at } });
             } else if (onTimeout === "reject") {
-              resolve({ approved: false, decision: "timeout", at });
+              resolve({ output: { approved: false, decision: "timeout", at } });
             } else {
               reject(new Error(`Approval timed out after ${timeout} (on_timeout: ${onTimeout ?? "fail"})`));
             }
@@ -1053,7 +1064,7 @@ export class WorkflowInterpreter {
       // cleanup().
       this.approvalResolvers.set(resolverKey, (approved: boolean) => {
         cleanup();
-        resolve({ approved, decision: approved ? "approved" : "rejected", at });
+        resolve({ output: { approved, decision: approved ? "approved" : "rejected", at } });
       });
     });
   }
@@ -1107,7 +1118,7 @@ export class WorkflowInterpreter {
     // template string.
     const childInput: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(inputSpec ?? {})) {
-      childInput[key] = this.evaluateInputValue(value, ctx);
+      childInput[key] = evaluateTemplatedValue(value, ctx, this.evaluator);
     }
 
     // Validate subworkflow input against the child IR's compiled input schema.
@@ -1119,7 +1130,7 @@ export class WorkflowInterpreter {
     try {
       const childCtx = this.buildContext(validatedChildInput, runId);
       await this.executeNode(compiled.ir.root, childCtx, runId, dynamic, nodeKey);
-      return { ...childCtx.steps };
+      return { output: evaluateWorkflowOutputs(compiled.ir, childCtx, this.evaluator) };
     } finally {
       this.subworkflowStack.delete(childAbs);
     }
@@ -1129,16 +1140,6 @@ export class WorkflowInterpreter {
     if (this.allowedSourceRoots.length === 0) return;
     if (this.allowedSourceRoots.some((root) => path === root || path.startsWith(root + "/"))) return;
     throw new Error(message);
-  }
-
-  /** Evaluate a subworkflow input value, preserving native type for single expressions. */
-  private evaluateInputValue(value: unknown, ctx: ExpressionContext): unknown {
-    if (typeof value !== "string") return value;
-    const single = value.match(/^\s*\$\{\{(.+)\}\}\s*$/s);
-    if (single) {
-      return this.evaluator.evaluateExpression(single[1]!.trim(), ctx);
-    }
-    return this.evaluator.evaluateTemplate(value, ctx);
   }
 
   // ─── Helpers ────────────────────────────────────────────────────
@@ -1230,7 +1231,7 @@ interface GuardOutput {
 }
 
 interface GuardExecutionResult {
-  output: GuardOutput;
+  output: { output: GuardOutput };
   completeScope: boolean;
 }
 
@@ -1288,8 +1289,12 @@ class ScopeCompleted extends Error {
   }
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 class GuardFailureError extends Error {
-  constructor(message: string, public readonly output: GuardOutput) {
+  constructor(message: string, public readonly output: { output: GuardOutput }) {
     super(message);
     this.name = "GuardFailureError";
   }

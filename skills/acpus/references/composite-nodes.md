@@ -1,6 +1,6 @@
 # Composite Nodes
 
-Use this when authoring workflows with control flow. Composite nodes return direct values; they do not add a `.output` envelope.
+Use this when authoring workflows with control flow. Composite nodes expose their primary produced value through `steps.<id>.output`, the same as executable nodes.
 
 ## Guard
 
@@ -21,26 +21,26 @@ Use this when authoring workflows with control flow. Composite nodes return dire
 
 ## Loop
 
-`until` is raw CEL and is checked after at least one body iteration. `loop.iter` is zero-based; `loop.last` is the previous body output.
+`until` is raw CEL and is checked after at least one body iteration. `loop.iter` is zero-based; `loop.last` is the previous body step value.
 
 ```yaml
 - id: repair_until_green
   loop:
     max_iterations: 4
-    until: loop.iter > 0 && loop.last.ok
-    steps:
+    until: loop.iter > 0 && loop.last.output.ok
+    do:
       - id: attempt
-        agent:
-          use: codex
-          prompt: "Repair ${{ input.target }}."
-          output:
-            ok: boolean
-            patch_path: string
+        run: agent
+        use: codex
+        prompt: "Repair ${{ input.target }}."
+        output:
+          ok: boolean
+          patch_path: string
 ```
 
 ## Fanout
 
-`over` is raw CEL when it references another output. `key` is a template. The body can use `item`, `item_id`, and `item_index`. The result is an array of successful lane outputs.
+`over` is raw CEL when it references another output. `key` is a template. The body can use `item`, `item_id`, and `item_index`. `steps.<fanout_id>.output` is an array of successful lane outputs.
 
 ```yaml
 - id: review_files
@@ -48,31 +48,33 @@ Use this when authoring workflows with control flow. Composite nodes return dire
     over: steps.plan.output.files
     key: "${{ item.path }}"
     join: all
-    steps:
+    do:
       - id: review
-        agent:
-          use: codex
-          prompt: "Review ${{ item.path }}."
-          output:
-            report_path: string
-            finding_count: integer
+        run: agent
+        use: codex
+        prompt: "Review ${{ item.path }}."
+        output:
+          report_path: string
+          finding_count: integer
 ```
 
 Use `quorum` and `success_criteria.min_success` only when partial success is acceptable.
 
 ## Parallel
 
-Parallel output is a record keyed by branch id. With `join: all`, every branch must succeed. Use fail-fast behavior only when later branches are not worth completing after one failure.
+`steps.<parallel_id>.output` is a record keyed by branch id. With `join: all`, every branch must succeed. Use fail-fast behavior only when later branches are not worth completing after one failure.
 
 ```yaml
 - id: checks
+  join: all
   parallel:
-    join: all
-    branches:
-      - id: review
-        steps: [...]
-      - id: test
-        steps: [...]
+    - id: review
+      run: agent
+      use: codex
+      prompt: "Review ${{ input.target }}."
+    - id: test
+      run: program
+      cmd: ["pnpm", "test"]
 ```
 
 ## Switch

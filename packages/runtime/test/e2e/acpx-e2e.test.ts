@@ -524,15 +524,14 @@ workflow:
       const skippedGuard = nodes.find((n) => n.nodeId === "skip_lane" && n.nodeKey.includes("item:skip"));
       expect(skippedGuard?.state).toBe("completed");
       expect(skippedGuard?.output).toEqual({
-        matched: true,
-        action: "complete"
+        output: { matched: true, action: "complete" }
       });
       expect(nodes.some((n) => n.nodeId === "work" && n.nodeKey.includes("item:skip"))).toBe(false);
 
       // 5. Fanout node completed with 3 lane outputs (2 work lanes + 1 guard-completed lane)
       const fanoutNode = nodes.find((n) => n.nodeId === "composite");
       expect(fanoutNode?.state).toBe("completed");
-      expect(fanoutNode?.output).toHaveLength(3);
+      expect(fanoutNode?.output).toEqual({ output: [expect.anything(), expect.anything(), expect.anything()] });
     }, 30_000);
   });
 });

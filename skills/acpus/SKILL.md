@@ -69,7 +69,7 @@ Use Acpus as the durable local runner underneath the user's preferred agent. Kee
 - Avoid `bash -lc` in Program Steps and verification wrappers. Use `bash -c` when shell semantics are required so the step inherits the runner environment instead of rebuilding it as a login shell.
 - Approval gates are for humans. Agents may prepare approval context but must not approve on the human's behalf.
 - Use raw CEL in `when`, `until`, and expression-valued `over`; use `${{ ... }}` interpolation inside prompts, command strings, keys, and messages.
-- Only Agent Steps and Program Steps expose `steps.<id>.output`. Composite, guard, and approval outputs are direct values.
+- Every Node exposes its primary produced value through `steps.<id>.output`. Program Steps also expose `steps.<id>.exit_code`.
 - Ask before destructive workspace changes, publishing, pushing git refs, applying patches, or running external side-effect commands.
 
 ## Recovery Loop

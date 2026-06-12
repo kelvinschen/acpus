@@ -294,10 +294,10 @@ workflow:
         - Patch: ${{ steps.collect_context.output.patch_path }}
 
         Reports:
-        - Contract: ${{ steps.adversarial_reviews.contract.output.report_path }}
-        - Correctness: ${{ steps.adversarial_reviews.correctness.output.report_path }}
-        - Tests: ${{ steps.adversarial_reviews.tests.output.report_path }}
-        - Maintainability: ${{ steps.adversarial_reviews.maintainability.output.report_path }}
+        - Contract: ${{ steps.adversarial_reviews.output.contract.output.report_path }}
+        - Correctness: ${{ steps.adversarial_reviews.output.correctness.output.report_path }}
+        - Tests: ${{ steps.adversarial_reviews.output.tests.output.report_path }}
+        - Maintainability: ${{ steps.adversarial_reviews.output.maintainability.output.report_path }}
 
         Start with one verdict: `ship`, `ship_with_fixes`, or `block`.
         Include blocking, high, medium, and needs-verification sections, concrete

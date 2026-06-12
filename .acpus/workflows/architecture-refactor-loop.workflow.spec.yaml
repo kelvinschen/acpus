@@ -465,8 +465,13 @@ workflow:
           run_id = sys.argv[1]
           state_path = pathlib.Path(".acpus/state/runs") / run_id / "nodes" / "workflow:architecture_loop.json"
           state = json.loads(state_path.read_text(encoding="utf-8"))
-          loop_output = state.get("output") or {}
-          verdict = loop_output.get("output", loop_output) if isinstance(loop_output, dict) else {}
+          output = state["output"]
+          if not isinstance(output, dict) or not isinstance(output.get("output"), dict):
+              raise TypeError("architecture_loop node output does not match the required envelope shape")
+          inner = output["output"]
+          if not isinstance(inner.get("output"), dict):
+              raise TypeError("architecture_loop final child output does not match the required envelope shape")
+          verdict = inner["output"]
           print(json.dumps({
               "done": bool(verdict.get("done")),
               "regression_ok": bool(verdict.get("regression_ok")),

@@ -62,6 +62,7 @@ workflow:
     expect(fastPath?.state).toBe("completed");
     expect(slowPath).toBeUndefined(); // should not execute
     expect(defaultPath).toBeUndefined(); // should not execute
+    expect(nodes.find((n) => n.nodeId === "route")?.output).toEqual({ output: { output: { speed: "fast" } } });
   });
 
   it("falls through to default branch", async () => {
@@ -108,5 +109,6 @@ workflow:
 
     expect(fastPath).toBeUndefined();
     expect(defaultPath?.state).toBe("completed");
+    expect(nodes.find((n) => n.nodeId === "route")?.output).toEqual({ output: { output: { speed: "default" } } });
   });
 });

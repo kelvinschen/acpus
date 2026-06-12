@@ -654,14 +654,10 @@ export function createSupervisorApp(
     const runId = c.req.param("runId");
     const meta = store.readRunMeta(runId);
     if (!meta) return c.json({ error: "Run not found" }, 404);
-    const nodes = store.listNodeStates(runId);
-    const output: Record<string, unknown> = {};
-    for (const node of nodes) {
-      if (node.state === "completed" && node.output !== undefined) {
-        output[node.nodeId] = node.output;
-      }
-    }
-    return c.json({ status: meta.status, output });
+    const output = meta.status === "completed" ? (meta.output ?? {}) : {};
+    const body: { status: typeof meta.status; output: Record<string, unknown>; error?: string } = { status: meta.status, output };
+    if (meta.status === "failed" && meta.error) body.error = meta.error;
+    return c.json(body);
   });
 
   return {

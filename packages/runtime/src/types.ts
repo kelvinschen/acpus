@@ -110,6 +110,10 @@ export interface RunState {
   updatedAt: string;
   /** Run generation: starts at 1 and increments on each Run-level retry. */
   runAttempt: number;
+  /** Evaluated top-level Workflow outputs, persisted when the Run completes. */
+  output?: Record<string, unknown>;
+  /** Run-level error message, set when the Run fails outside a single leaf output. */
+  error?: string;
   /** Lineage to the prior Run this Run was forked from (set on Forked Runs). */
   lineage?: RunLineage;
   /** Node states included when inspecting a specific run (GET /runs/:runId) */

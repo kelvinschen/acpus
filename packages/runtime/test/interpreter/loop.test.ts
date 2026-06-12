@@ -40,6 +40,7 @@ workflow:
 
     const loopNode = store.listNodeStates(meta.runId).find((n) => n.nodeId === "iterate");
     expect(loopNode?.state).toBe("completed");
+    expect(loopNode?.output).toEqual({ output: { output: { result: "ok" } } });
 
     // Should have exactly 3 step executions (one per iteration with unique loopRound keys)
     const stepNodes = store.listNodeStates(meta.runId).filter((n) => n.nodeId === "step");
@@ -81,5 +82,43 @@ workflow:
     // Should have 2 step executions with different loop rounds
     const stepNodes = store.listNodeStates(meta.runId).filter((n) => n.nodeId === "step");
     expect(stepNodes.length).toBe(2);
+  });
+
+  it("exposes the previous body step envelope through loop.last", async () => {
+    const ir = compileYaml(`
+version: 1
+name: loop-last-envelope-test
+agents:
+  coder:
+    type: command
+    use: "echo stub"
+workflow:
+  steps:
+    - id: iterate
+      loop:
+        until: loop.last.output.ok
+        max_iterations: 3
+        do:
+          - id: step
+            run: agent
+            use: coder
+            prompt: "Iterate"
+            output:
+              ok: boolean
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      agentResponses: { step: { sequence: [{ output: { ok: false } }, { output: { ok: true } }] } }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+
+    const stepNodes = store.listNodeStates(meta.runId).filter((n) => n.nodeId === "step");
+    expect(stepNodes).toHaveLength(2);
+    expect(store.listNodeStates(meta.runId).find((n) => n.nodeId === "iterate")?.output).toEqual({
+      output: { output: { ok: true } }
+    });
   });
 });

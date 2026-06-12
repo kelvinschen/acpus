@@ -36,7 +36,9 @@ describe("Supervisor HTTP API", () => {
     tmpDir = mkdtempSync(join(tmpdir(), "acpus-supervisor-"));
     store = new RunStore(join(tmpDir, "runs"));
     const agentExecutor = new StubAgentExecutor({
-      "step-a": { output: { result: "done" }, delay: 10 }
+      "step-a": { output: { result: "done" }, delay: 10 },
+      internal: { output: { result: "done" }, delay: 10 },
+      repeated: { output: { result: "lane" }, delay: 10 }
     });
     const programExecutor = new MockProgramExecutor({
       included: { stdout: "included" }
@@ -414,6 +416,95 @@ workflow:
     expect(data.output).toBeDefined();
   });
 
+  it("returns only declared workflow outputs via GET /runs/:runId/output", async () => {
+    const spec = `
+version: 1
+name: projected-output-test
+agents:
+  coder:
+    type: command
+    use: "echo stub"
+workflow:
+  steps:
+    - id: internal
+      run: agent
+      use: coder
+      prompt: "Internal"
+    - id: mapped
+      fanout:
+        over: ["a", "b"]
+        do:
+          - id: repeated
+            run: agent
+            use: coder
+            prompt: "Repeated \${{ item }}"
+outputs:
+  result: \${{ steps.internal.output.result }}
+  lane_count: \${{ len(steps.mapped.output) }}
+`;
+    const createRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec, input: {} })
+    });
+    const { runId } = await createRes.json();
+
+    expect(await pollRunStatus(runId)).toBe("completed");
+    const res = await fetch(`${baseUrl}/runs/${runId}/output`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.output).toEqual({ result: "done", lane_count: 2 });
+    expect(store.readRunMeta(runId)?.output).toEqual({ result: "done", lane_count: 2 });
+    expect(data.output.internal).toBeUndefined();
+    expect(data.output.repeated).toBeUndefined();
+  });
+
+  it("fails the run when declared workflow outputs cannot be evaluated", async () => {
+    const spec = `
+version: 1
+name: invalid-output-test
+agents:
+  coder:
+    type: command
+    use: "echo stub"
+workflow:
+  steps:
+    - id: internal
+      run: agent
+      use: coder
+      prompt: "Internal"
+outputs:
+  missing: \${{ steps.internal.output.result.missing }}
+`;
+    const createRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec, input: {} })
+    });
+    const { runId } = await createRes.json();
+
+    expect(await pollRunStatus(runId)).toBe("failed");
+    const res = await fetch(`${baseUrl}/runs/${runId}/output`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.status).toBe("failed");
+    expect(data.output).toEqual({});
+    expect(data.error).toEqual(expect.any(String));
+    expect(data.error).toContain("Workflow output 'missing' failed to evaluate:");
+    const meta = store.readRunMeta(runId);
+    expect(meta?.error).toEqual(data.error);
+    expect(meta?.output).toBeUndefined();
+    const root = store.readNodeState(runId, "workflow");
+    expect(root?.state).toBe("failed");
+    expect(root?.error).toEqual(data.error);
+
+    const retryRes = await fetch(`${baseUrl}/runs/${runId}/retry`, { method: "POST" });
+    expect(retryRes.status).toBe(200);
+    expect(await pollRunStatus(runId)).toBe("failed");
+    expect(store.readNodeState(runId, "workflow")?.attempt).toBe(2);
+    expect(store.readNodeState(runId, "workflow/internal")?.attempt).toBe(1);
+  });
+
   it("registers the interpreter before execution so control routes reach a running run", async () => {
     const createRes = await fetch(`${baseUrl}/runs`, {
       method: "POST",
@@ -503,6 +594,37 @@ workflow:
     expect(pauseRes.status).toBe(200);
     const data = await pauseRes.json();
     expect(data.status).toBe("paused");
+  });
+
+  it("returns empty output for running, paused, and cancelled runs", async () => {
+    const runningRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: SLOW_SPEC, input: {} })
+    });
+    const { runId: runningRunId } = await runningRes.json();
+    const runningOutput = await (await fetch(`${baseUrl}/runs/${runningRunId}/output`)).json();
+    expect(runningOutput).toEqual({ status: "running", output: {} });
+
+    const pausedRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: SLOW_SPEC, input: {} })
+    });
+    const { runId: pausedRunId } = await pausedRes.json();
+    await fetch(`${baseUrl}/runs/${pausedRunId}/pause`, { method: "POST" });
+    const pausedOutput = await (await fetch(`${baseUrl}/runs/${pausedRunId}/output`)).json();
+    expect(pausedOutput).toEqual({ status: "paused", output: {} });
+
+    const cancelledRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: SLOW_SPEC, input: {} })
+    });
+    const { runId: cancelledRunId } = await cancelledRes.json();
+    await fetch(`${baseUrl}/runs/${cancelledRunId}/cancel`, { method: "POST" });
+    const cancelledOutput = await (await fetch(`${baseUrl}/runs/${cancelledRunId}/output`)).json();
+    expect(cancelledOutput).toEqual({ status: "cancelled", output: {} });
   });
 
   it("Run-level pause returns 409 for non-running run", async () => {
@@ -798,7 +920,10 @@ workflow:
     - id: after
       run: agent
       use: coder
-      prompt: "approved=\${{ steps.gate.approved }}"
+      prompt: "approved=\${{ steps.gate.output.approved }}"
+outputs:
+  approved: \${{ steps.gate.output.approved }}
+  after_ok: \${{ steps.after.output.ok }}
 `;
 
   beforeAll(async () => {
@@ -860,12 +985,13 @@ workflow:
     expect(sigRes.status).toBe(200);
     const gateState = await sigRes.json();
     expect(gateState.state).toBe("completed");
-    expect(gateState.output).toEqual({ approved: true, decision: "approved", at: expect.any(String) });
+    expect(gateState.output).toEqual({
+      output: { approved: true, decision: "approved", at: store.readRunMeta(runId)?.createdAt }
+    });
 
     expect(await pollRunStatus(runId)).toBe("completed");
     const out = await (await fetch(`${baseUrl}/runs/${runId}/output`)).json();
-    expect(out.output.gate.approved).toBe(true);
-    expect(out.output.after).toBeDefined();
+    expect(out.output).toEqual({ approved: true, after_ok: true });
   });
 
   it("a reject decision completes the gate with approved=false", async () => {
@@ -885,8 +1011,8 @@ workflow:
     expect(sigRes.status).toBe(200);
     const gateState = await sigRes.json();
     expect(gateState.state).toBe("completed");
-    expect(gateState.output.approved).toBe(false);
-    expect(gateState.output.decision).toBe("rejected");
+    expect(gateState.output.output.approved).toBe(false);
+    expect(gateState.output.output.decision).toBe("rejected");
   });
 
   it("requires a node key", async () => {

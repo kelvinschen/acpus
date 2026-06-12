@@ -39,7 +39,7 @@ workflow:
     const after = nodes.find((n) => n.nodeId === "after");
     expect(guard?.state).toBe("failed");
     expect(guard?.error).toBe("blocked: not-ready");
-    expect(guard?.output).toEqual({ matched: false, action: "fail", message: "blocked: not-ready" });
+    expect(guard?.output).toEqual({ output: { matched: false, action: "fail", message: "blocked: not-ready" } });
     expect(after).toBeUndefined();
   });
 
@@ -71,7 +71,7 @@ workflow:
     const guard = nodes.find((n) => n.nodeId === "check");
     expect(guard?.state).toBe("failed");
     expect(guard?.error).toBe("Guard 'check' failed");
-    expect(guard?.output).toEqual({ matched: false, action: "fail" });
+    expect(guard?.output).toEqual({ output: { matched: false, action: "fail" } });
     expect(nodes.find((n) => n.nodeId === "after")).toBeUndefined();
   });
 
@@ -102,8 +102,7 @@ workflow:
 
     const nodes = store.listNodeStates(meta.runId);
     expect(nodes.find((n) => n.nodeId === "no_work")?.output).toEqual({
-      matched: true,
-      action: "complete"
+      output: { matched: true, action: "complete" }
     });
     expect(nodes.find((n) => n.nodeId === "after")).toBeUndefined();
   });
@@ -134,7 +133,7 @@ workflow:
     expect(meta.status).toBe("completed");
 
     const nodes = store.listNodeStates(meta.runId);
-    expect(nodes.find((n) => n.nodeId === "check")?.output).toEqual({ matched: true, action: "continue" });
+    expect(nodes.find((n) => n.nodeId === "check")?.output).toEqual({ output: { matched: true, action: "continue" } });
     expect(nodes.find((n) => n.nodeId === "after")?.state).toBe("completed");
   });
 
@@ -151,7 +150,7 @@ workflow:
         else: fail
     - id: assert_output
       guard:
-        when: steps.check.action == "continue"
+        when: steps.check.output.action == "continue"
         then: continue
         else: fail
 `);
@@ -230,12 +229,10 @@ workflow:
     const nodes = store.listNodeStates(meta.runId);
     expect(nodes.filter((n) => n.nodeId === "maybe_skip" && n.state === "completed")).toHaveLength(2);
     expect(nodes.find((n) => n.nodeId === "maybe_skip" && n.nodeKey.includes("item:skip"))?.output).toEqual({
-      matched: true,
-      action: "complete"
+      output: { matched: true, action: "complete" }
     });
     expect(nodes.find((n) => n.nodeId === "maybe_skip" && n.nodeKey.includes("item:run"))?.output).toEqual({
-      matched: false,
-      action: "continue"
+      output: { matched: false, action: "continue" }
     });
     expect(nodes.filter((n) => n.nodeId === "work" && n.state === "completed")).toHaveLength(1);
   });
@@ -283,7 +280,7 @@ workflow:
 
     const nodes = store.listNodeStates(meta.runId);
     expect(nodes.find((n) => n.nodeId === "route")?.state).toBe("completed");
-    expect(nodes.find((n) => n.nodeId === "stop_case")?.output).toEqual({ matched: true, action: "complete" });
+    expect(nodes.find((n) => n.nodeId === "stop_case")?.output).toEqual({ output: { matched: true, action: "complete" } });
     expect(nodes.find((n) => n.nodeId === "case_after")).toBeUndefined();
     expect(nodes.find((n) => n.nodeId === "default_after")).toBeUndefined();
     expect(nodes.find((n) => n.nodeId === "root_after")?.state).toBe("completed");
@@ -326,8 +323,8 @@ workflow:
 
     const nodes = store.listNodeStates(meta.runId);
     expect(nodes.find((n) => n.nodeId === "repeat")?.state).toBe("completed");
-    expect(nodes.find((n) => n.nodeId === "repeat")?.output).toEqual({ matched: true, action: "complete" });
-    expect(nodes.find((n) => n.nodeId === "stop_loop")?.output).toEqual({ matched: true, action: "complete" });
+    expect(nodes.find((n) => n.nodeId === "repeat")?.output).toEqual({ output: { output: { matched: true, action: "complete" } } });
+    expect(nodes.find((n) => n.nodeId === "stop_loop")?.output).toEqual({ output: { matched: true, action: "complete" } });
     expect(nodes.find((n) => n.nodeId === "loop_after")).toBeUndefined();
     expect(nodes.find((n) => n.nodeId === "root_after")?.state).toBe("completed");
   });

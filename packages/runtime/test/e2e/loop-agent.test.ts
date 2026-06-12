@@ -54,7 +54,7 @@ workflow:
     const loopNode = nodes.find((n) => n.nodeId === "fix-loop");
     expect(loopNode?.state).toBe("completed");
     // Last round's child output envelope
-    expect(loopNode?.output).toEqual({ output: { ok: true } });
+    expect(loopNode?.output).toEqual({ output: { output: { ok: true } } });
 
     // 3 fix-once nodes, each with composite nodeKey containing round:N
     const fixNodes = nodes.filter((n) => n.nodeId === "fix-once");

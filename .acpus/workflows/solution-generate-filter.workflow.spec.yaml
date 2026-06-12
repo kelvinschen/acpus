@@ -102,9 +102,9 @@ workflow:
             ${{ input.problem }}
 
             Generated options:
-            - minimal: title=${{ steps.generate_options[0].output.title }}, report=${{ steps.generate_options[0].output.report_path }}
-            - balanced: title=${{ steps.generate_options[1].output.title }}, report=${{ steps.generate_options[1].output.report_path }}
-            - bold: title=${{ steps.generate_options[2].output.title }}, report=${{ steps.generate_options[2].output.report_path }}
+            - minimal: title=${{ steps.generate_options.output[0].output.title }}, report=${{ steps.generate_options.output[0].output.report_path }}
+            - balanced: title=${{ steps.generate_options.output[1].output.title }}, report=${{ steps.generate_options.output[1].output.report_path }}
+            - bold: title=${{ steps.generate_options.output[2].output.title }}, report=${{ steps.generate_options.output[2].output.report_path }}
 
             Read each option report before evaluating.
 
@@ -134,9 +134,9 @@ workflow:
             ${{ input.problem }}
 
             Generated options:
-            - minimal: title=${{ steps.generate_options[0].output.title }}, report=${{ steps.generate_options[0].output.report_path }}
-            - balanced: title=${{ steps.generate_options[1].output.title }}, report=${{ steps.generate_options[1].output.report_path }}
-            - bold: title=${{ steps.generate_options[2].output.title }}, report=${{ steps.generate_options[2].output.report_path }}
+            - minimal: title=${{ steps.generate_options.output[0].output.title }}, report=${{ steps.generate_options.output[0].output.report_path }}
+            - balanced: title=${{ steps.generate_options.output[1].output.title }}, report=${{ steps.generate_options.output[1].output.report_path }}
+            - bold: title=${{ steps.generate_options.output[2].output.title }}, report=${{ steps.generate_options.output[2].output.report_path }}
 
             Read each option report before evaluating.
 
@@ -167,17 +167,17 @@ workflow:
         ${{ input.problem }}
 
         Generated options:
-        - minimal: title=${{ steps.generate_options[0].output.title }}, report=${{ steps.generate_options[0].output.report_path }}
-        - balanced: title=${{ steps.generate_options[1].output.title }}, report=${{ steps.generate_options[1].output.report_path }}
-        - bold: title=${{ steps.generate_options[2].output.title }}, report=${{ steps.generate_options[2].output.report_path }}
+        - minimal: title=${{ steps.generate_options.output[0].output.title }}, report=${{ steps.generate_options.output[0].output.report_path }}
+        - balanced: title=${{ steps.generate_options.output[1].output.title }}, report=${{ steps.generate_options.output[1].output.report_path }}
+        - bold: title=${{ steps.generate_options.output[2].output.title }}, report=${{ steps.generate_options.output[2].output.report_path }}
 
         Read each option report before synthesizing.
 
         Feasibility filter report:
-        ${{ steps.filter_options.feasibility.output.report_path }}
+        ${{ steps.filter_options.output.feasibility.output.report_path }}
 
         Risk filter report:
-        ${{ steps.filter_options.risk.output.report_path }}
+        ${{ steps.filter_options.output.risk.output.report_path }}
 
         Write the final Markdown report to:
         ${{ steps.prepare_output.output.final_path }}

@@ -44,8 +44,10 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 ### State Persistence
 
 - The runtime MUST persist per-node state as individual JSON files with atomic write (temp file + rename) for crash safety.
-- The runtime MUST persist run-level metadata (run ID, workflow name, optional workflow ref, workflow source path, status, IR digest, input digest, retry generation) separately from node state.
+- The runtime MUST persist run-level metadata (run ID, workflow name, optional workflow ref, workflow source path, status, IR digest, input digest, retry generation, evaluated output, and error) separately from node state.
 - Run metadata MUST include `runAttempt`, starting at `1` for a new Run and incrementing by `1` only when a Run-level retry is accepted.
+- Run metadata MUST include `output` when the Run completes successfully; this field MUST contain the evaluated top-level Workflow `outputs`.
+- Run metadata MUST include `error` when the Run fails with a Run-level error; this field MUST be a string.
 - A Node persisted as `completed` MUST NOT retain an `error` value from an earlier failed, paused, or cancelled attempt.
 - When a caller does not provide a Run ID, the runtime MUST generate a local-time-sortable Run ID using `yyyyMMddHHmmss` followed by 20 uppercase hexadecimal random characters.
 - The runtime MUST persist a frozen IR snapshot at run creation and MUST NOT re-read mutable YAML during replay or resume.
@@ -158,7 +160,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - The runtime MUST use `.acpus/state/supervisor.lock` or an equivalent Workspace-local lock to prevent concurrent CLI invocations from starting multiple supervisors for the same Workspace.
 - When ensuring a supervisor, the CLI MUST verify that `.acpus/state/supervisor.json` matches the current Workspace and that the endpoint health check succeeds.
 - When supervisor metadata is stale, unreachable, malformed, or for a different Workspace, the CLI MUST clean or replace it before using a supervisor.
-- The Run Supervisor MUST expose an HTTP REST API for run submission, run listing, run inspection, node state listing, node retrieval, Run-level control, Node-level retry, approval signal delivery, run replay, frozen IR retrieval, artifact path resolution, and health checks.
+- The Run Supervisor MUST expose an HTTP REST API for run submission, run listing, run inspection, node state listing, node retrieval, Run-level control, Node-level retry, approval signal delivery, run replay, frozen IR retrieval, evaluated workflow output retrieval, artifact path resolution, and health checks.
 - Run-facing CLI commands MUST use the Run Supervisor API rather than maintaining a separate direct-disk read path.
 - The runtime MUST NOT require a normal user-facing `acpus daemon` or `acpus supervisor` command for normal execution.
 - The Run Supervisor MUST execute submitted Runs in the background and return the initial `running` state immediately, rather than blocking until the Run reaches a terminal state.
@@ -172,6 +174,11 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - The Run Supervisor MUST perform graceful shutdown on SIGINT/SIGTERM: persist all live `running` Nodes as `paused`, remove supervisor metadata, close the HTTP server, then exit.
 - The Run Supervisor MUST use a 5-second forced-exit fallback if the HTTP server does not close promptly.
 - Node keys MUST be passed as `?key=` query parameters in the REST API for Node-level retry, node retrieval, approval signal delivery, and artifact path resolution because node keys contain `/` which is incompatible with path segments.
+- `GET /runs/:runId/output` MUST return `{ status, output }` and MAY include `error` as a string when the Run has failed.
+- `GET /runs/:runId/output` MUST return the persisted evaluated top-level Workflow `outputs` when `status` is `completed`.
+- `GET /runs/:runId/output` MUST return `{}` for `output` when the Run is `running`, `failed`, `paused`, or `cancelled`.
+- The runtime MUST evaluate top-level Workflow `outputs` exactly once after all Nodes complete successfully, persist the evaluated value on Run metadata, and serve that persisted value through the Run Supervisor.
+- If top-level Workflow `outputs` evaluation fails after successful Node execution, the runtime MUST fail the Run, persist the evaluation error on Run metadata, and mark the root Workflow Node as failed while preserving completed child Node state.
 
 ### Run Observations
 
@@ -221,6 +228,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Run-level `retry` MUST increment the Run's `runAttempt`.
 - Run-level `retry` MUST NOT create a new Run and MUST NOT mean rerun from scratch.
 - Run-level `retry` MUST reset recovered failed, paused, and cancelled materialized Nodes to `pending`.
+- Run-level `retry` MUST clear the Run metadata `output` and `error` fields before re-execution.
 - Run-level `retry` MUST clear recovered Nodes' stale attempt fields, including `startedAt`, `completedAt`, `error`, `output`, `artifactRefs`, `dynamicContext`, and `renderedPrompt`.
 - Invalid Run-level control operations MUST be rejected with a conflict error and MUST leave persisted state unchanged.
 - Run cleanup MUST delete only Run directories whose Run metadata status is `completed`, `failed`, or `cancelled`.
@@ -277,10 +285,10 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 
 - The runtime MUST execute Guard Nodes as deterministic condition checks against the current expression context.
 - A Guard Node action of `continue` MUST complete the Guard Node and allow the current scope to continue.
-- A Guard Node action of `fail` MUST fail the Guard Node, persist its structured output, and propagate failure through existing parent composite failure semantics.
+- A Guard Node action of `fail` MUST fail the Guard Node, persist its output envelope, and propagate failure through existing parent composite failure semantics.
 - A Guard Node action of `complete` MUST complete the Guard Node and stop executing later sibling Nodes in the current scope.
 - A Guard Node `complete` action MUST NOT directly terminate outer scopes except when the current scope is the Workflow root.
-- A completed or failed Guard Node MUST persist output containing `matched` and `action`, and MUST include `message` only when the selected action is `fail` and a Guard message template is declared.
+- A completed or failed Guard Node MUST persist an output envelope whose `output` field contains `matched` and `action`, and MUST include `message` only when the selected action is `fail` and a Guard message template is declared.
 
 ## Verification
 
@@ -302,6 +310,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Runtime tests MUST cover Run cleanup deleting terminal Runs, preserving running and paused Runs, skipping corrupt metadata, and dry-run behavior.
 - Runtime tests MUST cover that Run-level retry is in-place recovery and does not rerun completed Nodes or create a new Run.
 - Runtime tests MUST cover that new Runs start with `runAttempt: 1` and Run-level retry persists an incremented `runAttempt`.
+- Runtime tests MUST cover that completed Runs persist evaluated top-level Workflow output, that output evaluation failures persist a Run-level error, and that Run-level retry clears Run metadata `output` and `error` before re-execution.
 - Runtime tests MUST cover that Run-level resume resets paused materialized Nodes to `pending` and re-executes without rerunning completed Nodes.
 - Runtime tests MUST cover that Node-level retry restores a failed executable Node's persisted dynamic value-context so fanout item and loop round templates re-render correctly.
 - Runtime tests MUST cover that Node-level retry returns promptly while retried execution continues in the background.

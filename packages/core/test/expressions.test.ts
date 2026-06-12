@@ -72,7 +72,7 @@ describe("createExpressionCollector", () => {
 
     collector.visit("${{ steps.discover.output.files }}", "$.workflow.steps[0].fanout.over");
     collector.visit("${{ loop.iter >= 2 }}", "$.workflow.steps[1].loop.until");
-    collector.visit("${{ steps.gate.approved }}", "$.workflow.steps[2].switch.cases[0].when");
+    collector.visit("${{ steps.gate.output.approved }}", "$.workflow.steps[2].switch.cases[0].when");
 
     expect(diagnostics.diagnostics).toEqual([
       expect.objectContaining({ code: "EXPR_TEMPLATE_IN_CEL", path: expect.stringContaining("over") }),
@@ -87,7 +87,7 @@ describe("createExpressionCollector", () => {
 
     collector.visit("steps.discover.output.files", "$.workflow.steps[0].fanout.over");
     collector.visit("loop.iter >= 2", "$.workflow.steps[1].loop.until");
-    collector.visit("steps.gate.approved", "$.workflow.steps[2].switch.cases[0].when");
+    collector.visit("steps.gate.output.approved", "$.workflow.steps[2].switch.cases[0].when");
 
     expect(diagnostics.diagnostics).toEqual([]);
   });
@@ -103,36 +103,29 @@ describe("createExpressionCollector", () => {
     expect(warnings).toEqual([]);
   });
 
-  it("errors when .output is accessed on a composite step (fanout)", () => {
+  it("allows .output on a composite step (fanout)", () => {
     const diagnostics = new DiagnosticBag();
     const kinds = new Map([["research", "fanout"]]);
     const collector = createExpressionCollector(diagnostics, new Set(["research"]), kinds);
     collector.visit("${{ steps.research.output.architecture.filepath }}", "$.test");
-    expect(diagnostics.diagnostics).toEqual([
-      expect.objectContaining({ code: "EXPR_COMPOSITE_OUTPUT", message: expect.stringContaining("fanout") })
-    ]);
+    expect(diagnostics.diagnostics).toEqual([]);
   });
 
-  it("errors when .output is accessed on a composite step (parallel)", () => {
+  it("allows .output on a composite step (parallel)", () => {
     const diagnostics = new DiagnosticBag();
     const kinds = new Map([["analyze", "parallel"]]);
     const collector = createExpressionCollector(diagnostics, new Set(["analyze"]), kinds);
     collector.visit("${{ steps.analyze.output }}", "$.test");
-    expect(diagnostics.diagnostics).toEqual([
-      expect.objectContaining({ code: "EXPR_COMPOSITE_OUTPUT", message: expect.stringContaining("parallel") })
-    ]);
+    expect(diagnostics.diagnostics).toEqual([]);
   });
 
-  it("errors when .output is accessed on a composite step (loop/switch)", () => {
+  it("allows .output on a composite step (loop/switch)", () => {
     const diagnostics = new DiagnosticBag();
     const kinds = new Map([["refine", "loop"], ["route", "switch"]]);
     const collector = createExpressionCollector(diagnostics, new Set(["refine", "route"]), kinds);
     collector.visit("${{ steps.refine.output.result }}", "$.test1");
     collector.visit("${{ steps.route.output.chosen }}", "$.test2");
-    const errs = diagnostics.diagnostics.filter((d) => d.code === "EXPR_COMPOSITE_OUTPUT");
-    expect(errs).toHaveLength(2);
-    expect(errs[0].message).toContain("loop");
-    expect(errs[1].message).toContain("switch");
+    expect(diagnostics.diagnostics).toEqual([]);
   });
 
   it("allows .output on leaf steps (run.agent, run.program)", () => {
@@ -152,21 +145,19 @@ describe("createExpressionCollector", () => {
     expect(diagnostics.diagnostics).toEqual([]);
   });
 
-  it("errors when .output is accessed on a subworkflow step", () => {
+  it("allows .output on a subworkflow step", () => {
     const diagnostics = new DiagnosticBag();
     const kinds = new Map([["sub", "subworkflow"]]);
     const collector = createExpressionCollector(diagnostics, new Set(["sub"]), kinds);
     collector.visit("${{ steps.sub.output.result }}", "$.test");
-    expect(diagnostics.diagnostics).toEqual([
-      expect.objectContaining({ code: "EXPR_COMPOSITE_OUTPUT", message: expect.stringContaining("subworkflow") })
-    ]);
+    expect(diagnostics.diagnostics).toEqual([]);
   });
 
-  it("does not error when fanout uses bracket-index path", () => {
+  it("allows fanout lane access through the node output envelope", () => {
     const diagnostics = new DiagnosticBag();
     const kinds = new Map([["research", "fanout"]]);
     const collector = createExpressionCollector(diagnostics, new Set(["research"]), kinds);
-    collector.visit("${{ steps.research[0].output.filepath }}", "$.test");
+    collector.visit("${{ steps.research.output[0].output.filepath }}", "$.test");
     expect(diagnostics.diagnostics).toEqual([]);
   });
 
@@ -175,7 +166,6 @@ describe("createExpressionCollector", () => {
     const kinds = new Map(); // no kind for "mystery"
     const collector = createExpressionCollector(diagnostics, new Set(["mystery"]), kinds);
     collector.visit("${{ steps.mystery.output.x }}", "$.test");
-    const compositeErrors = diagnostics.diagnostics.filter((d) => d.code === "EXPR_COMPOSITE_OUTPUT");
-    expect(compositeErrors).toEqual([]);
+    expect(diagnostics.diagnostics).toEqual([]);
   });
 });

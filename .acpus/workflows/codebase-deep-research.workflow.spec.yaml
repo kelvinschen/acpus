@@ -244,11 +244,11 @@ workflow:
         Custom instructions: ${{ input.custom_instructions }}
 
         Read these independent research reports:
-        - Architecture: ${{ steps.research.architecture.output.report_path }}
-        - Quality: ${{ steps.research.quality.output.report_path }}
-        - Security: ${{ steps.research.security.output.report_path }}
-        - Performance: ${{ steps.research.performance.output.report_path }}
-        - API design: ${{ steps.research.api_design.output.report_path }}
+        - Architecture: ${{ steps.research.output.architecture.output.report_path }}
+        - Quality: ${{ steps.research.output.quality.output.report_path }}
+        - Security: ${{ steps.research.output.security.output.report_path }}
+        - Performance: ${{ steps.research.output.performance.output.report_path }}
+        - API design: ${{ steps.research.output.api_design.output.report_path }}
 
         Synthesize by theme, not by source report. Cross-validate claims that
         appear in multiple reports, downgrade weak evidence, identify gaps, and

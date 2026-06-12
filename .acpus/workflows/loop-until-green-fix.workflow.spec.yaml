@@ -96,7 +96,7 @@ workflow:
 
     - id: repair_loop
       loop:
-        until: !loop.last.output.should_continue
+        until: "!loop.last.output.should_continue"
         max_iterations: 5
         do:
           - id: repair_attempt
