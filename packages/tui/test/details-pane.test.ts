@@ -57,6 +57,17 @@ describe("buildDetailLines", () => {
     expect(text).toContain("Status:");
   });
 
+  it("renders the Summary kind field with the graph node type legend and color", () => {
+    const lines = buildDetailLines(makeRow(), 60, {});
+    const kindLine = lines.find((line) => formatDetailLinesPlainText([line]).startsWith("Kind:"));
+
+    expect(kindLine?.segments).toEqual([
+      { text: "Kind: ", color: "gray" },
+      { text: "AGENT", color: "cyan" },
+      { text: " ◉", color: "cyan" }
+    ]);
+  });
+
   it("shows error lines when instance has an error", () => {
     const row = makeRow({
       instance: {
@@ -112,10 +123,12 @@ describe("buildDetailLines", () => {
     const sections = buildDetailSections(row, 60, {});
     expect(sections.map((section) => section.key)).toEqual([
       "summary",
-      "definition",
       "prompt",
       "output"
     ]);
+    const summaryText = formatDetailLinesPlainText(sections.find((section) => section.key === "summary")?.lines ?? []);
+    expect(summaryText).toContain("Definition");
+    expect(summaryText).toContain("  Type: builtin");
     expect(sections.find((section) => section.key === "prompt")?.richContent).toEqual({
       kind: "markdown",
       content: "## Review\n- item"
@@ -246,20 +259,19 @@ describe("buildDetailLines", () => {
 
     const sections = buildDetailSections(row, 44, {});
     const summaryText = formatDetailLinesPlainText(sections.find((section) => section.key === "summary")?.lines ?? []);
-    const definitionText = formatDetailLinesPlainText(sections.find((section) => section.key === "definition")?.lines ?? []);
 
-    expect(summaryText).not.toContain("When:");
-    expect(definitionText).toContain("Definition:");
-    expect(definitionText).toContain("  When:");
-    expect(definitionText).toContain("input.changed_files.exists");
-    expect(definitionText).toContain("steps.collect_context.output.has");
-    expect(definitionText).toContain("_changes");
-    expect(definitionText).toContain("  Then: continue");
-    expect(definitionText).toContain("  Else: fail");
-    expect(definitionText).toContain("  Message:");
-    expect(definitionText).toContain("No TypeScript changes were");
-    expect(definitionText).toContain("detected.");
-    expect(definitionText).not.toContain("…");
+    expect(sections.map((section) => section.key)).not.toContain("definition");
+    expect(summaryText).toContain("Definition");
+    expect(summaryText).toContain("  When:");
+    expect(summaryText).toContain("input.changed_files.exists");
+    expect(summaryText).toContain("steps.collect_context.output.has");
+    expect(summaryText).toContain("_changes");
+    expect(summaryText).toContain("  Then: continue");
+    expect(summaryText).toContain("  Else: fail");
+    expect(summaryText).toContain("  Message:");
+    expect(summaryText).toContain("No TypeScript changes were");
+    expect(summaryText).toContain("detected.");
+    expect(summaryText).not.toContain("…");
   });
 
   it("omits Guard definition message when no message is declared", () => {
@@ -278,11 +290,119 @@ describe("buildDetailLines", () => {
       label: "check"
     });
 
-    const definitionText = formatDetailLinesPlainText(buildDetailSections(row, 80, {}).find((section) => section.key === "definition")?.lines ?? []);
-    expect(definitionText).toContain("  When: true");
-    expect(definitionText).toContain("  Then: continue");
-    expect(definitionText).toContain("  Else: fail");
-    expect(definitionText).not.toContain("Message:");
+    const sections = buildDetailSections(row, 80, {});
+    const summaryText = formatDetailLinesPlainText(sections.find((section) => section.key === "summary")?.lines ?? []);
+    expect(sections.map((section) => section.key)).not.toContain("definition");
+    expect(summaryText).toContain("  When: true");
+    expect(summaryText).toContain("  Then: continue");
+    expect(summaryText).toContain("  Else: fail");
+    expect(summaryText).not.toContain("Message:");
+  });
+
+  it("renders dynamic context inside Summary", () => {
+    const row = makeRow({
+      groupDim: "round",
+      groupValue: "2",
+      irNode: {
+        id: "test-node",
+        kind: "run.agent",
+        nodePath: ["workflow", "test-node"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow/test-node" },
+        metadata: { agent: { use: "traex", type: "builtin" } }
+      },
+      instance: {
+        nodeKey: "workflow/loop/task/round:2",
+        nodeId: "test-node",
+        kind: "run.agent",
+        state: "completed",
+        attempt: 1,
+        renderedSessionKey: "shared-session",
+        dynamicContext: {
+          item_id: "case-a",
+          item_index: 3,
+          loop: { iter: 2 }
+        }
+      }
+    });
+
+    const sections = buildDetailSections(row, 80, {});
+    const summary = sections.find((section) => section.key === "summary");
+    const summaryText = formatDetailLinesPlainText(summary?.lines ?? []);
+
+    expect(summary?.lines.find((line) => formatDetailLinesPlainText([line]).includes("Runtime"))?.segments[0]).toEqual({
+      text: "── Runtime ──",
+      color: "gray",
+      bold: true
+    });
+    expect(sections.map((section) => section.key)).not.toContain("context");
+    expect(summary?.lines.find((line) => formatDetailLinesPlainText([line]).includes("Context"))?.segments[0]).toEqual({
+      text: "── Context ──",
+      color: "gray",
+      bold: true
+    });
+    expect(summaryText).toContain("Round: 2");
+    expect(summaryText).toContain("Context");
+    expect(summaryText).toContain("  item_id: case-a");
+    expect(summaryText).toContain("  item_idx: 3");
+    expect(summaryText).toContain("  loop.iter: 2");
+    expect(summaryText).toContain("  Use: traex");
+    expect(summaryText).toContain("  Session key: shared-session");
+  });
+
+  it("omits Agent session key from Summary when no explicit session_key was rendered", () => {
+    const row = makeRow({
+      irNode: {
+        id: "test-node",
+        kind: "run.agent",
+        nodePath: ["workflow", "test-node"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow/test-node" },
+        metadata: { agent: { use: "traex", type: "builtin" } }
+      },
+      instance: {
+        nodeKey: "workflow/test",
+        nodeId: "test-node",
+        kind: "run.agent",
+        state: "completed",
+        attempt: 1
+      }
+    });
+
+    const summaryText = formatDetailLinesPlainText(buildDetailSections(row, 80, {}).find((section) => section.key === "summary")?.lines ?? []);
+
+    expect(summaryText).toContain("  Use: traex");
+    expect(summaryText).not.toContain("Session key:");
+  });
+
+  it("renders Program commands inside Summary without truncation", () => {
+    const row = makeRow({
+      irNode: {
+        id: "build",
+        kind: "run.program",
+        nodePath: ["workflow", "build"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow/build" },
+        metadata: {
+          cmd: ["bash", "-c", "pnpm build && pnpm typecheck && pnpm test -- --runInBand"],
+          capture: { from: "stdout", parse: "json" }
+        }
+      },
+      label: "build"
+    });
+
+    const summary = buildDetailSections(row, 42, {}).find((section) => section.key === "summary");
+    const summaryText = formatDetailLinesPlainText(summary?.lines ?? []);
+
+    expect(summary?.lines.find((line) => formatDetailLinesPlainText([line]).includes("Definition"))?.segments[0]).toEqual({
+      text: "── Definition ──",
+      color: "gray",
+      bold: true
+    });
+    expect(summaryText).toContain("Definition");
+    expect(summaryText).toContain("  Command:");
+    expect(summaryText).toContain("pnpm build");
+    expect(summaryText).toContain("runInBand");
+    expect(summaryText).toContain("  Capture: from=stdout parse=json");
+    expect(summaryText).not.toContain("…");
+    expect(detailSectionRowCount(summary, 42)).toBeGreaterThan(8);
   });
 
   it("counts active detail section rows from rich renderers", () => {
@@ -353,6 +473,32 @@ describe("buildDetailLines", () => {
     expect(text).toContain("  Tool calls: 4");
     expect(text).toContain("completed Read file");
     expect(text.indexOf("Execution:")).toBeLessThan(text.indexOf("Prompt:"));
+  });
+
+  it("uses rendered agent prompts when telemetry is unavailable", () => {
+    const row = makeRow({
+      irNode: {
+        id: "test-node",
+        kind: "run.agent",
+        nodePath: ["workflow", "test-node"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow/test-node" },
+        metadata: { prompt: "template prompt with ${{ input.name }}" }
+      },
+      instance: {
+        nodeKey: "workflow/test",
+        nodeId: "test-node",
+        kind: "run.agent",
+        state: "running",
+        attempt: 1,
+        renderedPrompt: "rendered prompt with actual value"
+      }
+    });
+
+    const text = formatDetailLinesPlainText(buildDetailLines(row, 80, {}));
+
+    expect(text).toContain("Prompt:");
+    expect(text).toContain("rendered prompt with actual value");
+    expect(text).not.toContain("template prompt with");
   });
 
   it("formats context usage with compact k units", () => {

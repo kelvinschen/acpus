@@ -307,6 +307,8 @@ export class RunControl {
     state.output = undefined;
     state.artifactRefs = undefined;
     state.dynamicContext = undefined;
+    state.renderedPrompt = undefined;
+    state.renderedSessionKey = undefined;
     state.agentTelemetry = undefined;
   }
 }

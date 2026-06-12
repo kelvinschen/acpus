@@ -603,6 +603,10 @@ export class WorkflowInterpreter {
       const rawAcpDebug = process.env.ACPUS_AGENT_RAW_ACP_DEBUG === "1";
       const liveArtifacts = this.attemptArtifacts.startAgentAttempt(runId, nodeKey, attemptNo, preparedPrompt, { rawAcpDebug });
       this.attemptArtifacts.mergeAttemptRefs(allArtifactRefs, liveArtifacts.artifactRefs);
+      this.publishRenderedAgentPrompt(runId, nodeKey, preparedPrompt);
+      if (attempt === 0 && renderedSessionKey !== undefined) {
+        this.publishRenderedAgentSessionKey(runId, nodeKey, renderedSessionKey);
+      }
 
       const streamDiagnostics: string[] = [];
       let sawStdoutStream = false;
@@ -739,6 +743,20 @@ export class WorkflowInterpreter {
     this.store.writeNodeState(runId, state);
   }
 
+  private publishRenderedAgentSessionKey(runId: string, nodeKey: string, renderedSessionKey: string | undefined): void {
+    const state = this.store.readNodeState(runId, nodeKey);
+    if (!state) return;
+    state.renderedSessionKey = renderedSessionKey;
+    this.store.writeNodeState(runId, state);
+  }
+
+  private publishRenderedAgentPrompt(runId: string, nodeKey: string, renderedPrompt: string): void {
+    const state = this.store.readNodeState(runId, nodeKey);
+    if (!state) return;
+    state.renderedPrompt = renderedPrompt;
+    this.store.writeNodeState(runId, state);
+  }
+
   private publishAgentTelemetry(runId: string, nodeKey: string, attemptTelemetry: AgentAttemptTelemetry): void {
     const state = this.store.readNodeState(runId, nodeKey);
     if (!state) return;
@@ -747,7 +765,10 @@ export class WorkflowInterpreter {
   }
 
   private syncAgentTelemetryFromDisk(runId: string, nodeKey: string, state: NodeExecutionState): void {
-    state.agentTelemetry = this.store.readNodeState(runId, nodeKey)?.agentTelemetry ?? state.agentTelemetry;
+    const persisted = this.store.readNodeState(runId, nodeKey);
+    state.agentTelemetry = persisted?.agentTelemetry ?? state.agentTelemetry;
+    state.renderedSessionKey = persisted?.renderedSessionKey ?? state.renderedSessionKey;
+    state.renderedPrompt = persisted?.renderedPrompt ?? state.renderedPrompt;
   }
 
   private async executeParallel(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, nodeKey: string, keyPrefix?: string): Promise<unknown> {

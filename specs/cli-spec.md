@@ -108,7 +108,8 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - The single-Run visualizer MUST hide the internal paused-abort reason `Aborted: paused` from the Details error block.
 - The single-Run visualizer MUST support copying the full selected-node details text through OSC 52 with `y` while the details pane is focused.
 - The single-Run visualizer MUST render artifact filenames and absolute artifact paths as plain wrapped text without OSC 8 links. Each artifact filename MUST be immediately followed by its path, and separate artifacts MUST be separated by a blank line.
-- The Node Details Definition tab MUST show Guard Node definition fields `when`, `then`, `else`, and declared `message`, wrapping long `when` and `message` values without truncation.
+- The Node Details Summary tab MUST show runtime fields, dynamic context fields `item_id`, `item_index`, and `loop.iter` when available, and node definition fields. Guard Node definition fields `when`, `then`, `else`, and declared `message` MUST appear in Summary, wrapping long `when` and `message` values without truncation.
+- The Node Details Summary `Kind` field MUST include the same node-kind symbol and kind color used by graph rows.
 - The single-Run visualizer MUST render prompts in the Prompt details tab with Markdown-aware terminal formatting while preserving useful plain text for OSC 52 copy.
 - The single-Run visualizer MUST render structured object or array outputs in the Output details tab with a JSON tree view while preserving useful plain text for OSC 52 copy.
 - The Output details JSON tree MUST use `root` for its synthetic top-level tree node and MUST NOT use the selected Node label or `output` as the synthetic root label.
@@ -117,7 +118,8 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - While the single-Run visualizer is polling a live Run, refreshed Output JSON data for the same selected graph row and Output tab MUST NOT reset the JSON tree cursor to `root`.
 - The single-Run visualizer MUST show an Agent Step execution block before the prompt when `NodeExecutionState.agentTelemetry` is available for the selected Agent Step. This block MUST show the current attempt's latest context window occupancy as `used/size` when available.
 - The Agent Step execution block MUST read compact tool telemetry from `NodeExecutionState.agentTelemetry`, MUST show the current attempt's total tool-call count, and MUST show the three retained tool calls with the most recent structured update.
-- The single-Run visualizer MUST use bounded prompt and response previews from `NodeExecutionState.agentTelemetry` for Agent Step Prompt and Output details, while full prompt/response content remains available through artifact references.
+- The single-Run visualizer MUST use bounded prompt and response previews from `NodeExecutionState.agentTelemetry` for Agent Step Prompt and Output details, while full prompt/response content remains available through artifact references. When an Agent Step has no telemetry input preview, the Prompt details tab MUST fall back to the persisted rendered prompt before falling back to the IR prompt template.
+- The single-Run visualizer MUST show a persisted rendered explicit Agent `session_key` as `Session key` in the Summary Definition block when `NodeExecutionState.renderedSessionKey` is available, and MUST NOT show default node-key-derived Agent session identities.
 - The single-Run visualizer MUST wrap long node keys, long definition fields, artifact paths, prompts, outputs, and errors across multiple lines instead of truncating them.
 - The single-Run visualizer MUST clear the terminal viewport after exiting when stdout is a TTY, and MUST NOT emit clear-screen control sequences when stdout is not a TTY.
 - The CLI MUST route Agent Step execution through acpx once Agent Step runtime execution exists.

@@ -130,6 +130,8 @@ workflow:
       output: { stale: true },
       artifactRefs: ["artifact://runs/run/nodes/workflow/failed/stdout.log"],
       agentTelemetry: staleAgentTelemetry(),
+      renderedPrompt: "stale prompt",
+      renderedSessionKey: "stale-session",
       completedAt: "2025-01-01T00:01:00Z",
       startedAt: "2025-01-01T00:00:00Z",
       dynamicContext: { item: "old" }
@@ -140,6 +142,8 @@ workflow:
       output: { stale: true },
       artifactRefs: ["artifact://runs/run/nodes/workflow/paused/stdout.log"],
       agentTelemetry: staleAgentTelemetry(),
+      renderedPrompt: "stale prompt",
+      renderedSessionKey: "stale-session",
       completedAt: "2025-01-01T00:01:00Z",
       startedAt: "2025-01-01T00:00:00Z",
       dynamicContext: { item: "old" }
@@ -150,6 +154,8 @@ workflow:
       output: { stale: true },
       artifactRefs: ["artifact://runs/run/nodes/workflow/cancelled/stdout.log"],
       agentTelemetry: staleAgentTelemetry(),
+      renderedPrompt: "stale prompt",
+      renderedSessionKey: "stale-session",
       completedAt: "2025-01-01T00:01:00Z",
       startedAt: "2025-01-01T00:00:00Z",
       dynamicContext: { item: "old" }
@@ -173,6 +179,8 @@ workflow:
       expect(reset?.completedAt).toBeUndefined();
       expect(reset?.startedAt).toBeUndefined();
       expect(reset?.dynamicContext).toBeUndefined();
+      expect(reset?.renderedPrompt).toBeUndefined();
+      expect(reset?.renderedSessionKey).toBeUndefined();
       expect(reset?.agentTelemetry).toBeUndefined();
     }
   });

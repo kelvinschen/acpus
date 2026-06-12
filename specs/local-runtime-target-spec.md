@@ -91,6 +91,8 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - The runtime MUST support a real AgentExecutor spawning `acpx` via `execa` for ACP session management.
 - Executor adapters MUST implement a single `execute(request)` method receiving an `ExecutionRequest` with `node`, `context`, `signal`, `nodeKey`, and optional prepared execution fields including `prompt`, `sessionKey`, `continuation`, `retry`, and `onStream`.
 - When an Agent Step declares `session_key`, the interpreter MUST pass the rendered semantic key to the Agent executor as `ExecutionRequest.sessionKey`.
+- The interpreter MUST persist the rendered Agent prompt prepared for the current Agent executor call on the Agent Node state as `renderedPrompt`.
+- When an Agent Step declares `session_key`, the interpreter MUST persist the rendered semantic key on the Agent Node state as `renderedSessionKey`; Agent Steps without explicit `session_key` MUST omit `renderedSessionKey`.
 - The interpreter MUST route all Agent Steps through the single AgentExecutor (acpx-backed); there is no `type: mock` dispatch.
 - ProgramExecutor MUST handle cmd template resolution, capture config (json/text), `capture.from: file` reads, timeout (SIGKILL), and abort signals.
 - ProgramExecutor MUST execute string `cmd` values with shell semantics.

@@ -13,6 +13,7 @@ import type { DetailSection } from "../src/components/DetailsPane.js";
 
 const sections: DetailSection[] = [
   { key: "summary", label: "Summary", lines: [] },
+  { key: "execution", label: "Execution", lines: [] },
   { key: "prompt", label: "Prompt", lines: [] },
   { key: "output", label: "Output", lines: [] }
 ];
@@ -41,14 +42,15 @@ describe("App detail keybindings", () => {
 
   it("maps number keys to available detail tabs", () => {
     expect(detailSectionKeyForNumberInput("1", sections)).toBe("summary");
-    expect(detailSectionKeyForNumberInput("2", sections)).toBe("prompt");
-    expect(detailSectionKeyForNumberInput("3", sections)).toBe("output");
+    expect(detailSectionKeyForNumberInput("2", sections)).toBe("execution");
+    expect(detailSectionKeyForNumberInput("3", sections)).toBe("prompt");
+    expect(detailSectionKeyForNumberInput("4", sections)).toBe("output");
   });
 
   it("ignores non-number and out-of-range detail tab keys", () => {
     expect(detailSectionKeyForNumberInput("j", sections)).toBeUndefined();
     expect(detailSectionKeyForNumberInput("0", sections)).toBeUndefined();
-    expect(detailSectionKeyForNumberInput("4", sections)).toBeUndefined();
+    expect(detailSectionKeyForNumberInput("5", sections)).toBeUndefined();
   });
 
   it("moves a JSON cursor inside visible row bounds", () => {

@@ -11,9 +11,11 @@ import { tmpdir } from "node:os";
 
 class RecordingAgentExecutor implements ExecutorAdapter {
   calls = 0;
+  sessionKeys: Array<string | undefined> = [];
 
-  async execute(_request: ExecutionRequest): Promise<ExecutorResult> {
+  async execute(request: ExecutionRequest): Promise<ExecutorResult> {
     this.calls++;
+    this.sessionKeys.push(request.sessionKey);
     return { output: { ok: true } };
   }
 }
@@ -120,5 +122,106 @@ workflow:
     expect(node?.state).toBe("failed");
     expect(node?.error).toContain("session_key must render to a non-empty string");
     expect(node?.artifactRefs ?? []).toEqual([]);
+  });
+
+  it("persists rendered explicit session_key on Agent node state", async () => {
+    const ir = compileYaml(`
+version: 1
+name: rendered-session-key
+input:
+  ticket: string
+agents:
+  coder:
+    type: command
+    use: "echo stub"
+workflow:
+  steps:
+    - id: loop
+      loop:
+        max_iterations: 1
+        do:
+          - id: review
+            run: agent
+            use: coder
+            session_key: "shared-\${{ input.ticket }}-\${{ loop.iter }}"
+            prompt: "Review the code"
+`);
+
+    const executor = new RecordingAgentExecutor();
+    const tmpDir = mkdtempSync(join(tmpdir(), "acpus-rendered-session-key-"));
+    cleanups.push(() => rmSync(tmpDir, { recursive: true, force: true }));
+    const store = new RunStore(tmpDir);
+    const interpreter = new WorkflowInterpreter(store, executor, new MockProgramExecutor({}), {
+      nowTimestamp: "2025-01-01T00:00:00Z"
+    });
+
+    const meta = await interpreter.start(ir, { input: { ticket: "BUG-7" } });
+
+    expect(meta.status).toBe("completed");
+    expect(executor.sessionKeys).toEqual(["shared-BUG-7-0"]);
+    const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "review");
+    expect(node?.renderedSessionKey).toBe("shared-BUG-7-0");
+  });
+
+  it("persists rendered Agent prompt on Agent node state", async () => {
+    const ir = compileYaml(`
+version: 1
+name: rendered-prompt
+input:
+  ticket: string
+agents:
+  coder:
+    type: command
+    use: "echo stub"
+workflow:
+  steps:
+    - id: review
+      run: agent
+      use: coder
+      prompt: "Review ticket \${{ input.ticket }}"
+`);
+
+    const executor = new RecordingAgentExecutor();
+    const tmpDir = mkdtempSync(join(tmpdir(), "acpus-rendered-prompt-"));
+    cleanups.push(() => rmSync(tmpDir, { recursive: true, force: true }));
+    const store = new RunStore(tmpDir);
+    const interpreter = new WorkflowInterpreter(store, executor, new MockProgramExecutor({}), {
+      nowTimestamp: "2025-01-01T00:00:00Z"
+    });
+
+    const meta = await interpreter.start(ir, { input: { ticket: "BUG-7" } });
+
+    expect(meta.status).toBe("completed");
+    const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "review");
+    expect(node?.renderedPrompt).toBe("Review ticket BUG-7");
+    expect(node?.renderedPrompt).not.toContain("${{");
+  });
+
+  it("does not persist default node-key-derived Agent sessions", async () => {
+    const ir = compileYaml(`
+version: 1
+name: default-session-key
+agents:
+  coder:
+    type: command
+    use: "echo stub"
+workflow:
+  steps:
+    - id: review
+      run: agent
+      use: coder
+      prompt: "Review the code"
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      agentResponses: { review: { approved: true } }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+
+    expect(meta.status).toBe("completed");
+    const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "review");
+    expect(node?.renderedSessionKey).toBeUndefined();
   });
 });

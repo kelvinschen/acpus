@@ -3,7 +3,7 @@ import { Box, Text } from "ink";
 import type { AgentToolCallTelemetry, AgentTelemetry } from "@acpus/runtime";
 import type { DisplayRow } from "../model.js";
 import { formatDuration } from "../model.js";
-import { KIND_LABELS, styleForState } from "../theme.js";
+import { KIND_LABELS, styleForKind, styleForState } from "../theme.js";
 import { ScrollArea, Tabs, jsonViewerRows, markdownRows } from "../ui/inkui/index.js";
 import { clampInline, wrapText } from "../ui/inkui/theme.js";
 
@@ -33,7 +33,7 @@ export interface DetailLine {
   segments: DetailSegment[];
 }
 
-export type DetailSectionKey = "summary" | "definition" | "context" | "execution" | "prompt" | "error" | "output" | "artifacts";
+export type DetailSectionKey = "summary" | "execution" | "prompt" | "error" | "output" | "artifacts";
 
 export interface DetailSection {
   key: DetailSectionKey;
@@ -165,6 +165,18 @@ function field(label: string, value: string, cols: number, valueColor?: string):
   };
 }
 
+/** A node-kind field that mirrors the graph's node type legend. */
+function kindField(kind: DisplayRow["irNode"]["kind"]): DetailLine {
+  const kindStyle = styleForKind(kind);
+  return {
+    segments: [
+      { text: "Kind: ", color: "gray" },
+      { text: KIND_LABELS[kind], color: kindStyle.color },
+      { text: ` ${kindStyle.symbol}`, color: kindStyle.color }
+    ]
+  };
+}
+
 /** A "label: long value" field that wraps the value over multiple lines. */
 function wrappedField(label: string, value: string, cols: number, valueColor?: string): DetailLine[] {
   const prefix = `${label}: `;
@@ -181,6 +193,11 @@ function wrappedField(label: string, value: string, cols: number, valueColor?: s
 /** A plain heading line (gray). */
 function heading(text: string): DetailLine {
   return { segments: [{ text, color: "gray" }] };
+}
+
+/** A low-emphasis subsection heading inside dense detail panes. */
+function sectionHeading(text: string): DetailLine {
+  return { segments: [{ text: `── ${text} ──`, color: "gray", bold: true }] };
 }
 
 /** Split a multi-line string into wrapped DetailLines. */
@@ -220,11 +237,11 @@ export function buildDetailSections(
   const dyn = inst?.dynamicContext;
   const meta = (row.irNode.metadata ?? {}) as Record<string, unknown>;
   const sections: DetailSection[] = [];
-  const summary: DetailLine[] = [];
+  const summary: DetailLine[] = [sectionHeading("Runtime")];
 
   // ── Runtime info ──
   summary.push(field("Node", row.label, cols));
-  summary.push(field("Kind", KIND_LABELS[row.irNode.kind], cols));
+  summary.push(kindField(row.irNode.kind));
   summary.push({
     segments: [
       { text: "Status: ", color: "gray" },
@@ -239,20 +256,19 @@ export function buildDetailSections(
   if (row.branchWhen) summary.push(...wrappedField("When", row.branchWhen, cols));
   if (inst) summary.push(field("Duration", formatDuration(inst.startedAt, inst.completedAt, freezeAt), cols));
   if (row.nodeKey) summary.push(...wrappedField("Key", row.nodeKey, cols));
-  sections.push({ key: "summary", label: "Summary", lines: summary });
-
-  // ── Definition (from IR metadata) ──
-  const definition = definitionLines(row.irNode.kind, meta, row.summary, row.state, cols);
-  if (hasContent(definition)) sections.push({ key: "definition", label: "Definition", lines: definition });
 
   // ── Dynamic context ──
   if (dyn) {
-    const context: DetailLine[] = [blank(), heading("Context:")];
-    if (dyn.item_id !== undefined) context.push(field("  item_id", String(dyn.item_id), cols));
-    if (dyn.item_index !== undefined) context.push(field("  item_idx", String(dyn.item_index), cols));
-    if (dyn.loop) context.push(field("  loop.iter", String(dyn.loop.iter), cols));
-    sections.push({ key: "context", label: "Context", lines: context });
+    summary.push(blank(), sectionHeading("Context"));
+    if (dyn.item_id !== undefined) summary.push(field("  item_id", String(dyn.item_id), cols));
+    if (dyn.item_index !== undefined) summary.push(field("  item_idx", String(dyn.item_index), cols));
+    if (dyn.loop) summary.push(field("  loop.iter", String(dyn.loop.iter), cols));
   }
+
+  // ── Definition (from IR metadata) ──
+  const definition = definitionLines(row.irNode.kind, meta, row.summary, row.state, cols, inst?.renderedSessionKey);
+  if (hasContent(definition)) summary.push(...definition);
+  sections.push({ key: "summary", label: "Summary", lines: summary });
 
   const effectiveAgentTelemetry = agentTelemetry ?? inst?.agentTelemetry;
   const agentAttempt = effectiveAgentTelemetry?.attempts.find((attempt) => attempt.attempt === effectiveAgentTelemetry.currentAttempt)
@@ -278,7 +294,9 @@ export function buildDetailSections(
   }
 
   // ── Prompt (prefer runtime preview, fall back to IR template) ──
-  const prompt = agentAttempt?.input?.preview ?? (typeof meta.prompt === "string" ? meta.prompt : undefined);
+  const prompt = agentAttempt?.input?.preview
+    ?? inst?.renderedPrompt
+    ?? (typeof meta.prompt === "string" ? meta.prompt : undefined);
   if (prompt) {
     sections.push({
       key: "prompt",
@@ -353,16 +371,18 @@ function definitionLines(
   meta: Record<string, unknown>,
   summary: string | undefined,
   state: DisplayRow["state"],
-  cols: number
+  cols: number,
+  renderedSessionKey?: string
 ): DetailLine[] {
   const out: DetailLine[] = [];
 
   if (kind === "run.agent") {
     const agent = (meta.agent ?? {}) as Record<string, unknown>;
     const retry = meta.retry as { max?: unknown; backoff?: unknown } | undefined;
-    out.push(blank(), heading("Definition:"));
+    out.push(blank(), sectionHeading("Definition"));
     if (agent.use !== undefined) out.push(...wrappedField("  Use", String(agent.use), cols));
     out.push(field("  Type", String(agent.type ?? "builtin"), cols));
+    if (renderedSessionKey !== undefined) out.push(...wrappedField("  Session key", renderedSessionKey, cols));
     if (agent.model !== undefined) out.push(field("  Model", String(agent.model), cols));
     if (meta.timeout !== undefined) out.push(field("  Timeout", String(meta.timeout), cols));
     if (retry) {
@@ -380,7 +400,7 @@ function definitionLines(
   if (kind === "run.program") {
     const cmd = Array.isArray(meta.cmd) ? meta.cmd.map(String).join(" ") : undefined;
     const capture = meta.capture as { from?: unknown; parse?: unknown } | undefined;
-    out.push(blank(), heading("Definition:"));
+    out.push(blank(), sectionHeading("Definition"));
     if (cmd) out.push(...wrappedField("  Command", cmd, cols));
     if (capture) {
       out.push(
@@ -395,7 +415,7 @@ function definitionLines(
   }
 
   if (kind === "guard") {
-    out.push(blank(), heading("Definition:"));
+    out.push(blank(), sectionHeading("Definition"));
     if (meta.when !== undefined) out.push(...wrappedField("  When", String(meta.when), cols));
     if (meta.then !== undefined) out.push(field("  Then", String(meta.then), cols));
     if (meta.else !== undefined) out.push(field("  Else", String(meta.else), cols));
@@ -404,7 +424,7 @@ function definitionLines(
   }
 
   if (kind === "approval") {
-    out.push(blank(), heading("Definition:"));
+    out.push(blank(), sectionHeading("Definition"));
     if (meta.timeout !== undefined) out.push(field("  Timeout", String(meta.timeout), cols));
     if (meta.on_timeout !== undefined) out.push(field("  On timeout", String(meta.on_timeout), cols));
     if (state === "awaiting") {
@@ -415,7 +435,7 @@ function definitionLines(
 
   // composite / subworkflow: surface the summary if any.
   if (summary) {
-    out.push(blank(), heading("Definition:"), ...wrappedField("  Flow", summary, cols));
+    out.push(blank(), sectionHeading("Definition"), ...wrappedField("  Flow", summary, cols));
   }
   return out;
 }
