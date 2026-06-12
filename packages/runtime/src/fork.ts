@@ -247,7 +247,22 @@ export function materializeFork(
     workflowSourcePath: options.workflowSourcePath
   });
 
-  applyFork(store, options.forkRunId, plan);
+  try {
+    applyFork(store, options.forkRunId, plan);
+  } catch (error) {
+    const meta = store.readRunMeta(options.forkRunId);
+    if (meta) {
+      meta.status = "cancelled";
+      meta.updatedAt = new Date().toISOString();
+      meta.lineage = {
+        sourceRunId: plan.sourceRunId,
+        forkOriginNodeKey: plan.forkOriginNodeKey,
+        inheritedNodeCount: 0
+      };
+      store.writeRunMeta(options.forkRunId, meta);
+    }
+    throw error;
+  }
 
   const meta = store.readRunMeta(options.forkRunId);
   if (meta) {
@@ -259,7 +274,10 @@ export function materializeFork(
     store.writeRunMeta(options.forkRunId, meta);
   }
 
-  return { run, plan, input };
+  // Re-read the run meta after writing lineage so the returned object
+  // includes the lineage (M5 fix).
+  const updatedMeta = store.readRunMeta(options.forkRunId);
+  return { run: updatedMeta ?? run, plan, input };
 }
 
 export class ForkError extends Error {

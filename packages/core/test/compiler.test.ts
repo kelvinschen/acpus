@@ -1943,4 +1943,50 @@ workflow:
     expect(result.ok).toBe(false);
     expect(result.diagnostics.some((d) => d.code === "SPEC_SHAPE" && d.message.includes("Unknown"))).toBe(true);
   });
+
+  // ── Step ID colon restriction (B1: reserved for Node Key dynamic dimensions) ──
+
+  it("rejects step ids containing colons", () => {
+    const source = `
+version: 1
+name: colon-id
+workflow:
+  steps:
+    - id: "branch:blue"
+      run: program
+      cmd: ["echo", "hi"]
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "STEP_ID_COLON" || d.code === "STEP_ID")).toBe(true);
+  });
+
+  it("rejects step ids with item: prefix (reserved dynamic dimension)", () => {
+    const source = `
+version: 1
+name: item-id
+workflow:
+  steps:
+    - id: "item:my-step"
+      run: program
+      cmd: ["echo", "hi"]
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.some((d) => d.code === "STEP_ID_COLON" || d.code === "STEP_ID")).toBe(true);
+  });
+
+  it("accepts step ids without colons", () => {
+    const source = `
+version: 1
+name: valid-id
+workflow:
+  steps:
+    - id: my-step
+      run: program
+      cmd: ["echo", "hi"]
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+  });
 });

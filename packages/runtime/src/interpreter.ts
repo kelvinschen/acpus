@@ -443,10 +443,10 @@ export class WorkflowInterpreter {
           break;
         }
         case "parallel":
-          output = await this.executeParallel(node, ctx, runId, dynamic, keyPrefix);
+          output = await this.executeParallel(node, ctx, runId, dynamic, nodeKey, keyPrefix);
           break;
         case "fanout":
-          output = await this.executeFanout(node, ctx, runId, dynamic, keyPrefix);
+          output = await this.executeFanout(node, ctx, runId, dynamic, nodeKey, keyPrefix);
           break;
         case "switch":
           output = await this.executeSwitch(node, ctx, runId, dynamic, keyPrefix);
@@ -690,7 +690,7 @@ export class WorkflowInterpreter {
     this.store.writeNodeState(runId, state);
   }
 
-  private async executeParallel(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {
+  private async executeParallel(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, nodeKey: string, keyPrefix?: string): Promise<unknown> {
     const children = node.children ?? [];
     const maxConcurrency = (node.metadata.max_concurrency as number) ?? this.maxConcurrency;
     const join = (node.metadata.join as string) ?? "all";
@@ -731,7 +731,7 @@ export class WorkflowInterpreter {
         return mapOutput;
       } catch (error) {
         if (!(error instanceof NodeAbortedError)) {
-          this.runControl.cancelDescendantsInScope(runId, node, dynamic);
+          this.runControl.cancelDescendantsInScope(runId, nodeKey);
         }
         branchPromises.forEach((p) => void p.catch(() => undefined));
         throw error;
@@ -749,7 +749,7 @@ export class WorkflowInterpreter {
     } catch (error) {
       if (!(error instanceof NodeAbortedError)) {
         // Genuine failure or cancel — fast-stop: cancel still-running siblings
-        this.runControl.cancelDescendantsInScope(runId, node, dynamic);
+        this.runControl.cancelDescendantsInScope(runId, nodeKey);
       }
       branchPromises.forEach((p) => void p.catch(() => undefined));
       throw error;
@@ -762,7 +762,7 @@ export class WorkflowInterpreter {
     return mapOutput;
   }
 
-  private async executeFanout(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {
+  private async executeFanout(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, nodeKey: string, keyPrefix?: string): Promise<unknown> {
     const overExpr = node.metadata.over as string;
     if (!overExpr) {
       throw new Error(`fanout node ${node.id} missing 'over' expression`);
@@ -843,7 +843,7 @@ export class WorkflowInterpreter {
             // so it spans every lane), then reject to short-circuit the wait.
             if (!failFastTriggered) {
               failFastTriggered = true;
-              this.runControl.cancelDescendantsInScope(runId, node, dynamic);
+              this.runControl.cancelDescendantsInScope(runId, nodeKey);
             }
             throw error;
           }

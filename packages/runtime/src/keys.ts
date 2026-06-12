@@ -7,7 +7,14 @@ export interface ParsedNodeKey {
   nodeKey: string;
   staticPath: string;
   staticSegments: string[];
+  /** Collapsed dynamic dimensions (last-value-wins for repeated dimensions). */
   dynamic: NodeKeyDynamic;
+  /**
+   * Full frame-based parsing of dynamic dimensions. Each frame captures one
+   * dynamic "scope" (e.g., from a fanout/parallel/loop parent). Repeated
+   * dimensions appear in separate frames rather than being collapsed.
+   */
+  dynamicFrames: NodeKeyDynamic[];
 }
 
 type DynamicFrame = NodeKeyDynamic;
@@ -58,18 +65,32 @@ export function resolveNodeKey(
 
 /**
  * Parse a resolved Node Key into its static Node path and dynamic dimensions.
- * Dynamic dimensions are slash-separated `type:value` suffix segments.
+ *
+ * Dynamic segments are slash-separated `type:value` segments matching the
+ * DYNAMIC_SEGMENT pattern (`item:`, `lane:`, `branch:`, `round:`). Segments
+ * that match are treated as dynamic; all others are static.
+ *
+ * **Ambiguity note**: A step ID like `branch:blue` would match DYNAMIC_SEGMENT
+ * and be misparsed as dynamic. This is prevented at the compiler level: step
+ * IDs containing colons are rejected by both the JSON Schema `pattern` and the
+ * compiler's `STEP_ID_COLON` diagnostic. The runtime parsing relies on this
+ * compiler guarantee.
  */
 export function parseNodeKey(nodeKey: string): ParsedNodeKey {
+  const segments = nodeKey.split("/");
   const staticSegments: string[] = [];
-  const dynamic: NodeKeyDynamic = {};
+  const dynamicSegments: string[] = [];
 
-  for (const segment of nodeKey.split("/")) {
-    if (!DYNAMIC_SEGMENT.test(segment)) {
+  for (const segment of segments) {
+    if (DYNAMIC_SEGMENT.test(segment)) {
+      dynamicSegments.push(segment);
+    } else {
       staticSegments.push(segment);
-      continue;
     }
+  }
 
+  const dynamic: NodeKeyDynamic = {};
+  for (const segment of dynamicSegments) {
     const [kind, ...rest] = segment.split(":");
     const value = rest.join(":");
     switch (kind) {
@@ -88,17 +109,139 @@ export function parseNodeKey(nodeKey: string): ParsedNodeKey {
     }
   }
 
+  const dynamicFrames = buildDynamicFrames(dynamicSegments);
+
   return {
     nodeKey,
     staticPath: staticSegments.join("/"),
     staticSegments,
-    dynamic
+    dynamic,
+    dynamicFrames
   };
+}
+
+/**
+ * Build dynamic frames from the already-identified dynamic segments.
+ * Each time we encounter a new "item:" segment, we start a new frame
+ * (since item: begins a new fanout scope). Other dimensions accumulate
+ * into the current frame.
+ */
+function buildDynamicFrames(dynamicSegments: string[]): NodeKeyDynamic[] {
+  const frames: NodeKeyDynamic[] = [];
+  let current: NodeKeyDynamic = {};
+
+  for (const segment of dynamicSegments) {
+    const [kind, ...rest] = segment.split(":");
+    const value = rest.join(":");
+
+    // A new fanout item starts a new scope frame
+    if (kind === "item" && !isEmptyDynamicScope(current)) {
+      frames.push(current);
+      current = {};
+    }
+
+    switch (kind) {
+      case "item":
+        current.fanoutItemId = value;
+        break;
+      case "lane":
+        current.laneId = value;
+        break;
+      case "branch":
+        current.parallelBranchId = value;
+        break;
+      case "round":
+        current.loopRound = Number(value);
+        break;
+    }
+  }
+
+  if (!isEmptyDynamicScope(current)) {
+    frames.push(current);
+  }
+  return frames;
 }
 
 /** Return the static IR nodePath represented by a resolved Node Key. */
 export function staticNodePathFromKey(nodeKey: string): string {
   return parseNodeKey(nodeKey).staticPath;
+}
+
+/**
+ * Test whether a resolved Node Key is below any of the provided anchor keys.
+ * Comparison is based on static paths plus ordered dynamic frames: a node is
+ * below an anchor when it is not the exact same key, its static path is at or
+ * below the anchor's static path, and its dynamic frames stay within the
+ * anchor's runtime instance.
+ */
+export function isNodeKeyBelowAnyAnchor(nodeKey: string, anchorKeys: string[]): boolean {
+  if (anchorKeys.length === 0) return false;
+  const nodeParsed = parseNodeKey(nodeKey);
+
+  for (const anchorKey of anchorKeys) {
+    // Skip if this IS the anchor (not below it)
+    if (nodeKey === anchorKey) continue;
+    const anchorParsed = parseNodeKey(anchorKey);
+    // Check that the node's static path is below the anchor's static path
+    if (nodeParsed.staticPath === anchorParsed.staticPath || nodeParsed.staticPath.startsWith(`${anchorParsed.staticPath}/`)) {
+      // Verify dynamic scope alignment: the node must be in the same dynamic
+      // scope as the anchor (or a nested sub-scope under it)
+      if (isDynamicFramePrefix(anchorParsed.dynamicFrames, nodeParsed.dynamicFrames)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Check whether the anchor's ordered dynamic frames are a prefix of the node's
+ * dynamic frames. This preserves subworkflow/fanout nesting boundaries when
+ * the same inner item/lane values repeat under different outer instances.
+ */
+function isDynamicFramePrefix(anchorFrames: NodeKeyDynamic[], nodeFrames: NodeKeyDynamic[]): boolean {
+  anchorFrames = collapseAdjacentDuplicateFrames(anchorFrames);
+  nodeFrames = collapseAdjacentDuplicateFrames(nodeFrames);
+  if (anchorFrames.length > nodeFrames.length) return false;
+
+  return anchorFrames.every((anchorFrame, index) => {
+    const nodeFrame = nodeFrames[index]!;
+    if (anchorFrame.fanoutItemId !== undefined && nodeFrame.fanoutItemId !== anchorFrame.fanoutItemId) {
+      return false;
+    }
+    if (anchorFrame.laneId !== undefined && nodeFrame.laneId !== anchorFrame.laneId) {
+      return false;
+    }
+    if (
+      anchorFrame.parallelBranchId !== undefined &&
+      !isParallelBranchInScope(nodeFrame.parallelBranchId, anchorFrame.parallelBranchId)
+    ) {
+      return false;
+    }
+    if (anchorFrame.loopRound !== undefined && nodeFrame.loopRound !== anchorFrame.loopRound) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function collapseAdjacentDuplicateFrames(frames: NodeKeyDynamic[]): NodeKeyDynamic[] {
+  const collapsed: NodeKeyDynamic[] = [];
+  for (const frame of frames) {
+    const previous = collapsed.at(-1);
+    if (previous !== undefined && isSameDynamicFrame(previous, frame)) continue;
+    collapsed.push(frame);
+  }
+  return collapsed;
+}
+
+function isSameDynamicFrame(left: NodeKeyDynamic, right: NodeKeyDynamic): boolean {
+  return (
+    left.fanoutItemId === right.fanoutItemId &&
+    left.laneId === right.laneId &&
+    left.parallelBranchId === right.parallelBranchId &&
+    left.loopRound === right.loopRound
+  );
 }
 
 /**
@@ -168,6 +311,13 @@ function collectDynamicFrames(nodeKey: string): DynamicFrame[] {
 
     const [kind, ...rest] = segment.split(":");
     const value = rest.join(":");
+
+    // A new fanout item starts a new scope frame
+    if (kind === "item" && !isEmptyDynamicScope(current)) {
+      pushDynamicFrame(frames, current);
+      current = {};
+    }
+
     switch (kind) {
       case "item":
         current.fanoutItemId = value;

@@ -196,6 +196,17 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
     context.diagnostics.error("STEP_ID", "Every workflow step must define a non-empty string id.", `${path}.id`);
   }
 
+  // Reject step IDs containing colons — colons are reserved for dynamic
+  // dimension separators (item:, lane:, branch:, round:) in Node Keys
+  // and for filesystem encoding via encodeNodeKeyForDir.
+  if (typeof step.id === "string" && step.id.includes(":")) {
+    context.diagnostics.error(
+      "STEP_ID_COLON",
+      `Step id '${step.id}' must not contain colons. Colons are reserved for Node Key dynamic dimension separators.`,
+      `${path}.id`
+    );
+  }
+
   const nodePath = [...parentPath, id];
   const base = {
     id,

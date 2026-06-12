@@ -1,6 +1,6 @@
-import type { AcpusIr, IrNode } from "@acpus/core";
-import type { NodeExecutionState, NodeKeyDynamic, NodeState } from "./types.js";
-import { isNodeKeyInDynamicScope } from "./keys.js";
+import type { AcpusIr } from "@acpus/core";
+import type { NodeExecutionState, NodeState } from "./types.js";
+import { isNodeKeyBelowAnyAnchor } from "./keys.js";
 import { RunStore } from "./store.js";
 import {
   canTransition,
@@ -23,10 +23,6 @@ export function abortedNodeError(state: RunControlAbortState): string {
 
 export function isPausedContinuationState(state: NodeExecutionState | undefined): boolean {
   return state?.state === "pending" && state.attempt > 0 && state.error === PAUSED_ABORT_ERROR;
-}
-
-function isBelowAnyAnchor(nodeKey: string, anchorKeys: string[]): boolean {
-  return anchorKeys.some((anchorKey) => nodeKey.startsWith(`${anchorKey}/`));
 }
 
 export interface NodeRetryPreparation {
@@ -254,8 +250,8 @@ export class RunControl {
     }
   }
 
-  cancelDescendantsInScope(runId: string, node: IrNode, dynamic: NodeKeyDynamic): void {
-    this.descendantsInScope(runId, node, dynamic, (rid, key) => this.cancelMaterializedNode(rid, key));
+  cancelDescendantsInScope(runId: string, rootNodeKey: string): void {
+    this.descendantsInScope(runId, rootNodeKey, (rid, key) => this.cancelMaterializedNode(rid, key));
   }
 
   private pauseRunningNode(runId: string, nodeKey: string): void {
@@ -286,35 +282,14 @@ export class RunControl {
 
   private descendantsInScope(
     runId: string,
-    node: IrNode,
-    dynamic: NodeKeyDynamic,
+    rootNodeKey: string,
     action: (runId: string, nodeKey: string) => void
   ): void {
-    const descendantIds = new Set<string>();
-    const collect = (n: IrNode): void => {
-      for (const child of n.children ?? []) {
-        descendantIds.add(child.id);
-        collect(child);
-      }
-      for (const branch of n.branches ?? []) {
-        for (const child of branch.children) {
-          descendantIds.add(child.id);
-          collect(child);
-        }
-      }
-    };
-    collect(node);
-
     const states = this.store.listNodeStates(runId);
-    const anchorKeys = states
-      .filter((nodeState) => descendantIds.has(nodeState.nodeId))
-      .filter((nodeState) => isNodeKeyInDynamicScope(nodeState.nodeKey, dynamic))
-      .map((nodeState) => nodeState.nodeKey);
 
     for (const nodeState of states) {
       if (nodeState.state !== "running" && nodeState.state !== "awaiting" && nodeState.state !== "pending") continue;
-      if (!isNodeKeyInDynamicScope(nodeState.nodeKey, dynamic)) continue;
-      if (!descendantIds.has(nodeState.nodeId) && !isBelowAnyAnchor(nodeState.nodeKey, anchorKeys)) continue;
+      if (!isNodeKeyBelowAnyAnchor(nodeState.nodeKey, [rootNodeKey])) continue;
       action(runId, nodeState.nodeKey);
     }
   }

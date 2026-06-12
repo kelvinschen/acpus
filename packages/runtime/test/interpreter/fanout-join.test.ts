@@ -23,6 +23,20 @@ class ItemProgramExecutor implements ExecutorAdapter {
   }
 }
 
+class CrossLaneProgramExecutor implements ExecutorAdapter {
+  async execute({ node, nodeKey, signal }: ExecutionRequest): Promise<ExecutorResult> {
+    const outerLaneA = nodeKey.includes("workflow/mapped/route/sub_a/item:a/lane:0/");
+    await new Promise((resolve) => setTimeout(resolve, outerLaneA ? 5 : 80));
+    if (signal.aborted) {
+      return { partial: true, error: "aborted" };
+    }
+    if (node.id === "child_work" && outerLaneA) {
+      return { failureKind: "timeout", error: "lane-a failed", stdout: "", stderr: "" };
+    }
+    return { stdout: "ok", stderr: "" };
+  }
+}
+
 describe("Fanout join and success criteria", () => {
   const cleanups: Array<() => void> = [];
 
@@ -322,5 +336,83 @@ workflow:
     expect(childSlow?.nodeKey).toContain("workflow/mapped/route/sub/");
     expect(childSlow?.nodeKey).toContain("item:slow/lane:0");
     expect(childSlow?.nodeKey).toContain("item:inner/lane:0");
+  });
+
+  it("fail-fast does NOT cancel nodes under a different outer lane with matching inner dimensions (B2)", async () => {
+    // Two outer fanout lanes, each with a subworkflow containing an inner fanout
+    // with identical item/lane values. When the inner lane under outer lane A
+    // fails, the inner fail-fast cancellation must not cancel the matching
+    // child_work under outer lane B.
+    const dir = mkdtempSync(join(tmpdir(), "acpus-cross-lane-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const childAPath = join(dir, "child-a.yaml");
+    const childBPath = join(dir, "child-b.yaml");
+    const childSpec = `
+version: 1
+name: child-fanout
+workflow:
+  steps:
+    - id: child_mapped
+      fanout:
+        over: input.inner_items
+        key: \${{ item }}
+        join: all
+        do:
+          - id: child_work
+            run: program
+            cmd: ["echo", "child-work"]
+`;
+    writeFileSync(childAPath, childSpec);
+    writeFileSync(childBPath, childSpec);
+
+    const ir = compileYaml(`
+version: 1
+name: cross-lane-boundary
+workflow:
+  steps:
+    - id: mapped
+      fanout:
+        over: input.items
+        key: \${{ item }}
+        join: all
+        success_criteria:
+          min_success: 1
+        do:
+          - id: route
+            switch:
+              cases:
+                - when: item == "a"
+                  do:
+                    - id: sub_a
+                      subworkflow: ${childAPath}
+                      input:
+                        inner_items: \${{ input.inner_items }}
+              default:
+                do:
+                  - id: sub_b
+                    subworkflow: ${childBPath}
+                    input:
+                      inner_items: \${{ input.inner_items }}
+`);
+
+    const tmpDir = mkdtempSync(join(tmpdir(), "acpus-cross-lane-store-"));
+    cleanups.push(() => rmSync(tmpDir, { recursive: true, force: true }));
+    const store = new RunStore(tmpDir);
+    const interpreter = new WorkflowInterpreter(store, new StubAgentExecutor({}), new CrossLaneProgramExecutor(), {
+      nowTimestamp: "2025-01-01T00:00:00Z"
+    });
+
+    const meta = await interpreter.start(ir, { input: { items: ["a", "b"], inner_items: ["x"] } });
+    expect(meta.status).toBe("completed");
+
+    const nodes = store.listNodeStates(meta.runId);
+    const childWorks = nodes.filter((n) => n.nodeId === "child_work");
+    expect(childWorks).toHaveLength(2);
+
+    const laneAChild = childWorks.find((n) => n.nodeKey.includes("item:a/"));
+    expect(laneAChild?.state).toBe("failed");
+
+    const laneBChild = childWorks.find((n) => n.nodeKey.includes("item:b/"));
+    expect(laneBChild?.state).toBe("completed");
   });
 });

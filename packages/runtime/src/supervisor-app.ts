@@ -8,6 +8,7 @@ import { compileWorkflow, workflowSourcePolicy } from "@acpus/core";
 import { resolve } from "node:path";
 import type { RunState } from "./types.js";
 import { ForkError, materializeFork, planFork, type ForkPlan } from "./fork.js";
+import { ArtifactReferences } from "./artifacts.js";
 
 /** Pattern that matches unsafe runId characters (path traversal, separators, null). */
 const UNSAFE_RUN_ID = /(^|\/)\.\.?(\/|$)|[\\:\0]/;
@@ -375,6 +376,12 @@ export function createSupervisorApp(
     }
     if (!store.hasRun(runId)) {
       return c.json({ error: "Run not found" }, 404);
+    }
+    // Validate that the URI's runId matches the route's :runId to prevent
+    // cross-run artifact path resolution.
+    const parsed = ArtifactReferences.tryParse(uri);
+    if (parsed && parsed.runId !== runId) {
+      return c.json({ error: "Artifact URI runId does not match route runId" }, 400);
     }
     const absPath = store.resolveArtifactPath(uri);
     if (!absPath) {

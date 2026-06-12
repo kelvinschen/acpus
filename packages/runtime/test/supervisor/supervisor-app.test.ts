@@ -324,7 +324,7 @@ workflow:
     const { runId } = await createRes.json();
     await pollRunStatus(runId);
 
-    const uri = `artifact://runs/${runId}/nodes/workflow:step-a/transcript.jsonl`;
+    const uri = `artifact://runs/${runId}/nodes/workflow%2Fstep-a/transcript.jsonl`;
     const res = await fetch(`${baseUrl}/runs/${runId}/artifact-path?uri=${encodeURIComponent(uri)}`);
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -344,9 +344,35 @@ workflow:
   });
 
   it("returns 404 from artifact-path for unknown run", async () => {
-    const uri = "artifact://runs/nonexistent/nodes/workflow:step-a/x.txt";
+    const uri = "artifact://runs/nonexistent/nodes/workflow%2Fstep-a/x.txt";
     const res = await fetch(`${baseUrl}/runs/nonexistent/artifact-path?uri=${encodeURIComponent(uri)}`);
     expect(res.status).toBe(404);
+  });
+
+  it("returns 400 when artifact URI runId does not match route runId (H2 cross-run guard)", async () => {
+    const createRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: SPEC_YAML, input: {} })
+    });
+    const { runId } = await createRes.json();
+    await pollRunStatus(runId);
+
+    // Create a second run to have a valid target runId
+    const createRes2 = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: SPEC_YAML, input: {} })
+    });
+    const run2 = await createRes2.json();
+    await pollRunStatus(run2.runId);
+
+    // Request artifact-path under run-a but with a URI pointing to run-b
+    const crossUri = `artifact://runs/${run2.runId}/nodes/workflow%2Fstep-a/transcript.jsonl`;
+    const res = await fetch(`${baseUrl}/runs/${runId}/artifact-path?uri=${encodeURIComponent(crossUri)}`);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("runId");
   });
 
   it("gets a single node via GET /runs/:runId/node?key=...", async () => {

@@ -34,6 +34,7 @@ export {
   staticNodePathFromKey,
   isNodeKeyAtOrBelow,
   isNodeKeyInDynamicScope,
+  isNodeKeyBelowAnyAnchor,
   withNodeKeyPrefix,
   encodeNodeKeyForFs,
   encodeNodeKeyForDir
@@ -50,7 +51,8 @@ export { RunStore } from "./store.js";
 export { canTransition, transition, isTerminal, createInitialNodeState, resetFailedForRetry, resetRunningForCrashRecovery, resetAwaitingForCrashRecovery } from "./state-machine.js";
 
 // ─── Artifacts ───────────────────────────────────────────────────
-export { ArtifactStore } from "./artifacts.js";
+export { ArtifactStore, ArtifactReferences } from "./artifacts.js";
+export type { ParsedArtifactReference } from "./artifacts.js";
 
 // ─── Interpreter ─────────────────────────────────────────────────
 export { WorkflowInterpreter } from "./interpreter.js";

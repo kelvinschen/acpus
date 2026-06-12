@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { compileYaml, createTestInterpreter, waitForNodeState } from "./helper.js";
 import { ArtifactStore } from "../../src/artifacts.js";
+import { encodeNodeKeyForDir } from "../../src/keys.js";
 import { WorkflowInterpreter } from "../../src/interpreter.js";
 import { RunStore } from "../../src/store.js";
 import { StubAgentExecutor } from "../support/stub-agent.js";
@@ -211,8 +212,8 @@ workflow:
     expect(artifacts.read(meta.runId, slow!.nodeKey, "stdout.log").toString()).toBe("slow-out");
     expect(artifacts.read(meta.runId, fast!.nodeKey, "stdout.log").toString()).toBe("fast-out");
     // Refs must point at the node's own artifact directory.
-    expect(slow?.artifactRefs?.every((u) => u.includes("workflow:par:slow"))).toBe(true);
-    expect(fast?.artifactRefs?.every((u) => u.includes("workflow:par:fast"))).toBe(true);
+    expect(slow?.artifactRefs?.every((u) => u.includes(encodeURIComponent(slow!.nodeKey)))).toBe(true);
+    expect(fast?.artifactRefs?.every((u) => u.includes(encodeURIComponent(fast!.nodeKey)))).toBe(true);
   });
 
   it("cancels still-running sibling branches when join:all fails fast", async () => {
@@ -473,4 +474,68 @@ workflow:
     expect(slow?.state).toBe("cancelled");
   });
 
+  it("nested parallel produces dotted branch keys and distinct artifact directories (B3)", async () => {
+    const ir = compileYaml(`
+version: 1
+name: nested-parallel-keys
+workflow:
+  steps:
+    - id: outer
+      parallel:
+        - id: left
+          parallel:
+            - id: inner_a
+              run: program
+              cmd: ["echo", "a"]
+            - id: inner_b
+              run: program
+              cmd: ["echo", "b"]
+        - id: right
+          run: program
+          cmd: ["echo", "right"]
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: {
+        inner_a: { stdout: "a-out", stderr: "" },
+        inner_b: { stdout: "b-out", stderr: "" },
+        right: { stdout: "right-out", stderr: "" }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+
+    const nodes = store.listNodeStates(meta.runId);
+
+    // The outer parallel should have dotted branch keys
+    const leftBranch = nodes.find((n) => n.nodeId === "left");
+    expect(leftBranch).toBeDefined();
+    expect(leftBranch!.nodeKey).toContain("branch:0");
+    expect(leftBranch!.nodeKey).not.toContain("branch:0."); // "left" is branch 0, not dotted
+
+    // Inner branches should have dotted keys like "0.0" and "0.1"
+    const innerA = nodes.find((n) => n.nodeId === "inner_a");
+    expect(innerA).toBeDefined();
+    expect(innerA!.nodeKey).toMatch(/branch:0\.0$/);
+
+    const innerB = nodes.find((n) => n.nodeId === "inner_b");
+    expect(innerB).toBeDefined();
+    expect(innerB!.nodeKey).toMatch(/branch:0\.1$/);
+
+    const rightBranch = nodes.find((n) => n.nodeId === "right");
+    expect(rightBranch).toBeDefined();
+    expect(rightBranch!.nodeKey).toMatch(/branch:1$/);
+
+    // Artifact directories must exist for each executable node with artifacts
+    const artifactStore = new ArtifactStore(store.getBaseDir());
+    for (const node of [innerA!, innerB!, rightBranch!]) {
+      if (node.artifactRefs && node.artifactRefs.length > 0) {
+        const dir = join(store.getBaseDir(), meta.runId, "artifacts", encodeNodeKeyForDir(node.nodeKey));
+        const { existsSync } = await import("node:fs");
+        expect(existsSync(dir)).toBe(true);
+      }
+    }
+  });
 });

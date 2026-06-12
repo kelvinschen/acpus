@@ -16,7 +16,9 @@ const ARTIFACT_URI_PREFIX = "artifact://runs/";
 export interface ParsedArtifactReference {
   uri: string;
   runId: string;
+  /** URI-encoded resolved Node Key as it appears in the artifact URI. */
   encodedNodeKey: string;
+  /** Decoded (resolved) Node Key with slashes (e.g. "workflow/step-a"). */
   nodeKey: string;
   filename: string;
 }
@@ -24,7 +26,7 @@ export interface ParsedArtifactReference {
 export const ArtifactReferences = {
   make(runId: string, nodeKey: string, filename: string): ArtifactRef {
     validateArtifactFilename(filename);
-    const encodedNodeKey = encodeNodeKeyForDir(nodeKey);
+    const encodedNodeKey = encodeURIComponent(nodeKey);
     const uri = `${ARTIFACT_URI_PREFIX}${runId}/nodes/${encodedNodeKey}/${filename}`;
     return { uri, runId, nodeKey, filename };
   },
@@ -35,18 +37,25 @@ export const ArtifactReferences = {
     }
 
     const parts = uri.slice(ARTIFACT_URI_PREFIX.length).split("/");
-    if (parts.length < 4 || parts[1] !== "nodes") {
+    if (parts.length !== 4 || parts[1] !== "nodes") {
       throw new Error(`Invalid artifact URI format: ${uri}`);
     }
 
     const runId = parts[0];
-    const filename = parts[parts.length - 1];
-    const encodedNodeKey = parts.slice(2, parts.length - 1).join("/");
+    const encodedNodeKey = parts[2];
+    const filename = parts[3];
     if (!runId || !encodedNodeKey || !filename) {
       throw new Error(`Invalid artifact URI format: ${uri}`);
     }
 
-    return { uri, runId, encodedNodeKey, nodeKey: encodedNodeKey, filename };
+    let nodeKey: string;
+    try {
+      nodeKey = decodeURIComponent(encodedNodeKey);
+    } catch {
+      throw new Error(`Invalid artifact URI format: ${uri}`);
+    }
+
+    return { uri, runId, encodedNodeKey, nodeKey, filename };
   },
 
   tryParse(uri: string): ParsedArtifactReference | undefined {
@@ -66,7 +75,7 @@ export const ArtifactReferences = {
   resolvePath(baseDir: string, uri: string, isUnsafeRunId: (runId: string) => boolean): string | undefined {
     const ref = this.tryParse(uri);
     if (!ref || isUnsafeRunId(ref.runId)) return undefined;
-    if (!isSafeUriPathSegment(ref.encodedNodeKey) || !isSafeUriPathSegment(ref.filename)) return undefined;
+    if (!isSafeEncodedNodeKey(ref.encodedNodeKey) || !isSafeUriPathSegment(ref.filename)) return undefined;
 
     try {
       validateArtifactFilename(ref.filename);
@@ -74,8 +83,11 @@ export const ArtifactReferences = {
       return undefined;
     }
 
+    const safeNodeDir = encodeNodeKeyForDir(ref.nodeKey);
+    if (!isSafeUriPathSegment(safeNodeDir)) return undefined;
+
     const runDir = join(baseDir, ref.runId);
-    const resolved = resolve(join(runDir, "artifacts", ref.encodedNodeKey, ref.filename));
+    const resolved = resolve(join(runDir, "artifacts", safeNodeDir, ref.filename));
     if (!isPathAtOrBelow(resolved, runDir)) return undefined;
     return resolved;
   }
@@ -169,7 +181,18 @@ function validateArtifactFilename(filename: string): void {
 }
 
 function isSafeUriPathSegment(segment: string): boolean {
-  return Boolean(segment) && !segment.split("/").some((part) => part === "" || part === "." || part === "..");
+  return Boolean(segment) && !segment.split(/[/:]/).some((part) => part === "" || part === "." || part === "..");
+}
+
+function isSafeEncodedNodeKey(encodedNodeKey: string): boolean {
+  return (
+    Boolean(encodedNodeKey) &&
+    !encodedNodeKey.includes("/") &&
+    !encodedNodeKey.includes("\\") &&
+    !encodedNodeKey.includes(":") &&
+    encodedNodeKey !== "." &&
+    encodedNodeKey !== ".."
+  );
 }
 
 function isPathAtOrBelow(path: string, basePath: string): boolean {

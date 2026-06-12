@@ -32,7 +32,7 @@ agents:
   verdict:
     use: traex
   summarizer:
-    use: claude 
+    use: traex
 
 workflow:
   steps:

@@ -39,7 +39,11 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
       type: "object",
       required: ["id"],
       properties: {
-        id: { type: "string", minLength: 1 }
+        id: {
+          type: "string",
+          minLength: 1,
+          pattern: "^[^:]+$"
+        }
       },
       oneOf: [
         { $ref: "#/$defs/agentStep" },
@@ -59,7 +63,11 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
       additionalProperties: false,
       required: ["run", "use", "prompt"],
       properties: {
-        id: { type: "string", minLength: 1 },
+        id: {
+          type: "string",
+          minLength: 1,
+          pattern: "^[^:]+$"
+        },
         run: { const: "agent" },
         use: { type: "string" },
         prompt: { type: "string" },
@@ -79,7 +87,11 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
       additionalProperties: false,
       required: ["run", "cmd"],
       properties: {
-        id: { type: "string", minLength: 1 },
+        id: {
+          type: "string",
+          minLength: 1,
+          pattern: "^[^:]+$"
+        },
         run: { const: "program" },
         cmd: {
           oneOf: [
@@ -105,7 +117,11 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
       additionalProperties: false,
       required: ["parallel"],
       properties: {
-        id: { type: "string", minLength: 1 },
+        id: {
+          type: "string",
+          minLength: 1,
+          pattern: "^[^:]+$"
+        },
         parallel: {
           type: "array"
         },
@@ -125,7 +141,11 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
       additionalProperties: false,
       required: ["fanout"],
       properties: {
-        id: { type: "string", minLength: 1 },
+        id: {
+          type: "string",
+          minLength: 1,
+          pattern: "^[^:]+$"
+        },
         fanout: { $ref: "#/$defs/fanoutSpec" }
       }
     },
@@ -174,7 +194,11 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
       additionalProperties: false,
       required: ["switch"],
       properties: {
-        id: { type: "string", minLength: 1 },
+        id: {
+          type: "string",
+          minLength: 1,
+          pattern: "^[^:]+$"
+        },
         switch: { $ref: "#/$defs/switchSpec" }
       }
     },
@@ -217,7 +241,11 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
       additionalProperties: false,
       required: ["loop"],
       properties: {
-        id: { type: "string", minLength: 1 },
+        id: {
+          type: "string",
+          minLength: 1,
+          pattern: "^[^:]+$"
+        },
         loop: { $ref: "#/$defs/loopSpec" }
       }
     },
@@ -243,7 +271,11 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
       additionalProperties: false,
       required: ["guard"],
       properties: {
-        id: { type: "string", minLength: 1 },
+        id: {
+          type: "string",
+          minLength: 1,
+          pattern: "^[^:]+$"
+        },
         guard: { $ref: "#/$defs/guardSpec" }
       }
     },
@@ -275,7 +307,11 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
       additionalProperties: false,
       required: ["approval"],
       properties: {
-        id: { type: "string", minLength: 1 },
+        id: {
+          type: "string",
+          minLength: 1,
+          pattern: "^[^:]+$"
+        },
         approval: { $ref: "#/$defs/approvalSpec" }
       }
     },
@@ -302,7 +338,11 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
       additionalProperties: false,
       required: ["subworkflow"],
       properties: {
-        id: { type: "string", minLength: 1 },
+        id: {
+          type: "string",
+          minLength: 1,
+          pattern: "^[^:]+$"
+        },
         subworkflow: { type: "string" },
         input: { type: "object" }     // free-form
       }
