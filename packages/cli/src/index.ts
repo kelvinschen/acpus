@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { compileWorkflow, lintWorkflow, workflowSourcePolicy } from "@acpus/core";
 import { Command } from "commander";
-import { relative } from "node:path";
+import { readFileSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   findWorkflowCatalogEntry,
   listWorkflowCatalog,
@@ -25,11 +27,14 @@ const EXIT_USER_CANCEL = 2;
 const EXIT_CLI_ERROR = 1;
 
 const program = new Command();
+const cliPackageJson = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8")
+) as { version?: string };
 
 program
   .name("acpus")
   .description("Local durable ACP workflow runner")
-  .version("0.1.0");
+  .version(cliPackageJson.version ?? "0.0.0");
 
 const workflows = new Command("workflows")
   .alias("wf")

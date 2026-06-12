@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execaNode } from "execa";
@@ -9,6 +9,15 @@ const cliEntry = join(repoRoot, "packages/cli/src/index.ts");
 const fixtureDir = join(repoRoot, "packages/core/test/fixtures");
 
 describe("acpus CLI", () => {
+  it("prints the package version for --version", async () => {
+    const packageJson = JSON.parse(readFileSync(join(repoRoot, "packages/cli/package.json"), "utf8")) as { version: string };
+    const result = await execaNode(cliEntry, ["--version"], {
+      nodeOptions: ["--import", "tsx", "--conditions=development"]
+    });
+
+    expect(result.stdout).toBe(packageJson.version);
+  });
+
   it("lints a valid workflow as JSON", async () => {
     const result = await execaNode(cliEntry, ["workflows", "lint", join(fixtureDir, "all-primitives.yaml"), "--json"], {
       nodeOptions: ["--import", "tsx", "--conditions=development"]
