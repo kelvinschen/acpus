@@ -2,18 +2,21 @@ name: Publish to npm
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
 
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
   id-token: write
 
 jobs:
-  publish:
+  changesets:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
         with:
@@ -33,16 +36,14 @@ jobs:
 
       - run: pnpm test
 
-      - name: Check npm access
-        run: pnpm publish:preflight
+      - name: Create version PR or publish packages
+        uses: changesets/action@v1
+        with:
+          version: pnpm version-packages
+          publish: pnpm ci:publish
+          commit: "chore: version packages"
+          title: "chore: version packages"
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish public packages
-        run: |
-          pnpm --filter @acpus/core publish --access public --provenance --no-git-checks
-          pnpm --filter @acpus/runtime publish --access public --provenance --no-git-checks
-          pnpm --filter @acpus/tui publish --access public --provenance --no-git-checks
-          pnpm --filter acpus publish --access public --provenance --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: true

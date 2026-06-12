@@ -12,12 +12,16 @@
     "typecheck": "pnpm --filter @acpus/core build && pnpm -r typecheck",
     "test": "vitest run",
     "test:watch": "vitest",
+    "changeset": "changeset",
+    "version-packages": "changeset version && pnpm install --lockfile-only",
+    "ci:publish": "pnpm publish:preflight && changeset publish",
     "acpus": "node packages/cli/dist/index.js",
     "mock-agent": "node packages/mock-agent/dist/index.js",
     "publish:preflight": "node scripts/preflight-publish.mjs",
     "clean": "pnpm -r clean"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.31.0",
     "@types/node": "^22.15.30",
     "execa": "^9.6.0",
     "tsx": "^4.20.3",
