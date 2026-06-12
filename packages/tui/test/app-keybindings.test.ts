@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  TUI_REFRESH_INTERVAL_MS,
+  controlConfirmationMessage,
   detailSectionKeyForNumberInput,
   jsonDisplayResetKey,
   nextJsonCursor,
+  runElapsedMs,
   scrollOffsetForCursor
 } from "../src/components/App.js";
 import { CONTROL_KEY_TO_ACTION, READ_ONLY_DISABLED_CONTROL_KEYS, isReadOnlyControlKey } from "../src/controls.js";
@@ -15,6 +18,27 @@ const sections: DetailSection[] = [
 ];
 
 describe("App detail keybindings", () => {
+  it("uses normal and low refresh cadences for terminal and served visualizers", () => {
+    expect(TUI_REFRESH_INTERVAL_MS.normal).toBe(1000);
+    expect(TUI_REFRESH_INTERVAL_MS.low).toBe(3000);
+  });
+
+  it("builds confirmation prompts for important controls", () => {
+    expect(controlConfirmationMessage({ action: "cancel", scope: "run", targetLabel: "run_1" })).toBe("Cancel run run_1?");
+    expect(controlConfirmationMessage({ action: "retry", scope: "node", targetLabel: "workflow/task" })).toBe("Retry node workflow/task?");
+    expect(controlConfirmationMessage({ action: "approve", scope: "node", targetLabel: "workflow/gate" })).toBe("Approve node workflow/gate?");
+  });
+
+  it("computes live elapsed from the ticker clock and terminal elapsed from updatedAt", () => {
+    const run = {
+      status: "running",
+      createdAt: "2026-06-12T00:00:00.000Z",
+      updatedAt: "2026-06-12T00:00:01.000Z"
+    };
+    expect(runElapsedMs(run, Date.parse("2026-06-12T00:00:05.000Z"))).toBe(5000);
+    expect(runElapsedMs({ ...run, status: "completed" }, Date.parse("2026-06-12T00:00:05.000Z"))).toBe(1000);
+  });
+
   it("maps number keys to available detail tabs", () => {
     expect(detailSectionKeyForNumberInput("1", sections)).toBe("summary");
     expect(detailSectionKeyForNumberInput("2", sections)).toBe("prompt");

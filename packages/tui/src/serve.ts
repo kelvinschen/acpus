@@ -302,6 +302,7 @@ function buildChildEnv(options: ServeTuiOptions): Record<string, string> {
   }
   env.ACPUS_TUI_ENDPOINT = options.endpoint;
   env.ACPUS_TUI_READ_ONLY = "1";
+  env.ACPUS_TUI_REFRESH_MODE = "low";
   if (options.runId) env.ACPUS_TUI_RUN_ID = options.runId;
   return env;
 }

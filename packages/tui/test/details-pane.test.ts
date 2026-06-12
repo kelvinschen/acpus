@@ -472,4 +472,21 @@ describe("buildDetailLines", () => {
     const text = formatDetailLinesPlainText(buildDetailLines(row, 60, {}, "2026-06-09T00:00:07.000Z"));
     expect(text).toContain("Duration: 00:00:07");
   });
+
+  it("uses the supplied render clock for running open-ended durations", () => {
+    const row = makeRow({
+      instance: {
+        nodeKey: "workflow/test",
+        nodeId: "test-node",
+        kind: "run.agent",
+        state: "running",
+        attempt: 1,
+        startedAt: "2026-06-09T00:00:00.000Z"
+      }
+    });
+    const first = formatDetailLinesPlainText(buildDetailLines(row, 60, {}, Date.parse("2026-06-09T00:00:07.000Z")));
+    const second = formatDetailLinesPlainText(buildDetailLines(row, 60, {}, Date.parse("2026-06-09T00:00:08.000Z")));
+    expect(first).toContain("Duration: 00:00:07");
+    expect(second).toContain("Duration: 00:00:08");
+  });
 });

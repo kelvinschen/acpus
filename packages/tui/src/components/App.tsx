@@ -29,6 +29,7 @@ import {
 import { Footer } from "./Footer.js";
 import { copyToClipboard } from "../osc52.js";
 import {
+  Confirm,
   Spinner,
   jsonExpandedIdsForInitialDepth,
   jsonRowDescriptors,
@@ -43,6 +44,13 @@ import {
 
 type Focus = "graph" | "details";
 type OverviewMessage = { text: string; level: "info" | "error" };
+export type TuiRefreshMode = "normal" | "low";
+export type PendingControlConfirmation = {
+  action: ControlAction;
+  scope: "run" | "node";
+  nodeKey?: string;
+  targetLabel: string;
+};
 type TranscriptCache = {
   path?: string;
   offset: number;
@@ -52,7 +60,10 @@ type TranscriptCache = {
   inFlight: boolean;
 };
 
-const AGENT_TRANSCRIPT_REFRESH_MS = 3000;
+export const TUI_REFRESH_INTERVAL_MS: Record<TuiRefreshMode, number> = {
+  normal: 1000,
+  low: 3000
+};
 const AGENT_TRANSCRIPT_CATCHUP_REFRESH_MS = 25;
 const AGENT_TRANSCRIPT_READ_CHUNK_BYTES = 2 * 1024 * 1024;
 const AGENT_TRANSCRIPT_READ_BUDGET_BYTES = 4 * 1024 * 1024;
@@ -61,11 +72,13 @@ const AGENT_TRANSCRIPT_READ_BUDGET_BYTES = 4 * 1024 * 1024;
 export function App({
   client,
   runId,
-  readOnly = false
+  readOnly = false,
+  refreshMode = "normal"
 }: {
   client: RunSupervisorClient;
   runId: string;
   readOnly?: boolean;
+  refreshMode?: TuiRefreshMode;
 }): React.ReactElement {
   const { exit } = useApp();
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -79,10 +92,16 @@ export function App({
   const [messages, setMessages] = useState<OverviewMessage[]>([]);
   const [artifactPaths, setArtifactPaths] = useState<Record<string, string>>({});
   const [agentExecution, setAgentExecution] = useState<AgentExecutionSummary | undefined>(undefined);
+  const [pendingControl, setPendingControl] = useState<PendingControlConfirmation | undefined>(undefined);
   const transcriptCacheRef = useRef(new Map<string, TranscriptCache>());
   const jsonResetKeyRef = useRef<string | undefined>(undefined);
 
-  const snapshot = useRunPoller(client, runId, 400, refreshNonce);
+  const refreshIntervalMs = TUI_REFRESH_INTERVAL_MS[refreshMode];
+  const snapshot = useRunPoller(client, runId, refreshIntervalMs, refreshNonce);
+  const run = snapshot.run;
+  const live = run ? !isTerminal(run.status) : false;
+  const liveNow = useLiveNow(live, refreshIntervalMs);
+  const durationClock = run ? (live ? liveNow : run.updatedAt) : undefined;
   const { rows: termRows, columns: termCols } = useTerminalSize();
 
   // Build the render tree once per snapshot; rows and counts both derive from it.
@@ -118,7 +137,7 @@ export function App({
   // The whole frame MUST fit within the terminal height, otherwise Ink cannot
   // erase the previous frame and old frames linger. Chrome = top bar (3) +
   // footer (2) + margins; the rest goes to the three equal-height panes.
-  const RESERVED = 6;
+  const RESERVED = 6 + (pendingControl ? 1 : 0);
   const paneHeight = Math.max(8, termRows - RESERVED);
   // Box border + header consume ~4 lines for the graph; details reserves an
   // extra line for the tab bar (see DetailsPane).
@@ -136,13 +155,11 @@ export function App({
     Math.min(remaining - 20, focus === "details" ? focusedShare : remaining - focusedShare)
   );
   const graphWidth = Math.max(20, remaining - detailsWidth);
-  const freezeAt = snapshot.run?.status === "running" ? undefined : snapshot.run?.updatedAt;
-
   // Flatten the selected node into a single array of colored lines, then derive
   // the scroll bound from its true length (so long prompts/outputs scroll fully).
   const detailSections = useMemo(
-    () => buildDetailSections(selected, detailsWidth, artifactPaths, freezeAt, agentExecution),
-    [selected, detailsWidth, artifactPaths, freezeAt, agentExecution]
+    () => buildDetailSections(selected, detailsWidth, artifactPaths, durationClock, agentExecution),
+    [selected, detailsWidth, artifactPaths, durationClock, agentExecution]
   );
   const detailLines = useMemo(() => detailSections.flatMap((section) => section.lines), [detailSections]);
   const resolvedActiveDetailSectionKey = useMemo(
@@ -228,7 +245,7 @@ export function App({
       if (!cancelled && (snapshot.run?.status === "running" || hasPendingReads)) {
         timer = setTimeout(() => {
           void refresh();
-        }, hasPendingReads ? AGENT_TRANSCRIPT_CATCHUP_REFRESH_MS : AGENT_TRANSCRIPT_REFRESH_MS);
+        }, hasPendingReads ? transcriptCatchupRefreshMs(refreshMode) : refreshIntervalMs);
       }
     };
     void refresh();
@@ -242,6 +259,8 @@ export function App({
     selected?.rowKey,
     selectedTranscriptRefsKey,
     selectedTranscriptPathsKey,
+    refreshIntervalMs,
+    refreshMode,
     snapshot.run?.status
   ]);
 
@@ -282,6 +301,7 @@ export function App({
   }, [activeDetailSectionKey, resolvedActiveDetailSectionKey]);
 
   useInput((input, key) => {
+    if (pendingControl && !(key.ctrl && input === "c")) return;
     if (input === "q" || (key.ctrl && input === "c")) {
       exit();
       return;
@@ -392,13 +412,7 @@ export function App({
         pushMessage(`Cannot ${action} a ${selected.state ?? "not-started"} node.`, "error");
         return;
       }
-      try {
-        const state = await applyControl(client, action, runId, selectedNodeKey);
-        pushMessage(`${action} → ${selectedNodeKey} (${state.state})`, "info");
-        setRefreshNonce((n) => n + 1);
-      } catch (err) {
-        pushMessage(err instanceof Error ? err.message : String(err), "error");
-      }
+      setPendingControl({ action, scope: "node", nodeKey: selectedNodeKey, targetLabel: selectedNodeKey });
       return;
     }
 
@@ -411,9 +425,28 @@ export function App({
       pushMessage(`Cannot ${action} a ${run?.status ?? "unknown"} run.`, "error");
       return;
     }
+    setPendingControl({ action, scope: "run", targetLabel: runId });
+  }
+
+  async function confirmPendingControl(pending: PendingControlConfirmation): Promise<void> {
+    setPendingControl(undefined);
+    if (pending.scope === "node") {
+      if (!pending.nodeKey) {
+        pushMessage(`Cannot ${pending.action}: missing selected node.`, "error");
+        return;
+      }
+      try {
+        const state = await applyControl(client, pending.action, runId, pending.nodeKey);
+        pushMessage(`${pending.action} → ${pending.nodeKey} (${state.state})`, "info");
+        setRefreshNonce((n) => n + 1);
+      } catch (err) {
+        pushMessage(err instanceof Error ? err.message : String(err), "error");
+      }
+      return;
+    }
     try {
-      const state = await applyRunControl(client, action, runId);
-      pushMessage(`${action} run → ${state.status}`, "info");
+      const state = await applyRunControl(client, pending.action, runId);
+      pushMessage(`${pending.action} run → ${state.status}`, "info");
       setRefreshNonce((n) => n + 1);
     } catch (err) {
       pushMessage(err instanceof Error ? err.message : String(err), "error");
@@ -432,12 +465,10 @@ export function App({
     });
   }
 
-  const run = snapshot.run;
-  const live = run ? !isTerminal(run.status) : false;
   // While live, elapsed grows with wall-clock. Once the run reaches a terminal
   // state, freeze it at (updatedAt − createdAt) so it stops ticking.
   const elapsed = run
-    ? formatElapsed((live ? Date.now() : Date.parse(run.updatedAt)) - Date.parse(run.createdAt))
+    ? formatElapsed(runElapsedMs(run, liveNow))
     : "--:--:--";
   const overviewMessages = [
     ...messages,
@@ -481,6 +512,8 @@ export function App({
           <Text color="green">{run?.workflowName}</Text>
           <Text color="gray">  │  Status </Text>
           <Text color={live ? "yellow" : "white"}>{run?.status}</Text>
+          <Text color="gray">  │  Refresh </Text>
+          <Text>{refreshMode === "low" ? "3s" : "1s"}</Text>
           {run && run.runAttempt > 1 ? (
             <>
               <Text color="gray">  │  </Text>
@@ -492,7 +525,7 @@ export function App({
           <Text color="gray">Elapsed </Text>
           <Text>{elapsed}  </Text>
           {live
-            ? readOnly
+            ? readOnly || refreshMode === "low"
               ? <Text color="yellow" bold>■ LIVE</Text>
               : <Spinner label="LIVE" active={live} />
             : <Text color="gray" bold>■ ENDED</Text>}
@@ -510,7 +543,7 @@ export function App({
           moreBelow={moreBelow}
           height={paneHeight}
           width={graphWidth}
-          freezeAt={freezeAt}
+          freezeAt={durationClock}
           collapsedRows={collapsedRows}
         />
         <DetailsPane
@@ -523,6 +556,22 @@ export function App({
           jsonDisplay={activeJsonDisplay}
         />
       </Box>
+
+      {pendingControl ? (
+        <Box paddingX={1}>
+          <Confirm
+            message={controlConfirmationMessage(pendingControl)}
+            defaultValue={false}
+            onConfirm={() => {
+              void confirmPendingControl(pendingControl);
+            }}
+            onCancel={() => {
+              pushMessage(`${pendingControl.action} cancelled`, "info");
+              setPendingControl(undefined);
+            }}
+          />
+        </Box>
+      ) : null}
 
       <Footer
         focus={focus}
@@ -549,6 +598,51 @@ export function scrollOffsetForCursor(cursor: number, currentOffset: number, vis
   if (cursor < currentOffset) return cursor;
   if (cursor >= currentOffset + height) return cursor - height + 1;
   return currentOffset;
+}
+
+export function controlConfirmationMessage(pending: PendingControlConfirmation): string {
+  const target = pending.scope === "run" ? `run ${pending.targetLabel}` : `node ${pending.targetLabel}`;
+  switch (pending.action) {
+    case "pause":
+      return `Pause ${target}?`;
+    case "resume":
+      return `Resume ${target}?`;
+    case "cancel":
+      return `Cancel ${target}?`;
+    case "retry":
+      return `Retry ${target}?`;
+    case "approve":
+      return `Approve ${target}?`;
+    case "reject":
+      return `Reject ${target}?`;
+  }
+}
+
+export function runElapsedMs(
+  run: { status: string; createdAt: string; updatedAt: string },
+  liveNowMs: number
+): number {
+  const end = isTerminal(run.status) ? Date.parse(run.updatedAt) : liveNowMs;
+  return end - Date.parse(run.createdAt);
+}
+
+function useLiveNow(active: boolean, intervalMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const timer = setInterval(() => {
+      setNow(Date.now());
+    }, intervalMs);
+    return () => clearInterval(timer);
+  }, [active, intervalMs]);
+
+  return now;
+}
+
+function transcriptCatchupRefreshMs(refreshMode: TuiRefreshMode): number {
+  return refreshMode === "low" ? TUI_REFRESH_INTERVAL_MS.low : AGENT_TRANSCRIPT_CATCHUP_REFRESH_MS;
 }
 
 export function jsonDisplayResetKey(

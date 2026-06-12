@@ -1,3 +1,4 @@
+export * from "./Confirm.js";
 export * from "./JSONViewer.js";
 export * from "./KeyHint.js";
 export * from "./Markdown.js";

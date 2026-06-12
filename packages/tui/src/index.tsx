@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { render } from "ink";
 import { RunSupervisorClient } from "@acpus/runtime";
-import { App } from "./components/App.js";
+import { App, type TuiRefreshMode } from "./components/App.js";
 import { RunPicker } from "./components/RunPicker.js";
 
 export interface RunTuiOptions {
@@ -11,29 +11,40 @@ export interface RunTuiOptions {
   endpoint: string;
   /** Disable mutating Run controls while preserving navigation. */
   readOnly?: boolean;
+  /** Render cadence. Terminal TUI defaults to normal; served visualizer uses low. */
+  refreshMode?: TuiRefreshMode;
 }
 
 function Root({
   client,
   initialRunId,
-  readOnly
+  readOnly,
+  refreshMode = "normal"
 }: {
   client: RunSupervisorClient;
   initialRunId?: string;
   readOnly?: boolean;
+  refreshMode?: TuiRefreshMode;
 }): React.ReactElement {
   const [runId, setRunId] = useState<string | undefined>(initialRunId);
   if (!runId) {
     return <RunPicker client={client} onSelect={setRunId} />;
   }
-  return <App client={client} runId={runId} readOnly={readOnly} />;
+  return <App client={client} runId={runId} readOnly={readOnly} refreshMode={refreshMode} />;
 }
 
 /** Launch the TUI. Resolves when the user exits. */
 export async function runTui(options: RunTuiOptions): Promise<void> {
   const client = new RunSupervisorClient(options.endpoint);
   client.clientKind = "visualize";
-  const { waitUntilExit } = render(<Root client={client} initialRunId={options.runId} readOnly={options.readOnly} />);
+  const { waitUntilExit } = render(
+    <Root
+      client={client}
+      initialRunId={options.runId}
+      readOnly={options.readOnly}
+      refreshMode={options.refreshMode ?? "normal"}
+    />
+  );
   try {
     await waitUntilExit();
   } finally {

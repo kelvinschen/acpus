@@ -96,12 +96,14 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - The single-Run visualizer MUST render a colored `▾` disclosure indicator for expanded collapsible graph rows and a colored `▸` disclosure indicator for collapsed collapsible graph rows.
 - The single-Run visualizer MUST treat `p`, `r`, and `c` as Run-level pause, resume, and cancel controls.
 - The single-Run visualizer MUST treat `R` as Node-level retry only when the selected row is a failed executable Node; otherwise `R` MUST apply Run-level retry when the Run is failed.
+- The single-Run visualizer MUST require an inline confirmation before applying `p`, `r`, `c`, `R`, `a`, or `x`.
 - The single-Run visualizer MUST keep control results, poll errors, and selected awaiting-gate hints in a fixed multi-line Status Overview messages area, not in the footer.
 - The single-Run visualizer MUST render a node-kind legend in Status Overview and MUST render graph node kinds with the symbols `▣`, `◉`, `$`, `▥`, `◬`, `◇`, `↻`, `◈`, `□`, and `▧` for pipeline, agent, program, parallel, fanout, switch, loop, guard, approval, and subworkflow respectively.
 - The single-Run visualizer MUST color tree guide-line segments with the same fixed color as the node kind that owns that guide-line column.
 - The single-Run visualizer MUST render switch branch labels and fanout item labels with square brackets, not guillemets.
 - The single-Run visualizer MUST show Run retry generation as `↺N` in the top bar only when the Run's `runAttempt` is greater than `1`, and MUST NOT show per-node attempt markers in graph rows.
-- The single-Run visualizer MUST show an animated live indicator while the Run is running and MUST render a non-animated ended indicator when the Run is terminal. The read-only Served Visualizer session MUST use a non-animated live indicator to reduce browser terminal repaint churn.
+- The terminal single-Run visualizer MUST poll live Run and Node state once per second. The read-only Served Visualizer session MUST poll live Run and Node state every three seconds to reduce browser terminal repaint churn.
+- The single-Run visualizer MUST show an animated live indicator while the Run is running in terminal mode and MUST render a non-animated ended indicator when the Run is terminal. The read-only Served Visualizer session MUST use a non-animated live indicator.
 - The single-Run visualizer MUST freeze open-ended Node durations at the Run's `updatedAt` when the Run is not `running`.
 - The single-Run visualizer MUST hide the internal paused-abort reason `Aborted: paused` from the Details error block.
 - The single-Run visualizer MUST support copying the full selected-node details text through OSC 52 with `y` while the details pane is focused.
@@ -149,6 +151,6 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - Runtime CLI tests MUST cover Served Visualizer bridge listen parsing, token-gated WebSocket access, client-limit rejection, and PTY cleanup when a browser WebSocket disconnects or the PTY exits.
 - Runtime CLI tests MUST cover `acpus runs list` and the visualize picker listing the most recent 50 Runs sorted by `updatedAt` descending.
 - Runtime CLI tests MUST cover `acpus runs clean` deleting terminal Runs, preserving running and paused Runs, skipping corrupt metadata, and supporting `--dry-run` and `--json`.
-- TUI tests MUST cover single-Run visualizer wrapping, detail tabs, Markdown prompt rendering, JSON output rendering, Output JSON cursor preservation across live data refreshes, controlled details scrolling, key hints, live indicator behavior, plain-text artifact rendering, Agent Step execution telemetry including estimated token formatting and retry-attempt aggregation, plain-text details copy formatting, node-kind symbols, Status Overview messages, frozen durations, hidden paused-abort details, exit viewport clearing, and collapse filtering.
+- TUI tests MUST cover single-Run visualizer wrapping, detail tabs, Markdown prompt rendering, JSON output rendering, Output JSON cursor preservation across live data refreshes, controlled details scrolling, key hints, live indicator behavior, refresh cadences, important-control confirmation prompts, plain-text artifact rendering, Agent Step execution telemetry including estimated token formatting and retry-attempt aggregation, plain-text details copy formatting, node-kind symbols, Status Overview messages, frozen durations, hidden paused-abort details, exit viewport clearing, and collapse filtering.
 - TUI tests MUST cover read-only Served Visualizer footer hints and centralized disabled control keys.
 - Runtime CLI tests MUST cover Agent Step execution through acpx once Agent Activity integration exists.

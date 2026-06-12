@@ -6,6 +6,7 @@ import {
   ScrollArea,
   Tabs,
   clampInline,
+  confirmSuffix,
   jsonExpandedIdsForInitialDepth,
   jsonRowDescriptors,
   jsonViewerRows,
@@ -75,6 +76,11 @@ describe("InkUI-adapted components", () => {
     expect(text).toContain("scroll");
     expect(text).toContain("[y]");
     expect(text).toContain("copy all");
+  });
+
+  it("renders confirmation default hints", () => {
+    expect(confirmSuffix(false)).toBe("(y/N)");
+    expect(confirmSuffix(true)).toBe("(Y/n)");
   });
 
   it("renders spinner as inline text suitable for top bars", () => {

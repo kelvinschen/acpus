@@ -201,6 +201,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - The Served Visualizer bridge MUST connect to the existing Workspace Run Supervisor as a visualize client, and MUST NOT become the Run Supervisor, replace the Run Supervisor, or write supervisor discovery metadata.
 - Stopping the Served Visualizer bridge MUST close browser access and its terminal child processes, and MUST NOT stop the Run Supervisor or mutate any Run.
 - Each browser connection to the Served Visualizer bridge MUST receive an independent read-only visualizer session.
+- Terminal visualizer sessions MUST poll live Run and Node state every one second. Served Visualizer sessions MUST poll live Run and Node state every three seconds and MUST use a non-animated live indicator.
 - The Served Visualizer bridge MUST require an unguessable bridge token for the browser page and WebSocket endpoint, and MUST reject browser WebSocket upgrades whose `Origin` header does not match the request `Host`.
 - The Served Visualizer bridge MUST allow at most eight active browser sessions and MUST reject excess WebSocket connections before spawning a terminal child process.
 - The Served Visualizer bridge MUST bound browser-to-bridge messages to 1 MiB and MUST clamp terminal resize requests to at most 500 columns and 200 rows.

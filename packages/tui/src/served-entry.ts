@@ -8,5 +8,6 @@ if (!endpoint) {
 await runTui({
   endpoint,
   runId: process.env.ACPUS_TUI_RUN_ID || undefined,
-  readOnly: process.env.ACPUS_TUI_READ_ONLY === "1"
+  readOnly: process.env.ACPUS_TUI_READ_ONLY === "1",
+  refreshMode: process.env.ACPUS_TUI_REFRESH_MODE === "low" ? "low" : "normal"
 });
