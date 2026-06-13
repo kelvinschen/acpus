@@ -71,10 +71,8 @@ Use Acpus as the durable local runner underneath the user's preferred agent. Kee
 - Keep `output:` schemas flat and minimal. Do not put the output schema in the prompt; Acpus injects it and retries parse/schema failures.
 - Treat `output:` as workflow control data, not agent memory. Put reports, rationale, findings, handoff notes, and cross-step context in files, then return their paths.
 - Use Program Steps only for deterministic local glue: preparing directories, computing paths, running verification, collecting diffs, applying or rolling back patches, and reading simple state for guards.
+- Prefer real helper scripts over long inline shell for repository-local workflows. Dry-run helper scripts to verify they work before integrating them into a Workflow Spec. Inline Program scripts are acceptable when they stay short, deterministic, and mechanically verifiable.
 - Let Agent Steps handle planning, judgment, synthesis, failure interpretation, role boundaries, and cross-round memory. If a Program Step starts to encode those decisions, move that work into an agent prompt and a durable handoff/report file.
-- Prefer real helper scripts over long inline shell for repository-local workflows. For public single-file templates, inline Program scripts are acceptable when they stay short, deterministic, and mechanically verifiable.
-- Avoid `bash -lc` in Program Steps and verification wrappers. Use `bash -c` when shell semantics are required so the step inherits the runner environment instead of rebuilding it as a login shell.
-- Approval gates are for humans. Agents may prepare approval context but must not approve on the human's behalf.
 - Use raw CEL in `when`, `until`, and expression-valued `over`; use `${{ ... }}` interpolation inside prompts, command strings, keys, and messages.
 - Every Node exposes its primary produced value through `steps.<id>.output`. Program Steps also expose `steps.<id>.exit_code`.
 - Ask before destructive workspace changes, publishing, pushing git refs, applying patches, or running external side-effect commands.
