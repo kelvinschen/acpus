@@ -26,11 +26,15 @@ Use Program Steps for deterministic glue: directory setup, stable path calculati
 
 Prefer real helper scripts over long inline shell in repository-local workflows. Public single-file templates may keep inline scripts for easy distribution, but those scripts should stay short and mechanically verifiable. Avoid `bash -lc`; use `bash -c` when shell semantics are required.
 
+Never interpolate bash variables into inline scripts (`python3 -c "…$VAR…"`, `node -e "...$VAR..."`) — use heredoc or `process.argv` / `sys.argv` to pass values instead. Acpus already guarantees Node.js is available; Python is optional.
+
 Leave Program Steps at the default `expect.exit_code: [0]` unless a non-zero code is true business data (for example, tests failed but should be parsed, `grep` found nothing, or `diff` found changes). In those cases, explicitly allow the known codes, such as `expect: { exit_code: [0, 1] }`.
 
 ## 4. Do Not Put Output Schema In Prompts
 
 Declare `output:` in YAML. Acpus injects the schema prompt and automatically retries agent replies that fail JSON extraction or schema validation. In the prompt, say what to accomplish and where to write large artifacts.
+
+The output schema is strict by default — extra fields not declared in `output:` will cause validation failure.
 
 ## 5. Use Session Keys Sparingly
 
@@ -59,3 +63,13 @@ Use raw CEL in `when`, `until`, and expression-valued `over`. Use `${{ ... }}` i
 ## 11. Recover From Failures Before Rewriting
 
 When execution fails, inspect the Run, node state, error, and artifacts first. Prefer node retry, resume, approval signal, or replay before editing the Workflow Spec.
+
+## 12. Always Declare Timeout
+
+`timeout` is in **milliseconds** when a number (`timeout: 300000` = 5 min). String duration syntax is also supported: `timeout: 5m`, `timeout: 30s`, `timeout: 500ms`.
+
+- **Program Step**: timeout enforced by subprocess; reports `failureKind: "timeout"`.
+- **Agent Step**: timeout delegated to `acpx --timeout <seconds>`; reports `failureKind: "exit"` (not "timeout").
+- **Approval Step**: requires `on_timeout` (`approve`/`reject`/`fail`/`escalate`) when `timeout` is set; no timeout means indefinite wait.
+
+Common values: `30000` = 30s, `120000` = 2min, `300000` = 5min. A bare `timeout: 300` means 300ms — almost certainly a mistake.

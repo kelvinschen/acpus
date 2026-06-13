@@ -86,7 +86,7 @@ When a Run fails or stalls:
 3. Pick the smallest recovery:
    - **Spec is wrong** (script bug, schema mismatch, control-flow error): edit spec, then `acpus runs fork <runId> <fixed-spec> [--dry-run] [--from <nodeKey>]`. Inherits unaffected work.
    - **Agent choice is wrong for the next submission**: use `--agents` on `workflows run` or `runs fork`; see `references/agent-selection.md`.
-   - **Spec is fine, transient failure**: `acpus runs retry <runId> [--node <nodeKey>]`.
+   - **Spec is fine, transient failure**: `acpus runs retry <runId> [--node <nodeKey>]` — retry replays the original frozen spec; if you edited the spec, use `fork` instead.
    - **Paused / awaiting / verifying**: `acpus runs resume <runId>` / `acpus runs signal <runId> --node <nodeKey> --approve|--reject` / `acpus runs replay <runId>`.
 
 See `references/error-recovery.md` for failure-symptom decision table and fork semantics. Background polling cadence: `references/background-run-polling.md`.
@@ -103,10 +103,11 @@ See `references/error-recovery.md` for failure-symptom decision table and fork s
 - `references/expressions-and-outputs.md`: CEL, templates, and output shape rules.
 - `references/composite-nodes.md`: guard, loop, fanout, parallel, and switch behavior.
 - `references/error-recovery.md`: failure-specific recovery paths.
+- `references/common-errors.md`: frequent authoring mistakes and runtime errors with fixes.
 - `references/agent-selection.md`: choosing acpx-backed worker agents.
 - `references/background-run-polling.md`: efficient polling cadence for background Runs.
-- `references/playbooks.md`: GitHub source and raw links for public Agent Workflow Playbooks.
-- `assets/examples/`: copyable Workflow Spec examples.
+- `references/playbooks.md`: GitHub source and raw links for public Agent Workflow Playbooks, which contains many complex workflow cases.
+- `assets/examples/`: copyable Workflow Spec examples — `review-guard` (simple, guard), `draft-review-loop` (medium, loop), `topic-fanout-synthesis` (complex, fanout).
 
 ## Source Docs
 

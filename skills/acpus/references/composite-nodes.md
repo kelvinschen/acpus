@@ -32,6 +32,8 @@ Use this when authoring workflows with control flow. Composite nodes expose thei
       - id: attempt
         run: agent
         use: codex
+        timeout: 10m
+        session_key: repair-loop
         prompt: "Repair ${{ input.target }}."
         output:
           ok: boolean
@@ -52,6 +54,7 @@ Use this when authoring workflows with control flow. Composite nodes expose thei
       - id: review
         run: agent
         use: codex
+        timeout: 10m
         prompt: "Review ${{ item.path }}."
         output:
           report_path: string
@@ -77,6 +80,43 @@ Use `quorum` and `success_criteria.min_success` only when partial success is acc
       cmd: ["pnpm", "test"]
 ```
 
+> **Common mistake**: parallel output is a record keyed by branch id, so there is an extra `.output.` layer between the parallel node and the branch.
+>
+> ```yaml
+> # ❌ Wrong: intuitive but incorrect
+> steps.checks.review.output.report_path
+>
+> # ✅ Correct: parallel output → branch key → branch output
+> steps.checks.output.review.output.report_path
+> ```
+
 ## Switch
 
 Switch branches are evaluated in order. Use a default branch when the workflow should continue for unknown cases; omit it when an unmatched case should fail loudly.
+
+```yaml
+- id: route
+  switch:
+    cases:
+      - when: steps.classify.output.complexity == "simple"
+        do:
+          - id: handle_simple
+            run: agent
+            use: fast_agent
+            prompt: "Handle ${{ input.task }}."
+            output:
+              result_path: string
+      - when: steps.classify.output.complexity == "complex"
+        do:
+          - id: handle_complex
+            run: agent
+            use: deep_agent
+            prompt: "Handle ${{ input.task }}."
+            output:
+              result_path: string
+    default:
+      do:
+        - id: handle_unknown
+          run: program
+          cmd: ["bash", "-c", "echo 'Unhandled complexity'"]
+```

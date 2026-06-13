@@ -1,0 +1,90 @@
+version: 1
+name: example-topic-fanout-synthesis
+description: Agent identifies topics, fanout reviews each, synthesis agent cross-validates findings.
+
+input:
+  subject: string
+  output_root?: string = ".acpus/output/example-topic-fanout-synthesis"
+
+agents:
+  identifier:
+    use: pi
+  reviewer:
+    use: pi
+  synthesizer:
+    use: pi
+
+workflow:
+  steps:
+    - id: prepare
+      run: program
+      timeout: 30s
+      cmd:
+        - bash
+        - -c
+        - |
+          set -euo pipefail
+          OUT="${{ input.output_root }}/${{ run_id }}"
+          mkdir -p "$OUT"
+          node -e '
+          const out = process.argv[1];
+          console.log(JSON.stringify({output_dir: out}));
+          ' "$OUT"
+      capture:
+        from: stdout
+        parse: json
+      output:
+        output_dir: string
+
+    - id: identify
+      run: agent
+      use: identifier
+      timeout: 10m
+      prompt: |
+        Identify the key topics worth investigating for the subject.
+        Return each topic with a name and focus area.
+        Subject:
+        ${{ input.subject }}
+      output:
+        topics: [{ topic: string, focus: string }]
+
+    - id: review_topics
+      fanout:
+        over: steps.identify.output.topics
+        key: "${{ item.topic }}"
+        join: all
+        do:
+          - id: review
+            run: agent
+            use: reviewer
+            timeout: 10m
+            prompt: |
+              Investigate this topic and write a report to:
+              ${{ steps.prepare.output.output_dir }}/topic-${{ item_index }}.md
+              Topic: ${{ item.topic }}
+              Focus: ${{ item.focus }}
+              Return the finding count and whether any are critical.
+            output:
+              report_path: string
+              finding_count: integer
+              has_critical: boolean
+
+    - id: synthesize
+      run: agent
+      use: synthesizer
+      timeout: 15m
+      prompt: |
+        Synthesize findings from ${{ len(steps.review_topics.output) }} topic reviews.
+        Each review wrote its report to the output directory:
+        ${{ steps.prepare.output.output_dir }}/
+        Read every .md file in that directory and produce a cross-validated summary.
+      output:
+        report_path: string
+        total_findings: integer
+        overall_risk: string
+
+outputs:
+  topics_reviewed: ${{ len(steps.review_topics.output) }}
+  report_path: ${{ steps.synthesize.output.report_path }}
+  total_findings: ${{ steps.synthesize.output.total_findings }}
+  overall_risk: ${{ steps.synthesize.output.overall_risk }}

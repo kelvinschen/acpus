@@ -1,0 +1,52 @@
+version: 1
+name: example-review-guard
+description: Agent reviews a topic, guard checks for issues, second agent drafts a fix if needed.
+
+input:
+  topic: string
+
+agents:
+  reviewer:
+    use: pi
+  drafter:
+    use: pi
+
+workflow:
+  steps:
+    - id: review
+      run: agent
+      use: reviewer
+      timeout: 10m
+      prompt: |
+        Review the topic and identify issues. Output schema is strict — no extra fields.
+        Topic:
+        ${{ input.topic }}
+      output:
+        issue_count: integer
+        summary: string
+
+    - id: require_issues
+      guard:
+        when: steps.review.output.issue_count > 0
+        then: continue
+        else: fail
+        message: "No issues found for ${{ input.topic }}"
+
+    - id: draft
+      run: agent
+      use: drafter
+      timeout: 10m
+      prompt: |
+        Draft a fix for the issues found in the review.
+        Summary of issues:
+        ${{ steps.review.output.summary }}
+        Topic:
+        ${{ input.topic }}
+      output:
+        draft_path: string
+        resolved_count: integer
+
+outputs:
+  issue_count: ${{ steps.review.output.issue_count }}
+  draft_path: ${{ steps.draft.output.draft_path }}
+  resolved_count: ${{ steps.draft.output.resolved_count }}

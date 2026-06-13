@@ -1,0 +1,89 @@
+version: 1
+name: example-draft-review-loop
+description: Agent drafts a document, reviewer loops until quality passes, then a finalizer wraps up.
+
+input:
+  topic: string
+  output_root?: string = ".acpus/output/example-draft-review-loop"
+
+agents:
+  drafter:
+    use: pi
+  reviewer:
+    use: pi
+  finalizer:
+    use: pi
+
+workflow:
+  steps:
+    - id: prepare
+      run: program
+      timeout: 30s
+      cmd:
+        - bash
+        - -c
+        - |
+          set -euo pipefail
+          OUT="${{ input.output_root }}/${{ run_id }}"
+          mkdir -p "$OUT"
+          node -e '
+          const out = process.argv[1];
+          console.log(JSON.stringify({output_dir: out, draft_path: out + "/draft.md"}));
+          ' "$OUT"
+      capture:
+        from: stdout
+        parse: json
+      output:
+        output_dir: string
+        draft_path: string
+
+    - id: improve
+      loop:
+        max_iterations: 4
+        until: loop.iter > 0 && loop.last.output.quality_ok
+        do:
+          - id: draft
+            run: agent
+            use: drafter
+            timeout: 10m
+            session_key: draft-loop
+            prompt: |
+              Draft or revise the document at:
+              ${{ steps.prepare.output.draft_path }}
+              Iteration: ${{ loop.iter }}
+              Previous feedback:
+              ${{ loop.iter == 0 ? "(first attempt)" : loop.last.output.feedback }}
+              Topic:
+              ${{ input.topic }}
+            output:
+              draft_path: string
+              attempt: integer
+
+          - id: review
+            run: agent
+            use: reviewer
+            timeout: 10m
+            prompt: |
+              Review the draft at:
+              ${{ steps.prepare.output.draft_path }}
+              Be strict. Return quality_ok = true only if the draft is complete and correct.
+            output:
+              quality_ok: boolean
+              feedback: string
+
+    - id: finalize
+      run: agent
+      use: finalizer
+      timeout: 5m
+      prompt: |
+        Finalize the approved draft at:
+        ${{ steps.prepare.output.draft_path }}
+        Write a one-line summary of what was accomplished.
+      output:
+        summary: string
+        final_path: string
+
+outputs:
+  draft_path: ${{ steps.prepare.output.draft_path }}
+  summary: ${{ steps.finalize.output.summary }}
+  quality_ok: ${{ steps.improve.output.quality_ok }}
