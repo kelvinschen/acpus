@@ -1,5 +1,11 @@
 # @acpus/runtime
 
+## 0.2.2
+
+### Patch Changes
+
+- 1842614: Expose persisted run input through the supervisor API and show root workflow input and public outputs in the TUI.
+
 ## 0.2.1
 
 ### Patch Changes
