@@ -1,0 +1,860 @@
+#!/usr/bin/env python3
+"""Single-file generator: render Acpus Workflow Spec(s) into a self-contained HTML visualizer.
+
+Usage:
+  python3 workflow-viz.py <spec.yaml>            # -> <name>.html
+  python3 workflow-viz.py <spec.yaml> -o out.html
+  python3 workflow-viz.py <dir> -o <outdir>      # batch + index.html
+
+Only dependency is PyYAML. The HTML template is embedded below.
+
+Parses the Spec into a model, embeds it as JSON, renders metadata + inputs +
+agents + a workflow digraph + node detail + outputs. Gruvbox Dark, Noto Sans +
+Source Code Pro.
+"""
+import json
+import pathlib
+import sys
+
+import yaml
+
+
+# Node-kind symbols/colors mirror the existing TUI / served visualizer.
+KIND_META = {
+    "pipeline": {"symbol": "\u25a3", "color": "#98971a", "label": "Pipeline"},
+    "agent": {"symbol": "\u25c9", "color": "#689d6a", "label": "Agent"},
+    "program": {"symbol": "$", "color": "#d79921", "label": "Program"},
+    "parallel": {"symbol": "\u25a5", "color": "#83a598", "label": "Parallel"},
+    "fanout": {"symbol": "\u25ec", "color": "#b16286", "label": "Fanout"},
+    "switch": {"symbol": "\u25c7", "color": "#458588", "label": "Switch"},
+    "loop": {"symbol": "\u21bb", "color": "#fabd2f", "label": "Loop"},
+    "guard": {"symbol": "\u25c8", "color": "#fb4934", "label": "Guard"},
+    "approval": {"symbol": "\u25a1", "color": "#a89984", "label": "Approval"},
+    "subworkflow": {"symbol": "\u25a7", "color": "#928374", "label": "Subworkflow"},
+}
+
+
+def yaml_dump(value):
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return yaml.safe_dump(value, sort_keys=False, allow_unicode=True, default_flow_style=False).rstrip()
+
+
+def parse_inputs(raw):
+    out = []
+    if not isinstance(raw, dict):
+        return out
+    for key, value in raw.items():
+        name = str(key)
+        optional = name.endswith("?")
+        name = name.rstrip("?")
+        entry = {"name": name, "optional": optional, "type": "", "default": None}
+        if isinstance(value, dict):
+            entry["type"] = str(value.get("type", ""))
+            if "default" in value:
+                entry["default"] = yaml_dump(value.get("default"))
+        elif isinstance(value, str):
+            if " = " in value:
+                type_part, default_part = value.split(" = ", 1)
+                entry["type"] = type_part.strip()
+                entry["default"] = default_part.strip()
+            else:
+                entry["type"] = value.strip()
+        else:
+            entry["type"] = yaml_dump(value)
+        out.append(entry)
+    return out
+
+
+def parse_agents(raw):
+    out = []
+    if not isinstance(raw, dict):
+        return out
+    for name, value in raw.items():
+        value = value or {}
+        out.append({
+            "name": str(name),
+            "type": str(value.get("type", "builtin")),
+            "use": yaml_dump(value.get("use", "")),
+            "model": str(value.get("model")) if value.get("model") is not None else None,
+            "cwd": str(value.get("cwd")) if value.get("cwd") is not None else None,
+            "env": yaml_dump(value.get("env")) if value.get("env") is not None else None,
+        })
+    return out
+
+
+def cmd_to_text(cmd):
+    if cmd is None:
+        return None
+    if isinstance(cmd, list):
+        return "\n".join(str(part) for part in cmd)
+    return str(cmd)
+
+
+def cmd_key_label(cmd):
+    if isinstance(cmd, list) and cmd:
+        # Skip generic shells to surface the meaningful token.
+        skip = {"bash", "-c", "-lc", "sh", "-e", "set", "-euo", "pipefail"}
+        for token in cmd:
+            token = str(token)
+            if token not in skip and not token.startswith("-"):
+                return token
+        return str(cmd[0])
+    if isinstance(cmd, str):
+        return cmd.strip().splitlines()[0] if cmd.strip() else ""
+    return ""
+
+
+def normalize_node(node):
+    """Normalize one Spec node into the renderer model."""
+    nid = node.get("id", "")
+    common = {}
+    for field in ("timeout", "on_error", "session_key"):
+        if field in node:
+            common[field] = yaml_dump(node[field])
+    if "retry" in node:
+        common["retry"] = yaml_dump(node["retry"])
+
+    if "loop" in node:
+        loop = node["loop"] or {}
+        return {
+            "id": nid, "kind": "loop",
+            "until": yaml_dump(loop.get("until")),
+            "max_iterations": yaml_dump(loop.get("max_iterations")),
+            "body": [normalize_node(n) for n in (loop.get("do") or [])],
+            **common,
+        }
+    if "fanout" in node:
+        fan = node["fanout"] or {}
+        return {
+            "id": nid, "kind": "fanout",
+            "over": yaml_dump(fan.get("over")),
+            "fanoutKey": yaml_dump(fan.get("key")),
+            "join": yaml_dump(fan.get("join")),
+            "max_concurrency": yaml_dump(fan.get("max_concurrency")),
+            "quorum": yaml_dump(fan.get("quorum")),
+            "success_criteria": yaml_dump(fan.get("success_criteria")),
+            "body": [normalize_node(n) for n in (fan.get("do") or [])],
+            **common,
+        }
+    if "parallel" in node:
+        return {
+            "id": nid, "kind": "parallel",
+            "join": yaml_dump(node.get("join")),
+            "branches": [normalize_node(n) for n in (node["parallel"] or [])],
+            **common,
+        }
+    if "switch" in node:
+        sw = node["switch"] or {}
+        cases = []
+        for case in (sw.get("cases") or []):
+            cases.append({
+                "when": yaml_dump(case.get("when")),
+                "body": [normalize_node(n) for n in (case.get("do") or [])],
+            })
+        default = None
+        if sw.get("default") is not None:
+            default = [normalize_node(n) for n in (sw["default"].get("do") or [])]
+        return {"id": nid, "kind": "switch", "cases": cases, "default": default, **common}
+    if "guard" in node:
+        g = node["guard"] or {}
+        return {
+            "id": nid, "kind": "guard",
+            "when": yaml_dump(g.get("when")),
+            "then": yaml_dump(g.get("then")),
+            "else": yaml_dump(g.get("else")),
+            "message": yaml_dump(g.get("message")),
+            **common,
+        }
+    if "approval" in node:
+        return {
+            "id": nid, "kind": "approval",
+            "prompt": yaml_dump(node.get("prompt")),
+            "on_timeout": yaml_dump(node.get("on_timeout")),
+            **common,
+        }
+    if "subworkflow" in node:
+        sub = node["subworkflow"] or {}
+        return {
+            "id": nid, "kind": "subworkflow",
+            "ref": yaml_dump(sub.get("ref") or sub.get("path")),
+            "input": yaml_dump(sub.get("input")),
+            **common,
+        }
+
+    run = node.get("run")
+    if run == "agent":
+        return {
+            "id": nid, "kind": "agent",
+            "use": yaml_dump(node.get("use")),
+            "prompt": yaml_dump(node.get("prompt")),
+            "output": yaml_dump(node.get("output")),
+            **common,
+        }
+    if run == "program":
+        return {
+            "id": nid, "kind": "program",
+            "cmd": cmd_to_text(node.get("cmd")),
+            "cmd_key": cmd_key_label(node.get("cmd")),
+            "capture": yaml_dump(node.get("capture")),
+            "expect": yaml_dump(node.get("expect")),
+            "env": yaml_dump(node.get("env")),
+            "output": yaml_dump(node.get("output")),
+            **common,
+        }
+    # Fallback: unknown node shape.
+    return {"id": nid, "kind": run or "program", **common}
+
+
+def count_kinds(nodes, acc):
+    for node in nodes:
+        acc[node["kind"]] = acc.get(node["kind"], 0) + 1
+        for child_key in ("body", "branches", "default"):
+            child = node.get(child_key)
+            if isinstance(child, list):
+                count_kinds(child, acc)
+        for case in node.get("cases") or []:
+            count_kinds(case["body"], acc)
+    return acc
+
+
+def build_model(spec, source):
+    steps = ((spec.get("workflow") or {}).get("steps")) or []
+    nodes = [normalize_node(n) for n in steps]
+    counts = count_kinds(nodes, {})
+    outputs = []
+    for key, value in (spec.get("outputs") or {}).items():
+        outputs.append({"key": str(key), "expr": yaml_dump(value)})
+    return {
+        "name": spec.get("name", "(unnamed)"),
+        "version": spec.get("version", ""),
+        "description": (spec.get("description") or "").strip(),
+        "source": source,
+        "inputs": parse_inputs(spec.get("input")),
+        "agents": parse_agents(spec.get("agents")),
+        "nodes": nodes,
+        "outputs": outputs,
+        "counts": counts,
+        "total": sum(counts.values()),
+        "kindMeta": KIND_META,
+    }
+
+
+def render_page(model):
+    data = json.dumps(model, ensure_ascii=False)
+    return (TEMPLATE
+            .replace("__TITLE__", model["name"])
+            .replace("/*__DATA__*/null", data))
+
+
+INDEX_HEAD = """<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Acpus Workflows</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;600;700&family=Source+Code+Pro:wght@400;600&display=swap" rel="stylesheet"/>
+<style>
+:root{--bg-hard:#1d2021;--bg:#282828;--bg-soft:#32302f;--surface:#3c3836;--surface2:#504945;
+--border:#665c54;--fg:#ebdbb2;--fg-dim:#a89984;--muted:#928374;--yellow:#fabd2f;--aqua:#8ec07c;--blue:#83a598;}
+*{box-sizing:border-box}body{margin:0;background:var(--bg-hard);color:var(--fg);
+font-family:"Noto Sans",system-ui,sans-serif;line-height:1.5}
+header{padding:34px 32px 18px;border-bottom:1px solid var(--border);background:var(--bg)}
+header h1{margin:0 0 6px;font-size:26px}
+header p{margin:0;color:var(--fg-dim);font-size:14px}
+header .src{font-family:"Source Code Pro",monospace;color:var(--muted);font-size:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:18px;padding:28px 32px}
+.card{display:block;background:var(--surface);border:1px solid var(--border);border-radius:12px;
+padding:18px 20px;color:var(--fg);text-decoration:none;transition:.14s}
+.card:hover{background:var(--surface2);transform:translateY(-2px);border-color:var(--yellow)}
+.card h2{margin:0 0 6px;font-size:17px;font-family:"Source Code Pro",monospace}
+.card .desc{color:var(--fg-dim);font-size:13px;min-height:38px}
+.card .meta{margin-top:12px;display:flex;flex-wrap:wrap;gap:6px}
+.chip{font-size:11px;font-family:"Source Code Pro",monospace;background:var(--bg-soft);
+border:1px solid var(--border);border-radius:10px;padding:1px 8px;color:var(--fg-dim)}
+.chip.total{background:var(--yellow);color:var(--bg-hard);font-weight:700;border-color:var(--yellow)}
+</style></head><body>
+<header><h1>Acpus Workflow Spec Visualizer</h1>
+<p>Static, read-only review pages generated from <span class="src">.acpus/workflows</span> by <span class="src">workflow-viz.py</span>.</p></header>
+<div class="grid">
+"""
+
+
+def render_index(index):
+    cards = []
+    for entry in index:
+        chips = ['<span class="chip total">%d nodes</span>' % entry["total"]]
+        for kind, num in sorted(entry["counts"].items()):
+            label = KIND_META.get(kind, {}).get("label", kind)
+            chips.append('<span class="chip">%s &times;%d</span>' % (label, num))
+        cards.append(
+            '<a class="card" href="%s"><h2>%s</h2><div class="desc">%s</div><div class="meta">%s</div></a>'
+            % (entry["file"],
+               entry["name"].replace("&", "&amp;").replace("<", "&lt;"),
+               (entry["description"] or "").replace("&", "&amp;").replace("<", "&lt;"),
+               "".join(chips))
+        )
+    return INDEX_HEAD + "\n".join(cards) + "\n</div></body></html>\n"
+
+
+TEMPLATE = r"""<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>__TITLE__ · Acpus Workflow</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;600;700&family=Source+Code+Pro:wght@400;600&display=swap" rel="stylesheet" />
+<style>
+:root{
+  --bg-hard:#1d2021; --bg:#282828; --bg-soft:#32302f;
+  --surface:#3c3836; --surface2:#504945; --border:#665c54;
+  --fg:#ebdbb2; --fg-dim:#a89984; --muted:#928374;
+  --red:#fb4934; --green:#b8bb26; --yellow:#fabd2f; --blue:#83a598;
+  --purple:#d3869b; --aqua:#8ec07c; --orange:#fe8019;
+  --k-pipeline:#98971a; --k-agent:#689d6a; --k-program:#d79921; --k-parallel:#83a598;
+  --k-fanout:#b16286; --k-switch:#458588; --k-loop:#fabd2f; --k-guard:#fb4934;
+  --k-approval:#a89984; --k-subworkflow:#928374;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden}
+body{
+  background:var(--bg-hard); color:var(--fg);
+  font-family:"Noto Sans",system-ui,sans-serif; font-size:14px; line-height:1.5;
+  display:flex;flex-direction:column;
+}
+code,pre,.mono{font-family:"Source Code Pro",ui-monospace,monospace}
+a{color:var(--blue);text-decoration:none}
+a:hover{text-decoration:underline}
+
+#topbar{padding:18px 24px;border-bottom:1px solid var(--border);background:var(--bg);flex-shrink:0}
+.tb-head{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+.tb-head h1{margin:0;font-size:22px;font-weight:700}
+.ver{font-family:"Source Code Pro",monospace;font-size:12px;color:var(--bg-hard);background:var(--yellow);
+  padding:1px 8px;border-radius:10px;font-weight:600}
+.src{color:var(--muted);font-family:"Source Code Pro",monospace;font-size:12px}
+.home{margin-left:auto;font-size:13px}
+.pills{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center}
+.pill{display:inline-flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--border);
+  border-radius:12px;padding:2px 10px;font-size:12px}
+.pill .dot{width:9px;height:9px;border-radius:50%}
+.pill.total{background:var(--surface2);font-weight:600}
+.desc-btn{display:inline-flex;align-items:center;gap:4px;background:var(--surface);border:1px solid var(--border);
+  border-radius:12px;padding:2px 10px;font-size:12px;color:var(--fg-dim);cursor:pointer;font-family:inherit}
+.desc-btn:hover{background:var(--surface2);border-color:var(--yellow);color:var(--fg)}
+#desc-overlay{display:none;position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.55);
+  align-items:center;justify-content:center}
+#desc-overlay.open{display:flex}
+#desc-modal{background:var(--bg);border:1px solid var(--border);border-radius:12px;
+  padding:20px 24px;max-width:640px;width:90%;max-height:70vh;overflow:auto;position:relative}
+#desc-modal h3{margin:0 0 10px;font-size:15px;color:var(--fg)}
+#desc-modal pre{white-space:pre-wrap;background:var(--bg-soft);border:1px solid var(--border);
+  border-radius:8px;padding:12px;margin:0;font-size:12.5px;color:var(--fg-dim)}
+#desc-close{position:absolute;top:10px;right:14px;background:none;border:none;color:var(--muted);
+  font-size:18px;cursor:pointer;padding:0 4px}
+#desc-close:hover{color:var(--fg)}
+
+#layout{display:flex;align-items:stretch;gap:0;flex:1 1 auto;min-height:0}
+#graphpane{flex:1 1 auto;min-width:0;padding:20px 24px;overflow:auto}
+.graphtop{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+.graphtop .panetitle{margin:0}
+#zoombar{margin-left:auto;display:flex;align-items:center;gap:4px}
+#zoombar button{background:var(--surface);color:var(--fg);border:1px solid var(--border);
+  border-radius:6px;font-family:"Source Code Pro",monospace;font-size:12px;padding:3px 9px;cursor:pointer}
+#zoombar button:hover{background:var(--surface2);border-color:var(--yellow)}
+#zoomlabel{font-family:"Source Code Pro",monospace;font-size:12px;color:var(--fg-dim);min-width:42px;text-align:center}
+#graphscroll{width:100%;text-align:center}
+#graphfit{display:inline-block;text-align:left;transform-origin:top center}
+#side{flex:0 0 430px;max-width:46vw;border-left:1px solid var(--border);
+  overflow:hidden;padding:0;background:var(--bg);display:flex;flex-direction:column}
+.tabs{display:flex;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--bg-soft)}
+.tab-btn{flex:1;padding:9px 0;text-align:center;font-size:12px;font-weight:600;
+  letter-spacing:.06em;text-transform:uppercase;color:var(--muted);cursor:pointer;
+  border:none;background:none;font-family:"Source Code Pro",monospace;
+  border-bottom:2px solid transparent;transition:.12s}
+.tab-btn:hover{color:var(--fg-dim);background:rgba(255,255,255,.03)}
+.tab-btn.active{color:var(--yellow);border-bottom-color:var(--yellow)}
+.tab-pane{display:none;flex:1 1 auto;overflow:auto;padding:18px 20px;min-height:0}
+.tab-pane.active{display:block}
+.panetitle{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+  margin:0 0 12px;font-weight:700}
+
+/* graph */
+.scope{display:flex;flex-direction:column;align-items:center}
+.conn{width:2px;height:18px;background:var(--border);position:relative}
+.conn::after{content:"";position:absolute;bottom:-1px;left:50%;transform:translateX(-50%);
+  border-left:5px solid transparent;border-right:5px solid transparent;border-top:6px solid var(--border)}
+.node{position:relative;width:260px;max-width:100%;background:var(--surface);border:1px solid var(--border);
+  border-left:4px solid var(--muted);border-radius:8px;padding:9px 12px;cursor:pointer;transition:.12s}
+.node:hover{background:var(--surface2);transform:translateY(-1px)}
+.node.sel{outline:2px solid var(--yellow);outline-offset:1px}
+.node .row1{display:flex;align-items:center;gap:8px}
+.node .sym{font-family:"Source Code Pro",monospace;font-size:15px;width:18px;text-align:center}
+.node .nid{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.node .badge{margin-left:auto;font-size:10px;letter-spacing:.05em;color:var(--bg-hard);
+  padding:1px 6px;border-radius:8px;font-weight:700;font-family:"Source Code Pro",monospace}
+.node .keyline{margin-top:4px;font-family:"Source Code Pro",monospace;font-size:11.5px;color:var(--fg-dim);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.composite{width:auto;max-width:100%;border:1px dashed var(--border);border-radius:10px;
+  background:rgba(255,255,255,.02);padding:0;position:relative}
+.composite .fanout-badge{position:absolute;top:-1px;right:-1px;
+  font-family:"Source Code Pro",monospace;font-size:11px;font-weight:700;
+  color:var(--bg-hard);background:var(--k-fanout);padding:1px 7px;
+  border-radius:0 10px 0 8px;letter-spacing:.03em;pointer-events:none}
+.composite>.chead{display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer;
+  border-bottom:1px dashed var(--border);border-radius:10px 10px 0 0}
+.composite>.chead:hover{background:rgba(255,255,255,.04)}
+.composite>.chead.sel{outline:2px solid var(--yellow);outline-offset:-2px}
+.composite>.chead .sym{font-family:"Source Code Pro",monospace;font-size:15px;width:18px;text-align:center}
+.composite>.chead .nid{font-weight:700}
+.composite>.chead .badge{font-size:10px;color:var(--bg-hard);padding:1px 6px;border-radius:8px;font-weight:700;
+  font-family:"Source Code Pro",monospace}
+.composite>.chead .keyfield{font-family:"Source Code Pro",monospace;font-size:11px;color:var(--fg-dim);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.composite>.chead .toggle{margin-left:auto;color:var(--muted);font-size:13px;padding:0 4px}
+.cbody{padding:16px 16px}
+.cbody.collapsed{display:none}
+.cols{display:flex;gap:18px;align-items:flex-start}
+.col{display:flex;flex-direction:column;align-items:center;gap:0;flex:0 0 auto}
+.col .collabel{font-family:"Source Code Pro",monospace;font-size:11px;color:var(--blue);
+  background:var(--bg-soft);border:1px solid var(--border);border-radius:8px;padding:2px 8px;margin-bottom:10px;
+  max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.switch-lanes{display:flex;gap:0;align-items:flex-start}
+.switch-lane{display:flex;flex-direction:column;align-items:center;gap:0;flex:0 0 auto;padding:0 14px}
+.switch-lane .sl-label{font-family:"Source Code Pro",monospace;font-size:11px;color:var(--k-switch);
+  background:var(--bg-soft);border:1px solid var(--border);border-radius:8px;padding:2px 8px;margin-bottom:10px;
+  letter-spacing:.03em;font-weight:600}
+.switch-divider{width:0;height:100%;border-left:1px dashed var(--border);align-self:stretch}
+.lanehint{font-family:"Source Code Pro",monospace;font-size:11px;color:var(--purple);margin-bottom:10px}
+.backedge{margin-top:10px;font-family:"Source Code Pro",monospace;font-size:11px;color:var(--yellow);
+  border-top:1px dashed var(--k-loop);padding-top:8px;width:100%;text-align:center}
+
+/* side panels */
+.panel{margin-bottom:22px}
+.io-section{margin-bottom:14px}
+.io-section:last-child{margin-bottom:0}
+.io-label{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+  margin:0 0 8px;font-weight:700}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:12.5px}
+.kv .k{color:var(--muted);font-family:"Source Code Pro",monospace}
+.kv .v{font-family:"Source Code Pro",monospace;word-break:break-word}
+.tag{display:inline-block;font-size:10px;font-family:"Source Code Pro",monospace;padding:0 6px;border-radius:8px;
+  background:var(--surface2);color:var(--fg-dim)}
+.tag.req{background:var(--red);color:var(--bg-hard);font-weight:700}
+.tag.opt{background:var(--surface2);color:var(--fg-dim)}
+.item{border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px;background:var(--bg-soft)}
+.item .name{font-weight:600;font-family:"Source Code Pro",monospace}
+.fields{display:flex;flex-direction:column;gap:4px;margin:6px 0 0}
+.field-row{display:flex;align-items:baseline;gap:8px;font-family:"Source Code Pro",monospace;font-size:12px}
+.field-row .fname{color:var(--aqua);font-weight:600}
+.field-row .ftype{color:var(--fg-dim)}
+.field-row .fopt{font-size:10px;color:var(--muted);background:var(--surface2);padding:0 5px;border-radius:6px}
+.codeblock{background:var(--bg-hard);border:1px solid var(--border);border-radius:8px;padding:10px;
+  margin:6px 0 0;font-size:12px;white-space:pre-wrap;word-break:break-word;max-height:340px;overflow:auto;color:var(--fg)}
+.fieldlabel{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin:12px 0 2px;font-weight:700}
+#detail .dhead{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+#detail .dhead .sym{font-family:"Source Code Pro",monospace;font-size:20px}
+#detail .dhead .nid{font-size:16px;font-weight:700;font-family:"Source Code Pro",monospace}
+#detail .dhead .badge{font-size:10px;color:var(--bg-hard);padding:1px 7px;border-radius:8px;font-weight:700;font-family:"Source Code Pro",monospace}
+.empty{color:var(--muted);font-style:italic}
+.metaline{font-size:12px;color:var(--fg-dim);font-family:"Source Code Pro",monospace;margin:2px 0}
+.metaline b{color:var(--fg)}
+*{scrollbar-width:none}
+*::-webkit-scrollbar{display:none}
+</style>
+</head>
+<body>
+<div id="topbar"></div>
+<div id="layout">
+  <div id="graphpane">
+    <div class="graphtop"><div class="panetitle">Workflow Digraph</div>
+      <div id="zoombar">
+        <button id="zfit" title="Fit to width">fit</button>
+        <button id="zout" title="Zoom out">&minus;</button>
+        <span id="zoomlabel">100%</span>
+        <button id="zin" title="Zoom in">+</button>
+        <button id="zreset" title="Reset to 100%">100%</button>
+      </div>
+    </div>
+    <div id="graphscroll"><div id="graphfit"><div id="graph" class="scope"></div></div></div>
+  </div>
+  <div id="side">
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="detail">Node Detail</button>
+      <button class="tab-btn" data-tab="wf-io">Workflow I/O</button>
+    </div>
+    <div id="detail" class="tab-pane active panel"></div>
+    <div id="wf-io" class="tab-pane panel"></div>
+  </div>
+</div>
+<script>
+const MODEL = /*__DATA__*/null;
+const KM = MODEL.kindMeta;
+let UID = 0;
+const REG = {};
+
+function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));}
+function kmeta(kind){return KM[kind]||{symbol:"\u25cb",color:"#928374",label:kind};}
+
+function keyfield(node){
+  switch(node.kind){
+    case "agent": return node.use?("use: "+node.use):"";
+    case "program": return node.cmd_key?("$ "+node.cmd_key):"program";
+    case "guard": return node.when?("when: "+node.when):"";
+    case "loop": return "until: "+(node.until||"-")+(node.max_iterations?("  ·  max "+node.max_iterations):"");
+    case "fanout": return "over: "+(node.over||"-")+(node.fanoutKey?("  ·  key "+node.fanoutKey):"");
+    case "switch": return ((node.cases||[]).length)+" case(s)"+(node.default?" + default":"");
+    case "parallel": return (node.join?("join: "+node.join+"  ·  "):"")+((node.branches||[]).length)+" branch(es)";
+    case "subworkflow": return node.ref?("ref: "+node.ref):"";
+    case "approval": return node.prompt?node.prompt.split("\n")[0]:"approval";
+    default: return "";
+  }
+}
+
+const COMPOSITE = new Set(["loop","fanout","parallel","switch","subworkflow"]);
+
+function makeLeaf(node){
+  const m=kmeta(node.kind); node._uid="n"+(UID++); REG[node._uid]=node;
+  const el=document.createElement("div");
+  el.className="node kind-"+node.kind; el.style.borderLeftColor=m.color; el.dataset.uid=node._uid;
+  el.innerHTML='<div class="row1"><span class="sym" style="color:'+m.color+'">'+esc(m.symbol)+'</span>'
+    +'<span class="nid">'+esc(node.id)+'</span>'
+    +'<span class="badge" style="background:'+m.color+'">'+esc(node.kind.toUpperCase())+'</span></div>'
+    +(keyfield(node)?'<div class="keyline">'+esc(keyfield(node))+'</div>':'');
+  el.addEventListener("click",()=>select(node._uid,el));
+  return el;
+}
+
+function makeComposite(node){
+  const m=kmeta(node.kind); node._uid="n"+(UID++); REG[node._uid]=node;
+  const box=document.createElement("div");
+  box.className="composite kind-"+node.kind; box.style.borderColor=m.color;
+  const head=document.createElement("div");
+  head.className="chead"; head.dataset.uid=node._uid;
+  head.innerHTML='<span class="sym" style="color:'+m.color+'">'+esc(m.symbol)+'</span>'
+    +'<span class="nid">'+esc(node.id)+'</span>'
+    +'<span class="badge" style="background:'+m.color+'">'+esc(node.kind.toUpperCase())+'</span>'
+    +'<span class="keyfield">'+esc(keyfield(node))+'</span>'
+    +'<span class="toggle">\u25be</span>';
+  const body=document.createElement("div"); body.className="cbody";
+  head.addEventListener("click",e=>{
+    if(e.target.classList.contains("toggle")){
+      body.classList.toggle("collapsed");
+      e.target.textContent=body.classList.contains("collapsed")?"\u25b8":"\u25be";
+      if(fitMode) fitGraph();
+      return;
+    }
+    select(node._uid,head);
+  });
+  // body content
+  if(node.kind==="loop"){
+    body.appendChild(renderScope(node.body));
+    const be=document.createElement("div"); be.className="backedge";
+    be.textContent="\u21bb repeat until "+(node.until||"(condition)");
+    body.appendChild(be);
+  }else if(node.kind==="fanout"){
+    const badge=document.createElement("span"); badge.className="fanout-badge";
+    badge.textContent="×N"; box.appendChild(badge);
+    const hint=document.createElement("div"); hint.className="lanehint";
+    hint.textContent="\u25ec lane template  ["+(node.fanoutKey||node.over||"item")+"]"+(node.join?("  · join "+node.join):"");
+    body.appendChild(hint);
+    body.appendChild(renderScope(node.body));
+  }else if(node.kind==="parallel"){
+    const cols=document.createElement("div"); cols.className="cols";
+    (node.branches||[]).forEach(br=>{
+      const col=document.createElement("div"); col.className="col";
+      const lab=document.createElement("div"); lab.className="collabel"; lab.textContent="branch: "+br.id;
+      col.appendChild(lab); col.appendChild(renderScope([br])); cols.appendChild(col);
+    });
+    body.appendChild(cols);
+  }else if(node.kind==="switch"){
+    const lanes=document.createElement("div"); lanes.className="switch-lanes";
+    (node.cases||[]).forEach((c,i)=>{
+      const lane=document.createElement("div"); lane.className="switch-lane";
+      const lab=document.createElement("div"); lab.className="sl-label"; lab.textContent="case "+i;
+      lane.appendChild(lab); lane.appendChild(renderScope(c.body));
+      if(i>0){const d=document.createElement("div");d.className="switch-divider";lanes.appendChild(d);}
+      lanes.appendChild(lane);
+    });
+    if(node.default){
+      const d=document.createElement("div");d.className="switch-divider";lanes.appendChild(d);
+      const lane=document.createElement("div"); lane.className="switch-lane";
+      const lab=document.createElement("div"); lab.className="sl-label"; lab.textContent="default";
+      lane.appendChild(lab); lane.appendChild(renderScope(node.default)); lanes.appendChild(lane);
+    }
+    body.appendChild(lanes);
+  }else if(node.kind==="subworkflow"){
+    const hint=document.createElement("div"); hint.className="lanehint";
+    hint.textContent="ref: "+(node.ref||"(spec)"); body.appendChild(hint);
+  }
+  box.appendChild(head); box.appendChild(body);
+  return box;
+}
+
+function renderNode(node){
+  return COMPOSITE.has(node.kind)?makeComposite(node):makeLeaf(node);
+}
+
+function renderScope(nodes){
+  const scope=document.createElement("div"); scope.className="scope";
+  (nodes||[]).forEach((node,i)=>{
+    if(i>0){const c=document.createElement("div"); c.className="conn"; scope.appendChild(c);}
+    scope.appendChild(renderNode(node));
+  });
+  if(!nodes||!nodes.length){
+    const e=document.createElement("div"); e.className="empty"; e.textContent="(empty)"; scope.appendChild(e);
+  }
+  return scope;
+}
+
+let selEl=null;
+function switchTab(tabId){
+  document.querySelectorAll(".tab-btn").forEach(b=>{b.classList.toggle("active",b.dataset.tab===tabId);});
+  document.querySelectorAll(".tab-pane").forEach(p=>{p.classList.toggle("active",p.id===tabId);});
+}
+function select(uid,el){
+  if(selEl) selEl.classList.remove("sel");
+  selEl=el; el.classList.add("sel");
+  renderDetail(REG[uid]);
+  switchTab("detail");
+}
+
+function codeBlock(label,val){
+  if(!val) return "";
+  return '<div class="fieldlabel">'+esc(label)+'</div><pre class="codeblock">'+esc(val)+'</pre>';
+}
+function metaLine(label,val){
+  if(!val) return "";
+  return '<div class="metaline"><b>'+esc(label)+':</b> '+esc(val)+'</div>';
+}
+
+function outputSchema(val){
+  if(!val) return "";
+  // Try to parse as YAML dict of {name: type} or {name?: type}
+  const lines=val.trim().split("\n");
+  const fields=[];
+  for(const line of lines){
+    const m=line.match(/^(-\s+)?(\S+\??)\s*:\s*(.+)$/);
+    if(m){
+      let name=m[2]; const opt=name.endsWith("?");
+      if(opt) name=name.slice(0,-1);
+      fields.push({name,opt,type:m[3].trim()});
+    }
+  }
+  if(fields.length){
+    let h='<div class="fieldlabel">Output Schema</div><div class="fields">';
+    fields.forEach(f=>{
+      h+='<div class="field-row"><span class="fname">'+esc(f.name)+'</span>'
+        +'<span class="ftype">'+esc(f.type)+'</span>'
+        +(f.opt?'<span class="fopt">opt</span>':'')+'</div>';
+    });
+    return h+'</div>';
+  }
+  return codeBlock("output schema",val);
+}
+
+function renderDetail(node){
+  const m=kmeta(node.kind);
+  let h='<div class="dhead"><span class="sym" style="color:'+m.color+'">'+esc(m.symbol)+'</span>'
+    +'<span class="nid">'+esc(node.id)+'</span>'
+    +'<span class="badge" style="background:'+m.color+'">'+esc(m.label)+'</span></div>';
+  h+=metaLine("timeout",node.timeout)+metaLine("on_error",node.on_error)
+    +metaLine("session_key",node.session_key)+metaLine("retry",node.retry);
+  if(node.kind==="agent"){
+    h+=metaLine("use",node.use);
+    h+=outputSchema(node.output);
+    h+=codeBlock("prompt",node.prompt);
+  }else if(node.kind==="program"){
+    h+=codeBlock("cmd",node.cmd);
+    h+=codeBlock("capture",node.capture)+codeBlock("expect",node.expect)+codeBlock("env",node.env);
+    h+=outputSchema(node.output);
+  }else if(node.kind==="guard"){
+    h+=codeBlock("when (CEL)",node.when);
+    h+=metaLine("then",node.then)+metaLine("else",node.else);
+    h+=codeBlock("message",node.message);
+  }else if(node.kind==="loop"){
+    h+=metaLine("max_iterations",node.max_iterations);
+    h+=codeBlock("until (CEL)",node.until);
+    h+=metaLine("body nodes",(node.body||[]).length);
+  }else if(node.kind==="fanout"){
+    h+=metaLine("join",node.join)+metaLine("max_concurrency",node.max_concurrency)
+      +metaLine("quorum",node.quorum);
+    h+=codeBlock("over (CEL)",node.over)+codeBlock("key",node.fanoutKey)
+      +codeBlock("success_criteria",node.success_criteria);
+    h+=metaLine("body nodes",(node.body||[]).length);
+  }else if(node.kind==="parallel"){
+    h+=metaLine("join",node.join)+metaLine("branches",(node.branches||[]).map(b=>b.id).join(", "));
+  }else if(node.kind==="switch"){
+    (node.cases||[]).forEach((c,i)=>{h+=codeBlock("case "+i+" when",c.when);});
+    h+=metaLine("default",node.default?"yes":"no");
+  }else if(node.kind==="subworkflow"){
+    h+=metaLine("ref",node.ref); h+=codeBlock("input",node.input);
+  }else if(node.kind==="approval"){
+    h+=metaLine("on_timeout",node.on_timeout); h+=codeBlock("prompt",node.prompt);
+  }
+  document.getElementById("detail").innerHTML='<div class="panetitle">Node Detail</div>'+h;
+}
+
+function renderTopbar(){
+  let pills='<span class="pill total">'+MODEL.total+' nodes</span>';
+  Object.keys(MODEL.counts).sort().forEach(k=>{
+    const m=kmeta(k);
+    pills+='<span class="pill"><span class="dot" style="background:'+m.color+'"></span>'+esc(m.label)+' \u00d7'+MODEL.counts[k]+'</span>';
+  });
+  const desc=MODEL.description?('<button class="desc-btn" onclick="document.getElementById(\'desc-overlay\').classList.add(\'open\')">description</button>'):'';
+  document.getElementById("topbar").innerHTML=
+    '<div class="tb-head"><h1>'+esc(MODEL.name)+'</h1>'
+    +(MODEL.version!==""?'<span class="ver">v'+esc(MODEL.version)+'</span>':'')
+    +'<span class="src">'+esc(MODEL.source)+'</span></div>'
+    +'<div class="pills">'+pills+(desc?'&nbsp;'+desc:'')+'</div>';
+  if(MODEL.description){
+    document.body.insertAdjacentHTML('beforeend',
+      '<div id="desc-overlay" onclick="if(event.target===this)this.classList.remove(\'open\')">'
+      +'<div id="desc-modal"><button id="desc-close" onclick="document.getElementById(\'desc-overlay\').classList.remove(\'open\')">&times;</button>'
+      +'<h3>Description</h3><pre>'+esc(MODEL.description)+'</pre></div></div>');
+  }
+}
+
+function renderWfIO(){
+  let h='<div class="panetitle">Workflow I/O</div>';
+  if(MODEL.agents.length){
+    h+='<div class="io-section"><div class="io-label">Agents</div>';
+    MODEL.agents.forEach(a=>{
+      h+='<div class="item"><div class="name">'+esc(a.name)+' <span class="tag">'+esc(a.type)+'</span></div>'
+        +'<div class="kv"><span class="k">use</span><span class="v">'+esc(a.use||'-')+'</span>'
+        +(a.model?'<span class="k">model</span><span class="v">'+esc(a.model)+'</span>':'')
+        +(a.cwd?'<span class="k">cwd</span><span class="v">'+esc(a.cwd)+'</span>':'')
+        +'</div>'+(a.env?'<pre class="codeblock">'+esc(a.env)+'</pre>':'')+'</div>';
+    });
+    h+='</div>';
+  }
+  if(MODEL.inputs.length){
+    h+='<div class="io-section"><div class="io-label">Inputs</div>';
+    MODEL.inputs.forEach(i=>{
+      h+='<div class="item"><div class="name">'+esc(i.name)+' '
+        +'<span class="tag '+(i.optional?'opt':'req')+'">'+(i.optional?'optional':'required')+'</span></div>'
+        +'<div class="kv"><span class="k">type</span><span class="v">'+esc(i.type||'-')+'</span>'
+        +(i.default!=null?'<span class="k">default</span><span class="v">'+esc(i.default)+'</span>':'')+'</div></div>';
+    });
+    h+='</div>';
+  }
+  if(MODEL.outputs.length){
+    h+='<div class="io-section"><div class="io-label">Outputs</div>';
+    MODEL.outputs.forEach(o=>{
+      h+='<div class="item"><div class="name">'+esc(o.key)+'</div><pre class="codeblock">'+esc(o.expr)+'</pre></div>';
+    });
+    h+='</div>';
+  }
+  if(!MODEL.inputs.length&&!MODEL.outputs.length&&!MODEL.agents.length){h+='<div class="empty">none</div>';}
+  document.getElementById("wf-io").innerHTML=h;
+}
+
+
+
+renderTopbar();
+document.getElementById("graph").appendChild(renderScope(MODEL.nodes));
+renderWfIO();
+
+document.querySelectorAll(".tab-btn").forEach(btn=>{
+  btn.addEventListener("click",()=>switchTab(btn.dataset.tab));
+});
+
+// ---- zoom / fit-to-width ----
+let curZoom=1, fitMode=true;
+const fitEl=document.getElementById("graphfit");
+const paneEl=document.getElementById("graphpane");
+const zlabel=document.getElementById("zoomlabel");
+function applyZoom(z){curZoom=Math.max(0.25,Math.min(2,z));fitEl.style.zoom=String(curZoom);
+  zlabel.textContent=Math.round(curZoom*100)+"%";}
+function fitGraph(){
+  fitEl.style.zoom="1";
+  const avail=paneEl.clientWidth-48;            // minus horizontal padding
+  const natural=fitEl.scrollWidth||fitEl.offsetWidth;
+  fitMode=true; applyZoom(natural>avail?avail/natural:1);
+}
+document.getElementById("zfit").addEventListener("click",fitGraph);
+document.getElementById("zin").addEventListener("click",()=>{fitMode=false;applyZoom(curZoom+0.1);});
+document.getElementById("zout").addEventListener("click",()=>{fitMode=false;applyZoom(curZoom-0.1);});
+document.getElementById("zreset").addEventListener("click",()=>{fitMode=false;applyZoom(1);});
+window.addEventListener("resize",()=>{if(fitMode)fitGraph();});
+window.addEventListener("load",()=>{if(fitMode)fitGraph();});  // re-fit after webfonts load
+requestAnimationFrame(fitGraph);
+
+document.getElementById("detail").innerHTML='<div class="panetitle">Node Detail</div><div class="empty">Select a node in the digraph to see its full definition.</div>';
+</script>
+</body>
+</html>
+"""
+
+
+def _iter_specs(directory):
+    seen, specs = set(), []
+    for pattern in ("*.yaml", "*.yml", "*/*.yaml", "*/*.yml"):
+        for path in sorted(directory.glob(pattern)):
+            if path in seen:
+                continue
+            seen.add(path)
+            try:
+                doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if isinstance(doc, dict) and "workflow" in doc:
+                specs.append((path, doc))
+    return specs
+
+
+def main():
+    import argparse
+    ap = argparse.ArgumentParser(
+        description="Render Acpus Workflow Spec(s) into a self-contained HTML visualizer "
+                    "(Gruvbox Dark, Noto Sans + Source Code Pro).")
+    ap.add_argument("input", help="a Workflow Spec .yaml/.yml file, or a directory of specs")
+    ap.add_argument("-o", "--output",
+                    help="output .html file (single spec) or output directory (directory input)")
+    args = ap.parse_args()
+
+    inp = pathlib.Path(args.input)
+    if not inp.exists():
+        raise SystemExit(f"input not found: {inp}")
+
+    if inp.is_dir():
+        out_dir = pathlib.Path(args.output) if args.output else inp.parent / (inp.name + "-viz")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        index = []
+        for path, spec in _iter_specs(inp):
+            try:
+                rel = str(path.relative_to(inp))
+            except ValueError:
+                rel = path.name
+            model = build_model(spec, rel)
+            slug = model["name"].replace("/", "-")
+            out_file = out_dir / f"{slug}.html"
+            out_file.write_text(render_page(model), encoding="utf-8")
+            index.append({
+                "name": model["name"], "file": out_file.name,
+                "description": model["description"].splitlines()[0] if model["description"] else "",
+                "total": model["total"], "counts": model["counts"],
+            })
+            print(f"generated {out_file.name}  ({model['total']} nodes)")
+        if not index:
+            raise SystemExit(f"no Workflow Specs (yaml with a top-level 'workflow') found under {inp}")
+        (out_dir / "index.json").write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+        (out_dir / "index.html").write_text(render_index(index), encoding="utf-8")
+        print(f"\n{len(index)} pages -> {out_dir}")
+    else:
+        spec = yaml.safe_load(inp.read_text(encoding="utf-8"))
+        if not isinstance(spec, dict) or "workflow" not in spec:
+            raise SystemExit(f"not a Workflow Spec (missing top-level 'workflow'): {inp}")
+        model = build_model(spec, inp.name)
+        out_file = pathlib.Path(args.output) if args.output else pathlib.Path(model["name"].replace("/", "-") + ".html")
+        if out_file.parent != pathlib.Path("."):
+            out_file.parent.mkdir(parents=True, exist_ok=True)
+        out_file.write_text(render_page(model), encoding="utf-8")
+        print(f"generated {out_file}  ({model['total']} nodes)")
+
+
+if __name__ == "__main__":
+    main()

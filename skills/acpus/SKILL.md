@@ -107,6 +107,7 @@ See `references/error-recovery.md` for failure-symptom decision table and fork s
 - `references/agent-selection.md`: choosing acpx-backed worker agents.
 - `references/background-run-polling.md`: efficient polling cadence for background Runs.
 - `references/playbooks.md`: GitHub source and raw links for public Agent Workflow Playbooks, which contains many complex workflow cases.
+- `scripts/workflow-viz.py`: generate a self-contained HTML visualization page for a Workflow Spec (`python3 scripts/workflow-viz.py <spec.yaml> [-o out.html]`).
 - `assets/examples/`: copyable Workflow Spec examples — `review-guard` (simple, guard), `draft-review-loop` (medium, loop), `topic-fanout-synthesis` (complex, fanout).
 
 ## Source Docs
