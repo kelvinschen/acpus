@@ -27,6 +27,18 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - During foreground follow or `--visualize`, Ctrl-C MUST detach the CLI from the Run without cancelling the Run, and the CLI MUST exit successfully.
 - `acpus workflows run <ref-or-path> --dry-run` MUST compile to IR and print schedule projection without ensuring a Run Supervisor and without executing Agent Steps or Program Steps.
 - The CLI MUST accept `--input <value>` for `run`, where `<value>` is either inline JSON or a path to a `.json`, `.yaml`, or `.yml` input file.
+- The CLI MUST accept `--agents <value>` for `workflows run` and `runs fork`, where `<value>` is either inline JSON/YAML or a path to a `.json`, `.yaml`, or `.yml` Agent Overrides object.
+- The CLI MUST NOT expose a singular `--agent` flag in v1.
+- `--agents` file paths MUST resolve relative to the process current working directory. Existing file paths MUST take precedence over inline parsing, directory values MUST be rejected, unsupported file extensions MUST be rejected, and missing path-like values MUST be errors.
+- `--agents` values MUST resolve to an object keyed by existing top-level agent names. Each override object MUST be non-empty and MAY contain only `type`, `use`, `model`, `cwd`, and `env`.
+- `--agents` MUST reject arrays, scalars, unsupported fields, unknown current agent names, invalid `type`, unpaired `type` or `use`, `model: null`, non-object `env`, and `cwd` values that are not non-empty strings.
+- `--agents` MUST merge `env` by key and MUST NOT support field deletion or environment deletion in v1.
+- `type` and `use` in `--agents` MUST be treated as identity fields and MUST appear together if either appears.
+- `model`, `cwd`, and `env` MAY be overridden without overriding `type` and `use`.
+- When `--agents` overrides `type` and `use` and omits `model`, the effective agent definition MUST clear any inherited `model` and MUST emit `AGENT_MODEL_CLEARED` when a model was actually cleared.
+- `workflows run --dry-run --agents` MUST compile the effective Workflow Spec after applying Agent Overrides and MUST include `agentOverrides` and `submissionWarnings` in JSON output.
+- `runs fork --dry-run --agents` MUST plan against the effective overridden IR and MUST include `agentOverrides` and `submissionWarnings` in JSON output.
+- Human CLI output MUST print submission warnings to stderr after successful submit or dry-run planning and before foreground follow. JSON mode MUST carry warnings in JSON and MUST NOT also print human warning lines to stderr.
 - The CLI MUST support machine-readable JSON output for automation where a command exposes `--json`.
 - The CLI MAY support human-readable output for interactive use.
 - The CLI MUST report lint failures with exit code `10`.
@@ -45,6 +57,8 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - Human-readable `runs show` output MUST show Run metadata and Node states/errors/artifact references without dumping large Node outputs by default.
 - For running Agent Step Nodes with compact Agent telemetry, human-readable `runs show` output MUST show a compact Agent activity line derived from `NodeExecutionState.agentTelemetry`, including telemetry update age and unique tool-call count, and SHOULD show recent tool names and latest context window occupancy when available.
 - `acpus runs show <run_id> --json` MUST output the full structured Run state including Node outputs and artifact references.
+- `acpus runs show <run_id> --json` MUST expose Run metadata fields `agentOverrides` and `submissionWarnings` when present.
+- `acpus runs list` and the Run picker MUST NOT display Agent Overrides in v1.
 - The CLI MUST support Run-level pause through `acpus runs pause <run_id>`.
 - The CLI MUST support Run-level resume through `acpus runs resume <run_id>`.
 - The CLI MUST support Run-level cancel through `acpus runs cancel <run_id>`.
@@ -67,6 +81,7 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - `acpus runs fork --dry-run` MUST print or emit (with `--json`) the Fork Plan including `inheritedNodeKeys`, `defaultForkOriginNodeKey`, `forkOriginNodeKey`, and `boundaryReason`, and MUST NOT create a Run.
 - `acpus runs fork` without `--background`, `--visualize`, or `--dry-run` MUST submit the Forked Run and foreground-follow it until terminal status, mirroring `workflows run`.
 - `acpus runs fork --input <value>` MAY override the inherited input; without it the Forked Run MUST inherit the source Run's frozen input.
+- `acpus runs fork --agents <value>` MUST merge current Agent Overrides on top of the source Run's persisted effective Agent Override map.
 - `acpus runs list` MUST mark Forked Runs with their immediate prior Run ID (`forked from <id>`) when lineage is present; lineage MUST NOT carry deeper ancestry.
 - `acpus runs replay` MUST reconstruct the Run from the frozen IR snapshot and recorded Node outcomes, and MUST NOT depend on mutable YAML, system time, random values, or large artifact payloads.
 - `acpus runs replay` MUST report verification results as machine-readable JSON, including any discrepancies between the recorded and replayed Node topology.
@@ -134,6 +149,8 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - CLI tests MUST cover `workflows show` entry details and diagnostics.
 - CLI tests MUST cover `workflows run --dry-run` JSON output.
 - CLI tests MUST cover inline JSON input and file input.
+- CLI tests MUST cover `workflows run --dry-run --agents` JSON output including `agentOverrides` and `submissionWarnings`.
+- CLI tests MUST cover human submission warnings on stderr and JSON warning suppression for `workflows run --agents` and `runs fork --agents`.
 - CLI tests MUST cover lazy Run Supervisor startup for Run-facing commands.
 - CLI tests MUST cover `workflows run` foreground human follow output reaching completed, failed, cancelled, and paused exit codes.
 - CLI tests MUST cover `workflows run --json` emitting JSONL Run Observations and a terminal summary.
@@ -146,6 +163,7 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - Runtime CLI tests MUST cover Run-level pause, resume, cancel, and retry validation.
 - Runtime CLI tests MUST cover Node-level retry validation through `--node`.
 - Runtime CLI tests MUST cover `acpus runs fork` foreground follow, `--background`, `--dry-run --json`, `--from <nodeKey>` override, rejection on non-terminal source Run, and lineage display in `acpus runs list`.
+- Runtime CLI tests MUST cover `runs fork --agents` inheriting source effective Agent Overrides, applying current overrides on top, and including dry-run warnings in JSON output.
 - Runtime CLI tests MUST cover Run-level control commands and Node-level retry producing machine-readable JSON output.
 - Runtime CLI tests MUST cover `acpus runs replay` producing machine-readable JSON output.
 - Runtime CLI tests MUST cover `acpus runs replay` reproducing a Run's Node topology deterministically and reporting discrepancies when the persisted Run's topology is tampered with.

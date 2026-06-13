@@ -135,6 +135,7 @@ acpus workflows run review.workflow.yaml
 acpus workflows run review.workflow.yaml --background
 acpus workflows run review.workflow.yaml --visualize
 acpus workflows run review.workflow.yaml --json
+acpus workflows run review.workflow.yaml --agents '{"reviewer":{"type":"builtin","use":"claude","model":"opus"}}'
 
 # Run inspection and control
 acpus runs list
@@ -147,10 +148,38 @@ acpus runs retry <runId>
 acpus runs retry <runId> --node <nodeKey>
 acpus runs signal <runId> --node <nodeKey> --approve
 acpus runs replay <runId>
+acpus runs fork <runId> review.workflow.yaml --dry-run
+acpus runs fork <runId> review.workflow.yaml --from workflow/review
 acpus runs clean --dry-run
 ```
 
 Run-facing commands lazily start a Workspace-scoped local Run Supervisor. You do not start a daemon manually; the supervisor is discovered through `.acpus/state/supervisor.json` and exits after it becomes idle.
+
+### Change Agents At Submit Time
+
+Use `--agents` to temporarily run an existing Workflow Spec with different agents. Inline values should use JSON:
+
+```sh
+acpus workflows run review.workflow.yaml \
+  --agents '{"reviewer":{"type":"builtin","use":"claude","model":"opus"}}'
+```
+
+Use a JSON file for larger maps: `acpus workflows run review.workflow.yaml --agents agents.json`.
+
+### Fork A Run
+
+Use `runs fork` to continue from a repaired Workflow Spec while reusing completed work:
+
+```sh
+acpus runs fork <sourceRunId> review.workflow.yaml --dry-run --json
+```
+
+Then create the Forked Run:
+
+```sh
+acpus runs fork <sourceRunId> review.workflow.yaml --from workflow/review
+```
+
 
 ## Run Pattern
 

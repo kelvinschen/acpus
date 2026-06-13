@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { existsSync } from "node:fs";
 import { compileYaml, createTestInterpreter } from "./interpreter/helper.js";
 import { ForkError, materializeFork, planFork } from "../src/fork.js";
+import { applyAgentOverrides, parseWorkflowSpecForOverrides } from "@acpus/core";
 
 const SPEC_V1 = `
 version: 1
@@ -409,5 +410,119 @@ workflow:
     const finalB = store.readRunMeta(forkBId)!;
     expect(finalB.lineage?.sourceRunId).toBe(forkAId);
     expect(finalB.lineage?.sourceRunId).not.toBe(sourceMeta.runId);
+  });
+
+  it("fork-of-fork preserves the persisted single-layer Agent Override map", async () => {
+    const ir = compileYaml(SPEC_V1);
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: { gather: { parsedOutput: "hi" }, build: {}, publish: {} }
+    });
+    cleanups.push(cleanup);
+    const sourceMeta = await interpreter.start(ir, { input: {} });
+
+    const planA = planFork(store.readRunMeta(sourceMeta.runId)!, store.readCheckpoints(sourceMeta.runId), ir);
+    const forkAId = "fork-agent-a";
+    materializeFork(store, planA, {
+      forkRunId: forkAId,
+      ir,
+      agentOverrides: {
+        reviewer: { type: "builtin", use: "pi", model: "deepseek" },
+        cross_examiner: { type: "builtin", use: "claude" }
+      }
+    });
+    const metaA = store.readRunMeta(forkAId)!;
+    metaA.status = "completed";
+    store.writeRunMeta(forkAId, metaA);
+
+    const inherited = store.readRunMeta(forkAId)?.agentOverrides ?? {};
+    const result = applyAgentOverrides(parseWorkflowSpecForOverrides([
+      "version: 1",
+      "name: fork-agent-overrides",
+      "agents:",
+      "  reviewer:",
+      "    type: builtin",
+      "    use: codex",
+      "  cross_examiner:",
+      "    type: builtin",
+      "    use: pi",
+      "workflow:",
+      "  steps:",
+      "    - id: impl",
+      "      run: agent",
+      "      use: reviewer",
+      "      prompt: Do it."
+    ].join("\n")), undefined, { inherited });
+
+    const planB = planFork(store.readRunMeta(forkAId)!, store.readCheckpoints(forkAId), ir);
+    const forkBId = "fork-agent-b";
+    materializeFork(store, planB, {
+      forkRunId: forkBId,
+      ir,
+      agentOverrides: result.agentOverrides
+    });
+
+    expect(store.readRunMeta(forkBId)?.agentOverrides).toEqual({
+      reviewer: { type: "builtin", use: "pi", model: "deepseek" },
+      cross_examiner: { type: "builtin", use: "claude" }
+    });
+  });
+
+  it("materializeFork persists effective single-layer Agent Overrides and warnings", async () => {
+    const ir = compileYaml(SPEC_V1);
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: { gather: { parsedOutput: "hi" }, build: {}, publish: {} }
+    });
+    cleanups.push(cleanup);
+    const sourceMeta = await interpreter.start(ir, { input: {} });
+    const plan = planFork(store.readRunMeta(sourceMeta.runId)!, store.readCheckpoints(sourceMeta.runId), ir);
+
+    const warnings = [{ code: "AGENT_MODEL_CLEARED" as const, agent: "implementer", message: "cleared" }];
+    materializeFork(store, plan, {
+      forkRunId: "fork-with-agent-overrides",
+      ir,
+      agentOverrides: { implementer: { type: "builtin", use: "codex" } },
+      submissionWarnings: warnings
+    });
+
+    expect(store.readRunMeta("fork-with-agent-overrides")?.agentOverrides).toEqual({
+      implementer: { type: "builtin", use: "codex" }
+    });
+    expect(store.readRunMeta("fork-with-agent-overrides")?.submissionWarnings).toEqual(warnings);
+  });
+
+  it("fork override merge inherits source effective map and lets current overrides win", () => {
+    const source = [
+      "version: 1",
+      "name: fork-agent-overrides",
+      "agents:",
+      "  implementer:",
+      "    type: builtin",
+      "    use: codex",
+      "    model: gpt-5",
+      "  reviewer:",
+      "    type: builtin",
+      "    use: claude",
+      "workflow:",
+      "  steps:",
+      "    - id: impl",
+      "      run: agent",
+      "      use: implementer",
+      "      prompt: Do it."
+    ].join("\n");
+
+    const result = applyAgentOverrides(parseWorkflowSpecForOverrides(source), {
+      reviewer: { model: "opus" }
+    }, {
+      inherited: {
+        implementer: { model: "gpt-5.1" }
+      }
+    });
+
+    expect(result.agentOverrides).toEqual({
+      implementer: { model: "gpt-5.1" },
+      reviewer: { model: "opus" }
+    });
+    expect(result.effectiveSpec.agents?.implementer.model).toBe("gpt-5.1");
+    expect(result.effectiveSpec.agents?.reviewer.model).toBe("opus");
   });
 });

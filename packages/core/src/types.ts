@@ -1,4 +1,5 @@
 export type DiagnosticSeverity = "error" | "warning";
+export type { AgentOverrideWarning, AgentOverrides } from "./agent-overrides.js";
 
 export interface Diagnostic {
   severity: DiagnosticSeverity;

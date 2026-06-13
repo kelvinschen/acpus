@@ -8,7 +8,7 @@
  * characters that are incompatible with URL path segments.
  */
 
-import type { AcpusIr } from "@acpus/core";
+import type { AcpusIr, AgentOverrideWarning, AgentOverrides } from "@acpus/core";
 import type { RunCleanResult, RunState, NodeExecutionState, RunSummary, ReplayResult, SupervisorHealth } from "./types.js";
 import type { ForkPlan } from "./fork.js";
 import { randomUUID } from "node:crypto";
@@ -41,11 +41,17 @@ export class RunSupervisorClient {
     return res.json() as Promise<SupervisorHealth>;
   }
 
-  async startRun(spec: string, input?: Record<string, unknown>, sourcePath?: string, workflowRef?: string): Promise<RunState> {
+  async startRun(
+    spec: string,
+    input?: Record<string, unknown>,
+    sourcePath?: string,
+    workflowRef?: string,
+    agentOverrides?: AgentOverrides
+  ): Promise<RunState> {
     const res = await fetch(`${this.baseUrl}/runs`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...this.headers() },
-      body: JSON.stringify({ spec, input, sourcePath, workflowRef })
+      body: JSON.stringify({ spec, input, sourcePath, workflowRef, agentOverrides })
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
@@ -181,8 +187,9 @@ export class RunSupervisorClient {
       input?: Record<string, unknown>;
       overrideOriginNodeKey?: string;
       dryRun?: boolean;
+      agentOverrides?: AgentOverrides;
     } = {}
-  ): Promise<{ run?: RunState; plan: ForkPlan; dryRun?: boolean }> {
+  ): Promise<{ run?: RunState; plan: ForkPlan; dryRun?: boolean; agentOverrides?: AgentOverrides; submissionWarnings?: AgentOverrideWarning[] }> {
     const res = await fetch(`${this.baseUrl}/runs/${sourceRunId}/fork`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...this.headers() },
@@ -194,7 +201,7 @@ export class RunSupervisorClient {
       if (body.kind === "fork-rejected") throw new ForkRejectedError(message);
       throw new Error(message);
     }
-    return res.json() as Promise<{ run?: RunState; plan: ForkPlan; dryRun?: boolean }>;
+    return res.json() as Promise<{ run?: RunState; plan: ForkPlan; dryRun?: boolean; agentOverrides?: AgentOverrides; submissionWarnings?: AgentOverrideWarning[] }>;
   }
 
   /**

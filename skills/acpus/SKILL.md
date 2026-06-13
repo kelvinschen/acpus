@@ -37,11 +37,18 @@ Use Acpus as the durable local runner underneath the user's preferred agent. Kee
    acpus workflows run <workflow-or-ref> --dry-run
    ```
 
+   To temporarily change agents for a new Run from an existing Spec, pass Agent Overrides with `--agents`. Prefer inline JSON:
+
+   ```sh
+   acpus workflows run <workflow-or-ref> --dry-run --agents '{"reviewer":{"type":"builtin","use":"claude","model":"opus"}}'
+   ```
+
 5. Start quick Runs in the foreground and long Runs in the background:
 
    ```sh
    acpus workflows run <workflow-or-ref> --input '<json>'
    acpus workflows run <workflow-or-ref> --background --input '<json>'
+   acpus workflows run <workflow-or-ref> --background --agents '{"reviewer":{"type":"builtin","use":"pi"}}' --input '<json>'
    ```
 
 6. Track background Run status with compact text output. Use decreasing polling intervals from `references/background-run-polling.md`; read the `Activity:` line on running Agent Steps to see transcript freshness, tool-call count, and recent tools:
@@ -80,10 +87,17 @@ When a Run fails or stalls:
 2. Read referenced artifacts before guessing. `artifact://runs/<runId>/nodes/<nodeKey>/<file>` resolves to `.acpus/state/runs/<runId>/artifacts/<encoded-key>/<file>` (`/` → `:`).
 3. Pick the smallest recovery:
    - **Spec is wrong** (script bug, schema mismatch, control-flow error): edit spec, then `acpus runs fork <runId> <fixed-spec> [--dry-run] [--from <nodeKey>]`. Inherits unaffected work.
+   - **Agent choice is wrong for the next submission**: use `--agents` on `workflows run` or `runs fork`; see `references/agent-selection.md`.
    - **Spec is fine, transient failure**: `acpus runs retry <runId> [--node <nodeKey>]`.
    - **Paused / awaiting / verifying**: `acpus runs resume <runId>` / `acpus runs signal <runId> --node <nodeKey> --approve|--reject` / `acpus runs replay <runId>`.
 
 See `references/error-recovery.md` for failure-symptom decision table and fork semantics. Background polling cadence: `references/background-run-polling.md`.
+
+## Agent Overrides
+
+- Use Agent Overrides when reusing an existing Spec with different agents for one new Run.
+- Prefer inline JSON for `--agents`, and dry-run first when exact agent selection matters.
+- For detailed rules and examples, read `references/agent-selection.md`.
 
 ## Load More When Needed
 

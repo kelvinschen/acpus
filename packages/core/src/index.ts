@@ -1,5 +1,14 @@
 export { DiagnosticBag } from "./diagnostics.js";
 export { compileWorkflow, lintWorkflow } from "./compiler.js";
+export {
+  applyAgentOverrides,
+  emptyAgentOverrideResult,
+  optionalSubmissionMetadata,
+  parseAgentOverridesInput,
+  parseWorkflowSpecForOverrides,
+  serializeWorkflowSpecForOverrides,
+  validateAgentOverrides
+} from "./agent-overrides.js";
 export { createSchedule } from "./schedule.js";
 export { createIncludeResolver, globalWorkflowRoot, workflowSourcePolicy } from "./source-policy.js";
 export { compileSchemaDsl } from "./schema/index.js";
@@ -18,6 +27,8 @@ export type { ParseDurationOptions } from "./duration.js";
 export { hashIrNode } from "./hash.js";
 export type {
   AcpusIr,
+  AgentOverrideWarning,
+  AgentOverrides,
   AgentSpec,
   CompileOptions,
   CompileResult,

@@ -7,3 +7,4 @@ coverage/
 .acpus/output/
 *.tsbuildinfo
 mock-trace.jsonl
+.pnpm-store

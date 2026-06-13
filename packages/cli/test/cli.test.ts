@@ -49,6 +49,162 @@ describe("acpus CLI", () => {
     expect(payload.schedule.nodes).toHaveLength(9);
   });
 
+  it("prints dry-run Agent Overrides in JSON output", async () => {
+    const tempDir = join(repoRoot, ".tmp-tests", "agent-overrides-dry-run");
+    rmSync(tempDir, { recursive: true, force: true });
+    mkdirSync(tempDir, { recursive: true });
+    const workflowPath = join(tempDir, "workflow.yaml");
+    writeFileSync(workflowPath, [
+      "version: 1",
+      "name: agent-overrides-dry-run",
+      "agents:",
+      "  implementer:",
+      "    type: builtin",
+      "    use: codex",
+      "workflow:",
+      "  steps:",
+      "    - id: impl",
+      "      run: agent",
+      "      use: implementer",
+      "      prompt: Do it."
+    ].join("\n"));
+
+    const result = await execaNode(cliEntry, [
+      "workflows", "run", workflowPath,
+      "--dry-run", "--json", "--agents", "implementer: { model: gpt-5.1 }"
+    ], {
+      nodeOptions: ["--import", "tsx", "--conditions=development"]
+    });
+    const payload = JSON.parse(result.stdout);
+
+    expect(payload.ok).toBe(true);
+    expect(payload.agentOverrides).toEqual({ implementer: { model: "gpt-5.1" } });
+    expect(payload.submissionWarnings).toEqual([]);
+    expect(payload.ir.root.children[0].metadata.agent.model).toBe("gpt-5.1");
+    expect(result.stderr).toBe("");
+  });
+
+  it("does not print human Agent Override warnings in dry-run JSON mode", async () => {
+    const tempDir = join(repoRoot, ".tmp-tests", "agent-overrides-warning-json");
+    rmSync(tempDir, { recursive: true, force: true });
+    mkdirSync(tempDir, { recursive: true });
+    const workflowPath = join(tempDir, "workflow.yaml");
+    writeFileSync(workflowPath, [
+      "version: 1",
+      "name: agent-overrides-warning-json",
+      "agents:",
+      "  implementer:",
+      "    type: builtin",
+      "    use: codex",
+      "    model: gpt-5",
+      "workflow:",
+      "  steps:",
+      "    - id: impl",
+      "      run: agent",
+      "      use: implementer",
+      "      prompt: Do it."
+    ].join("\n"));
+
+    const result = await execaNode(cliEntry, [
+      "workflows", "run", workflowPath,
+      "--dry-run", "--json", "--agents", "implementer: { type: command, use: 'node ./agent.js' }"
+    ], {
+      nodeOptions: ["--import", "tsx", "--conditions=development"]
+    });
+    const payload = JSON.parse(result.stdout);
+
+    expect(payload.submissionWarnings[0].code).toBe("AGENT_MODEL_CLEARED");
+    expect(result.stderr).toBe("");
+  });
+
+  it("plans runs fork --agents with inherited and current Agent Overrides", async () => {
+    const tempDir = join(repoRoot, ".tmp-tests", "fork-agents-cli");
+    rmSync(tempDir, { recursive: true, force: true });
+    mkdirSync(tempDir, { recursive: true });
+    writeFileSync(join(tempDir, "workflow.yaml"), [
+      "version: 1",
+      "name: fork-agents-cli",
+      "agents:",
+      "  reviewer:",
+      "    type: builtin",
+      "    use: codex",
+      "  cross_examiner:",
+      "    type: builtin",
+      "    use: pi",
+      "workflow:",
+      "  steps:",
+      "    - id: gather",
+      "      run: program",
+      "      cmd: \"echo ok\""
+    ].join("\n"));
+
+    const run = await execaNode(cliEntry, [
+      "workflows", "run", "workflow.yaml", "--background", "--json",
+      "--agents", "reviewer: { model: gpt-5.1 }"
+    ], {
+      cwd: tempDir,
+      nodeOptions: ["--import", "tsx", "--conditions=development"]
+    });
+    const runId = JSON.parse(run.stdout).runId as string;
+    await waitForRunTerminal(tempDir, runId);
+
+    const fork = await execaNode(cliEntry, [
+      "runs", "fork", runId, "workflow.yaml", "--dry-run", "--json",
+      "--agents", "cross_examiner: { type: builtin, use: claude }"
+    ], {
+      cwd: tempDir,
+      nodeOptions: ["--import", "tsx", "--conditions=development"]
+    });
+    const payload = JSON.parse(fork.stdout);
+
+    expect(payload.dryRun).toBe(true);
+    expect(payload.agentOverrides).toEqual({
+      reviewer: { model: "gpt-5.1" },
+      cross_examiner: { type: "builtin", use: "claude" }
+    });
+    expect(payload.submissionWarnings).toEqual([]);
+  }, 30_000);
+
+  it("prints non-dry-run fork Agent Override warnings from the returned Run", async () => {
+    const tempDir = join(repoRoot, ".tmp-tests", "fork-agents-warning-cli");
+    rmSync(tempDir, { recursive: true, force: true });
+    mkdirSync(tempDir, { recursive: true });
+    writeFileSync(join(tempDir, "workflow.yaml"), [
+      "version: 1",
+      "name: fork-agents-warning-cli",
+      "agents:",
+      "  reviewer:",
+      "    type: builtin",
+      "    use: codex",
+      "    model: gpt-5",
+      "workflow:",
+      "  steps:",
+      "    - id: gather",
+      "      run: program",
+      "      cmd: \"echo ok\""
+    ].join("\n"));
+
+    const run = await execaNode(cliEntry, [
+      "workflows", "run", "workflow.yaml", "--background", "--json"
+    ], {
+      cwd: tempDir,
+      nodeOptions: ["--import", "tsx", "--conditions=development"]
+    });
+    const runId = JSON.parse(run.stdout).runId as string;
+    await waitForRunTerminal(tempDir, runId);
+
+    const fork = await execaNode(cliEntry, [
+      "runs", "fork", runId, "workflow.yaml", "--background",
+      "--agents", "reviewer: { type: builtin, use: claude }"
+    ], {
+      cwd: tempDir,
+      nodeOptions: ["--import", "tsx", "--conditions=development"]
+    });
+
+    expect(fork.stdout).toContain("forked from");
+    expect(fork.stderr).toContain("WARNING AGENT_MODEL_CLEARED reviewer");
+  }, 30_000);
+
   it("accepts input from a JSON file in dry-run mode", async () => {
     const tempDir = join(repoRoot, ".tmp-tests");
     mkdirSync(tempDir, { recursive: true });
@@ -325,4 +481,18 @@ function waitForOutput(child: any, pattern: RegExp, timeoutMs = 15_000): Promise
     child.stderr?.on("data", onData);
     child.once?.("exit", onExit);
   });
+}
+
+async function waitForRunTerminal(cwd: string, runId: string, timeoutMs = 10_000): Promise<void> {
+  const start = Date.now();
+  for (;;) {
+    const result = await execaNode(cliEntry, ["runs", "show", runId, "--json"], {
+      cwd,
+      nodeOptions: ["--import", "tsx", "--conditions=development"]
+    });
+    const status = JSON.parse(result.stdout).status as string;
+    if (["completed", "failed", "cancelled", "paused"].includes(status)) return;
+    if (Date.now() - start > timeoutMs) throw new Error(`Run ${runId} did not reach a terminal status`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
 }

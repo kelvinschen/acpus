@@ -13,7 +13,7 @@ import {
 import { dirname, join } from "node:path";
 import { encodeNodeKeyForFs, encodeNodeKeyForDir } from "./keys.js";
 import { ArtifactReferences } from "./artifacts.js";
-import type { AcpusIr } from "@acpus/core";
+import type { AcpusIr, AgentOverrideWarning, AgentOverrides } from "@acpus/core";
 import type { AgentTelemetry, NodeExecutionState, RunCheckpoint, RunCleanItem, RunCleanResult, RunState } from "./types.js";
 
 /**
@@ -57,7 +57,18 @@ export class RunStore {
   // ─── Run lifecycle ─────────────────────────────────────────────
 
   /** Create a new run directory and write IR + input snapshots. */
-  initRun(runId: string, ir: AcpusIr, input: Record<string, unknown>, source?: { workflowRef?: string; workflowSourcePath?: string; lineage?: import("./types.js").RunLineage }): RunState {
+  initRun(
+    runId: string,
+    ir: AcpusIr,
+    input: Record<string, unknown>,
+    source?: {
+      workflowRef?: string;
+      workflowSourcePath?: string;
+      lineage?: import("./types.js").RunLineage;
+      agentOverrides?: AgentOverrides;
+      submissionWarnings?: AgentOverrideWarning[];
+    }
+  ): RunState {
     validateRunId(runId);
     const runDir = this.runDir(runId);
     mkdirSync(join(runDir, "nodes"), { recursive: true });
@@ -83,7 +94,9 @@ export class RunStore {
       createdAt: now,
       updatedAt: now,
       runAttempt: 1,
-      lineage: source?.lineage
+      lineage: source?.lineage,
+      agentOverrides: source?.agentOverrides,
+      submissionWarnings: source?.submissionWarnings
     };
     this.writeRunMeta(runId, meta);
     // Empty checkpoints index — appended to as Nodes reach terminal state.

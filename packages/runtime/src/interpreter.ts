@@ -78,7 +78,9 @@ export class WorkflowInterpreter {
     const runId = opts.runId ?? generateRunId();
     return this.store.initRun(runId, ir, validatedInput, {
       workflowRef: opts.workflowRef,
-      workflowSourcePath: opts.workflowSourcePath
+      workflowSourcePath: opts.workflowSourcePath,
+      agentOverrides: opts.agentOverrides,
+      submissionWarnings: opts.submissionWarnings
     });
   }
 

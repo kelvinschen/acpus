@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { compileWorkflow, lintWorkflow } from "../src/index.js";
+import { applyAgentOverrides, compileWorkflow, lintWorkflow } from "../src/index.js";
+import { parse as parseYaml } from "yaml";
 
 const fixtures = join(import.meta.dirname, "fixtures");
 
@@ -11,6 +12,32 @@ function fixture(name: string): string {
 
 describe("@acpus/core compiler", () => {
   // ── Canonical spec compilation (M1 Test Plan) ──
+
+  it("compiles Agent Steps with overridden effective agent metadata", () => {
+    const source = [
+      "version: 1",
+      "name: agent-override-compile",
+      "agents:",
+      "  implementer:",
+      "    type: builtin",
+      "    use: codex",
+      "    model: gpt-5",
+      "workflow:",
+      "  steps:",
+      "    - id: impl",
+      "      run: agent",
+      "      use: implementer",
+      "      prompt: Do it."
+    ].join("\n");
+    const effective = applyAgentOverrides(parseYaml(source) as any, {
+      implementer: { type: "builtin", use: "claude", model: "opus" }
+    });
+    const result = compileWorkflow(JSON.stringify(effective.effectiveSpec));
+
+    expect(result.ok).toBe(true);
+    const node = result.ir?.root.children?.[0];
+    expect(node?.metadata.agent).toEqual({ type: "builtin", use: "claude", model: "opus" });
+  });
 
   it("compiles Case A: plan-review-impl (sequential + approval + agents)", () => {
     const result = compileWorkflow(fixture("case-a-plan-review-impl.yaml"), {

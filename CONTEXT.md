@@ -44,6 +44,10 @@ _Avoid_: leaf task, action
 An Executable Node that prompts an ACP-compatible agent and expects a structured output object.
 _Avoid_: AI task, model call
 
+**Agent Override**:
+A submit-time override of a Workflow Spec's top-level agent definitions used when creating a Run or Forked Run. Agent Overrides affect the frozen IR created for that Run and do not mutate or control an already-started Run.
+_Avoid_: runtime agent switch, node control
+
 **Program Step**:
 An Executable Node that runs a local command and records command output.
 _Avoid_: shell task, script step

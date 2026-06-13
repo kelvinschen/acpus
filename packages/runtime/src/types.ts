@@ -1,4 +1,4 @@
-import type { IrNodeKind } from "@acpus/core";
+import type { AgentOverrideWarning, AgentOverrides, IrNodeKind } from "@acpus/core";
 
 // ─── Node lifecycle ──────────────────────────────────────────────
 
@@ -120,6 +120,10 @@ export interface RunState {
   error?: string;
   /** Lineage to the prior Run this Run was forked from (set on Forked Runs). */
   lineage?: RunLineage;
+  /** Effective submit-time Agent Overrides applied before this Run's IR was frozen. */
+  agentOverrides?: AgentOverrides;
+  /** Non-fatal warnings produced while resolving submit-time metadata. */
+  submissionWarnings?: AgentOverrideWarning[];
   /** Node states included when inspecting a specific run (GET /runs/:runId) */
   nodes?: NodeExecutionState[];
 }
@@ -248,6 +252,10 @@ export interface RunOptions {
   workflowRef?: string;
   /** Absolute Workflow Spec path used to compile this Run. */
   workflowSourcePath?: string;
+  /** Effective submit-time Agent Overrides applied before this Run's IR was frozen. */
+  agentOverrides?: AgentOverrides;
+  /** Non-fatal warnings produced while resolving submit-time metadata. */
+  submissionWarnings?: AgentOverrideWarning[];
 }
 
 // ─── Supervisor types ────────────────────────────────────────────

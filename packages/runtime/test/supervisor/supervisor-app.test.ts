@@ -84,6 +84,40 @@ describe("Supervisor HTTP API", () => {
     expect(await pollRunStatus(data.runId)).toBe("completed");
   });
 
+  it("applies Agent Overrides through POST /runs and exposes persisted metadata", async () => {
+    const res = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        spec: SPEC_YAML,
+        input: {},
+        agentOverrides: {
+          coder: { type: "builtin", use: "pi", model: "test-model" }
+        }
+      })
+    });
+    expect(res.status).toBe(201);
+    const data = await res.json();
+    expect(data.agentOverrides).toEqual({
+      coder: { type: "builtin", use: "pi", model: "test-model" }
+    });
+    expect(data.submissionWarnings).toBeUndefined();
+
+    const ir = store.readIr(data.runId);
+    expect(ir?.root.children?.[0]?.metadata.agent).toEqual({
+      type: "builtin",
+      use: "pi",
+      model: "test-model"
+    });
+    expect(store.readRunMeta(data.runId)?.agentOverrides).toEqual(data.agentOverrides);
+
+    const showRes = await fetch(`${baseUrl}/runs/${data.runId}`);
+    expect(showRes.status).toBe(200);
+    const show = await showRes.json();
+    expect(show.agentOverrides).toEqual(data.agentOverrides);
+    expect(await pollRunStatus(data.runId)).toBe("completed");
+  });
+
   it("accepts sourcePath in POST /runs", async () => {
     // sourcePath must be within the workspace.
     const workspace = tmpDir;

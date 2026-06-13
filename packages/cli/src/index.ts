@@ -1,5 +1,13 @@
 #!/usr/bin/env node
-import { compileWorkflow, lintWorkflow, workflowSourcePolicy } from "@acpus/core";
+import {
+  applyAgentOverrides,
+  compileWorkflow,
+  lintWorkflow,
+  parseAgentOverridesInput,
+  parseWorkflowSpecForOverrides,
+  serializeWorkflowSpecForOverrides,
+  workflowSourcePolicy
+} from "@acpus/core";
 import { Command } from "commander";
 import { readFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
@@ -102,13 +110,14 @@ workflows
   .argument("<refOrPath>", "Workflow Catalog ref/name or workflow YAML spec path")
   .option("--dry-run", "compile to IR and print schedule without execution")
   .option("--input <value>", "inline JSON or path to YAML/JSON input object")
+  .option("--agents <value>", "inline JSON/YAML or path to JSON/YAML Agent Overrides object")
   .option("--background", "submit and return immediately (no follow)")
   .option("--visualize", "submit and open TUI visualizer")
   .option("--json", "write JSONL observations (follow mode) or JSON (background)")
   .option("--quiet", "only write final output")
   .action(async (
     refOrPath: string,
-    options: { dryRun?: boolean; input?: string; background?: boolean; visualize?: boolean; json?: boolean; quiet?: boolean }
+    options: { dryRun?: boolean; input?: string; agents?: string; background?: boolean; visualize?: boolean; json?: boolean; quiet?: boolean }
   ) => {
     if (options.background && options.visualize) {
       printError("--background and --visualize are mutually exclusive", options);
@@ -124,22 +133,34 @@ workflows
     try {
       const target = resolveWorkflowTarget(refOrPath);
       const parsedInput = parseInput(options.input);
+      const parsedAgentOverrides = parseAgentOverridesInput(options.agents);
 
       if (options.dryRun) {
-        const result = compileWorkflow(target.source, {
+        const overrideResult = parsedAgentOverrides === undefined
+          ? undefined
+          : applyAgentOverrides(parseWorkflowSpec(target.source), parsedAgentOverrides);
+        const result = compileWorkflow(
+          overrideResult ? serializeWorkflowSpecForOverrides(overrideResult.effectiveSpec) : target.source,
+          {
           sourcePath: target.sourcePath,
           includeResolver: createWorkspaceIncludeResolver()
-        });
+          }
+        );
         const output = parsedInput === undefined || !result.ir
           ? result
           : { ...result, ir: { ...result.ir, runtimeInput: parsedInput } };
-        printCompile(output, options);
+        printCompile({
+          ...output,
+          agentOverrides: overrideResult?.agentOverrides,
+          submissionWarnings: overrideResult?.warnings
+        }, options);
+        printSubmissionWarnings(overrideResult?.warnings ?? [], options);
         process.exitCode = result.ok ? 0 : EXIT_DSL_STATIC_ERROR;
         return;
       }
 
       const client = await ensureSupervisor();
-      const runState = await client.startRun(target.source, parsedInput, target.sourcePath, target.workflowRef);
+      const runState = await client.startRun(target.source, parsedInput, target.sourcePath, target.workflowRef, parsedAgentOverrides);
 
       if (options.background) {
         if (options.json) {
@@ -152,6 +173,8 @@ workflows
         process.exitCode = 0;
         return;
       }
+
+      printSubmissionWarnings(runState.submissionWarnings ?? [], options);
 
       if (options.visualize) {
         const { runTui } = await import("@acpus/tui");
@@ -369,6 +392,7 @@ runs
   .argument("<refOrPath>", "Workflow Catalog ref/name or workflow YAML spec path with the repaired Spec")
   .option("--from <nodeKey>", "force the Fork Origin to a specific Node Key (default: first divergence)")
   .option("--input <value>", "inline JSON or path to YAML/JSON input (default: inherit from source Run)")
+  .option("--agents <value>", "inline JSON/YAML or path to JSON/YAML Agent Overrides object")
   .option("--dry-run", "compute the fork plan without creating a new Run")
   .option("--background", "submit and return immediately (no follow)")
   .option("--visualize", "submit and open TUI visualizer")
@@ -378,7 +402,7 @@ runs
   .action(async (
     sourceRunId: string,
     refOrPath: string,
-    options: { from?: string; input?: string; dryRun?: boolean; background?: boolean; visualize?: boolean; json?: boolean; quiet?: boolean }
+    options: { from?: string; input?: string; agents?: string; dryRun?: boolean; background?: boolean; visualize?: boolean; json?: boolean; quiet?: boolean }
   ) => {
     if (options.background && options.visualize) {
       printError("--background and --visualize are mutually exclusive", options);
@@ -393,13 +417,15 @@ runs
     try {
       const target = resolveWorkflowTarget(refOrPath);
       const parsedInput = parseInput(options.input);
+      const parsedAgentOverrides = parseAgentOverridesInput(options.agents);
       const client = await ensureSupervisor();
       const result = await client.forkRun(sourceRunId, target.source, {
         sourcePath: target.sourcePath,
         workflowRef: target.workflowRef,
         input: parsedInput,
         overrideOriginNodeKey: options.from,
-        dryRun: options.dryRun
+        dryRun: options.dryRun,
+        agentOverrides: parsedAgentOverrides
       });
 
       if (options.dryRun) {
@@ -411,6 +437,7 @@ runs
           console.log(`  Inherited Nodes: ${result.plan.inheritedNodeKeys.length}`);
           for (const key of result.plan.inheritedNodeKeys) console.log(`    + ${key}`);
         }
+        printSubmissionWarnings(result.submissionWarnings ?? [], options);
         process.exitCode = 0;
         return;
       }
@@ -430,9 +457,12 @@ runs
           console.log(`Inherited: ${result.plan.inheritedNodeKeys.length} node(s)`);
           console.log(`Status: ${result.run.status}`);
         }
+        printSubmissionWarnings(result.run.submissionWarnings ?? [], options);
         process.exitCode = 0;
         return;
       }
+
+      printSubmissionWarnings(result.run.submissionWarnings ?? [], options);
 
       if (options.visualize) {
         const { runTui } = await import("@acpus/tui");
@@ -522,6 +552,20 @@ function displayPath(path: string): string {
 
 function createWorkspaceIncludeResolver(): (path: string, fromPath?: string) => string {
   return workflowSourcePolicy().createIncludeResolver();
+}
+
+function parseWorkflowSpec(source: string): import("@acpus/core").WorkflowSpec {
+  return parseWorkflowSpecForOverrides(source);
+}
+
+function printSubmissionWarnings(
+  warnings: import("@acpus/core").AgentOverrideWarning[],
+  options: { json?: boolean; quiet?: boolean }
+): void {
+  if (options.json || options.quiet || warnings.length === 0) return;
+  for (const warning of warnings) {
+    console.error(`WARNING ${warning.code} ${warning.agent}: ${warning.message}`);
+  }
 }
 
 function formatBytes(bytes: number): string {

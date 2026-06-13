@@ -44,13 +44,16 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 ### State Persistence
 
 - The runtime MUST persist per-node state as individual JSON files with atomic write (temp file + rename) for crash safety.
-- The runtime MUST persist run-level metadata (run ID, workflow name, optional workflow ref, workflow source path, status, IR digest, input digest, retry generation, evaluated output, and error) separately from node state.
+- The runtime MUST persist run-level metadata (run ID, workflow name, optional workflow ref, workflow source path, status, IR digest, input digest, retry generation, evaluated output, error, effective Agent Overrides, and submission warnings) separately from node state.
 - Run metadata MUST include `runAttempt`, starting at `1` for a new Run and incrementing by `1` only when a Run-level retry is accepted.
 - Run metadata MUST include `output` when the Run completes successfully; this field MUST contain the evaluated top-level Workflow `outputs`.
 - Run metadata MUST include `error` when the Run fails with a Run-level error; this field MUST be a string.
 - A Node persisted as `completed` MUST NOT retain an `error` value from an earlier failed, paused, or cancelled attempt.
 - When a caller does not provide a Run ID, the runtime MUST generate a local-time-sortable Run ID using `yyyyMMddHHmmss` followed by 20 uppercase hexadecimal random characters.
 - The runtime MUST persist a frozen IR snapshot at run creation and MUST NOT re-read mutable YAML during replay or resume.
+- The runtime MUST apply submit-time Agent Overrides before compiling the frozen IR snapshot for a Run.
+- Run metadata `agentOverrides` MUST persist the final effective single-layer Agent Override map applied before IR creation when that map is non-empty. Run metadata `submissionWarnings` MUST persist submit-time warning objects with `code`, `agent`, and `message` when warnings exist.
+- Execution, resume, retry, and replay MUST depend on `ir.json` and MUST NOT read Agent Override files or use Agent Override metadata to alter execution after Run creation.
 - The runtime MUST persist, for each executable leaf Node, a snapshot of its parent dynamic value-context (fanout item, loop round) so retry can rebuild the expression context without re-deriving ancestor scopes; the snapshot MUST contain only value context, never large artifact payloads.
 - The runtime MUST write node keys as filesystem-safe filenames by replacing `/` with `:`.
 
@@ -250,14 +253,19 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - The runtime MUST persist Run Checkpoints under `.acpus/state/runs/<runId>/checkpoints.index.json` as an ordered array; each entry MUST include `sequence`, `nodeKey`, terminal `state`, `definitionHash`, and `completedAt`.
 - The runtime MUST append a Run Checkpoint whenever a Node enters a terminal state (`completed`, `failed`, `cancelled`); a re-attempt of the same Node MUST update its checkpoint entry in place, preserving the original `sequence`.
 - Each persisted Node state MUST carry the Node Definition Hash that produced it; the runtime MUST treat the hash as opaque outside of fork planning.
-- The runtime MUST expose a `POST /runs/:runId/fork` Run Supervisor route accepting a Workflow Spec, optional `sourcePath`, `workflowRef`, `input`, `overrideOriginNodeKey`, and `dryRun`.
+- The runtime MUST expose a `POST /runs/:runId/fork` Run Supervisor route accepting a Workflow Spec, optional `sourcePath`, `workflowRef`, `input`, `overrideOriginNodeKey`, `dryRun`, and `agentOverrides`.
 - Fork submission MUST be rejected with a conflict error when the source Run is in a non-terminal state (`running`, `paused`, or `awaiting`) or when the source Run has no checkpoint index.
 - Fork planning MUST scan the source Run's checkpoints in `sequence` order and inherit each Node whose Node Key has a matching static counterpart in the new Spec, whose prior state is `completed`, and whose Node Definition Hash matches the new compiled IR; inheritance MUST stop at the first Node failing any of these checks (the inheritance boundary).
 - The default Fork Origin MUST be the inheritance boundary determined by the scan; an operator override MAY force an earlier Origin but MUST NOT be a Node inside a Composite (`parallel`, `fanout`, `loop`, `switch`, `subworkflow`) body.
 - A Forked Run MUST be its own Run with its own frozen IR snapshot and MUST NOT mutate the source Run.
+- A Forked Run MUST inherit the source Run's persisted effective Agent Override map by default. Missing `agentOverrides` on an older source Run MUST be treated as an empty map.
+- Fork Agent Override resolution MUST filter inherited override entries to agents still declared by the repaired top-level Workflow Spec, MUST emit `INHERITED_AGENT_OVERRIDE_SKIPPED` for skipped inherited entries, and MUST NOT reject the fork solely because an inherited override no longer has a matching agent.
+- Current fork `agentOverrides` MUST merge on top of inherited Agent Overrides and MUST reject unknown current override agents.
+- A Forked Run MUST persist the final effective single-layer Agent Override map when that map is non-empty and MUST NOT persist separate inherited/current override layers or the `--agents` source path.
 - Inherited Nodes MUST be materialized in the Forked Run by copying their persisted Node state and artifact directory from the source Run, rewriting artifact URIs to the new Run ID; subsequent execution MUST short-circuit on these completed Nodes.
 - A Forked Run's `run-meta.json` MUST persist `lineage` containing `sourceRunId`, `forkOriginNodeKey`, and `inheritedNodeCount`; the lineage MUST refer only to the immediate prior Run and MUST NOT carry deeper ancestry.
 - `dryRun: true` MUST return the Fork Plan (`sourceRunId`, `inheritedNodeKeys`, `defaultForkOriginNodeKey`, `forkOriginNodeKey`, `boundaryReason`) without creating a Run.
+- Fork dry-run planning MUST use the effective overridden IR and MUST return `agentOverrides` and `submissionWarnings`.
 - A Forked Run MUST treat inherited outputs as historical facts and MUST NOT recompute runtime-context values (such as `run_id` or `now()` derivations) embedded in those outputs.
 - A Forked Run MUST start fresh ACP sessions for any Agent Step it executes; Continuation MUST NOT span Runs.
 
@@ -342,6 +350,10 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Runtime tests MUST cover artifact filename validation (directory traversal prevention).
 - Runtime tests MUST cover Run Supervisor REST API routes including query-parameter node key handling.
 - Runtime tests MUST cover Run Checkpoint persistence on terminal Node transitions, including in-place update on a re-attempt.
+- Runtime tests MUST cover Agent Override metadata persistence on Run creation and exposure through Run inspection.
+- Runtime tests MUST cover effective compiled IR containing overridden Agent Step `metadata.agent`, equivalent effective IR producing matching Node Definition Hashes, and agent identity changes affecting referenced Agent Step hashes.
+- Runtime tests MUST cover that retry, resume, and replay read only the frozen IR and do not read Agent Override files or metadata after Run creation.
 - Runtime tests MUST cover Forked Run inheritance: completed/failed/cancelled source Run, first-divergence default origin, hash-mismatch and missing-Node truncation, operator override (including rejection inside a Composite body), input inheritance, and persisted lineage.
+- Runtime tests MUST cover Forked Runs inheriting source effective Agent Overrides by default, current fork overrides winning, fork-of-fork preserving the persisted single-layer map, and inherited overrides for removed agents being skipped with warnings.
 - Runtime tests MUST cover that a Forked Run runs to completion using inherited Nodes without re-executing them.
 - Runtime tests MUST cover `dryRun` fork planning returning the plan without creating a Run, and the supervisor rejecting fork on non-terminal source Runs.

@@ -1,4 +1,4 @@
-import type { AcpusIr, IrNode } from "@acpus/core";
+import type { AcpusIr, AgentOverrideWarning, AgentOverrides, IrNode } from "@acpus/core";
 import { hashIrNode } from "@acpus/core";
 import type { RunCheckpoint, RunState } from "./types.js";
 import type { RunStore } from "./store.js";
@@ -46,6 +46,10 @@ export interface MaterializeForkOptions {
   workflowRef?: string;
   /** Absolute Workflow Spec path used to compile this Forked Run. */
   workflowSourcePath?: string;
+  /** Effective submit-time Agent Overrides applied before this Run's IR was frozen. */
+  agentOverrides?: AgentOverrides;
+  /** Non-fatal warnings produced while resolving submit-time metadata. */
+  submissionWarnings?: AgentOverrideWarning[];
 }
 
 export interface MaterializedFork {
@@ -244,7 +248,9 @@ export function materializeFork(
   const input = validateInput(options.ir.input, options.input ?? sourceInput);
   const run = store.initRun(options.forkRunId, options.ir, input, {
     workflowRef: options.workflowRef,
-    workflowSourcePath: options.workflowSourcePath
+    workflowSourcePath: options.workflowSourcePath,
+    agentOverrides: options.agentOverrides,
+    submissionWarnings: options.submissionWarnings
   });
 
   try {

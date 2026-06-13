@@ -1,4 +1,4 @@
-import type { CompileResult, Diagnostic, LintResult } from "@acpus/core";
+import type { AgentOverrideWarning, AgentOverrides, CompileResult, Diagnostic, LintResult } from "@acpus/core";
 
 export interface OutputOptions {
   json?: boolean;
@@ -19,10 +19,20 @@ export function printLint(result: LintResult, options: OutputOptions): void {
   }
 }
 
-export function printCompile(result: CompileResult, options: OutputOptions): void {
+export function printCompile(
+  result: CompileResult & { agentOverrides?: AgentOverrides; submissionWarnings?: AgentOverrideWarning[] },
+  options: OutputOptions
+): void {
   if (options.quiet) {
     if (options.json) {
-      writeJsonLine({ ok: result.ok, diagnostics: result.diagnostics, ir: result.ir, schedule: result.schedule });
+      writeJsonLine({
+        ok: result.ok,
+        diagnostics: result.diagnostics,
+        ir: result.ir,
+        schedule: result.schedule,
+        agentOverrides: result.agentOverrides,
+        submissionWarnings: result.submissionWarnings
+      });
     }
     return;
   }
@@ -31,7 +41,9 @@ export function printCompile(result: CompileResult, options: OutputOptions): voi
       ok: result.ok,
       diagnostics: result.diagnostics,
       ir: result.ir,
-      schedule: result.schedule
+      schedule: result.schedule,
+      agentOverrides: result.agentOverrides,
+      submissionWarnings: result.submissionWarnings
     });
     return;
   }

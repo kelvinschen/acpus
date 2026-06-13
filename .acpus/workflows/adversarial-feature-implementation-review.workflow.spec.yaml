@@ -22,6 +22,8 @@ input:
 agents:
   reviewer:
     use: traex
+  cross_examiner:
+    use: pi
 
 workflow:
   steps:
@@ -278,7 +280,7 @@ workflow:
 
     - id: cross_examine
       run: agent
-      use: reviewer
+      use: cross_examiner
       prompt: |
         You are the final cross-examination reviewer. Read all four reports,
         filter weak evidence, merge duplicates, resolve contradictions, and

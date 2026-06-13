@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { hashIrNode } from "../src/hash.js";
+import { compileWorkflow, hashIrNode } from "../src/index.js";
+import { applyAgentOverrides } from "../src/agent-overrides.js";
+import { parse as parseYaml } from "yaml";
 import type { IrNode } from "../src/types.js";
 
 function programNode(metadata: Record<string, unknown>): IrNode {
@@ -70,5 +72,55 @@ describe("hashIrNode", () => {
       metadata: { run: "program", cmd: "ls" }
     };
     expect(hashIrNode(a)).toBe(hashIrNode(b));
+  });
+
+  it("matches hashes for equivalent effective IR from spec defaults and overrides", () => {
+    const defaultSource = [
+      "version: 1",
+      "name: hash-agent-default",
+      "agents:",
+      "  implementer:",
+      "    type: builtin",
+      "    use: claude",
+      "    model: opus",
+      "workflow:",
+      "  steps:",
+      "    - id: impl",
+      "      run: agent",
+      "      use: implementer",
+      "      prompt: Do it."
+    ].join("\n");
+    const overrideSource = defaultSource.replace("use: claude", "use: codex").replace("model: opus", "model: gpt-5");
+    const effective = applyAgentOverrides(parseYaml(overrideSource) as any, {
+      implementer: { type: "builtin", use: "claude", model: "opus" }
+    });
+    const defaultIr = compileWorkflow(defaultSource).ir!;
+    const overrideIr = compileWorkflow(JSON.stringify(effective.effectiveSpec)).ir!;
+
+    expect(hashIrNode(defaultIr.root.children![0]!)).toBe(hashIrNode(overrideIr.root.children![0]!));
+  });
+
+  it("changes referenced Agent Step hash when agent identity changes", () => {
+    const source = [
+      "version: 1",
+      "name: hash-agent-change",
+      "agents:",
+      "  implementer:",
+      "    type: builtin",
+      "    use: codex",
+      "workflow:",
+      "  steps:",
+      "    - id: impl",
+      "      run: agent",
+      "      use: implementer",
+      "      prompt: Do it."
+    ].join("\n");
+    const effective = applyAgentOverrides(parseYaml(source) as any, {
+      implementer: { type: "builtin", use: "claude" }
+    });
+    const originalIr = compileWorkflow(source).ir!;
+    const overrideIr = compileWorkflow(JSON.stringify(effective.effectiveSpec)).ir!;
+
+    expect(hashIrNode(originalIr.root.children![0]!)).not.toBe(hashIrNode(overrideIr.root.children![0]!));
   });
 });

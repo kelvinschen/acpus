@@ -4,7 +4,15 @@ import type { ExecutorAdapter } from "./executors/types.js";
 import type { SupervisorConfig, RunSummary, SupervisorHealth } from "./types.js";
 import { WorkflowInterpreter, generateRunId } from "./interpreter.js";
 import { InputValidationFailure } from "./validate-input.js";
-import { compileWorkflow, workflowSourcePolicy } from "@acpus/core";
+import {
+  applyAgentOverrides,
+  compileWorkflow,
+  emptyAgentOverrideResult,
+  optionalSubmissionMetadata,
+  parseWorkflowSpecForOverrides,
+  serializeWorkflowSpecForOverrides,
+  workflowSourcePolicy
+} from "@acpus/core";
 import { resolve } from "node:path";
 import type { RunState } from "./types.js";
 import { ForkError, materializeFork, planFork, type ForkPlan } from "./fork.js";
@@ -239,7 +247,13 @@ export function createSupervisorApp(
   // ─── Runs ────────────────────────────────────────────────────────
 
   app.post("/runs", async (c) => {
-    const body = await c.req.json<{ spec?: string; input?: Record<string, unknown>; sourcePath?: string; workflowRef?: string }>();
+    const body = await c.req.json<{
+      spec?: string;
+      input?: Record<string, unknown>;
+      sourcePath?: string;
+      workflowRef?: string;
+      agentOverrides?: import("@acpus/core").AgentOverrides;
+    }>();
     if (!body.spec) {
       return c.json({ error: "spec is required" }, 400);
     }
@@ -253,7 +267,19 @@ export function createSupervisorApp(
       }
     }
 
-    const result = compileWorkflow(body.spec, {
+    let effectiveSource = body.spec;
+    let submitMetadata = emptyAgentOverrideResult();
+    try {
+      if (body.agentOverrides !== undefined) {
+        const parsedSpec = parseWorkflowSpecForOverrides(body.spec);
+        submitMetadata = applyAgentOverrides(parsedSpec, body.agentOverrides);
+        effectiveSource = serializeWorkflowSpecForOverrides(submitMetadata.effectiveSpec);
+      }
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, 400);
+    }
+
+    const result = compileWorkflow(effectiveSource, {
       sourcePath,
       includeResolver: sourcePolicy.createIncludeResolver(sourcePath)
     });
@@ -267,7 +293,8 @@ export function createSupervisorApp(
       runState = initInterpreter.initRun(result.ir, {
         input: body.input ?? {},
         workflowRef: body.workflowRef,
-        workflowSourcePath: sourcePath
+        workflowSourcePath: sourcePath,
+        ...optionalSubmissionMetadata(submitMetadata)
       });
     } catch (error) {
       if (error instanceof InputValidationFailure) {
@@ -518,6 +545,7 @@ export function createSupervisorApp(
       input?: Record<string, unknown>;
       overrideOriginNodeKey?: string;
       dryRun?: boolean;
+      agentOverrides?: import("@acpus/core").AgentOverrides;
     };
     const body = await c.req.json<ForkRequestBody>().catch((): ForkRequestBody => ({}));
 
@@ -542,7 +570,21 @@ export function createSupervisorApp(
       }
     }
 
-    const compileResult = compileWorkflow(body.spec, {
+    let submitMetadata = emptyAgentOverrideResult();
+    let effectiveSource = body.spec;
+    try {
+      if (body.agentOverrides !== undefined || Object.keys(priorMeta.agentOverrides ?? {}).length > 0) {
+        const parsedSpec = parseWorkflowSpecForOverrides(body.spec);
+        submitMetadata = applyAgentOverrides(parsedSpec, body.agentOverrides, {
+          inherited: priorMeta.agentOverrides ?? {}
+        });
+        effectiveSource = serializeWorkflowSpecForOverrides(submitMetadata.effectiveSpec);
+      }
+    } catch (error) {
+      return c.json({ kind: "fork-rejected", error: errorMessage(error) }, 400);
+    }
+
+    const compileResult = compileWorkflow(effectiveSource, {
       sourcePath,
       includeResolver: sourcePolicy.createIncludeResolver(sourcePath)
     });
@@ -563,7 +605,12 @@ export function createSupervisorApp(
     }
 
     if (body.dryRun) {
-      return c.json({ dryRun: true, plan });
+      return c.json({
+        dryRun: true,
+        plan,
+        agentOverrides: submitMetadata.agentOverrides,
+        submissionWarnings: submitMetadata.warnings
+      });
     }
 
     const forkRunId = generateRunId();
@@ -574,7 +621,8 @@ export function createSupervisorApp(
         ir: compileResult.ir,
         input: body.input,
         workflowRef: body.workflowRef ?? priorMeta.workflowRef,
-        workflowSourcePath: sourcePath ?? priorMeta.workflowSourcePath
+        workflowSourcePath: sourcePath ?? priorMeta.workflowSourcePath,
+        ...optionalSubmissionMetadata(submitMetadata)
       });
     } catch (error) {
       if (error instanceof InputValidationFailure) {

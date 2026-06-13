@@ -18,6 +18,10 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A Workflow Run MUST fail when top-level `outputs` evaluation fails after Node execution completes.
 - A Workflow Spec MAY declare `include` steps that are expanded at compile time.
 - A started Workflow Run MUST execute a frozen IR snapshot and MUST NOT re-read mutable YAML during replay or resume.
+- Agent Overrides MAY produce an effective Workflow Spec at Run or Forked Run creation by overriding top-level agent definitions before compilation.
+- Agent Overrides MUST apply only to the submitted top-level Workflow Spec's top-level `agents` map and MUST NOT mutate the Workflow Spec YAML.
+- Agent Overrides MUST affect a Run only through the frozen IR created from the effective Workflow Spec; they MUST NOT control an already-started Run.
+- Included Agent Steps MUST continue to resolve agents from the effective top-level agent definitions. Subworkflow-scoped Agent Overrides are not supported in v1.
 
 ### Authoring Boundaries
 
@@ -47,8 +51,10 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A `command` agent MUST declare `use` as the launch command for a custom ACP server; the runtime drives it through the acpx `--agent "<use>"` escape hatch.
 - For testing, use `acpus-mock-agent` as a `command` agent (e.g. `type: command, use: "acpus-mock-agent --script <path>"`), which provides deterministic script responses through the real acpx path.
 - An agent MAY declare `model`, `cwd`, and `env`, which the runtime forwards to acpx.
+- An Agent Override `cwd` value MUST be a non-empty string.
 - Agent `env` values MUST add to or override the executor process environment, and MUST be template-evaluated and stringified before being passed to acpx.
 - Agent `env` MUST NOT delete inherited environment variables.
+- Agent Override `env` values MUST merge into the selected top-level agent's `env` by key and MUST NOT delete existing agent environment keys.
 - An Agent Step MAY omit `output` when no structured output parsing is required.
 - An Agent Step MAY declare `output` using the Acpus Schema DSL defined in [Schema Spec](schema-spec.md).
 - An Agent Step `output` declared with the Acpus Schema DSL MUST compile nested object and array item structure into the Agent Step output schema stored in the IR.
