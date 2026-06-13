@@ -35,6 +35,8 @@ describe("snapshotFingerprint", () => {
     const base = snapshotFingerprint(run, nodes);
 
     expect(snapshotFingerprint({ ...run, status: "completed" }, nodes)).not.toBe(base);
+    expect(snapshotFingerprint({ ...run, output: { verdict: "ship" } }, nodes)).not.toBe(base);
+    expect(snapshotFingerprint({ ...run, error: "workflow output failed" }, nodes)).not.toBe(base);
     expect(snapshotFingerprint(run, [{ ...nodes[0], state: "completed", output: { ok: true } }])).not.toBe(base);
   });
 

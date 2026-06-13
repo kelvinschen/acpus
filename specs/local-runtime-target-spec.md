@@ -184,6 +184,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - The Run Supervisor MUST perform graceful shutdown on SIGINT/SIGTERM: persist all live `running` Nodes as `paused`, remove supervisor metadata, close the HTTP server, then exit.
 - The Run Supervisor MUST use a 5-second forced-exit fallback if the HTTP server does not close promptly.
 - Node keys MUST be passed as `?key=` query parameters in the REST API for Node-level retry, node retrieval, approval signal delivery, and artifact path resolution because node keys contain `/` which is incompatible with path segments.
+- `GET /runs/:runId/input` MUST return `{ input }` containing the persisted resolved Workflow input for the Run.
 - `GET /runs/:runId/output` MUST return `{ status, output }` and MAY include `error` as a string when the Run has failed.
 - `GET /runs/:runId/output` MUST return the persisted evaluated top-level Workflow `outputs` when `status` is `completed`.
 - `GET /runs/:runId/output` MUST return `{}` for `output` when the Run is `running`, `failed`, `paused`, or `cancelled`.

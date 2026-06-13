@@ -128,6 +128,8 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - The single-Run visualizer MUST render prompts in the Prompt details tab with Markdown-aware terminal formatting while preserving useful plain text for OSC 52 copy.
 - The single-Run visualizer MUST render structured object or array outputs in the Output details tab with a JSON tree view while preserving useful plain text for OSC 52 copy.
 - The Output details JSON tree MUST use `root` for its synthetic top-level tree node and MUST NOT use the selected Node label or `output` as the synthetic root label.
+- When the root Workflow row is selected, the single-Run visualizer MUST show an Input details tab containing the resolved Run input as a JSON tree.
+- When the root Workflow row is selected for a completed Run, the Output details tab MUST show the Run's evaluated top-level Workflow `outputs`, not the root pipeline Node's internal child-output aggregate.
 - The Output details tab MUST preserve the selected Node's persisted output shape as exposed through `steps.<node>`. Every Node's primary produced value MUST appear in the persisted `output` field, and Program Step `exit_code` MUST remain a sibling field.
 - While the details pane is focused on a structured Output tab, `j` and `k` MUST move the JSON tree cursor, and `Space` or `Enter` MUST toggle the selected expandable JSON branch.
 - While the single-Run visualizer is polling a live Run, refreshed Output JSON data for the same selected graph row and Output tab MUST NOT reset the JSON tree cursor to `root`.

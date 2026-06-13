@@ -382,6 +382,18 @@ export function createSupervisorApp(
     return c.json(ir);
   });
 
+  app.get("/runs/:runId/input", (c) => {
+    const runId = c.req.param("runId");
+    if (!store.hasRun(runId)) {
+      return c.json({ error: "Run not found" }, 404);
+    }
+    const input = store.readInput(runId);
+    if (!input) {
+      return c.json({ error: "Input not found" }, 404);
+    }
+    return c.json({ input });
+  });
+
   app.get("/runs/:runId/node", (c) => {
     const runId = c.req.param("runId");
     const nodeKey = c.req.query("key");

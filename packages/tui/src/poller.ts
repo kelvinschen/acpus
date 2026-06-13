@@ -10,6 +10,7 @@ import type { RunSupervisorClient, NodeExecutionState, RunState } from "@acpus/r
 
 export interface RunSnapshot {
   ir?: AcpusIr;
+  input?: Record<string, unknown>;
   run?: RunState;
   nodes: NodeExecutionState[];
   /** Connection / fetch error message, if the last poll failed. */
@@ -37,11 +38,18 @@ export function useRunPoller(
 ): RunSnapshot {
   const [snapshot, setSnapshot] = useState<RunSnapshot>({ nodes: [], loaded: false });
   const irRef = useRef<AcpusIr | undefined>(undefined);
+  const inputRef = useRef<Record<string, unknown> | undefined>(undefined);
+  const cachedRunIdRef = useRef<string | undefined>(undefined);
   const fingerprintRef = useRef<string | undefined>(undefined);
   const stopped = useRef(false);
 
   useEffect(() => {
     stopped.current = false;
+    if (cachedRunIdRef.current !== runId) {
+      cachedRunIdRef.current = runId;
+      irRef.current = undefined;
+      inputRef.current = undefined;
+    }
     fingerprintRef.current = undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -49,6 +57,9 @@ export function useRunPoller(
       try {
         if (!irRef.current) {
           irRef.current = await client.getIr(runId);
+        }
+        if (!inputRef.current) {
+          inputRef.current = await client.getInput(runId);
         }
         const [run, nodes] = await Promise.all([
           client.getRun(runId),
@@ -58,11 +69,11 @@ export function useRunPoller(
         const fingerprint = snapshotFingerprint(run, nodes);
         if (fingerprint !== fingerprintRef.current) {
           fingerprintRef.current = fingerprint;
-          setSnapshot({ ir: irRef.current, run, nodes, loaded: true });
+          setSnapshot({ ir: irRef.current, input: inputRef.current, run, nodes, loaded: true });
         } else {
           setSnapshot((prev) => prev.loaded && prev.error === undefined
             ? prev
-            : { ir: irRef.current, run, nodes, loaded: true });
+            : { ir: irRef.current, input: inputRef.current, run, nodes, loaded: true });
         }
         if (isTerminal(run.status)) return; // stop polling; keep last frame
       } catch (err) {
@@ -91,7 +102,9 @@ export function snapshotFingerprint(run: RunState, nodes: NodeExecutionState[]):
       runId: run.runId,
       status: run.status,
       updatedAt: run.updatedAt,
-      runAttempt: run.runAttempt
+      runAttempt: run.runAttempt,
+      output: run.output,
+      error: run.error
     },
     nodes: nodes.map((node) => ({
       nodeKey: node.nodeKey,

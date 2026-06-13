@@ -231,6 +231,151 @@ describe("buildDetailLines", () => {
     expect(formatDetailLinesPlainText(parallelOutput?.lines ?? [])).toContain("\"output\":");
   });
 
+  it("renders root workflow input and public output instead of the internal aggregate", () => {
+    const row = makeRow({
+      irNode: {
+        id: "workflow",
+        kind: "pipeline",
+        nodePath: ["workflow"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow" },
+        metadata: {}
+      },
+      rowKey: "/workflow#workflow",
+      label: "workflow",
+      nodeKey: "workflow",
+      instance: {
+        nodeKey: "workflow",
+        nodeId: "workflow",
+        kind: "pipeline",
+        state: "completed",
+        attempt: 1,
+        output: {
+          output: {
+            collect_context: { output: { output_dir: "/tmp/internal" } },
+            cross_examine: { output: { verdict: "internal" } }
+          }
+        }
+      }
+    });
+
+    const sections = buildDetailSections(row, 80, {}, undefined, undefined, {
+      input: { feature_goal: "review", base_ref: "abc123" },
+      output: { verdict: "ship", final_report_path: "/tmp/report.md" },
+      status: "completed"
+    });
+
+    expect(sections.map((section) => section.key)).toEqual(["summary", "input", "output"]);
+    expect(sections.find((section) => section.key === "input")?.richContent).toEqual({
+      kind: "json",
+      data: { feature_goal: "review", base_ref: "abc123" }
+    });
+    expect(sections.find((section) => section.key === "output")?.richContent).toEqual({
+      kind: "json",
+      data: { verdict: "ship", final_report_path: "/tmp/report.md" }
+    });
+
+    const outputText = formatDetailLinesPlainText(sections.find((section) => section.key === "output")?.lines ?? []);
+    expect(outputText).toContain("\"verdict\": \"ship\"");
+    expect(outputText).not.toContain("collect_context");
+    expect(outputText).not.toContain("internal");
+  });
+
+  it("renders an empty public output for completed root workflows without declared outputs", () => {
+    const row = makeRow({
+      irNode: {
+        id: "workflow",
+        kind: "pipeline",
+        nodePath: ["workflow"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow" },
+        metadata: {}
+      },
+      rowKey: "/workflow#workflow",
+      label: "workflow",
+      nodeKey: "workflow",
+      instance: {
+        nodeKey: "workflow",
+        nodeId: "workflow",
+        kind: "pipeline",
+        state: "completed",
+        attempt: 1,
+        output: { output: { child: { output: { ok: true } } } }
+      }
+    });
+
+    const output = buildDetailSections(row, 80, {}, undefined, undefined, {
+      input: {},
+      status: "completed"
+    }).find((section) => section.key === "output");
+
+    expect(output?.richContent).toEqual({ kind: "json", data: {} });
+    expect(formatDetailLinesPlainText(output?.lines ?? [])).toContain("{}");
+  });
+
+  it("does not render root pipeline aggregate for failed root workflows", () => {
+    const row = makeRow({
+      irNode: {
+        id: "workflow",
+        kind: "pipeline",
+        nodePath: ["workflow"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow" },
+        metadata: {}
+      },
+      rowKey: "/workflow#workflow",
+      label: "workflow",
+      nodeKey: "workflow",
+      instance: {
+        nodeKey: "workflow",
+        nodeId: "workflow",
+        kind: "pipeline",
+        state: "failed",
+        attempt: 1,
+        error: "Workflow output failed",
+        output: { output: { child: { output: { secret: "aggregate" } } } }
+      }
+    });
+
+    const sections = buildDetailSections(row, 80, {}, undefined, undefined, {
+      input: { feature_goal: "review" },
+      status: "failed"
+    });
+
+    expect(sections.map((section) => section.key)).toEqual(["summary", "error", "input"]);
+    const detailsText = formatDetailLinesPlainText(sections.flatMap((section) => section.lines));
+    expect(detailsText).not.toContain("secret");
+    expect(detailsText).not.toContain("aggregate");
+  });
+
+  it("renders root workflow input from the IR row before root node state exists", () => {
+    const row = makeRow({
+      irNode: {
+        id: "workflow",
+        kind: "pipeline",
+        nodePath: ["workflow"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow" },
+        metadata: {}
+      },
+      rowKey: "/workflow",
+      label: "workflow",
+      nodeKey: undefined,
+      instance: undefined
+    });
+
+    const sections = buildDetailSections(row, 80, {}, undefined, undefined, {
+      input: { feature_goal: "review" },
+      output: { verdict: "ship" },
+      status: "completed"
+    });
+
+    expect(sections.find((section) => section.key === "input")?.richContent).toEqual({
+      kind: "json",
+      data: { feature_goal: "review" }
+    });
+    expect(sections.find((section) => section.key === "output")?.richContent).toEqual({
+      kind: "json",
+      data: { verdict: "ship" }
+    });
+  });
+
   it("renders Guard definitions with wrapped conditions and optional message", () => {
     const longWhen = "input.changed_files.exists(path, path.endsWith('.ts') || path.endsWith('.tsx')) && steps.collect_context.output.has_changes";
     const row = makeRow({

@@ -33,7 +33,7 @@ export interface DetailLine {
   segments: DetailSegment[];
 }
 
-export type DetailSectionKey = "summary" | "execution" | "prompt" | "error" | "output" | "artifacts";
+export type DetailSectionKey = "summary" | "execution" | "prompt" | "error" | "input" | "output" | "artifacts";
 
 export interface DetailSection {
   key: DetailSectionKey;
@@ -46,6 +46,12 @@ export interface DetailSection {
 export interface JsonDisplayState {
   expandedIds?: ReadonlySet<string>;
   selectedIndex?: number;
+}
+
+export interface RunBoundaryDetails {
+  input?: Record<string, unknown>;
+  output?: Record<string, unknown>;
+  status?: string;
 }
 
 export function DetailsPane({
@@ -218,9 +224,10 @@ export function buildDetailLines(
   width: number,
   artifactPaths: Record<string, string>,
   freezeAt?: string | number,
-  agentTelemetry?: AgentTelemetry
+  agentTelemetry?: AgentTelemetry,
+  runBoundary?: RunBoundaryDetails
 ): DetailLine[] {
-  return buildDetailSections(row, width, artifactPaths, freezeAt, agentTelemetry).flatMap((section) => section.lines);
+  return buildDetailSections(row, width, artifactPaths, freezeAt, agentTelemetry, runBoundary).flatMap((section) => section.lines);
 }
 
 export function buildDetailSections(
@@ -228,11 +235,13 @@ export function buildDetailSections(
   width: number,
   artifactPaths: Record<string, string>,
   freezeAt?: string | number,
-  agentTelemetry?: AgentTelemetry
+  agentTelemetry?: AgentTelemetry,
+  runBoundary?: RunBoundaryDetails
 ): DetailSection[] {
   if (!row) return [];
   const cols = Math.max(12, width - 4);
   const inst = row.instance;
+  const isRootWorkflow = row.irNode.id === "workflow" && row.irNode.nodePath.length === 1 && row.irNode.nodePath[0] === "workflow";
   const style = styleForState(row.state);
   const dyn = inst?.dynamicContext;
   const meta = (row.irNode.metadata ?? {}) as Record<string, unknown>;
@@ -315,8 +324,31 @@ export function buildDetailSections(
     });
   }
 
+  // ── Root Workflow input ──
+  if (isRootWorkflow && runBoundary?.input !== undefined) {
+    const inputValue = runBoundary.input;
+    const inputText = JSON.stringify(inputValue, null, 2) ?? String(inputValue);
+    sections.push({
+      key: "input",
+      label: "Input",
+      lines: [blank(), heading("Input:"), ...textLines(inputText, cols)],
+      richContent: { kind: "json", data: inputValue }
+    });
+  }
+
   // ── Output ──
-  if (row.irNode.kind === "run.agent" && agentAttempt?.output) {
+  if (isRootWorkflow) {
+    if (runBoundary?.status === "completed") {
+      const outputValue = runBoundary.output ?? {};
+      const outputText = JSON.stringify(outputValue, null, 2) ?? String(outputValue);
+      sections.push({
+        key: "output",
+        label: "Output",
+        lines: [blank(), heading("Output:"), ...textLines(outputText, cols)],
+        richContent: { kind: "json", data: outputValue }
+      });
+    }
+  } else if (row.irNode.kind === "run.agent" && agentAttempt?.output) {
     const outputText = agentAttempt.output.preview;
     sections.push({
       key: "output",

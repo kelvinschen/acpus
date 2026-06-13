@@ -7,7 +7,7 @@ import type { ExecutorAdapter, ExecutionRequest } from "../../src/executors/type
 import type { ExecutorResult } from "../../src/types.js";
 import type { Server } from "node:http";
 import { serve } from "@hono/node-server";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -129,6 +129,40 @@ describe("Supervisor HTTP API", () => {
       body: JSON.stringify({ spec: SPEC_YAML, input: {}, sourcePath })
     });
     expect(res.status).toBe(201);
+  });
+
+  it("returns resolved run input via GET /runs/:runId/input", async () => {
+    const input = { feature_goal: "review", files: ["a.ts", "b.ts"] };
+    const createRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: SPEC_YAML, input })
+    });
+    const { runId } = await createRes.json();
+
+    const res = await fetch(`${baseUrl}/runs/${runId}/input`);
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ input });
+  });
+
+  it("returns 404 for unknown run input", async () => {
+    const res = await fetch(`${baseUrl}/runs/missing-run/input`);
+    expect(res.status).toBe(404);
+    await expect(res.json()).resolves.toEqual({ error: "Run not found" });
+  });
+
+  it("returns 404 when persisted input is missing for an existing run", async () => {
+    const createRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: SPEC_YAML, input: { feature_goal: "review" } })
+    });
+    const { runId } = await createRes.json();
+    unlinkSync(join(store.getBaseDir(), runId, "input.json"));
+
+    const res = await fetch(`${baseUrl}/runs/${runId}/input`);
+    expect(res.status).toBe(404);
+    await expect(res.json()).resolves.toEqual({ error: "Input not found" });
   });
 
   it("rejects sourcePath outside workspace and global Workflow Catalog roots", async () => {
@@ -491,6 +525,17 @@ outputs:
     expect(store.readRunMeta(runId)?.output).toEqual({ result: "done", lane_count: 2 });
     expect(data.output.internal).toBeUndefined();
     expect(data.output.repeated).toBeUndefined();
+
+    const showRes = await fetch(`${baseUrl}/runs/${runId}`);
+    expect(showRes.status).toBe(200);
+    const show = await showRes.json();
+    expect(show.status).toBe("completed");
+    expect(show.output).toEqual({ result: "done", lane_count: 2 });
+    expect(show.output.internal).toBeUndefined();
+    expect(show.output.repeated).toBeUndefined();
+    const root = show.nodes.find((node: { nodeKey?: string }) => node.nodeKey === "workflow");
+    expect(root?.output?.output?.internal).toBeDefined();
+    expect(root?.output?.output?.mapped).toBeDefined();
   });
 
   it("fails the run when declared workflow outputs cannot be evaluated", async () => {

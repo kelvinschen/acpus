@@ -88,6 +88,13 @@ export class RunSupervisorClient {
     return res.json() as Promise<AcpusIr>;
   }
 
+  async getInput(runId: string): Promise<Record<string, unknown>> {
+    const res = await fetch(`${this.baseUrl}/runs/${runId}/input`, { headers: this.headers() });
+    if (!res.ok) throw new Error(`Input not found: ${runId}`);
+    const body = (await res.json()) as { input: Record<string, unknown> };
+    return body.input;
+  }
+
   /** Resolve an artifact:// URI to its absolute filesystem path on the supervisor host. */
   async getArtifactPath(runId: string, uri: string): Promise<string> {
     const res = await fetch(`${this.baseUrl}/runs/${runId}/artifact-path?uri=${encodeURIComponent(uri)}`, { headers: this.headers() });

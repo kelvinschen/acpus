@@ -131,8 +131,12 @@ export function App({
   // Flatten the selected node into a single array of colored lines, then derive
   // the scroll bound from its true length (so long prompts/outputs scroll fully).
   const detailSections = useMemo(
-    () => buildDetailSections(selected, detailsWidth, artifactPaths, durationClock, selectedAgentTelemetry),
-    [selected, detailsWidth, artifactPaths, durationClock, selectedAgentTelemetry]
+    () => buildDetailSections(selected, detailsWidth, artifactPaths, durationClock, selectedAgentTelemetry, {
+      input: snapshot.input,
+      output: run?.output,
+      status: run?.status
+    }),
+    [selected, detailsWidth, artifactPaths, durationClock, selectedAgentTelemetry, snapshot.input, run?.output, run?.status]
   );
   const detailLines = useMemo(() => detailSections.flatMap((section) => section.lines), [detailSections]);
   const resolvedActiveDetailSectionKey = useMemo(
