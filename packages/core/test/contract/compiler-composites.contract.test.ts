@@ -1,0 +1,470 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import { compileWorkflow, lintWorkflow } from "../../src/index.js";
+import { expectDiagnostic } from "../support/diagnostic-helpers.js";
+
+const fixtures = join(import.meta.dirname, "..", "fixtures");
+
+function fixture(name: string): string {
+  return readFileSync(join(fixtures, name), "utf8");
+}
+
+describe("@acpus/core compiler: composites (outputMerge, IR shape)", () => {
+  it("parallel: outputMerge is map, branch ids preserved in children", () => {
+    const source = `
+version: 1
+name: parallel-output
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: par
+      parallel:
+        - id: a
+          run: program
+          cmd: ["echo", "a"]
+        - id: b
+          run: program
+          cmd: ["echo", "b"]
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const parNode = result.ir?.root.children?.[0];
+    expect(parNode?.kind).toBe("parallel");
+    expect(parNode?.outputMerge).toBe("map");
+    expect(parNode?.children?.map((c) => c.id)).toEqual(["a", "b"]);
+  });
+
+  it("fanout: outputMerge is array; multi-step lane takes last child", () => {
+    const source = `
+version: 1
+name: fanout-multi-step
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: mapped
+      fanout:
+        over: [1, 2]
+        join: all
+        do:
+          - id: step_a
+            run: program
+            cmd: ["echo", "a"]
+          - id: step_b
+            run: program
+            cmd: ["echo", "b"]
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const fanoutNode = result.ir?.root.children?.[0];
+    expect(fanoutNode?.kind).toBe("fanout");
+    expect(fanoutNode?.outputMerge).toBe("array");
+    expect(fanoutNode?.children?.length).toBe(2);
+    expect(fanoutNode?.children?.map((c) => c.id)).toEqual(["step_a", "step_b"]);
+  });
+
+  it("switch: outputMerge is selected; branches and default preserved", () => {
+    const source = `
+version: 1
+name: switch-output
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: route
+      switch:
+        cases:
+          - when: true
+            do:
+              - id: go
+                run: program
+                cmd: ["echo", "ok"]
+          - when: false
+            do:
+              - id: maybe
+                run: program
+                cmd: ["echo", "maybe"]
+        default:
+          do:
+            - id: nope
+              run: program
+              cmd: ["echo", "nope"]
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const switchNode = result.ir?.root.children?.[0];
+    expect(switchNode?.kind).toBe("switch");
+    expect(switchNode?.outputMerge).toBe("selected");
+    expect(switchNode?.branches?.length).toBe(3);
+    expect(switchNode?.branches?.[0]?.id).toBe("case_1");
+    expect(switchNode?.branches?.[1]?.id).toBe("case_2");
+    expect(switchNode?.branches?.[2]?.id).toBe("default");
+    expect(switchNode?.branches?.[0]?.children?.map((c) => c.id)).toEqual(["go"]);
+  });
+
+  it("switch without default: only case branches", () => {
+    const source = `
+version: 1
+name: switch-no-default
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: route
+      switch:
+        cases:
+          - when: true
+            do:
+              - id: go
+                run: program
+                cmd: ["echo", "ok"]
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const switchNode = result.ir?.root.children?.[0];
+    expect(switchNode?.outputMerge).toBe("selected");
+    expect(switchNode?.branches?.length).toBe(1);
+    expect(switchNode?.branches?.[0]?.id).toBe("case_1");
+  });
+
+  it("guard: compiles deterministic scoped control actions", () => {
+    const source = `
+version: 1
+name: guard-output
+workflow:
+  steps:
+    - id: check
+      guard:
+        when: input.ok
+        then: continue
+        else: fail
+        message: "blocked \${{ input.reason }}"
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const guardNode = result.ir?.root.children?.[0];
+    expect(guardNode?.kind).toBe("guard");
+    expect(guardNode?.metadata).toEqual({
+      when: "input.ok",
+      then: "continue",
+      else: "fail",
+      message: "blocked ${{ input.reason }}"
+    });
+    expect(result.schedule?.nodes[0]?.kind).toBe("guard");
+    expect(result.ir?.expressions.some((expr) => expr.path === "$.workflow.steps[0].guard.message")).toBe(true);
+  });
+
+  it("loop: outputMerge is last; multi-step body takes last child", () => {
+    const source = `
+version: 1
+name: loop-output
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: fix
+      loop:
+        until: true
+        max_iterations: 3
+        do:
+          - id: step_a
+            run: program
+            cmd: ["echo", "a"]
+          - id: step_b
+            run: program
+            cmd: ["echo", "b"]
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const loopNode = result.ir?.root.children?.[0];
+    expect(loopNode?.kind).toBe("loop");
+    expect(loopNode?.outputMerge).toBe("last");
+    expect(loopNode?.children?.length).toBe(2);
+    expect(loopNode?.children?.map((c) => c.id)).toEqual(["step_a", "step_b"]);
+  });
+
+  it("subworkflow: no outputMerge field", () => {
+    const source = `
+version: 1
+name: sub-workflow
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: child
+      subworkflow: ./child.yaml
+      input:
+        x: 1
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const subNode = result.ir?.root.children?.[0];
+    expect(subNode?.kind).toBe("subworkflow");
+    expect(subNode?.outputMerge).toBeUndefined();
+  });
+
+  it("passes outputMerge through to schedule for all composite types", () => {
+    const result = compileWorkflow(fixture("all-primitives.yaml"), {
+      sourcePath: join(fixtures, "all-primitives.yaml")
+    });
+    expect(result.ok).toBe(true);
+
+    const parallelScheduleNode = result.schedule?.nodes[2];
+    expect(parallelScheduleNode?.kind).toBe("parallel");
+    expect(parallelScheduleNode?.outputMerge).toBe("map");
+
+    const fanoutScheduleNode = result.schedule?.nodes[3];
+    expect(fanoutScheduleNode?.kind).toBe("fanout");
+    expect(fanoutScheduleNode?.outputMerge).toBe("array");
+
+    const guardScheduleNode = result.schedule?.nodes[4];
+    expect(guardScheduleNode?.kind).toBe("guard");
+    expect(guardScheduleNode?.outputMerge).toBeUndefined();
+
+    const switchScheduleNode = result.schedule?.nodes[5];
+    expect(switchScheduleNode?.kind).toBe("switch");
+    expect(switchScheduleNode?.outputMerge).toBe("selected");
+
+    const loopScheduleNode = result.schedule?.nodes[6];
+    expect(loopScheduleNode?.kind).toBe("loop");
+    expect(loopScheduleNode?.outputMerge).toBe("last");
+
+    const subworkflowScheduleNode = result.schedule?.nodes[8];
+    expect(subworkflowScheduleNode?.kind).toBe("subworkflow");
+    expect(subworkflowScheduleNode?.outputMerge).toBeUndefined();
+  });
+
+  it("rejects quorum fanout without a positive quorum", () => {
+    const source = `
+version: 1
+name: missing-quorum
+workflow:
+  steps:
+    - id: mapped
+      fanout:
+        over: [1, 2]
+        join: quorum
+        do:
+          - id: each
+            run: program
+            cmd: ["echo", "hi"]
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expectDiagnostic(result, { code: "FANOUT_QUORUM" });
+  });
+
+  it("preserves valid fanout success criteria", () => {
+    const source = `
+version: 1
+name: fanout-success-criteria
+workflow:
+  steps:
+    - id: mapped
+      fanout:
+        over: [1, 2, 3]
+        join: all
+        success_criteria:
+          min_success: 2
+        do:
+          - id: each
+            run: program
+            cmd: ["echo", "hi"]
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const fanoutNode = result.ir?.root.children?.[0];
+    expect(fanoutNode?.kind).toBe("fanout");
+    expect(fanoutNode?.metadata.success_criteria).toEqual({ min_success: 2 });
+  });
+
+  it("accepts quorum fanout with valid quorum", () => {
+    const source = `
+version: 1
+name: fanout-quorum
+workflow:
+  steps:
+    - id: mapped
+      fanout:
+        over: [1, 2, 3]
+        join: quorum
+        quorum: 2
+        do:
+          - id: each
+            run: program
+            cmd: ["echo", "hi"]
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const fanoutNode = result.ir?.root.children?.[0];
+    expect(fanoutNode?.kind).toBe("fanout");
+    expect(fanoutNode?.metadata.quorum).toBe(2);
+  });
+
+  it("coerces boolean until to string", () => {
+    const source = `
+version: 1
+name: coerce-until-bool
+workflow:
+  steps:
+    - id: fix
+      loop:
+        until: true
+        max_iterations: 3
+        do:
+          - id: step_a
+            run: program
+            cmd: ["echo", "a"]
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const loopNode = result.ir?.root.children?.[0];
+    expect(loopNode?.kind).toBe("loop");
+    expect(loopNode?.metadata.until).toBe("true");
+  });
+
+  it("coerces boolean when to string", () => {
+    const source = `
+version: 1
+name: coerce-when-bool
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: route
+      switch:
+        cases:
+          - when: false
+            do:
+              - id: go
+                run: program
+                cmd: ["echo", "ok"]
+        default:
+          do:
+            - id: nope
+              run: program
+              cmd: ["echo", "nope"]
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const switchNode = result.ir?.root.children?.[0];
+    expect(switchNode?.kind).toBe("switch");
+    expect(switchNode?.branches?.[0]?.when).toBe("false");
+  });
+
+  it("coerces guard boolean when to string", () => {
+    const source = `
+version: 1
+name: guard-bool-when
+workflow:
+  steps:
+    - id: check
+      guard:
+        when: false
+        then: continue
+        else: complete
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const guardNode = result.ir?.root.children?.[0];
+    expect(guardNode?.kind).toBe("guard");
+    expect(guardNode?.metadata.when).toBe("false");
+  });
+
+  it("coerces array over to JSON string", () => {
+    const source = `
+version: 1
+name: coerce-over-array
+workflow:
+  steps:
+    - id: mapped
+      fanout:
+        over: [1, 2, 3]
+        join: all
+        do:
+          - id: each
+            run: program
+            cmd: ["echo", "hi"]
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const fanoutNode = result.ir?.root.children?.[0];
+    expect(fanoutNode?.kind).toBe("fanout");
+    expect(fanoutNode?.metadata.over).toBe("[1,2,3]");
+  });
+
+  it("accepts numeric timeout (milliseconds)", () => {
+    const source = `
+version: 1
+name: numeric-timeout
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: mock
+      prompt: "x"
+      timeout: 300
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const askNode = result.ir?.root.children?.[0];
+    expect(askNode?.metadata.timeout).toBe(300);
+  });
+
+  it("accepts valid on_error value", () => {
+    const source = `
+version: 1
+name: good-on-error
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: mock
+      prompt: "x"
+      on_error: fail
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const askNode = result.ir?.root.children?.[0];
+    expect(askNode?.metadata.on_error).toBe("fail");
+  });
+
+  it("accepts program step timeout and on_error", () => {
+    const source = `
+version: 1
+name: program-timeout-onerror
+workflow:
+  steps:
+    - id: run_it
+      run: program
+      cmd: ["echo", "hello"]
+      timeout: "5m"
+      on_error: retry
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const runNode = result.ir?.root.children?.[0];
+    expect(runNode?.metadata.timeout).toBe("5m");
+    expect(runNode?.metadata.on_error).toBe("retry");
+  });
+
+  it("accepts step ids without colons", () => {
+    const source = `
+version: 1
+name: valid-id
+workflow:
+  steps:
+    - id: my-step
+      run: program
+      cmd: ["echo", "hi"]
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+  });
+});
