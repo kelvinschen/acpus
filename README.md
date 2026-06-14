@@ -195,7 +195,7 @@ They keep agents responsible for judgment, synthesis, implementation, and repair
 
 | Pattern | Workflow ref | Use case | Mutates workspace |
 | --- | --- | --- | --- |
-| Loop until done | [`architecture-refactor-loop`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/architecture-refactor-loop.workflow.spec.yaml) | Iteratively find deepening opportunities, apply behavior-preserving refactors in an isolated worktree, and verify each round until no worthwhile work remains. | Yes |
+| Goal driven development | [`goal-driven-development`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/goal-driven-development.workflow.spec.yaml) | Decompose a goal into a frozen requirement checklist, then loop build-audit until every requirement is verified met or the budget is exhausted. | Yes |
 | Fanout and synthesize | [`codebase-deep-research`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/codebase-deep-research.workflow.spec.yaml) | Run independent research agents and synthesize a final report. | No |
 | Adversarial verification | [`adversarial-feature-implementation-review`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/adversarial-feature-implementation-review.workflow.spec.yaml) | Review a feature through contract, correctness, test, and maintainability lenses. | No |
 | Generate and filter | [`solution-generate-filter`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/solution-generate-filter.workflow.spec.yaml) | Generate multiple solution directions, critique them, and rank a recommendation. | No |

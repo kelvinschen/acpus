@@ -12,18 +12,6 @@
     }
   },
   {
-    "name": "architecture-refactor-loop",
-    "file": "architecture-refactor-loop.html",
-    "description": "Dynamic workflow pattern: loop-until-done.",
-    "total": 13,
-    "counts": {
-      "program": 3,
-      "guard": 3,
-      "loop": 1,
-      "agent": 6
-    }
-  },
-  {
     "name": "codebase-deep-research",
     "file": "codebase-deep-research.html",
     "description": "Dynamic workflow pattern: fanout-and-synthesize.",
@@ -47,15 +35,16 @@
     }
   },
   {
-    "name": "large-scale-refactor-parallel-review",
-    "file": "large-scale-refactor-parallel-review.html",
-    "description": "Large-scale parallel adversarial review for broad refactors.",
-    "total": 14,
+    "name": "goal-driven-development",
+    "file": "goal-driven-development.html",
+    "description": "Dynamic workflow pattern: goal-driven development (GDD).",
+    "total": 10,
     "counts": {
       "program": 1,
-      "guard": 1,
-      "parallel": 1,
-      "agent": 11
+      "guard": 2,
+      "agent": 5,
+      "loop": 1,
+      "switch": 1
     }
   },
   {

@@ -1,0 +1,345 @@
+version: 1
+name: goal-driven-development
+description: |
+  Goal Driven Development (GDD): an acpus-native re-implementation of the
+  "goal mode" found in OpenAI Codex (codex-rs/ext/goal) and the Pi extension
+  @narumitw/pi-goal.
+
+  Goal mode in those agents is a *runtime* loop: a single agent keeps getting
+  auto-continuation prompts ("keep going until the goal is resolved end-to-end")
+  until it calls a goal_complete / update_goal tool after a requirement-by-
+  requirement audit. This workflow expresses that same idea with acpus
+  primitives so the loop is durable, bounded, observable, and forkable, and it
+  works directly on the current workspace (no isolated git worktree):
+
+    - the goal objective              -> input.goal (+ a frozen requirement checklist)
+    - the auto-continuation loop      -> a Loop Node (until + max_iterations: 10)
+    - the persistence system prompt   -> the builder Agent Step prompt
+    - the goal_complete tool + audit  -> a separate auditor Agent Step that both
+                                         verifies (by whatever means fits the
+                                         goal) and judges goal_met / blocked
+    - the token budget                -> the iteration budget (max_iterations)
+    - budget_limited graceful stop    -> the degraded-summary switch branch
+    - pause / resume / clear / edit   -> acpus runs pause|resume|cancel|fork
+
+  The builder edits the current workspace in place. Verification is NOT a fixed
+  Program Step: not every goal is "write code + run tests", so the independent
+  auditor decides and performs the appropriate verification (tests, build, lint,
+  or direct inspection of files / command output) before declaring completion.
+
+  Output: .acpus/output/goal-driven-development/<run_id>/
+
+input:
+  goal: string
+  target_path?: string = "."
+  acceptance_criteria?: string = "(derive concrete, checkable criteria from the goal)"
+  verification_hint?: string = "(choose checks that fit this goal — tests, build, lint, or direct inspection of files/output)"
+  extra_context?: string = "(none)"
+  output_root?: string = ".acpus/output/goal-driven-development"
+
+agents:
+  planner:
+    use: codex
+  builder:
+    use: codex
+  auditor:
+    use: pi
+  summarizer:
+    use: pi
+
+workflow:
+  steps:
+    # 1. Deterministic glue only: create the run output/report directories and
+    #    resolve stable paths. No git, no worktree — the loop runs against the
+    #    current workspace directly.
+    - id: prepare_output
+      run: program
+      cmd:
+        - bash
+        - -c
+        - |
+          set -euo pipefail
+          python3 - "${{ input.target_path }}" "${{ input.output_root }}" "${{ run_id }}" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          target, root, run_id = sys.argv[1:4]
+          repo = pathlib.Path(target).resolve()
+          out = pathlib.Path(root).resolve() / run_id
+          reports = out / "reports"
+          reports.mkdir(parents=True, exist_ok=True)
+          print(json.dumps({
+              "ok": True,
+              "workspace_path": str(repo),
+              "output_dir": str(out),
+              "reports_dir": str(reports),
+              "checklist_path": str(reports / "requirement-checklist.md"),
+              "summary_path": str(reports / "goal-summary.md"),
+          }))
+          PY
+      capture:
+        from: stdout
+        parse: json
+      output:
+        ok: boolean
+        workspace_path: string
+        output_dir: string
+        reports_dir: string
+        checklist_path: string
+        summary_path: string
+      timeout: 5m
+
+    - id: require_output_ready
+      guard:
+        when: steps.prepare_output.output.ok
+        then: continue
+        else: fail
+        message: "Could not prepare the run output directory."
+
+    # 2. Freeze the goal into an explicit requirement checklist BEFORE working.
+    #    This is acpus's answer to Codex's "do not redefine the goal into a
+    #    smaller task": the completion contract is fixed up front, not by the
+    #    same agent that later wants to stop.
+    - id: establish_baseline
+      run: agent
+      use: planner
+      session_key: "gdd-planning"
+      prompt: |
+        You are decomposing a goal into a fixed, checkable requirement contract.
+        Do NOT do the work yet.
+
+        Goal:
+        ${{ input.goal }}
+
+        Acceptance criteria (refine into concrete, verifiable checks):
+        ${{ input.acceptance_criteria }}
+
+        How completion should be verified for THIS goal:
+        ${{ input.verification_hint }}
+
+        Workspace to inspect (read-only here):
+        ${{ steps.prepare_output.output.workspace_path }}
+
+        Extra context:
+        ${{ input.extra_context }}
+
+        Requirements:
+        - Inspect the workspace to ground the checklist in reality.
+        - Produce an explicit, numbered requirement checklist. Each item MUST be
+          independently verifiable (a test, a command result, an observable file
+          or output state). Keep the full goal scope; do not shrink it.
+        - For each requirement, state exactly how it will be verified.
+        - Do not modify anything yet.
+
+        Write the checklist as markdown to:
+        ${{ steps.prepare_output.output.checklist_path }}
+
+        Return JSON with the checklist path and the number of requirements.
+      output:
+        checklist_path: string
+        requirement_count: integer
+        notes: string
+      timeout: 20m
+
+    # 3. The goal loop: build -> audit. This is the structural equivalent of
+    #    Codex/pi auto-continuation. It keeps running until the auditor declares
+    #    the goal met (or unreachable/blocked), or the iteration budget
+    #    (max_iterations = token-budget analogue) is spent.
+    - id: goal_loop
+      loop:
+        until: "!loop.last.output.should_continue"
+        max_iterations: 50
+        do:
+          - id: build_attempt
+            run: agent
+            use: builder
+            session_key: "gdd-build"
+            prompt: |
+              Goal mode is active. Keep working until the goal is completely
+              resolved end-to-end. Do not stop at a plan, a TODO list, partial
+              work, or "suggested next steps" — actually do it in the workspace.
+
+              Goal:
+              ${{ input.goal }}
+
+              Frozen requirement checklist (the completion contract):
+              ${{ steps.prepare_output.output.checklist_path }}
+
+              Workspace (make your changes directly here):
+              ${{ steps.prepare_output.output.workspace_path }}
+
+              How completion should be verified for this goal:
+              ${{ input.verification_hint }}
+
+              Iteration:
+              ${{ loop.iter }}
+
+              Auditor findings from the previous iteration (unmet requirements
+              and guidance), if any:
+              ${{ loop.iter == 0 ? "(first iteration)" : steps.audit_attempt.output.audit_summary }}
+
+              Persistence rules (Codex/pi goal-mode style):
+              - Treat the current workspace, command output, and tests as authoritative.
+              - Do not redefine the goal into a smaller task.
+              - Persevere through recoverable tool failures by trying alternatives.
+              - Build on your previous attempt's reasoning (same session) to refine.
+              - Address the auditor's unmet requirements first.
+
+              Constraints:
+              - Make changes directly in the workspace. Do not commit.
+              - Keep complex diagnosis and implementation decisions in this step.
+
+              Write a short progress report to:
+              ${{ steps.prepare_output.output.reports_dir }}/build-round-${{ loop.iter }}.md
+
+              Return JSON with only the report path.
+            output:
+              report_path: string
+            timeout: 45m
+
+          # The goal_complete analogue: a SEPARATE agent both VERIFIES and judges
+          # completion. It chooses verification appropriate to the goal (run
+          # tests/build/lint for code; inspect files/output otherwise) and audits
+          # the frozen checklist requirement-by-requirement against authoritative
+          # evidence. The goal is "complete" only when every requirement is met
+          # and verified.
+          - id: audit_attempt
+            run: agent
+            use: auditor
+            prompt: |
+              You are an independent completion auditor. You did NOT do this work.
+              You must VERIFY and then judge completion against authoritative
+              evidence only — never accept "looks done".
+
+              Goal:
+              ${{ input.goal }}
+
+              Frozen requirement checklist (the completion contract):
+              ${{ steps.prepare_output.output.checklist_path }}
+
+              Workspace:
+              ${{ steps.prepare_output.output.workspace_path }}
+
+              How completion should be verified for this goal:
+              ${{ input.verification_hint }}
+
+              Iteration:
+              ${{ loop.iter }}
+
+              Audit requirements:
+              - Perform the verification yourself. Pick what fits the goal: run
+                tests / build / lint for code goals, or inspect the relevant
+                files / command output / produced artifacts for non-code goals.
+              - Walk every checklist item. For each, cite the evidence (file,
+                command output, or check result) that proves it is met or unmet.
+              - goal_met MUST be true only if EVERY requirement is met AND your
+                verification passed. A passing audit must PROVE completion, not
+                merely fail to find remaining work.
+              - Never mark goal_met just to stop early or to save iterations.
+              - Set blocked=true only if the goal is unreachable or fundamentally
+                flawed (e.g. the same blocker persisted across multiple rounds).
+              - should_continue MUST be false when goal_met is true OR blocked is
+                true; otherwise true (another build iteration is warranted).
+
+              Write the audit to:
+              ${{ steps.prepare_output.output.reports_dir }}/audit-round-${{ loop.iter }}.md
+
+              Return JSON with:
+              - goal_met: boolean
+              - should_continue: boolean
+              - blocked: boolean
+              - unmet_requirements: string[] — short labels of still-unmet items
+              - audit_summary: string — concise diagnosis + guidance for the next build
+            output:
+              goal_met: boolean
+              should_continue: boolean
+              blocked: boolean
+              unmet_requirements:
+                - string
+              audit_summary: string
+            timeout: 20m
+
+    # 4. Branch on the final audit. On success: write a completion summary.
+    #    Otherwise: a graceful degraded summary (the budget_limited / blocked
+    #    analogue) so the run hands off honestly.
+    - id: finalize
+      switch:
+        cases:
+          - when: steps.goal_loop.output.goal_met
+            do:
+              - id: success_summary
+                run: agent
+                use: summarizer
+                prompt: |
+                  The goal was verified as met. Produce a concise completion
+                  summary for the user.
+
+                  Goal:
+                  ${{ input.goal }}
+
+                  Final audit summary:
+                  ${{ steps.goal_loop.output.audit_summary }}
+
+                  Requirement checklist:
+                  ${{ steps.prepare_output.output.checklist_path }}
+
+                  Workspace (changes were made here):
+                  ${{ steps.prepare_output.output.workspace_path }}
+
+                  Summarize what was accomplished, how it was verified, and what
+                  the user should review. Write it to:
+                  ${{ steps.prepare_output.output.summary_path }}
+
+                  Return JSON with the summary path.
+                output:
+                  summary_path: string
+                timeout: 15m
+        default:
+          do:
+            - id: degraded_summary
+              run: agent
+              use: summarizer
+              prompt: |
+                The goal was NOT completed within the iteration budget, or the
+                auditor marked it blocked. Produce an honest hand-off summary
+                (the goal-mode "budget_limited / blocked" graceful stop).
+
+                Goal:
+                ${{ input.goal }}
+
+                Final audit summary:
+                ${{ steps.goal_loop.output.audit_summary }}
+
+                Blocked:
+                ${{ steps.goal_loop.output.blocked }}
+
+                Still-unmet requirements:
+                ${{ steps.goal_loop.output.unmet_requirements }}
+
+                Workspace (work in progress lives here):
+                ${{ steps.prepare_output.output.workspace_path }}
+
+                Write a concise progress + next-steps summary to:
+                ${{ steps.prepare_output.output.summary_path }}
+
+                Return JSON with the summary path.
+              output:
+                summary_path: string
+              timeout: 20m
+
+    # 5. Root-level outcome gate: the Run completes only if the goal was met,
+    #    otherwise it fails (so "budget exhausted / blocked" is a clear failure,
+    #    just like a non-completed goal in Codex/pi).
+    - id: require_goal_met
+      guard:
+        when: steps.goal_loop.output.goal_met
+        then: complete
+        else: fail
+        message: "Goal not met within the iteration budget (or blocked); see the degraded summary report."
+
+outputs:
+  output_dir: ${{ steps.prepare_output.output.output_dir }}
+  checklist_path: ${{ steps.prepare_output.output.checklist_path }}
+  summary_path: ${{ steps.prepare_output.output.summary_path }}
+  goal_met: ${{ steps.goal_loop.output.goal_met }}
