@@ -397,26 +397,39 @@ outputs:
         </p>
         <div class="playbooks">
           <div class="template">
-            <a href="https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/dynamic-workflow-designer.workflow.spec.yaml">dynamic-workflow-designer</a>
-            <p>Classify a maintainer task and install a generated Workflow Spec into the catalog.</p>
+            <a href="./workflows/architecture-refactor-loop.html">architecture-refactor-loop</a>
+            <p>Iteratively find deepening opportunities, apply behavior-preserving refactors in an isolated worktree, and verify each round until no worthwhile work remains.</p>
           </div>
           <div class="template">
-            <a href="https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/codebase-deep-research.workflow.spec.yaml">codebase-deep-research</a>
+            <a href="./workflows/codebase-deep-research.html">codebase-deep-research</a>
             <p>Fan out independent research agents and synthesize a final report.</p>
           </div>
           <div class="template">
-            <a href="https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/worktree-implementation-tournament.workflow.spec.yaml">worktree-implementation-tournament</a>
+            <a href="./workflows/worktree-implementation-tournament.html">worktree-implementation-tournament</a>
             <p>Run competing implementations in isolated worktrees and apply the winner.</p>
           </div>
           <div class="template">
-            <a href="https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/loop-until-green-fix.workflow.spec.yaml">loop-until-green-fix</a>
+            <a href="./workflows/loop-until-green-fix.html">loop-until-green-fix</a>
             <p>Iterate agent repair attempts until verification passes, then apply the passing patch.</p>
           </div>
         </div>
         <p class="note">
-          Featured playbooks shown here. See the full catalog in
-          <a href="https://github.com/kelvinschen/acpus/tree/main/.acpus/workflows">GitHub</a>.
+          Featured playbooks shown here. Explore all workflow specs with interactive digraphs in the
+          <a href="./workflows/index.html">Workflow Visualizer</a>.
         </p>
+      </section>
+
+      <section>
+        <h2><small>Visualizer</small>Interactive workflow diagrams</h2>
+        <div class="rule"></div>
+        <p class="lede">
+          Every workflow spec rendered as an interactive digraph. Click nodes to inspect
+          agents, programs, guards, loops, and fanout bodies. Expand composite nodes to
+          see inner steps.
+        </p>
+        <div class="actions" style="justify-content:flex-start;margin-top:18px;">
+          <a class="button primary" href="./workflows/index.html">Browse all workflows</a>
+        </div>
       </section>
     </main>
 

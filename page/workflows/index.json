@@ -1,0 +1,110 @@
+[
+  {
+    "name": "adversarial-feature-implementation-review",
+    "file": "adversarial-feature-implementation-review.html",
+    "description": "Dynamic workflow pattern: adversarial verification.",
+    "total": 8,
+    "counts": {
+      "program": 1,
+      "guard": 1,
+      "parallel": 1,
+      "agent": 5
+    }
+  },
+  {
+    "name": "architecture-refactor-loop",
+    "file": "architecture-refactor-loop.html",
+    "description": "Dynamic workflow pattern: loop-until-done.",
+    "total": 13,
+    "counts": {
+      "program": 3,
+      "guard": 3,
+      "loop": 1,
+      "agent": 6
+    }
+  },
+  {
+    "name": "codebase-deep-research",
+    "file": "codebase-deep-research.html",
+    "description": "Dynamic workflow pattern: fanout-and-synthesize.",
+    "total": 8,
+    "counts": {
+      "program": 1,
+      "parallel": 1,
+      "agent": 6
+    }
+  },
+  {
+    "name": "dynamic-workflow-designer",
+    "file": "dynamic-workflow-designer.html",
+    "description": "Dynamic workflow pattern: classify-and-act.",
+    "total": 8,
+    "counts": {
+      "program": 2,
+      "agent": 4,
+      "switch": 1,
+      "guard": 1
+    }
+  },
+  {
+    "name": "large-scale-refactor-parallel-review",
+    "file": "large-scale-refactor-parallel-review.html",
+    "description": "Large-scale parallel adversarial review for broad refactors.",
+    "total": 14,
+    "counts": {
+      "program": 1,
+      "guard": 1,
+      "parallel": 1,
+      "agent": 11
+    }
+  },
+  {
+    "name": "loop-until-green-fix",
+    "file": "loop-until-green-fix.html",
+    "description": "Dynamic workflow pattern: loop-until-done.",
+    "total": 8,
+    "counts": {
+      "program": 3,
+      "guard": 2,
+      "loop": 1,
+      "agent": 2
+    }
+  },
+  {
+    "name": "solution-generate-filter",
+    "file": "solution-generate-filter.html",
+    "description": "Dynamic workflow pattern: generate-and-filter.",
+    "total": 7,
+    "counts": {
+      "program": 1,
+      "fanout": 1,
+      "agent": 4,
+      "parallel": 1
+    }
+  },
+  {
+    "name": "worktree-implementation-tournament",
+    "file": "worktree-implementation-tournament.html",
+    "description": "Dynamic workflow pattern: tournament.",
+    "total": 8,
+    "counts": {
+      "program": 3,
+      "guard": 2,
+      "fanout": 1,
+      "agent": 2
+    }
+  },
+  {
+    "name": "stress-demo",
+    "file": "stress-demo.html",
+    "description": "TUI stress workflow: nested fanout → parallel → loop → switch using the ACP",
+    "total": 9,
+    "counts": {
+      "fanout": 1,
+      "parallel": 1,
+      "agent": 5,
+      "loop": 1,
+      "switch": 1
+    }
+  }
+]

@@ -1,0 +1,39 @@
+<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Acpus Workflows</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;600;700&family=Source+Code+Pro:wght@400;600&display=swap" rel="stylesheet"/>
+<style>
+:root{--bg-hard:#1d2021;--bg:#282828;--bg-soft:#32302f;--surface:#3c3836;--surface2:#504945;
+--border:#665c54;--fg:#ebdbb2;--fg-dim:#a89984;--muted:#928374;--yellow:#fabd2f;--aqua:#8ec07c;--blue:#83a598;}
+*{box-sizing:border-box}body{margin:0;background:var(--bg-hard);color:var(--fg);
+font-family:"Noto Sans",system-ui,sans-serif;line-height:1.5}
+header{padding:34px 32px 18px;border-bottom:1px solid var(--border);background:var(--bg)}
+header h1{margin:0 0 6px;font-size:26px}
+header p{margin:0;color:var(--fg-dim);font-size:14px}
+header .src{font-family:"Source Code Pro",monospace;color:var(--muted);font-size:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:18px;padding:28px 32px}
+.card{display:block;background:var(--surface);border:1px solid var(--border);border-radius:12px;
+padding:18px 20px;color:var(--fg);text-decoration:none;transition:.14s}
+.card:hover{background:var(--surface2);transform:translateY(-2px);border-color:var(--yellow)}
+.card h2{margin:0 0 6px;font-size:17px;font-family:"Source Code Pro",monospace}
+.card .desc{color:var(--fg-dim);font-size:13px;min-height:38px}
+.card .meta{margin-top:12px;display:flex;flex-wrap:wrap;gap:6px}
+.chip{font-size:11px;font-family:"Source Code Pro",monospace;background:var(--bg-soft);
+border:1px solid var(--border);border-radius:10px;padding:1px 8px;color:var(--fg-dim)}
+.chip.total{background:var(--yellow);color:var(--bg-hard);font-weight:700;border-color:var(--yellow)}
+</style></head><body>
+<header><h1>Acpus Workflow Spec Visualizer</h1>
+<p>Static, read-only review pages generated from <span class="src">.acpus/workflows</span> by <span class="src">workflow-viz.py</span>. <a href="../" style="color:var(--aqua);text-decoration:none;font-family:'Source Code Pro',monospace;font-size:12px">&larr; back to Acpus</a></p></header>
+<div class="grid">
+<a class="card" href="adversarial-feature-implementation-review.html"><h2>adversarial-feature-implementation-review</h2><div class="desc">Dynamic workflow pattern: adversarial verification.</div><div class="meta"><span class="chip total">8 nodes</span><span class="chip">Agent &times;5</span><span class="chip">Guard &times;1</span><span class="chip">Parallel &times;1</span><span class="chip">Program &times;1</span></div></a>
+<a class="card" href="architecture-refactor-loop.html"><h2>architecture-refactor-loop</h2><div class="desc">Dynamic workflow pattern: loop-until-done.</div><div class="meta"><span class="chip total">13 nodes</span><span class="chip">Agent &times;6</span><span class="chip">Guard &times;3</span><span class="chip">Loop &times;1</span><span class="chip">Program &times;3</span></div></a>
+<a class="card" href="codebase-deep-research.html"><h2>codebase-deep-research</h2><div class="desc">Dynamic workflow pattern: fanout-and-synthesize.</div><div class="meta"><span class="chip total">8 nodes</span><span class="chip">Agent &times;6</span><span class="chip">Parallel &times;1</span><span class="chip">Program &times;1</span></div></a>
+<a class="card" href="dynamic-workflow-designer.html"><h2>dynamic-workflow-designer</h2><div class="desc">Dynamic workflow pattern: classify-and-act.</div><div class="meta"><span class="chip total">8 nodes</span><span class="chip">Agent &times;4</span><span class="chip">Guard &times;1</span><span class="chip">Program &times;2</span><span class="chip">Switch &times;1</span></div></a>
+<a class="card" href="large-scale-refactor-parallel-review.html"><h2>large-scale-refactor-parallel-review</h2><div class="desc">Large-scale parallel adversarial review for broad refactors.</div><div class="meta"><span class="chip total">14 nodes</span><span class="chip">Agent &times;11</span><span class="chip">Guard &times;1</span><span class="chip">Parallel &times;1</span><span class="chip">Program &times;1</span></div></a>
+<a class="card" href="loop-until-green-fix.html"><h2>loop-until-green-fix</h2><div class="desc">Dynamic workflow pattern: loop-until-done.</div><div class="meta"><span class="chip total">8 nodes</span><span class="chip">Agent &times;2</span><span class="chip">Guard &times;2</span><span class="chip">Loop &times;1</span><span class="chip">Program &times;3</span></div></a>
+<a class="card" href="solution-generate-filter.html"><h2>solution-generate-filter</h2><div class="desc">Dynamic workflow pattern: generate-and-filter.</div><div class="meta"><span class="chip total">7 nodes</span><span class="chip">Agent &times;4</span><span class="chip">Fanout &times;1</span><span class="chip">Parallel &times;1</span><span class="chip">Program &times;1</span></div></a>
+<a class="card" href="worktree-implementation-tournament.html"><h2>worktree-implementation-tournament</h2><div class="desc">Dynamic workflow pattern: tournament.</div><div class="meta"><span class="chip total">8 nodes</span><span class="chip">Agent &times;2</span><span class="chip">Fanout &times;1</span><span class="chip">Guard &times;2</span><span class="chip">Program &times;3</span></div></a>
+<a class="card" href="stress-demo.html"><h2>stress-demo</h2><div class="desc">TUI stress workflow: nested fanout → parallel → loop → switch using the ACP</div><div class="meta"><span class="chip total">9 nodes</span><span class="chip">Agent &times;5</span><span class="chip">Fanout &times;1</span><span class="chip">Loop &times;1</span><span class="chip">Parallel &times;1</span><span class="chip">Switch &times;1</span></div></a>
+</div></body></html>
