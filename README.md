@@ -181,12 +181,16 @@ acpus runs fork <sourceRunId> review.workflow.yaml --from workflow/review
 ```
 
 
-## Run Pattern
+## Workflow Visualizer
 
-The `project:adversarial-feature-implementation-review` playbook is one example of the split between a Workflow Spec, a durable Run, and the workflow nodes inside that Run. It shows how Program Steps, Guard Nodes, parallel Agent Steps, synthesis, and output can fit together in one local Run.
+Every workflow spec is rendered as an interactive digraph — click nodes to inspect agents, programs, guards, loops, and fanout bodies. Expand composite nodes to see inner steps.
 
 <p align="center">
-  <img src="page/img/acpus-user-flow.svg" alt="YAML Workflow Spec and Acpus Run feeding an adversarial feature implementation review workflow" width="1000">
+  <a href="https://kelvinschen.github.io/acpus/workflows/">
+    <img src="page/img/acpus_visualize.webp" alt="Acpus workflow visualizer" width="1000">
+    <br>
+    <sup><em>Browse all workflow specs with interactive diagrams on GitHub Pages.</em></sup>
+  </a>
 </p>
 
 ## Agent Workflow Playbooks
@@ -197,7 +201,7 @@ They keep agents responsible for judgment, synthesis, implementation, and repair
 
 | Pattern | Workflow ref | Use case | Mutates workspace |
 | --- | --- | --- | --- |
-| Classify and act | [`dynamic-workflow-designer`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/dynamic-workflow-designer.workflow.spec.yaml) | Classify a maintainer task and install a generated Workflow Spec into the catalog. | Yes |
+| Loop until done | [`architecture-refactor-loop`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/architecture-refactor-loop.workflow.spec.yaml) | Iteratively find deepening opportunities, apply behavior-preserving refactors in an isolated worktree, and verify each round until no worthwhile work remains. | Yes |
 | Fanout and synthesize | [`codebase-deep-research`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/codebase-deep-research.workflow.spec.yaml) | Run independent research agents and synthesize a final report. | No |
 | Adversarial verification | [`adversarial-feature-implementation-review`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/adversarial-feature-implementation-review.workflow.spec.yaml) | Review a feature through contract, correctness, test, and maintainability lenses. | No |
 | Generate and filter | [`solution-generate-filter`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/solution-generate-filter.workflow.spec.yaml) | Generate multiple solution directions, critique them, and rank a recommendation. | No |
