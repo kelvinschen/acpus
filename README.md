@@ -185,13 +185,7 @@ acpus runs fork <sourceRunId> review.workflow.yaml --from workflow/review
 
 Every workflow spec is rendered as an interactive digraph — click nodes to inspect agents, programs, guards, loops, and fanout bodies. Expand composite nodes to see inner steps.
 
-<p align="center">
-  <a href="https://kelvinschen.github.io/acpus/workflows/">
-    <img src="page/img/acpus_visualize.webp" alt="Acpus workflow visualizer" width="1000">
-    <br>
-    <sup><em>Browse all workflow specs with interactive diagrams on GitHub Pages.</em></sup>
-  </a>
-</p>
+→ [Browse all workflow specs on GitHub Pages](https://kelvinschen.github.io/acpus/workflows/)
 
 ## Agent Workflow Playbooks
 
