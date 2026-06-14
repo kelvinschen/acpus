@@ -1,49 +1,110 @@
 ---
 name: acpus
-description: Load when the user asks to design, run, inspect, recover, or improve an Acpus workflow, Workflow Spec, Run, catalog playbook, or acpx-backed agent orchestration.
+description: Load when the user works with Acpus — the local durable runner that orchestrates acpx-backed agents through Workflow Specs, Runs, and catalog playbooks. Trigger on any mention of Acpus, acpx, Acpus Workflow Spec, Acpus Run, or catalog playbook, even if the user only says "workflow" when context clearly means Acpus (e.g., they reference the acpus CLI, acpx agents, or Acpus-specific concepts like fork/retry/resume of runs). Do not load for CI/CD pipelines, GitHub Actions, Airflow, Temporal, or any workflow or orchestration request that does not involve Acpus or acpx.
 ---
 
 # Acpus
 
-Use Acpus as the durable local runner underneath the user's preferred agent. Keep this file as the operating hub; read the referenced files only when the task needs that detail.
+Acpus is the durable local runner that orchestrates acpx-backed agents through Workflow Specs, Runs, and catalog playbooks. Keep this file as the operating hub; read the referenced files only when the task needs that detail.
 
-## Operating Loop
+## Classify the Task
 
-1. Check the CLI:
+Before acting, decide which path the user's request falls into. A single conversation may visit several paths in sequence — that is fine; just start from the right one each time.
+
+| Path | When the user… |
+|------|---------------|
+| **Inspect / Monitor** | Asks about a Run's status, a Node's output, an artifact, or wants to watch a background Run. |
+| **Recover** | Reports a failed or stalled Run, asks why something went wrong, or wants to fix/retry/fork. |
+| **Run Existing** | Wants to execute a Workflow Spec or catalog playbook (with or without agent overrides). |
+| **Author / Adapt** | Wants to write or edit a Workflow Spec, choose composite node types, or adapt a playbook. |
+| **Explain** | Asks what Acpus is, how a concept works (CEL, composites, fork semantics…), or wants conceptual guidance with no side effects. |
+
+> **Prerequisite for all action paths** — verify the CLI first: `acpus --version`. If missing, ask before installing: `npm install -g acpus`.
+
+> **Safety** — ask before destructive workspace changes, publishing, pushing git refs, applying patches, or running external side-effect commands.
+
+---
+
+## Inspect / Monitor
+
+1. Show the Run in compact text. Use `--json` only when you need exact node keys, artifact refs, or machine-readable state:
 
    ```sh
-   acpus --version
+   acpus runs show <runId>
    ```
 
-   If missing, ask before installing:
+2. To read an artifact (e.g., agent transcript, captured output), resolve the path:
+
+   `artifact://runs/<runId>/nodes/<nodeKey>/<file>` → `.acpus/state/runs/<runId>/artifacts/<encoded-key>/<file>` (`/` → `:`).
+
+3. For long-running background Runs, poll with decreasing intervals (5 → 4 → 3 → 2 min, repeat). On each poll, check the `Activity:` line for Agent Steps to see transcript freshness, tool-call count, and recent tools. See `references/background-run-polling.md` for the full cadence table.
+
+4. If the user wants to observe a background Run themselves, serve the read-only visualizer:
 
    ```sh
-   npm install -g acpus
+   acpus runs visualize <runId> --serve
    ```
 
-2. If the user did not name worker agents, ask which acpx-supported agents to use. If they ask you to choose freely, inspect `acpx --help` and pick from available builtins such as `claude`, `codex`, `pi`, `cursor`, or `trae`.
+---
 
-3. Prefer existing playbooks before inventing a new Workflow Spec:
+## Recover
+
+1. Get the full Run state and find the failed/awaiting nodeKey, error, and artifact refs:
+
+   ```sh
+   acpus runs show <runId> --json
+   ```
+
+2. Read the referenced artifacts before guessing what went wrong.
+
+3. Pick the smallest recovery:
+
+   - **Spec is wrong** (script bug, schema mismatch, control-flow error): edit the spec, then fork. Inherits unaffected completed work:
+
+     ```sh
+     acpus runs fork <runId> <fixed-spec> [--dry-run] [--from <nodeKey>]
+     ```
+
+   - **Agent choice is wrong**: use `--agents` on `workflows run` or `runs fork`. See `references/agent-selection.md`.
+
+   - **Spec is fine, transient failure** (network, OOM, race): retry replays the original frozen spec. If you edited the spec, use fork instead:
+
+     ```sh
+     acpus runs retry <runId> [--node <nodeKey>]
+     ```
+
+   - **Paused / awaiting / verifying**:
+
+     ```sh
+     acpus runs resume <runId>
+     acpus runs signal <runId> --node <nodeKey> --approve|--reject
+     acpus runs replay <runId>
+     ```
+
+See `references/error-recovery.md` for the failure-symptom decision table and fork-inheritance semantics.
+
+---
+
+## Run Existing
+
+1. If the user did not name worker agents, ask which acpx-supported agents to use. If they say "choose freely", inspect `acpx --help` and match by task shape (planning/review → `claude`, `pi`; implementation → `codex`, `cursor`, `trae`; custom ACP server → `type: command`). See `references/agent-selection.md`.
+
+2. Prefer existing playbooks before inventing a new Workflow Spec:
 
    ```sh
    acpus workflows list
    acpus workflows show <catalog-ref>
    ```
 
-4. Lint and dry-run before starting real work:
+3. Lint and dry-run before starting real work. To temporarily change agents for this Run, pass Agent Overrides with `--agents` (inline JSON):
 
    ```sh
    acpus workflows lint <workflow-or-ref>
    acpus workflows run <workflow-or-ref> --dry-run
-   ```
-
-   To temporarily change agents for a new Run from an existing Spec, pass Agent Overrides with `--agents`. Prefer inline JSON:
-
-   ```sh
    acpus workflows run <workflow-or-ref> --dry-run --agents '{"reviewer":{"type":"builtin","use":"claude","model":"opus"}}'
    ```
 
-5. Start quick Runs in the foreground and long Runs in the background:
+4. Start the Run — foreground for quick workflows, background for long ones:
 
    ```sh
    acpus workflows run <workflow-or-ref> --input '<json>'
@@ -51,64 +112,55 @@ Use Acpus as the durable local runner underneath the user's preferred agent. Kee
    acpus workflows run <workflow-or-ref> --background --agents '{"reviewer":{"type":"builtin","use":"pi"}}' --input '<json>'
    ```
 
-6. Track background Run status with compact text output. Use decreasing polling intervals from `references/background-run-polling.md`; read the `Activity:` line on running Agent Steps to see transcript freshness, tool-call count, and recent tools:
+5. After launching a background Run, switch to **Inspect / Monitor** to track it.
 
-   ```sh
-   acpus runs show <runId>
-   ```
+---
 
-   Use `--json` only when exact node keys, artifact refs, or machine-readable state are needed.
+## Author / Adapt
 
-7. (Optional) When the user needs to observe a background workflow themselves, serve the read-only visualizer and send them the printed URL:
+This path covers writing or editing a Workflow Spec YAML — no CLI commands run the spec here; use **Run Existing** for that.
 
-   ```sh
-   acpus runs visualize <runId> --serve
-   ```
+Key decisions while authoring:
 
-## Authoring Rules
+- **Program vs Agent Step**: Program Steps are for deterministic local glue (prepare dirs, compute paths, collect diffs, apply/rollback patches, read state for guards). Agent Steps handle planning, judgment, synthesis, failure interpretation, role boundaries, and cross-round memory. If a Program Step starts encoding those decisions, move that work into an agent prompt and a durable file.
+- **Composite nodes**: guard, loop, fanout, parallel, switch — each has distinct scope variables and output shape. See `references/composite-nodes.md` for syntax and common pitfalls (e.g., parallel output needs double `.output.` level; `loop.last` is undefined on first iteration).
+- **Expression forms**: raw CEL in `when`, `until`, and expression-valued `over`; `${{ ... }}` interpolation in prompts, command strings, keys, and messages. See `references/expressions-and-outputs.md`.
+- **Output schema**: keep flat and minimal (paths, counts, booleans, durable ids). Do not put the output schema in the prompt — Acpus injects it and retries parse/schema failures. Large artifacts go in files; return their paths.
+- **Helper scripts**: prefer real scripts over long inline shell for repository-local workflows. Dry-run scripts to verify them before integrating.
+- **Timeouts**: bare number = milliseconds; string duration (`5m`, `30s`) also supported. Approval steps require `on_timeout`.
+- **Examples**: see `assets/examples/` for copyable Specs — `review-guard` (simple, guard), `draft-review-loop` (medium, loop), `topic-fanout-synthesis` (complex, fanout).
 
-- Keep large intermediate material in files under `.acpus/output/...` or the workflow output directory. Return only paths, counts, booleans, decisions, and durable ids in node output.
-- Keep `output:` schemas flat and minimal. Do not put the output schema in the prompt; Acpus injects it and retries parse/schema failures.
-- Treat `output:` as workflow control data, not agent memory. Put reports, rationale, findings, handoff notes, and cross-step context in files, then return their paths.
-- Use Program Steps only for deterministic local glue: preparing directories, computing paths, running verification, collecting diffs, applying or rolling back patches, and reading simple state for guards.
-- Prefer real helper scripts over long inline shell for repository-local workflows. Dry-run helper scripts to verify they work before integrating them into a Workflow Spec. Inline Program scripts are acceptable when they stay short, deterministic, and mechanically verifiable.
-- Let Agent Steps handle planning, judgment, synthesis, failure interpretation, role boundaries, and cross-round memory. If a Program Step starts to encode those decisions, move that work into an agent prompt and a durable handoff/report file.
-- Use raw CEL in `when`, `until`, and expression-valued `over`; use `${{ ... }}` interpolation inside prompts, command strings, keys, and messages.
-- Every Node exposes its primary produced value through `steps.<id>.output`. Program Steps also expose `steps.<id>.exit_code`.
-- Ask before destructive workspace changes, publishing, pushing git refs, applying patches, or running external side-effect commands.
+---
 
-## Recovery Loop
+## Explain
 
-When a Run fails or stalls:
+Answer conceptual questions without side effects. Common topics and where to find detail:
 
-1. `acpus runs show <runId> --json` — find the failed/awaiting nodeKey, error, artifact refs.
-2. Read referenced artifacts before guessing. `artifact://runs/<runId>/nodes/<nodeKey>/<file>` resolves to `.acpus/state/runs/<runId>/artifacts/<encoded-key>/<file>` (`/` → `:`).
-3. Pick the smallest recovery:
-   - **Spec is wrong** (script bug, schema mismatch, control-flow error): edit spec, then `acpus runs fork <runId> <fixed-spec> [--dry-run] [--from <nodeKey>]`. Inherits unaffected work.
-   - **Agent choice is wrong for the next submission**: use `--agents` on `workflows run` or `runs fork`; see `references/agent-selection.md`.
-   - **Spec is fine, transient failure**: `acpus runs retry <runId> [--node <nodeKey>]` — retry replays the original frozen spec; if you edited the spec, use `fork` instead.
-   - **Paused / awaiting / verifying**: `acpus runs resume <runId>` / `acpus runs signal <runId> --node <nodeKey> --approve|--reject` / `acpus runs replay <runId>`.
+| Topic | Reference |
+|-------|-----------|
+| Fork vs retry semantics, fork inheritance | `references/error-recovery.md` |
+| Composite node types and their scope/output | `references/composite-nodes.md` |
+| CEL vs `${{ }}` placement rules | `references/expressions-and-outputs.md` |
+| Authoring gotchas and positive/negative patterns | `references/best-practices.md` |
+| Frequent mistakes and fixes | `references/common-errors.md` |
+| Agent selection by task shape | `references/agent-selection.md` |
 
-See `references/error-recovery.md` for failure-symptom decision table and fork semantics. Background polling cadence: `references/background-run-polling.md`.
+For deeper reading, link the user to the Source Docs at the bottom of this file.
 
-## Agent Overrides
+## Reference Index
 
-- Use Agent Overrides when reusing an existing Spec with different agents for one new Run.
-- Prefer inline JSON for `--agents`, and dry-run first when exact agent selection matters.
-- For detailed rules and examples, read `references/agent-selection.md`.
+Every path above links its relevant references inline. For quick lookup:
 
-## Load More When Needed
-
-- `references/best-practices.md`: gotchas and positive/negative authoring patterns.
-- `references/expressions-and-outputs.md`: CEL, templates, and output shape rules.
-- `references/composite-nodes.md`: guard, loop, fanout, parallel, and switch behavior.
-- `references/error-recovery.md`: failure-specific recovery paths.
-- `references/common-errors.md`: frequent authoring mistakes and runtime errors with fixes.
-- `references/agent-selection.md`: choosing acpx-backed worker agents.
-- `references/background-run-polling.md`: efficient polling cadence for background Runs.
-- `references/playbooks.md`: GitHub source and raw links for public Agent Workflow Playbooks, which contains many complex workflow cases.
-- `scripts/workflow-viz.py`: generate a self-contained HTML visualization page for a Workflow Spec (`python3 scripts/workflow-viz.py <spec.yaml> [-o out.html]`).
-- `assets/examples/`: copyable Workflow Spec examples — `review-guard` (simple, guard), `draft-review-loop` (medium, loop), `topic-fanout-synthesis` (complex, fanout).
+- `references/best-practices.md` — gotchas and positive/negative authoring patterns
+- `references/expressions-and-outputs.md` — CEL, templates, and output shape rules
+- `references/composite-nodes.md` — guard, loop, fanout, parallel, and switch behavior
+- `references/error-recovery.md` — failure-symptom decision table and fork semantics
+- `references/common-errors.md` — frequent authoring mistakes and runtime errors with fixes
+- `references/agent-selection.md` — choosing acpx-backed worker agents
+- `references/background-run-polling.md` — efficient polling cadence for background Runs
+- `references/playbooks.md` — GitHub source and raw links for public Agent Workflow Playbooks
+- `scripts/workflow-viz.py` — generate an HTML visualization for a Spec (`python3 scripts/workflow-viz.py <spec.yaml> [-o out.html]`)
+- `assets/examples/` — copyable Workflow Spec examples: `review-guard`, `draft-review-loop`, `topic-fanout-synthesis`
 
 ## Source Docs
 
