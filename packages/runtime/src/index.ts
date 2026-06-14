@@ -57,6 +57,7 @@ export { RunStore } from "./store.js";
 
 // ─── State Machine ───────────────────────────────────────────────
 export { canTransition, transition, isTerminal, createInitialNodeState, resetFailedForRetry, resetRunningForCrashRecovery, resetAwaitingForCrashRecovery } from "./state-machine.js";
+export { isRunTerminal, RUN_TERMINAL_STATUSES } from "./types.js";
 
 // ─── Artifacts ───────────────────────────────────────────────────
 export { ArtifactStore, ArtifactReferences } from "./artifacts.js";
@@ -83,5 +84,12 @@ export { ensureWorkspaceSupervisor } from "./supervisor-discovery.js";
 export { RunSupervisorClient, ForkRejectedError } from "./client.js";
 
 // ─── Fork ────────────────────────────────────────────────────────
-export { planFork, applyFork, materializeFork, ForkError } from "./fork.js";
-export type { ForkPlan, BoundaryReason, MaterializeForkOptions, MaterializedFork } from "./fork.js";
+export { planForkedRun, materializeForkedRun, ForkError } from "./fork.js";
+export type {
+  ForkPlan,
+  BoundaryReason,
+  PlanForkedRunOptions,
+  MaterializeForkOptions,
+  MaterializeForkedRunOptions,
+  MaterializedFork
+} from "./fork.js";

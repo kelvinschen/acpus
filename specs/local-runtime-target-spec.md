@@ -68,7 +68,9 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - `isNodeKeyBelowAnyAnchor` MUST test whether a node key is a strict descendant (below, not equal to) any of the provided anchor keys. It MUST be used by Run Control cancellation to prevent cross-subworkflow boundary violations.
 - Fail-fast Run Control cancellation MUST use the cancelled Composite Node's resolved Node Key as the cancellation root. It MUST cancel active descendants of that Composite Node instance, and MUST NOT cancel nodes in a different subworkflow or dynamic instance merely because they share a Node ID or matching inner dynamic dimensions.
 - `ArtifactReferences` MUST provide `make`, `parse`, `tryParse`, `rewriteRunId`, and `resolvePath` methods. Artifact URI node-key segments MUST use percent-encoded resolved Node Keys, while artifact storage directories MUST use filesystem-safe Node Keys. `parse` MUST return `ParsedArtifactReference` with `encodedNodeKey` (URI-encoded form) and `nodeKey` (decoded resolved form for state lookups) such that `parse(make(...).uri).nodeKey` round-trips correctly.
-- `materializeFork` MUST wrap inheritance in try/catch; on failure, it MUST write a `cancelled` run meta with lineage before re-throwing. The returned `MaterializedFork.run` MUST include lineage (re-read after writing).
+- `planForkedRun` MUST own source Run eligibility, Run Checkpoint reading, Node Definition Hash comparison, and Fork Origin derivation for Forked Runs.
+- `materializeForkedRun` MUST own input inheritance, explicit input validation, inherited Node state and Artifact materialization, Run Checkpoint registration, and lineage persistence for Forked Runs.
+- `materializeForkedRun` MUST wrap inheritance in try/catch; on failure, it MUST write a `cancelled` run meta with lineage before re-throwing. The returned `MaterializedFork.run` MUST include lineage (re-read after writing).
 
 ### Expression Evaluation
 

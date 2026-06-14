@@ -15,7 +15,8 @@ import {
 } from "@acpus/core";
 import { resolve } from "node:path";
 import type { RunState } from "./types.js";
-import { ForkError, materializeFork, planFork, type ForkPlan } from "./fork.js";
+import { isRunTerminal } from "./types.js";
+import { ForkError, materializeForkedRun, planForkedRun, type ForkPlan } from "./fork.js";
 import { ArtifactReferences } from "./artifacts.js";
 
 /** Pattern that matches unsafe runId characters (path traversal, separators, null). */
@@ -142,7 +143,7 @@ export function createSupervisorApp(
   function pruneTerminalInterpreters(): void {
     for (const [runId] of interpreters) {
       const meta = store.readRunMeta(runId);
-      if (meta?.status === "completed" || meta?.status === "failed" || meta?.status === "cancelled") {
+      if (meta && isRunTerminal(meta.status)) {
         interpreters.delete(runId);
       }
     }
@@ -563,12 +564,6 @@ export function createSupervisorApp(
 
     const priorMeta = store.readRunMeta(runId);
     if (!priorMeta) return c.json({ error: "Run not found" }, 404);
-    if (priorMeta.status !== "completed" && priorMeta.status !== "failed" && priorMeta.status !== "cancelled") {
-      return c.json({ kind: "fork-rejected", error: `Cannot fork a run in state '${priorMeta.status}'` }, 409);
-    }
-    if (!store.hasCheckpointIndex(runId)) {
-      return c.json({ kind: "fork-rejected", error: "Run has no checkpoint index" }, 409);
-    }
     if (!body.spec) {
       return c.json({ error: "spec is required" }, 400);
     }
@@ -604,11 +599,13 @@ export function createSupervisorApp(
       return c.json({ kind: "fork-rejected", error: "Compilation failed", diagnostics: compileResult.diagnostics }, 400);
     }
 
-    const checkpoints = store.readCheckpoints(runId);
-
     let plan: ForkPlan;
     try {
-      plan = planFork(priorMeta, checkpoints, compileResult.ir, body.overrideOriginNodeKey);
+      plan = planForkedRun(store, {
+        sourceRunId: runId,
+        ir: compileResult.ir,
+        overrideOriginNodeKey: body.overrideOriginNodeKey
+      });
     } catch (error) {
       if (error instanceof ForkError) {
         return c.json({ kind: "fork-rejected", error: error.message }, 409);
@@ -626,14 +623,16 @@ export function createSupervisorApp(
     }
 
     const forkRunId = generateRunId();
-    let materialized: ReturnType<typeof materializeFork>;
+    let materialized: ReturnType<typeof materializeForkedRun>;
     try {
-      materialized = materializeFork(store, plan, {
+      materialized = materializeForkedRun(store, {
+        sourceRunId: runId,
         forkRunId,
         ir: compileResult.ir,
         input: body.input,
         workflowRef: body.workflowRef ?? priorMeta.workflowRef,
         workflowSourcePath: sourcePath ?? priorMeta.workflowSourcePath,
+        plan,
         ...optionalSubmissionMetadata(submitMetadata)
       });
     } catch (error) {

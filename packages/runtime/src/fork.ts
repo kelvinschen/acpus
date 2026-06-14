@@ -1,6 +1,7 @@
 import type { AcpusIr, AgentOverrideWarning, AgentOverrides, IrNode } from "@acpus/core";
 import { hashIrNode } from "@acpus/core";
 import type { RunCheckpoint, RunState } from "./types.js";
+import { isRunTerminal } from "./types.js";
 import type { RunStore } from "./store.js";
 import { isNodeKeyAtOrBelow, staticNodePathFromKey } from "./keys.js";
 import { validateInput } from "./validate-input.js";
@@ -52,6 +53,32 @@ export interface MaterializeForkOptions {
   submissionWarnings?: AgentOverrideWarning[];
 }
 
+export interface PlanForkedRunOptions {
+  /** Run ID of the prior terminal Run. */
+  sourceRunId: string;
+  /** Compiled IR of the repaired Workflow Spec. */
+  ir: AcpusIr;
+  /** Optional operator-selected Fork Origin. */
+  overrideOriginNodeKey?: string;
+}
+
+export interface MaterializeForkedRunOptions extends PlanForkedRunOptions {
+  /** Run ID to assign to the new Forked Run. */
+  forkRunId: string;
+  /** Explicit input override. When omitted, the source Run input is inherited. */
+  input?: Record<string, unknown>;
+  /** Catalog ref used to start this Forked Run, when applicable. */
+  workflowRef?: string;
+  /** Absolute Workflow Spec path used to compile this Forked Run. */
+  workflowSourcePath?: string;
+  /** Effective submit-time Agent Overrides applied before this Run's IR was frozen. */
+  agentOverrides?: AgentOverrides;
+  /** Non-fatal warnings produced while resolving submit-time metadata. */
+  submissionWarnings?: AgentOverrideWarning[];
+  /** Reuse a dry-run Fork Plan when the caller already computed one. */
+  plan?: ForkPlan;
+}
+
 export interface MaterializedFork {
   /** Initial persisted state of the new Forked Run. */
   run: RunState;
@@ -59,6 +86,11 @@ export interface MaterializedFork {
   plan: ForkPlan;
   /** Validated input snapshot written for the new Forked Run. */
   input: Record<string, unknown>;
+}
+
+interface ForkSource {
+  prior: RunState;
+  checkpoints: RunCheckpoint[];
 }
 
 /**
@@ -125,13 +157,13 @@ function indexIrNodes(ir: AcpusIr): Map<string, IrNodeIndexEntry> {
  * @param newIr     compiled IR of the new (possibly modified) Workflow Spec
  * @param overrideOriginNodeKey  optional operator-specified Fork Origin
  */
-export function planFork(
+function computeForkPlan(
   prior: RunState,
   checkpoints: RunCheckpoint[],
   newIr: AcpusIr,
   overrideOriginNodeKey?: string
 ): ForkPlan {
-  if (prior.status !== "completed" && prior.status !== "failed" && prior.status !== "cancelled") {
+  if (!isRunTerminal(prior.status)) {
     throw new ForkError(`Cannot fork run ${prior.runId}: source Run is in non-terminal state '${prior.status}'`);
   }
 
@@ -214,14 +246,18 @@ export function planFork(
   };
 }
 
+export function planForkedRun(store: RunStore, options: PlanForkedRunOptions): ForkPlan {
+  const source = readForkSource(store, options.sourceRunId);
+  return computeForkPlan(source.prior, source.checkpoints, options.ir, options.overrideOriginNodeKey);
+}
+
 /**
  * Materialize a Forked Run on disk. The caller is expected to have already
- * called {@link planFork} and freshly initialized the new Run via
- * `RunStore.initRun(...)`. This routine copies the inherited Node states +
- * artifacts from the source Run into the new Run, and registers each as a
- * Run Checkpoint in the new Run's index.
+ * computed or accepted a Fork Plan. This routine copies the inherited Node
+ * states and artifacts from the source Run into the new Run, and registers
+ * each as a Run Checkpoint in the new Run's index.
  */
-export function applyFork(
+function applyFork(
   store: RunStore,
   forkRunId: string,
   plan: ForkPlan
@@ -234,16 +270,24 @@ export function applyFork(
 /**
  * Materialize a Forked Run on disk from a previously computed Fork Plan.
  *
- * This is the stateful counterpart to {@link planFork}: it creates the new Run,
- * inherits the source input unless the operator supplied an override, copies
- * inherited Node states and artifacts through RunStore, and persists immediate
- * prior lineage on the new Run.
+ * This is the stateful counterpart to {@link planForkedRun}: it creates the
+ * new Run, inherits the source input unless the operator supplied an override,
+ * copies inherited Node states and artifacts through RunStore, and persists
+ * immediate prior lineage on the new Run.
  */
-export function materializeFork(
+export function materializeForkedRun(
   store: RunStore,
-  plan: ForkPlan,
-  options: MaterializeForkOptions
+  options: MaterializeForkedRunOptions
 ): MaterializedFork {
+  const plan = options.plan ?? planForkedRun(store, {
+    sourceRunId: options.sourceRunId,
+    ir: options.ir,
+    overrideOriginNodeKey: options.overrideOriginNodeKey
+  });
+  if (plan.sourceRunId !== options.sourceRunId) {
+    throw new ForkError(`Fork Plan source Run '${plan.sourceRunId}' does not match requested source Run '${options.sourceRunId}'`);
+  }
+
   const sourceInput = store.readInput(plan.sourceRunId) ?? {};
   const input = validateInput(options.ir.input, options.input ?? sourceInput);
   const run = store.initRun(options.forkRunId, options.ir, input, {
@@ -284,6 +328,23 @@ export function materializeFork(
   // includes the lineage (M5 fix).
   const updatedMeta = store.readRunMeta(options.forkRunId);
   return { run: updatedMeta ?? run, plan, input };
+}
+
+function readForkSource(store: RunStore, sourceRunId: string): ForkSource {
+  const prior = store.readRunMeta(sourceRunId);
+  if (!prior) {
+    throw new ForkError(`Run not found: ${sourceRunId}`);
+  }
+  if (!isRunTerminal(prior.status)) {
+    throw new ForkError(`Cannot fork run ${prior.runId}: source Run is in non-terminal state '${prior.status}'`);
+  }
+  if (!store.hasCheckpointIndex(sourceRunId)) {
+    throw new ForkError("Run has no checkpoint index");
+  }
+  return {
+    prior,
+    checkpoints: store.readCheckpoints(sourceRunId)
+  };
 }
 
 export class ForkError extends Error {

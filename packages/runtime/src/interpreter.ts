@@ -1054,8 +1054,9 @@ export class WorkflowInterpreter {
       }
     }
 
-    // outputMerge: "last"
-    return { output: lastOutput };
+    // outputMerge: "last" — lastOutput is already an { output: ... } envelope
+    // from executeNode, so return it directly (no extra wrapping).
+    return lastOutput ?? { output: {} };
   }
 
   private executeGuard(node: IrNode, ctx: ExpressionContext): GuardExecutionResult {

@@ -40,7 +40,7 @@ workflow:
 
     const loopNode = store.listNodeStates(meta.runId).find((n) => n.nodeId === "iterate");
     expect(loopNode?.state).toBe("completed");
-    expect(loopNode?.output).toEqual({ output: { output: { result: "ok" } } });
+    expect(loopNode?.output).toEqual({ output: { result: "ok" } });
 
     // Should have exactly 3 step executions (one per iteration with unique loopRound keys)
     const stepNodes = store.listNodeStates(meta.runId).filter((n) => n.nodeId === "step");
@@ -118,7 +118,7 @@ workflow:
     const stepNodes = store.listNodeStates(meta.runId).filter((n) => n.nodeId === "step");
     expect(stepNodes).toHaveLength(2);
     expect(store.listNodeStates(meta.runId).find((n) => n.nodeId === "iterate")?.output).toEqual({
-      output: { output: { ok: true } }
+      output: { ok: true }
     });
   });
 });

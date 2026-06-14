@@ -8,6 +8,14 @@ export type NodeState = "pending" | "running" | "awaiting" | "completed" | "fail
 /** Run-level status (mirrors terminal node states + "running"). */
 export type RunStatus = "running" | "completed" | "failed" | "paused" | "cancelled";
 
+/** Terminal Run statuses — a Run in any of these states will not transition further. */
+export const RUN_TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set(["completed", "failed", "cancelled"]);
+
+/** Returns true when the Run status is terminal (completed, failed, or cancelled). */
+export function isRunTerminal(status: RunStatus): boolean {
+  return RUN_TERMINAL_STATUSES.has(status);
+}
+
 // ─── Node key ────────────────────────────────────────────────────
 
 /** Dynamic dimensions that make a node key unique at runtime. */

@@ -15,6 +15,7 @@ import { encodeNodeKeyForFs, encodeNodeKeyForDir } from "./keys.js";
 import { ArtifactReferences } from "./artifacts.js";
 import type { AcpusIr, AgentOverrideWarning, AgentOverrides } from "@acpus/core";
 import type { AgentTelemetry, NodeExecutionState, RunCheckpoint, RunCleanItem, RunCleanResult, RunState } from "./types.js";
+import { isRunTerminal } from "./types.js";
 
 /**
  * Per-node JSON file persistence with write-to-temp-then-rename for crash safety.
@@ -281,7 +282,7 @@ export class RunStore {
         continue;
       }
 
-      if (meta.status !== "completed" && meta.status !== "failed" && meta.status !== "cancelled") {
+      if (!isRunTerminal(meta.status)) {
         skipped.push({ runId, status: meta.status, bytes, reason: "not-terminal" });
         continue;
       }
@@ -293,7 +294,7 @@ export class RunStore {
           skipped.push({ runId, bytes, reason: "corrupt-metadata" });
           continue;
         }
-        if (latest.status !== "completed" && latest.status !== "failed" && latest.status !== "cancelled") {
+        if (!isRunTerminal(latest.status)) {
           skipped.push({ runId, status: latest.status, bytes, reason: "not-terminal" });
           continue;
         }
