@@ -175,6 +175,12 @@ export interface ExecutorResult {
   failureKind?: FailureKind;
   /** True if the executor was aborted mid-execution */
   partial?: boolean;
+  /** Raw acpx session record ID. Use to locate the original transcript at
+   *  ~/.acpx/sessions/<acpxRecordId>.json. Absent when acpx is not used. */
+  acpxRecordId?: string;
+  /** Absolute working directory passed to acpx via --cwd. Always present;
+   *  defaults to process.cwd() when no agent cwd is configured. */
+  cwd?: string;
 }
 
 export interface AgentContextUsage {
@@ -221,6 +227,13 @@ export interface AgentAttemptTelemetry {
   input?: AgentIoPreview;
   output?: AgentIoPreview;
   tools: AgentToolsTelemetry;
+  /** Raw acpx session record ID. Use to locate the original transcript at
+   *  ~/.acpx/sessions/<acpxRecordId>.json. Absent on historical data or when
+   *  acpx is not used. */
+  acpxRecordId?: string;
+  /** Absolute working directory passed to acpx via --cwd. Absent on historical
+   *  data; always present in new artifacts. */
+  cwd?: string;
 }
 
 export interface AgentTelemetry {

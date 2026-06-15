@@ -185,4 +185,72 @@ describe("AgentTelemetryAccumulator", () => {
     // First update with used=0 is valid — no prior measurement to preserve
     expect(accumulator.context()).toEqual({ used: 0, size: 200000, updatedAt: "2026-06-12T10:00:00.000Z" });
   });
+
+  it("includes acpxRecordId in snapshot when provided via constructor", () => {
+    const accumulator = new AgentTelemetryAccumulator({
+      attempt: 1,
+      inputText: "prompt",
+      acpxRecordId: "550e8400-e29b-41d4-a716-446655440000"
+    });
+
+    const snapshot = accumulator.snapshot();
+    expect(snapshot.acpxRecordId).toBe("550e8400-e29b-41d4-a716-446655440000");
+  });
+
+  it("includes acpxRecordId in snapshot when set via setAcpxRecordId()", () => {
+    const accumulator = new AgentTelemetryAccumulator({
+      attempt: 1,
+      inputText: "prompt"
+    });
+
+    expect(accumulator.snapshot().acpxRecordId).toBeUndefined();
+
+    accumulator.setAcpxRecordId("abc-123-def");
+    const snapshot = accumulator.snapshot();
+    expect(snapshot.acpxRecordId).toBe("abc-123-def");
+  });
+
+  it("omits acpxRecordId from snapshot when not provided", () => {
+    const accumulator = new AgentTelemetryAccumulator({
+      attempt: 1,
+      inputText: "prompt"
+    });
+
+    const snapshot = accumulator.snapshot();
+    expect(snapshot).not.toHaveProperty("acpxRecordId");
+  });
+
+  it("includes cwd in snapshot when provided via constructor", () => {
+    const accumulator = new AgentTelemetryAccumulator({
+      attempt: 1,
+      inputText: "prompt",
+      cwd: "/home/user/project"
+    });
+
+    const snapshot = accumulator.snapshot();
+    expect(snapshot.cwd).toBe("/home/user/project");
+  });
+
+  it("includes cwd in snapshot when set via setCwd()", () => {
+    const accumulator = new AgentTelemetryAccumulator({
+      attempt: 1,
+      inputText: "prompt"
+    });
+
+    expect(accumulator.snapshot().cwd).toBeUndefined();
+
+    accumulator.setCwd("/tmp/workspace");
+    const snapshot = accumulator.snapshot();
+    expect(snapshot.cwd).toBe("/tmp/workspace");
+  });
+
+  it("omits cwd from snapshot when not provided", () => {
+    const accumulator = new AgentTelemetryAccumulator({
+      attempt: 1,
+      inputText: "prompt"
+    });
+
+    const snapshot = accumulator.snapshot();
+    expect(snapshot).not.toHaveProperty("cwd");
+  });
 });

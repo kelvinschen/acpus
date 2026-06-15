@@ -16,6 +16,8 @@ export interface AgentTelemetryAccumulatorOptions {
   attempt: number;
   inputText: string;
   inputArtifactRef?: string;
+  acpxRecordId?: string;
+  cwd?: string;
   startedAt?: string;
   now?: () => number;
   previewEdgeBytes?: number;
@@ -39,6 +41,8 @@ export class AgentTelemetryAccumulator {
   private stopReason: string | undefined;
   private latestContext: AgentContextUsage | undefined;
   private outputArtifactRef: string | undefined;
+  private acpxRecordId: string | undefined;
+  private cwd: string | undefined;
   private lastPublishedAt = 0;
   private toolSeq = 0;
   private totalToolCallCount = 0;
@@ -51,6 +55,8 @@ export class AgentTelemetryAccumulator {
     this.flushIntervalMs = options.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS;
     this.onTelemetry = options.onTelemetry;
     this.startedAt = options.startedAt ?? new Date(this.now()).toISOString();
+    this.acpxRecordId = options.acpxRecordId;
+    this.cwd = options.cwd;
     this.input = buildPreview(options.inputText, this.previewEdgeBytes, options.inputArtifactRef);
   }
 
@@ -90,6 +96,14 @@ export class AgentTelemetryAccumulator {
     this.outputArtifactRef = ref;
   }
 
+  setAcpxRecordId(id: string): void {
+    this.acpxRecordId = id;
+  }
+
+  setCwd(dir: string): void {
+    this.cwd = dir;
+  }
+
   snapshot(state: AgentAttemptTelemetryState = "running", completedAt?: string): AgentAttemptTelemetry {
     const updatedAt = completedAt ?? new Date(this.now()).toISOString();
     const recentCalls = [...this.tools.values()]
@@ -112,7 +126,9 @@ export class AgentTelemetryAccumulator {
         totalToolCallCount: this.totalToolCallCount,
         droppedToolCallCount: Math.max(0, this.totalToolCallCount - recentCalls.length),
         recentCalls
-      }
+      },
+      ...(this.acpxRecordId ? { acpxRecordId: this.acpxRecordId } : {}),
+      ...(this.cwd ? { cwd: this.cwd } : {})
     };
   }
 

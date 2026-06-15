@@ -651,6 +651,8 @@ export class WorkflowInterpreter {
       });
       try {
         if (!sawStdoutStream && result.stdout !== undefined) activity.append(result.stdout);
+        if (result.acpxRecordId) activity.setAcpxRecordId(result.acpxRecordId);
+        if (result.cwd) activity.setCwd(result.cwd);
         activity.flush();
       } catch (error) {
         streamDiagnostics.push(`failed to parse live agent telemetry: ${error instanceof Error ? error.message : String(error)}`);

@@ -78,10 +78,11 @@ export class AgentExecutor implements ExecutorAdapter {
     const invoker = this.resolveInvoker();
     const build = this.argsBuilder(agent, cwd);
 
+    let acpxRecordId: string | undefined;
     try {
       // Ensure a saved session exists (idempotent). acpx requires a session
       // record before prompt commands route to it.
-      const ensureResult = await execa(invoker.command, [...invoker.prefixArgs, ...build([], ["sessions", "ensure", "--name", sessionName])], {
+      const ensureResult = await execa(invoker.command, [...invoker.prefixArgs, ...build(["--format", "json"], ["sessions", "ensure", "--name", sessionName])], {
         reject: false,
         env
       });
@@ -93,15 +94,21 @@ export class AgentExecutor implements ExecutorAdapter {
         return { failureKind: "spawn", exitCode, error: detail, prompt, responseText: "", stdout: ensureResult.stdout ?? "", stderr };
       }
 
+      if (ensureResult.stdout) {
+        try {
+          acpxRecordId = JSON.parse(ensureResult.stdout).acpxRecordId;
+        } catch { /* non-JSON output; record ID stays undefined */ }
+      }
+
       if (signal.aborted) {
-        return { partial: true, error: "Aborted before prompt", prompt, responseText: "" };
+        return { partial: true, error: "Aborted before prompt", prompt, responseText: "", acpxRecordId, cwd };
       }
 
       // Run the prompt, streaming the ACP protocol as NDJSON. Stdout buffering
       // is disabled so execa does not retain the full stream in memory.
       const promptGlobalArgs = [...(timeoutSeconds ? ["--timeout", timeoutSeconds] : []), "--format", "json"];
       const promptArgs = [...invoker.prefixArgs, ...build(promptGlobalArgs, ["prompt", "-s", sessionName, prompt])];
-      const accumulator = new AgentTelemetryAccumulator({ attempt: 1, inputText: prompt });
+      const accumulator = new AgentTelemetryAccumulator({ attempt: 1, inputText: prompt, acpxRecordId, cwd });
       const proc = execa(invoker.command, promptArgs, {
         reject: false,
         env,
@@ -131,17 +138,17 @@ export class AgentExecutor implements ExecutorAdapter {
 
       // Cooperative cancel (or any cancelled turn) → paused with partial response.
       if (cancellation.cancelled || stopReason === "cancelled") {
-        return { partial: true, output: { text }, prompt, responseText: text, stderr, error: "Aborted" };
+        return { partial: true, output: { text }, prompt, responseText: text, stderr, error: "Aborted", acpxRecordId, cwd };
       }
 
       // Spawn failure (no exit code) → non-recoverable.
       if (result.failed && (result.exitCode === undefined || result.exitCode === null)) {
-        return { failureKind: "spawn", error: result.shortMessage || "Failed to spawn acpx", prompt, responseText: text, stderr };
+        return { failureKind: "spawn", error: result.shortMessage || "Failed to spawn acpx", prompt, responseText: text, stderr, acpxRecordId, cwd };
       }
 
       // Non-zero exit (and not cancelled) → non-recoverable agent failure.
       if (result.exitCode !== 0) {
-        return { failureKind: "exit", exitCode: result.exitCode ?? 1, error: stderr || `acpx exited with code ${result.exitCode}`, prompt, responseText: text, stderr };
+        return { failureKind: "exit", exitCode: result.exitCode ?? 1, error: stderr || `acpx exited with code ${result.exitCode}`, prompt, responseText: text, stderr, acpxRecordId, cwd };
       }
 
       // Assemble structured output. When a schema is declared, extract a JSON
@@ -151,20 +158,20 @@ export class AgentExecutor implements ExecutorAdapter {
       if (outputSchema) {
         const parsed = extractJson(text);
         if (parsed === undefined) {
-          return { failureKind: "parse", error: "Failed to parse agent output as JSON", output: { text }, prompt, responseText: text, stderr };
+          return { failureKind: "parse", error: "Failed to parse agent output as JSON", output: { text }, prompt, responseText: text, stderr, acpxRecordId, cwd };
         }
         const validate = this.ajv.compile(outputSchema);
         if (!validate(parsed)) {
-          return { failureKind: "schema", error: `Output validation failed: ${this.ajv.errorsText(validate.errors)}`, output: parsed, prompt, responseText: text, stderr };
+          return { failureKind: "schema", error: `Output validation failed: ${this.ajv.errorsText(validate.errors)}`, output: parsed, prompt, responseText: text, stderr, acpxRecordId, cwd };
         }
         output = parsed;
       } else {
         output = { text };
       }
 
-      return { exitCode: 0, output, prompt, responseText: text, stderr };
+      return { exitCode: 0, output, prompt, responseText: text, stderr, acpxRecordId, cwd };
     } catch (error) {
-      return { failureKind: "spawn", error: error instanceof Error ? error.message : String(error), prompt, responseText: "" };
+      return { failureKind: "spawn", error: error instanceof Error ? error.message : String(error), prompt, responseText: "", acpxRecordId, cwd };
     }
   }
 

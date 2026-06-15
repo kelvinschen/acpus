@@ -56,6 +56,12 @@ function writeRecordingAcpxScript(dir: string): { script: string; logPath: strin
   writeFileSync(script, `#!/usr/bin/env node
 const fs = require("node:fs");
 fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(process.argv.slice(2)) + "\\n");
+if (process.argv.includes("ensure")) {
+  if (process.argv.includes("--format") && process.argv.includes("json")) {
+    console.log(JSON.stringify({ action: "session_ensured", created: true, acpxRecordId: "mock-session-id" }));
+  }
+  process.exit(0);
+}
 console.log(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } } } }));
 console.log(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } }));
 `);
@@ -68,6 +74,12 @@ function writeEnvRecordingAcpxScript(dir: string): { script: string; envPath: st
   const envPath = join(dir, "env.log");
   writeFileSync(script, `#!/usr/bin/env node
 const fs = require("node:fs");
+if (process.argv.includes("ensure")) {
+  if (process.argv.includes("--format") && process.argv.includes("json")) {
+    console.log(JSON.stringify({ action: "session_ensured", created: true, acpxRecordId: "mock-session-id" }));
+  }
+  process.exit(0);
+}
 fs.writeFileSync(${JSON.stringify(envPath)}, JSON.stringify({
   inherited: process.env.ACPUS_AGENT_INHERITED_ENV ?? null,
   override: process.env.ACPUS_AGENT_OVERRIDE_ENV ?? null,
@@ -87,6 +99,9 @@ function writeSlowEnsureRecordingAcpxScript(dir: string): { script: string; logP
 const fs = require("node:fs");
 fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(process.argv.slice(2)) + "\\n");
 if (process.argv.includes("ensure")) {
+  if (process.argv.includes("--format") && process.argv.includes("json")) {
+    process.stdout.write(JSON.stringify({ action: "session_ensured", created: true, acpxRecordId: "mock-session-id" }));
+  }
   setTimeout(() => process.exit(0), 50);
 } else {
   console.log(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } } } }));
@@ -179,6 +194,11 @@ describe("AgentExecutor: sessions ensure failure", () => {
 if [[ " $* " == *" sessions ensure "* ]]; then
   exit 42
 fi
+# Ensure with --format json
+if [[ " $* " == *" ensure "* ]] && [[ " $* " == *" --format "* ]]; then
+  echo '{"action":"session_ensured","created":true,"acpxRecordId":"mock-session-id"}'
+  exit 0
+fi
 echo '{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}'
 exit 0
 `);
@@ -213,7 +233,7 @@ describe("AgentExecutor: session_key", () => {
       agent: { type: "builtin", use: "mock", model: "test-model" },
       prompt: "Hello"
     });
-    await executor.execute({
+    const result = await executor.execute({
       node,
       context: baseCtx(),
       signal: new AbortController().signal,
@@ -227,6 +247,8 @@ describe("AgentExecutor: session_key", () => {
     expect(promptArgs).toBeDefined();
     expect(sessionFromEnsureArgs(ensureArgs!)).toBe("acpus-run-001-workflow__test-agent__round-0");
     expect(sessionFromPromptArgs(promptArgs!)).toBe("acpus-run-001-workflow__test-agent__round-0");
+    expect(result.acpxRecordId).toBe("mock-session-id");
+    expect(result.cwd).toBeTruthy();
   });
 
   it("uses a fixed session_key across different node keys", async () => {
@@ -372,6 +394,52 @@ describe("AgentExecutor: session_key", () => {
     expect(calls.some((args) => args.includes("sessions") && args.includes("ensure"))).toBe(true);
     expect(calls.some((args) => args.includes("sessions") && args.includes("close"))).toBe(false);
     expect(calls.some((args) => args.includes("prompt"))).toBe(false);
+  });
+});
+
+describe("AgentExecutor: cwd resolution", () => {
+  it("passes agent.cwd to acpx and returns it on the result", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-agent-test-"));
+    tmpDirs.push(dir);
+    const { script, logPath } = writeRecordingAcpxScript(dir);
+
+    const executor = new AgentExecutor({ acpxPath: script });
+    const node = makeAgentNode({
+      agent: { type: "builtin", use: "mock", model: "test-model", cwd: "/custom/workspace" },
+      prompt: "Hello"
+    });
+    const result = await executor.execute({
+      node,
+      context: baseCtx(),
+      signal: new AbortController().signal,
+      nodeKey: "workflow/test-agent"
+    });
+
+    expect(result.cwd).toBe("/custom/workspace");
+    const promptArgs = readRecordedPromptArgs(logPath);
+    const cwdIndex = promptArgs.indexOf("--cwd");
+    expect(cwdIndex).toBeGreaterThanOrEqual(0);
+    expect(promptArgs[cwdIndex + 1]).toBe("/custom/workspace");
+  });
+
+  it("defaults cwd to process.cwd() when agent cwd is not set", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-agent-test-"));
+    tmpDirs.push(dir);
+    const { script } = writeRecordingAcpxScript(dir);
+
+    const executor = new AgentExecutor({ acpxPath: script });
+    const node = makeAgentNode({
+      agent: { type: "builtin", use: "mock", model: "test-model" },
+      prompt: "Hello"
+    });
+    const result = await executor.execute({
+      node,
+      context: baseCtx(),
+      signal: new AbortController().signal,
+      nodeKey: "workflow/test-agent"
+    });
+
+    expect(result.cwd).toBe(process.cwd());
   });
 });
 
