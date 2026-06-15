@@ -1,4 +1,5 @@
 import type { AgentToolCallTelemetry, NodeExecutionState, RunState, RunSupervisorClient } from "@acpus/runtime";
+import { stringify as stringifyYaml } from "yaml";
 
 type ArtifactPathResolver = Pick<RunSupervisorClient, "getArtifactPath">;
 
@@ -175,6 +176,13 @@ export async function formatRunShow(
     if (activity) lines.push(`    Activity: ${activity}`);
   }
 
+  // --- Workflow output ---
+  const outputSection = formatWorkflowOutput(run.output);
+  if (outputSection) {
+    lines.push("");
+    lines.push(outputSection);
+  }
+
   return lines.join("\n");
 }
 
@@ -228,4 +236,25 @@ function formatAge(deltaMs: number): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 48) return `${hours}h`;
   return `${Math.floor(hours / 24)}d`;
+}
+
+const MAX_OUTPUT_LINES = 25;
+
+function formatWorkflowOutput(output: Record<string, unknown> | undefined): string | null {
+  if (!output) return null;
+  const yaml = stringifyYaml(output).trimEnd();
+  if (yaml === "{}") return null;
+  const lines = yaml.split("\n");
+  if (lines.length <= MAX_OUTPUT_LINES) {
+    return ["Output:", ...lines.map(l => "  " + l)].join("\n");
+  }
+  // Truncate at a top-level key boundary (line without leading whitespace)
+  let cutIndex = MAX_OUTPUT_LINES;
+  while (cutIndex > 0 && lines[cutIndex - 1]?.match(/^\s/)) {
+    cutIndex--;
+  }
+  const remaining = lines.length - cutIndex;
+  const truncated = lines.slice(0, cutIndex).map(l => "  " + l);
+  truncated.push(`  ... (${remaining} more lines)`);
+  return ["Output:", ...truncated].join("\n");
 }

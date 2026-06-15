@@ -773,4 +773,221 @@ describe("formatRunShow", () => {
     // Should still show tool_calls and other activity info
     expect(output).toContain("tool_calls=5");
   });
+
+  it("shows workflow output section for completed run with output", async () => {
+    const run: RunState = {
+      runId: "run-26",
+      workflowName: "review-pipeline",
+      status: "completed",
+      irDigest: "ir",
+      inputDigest: "input",
+      createdAt: "2026-06-10T09:00:00.000Z",
+      updatedAt: "2026-06-10T09:05:30.000Z",
+      runAttempt: 1,
+      output: {
+        verdict: "pass",
+        final_report_path: "/tmp/report.md",
+        blocking_count: 2,
+      },
+      nodes: [
+        { nodeKey: "workflow/review", nodeId: "review", kind: "run.agent", state: "completed", attempt: 1, startedAt: "2026-06-10T09:00:00.000Z", completedAt: "2026-06-10T09:05:28.000Z" }
+      ]
+    };
+
+    const output = await formatRunShow(run);
+    expect(output).toContain("Output:");
+    expect(output).toContain("  verdict: pass");
+    expect(output).toContain("  final_report_path: /tmp/report.md");
+    expect(output).toContain("  blocking_count: 2");
+  });
+
+  it("does not show output section when run.output is undefined", async () => {
+    const run: RunState = {
+      runId: "run-27",
+      workflowName: "test",
+      status: "running",
+      irDigest: "ir",
+      inputDigest: "input",
+      createdAt: "2026-06-10T09:00:00.000Z",
+      updatedAt: "2026-06-10T09:00:10.000Z",
+      runAttempt: 1,
+      nodes: []
+    };
+
+    const output = await formatRunShow(run);
+    expect(output).not.toContain("Output:");
+  });
+
+  it("does not show output section when run.output is empty object", async () => {
+    const run: RunState = {
+      runId: "run-28",
+      workflowName: "test",
+      status: "completed",
+      irDigest: "ir",
+      inputDigest: "input",
+      createdAt: "2026-06-10T09:00:00.000Z",
+      updatedAt: "2026-06-10T09:00:10.000Z",
+      runAttempt: 1,
+      output: {},
+      nodes: []
+    };
+
+    const output = await formatRunShow(run);
+    expect(output).not.toContain("Output:");
+  });
+
+  it("shows nested workflow output with proper indentation", async () => {
+    const run: RunState = {
+      runId: "run-29",
+      workflowName: "test",
+      status: "completed",
+      irDigest: "ir",
+      inputDigest: "input",
+      createdAt: "2026-06-10T09:00:00.000Z",
+      updatedAt: "2026-06-10T09:00:10.000Z",
+      runAttempt: 1,
+      output: {
+        result: {
+          score: 0.9,
+          label: "positive",
+        },
+        verdict: "pass",
+      },
+      nodes: []
+    };
+
+    const output = await formatRunShow(run);
+    expect(output).toContain("Output:");
+    expect(output).toContain("  result:");
+    expect(output).toContain("    score: 0.9");
+    expect(output).toContain("    label: positive");
+    expect(output).toContain("  verdict: pass");
+  });
+
+  it("shows output section with blank line separator after nodes", async () => {
+    const run: RunState = {
+      runId: "run-30",
+      workflowName: "test",
+      status: "completed",
+      irDigest: "ir",
+      inputDigest: "input",
+      createdAt: "2026-06-10T09:00:00.000Z",
+      updatedAt: "2026-06-10T09:00:10.000Z",
+      runAttempt: 1,
+      output: { verdict: "pass" },
+      nodes: [
+        { nodeKey: "workflow/review", nodeId: "review", kind: "run.agent", state: "completed", attempt: 1, startedAt: "2026-06-10T09:00:00.000Z", completedAt: "2026-06-10T09:00:05.000Z" }
+      ]
+    };
+
+    const output = await formatRunShow(run);
+    const lines = output.split("\n");
+    // Find the node line and the output section
+    const nodeLineIdx = lines.findIndex(l => l.includes("workflow/review"));
+    const outputLineIdx = lines.findIndex(l => l === "Output:");
+    expect(nodeLineIdx).toBeGreaterThanOrEqual(0);
+    expect(outputLineIdx).toBeGreaterThan(nodeLineIdx);
+    // There should be a blank line between the last node line and "Output:"
+    expect(lines[outputLineIdx - 1]).toBe("");
+  });
+
+  it("shows output for run with no nodes", async () => {
+    const run: RunState = {
+      runId: "run-31",
+      workflowName: "test",
+      status: "completed",
+      irDigest: "ir",
+      inputDigest: "input",
+      createdAt: "2026-06-10T09:00:00.000Z",
+      updatedAt: "2026-06-10T09:00:10.000Z",
+      runAttempt: 1,
+      output: { result: "ok" },
+      nodes: []
+    };
+
+    const output = await formatRunShow(run);
+    expect(output).toContain("Output:");
+    expect(output).toContain("  result: ok");
+  });
+
+  it("handles output with array values", async () => {
+    const run: RunState = {
+      runId: "run-32",
+      workflowName: "test",
+      status: "completed",
+      irDigest: "ir",
+      inputDigest: "input",
+      createdAt: "2026-06-10T09:00:00.000Z",
+      updatedAt: "2026-06-10T09:00:10.000Z",
+      runAttempt: 1,
+      output: {
+        tags: ["bug", "security", "critical"],
+        count: 3,
+      },
+      nodes: []
+    };
+
+    const output = await formatRunShow(run);
+    expect(output).toContain("Output:");
+    expect(output).toContain("  tags:");
+    expect(output).toContain("    - bug");
+    expect(output).toContain("    - security");
+    expect(output).toContain("    - critical");
+    expect(output).toContain("  count: 3");
+  });
+
+  it("does not show output for failed run", async () => {
+    const run: RunState = {
+      runId: "run-33",
+      workflowName: "test",
+      status: "failed",
+      irDigest: "ir",
+      inputDigest: "input",
+      createdAt: "2026-06-10T09:00:00.000Z",
+      updatedAt: "2026-06-10T09:00:10.000Z",
+      runAttempt: 1,
+      error: "something failed",
+      nodes: [
+        { nodeKey: "workflow/review", nodeId: "review", kind: "run.agent", state: "failed", attempt: 1, error: "agent failed", startedAt: "2026-06-10T09:00:00.000Z", completedAt: "2026-06-10T09:00:05.000Z" }
+      ]
+    };
+
+    const output = await formatRunShow(run);
+    expect(output).not.toContain("Output:");
+  });
+
+  it("truncates large output at key boundary", async () => {
+    // Build an output with >25 lines of YAML
+    const outputObj: Record<string, unknown> = {};
+    for (let i = 1; i <= 30; i++) {
+      outputObj[`key_${i}`] = `value_${i}`;
+    }
+
+    const run: RunState = {
+      runId: "run-34",
+      workflowName: "test",
+      status: "completed",
+      irDigest: "ir",
+      inputDigest: "input",
+      createdAt: "2026-06-10T09:00:00.000Z",
+      updatedAt: "2026-06-10T09:00:10.000Z",
+      runAttempt: 1,
+      output: outputObj,
+      nodes: []
+    };
+
+    const output = await formatRunShow(run);
+    expect(output).toContain("Output:");
+    // Should have truncation indicator
+    expect(output).toMatch(/\.\.\. \(\d+ more lines\)/);
+    // Should NOT contain key_30 (it's beyond the 25-line limit)
+    expect(output).not.toContain("key_30");
+    // All shown keys should be complete top-level keys
+    const outputSection = output.split("Output:\n")[1];
+    const contentLines = outputSection!.split("\n");
+    // Last content line before indicator should be a top-level key (starts with 2 spaces + non-space)
+    const beforeIndicator = contentLines.filter(l => l.startsWith("  ") && !l.includes("..."));
+    const lastKey = beforeIndicator[beforeIndicator.length - 1];
+    expect(lastKey).toMatch(/^  key_\d+: value_\d+$/);
+  });
 });
