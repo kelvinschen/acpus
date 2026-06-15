@@ -582,7 +582,7 @@ export class WorkflowInterpreter {
     const retry = node.metadata.retry as { max?: number; backoff?: string } | undefined;
     const hasOutputSchema = node.metadata.output !== undefined;
     const maxRetries = typeof retry?.max === "number" ? retry.max : hasOutputSchema ? 2 : 0;
-    const backoffMs = retry?.backoff ? parseDurationMs(retry.backoff) : 0;
+    const backoffMs = retry?.backoff ? parseDurationMs(retry.backoff) : 5e3;
     const allArtifactRefs: string[] = [...(this.store.readNodeState(runId, nodeKey)?.artifactRefs ?? [])];
 
     // `attempt` is local to this executor call and controls parse/schema
