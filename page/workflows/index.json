@@ -84,6 +84,18 @@
     }
   },
   {
+    "name": "subagent-fanout",
+    "file": "subagent-fanout.html",
+    "description": "General purpose subagent-driven workflow — dispatches N parallel subagents sharing one agent definition, each with its own task, then aggregates their outputs into a combined result.",
+    "total": 5,
+    "counts": {
+      "agent": 1,
+      "program": 2,
+      "guard": 1,
+      "fanout": 1
+    }
+  },
+  {
     "name": "stress-demo",
     "file": "stress-demo.html",
     "description": "TUI stress workflow: nested fanout → parallel → loop → switch using the ACP",
