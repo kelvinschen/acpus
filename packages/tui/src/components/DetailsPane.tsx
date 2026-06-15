@@ -289,6 +289,9 @@ export function buildDetailSections(
     if (agentAttempt.context) {
       execution.push(field("  Context", formatContextUsage(agentAttempt.context.used, agentAttempt.context.size), cols));
     }
+    if (agentAttempt.cwd) {
+      execution.push(field("  Cwd", agentAttempt.cwd, cols));
+    }
     execution.push(field("  Tool calls", String(agentAttempt.tools.totalToolCallCount), cols));
     if (agentAttempt.tools.droppedToolCallCount > 0) {
       execution.push(field("  Dropped", String(agentAttempt.tools.droppedToolCallCount), cols));
