@@ -1,5 +1,5 @@
 version: 1
-name: subagent-fanout
+name: subagent-driven
 description: |
   General purpose subagent-driven workflow — dispatches N parallel subagents
   sharing one agent definition, each with its own task, then aggregates their
@@ -14,7 +14,7 @@ description: |
 input:
   tasks: array
   context?: string = "(none)"
-  output_root?: string = ".acpus/output/subagent-fanout"
+  output_root?: string = ".acpus/output/subagent-driven"
 
 agents:
   worker:
@@ -98,7 +98,7 @@ workflow:
           combined_path = os.path.join(root, "combined.md")
 
           with open(combined_path, "w") as out:
-            out.write("# Subagent Fanout Report\n\n")
+            out.write("# Subagent Driven Report\n\n")
             out.write(f"- Dispatched: {dispatched}\n")
             out.write(f"- Succeeded: {succeeded}\n\n")
             for r in reports:

@@ -23,18 +23,6 @@
     }
   },
   {
-    "name": "dynamic-workflow-designer",
-    "file": "dynamic-workflow-designer.html",
-    "description": "Dynamic workflow pattern: classify-and-act.",
-    "total": 8,
-    "counts": {
-      "program": 2,
-      "agent": 4,
-      "switch": 1,
-      "guard": 1
-    }
-  },
-  {
     "name": "goal-driven-development",
     "file": "goal-driven-development.html",
     "description": "Dynamic workflow pattern: goal-driven development (GDD).",
@@ -84,8 +72,8 @@
     }
   },
   {
-    "name": "subagent-fanout",
-    "file": "subagent-fanout.html",
+    "name": "subagent-driven",
+    "file": "subagent-driven.html",
     "description": "General purpose subagent-driven workflow — dispatches N parallel subagents sharing one agent definition, each with its own task, then aggregates their outputs into a combined result.",
     "total": 5,
     "counts": {

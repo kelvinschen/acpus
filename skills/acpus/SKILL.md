@@ -159,9 +159,9 @@ Every path above links its relevant references inline. For quick lookup:
 - `references/agent-selection.md` — choosing acpx-backed worker agents
 - `references/background-run-polling.md` — efficient polling cadence for background Runs
 - `references/playbooks.md` — GitHub source and raw links for public Agent Workflow Playbooks
-  (`dynamic-workflow-designer`, `codebase-deep-research`, `adversarial-feature-implementation-review`,
+  (`codebase-deep-research`, `adversarial-feature-implementation-review`,
   `solution-generate-filter`, `worktree-implementation-tournament`, `loop-until-green-fix`,
-  `goal-driven-development`, `subagent-fanout`)
+  `goal-driven-development`, `subagent-driven`)
 - `scripts/workflow-viz.py` — generate an HTML visualization for a Spec (`python3 scripts/workflow-viz.py <spec.yaml> [-o out.html]`)
 - `assets/examples/` — copyable Workflow Spec examples: `review-guard`, `draft-review-loop`, `topic-fanout-synthesis`
 
