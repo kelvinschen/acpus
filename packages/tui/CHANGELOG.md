@@ -1,5 +1,12 @@
 # @acpus/tui
 
+## 0.3.2
+
+### Patch Changes
+
+- Updated dependencies
+  - @acpus/runtime@0.3.0
+
 ## 0.3.1
 
 ### Patch Changes

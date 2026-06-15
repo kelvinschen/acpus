@@ -1,6 +1,6 @@
 {
   "name": "acpus",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Local durable workflow runner for ACP agents",
   "keywords": [
     "acp",
