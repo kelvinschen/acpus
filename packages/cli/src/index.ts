@@ -229,7 +229,11 @@ runs
       const client = await ensureSupervisor();
       const run = await client.getRun(runId);
       if (options.json) {
-        console.log(JSON.stringify(run));
+        const { nodes, ...rest } = run;
+        const cleaned = nodes
+          ? { ...rest, nodes: nodes.map(({ renderedPrompt: _, ...node }) => node) }
+          : rest;
+        console.log(JSON.stringify(cleaned));
         return;
       }
       console.log(await formatRunShow(run, client));

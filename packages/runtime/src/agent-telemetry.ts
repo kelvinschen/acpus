@@ -140,7 +140,17 @@ export class AgentTelemetryAccumulator {
       const used = readNonNegativeNumber(update.used);
       const size = readNonNegativeNumber(update.size);
       if (used !== undefined && size !== undefined) {
-        this.latestContext = { used, size, updatedAt: new Date(this.now()).toISOString() };
+        // acpx sends used=0 at the start of every LLM API call before the
+        // response arrives with real token counts.  Overwriting a known
+        // non-zero measurement with 0 would produce misleading telemetry
+        // (e.g. "context=0/200k") when a failed attempt's last update was
+        // an initial allocation.  Preserve the previous `used` if the new
+        // one is 0 and we already have a real measurement.
+        if (used === 0 && this.latestContext && this.latestContext.used > 0) {
+          this.latestContext = { used: this.latestContext.used, size, updatedAt: new Date(this.now()).toISOString() };
+        } else {
+          this.latestContext = { used, size, updatedAt: new Date(this.now()).toISOString() };
+        }
         this.publish("running", false);
       }
       return;

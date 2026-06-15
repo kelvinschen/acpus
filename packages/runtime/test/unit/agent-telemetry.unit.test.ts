@@ -125,4 +125,64 @@ describe("AgentTelemetryAccumulator", () => {
     expect(telemetry.currentAttempt).toBe(2);
     expect(telemetry.attempts.map((attempt) => attempt.attempt)).toEqual([1, 2]);
   });
+
+  it("preserves non-zero used when acpx sends usage_update with used=0 (new API call start)", () => {
+    // acpx sends used=0 at the start of every new LLM API call, then follows
+    // with the real token count after the API responds. If the attempt fails
+    // between the initial used=0 and the real response, we must not overwrite
+    // a known measurement with 0.
+    const accumulator = new AgentTelemetryAccumulator({
+      attempt: 1,
+      inputText: "prompt",
+      now: () => Date.parse("2026-06-12T10:00:00.000Z")
+    });
+
+    // First API call: initial allocation, then real usage
+    accumulator.append(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: { update: { sessionUpdate: "usage_update", used: 0, size: 200000 } }
+    }) + "\n");
+    expect(accumulator.context()).toEqual({ used: 0, size: 200000, updatedAt: "2026-06-12T10:00:00.000Z" });
+
+    accumulator.append(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: { update: { sessionUpdate: "usage_update", used: 40000, size: 200000 } }
+    }) + "\n");
+    expect(accumulator.context()?.used).toBe(40000);
+
+    // Second API call: acpx sends used=0 again — must NOT overwrite the 40000
+    accumulator.append(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: { update: { sessionUpdate: "usage_update", used: 0, size: 200000 } }
+    }) + "\n");
+    expect(accumulator.context()?.used).toBe(40000); // preserved!
+    expect(accumulator.context()?.size).toBe(200000); // size still updated
+
+    // Real usage for the second call
+    accumulator.append(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: { update: { sessionUpdate: "usage_update", used: 60000, size: 200000 } }
+    }) + "\n");
+    expect(accumulator.context()?.used).toBe(60000); // real measurement replaces
+  });
+
+  it("allows used=0 when no prior measurement exists (first update of a session)", () => {
+    const accumulator = new AgentTelemetryAccumulator({
+      attempt: 1,
+      inputText: "prompt",
+      now: () => Date.parse("2026-06-12T10:00:00.000Z")
+    });
+
+    accumulator.append(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: { update: { sessionUpdate: "usage_update", used: 0, size: 200000 } }
+    }) + "\n");
+    // First update with used=0 is valid — no prior measurement to preserve
+    expect(accumulator.context()).toEqual({ used: 0, size: 200000, updatedAt: "2026-06-12T10:00:00.000Z" });
+  });
 });
