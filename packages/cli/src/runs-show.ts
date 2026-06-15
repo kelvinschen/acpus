@@ -176,8 +176,8 @@ export async function formatRunShow(
     if (activity) lines.push(`    Activity: ${activity}`);
   }
 
-  // --- Workflow output ---
-  const outputSection = formatWorkflowOutput(run.output);
+  // --- Workflow output (completed runs only) ---
+  const outputSection = run.status === "completed" ? formatWorkflowOutput(run.output) : null;
   if (outputSection) {
     lines.push("");
     lines.push(outputSection);
@@ -254,6 +254,15 @@ function formatWorkflowOutput(output: Record<string, unknown> | undefined): stri
     cutIndex--;
   }
   const remaining = lines.length - cutIndex;
+  if (cutIndex === 0) {
+    // No content fits — emit placeholder
+    return ["Output:", `  ... (${remaining} more lines, output too large to preview)`].join("\n");
+  }
+  // Check if we'd be left with just a top-level key name and no value
+  // (cutIndex === 1 means only line 0, which is a top-level key with no value content)
+  if (cutIndex === 1 && lines[0]?.match(/^[^\s]/)) {
+    return ["Output:", `  ... (${lines.length} more lines, output too large to preview)`].join("\n");
+  }
   const truncated = lines.slice(0, cutIndex).map(l => "  " + l);
   truncated.push(`  ... (${remaining} more lines)`);
   return ["Output:", ...truncated].join("\n");

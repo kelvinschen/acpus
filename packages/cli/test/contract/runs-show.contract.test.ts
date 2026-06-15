@@ -936,7 +936,7 @@ describe("formatRunShow", () => {
     expect(output).toContain("  count: 3");
   });
 
-  it("does not show output for failed run", async () => {
+  it("does not show output for failed run even when run.output is present", async () => {
     const run: RunState = {
       runId: "run-33",
       workflowName: "test",
@@ -947,9 +947,47 @@ describe("formatRunShow", () => {
       updatedAt: "2026-06-10T09:00:10.000Z",
       runAttempt: 1,
       error: "something failed",
+      output: { verdict: "pass", final_report_path: "/tmp/report.md" },
       nodes: [
         { nodeKey: "workflow/review", nodeId: "review", kind: "run.agent", state: "failed", attempt: 1, error: "agent failed", startedAt: "2026-06-10T09:00:00.000Z", completedAt: "2026-06-10T09:00:05.000Z" }
       ]
+    };
+
+    const output = await formatRunShow(run);
+    expect(output).not.toContain("Output:");
+    expect(output).not.toContain("final_report_path:");
+  });
+
+  it("does not show output for cancelled run even when run.output is present", async () => {
+    const run: RunState = {
+      runId: "run-33b",
+      workflowName: "test",
+      status: "cancelled",
+      irDigest: "ir",
+      inputDigest: "input",
+      createdAt: "2026-06-10T09:00:00.000Z",
+      updatedAt: "2026-06-10T09:00:10.000Z",
+      runAttempt: 1,
+      output: { verdict: "pass" },
+      nodes: []
+    };
+
+    const output = await formatRunShow(run);
+    expect(output).not.toContain("Output:");
+  });
+
+  it("does not show output for paused run even when run.output is present", async () => {
+    const run: RunState = {
+      runId: "run-33c",
+      workflowName: "test",
+      status: "paused",
+      irDigest: "ir",
+      inputDigest: "input",
+      createdAt: "2026-06-10T09:00:00.000Z",
+      updatedAt: "2026-06-10T09:00:10.000Z",
+      runAttempt: 1,
+      output: { verdict: "pass" },
+      nodes: []
     };
 
     const output = await formatRunShow(run);
@@ -989,5 +1027,38 @@ describe("formatRunShow", () => {
     const beforeIndicator = contentLines.filter(l => l.startsWith("  ") && !l.includes("..."));
     const lastKey = beforeIndicator[beforeIndicator.length - 1];
     expect(lastKey).toMatch(/^  key_\d+: value_\d+$/);
+  });
+
+  it("does not emit dangling top-level key when truncating a large nested first key", async () => {
+    // Build an output where the first top-level key has a nested value >25 lines
+    const bigItems: string[] = [];
+    for (let i = 0; i < 40; i++) {
+      bigItems.push(`item_${i}`);
+    }
+
+    const run: RunState = {
+      runId: "run-35",
+      workflowName: "test",
+      status: "completed",
+      irDigest: "ir",
+      inputDigest: "input",
+      createdAt: "2026-06-10T09:00:00.000Z",
+      updatedAt: "2026-06-10T09:00:10.000Z",
+      runAttempt: 1,
+      output: {
+        big: { items: bigItems },
+        verdict: "pass",
+      },
+      nodes: []
+    };
+
+    const output = await formatRunShow(run);
+    expect(output).toContain("Output:");
+    // Must still indicate truncation
+    expect(output).toMatch(/\.\.\. \(\d+ more lines/);
+    // Must NOT show a dangling "big:" key with no value followed by truncation marker
+    expect(output).not.toMatch(/  big:\n  \.\.\./);
+    // Should use the "too large to preview" placeholder
+    expect(output).toContain("output too large to preview");
   });
 });
