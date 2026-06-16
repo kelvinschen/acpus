@@ -55,14 +55,14 @@ export interface KindStyle {
 /** Single-width node-kind symbols and colors shared by graph rows and legends. */
 export const KIND_STYLES: Record<IrNodeKind, KindStyle> = {
   pipeline: { symbol: "▣", color: "green", label: "Pipeline" },
-  "run.agent": { symbol: "◉", color: "cyan", label: "Agent" },
+  "run.agent": { symbol: "✦", color: "cyan", label: "Agent" },
   "run.program": { symbol: "$", color: "yellow", label: "Program" },
   parallel: { symbol: "▥", color: "blueBright", label: "Parallel" },
   fanout: { symbol: "◬", color: "magenta", label: "Fanout" },
   switch: { symbol: "◇", color: "blue", label: "Switch" },
   loop: { symbol: "↻", color: "yellowBright", label: "Loop" },
   guard: { symbol: "◈", color: "redBright", label: "Guard" },
-  "run.signal": { symbol: "□", color: "white", label: "Signal" },
+  "run.signal": { symbol: "◌", color: "white", label: "Signal" },
   subworkflow: { symbol: "▧", color: "gray", label: "Subworkflow" }
 };
 

@@ -22,14 +22,14 @@ import yaml
 # Node-kind symbols/colors mirror the existing TUI / served visualizer.
 KIND_META = {
     "pipeline": {"symbol": "\u25a3", "color": "#98971a", "label": "Pipeline"},
-    "agent": {"symbol": "\u25c9", "color": "#689d6a", "label": "Agent"},
+    "agent": {"symbol": "\u2726", "color": "#689d6a", "label": "Agent"},
     "program": {"symbol": "$", "color": "#d79921", "label": "Program"},
     "parallel": {"symbol": "\u25a5", "color": "#83a598", "label": "Parallel"},
     "fanout": {"symbol": "\u25ec", "color": "#b16286", "label": "Fanout"},
     "switch": {"symbol": "\u25c7", "color": "#458588", "label": "Switch"},
     "loop": {"symbol": "\u21bb", "color": "#fabd2f", "label": "Loop"},
     "guard": {"symbol": "\u25c8", "color": "#fb4934", "label": "Guard"},
-    "signal": {"symbol": "\u25a1", "color": "#a89984", "label": "Signal"},
+    "signal": {"symbol": "\u25cc", "color": "#a89984", "label": "Signal"},
     "subworkflow": {"symbol": "\u25a7", "color": "#928374", "label": "Subworkflow"},
 }
 

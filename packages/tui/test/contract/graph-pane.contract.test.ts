@@ -39,8 +39,8 @@ describe("GraphRow", () => {
     };
 
     const text = collectText(GraphRow({ row, selected: false }));
-    expect(text).toContain("▷ switch_alpha_agent ◉ [case_1]");
-    expect(text).not.toContain("▷ ◉ switch_alpha_agent");
+    expect(text).toContain("▷ switch_alpha_agent ✦ [case_1]");
+    expect(text).not.toContain("▷ ✦ switch_alpha_agent");
     expect(text).not.toContain("«case_1»");
     expect(text).not.toContain("[AGENT]");
     expect(text).not.toContain("↺2");
@@ -139,7 +139,7 @@ describe("GraphRow", () => {
     };
 
     expect(collapseIndicatorForRow(row, false)).toBeUndefined();
-    expect(collectText(GraphRow({ row, selected: false }))).toContain("✓ agent ◉");
+    expect(collectText(GraphRow({ row, selected: false }))).toContain("✓ agent ✦");
     expect(collectText(GraphRow({ row, selected: false }))).not.toContain("▾");
   });
 });

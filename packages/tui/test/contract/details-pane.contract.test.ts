@@ -64,7 +64,7 @@ describe("buildDetailLines", () => {
     expect(kindLine?.segments).toEqual([
       { text: "Kind: ", color: "gray" },
       { text: "AGENT", color: "cyan" },
-      { text: " ◉", color: "cyan" }
+      { text: " ✦", color: "cyan" }
     ]);
   });
 

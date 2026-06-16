@@ -115,7 +115,7 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - The single-Run visualizer MUST treat `s` as a Signal Node decision only when the selected row is an `awaiting` Signal Node: a single required boolean `output` field is delivered through a y/N quick prompt, and any other (or absent) schema is entered through the operator's `$EDITOR`.
 - The single-Run visualizer MUST require an inline confirmation before applying `p`, `r`, `c`, `R`, or a single-boolean `s` decision.
 - The single-Run visualizer MUST keep control results, poll errors, and selected awaiting Signal Node hints in a fixed multi-line Status Overview messages area, not in the footer.
-- The single-Run visualizer MUST render a node-kind legend in Status Overview and MUST render graph node kinds with the symbols `▣`, `◉`, `$`, `▥`, `◬`, `◇`, `↻`, `◈`, `□`, and `▧` for pipeline, agent, program, parallel, fanout, switch, loop, guard, signal, and subworkflow respectively.
+- The single-Run visualizer MUST render a node-kind legend in Status Overview and MUST render graph node kinds with the symbols `▣`, `✦`, `$`, `▥`, `◬`, `◇`, `↻`, `◈`, `◌`, and `▧` for pipeline, agent, program, parallel, fanout, switch, loop, guard, signal, and subworkflow respectively.
 - The single-Run visualizer MUST color tree guide-line segments with the same fixed color as the node kind that owns that guide-line column.
 - The single-Run visualizer MUST render switch branch labels and fanout item labels with square brackets, not guillemets.
 - The single-Run visualizer MUST show Run retry generation as `↺N` in the top bar only when the Run's `runAttempt` is greater than `1`, and MUST NOT show per-node attempt markers in graph rows.
