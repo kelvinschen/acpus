@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 import { Ajv } from "ajv";
 import { parse as parseYaml } from "yaml";
 import { DiagnosticBag } from "./diagnostics.js";
+import { outputMergeFor, keyTemplateForKind } from "./composite-contract.js";
 import { createExpressionCollector } from "./expressions.js";
+import { validateScopedExpressions } from "./expression-scope.js";
 import { createSchedule } from "./schedule.js";
 import { compileSchemaDsl } from "./schema/index.js";
 import { parseDurationMs } from "./duration.js";
@@ -60,6 +62,18 @@ export function compileWorkflow(source: string, options: CompileOptions = {}): C
   expressionCollector.visit(expanded.agents ?? {}, "$.agents");
   expressionCollector.visit(expanded.workflow.steps, "$.workflow.steps");
   expressionCollector.visit(expanded.outputs ?? {}, "$.outputs");
+
+  // Scope-aware validation over the compiled IR: field paths against declared
+  // schemas, local-root scope, step visibility, and shell-safety in cmd. This
+  // consumes the schemas already compiled onto node metadata. Fail-quiet.
+  validateScopedExpressions({
+    root,
+    inputSchema: isRecord(expanded.input) ? expanded.input : {},
+    outputs: isRecord(expanded.outputs) ? expanded.outputs : {},
+    agents: isRecord(expanded.agents) ? expanded.agents : {},
+    allStepIds: stepIds,
+    diagnostics
+  });
 
   const ok = !diagnostics.hasErrors(options.strict);
   if (!ok) {
@@ -261,8 +275,8 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
     return {
       ...base,
       kind: "parallel",
-      keyTemplate: { ...keyTemplate(nodePath), parallelBranchId: true },
-      outputMerge: "map",
+      keyTemplate: keyTemplateForKind("parallel", keyTemplate(nodePath)),
+      outputMerge: outputMergeFor("parallel"),
       children: compileSteps(asSteps(step.parallel, `${path}.parallel`, context), nodePath, `${path}.parallel`, context),
       metadata: pickMetadata(step, ["max_concurrency", "join"])
     };
@@ -278,8 +292,8 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
     return {
       ...base,
       kind: "fanout",
-      keyTemplate: { ...keyTemplate(nodePath), fanoutItemId: true, laneId: true },
-      outputMerge: "array",
+      keyTemplate: keyTemplateForKind("fanout", keyTemplate(nodePath)),
+      outputMerge: outputMergeFor("fanout"),
       children,
       metadata: pickMetadata(fanout, ["over", "key", "max_concurrency", "join", "quorum", "success_criteria"])
     };
@@ -321,7 +335,7 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
     return {
       ...base,
       kind: "switch",
-      outputMerge: "selected",
+      outputMerge: outputMergeFor("switch"),
       branches,
       metadata: pickMetadata(switchSpec, ["on"])
     };
@@ -341,8 +355,8 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
     return {
       ...base,
       kind: "loop",
-      keyTemplate: { ...keyTemplate(nodePath), loopRound: true },
-      outputMerge: "last",
+      keyTemplate: keyTemplateForKind("loop", keyTemplate(nodePath)),
+      outputMerge: outputMergeFor("loop"),
       children: Array.isArray(loop.do) ? compileSteps(asSteps(loop.do, `${path}.loop.do`, context), nodePath, `${path}.loop.do`, context) : [],
       metadata: pickMetadata(loop, ["until", "max_iterations"])
     };

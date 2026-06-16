@@ -1,15 +1,13 @@
-import { parse as parseCel } from "@marcbachmann/cel-js";
+import { extractReferences } from "./cel-ast.js";
+import { EXPRESSION_PATTERN, toCelParseSource } from "./expressions-shared.js";
 import type { DiagnosticBag } from "./diagnostics.js";
 import type { IrExpression } from "./types.js";
 
-export const EXPRESSION_PATTERN = /\$\{\{\s*([\s\S]*?)\s*\}\}/g;
+export { EXPRESSION_PATTERN, toCelParseSource } from "./expressions-shared.js";
 
 /** Fields that are evaluated as raw CEL (evaluateExpression), not templates.
  *  Using ${{ }} in these fields causes a runtime CEL parse error. */
 const RAW_CEL_FIELDS = new Set(["over", "until", "when"]);
-
-const STEP_REFERENCE_PATTERN = /\bsteps\.([A-Za-z_][A-Za-z0-9_-]*)\b/g;
-const ROOT_REFERENCE_PATTERN = /(?<![\w.])([A-Za-z_][A-Za-z0-9_]*)\s*(?:\.|\()/g;
 
 export const ALLOWED_ROOTS = new Set(["input", "steps", "loop", "item", "item_id", "item_index", "run_id"]);
 export const ALLOWED_FUNCTIONS = new Set(["now", "len", "startsWith", "matches", "coalesce", "json"]);
@@ -44,23 +42,33 @@ export function createExpressionCollector(diagnostics: DiagnosticBag, knownStepI
         continue;
       }
 
-      try {
-        parseCel(toCelParseSource(source));
-      } catch (error) {
-        diagnostics.error("EXPR_PARSE", `Invalid CEL expression: ${errorMessage(error)}`, path);
+      const { references, functions, parseError } = extractReferences(source);
+      if (parseError) {
+        diagnostics.error("EXPR_PARSE", `Invalid CEL expression: ${parseError}`, path);
+        continue;
       }
 
-      const references = [...source.matchAll(STEP_REFERENCE_PATTERN)].map((reference) => reference[1] as string);
-      for (const reference of references) {
-        if (!knownStepIds.has(reference)) {
-          diagnostics.error("EXPR_UNKNOWN_STEP", `Expression references unknown step '${reference}'.`, path);
+      const stepReferences: string[] = [];
+      for (const ref of references) {
+        // Unknown root (not an allowed context variable). Functions are reported
+        // separately below so a function name is never mistaken for a root.
+        if (!ALLOWED_ROOTS.has(ref.root)) {
+          diagnostics.warning("EXPR_UNKNOWN_ROOT", `Expression root '${ref.root}' is not part of the M1 DSL context.`, path);
+        }
+        if (ref.root === "steps") {
+          const first = ref.segments[0];
+          if (first && first.kind === "field") {
+            stepReferences.push(first.name);
+            if (!knownStepIds.has(first.name)) {
+              diagnostics.error("EXPR_UNKNOWN_STEP", `Expression references unknown step '${first.name}'.`, path);
+            }
+          }
         }
       }
 
-      for (const root of source.matchAll(ROOT_REFERENCE_PATTERN)) {
-        const name = root[1] as string;
-        if (!ALLOWED_ROOTS.has(name) && !ALLOWED_FUNCTIONS.has(name)) {
-          diagnostics.warning("EXPR_UNKNOWN_ROOT", `Expression root '${name}' is not part of the M1 DSL context.`, path);
+      for (const fn of functions) {
+        if (!ALLOWED_FUNCTIONS.has(fn)) {
+          diagnostics.warning("EXPR_UNKNOWN_ROOT", `Expression function '${fn}' is not part of the M1 DSL context.`, path);
         }
       }
 
@@ -68,7 +76,7 @@ export function createExpressionCollector(diagnostics: DiagnosticBag, knownStepI
         id: `expr_${expressions.length + 1}`,
         source,
         path,
-        references
+        references: stepReferences
       });
     }
   }
@@ -90,14 +98,6 @@ export function createExpressionCollector(diagnostics: DiagnosticBag, knownStepI
   }
 
   return { expressions, visit };
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-export function toCelParseSource(source: string): string {
-  return source.replace(/\bloop\./g, "loop_ctx.");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

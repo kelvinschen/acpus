@@ -22,6 +22,12 @@ export {
   createExpressionCollector
 } from "./expressions.js";
 export type { ExpressionCollector } from "./expressions.js";
+export { extractReferences, referenceToString, isStaticReference } from "./cel-ast.js";
+export type { ExpressionReference, ReferenceSegment, ExtractResult } from "./cel-ast.js";
+export { validateScopedExpressions } from "./expression-scope.js";
+export type { ScopedValidationInput } from "./expression-scope.js";
+export { COMPOSITE_CONTRACTS, outputMergeFor, keyTemplateForKind } from "./composite-contract.js";
+export type { CompositeContract, OutputShapeKind } from "./composite-contract.js";
 export { parseDurationMs } from "./duration.js";
 export type { ParseDurationOptions } from "./duration.js";
 export { hashIrNode } from "./hash.js";

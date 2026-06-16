@@ -207,6 +207,19 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - `now()` MUST be bound to the deterministic workflow clock.
 - `json(value)` MUST serialize its argument to a JSON string with deterministic (sorted) object key order, so an object or array can be embedded into a template string instead of stringifying to `[object Object]`.
 
+#### Static Validation
+
+The compiler MUST statically validate expressions against the compiled IR so that classes of runtime failure are surfaced at lint / dry-run time. Validation MUST be fail-quiet: any reference whose shape cannot be determined statically MUST be accepted silently (prefer false negatives over false positives), and static validation MUST NOT throw.
+
+- Expression references MUST be extracted from the parsed CEL AST, not by text matching.
+- A `steps.<id>.output.<path>` reference whose `<id>` declares a closed output schema (an Agent, Program, or Signal Node) MUST be rejected when `<path>` names a field absent from that schema; the diagnostic MUST list the available fields. Path validation MUST stop, accepting the reference, at the first dynamic index, open object, untyped array element, or composite (loop/fanout/parallel/switch/guard) output projection.
+- An `input.<path>` reference MUST be validated against the compiled input schema under the same closed-schema rule.
+- Inside a `fanout` body whose `over` resolves to a typed array element schema, an `item.<path>` reference MUST be validated against that element schema under the same closed-schema rule.
+- A scope-local root (`loop`, `item`, `item_id`, `item_index`) used outside the composite body that introduces it MUST be rejected.
+- A `steps.<id>` reference to a step that is not visible at the referencing position (a later sibling, or a step in a sibling branch) MUST be rejected; the diagnostic MUST list the visible steps.
+- A `${{ }}` expression spliced into a Program Step `cmd` element that statically evaluates to a non-scalar value (an object, an array, or a `json(...)` call) MUST produce a warning advising the author to route the value through `env:`. Values placed in `env:` MUST NOT be flagged.
+- The static-validation rules MUST source every Node kind's output projection and body-local scope from a single shared composite contract that the compiler also uses to build the IR, so a new composite kind is described in exactly one place.
+
 ### Local Runtime Boundary
 
 - Workflow scheduling MUST be owned by Acpus.
@@ -229,6 +242,8 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - Compiler tests MUST cover Signal Node shape validation, optional `output` schema compilation, and `default` payload validation against a declared `output` schema.
 - Compiler tests MUST cover include expansion and include cycle diagnostics.
 - Compiler tests MUST cover expression collection and validation.
+- Compiler tests MUST cover scope-aware expression validation: closed-schema field-path rejection with available-field reporting, fail-quiet acceptance of dyn / open / composite shapes, out-of-scope local roots, step visibility, fanout `item` element-schema validation, and the non-scalar-in-`cmd` warning.
+- Compiler tests MUST assert that every IR Node kind has an entry in the shared composite contract.
 - Compiler tests MUST cover output schema validation.
 - Compiler tests MUST cover Agent Step output declarations that use the Acpus Schema DSL.
 - Runtime tests MUST cover Agent Steps through acpx.
