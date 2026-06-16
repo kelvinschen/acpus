@@ -44,6 +44,7 @@ export function footerHintGroups(
     ? [
         { key: "h/l", label: "focus" },
         { key: "read-only", label: "controls disabled" },
+        { key: "Esc", label: "back" },
         { key: "q", label: "quit" }
       ]
     : [
@@ -53,6 +54,7 @@ export function footerHintGroups(
         { key: controlKeyForAction("cancel"), label: "cancel" },
         { key: controlKeyForAction("retry"), label: "retry" },
         { key: controlKeyForAction("signal"), label: "signal" },
+        { key: "Esc", label: "back" },
         { key: "q", label: "quit" }
       ];
   return { nav, global };

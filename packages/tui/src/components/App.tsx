@@ -56,12 +56,14 @@ export function App({
   client,
   runId,
   readOnly = false,
-  refreshMode = "normal"
+  refreshMode = "normal",
+  onBack
 }: {
   client: RunSupervisorClient;
   runId: string;
   readOnly?: boolean;
   refreshMode?: TuiRefreshMode;
+  onBack?: () => void;
 }): React.ReactElement {
   const { exit } = useApp();
   const { setRawMode, stdin } = useStdin();
@@ -238,6 +240,10 @@ export function App({
 
   useInput((input, key) => {
     if (pendingControl && !(key.ctrl && input === "c")) return;
+    if (key.escape) {
+      onBack?.();
+      return;
+    }
     if (input === "q" || (key.ctrl && input === "c")) {
       exit();
       return;
