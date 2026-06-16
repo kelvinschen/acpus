@@ -381,12 +381,12 @@ function isTerminal(state: NodeExecutionState["state"]): boolean {
  * subworkflow) record an aggregate outcome whose meaning depends on their
  * children; inheriting them in a Forked Run would short-circuit the container
  * body wholesale (the interpreter treats any persisted completed as done).
- * Only leaves and the deterministic Guard / Approval gates produce checkpoints,
+ * Only leaves and the deterministic Guard / Signal nodes produce checkpoints,
  * so a Forked Run inherits leaf outputs and re-derives container control flow
  * against the new IR.
  */
 function isCheckpointableKind(kind: NodeExecutionState["kind"]): boolean {
-  return kind === "run.agent" || kind === "run.program" || kind === "guard" || kind === "approval";
+  return kind === "run.agent" || kind === "run.program" || kind === "guard" || kind === "run.signal";
 }
 
 function rewriteAgentTelemetryArtifactRefs(

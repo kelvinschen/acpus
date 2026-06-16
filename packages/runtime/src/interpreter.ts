@@ -13,6 +13,7 @@ import type { ExecutorAdapter } from "./executors/types.js";
 import { renderAgentRequestPrompt, renderAgentSessionKey } from "./executors/agent.js";
 import type { NodeExecutionState, NodeState, ReplayResult, ReplayMismatch } from "./types.js";
 import { validateInput } from "./validate-input.js";
+import { validateSignalPayload } from "./validate-signal.js";
 import { RunControl, abortedNodeError, isPausedContinuationState } from "./run-control.js";
 import { evaluateTemplatedValue, evaluateWorkflowOutputs } from "./workflow-outputs.js";
 import { randomBytes } from "node:crypto";
@@ -35,9 +36,11 @@ export class WorkflowInterpreter {
   private readonly allowedSourceRoots: string[];
   private readonly sleep: (ms: number) => Promise<void>;
 
-  /** Pending human-decision resolvers for Approval Gates awaiting a signal,
-   *  keyed by "runId:nodeKey". An entry exists only while a node is `awaiting`. */
-  private readonly approvalResolvers: Map<string, (approved: boolean) => void> = new Map();
+  /** Pending external-decision resolvers for Signal Nodes awaiting a payload,
+   *  keyed by "runId:nodeKey". An entry exists only while a node is `awaiting`.
+   *  The resolver validates the payload against the node's output schema and
+   *  throws on mismatch, leaving the node `awaiting`. */
+  private readonly signalResolvers: Map<string, (payload: unknown) => void> = new Map();
 
   /** Absolute paths of subworkflow specs currently on the execution stack (cycle guard). */
   private readonly subworkflowStack: Set<string> = new Set();
@@ -126,10 +129,10 @@ export class WorkflowInterpreter {
   /**
    * Reset any nodes persisted as `running` (or `awaiting`) back to `pending`
    * (crash recovery). Safe to call when adopting a Run after a supervisor
-   * restart: in-memory abort controllers and approval resolvers are gone, so a
+   * restart: in-memory abort controllers and signal resolvers are gone, so a
    * node marked `running`/`awaiting` on disk has no live execution and must be
-   * re-runnable. An `awaiting` Approval Gate re-registers its resolver and waits
-   * for a fresh human decision on re-execution.
+   * re-runnable. An `awaiting` Signal Node re-registers its resolver and waits
+   * for a fresh external decision on re-execution.
    */
   recoverStaleNodes(runId: string): void {
     this.runControl.recoverStaleNodes(runId);
@@ -292,8 +295,8 @@ export class WorkflowInterpreter {
           }
         }
         break;
-      // run.agent / run.program / approval are leaves: their recorded state was
-      // already captured above; nothing further to descend.
+      // run.agent / run.program / run.signal are leaves: their recorded state
+      // was already captured above; nothing further to descend.
       default:
         break;
     }
@@ -473,8 +476,8 @@ export class WorkflowInterpreter {
           completeScope = guard.completeScope;
           break;
         }
-        case "approval":
-          output = await this.executeApproval(node, ctx, runId, controller.signal, nodeKey);
+        case "run.signal":
+          output = await this.executeSignal(node, ctx, runId, controller.signal, nodeKey);
           break;
         case "subworkflow":
           output = await this.executeSubworkflow(node, ctx, runId, dynamic, nodeKey);
@@ -605,7 +608,7 @@ export class WorkflowInterpreter {
       const rawAcpDebug = process.env.ACPUS_AGENT_RAW_ACP_DEBUG === "1";
       const liveArtifacts = this.attemptArtifacts.startAgentAttempt(runId, nodeKey, attemptNo, preparedPrompt, { rawAcpDebug });
       this.attemptArtifacts.mergeAttemptRefs(allArtifactRefs, liveArtifacts.artifactRefs);
-      this.publishRenderedAgentPrompt(runId, nodeKey, preparedPrompt);
+      this.publishRenderedPrompt(runId, nodeKey, preparedPrompt);
       if (attempt === 0 && renderedSessionKey !== undefined) {
         this.publishRenderedAgentSessionKey(runId, nodeKey, renderedSessionKey);
       }
@@ -754,7 +757,7 @@ export class WorkflowInterpreter {
     this.store.writeNodeState(runId, state);
   }
 
-  private publishRenderedAgentPrompt(runId: string, nodeKey: string, renderedPrompt: string): void {
+  private publishRenderedPrompt(runId: string, nodeKey: string, renderedPrompt: string): void {
     const state = this.store.readNodeState(runId, nodeKey);
     if (!state) return;
     state.renderedPrompt = renderedPrompt;
@@ -1084,17 +1087,35 @@ export class WorkflowInterpreter {
     return { output: { output: guardOutput }, completeScope: action === "complete" };
   }
 
-  private async executeApproval(node: IrNode, ctx: ExpressionContext, runId: string, signal: AbortSignal, nodeKey: string): Promise<unknown> {
+  private async executeSignal(node: IrNode, ctx: ExpressionContext, runId: string, signal: AbortSignal, nodeKey: string): Promise<unknown> {
     const timeout = node.metadata.timeout as string | undefined;
     const onTimeout = node.metadata.on_timeout as string | undefined;
-    const at = this.evaluator.getNow();
+    const defaultPayload = node.metadata.default;
+    const outputSchema = node.metadata.output as Record<string, unknown> | undefined;
 
     const timeoutMs = timeout ? parseDurationMs(timeout) : undefined;
     const resolverKey = `${runId}:${nodeKey}`;
 
-    // Enter the `awaiting` state: the gate is now blocked on a human decision.
-    // This is deliberately distinct from operator `paused` (see state machine);
-    // a human signal resolves it, a cancel aborts it.
+    // Render the prompt the operator must act on. The Signal Node is the one
+    // place a human is expected to inject data, so the rendered prompt (and the
+    // expected payload schema, already on node.metadata.output) must be visible
+    // in `runs show` / TUI. Persist it the same way Agent prompts are surfaced.
+    const promptTemplate = node.metadata.prompt;
+    if (typeof promptTemplate === "string") {
+      let renderedPrompt: string;
+      try {
+        renderedPrompt = this.evaluator.evaluateTemplate(promptTemplate, ctx);
+      } catch (error) {
+        throw new LeafExecutionError(
+          `Signal step '${node.id}' failed (config): Failed to evaluate signal prompt template: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+      this.publishRenderedPrompt(runId, nodeKey, renderedPrompt);
+    }
+
+    // Enter the `awaiting` state: the node is now blocked on an external
+    // decision. This is deliberately distinct from operator `paused` (see state
+    // machine); a signal payload resolves it, a cancel aborts it.
     const enterState = this.store.readNodeState(runId, nodeKey);
     if (enterState && canTransition(enterState.state, "awaiting")) {
       enterState.state = transition(enterState.state, "awaiting") as NodeState;
@@ -1105,22 +1126,20 @@ export class WorkflowInterpreter {
       const onAbort = (): void => {
         cleanup();
         // Honor the operator intent recorded by Run-level pause/cancel. An
-        // awaiting gate is normally cancelled (awaiting → cancelled).
+        // awaiting signal node is normally cancelled (awaiting → cancelled).
         reject(new NodeAbortedError(nodeKey, this.runControl.abortIntent(runId, nodeKey)));
       };
 
       const timer = timeoutMs
         ? setTimeout(() => {
             cleanup();
-            // On timeout, the resolved decision follows the configured policy.
-            // `approve`/`reject` resolve; `fail`/`escalate` fail the node
-            // (escalate has no runtime channel yet — see roadmap).
-            if (onTimeout === "approve") {
-              resolve({ output: { approved: true, decision: "timeout", at } });
-            } else if (onTimeout === "reject") {
-              resolve({ output: { approved: false, decision: "timeout", at } });
+            // The compiler guarantees on_timeout is "fail" or "default" whenever
+            // timeout is set. "default" resolves with the literal default payload
+            // (already schema-checked at compile time); "fail" rejects.
+            if (onTimeout === "default") {
+              resolve({ output: defaultPayload ?? {} });
             } else {
-              reject(new Error(`Approval timed out after ${timeout} (on_timeout: ${onTimeout ?? "fail"})`));
+              reject(new Error(`Signal timed out after ${timeout} (on_timeout: fail)`));
             }
           }, timeoutMs)
         : undefined;
@@ -1130,32 +1149,39 @@ export class WorkflowInterpreter {
       const cleanup = (): void => {
         if (timer) clearTimeout(timer);
         signal.removeEventListener("abort", onAbort);
-        this.approvalResolvers.delete(resolverKey);
+        this.signalResolvers.delete(resolverKey);
       };
 
-      // Human-in-the-loop decision channel: an operator `signal` resolves the
-      // gate. With no `timeout` configured, the gate waits indefinitely for this
-      // (or a cancel). Whoever arrives first wins; the rest are torn down by
-      // cleanup().
-      this.approvalResolvers.set(resolverKey, (approved: boolean) => {
+      // External decision channel: an operator/system `signal` resolves the
+      // node with a structured payload. With no `timeout` configured, the node
+      // waits indefinitely for this (or a cancel). The resolver validates the
+      // payload against the declared output schema; an invalid payload throws
+      // back to the caller (the HTTP endpoint maps it to 422) and the node
+      // stays `awaiting` because cleanup() has not run.
+      this.signalResolvers.set(resolverKey, (payload: unknown) => {
+        validateSignalPayload(outputSchema, payload);
         cleanup();
-        resolve({ output: { approved, decision: approved ? "approved" : "rejected", at } });
+        resolve({ output: payload });
       });
     });
   }
 
   /**
-   * Submit a human decision to an Approval Gate that is currently `awaiting`.
-   * Resolves the in-memory promise registered by executeApproval, which lets
-   * executeNode transition the node `awaiting → completed` with the decision
-   * output. Throws if the node is not awaiting a decision (no live resolver).
+   * Submit an external decision payload to a Signal Node that is currently
+   * `awaiting`. Validates the payload against the node's output schema (when
+   * declared) and resolves the in-memory promise registered by executeSignal,
+   * which lets executeNode transition the node `awaiting → completed` with the
+   * payload as output. Throws if the node is not awaiting (no live resolver) or
+   * if the payload fails schema validation (the node stays `awaiting`).
    */
-  submitApproval(runId: string, nodeKey: string, approved: boolean): void {
-    const resolver = this.approvalResolvers.get(`${runId}:${nodeKey}`);
+  submitSignal(runId: string, nodeKey: string, payload: unknown): void {
+    const resolver = this.signalResolvers.get(`${runId}:${nodeKey}`);
     if (!resolver) {
-      throw new Error(`Node ${nodeKey} is not awaiting an approval decision`);
+      throw new Error(`Node ${nodeKey} is not awaiting a signal`);
     }
-    resolver(approved);
+    // resolver throws SignalPayloadValidationError on a non-conforming payload
+    // without consuming the awaiting state.
+    resolver(payload);
   }
 
   private async executeSubworkflow(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, nodeKey: string): Promise<unknown> {

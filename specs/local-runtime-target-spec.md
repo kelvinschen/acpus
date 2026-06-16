@@ -35,7 +35,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 
 - Every Node in a Run MUST follow a unified 7-state business lifecycle: `pending → running → {awaiting, completed, failed, paused, cancelled}`.
 - A `paused` Node MUST NOT transition directly to `running` through the business lifecycle. Run-level resume MUST recover paused materialized Nodes through a control-plane reset to `pending`.
-- An `awaiting` Node (an Approval Gate blocked on a human decision) MUST transition only to `completed` (decision delivered) or `cancelled` (operator cancel). `awaiting` MUST be distinct from `paused`.
+- An `awaiting` Node (a Signal Node blocked on an external decision) MUST transition only to `completed` (decision delivered) or `cancelled` (operator cancel). `awaiting` MUST be distinct from `paused`.
 - `completed`, `failed`, and `cancelled` MUST be terminal in the business lifecycle: they MUST NOT have any outgoing lifecycle transition, and `canTransition`/`transition` MUST reject moving out of them.
 - Recovery from a terminal, paused, or stale state MUST be modeled as an explicit control-plane reset, not as a business-lifecycle transition: operator retry MAY reset a `failed` Node to `pending`, Run-level retry of a failed Run MAY reset a materialized `cancelled` Node to `pending`, Run-level resume MAY reset a `paused` Node to `pending`, and crash recovery MAY reset a stale `running` or `awaiting` Node to `pending`. These resets MUST be exposed only through dedicated operations, never through the generic transition API.
 - `completed` MUST NOT be resettable by any control-plane operation. A `cancelled` Node MUST remain terminal in the business lifecycle and MUST be resettable only by Run-level retry of a failed Run.
@@ -97,6 +97,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Executor adapters MUST implement a single `execute(request)` method receiving an `ExecutionRequest` with `node`, `context`, `signal`, `nodeKey`, and optional prepared execution fields including `prompt`, `sessionKey`, `continuation`, `retry`, and `onStream`.
 - When an Agent Step declares `session_key`, the interpreter MUST pass the rendered semantic key to the Agent executor as `ExecutionRequest.sessionKey`.
 - The interpreter MUST persist the rendered Agent prompt prepared for the current Agent executor call on the Agent Node state as `renderedPrompt`.
+- The interpreter MUST persist the rendered Signal Node prompt (with expressions resolved) on the Signal Node state as `renderedPrompt` before entering `awaiting`, so operators can see what decision is requested without inspecting the frozen IR.
 - When an Agent Step declares `session_key`, the interpreter MUST persist the rendered semantic key on the Agent Node state as `renderedSessionKey`; Agent Steps without explicit `session_key` MUST omit `renderedSessionKey`.
 - The interpreter MUST route all Agent Steps through the single AgentExecutor (acpx-backed); there is no `type: mock` dispatch.
 - ProgramExecutor MUST handle cmd template resolution, capture config (json/text), `capture.from: file` reads, timeout (SIGKILL), and abort signals.
@@ -172,7 +173,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - The runtime MUST use `.acpus/state/supervisor.lock` or an equivalent Workspace-local lock to prevent concurrent CLI invocations from starting multiple supervisors for the same Workspace.
 - When ensuring a supervisor, the CLI MUST verify that `.acpus/state/supervisor.json` matches the current Workspace and that the endpoint health check succeeds.
 - When supervisor metadata is stale, unreachable, malformed, or for a different Workspace, the CLI MUST clean or replace it before using a supervisor.
-- The Run Supervisor MUST expose an HTTP REST API for run submission, run listing, run inspection, node state listing, node retrieval, Run-level control, Node-level retry, approval signal delivery, run replay, frozen IR retrieval, evaluated workflow output retrieval, artifact path resolution, and health checks.
+- The Run Supervisor MUST expose an HTTP REST API for run submission, run listing, run inspection, node state listing, node retrieval, Run-level control, Node-level retry, Signal Node decision delivery, run replay, frozen IR retrieval, evaluated workflow output retrieval, artifact path resolution, and health checks.
 - Run-facing CLI commands MUST use the Run Supervisor API rather than maintaining a separate direct-disk read path.
 - The runtime MUST NOT require a normal user-facing `acpus daemon` or `acpus supervisor` command for normal execution.
 - The Run Supervisor MUST execute submitted Runs in the background and return the initial `running` state immediately, rather than blocking until the Run reaches a terminal state.
@@ -185,7 +186,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - The Run Supervisor MUST perform startup recovery: reset orphaned `running` or `awaiting` Nodes to `pending` as a control-plane recovery operation.
 - The Run Supervisor MUST perform graceful shutdown on SIGINT/SIGTERM: persist all live `running` Nodes as `paused`, remove supervisor metadata, close the HTTP server, then exit.
 - The Run Supervisor MUST use a 5-second forced-exit fallback if the HTTP server does not close promptly.
-- Node keys MUST be passed as `?key=` query parameters in the REST API for Node-level retry, node retrieval, approval signal delivery, and artifact path resolution because node keys contain `/` which is incompatible with path segments.
+- Node keys MUST be passed as `?key=` query parameters in the REST API for Node-level retry, node retrieval, Signal Node decision delivery, and artifact path resolution because node keys contain `/` which is incompatible with path segments.
 - `GET /runs/:runId/input` MUST return `{ input }` containing the persisted resolved Workflow input for the Run.
 - `GET /runs/:runId/output` MUST return `{ status, output }` and MAY include `error` as a string when the Run has failed.
 - `GET /runs/:runId/output` MUST return the persisted evaluated top-level Workflow `outputs` when `status` is `completed`.
@@ -272,7 +273,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - A Forked Run MUST treat inherited outputs as historical facts and MUST NOT recompute runtime-context values (such as `run_id` or `now()` derivations) embedded in those outputs.
 - A Forked Run MUST start fresh ACP sessions for any Agent Step it executes; Continuation MUST NOT span Runs.
 
-### Node-Level Retry And Approval
+### Node-Level Retry And Signal Delivery
 
 - The runtime MUST support Node-level retry only for failed executable Nodes (`run.agent` and `run.program`).
 - Node-level retry MUST be addressed through an explicit node key parameter in the API and through `acpus runs retry <run_id> --node <nodeKey>` in the CLI.
@@ -281,8 +282,8 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Node-level retry MUST resolve the targeted Node's definition from the Run's persisted IR before mutating Node state, and MUST reject the operation with an error (leaving Node state unchanged) when the definition cannot be resolved. Subworkflow child Nodes, whose IR is compiled on demand and not persisted in the parent Run, are therefore not individually retryable.
 - Node-level retry HTTP requests MUST return after validation and execution startup; they MUST NOT hold the client request open until the retried Node finishes executing.
 - Node-level retry MUST NOT mutate composite ancestor Nodes and MUST NOT change Run status; Run-level retry is the operation that restores Workflow progress after a failed Run.
-- The runtime MUST support delivering a human approval decision to an Approval Gate that is `awaiting`, addressed through an explicit node key parameter (`--node <nodeKey>` in the CLI). The decision MUST be either approve or reject.
-- Approval signal delivery MUST require a live interpreter (the decision channel is in-memory); the Run Supervisor MUST NOT lazily recover one. When no live interpreter exists, it MUST return a conflict error if the Run exists on disk and a not-found error otherwise, and MUST return a conflict error when the targeted Node is not `awaiting`.
+- The runtime MUST support delivering an external decision payload to a Signal Node that is `awaiting`, addressed through an explicit node key parameter (`--node <nodeKey>` in the CLI). When the Signal Node declares an `output` schema, the payload MUST validate against it and a non-conforming payload MUST be rejected without resolving the Node; when no schema is declared any payload object is accepted.
+- Signal decision delivery MUST require a live interpreter (the decision channel is in-memory); the Run Supervisor MUST NOT lazily recover one. When no live interpreter exists, it MUST return a conflict error if the Run exists on disk and a not-found error otherwise, and MUST return a conflict error when the targeted Node is not `awaiting`.
 - A cancelled Agent Step MUST still persist its partial response and telemetry artifacts, the same as a paused one.
 
 ### Crash Recovery

@@ -42,7 +42,7 @@ export const KIND_LABELS: Record<IrNodeKind, string> = {
   switch: "SWITCH",
   loop: "LOOP",
   guard: "GUARD",
-  approval: "APPROVAL",
+  "run.signal": "SIGNAL",
   subworkflow: "SUBWORKFLOW"
 };
 
@@ -62,7 +62,7 @@ export const KIND_STYLES: Record<IrNodeKind, KindStyle> = {
   switch: { symbol: "◇", color: "blue", label: "Switch" },
   loop: { symbol: "↻", color: "yellowBright", label: "Loop" },
   guard: { symbol: "◈", color: "redBright", label: "Guard" },
-  approval: { symbol: "□", color: "white", label: "Approval" },
+  "run.signal": { symbol: "□", color: "white", label: "Signal" },
   subworkflow: { symbol: "▧", color: "gray", label: "Subworkflow" }
 };
 

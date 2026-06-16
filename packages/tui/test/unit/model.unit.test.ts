@@ -240,7 +240,7 @@ describe("model overlay", () => {
 
   it("counts every runtime instance by state", () => {
     const root = node("workflow", "pipeline", {
-      children: [node("a", "run.agent"), node("b", "run.agent"), node("g", "approval")]
+      children: [node("a", "run.agent"), node("b", "run.agent"), node("g", "run.signal")]
     });
     const states = [
       state("a", "workflow/a", "completed"),

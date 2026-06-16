@@ -69,6 +69,7 @@ export { WorkflowInterpreter } from "./interpreter.js";
 // ─── Input Validation ────────────────────────────────────────────
 export { InputValidationFailure, validateInput } from "./validate-input.js";
 export type { InputValidationError } from "./types.js";
+export { SignalPayloadValidationError, validateSignalPayload } from "./validate-signal.js";
 
 // ─── Executors ───────────────────────────────────────────────────
 export { MockProgramExecutor } from "./executors/mock-program.js";

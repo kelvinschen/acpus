@@ -365,12 +365,15 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
     };
   }
 
-  if (isRecord(step.approval)) {
-    validateApprovalStep(step.approval, path, context);
+  if (step.run === "signal") {
+    // validateSignalStep owns signal timeout validation (SIGNAL_TIMEOUT); do not
+    // also run validateStepTimeout or an invalid duration emits a duplicate
+    // STEP_TIMEOUT for the same field.
+    validateSignalStep(step, path, context);
     return {
       ...base,
-      kind: "approval",
-      metadata: pickMetadata(step.approval, ["prompt", "timeout", "on_timeout"])
+      kind: "run.signal",
+      metadata: pickMetadata(step, ["run", "prompt", "output", "timeout", "on_timeout", "default"])
     };
   }
 
@@ -383,7 +386,7 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
   }
 
   // Defensive: Schema already validates step kind; keep as fallback
-  context.diagnostics.error("STEP_KIND", "Step must define one of run: agent, run: program, parallel, fanout, switch, loop, guard, approval, subworkflow, or include.", path);
+  context.diagnostics.error("STEP_KIND", "Step must define one of run: agent, run: program, run: signal, parallel, fanout, switch, loop, guard, subworkflow, or include.", path);
   return {
     ...base,
     kind: "run.program",
@@ -455,13 +458,64 @@ function validateFanout(fanout: Record<string, unknown>, path: string, context: 
   }
 }
 
-function validateApprovalStep(approval: Record<string, unknown>, path: string, context: CompileContext): void {
+function validateSignalStep(step: WorkflowStep, path: string, context: CompileContext): void {
+  // Cross-field: a declared timeout requires an on_timeout policy.
+  if (step.timeout !== undefined && step.on_timeout === undefined) {
+    context.diagnostics.error("SIGNAL_ON_TIMEOUT", "signal.on_timeout must be fail or default, and is required when timeout is set.", `${path}.on_timeout`);
+  }
+  // Cross-field: on_timeout: default requires a literal default payload.
+  if (step.on_timeout === "default" && !isRecord(step.default)) {
+    context.diagnostics.error("SIGNAL_DEFAULT", "signal.default is required (as an object) when on_timeout is default.", `${path}.default`);
+  }
+
   // Duration format validation (not expressible in JSON Schema)
-  if (typeof approval.timeout === "string") {
+  if (typeof step.timeout === "string") {
     try {
-      parseDurationMs(approval.timeout, { strict: true });
+      parseDurationMs(step.timeout, { strict: true });
     } catch {
-      context.diagnostics.error("APPROVAL_TIMEOUT", "approval.timeout must be a valid duration string (e.g. 5m, 2h, 30s).", `${path}.approval.timeout`);
+      context.diagnostics.error("SIGNAL_TIMEOUT", "signal.timeout must be a valid duration string (e.g. 5m, 2h, 30s).", `${path}.timeout`);
+    }
+  }
+
+  // Compile the optional output schema DSL into JSON Schema, mirroring Agent and
+  // Program steps. When omitted (or an empty map), the injected payload is
+  // accepted unvalidated.
+  let outputSchema: Record<string, unknown> | undefined;
+  if (isRecord(step.output) && Object.keys(step.output).length > 0) {
+    if ("schema" in step.output) {
+      context.diagnostics.error("OUTPUT_SHAPE", "The 'schema' key in signal output is no longer supported as a JSON Schema escape hatch. Use the Acpus Schema DSL directly (e.g. output: { field: string }).", `${path}.output.schema`);
+    }
+    const { schema, errors } = compileSchemaDsl(step.output);
+    for (const err of errors) {
+      context.diagnostics.error("OUTPUT_SHAPE", err.message, `${path}.output.${err.field}`);
+    }
+    if (errors.length === 0) {
+      validateJsonSchema(schema, `${path}.output`, context);
+      outputSchema = schema;
+      step.output = schema;
+    } else {
+      // Guarantee the IR invariant: metadata.output is either undefined or a
+      // valid compiled JSON Schema — never a partial schema or raw DSL.
+      step.output = undefined;
+    }
+  } else {
+    // `output: {}` (empty map) means "accept any object", identical to omitting
+    // output. Clear it so metadata.output stays undefined rather than compiling
+    // to a schema that rejects every non-empty payload.
+    delete (step as Record<string, unknown>).output;
+  }
+
+  // When `on_timeout: default`, validate the literal `default` payload at compile
+  // time so an invalid default is a lint error, not a runtime surprise.
+  if (step.on_timeout === "default" && isRecord(step.default) && outputSchema) {
+    let validate: ReturnType<typeof ajv.compile>;
+    try {
+      validate = ajv.compile(outputSchema);
+    } catch {
+      return;
+    }
+    if (!validate(step.default)) {
+      context.diagnostics.error("SIGNAL_DEFAULT", `signal.default does not match the declared output schema: ${ajv.errorsText(validate.errors)}`, `${path}.default`);
     }
   }
 }
@@ -510,7 +564,7 @@ function inferStepKind(step: Record<string, unknown>): string | undefined {
   if (isRecord(step.switch)) return "switch";
   if (isRecord(step.loop)) return "loop";
   if (isRecord(step.guard)) return "guard";
-  if (isRecord(step.approval)) return "approval";
+  if (step.run === "signal") return "run.signal";
   if (typeof step.subworkflow === "string") return "subworkflow";
   return undefined;
 }

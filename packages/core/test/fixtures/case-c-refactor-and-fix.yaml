@@ -80,9 +80,13 @@ workflow:
                       parse: text
 
     - id: final_gate
-      approval:
-        prompt: "Refactor loop complete for ${{ input.module }}. Push branch?"
-        timeout: 24h
-        on_timeout: reject
+      run: signal
+      prompt: "Refactor loop complete for ${{ input.module }}. Push branch?"
+      output:
+        approved: boolean
+      timeout: 24h
+      on_timeout: default
+      default:
+        approved: false
 outputs:
   pushed: ${{ steps.final_gate.output.approved }}

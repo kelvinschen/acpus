@@ -976,17 +976,17 @@ workflow:
   });
 });
 
-describe("Supervisor approval signal (human-in-the-loop)", () => {
+describe("Supervisor signal (external decision)", () => {
   let tmpDir: string;
   let server: Server;
   let baseUrl: string;
   let store: RunStore;
 
-  // A gate with no timeout waits indefinitely for a human decision, then a
-  // downstream step consumes the decision so we can prove the loop closes.
+  // A signal node with no timeout waits indefinitely for an external decision,
+  // then a downstream step consumes the decision so we can prove the loop closes.
   const GATE_SPEC = `
 version: 1
-name: approval-signal-test
+name: signal-test
 agents:
   coder:
     type: command
@@ -994,8 +994,10 @@ agents:
 workflow:
   steps:
     - id: gate
-      approval:
-        prompt: "Approve?"
+      run: signal
+      prompt: "Approve?"
+      output:
+        approved: boolean
     - id: after
       run: agent
       use: coder
@@ -1046,7 +1048,7 @@ outputs:
     }
   }
 
-  it("delivers an approve decision end-to-end and lets downstream consume it", async () => {
+  it("delivers a payload end-to-end and lets downstream consume it", async () => {
     const createRes = await fetch(`${baseUrl}/runs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1059,21 +1061,19 @@ outputs:
     const sigRes = await fetch(`${baseUrl}/runs/${runId}/signal?key=${encodeURIComponent("workflow/gate")}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind: "approval", approved: true })
+      body: JSON.stringify({ approved: true })
     });
     expect(sigRes.status).toBe(200);
     const gateState = await sigRes.json();
     expect(gateState.state).toBe("completed");
-    expect(gateState.output).toEqual({
-      output: { approved: true, decision: "approved", at: store.readRunMeta(runId)?.createdAt }
-    });
+    expect(gateState.output).toEqual({ output: { approved: true } });
 
     expect(await pollRunStatus(runId)).toBe("completed");
     const out = await (await fetch(`${baseUrl}/runs/${runId}/output`)).json();
     expect(out.output).toEqual({ approved: true, after_ok: true });
   });
 
-  it("a reject decision completes the gate with approved=false", async () => {
+  it("delivers an approved=false payload to complete the gate", async () => {
     const createRes = await fetch(`${baseUrl}/runs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1085,13 +1085,12 @@ outputs:
     const sigRes = await fetch(`${baseUrl}/runs/${runId}/signal?key=${encodeURIComponent("workflow/gate")}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind: "approval", approved: false })
+      body: JSON.stringify({ approved: false })
     });
     expect(sigRes.status).toBe(200);
     const gateState = await sigRes.json();
     expect(gateState.state).toBe("completed");
     expect(gateState.output.output.approved).toBe(false);
-    expect(gateState.output.output.decision).toBe("rejected");
   });
 
   it("requires a node key", async () => {
@@ -1104,14 +1103,14 @@ outputs:
     const res = await fetch(`${baseUrl}/runs/${runId}/signal`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind: "approval", approved: true })
+      body: JSON.stringify({ approved: true })
     });
     expect(res.status).toBe(400);
     // cleanup: cancel the still-awaiting run
     await fetch(`${baseUrl}/runs/${runId}/cancel`, { method: "POST" });
   });
 
-  it("returns 400 for an unsupported signal kind", async () => {
+  it("returns 422 for a payload that fails the declared output schema", async () => {
     const createRes = await fetch(`${baseUrl}/runs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1122,7 +1121,27 @@ outputs:
     const res = await fetch(`${baseUrl}/runs/${runId}/signal?key=${encodeURIComponent("workflow/gate")}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind: "nope", approved: true })
+      body: JSON.stringify({ approved: "yes" })
+    });
+    expect(res.status).toBe(422);
+    // The node stays awaiting after a rejected payload.
+    const nodes = await (await fetch(`${baseUrl}/runs/${runId}/nodes`)).json();
+    expect(nodes.find((n: { nodeId: string }) => n.nodeId === "gate")?.state).toBe("awaiting");
+    await fetch(`${baseUrl}/runs/${runId}/cancel`, { method: "POST" });
+  });
+
+  it("returns 400 for a non-object payload", async () => {
+    const createRes = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: GATE_SPEC, input: {} })
+    });
+    const { runId } = await createRes.json();
+    await waitForNodeState(runId, "gate", "awaiting");
+    const res = await fetch(`${baseUrl}/runs/${runId}/signal?key=${encodeURIComponent("workflow/gate")}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(["not", "an", "object"])
     });
     expect(res.status).toBe(400);
     await fetch(`${baseUrl}/runs/${runId}/cancel`, { method: "POST" });
@@ -1140,7 +1159,7 @@ outputs:
     const res = await fetch(`${baseUrl}/runs/${runId}/signal?key=${encodeURIComponent("workflow/after")}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind: "approval", approved: true })
+      body: JSON.stringify({ approved: true })
     });
     expect(res.status).toBe(409);
     await fetch(`${baseUrl}/runs/${runId}/cancel`, { method: "POST" });
@@ -1150,7 +1169,7 @@ outputs:
     const res = await fetch(`${baseUrl}/runs/does-not-exist/signal?key=${encodeURIComponent("workflow/gate")}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind: "approval", approved: true })
+      body: JSON.stringify({ approved: true })
     });
     expect(res.status).toBe(404);
   });

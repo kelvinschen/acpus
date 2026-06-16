@@ -20,6 +20,7 @@ Pick a playbook by task shape:
 | Iteratively fix failing tests until green | `loop-until-green-fix` |
 | Drive development from a goal, loop-plan-execute until done | `goal-driven-development` |
 | Dispatch N parallel subagents, each with its own task | `subagent-driven` |
+| Loop plan→implement→review with a human (or driving agent) approving each round via a Signal Node | `human-in-the-loop-development` |
 
 ## Public Playbooks
 
@@ -32,5 +33,8 @@ Pick a playbook by task shape:
 | `project:loop-until-green-fix` | loop-until-done | Yes | [source](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/loop-until-green-fix.workflow.spec.yaml) / [raw](https://raw.githubusercontent.com/kelvinschen/acpus/main/.acpus/workflows/loop-until-green-fix.workflow.spec.yaml) |
 | `project:goal-driven-development` | goal-driven (GDD) | Yes | [source](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/goal-driven-development.workflow.spec.yaml) / [raw](https://raw.githubusercontent.com/kelvinschen/acpus/main/.acpus/workflows/goal-driven-development.workflow.spec.yaml) |
 | `project:subagent-driven` | fanout-subagents | No | [source](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/subagent-driven.workflow.spec.yaml) / [raw](https://raw.githubusercontent.com/kelvinschen/acpus/main/.acpus/workflows/subagent-driven.workflow.spec.yaml) |
+| `project:human-in-the-loop-development` | human-in-the-loop (Signal-gated) | Yes | [source](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/human-in-the-loop-development.workflow.spec.yaml) / [raw](https://raw.githubusercontent.com/kelvinschen/acpus/main/.acpus/workflows/human-in-the-loop-development.workflow.spec.yaml) |
 
 When adapting a playbook, rewrite prompts, inputs, outputs, agent roles, and write boundaries for the actual user task. Do not copy a playbook mechanically.
+
+`human-in-the-loop-development` loops plan→implement→review→route until approved. The reviewer agent gates each round; when it approves, a Signal Node (`workflow/dev_loop/route/human_gate`) blocks for an external decision delivered via `acpus runs signal <run_id> --node <nodeKey> --payload '{"approved":true|false,"notes":"..."}'`. A rejection's `notes` is carried into the next round so the planner/implementer/reviewer fix exactly what the decider objected to. The decider may be a human OR the agent driving the workflow.

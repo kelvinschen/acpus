@@ -33,11 +33,11 @@ A Node that controls other Nodes, such as parallel, fanout, switch, loop, or sub
 _Avoid_: container step, control block
 
 **Guard Node**:
-An automatic deterministic decision point that evaluates a condition and either continues, fails, or completes the current Workflow scope. A Guard Node is distinct from an Approval Gate because it does not wait for a human decision, and distinct from Run Control because it is declared business flow inside the Workflow.
-_Avoid_: approval gate, pause, cancel, manual checkpoint
+An automatic deterministic decision point that evaluates a condition and either continues, fails, or completes the current Workflow scope. A Guard Node is distinct from a Signal Node because it does not wait for an external decision, and distinct from Run Control because it is declared business flow inside the Workflow.
+_Avoid_: signal node, pause, cancel, manual checkpoint
 
 **Executable Node**:
-A Node that performs external work through an Agent Step or Program Step.
+A Node that performs external work through an Agent Step, Program Step, or Signal Node.
 _Avoid_: leaf task, action
 
 **Agent Step**:
@@ -52,9 +52,9 @@ _Avoid_: runtime agent switch, node control
 An Executable Node that runs a local command and records command output.
 _Avoid_: shell task, script step
 
-**Approval Gate**:
-A human decision point inside a Workflow. While blocked on a decision a Gate is `awaiting`; a human approve/reject resolves it, distinct from operator pause.
-_Avoid_: pause, manual stop
+**Signal Node**:
+An Executable Node that suspends a Run until an external structured decision is delivered into it, then exposes that decision as its `output`. A Signal Node MAY declare an `output` schema (like an Agent or Program Step); when declared the injected payload MUST validate against it and a non-conforming signal is rejected while the Node keeps waiting, and when omitted any payload object is accepted. A Signal Node is an external, human-or-system decision source, distinct from a Guard Node (deterministic, no wait) and from Run Control (whole-Run operator action, not declared in the Spec). The injected value alone is the Node's `output`; binary approve/reject is just the degenerate `{ approved: boolean }` schema. The decision channel is in-memory and requires a live in-flight Run; durable decision recovery is deferred.
+_Avoid_: approval gate, pause, manual stop, message queue
 
 **Mock Agent**:
 An ACP-compatible Agent used to produce deterministic responses for repeatable Workflow testing.
@@ -65,7 +65,7 @@ A stable filesystem-safe string that identifies a Node within a Run, resolved fr
 _Avoid_: task id, step path
 
 **Node State Machine**:
-A unified 7-state lifecycle (pending → running → {awaiting, completed, failed, paused, cancelled}) governing every Node in a Run. `awaiting` is the human-decision wait used by Approval Gates.
+A unified 7-state lifecycle (pending → running → {awaiting, completed, failed, paused, cancelled}) governing every Node in a Run. `awaiting` is the external-decision wait used by Signal Nodes.
 _Avoid_: status enum, phase tracker
 
 **Run Control**:

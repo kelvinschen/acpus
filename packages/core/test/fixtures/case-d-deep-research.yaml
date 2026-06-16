@@ -64,15 +64,19 @@ workflow:
               parse: json
 
     - id: human_outline
-      approval:
-        prompt: |
-          Outline:
-          ${{ steps.replan.output.outline_md }}
+      run: signal
+      prompt: |
+        Outline:
+        ${{ steps.replan.output.outline_md }}
 
-          Coverage: ${{ steps.replan.output.coverage }}
-          Approve writing?
-        timeout: 6h
-        on_timeout: reject
+        Coverage: ${{ steps.replan.output.coverage }}
+        Approve writing?
+      output:
+        approved: boolean
+      timeout: 6h
+      on_timeout: default
+      default:
+        approved: false
 
     - id: write
       run: agent

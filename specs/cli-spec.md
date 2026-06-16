@@ -56,6 +56,7 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - The CLI MUST support local Run inspection through `acpus runs show <run_id>`.
 - Human-readable `runs show` output MUST show Run metadata and Node states/errors/artifact references without dumping large Node outputs by default.
 - For running Agent Step Nodes with compact Agent telemetry, human-readable `runs show` output MUST show a compact Agent activity line derived from `NodeExecutionState.agentTelemetry`, including telemetry update age and unique tool-call count, and SHOULD show recent tool names and latest context window occupancy when available.
+- For an `awaiting` Signal Node, human-readable `runs show` output MUST show the rendered prompt, the expected payload (the Signal Node's `output` schema fields with type and requiredness, or an explicit "any JSON object" note when no schema is declared), and a copy-pasteable `acpus runs signal` deliver command.
 - `acpus runs show <run_id> --json` MUST output the full structured Run state including Node outputs and artifact references.
 - `acpus runs show <run_id> --json` MUST expose Run metadata fields `agentOverrides` and `submissionWarnings` when present.
 - `acpus runs list` and the Run picker MUST NOT display Agent Overrides in v1.
@@ -71,9 +72,9 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - Run-level retry MUST mean in-place recovery of the failed Run; it MUST NOT create a new Run and MUST NOT rerun completed Nodes.
 - Node-level retry MUST be validated against the current local Run and Node state before being accepted.
 - Run-level control commands (`pause`, `resume`, `cancel`, `retry`) and Node-level retry MUST support machine-readable JSON output reporting the resulting Run or Node state.
-- The CLI MUST support submitting a human approval decision to an Approval Gate through `acpus runs signal <run_id> --node <nodeKey> --approve` or `--reject`.
-- `acpus runs signal` MUST require `--node` and MUST require exactly one of `--approve` or `--reject`; supplying neither or both MUST be a usage error.
-- `acpus runs signal` MUST be accepted only for a Node currently `awaiting` and MUST be rejected with a conflict otherwise; it MUST support machine-readable JSON output reporting the resulting Node state.
+- The CLI MUST support submitting an external decision payload to a Signal Node through `acpus runs signal <run_id> --node <nodeKey> --payload <value>`, where `<value>` is either inline JSON or a path to a `.json`, `.yaml`, or `.yml` payload object file.
+- `acpus runs signal` MUST require `--node` and `--payload`, and the resolved payload MUST be an object.
+- `acpus runs signal` MUST be accepted only for a Node currently `awaiting` and MUST be rejected with a conflict otherwise; when the Signal Node declares an `output` schema, a payload that fails it MUST be rejected without resolving the Node; it MUST support machine-readable JSON output reporting the resulting Node state.
 - The CLI MUST support `acpus runs replay <run_id>` to deterministically replay a local Run through the Run Supervisor and verify its reconstructed Node topology against the persisted Run.
 - The CLI MUST support `acpus runs fork <source_run_id> <ref-or-path>` to derive a new Run from a terminal source Run, where `<ref-or-path>` selects the repaired Workflow Spec.
 - `acpus runs fork` MUST be rejected when the source Run is in a non-terminal state, when the source Run has no checkpoint index, when the override `--from <nodeKey>` is inside a Composite body, or when the supplied Spec fails to compile.
@@ -93,7 +94,7 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - `acpus runs visualize [run_id] --serve <port>` and `--serve=<port>` MUST listen on `127.0.0.1:<port>`.
 - `acpus runs visualize [run_id] --serve <host:port>` and `--serve=<host:port>` MUST listen on the explicitly supplied host and port.
 - If `--serve <value>` is not a valid port or `host:port`, the CLI MUST reject it as invalid and tell the user to put the Run ID before `--serve`.
-- The Served Visualizer MUST be read-only: it MUST preserve visual navigation keys, and MUST disable `p`, `r`, `c`, `R`, `a`, and `x` so browser input cannot issue Run Control, Node Retry, or Approval Gate decisions.
+- The Served Visualizer MUST be read-only: it MUST preserve visual navigation keys, and MUST disable `p`, `r`, `c`, `R`, and `s` so browser input cannot issue Run Control, Node Retry, or Signal Node decisions.
 - The Served Visualizer browser page and WebSocket MUST reject requests that omit the bridge token, and browser WebSocket upgrades MUST reject cross-origin `Origin` headers.
 - The Served Visualizer MUST NOT automatically open a browser.
 - The CLI MUST support `acpus runs clean` to delete stored terminal Runs.
@@ -111,9 +112,10 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - The single-Run visualizer MUST render a colored `▾` disclosure indicator for expanded collapsible graph rows and a colored `▸` disclosure indicator for collapsed collapsible graph rows.
 - The single-Run visualizer MUST treat `p`, `r`, and `c` as Run-level pause, resume, and cancel controls.
 - The single-Run visualizer MUST treat `R` as Node-level retry only when the selected row is a failed executable Node; otherwise `R` MUST apply Run-level retry when the Run is failed.
-- The single-Run visualizer MUST require an inline confirmation before applying `p`, `r`, `c`, `R`, `a`, or `x`.
-- The single-Run visualizer MUST keep control results, poll errors, and selected awaiting-gate hints in a fixed multi-line Status Overview messages area, not in the footer.
-- The single-Run visualizer MUST render a node-kind legend in Status Overview and MUST render graph node kinds with the symbols `▣`, `◉`, `$`, `▥`, `◬`, `◇`, `↻`, `◈`, `□`, and `▧` for pipeline, agent, program, parallel, fanout, switch, loop, guard, approval, and subworkflow respectively.
+- The single-Run visualizer MUST treat `s` as a Signal Node decision only when the selected row is an `awaiting` Signal Node: a single required boolean `output` field is delivered through a y/N quick prompt, and any other (or absent) schema is entered through the operator's `$EDITOR`.
+- The single-Run visualizer MUST require an inline confirmation before applying `p`, `r`, `c`, `R`, or a single-boolean `s` decision.
+- The single-Run visualizer MUST keep control results, poll errors, and selected awaiting Signal Node hints in a fixed multi-line Status Overview messages area, not in the footer.
+- The single-Run visualizer MUST render a node-kind legend in Status Overview and MUST render graph node kinds with the symbols `▣`, `◉`, `$`, `▥`, `◬`, `◇`, `↻`, `◈`, `□`, and `▧` for pipeline, agent, program, parallel, fanout, switch, loop, guard, signal, and subworkflow respectively.
 - The single-Run visualizer MUST color tree guide-line segments with the same fixed color as the node kind that owns that guide-line column.
 - The single-Run visualizer MUST render switch branch labels and fanout item labels with square brackets, not guillemets.
 - The single-Run visualizer MUST show Run retry generation as `↺N` in the top bar only when the Run's `runAttempt` is greater than `1`, and MUST NOT show per-node attempt markers in graph rows.
@@ -164,6 +166,7 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - Runtime CLI tests MUST cover local Run execution without remote workers, remote task queues, or a shared Temporal cluster.
 - Runtime CLI tests MUST cover Run-level pause, resume, cancel, and retry validation.
 - Runtime CLI tests MUST cover Node-level retry validation through `--node`.
+- Runtime CLI tests MUST cover `acpus runs signal` payload delivery to an awaiting Signal Node, usage errors for a missing or non-object `--payload`, conflict rejection for a non-awaiting Node, and schema-invalid payload rejection.
 - Runtime CLI tests MUST cover `acpus runs fork` foreground follow, `--background`, `--dry-run --json`, `--from <nodeKey>` override, rejection on non-terminal source Run, and lineage display in `acpus runs list`.
 - Runtime CLI tests MUST cover `runs fork --agents` inheriting source effective Agent Overrides, applying current overrides on top, and including dry-run warnings in JSON output.
 - Runtime CLI tests MUST cover Run-level control commands and Node-level retry producing machine-readable JSON output.

@@ -236,7 +236,7 @@ runs
         console.log(JSON.stringify(cleaned));
         return;
       }
-      console.log(await formatRunShow(run, client));
+      console.log(await formatRunShow(run, client, Date.now(), await loadIrForShow(client, run)));
     } catch (error) {
       printError(errorMessage(error), { json: options.json, quiet: false });
       process.exitCode = isSupervisorConnectionError(error) ? EXIT_SUPERVISOR_ERROR : EXIT_RUNTIME_ERROR;
@@ -341,23 +341,28 @@ runs
 runs
   .command("signal")
   .argument("<runId>", "run ID")
-  .requiredOption("--node <key>", "the Approval Gate node key to decide on")
-  .option("--approve", "approve the gate")
-  .option("--reject", "reject the gate")
+  .requiredOption("--node <key>", "the Signal Node key to deliver the payload to")
+  .requiredOption("--payload <value>", "inline JSON or path to a YAML/JSON payload object")
   .option("--json", "output machine-readable JSON")
-  .description("submit a human decision to an Approval Gate awaiting a decision")
-  .action(async (runId: string, options: { node: string; approve?: boolean; reject?: boolean; json?: boolean }) => {
-    if (options.approve === options.reject) {
-      printError("exactly one of --approve or --reject is required", { json: Boolean(options.json), quiet: false });
+  .description("deliver an external decision payload to a Signal Node awaiting a decision")
+  .action(async (runId: string, options: { node: string; payload: string; json?: boolean }) => {
+    let payload: Record<string, unknown>;
+    try {
+      const parsed = parseInput(options.payload, "--payload");
+      if (parsed === undefined) {
+        throw new Error("--payload is required");
+      }
+      payload = parsed;
+    } catch (error) {
+      printError(errorMessage(error), { json: Boolean(options.json), quiet: false });
       process.exitCode = EXIT_RUNTIME_ERROR;
       return;
     }
-    const approved = Boolean(options.approve);
     try {
       const client = await ensureSupervisor();
-      const state = await client.signalApproval(runId, options.node, approved);
+      const state = await client.signalNode(runId, options.node, payload);
       if (options.json) console.log(JSON.stringify(state));
-      else console.log(`Node ${options.node} ${approved ? "approved" : "rejected"} (state: ${state.state})`);
+      else console.log(`Node ${options.node} signaled (state: ${state.state})`);
     } catch (error) {
       printError(errorMessage(error), { json: Boolean(options.json), quiet: false });
       process.exitCode = isSupervisorConnectionError(error) ? EXIT_SUPERVISOR_ERROR : EXIT_RUNTIME_ERROR;
@@ -586,4 +591,22 @@ function pastTense(action: "pause" | "resume" | "cancel"): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Best-effort IR fetch for `runs show`. Only needed to surface the prompt and
+ * expected payload schema of an awaiting Signal Node, so skip the round-trip
+ * unless one exists, and swallow errors (display degrades gracefully).
+ */
+async function loadIrForShow(
+  client: { getIr: (runId: string) => Promise<import("@acpus/core").AcpusIr> },
+  run: import("@acpus/runtime").RunState
+): Promise<import("@acpus/core").AcpusIr | undefined> {
+  const hasAwaitingSignal = run.nodes?.some((n) => n.kind === "run.signal" && n.state === "awaiting");
+  if (!hasAwaitingSignal) return undefined;
+  try {
+    return await client.getIr(run.runId);
+  } catch {
+    return undefined;
+  }
 }

@@ -64,7 +64,7 @@ workflow:
     writeNode(store, meta.runId, "workflow", "workflow", "pipeline", "running");
     writeNode(store, meta.runId, "workflow/pending", "pending", "run.program", "pending");
     writeNode(store, meta.runId, "workflow/running", "running", "run.program", "running");
-    writeNode(store, meta.runId, "workflow/awaiting", "awaiting", "approval", "awaiting");
+    writeNode(store, meta.runId, "workflow/awaiting", "awaiting", "run.signal", "awaiting");
     writeNode(store, meta.runId, "workflow/paused", "paused", "run.program", "paused");
 
     interpreter.cancelRun(meta.runId);
@@ -96,7 +96,7 @@ workflow:
     writeNode(store, meta.runId, "workflow/completed", "completed", "run.program", "completed");
     writeNode(store, meta.runId, "workflow/paused", "paused", "run.program", "paused");
     writeNode(store, meta.runId, "workflow/running", "running", "run.program", "running");
-    writeNode(store, meta.runId, "workflow/awaiting", "awaiting", "approval", "awaiting");
+    writeNode(store, meta.runId, "workflow/awaiting", "awaiting", "run.signal", "awaiting");
 
     await interpreter.resumeRun(meta.runId);
 
@@ -200,7 +200,7 @@ workflow:
     const meta = interpreter.initRun(ir, { input: {} });
 
     writeNode(store, meta.runId, "workflow/running", "running", "run.program", "running");
-    writeNode(store, meta.runId, "workflow/awaiting", "awaiting", "approval", "awaiting");
+    writeNode(store, meta.runId, "workflow/awaiting", "awaiting", "run.signal", "awaiting");
     writeNode(store, meta.runId, "workflow/completed", "completed", "run.program", "completed");
     writeNode(store, meta.runId, "workflow/failed", "failed", "run.program", "failed");
 

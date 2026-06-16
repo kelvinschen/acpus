@@ -12,7 +12,7 @@ const STEP_REFERENCE_PATTERN = /\bsteps\.([A-Za-z_][A-Za-z0-9_-]*)\b/g;
 const ROOT_REFERENCE_PATTERN = /(?<![\w.])([A-Za-z_][A-Za-z0-9_]*)\s*(?:\.|\()/g;
 
 export const ALLOWED_ROOTS = new Set(["input", "steps", "loop", "item", "item_id", "item_index", "run_id"]);
-export const ALLOWED_FUNCTIONS = new Set(["now", "len", "startsWith", "matches", "coalesce"]);
+export const ALLOWED_FUNCTIONS = new Set(["now", "len", "startsWith", "matches", "coalesce", "json"]);
 
 export interface ExpressionCollector {
   expressions: IrExpression[];
@@ -59,9 +59,6 @@ export function createExpressionCollector(diagnostics: DiagnosticBag, knownStepI
 
       for (const root of source.matchAll(ROOT_REFERENCE_PATTERN)) {
         const name = root[1] as string;
-        if (name === "json" || name === "hash") {
-          continue;
-        }
         if (!ALLOWED_ROOTS.has(name) && !ALLOWED_FUNCTIONS.has(name)) {
           diagnostics.warning("EXPR_UNKNOWN_ROOT", `Expression root '${name}' is not part of the M1 DSL context.`, path);
         }

@@ -1,3 +1,4 @@
+import type { AcpusIr, IrNode } from "@acpus/core";
 import type { AgentToolCallTelemetry, NodeExecutionState, RunState, RunSupervisorClient } from "@acpus/runtime";
 import { stringify as stringifyYaml } from "yaml";
 
@@ -13,7 +14,7 @@ const COMPACT_KIND: Record<string, string> = {
   switch: "switch",
   loop: "loop",
   guard: "guard",
-  approval: "approval",
+  "run.signal": "signal",
   subworkflow: "subworkflow",
 };
 
@@ -31,6 +32,75 @@ const CONTAINER_KINDS = new Set<string>([
 
 function isContainerKind(kind: string): boolean {
   return CONTAINER_KINDS.has(kind);
+}
+
+// --- Awaiting Signal Node rendering ---
+// Build a nodeId → IrNode lookup by walking the full IR tree once. Composite
+// nodes expose children via `children` (pipeline/parallel/fanout/loop bodies)
+// and `branches[].children` (switch cases); both must be walked so signal nodes
+// nested inside any composite are indexed.
+function indexIrNodesById(root: IrNode): Map<string, IrNode> {
+  const byId = new Map<string, IrNode>();
+  const stack: IrNode[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    // First write wins is irrelevant here; ids are unique per IR.
+    byId.set(node.id, node);
+    if (node.children) stack.push(...node.children);
+    if (node.branches) {
+      for (const branch of node.branches) {
+        if (branch.children) stack.push(...branch.children);
+      }
+    }
+  }
+  return byId;
+}
+
+// Render the prompt and expected payload schema for an awaiting Signal Node so
+// the operator knows what to deliver via `acpus runs signal`. Indented two
+// spaces to align with the node's detail lines.
+function formatAwaitingSignal(node: NodeExecutionState, irNode: IrNode | undefined, runId: string): string[] {
+  const lines: string[] = [];
+  const prompt = node.renderedPrompt ?? (typeof irNode?.metadata.prompt === "string" ? irNode.metadata.prompt : undefined);
+  if (prompt) {
+    const promptLines = prompt.replace(/\s+$/, "").split("\n");
+    lines.push("    Prompt:");
+    for (const line of promptLines) lines.push(`      ${line}`);
+  }
+
+  const schema = irNode?.metadata.output;
+  if (isRecord(schema)) {
+    const fields = describeSchemaFields(schema);
+    if (fields.length > 0) {
+      lines.push("    Expected payload:");
+      for (const field of fields) lines.push(`      ${field}`);
+    } else {
+      // A declared schema with no properties — never leave the operator without
+      // payload guidance.
+      lines.push("    Expected payload: {} (empty object; no properties declared)");
+    }
+  } else {
+    lines.push("    Expected payload: any JSON object (no schema declared)");
+  }
+
+  lines.push(`    Deliver: acpus runs signal ${runId} --node ${node.nodeKey} --payload '{...}'`);
+  return lines;
+}
+
+// Summarize a compiled JSON Schema's top-level properties as "name: type[, required]".
+function describeSchemaFields(schema: Record<string, unknown>): string[] {
+  const properties = isRecord(schema.properties) ? schema.properties : undefined;
+  if (!properties) return [];
+  const required = new Set(Array.isArray(schema.required) ? schema.required.map(String) : []);
+  return Object.entries(properties).map(([name, def]) => {
+    const type = isRecord(def) && typeof def.type === "string" ? def.type : "any";
+    const req = required.has(name) ? " (required)" : " (optional)";
+    return `${name}: ${type}${req}`;
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 // --- State glyphs ---
@@ -108,9 +178,14 @@ function collectChildErrors(nodes: NodeExecutionState[], containerPrefix: string
 export async function formatRunShow(
   run: RunState,
   client?: ArtifactPathResolver,
-  nowMs = Date.now()
+  nowMs = Date.now(),
+  ir?: AcpusIr
 ): Promise<string> {
   const lines: string[] = [];
+
+  // Map IR node id → node so awaiting Signal Nodes can surface the prompt and
+  // the expected payload schema the operator must satisfy.
+  const irNodesById = ir ? indexIrNodesById(ir.root) : undefined;
 
   // --- Compact header ---
   const duration = formatRunDuration(run);
@@ -174,6 +249,14 @@ export async function formatRunShow(
     // Activity for running agents
     const activity = await summarizeRunningAgentActivity(run.runId, node, client, nowMs);
     if (activity) lines.push(`    Activity: ${activity}`);
+
+    // Awaiting Signal Node: operators must act here, so surface the rendered
+    // prompt and the expected payload schema rather than leaving them blind.
+    if (node.kind === "run.signal" && node.state === "awaiting") {
+      for (const detail of formatAwaitingSignal(node, irNodesById?.get(node.nodeId), run.runId)) {
+        lines.push(detail);
+      }
+    }
   }
 
   // --- Workflow output (completed runs only) ---

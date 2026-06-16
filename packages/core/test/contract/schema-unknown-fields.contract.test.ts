@@ -108,7 +108,7 @@ workflow:
     expectDiagnostic(result, { code: "STEP_SHAPE", message: "Unknown" });
   });
 
-  it("rejects unknown approval property", () => {
+  it("rejects unknown signal node property", () => {
     const src = `
 version: 1
 name: test
@@ -117,11 +117,11 @@ agents:
 workflow:
   steps:
     - id: gate
-      approval:
-        prompt: "OK?"
-        timeout: 5m
-        on_timeout: fail
-        notify: admin@example.com
+      run: signal
+      prompt: "OK?"
+      timeout: 5m
+      on_timeout: fail
+      notify: admin@example.com
 `;
     const result = lintWorkflow(src);
     expect(result.ok).toBe(false);

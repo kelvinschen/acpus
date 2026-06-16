@@ -25,7 +25,7 @@
   {
     "name": "goal-driven-development",
     "file": "goal-driven-development.html",
-    "description": "Dynamic workflow pattern: goal-driven development (GDD).",
+    "description": "Goal Driven Development (GDD): an acpus-native re-implementation of the",
     "total": 10,
     "counts": {
       "program": 1,
@@ -33,6 +33,20 @@
       "agent": 5,
       "loop": 1,
       "switch": 1
+    }
+  },
+  {
+    "name": "human-in-the-loop-development",
+    "file": "human-in-the-loop-development.html",
+    "description": "Human-in-the-loop iterative development: plan → implement → review → route,",
+    "total": 12,
+    "counts": {
+      "program": 4,
+      "loop": 1,
+      "agent": 4,
+      "switch": 1,
+      "signal": 1,
+      "guard": 1
     }
   },
   {
@@ -60,6 +74,18 @@
     }
   },
   {
+    "name": "subagent-driven",
+    "file": "subagent-driven.html",
+    "description": "General purpose subagent-driven workflow — dispatches N parallel subagents",
+    "total": 5,
+    "counts": {
+      "guard": 1,
+      "program": 2,
+      "fanout": 1,
+      "agent": 1
+    }
+  },
+  {
     "name": "worktree-implementation-tournament",
     "file": "worktree-implementation-tournament.html",
     "description": "Dynamic workflow pattern: tournament.",
@@ -69,18 +95,6 @@
       "guard": 2,
       "fanout": 1,
       "agent": 2
-    }
-  },
-  {
-    "name": "subagent-driven",
-    "file": "subagent-driven.html",
-    "description": "General purpose subagent-driven workflow — dispatches N parallel subagents sharing one agent definition, each with its own task, then aggregates their outputs into a combined result.",
-    "total": 5,
-    "counts": {
-      "agent": 1,
-      "program": 2,
-      "guard": 1,
-      "fanout": 1
     }
   },
   {

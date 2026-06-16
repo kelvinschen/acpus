@@ -57,13 +57,17 @@ workflow:
         parse: json
 
     - id: gate
-      approval:
-        prompt: |
-          Aggregated issues:
-          ${{ steps.aggregate.output.summary_md }}
-          Approve auto-comment to PR?
-        timeout: 12h
-        on_timeout: reject
+      run: signal
+      prompt: |
+        Aggregated issues:
+        ${{ steps.aggregate.output.summary_md }}
+        Approve auto-comment to PR?
+      output:
+        approved: boolean
+      timeout: 12h
+      on_timeout: default
+      default:
+        approved: false
 
     - id: post_comment
       switch:

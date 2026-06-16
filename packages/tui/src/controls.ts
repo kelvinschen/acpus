@@ -5,15 +5,14 @@
 
 import type { RunSupervisorClient, NodeExecutionState, NodeState, RunStatus } from "@acpus/runtime";
 
-export type ControlAction = "pause" | "resume" | "cancel" | "retry" | "approve" | "reject";
+export type ControlAction = "pause" | "resume" | "cancel" | "retry" | "signal";
 
 export const CONTROL_KEY_TO_ACTION: Readonly<Record<string, ControlAction>> = {
   p: "pause",
   r: "resume",
   c: "cancel",
   R: "retry",
-  a: "approve",
-  x: "reject"
+  s: "signal"
 };
 
 export const READ_ONLY_DISABLED_CONTROL_KEYS = new Set(Object.keys(CONTROL_KEY_TO_ACTION));
@@ -27,8 +26,7 @@ export function canApply(action: ControlAction, state: NodeState | undefined): b
   switch (action) {
     case "retry":
       return state === "failed";
-    case "approve":
-    case "reject":
+    case "signal":
       return state === "awaiting";
     default:
       return false;
@@ -46,29 +44,27 @@ export function canApplyRun(action: ControlAction, status: RunStatus | undefined
       return status === "paused";
     case "retry":
       return status === "failed";
-    // approve/reject are node-level only; there is no Run-level decision.
-    case "approve":
-    case "reject":
+    // signal is node-level only; there is no Run-level decision.
+    case "signal":
       return false;
     default:
       return false;
   }
 }
 
-/** Apply a node-addressed action. */
+/** Apply a node-addressed action. Signal delivery requires a payload object. */
 export async function applyControl(
   client: RunSupervisorClient,
   action: ControlAction,
   runId: string,
-  nodeKey: string
+  nodeKey: string,
+  payload?: Record<string, unknown>
 ): Promise<NodeExecutionState> {
   switch (action) {
     case "retry":
       return client.retryNode(runId, nodeKey);
-    case "approve":
-      return client.signalApproval(runId, nodeKey, true);
-    case "reject":
-      return client.signalApproval(runId, nodeKey, false);
+    case "signal":
+      return client.signalNode(runId, nodeKey, payload ?? {});
     case "pause":
     case "resume":
     case "cancel":
@@ -91,9 +87,8 @@ export async function applyRunControl(
       return client.cancelRun(runId);
     case "retry":
       return client.retryRun(runId);
-    case "approve":
-    case "reject":
-      // Guarded out by canApplyRun; approve/reject are node-level only.
+    case "signal":
+      // Guarded out by canApplyRun; signal is node-level only.
       throw new Error(`'${action}' is not a Run-level action`);
   }
 }

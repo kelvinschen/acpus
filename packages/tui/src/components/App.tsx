@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Box, Text, useApp, useInput } from "ink";
+import { Box, Text, useApp, useInput, useStdin } from "ink";
 import type { AgentTelemetry, RunSupervisorClient } from "@acpus/runtime";
 import { useRunPoller, isTerminal } from "../poller.js";
 import { buildRenderTree, buildRows, countByState, formatElapsed } from "../model.js";
@@ -12,6 +12,7 @@ import {
   isReadOnlyControlKey,
   type ControlAction
 } from "../controls.js";
+import { launchPayloadEditor, singleBooleanField } from "../signal.js";
 import { useTerminalSize, windowSlice } from "../useTerminalSize.js";
 import { StatusOverview } from "./StatusOverview.js";
 import { GraphPane } from "./GraphPane.js";
@@ -42,6 +43,8 @@ export type PendingControlConfirmation = {
   scope: "run" | "node";
   nodeKey?: string;
   targetLabel: string;
+  /** For a single-boolean signal node: the field name to set from the y/N answer. */
+  signalBoolField?: string;
 };
 export const TUI_REFRESH_INTERVAL_MS: Record<TuiRefreshMode, number> = {
   normal: 1000,
@@ -61,6 +64,7 @@ export function App({
   refreshMode?: TuiRefreshMode;
 }): React.ReactElement {
   const { exit } = useApp();
+  const { setRawMode, stdin } = useStdin();
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [focus, setFocus] = useState<Focus>("graph");
   const [activeDetailSectionKey, setActiveDetailSectionKey] = useState<DetailSectionKey>("summary");
@@ -337,9 +341,21 @@ export function App({
     const isSelectedExecutable = selected?.irNode.kind === "run.agent" || selected?.irNode.kind === "run.program";
     const selectedNodeKey = selected?.nodeKey;
     const nodeRetry = action === "retry" && selectedNodeKey && isSelectedExecutable && selected?.state === "failed";
-    const nodeDecision = (action === "approve" || action === "reject") && selectedNodeKey;
 
-    if ((nodeRetry || nodeDecision) && selected && selectedNodeKey) {
+    if (action === "signal") {
+      if (!selectedNodeKey || selected?.irNode.kind !== "run.signal") {
+        pushMessage("Select an awaiting signal node to deliver a payload.", "error");
+        return;
+      }
+      if (!canApply(action, selected.state)) {
+        pushMessage(`Cannot signal a ${selected.state ?? "not-started"} node.`, "error");
+        return;
+      }
+      await initiateSignal(selected.irNode.metadata?.output as Record<string, unknown> | undefined, selectedNodeKey);
+      return;
+    }
+
+    if (nodeRetry && selected && selectedNodeKey) {
       if (!canApply(action, selected.state)) {
         pushMessage(`Cannot ${action} a ${selected.state ?? "not-started"} node.`, "error");
         return;
@@ -348,16 +364,59 @@ export function App({
       return;
     }
 
-    if (action === "approve" || action === "reject") {
-      pushMessage(`Select an awaiting approval node to ${action}.`, "error");
-      return;
-    }
-
     if (!canApplyRun(action, run?.status)) {
       pushMessage(`Cannot ${action} a ${run?.status ?? "unknown"} run.`, "error");
       return;
     }
     setPendingControl({ action, scope: "run", targetLabel: runId });
+  }
+
+  /**
+   * Begin a signal-node decision. A single required boolean field gets a y/N
+   * quick prompt; everything else (no schema or a richer schema) is entered via
+   * $EDITOR. The editor needs the real terminal, so Ink's raw-mode hold on
+   * stdin is released for the duration of the synchronous spawn.
+   */
+  async function initiateSignal(schema: Record<string, unknown> | undefined, nodeKey: string): Promise<void> {
+    const boolField = singleBooleanField(schema);
+    if (boolField) {
+      setPendingControl({ action: "signal", scope: "node", nodeKey, targetLabel: nodeKey, signalBoolField: boolField });
+      return;
+    }
+    let payload: Record<string, unknown> | undefined;
+    try {
+      setRawMode?.(false);
+      stdin?.pause();
+      payload = launchPayloadEditor(schema);
+    } catch (err) {
+      pushMessage(err instanceof Error ? err.message : String(err), "error");
+      return;
+    } finally {
+      stdin?.resume();
+      setRawMode?.(true);
+    }
+    if (payload === undefined) {
+      pushMessage("signal cancelled (no payload entered)", "info");
+      return;
+    }
+    try {
+      const state = await applyControl(client, "signal", runId, nodeKey, payload);
+      pushMessage(`signal → ${nodeKey} (${state.state})`, "info");
+      setRefreshNonce((n) => n + 1);
+    } catch (err) {
+      pushMessage(err instanceof Error ? err.message : String(err), "error");
+    }
+  }
+
+  /** Deliver a single-boolean signal payload (`{ field: value }`) from a y/N answer. */
+  async function submitSignalBool(nodeKey: string, field: string, value: boolean): Promise<void> {
+    try {
+      const state = await applyControl(client, "signal", runId, nodeKey, { [field]: value });
+      pushMessage(`signal → ${nodeKey} (${state.state})`, "info");
+      setRefreshNonce((n) => n + 1);
+    } catch (err) {
+      pushMessage(err instanceof Error ? err.message : String(err), "error");
+    }
   }
 
   async function confirmPendingControl(pending: PendingControlConfirmation): Promise<void> {
@@ -408,8 +467,8 @@ export function App({
     ...(selected?.state === "awaiting"
       ? [{
           text: readOnly
-            ? "selected gate is awaiting; served visualizer is read-only"
-            : "selected gate is awaiting: a approve, x reject",
+            ? "selected node is awaiting; served visualizer is read-only"
+            : "selected node is awaiting: s signal",
           level: "info" as const
         }]
       : [])
@@ -493,9 +552,21 @@ export function App({
             message={controlConfirmationMessage(pendingControl)}
             defaultValue={false}
             onConfirm={() => {
+              if (pendingControl.signalBoolField && pendingControl.nodeKey) {
+                setPendingControl(undefined);
+                void submitSignalBool(pendingControl.nodeKey, pendingControl.signalBoolField, true);
+                return;
+              }
               void confirmPendingControl(pendingControl);
             }}
             onCancel={() => {
+              // For a single-boolean signal, "no" is still a decision (false),
+              // which completes the node — not a cancel of the action.
+              if (pendingControl.signalBoolField && pendingControl.nodeKey) {
+                setPendingControl(undefined);
+                void submitSignalBool(pendingControl.nodeKey, pendingControl.signalBoolField, false);
+                return;
+              }
               pushMessage(`${pendingControl.action} cancelled`, "info");
               setPendingControl(undefined);
             }}
@@ -541,10 +612,10 @@ export function controlConfirmationMessage(pending: PendingControlConfirmation):
       return `Cancel ${target}?`;
     case "retry":
       return `Retry ${target}?`;
-    case "approve":
-      return `Approve ${target}?`;
-    case "reject":
-      return `Reject ${target}?`;
+    case "signal":
+      return pending.signalBoolField
+        ? `Signal ${target}: set ${pending.signalBoolField}?`
+        : `Signal ${target}?`;
   }
 }
 

@@ -3,6 +3,32 @@ import { EXPRESSION_PATTERN, toCelParseSource } from "@acpus/core";
 import type { ExpressionContext } from "./types.js";
 
 /**
+ * Deterministically serialize a value to JSON for the `json()` expression
+ * function. Object keys are sorted so the result is stable regardless of
+ * insertion order, and BigInt (CEL integers) is rendered as a JSON number so
+ * structured step outputs round-trip cleanly into prompts and program inputs.
+ */
+function stableJsonStringify(value: unknown): string {
+  return JSON.stringify(normalizeForJson(value));
+}
+
+function normalizeForJson(value: unknown): unknown {
+  if (typeof value === "bigint") return Number(value);
+  if (Array.isArray(value)) return value.map(normalizeForJson);
+  if (value instanceof Map) {
+    return normalizeForJson(Object.fromEntries(value));
+  }
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      out[key] = normalizeForJson((value as Record<string, unknown>)[key]);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
  * Wraps @marcbachmann/cel-js to evaluate ${{ expr }} templates and raw CEL
  * expressions. Registers custom functions (now, len, startsWith, matches,
  * coalesce) via Environment.registerFunction().
@@ -41,11 +67,16 @@ export class ExpressionEvaluator {
       if (b !== null && b !== undefined) return b;
       return c;
     });
+
+    // json() — serialize any value to a JSON string. Required for embedding
+    // structured step outputs (objects/arrays) into template strings; without
+    // it `${{ steps.x.output }}` stringifies an object to "[object Object]".
+    this.env.registerFunction("json(dyn): string", (value: unknown) => stableJsonStringify(value));
   }
 
   /**
-   * The deterministic timestamp bound to now(). Exposed so the interpreter can
-   * stamp control outputs (e.g. approval `at`) without reading wall-clock time.
+   * The deterministic timestamp bound to now(). Exposed so callers can stamp
+   * outputs against the workflow clock without reading wall-clock time.
    */
   getNow(): string {
     return this.nowTimestamp;

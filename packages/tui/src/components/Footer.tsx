@@ -52,7 +52,7 @@ export function footerHintGroups(
         { key: controlKeyForAction("resume"), label: "resume" },
         { key: controlKeyForAction("cancel"), label: "cancel" },
         { key: controlKeyForAction("retry"), label: "retry" },
-        { key: `${controlKeyForAction("approve")}/${controlKeyForAction("reject")}`, label: "approve/reject" },
+        { key: controlKeyForAction("signal"), label: "signal" },
         { key: "q", label: "quit" }
       ];
   return { nav, global };

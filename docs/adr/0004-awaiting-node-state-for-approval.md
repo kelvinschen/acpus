@@ -1,5 +1,7 @@
 # Add an `awaiting` node state for human-in-the-loop Approval Gates
 
+> Superseded by [0010](0010-signal-node-supersedes-approval-gate.md): the `awaiting` state and in-memory decision channel decided here are retained, but the Approval Gate built on them is replaced by a general Signal Node. Read this ADR for why `awaiting` exists; read 0010 for the current node.
+
 To make Approval Gates a real human-in-the-loop primitive, we added a 7th node state, `awaiting`, rather than reusing `running` or `paused`. A Gate enters `awaiting` while blocked on a human decision; an approve/reject decision (delivered through the Run Supervisor `signal` channel into an in-memory resolver) resolves it to `completed`, and an operator cancel takes it to `cancelled`.
 
 ## Considered Options

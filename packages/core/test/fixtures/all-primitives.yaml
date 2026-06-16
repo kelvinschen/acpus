@@ -77,10 +77,14 @@ workflow:
               ok: boolean
 
     - id: human_gate
-      approval:
-        prompt: "Approve?"
-        timeout: 1h
-        on_timeout: reject
+      run: signal
+      prompt: "Approve?"
+      output:
+        approved: boolean
+      timeout: 1h
+      on_timeout: default
+      default:
+        approved: false
 
     - id: child
       subworkflow: ./child.yaml

@@ -10,7 +10,7 @@ function fixture(name: string): string {
 }
 
 describe("@acpus/core compiler: canonical fixtures", () => {
-  it("compiles Case A: plan-review-impl (sequential + approval + agents)", () => {
+  it("compiles Case A: plan-review-impl (sequential + signal + agents)", () => {
     const result = compileWorkflow(fixture("case-a-plan-review-impl.yaml"), {
       sourcePath: join(fixtures, "case-a-plan-review-impl.yaml")
     });
@@ -19,7 +19,7 @@ describe("@acpus/core compiler: canonical fixtures", () => {
     expect(result.ir?.name).toBe("plan-review-impl");
     expect(result.ir?.root.children?.map((n) => n.kind)).toEqual([
       "run.agent",
-      "approval",
+      "run.signal",
       "run.agent",
       "run.program"
     ]);
@@ -37,7 +37,7 @@ describe("@acpus/core compiler: canonical fixtures", () => {
       "run.program",
       "fanout",
       "run.program",
-      "approval",
+      "run.signal",
       "switch"
     ]);
     expect(result.schedule?.nodes).toHaveLength(5);
@@ -61,7 +61,7 @@ describe("@acpus/core compiler: canonical fixtures", () => {
       "guard",
       "fanout",
       "loop",
-      "approval"
+      "run.signal"
     ]);
     expect(result.schedule?.nodes).toHaveLength(5);
     const loopNode = result.ir?.root.children?.[3];
@@ -80,7 +80,7 @@ describe("@acpus/core compiler: canonical fixtures", () => {
       "run.agent",
       "fanout",
       "loop",
-      "approval",
+      "run.signal",
       "run.agent"
     ]);
     expect(result.schedule?.nodes).toHaveLength(5);
@@ -101,7 +101,7 @@ describe("@acpus/core compiler: canonical fixtures", () => {
       "guard",
       "switch",
       "loop",
-      "approval",
+      "run.signal",
       "subworkflow"
     ]);
     expect(result.schedule?.nodes).toHaveLength(9);

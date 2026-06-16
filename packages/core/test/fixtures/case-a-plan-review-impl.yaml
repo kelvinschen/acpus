@@ -18,10 +18,12 @@ workflow:
         plan_md: string
 
     - id: human_review
-      approval:
-        prompt: "Review ${{ steps.plan.output.plan_md }}. Approve to proceed?"
-        timeout: 24h
-        on_timeout: fail
+      run: signal
+      prompt: "Review ${{ steps.plan.output.plan_md }}. Approve to proceed?"
+      output:
+        approved: boolean
+      timeout: 24h
+      on_timeout: fail
 
     - id: implement
       run: agent

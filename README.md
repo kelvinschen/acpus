@@ -16,6 +16,8 @@ Acpus is a local durable workflow runner for ACP agents. You write a YAML Workfl
 
 It is built for agent work that needs structure: fanout, loops, switches, human approvals, retry, replay, artifacts, and a terminal visualizer that can inspect and control a live Run.
 
+Acpus puts three execution units on equal footing — **Agent Steps** (`run: agent`, open-ended judgment), **Program Steps** (`run: program`, deterministic local glue), and **Signal Nodes** (`run: signal`, an external decision channel) — and lets you freely orchestrate them with composite nodes (loop, fanout, parallel, switch, guard) into highly controllable workflows. A Signal Node pauses the Run in `awaiting` until a JSON payload is injected through `acpus runs signal`, which then steers the workflow. That external decider is not only a human: an agent that is *driving* the workflow (the orchestrating/main agent, or any system) can watch a Run and inject the same payload to operate it — so one mechanism covers both human-in-the-loop approval and agent-driven control over a running workflow.
+
 <p align="center">
   <img src="page/img/acpus-run-model.svg" alt="Acpus run model diagram" width="860">
 </p>
@@ -118,7 +120,7 @@ Acpus separates workflow definition from execution state:
 | Workflow Spec | YAML file declaring inputs, agents, steps, control flow, and outputs. |
 | Workflow Catalog | Discoverable specs under `.acpus/workflows/` or `$HOME/.acpus/workflows/`. |
 | Run | One submitted execution with frozen input and a frozen workflow snapshot. |
-| Node | A stable addressable unit inside a Run: Agent Step, Program Step, fanout, loop, switch, approval, and more. |
+| Node | A stable addressable unit inside a Run: Agent Step, Program Step, Signal Node, fanout, loop, switch, and more. |
 | Artifact | Durable files written under `.acpus/state/runs/<runId>/artifacts/`. |
 
 Common commands:
@@ -146,7 +148,7 @@ acpus runs resume <runId>
 acpus runs cancel <runId>
 acpus runs retry <runId>
 acpus runs retry <runId> --node <nodeKey>
-acpus runs signal <runId> --node <nodeKey> --approve
+acpus runs signal <runId> --node <nodeKey> --payload '{"approved":true,"notes":"ship it"}'
 acpus runs replay <runId>
 acpus runs fork <runId> review.workflow.yaml --dry-run
 acpus runs fork <runId> review.workflow.yaml --from workflow/review
@@ -201,6 +203,7 @@ They keep agents responsible for judgment, synthesis, implementation, and repair
 | Generate and filter | [`solution-generate-filter`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/solution-generate-filter.workflow.spec.yaml) | Generate multiple solution directions, critique them, and rank a recommendation. | No |
 | Tournament | [`worktree-implementation-tournament`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/worktree-implementation-tournament.workflow.spec.yaml) | Let multiple agents implement candidates in isolated worktrees and apply the winning patch. | Yes |
 | Loop until done | [`loop-until-green-fix`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/loop-until-green-fix.workflow.spec.yaml) | Iterate agent repair attempts until verification passes, then apply the passing patch. | Yes |
+| Human-in-the-loop development | [`human-in-the-loop-development`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/human-in-the-loop-development.workflow.spec.yaml) | Loop plan→implement→review→route; the reviewer gates each round and an approved round blocks on a Signal Node for a human (or driving agent) decision, carrying any rejection reason into the next round. | Yes |
 
 Examples:
 

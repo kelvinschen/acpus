@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Workflow Specs are YAML documents that declare local durable workflows made of Agent Steps, Program Steps, Composite Nodes, Guard Nodes, Approval Gates, inputs, agents, and outputs.
+Workflow Specs are YAML documents that declare local durable workflows made of Agent Steps, Program Steps, Composite Nodes, Guard Nodes, Signal Nodes, inputs, agents, and outputs.
 
 ## Requirements
 
@@ -163,20 +163,23 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A Guard Node inside a fanout lane or parallel branch MUST affect only that current lane or branch scope; outer composite success remains governed by that composite's join and success criteria.
 - A Guard Node at the Workflow root scope MAY complete or fail the whole Run.
 
-### Approval Gates
+### Signal Nodes
 
-- An Approval Gate MUST declare `approval`.
-- An Approval Gate MUST declare `prompt`.
-- An Approval Gate MAY declare `timeout`. When `timeout` is declared, `on_timeout` MUST also be declared.
-- An Approval Gate with no `timeout` MUST wait indefinitely for a human decision (or a cancel).
-- An Approval Gate MUST enter the `awaiting` Node state while blocked on a human decision.
-- A human decision MUST be delivered through the Run Supervisor approval signal channel (`approve` or `reject`).
-- An Approval Gate MUST produce an output envelope whose `output` field includes `approved`, `decision`, and `at`.
-- The `decision` field MUST be one of `approved`, `rejected`, or `timeout`, and `at` MUST be the deterministic workflow clock value.
-- A human `reject` MUST complete the Node (not fail it) with `approved: false` and `decision: rejected`, so downstream Nodes can branch on `approved`.
-- An Approval Gate with `on_timeout: fail` or `on_timeout: escalate` MUST fail the Node on timeout; full `escalate` semantics are deferred.
-- The `awaiting` state MUST be distinct from operator `paused`: a human decision resolves an `awaiting` gate, whereas operator pause/resume governs `paused` Nodes.
-- The approval decision channel is in-memory; if the Run Supervisor restarts while a gate is `awaiting`, the gate MUST be re-executed and wait for a fresh decision. Durable decision recovery is deferred (see roadmap).
+- A Signal Node MUST use `run: signal`.
+- A Signal Node MUST declare `prompt` as an operator-facing description template string.
+- A Signal Node MAY declare `output` using the Acpus Schema DSL defined in [Schema Spec](schema-spec.md); when omitted or declared as an empty map (`output: {}`), any injected payload object is accepted without validation, mirroring Agent and Program steps.
+- A Signal Node MUST enter the `awaiting` Node state while blocked on an external decision.
+- An external decision MUST be delivered through the Run Supervisor signal channel as a JSON payload object.
+- When `output` is declared, the injected payload MUST validate against it; a non-conforming payload MUST be rejected without resolving the Node, and the Node MUST remain `awaiting`.
+- A Signal Node MUST produce an output envelope whose `output` field is exactly the injected payload object, with no added envelope metadata.
+- A Signal Node MAY declare `timeout` as a duration string or number (in milliseconds). When `timeout` is declared, `on_timeout` MUST also be declared.
+- A Signal Node with no `timeout` MUST wait indefinitely for an external decision (or a cancel).
+- `on_timeout` MUST be one of `fail` or `default`.
+- A Signal Node with `on_timeout: default` MUST declare `default` as a literal payload object; when `output` is declared, `default` MUST validate against it at compile time.
+- A Signal Node with `on_timeout: default` MUST, on timeout, complete the Node with the declared `default` payload as its `output`.
+- A Signal Node with `on_timeout: fail` MUST fail the Node on timeout.
+- The `awaiting` state MUST be distinct from operator `paused`: an external decision resolves an `awaiting` Signal Node, whereas operator pause/resume governs `paused` Nodes.
+- The decision channel is in-memory; if the Run Supervisor restarts while a Signal Node is `awaiting`, the Node MUST be re-executed and wait for a fresh decision. Durable decision recovery is deferred (see roadmap).
 
 ### Expressions
 
@@ -194,6 +197,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - Expressions MAY read fanout and loop scope variables when in scope.
 - Expressions MAY read `run_id`.
 - `now()` MUST be bound to the deterministic workflow clock.
+- `json(value)` MUST serialize its argument to a JSON string with deterministic (sorted) object key order, so an object or array can be embedded into a template string instead of stringifying to `[object Object]`.
 
 ### Local Runtime Boundary
 
@@ -213,6 +217,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - Compiler tests MUST cover `expect.exit_code` shape validation.
 - Compiler tests MUST cover composite Node compilation.
 - Compiler tests MUST cover Guard Node shape validation, compilation, and expression collection.
+- Compiler tests MUST cover Signal Node shape validation, optional `output` schema compilation, and `default` payload validation against a declared `output` schema.
 - Compiler tests MUST cover include expansion and include cycle diagnostics.
 - Compiler tests MUST cover expression collection and validation.
 - Compiler tests MUST cover output schema validation.
@@ -221,4 +226,5 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - Runtime tests MUST cover Program Steps as local subprocesses.
 - Runtime tests MUST cover Program Step default fail-fast on non-allow-listed exit codes and `expect.exit_code` opt-out.
 - Runtime tests MUST cover deterministic replay.
+- Runtime tests MUST cover Signal Nodes: entering `awaiting`, schema-validated payload injection, rejection of a non-conforming payload while staying `awaiting`, and `on_timeout` `fail` and `default` behavior.
 - Runtime tests MUST cover top-level `outputs` projection and failure when declared `outputs` cannot be evaluated.

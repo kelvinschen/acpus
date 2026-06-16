@@ -44,7 +44,7 @@ workflow:
     expectDiagnostic(result, { code: "AGENT_SHAPE" });
   });
 
-  it("rejects invalid on_timeout enum in approval", () => {
+  it("rejects invalid on_timeout enum in a signal node", () => {
     const src = `
 version: 1
 name: test
@@ -53,14 +53,14 @@ agents:
 workflow:
   steps:
     - id: gate
-      approval:
-        prompt: "OK?"
-        timeout: 5m
-        on_timeout: maybe
+      run: signal
+      prompt: "OK?"
+      timeout: 5m
+      on_timeout: maybe
 `;
     const result = lintWorkflow(src);
     expect(result.ok).toBe(false);
-    expectDiagnostic(result, { code: "APPROVAL_ON_TIMEOUT" });
+    expectDiagnostic(result, { code: "SIGNAL_ON_TIMEOUT" });
   });
 
   it("accepts zero retry max", () => {

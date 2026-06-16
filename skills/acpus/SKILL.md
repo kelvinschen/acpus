@@ -7,6 +7,14 @@ description: Load when the user works with Acpus — the local durable runner th
 
 Acpus is the durable local runner that orchestrates acpx-backed agents through Workflow Specs, Runs, and catalog playbooks. Keep this file as the operating hub; read the referenced files only when the task needs that detail.
 
+## Core Model: Three Composable Units
+
+Three equal units, freely orchestrated with composite nodes (loop, fanout, parallel, switch, guard) into controllable workflows:
+
+- **Agent Step** (`run: agent`) — open-ended judgment via an acpx agent.
+- **Program Step** (`run: program`) — deterministic local glue.
+- **Signal Node** (`run: signal`) — external decision channel: the Run blocks in `awaiting` until a JSON payload (via `acpus runs signal`) steers it (branch, gate, feed next loop round). The decider can be a human OR the agent driving the workflow.
+
 ## Classify the Task
 
 Before acting, decide which path the user's request falls into. A single conversation may visit several paths in sequence — that is fine; just start from the right one each time.
@@ -77,7 +85,7 @@ Before acting, decide which path the user's request falls into. A single convers
 
      ```sh
      acpus runs resume <runId>
-     acpus runs signal <runId> --node <nodeKey> --approve|--reject
+     acpus runs signal <runId> --node <nodeKey> --payload '<json>'
      acpus runs replay <runId>
      ```
 
@@ -127,7 +135,7 @@ Key decisions while authoring:
 - **Expression forms**: raw CEL in `when`, `until`, and expression-valued `over`; `${{ ... }}` interpolation in prompts, command strings, keys, and messages. See `references/expressions-and-outputs.md`.
 - **Output schema**: keep flat and minimal (paths, counts, booleans, durable ids). Do not put the output schema in the prompt — Acpus injects it and retries parse/schema failures. Large artifacts go in files; return their paths.
 - **Helper scripts**: prefer real scripts over long inline shell for repository-local workflows. Dry-run scripts to verify them before integrating.
-- **Timeouts**: bare number = milliseconds; string duration (`5m`, `30s`) also supported. Approval steps require `on_timeout`.
+- **Timeouts**: bare number = milliseconds; string duration (`5m`, `30s`) also supported. Signal Nodes with a `timeout` require `on_timeout` (`fail` or `default`).
 - **Examples**: see `assets/examples/` for copyable Specs — `review-guard` (simple, guard), `draft-review-loop` (medium, loop), `topic-fanout-synthesis` (complex, fanout).
 
 ---
@@ -161,7 +169,7 @@ Every path above links its relevant references inline. For quick lookup:
 - `references/playbooks.md` — GitHub source and raw links for public Agent Workflow Playbooks
   (`codebase-deep-research`, `adversarial-feature-implementation-review`,
   `solution-generate-filter`, `worktree-implementation-tournament`, `loop-until-green-fix`,
-  `goal-driven-development`, `subagent-driven`)
+  `goal-driven-development`, `subagent-driven`, `human-in-the-loop-development`)
 - `scripts/workflow-viz.py` — generate an HTML visualization for a Spec (`python3 scripts/workflow-viz.py <spec.yaml> [-o out.html]`)
 - `assets/examples/` — copyable Workflow Spec examples: `review-guard`, `draft-review-loop`, `topic-fanout-synthesis`
 

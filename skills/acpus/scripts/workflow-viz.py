@@ -29,7 +29,7 @@ KIND_META = {
     "switch": {"symbol": "\u25c7", "color": "#458588", "label": "Switch"},
     "loop": {"symbol": "\u21bb", "color": "#fabd2f", "label": "Loop"},
     "guard": {"symbol": "\u25c8", "color": "#fb4934", "label": "Guard"},
-    "approval": {"symbol": "\u25a1", "color": "#a89984", "label": "Approval"},
+    "signal": {"symbol": "\u25a1", "color": "#a89984", "label": "Signal"},
     "subworkflow": {"symbol": "\u25a7", "color": "#928374", "label": "Subworkflow"},
 }
 
@@ -168,13 +168,6 @@ def normalize_node(node):
             "message": yaml_dump(g.get("message")),
             **common,
         }
-    if "approval" in node:
-        return {
-            "id": nid, "kind": "approval",
-            "prompt": yaml_dump(node.get("prompt")),
-            "on_timeout": yaml_dump(node.get("on_timeout")),
-            **common,
-        }
     if "subworkflow" in node:
         sub = node["subworkflow"] or {}
         return {
@@ -191,6 +184,15 @@ def normalize_node(node):
             "use": yaml_dump(node.get("use")),
             "prompt": yaml_dump(node.get("prompt")),
             "output": yaml_dump(node.get("output")),
+            **common,
+        }
+    if run == "signal":
+        return {
+            "id": nid, "kind": "signal",
+            "prompt": yaml_dump(node.get("prompt")),
+            "output": yaml_dump(node.get("output")),
+            "on_timeout": yaml_dump(node.get("on_timeout")),
+            "default": yaml_dump(node.get("default")),
             **common,
         }
     if run == "program":
@@ -316,7 +318,7 @@ TEMPLATE = r"""<!DOCTYPE html>
   --purple:#d3869b; --aqua:#8ec07c; --orange:#fe8019;
   --k-pipeline:#98971a; --k-agent:#689d6a; --k-program:#d79921; --k-parallel:#83a598;
   --k-fanout:#b16286; --k-switch:#458588; --k-loop:#fabd2f; --k-guard:#fb4934;
-  --k-approval:#a89984; --k-subworkflow:#928374;
+  --k-signal:#a89984; --k-subworkflow:#928374;
 }
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;overflow:hidden}
@@ -509,7 +511,7 @@ function keyfield(node){
     case "switch": return ((node.cases||[]).length)+" case(s)"+(node.default?" + default":"");
     case "parallel": return (node.join?("join: "+node.join+"  ·  "):"")+((node.branches||[]).length)+" branch(es)";
     case "subworkflow": return node.ref?("ref: "+node.ref):"";
-    case "approval": return node.prompt?node.prompt.split("\n")[0]:"approval";
+    case "signal": return node.prompt?node.prompt.split("\n")[0]:"signal";
     default: return "";
   }
 }
@@ -692,8 +694,10 @@ function renderDetail(node){
     h+=metaLine("default",node.default?"yes":"no");
   }else if(node.kind==="subworkflow"){
     h+=metaLine("ref",node.ref); h+=codeBlock("input",node.input);
-  }else if(node.kind==="approval"){
-    h+=metaLine("on_timeout",node.on_timeout); h+=codeBlock("prompt",node.prompt);
+  }else if(node.kind==="signal"){
+    h+=metaLine("on_timeout",node.on_timeout);
+    h+=outputSchema(node.output);
+    h+=codeBlock("prompt",node.prompt)+codeBlock("default",node.default);
   }
   document.getElementById("detail").innerHTML='<div class="panetitle">Node Detail</div>'+h;
 }

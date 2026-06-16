@@ -51,7 +51,7 @@ export interface NodeExecutionState {
   output?: unknown;
   /** References to artifacts stored for this node */
   artifactRefs?: string[];
-  /** Runtime-rendered Agent prompt, retained for display when compact telemetry is unavailable. */
+  /** Runtime-rendered prompt (Agent or Signal Node), retained for display when compact telemetry is unavailable. */
   renderedPrompt?: string;
   /** Runtime-rendered explicit Agent session_key, when declared by the Workflow Spec. */
   renderedSessionKey?: string;

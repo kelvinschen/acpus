@@ -48,6 +48,22 @@ describe("createExpressionCollector", () => {
     expect(diagnostics.diagnostics).toEqual([]);
   });
 
+  it("accepts the json() function without warning", () => {
+    const diagnostics = new DiagnosticBag();
+    const collector = createExpressionCollector(diagnostics, new Set(["s"]), new Map([["s", "run.agent"]]));
+    collector.visit("${{ json(steps.s.output) }}", "$.test");
+    expect(diagnostics.diagnostics).toEqual([]);
+  });
+
+  it("warns on the unregistered hash() function (no silent lint pass)", () => {
+    const diagnostics = new DiagnosticBag();
+    const collector = createExpressionCollector(diagnostics, new Set(["s"]), new Map([["s", "run.agent"]]));
+    collector.visit("${{ hash(steps.s.output) }}", "$.test");
+    expect(diagnostics.diagnostics).toEqual([
+      expect.objectContaining({ code: "EXPR_UNKNOWN_ROOT" })
+    ]);
+  });
+
   it("rejects empty expressions", () => {
     const diagnostics = new DiagnosticBag();
     const collector = createExpressionCollector(diagnostics, new Set(), new Map());
@@ -68,7 +84,7 @@ describe("createExpressionCollector", () => {
 
   it("warns when ${{ }} appears in raw-CEL fields (over, until, when)", () => {
     const diagnostics = new DiagnosticBag();
-    const collector = createExpressionCollector(diagnostics, new Set(["discover", "gate"]), new Map([["discover", "run.agent"], ["gate", "approval"]]));
+    const collector = createExpressionCollector(diagnostics, new Set(["discover", "gate"]), new Map([["discover", "run.agent"], ["gate", "run.signal"]]));
 
     collector.visit("${{ steps.discover.output.files }}", "$.workflow.steps[0].fanout.over");
     collector.visit("${{ loop.iter >= 2 }}", "$.workflow.steps[1].loop.until");

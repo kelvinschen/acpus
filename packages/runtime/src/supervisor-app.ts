@@ -4,6 +4,7 @@ import type { ExecutorAdapter } from "./executors/types.js";
 import type { SupervisorConfig, RunSummary, SupervisorHealth } from "./types.js";
 import { WorkflowInterpreter, generateRunId } from "./interpreter.js";
 import { InputValidationFailure } from "./validate-input.js";
+import { SignalPayloadValidationError } from "./validate-signal.js";
 import {
   applyAgentOverrides,
   compileWorkflow,
@@ -660,28 +661,25 @@ export function createSupervisorApp(
     return c.json(result);
   });
 
-  // ─── Approval signal ─────────────────────────────────────────────
+  // ─── Signal ───────────────────────────────────────────────────────
   //
-  // Deliver a human-in-the-loop decision to an Approval Gate that is currently
-  // `awaiting`. Node-addressed only (`?key=` required). The resolver lives in
-  // the in-memory interpreter, so a live in-flight run is required (409
-  // otherwise).
+  // Deliver an external decision payload to a Signal Node that is currently
+  // `awaiting`. Node-addressed only (`?key=` required). The request body is the
+  // payload object directly. The resolver lives in the in-memory interpreter,
+  // so a live in-flight run is required (409 otherwise). A payload that fails
+  // the node's declared output schema is rejected with 422 and the node stays
+  // `awaiting`.
 
   app.post("/runs/:runId/signal", async (c) => {
     const runId = c.req.param("runId");
     const nodeKey = c.req.query("key");
     if (!nodeKey) {
-      return c.json({ error: "key query parameter is required (approval signals are node-level)" }, 400);
+      return c.json({ error: "key query parameter is required (signals are node-level)" }, 400);
     }
 
-    const body = await c.req
-      .json<{ kind?: string; approved?: boolean }>()
-      .catch(() => ({}) as { kind?: string; approved?: boolean });
-    if (body.kind !== "approval") {
-      return c.json({ error: `Unsupported signal kind '${body.kind ?? ""}'; only 'approval' is supported` }, 400);
-    }
-    if (typeof body.approved !== "boolean") {
-      return c.json({ error: "approved (boolean) is required" }, 400);
+    const payload = await c.req.json<unknown>().catch(() => undefined);
+    if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+      return c.json({ error: "Signal payload must be a JSON object" }, 400);
     }
 
     const interpreter = interpreters.get(runId);
@@ -692,11 +690,17 @@ export function createSupervisorApp(
     }
 
     try {
-      interpreter.submitApproval(runId, nodeKey, body.approved);
+      interpreter.submitSignal(runId, nodeKey, payload);
     } catch (err) {
+      // A non-conforming payload is a request-body problem (422); the node
+      // stays `awaiting`. A missing resolver ("not awaiting") is a state
+      // conflict (409).
+      if (err instanceof SignalPayloadValidationError) {
+        return c.json({ error: err.message }, 422);
+      }
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 409);
     }
-    // submitApproval resolves the in-memory promise; the awaiting → completed
+    // submitSignal resolves the in-memory promise; the awaiting → completed
     // write happens in the executeNode continuation on a later microtask. Wait
     // briefly for the node to leave `awaiting` so we return the settled state.
     let state = store.readNodeState(runId, nodeKey);

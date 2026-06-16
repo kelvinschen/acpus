@@ -40,9 +40,9 @@ The output schema is strict by default — extra fields not declared in `output:
 
 Use Agent Step `session_key` only when materialized steps need shared working context, such as a loop repair agent that should remember prior failed attempts. Do not use it as a default; independent Agent Steps should keep separate sessions.
 
-## 6. Approval Is Human-In-The-Loop
+## 6. Signal Nodes Are Human-In-The-Loop
 
-Use approval gates for human decisions. An agent can prepare a decision brief, risk note, or patch summary, but it must not call `acpus runs signal` unless the user explicitly gave that decision.
+Use Signal Nodes for external decisions injected into a running Workflow. An agent can prepare a decision brief, risk note, or patch summary, but it must not call `acpus runs signal` unless the user explicitly gave that decision.
 
 ## 7. Poll Background Runs Deliberately
 
@@ -62,7 +62,7 @@ Use raw CEL in `when`, `until`, and expression-valued `over`. Use `${{ ... }}` i
 
 ## 11. Recover From Failures Before Rewriting
 
-When execution fails, inspect the Run, node state, error, and artifacts first. Prefer node retry, resume, approval signal, or replay before editing the Workflow Spec.
+When execution fails, inspect the Run, node state, error, and artifacts first. Prefer node retry, resume, signal delivery, or replay before editing the Workflow Spec.
 
 ## 12. Always Declare Timeout
 
@@ -70,6 +70,6 @@ When execution fails, inspect the Run, node state, error, and artifacts first. P
 
 - **Program Step**: timeout enforced by subprocess; reports `failureKind: "timeout"`.
 - **Agent Step**: timeout delegated to `acpx --timeout <seconds>`; reports `failureKind: "exit"` (not "timeout").
-- **Approval Step**: requires `on_timeout` (`approve`/`reject`/`fail`/`escalate`) when `timeout` is set; no timeout means indefinite wait.
+- **Signal Node**: requires `on_timeout` (`fail` or `default`) when `timeout` is set; no timeout means indefinite wait for an external decision.
 
 Common values: `30000` = 30s, `120000` = 2min, `300000` = 5min. A bare `timeout: 300` means 300ms — almost certainly a mistake.

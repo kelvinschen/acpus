@@ -20,7 +20,7 @@ acpus runs show <runId> --json
 | Run took wrong branch / iterated wrong / skipped fanout item | Spec logic bug (guard / fanout `over` / loop `until` / switch case). Edit spec → `runs fork [--from <upstream-nodeKey>]`. |
 | Transient: network blip, race, host hiccup | `runs retry <runId> [--node <nodeKey>]`. |
 | Run paused | `runs resume <runId>`. |
-| Node `awaiting` (Approval Gate) | `runs signal <runId> --node <nodeKey> --approve|--reject`. |
+| Node `awaiting` (Signal Node) | `runs signal <runId> --node <nodeKey> --payload '<json>'`. |
 | Verifying determinism / topology drift | `runs replay <runId>`. No execution, no writes. |
 
 Rule of thumb: **spec is wrong → fork; spec is fine, environment hiccup → retry.**

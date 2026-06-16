@@ -458,12 +458,12 @@ function definitionLines(
     return out;
   }
 
-  if (kind === "approval") {
+  if (kind === "run.signal") {
     out.push(blank(), sectionHeading("Definition"));
     if (meta.timeout !== undefined) out.push(field("  Timeout", String(meta.timeout), cols));
     if (meta.on_timeout !== undefined) out.push(field("  On timeout", String(meta.on_timeout), cols));
     if (state === "awaiting") {
-      out.push({ segments: [{ text: "  ⏳ awaiting decision — [a] approve  [x] reject", color: "blue" }] });
+      out.push({ segments: [{ text: "  ◷ awaiting signal — [s] deliver payload", color: "blue" }] });
     }
     return out;
   }

@@ -141,7 +141,7 @@ function mapErrors(errors: ErrorObject[], diagnostics: DiagnosticBag): void {
       }
     } else {
       // No classifiable sub-error — step truly has no matching kind
-      diagnostics.error("STEP_KIND", "Step must define one of run: agent, run: program, parallel, fanout, switch, loop, guard, approval, subworkflow, or include.", toPath(stepPath));
+      diagnostics.error("STEP_KIND", "Step must define one of run: agent, run: program, run: signal, parallel, fanout, switch, loop, guard, subworkflow, or include.", toPath(stepPath));
     }
   }
 
@@ -194,11 +194,6 @@ function classifyError(err: ErrorObject, path: string): string {
     case "exclusiveMinimum":
       return classifyMinimum(err, path);
 
-    case "dependencies":
-    case "dependentRequired":
-      // approval gate: `timeout` present requires `on_timeout`.
-      return pathContext(path) === "approval" ? "APPROVAL_ON_TIMEOUT" : "SPEC_SHAPE";
-
     default:
       return "SPEC_SHAPE";
   }
@@ -219,8 +214,6 @@ function classifyAdditionalProperties(err: ErrorObject, path: string): string {
     case "switch-spec":
       return "STEP_SHAPE";
     case "guard":
-      return "STEP_SHAPE";
-    case "approval":
       return "STEP_SHAPE";
     case "capture":
       return "CAPTURE_SHAPE";
@@ -246,7 +239,6 @@ function classifyRequired(missing: string, path: string): string {
     case "use":
       return "AGENT_SHAPE";
     case "prompt":
-      if (ctx === "approval") return "APPROVAL_PROMPT";
       return "AGENT_PROMPT";
     case "over":
       return "FANOUT_OVER";
@@ -263,10 +255,11 @@ function classifyRequired(missing: string, path: string): string {
     case "path":
       return "CAPTURE_PATH";
     case "timeout":
-      if (ctx === "approval") return "APPROVAL_TIMEOUT";
       return "STEP_TIMEOUT";
     case "on_timeout":
-      return "APPROVAL_ON_TIMEOUT";
+      return "SIGNAL_ON_TIMEOUT";
+    case "default":
+      return "SIGNAL_DEFAULT";
     case "max_iterations":
       return "LOOP_MAX_ITERATIONS";
     case "when":
@@ -306,8 +299,8 @@ function classifyEnum(err: ErrorObject, path: string): string {
   }
 
   // on_timeout enum
-  if (setsEqual(allowedValues, ["fail", "escalate", "approve", "reject"])) {
-    return "APPROVAL_ON_TIMEOUT";
+  if (setsEqual(allowedValues, ["fail", "default"])) {
+    return "SIGNAL_ON_TIMEOUT";
   }
 
   // join enum (parallel: all, race)
@@ -483,12 +476,14 @@ function formatRequiredMessage(missing: string, code: string, _path: string): st
       return "run: program capture.parse must be json or text.";
     case "CAPTURE_PATH":
       return "run: program capture.path must be a string when capture.from is file.";
-    case "APPROVAL_PROMPT":
-      return "approval.prompt must be a string.";
-    case "APPROVAL_TIMEOUT":
-      return "approval.timeout must be a duration string.";
-    case "APPROVAL_ON_TIMEOUT":
-      return "approval.on_timeout must be fail, escalate, approve, or reject.";
+    case "SIGNAL_PROMPT":
+      return "run: signal steps must define a prompt string.";
+    case "SIGNAL_TIMEOUT":
+      return "signal.timeout must be a duration string.";
+    case "SIGNAL_ON_TIMEOUT":
+      return "signal.on_timeout must be fail or default, and is required when timeout is set.";
+    case "SIGNAL_DEFAULT":
+      return "signal.default is required when on_timeout is default.";
     case "LOOP_MAX_ITERATIONS":
       return "loop.max_iterations must be a number.";
     case "GUARD_WHEN":
@@ -567,15 +562,16 @@ function toPath(instancePath: string): string {
 /** Determine the semantic context of a path for error classification. */
 function pathContext(path: string): string {
   // Match patterns like $.agents.xxx or $.workflow.steps[n].fanout etc.
+  // Note: there is no "signal" context — a `run: signal` step shares the flat
+  // `$.workflow.steps[n]` path with agent/program steps, so it resolves to
+  // "step". Signal-specific diagnostics are owned by the compiler
+  // (validateSignalStep), not the schema-validator.
   if (/\.agents\.[^.]+$/.test(path) || /\.agents\.[^.]+\./.test(path)) {
     return "agent";
   }
   if (/\.fanout\b/.test(path)) {
     if (/\.fanout\.success_criteria/.test(path)) return "success-criteria";
     return "fanout";
-  }
-  if (/\.approval\b/.test(path)) {
-    return "approval";
   }
   if (/\.capture\b/.test(path)) {
     return "capture";

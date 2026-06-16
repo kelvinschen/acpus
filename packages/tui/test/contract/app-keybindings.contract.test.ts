@@ -27,7 +27,7 @@ describe("App detail keybindings", () => {
   it("builds confirmation prompts for important controls", () => {
     expect(controlConfirmationMessage({ action: "cancel", scope: "run", targetLabel: "run_1" })).toBe("Cancel run run_1?");
     expect(controlConfirmationMessage({ action: "retry", scope: "node", targetLabel: "workflow/task" })).toBe("Retry node workflow/task?");
-    expect(controlConfirmationMessage({ action: "approve", scope: "node", targetLabel: "workflow/gate" })).toBe("Approve node workflow/gate?");
+    expect(controlConfirmationMessage({ action: "signal", scope: "node", targetLabel: "workflow/gate", signalBoolField: "approved" })).toBe("Signal node workflow/gate: set approved?");
   });
 
   it("computes live elapsed from the ticker clock and terminal elapsed from updatedAt", () => {

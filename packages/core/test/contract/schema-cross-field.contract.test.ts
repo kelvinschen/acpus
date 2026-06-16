@@ -108,7 +108,7 @@ workflow:
     expect(result.ok).toBe(true);
   });
 
-  it("accepts an approval gate with only prompt (no timeout = wait indefinitely)", () => {
+  it("accepts a signal node with only prompt (no timeout = wait indefinitely)", () => {
     const src = `
 version: 1
 name: test
@@ -117,14 +117,14 @@ agents:
 workflow:
   steps:
     - id: gate
-      approval:
-        prompt: "OK?"
+      run: signal
+      prompt: "OK?"
 `;
     const result = lintWorkflow(src);
     expect(result.ok).toBe(true);
   });
 
-  it("rejects an approval gate with timeout but no on_timeout", () => {
+  it("rejects a signal node with timeout but no on_timeout", () => {
     const src = `
 version: 1
 name: test
@@ -133,12 +133,49 @@ agents:
 workflow:
   steps:
     - id: gate
-      approval:
-        prompt: "OK?"
-        timeout: 5m
+      run: signal
+      prompt: "OK?"
+      timeout: 5m
 `;
     const result = lintWorkflow(src);
     expect(result.ok).toBe(false);
-    expectDiagnostic(result, { code: "APPROVAL_ON_TIMEOUT" });
+    expectDiagnostic(result, { code: "SIGNAL_ON_TIMEOUT" });
+  });
+
+  it("treats signal output: {} as no schema (metadata.output undefined, accept any object)", () => {
+    const src = `
+version: 1
+name: test
+workflow:
+  steps:
+    - id: gate
+      run: signal
+      prompt: "OK?"
+      output: {}
+`;
+    const result = compileWorkflow(src);
+    expect(result.ok).toBe(true);
+    const gate = result.ir!.root.children!.find((n) => n.id === "gate");
+    // Empty DSL must NOT compile to additionalProperties:false (which would
+    // reject every non-empty payload); it means "accept any object".
+    expect(gate?.metadata.output).toBeUndefined();
+  });
+
+  it("compiles a declared signal output schema into metadata.output", () => {
+    const src = `
+version: 1
+name: test
+workflow:
+  steps:
+    - id: gate
+      run: signal
+      prompt: "OK?"
+      output:
+        approved: boolean
+`;
+    const result = compileWorkflow(src);
+    expect(result.ok).toBe(true);
+    const gate = result.ir!.root.children!.find((n) => n.id === "gate");
+    expect(gate?.metadata.output).toMatchObject({ type: "object", properties: { approved: { type: "boolean" } } });
   });
 });

@@ -338,12 +338,12 @@ describe("formatRunShow", () => {
       updatedAt: "2026-06-10T09:00:10.000Z",
       runAttempt: 1,
       nodes: [
-        { nodeKey: "workflow/wait", nodeId: "wait", kind: "approval", state: "pending", attempt: 1 }
+        { nodeKey: "workflow/wait", nodeId: "wait", kind: "run.signal", state: "pending", attempt: 1 }
       ]
     };
 
     const output = await formatRunShow(run);
-    expect(output).toContain("○ workflow/wait  [approval]  pending");
+    expect(output).toContain("○ workflow/wait  [signal]  pending");
   });
 
   it("compact header includes run duration", async () => {
@@ -483,13 +483,13 @@ describe("formatRunShow", () => {
       updatedAt: "2026-06-10T09:00:10.000Z",
       runAttempt: 1,
       nodes: [
-        { nodeKey: "workflow/approval", nodeId: "approval", kind: "approval", state: "awaiting", attempt: 1 },
+        { nodeKey: "workflow/signal", nodeId: "signal", kind: "run.signal", state: "awaiting", attempt: 1 },
         { nodeKey: "workflow/hold", nodeId: "hold", kind: "run.agent", state: "paused", attempt: 1 }
       ]
     };
 
     const output = await formatRunShow(run);
-    expect(output).toContain("⏳ workflow/approval  [approval]  awaiting");
+    expect(output).toContain("⏳ workflow/signal  [signal]  awaiting");
     expect(output).toContain("⏸ workflow/hold  [agent]  paused");
   });
 
@@ -1060,5 +1060,200 @@ describe("formatRunShow", () => {
     expect(output).not.toMatch(/  big:\n  \.\.\./);
     // Should use the "too large to preview" placeholder
     expect(output).toContain("output too large to preview");
+  });
+
+  it("surfaces prompt, expected schema, and deliver command for an awaiting Signal Node", async () => {
+    const run: RunState = {
+      runId: "run-sig",
+      workflowName: "demo",
+      status: "running",
+      irDigest: "ir",
+      inputDigest: "input",
+      createdAt: "2026-06-10T09:59:00.000Z",
+      updatedAt: "2026-06-10T10:00:00.000Z",
+      runAttempt: 1,
+      nodes: [
+        {
+          nodeKey: "workflow/gate",
+          nodeId: "gate",
+          kind: "run.signal",
+          state: "awaiting",
+          attempt: 1,
+          startedAt: "2026-06-10T09:59:00.000Z",
+          renderedPrompt: "Decide on: release readiness."
+        }
+      ]
+    };
+    const ir = {
+      irVersion: 1,
+      astVersion: 1,
+      source: { digest: "d" },
+      name: "demo",
+      input: {},
+      agents: {},
+      outputs: {},
+      expressions: [],
+      root: {
+        id: "workflow",
+        kind: "pipeline",
+        nodePath: [],
+        keyTemplate: "workflow",
+        metadata: {},
+        children: [
+          {
+            id: "gate",
+            kind: "run.signal",
+            nodePath: ["gate"],
+            keyTemplate: "workflow/gate",
+            metadata: {
+              prompt: "Decide on: ${{ input.topic }}.",
+              output: {
+                type: "object",
+                properties: { decision: { type: "string" }, confidence: { type: "number" } },
+                required: ["decision"],
+                additionalProperties: false
+              }
+            }
+          }
+        ]
+      }
+    } as unknown as Parameters<typeof formatRunShow>[3];
+
+    const output = await formatRunShow(run, undefined, Date.now(), ir);
+    // Rendered prompt (not the raw template) is shown.
+    expect(output).toContain("Prompt:");
+    expect(output).toContain("Decide on: release readiness.");
+    expect(output).not.toContain("${{");
+    // Expected payload schema fields with type and requiredness.
+    expect(output).toContain("Expected payload:");
+    expect(output).toContain("decision: string (required)");
+    expect(output).toContain("confidence: number (optional)");
+    // Copy-pasteable deliver command.
+    expect(output).toContain("acpus runs signal run-sig --node workflow/gate --payload");
+  });
+
+  it("shows 'any JSON object' for an awaiting Signal Node without an output schema", async () => {
+    const run: RunState = {
+      runId: "run-sig2",
+      workflowName: "demo",
+      status: "running",
+      irDigest: "ir",
+      inputDigest: "input",
+      createdAt: "2026-06-10T09:59:00.000Z",
+      updatedAt: "2026-06-10T10:00:00.000Z",
+      runAttempt: 1,
+      nodes: [
+        {
+          nodeKey: "workflow/gate",
+          nodeId: "gate",
+          kind: "run.signal",
+          state: "awaiting",
+          attempt: 1,
+          startedAt: "2026-06-10T09:59:00.000Z",
+          renderedPrompt: "Any object is fine."
+        }
+      ]
+    };
+    const ir = {
+      irVersion: 1,
+      astVersion: 1,
+      source: { digest: "d" },
+      name: "demo",
+      input: {},
+      agents: {},
+      outputs: {},
+      expressions: [],
+      root: {
+        id: "workflow",
+        kind: "pipeline",
+        nodePath: [],
+        keyTemplate: "workflow",
+        metadata: {},
+        children: [
+          {
+            id: "gate",
+            kind: "run.signal",
+            nodePath: ["gate"],
+            keyTemplate: "workflow/gate",
+            metadata: { prompt: "Any object is fine." }
+          }
+        ]
+      }
+    } as unknown as Parameters<typeof formatRunShow>[3];
+
+    const output = await formatRunShow(run, undefined, Date.now(), ir);
+    expect(output).toContain("Expected payload: any JSON object (no schema declared)");
+  });
+
+  it("indexes a Signal Node nested inside a switch branch (composite traversal)", async () => {
+    const run: RunState = {
+      runId: "run-sig3",
+      workflowName: "demo",
+      status: "running",
+      irDigest: "ir",
+      inputDigest: "input",
+      createdAt: "2026-06-10T09:59:00.000Z",
+      updatedAt: "2026-06-10T10:00:00.000Z",
+      runAttempt: 1,
+      nodes: [
+        {
+          nodeKey: "workflow/route/case:0/gate",
+          nodeId: "gate",
+          kind: "run.signal",
+          state: "awaiting",
+          attempt: 1,
+          startedAt: "2026-06-10T09:59:00.000Z",
+          renderedPrompt: "Nested decision."
+        }
+      ]
+    };
+    const ir = {
+      irVersion: 1,
+      astVersion: 1,
+      source: { digest: "d" },
+      name: "demo",
+      input: {},
+      agents: {},
+      outputs: {},
+      expressions: [],
+      root: {
+        id: "workflow",
+        kind: "pipeline",
+        nodePath: [],
+        keyTemplate: "workflow",
+        metadata: {},
+        children: [
+          {
+            id: "route",
+            kind: "switch",
+            nodePath: ["route"],
+            keyTemplate: "workflow/route",
+            metadata: {},
+            branches: [
+              {
+                id: "case-0",
+                children: [
+                  {
+                    id: "gate",
+                    kind: "run.signal",
+                    nodePath: ["route", "gate"],
+                    keyTemplate: "workflow/route/gate",
+                    metadata: {
+                      prompt: "Nested decision.",
+                      output: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    } as unknown as Parameters<typeof formatRunShow>[3];
+
+    const output = await formatRunShow(run, undefined, Date.now(), ir);
+    // The signal node lives in a switch branch; its schema must still be found.
+    expect(output).toContain("Expected payload:");
+    expect(output).toContain("ok: boolean (required)");
   });
 });

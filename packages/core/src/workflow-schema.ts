@@ -53,7 +53,7 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
         { $ref: "#/$defs/switchStep" },
         { $ref: "#/$defs/loopStep" },
         { $ref: "#/$defs/guardStep" },
-        { $ref: "#/$defs/approvalStep" },
+        { $ref: "#/$defs/signalStep" },
         { $ref: "#/$defs/subworkflowStep" }
       ]
     },
@@ -302,34 +302,28 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
       enum: ["continue", "fail", "complete"]
     },
 
-    approvalStep: {
+    signalStep: {
       type: "object",
       additionalProperties: false,
-      required: ["approval"],
+      required: ["run", "prompt"],
+      // Cross-field rules (timeout⇒on_timeout, on_timeout:default⇒default) are
+      // enforced in the compiler so their diagnostics are not lost to oneOf
+      // branch-matching noise from the shared `run:` discriminator.
       properties: {
         id: {
           type: "string",
           minLength: 1,
           pattern: "^[^:]+$"
         },
-        approval: { $ref: "#/$defs/approvalSpec" }
-      }
-    },
-
-    approvalSpec: {
-      type: "object",
-      additionalProperties: false,
-      required: ["prompt"],
-      // A gate with no `timeout` waits indefinitely for a human decision.
-      // When `timeout` is set, `on_timeout` must specify the timeout policy.
-      dependencies: { timeout: ["on_timeout"] },
-      properties: {
+        run: { const: "signal" },
         prompt: { type: "string" },
+        output: { type: "object" },   // free DSL — validated by compiler
         timeout: { type: "string" },   // duration format validated by compiler
         on_timeout: {
           type: "string",
-          enum: ["fail", "escalate", "approve", "reject"]
-        }
+          enum: ["fail", "default"]
+        },
+        default: { type: "object" }    // literal payload — validated by compiler
       }
     },
 

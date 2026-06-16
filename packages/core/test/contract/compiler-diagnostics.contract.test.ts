@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { lintWorkflow } from "../../src/index.js";
-import { expectDiagnostic } from "../support/diagnostic-helpers.js";
+import { expectDiagnostic, expectDiagnosticCount } from "../support/diagnostic-helpers.js";
 
 const fixtures = join(import.meta.dirname, "..", "fixtures");
 
@@ -104,23 +104,27 @@ workflow:
     expectDiagnostic(result, { code: "STEP_TIMEOUT" });
   });
 
-  it("rejects approval timeout with invalid duration format", () => {
+  it("rejects signal timeout with invalid duration format", () => {
     const source = `
 version: 1
-name: bad-approval-timeout
+name: bad-signal-timeout
 agents:
   mock: { type: command, use: "echo stub" }
 workflow:
   steps:
     - id: gate
-      approval:
-        prompt: "Approve?"
-        timeout: "2d"
-        on_timeout: reject
+      run: signal
+      prompt: "Approve?"
+      timeout: "2d"
+      on_timeout: fail
 `;
     const result = lintWorkflow(source);
     expect(result.ok).toBe(false);
-    expectDiagnostic(result, { code: "APPROVAL_TIMEOUT" });
+    expectDiagnostic(result, { code: "SIGNAL_TIMEOUT" });
+    // The signal-specific check owns timeout validation; the generic
+    // validateStepTimeout must not also fire (no duplicate diagnostic).
+    expectDiagnosticCount(result, "SIGNAL_TIMEOUT", 1);
+    expectDiagnosticCount(result, "STEP_TIMEOUT", 0);
   });
 
   it("rejects invalid fanout join values", () => {

@@ -57,9 +57,9 @@ steps.research_lanes.output[0].output.report_path
 steps.require_ready.output.matched
 steps.require_ready.output.action
 
-# approval decision fields are inside output
+# signal node output is exactly the injected payload object
 steps.human_gate.output.approved
-steps.human_gate.output.decision
+steps.human_gate.output.target
 ```
 
 Use `steps.<id>.output` consistently for every Node's primary produced value. Program Steps also expose `steps.<id>.exit_code`.

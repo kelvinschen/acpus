@@ -6,7 +6,7 @@
 
 - 只写未来/计划/能力缺口。已落地的行为属于 `specs/`，roadmap 仅指向尚未完成的部分。
 - 不使用 RFC 2119 规范动词（MUST/SHOULD/MAY）作为约束——那是 spec 专用。这里用「计划 / 目标 / 缺口 / 候选 / 待定」等描述性语言。
-- 术语与 `CONTEXT.md` 保持一致：Workflow Spec、Run、Node、Composite Node、Executable Node、Agent Step、Program Step、Approval Gate、Node Key、Node State Machine、Daemon、Artifact；并沿用 PRD/README 的 frozen IR、acpx-managed session 表述。
+- 术语与 `CONTEXT.md` 保持一致：Workflow Spec、Run、Node、Composite Node、Executable Node、Agent Step、Program Step、Signal Node、Node Key、Node State Machine、Daemon、Artifact；并沿用 PRD/README 的 frozen IR、acpx-managed session 表述。
 - 不得违反已锁定的架构决策：ADR 0001（`@acpus/core` 保持无副作用，I/O 与进程关注点归 runtime/CLI）、ADR 0002（M1 用 tsc 构建，bundling 仅作为未来发布优化）。
 - 不引入分布式假设：Acpus 是单主机本地 CLI 工具，Temporal 仅作实现内核。`docs/archive/` 中的分布式/service-first 旧设计属历史，不作为当前真相。
 
@@ -43,8 +43,8 @@
 
 ## Backlog / 能力缺口
 
-- **Approval Gate 人工回路已落地**：`awaiting` 状态、人工 approve/reject（TUI `a`/`x` 与 CLI `acpus signal`）、无 timeout 无限等待、reject→completed 已实现并测试覆盖（行为见 `specs/workflow-spec.md` Approval Gates）。
-- **Approval 决策持久化恢复（缺口）**：当前决策通道为内存 resolver，Run Supervisor 在 Gate `awaiting` 期间重启会把节点重置为 `pending` 并重新等待人工决策，down 窗口内到达的决策会丢失。持久化决策通道（与 approval `escalate` 持久通道一并）留待后续。
+- **Signal Node 外部决策注入已落地**：`awaiting` 状态、schema-validated payload 注入（TUI `s` 与 CLI `acpus runs signal --payload`）、`on_timeout: fail|default` 策略、无 timeout 无限等待、payload 校验失败保持 `awaiting` 均已实现并测试覆盖（行为见 `specs/workflow-spec.md` Signal Node、ADR 0010）。
+- **Signal 决策持久化恢复（缺口）**：当前决策通道为内存 resolver，Run Supervisor 在 Signal Node `awaiting` 期间重启会把节点重置为 `pending` 并重新等待外部决策，down 窗口内到达的 payload 会丢失。持久化决策通道留待后续（与整个 `awaiting` 家族的 durable 恢复一并处理，见 ADR 0010 Option A）。
 - **TUI 同种 Composite 嵌套消歧（缺口）**：Node Key 的动态维度（item/lane/branch/round）按类型追加在 key 尾部，同类型维度 last-write-wins。因此 TUI 可视化器（`packages/tui/src/model.ts`）在 fanout-in-fanout / loop-in-loop 等同种 Composite 嵌套场景下，内层维度会覆盖外层，导致按维度重建的层级树无法正确消歧（fanout→parallel 等异种嵌套不受影响）。彻底修复需让 Node Key 采用带位置/复合的动态维度编码（`packages/runtime/src/keys.ts`），留待后续。
 - **Mock script 依赖边界优化（已完成）**：`type: mock` 已移除，`MockAgentExecutor` 已删除；`@acpus/mock-agent` 不再是 runtime 的生产依赖（移至 devDep），所有 agent type 统一走 `AgentExecutor`（通过 acpx）。单元测试使用轻量 `StubAgentExecutor`（在 `packages/runtime/test/support/` 内），E2E 测试使用 `acpus-mock-agent` 作为 `type: command` agent 通过真实 acpx 路径执行。`specs/mock-agent-spec.md` 描述的 `@acpus/mock-agent` 包本身（ACP 服务器 + 脚本 DSL）行为不变。
 - **Forked Run 跨进程 checkpoint 写入并发安全（缺口，F3）**：`RunStore.appendCheckpoint` 是 read-modify-write，跨 Workspace 多进程同时落 checkpoint 会丢条目（当前 supervisor lock 已在大多数路径上排除并发，但未来如果 CLI 子进程也直接 append 会触发）。候选方案：file lock 或 append-only journal。

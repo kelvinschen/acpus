@@ -18,4 +18,4 @@ wait 2m -> acpus runs show <runId>
 wait 2m -> repeat until terminal
 ```
 
-For running Agent Steps, use the `Activity:` line to check whether transcript updates, tool-call counts, or recent tools are still moving. Use `--json` only when you need exact node keys, artifact refs, or machine-readable state. Escalate to `acpus runs visualize` when a human wants live inspection. If the Run is `awaiting`, ask the user for the approval decision before signaling it. If the Run is `failed`, inspect artifacts before deciding whether to retry a node.
+For running Agent Steps, use the `Activity:` line to check whether transcript updates, tool-call counts, or recent tools are still moving. Use `--json` only when you need exact node keys, artifact refs, or machine-readable state. Escalate to `acpus runs visualize` when a human wants live inspection. If the Run is `awaiting`, ask the user for the signal payload before delivering it. If the Run is `failed`, inspect artifacts before deciding whether to retry a node.

@@ -6,7 +6,7 @@ describe("Footer hints", () => {
     const hints = footerHintGroups("graph", 0);
     expect(hints.nav).toContainEqual({ key: "j/k", label: "select" });
     expect(hints.nav).toContainEqual({ key: "g/G", label: "top/bottom" });
-    expect(hints.global).toContainEqual({ key: "a/x", label: "approve/reject" });
+    expect(hints.global).toContainEqual({ key: "s", label: "signal" });
   });
 
   it("hides mutating controls in read-only mode", () => {
@@ -17,7 +17,7 @@ describe("Footer hints", () => {
     expect(hints.global.some((hint) => hint.key === "r")).toBe(false);
     expect(hints.global.some((hint) => hint.key === "c")).toBe(false);
     expect(hints.global.some((hint) => hint.key === "R")).toBe(false);
-    expect(hints.global.some((hint) => hint.key === "a/x")).toBe(false);
+    expect(hints.global.some((hint) => hint.key === "s")).toBe(false);
   });
 
   it("shows details navigation with tab count", () => {

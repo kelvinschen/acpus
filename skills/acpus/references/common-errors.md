@@ -59,6 +59,24 @@ ${{ len(steps.review_topics.output) }}
 
 **Fix:** Replace `size()` with `len()`.
 
+### Object/array interpolated as `[object Object]`
+
+**Symptom:** A prompt or `cmd` that embeds a whole step output renders literal `[object Object]` (or `[object Object],[object Object]` for an array of objects) instead of the data.
+
+**Root cause:** Template interpolation `${{ ... }}` stringifies the result with `String()`. For a primitive that is correct, but an object or array becomes `[object Object]`. Referencing a composite value directly (e.g. a fanout's aggregated output, an agent's whole output object) hits this.
+
+**Fix:** Wrap the value in `json()` to serialize it to a real JSON string (object keys are sorted for determinism):
+```yaml
+# Wrong — renders "[object Object],[object Object],..."
+The dispatched reviews returned:
+${{ steps.dispatch.output }}
+
+# Correct — renders a JSON array string
+The dispatched reviews returned:
+${{ json(steps.dispatch.output) }}
+```
+Reach for a single scalar field (`${{ steps.x.output.count }}`) when you only need one value; use `json(...)` when you intentionally want the whole structure inline.
+
 ---
 
 ## Schema Errors
@@ -118,6 +136,47 @@ cmd:
     PYEOF
 ```
 
+### `${{ }}` step output interpolated into a `cmd` breaks the shell
+
+**Symptom:** A Program Step fails with `failureKind: "exit"` and stderr like
+`bash: -c: line 1: syntax error near unexpected token '('` (or near `"`, `&`,
+backticks, etc.). Common when embedding a whole step output, a `json(...)` blob,
+or any free-text agent/operator value (a reviewer's feedback, a signal's notes).
+
+**Root cause:** Acpus expands `${{ ... }}` **before** the shell runs, splicing
+the value straight into the command text. Shell metacharacters in that value —
+`(`, `)`, `"`, `'`, `;`, `&`, `` ` `` — then get parsed as shell syntax. This is
+different from the bash `$VAR` case above: the unsafe content is injected by
+Acpus templating, so a heredoc + `sys.argv` does NOT help (the `${{ }}` in the
+argv position is substituted before bash ever sees it).
+
+**Fix:** Route `${{ }}` values through `env:` (template-evaluated and passed to
+the subprocess as environment strings — never parsed by the shell), and read
+them with `os.environ` / `process.env`:
+```yaml
+# Wrong — JSON with () and " breaks `bash -c`
+cmd:
+  - bash
+  - -c
+  - |
+    python3 - "${{ json(steps.dispatch.output) }}" <<'PY'
+    import json, sys
+    print(json.loads(sys.argv[1]))
+    PY
+
+# Correct — the value never touches the shell
+env:
+  OUTCOME: "${{ json(steps.dispatch.output) }}"
+cmd:
+  - bash
+  - -c
+  - |
+    python3 <<'PY'
+    import json, os
+    print(json.loads(os.environ["OUTCOME"]))
+    PY
+```
+
 ---
 
 ## Timeout Errors
@@ -139,19 +198,23 @@ timeout: 300000
 timeout: 5m
 ```
 
-### Approval step timeout without `on_timeout`
+### Signal Node timeout without `on_timeout`
 
-**Symptom:** Approval step fails when timeout expires.
+**Symptom:** Signal Node fails to compile, or fails when timeout expires.
 
-**Root cause:** Approval steps require `on_timeout` (`approve`/`reject`/`fail`/`escalate`) when `timeout` is set. Without it, the behavior is undefined.
+**Root cause:** Signal Nodes with a `timeout` require `on_timeout` (`fail` or `default`). With `default`, a literal `default` payload is also required (and is validated against the declared `output` schema at compile time).
 
 **Fix:**
 ```yaml
-- id: approve
+- id: gate
+  run: signal
+  prompt: "Review and decide."
+  output:
+    approved: boolean
   timeout: 24h
-  approval:
-    prompt: "Review and decide."
-  on_timeout: reject
+  on_timeout: default
+  default:
+    approved: false
 ```
 
 ---
@@ -190,6 +253,93 @@ fanout:
   over: steps.identify.output.topics
   key: "${{ item_index }}-${{ item.topic }}"
 ```
+
+---
+
+## Agent Errors
+
+### Agent runs in the wrong directory — `cwd` on the step is silently ignored
+
+**Symptom:** An agent that should edit / inspect another repository instead
+operates on the host project. Telemetry shows `cwd` pointing at the workspace
+root, not your `target_path`. The reviewer "sees" unrelated files; the
+implementer's edits land nowhere you expect.
+
+**Root cause:** `cwd` is an **agent-definition** field (`agents.<name>.cwd`), not
+a step field. Putting `cwd:` on a `run: agent` step is dropped by the compiler's
+metadata allow-list. Worse, when the step is nested inside a composite body
+(`loop.do`, `switch` case `do`, `parallel`, `fanout.do`), lint does NOT flag the
+unknown `cwd` key (see the lint-gap note below), so it fails silently.
+
+**Fix:** Set `cwd` on the agent definition. It is template-evaluated against the
+step context, so it can read `input.*`:
+```yaml
+agents:
+  implementer:
+    use: pi
+    cwd: "${{ input.target_path }}"   # agent runs inside the target repo
+```
+Note `cwd` resolves against `input.*` (and other in-scope expression values),
+but it cannot read `steps.*` — the agent definition is resolved per call, so
+prefer threading the path through `input`.
+
+### Switch/parallel branch references a sibling via the composite id
+
+**Symptom:** `Failed to evaluate ... template: No such key: <composite_id>` for a
+node inside a `switch` case or `parallel` branch that references an earlier
+sibling in the same branch.
+
+**Root cause:** Inside a branch, sibling nodes are referenced by their own id
+(`steps.<sibling_id>.output`), not through the enclosing composite
+(`steps.<switch_id>.<sibling_id>.output`). The composite's own `steps.<id>`
+value does not exist until the composite completes.
+
+**Fix:**
+```yaml
+- id: route
+  switch:
+    cases:
+      - when: steps.review.output.approved
+        do:
+          - id: human_gate
+            run: signal
+            prompt: "..."
+            output: { approved: boolean, notes: string }
+          - id: normalize
+            run: program
+            env:
+              # Wrong: steps.route.human_gate.output.approved  → No such key: route
+              # Right: reference the sibling directly
+              APPROVED: "${{ steps.human_gate.output.approved }}"
+            cmd: ["bash", "-c", "..."]
+```
+Outer / earlier scopes (e.g. `steps.review`, `steps.prepare`, `input`) ARE
+visible from inside a branch; only the not-yet-produced composite self-reference
+is not.
+
+---
+
+## Lint Gaps (validated but worth knowing)
+
+### Unknown fields inside composite bodies are NOT caught by lint
+
+**Symptom:** A typo'd or misplaced field (e.g. a step-level `cwd`, a misspelled
+`prompt`) passes `acpus lint: ok` when the node lives inside `loop.do`,
+`switch`-case `do`, `parallel`, or `fanout.do`, but is silently dropped at
+runtime. The same field at the top-level `workflow.steps` IS rejected with
+`STEP_SHAPE: Unknown step property '<x>'`.
+
+**Root cause:** The JSON schema enforces `additionalProperties: false` on each
+step type, but composite child arrays are declared only as `{ type: "array" }`
+and do not recurse the per-step union into their items. So unknown-field
+detection does not reach nested nodes. (Semantic checks like "agent step needs a
+prompt" still run, because the compiler recursively compiles child nodes — only
+the strict unknown-key check is skipped.)
+
+**Fix / workaround:** Until the schema recurses composite children, treat nested
+nodes with extra care: copy a known-good node shape, and after authoring run the
+node once to confirm fields took effect (e.g. check agent `cwd` in `runs show`
+telemetry). Prefer top-level lint of a simplified version when unsure.
 
 ---
 

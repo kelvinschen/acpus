@@ -68,12 +68,12 @@ export type IrNodeKind =
   | "pipeline"
   | "run.agent"
   | "run.program"
+  | "run.signal"
   | "parallel"
   | "fanout"
   | "switch"
   | "loop"
   | "guard"
-  | "approval"
   | "subworkflow";
 
 export interface AcpusIr {

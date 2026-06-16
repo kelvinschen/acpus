@@ -128,22 +128,23 @@ export class RunSupervisorClient {
   }
 
   /**
-   * Deliver a human-in-the-loop approval decision to an Approval Gate that is
-   * currently `awaiting`. Node-level only. On a non-2xx response the
-   * supervisor's error message (e.g. 409 "not awaiting") is surfaced.
+   * Deliver an external decision payload to a Signal Node that is currently
+   * `awaiting`. Node-level only. The payload object is sent as the request body
+   * directly. On a non-2xx response the supervisor's error message (e.g. 409
+   * "not awaiting", 422 schema mismatch) is surfaced.
    */
-  async signalApproval(runId: string, nodeKey: string, approved: boolean): Promise<NodeExecutionState> {
+  async signalNode(runId: string, nodeKey: string, payload: Record<string, unknown>): Promise<NodeExecutionState> {
     const res = await fetch(
       `${this.baseUrl}/runs/${runId}/signal?key=${encodeURIComponent(nodeKey)}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json", ...this.headers() },
-        body: JSON.stringify({ kind: "approval", approved })
+        body: JSON.stringify(payload)
       }
     );
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
-      throw new Error(body.error ?? `Failed to signal approval: ${res.status}`);
+      throw new Error(body.error ?? `Failed to signal node: ${res.status}`);
     }
     return res.json() as Promise<NodeExecutionState>;
   }

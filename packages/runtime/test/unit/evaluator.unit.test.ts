@@ -91,6 +91,30 @@ describe("ExpressionEvaluator", () => {
       const result = evaluator.evaluateExpression("coalesce(null, null, 42)", baseCtx());
       expect(Number(result)).toBe(42);
     });
+
+    it("json() serializes an object to a JSON string (not [object Object])", () => {
+      const ctx = baseCtx({ steps: { dispatch: { output: [{ dimension: "correctness", high_count: 2 }] } } });
+      const result = evaluator.evaluateExpression("json(steps.dispatch.output)", ctx);
+      expect(result).toBe('[{"dimension":"correctness","high_count":2}]');
+    });
+
+    it("json() inside a template produces real JSON, not [object Object]", () => {
+      const ctx = baseCtx({ steps: { dispatch: { output: { a: 1, b: "x" } } } });
+      const result = evaluator.evaluateTemplate("returned: ${{ json(steps.dispatch.output) }}", ctx);
+      expect(result).toBe('returned: {"a":1,"b":"x"}');
+      expect(result).not.toContain("[object Object]");
+    });
+
+    it("json() sorts object keys deterministically", () => {
+      const ctx = baseCtx({ steps: { s: { output: { b: 1, a: 2 } } } });
+      expect(evaluator.evaluateExpression("json(steps.s.output)", ctx)).toBe('{"a":2,"b":1}');
+    });
+
+    it("bare object interpolation stringifies to [object Object] (the pitfall json() fixes)", () => {
+      const ctx = baseCtx({ steps: { dispatch: { output: { a: 1 } } } });
+      const result = evaluator.evaluateTemplate("returned: ${{ steps.dispatch.output }}", ctx);
+      expect(result).toBe("returned: [object Object]");
+    });
   });
 
   describe("evaluateOverExpression", () => {
