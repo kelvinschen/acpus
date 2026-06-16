@@ -1,5 +1,11 @@
 # @acpus/tui
 
+## 0.5.0
+
+### Minor Changes
+
+- 57cd479: Add `Esc` key to navigate back from App (graph view) to RunPicker, allowing users to select a different run without quitting and relaunching the TUI. Footer now shows `Esc back` hint.
+
 ## 0.4.1
 
 ### Patch Changes
