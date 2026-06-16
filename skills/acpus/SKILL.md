@@ -170,7 +170,7 @@ Every path above links its relevant references inline. For quick lookup:
   (`codebase-deep-research`, `adversarial-feature-implementation-review`,
   `solution-generate-filter`, `worktree-implementation-tournament`, `loop-until-green-fix`,
   `goal-driven-development`, `subagent-driven`, `human-in-the-loop-development`)
-- `scripts/workflow-viz.py` — generate an HTML visualization for a Spec (`python3 scripts/workflow-viz.py <spec.yaml> [-o out.html]`)
+- `scripts/workflow-viz.py` — generate an HTML visualization for a Spec (`python3 scripts/workflow-viz.py <spec.yaml> [-o out.html]`), or for an executed Run with real node outputs/state overlaid (`python3 scripts/workflow-viz.py --run .acpus/state/runs/<runId>/ [-o out.html]`)
 - `assets/examples/` — copyable Workflow Spec examples: `review-guard`, `draft-review-loop`, `topic-fanout-synthesis`
 
 ## Source Docs

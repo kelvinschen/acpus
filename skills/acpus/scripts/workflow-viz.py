@@ -170,6 +170,8 @@ def normalize_node(node):
         }
     if "subworkflow" in node:
         sub = node["subworkflow"] or {}
+        if isinstance(sub, str):
+            sub = {"ref": sub}
         return {
             "id": nid, "kind": "subworkflow",
             "ref": yaml_dump(sub.get("ref") or sub.get("path")),
@@ -241,7 +243,135 @@ def build_model(spec, source):
         "counts": counts,
         "total": sum(counts.values()),
         "kindMeta": KIND_META,
+        "mode": "spec",
     }
+
+
+# ── Run augmentation ─────────────────────────────────────────────
+# Best-effort overlay of an executed Run's persisted state onto the Spec
+# skeleton. We only read the documented on-disk JSON under
+# .acpus/state/runs/<runId>/ (RunState + NodeExecutionState, see
+# packages/runtime/src/types.ts). No runtime code, no processes, no server.
+
+PREVIEW_LIMIT = 4000
+
+
+def preview_value(value):
+    """Render a persisted value as bounded JSON/text for inline display."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False, indent=2)
+        except (TypeError, ValueError):
+            text = str(value)
+    if len(text) > PREVIEW_LIMIT:
+        text = text[:PREVIEW_LIMIT] + "\n… (truncated)"
+    return text
+
+
+def dynamic_label(dctx, node_key, node_id):
+    """Human label for one fanout/loop instance (e.g. 'item correctness', 'round 2')."""
+    if isinstance(dctx, dict):
+        loop = dctx.get("loop")
+        if isinstance(loop, dict) and loop.get("iter") is not None:
+            return "round %s" % loop.get("iter")
+        if dctx.get("item_id") is not None:
+            idx = dctx.get("item_index")
+            return "item %s%s" % (dctx["item_id"], (" [%s]" % idx) if idx is not None else "")
+        if dctx.get("item") is not None:
+            return "item %s" % dctx["item"]
+    # Fall back to the node-key suffix beyond the static node id.
+    tail = str(node_key).split(node_id, 1)[-1].strip("/")
+    return tail or ""
+
+
+def run_entry(state):
+    """Project one NodeExecutionState into the renderer model."""
+    return {
+        "nodeKey": state.get("nodeKey", ""),
+        "state": state.get("state", ""),
+        "attempt": state.get("attempt"),
+        "startedAt": state.get("startedAt"),
+        "completedAt": state.get("completedAt"),
+        "error": state.get("error"),
+        "label": dynamic_label(state.get("dynamicContext"), state.get("nodeKey", ""), state.get("nodeId", "")),
+        "renderedPrompt": preview_value(state.get("renderedPrompt")),
+        "output": preview_value(state.get("output")),
+    }
+
+
+def kv_previews(value):
+    """Turn a resolved input/output dict into [{key, value}] previews for display."""
+    if not isinstance(value, dict):
+        text = preview_value(value)
+        return [{"key": "", "value": text}] if text else []
+    return [{"key": str(k), "value": preview_value(v)} for k, v in value.items()]
+
+
+def load_run(run_dir):
+    """Read run-meta.json + input.json + nodes/*.json; group node states by static node id."""
+    meta_path = run_dir / "run-meta.json"
+    if not meta_path.exists():
+        raise SystemExit(f"not a run directory (missing run-meta.json): {run_dir}")
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    resolved_input = None
+    input_path = run_dir / "input.json"
+    if input_path.exists():
+        try:
+            resolved_input = json.loads(input_path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            resolved_input = None
+    by_id = {}
+    nodes_dir = run_dir / "nodes"
+    if nodes_dir.is_dir():
+        for path in sorted(nodes_dir.glob("*.json")):
+            try:
+                state = json.loads(path.read_text(encoding="utf-8"))
+            except (ValueError, OSError):
+                continue
+            nid = state.get("nodeId")
+            if not nid:
+                continue
+            by_id.setdefault(nid, []).append(run_entry(state))
+    return {
+        "meta": meta,
+        "byId": by_id,
+        "input": kv_previews(resolved_input) if resolved_input is not None else [],
+        "output": kv_previews(meta.get("output")) if meta.get("output") is not None else [],
+    }
+
+
+def attach_run(nodes, by_id):
+    """Recurse the model tree, attaching matching run states by node id."""
+    for node in nodes:
+        node["runStates"] = by_id.get(node["id"], [])
+        for child_key in ("body", "branches", "default"):
+            child = node.get(child_key)
+            if isinstance(child, list):
+                attach_run(child, by_id)
+        for case in node.get("cases") or []:
+            attach_run(case.get("body") or [], by_id)
+
+
+def build_run_model(spec, source, run):
+    """Spec model + executed-run overlay."""
+    model = build_model(spec, source)
+    attach_run(model["nodes"], run["byId"])
+    meta = run["meta"]
+    model["mode"] = "run"
+    model["runMeta"] = {
+        "runId": meta.get("runId", ""),
+        "status": meta.get("status", ""),
+        "createdAt": meta.get("createdAt", ""),
+        "updatedAt": meta.get("updatedAt", ""),
+        "error": meta.get("error"),
+        "input": run.get("input"),
+        "output": run.get("output"),
+    }
+    return model
 
 
 def render_page(model):
@@ -464,6 +594,36 @@ a:hover{text-decoration:underline}
 .empty{color:var(--muted);font-style:italic}
 .metaline{font-size:12px;color:var(--fg-dim);font-family:"Source Code Pro",monospace;margin:2px 0}
 .metaline b{color:var(--fg)}
+
+/* run overlay */
+.node{position:relative}
+.st-badge{position:absolute;top:-7px;right:-7px;width:18px;height:18px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;font-family:"Source Code Pro",monospace;
+  font-size:11px;font-weight:700;border:1px solid var(--bg-hard);color:var(--bg-hard);z-index:2}
+.st-completed{background:var(--green)} .st-failed{background:var(--red)}
+.st-running{background:var(--yellow)} .st-awaiting{background:var(--blue)}
+.st-paused{background:var(--aqua)} .st-cancelled{background:var(--purple)} .st-pending{background:var(--muted)}
+.runbar{display:flex;align-items:center;gap:8px;margin-left:auto;font-family:"Source Code Pro",monospace;
+  font-size:11px;color:var(--fg-dim)}
+.runbar .seg{display:inline-flex;align-items:center;gap:3px}
+.runbar .ok{color:var(--green)} .runbar .bad{color:var(--red)} .runbar .run{color:var(--yellow)}
+.st-completed-fg{color:var(--green)} .st-failed-fg{color:var(--red)} .st-running-fg{color:var(--yellow)}
+.st-paused-fg{color:var(--aqua)} .st-cancelled-fg{color:var(--purple)}
+.composite.run-completed{border-color:var(--green)} .composite.run-failed{border-color:var(--red)}
+.runpill{display:inline-flex;align-items:center;gap:5px;border-radius:12px;padding:2px 10px;font-size:12px;
+  font-family:"Source Code Pro",monospace;font-weight:600;color:var(--bg-hard)}
+.runpill.completed{background:var(--green)} .runpill.failed{background:var(--red)}
+.runpill.running{background:var(--yellow)} .runpill.paused{background:var(--aqua)}
+.runpill.cancelled{background:var(--muted)}
+.inst{border:1px solid var(--border);border-radius:8px;margin:8px 0 0;background:var(--bg-soft);overflow:hidden}
+.inst>.ihead{display:flex;align-items:center;gap:8px;padding:7px 10px;cursor:pointer;font-size:12px;
+  font-family:"Source Code Pro",monospace}
+.inst>.ihead:hover{background:rgba(255,255,255,.04)}
+.inst>.ihead .ilabel{font-weight:600;color:var(--aqua)}
+.inst>.ihead .itoggle{margin-left:auto;color:var(--muted)}
+.inst .ibody{padding:0 10px 10px;border-top:1px solid var(--border)}
+.inst .ibody.collapsed{display:none}
+.st-dot{display:inline-block;width:9px;height:9px;border-radius:50%}
 *{scrollbar-width:none}
 *::-webkit-scrollbar{display:none}
 </style>
@@ -501,6 +661,22 @@ const REG = {};
 function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));}
 function kmeta(kind){return KM[kind]||{symbol:"\u25cb",color:"#928374",label:kind};}
 
+const RUN = MODEL.mode==="run";
+// State glyphs mirror the TUI (packages/tui/src/theme.ts STATE_STYLES).
+const STATE_GLYPH={pending:"\u25cb",running:"\u25b7",awaiting:"\u25f7",
+  completed:"\u2713",failed:"\u2717",paused:"=",cancelled:"\u2298"};
+function stateGlyph(s){return STATE_GLYPH[s]||"\u25cb";}
+// Roll up many instances (fanout lanes / loop rounds) into one summary state.
+function rollup(states){
+  const c={};(states||[]).forEach(s=>{c[s.state]=(c[s.state]||0)+1;});
+  let overall="completed";
+  if(c.failed) overall="failed";
+  else if(c.running||c.awaiting||c.pending) overall="running";
+  else if(c.cancelled||c.paused) overall="paused";
+  else if(!(states||[]).length) overall="";
+  return {counts:c,overall:overall,total:(states||[]).length};
+}
+
 function keyfield(node){
   switch(node.kind){
     case "agent": return node.use?("use: "+node.use):"";
@@ -518,11 +694,34 @@ function keyfield(node){
 
 const COMPOSITE = new Set(["loop","fanout","parallel","switch","subworkflow"]);
 
+// Distinct instance labels (fanout lanes / loop rounds) found in a subtree's
+// run states — the container node itself runs once, so the multiplicity lives
+// in its descendants' dynamic keys.
+function descendantLabels(node){
+  const set=new Set();
+  function walk(n){
+    (n.runStates||[]).forEach(s=>{if(s.label) set.add(s.label);});
+    ["body","branches","default"].forEach(k=>{if(Array.isArray(n[k]))n[k].forEach(walk);});
+    (n.cases||[]).forEach(c=>(c.body||[]).forEach(walk));
+  }
+  ["body","branches","default"].forEach(k=>{if(Array.isArray(node[k]))node[k].forEach(walk);});
+  (node.cases||[]).forEach(c=>(c.body||[]).forEach(walk));
+  return set;
+}
+
+function statusBadge(node){
+  if(!RUN) return "";
+  const ru=rollup(node.runStates);
+  if(!ru.total) return "";
+  return '<span class="st-badge st-'+ru.overall+'" title="'+esc(ru.overall)+'">'+esc(stateGlyph(ru.overall))+'</span>';
+}
+
 function makeLeaf(node){
   const m=kmeta(node.kind); node._uid="n"+(UID++); REG[node._uid]=node;
   const el=document.createElement("div");
   el.className="node kind-"+node.kind; el.style.borderLeftColor=m.color; el.dataset.uid=node._uid;
-  el.innerHTML='<div class="row1"><span class="sym" style="color:'+m.color+'">'+esc(m.symbol)+'</span>'
+  el.innerHTML=statusBadge(node)
+    +'<div class="row1"><span class="sym" style="color:'+m.color+'">'+esc(m.symbol)+'</span>'
     +'<span class="nid">'+esc(node.id)+'</span>'
     +'<span class="badge" style="background:'+m.color+'">'+esc(node.kind.toUpperCase())+'</span></div>'
     +(keyfield(node)?'<div class="keyline">'+esc(keyfield(node))+'</div>':'');
@@ -530,16 +729,42 @@ function makeLeaf(node){
   return el;
 }
 
+function runBar(node){
+  if(!RUN) return "";
+  // Fanout/loop containers run once; their multiplicity is the lanes/rounds in
+  // the body. Show that count plus the container's own overall outcome.
+  if(node.kind==="fanout"||node.kind==="loop"){
+    const n=descendantLabels(node).size;
+    const own=rollup(node.runStates);
+    if(!n&&!own.total) return "";
+    const unit=node.kind==="loop"?"round":"lane";
+    const segs=[];
+    if(n) segs.push('<span class="seg">\u00d7'+n+' '+unit+(n>1?"s":"")+'</span>');
+    if(own.total) segs.push('<span class="seg st-'+own.overall+'-fg">'+esc(stateGlyph(own.overall))+' '+esc(own.overall)+'</span>');
+    return '<span class="runbar">'+segs.join("")+'</span>';
+  }
+  const ru=rollup(node.runStates);
+  if(!ru.total) return "";
+  const segs=['<span class="seg">\u00d7'+ru.total+'</span>'];
+  if(ru.counts.completed) segs.push('<span class="seg ok">'+esc(stateGlyph("completed"))+ru.counts.completed+'</span>');
+  if(ru.counts.failed) segs.push('<span class="seg bad">'+esc(stateGlyph("failed"))+ru.counts.failed+'</span>');
+  const rest=ru.total-(ru.counts.completed||0)-(ru.counts.failed||0);
+  if(rest>0) segs.push('<span class="seg run">'+esc(stateGlyph("running"))+rest+'</span>');
+  return '<span class="runbar">'+segs.join("")+'</span>';
+}
+
 function makeComposite(node){
   const m=kmeta(node.kind); node._uid="n"+(UID++); REG[node._uid]=node;
   const box=document.createElement("div");
   box.className="composite kind-"+node.kind; box.style.borderColor=m.color;
+  if(RUN){const ru=rollup(node.runStates);if(ru.total)box.classList.add("run-"+ru.overall);}
   const head=document.createElement("div");
   head.className="chead"; head.dataset.uid=node._uid;
   head.innerHTML='<span class="sym" style="color:'+m.color+'">'+esc(m.symbol)+'</span>'
     +'<span class="nid">'+esc(node.id)+'</span>'
     +'<span class="badge" style="background:'+m.color+'">'+esc(node.kind.toUpperCase())+'</span>'
     +'<span class="keyfield">'+esc(keyfield(node))+'</span>'
+    +runBar(node)
     +'<span class="toggle">\u25be</span>';
   const body=document.createElement("div"); body.className="cbody";
   head.addEventListener("click",e=>{
@@ -559,7 +784,8 @@ function makeComposite(node){
     body.appendChild(be);
   }else if(node.kind==="fanout"){
     const badge=document.createElement("span"); badge.className="fanout-badge";
-    badge.textContent="×N"; box.appendChild(badge);
+    const lanes=RUN?descendantLabels(node).size:0;
+    badge.textContent=lanes?("\u00d7"+lanes):"\u00d7N"; box.appendChild(badge);
     const hint=document.createElement("div"); hint.className="lanehint";
     hint.textContent="\u25ec lane template  ["+(node.fanoutKey||node.over||"item")+"]"+(node.join?("  · join "+node.join):"");
     body.appendChild(hint);
@@ -658,8 +884,38 @@ function outputSchema(val){
   return codeBlock("output schema",val);
 }
 
+function instTiming(s){
+  const bits=[];
+  if(s.attempt!=null) bits.push("attempt "+s.attempt);
+  if(s.startedAt) bits.push("start "+s.startedAt);
+  if(s.completedAt) bits.push("end "+s.completedAt);
+  return bits.join("  ·  ");
+}
+function renderInstances(states,opts){
+  // One collapsible block per executed instance (fanout lane / loop round / single run).
+  let h='<div class="fieldlabel">Run \u00b7 '+states.length+' execution(s)</div>';
+  states.forEach((s,i)=>{
+    const open=states.length===1;
+    const label=s.label||("#"+i);
+    h+='<div class="inst"><div class="ihead">'
+      +'<span class="st-dot st-'+s.state+'"></span>'
+      +'<span class="ilabel">'+esc(label)+'</span>'
+      +'<span class="ftype">'+esc(s.state)+'</span>'
+      +'<span class="itoggle">'+(open?"\u25be":"\u25b8")+'</span></div>'
+      +'<div class="ibody'+(open?"":" collapsed")+'">'
+      +(instTiming(s)?'<div class="metaline">'+esc(instTiming(s))+'</div>':'')
+      +(s.error?codeBlock("error",s.error):"")
+      +(opts.prompt&&s.renderedPrompt?codeBlock("rendered prompt",s.renderedPrompt):"")
+      +(s.output?codeBlock("output",s.output):"")
+      +'</div></div>';
+  });
+  return h;
+}
+
 function renderDetail(node){
   const m=kmeta(node.kind);
+  const rs=RUN?(node.runStates||[]):[];
+  const hasRun=rs.length>0;
   let h='<div class="dhead"><span class="sym" style="color:'+m.color+'">'+esc(m.symbol)+'</span>'
     +'<span class="nid">'+esc(node.id)+'</span>'
     +'<span class="badge" style="background:'+m.color+'">'+esc(m.label)+'</span></div>';
@@ -667,12 +923,11 @@ function renderDetail(node){
     +metaLine("session_key",node.session_key)+metaLine("retry",node.retry);
   if(node.kind==="agent"){
     h+=metaLine("use",node.use);
-    h+=outputSchema(node.output);
-    h+=codeBlock("prompt",node.prompt);
+    if(!hasRun){h+=outputSchema(node.output);h+=codeBlock("prompt",node.prompt);}
   }else if(node.kind==="program"){
     h+=codeBlock("cmd",node.cmd);
     h+=codeBlock("capture",node.capture)+codeBlock("expect",node.expect)+codeBlock("env",node.env);
-    h+=outputSchema(node.output);
+    if(!hasRun){h+=outputSchema(node.output);}
   }else if(node.kind==="guard"){
     h+=codeBlock("when (CEL)",node.when);
     h+=metaLine("then",node.then)+metaLine("else",node.else);
@@ -696,10 +951,21 @@ function renderDetail(node){
     h+=metaLine("ref",node.ref); h+=codeBlock("input",node.input);
   }else if(node.kind==="signal"){
     h+=metaLine("on_timeout",node.on_timeout);
-    h+=outputSchema(node.output);
-    h+=codeBlock("prompt",node.prompt)+codeBlock("default",node.default);
+    if(!hasRun){h+=outputSchema(node.output)+codeBlock("prompt",node.prompt)+codeBlock("default",node.default);}
   }
-  document.getElementById("detail").innerHTML='<div class="panetitle">Node Detail</div>'+h;
+  if(hasRun){
+    const wantsPrompt=(node.kind==="agent"||node.kind==="signal");
+    h+=renderInstances(rs,{prompt:wantsPrompt});
+  }
+  const el=document.getElementById("detail");
+  el.innerHTML='<div class="panetitle">Node Detail</div>'+h;
+  el.querySelectorAll(".inst .ihead").forEach(head=>{
+    head.addEventListener("click",()=>{
+      const body=head.nextElementSibling;const tog=head.querySelector(".itoggle");
+      body.classList.toggle("collapsed");
+      tog.textContent=body.classList.contains("collapsed")?"\u25b8":"\u25be";
+    });
+  });
 }
 
 function renderTopbar(){
@@ -709,9 +975,16 @@ function renderTopbar(){
     pills+='<span class="pill"><span class="dot" style="background:'+m.color+'"></span>'+esc(m.label)+' \u00d7'+MODEL.counts[k]+'</span>';
   });
   const desc=MODEL.description?('<button class="desc-btn" onclick="document.getElementById(\'desc-overlay\').classList.add(\'open\')">description</button>'):'';
+  let runHead="";
+  if(RUN){
+    const rm=MODEL.runMeta;
+    runHead='<span class="runpill '+esc(rm.status)+'">'+esc(stateGlyph(rm.status))+' '+esc(rm.status)+'</span>'
+      +'<span class="src">run '+esc(rm.runId)+'</span>';
+  }
   document.getElementById("topbar").innerHTML=
     '<div class="tb-head"><h1>'+esc(MODEL.name)+'</h1>'
     +(MODEL.version!==""?'<span class="ver">v'+esc(MODEL.version)+'</span>':'')
+    +runHead
     +'<span class="src">'+esc(MODEL.source)+'</span></div>'
     +'<div class="pills">'+pills+(desc?'&nbsp;'+desc:'')+'</div>';
   if(MODEL.description){
@@ -724,6 +997,8 @@ function renderTopbar(){
 
 function renderWfIO(){
   let h='<div class="panetitle">Workflow I/O</div>';
+  const runIn={};(RUN?(MODEL.runMeta.input||[]):[]).forEach(e=>{runIn[e.key]=e.value;});
+  const runOut={};(RUN?(MODEL.runMeta.output||[]):[]).forEach(e=>{runOut[e.key]=e.value;});
   if(MODEL.agents.length){
     h+='<div class="io-section"><div class="io-label">Agents</div>';
     MODEL.agents.forEach(a=>{
@@ -736,21 +1011,30 @@ function renderWfIO(){
     h+='</div>';
   }
   if(MODEL.inputs.length){
-    h+='<div class="io-section"><div class="io-label">Inputs</div>';
+    h+='<div class="io-section"><div class="io-label">Inputs'+(RUN?' (resolved)':'')+'</div>';
     MODEL.inputs.forEach(i=>{
+      const hasVal=RUN&&Object.prototype.hasOwnProperty.call(runIn,i.name);
       h+='<div class="item"><div class="name">'+esc(i.name)+' '
         +'<span class="tag '+(i.optional?'opt':'req')+'">'+(i.optional?'optional':'required')+'</span></div>'
         +'<div class="kv"><span class="k">type</span><span class="v">'+esc(i.type||'-')+'</span>'
-        +(i.default!=null?'<span class="k">default</span><span class="v">'+esc(i.default)+'</span>':'')+'</div></div>';
+        +(i.default!=null?'<span class="k">default</span><span class="v">'+esc(i.default)+'</span>':'')+'</div>'
+        +(hasVal?'<pre class="codeblock">'+esc(runIn[i.name])+'</pre>':'')+'</div>';
     });
     h+='</div>';
   }
   if(MODEL.outputs.length){
-    h+='<div class="io-section"><div class="io-label">Outputs</div>';
+    h+='<div class="io-section"><div class="io-label">Outputs'+(RUN?' (resolved)':'')+'</div>';
     MODEL.outputs.forEach(o=>{
-      h+='<div class="item"><div class="name">'+esc(o.key)+'</div><pre class="codeblock">'+esc(o.expr)+'</pre></div>';
+      const hasVal=RUN&&Object.prototype.hasOwnProperty.call(runOut,o.key);
+      const body=hasVal?runOut[o.key]:o.expr;
+      h+='<div class="item"><div class="name">'+esc(o.key)+(hasVal?'':(RUN?' <span class="tag">expr</span>':''))+'</div>'
+        +'<pre class="codeblock">'+esc(body)+'</pre></div>';
     });
     h+='</div>';
+  }
+  if(RUN&&MODEL.runMeta.error){
+    h+='<div class="io-section"><div class="io-label">Run Error</div>'
+      +'<pre class="codeblock">'+esc(MODEL.runMeta.error)+'</pre></div>';
   }
   if(!MODEL.inputs.length&&!MODEL.outputs.length&&!MODEL.agents.length){h+='<div class="empty">none</div>';}
   document.getElementById("wf-io").innerHTML=h;
@@ -815,10 +1099,19 @@ def main():
     ap = argparse.ArgumentParser(
         description="Render Acpus Workflow Spec(s) into a self-contained HTML visualizer "
                     "(Gruvbox Dark, Noto Sans + Source Code Pro).")
-    ap.add_argument("input", help="a Workflow Spec .yaml/.yml file, or a directory of specs")
+    group = ap.add_mutually_exclusive_group(required=True)
+    group.add_argument("input", nargs="?",
+                       help="a Workflow Spec .yaml/.yml file, or a directory of specs")
+    group.add_argument("--run", metavar="RUN_DIR",
+                       help="an executed Run directory (.acpus/state/runs/<runId>/); "
+                            "overlays persisted node outputs/state onto the Spec skeleton")
     ap.add_argument("-o", "--output",
-                    help="output .html file (single spec) or output directory (directory input)")
+                    help="output .html file (single spec/run) or output directory (directory input)")
     args = ap.parse_args()
+
+    if args.run:
+        render_run(pathlib.Path(args.run), args.output)
+        return
 
     inp = pathlib.Path(args.input)
     if not inp.exists():
@@ -858,6 +1151,29 @@ def main():
             out_file.parent.mkdir(parents=True, exist_ok=True)
         out_file.write_text(render_page(model), encoding="utf-8")
         print(f"generated {out_file}  ({model['total']} nodes)")
+
+
+def render_run(run_dir, output):
+    if not run_dir.is_dir():
+        raise SystemExit(f"run directory not found: {run_dir}")
+    run = load_run(run_dir)
+    source_path = run["meta"].get("workflowSourcePath")
+    if not source_path:
+        raise SystemExit(f"run-meta.json has no workflowSourcePath; cannot locate the Spec skeleton: {run_dir}")
+    spec_file = pathlib.Path(source_path)
+    if not spec_file.exists():
+        raise SystemExit(f"Workflow Spec referenced by this run is missing: {spec_file}")
+    spec = yaml.safe_load(spec_file.read_text(encoding="utf-8"))
+    if not isinstance(spec, dict) or "workflow" not in spec:
+        raise SystemExit(f"not a Workflow Spec (missing top-level 'workflow'): {spec_file}")
+    model = build_run_model(spec, spec_file.name, run)
+    run_id = run["meta"].get("runId") or run_dir.name
+    out_file = pathlib.Path(output) if output else pathlib.Path(f"{run_id}.html")
+    if out_file.parent != pathlib.Path("."):
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+    out_file.write_text(render_page(model), encoding="utf-8")
+    print(f"generated {out_file}  (run {run_id}, status {model['runMeta']['status']}, "
+          f"{model['total']} spec nodes, {len(run['byId'])} executed node id(s))")
 
 
 if __name__ == "__main__":
