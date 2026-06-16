@@ -1,6 +1,6 @@
 {
   "name": "@acpus/runtime",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Local durable runtime and Run Supervisor for Acpus workflows",
   "keywords": [
     "acp",

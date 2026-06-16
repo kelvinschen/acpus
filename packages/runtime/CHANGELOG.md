@@ -1,5 +1,12 @@
 # @acpus/runtime
 
+## 0.4.1
+
+### Patch Changes
+
+- Updated dependencies [ac9318d]
+  - @acpus/core@0.3.1
+
 ## 0.4.0
 
 ### Minor Changes
