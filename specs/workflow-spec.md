@@ -52,6 +52,10 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - For testing, use `acpus-mock-agent` as a `command` agent (e.g. `type: command, use: "acpus-mock-agent --script <path>"`), which provides deterministic script responses through the real acpx path.
 - An agent MAY declare `model`, `cwd`, and `env`, which the runtime forwards to acpx.
 - An Agent Override `cwd` value MUST be a non-empty string.
+- An Agent Step MAY declare `cwd` as a template string, which overrides the referenced agent definition's `cwd` for that step's execution.
+- A step-level `cwd` MUST be evaluated against the current expression context (so it MAY reference `input.*` and prior `steps.*`) and resolved to an absolute path before being forwarded to acpx.
+- When an Agent Step omits `cwd`, the runtime MUST fall back to the referenced agent definition's `cwd`, and then to the executor process working directory.
+- An Agent Step `cwd` that is declared but renders empty (including the literal `cwd: ""`) MUST resolve to the executor process working directory, bypassing the agent definition's `cwd`; this is the canonical way to opt a single step out of an agent's default `cwd`.
 - Agent `env` values MUST add to or override the executor process environment, and MUST be template-evaluated and stringified before being passed to acpx.
 - Agent `env` MUST NOT delete inherited environment variables.
 - Agent Override `env` values MUST merge into the selected top-level agent's `env` by key and MUST NOT delete existing agent environment keys.
@@ -84,12 +88,15 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A Program Step MAY declare `env`.
 - Program Step `env` values MUST add to or override the executor process environment, and MUST be template-evaluated and stringified before subprocess execution.
 - Program Step `env` MUST NOT delete inherited environment variables.
+- A Program Step MAY declare `cwd` as a template string, evaluated against the current expression context and resolved to an absolute path; the subprocess MUST run in that directory.
+- When a Program Step omits `cwd`, the subprocess MUST run in the executor process working directory.
+- A Program Step with `capture.from: file` MUST resolve a relative `capture.path` against the resolved `cwd`.
 - A Program Step MAY declare `capture`.
 - A Program Step MUST declare `capture` as an object when `capture` is present.
 - Program Step `capture.from` MUST be `stdout` or `file`.
 - Program Step `capture.parse` MUST be `json` or `text`.
 - Program Step `capture.path` MUST be present when `capture.from` is `file`.
-- A Program Step with `capture.from: file` MUST read `capture.path` (resolved relative to the workspace) and parse it per `capture.parse`.
+- A Program Step with `capture.from: file` MUST read `capture.path` (resolved relative to the resolved `cwd`) and parse it per `capture.parse`.
 - A Program Step result MUST be exposed as an envelope `{ output, exit_code }` at `steps.<id>`.
 - A Program Step MUST expose `steps.<id>.exit_code`.
 - A Program Step MUST persist its stdout and stderr as artifacts (`stdout.log` and `stderr.log`) on every execution, and expose their references.
@@ -111,6 +118,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 ### Composite Nodes
 
 - A `parallel` Node MUST contain named child Nodes.
+- Composite child Nodes (`parallel` entries and `fanout`, `switch` case, `switch` default, and `loop` `do` lists) MUST be validated as full Nodes, so unknown or misplaced fields on a nested Node MUST be rejected with the same structural diagnostics as a top-level Node.
 - Every Node result MUST be a step value envelope that exposes its primary produced value at `steps.<id>.output`.
 - Nested composite outputs MUST preserve child step values; for example, a parallel branch value, fanout lane value, switch selected value, or loop last value that comes from an Agent Step includes that Agent Step's own `output` field.
 - The root pipeline Node MUST persist an output envelope whose `output` field is a map keyed by direct child step id, where each value is that child step's full step value.
@@ -216,6 +224,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - Compiler tests MUST cover Program Step shape validation.
 - Compiler tests MUST cover `expect.exit_code` shape validation.
 - Compiler tests MUST cover composite Node compilation.
+- Compiler tests MUST cover unknown-field rejection on Nodes nested inside composite `do` and `parallel` lists.
 - Compiler tests MUST cover Guard Node shape validation, compilation, and expression collection.
 - Compiler tests MUST cover Signal Node shape validation, optional `output` schema compilation, and `default` payload validation against a declared `output` schema.
 - Compiler tests MUST cover include expansion and include cycle diagnostics.

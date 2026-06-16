@@ -71,6 +71,7 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
         run: { const: "agent" },
         use: { type: "string" },
         prompt: { type: "string" },
+        cwd: { type: "string" },        // overrides agent default cwd
         session_key: { type: "string" },
         output: { type: "object" },   // free DSL — validated by compiler
         retry: { $ref: "#/$defs/retrySpec" },
@@ -100,6 +101,7 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
           ]
         },
         env: { type: "object" },
+        cwd: { type: "string" },        // overrides default cwd
         capture: { $ref: "#/$defs/captureSpec" },
         expect: { $ref: "#/$defs/expectSpec" },
         output: { type: "object" },   // free DSL
@@ -123,7 +125,8 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
           pattern: "^[^:]+$"
         },
         parallel: {
-          type: "array"
+          type: "array",
+          items: { $ref: "#/$defs/step" }
         },
         max_concurrency: {
           type: "integer",
@@ -175,7 +178,7 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
           minimum: 1
         },
         success_criteria: { $ref: "#/$defs/successCriteriaSpec" },
-        do: { type: "array" }
+        do: { type: "array", items: { $ref: "#/$defs/step" } }
       },
       allOf: [
         // join: quorum → quorum required
@@ -216,7 +219,7 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
           type: "object",
           additionalProperties: false,
           properties: {
-            do: { type: "array" }
+            do: { type: "array", items: { $ref: "#/$defs/step" } }
           }
         }
       }
@@ -232,7 +235,7 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
             { type: "boolean" }
           ]
         },
-        do: { type: "array" }
+        do: { type: "array", items: { $ref: "#/$defs/step" } }
       }
     },
 
@@ -262,7 +265,7 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
           ]
         },
         max_iterations: { type: "number" },
-        do: { type: "array" }
+        do: { type: "array", items: { $ref: "#/$defs/step" } }
       }
     },
 

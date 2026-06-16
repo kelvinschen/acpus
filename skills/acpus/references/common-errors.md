@@ -258,30 +258,43 @@ fanout:
 
 ## Agent Errors
 
-### Agent runs in the wrong directory — `cwd` on the step is silently ignored
+### Agent runs in the wrong directory
 
 **Symptom:** An agent that should edit / inspect another repository instead
 operates on the host project. Telemetry shows `cwd` pointing at the workspace
 root, not your `target_path`. The reviewer "sees" unrelated files; the
 implementer's edits land nowhere you expect.
 
-**Root cause:** `cwd` is an **agent-definition** field (`agents.<name>.cwd`), not
-a step field. Putting `cwd:` on a `run: agent` step is dropped by the compiler's
-metadata allow-list. Worse, when the step is nested inside a composite body
-(`loop.do`, `switch` case `do`, `parallel`, `fanout.do`), lint does NOT flag the
-unknown `cwd` key (see the lint-gap note below), so it fails silently.
+**Root cause:** No `cwd` was set, so the agent defaults to the executor process
+working directory.
 
-**Fix:** Set `cwd` on the agent definition. It is template-evaluated against the
-step context, so it can read `input.*`:
+**Fix:** `cwd` can be set either on the agent definition (a default for every
+step using that agent) or on the individual `run: agent` step (overrides the
+agent default for that step only). A step-level `cwd` is the right tool when one
+agent is reused across several target directories. Program steps support `cwd`
+too. All forms are template-evaluated against the step context, so they can read
+`input.*` and prior `steps.*`:
 ```yaml
 agents:
   implementer:
     use: pi
-    cwd: "${{ input.target_path }}"   # agent runs inside the target repo
+    cwd: "${{ input.target_path }}"   # default for every step using `implementer`
+
+workflow:
+  steps:
+    - id: edit_other_repo
+      run: agent
+      use: implementer
+      prompt: "..."
+      cwd: "${{ input.other_repo }}"  # overrides the agent default for this step
 ```
-Note `cwd` resolves against `input.*` (and other in-scope expression values),
-but it cannot read `steps.*` — the agent definition is resolved per call, so
-prefer threading the path through `input`.
+Resolution order for a `run: agent` step is: step `cwd` → agent-definition
+`cwd` → process working directory.
+
+To make one step opt OUT of an agent's default `cwd` and run in the process
+working directory, set `cwd: ""` (or a template that renders empty) on that step
+— a declared-but-empty `cwd` resolves to the process cwd and skips the agent
+default. `cwd` must be a string; a non-string value (`cwd: 123`) is a lint error.
 
 ### Switch/parallel branch references a sibling via the composite id
 
@@ -316,30 +329,6 @@ value does not exist until the composite completes.
 Outer / earlier scopes (e.g. `steps.review`, `steps.prepare`, `input`) ARE
 visible from inside a branch; only the not-yet-produced composite self-reference
 is not.
-
----
-
-## Lint Gaps (validated but worth knowing)
-
-### Unknown fields inside composite bodies are NOT caught by lint
-
-**Symptom:** A typo'd or misplaced field (e.g. a step-level `cwd`, a misspelled
-`prompt`) passes `acpus lint: ok` when the node lives inside `loop.do`,
-`switch`-case `do`, `parallel`, or `fanout.do`, but is silently dropped at
-runtime. The same field at the top-level `workflow.steps` IS rejected with
-`STEP_SHAPE: Unknown step property '<x>'`.
-
-**Root cause:** The JSON schema enforces `additionalProperties: false` on each
-step type, but composite child arrays are declared only as `{ type: "array" }`
-and do not recurse the per-step union into their items. So unknown-field
-detection does not reach nested nodes. (Semantic checks like "agent step needs a
-prompt" still run, because the compiler recursively compiles child nodes — only
-the strict unknown-key check is skipped.)
-
-**Fix / workaround:** Until the schema recurses composite children, treat nested
-nodes with extra care: copy a known-good node shape, and after authoring run the
-node once to confirm fields took effect (e.g. check agent `cwd` in `runs show`
-telemetry). Prefer top-level lint of a simplified version when unsure.
 
 ---
 

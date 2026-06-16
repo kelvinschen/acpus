@@ -180,4 +180,135 @@ workflow:
     expect(result.ok).toBe(false);
     expectDiagnostic(result, { code: "SPEC_SHAPE", message: "Unknown" });
   });
+
+  it("rejects unknown step property nested in loop.do", () => {
+    const src = `
+version: 1
+name: test
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: outer
+      loop:
+        max_iterations: 3
+        do:
+          - id: inner
+            run: agent
+            use: mock
+            prompt: "x"
+            bogus_field: 1
+`;
+    const result = lintWorkflow(src);
+    expect(result.ok).toBe(false);
+    expectDiagnostic(result, { code: "STEP_SHAPE", path: "$.workflow.steps[0].loop.do[0]", message: "Unknown step property 'bogus_field'" });
+  });
+
+  it("rejects unknown step property nested in a parallel branch", () => {
+    const src = `
+version: 1
+name: test
+workflow:
+  steps:
+    - id: outer
+      parallel:
+        - id: inner
+          run: program
+          cmd: ["echo", "hi"]
+          surprise: true
+`;
+    const result = lintWorkflow(src);
+    expect(result.ok).toBe(false);
+    expectDiagnostic(result, { code: "STEP_SHAPE", path: "$.workflow.steps[0].parallel[0]", message: "Unknown step property 'surprise'" });
+  });
+
+  it("reports a missing required field on a nested step without ancestor cascade", () => {
+    const src = `
+version: 1
+name: test
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: outer
+      loop:
+        max_iterations: 3
+        do:
+          - id: inner
+            run: agent
+            use: mock
+`;
+    const result = lintWorkflow(src);
+    expect(result.ok).toBe(false);
+    expectDiagnostic(result, { code: "AGENT_PROMPT", path: "$.workflow.steps[0].loop.do[0]" });
+    // The enclosing loop is well-formed; it MUST NOT be reported as a bad step.
+    const outerErrors = result.diagnostics.filter((d) => d.path === "$.workflow.steps[0]");
+    expect(outerErrors).toHaveLength(0);
+  });
+
+  it("rejects unknown step property nested in a switch case do list", () => {
+    const src = `
+version: 1
+name: test
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: router
+      switch:
+        on: input.kind
+        cases:
+          - when: input.kind == "a"
+            do:
+              - id: handle
+                run: agent
+                use: mock
+                prompt: "x"
+                surprise: true
+`;
+    const result = lintWorkflow(src);
+    expect(result.ok).toBe(false);
+    expectDiagnostic(result, { code: "STEP_SHAPE", path: "$.workflow.steps[0].switch.cases[0].do[0]", message: "Unknown step property 'surprise'" });
+  });
+
+  it("accepts step-level cwd on agent and program steps", () => {
+    const src = `
+version: 1
+name: test
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: a
+      run: agent
+      use: mock
+      prompt: "x"
+      cwd: "\${{ input.path }}"
+    - id: p
+      run: program
+      cmd: ["echo", "hi"]
+      cwd: "/tmp"
+`;
+    const result = lintWorkflow(src);
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects a non-string cwd on an agent step", () => {
+    const src = `
+version: 1
+name: test
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: a
+      run: agent
+      use: mock
+      prompt: "x"
+      cwd: 123
+`;
+    const result = lintWorkflow(src);
+    expect(result.ok).toBe(false);
+    expectDiagnostic(result, { code: "SPEC_SHAPE", path: "$.workflow.steps[0].cwd" });
+  });
 });

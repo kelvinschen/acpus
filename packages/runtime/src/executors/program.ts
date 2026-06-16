@@ -56,12 +56,14 @@ export class ProgramExecutor implements ExecutorAdapter {
     // Evaluate env templates. A bad expression (e.g. referencing an unknown step)
     // is a user-facing error, not a spawn failure — catch and report clearly.
     let env: Record<string, string>;
+    let cwd: string;
     try {
       env = { ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined) as [string, string][]), ...this.evaluateEnv(node.metadata.env as Record<string, unknown> | undefined, context) };
+      cwd = this.resolveCwd(node.metadata.cwd, context);
     } catch (error) {
       return {
-        failureKind: "capture",
-        error: `Failed to evaluate env template: ${error instanceof Error ? error.message : String(error)}`,
+        failureKind: "config",
+        error: `Failed to evaluate configuration template: ${error instanceof Error ? error.message : String(error)}`,
         stdout: "",
         stderr: ""
       };
@@ -71,6 +73,7 @@ export class ProgramExecutor implements ExecutorAdapter {
     try {
       result = await execa(command, args, {
         shell,
+        cwd,
         reject: false,
         timeout: timeoutMs && timeoutMs > 0 ? timeoutMs : 0,
         killSignal: "SIGKILL",
@@ -140,7 +143,7 @@ export class ProgramExecutor implements ExecutorAdapter {
 
       let raw: string;
       if (from === "file") {
-        const filePath = resolve(process.cwd(), capture.path as string);
+        const filePath = resolve(cwd, capture.path as string);
         try {
           raw = readFileSync(filePath, "utf8");
         } catch (error) {
@@ -211,6 +214,14 @@ export class ProgramExecutor implements ExecutorAdapter {
       out[k] = typeof v === "string" ? this.evaluator.evaluateTemplate(v, context) : String(v);
     }
     return out;
+  }
+
+  /** Resolve the optional step-level cwd template; falls back to the process cwd. */
+  private resolveCwd(cwd: unknown, context: ExpressionContext): string {
+    if (typeof cwd === "string" && cwd.length > 0) {
+      return resolve(this.evaluator.evaluateTemplate(cwd, context));
+    }
+    return process.cwd();
   }
 }
 

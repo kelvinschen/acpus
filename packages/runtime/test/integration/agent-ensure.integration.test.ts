@@ -441,6 +441,30 @@ describe("AgentExecutor: cwd resolution", () => {
 
     expect(result.cwd).toBe(process.cwd());
   });
+
+  it("lets a step-level cwd override the agent definition cwd", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-agent-test-"));
+    tmpDirs.push(dir);
+    const { script, logPath } = writeRecordingAcpxScript(dir);
+
+    const executor = new AgentExecutor({ acpxPath: script });
+    const node = makeAgentNode({
+      agent: { type: "builtin", use: "mock", model: "test-model", cwd: "/agent/default" },
+      cwd: "${{ input.target }}",
+      prompt: "Hello"
+    });
+    const result = await executor.execute({
+      node,
+      context: { input: { target: "/step/override" }, steps: {}, run_id: "run-001" },
+      signal: new AbortController().signal,
+      nodeKey: "workflow/test-agent"
+    });
+
+    expect(result.cwd).toBe("/step/override");
+    const promptArgs = readRecordedPromptArgs(logPath);
+    const cwdIndex = promptArgs.indexOf("--cwd");
+    expect(promptArgs[cwdIndex + 1]).toBe("/step/override");
+  });
 });
 
 describe("AgentExecutor: acpx timeout", () => {

@@ -116,9 +116,12 @@ workflow:
           - id: implement
             run: agent
             use: implementer
+            cwd: "${{ item.worktree_path }}"
             prompt: |
-              Implement this feature in the isolated git worktree. Keep
-              identifiers, paths, and commands verbatim.
+              Implement this feature in the isolated git worktree. You are
+              already running inside the candidate worktree (your working
+              directory is the worktree root). Keep identifiers, paths, and
+              commands verbatim.
 
               Feature goal:
               ${{ input.feature_goal }}
@@ -171,12 +174,16 @@ workflow:
                 wt = pathlib.Path(worktree)
                 patch_path = pathlib.Path(patch)
                 log_path = pathlib.Path(log)
-                diff = subprocess.run(["git", "-C", str(wt), "diff", "--binary"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                # Stage everything (including untracked new files) so the diff
+                # captures the full candidate change; `git diff` alone omits
+                # untracked files.
+                add = subprocess.run(["git", "-C", str(wt), "add", "-A"], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                diff = subprocess.run(["git", "-C", str(wt), "diff", "--cached", "--binary"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 patch_path.write_text(diff.stdout, encoding="utf-8")
                 verify_result = subprocess.run(["bash", "-c", verify], cwd=wt, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
                 log_path.write_text(verify_result.stdout, encoding="utf-8")
                 print(json.dumps({
-                    "ok": diff.returncode == 0 and verify_result.returncode == 0 and patch_path.stat().st_size > 0,
+                    "ok": add.returncode == 0 and diff.returncode == 0 and verify_result.returncode == 0 and patch_path.stat().st_size > 0,
                     "patch_path": str(patch_path),
                     "verify_log_path": str(log_path),
                     "verify_exit_code": verify_result.returncode,

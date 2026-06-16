@@ -221,7 +221,7 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
   if (step.run === "agent") {
     validateAgentStep(step, path, context);
     validateStepTimeout(step, path, context);
-    const metadata = pickMetadata(step, ["run", "use", "prompt", "session_key", "output", "retry", "timeout", "on_error"]);
+    const metadata = pickMetadata(step, ["run", "use", "prompt", "cwd", "session_key", "output", "retry", "timeout", "on_error"]);
     // Snapshot the referenced agent definition into the node so the runtime can
     // route to the right executor and build the acpx invocation. `type` defaults
     // to "builtin".
@@ -240,7 +240,7 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
   if (step.run === "program") {
     validateProgramStep(step, path, context);
     validateStepTimeout(step, path, context);
-    const metadata = pickMetadata(step, ["run", "cmd", "env", "capture", "expect", "output", "retry", "timeout", "on_error"]);
+    const metadata = pickMetadata(step, ["run", "cmd", "env", "cwd", "capture", "expect", "output", "retry", "timeout", "on_error"]);
     // Normalize the default `expect.exit_code` so omitting it and explicitly
     // declaring `[0]` produce the same IR (and therefore the same Node
     // Definition Hash). Without this, authors who add `expect: { exit_code: [0] }`

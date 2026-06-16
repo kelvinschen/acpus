@@ -212,29 +212,26 @@ workflow:
     expect(result.ok).toBe(true);
   });
 
-  it("compiles Agent Steps with overridden effective agent metadata", () => {
-    const source = [
-      "version: 1",
-      "name: agent-override-compile",
-      "agents:",
-      "  implementer:",
-      "    type: builtin",
-      "    use: codex",
-      "    model: gpt-5",
-      "workflow:",
-      "  steps:",
-      "    - id: impl",
-      "      run: agent",
-      "      use: implementer",
-      "      prompt: Do it."
-    ].join("\n");
-    const effective = applyAgentOverrides(parseYaml(source) as any, {
-      implementer: { type: "builtin", use: "claude", model: "opus" }
-    });
-    const result = compileWorkflow(JSON.stringify(effective.effectiveSpec));
+  it("carries a step-level cwd into agent node metadata", () => {
+    const source = `
+version: 1
+name: agent-step-cwd
+agents:
+  coder: { use: pi, cwd: "/default" }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: coder
+      prompt: "x"
+      cwd: "\${{ input.target }}"
+`;
+    const result = compileWorkflow(source);
 
     expect(result.ok).toBe(true);
-    const node = result.ir?.root.children?.[0];
-    expect(node?.metadata.agent).toEqual({ type: "builtin", use: "claude", model: "opus" });
+    const agentNode = result.ir!.root.children!.find((n) => n.id === "ask")!;
+    expect(agentNode.metadata.cwd).toBe("${{ input.target }}");
+    // The agent definition's own cwd remains snapshotted for fallback.
+    expect((agentNode.metadata.agent as { cwd?: string }).cwd).toBe("/default");
   });
 });

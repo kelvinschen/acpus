@@ -28,6 +28,7 @@ workflow:
           - id: loop_body
             loop:
               until: loop.iter >= input.max_rounds
+              max_iterations: 2
               do:
                 - id: work
                   run: agent

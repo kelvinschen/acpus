@@ -247,4 +247,92 @@ describe("ProgramExecutor", () => {
     expect(result.exitCode).toBe(0);
     expect((result.output as string).trim()).toBe("world");
   });
+
+  it("runs the subprocess in a step-level cwd template", async () => {
+    const { mkdtempSync, realpathSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "acpus-cwd-")));
+    try {
+      const executor = new ProgramExecutor();
+      const node = makeProgramNode({
+        cmd: [process.execPath, "-e", "console.log(process.cwd())"],
+        cwd: "${{ input.dir }}",
+        capture: { from: "stdout", parse: "text" }
+      });
+      const ctx: ExpressionContext = { input: { dir }, steps: {}, run_id: "test" };
+      const result = await executor.execute({ node, context: ctx, signal: new AbortController().signal, nodeKey: node.id });
+      expect(result.exitCode).toBe(0);
+      expect((result.output as string).trim()).toBe(dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves a relative capture.path against the step cwd", async () => {
+    const { mkdtempSync, writeFileSync, realpathSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "acpus-cwd-capture-")));
+    writeFileSync(join(dir, "out.json"), JSON.stringify({ from: "cwd-relative" }));
+    try {
+      const executor = new ProgramExecutor();
+      const node = makeProgramNode({
+        cmd: "echo ignored",
+        cwd: dir,
+        capture: { from: "file", parse: "json", path: "out.json" }
+      });
+      const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toEqual({ from: "cwd-relative" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves a relative cwd against the process working directory", async () => {
+    const { join, relative } = await import("node:path");
+    const { mkdtempSync, realpathSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    // A sibling temp dir reachable from process.cwd() via a relative path.
+    const abs = realpathSync(mkdtempSync(join(tmpdir(), "acpus-rel-cwd-")));
+    const rel = relative(process.cwd(), abs);
+    try {
+      const executor = new ProgramExecutor();
+      const node = makeProgramNode({
+        cmd: [process.execPath, "-e", "console.log(process.cwd())"],
+        cwd: rel,
+        capture: { from: "stdout", parse: "text" }
+      });
+      const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+      expect(result.exitCode).toBe(0);
+      expect((result.output as string).trim()).toBe(abs);
+    } finally {
+      rmSync(abs, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the process cwd when the cwd template renders empty", async () => {
+    const executor = new ProgramExecutor();
+    const node = makeProgramNode({
+      cmd: [process.execPath, "-e", "console.log(process.cwd())"],
+      cwd: "${{ input.empty }}",
+      capture: { from: "stdout", parse: "text" }
+    });
+    const ctx: ExpressionContext = { input: { empty: "" }, steps: {}, run_id: "test" };
+    const result = await executor.execute({ node, context: ctx, signal: new AbortController().signal, nodeKey: node.id });
+    expect(result.exitCode).toBe(0);
+    expect((result.output as string).trim()).toBe(process.cwd());
+  });
+
+  it("reports a cwd template evaluation failure as a config failure", async () => {
+    const executor = new ProgramExecutor();
+    const node = makeProgramNode({
+      cmd: "echo hi",
+      cwd: "${{ missing.value }}"
+    });
+    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+    expect(result.failureKind).toBe("config");
+    expect(result.error).toContain("Failed to evaluate configuration template");
+  });
 });

@@ -39,11 +39,11 @@ const validate = ajv.compile(WORKFLOW_SCHEMA);
 export function validateWithSchema(spec: unknown, diagnostics: DiagnosticBag): void {
   if (!validate(spec)) {
     const errors = validate.errors ?? [];
-    mapErrors(errors, diagnostics);
+    mapErrors(errors, diagnostics, spec);
   }
 }
 
-function mapErrors(errors: ErrorObject[], diagnostics: DiagnosticBag): void {
+function mapErrors(errors: ErrorObject[], diagnostics: DiagnosticBag, spec: unknown): void {
   // Identify step-level oneOf failures — these produce many noisy sub-errors
   // because Ajv tries each branch and reports all mismatches.
   const stepOneOfPaths = new Set<string>();
@@ -53,96 +53,45 @@ function mapErrors(errors: ErrorObject[], diagnostics: DiagnosticBag): void {
     }
   }
 
-  // For each step-level oneOf failure, try to extract specific property errors
-  // from the sub-errors. If we can, report those instead of STEP_KIND.
+  // For each step-level oneOf failure, re-validate the step against only its
+  // intended branch (inferred from the data's discriminator). This avoids two
+  // classes of noise that arise once composite child lists recurse into the
+  // step union: (1) cross-branch artifacts (e.g. a `loop` step reported as
+  // "missing prompt" because the agent branch also failed), and (2) ancestor
+  // cascade (a parent step failing its oneOf only because a descendant step is
+  // invalid). Descendant step errors are reported by their own oneOf iteration.
   const reportedStepSubErrors = new Set<string>(); // instancePath of reported sub-errors
   for (const stepPath of stepOneOfPaths) {
-    // Include errors at the step level itself AND deeper sub-errors
-    const subErrors = errors.filter(
-      (err) => (err.instancePath === stepPath || err.instancePath.startsWith(stepPath + "/")) && err.keyword !== "oneOf"
-    );
+    const stepData = navigate(spec, stepPath);
+    const branch = inferStepBranch(stepData);
 
-    // Collect all additionalProperties errors at the step level
-    const additionalPropErrors = subErrors.filter(
-      (err) => err.keyword === "additionalProperties" && err.instancePath === stepPath
-    );
-
-    // If there are additionalProperties errors, find the "intended branch" and
-    // report only the truly unknown properties from it.
-    if (additionalPropErrors.length > 0) {
-      // Group additionalProperties by the property name and count how many
-      // branches reject each property.
-      const propRejectionCounts = new Map<string, number>();
-      for (const err of additionalPropErrors) {
-        const prop = (err.params as { additionalProperty: string }).additionalProperty;
-        propRejectionCounts.set(prop, (propRejectionCounts.get(prop) ?? 0) + 1);
+    if (branch) {
+      const branchErrors = validateAgainstBranch(branch, stepData);
+      // Keep only errors that belong to THIS step. Errors inside a nested child
+      // step (under a `do`/`parallel` list) are owned by that child's own oneOf
+      // iteration, so drop them here to avoid ancestor cascade.
+      const relevant = branchErrors.filter((err) => !isWithinNestedStep(err.instancePath));
+      let reportedAny = false;
+      for (const err of relevant) {
+        const absolutePath = prefixPath(stepPath, err.instancePath);
+        const path = toPath(absolutePath);
+        const code = classifyError(err, path);
+        if (code === "STEP_KIND") continue;
+        if (err.keyword === "if") continue;
+        const dedupeKey = `${absolutePath}|${code}|${err.keyword}|${JSON.stringify(err.params)}`;
+        if (reportedStepSubErrors.has(dedupeKey)) continue;
+        reportedStepSubErrors.add(dedupeKey);
+        diagnostics.error(code, formatMessage(err, code, path), path);
+        reportedAny = true;
       }
-
-      // Properties rejected by ALL branches are truly unknown in every context.
-      // Properties rejected by only SOME branches are actually known in the
-      // matching branch — the truly unknown ones are those rejected even by
-      // the branch that the user clearly intended.
-      // Heuristic: properties present in the data that are rejected by all branches
-      // are the truly unknown ones. We count how many branches there are from
-      // the total additionalProperties errors.
-      // Derive branch count from the schema so adding a new step kind
-      // doesn't require updating a magic number here.
-      const stepDef = (WORKFLOW_SCHEMA.$defs as Record<string, Record<string, unknown>>).step;
-      const branchCount = (stepDef.oneOf as unknown[]).length;
-      const trulyUnknown = [...propRejectionCounts.entries()]
-        .filter(([, count]) => count === branchCount) // rejected by ALL branches
-        .map(([prop]) => prop);
-
-      for (const prop of trulyUnknown) {
-        const key = `${stepPath}/additionalProperty/${prop}`;
-        if (!reportedStepSubErrors.has(key)) {
-          reportedStepSubErrors.add(key);
-          const path = toPath(stepPath);
-          diagnostics.error("STEP_SHAPE", `Unknown step property '${prop}'.`, path);
-        }
-      }
-
-      // If we found truly unknown properties, we're done for this step
-      if (trulyUnknown.length > 0) {
-        continue;
-      }
+      // The step itself is well-formed (its only failures were invalid
+      // descendants, which report their own diagnostics) → emit nothing.
+      if (reportedAny || !relevant.some((err) => err.keyword !== "if")) continue;
     }
 
-    // Try to find classifiable sub-errors that represent real issues
-    // (not just structural mismatches from branch selection).
-    // Collect all classifiable sub-errors, deduplicated by instancePath,
-    // keeping the most specific classification per path.
-    const classifiableMap = new Map<string, { err: ErrorObject; code: string; path: string; message: string; specificity: number }>();
-    for (const sub of subErrors) {
-      const path = toPath(sub.instancePath);
-      const code = classifyError(sub, path);
-      // Structural artifacts from oneOf branch matching — skip these
-      if (code === "STEP_KIND") continue;
-      // "if" keyword artifacts — skip
-      if (sub.keyword === "if") continue;
-      // Skip additionalProperties from non-matching branches (handled above)
-      if (sub.keyword === "additionalProperties" && sub.instancePath === stepPath) continue;
-      const message = formatMessage(sub, code, path);
-      // Specificity: prefer more specific codes over SPEC_SHAPE
-      const specificity = codeSpecificity(code);
-      const existing = classifiableMap.get(sub.instancePath);
-      if (!existing || specificity > existing.specificity) {
-        classifiableMap.set(sub.instancePath, { err: sub, code, path, message, specificity });
-      }
-    }
-
-    if (classifiableMap.size > 0) {
-      // Report the most specific property errors instead of a vague STEP_KIND
-      for (const item of classifiableMap.values()) {
-        if (!reportedStepSubErrors.has(item.err.instancePath)) {
-          reportedStepSubErrors.add(item.err.instancePath);
-          diagnostics.error(item.code, item.message, item.path);
-        }
-      }
-    } else {
-      // No classifiable sub-error — step truly has no matching kind
-      diagnostics.error("STEP_KIND", "Step must define one of run: agent, run: program, run: signal, parallel, fanout, switch, loop, guard, subworkflow, or include.", toPath(stepPath));
-    }
+    // No intended branch could be inferred (or none of its errors classified) —
+    // the step truly has no matching kind.
+    diagnostics.error("STEP_KIND", "Step must define one of run: agent, run: program, run: signal, parallel, fanout, switch, loop, guard, subworkflow, or include.", toPath(stepPath));
   }
 
   // Now process all remaining errors (non-step-oneOf sub-errors, and errors
@@ -167,6 +116,68 @@ function mapErrors(errors: ErrorObject[], diagnostics: DiagnosticBag): void {
     const message = formatMessage(err, code, path);
     diagnostics.error(code, message, path);
   }
+}
+
+// ── Branch inference for step oneOf failures ──
+
+/** Map a step's data discriminator to the `$defs` branch it intended to match. */
+function inferStepBranch(stepData: unknown): string | undefined {
+  if (typeof stepData !== "object" || stepData === null) return undefined;
+  const data = stepData as Record<string, unknown>;
+  if (data.run === "agent") return "agentStep";
+  if (data.run === "program") return "programStep";
+  if (data.run === "signal") return "signalStep";
+  if ("parallel" in data) return "parallelStep";
+  if ("fanout" in data) return "fanoutStep";
+  if ("switch" in data) return "switchStep";
+  if ("loop" in data) return "loopStep";
+  if ("guard" in data) return "guardStep";
+  if ("subworkflow" in data) return "subworkflowStep";
+  return undefined;
+}
+
+/** Cache of per-branch validators so repeated steps don't recompile. */
+const branchValidators = new Map<string, ReturnType<typeof ajv.compile>>();
+
+/** Validate `stepData` against a single step branch and return its errors. */
+function validateAgainstBranch(branch: string, stepData: unknown): ErrorObject[] {
+  let v = branchValidators.get(branch);
+  if (!v) {
+    v = ajv.compile({ $ref: `#/$defs/${branch}`, $defs: WORKFLOW_SCHEMA.$defs });
+    branchValidators.set(branch, v);
+  }
+  v(stepData);
+  return v.errors ?? [];
+}
+
+/** Resolve the JSON value at an Ajv instancePath ("/workflow/steps/0"). */
+function navigate(spec: unknown, instancePath: string): unknown {
+  const parts = instancePath.split("/").filter(Boolean);
+  let cur: unknown = spec;
+  for (const part of parts) {
+    if (cur == null || typeof cur !== "object") return undefined;
+    cur = (cur as Record<string, unknown>)[decodePointer(part)];
+  }
+  return cur;
+}
+
+/** Decode a JSON Pointer token (~1 → /, ~0 → ~). */
+function decodePointer(token: string): string {
+  return token.replace(/~1/g, "/").replace(/~0/g, "~");
+}
+
+/** Join a step's absolute instancePath with a branch-local instancePath. */
+function prefixPath(stepPath: string, localPath: string): string {
+  return localPath ? stepPath + localPath : stepPath;
+}
+
+/**
+ * True when a branch-local instancePath points inside a nested child step (an
+ * entry in a `do` or `parallel` list). Such errors belong to that child step's
+ * own oneOf iteration, not the enclosing step.
+ */
+function isWithinNestedStep(localPath: string): boolean {
+  return /\/(do|parallel)\/\d+(\/|$)/.test(localPath);
 }
 
 // ── Error classification ──
@@ -569,6 +580,12 @@ function pathContext(path: string): string {
   if (/\.agents\.[^.]+$/.test(path) || /\.agents\.[^.]+\./.test(path)) {
     return "agent";
   }
+  // A step entry itself — top-level `steps[n]` or a nested composite child
+  // (`do[n]` / `parallel[n]`). Checked before the composite-keyword cases so a
+  // nested step entry resolves to "step" rather than its enclosing composite.
+  if (/\.(steps|do|parallel)\[\d+\]$/.test(path)) {
+    return "step";
+  }
   if (/\.fanout\b/.test(path)) {
     if (/\.fanout\.success_criteria/.test(path)) return "success-criteria";
     return "fanout";
@@ -600,11 +617,12 @@ function pathContext(path: string): string {
   return "top";
 }
 
-/** Check if an instancePath looks like a step (direct child of steps array). */
+/** Check if an instancePath looks like a step (an entry in a steps/do/parallel list). */
 function isStepPath(instancePath: string): boolean {
-  // /workflow/steps/N — exactly one index deep under steps
-  const match = instancePath.match(/^\/workflow\/steps\/\d+$/);
-  return match !== null;
+  // Steps live directly in `workflow.steps`, composite `do` lists, or a
+  // `parallel` list. Each is an array whose entries are full Nodes, so a step
+  // entry path ends with one of those array names followed by a numeric index.
+  return /\/(steps|do|parallel)\/\d+$/.test(instancePath);
 }
 
 /** Check if errPath is a sub-path of any of the given parent paths. */

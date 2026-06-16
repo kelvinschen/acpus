@@ -59,7 +59,8 @@ export class AgentExecutor implements ExecutorAdapter {
     let prompt: string;
     let sessionName: string;
     try {
-      cwd = this.resolveCwd(agent.cwd, context);
+      // Step-level cwd overrides the agent definition's default cwd.
+      cwd = this.resolveCwd(node.metadata.cwd ?? agent.cwd, context);
       env = { ...process.env, ...this.stringEnv(agent.env, context) };
       prompt = preparedPrompt ?? renderAgentRequestPrompt(node, context, this.evaluator, Boolean(continuation), Boolean(retry));
       const sessionKey = preparedSessionKey ?? renderAgentSessionKey(node, context, this.evaluator);
