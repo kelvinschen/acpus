@@ -1,5 +1,23 @@
 # @acpus/tui
 
+## 0.4.0
+
+### Minor Changes
+
+- Generalize the Approval Gate into a first-class Signal Node and add step-level working directories.
+
+  - **Signal Node (`run: signal`)**: replaces the Approval Gate with a general human-in-the-loop / external-control node. A Signal Node blocks as `awaiting` until an external payload is delivered (`acpus runs signal --node <key> --payload <value>`), enabling arbitrary branching and guards driven by outside instructions. Payloads are validated against the node's declared `output` schema, with friendly rejection messages on mismatch.
+  - **Step-level `cwd`**: agent and program steps accept a `cwd` that overrides the agent-definition default (falling back to the agent cwd, then the process cwd). Composite child nodes (loop/fanout/switch/parallel) are now validated for unknown fields by lint.
+  - **Agent telemetry**: propagate `acpxRecordId` and `cwd` through agent telemetry; surface agent cwd in the TUI Execution tab.
+  - **`runs show`**: display rendered Signal Node prompts, expected payload schema, and a copy-pasteable deliver command; show workflow output in the compact format.
+  - **TUI**: signal decision controls and updated node-kind legend glyphs (Agent `✦`, Signal `◌`).
+
+### Patch Changes
+
+- Updated dependencies
+  - @acpus/core@0.3.0
+  - @acpus/runtime@0.4.0
+
 ## 0.3.2
 
 ### Patch Changes
