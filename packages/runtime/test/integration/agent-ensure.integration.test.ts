@@ -575,3 +575,143 @@ describe("AgentExecutor: acpx timeout", () => {
     });
   });
 });
+
+describe("AgentExecutor: agent policy", () => {
+  it("uses --approve-all and --non-interactive-permissions deny for policy: full (default)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-agent-test-"));
+    tmpDirs.push(dir);
+    const { script, logPath } = writeRecordingAcpxScript(dir);
+
+    const executor = new AgentExecutor({ acpxPath: script });
+    const node = makeAgentNode({
+      agent: { type: "builtin", use: "mock", model: "test-model" },
+      prompt: "Hello"
+    });
+    await executor.execute({
+      node,
+      context: baseCtx(),
+      signal: new AbortController().signal,
+      nodeKey: "workflow/test-agent"
+    });
+
+    const calls = readRecordedCalls(logPath);
+    // Both ensure and prompt should have the policy flags.
+    for (const args of calls) {
+      expect(args).toContain("--approve-all");
+      expect(args).not.toContain("--approve-reads");
+      const nipIndex = args.indexOf("--non-interactive-permissions");
+      expect(nipIndex).toBeGreaterThanOrEqual(0);
+      expect(args[nipIndex + 1]).toBe("deny");
+    }
+  });
+
+  it("uses --approve-reads and --non-interactive-permissions fail for policy: read on agent definition", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-agent-test-"));
+    tmpDirs.push(dir);
+    const { script, logPath } = writeRecordingAcpxScript(dir);
+
+    const executor = new AgentExecutor({ acpxPath: script });
+    const node = makeAgentNode({
+      agent: { type: "builtin", use: "mock", model: "test-model", policy: "read" },
+      prompt: "Hello"
+    });
+    await executor.execute({
+      node,
+      context: baseCtx(),
+      signal: new AbortController().signal,
+      nodeKey: "workflow/test-agent"
+    });
+
+    const calls = readRecordedCalls(logPath);
+    for (const args of calls) {
+      expect(args).toContain("--approve-reads");
+      expect(args).not.toContain("--approve-all");
+      const nipIndex = args.indexOf("--non-interactive-permissions");
+      expect(nipIndex).toBeGreaterThanOrEqual(0);
+      expect(args[nipIndex + 1]).toBe("fail");
+    }
+  });
+
+  it("step-level policy overrides agent definition policy", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-agent-test-"));
+    tmpDirs.push(dir);
+    const { script, logPath } = writeRecordingAcpxScript(dir);
+
+    const executor = new AgentExecutor({ acpxPath: script });
+    const node = makeAgentNode({
+      agent: { type: "builtin", use: "mock", model: "test-model", policy: "full" },
+      prompt: "Hello",
+      policy: "read"
+    });
+    await executor.execute({
+      node,
+      context: baseCtx(),
+      signal: new AbortController().signal,
+      nodeKey: "workflow/test-agent"
+    });
+
+    const calls = readRecordedCalls(logPath);
+    for (const args of calls) {
+      expect(args).toContain("--approve-reads");
+      expect(args).not.toContain("--approve-all");
+    }
+  });
+
+  it("never includes both --approve-all and --approve-reads in the same arg list", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-agent-test-"));
+    tmpDirs.push(dir);
+    const { script, logPath } = writeRecordingAcpxScript(dir);
+
+    // Test both policy values to confirm mutual exclusion.
+    for (const policy of ["full", "read"] as const) {
+      // Clear log from previous iteration
+      if (existsSync(logPath)) unlinkSync(logPath);
+
+      const executor = new AgentExecutor({ acpxPath: script });
+      const node = makeAgentNode({
+        agent: { type: "builtin", use: "mock", model: "test-model", policy },
+        prompt: "Hello"
+      });
+      await executor.execute({
+        node,
+        context: baseCtx(),
+        signal: new AbortController().signal,
+        nodeKey: "workflow/test-agent"
+      });
+
+      const calls = readRecordedCalls(logPath);
+      for (const args of calls) {
+        const hasApproveAll = args.includes("--approve-all");
+        const hasApproveReads = args.includes("--approve-reads");
+        expect(hasApproveAll && hasApproveReads).toBe(false);
+      }
+    }
+  });
+
+  it("passes policy flags for command-type agents", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-agent-test-"));
+    tmpDirs.push(dir);
+    const { script, logPath } = writeRecordingAcpxScript(dir);
+
+    const executor = new AgentExecutor({ acpxPath: script });
+    const node = makeAgentNode({
+      agent: { type: "command", use: "node ./review.js", policy: "read" },
+      prompt: "Hello"
+    });
+    await executor.execute({
+      node,
+      context: baseCtx(),
+      signal: new AbortController().signal,
+      nodeKey: "workflow/test-agent"
+    });
+
+    const calls = readRecordedCalls(logPath);
+    for (const args of calls) {
+      expect(args).toContain("--approve-reads");
+      expect(args).not.toContain("--approve-all");
+      expect(args).toContain("--agent");
+      const agentIndex = args.indexOf("--agent");
+      expect(args[agentIndex + 1]).toBe("node ./review.js");
+    }
+  });
+});

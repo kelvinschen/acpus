@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyAgentOverrides, compileWorkflow, lintWorkflow } from "../../src/index.js";
+import { applyAgentOverrides, compileWorkflow, hashIrNode, lintWorkflow } from "../../src/index.js";
 import { parse as parseYaml } from "yaml";
 import { expectDiagnostic } from "../support/diagnostic-helpers.js";
 
@@ -233,5 +233,156 @@ workflow:
     expect(agentNode.metadata.cwd).toBe("${{ input.target }}");
     // The agent definition's own cwd remains snapshotted for fallback.
     expect((agentNode.metadata.agent as { cwd?: string }).cwd).toBe("/default");
+  });
+
+  it("snapshots agent definition policy into metadata.agent.policy", () => {
+    const source = `
+version: 1
+name: agent-policy-read
+agents:
+  reviewer: { use: pi, policy: read }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: reviewer
+      prompt: "x"
+`;
+    const result = compileWorkflow(source);
+
+    expect(result.ok).toBe(true);
+    const agentNode = result.ir!.root.children!.find((n) => n.id === "ask")!;
+    expect((agentNode.metadata.agent as { policy?: string }).policy).toBe("read");
+    // Step-level policy is absent when not declared on the step.
+    expect(agentNode.metadata.policy).toBeUndefined();
+  });
+
+  it("stores step-level policy in metadata.policy", () => {
+    const source = `
+version: 1
+name: step-policy-full
+agents:
+  coder: { use: pi }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: coder
+      prompt: "x"
+      policy: full
+`;
+    const result = compileWorkflow(source);
+
+    expect(result.ok).toBe(true);
+    const agentNode = result.ir!.root.children!.find((n) => n.id === "ask")!;
+    expect(agentNode.metadata.policy).toBe("full");
+    // Agent definition has no policy declared.
+    expect((agentNode.metadata.agent as { policy?: string }).policy).toBeUndefined();
+  });
+
+  it("preserves both step-level and agent-level policy in IR", () => {
+    const source = `
+version: 1
+name: both-policies
+agents:
+  coder: { use: pi, policy: read }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: coder
+      prompt: "x"
+      policy: full
+`;
+    const result = compileWorkflow(source);
+
+    expect(result.ok).toBe(true);
+    const agentNode = result.ir!.root.children!.find((n) => n.id === "ask")!;
+    expect(agentNode.metadata.policy).toBe("full");
+    expect((agentNode.metadata.agent as { policy?: string }).policy).toBe("read");
+  });
+
+  it("snapshots policy on a command agent into metadata.agent.policy", () => {
+    const source = `
+version: 1
+name: command-agent-policy
+agents:
+  reviewer: { type: command, use: "node ./review.js", policy: read }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: reviewer
+      prompt: "x"
+`;
+    const result = compileWorkflow(source);
+
+    expect(result.ok).toBe(true);
+    const agentNode = result.ir!.root.children!.find((n) => n.id === "ask")!;
+    expect((agentNode.metadata.agent as { type?: string; policy?: string }).type).toBe("command");
+    expect((agentNode.metadata.agent as { policy?: string }).policy).toBe("read");
+    // No step-level policy declared.
+    expect(agentNode.metadata.policy).toBeUndefined();
+  });
+
+  it("stores step-level policy: read overriding agent-level policy: full", () => {
+    const source = `
+version: 1
+name: step-read-agent-full
+agents:
+  coder: { use: pi, policy: full }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: coder
+      prompt: "x"
+      policy: read
+`;
+    const result = compileWorkflow(source);
+
+    expect(result.ok).toBe(true);
+    const agentNode = result.ir!.root.children!.find((n) => n.id === "ask")!;
+    expect(agentNode.metadata.policy).toBe("read");
+    expect((agentNode.metadata.agent as { policy?: string }).policy).toBe("full");
+  });
+
+  it("produces different Node Definition Hash for different policy values", () => {
+    const sourceRead = `
+version: 1
+name: hash-test
+agents:
+  coder: { use: pi, policy: read }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: coder
+      prompt: "x"
+`;
+    const sourceFull = `
+version: 1
+name: hash-test
+agents:
+  coder: { use: pi, policy: full }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: coder
+      prompt: "x"
+`;
+    const resultRead = compileWorkflow(sourceRead);
+    const resultFull = compileWorkflow(sourceFull);
+
+    expect(resultRead.ok).toBe(true);
+    expect(resultFull.ok).toBe(true);
+
+    const nodeRead = resultRead.ir!.root.children!.find((n) => n.id === "ask")!;
+    const nodeFull = resultFull.ir!.root.children!.find((n) => n.id === "ask")!;
+
+    // The Node Definition Hash must differ because metadata.agent.policy
+    // differs, and nodeShape includes the full metadata object.
+    expect(hashIrNode(nodeRead)).not.toBe(hashIrNode(nodeFull));
   });
 });

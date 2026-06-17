@@ -30,8 +30,8 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - The CLI MUST accept `--agents <value>` for `workflows run` and `runs fork`, where `<value>` is either inline JSON/YAML or a path to a `.json`, `.yaml`, or `.yml` Agent Overrides object.
 - The CLI MUST NOT expose a singular `--agent` flag in v1.
 - `--agents` file paths MUST resolve relative to the process current working directory. Existing file paths MUST take precedence over inline parsing, directory values MUST be rejected, unsupported file extensions MUST be rejected, and missing path-like values MUST be errors.
-- `--agents` values MUST resolve to an object keyed by existing top-level agent names. Each override object MUST be non-empty and MAY contain only `type`, `use`, `model`, `cwd`, and `env`.
-- `--agents` MUST reject arrays, scalars, unsupported fields, unknown current agent names, invalid `type`, unpaired `type` or `use`, `model: null`, non-object `env`, and `cwd` values that are not non-empty strings.
+- `--agents` values MUST resolve to an object keyed by existing top-level agent names. Each override object MUST be non-empty and MAY contain only `type`, `use`, `model`, `cwd`, `env`, and `policy`.
+- `--agents` MUST reject arrays, scalars, unsupported fields, unknown current agent names, invalid `type`, unpaired `type` or `use`, `model: null`, non-object `env`, `cwd` values that are not non-empty strings, and `policy` values that are not `read` or `full`.
 - `--agents` MUST merge `env` by key and MUST NOT support field deletion or environment deletion in v1.
 - `type` and `use` in `--agents` MUST be treated as identity fields and MUST appear together if either appears.
 - `model`, `cwd`, and `env` MAY be overridden without overriding `type` and `use`.

@@ -37,6 +37,28 @@ workflow:
     expectDiagnostic(result, { code: "AGENT_SHAPE", message: "Unknown" });
   });
 
+  it("rejects stale agent permission and concurrency fields", () => {
+    const src = `
+version: 1
+name: test
+agents:
+  coder:
+    type: command
+    use: "echo"
+    tools_allowlist: ["shell"]
+    max_concurrency: 1
+workflow:
+  steps:
+    - id: s1
+      run: agent
+      use: coder
+      prompt: "x"
+`;
+    const result = lintWorkflow(src);
+    expect(result.ok).toBe(false);
+    expectDiagnostic(result, { code: "AGENT_SHAPE", message: "Unknown" });
+  });
+
   it("rejects unknown step property on agent step", () => {
     const src = `
 version: 1
@@ -291,6 +313,146 @@ workflow:
 `;
     const result = lintWorkflow(src);
     expect(result.ok).toBe(true);
+  });
+
+  it("accepts policy: read on agent definition", () => {
+    const src = `
+version: 1
+name: test
+agents:
+  reviewer: { type: command, use: "echo stub", policy: read }
+workflow:
+  steps:
+    - id: a
+      run: agent
+      use: reviewer
+      prompt: "x"
+`;
+    const result = lintWorkflow(src);
+    expect(result.ok).toBe(true);
+  });
+
+  it("accepts policy: full on agent definition", () => {
+    const src = `
+version: 1
+name: test
+agents:
+  worker: { type: command, use: "echo stub", policy: full }
+workflow:
+  steps:
+    - id: a
+      run: agent
+      use: worker
+      prompt: "x"
+`;
+    const result = lintWorkflow(src);
+    expect(result.ok).toBe(true);
+  });
+
+  it("accepts policy: read on agent step", () => {
+    const src = `
+version: 1
+name: test
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: a
+      run: agent
+      use: mock
+      prompt: "x"
+      policy: read
+`;
+    const result = lintWorkflow(src);
+    expect(result.ok).toBe(true);
+  });
+
+  it("accepts policy: full on agent step", () => {
+    const src = `
+version: 1
+name: test
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: a
+      run: agent
+      use: mock
+      prompt: "x"
+      policy: full
+`;
+    const result = lintWorkflow(src);
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects invalid policy value on agent definition", () => {
+    const src = `
+version: 1
+name: test
+agents:
+  coder: { type: command, use: "echo stub", policy: write }
+workflow:
+  steps:
+    - id: a
+      run: agent
+      use: coder
+      prompt: "x"
+`;
+    const result = lintWorkflow(src);
+    expect(result.ok).toBe(false);
+    expectDiagnostic(result, { code: "SPEC_SHAPE", path: "$.agents.coder.policy" });
+  });
+
+  it("rejects invalid policy value on agent step", () => {
+    const src = `
+version: 1
+name: test
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: a
+      run: agent
+      use: mock
+      prompt: "x"
+      policy: admin
+`;
+    const result = lintWorkflow(src);
+    expect(result.ok).toBe(false);
+    expectDiagnostic(result, { code: "SPEC_SHAPE", path: "$.workflow.steps[0].policy" });
+  });
+
+  it("accepts policy on a builtin agent definition", () => {
+    const src = `
+version: 1
+name: test
+agents:
+  reviewer: { use: pi, policy: read }
+workflow:
+  steps:
+    - id: a
+      run: agent
+      use: reviewer
+      prompt: "x"
+`;
+    const result = lintWorkflow(src);
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects policy on a program step", () => {
+    const src = `
+version: 1
+name: test
+workflow:
+  steps:
+    - id: p
+      run: program
+      cmd: ["echo", "hi"]
+      policy: read
+`;
+    const result = lintWorkflow(src);
+    expect(result.ok).toBe(false);
+    expectDiagnostic(result, { code: "STEP_SHAPE" });
   });
 
   it("rejects a non-string cwd on an agent step", () => {

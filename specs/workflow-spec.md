@@ -51,6 +51,11 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A `command` agent MUST declare `use` as the launch command for a custom ACP server; the runtime drives it through the acpx `--agent "<use>"` escape hatch.
 - For testing, use `acpus-mock-agent` as a `command` agent (e.g. `type: command, use: "acpus-mock-agent --script <path>"`), which provides deterministic script responses through the real acpx path.
 - An agent MAY declare `model`, `cwd`, and `env`, which the runtime forwards to acpx.
+- An agent MAY declare `policy` as one of `read` or `full`; `policy` defaults to `full` when omitted.
+- An Agent Step MAY declare `policy` as one of `read` or `full`; a step-level `policy` overrides the referenced agent definition's `policy`.
+- `policy: read` MUST constrain the agent to only read and search operations; individual write tool calls MUST be rejected and MAY cause the Agent Step to fail.
+- `policy: full` MUST allow all operations.
+- Agent Policy is orthogonal to terminal capability (whether the agent can create sub-processes via ACP `terminal/create`).
 - An Agent Override `cwd` value MUST be a non-empty string.
 - An Agent Step MAY declare `cwd` as a template string, which overrides the referenced agent definition's `cwd` for that step's execution.
 - A step-level `cwd` MUST be evaluated against the current expression context (so it MAY reference `input.*` and prior `steps.*`) and resolved to an absolute path before being forwarded to acpx.
@@ -59,6 +64,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - Agent `env` values MUST add to or override the executor process environment, and MUST be template-evaluated and stringified before being passed to acpx.
 - Agent `env` MUST NOT delete inherited environment variables.
 - Agent Override `env` values MUST merge into the selected top-level agent's `env` by key and MUST NOT delete existing agent environment keys.
+- An Agent Override MAY declare `policy` as one of `read` or `full`; policy is a whole-value replacement and MUST NOT be cleared by an Agent Override. When an Agent Override changes `type`/`use` (identity change), the agent's `policy` MUST be preserved (policy is orthogonal to agent identity, unlike `model` which is cleared).
 - An Agent Step MAY omit `output` when no structured output parsing is required.
 - An Agent Step MAY declare `output` using the Acpus Schema DSL defined in [Schema Spec](schema-spec.md).
 - An Agent Step `output` declared with the Acpus Schema DSL MUST compile nested object and array item structure into the Agent Step output schema stored in the IR.

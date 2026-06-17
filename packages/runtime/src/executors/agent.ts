@@ -77,7 +77,8 @@ export class AgentExecutor implements ExecutorAdapter {
     }
 
     const invoker = this.resolveInvoker();
-    const build = this.argsBuilder(agent, cwd);
+    const effectivePolicy = this.resolveEffectivePolicy(node.metadata.policy, agent.policy);
+    const build = this.argsBuilder(agent, cwd, effectivePolicy);
 
     let acpxRecordId: string | undefined;
     try {
@@ -253,15 +254,22 @@ export class AgentExecutor implements ExecutorAdapter {
 
   /**
    * Build acpx arg lists for a subcommand. Global flags (--cwd, --model,
-   * --format) precede the command. For `command` agents the custom ACP server
-   * is selected via the `--agent` escape hatch; for `builtin` agents the
-   * adapter name is the command prefix.
+   * --format, policy flags) precede the command. For `command` agents the
+   * custom ACP server is selected via the `--agent` escape hatch; for
+   * `builtin` agents the adapter name is the command prefix.
+   *
+   * Policy flag mapping:
+   *   full → --approve-all --non-interactive-permissions deny
+   *   read → --approve-reads --non-interactive-permissions fail
    */
-  private argsBuilder(agent: AgentSpec, cwd: string): (global: string[], sub: string[]) => string[] {
+  private argsBuilder(agent: AgentSpec, cwd: string, policy: "read" | "full"): (global: string[], sub: string[]) => string[] {
     const globalBase = [
       "--cwd",
       cwd,
-      ...(agent.model ? ["--model", agent.model] : [])
+      ...(agent.model ? ["--model", agent.model] : []),
+      ...(policy === "full"
+        ? ["--approve-all", "--non-interactive-permissions", "deny"] as const
+        : ["--approve-reads", "--non-interactive-permissions", "fail"] as const)
     ];
     if (agent.type === "command") {
       const command = agent.use ?? "";
@@ -292,6 +300,12 @@ export class AgentExecutor implements ExecutorAdapter {
       return resolve(this.evaluator.evaluateTemplate(cwd, context));
     }
     return process.cwd();
+  }
+
+  private resolveEffectivePolicy(stepPolicy: unknown, agentPolicy: unknown): "read" | "full" {
+    if (stepPolicy === "read" || stepPolicy === "full") return stepPolicy;
+    if (agentPolicy === "read" || agentPolicy === "full") return agentPolicy;
+    return "full";
   }
 
   private resolveTimeoutSeconds(timeout: unknown): string | undefined {

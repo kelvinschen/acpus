@@ -23,6 +23,7 @@ agents:
     use: codex
   reviewer:
     use: pi
+    policy: read
 
 workflow:
   steps:

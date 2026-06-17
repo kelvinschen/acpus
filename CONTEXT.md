@@ -40,6 +40,10 @@ _Avoid_: signal node, pause, cancel, manual checkpoint
 A Node that performs external work through an Agent Step, Program Step, or Signal Node.
 _Avoid_: leaf task, action
 
+**Agent Policy**:
+A runtime constraint on what operations an ACP agent may perform, declared on an Agent definition or Agent Step as `policy: read | full`. `read` allows only read and search operations; `full` (default) allows all operations. Agent Policy is orthogonal to terminal capability (whether the agent can create sub-processes via ACP `terminal/create`). Step-level Agent Policy overrides Agent definition-level Agent Policy. Agent Policy is frozen into the compiled IR like other agent parameters.
+_Avoid_: permission, access level, sandbox
+
 **Agent Step**:
 An Executable Node that prompts an ACP-compatible agent and expects a structured output object.
 _Avoid_: AI task, model call

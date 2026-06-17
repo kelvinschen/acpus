@@ -21,14 +21,10 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
         use: { type: "string" },
         model: { type: "string" },
         cwd: {},                       // any type — runtime coercion
-        env: { type: "object" },       // free-form env vars
-        tools_allowlist: {
-          type: "array",
-          items: { type: "string" }
-        },
-        max_concurrency: {
-          type: "integer",
-          minimum: 1
+        env: { type: "object" },        // free-form env vars
+        policy: {
+          type: "string",
+          enum: ["read", "full"]
         }
       },
       required: ["use"]
@@ -79,6 +75,10 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
         on_error: {
           type: "string",
           enum: ["fail", "retry", "skip"]
+        },
+        policy: {
+          type: "string",
+          enum: ["read", "full"]
         }
       }
     },

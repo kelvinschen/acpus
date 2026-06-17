@@ -56,8 +56,12 @@ export interface AgentSpec {
   model?: string;
   cwd?: unknown;
   env?: Record<string, unknown>;
-  tools_allowlist?: string[];
-  max_concurrency?: number;
+  /**
+   * Agent Policy: constrains what operations the agent may perform.
+   * - `full` (default): all operations allowed.
+   * - `read`: only read and search operations allowed; write attempts fail.
+   */
+  policy?: "read" | "full";
 }
 
 export type WorkflowStep = Record<string, unknown> & {

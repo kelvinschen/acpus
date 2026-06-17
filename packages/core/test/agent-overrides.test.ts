@@ -15,8 +15,7 @@ function spec(): WorkflowSpec {
         use: "codex",
         model: "gpt-5",
         cwd: "./old",
-        env: { A: "1", B: "2" },
-        tools_allowlist: ["shell"]
+        env: { A: "1", B: "2" }
       },
       reviewer: {
         type: "builtin",
@@ -95,8 +94,7 @@ describe("Agent Overrides", () => {
       use: "codex",
       model: "gpt-5.1",
       cwd: "./packages/core",
-      env: { A: "1", B: "override", C: "3" },
-      tools_allowlist: ["shell"]
+      env: { A: "1", B: "override", C: "3" }
     });
   });
 
@@ -142,6 +140,80 @@ describe("Agent Overrides", () => {
       code: "INHERITED_AGENT_OVERRIDE_SKIPPED",
       agent: "removed",
       message: "Inherited Agent Override for 'removed' was skipped because the repaired Workflow Spec does not declare that agent."
+    });
+  });
+
+  it("parses --agents YAML with policy: read", () => {
+    expect(parseAgentOverridesInput("implementer: { policy: read }")).toEqual({
+      implementer: { policy: "read" }
+    });
+  });
+
+  it("parses --agents YAML with policy: full", () => {
+    expect(parseAgentOverridesInput("reviewer: { policy: full }")).toEqual({
+      reviewer: { policy: "full" }
+    });
+  });
+
+  it("rejects invalid policy value in --agents", () => {
+    expect(() => parseAgentOverridesInput("implementer: { policy: write }")).toThrow(/policy/);
+  });
+
+  it("override policy replaces agent definition policy", () => {
+    const readSpec: WorkflowSpec = {
+      version: 1,
+      name: "policy-override",
+      agents: {
+        implementer: {
+          type: "builtin",
+          use: "codex",
+          policy: "full"
+        }
+      },
+      workflow: {
+        steps: [
+          { id: "impl", run: "agent", use: "implementer", prompt: "Do it." }
+        ]
+      }
+    };
+    const result = applyAgentOverrides(readSpec, {
+      implementer: { policy: "read" }
+    });
+
+    expect(result.effectiveSpec.agents?.implementer.policy).toBe("read");
+    expect(result.agentOverrides.implementer).toEqual({ policy: "read" });
+  });
+
+  it("preserves policy when identity changes (unlike model)", () => {
+    const policySpec: WorkflowSpec = {
+      version: 1,
+      name: "policy-identity",
+      agents: {
+        reviewer: {
+          type: "builtin",
+          use: "claude",
+          model: "gpt-5",
+          policy: "read"
+        }
+      },
+      workflow: {
+        steps: [
+          { id: "rev", run: "agent", use: "reviewer", prompt: "Review it." }
+        ]
+      }
+    };
+    const result = applyAgentOverrides(policySpec, {
+      reviewer: { type: "command", use: "node ./agent.js" }
+    });
+
+    // Model is cleared on identity change (with warning).
+    expect(result.effectiveSpec.agents?.reviewer.model).toBeUndefined();
+    // Policy is preserved — it is orthogonal to agent identity.
+    expect(result.effectiveSpec.agents?.reviewer.policy).toBe("read");
+    expect(result.warnings).toContainEqual({
+      code: "AGENT_MODEL_CLEARED",
+      agent: "reviewer",
+      message: "Agent Override for 'reviewer' changed type/use and cleared the inherited model."
     });
   });
 });

@@ -64,6 +64,10 @@ Use raw CEL in `when`, `until`, and expression-valued `over`. Use `${{ ... }}` i
 
 When execution fails, inspect the Run, node state, error, and artifacts first. Prefer node retry, resume, signal delivery, or replay before editing the Workflow Spec.
 
+## 13. Default Agent Policy To Full
+
+Agents default to `policy: full`. Only use `policy: read` on agents that never write files or run commands — it maps to `--approve-reads`, which blocks all edit/execute tool calls regardless of target path.
+
 ## 12. Always Declare Timeout
 
 `timeout` is in **milliseconds** when a number (`timeout: 300000` = 5 min). String duration syntax is also supported: `timeout: 5m`, `timeout: 30s`, `timeout: 500ms`.

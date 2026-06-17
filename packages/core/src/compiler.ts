@@ -247,7 +247,7 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
   if (step.run === "agent") {
     validateAgentStep(step, path, context);
     validateStepTimeout(step, path, context);
-    const metadata = pickMetadata(step, ["run", "use", "prompt", "cwd", "session_key", "output", "retry", "timeout", "on_error"]);
+    const metadata = pickMetadata(step, ["run", "use", "prompt", "cwd", "session_key", "output", "retry", "timeout", "on_error", "policy"]);
     // Snapshot the referenced agent definition into the node so the runtime can
     // route to the right executor and build the acpx invocation. `type` defaults
     // to "builtin".

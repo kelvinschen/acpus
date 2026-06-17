@@ -11,6 +11,7 @@ export interface AgentOverride {
   model?: string;
   cwd?: string;
   env?: Record<string, unknown>;
+  policy?: "read" | "full";
 }
 
 export interface AgentOverrideWarning {
@@ -29,7 +30,7 @@ export interface ApplyAgentOverridesResult {
   warnings: AgentOverrideWarning[];
 }
 
-const SUPPORTED_OVERRIDE_FIELDS = new Set(["type", "use", "model", "cwd", "env"]);
+const SUPPORTED_OVERRIDE_FIELDS = new Set(["type", "use", "model", "cwd", "env", "policy"]);
 const SUPPORTED_FILE_EXTENSIONS = new Set([".json", ".yaml", ".yml"]);
 
 export function parseAgentOverridesInput(value: string | undefined, cwd = process.cwd()): AgentOverrides | undefined {
@@ -128,6 +129,9 @@ export function validateAgentOverrides(value: unknown, label = "Agent Overrides"
     if (rawOverride.env !== undefined && !isRecord(rawOverride.env)) {
       throw new Error(`${label}.${agentName}.env must be an object.`);
     }
+    if (rawOverride.policy !== undefined && rawOverride.policy !== "read" && rawOverride.policy !== "full") {
+      throw new Error(`${label}.${agentName}.policy must be 'read' or 'full'.`);
+    }
 
     const override: AgentOverride = {};
     if (rawOverride.type !== undefined) override.type = rawOverride.type;
@@ -135,6 +139,7 @@ export function validateAgentOverrides(value: unknown, label = "Agent Overrides"
     if (rawOverride.model !== undefined) override.model = rawOverride.model;
     if ("cwd" in rawOverride) override.cwd = rawOverride.cwd as string;
     if (rawOverride.env !== undefined) override.env = { ...rawOverride.env };
+    if (rawOverride.policy !== undefined) override.policy = rawOverride.policy;
     overrides[agentName] = override;
   }
   return overrides;
@@ -203,6 +208,11 @@ function applySingleOverride(
     mergedAgent.use = override.use;
     mergedOverride.type = override.type;
     mergedOverride.use = override.use;
+    // Model is identity-tied (different adapters use different models), so
+    // clearing it on identity change prevents sending a stale model to a new
+    // adapter. Policy is orthogonal to agent identity — a read-only reviewer
+    // should stay read-only regardless of which adapter backs it — so policy
+    // is preserved rather than cleared.
     if (override.model === undefined && mergedAgent.model !== undefined) {
       delete mergedAgent.model;
       delete mergedOverride.model;
@@ -224,6 +234,10 @@ function applySingleOverride(
   if (override.env !== undefined) {
     mergedAgent.env = { ...(isRecord(mergedAgent.env) ? mergedAgent.env : {}), ...override.env };
     mergedOverride.env = { ...(isRecord(mergedOverride.env) ? mergedOverride.env : {}), ...override.env };
+  }
+  if (override.policy !== undefined) {
+    mergedAgent.policy = override.policy;
+    mergedOverride.policy = override.policy;
   }
 
   agents[agentName] = mergedAgent;
