@@ -12,7 +12,7 @@ import {
   optionalSubmissionMetadata,
   parseWorkflowSpecForOverrides,
   serializeWorkflowSpecForOverrides,
-  workflowSourcePolicy
+  workflowSourceResolver
 } from "@acpus/core";
 import { resolve } from "node:path";
 import type { RunState } from "./types.js";
@@ -60,8 +60,7 @@ export function createSupervisorApp(
   let healthStartedAt = "";
   let healthEndpoint = "";
   const workspaceRoot = resolve(config.workspace ?? process.cwd());
-  const sourcePolicy = workflowSourcePolicy(workspaceRoot);
-  const allowedSourceRoots = sourcePolicy.allowedSourceRoots;
+  const sourceResolver = workflowSourceResolver(workspaceRoot);
 
   /** Refresh lease on every request with client headers. */
   function refreshLease(clientId: string | undefined, clientKind: string | undefined): void {
@@ -109,7 +108,7 @@ export function createSupervisorApp(
   /** Create an interpreter bound to this supervisor's store + executors. */
   function newInterpreter(runId?: string): WorkflowInterpreter {
     const nowTimestamp = runId ? store.readRunMeta(runId)?.createdAt : undefined;
-    return new WorkflowInterpreter(store, agentExecutor, programExecutor, { allowedSourceRoots, nowTimestamp });
+    return new WorkflowInterpreter(store, agentExecutor, programExecutor, { nowTimestamp });
   }
 
   /**
@@ -263,7 +262,7 @@ export function createSupervisorApp(
     let sourcePath: string | undefined;
     if (body.sourcePath) {
       try {
-        sourcePath = sourcePolicy.validateSourcePath(body.sourcePath);
+        sourcePath = sourceResolver.validateSourcePath(body.sourcePath);
       } catch (error) {
         return c.json({ error: errorMessage(error) }, 400);
       }
@@ -283,7 +282,7 @@ export function createSupervisorApp(
 
     const result = compileWorkflow(effectiveSource, {
       sourcePath,
-      includeResolver: sourcePolicy.createIncludeResolver(sourcePath)
+      includeResolver: sourceResolver.createIncludeResolver(sourcePath)
     });
     if (!result.ok || !result.ir) {
       return c.json({ error: "Compilation failed", diagnostics: result.diagnostics }, 400);
@@ -572,7 +571,7 @@ export function createSupervisorApp(
     let sourcePath: string | undefined;
     if (body.sourcePath) {
       try {
-        sourcePath = sourcePolicy.validateSourcePath(body.sourcePath);
+        sourcePath = sourceResolver.validateSourcePath(body.sourcePath);
       } catch (error) {
         return c.json({ error: errorMessage(error) }, 400);
       }
@@ -594,7 +593,7 @@ export function createSupervisorApp(
 
     const compileResult = compileWorkflow(effectiveSource, {
       sourcePath,
-      includeResolver: sourcePolicy.createIncludeResolver(sourcePath)
+      includeResolver: sourceResolver.createIncludeResolver(sourcePath)
     });
     if (!compileResult.ok || !compileResult.ir) {
       return c.json({ kind: "fork-rejected", error: "Compilation failed", diagnostics: compileResult.diagnostics }, 400);

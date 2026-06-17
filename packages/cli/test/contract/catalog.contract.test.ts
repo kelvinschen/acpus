@@ -58,7 +58,7 @@ describe("Workflow Catalog", () => {
     }
   });
 
-  it("marks specs invalid when includes resolve outside allowed source roots", () => {
+  it("marks specs ready when includes resolve outside workspace/global catalog roots", () => {
     const workspace = mkdtempSync(join(tmpdir(), "acpus-catalog-include-"));
     const outside = mkdtempSync(join(tmpdir(), "acpus-catalog-outside-"));
     try {
@@ -75,8 +75,9 @@ workflow:
 
       const entry = listWorkflowCatalog(workspace).find((item) => item.name === "catalog-parent");
 
-      expect(entry?.status).toBe("invalid");
-      expect(entry?.diagnostics.map((diagnostic) => diagnostic.message).join("\n")).toMatch(/outside allowed Workflow Spec roots/);
+      // Catalog discovery roots remain constrained; file references from discovered specs
+      // are not constrained by those roots.
+      expect(entry?.status).toBe("ready");
     } finally {
       rmSync(workspace, { recursive: true, force: true });
       rmSync(outside, { recursive: true, force: true });

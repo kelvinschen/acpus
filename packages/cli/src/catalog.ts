@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { globalWorkflowRoot, lintWorkflow, workflowSourcePolicy, type Diagnostic, type LintResult } from "@acpus/core";
+import { globalWorkflowRoot, lintWorkflow, workflowSourceResolver, type Diagnostic, type LintResult } from "@acpus/core";
 
 export type WorkflowCatalogScope = "project" | "global";
 export type WorkflowCatalogStatus = "ready" | "invalid" | "conflict";
@@ -32,10 +32,10 @@ export function projectWorkflowRoot(workspace = process.cwd()): string {
 export { globalWorkflowRoot };
 
 export function listWorkflowCatalog(workspace = process.cwd()): WorkflowCatalogEntry[] {
-  const sourcePolicy = workflowSourcePolicy(workspace);
+  const sourceResolver = workflowSourceResolver(workspace);
   const entries = [
-    ...scanScope("project", projectWorkflowRoot(workspace), sourcePolicy),
-    ...scanScope("global", globalWorkflowRoot(), sourcePolicy)
+    ...scanScope("project", projectWorkflowRoot(workspace), sourceResolver),
+    ...scanScope("global", globalWorkflowRoot(), sourceResolver)
   ];
 
   for (const scope of ["project", "global"] as const) {
@@ -107,10 +107,10 @@ function matchesCatalogTarget(entry: WorkflowCatalogEntry, target: string): bool
   return entry.ref === target || entry.name === target || (entry.name !== undefined && `${entry.scope}:${entry.name}` === target);
 }
 
-function scanScope(scope: WorkflowCatalogScope, root: string, sourcePolicy: ReturnType<typeof workflowSourcePolicy>): WorkflowCatalogEntry[] {
+function scanScope(scope: WorkflowCatalogScope, root: string, sourceResolver: ReturnType<typeof workflowSourceResolver>): WorkflowCatalogEntry[] {
   if (!existsSync(root)) return [];
   const files = collectCandidateFiles(root);
-  return files.map((file) => entryFromFile(scope, file, sourcePolicy));
+  return files.map((file) => entryFromFile(scope, file, sourceResolver));
 }
 
 function collectCandidateFiles(root: string): string[] {
@@ -129,10 +129,10 @@ function collectCandidateFiles(root: string): string[] {
   return out.sort();
 }
 
-function entryFromFile(scope: WorkflowCatalogScope, path: string, sourcePolicy: ReturnType<typeof workflowSourcePolicy>): WorkflowCatalogEntry {
+function entryFromFile(scope: WorkflowCatalogScope, path: string, sourceResolver: ReturnType<typeof workflowSourceResolver>): WorkflowCatalogEntry {
   const source = readFileSync(path, "utf8");
   const parsed = parseSpecSummary(source);
-  const lint = lintCatalogEntry(source, path, sourcePolicy);
+  const lint = lintCatalogEntry(source, path, sourceResolver);
   const name = parsed.name;
   const status: WorkflowCatalogStatus = lint.ok && name ? "ready" : "invalid";
 
@@ -151,11 +151,11 @@ function entryFromFile(scope: WorkflowCatalogScope, path: string, sourcePolicy: 
   };
 }
 
-function lintCatalogEntry(source: string, path: string, sourcePolicy: ReturnType<typeof workflowSourcePolicy>): LintResult {
+function lintCatalogEntry(source: string, path: string, sourceResolver: ReturnType<typeof workflowSourceResolver>): LintResult {
   try {
     return lintWorkflow(source, {
       sourcePath: path,
-      includeResolver: sourcePolicy.createIncludeResolver(path)
+      includeResolver: sourceResolver.createIncludeResolver(path)
     });
   } catch (error) {
     return {

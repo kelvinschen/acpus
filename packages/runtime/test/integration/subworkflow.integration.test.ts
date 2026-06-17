@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { compileYaml, createTestInterpreter } from "../interpreter/helper.js";
-import { mkdtempSync, realpathSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -170,13 +170,12 @@ workflow:
     expect(sub?.state).toBe("failed");
   });
 
-  it("rejects subworkflow specs outside allowed source roots", async () => {
-    const allowedDir = mkdtempSync(join(tmpdir(), "acpus-subwf-allowed-"));
-    const outsideDir = mkdtempSync(join(tmpdir(), "acpus-subwf-outside-"));
+  it("accepts subworkflow specs from any directory", async () => {
+    const outsideDir = mkdtempSync(join(tmpdir(), "acpus-subwf-anywhere-"));
     const childPath = join(outsideDir, "child.yaml");
     writeFileSync(childPath, `
 version: 1
-name: child-outside
+name: child-anywhere
 workflow:
   steps:
     - id: child-step
@@ -186,7 +185,7 @@ workflow:
 
     const ir = compileYaml(`
 version: 1
-name: parent-outside-child
+name: parent-anywhere
 workflow:
   steps:
     - id: sub
@@ -194,18 +193,16 @@ workflow:
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
-      interpreterOptions: { allowedSourceRoots: [allowedDir] }
+      programResponses: { "child-step": { parsedOutput: { done: true }, stdout: "hi" } }
     });
     cleanups.push(cleanup);
-    cleanups.push(() => rmSync(allowedDir, { recursive: true, force: true }));
     cleanups.push(() => rmSync(outsideDir, { recursive: true, force: true }));
 
     const meta = await interpreter.start(ir, { input: {} });
-    expect(meta.status).toBe("failed");
+    expect(meta.status).toBe("completed");
 
     const sub = store.listNodeStates(meta.runId).find((n) => n.nodeId === "sub");
-    expect(sub?.state).toBe("failed");
-    expect(sub?.error).toMatch(/outside allowed Workflow Spec roots/);
+    expect(sub?.state).toBe("completed");
   });
 
   it("fails when the child spec does not compile", async () => {
@@ -312,5 +309,72 @@ workflow:
 
     // State must be untouched (no dirty running/pending left behind).
     expect(store.readNodeState(meta.runId, childKey)?.state).toBe("failed");
+  });
+
+  it("resolves relative subworkflow paths from parent sourcePath in /tmp", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "acpus-subwf-rel-"));
+    const parentPath = join(tmpDir, "parent.yaml");
+    const childPath = join(tmpDir, "child.yaml");
+    writeFileSync(childPath, `
+version: 1
+name: child-relative
+workflow:
+  steps:
+    - id: child-step
+      run: program
+      cmd: ["echo", "hi"]
+`);
+    writeFileSync(parentPath, `
+version: 1
+name: parent-relative
+workflow:
+  steps:
+    - id: sub
+      subworkflow: child.yaml
+`);
+
+    // Read and compile the parent with sourcePath so relative resolution works.
+    const { compileWorkflow } = await import("@acpus/core");
+    const result = compileWorkflow(readFileSync(parentPath, "utf8"), {
+      sourcePath: parentPath,
+      includeResolver: () => { throw new Error("no includes expected"); }
+    });
+    if (!result.ok || !result.ir) {
+      throw new Error("Compilation failed");
+    }
+    const ir = result.ir;
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: { "child-step": { parsedOutput: { done: true }, stdout: "hi" } }
+    });
+    cleanups.push(cleanup);
+    cleanups.push(() => rmSync(tmpDir, { recursive: true, force: true }));
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+
+    const sub = store.listNodeStates(meta.runId).find((n) => n.nodeId === "sub");
+    expect(sub?.state).toBe("completed");
+  });
+
+  it("fails for non-existent subworkflow paths with does not exist or is not readable", async () => {
+    const ir = compileYaml(`
+version: 1
+name: parent-nonexistent
+workflow:
+  steps:
+    - id: sub
+      subworkflow: /nonexistent/acpus-child-nonexistent.yaml
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({});
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("failed");
+
+    const sub = store.listNodeStates(meta.runId).find((n) => n.nodeId === "sub");
+    expect(sub?.state).toBe("failed");
+    expect(sub?.error).toMatch(/does not exist or is not readable/);
   });
 });

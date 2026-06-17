@@ -155,10 +155,9 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 ### Subworkflows
 
 - The runtime MUST resolve a `subworkflow` path relative to the parent spec's source path, compile it with `compileWorkflow`, and execute its root as a nested run.
-- The runtime MUST allow Workflow Spec source paths under the current Workspace or `$HOME/.acpus/workflows/`.
-- The runtime MUST validate Workflow Spec source paths and include targets using real filesystem paths after symlink resolution.
-- The runtime MUST reject Workflow Spec source paths and include targets whose real path is outside the current Workspace and `$HOME/.acpus/workflows/`.
+- The runtime MUST validate Workflow Spec source paths and include targets by resolving real filesystem paths after symlink resolution.
 - The runtime MUST reject Workflow Spec source paths and include targets that do not exist or cannot be read.
+- The runtime MUST NOT restrict Workflow Spec source paths or include targets to the current Workspace or `$HOME/.acpus/workflows/` roots.
 - Subworkflow file reads and compilation MUST occur in the runtime layer, never in `@acpus/core`.
 - The runtime MUST guard against subworkflow cycles by tracking specs currently on the execution stack.
 - Subworkflow child Node keys MUST be prefixed with the parent subworkflow Node key to stay unique within the run.

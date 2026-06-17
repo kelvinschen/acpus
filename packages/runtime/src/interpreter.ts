@@ -1,5 +1,5 @@
 import type { AcpusIr, IrNode, NodeKeyTemplate } from "@acpus/core";
-import { parseDurationMs, compileWorkflow, hashIrNode } from "@acpus/core";
+import { parseDurationMs, compileWorkflow, hashIrNode, realPathOrUndefined } from "@acpus/core";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { AgentAttemptTelemetry, AgentAttemptTelemetryState, ExpressionContext, InterpreterOptions, NodeKeyDynamic, RunOptions } from "./types.js";
@@ -34,7 +34,6 @@ export class WorkflowInterpreter {
   private readonly attemptArtifacts: AttemptArtifactRecorder;
   private readonly runControl: RunControl;
   private readonly maxConcurrency: number;
-  private readonly allowedSourceRoots: string[];
   private readonly sleep: (ms: number) => Promise<void>;
 
   /** Pending external-decision resolvers for Signal Nodes awaiting a payload,
@@ -60,7 +59,6 @@ export class WorkflowInterpreter {
     this.attemptArtifacts = new AttemptArtifactRecorder(this.artifactStore);
     this.runControl = new RunControl(store);
     this.maxConcurrency = options?.maxConcurrency ?? 10;
-    this.allowedSourceRoots = options?.allowedSourceRoots?.map((root) => resolve(root)) ?? [];
     this.sleep = options?.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   }
 
@@ -1193,22 +1191,22 @@ export class WorkflowInterpreter {
     const parentIr = this.store.readIr(runId);
     const baseDir = parentIr?.source.path ? dirname(parentIr.source.path) : process.cwd();
     const childAbs = resolve(baseDir, specPath);
-    this.assertAllowedSourcePath(childAbs, `Subworkflow path '${specPath}' resolves outside allowed Workflow Spec roots`);
+    const childReal = this.resolveExistingSourcePath(childAbs, `Subworkflow path '${specPath}' does not exist or is not readable`);
 
-    // Cycle guard across nested subworkflows.
-    if (this.subworkflowStack.has(childAbs)) {
-      throw new Error(`Subworkflow cycle detected for '${childAbs}'`);
+    // Cycle guard across nested subworkflows (uses real path).
+    if (this.subworkflowStack.has(childReal)) {
+      throw new Error(`Subworkflow cycle detected for '${specPath}'`);
     }
 
     // Compile the child spec at runtime (file I/O lives in the runtime layer).
-    const source = readFileSync(childAbs, "utf8");
+    const source = readFileSync(childReal, "utf8");
     const compiled = compileWorkflow(source, {
-      sourcePath: childAbs,
+      sourcePath: childReal,
       includeResolver: (includePath, fromPath) => {
         const dir = fromPath ? dirname(resolve(fromPath)) : process.cwd();
         const includeAbs = resolve(dir, includePath);
-        this.assertAllowedSourcePath(includeAbs, `Include path '${includePath}' resolves outside allowed Workflow Spec roots`);
-        return readFileSync(includeAbs, "utf8");
+        const includeReal = this.resolveExistingSourcePath(includeAbs, `Include path '${includePath}' does not exist or is not readable`);
+        return readFileSync(includeReal, "utf8");
       }
     });
     if (!compiled.ok || !compiled.ir) {
@@ -1228,20 +1226,22 @@ export class WorkflowInterpreter {
 
     // Execute the child root as a nested pipeline. Child node keys are nested
     // under this subworkflow's node key to stay unique within the run.
-    this.subworkflowStack.add(childAbs);
+    this.subworkflowStack.add(childReal);
     try {
       const childCtx = this.buildContext(compiled.ir, validatedChildInput, runId);
       await this.executeNode(compiled.ir.root, childCtx, runId, dynamic, nodeKey);
       return { output: evaluateWorkflowOutputs(compiled.ir, childCtx, this.evaluator) };
     } finally {
-      this.subworkflowStack.delete(childAbs);
+      this.subworkflowStack.delete(childReal);
     }
   }
 
-  private assertAllowedSourcePath(path: string, message: string): void {
-    if (this.allowedSourceRoots.length === 0) return;
-    if (this.allowedSourceRoots.some((root) => path === root || path.startsWith(root + "/"))) return;
-    throw new Error(message);
+  private resolveExistingSourcePath(path: string, message: string): string {
+    const realPath = realPathOrUndefined(path);
+    if (realPath === undefined) {
+      throw new Error(message);
+    }
+    return realPath;
   }
 
   // ─── Helpers ────────────────────────────────────────────────────

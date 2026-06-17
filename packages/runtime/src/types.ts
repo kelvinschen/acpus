@@ -276,8 +276,6 @@ export interface ArtifactRef {
 export interface InterpreterOptions {
   /** Maximum concurrent node executions across the interpreter */
   maxConcurrency?: number;
-  /** Absolute source roots that Workflow Spec file reads may resolve under. */
-  allowedSourceRoots?: string[];
   /** Deterministic timestamp for now() in expressions (ISO string) */
   nowTimestamp?: string;
   /** Injectable sleep used for retry backoff (default: real setTimeout). */

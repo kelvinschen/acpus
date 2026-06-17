@@ -165,7 +165,7 @@ describe("Supervisor HTTP API", () => {
     await expect(res.json()).resolves.toEqual({ error: "Input not found" });
   });
 
-  it("rejects sourcePath outside workspace and global Workflow Catalog roots", async () => {
+  it("accepts sourcePath outside workspace and global Workflow Catalog roots", async () => {
     const sourcePath = join(tmpdir(), "acpus-outside-workspace.yaml");
     writeFileSync(sourcePath, SPEC_YAML, "utf8");
     const res = await fetch(`${baseUrl}/runs`, {
@@ -174,9 +174,9 @@ describe("Supervisor HTTP API", () => {
       body: JSON.stringify({ spec: SPEC_YAML, input: {}, sourcePath })
     });
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(201);
     const data = await res.json();
-    expect(data.error).toMatch(/sourcePath must be within/);
+    expect(await pollRunStatus(data.runId)).toBe("completed");
     rmSync(sourcePath, { force: true });
   });
 
@@ -213,7 +213,7 @@ workflow:
     expect(await pollRunStatus(data.runId)).toBe("completed");
   });
 
-  it("rejects submitted Workflow Specs with includes outside allowed roots", async () => {
+  it("accepts submitted Workflow Specs with includes outside workspace roots", async () => {
     const outside = mkdtempSync(join(tmpdir(), "acpus-supervisor-outside-"));
     try {
       const workflowDir = join(tmpDir, ".acpus", "workflows");
@@ -243,11 +243,9 @@ workflow:
         body: JSON.stringify({ spec, input: {}, sourcePath })
       });
 
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(201);
       const data = await res.json();
-      expect(data.error).toBe("Compilation failed");
-      expect(data.diagnostics.map((diagnostic: { code: string }) => diagnostic.code)).toContain("INCLUDE_RESOLUTION");
-      expect(data.diagnostics.map((diagnostic: { message: string }) => diagnostic.message).join("\n")).toMatch(/outside allowed Workflow Spec roots/);
+      expect(await pollRunStatus(data.runId)).toBe("completed");
     } finally {
       rmSync(outside, { recursive: true, force: true });
     }
@@ -277,6 +275,45 @@ workflow:
     const codes = data.diagnostics.map((diagnostic: { code: string }) => diagnostic.code);
     expect(codes).toContain("STEP_ID");
     expect(codes).not.toContain("INCLUDE_RESOLUTION");
+  });
+
+  it("returns 400 for non-existent sourcePath", async () => {
+    const sourcePath = "/nonexistent/path/workflow.yaml";
+    const res = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: SPEC_YAML, input: {}, sourcePath })
+    });
+
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toMatch(/does not exist or is not readable/);
+  });
+
+  it("reports INCLUDE_RESOLUTION diagnostics for non-existent includes", async () => {
+    const workflowDir = join(tmpDir, ".acpus", "workflows");
+    mkdirSync(workflowDir, { recursive: true });
+    const sourcePath = join(workflowDir, "missing-include.workflow.yaml");
+    const spec = `
+version: 1
+name: missing-include-parent
+workflow:
+  steps:
+    - include: /nonexistent/child.yaml
+`;
+    writeFileSync(sourcePath, spec, "utf8");
+
+    const res = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec, input: {}, sourcePath })
+    });
+
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toBe("Compilation failed");
+    expect(data.diagnostics.map((diagnostic: { code: string }) => diagnostic.code)).toContain("INCLUDE_RESOLUTION");
+    expect(data.diagnostics.map((diagnostic: { message: string }) => diagnostic.message).join("\n")).toMatch(/does not exist or is not readable/);
   });
 
   it("returns health via GET /health", async () => {

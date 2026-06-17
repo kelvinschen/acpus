@@ -19,8 +19,9 @@ The Workflow Catalog is the read-only discovery surface for project and global W
 - Running a global Workflow Spec MUST create the Run in the current Workspace.
 - Includes and subworkflows MUST resolve relative to the Workflow Spec source path.
 - Catalog source path validation and include resolution MUST use real filesystem paths after symlink resolution.
-- Catalog source path validation and include resolution MUST reject targets whose real path is outside the current Workspace or `$HOME/.acpus/workflows/`.
 - Catalog source path validation and include resolution MUST reject targets that do not exist or cannot be read.
+- Catalog source path validation and include resolution MUST NOT restrict targets to the current Workspace or `$HOME/.acpus/workflows/` roots.
+- Catalog discovery scope is constrained (`.acpus/workflows/` and global root only); file references from discovered specs are not constrained by those roots.
 - Program execution, Program `capture.path`, and default Agent cwd MUST resolve relative to the current Workspace.
 - Workflow authors MUST use the Workflow Spec expression context `workflow.source_dir` for explicit spec-local helper paths; this MUST NOT change Program execution, Program `capture.path`, or default Agent cwd resolution.
 

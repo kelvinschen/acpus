@@ -10,10 +10,10 @@ export {
   validateAgentOverrides
 } from "./agent-overrides.js";
 export { createSchedule } from "./schedule.js";
-export { createIncludeResolver, globalWorkflowRoot, workflowSourcePolicy } from "./source-policy.js";
+export { createIncludeResolver, globalWorkflowRoot, realPathOrUndefined, workflowSourceResolver } from "./source-resolver.js";
 export { compileSchemaDsl } from "./schema/index.js";
 export type { CompileSchemaDslResult, SchemaDslError, CompileSchemaDslOptions } from "./schema/index.js";
-export type { WorkflowSourcePolicy } from "./source-policy.js";
+export type { WorkflowSourceResolver } from "./source-resolver.js";
 export {
   EXPRESSION_PATTERN,
   ALLOWED_ROOTS,

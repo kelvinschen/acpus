@@ -6,7 +6,7 @@ import {
   parseAgentOverridesInput,
   parseWorkflowSpecForOverrides,
   serializeWorkflowSpecForOverrides,
-  workflowSourcePolicy
+  workflowSourceResolver
 } from "@acpus/core";
 import { Command } from "commander";
 import { readFileSync } from "node:fs";
@@ -560,7 +560,7 @@ function displayPath(path: string): string {
 }
 
 function createWorkspaceIncludeResolver(): (path: string, fromPath?: string) => string {
-  return workflowSourcePolicy().createIncludeResolver();
+  return workflowSourceResolver().createIncludeResolver();
 }
 
 function parseWorkflowSpec(source: string): import("@acpus/core").WorkflowSpec {

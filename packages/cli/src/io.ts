@@ -1,7 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
-export { createIncludeResolver } from "@acpus/core";
 
 export function readTextFile(path: string): string {
   return readFileSync(path, "utf8");
