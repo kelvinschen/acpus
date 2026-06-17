@@ -1,7 +1,7 @@
 ---
 "@acpus/core": minor
 "@acpus/runtime": minor
-"@acpus/cli": patch
+"acpus": patch
 ---
 
 Remove source path root directory restriction: Workflow Spec source/include paths are no longer restricted to workspace/global catalog roots
