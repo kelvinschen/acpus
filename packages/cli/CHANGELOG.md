@@ -7,14 +7,14 @@
 - e7cc11e: Add opt-in agent token telemetry: display token usage in run status and TUI detail pane
 
   - `@acpus/runtime`: Add `AgentTokenUsage` type and `tokenUsage` field on `AgentAttemptTelemetry`. Token usage is opt-in — only populated when the agent adapter reports it.
-  - `@acpus/cli`: Display token counts in `acpus runs show` agent activity summaries.
+  - `acpus`: Display token counts in `acpus runs show` agent activity summaries.
   - `@acpus/tui`: Show token usage in the detail pane. Fix field label indentation in definition and context sections.
 
 - cda81af: Remove source path root directory restriction: Workflow Spec source/include paths are no longer restricted to workspace/global catalog roots
 
   - `@acpus/core`: `workflowSourcePolicy` renamed to `workflowSourceResolver`. `WorkflowSourcePolicy` type renamed to `WorkflowSourceResolver`. `allowedSourceRoots` and `isAllowedSourcePath` removed. `createIncludeResolver` no longer takes `allowedSourceRoots` parameter. `realPathOrUndefined` is now exported. Source and include paths are validated for existence and readability only, not restricted by root directory.
   - `@acpus/runtime`: `allowedSourceRoots` removed from `InterpreterOptions`. Subworkflow and include path validation no longer restricts to workspace/global catalog roots — any readable filesystem path is accepted.
-  - `@acpus/cli`: Internal update to use `workflowSourceResolver`. Dead `createIncludeResolver` re-export removed from `io.ts`.
+  - `acpus`: Internal update to use `workflowSourceResolver`. Dead `createIncludeResolver` re-export removed from `io.ts`.
 
 - Updated dependencies [e7cc11e]
 - Updated dependencies [cda81af]
