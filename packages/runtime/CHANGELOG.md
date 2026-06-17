@@ -1,5 +1,13 @@
 # @acpus/runtime
 
+## 0.5.1
+
+### Patch Changes
+
+- 23b50c5: Add workflow source context
+- Updated dependencies [23b50c5]
+  - @acpus/core@0.4.1
+
 ## 0.5.0
 
 ### Minor Changes

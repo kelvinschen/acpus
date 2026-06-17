@@ -1,5 +1,11 @@
 # @acpus/core
 
+## 0.4.1
+
+### Patch Changes
+
+- 23b50c5: Add workflow source context
+
 ## 0.4.0
 
 ### Minor Changes
