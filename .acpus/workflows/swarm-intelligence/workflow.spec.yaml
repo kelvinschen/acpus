@@ -1,0 +1,461 @@
+version: 1
+name: swarm-intelligence
+description: |
+  Swarm intelligence workflow: multiple specialized agents (Challenger, Builder,
+  Synthesizer, Empiricist) collaborate through a shared blackboard to explore a
+  topic, debate proposals, and converge on consensus — inspired by insect colony
+  decision-making.
+
+  Each agent reads the blackboard, contributes structured contributions
+  (claims, objections, proposals, evidence), and a deterministic merge step
+  resolves conflicts via confidence-weighted objection/evidence rules.
+  Agents reuse sessions across loop iterations to maintain their own thinking
+  chain while only perceiving the group through the blackboard.
+
+  Roles:
+  - Challenger: finds weaknesses, raises objections, prevents groupthink
+  - Builder: constructs solutions, strengthens arguments, responds to objections
+  - Synthesizer: finds patterns, identifies consensus, bridges perspectives
+  - Empiricist: grounds discussion in real-world evidence, historical precedents,
+    and testable predictions
+
+  Termination: max_rounds, consensus (high-confidence claim with no active
+  objection), or saturation (consecutive low-activity rounds). max_rounds is
+  bounded by a static max_iterations safety valve of 20 rounds.
+
+input:
+  topic: string
+  context?: string = ""
+  max_rounds?: integer = 10
+  saturation_threshold?: integer = 1
+  consensus_confidence?: integer = 4
+  output_root?: string = ".acpus/output/swarm-intelligence"
+
+agents:
+  challenger:
+    use: claude
+  builder:
+    use: pi
+  synthesizer:
+    use: claude
+  empiricist:
+    use: pi
+  summarizer:
+    use: pi
+
+workflow:
+  steps:
+    # ── Initialize blackboard ─────────────────────────────────────────
+    - id: init_blackboard
+      run: program
+      cmd:
+        - node
+        - ${{ workflow.source_dir }}/scripts/swarm.mjs
+        - init
+        - "${{ input.output_root }}/${{ run_id }}"
+        - "${{ input.topic }}"
+        - "${{ input.context }}"
+      capture:
+        from: stdout
+        parse: json
+      output:
+        blackboard_json_path: string
+        blackboard_md_path: string
+        blackboard_dir: string
+      timeout: 30s
+
+    # ── Swarm loop ────────────────────────────────────────────────────
+    - id: swarm_loop
+      loop:
+        max_iterations: 20
+        until: >
+          loop.iter >= input.max_rounds
+          || (
+            loop.iter > 0
+            && (loop.last.output.has_consensus || loop.last.output.is_saturated)
+          )
+        do:
+          # ── Read blackboard ─────────────────────────────────────────
+          - id: read_blackboard
+            run: program
+            cmd:
+              - node
+              - ${{ workflow.source_dir }}/scripts/swarm.mjs
+              - summary
+              - "${{ steps.init_blackboard.output.blackboard_json_path }}"
+            capture:
+              from: stdout
+              parse: json
+            output:
+              summary: string
+              blackboard_md_path: string
+            timeout: 30s
+
+          # ── Assign mandatory attention sets ──────────────────────────
+          # Each agent gets a deterministic subset of active claims they MUST
+          # address. Closes the coverage gap where agents could silently ignore
+          # claims they disagree with.
+          - id: assign_attention
+            run: program
+            cmd:
+              - node
+              - ${{ workflow.source_dir }}/scripts/swarm.mjs
+              - attention
+              - "${{ steps.init_blackboard.output.blackboard_json_path }}"
+            capture:
+              from: stdout
+              parse: json
+            output:
+              challenger_attention: string
+              builder_attention: string
+              synthesizer_attention: string
+              empiricist_attention: string
+              challenger_attention_text: string
+              builder_attention_text: string
+              synthesizer_attention_text: string
+              empiricist_attention_text: string
+              challenger_attention_set: string
+              builder_attention_set: string
+              synthesizer_attention_set: string
+              empiricist_attention_set: string
+              total_active_claims: integer
+              coverage: integer
+            timeout: 30s
+
+          # ── Parallel agents ─────────────────────────────────────────
+          - id: swarm_agents
+            parallel:
+              # ── Challenger ──────────────────────────────────────────
+              - id: challenger
+                run: agent
+                use: challenger
+                session_key: "swarm-challenger"
+                timeout: 10m
+                prompt: |
+                  You are the **Challenger** in a swarm intelligence discussion.
+                  Your role is to find weaknesses, raise objections, and
+                  question assumptions. You are the critical voice that
+                  prevents groupthink.
+
+                  ## Current Blackboard Summary
+                  ${{ steps.read_blackboard.output.summary }}
+
+                  Full blackboard (read if you need detailed rationale):
+                  ${{ steps.read_blackboard.output.blackboard_md_path }}
+
+                  ## Your Mandatory Attention Set
+                  You MUST reference at least one of these claims in your contributions.
+                  These are claims assigned to you for review — silence implies consent:
+                  ${{ steps.assign_attention.output.challenger_attention_text }}
+
+                  ## Your Task
+                  Review the blackboard. Look for:
+                  - Weak claims that lack evidence (especially those in your attention set)
+                  - Proposals with unaddressed edge cases
+                  - Assumptions that haven't been questioned
+                  - Logical gaps in existing arguments
+
+                  Then contribute 1-3 new contributions. You can:
+                  - **object** to existing claims/proposals (reference their ID)
+                  - **question** assumptions or gaps
+                  - **claim** something if you see a risk others missed
+
+                  Rules:
+                  - At least one contribution MUST reference a claim from your attention set
+                  - Reference existing contribution IDs using the [id] format
+                  - Be specific and constructive — "this won't work" is not
+                    useful; "this won't work because X, and Y would address it" is
+                  - Confidence 1-5: how strongly you believe this objection/question
+                  - Do NOT repeat contributions already on the blackboard
+
+                  Write your structured output to a JSON file at:
+                  ${{ steps.init_blackboard.output.blackboard_dir }}/challenger-round.json
+
+                  The JSON file must have this shape:
+                  {
+                    "contributions": [
+                      {
+                        "type": "objection" | "question" | "claim",
+                        "summary": "one-line summary (max 300 chars)",
+                        "confidence": 1-5,
+                        "references": ["id1", "id2"]
+                      }
+                    ],
+                    "rationale": "Your full thinking process and reasoning"
+                  }
+
+                  Return JSON with the file path: {"contributions_path": "<path>"}
+                output:
+                  contributions_path: string
+
+              # ── Builder ─────────────────────────────────────────────
+              - id: builder
+                run: agent
+                use: builder
+                session_key: "swarm-builder"
+                timeout: 10m
+                prompt: |
+                  You are the **Builder** in a swarm intelligence discussion.
+                  Your role is to construct solutions, strengthen arguments,
+                  and respond to objections with concrete proposals. You are
+                  the constructive voice that moves the discussion forward.
+
+                  ## Current Blackboard Summary
+                  ${{ steps.read_blackboard.output.summary }}
+
+                  Full blackboard (read if you need detailed rationale):
+                  ${{ steps.read_blackboard.output.blackboard_md_path }}
+
+                  ## Your Mandatory Attention Set
+                  You MUST reference at least one of these claims in your contributions.
+                  These are claims assigned to you for review — silence implies consent:
+                  ${{ steps.assign_attention.output.builder_attention_text }}
+
+                  ## Your Task
+                  Review the blackboard. Look for:
+                  - Objections you can address with evidence or refined proposals
+                    (especially those in your attention set)
+                  - Areas of agreement you can formalize into claims
+                  - Proposals that need concrete implementation details
+                  - Consensus building opportunities
+
+                  Then contribute 1-3 new contributions. You can:
+                  - **claim** something based on evidence
+                  - **propose** a concrete solution or refinement
+                  - **evidence** to support existing claims (reference their ID)
+
+                  Rules:
+                  - At least one contribution MUST reference a claim from your attention set
+                  - Reference existing contribution IDs using the [id] format
+                  - When responding to objections, be specific about how your
+                    proposal addresses the concern
+                  - Confidence 1-5: how strongly you believe this claim/proposal
+                  - Do NOT repeat contributions already on the blackboard
+
+                  Write your structured output to a JSON file at:
+                  ${{ steps.init_blackboard.output.blackboard_dir }}/builder-round.json
+
+                  The JSON file must have this shape:
+                  {
+                    "contributions": [
+                      {
+                        "type": "claim" | "proposal" | "evidence",
+                        "summary": "one-line summary (max 300 chars)",
+                        "confidence": 1-5,
+                        "references": ["id1", "id2"]
+                      }
+                    ],
+                    "rationale": "Your full thinking process and reasoning"
+                  }
+
+                  Return JSON with the file path: {"contributions_path": "<path>"}
+                output:
+                  contributions_path: string
+
+              # ── Synthesizer ─────────────────────────────────────────
+              - id: synthesizer
+                run: agent
+                use: synthesizer
+                session_key: "swarm-synthesizer"
+                timeout: 10m
+                prompt: |
+                  You are the **Synthesizer** in a swarm intelligence discussion.
+                  Your role is to find patterns, identify consensus, and bridge
+                  different perspectives. You are the integrative voice that
+                  reveals what the group collectively knows.
+
+                  ## Current Blackboard Summary
+                  ${{ steps.read_blackboard.output.summary }}
+
+                  Full blackboard (read if you need detailed rationale):
+                  ${{ steps.read_blackboard.output.blackboard_md_path }}
+
+                  ## Your Mandatory Attention Set
+                  You MUST reference at least one of these claims in your contributions.
+                  These are claims assigned to you for review — silence implies consent:
+                  ${{ steps.assign_attention.output.synthesizer_attention_text }}
+
+                  ## Your Task
+                  Review the blackboard. Look for:
+                  - Points where multiple roles implicitly agree
+                    (especially around your attention set claims)
+                  - Objections that have been adequately addressed by evidence
+                  - Patterns across contributions that others may not see
+                  - Areas where the discussion is going in circles
+
+                  Then contribute 1-3 new contributions. You can:
+                  - **evidence** by identifying cross-role agreement patterns
+                  - **claim** high-confidence consensus points
+                  - **question** if the discussion is stuck or missing a dimension
+
+                  Rules:
+                  - At least one contribution MUST reference a claim from your attention set
+                  - Reference existing contribution IDs using the [id] format
+                  - Your evidence is especially powerful — you connect dots
+                    across roles, so be thorough
+                  - Confidence 1-5: how strongly you believe this
+                  - Do NOT repeat contributions already on the blackboard
+
+                  Write your structured output to a JSON file at:
+                  ${{ steps.init_blackboard.output.blackboard_dir }}/synthesizer-round.json
+
+                  The JSON file must have this shape:
+                  {
+                    "contributions": [
+                      {
+                        "type": "evidence" | "claim" | "question",
+                        "summary": "one-line summary (max 300 chars)",
+                        "confidence": 1-5,
+                        "references": ["id1", "id2"]
+                      }
+                    ],
+                    "rationale": "Your full thinking process and reasoning"
+                  }
+
+                  Return JSON with the file path: {"contributions_path": "<path>"}
+                output:
+                  contributions_path: string
+
+              # ── Empiricist ─────────────────────────────────────────
+              - id: empiricist
+                run: agent
+                use: empiricist
+                session_key: "swarm-empiricist"
+                timeout: 10m
+                prompt: |
+                  You are the **Empiricist** in a swarm intelligence discussion.
+                  Your role is to ground the discussion in real-world evidence,
+                  historical precedents, and testable predictions. You are the
+                  empirical voice that distinguishes sound arguments from
+                  plausible-but-untested speculation.
+
+                  ## Current Blackboard Summary
+                  ${{ steps.read_blackboard.output.summary }}
+
+                  Full blackboard (read if you need detailed rationale):
+                  ${{ steps.read_blackboard.output.blackboard_md_path }}
+
+                  ## Your Mandatory Attention Set
+                  You MUST reference at least one of these claims in your contributions.
+                  These are claims assigned to you for review — silence implies consent:
+                  ${{ steps.assign_attention.output.empiricist_attention_text }}
+
+                  ## Your Task
+                  Review the blackboard. Look for:
+                  - Claims that lack empirical support or are based on
+                    analogy alone (especially those in your attention set)
+                  - Historical precedents or case studies that support or
+                    contradict existing claims
+                  - Proposals that could be validated with a concrete test
+                    or measurement
+                  - Overgeneralizations from single examples
+
+                  Then contribute 1-3 new contributions. You can:
+                  - **evidence** from real-world systems, research, or
+                    historical cases
+                  - **claim** something based on empirical patterns
+                  - **objection** when a claim lacks empirical grounding
+                    or rests on faulty analogy
+
+                  Rules:
+                  - At least one contribution MUST reference a claim from your attention set
+                  - Reference existing contribution IDs using the [id] format
+                  - When citing evidence, be specific: name the system,
+                    paper, or historical case — not "studies show"
+                  - Confidence 1-5: how strongly you believe this, given
+                    the strength of the empirical support
+                  - Do NOT repeat contributions already on the blackboard
+
+                  Write your structured output to a JSON file at:
+                  ${{ steps.init_blackboard.output.blackboard_dir }}/empiricist-round.json
+
+                  The JSON file must have this shape:
+                  {
+                    "contributions": [
+                      {
+                        "type": "evidence" | "claim" | "objection",
+                        "summary": "one-line summary (max 300 chars)",
+                        "confidence": 1-5,
+                        "references": ["id1", "id2"]
+                      }
+                    ],
+                    "rationale": "Your full thinking process and reasoning"
+                  }
+
+                  Return JSON with the file path: {"contributions_path": "<path>"}
+                output:
+                  contributions_path: string
+
+          # ── Merge contributions ──────────────────────────────────────
+          - id: merge
+            run: program
+            cmd:
+              - node
+              - ${{ workflow.source_dir }}/scripts/swarm.mjs
+              - merge
+              - "${{ steps.init_blackboard.output.blackboard_json_path }}"
+              - "${{ input.consensus_confidence }}"
+              - "${{ input.saturation_threshold }}"
+              - "${{ steps.swarm_agents.output.challenger.output.contributions_path }}"
+              - "${{ steps.swarm_agents.output.builder.output.contributions_path }}"
+              - "${{ steps.swarm_agents.output.synthesizer.output.contributions_path }}"
+              - "${{ steps.swarm_agents.output.empiricist.output.contributions_path }}"
+            capture:
+              from: stdout
+              parse: json
+            output:
+              has_consensus: boolean
+              is_saturated: boolean
+              new_contributions_count: integer
+              round: integer
+              total_contributions: integer
+              consensus_count: integer
+              blackboard_json_path: string
+              blackboard_md_path: string
+              momentum_report: string
+            timeout: 30s
+
+    # ── Final summary ─────────────────────────────────────────────────
+    - id: final_summary
+      run: agent
+      use: summarizer
+      timeout: 10m
+      prompt: |
+        You are an independent summarizer. A swarm of four agents (Challenger,
+        Builder, Synthesizer, Empiricist) has just completed a multi-round
+        discussion on a topic. Your job is to read the final blackboard and
+        write a clear, human-friendly summary report.
+
+        Topic: ${{ input.topic }}
+
+        Read the full blackboard at:
+        ${{ steps.init_blackboard.output.blackboard_md_path }}
+
+        Your report should include:
+
+        1. **Consensus Reached** — What did the swarm agree on? List each
+           consensus point with its key supporting rationale.
+
+        2. **Open Questions** — What objections or questions remain unresolved?
+
+        3. **Key Debates** — What were the most interesting disagreements or
+           turning points in the discussion?
+
+        4. **Recommended Next Steps** — Based on the discussion, what should
+           the reader do next?
+
+        Write the report to:
+        ${{ steps.init_blackboard.output.blackboard_dir }}/summary.md
+
+        Return JSON with the report path.
+      output:
+        summary_path: string
+
+outputs:
+  blackboard_dir: ${{ steps.init_blackboard.output.blackboard_dir }}
+  blackboard_json: ${{ steps.init_blackboard.output.blackboard_json_path }}
+  blackboard_md: ${{ steps.init_blackboard.output.blackboard_md_path }}
+  summary_path: ${{ steps.final_summary.output.summary_path }}
+  rounds_completed: ${{ steps.swarm_loop.output.round }}
+  total_contributions: ${{ steps.swarm_loop.output.total_contributions }}
+  consensus_reached: ${{ steps.swarm_loop.output.has_consensus }}

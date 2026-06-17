@@ -109,5 +109,17 @@
       "loop": 1,
       "switch": 1
     }
+  },
+  {
+    "name": "swarm-intelligence",
+    "file": "swarm-intelligence.html",
+    "description": "Swarm intelligence workflow: multiple specialized agents collaborate through a shared blackboard.",
+    "total": 11,
+    "counts": {
+      "program": 4,
+      "loop": 1,
+      "parallel": 1,
+      "agent": 5
+    }
   }
 ]

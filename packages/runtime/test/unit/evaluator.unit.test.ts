@@ -6,6 +6,7 @@ function baseCtx(overrides?: Partial<ExpressionContext>): ExpressionContext {
   return {
     input: { name: "test", count: 3 },
     steps: {},
+    workflow: { name: "test-workflow", description: "desc", source_path: "/tmp/workflow.yaml", source_dir: "/tmp" },
     run_id: "run-001",
     ...overrides
   };
@@ -46,6 +47,11 @@ describe("ExpressionEvaluator", () => {
 
     it("evaluates run_id", () => {
       expect(evaluator.evaluateExpression("run_id", baseCtx())).toBe("run-001");
+    });
+
+    it("evaluates workflow metadata context", () => {
+      expect(evaluator.evaluateExpression("workflow.name", baseCtx())).toBe("test-workflow");
+      expect(evaluator.evaluateTemplate("${{ workflow.source_dir }}/scripts/helper.mjs", baseCtx())).toBe("/tmp/scripts/helper.mjs");
     });
 
     it("evaluates loop context with loop_ctx rewriting", () => {

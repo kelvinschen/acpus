@@ -93,6 +93,36 @@ describe("@acpus/core compiler: scoped expression validation", () => {
       expect(result.ok).toBe(false);
       expectDiagnostic(result, { code: "EXPR_UNKNOWN_FIELD", message: "fanout item" });
     });
+
+    it("accepts workflow metadata fields in expressions", () => {
+      const result = lintWorkflow(
+        `version: 1
+name: t
+${AGENTS}
+workflow:
+  steps:
+    - id: run_it
+      run: program
+      cmd: ["node", "\${{ workflow.source_dir }}/scripts/helper.mjs"]
+outputs:
+  name: "\${{ workflow.name }}"
+  description: "\${{ workflow.description }}"
+  source_path: "\${{ workflow.source_path }}"`
+      );
+      expectOk(result);
+      expectNoDiagnostic(result, "EXPR_UNKNOWN_ROOT");
+      expectNoDiagnostic(result, "EXPR_UNKNOWN_FIELD");
+    });
+
+    it("rejects an unknown workflow metadata field", () => {
+      const result = lintWorkflow(
+        wf(`    - id: run_it
+      run: program
+      cmd: ["echo", "\${{ workflow.missing }}"]`)
+      );
+      expect(result.ok).toBe(false);
+      expectDiagnostic(result, { code: "EXPR_UNKNOWN_FIELD", message: "workflow" });
+    });
   });
 
   describe("scope visibility", () => {

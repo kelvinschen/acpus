@@ -204,6 +204,14 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - Expressions MAY read `steps.<id>.exit_code`.
 - Expressions MAY read fanout and loop scope variables when in scope.
 - Expressions MAY read `run_id`.
+- Expressions MAY read Workflow metadata through `workflow.name`, `workflow.description`, `workflow.source_path`, and `workflow.source_dir`.
+- `workflow.name` MUST be the compiled Workflow Spec `name`.
+- `workflow.description` MUST be the compiled Workflow Spec `description`, or an empty string when absent.
+- `workflow.source_path` MUST be the absolute real filesystem path of the Workflow Spec source used to compile the Run, or an empty string when the Run has no source path.
+- `workflow.source_dir` MUST be the absolute real filesystem directory containing `workflow.source_path`, or an empty string when the Run has no source path.
+- `workflow.source_dir` SHOULD be used for explicit spec-local helper scripts, for example `cmd: ["node", "${{ workflow.source_dir }}/scripts/helper.mjs"]`.
+- Included steps MUST inherit the parent compiled Workflow's `workflow.*` context because includes are expanded into the parent Workflow at compile time.
+- Subworkflow execution MUST expose the child Workflow Spec's own `workflow.*` context while evaluating child steps and child top-level `outputs`.
 - `now()` MUST be bound to the deterministic workflow clock.
 - `json(value)` MUST serialize its argument to a JSON string with deterministic (sorted) object key order, so an object or array can be embedded into a template string instead of stringifying to `[object Object]`.
 
@@ -214,6 +222,7 @@ The compiler MUST statically validate expressions against the compiled IR so tha
 - Expression references MUST be extracted from the parsed CEL AST, not by text matching.
 - A `steps.<id>.output.<path>` reference whose `<id>` declares a closed output schema (an Agent, Program, or Signal Node) MUST be rejected when `<path>` names a field absent from that schema; the diagnostic MUST list the available fields. Path validation MUST stop, accepting the reference, at the first dynamic index, open object, untyped array element, or composite (loop/fanout/parallel/switch/guard) output projection.
 - An `input.<path>` reference MUST be validated against the compiled input schema under the same closed-schema rule.
+- A `workflow.<path>` reference MUST be validated against the workflow metadata context fields.
 - Inside a `fanout` body whose `over` resolves to a typed array element schema, an `item.<path>` reference MUST be validated against that element schema under the same closed-schema rule.
 - A scope-local root (`loop`, `item`, `item_id`, `item_index`) used outside the composite body that introduces it MUST be rejected.
 - A `steps.<id>` reference to a step that is not visible at the referencing position (a later sibling, or a step in a sibling branch) MUST be rejected; the diagnostic MUST list the visible steps.
@@ -243,12 +252,15 @@ The compiler MUST statically validate expressions against the compiled IR so tha
 - Compiler tests MUST cover include expansion and include cycle diagnostics.
 - Compiler tests MUST cover expression collection and validation.
 - Compiler tests MUST cover scope-aware expression validation: closed-schema field-path rejection with available-field reporting, fail-quiet acceptance of dyn / open / composite shapes, out-of-scope local roots, step visibility, fanout `item` element-schema validation, and the non-scalar-in-`cmd` warning.
+- Compiler tests MUST cover workflow metadata context references and rejection of unknown `workflow.*` fields.
 - Compiler tests MUST assert that every IR Node kind has an entry in the shared composite contract.
 - Compiler tests MUST cover output schema validation.
 - Compiler tests MUST cover Agent Step output declarations that use the Acpus Schema DSL.
 - Runtime tests MUST cover Agent Steps through acpx.
 - Runtime tests MUST cover Program Steps as local subprocesses.
+- Runtime tests MUST cover spec-local helper script execution through `workflow.source_dir`.
 - Runtime tests MUST cover Program Step default fail-fast on non-allow-listed exit codes and `expect.exit_code` opt-out.
 - Runtime tests MUST cover deterministic replay.
 - Runtime tests MUST cover Signal Nodes: entering `awaiting`, schema-validated payload injection, rejection of a non-conforming payload while staying `awaiting`, and `on_timeout` `fail` and `default` behavior.
 - Runtime tests MUST cover top-level `outputs` projection and failure when declared `outputs` cannot be evaluated.
+- Runtime tests MUST cover workflow metadata context in top-level `outputs`, empty source path fallback, retry/resume context reconstruction, and subworkflow child metadata context.

@@ -14,7 +14,7 @@ function makeProgramNode(metadata: Record<string, unknown>): IrNode {
 }
 
 function baseCtx(): ExpressionContext {
-  return { input: {}, steps: {}, run_id: "test" };
+  return { input: {}, steps: {}, workflow: { name: "test", description: "", source_path: "", source_dir: "" }, run_id: "test" };
 }
 
 describe("ProgramExecutor", () => {
@@ -107,7 +107,7 @@ describe("ProgramExecutor", () => {
         },
         capture: { from: "stdout", parse: "json" }
       });
-      const ctx: ExpressionContext = { input: { override: "step-value" }, steps: {}, run_id: "test" };
+      const ctx: ExpressionContext = { ...baseCtx(), input: { override: "step-value" } };
       const result = await executor.execute({ node, context: ctx, signal: new AbortController().signal, nodeKey: node.id });
       expect(result.exitCode).toBe(0);
       expect(result.output).toEqual({
@@ -242,7 +242,7 @@ describe("ProgramExecutor", () => {
       cmd: "echo ${{ input.name }}",
       capture: { from: "stdout", parse: "text" }
     });
-    const ctx: ExpressionContext = { input: { name: "world" }, steps: {}, run_id: "test" };
+    const ctx: ExpressionContext = { ...baseCtx(), input: { name: "world" } };
     const result = await executor.execute({ node, context: ctx, signal: new AbortController().signal, nodeKey: node.id });
     expect(result.exitCode).toBe(0);
     expect((result.output as string).trim()).toBe("world");
@@ -260,7 +260,7 @@ describe("ProgramExecutor", () => {
         cwd: "${{ input.dir }}",
         capture: { from: "stdout", parse: "text" }
       });
-      const ctx: ExpressionContext = { input: { dir }, steps: {}, run_id: "test" };
+      const ctx: ExpressionContext = { ...baseCtx(), input: { dir } };
       const result = await executor.execute({ node, context: ctx, signal: new AbortController().signal, nodeKey: node.id });
       expect(result.exitCode).toBe(0);
       expect((result.output as string).trim()).toBe(dir);
@@ -319,7 +319,7 @@ describe("ProgramExecutor", () => {
       cwd: "${{ input.empty }}",
       capture: { from: "stdout", parse: "text" }
     });
-    const ctx: ExpressionContext = { input: { empty: "" }, steps: {}, run_id: "test" };
+    const ctx: ExpressionContext = { ...baseCtx(), input: { empty: "" } };
     const result = await executor.execute({ node, context: ctx, signal: new AbortController().signal, nodeKey: node.id });
     expect(result.exitCode).toBe(0);
     expect((result.output as string).trim()).toBe(process.cwd());

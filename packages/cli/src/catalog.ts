@@ -190,6 +190,8 @@ function parseSpecSummary(source: string): { name?: string; description?: string
 function isWorkflowCandidate(filename: string): boolean {
   return filename === "workflow.yaml"
     || filename === "workflow.yml"
+    || filename === "workflow.spec.yaml"
+    || filename === "workflow.spec.yml"
     || filename.endsWith(".workflow.yaml")
     || filename.endsWith(".workflow.yml")
     || filename.endsWith(".workflow.spec.yaml")

@@ -365,6 +365,17 @@ function checkReference(ref: ExpressionReference, ctx: ScopeContext, r: Resolver
     }
   }
 
+  if (ref.root === "workflow") {
+    const result = walkSchema(WORKFLOW_CONTEXT_SCHEMA, ref.segments, 0);
+    if (result.error) {
+      r.diagnostics.error(
+        "EXPR_UNKNOWN_FIELD",
+        `Expression '${referenceToString(ref)}' references field '${result.error.field}' not declared on workflow. Available fields: ${result.error.available.join(", ") || "(none)"}.`,
+        ctx.path
+      );
+    }
+  }
+
   if (ref.root === "item" && ctx.itemSchema) {
     const result = walkSchema(ctx.itemSchema, ref.segments, 0);
     if (result.error) {
@@ -468,7 +479,13 @@ function checkCmdScalar(
     nonScalar = true;
   } else if (references.length === 1 && isStaticReference(references[0]!)) {
     const ref = references[0]!;
-    const kind = ref.root === "steps" ? resolveStepType(ref, r) : ref.root === "input" ? walkSchema(r.inputSchema, ref.segments, 0).kind : "unknown";
+    const kind = ref.root === "steps"
+      ? resolveStepType(ref, r)
+      : ref.root === "input"
+        ? walkSchema(r.inputSchema, ref.segments, 0).kind
+        : ref.root === "workflow"
+          ? walkSchema(WORKFLOW_CONTEXT_SCHEMA, ref.segments, 0).kind
+          : "unknown";
     if (kind === "object" || kind === "array") {
       nonScalar = true;
       label = referenceToString(ref);
@@ -535,6 +552,17 @@ function schemaKind(schema: Record<string, unknown>): ResolvedKind {
       return "unknown";
   }
 }
+
+const WORKFLOW_CONTEXT_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    name: { type: "string" },
+    description: { type: "string" },
+    source_path: { type: "string" },
+    source_dir: { type: "string" }
+  }
+};
 
 function describeScope(ctx: ScopeContext): string {
   const locals = [...ctx.locals].sort();

@@ -16,8 +16,9 @@ function irWithOutputs(outputs: Record<string, unknown>): AcpusIr {
   return {
     irVersion: 1,
     astVersion: 1,
-    source: { digest: "sha256:test" },
+    source: { path: "/tmp/specs/output-test.workflow.yaml", digest: "sha256:test" },
     name: "output-test",
+    description: "Output test workflow",
     input: {},
     agents: {},
     root: {
@@ -39,6 +40,7 @@ describe("workflow output evaluation", () => {
       {
         input: {},
         run_id: "run-1",
+        workflow: { name: "output-test", description: "Output test workflow", source_path: "/tmp/specs/output-test.workflow.yaml", source_dir: "/tmp/specs" },
         steps: {
           items: { output: ["a", "b"] },
           check: { output: { ready: true } }
@@ -54,6 +56,7 @@ describe("workflow output evaluation", () => {
     const value = evaluateTemplatedValue("run=${{ run_id }} count=${{ len(steps.items.output) }}", {
       input: {},
       run_id: "run-1",
+      workflow: { name: "output-test", description: "Output test workflow", source_path: "/tmp/specs/output-test.workflow.yaml", source_dir: "/tmp/specs" },
       steps: { items: { output: ["a", "b"] } }
     }, evaluator);
 
@@ -69,6 +72,7 @@ describe("workflow output evaluation", () => {
     }, {
       input: {},
       run_id: "run-1",
+      workflow: { name: "output-test", description: "Output test workflow", source_path: "/tmp/specs/output-test.workflow.yaml", source_dir: "/tmp/specs" },
       steps: { first: { output: { value: "native", ok: true } } }
     }, evaluator);
 
@@ -83,8 +87,46 @@ describe("workflow output evaluation", () => {
     }, {
       input: {},
       run_id: "run-1",
+      workflow: { name: "output-test", description: "Output test workflow", source_path: "/tmp/specs/output-test.workflow.yaml", source_dir: "/tmp/specs" },
       steps: { first: { output: { value: "native" } } }
     }, evaluator)).toThrow(/Workflow output 'nested\.missing' failed to evaluate:/);
+  });
+
+  it("evaluates workflow metadata in top-level outputs", () => {
+    const output = evaluateWorkflowOutputs(
+      irWithOutputs({
+        name: "${{ workflow.name }}",
+        description: "${{ workflow.description }}",
+        source_path: "${{ workflow.source_path }}",
+        script: "${{ workflow.source_dir }}/scripts/helper.mjs"
+      }),
+      {
+        input: {},
+        run_id: "run-1",
+        workflow: { name: "output-test", description: "Output test workflow", source_path: "/tmp/specs/output-test.workflow.yaml", source_dir: "/tmp/specs" },
+        steps: {}
+      },
+      evaluator
+    );
+
+    expect(output).toEqual({
+      name: "output-test",
+      description: "Output test workflow",
+      source_path: "/tmp/specs/output-test.workflow.yaml",
+      script: "/tmp/specs/scripts/helper.mjs"
+    });
+  });
+
+  it("uses empty workflow source fields when the IR has no source path", () => {
+    const ir = irWithOutputs({ source_path: "${{ workflow.source_path }}", source_dir: "${{ workflow.source_dir }}" });
+    ir.source.path = undefined;
+    const output = evaluateWorkflowOutputs(
+      ir,
+      { input: {}, run_id: "run-1", workflow: { name: "output-test", description: "Output test workflow", source_path: "", source_dir: "" }, steps: {} },
+      evaluator
+    );
+
+    expect(output).toEqual({ source_path: "", source_dir: "" });
   });
 
   it("normalizes bigint values inside arrays and objects", () => {
@@ -107,9 +149,10 @@ describe("workflow output evaluation", () => {
       }
     ];
 
-    expect(buildCompletedStepContext({ file: "a.ts" }, "run-1", nodes)).toEqual({
+    expect(buildCompletedStepContext(irWithOutputs({}), { file: "a.ts" }, "run-1", nodes)).toEqual({
       input: { file: "a.ts" },
       run_id: "run-1",
+      workflow: { name: "output-test", description: "Output test workflow", source_path: "/tmp/specs/output-test.workflow.yaml", source_dir: "/tmp/specs" },
       steps: {
         first: { output: { value: "ok" } }
       }

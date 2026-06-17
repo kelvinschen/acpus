@@ -5,6 +5,7 @@ import { isRunTerminal } from "./types.js";
 import type { RunStore } from "./store.js";
 import { isNodeKeyAtOrBelow, staticNodePathFromKey } from "./keys.js";
 import { validateInput } from "./validate-input.js";
+import { buildWorkflowExpressionContext } from "./workflow-context.js";
 
 /**
  * Plan describing how a Forked Run will inherit Nodes from a prior Run.
@@ -185,7 +186,7 @@ function computeForkPlan(
       boundaryReason = "non-completed";
       break;
     }
-    const newHash = hashIrNode(irEntry.node);
+    const newHash = hashIrNode(irEntry.node, { workflow: buildWorkflowExpressionContext(newIr) });
     if (newHash !== checkpoint.definitionHash) {
       defaultOrigin = liftOutOfComposite(checkpoint.nodeKey, irIndex);
       boundaryReason = "hash-mismatch";

@@ -21,6 +21,7 @@ Pick a playbook by task shape:
 | Drive development from a goal, loop-plan-execute until done | `goal-driven-development` |
 | Dispatch N parallel subagents, each with its own task | `subagent-driven` |
 | Loop plan→implement→review with a human (or driving agent) approving each round via a Signal Node | `human-in-the-loop-development` |
+| Discuss a topic through adversarial, constructive, synthetic, and empirical roles until consensus | `swarm-intelligence` |
 
 ## Public Playbooks
 
@@ -34,6 +35,7 @@ Pick a playbook by task shape:
 | `project:goal-driven-development` | goal-driven (GDD) | Yes | [source](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/goal-driven-development.workflow.spec.yaml) / [raw](https://raw.githubusercontent.com/kelvinschen/acpus/main/.acpus/workflows/goal-driven-development.workflow.spec.yaml) |
 | `project:subagent-driven` | fanout-subagents | No | [source](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/subagent-driven.workflow.spec.yaml) / [raw](https://raw.githubusercontent.com/kelvinschen/acpus/main/.acpus/workflows/subagent-driven.workflow.spec.yaml) |
 | `project:human-in-the-loop-development` | human-in-the-loop (Signal-gated) | Yes | [source](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/human-in-the-loop-development.workflow.spec.yaml) / [raw](https://raw.githubusercontent.com/kelvinschen/acpus/main/.acpus/workflows/human-in-the-loop-development.workflow.spec.yaml) |
+| `project:swarm-intelligence` | blackboard-swarm | No | [source](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/swarm-intelligence/workflow.spec.yaml) / [raw](https://raw.githubusercontent.com/kelvinschen/acpus/main/.acpus/workflows/swarm-intelligence/workflow.spec.yaml) |
 
 When adapting a playbook, rewrite prompts, inputs, outputs, agent roles, and write boundaries for the actual user task. Do not copy a playbook mechanically.
 

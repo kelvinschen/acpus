@@ -19,6 +19,7 @@ import { evaluateTemplatedValue, evaluateWorkflowOutputs } from "./workflow-outp
 import { randomBytes } from "node:crypto";
 import pLimit from "p-limit";
 import { AgentTelemetryAccumulator, upsertAgentAttemptTelemetry } from "./agent-telemetry.js";
+import { buildWorkflowExpressionContext } from "./workflow-context.js";
 
 /**
  * The core IR interpreter that drives state transitions, orchestrates
@@ -93,7 +94,7 @@ export class WorkflowInterpreter {
   async runToCompletion(ir: AcpusIr, opts: RunOptions, runId: string): Promise<import("./types.js").RunState> {
     const meta = this.store.readRunMeta(runId)!;
     try {
-      const ctx = this.buildContext(opts.input, runId);
+      const ctx = this.buildContext(ir, opts.input, runId);
       await this.executeNode(ir.root, ctx, runId, {});
       meta.output = evaluateWorkflowOutputs(ir, ctx, this.evaluator);
       meta.error = undefined;
@@ -172,7 +173,7 @@ export class WorkflowInterpreter {
 
     // States reached by the deterministic re-walk.
     const reached = new Map<string, NodeState>();
-    const ctx = this.buildContext(input, runId);
+    const ctx = this.buildContext(ir, input, runId);
     this.replayNode(ir.root, ctx, runId, {}, undefined, recorded, reached, evaluator);
 
     // Compare the set of node keys reached by the re-walk against what was
@@ -325,7 +326,7 @@ export class WorkflowInterpreter {
     // transition. `attempt` is incremented by executeNode.
     this.runControl.resetNodeForRetry(runId, state);
 
-    const ctx = this.buildContext(input, runId);
+    const ctx = this.buildContext(ir, input, runId);
     this.populateStepOutputs(runId, ctx);
     // Restore the parent dynamic value-context captured at first execution.
     this.restoreDynamicContext(ctx, state.dynamicContext);
@@ -402,7 +403,7 @@ export class WorkflowInterpreter {
     );
 
     // Initialize state
-    const definitionHash = hashIrNode(node);
+    const definitionHash = hashIrNode(node, { workflow: ctx.workflow });
     const state = existing ?? createInitialNodeState(nodeKey, node.id, node.kind, definitionHash);
     if (!state.definitionHash) state.definitionHash = definitionHash;
     if (state.state === "failed") {
@@ -785,7 +786,7 @@ export class WorkflowInterpreter {
 
     if (join === "all") {
       children.forEach((child, index) => {
-        this.materializePendingNode(runId, child, nestedParallelBranchDynamic(dynamic, index), keyPrefix);
+        this.materializePendingNode(runId, child, ctx, nestedParallelBranchDynamic(dynamic, index), keyPrefix);
       });
     }
 
@@ -884,7 +885,7 @@ export class WorkflowInterpreter {
       for (const lane of lanePlan) {
         const itemDynamic: NodeKeyDynamic = { ...dynamic, ...lane.itemDynamic };
         for (const child of children) {
-          this.materializePendingNode(runId, child, itemDynamic, keyPrefix);
+          this.materializePendingNode(runId, child, lane.keyCtx, itemDynamic, keyPrefix);
         }
       }
     }
@@ -986,11 +987,11 @@ export class WorkflowInterpreter {
     return Promise.all(lanePromises);
   }
 
-  private materializePendingNode(runId: string, node: IrNode, dynamic: NodeKeyDynamic, keyPrefix?: string): void {
+  private materializePendingNode(runId: string, node: IrNode, ctx: ExpressionContext, dynamic: NodeKeyDynamic, keyPrefix?: string): void {
     const resolved = resolveNodeKey(node.keyTemplate, dynamic);
     const nodeKey = withNodeKeyPrefix(keyPrefix, resolved);
     if (this.store.readNodeState(runId, nodeKey)) return;
-    this.store.writeNodeState(runId, createInitialNodeState(nodeKey, node.id, node.kind, hashIrNode(node)));
+    this.store.writeNodeState(runId, createInitialNodeState(nodeKey, node.id, node.kind, hashIrNode(node, { workflow: ctx.workflow })));
   }
 
   private async executeSwitch(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {
@@ -1229,7 +1230,7 @@ export class WorkflowInterpreter {
     // under this subworkflow's node key to stay unique within the run.
     this.subworkflowStack.add(childAbs);
     try {
-      const childCtx = this.buildContext(validatedChildInput, runId);
+      const childCtx = this.buildContext(compiled.ir, validatedChildInput, runId);
       await this.executeNode(compiled.ir.root, childCtx, runId, dynamic, nodeKey);
       return { output: evaluateWorkflowOutputs(compiled.ir, childCtx, this.evaluator) };
     } finally {
@@ -1245,8 +1246,8 @@ export class WorkflowInterpreter {
 
   // ─── Helpers ────────────────────────────────────────────────────
 
-  private buildContext(input: Record<string, unknown>, runId: string): ExpressionContext {
-    return { input, steps: {}, run_id: runId };
+  private buildContext(ir: AcpusIr, input: Record<string, unknown>, runId: string): ExpressionContext {
+    return { input, steps: {}, workflow: buildWorkflowExpressionContext(ir), run_id: runId };
   }
 
   private populateStepOutputs(runId: string, ctx: ExpressionContext): void {

@@ -17,7 +17,7 @@ function makeAgentNode(metadata: Record<string, unknown>): IrNode {
 }
 
 function baseCtx(): ExpressionContext {
-  return { input: {}, steps: {}, run_id: "run-001" };
+  return { input: {}, steps: {}, workflow: { name: "test", description: "", source_path: "", source_dir: "" }, run_id: "run-001" };
 }
 
 const tmpDirs: string[] = [];
@@ -179,7 +179,7 @@ describe("AgentExecutor: sessions ensure failure", () => {
       nodeKey: "workflow/test-agent"
     });
 
-    expect(result.failureKind).toBe("spawn");
+    expect(result.failureKind).toBe("exit");
     expect(result.exitCode).toBe(3);
     expect(result.error).toContain("NO_SESSION");
     expect(result.stderr).toContain("NO_SESSION");
@@ -216,7 +216,7 @@ exit 0
       nodeKey: "workflow/test-agent"
     });
 
-    expect(result.failureKind).toBe("spawn");
+    expect(result.failureKind).toBe("exit");
     expect(result.exitCode).toBe(42);
     expect(result.error).toBeTruthy();
   });
@@ -284,11 +284,11 @@ describe("AgentExecutor: session_key", () => {
       session_key: "${{ input.ticket }}-${{ item_id }}-${{ loop.iter }}-${{ steps.seed.exit_code }}"
     });
     const ctx: ExpressionContext = {
+      ...baseCtx(),
       input: { ticket: "T-7" },
       steps: { seed: { exit_code: 0 } },
       loop: { iter: 2 },
-      item_id: "file:alpha",
-      run_id: "run-001"
+      item_id: "file:alpha"
     };
     await executor.execute({
       node,
@@ -455,7 +455,7 @@ describe("AgentExecutor: cwd resolution", () => {
     });
     const result = await executor.execute({
       node,
-      context: { input: { target: "/step/override" }, steps: {}, run_id: "run-001" },
+      context: { ...baseCtx(), input: { target: "/step/override" } },
       signal: new AbortController().signal,
       nodeKey: "workflow/test-agent"
     });
@@ -559,7 +559,7 @@ describe("AgentExecutor: acpx timeout", () => {
         },
         prompt: "Hello"
       });
-      const ctx: ExpressionContext = { input: { override: "agent-step-value" }, steps: {}, run_id: "run-001" };
+      const ctx: ExpressionContext = { ...baseCtx(), input: { override: "agent-step-value" } };
       await executor.execute({
         node,
         context: ctx,

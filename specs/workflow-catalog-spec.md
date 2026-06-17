@@ -9,7 +9,7 @@ The Workflow Catalog is the read-only discovery surface for project and global W
 - The implementation MUST scan project Workflow Specs under `.acpus/workflows/` in the current Workspace.
 - The implementation MUST scan global Workflow Specs under `$HOME/.acpus/workflows/`.
 - Catalog listing MUST scan project entries before global entries.
-- Catalog discovery MUST recursively consider only `*.workflow.yaml`, `*.workflow.yml`, `*.workflow.spec.yaml`, `*.workflow.spec.yml`, `workflow.yaml`, and `workflow.yml`.
+- Catalog discovery MUST recursively consider only `*.workflow.yaml`, `*.workflow.yml`, `*.workflow.spec.yaml`, `*.workflow.spec.yml`, `workflow.yaml`, `workflow.yml`, `workflow.spec.yaml`, and `workflow.spec.yml`.
 - Catalog refs MUST be derived from the Workflow Spec `name` as `project:<name>` or `global:<name>`.
 - Short names MUST resolve only when exactly one ready Catalog entry has that name across all scopes.
 - Entries whose Workflow Spec fails static validation MUST be listed with status `invalid`.
@@ -22,6 +22,7 @@ The Workflow Catalog is the read-only discovery surface for project and global W
 - Catalog source path validation and include resolution MUST reject targets whose real path is outside the current Workspace or `$HOME/.acpus/workflows/`.
 - Catalog source path validation and include resolution MUST reject targets that do not exist or cannot be read.
 - Program execution, Program `capture.path`, and default Agent cwd MUST resolve relative to the current Workspace.
+- Workflow authors MUST use the Workflow Spec expression context `workflow.source_dir` for explicit spec-local helper paths; this MUST NOT change Program execution, Program `capture.path`, or default Agent cwd resolution.
 
 ## Verification
 

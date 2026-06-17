@@ -1,13 +1,15 @@
 import type { AcpusIr } from "@acpus/core";
 import { ExpressionEvaluator } from "./evaluator.js";
 import type { ExpressionContext, NodeExecutionState } from "./types.js";
+import { buildWorkflowExpressionContext } from "./workflow-context.js";
 
 export function buildCompletedStepContext(
+  ir: AcpusIr,
   input: Record<string, unknown>,
   runId: string,
   nodes: NodeExecutionState[]
 ): ExpressionContext {
-  const ctx: ExpressionContext = { input, steps: {}, run_id: runId };
+  const ctx: ExpressionContext = { input, steps: {}, workflow: buildWorkflowExpressionContext(ir), run_id: runId };
   const root = nodes.find((node) => node.nodeKey === "workflow" && node.state === "completed");
   const rootOutput = root?.output;
   if (isRecord(rootOutput) && isRecord(rootOutput.output)) {

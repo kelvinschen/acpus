@@ -11,6 +11,8 @@ describe("Workflow Catalog", () => {
       const root = join(workspace, ".acpus", "workflows");
       mkdirSync(root, { recursive: true });
       writeFileSync(join(root, "ready.workflow.yaml"), SIMPLE_WORKFLOW("catalog-ready"), "utf8");
+      mkdirSync(join(root, "bundle"), { recursive: true });
+      writeFileSync(join(root, "bundle", "workflow.spec.yaml"), SIMPLE_WORKFLOW("catalog-bundle"), "utf8");
       writeFileSync(join(root, "invalid.workflow.yaml"), "version: 1\nworkflow: {}\n", "utf8");
       writeFileSync(join(root, "dupe-one.workflow.yaml"), SIMPLE_WORKFLOW("catalog-dupe"), "utf8");
       writeFileSync(join(root, "dupe-two.workflow.yaml"), SIMPLE_WORKFLOW("catalog-dupe"), "utf8");
@@ -21,6 +23,11 @@ describe("Workflow Catalog", () => {
       expect(entries.find((entry) => entry.name === "catalog-ready")).toMatchObject({
         scope: "project",
         ref: "project:catalog-ready",
+        status: "ready"
+      });
+      expect(entries.find((entry) => entry.name === "catalog-bundle")).toMatchObject({
+        scope: "project",
+        ref: "project:catalog-bundle",
         status: "ready"
       });
       expect(entries.find((entry) => entry.path.endsWith("invalid.workflow.yaml"))?.status).toBe("invalid");

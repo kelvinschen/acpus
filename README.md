@@ -204,6 +204,7 @@ They keep agents responsible for judgment, synthesis, implementation, and repair
 | Tournament | [`worktree-implementation-tournament`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/worktree-implementation-tournament.workflow.spec.yaml) | Let multiple agents implement candidates in isolated worktrees and apply the winning patch. | Yes |
 | Loop until done | [`loop-until-green-fix`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/loop-until-green-fix.workflow.spec.yaml) | Iterate agent repair attempts until verification passes, then apply the passing patch. | Yes |
 | Human-in-the-loop development | [`human-in-the-loop-development`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/human-in-the-loop-development.workflow.spec.yaml) | Loop plan→implement→review→route; the reviewer gates each round and an approved round blocks on a Signal Node for a human (or driving agent) decision, carrying any rejection reason into the next round. | Yes |
+| Swarm intelligence | [`swarm-intelligence`](https://github.com/kelvinschen/acpus/blob/main/.acpus/workflows/swarm-intelligence/workflow.spec.yaml) | Coordinate Challenger, Builder, Synthesizer, and Empiricist agents through a shared blackboard until consensus, saturation, or the round budget. | No |
 
 Examples:
 

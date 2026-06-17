@@ -14,7 +14,7 @@ function makeProgramNode(metadata: Record<string, unknown>): IrNode {
 }
 
 function baseCtx(): ExpressionContext {
-  return { input: {}, steps: {}, run_id: "test" };
+  return { input: {}, steps: {}, workflow: { name: "test", description: "", source_path: "", source_dir: "" }, run_id: "test" };
 }
 
 describe("MockProgramExecutor", () => {

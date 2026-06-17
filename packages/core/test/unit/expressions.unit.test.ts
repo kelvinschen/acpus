@@ -43,6 +43,7 @@ describe("createExpressionCollector", () => {
     const diagnostics = new DiagnosticBag();
     const collector = createExpressionCollector(diagnostics, new Set(), new Map());
     collector.visit("${{ input.x }}", "$.test");
+    collector.visit("${{ workflow.source_dir }}", "$.test-workflow");
     collector.visit("${{ item.y }}", "$.test2");
     collector.visit("${{ loop.z }}", "$.test3");
     expect(diagnostics.diagnostics).toEqual([]);

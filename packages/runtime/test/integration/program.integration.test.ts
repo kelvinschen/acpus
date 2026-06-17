@@ -1,6 +1,9 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { compileYaml, createTestInterpreter } from "../interpreter/helper.js";
 import { ArtifactStore } from "../../src/artifacts.js";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 describe("Program execution", () => {
   const cleanups: Array<() => void> = [];
@@ -37,6 +40,43 @@ workflow:
     const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "list-files");
     expect(node?.state).toBe("completed");
     expect(node?.output).toEqual({ output: { files: ["a.txt", "b.txt"] }, exit_code: 0 });
+  });
+
+  it("executes a helper script through workflow.source_dir", async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "acpus-source-dir-")));
+    const specPath = join(dir, "workflow.yaml");
+    const scriptsDir = join(dir, "scripts");
+    const helperPath = join(scriptsDir, "helper.mjs");
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(scriptsDir);
+    writeFileSync(helperPath, "console.log(JSON.stringify({ sourceDir: process.argv[2] }))\n", "utf8");
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+
+    const ir = compileYaml(`
+version: 1
+name: source-dir-program
+workflow:
+  steps:
+    - id: helper
+      run: program
+      cmd: [${JSON.stringify(process.execPath)}, "\${{ workflow.source_dir }}/scripts/helper.mjs", "\${{ workflow.source_dir }}"]
+      capture:
+        from: stdout
+        parse: json
+      output:
+        sourceDir: string
+outputs:
+  helper_dir: "\${{ steps.helper.output.sourceDir }}"
+`);
+    ir.source.path = specPath;
+
+    const { interpreter, cleanup } = createTestInterpreter({ useRealProgramExecutor: true });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+
+    expect(meta.status).toBe("completed");
+    expect(meta.output).toEqual({ helper_dir: dir });
   });
 
   it("fails the node fast on a non-allow-listed non-zero exit code", async () => {

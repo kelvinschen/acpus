@@ -9,7 +9,7 @@ export { EXPRESSION_PATTERN, toCelParseSource } from "./expressions-shared.js";
  *  Using ${{ }} in these fields causes a runtime CEL parse error. */
 const RAW_CEL_FIELDS = new Set(["over", "until", "when"]);
 
-export const ALLOWED_ROOTS = new Set(["input", "steps", "loop", "item", "item_id", "item_index", "run_id"]);
+export const ALLOWED_ROOTS = new Set(["input", "steps", "workflow", "loop", "item", "item_id", "item_index", "run_id"]);
 export const ALLOWED_FUNCTIONS = new Set(["now", "len", "startsWith", "matches", "coalesce", "json"]);
 
 export interface ExpressionCollector {

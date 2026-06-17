@@ -1,5 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { compileYaml, createTestInterpreter } from "../interpreter/helper.js";
 import { ForkError, materializeForkedRun, planForkedRun } from "../../src/fork.js";
 import { applyAgentOverrides, parseWorkflowSpecForOverrides } from "@acpus/core";
@@ -158,6 +160,85 @@ workflow:
     expect(plan.inheritedNodeKeys).not.toContain("workflow/publish");
     expect(plan.forkOriginNodeKey).toBe("workflow/build");
     expect(plan.boundaryReason).toBe("hash-mismatch");
+  });
+
+  it("does not inherit a workflow-context-dependent node when source dir changes", async () => {
+    const sourceDir = realpathSync(mkdtempSync(join(tmpdir(), "acpus-fork-source-a-")));
+    const forkDir = realpathSync(mkdtempSync(join(tmpdir(), "acpus-fork-source-b-")));
+    cleanups.push(() => rmSync(sourceDir, { recursive: true, force: true }));
+    cleanups.push(() => rmSync(forkDir, { recursive: true, force: true }));
+
+    const spec = `
+version: 1
+name: fork-workflow-context
+workflow:
+  steps:
+    - id: locate
+      run: program
+      cmd: ["echo", "\${{ workflow.source_dir }}"]
+      capture:
+        from: stdout
+        parse: text
+    - id: publish
+      run: program
+      cmd: ["echo", "publish"]
+`;
+    const sourceIr = compileYaml(spec);
+    sourceIr.source.path = join(sourceDir, "workflow.yaml");
+    const forkIr = compileYaml(spec);
+    forkIr.source.path = join(forkDir, "workflow.yaml");
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: {
+        locate: { parsedOutput: sourceDir },
+        publish: {}
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(sourceIr, { input: {} });
+    expect(meta.status).toBe("completed");
+
+    const plan = planForkedRun(store, { sourceRunId: meta.runId, ir: forkIr });
+
+    expect(plan.inheritedNodeKeys).not.toContain("workflow/locate");
+    expect(plan.inheritedNodeKeys).not.toContain("workflow/publish");
+    expect(plan.forkOriginNodeKey).toBe("workflow/locate");
+    expect(plan.boundaryReason).toBe("hash-mismatch");
+  });
+
+  it("still inherits workflow-independent nodes when only source dir changes", async () => {
+    const sourceDir = realpathSync(mkdtempSync(join(tmpdir(), "acpus-fork-independent-a-")));
+    const forkDir = realpathSync(mkdtempSync(join(tmpdir(), "acpus-fork-independent-b-")));
+    cleanups.push(() => rmSync(sourceDir, { recursive: true, force: true }));
+    cleanups.push(() => rmSync(forkDir, { recursive: true, force: true }));
+
+    const spec = `
+version: 1
+name: fork-workflow-independent
+workflow:
+  steps:
+    - id: build
+      run: program
+      cmd: ["echo", "stable"]
+`;
+    const sourceIr = compileYaml(spec);
+    sourceIr.source.path = join(sourceDir, "workflow.yaml");
+    const forkIr = compileYaml(spec);
+    forkIr.source.path = join(forkDir, "workflow.yaml");
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: { build: { parsedOutput: "stable" } }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(sourceIr, { input: {} });
+    expect(meta.status).toBe("completed");
+
+    const plan = planForkedRun(store, { sourceRunId: meta.runId, ir: forkIr });
+
+    expect(plan.inheritedNodeKeys).toContain("workflow/build");
+    expect(plan.boundaryReason).toBe("all-completed");
   });
 
   it("rejects an operator override targeting a Composite-body Node", async () => {

@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { compileYaml, createTestInterpreter } from "../interpreter/helper.js";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -97,6 +97,57 @@ workflow:
 
     const sub = store.listNodeStates(meta.runId).find((n) => n.nodeId === "sub");
     expect(sub?.output).toEqual({ output: { result: "projected" } });
+  });
+
+  it("uses child workflow metadata inside subworkflow outputs", async () => {
+    const parentDir = realpathSync(mkdtempSync(join(tmpdir(), "acpus-subwf-parent-meta-")));
+    const childDir = realpathSync(mkdtempSync(join(tmpdir(), "acpus-subwf-child-meta-")));
+    const parentPath = join(parentDir, "parent.yaml");
+    const childPath = join(childDir, "child.yaml");
+    writeFileSync(childPath, `
+version: 1
+name: child-meta
+description: Child metadata
+workflow:
+  steps: []
+outputs:
+  name: \${{ workflow.name }}
+  description: \${{ workflow.description }}
+  source_path: \${{ workflow.source_path }}
+  source_dir: \${{ workflow.source_dir }}
+`);
+
+    const ir = compileYaml(`
+version: 1
+name: parent-meta
+workflow:
+  steps:
+    - id: sub
+      subworkflow: ${childPath}
+outputs:
+  parent_dir: \${{ workflow.source_dir }}
+  child_dir: \${{ steps.sub.output.source_dir }}
+`);
+    ir.source.path = parentPath;
+
+    const { interpreter, store, cleanup } = createTestInterpreter({});
+    cleanups.push(cleanup);
+    cleanups.push(() => rmSync(parentDir, { recursive: true, force: true }));
+    cleanups.push(() => rmSync(childDir, { recursive: true, force: true }));
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+    expect(meta.output).toEqual({ parent_dir: parentDir, child_dir: childDir });
+
+    const sub = store.listNodeStates(meta.runId).find((n) => n.nodeId === "sub");
+    expect(sub?.output).toEqual({
+      output: {
+        name: "child-meta",
+        description: "Child metadata",
+        source_path: childPath,
+        source_dir: childDir
+      }
+    });
   });
 
   it("fails when the child spec cannot be found", async () => {

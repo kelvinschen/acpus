@@ -91,8 +91,12 @@ export class AgentExecutor implements ExecutorAdapter {
       if (ensureResult.failed) {
         const exitCode = ensureResult.exitCode ?? 1;
         const stderr = ensureResult.stderr ?? "";
-        const detail = stderr || ensureResult.shortMessage || `acpx sessions ensure exited with code ${exitCode}`;
-        return { failureKind: "spawn", exitCode, error: detail, prompt, responseText: "", stdout: ensureResult.stdout ?? "", stderr };
+        const stdout = ensureResult.stdout ?? "";
+        // acpx may write errors to stdout (e.g. model rejection) as JSON-RPC
+        // or plain text. Prefer stderr, then extract the message from JSON-RPC
+        // stdout, fall back to raw stdout, then the generic shortMessage.
+        const detail = stderr || extractAcpxError(stdout) || stdout || ensureResult.shortMessage || `acpx sessions ensure exited with code ${exitCode}`;
+        return { failureKind: "exit", exitCode, error: detail, prompt, responseText: "", stdout, stderr };
       }
 
       if (ensureResult.stdout) {
@@ -116,10 +120,30 @@ export class AgentExecutor implements ExecutorAdapter {
         buffer: { stdout: false }
       });
       let stderrText = "";
+      // Capture raw non-NDJSON stdout lines in a bounded buffer for error
+      // reporting. The accumulator only extracts agent_message_chunk NDJSON,
+      // but acpx writes errors (e.g. model rejection, ACP errors) to stdout
+      // as plain text or JSON-RPC. We filter out NDJSON lines so the tail
+      // doesn't mix agent response content with error text. The buffer is
+      // line-aware at the tail boundary to avoid mid-line truncation.
+      let rawErrorTail = "";
+      const MAX_RAW_ERROR_TAIL = 2048;
       proc.stdout?.on("data", (chunk) => {
         const text = String(chunk);
         onStream?.("stdout", text);
         accumulator.append(text);
+        // Filter NDJSON lines: skip lines that start with '{' and contain
+        // "jsonrpc" (ACP protocol). Keep everything else as error candidates.
+        // Use line-aware append: only keep complete trailing lines so the
+        // buffer doesn't leave a mid-line fragment at the end.
+        rawErrorTail += text;
+        // Trim to last MAX_RAW_ERROR_TAIL bytes, then drop any leading
+        // partial line (first \n is our boundary).
+        if (rawErrorTail.length > MAX_RAW_ERROR_TAIL) {
+          rawErrorTail = rawErrorTail.slice(-MAX_RAW_ERROR_TAIL);
+          const nl = rawErrorTail.indexOf("\n");
+          if (nl > -1) rawErrorTail = rawErrorTail.slice(nl + 1);
+        }
       });
       proc.stderr?.on("data", (chunk) => {
         const text = String(chunk);
@@ -149,7 +173,15 @@ export class AgentExecutor implements ExecutorAdapter {
 
       // Non-zero exit (and not cancelled) → non-recoverable agent failure.
       if (result.exitCode !== 0) {
-        return { failureKind: "exit", exitCode: result.exitCode ?? 1, error: stderr || `acpx exited with code ${result.exitCode}`, prompt, responseText: text, stderr, acpxRecordId, cwd };
+        // acpx writes errors to stdout (e.g. model rejection, ACP errors),
+        // while stderr typically contains session lifecycle messages.
+        // When the agent produced no response text, the stdout error stream
+        // is likely the cause; surface it in the error message.
+        //
+        // Priority: extracted error lines (plain text / JSON-RPC, but not
+        // agent NDJSON), then stderr, then response text, then generic.
+        const exitError = nonNdjsonLines(rawErrorTail).trim() || stderr || text || `acpx exited with code ${result.exitCode}`;
+        return { failureKind: "exit", exitCode: result.exitCode ?? 1, error: exitError, prompt, responseText: text, stderr, acpxRecordId, cwd };
       }
 
       // Assemble structured output. When a schema is declared, extract a JSON
@@ -157,6 +189,15 @@ export class AgentExecutor implements ExecutorAdapter {
       // retryable parse failure. Otherwise wrap as { text }.
       let output: unknown;
       if (outputSchema) {
+        if (text.trim().length === 0) {
+          // Agent produced no output at all — likely an infrastructure failure
+          // (acpx couldn't reach the agent, model rejected, etc.). This is not
+          // a parse failure; classify as spawn (no usable response) so it is
+          // not retried as parse. exitCode is left undefined to avoid the
+          // semantic contradiction of exitCode:0 + failureKind:'exit'.
+          const noOutputError = nonNdjsonLines(rawErrorTail).trim() || stderr || `acpx exited with code ${result.exitCode} but produced no output`;
+          return { failureKind: "spawn", error: noOutputError, output: { text }, prompt, responseText: text, stderr, acpxRecordId, cwd };
+        }
         const parsed = extractJson(text);
         if (parsed === undefined) {
           return { failureKind: "parse", error: "Failed to parse agent output as JSON", output: { text }, prompt, responseText: text, stderr, acpxRecordId, cwd };
@@ -460,4 +501,46 @@ function isRepairableJsonCandidate(candidate: string): boolean {
   // `[1-9]` into `["1-9"]`; in this runtime, malformed final outputs we want to
   // save are object-shaped contracts with key/value separators.
   return trimmed.startsWith("{") && trimmed.includes(":");
+}
+
+/**
+ * Extract a human-readable error message from acpx JSON-RPC error output.
+ * acpx writes errors on stdout as JSON-RPC `{"jsonrpc":"2.0","error":{"message":"..."}}`.
+ * Returns the `error.message` field, or undefined if the input is not a valid
+ * JSON-RPC error.
+ */
+export function extractAcpxError(stdout: string): string | undefined {
+  if (!stdout) return undefined;
+  try {
+    const parsed = JSON.parse(stdout) as { error?: { message?: string } };
+    return typeof parsed?.error?.message === "string" && parsed.error.message.length > 0
+      ? parsed.error.message
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Filter a raw stdout buffer to lines that are NOT ACP NDJSON protocol
+ * messages. NDJSON lines start with '{' and contain "jsonrpc" — these are
+ * agent protocol events, not error messages. The remaining lines are
+ * likely acpx error output (plain text or JSON-RPC error objects).
+ *
+ * This is best-effort: when acpx fails, NDJSON is minimal or absent, and
+ * the error text dominates. The filter just prevents accidental mixing when
+ * a few NDJSON lines happen to be in the buffer tail.
+ */
+export function nonNdjsonLines(raw: string): string {
+  if (!raw) return "";
+  return raw
+    .split("\n")
+    .filter((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return false;
+      // NDJSON lines start with '{' and contain "jsonrpc" as a protocol marker.
+      if (trimmed.startsWith("{") && trimmed.includes('"jsonrpc"')) return false;
+      return true;
+    })
+    .join("\n");
 }

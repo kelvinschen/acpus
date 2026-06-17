@@ -142,11 +142,20 @@ export interface ExpressionContext {
   input: Record<string, unknown>;
   /** Step outputs keyed by step id */
   steps: Record<string, unknown>;
+  /** Frozen Workflow Spec metadata exposed to CEL/template expressions. */
+  workflow: WorkflowExpressionContext;
   loop?: { iter: number; last?: unknown };
   item?: unknown;
   item_id?: string;
   item_index?: number;
   run_id: string;
+}
+
+export interface WorkflowExpressionContext {
+  name: string;
+  description: string;
+  source_path: string;
+  source_dir: string;
 }
 
 // ─── Executor adapter contract ──────────────────────────────────

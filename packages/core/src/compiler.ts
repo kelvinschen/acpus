@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { Ajv } from "ajv";
 import { parse as parseYaml } from "yaml";
+import { realpathSync } from "node:fs";
 import { DiagnosticBag } from "./diagnostics.js";
 import { outputMergeFor, keyTemplateForKind } from "./composite-contract.js";
 import { createExpressionCollector } from "./expressions.js";
@@ -27,6 +28,7 @@ const ajv = new Ajv({ allErrors: true, strict: false });
 
 export function compileWorkflow(source: string, options: CompileOptions = {}): CompileResult {
   const diagnostics = new DiagnosticBag();
+  const sourcePath = normalizeSourcePath(options.sourcePath);
   const parsed = parseSource(source, diagnostics);
 
   if (!isWorkflowSpec(parsed)) {
@@ -34,14 +36,15 @@ export function compileWorkflow(source: string, options: CompileOptions = {}): C
     return result(false, diagnostics);
   }
 
-  const expanded = expandIncludes(parsed, options, diagnostics, new Set());
+  const compileOptions: CompileOptions = { ...options, sourcePath };
+  const expanded = expandIncludes(parsed, compileOptions, diagnostics, new Set());
   validateWithSchema(expanded, diagnostics);
   const { ids: stepIds, kinds: stepKinds } = collectStepIds(expanded.workflow.steps, diagnostics);
   const context: CompileContext = {
     diagnostics,
     stepIds,
     agents: isRecord(expanded.agents) ? expanded.agents : {},
-    sourcePath: options.sourcePath
+    sourcePath
   };
 
   validateSpec(expanded, context);
@@ -84,7 +87,7 @@ export function compileWorkflow(source: string, options: CompileOptions = {}): C
     irVersion: 1,
     astVersion: 1,
     source: {
-      path: options.sourcePath,
+      path: sourcePath,
       digest: digest(source)
     },
     name: expanded.name,
@@ -102,6 +105,15 @@ export function compileWorkflow(source: string, options: CompileOptions = {}): C
     ir,
     schedule: createSchedule(ir)
   };
+}
+
+function normalizeSourcePath(sourcePath: string | undefined): string | undefined {
+  if (!sourcePath) return undefined;
+  try {
+    return realpathSync.native(sourcePath);
+  } catch {
+    return sourcePath;
+  }
 }
 
 export function lintWorkflow(source: string, options: CompileOptions = {}): LintResult {

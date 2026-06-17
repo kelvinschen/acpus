@@ -121,6 +121,7 @@ export class ExpressionEvaluator {
     const bindings: Record<string, unknown> = {
       input: ctx.input,
       steps: ctx.steps,
+      workflow: ctx.workflow,
       run_id: ctx.run_id
     };
 
