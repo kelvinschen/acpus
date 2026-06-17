@@ -1,5 +1,20 @@
 # @acpus/tui
 
+## 0.5.3
+
+### Patch Changes
+
+- e7cc11e: Add opt-in agent token telemetry: display token usage in run status and TUI detail pane
+
+  - `@acpus/runtime`: Add `AgentTokenUsage` type and `tokenUsage` field on `AgentAttemptTelemetry`. Token usage is opt-in — only populated when the agent adapter reports it.
+  - `@acpus/cli`: Display token counts in `acpus runs show` agent activity summaries.
+  - `@acpus/tui`: Show token usage in the detail pane. Fix field label indentation in definition and context sections.
+
+- Updated dependencies [e7cc11e]
+- Updated dependencies [cda81af]
+  - @acpus/runtime@0.6.0
+  - @acpus/core@0.5.0
+
 ## 0.5.2
 
 ### Patch Changes
