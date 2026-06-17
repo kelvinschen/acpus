@@ -4,6 +4,7 @@ import type {
   AgentContextUsage,
   AgentIoPreview,
   AgentTelemetry,
+  AgentTokenUsage,
   AgentToolCallTelemetry
 } from "./types.js";
 
@@ -40,6 +41,7 @@ export class AgentTelemetryAccumulator {
   private response = "";
   private stopReason: string | undefined;
   private latestContext: AgentContextUsage | undefined;
+  private tokenUsage: AgentTokenUsage | undefined;
   private outputArtifactRef: string | undefined;
   private acpxRecordId: string | undefined;
   private cwd: string | undefined;
@@ -116,6 +118,7 @@ export class AgentTelemetryAccumulator {
       updatedAt,
       completedAt,
       context: this.latestContext,
+      tokenUsage: this.tokenUsage,
       input: this.input,
       output: this.response.length > 0
         ? buildPreview(this.response, this.previewEdgeBytes, this.outputArtifactRef)
@@ -179,8 +182,10 @@ export class AgentTelemetryAccumulator {
   }
 
   private captureResult(obj: Record<string, unknown>): void {
+    if (!Object.hasOwn(obj, "id") || !Object.hasOwn(obj, "result")) return;
     const result = readRecord(obj.result);
     if (typeof result?.stopReason === "string") this.stopReason = result.stopReason;
+    this.tokenUsage = readTokenUsage(readRecord(result?.usage)) ?? this.tokenUsage;
   }
 
   private captureTool(update: Record<string, unknown>): boolean {
@@ -312,6 +317,33 @@ function readString(value: unknown): string | undefined {
 
 function readNonNegativeNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function readTokenUsage(usage: Record<string, unknown> | undefined): AgentTokenUsage | undefined {
+  if (!usage) return undefined;
+  const out: AgentTokenUsage = { source: "prompt_response" };
+  assignTokenField(out, "inputTokens", usage, ["inputTokens", "input_tokens"]);
+  assignTokenField(out, "outputTokens", usage, ["outputTokens", "output_tokens"]);
+  assignTokenField(out, "cachedReadTokens", usage, ["cachedReadTokens", "cacheReadInputTokens", "cache_read_input_tokens"]);
+  assignTokenField(out, "cachedWriteTokens", usage, ["cachedWriteTokens", "cacheCreationInputTokens", "cache_creation_input_tokens"]);
+  assignTokenField(out, "thoughtTokens", usage, ["thoughtTokens", "thought_tokens"]);
+  assignTokenField(out, "totalTokens", usage, ["totalTokens", "total_tokens"]);
+  return Object.keys(out).length > 1 ? out : undefined;
+}
+
+function assignTokenField(
+  out: AgentTokenUsage,
+  key: keyof Omit<AgentTokenUsage, "source">,
+  source: Record<string, unknown>,
+  names: string[]
+): void {
+  for (const name of names) {
+    const value = readNonNegativeNumber(source[name]);
+    if (value !== undefined) {
+      out[key] = value;
+      return;
+    }
+  }
 }
 
 function readRecord(value: unknown): Record<string, unknown> | undefined {

@@ -29,6 +29,15 @@ describe("formatRunShow", () => {
               startedAt: "2026-06-10T09:59:59.000Z",
               updatedAt: "2026-06-10T10:00:00.000Z",
               context: { used: 25293, size: 190000, updatedAt: "2026-06-10T10:00:00.000Z" },
+              tokenUsage: {
+                source: "prompt_response",
+                inputTokens: 100,
+                outputTokens: 20,
+                cachedReadTokens: 5,
+                cachedWriteTokens: 1,
+                thoughtTokens: 3,
+                totalTokens: 12900
+              },
               input: { preview: "prompt", truncated: false, originalBytes: 6, headBytes: 6 },
               tools: {
                 totalToolCallCount: 2,
@@ -51,7 +60,7 @@ describe("formatRunShow", () => {
     // Compact kind
     expect(output).toContain("⠋ workflow/review  [agent]  running");
     // Activity summary
-    expect(output).toContain("Activity: updated=12s ago; tool_calls=2; recent=Read, Bash; context=25k/190k");
+    expect(output).toContain("Activity: updated=12s ago; tool_calls=2; recent=Read, Bash; context=25k/190k; tokens=12k");
     // No verbose fields
     expect(output).not.toContain("attempt=1");
     expect(output).not.toContain("Workflow:");
@@ -772,6 +781,7 @@ describe("formatRunShow", () => {
     expect(output).not.toContain("context=0/");
     // Should still show tool_calls and other activity info
     expect(output).toContain("tool_calls=5");
+    expect(output).not.toContain("tokens=");
   });
 
   it("shows workflow output section for completed run with output", async () => {

@@ -5,7 +5,8 @@ import {
   detailContentRows,
   detailSectionRowCount,
   formatContextUsage,
-  formatDetailLinesPlainText
+  formatDetailLinesPlainText,
+  formatTokenUsage
 } from "../../src/components/DetailsPane.js";
 import type { DisplayRow } from "../../src/model.js";
 import type { IrNode } from "@acpus/core";
@@ -128,7 +129,7 @@ describe("buildDetailLines", () => {
     ]);
     const summaryText = formatDetailLinesPlainText(sections.find((section) => section.key === "summary")?.lines ?? []);
     expect(summaryText).toContain("Definition");
-    expect(summaryText).toContain("  Type: builtin");
+    expect(summaryText).toContain("Type: builtin");
     expect(sections.find((section) => section.key === "prompt")?.richContent).toEqual({
       kind: "markdown",
       content: "## Review\n- item"
@@ -407,13 +408,13 @@ describe("buildDetailLines", () => {
 
     expect(sections.map((section) => section.key)).not.toContain("definition");
     expect(summaryText).toContain("Definition");
-    expect(summaryText).toContain("  When:");
+    expect(summaryText).toContain("When:");
     expect(summaryText).toContain("input.changed_files.exists");
-    expect(summaryText).toContain("steps.collect_context.output.has");
-    expect(summaryText).toContain("_changes");
-    expect(summaryText).toContain("  Then: continue");
-    expect(summaryText).toContain("  Else: fail");
-    expect(summaryText).toContain("  Message:");
+    expect(summaryText).toContain("steps.collect_context.output.has_c");
+    expect(summaryText).toContain("hanges");
+    expect(summaryText).toContain("Then: continue");
+    expect(summaryText).toContain("Else: fail");
+    expect(summaryText).toContain("Message:");
     expect(summaryText).toContain("No TypeScript changes were");
     expect(summaryText).toContain("detected.");
     expect(summaryText).not.toContain("…");
@@ -438,9 +439,9 @@ describe("buildDetailLines", () => {
     const sections = buildDetailSections(row, 80, {});
     const summaryText = formatDetailLinesPlainText(sections.find((section) => section.key === "summary")?.lines ?? []);
     expect(sections.map((section) => section.key)).not.toContain("definition");
-    expect(summaryText).toContain("  When: true");
-    expect(summaryText).toContain("  Then: continue");
-    expect(summaryText).toContain("  Else: fail");
+    expect(summaryText).toContain("When: true");
+    expect(summaryText).toContain("Then: continue");
+    expect(summaryText).toContain("Else: fail");
     expect(summaryText).not.toContain("Message:");
   });
 
@@ -487,11 +488,11 @@ describe("buildDetailLines", () => {
     });
     expect(summaryText).toContain("Round: 2");
     expect(summaryText).toContain("Context");
-    expect(summaryText).toContain("  item_id: case-a");
-    expect(summaryText).toContain("  item_idx: 3");
-    expect(summaryText).toContain("  loop.iter: 2");
-    expect(summaryText).toContain("  Use: traex");
-    expect(summaryText).toContain("  Session key: shared-session");
+    expect(summaryText).toContain("item_id: case-a");
+    expect(summaryText).toContain("item_idx: 3");
+    expect(summaryText).toContain("loop.iter: 2");
+    expect(summaryText).toContain("Use: traex");
+    expect(summaryText).toContain("Session key: shared-session");
   });
 
   it("omits Agent session key from Summary when no explicit session_key was rendered", () => {
@@ -514,7 +515,7 @@ describe("buildDetailLines", () => {
 
     const summaryText = formatDetailLinesPlainText(buildDetailSections(row, 80, {}).find((section) => section.key === "summary")?.lines ?? []);
 
-    expect(summaryText).toContain("  Use: traex");
+    expect(summaryText).toContain("Use: traex");
     expect(summaryText).not.toContain("Session key:");
   });
 
@@ -542,10 +543,10 @@ describe("buildDetailLines", () => {
       bold: true
     });
     expect(summaryText).toContain("Definition");
-    expect(summaryText).toContain("  Command:");
+    expect(summaryText).toContain("Command:");
     expect(summaryText).toContain("pnpm build");
     expect(summaryText).toContain("runInBand");
-    expect(summaryText).toContain("  Capture: from=stdout parse=json");
+    expect(summaryText).toContain("Capture: from=stdout parse=json");
     expect(summaryText).not.toContain("…");
     expect(detailSectionRowCount(summary, 42)).toBeGreaterThan(8);
   });
@@ -590,6 +591,13 @@ describe("buildDetailLines", () => {
             startedAt: "2026-06-12T10:00:00.000Z",
             updatedAt: "2026-06-12T10:00:00.000Z",
             context: { used: 25293, size: 190000, updatedAt: "2026-06-12T10:00:00.000Z" },
+            tokenUsage: {
+              source: "prompt_response",
+              inputTokens: 10817,
+              outputTokens: 2,
+              thoughtTokens: 12,
+              totalTokens: 10831
+            },
             input: { preview: "rendered prompt", truncated: false, originalBytes: 15, headBytes: 15 },
             tools: {
               totalToolCallCount: 4,
@@ -615,6 +623,7 @@ describe("buildDetailLines", () => {
 
     expect(text).toContain("Execution:");
     expect(text).toContain("  Context: 25k/190k");
+    expect(text).toContain("  Tokens: input=10k output=2 thought=12 total=10k");
     expect(text).toContain("  Tool calls: 4");
     expect(text).toContain("completed Read file");
     expect(text.indexOf("Execution:")).toBeLessThan(text.indexOf("Prompt:"));
@@ -649,6 +658,23 @@ describe("buildDetailLines", () => {
   it("formats context usage with compact k units", () => {
     expect(formatContextUsage(999, 1000)).toBe("999/1k");
     expect(formatContextUsage(25293, 190000)).toBe("25k/190k");
+  });
+
+  it("formats token usage from PromptResponse usage", () => {
+    expect(formatTokenUsage({
+      source: "prompt_response",
+      inputTokens: 10000,
+      outputTokens: 5,
+      cachedReadTokens: 3000,
+      cachedWriteTokens: 2,
+      thoughtTokens: 1,
+      totalTokens: 21000
+    })).toBe("input=10k output=5 cache_read=3k cache_write=2 thought=1 total=21k");
+    expect(formatTokenUsage({
+      source: "prompt_response",
+      inputTokens: 10
+    })).toBe("input=10");
+    expect(formatTokenUsage(undefined)).toBe("unavailable");
   });
 
   it("omits context when no usage update has been recorded", () => {
@@ -688,6 +714,7 @@ describe("buildDetailLines", () => {
     const text = formatDetailLinesPlainText(buildDetailLines(row, 80, {}));
 
     expect(text).toContain("  Tool calls: 0");
+    expect(text).toContain("  Tokens: unavailable");
     expect(text).not.toContain("  Context:");
   });
 

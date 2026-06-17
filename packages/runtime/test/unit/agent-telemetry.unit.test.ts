@@ -23,7 +23,8 @@ describe("AgentTelemetryAccumulator", () => {
     expect(accumulator.responseText()).toBe("hello");
     expect(accumulator.finalStopReason()).toBe("end_turn");
     expect(accumulator.context()).toEqual({ used: 25293, size: 190000, updatedAt: "2026-06-12T10:00:00.000Z" });
-    expect(accumulator.snapshot("completed", "2026-06-12T10:00:01.000Z")).toMatchObject({
+    const snapshot = accumulator.snapshot("completed", "2026-06-12T10:00:01.000Z");
+    expect(snapshot).toMatchObject({
       attempt: 1,
       state: "completed",
       context: { used: 25293, size: 190000 },
@@ -35,7 +36,136 @@ describe("AgentTelemetryAccumulator", () => {
         recentCalls: [{ toolCallId: "read-1", title: "Read file", kind: "read", status: "completed", toolName: "Read" }]
       }
     });
+    expect(snapshot.tokenUsage).toBeUndefined();
     expect(updates.length).toBeGreaterThan(0);
+  });
+
+  it("captures token usage from final PromptResponse usage", () => {
+    const accumulator = new AgentTelemetryAccumulator({
+      attempt: 1,
+      inputText: "prompt"
+    });
+
+    accumulator.append(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        stopReason: "end_turn",
+        usage: {
+          inputTokens: 10817,
+          outputTokens: 2,
+          cachedReadTokens: 42,
+          cachedWriteTokens: 7,
+          thoughtTokens: 12,
+          totalTokens: 10831
+        }
+      }
+    }) + "\n");
+
+    expect(accumulator.snapshot("completed").tokenUsage).toEqual({
+      source: "prompt_response",
+      inputTokens: 10817,
+      outputTokens: 2,
+      cachedReadTokens: 42,
+      cachedWriteTokens: 7,
+      thoughtTokens: 12,
+      totalTokens: 10831
+    });
+  });
+
+  it("normalizes snake_case PromptResponse usage fields", () => {
+    const accumulator = new AgentTelemetryAccumulator({
+      attempt: 1,
+      inputText: "prompt"
+    });
+
+    accumulator.append(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        stopReason: "end_turn",
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_read_input_tokens: 3,
+          cache_creation_input_tokens: 2,
+          thought_tokens: 1,
+          total_tokens: 21
+        }
+      }
+    }) + "\n");
+
+    expect(accumulator.snapshot("completed").tokenUsage).toEqual({
+      source: "prompt_response",
+      inputTokens: 10,
+      outputTokens: 5,
+      cachedReadTokens: 3,
+      cachedWriteTokens: 2,
+      thoughtTokens: 1,
+      totalTokens: 21
+    });
+  });
+
+  it("ignores result-like payloads that are not JSON-RPC responses", () => {
+    const accumulator = new AgentTelemetryAccumulator({
+      attempt: 1,
+      inputText: "prompt"
+    });
+
+    accumulator.append(JSON.stringify({
+      jsonrpc: "2.0",
+      result: {
+        stopReason: "end_turn",
+        usage: { inputTokens: 10, totalTokens: 10 }
+      }
+    }) + "\n");
+
+    expect(accumulator.finalStopReason()).toBeUndefined();
+    expect(accumulator.snapshot().tokenUsage).toBeUndefined();
+  });
+
+  it("leaves token usage unavailable for empty PromptResponse usage", () => {
+    const accumulator = new AgentTelemetryAccumulator({
+      attempt: 1,
+      inputText: "prompt"
+    });
+
+    accumulator.append(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        stopReason: "end_turn",
+        usage: {}
+      }
+    }) + "\n");
+
+    expect(accumulator.finalStopReason()).toBe("end_turn");
+    expect(accumulator.snapshot("completed").tokenUsage).toBeUndefined();
+  });
+
+  it("does not treat usage_update context occupancy as token usage", () => {
+    const accumulator = new AgentTelemetryAccumulator({
+      attempt: 1,
+      inputText: "prompt",
+      now: () => Date.parse("2026-06-12T10:00:00.000Z")
+    });
+
+    accumulator.append(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        update: {
+          sessionUpdate: "usage_update",
+          used: 10817,
+          size: 200000,
+          cost: { amount: 0, currency: "USD" }
+        }
+      }
+    }) + "\n");
+
+    const snapshot = accumulator.snapshot("running");
+    expect(snapshot.context).toMatchObject({ used: 10817, size: 200000 });
+    expect(snapshot.tokenUsage).toBeUndefined();
   });
 
   it("keeps previews bounded when many message chunks arrive", () => {

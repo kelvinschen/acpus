@@ -271,6 +271,65 @@ workflow:
     expect(meta.status).toBe("completed");
     const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "work");
     expect(node?.agentTelemetry?.attempts[0]?.context).toMatchObject({ used: 25, size: 100 });
+    expect(node?.agentTelemetry?.attempts[0]?.tokenUsage).toBeUndefined();
+  });
+
+  it("persists PromptResponse token usage from final acpx result", async () => {
+    const ir = compileYaml(`
+version: 1
+name: agent-token-usage
+agents:
+  coder:
+    type: command
+    use: "echo stub"
+workflow:
+  steps:
+    - id: work
+      run: agent
+      use: coder
+      prompt: "do"
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      agentResponses: {
+        work: {
+          output: { ok: true },
+          transcript: [
+            JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } } } }),
+            JSON.stringify({ jsonrpc: "2.0", id: 2, result: { stopReason: "end_turn", usage: { inputTokens: 100, outputTokens: 50, cachedReadTokens: 25, cachedWriteTokens: 5, thoughtTokens: 3, totalTokens: 183 } } })
+          ].join("\n") + "\n"
+        }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+    const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "work");
+    expect(node?.agentTelemetry?.attempts[0]?.context).toBeUndefined();
+    expect(node?.agentTelemetry?.attempts[0]?.tokenUsage).toEqual({
+      source: "prompt_response",
+      inputTokens: 100,
+      outputTokens: 50,
+      cachedReadTokens: 25,
+      cachedWriteTokens: 5,
+      thoughtTokens: 3,
+      totalTokens: 183
+    });
+
+    const artifacts = new ArtifactStore(store.getBaseDir());
+    const telemetry = JSON.parse(artifacts.read(meta.runId, node!.nodeKey, "attempt-001.telemetry.json").toString()) as {
+      tokenUsage?: unknown;
+    };
+    expect(telemetry.tokenUsage).toEqual({
+      source: "prompt_response",
+      inputTokens: 100,
+      outputTokens: 50,
+      cachedReadTokens: 25,
+      cachedWriteTokens: 5,
+      thoughtTokens: 3,
+      totalTokens: 183
+    });
   });
 
   it("defaults schema-backed agent steps to two output retries", async () => {

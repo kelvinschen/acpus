@@ -23,6 +23,7 @@ export type {
   ReplayMismatch,
   NodeDynamicContext,
   AgentContextUsage,
+  AgentTokenUsage,
   AgentAttemptTelemetryState,
   AgentIoPreview,
   AgentToolCallTelemetry,

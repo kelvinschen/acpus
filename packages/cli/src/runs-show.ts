@@ -1,5 +1,5 @@
 import type { AcpusIr, IrNode } from "@acpus/core";
-import type { AgentToolCallTelemetry, NodeExecutionState, RunState, RunSupervisorClient } from "@acpus/runtime";
+import type { AgentTokenUsage, AgentToolCallTelemetry, NodeExecutionState, RunState, RunSupervisorClient } from "@acpus/runtime";
 import { stringify as stringifyYaml } from "yaml";
 
 type ArtifactPathResolver = Pick<RunSupervisorClient, "getArtifactPath">;
@@ -291,6 +291,8 @@ async function summarizeRunningAgentActivity(
     const ctxDisplay = formatContextUsage(attempt.context.used, attempt.context.size);
     if (ctxDisplay) parts.push(`context=${ctxDisplay}`);
   }
+  const tokenDisplay = formatTokenUsage(attempt.tokenUsage);
+  if (tokenDisplay) parts.push(`tokens=${tokenDisplay}`);
   return parts.join("; ");
 }
 
@@ -303,6 +305,10 @@ function formatContextUsage(used: number, size: number): string | undefined {
 
 function formatContextNumber(value: number): string {
   return value < 1000 ? String(value) : `${Math.floor(value / 1000)}k`;
+}
+
+function formatTokenUsage(usage: AgentTokenUsage | undefined): string | undefined {
+  return usage?.totalTokens !== undefined ? formatContextNumber(usage.totalTokens) : undefined;
 }
 
 function formatToolName(tool: AgentToolCallTelemetry): string {

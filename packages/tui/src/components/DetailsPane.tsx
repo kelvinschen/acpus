@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
-import type { AgentToolCallTelemetry, AgentTelemetry } from "@acpus/runtime";
+import type { AgentTokenUsage, AgentToolCallTelemetry, AgentTelemetry } from "@acpus/runtime";
 import type { DisplayRow } from "../model.js";
 import { formatDuration } from "../model.js";
 import { KIND_LABELS, styleForKind, styleForState } from "../theme.js";
@@ -269,9 +269,9 @@ export function buildDetailSections(
   // ── Dynamic context ──
   if (dyn) {
     summary.push(blank(), sectionHeading("Context"));
-    if (dyn.item_id !== undefined) summary.push(field("  item_id", String(dyn.item_id), cols));
-    if (dyn.item_index !== undefined) summary.push(field("  item_idx", String(dyn.item_index), cols));
-    if (dyn.loop) summary.push(field("  loop.iter", String(dyn.loop.iter), cols));
+    if (dyn.item_id !== undefined) summary.push(field("item_id", String(dyn.item_id), cols));
+    if (dyn.item_index !== undefined) summary.push(field("item_idx", String(dyn.item_index), cols));
+    if (dyn.loop) summary.push(field("loop.iter", String(dyn.loop.iter), cols));
   }
 
   // ── Definition (from IR metadata) ──
@@ -289,6 +289,7 @@ export function buildDetailSections(
     if (agentAttempt.context) {
       execution.push(field("  Context", formatContextUsage(agentAttempt.context.used, agentAttempt.context.size), cols));
     }
+    execution.push(field("  Tokens", formatTokenUsage(agentAttempt.tokenUsage), cols));
     if (agentAttempt.cwd) {
       execution.push(field("  Cwd", agentAttempt.cwd, cols));
     }
@@ -415,15 +416,15 @@ function definitionLines(
     const agent = (meta.agent ?? {}) as Record<string, unknown>;
     const retry = meta.retry as { max?: unknown; backoff?: unknown } | undefined;
     out.push(blank(), sectionHeading("Definition"));
-    if (agent.use !== undefined) out.push(...wrappedField("  Use", String(agent.use), cols));
-    out.push(field("  Type", String(agent.type ?? "builtin"), cols));
-    if (renderedSessionKey !== undefined) out.push(...wrappedField("  Session key", renderedSessionKey, cols));
-    if (agent.model !== undefined) out.push(field("  Model", String(agent.model), cols));
-    if (meta.timeout !== undefined) out.push(field("  Timeout", String(meta.timeout), cols));
+    if (agent.use !== undefined) out.push(...wrappedField("Use", String(agent.use), cols));
+    out.push(field("Type", String(agent.type ?? "builtin"), cols));
+    if (renderedSessionKey !== undefined) out.push(...wrappedField("Session key", renderedSessionKey, cols));
+    if (agent.model !== undefined) out.push(field("Model", String(agent.model), cols));
+    if (meta.timeout !== undefined) out.push(field("Timeout", String(meta.timeout), cols));
     if (retry) {
       out.push(
         field(
-          "  Retry",
+          "Retry",
           `max=${String(retry.max ?? "?")}${retry.backoff !== undefined ? ` backoff=${String(retry.backoff)}` : ""}`,
           cols
         )
@@ -436,11 +437,11 @@ function definitionLines(
     const cmd = Array.isArray(meta.cmd) ? meta.cmd.map(String).join(" ") : undefined;
     const capture = meta.capture as { from?: unknown; parse?: unknown } | undefined;
     out.push(blank(), sectionHeading("Definition"));
-    if (cmd) out.push(...wrappedField("  Command", cmd, cols));
+    if (cmd) out.push(...wrappedField("Command", cmd, cols));
     if (capture) {
       out.push(
         field(
-          "  Capture",
+          "Capture",
           `from=${String(capture.from ?? "?")}${capture.parse !== undefined ? ` parse=${String(capture.parse)}` : ""}`,
           cols
         )
@@ -451,17 +452,17 @@ function definitionLines(
 
   if (kind === "guard") {
     out.push(blank(), sectionHeading("Definition"));
-    if (meta.when !== undefined) out.push(...wrappedField("  When", String(meta.when), cols));
-    if (meta.then !== undefined) out.push(field("  Then", String(meta.then), cols));
-    if (meta.else !== undefined) out.push(field("  Else", String(meta.else), cols));
-    if (meta.message !== undefined) out.push(...wrappedField("  Message", String(meta.message), cols));
+    if (meta.when !== undefined) out.push(...wrappedField("When", String(meta.when), cols));
+    if (meta.then !== undefined) out.push(field("Then", String(meta.then), cols));
+    if (meta.else !== undefined) out.push(field("Else", String(meta.else), cols));
+    if (meta.message !== undefined) out.push(...wrappedField("Message", String(meta.message), cols));
     return out;
   }
 
   if (kind === "run.signal") {
     out.push(blank(), sectionHeading("Definition"));
-    if (meta.timeout !== undefined) out.push(field("  Timeout", String(meta.timeout), cols));
-    if (meta.on_timeout !== undefined) out.push(field("  On timeout", String(meta.on_timeout), cols));
+    if (meta.timeout !== undefined) out.push(field("Timeout", String(meta.timeout), cols));
+    if (meta.on_timeout !== undefined) out.push(field("On timeout", String(meta.on_timeout), cols));
     if (state === "awaiting") {
       out.push({ segments: [{ text: "  ◷ awaiting signal — [s] deliver payload", color: "blue" }] });
     }
@@ -470,7 +471,7 @@ function definitionLines(
 
   // composite / subworkflow: surface the summary if any.
   if (summary) {
-    out.push(blank(), sectionHeading("Definition"), ...wrappedField("  Flow", summary, cols));
+    out.push(blank(), sectionHeading("Definition"), ...wrappedField("Flow", summary, cols));
   }
   return out;
 }
@@ -486,6 +487,18 @@ function formatToolCall(tool: AgentToolCallTelemetry): string {
 
 export function formatContextUsage(used: number, size: number): string {
   return `${formatContextNumber(used)}/${formatContextNumber(size)}`;
+}
+
+export function formatTokenUsage(usage: AgentTokenUsage | undefined): string {
+  if (!usage) return "unavailable";
+  const parts: string[] = [];
+  if (usage.inputTokens !== undefined) parts.push(`input=${formatContextNumber(usage.inputTokens)}`);
+  if (usage.outputTokens !== undefined) parts.push(`output=${formatContextNumber(usage.outputTokens)}`);
+  if (usage.cachedReadTokens !== undefined) parts.push(`cache_read=${formatContextNumber(usage.cachedReadTokens)}`);
+  if (usage.cachedWriteTokens !== undefined) parts.push(`cache_write=${formatContextNumber(usage.cachedWriteTokens)}`);
+  if (usage.thoughtTokens !== undefined) parts.push(`thought=${formatContextNumber(usage.thoughtTokens)}`);
+  if (usage.totalTokens !== undefined) parts.push(`total=${formatContextNumber(usage.totalTokens)}`);
+  return parts.length > 0 ? parts.join(" ") : "unavailable";
 }
 
 function formatContextNumber(value: number): string {

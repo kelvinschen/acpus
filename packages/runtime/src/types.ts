@@ -198,6 +198,16 @@ export interface AgentContextUsage {
   updatedAt: string;
 }
 
+export interface AgentTokenUsage {
+  source: "prompt_response";
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedReadTokens?: number;
+  cachedWriteTokens?: number;
+  thoughtTokens?: number;
+  totalTokens?: number;
+}
+
 export type AgentAttemptTelemetryState = "running" | "completed" | "failed" | "paused" | "cancelled";
 
 export interface AgentIoPreview {
@@ -233,6 +243,7 @@ export interface AgentAttemptTelemetry {
   updatedAt: string;
   completedAt?: string;
   context?: AgentContextUsage;
+  tokenUsage?: AgentTokenUsage;
   input?: AgentIoPreview;
   output?: AgentIoPreview;
   tools: AgentToolsTelemetry;
