@@ -17,6 +17,8 @@ interface SpawnedAgent {
   child: ChildProcessWithoutNullStreams;
   connection: acp.ClientSideConnection;
   client: TestClient;
+  stderr: Buffer[];
+  expectedStderr: RegExp[];
   tracePath: string;
   dir: string;
 }
@@ -51,6 +53,9 @@ afterEach(async () => {
   for (const item of spawned.splice(0)) {
     item.child.kill();
     await item.connection.closed.catch(() => undefined);
+    const stderr = Buffer.concat(item.stderr).toString("utf8").trim();
+    const allowed = item.expectedStderr.some((pattern) => pattern.test(stderr));
+    expect(stderr === "" || allowed).toBe(true);
     rmSync(item.dir, { recursive: true, force: true });
   }
 });
@@ -94,6 +99,8 @@ describe("@acpus/mock-agent protocol", () => {
     await expect(agent.connection.loadSession({ sessionId: "missing", cwd: repoRoot, mcpServers: [] })).rejects.toMatchObject({
       data: { code: "E_SESSION_NOT_FOUND", sessionId: "missing" }
     });
+    agent.expectedStderr.push(/E_SESSION_NOT_FOUND/);
+    await waitForStderr(agent, "E_SESSION_NOT_FOUND");
   });
 
   it("supports deterministic session ids", async () => {
@@ -196,13 +203,15 @@ function spawnAgent(script = scriptPath): SpawnedAgent {
   const dir = makeTempDir();
   const tracePath = join(dir, "trace.jsonl");
   const child = spawn(process.execPath, ["--import", "tsx", agentEntry, "--script", script, "--trace", tracePath, "--trace-mode", "overwrite"], {
-    stdio: ["pipe", "pipe", "inherit"]
+    stdio: ["pipe", "pipe", "pipe"]
   });
+  const stderr: Buffer[] = [];
+  child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
   const input = Writable.toWeb(child.stdin);
   const output = Readable.toWeb(child.stdout);
   const client = new TestClient();
   const connection = new acp.ClientSideConnection(() => client, acp.ndJsonStream(input, output));
-  const agent = { child, connection, client, tracePath, dir };
+  const agent = { child, connection, client, stderr, expectedStderr: [], tracePath, dir };
   spawned.push(agent);
   return agent;
 }
@@ -244,6 +253,17 @@ async function waitForTraceEvent(path: string, event: string): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error(`Timed out waiting for trace event ${event}.`);
+}
+
+async function waitForStderr(agent: SpawnedAgent, text: string): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started <= 2000) {
+    if (Buffer.concat(agent.stderr).toString("utf8").includes(text)) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`Timed out waiting for stderr text ${text}.`);
 }
 
 async function collectStream(stream: NodeJS.ReadableStream): Promise<string> {

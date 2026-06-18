@@ -26,6 +26,7 @@ One short paragraph describing the current feature boundary.
 
 ## Specs
 
+- [Build Toolchain Spec](build-toolchain-spec.md)
 - [CLI Spec](cli-spec.md)
 - [Local Runtime Target Spec](local-runtime-target-spec.md)
 - [Mock Agent Spec](mock-agent-spec.md)

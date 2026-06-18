@@ -18,8 +18,8 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && node -e \"require('node:fs').chmodSync('dist/index.js', 0o755)\"",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsgo -p tsconfig.json && node -e \"require('node:fs').chmodSync('dist/index.js', 0o755)\"",
+    "typecheck": "tsgo -p tsconfig.json --noEmit",
     "clean": "rm -rf dist"
   },
   "dependencies": {
