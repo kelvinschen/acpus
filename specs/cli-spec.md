@@ -19,6 +19,16 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - `acpus workflows run <ref-or-path>` MUST lazily ensure the Workspace Run Supervisor exists, submit one Run, then foreground-follow only that submitted Run until it reaches a terminal status.
 - `acpus workflows run <ref-or-path>` MUST emit concise human-readable Run Observations derived from Run and Node state changes, not raw Program stdout, raw Program stderr, Agent transcripts, or log streams.
 - `acpus workflows run <ref-or-path> --json` MUST emit newline-delimited JSON Run Observations until the submitted Run reaches a terminal status, followed by a terminal Run summary observation.
+- Human-readable follow observations MUST use the same compact node-line format as `runs show`: `{glyph} {nodeKey}  [{kind}]  {state}  {duration}  {attempt}`, where `completed` state text is omitted (implied by glyph), duration uses the same `formatDuration` function as `runs show` (`1m30s`, `<1s` format), and errors appear on indented detail lines (`    Error: ...`).
+- Human-readable follow observations MUST apply container filtering identical to `runs show`: completed or failed container nodes (pipeline, parallel, fanout, switch, loop, subworkflow) without unique errors MUST be omitted from follow output.
+- Running Agent Step follow observations MUST include a compact activity line (`    Activity: updated=... ago; tool_calls=...`) derived from `NodeExecutionState.agentTelemetry`, using the same summary format as `runs show`. Activity lines MUST only be emitted when the activity content changes (deduplication), not on every poll.
+- Follow terminal summary MUST use the `runs show` header format: `Run {id}  {name}  {status}  {duration}`.
+- Follow terminal summary for completed Runs MUST include the workflow output section when present, using the same format as `runs show`.
+- `workflows run` and `runs fork` MUST accept `--poll <duration>` to set the foreground follow polling interval using the same duration format as workflow spec timeouts (`ms`, `s`, `m`, `h` suffixes, e.g. `2s`, `1m`, `500ms`), with a default of 10 seconds and a minimum of 1 second.
+- `--poll` MUST NOT affect `--background` or `--visualize` modes.
+- Follow JSON observations of type `"node"` MUST include `kind`, `startedAt`, `completedAt`, `attempt`, `agentTelemetry` (when present), `artifactRefs` (when present), and `output` (when the node is completed and output is a non-null object).
+- Follow JSON observations of type `"run"` MUST include `workflowName`, `workflowRef` (when present), and `createdAt`.
+- Follow JSON observations of type `"summary"` MUST include `runDuration` in milliseconds and `output` for completed Runs.
 - `acpus workflows run <ref-or-path> --background` MUST submit a Run through the Workspace Run Supervisor, print the submitted Run identity in human-readable form, and exit without following the Run.
 - `acpus workflows run <ref-or-path> --background --json` MUST submit a Run through the Workspace Run Supervisor, print the submitted Run state as JSON, and exit without following the Run.
 - `acpus workflows run <ref-or-path> --visualize` MUST submit a Run through the Workspace Run Supervisor and immediately open the single-Run visualizer view for that Run.

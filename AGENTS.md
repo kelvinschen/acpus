@@ -13,3 +13,4 @@ This document defines the maintenance rules for AI agents working on this codeba
 
 ## Build Maintenance
 - After fully completing any feature implementation, MUST run the relevant build command so checked-in build artifacts are updated.
+- The package name of acpus is `acpus` instead of @acpus/cli

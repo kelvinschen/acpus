@@ -4,11 +4,12 @@ import {
   compileWorkflow,
   lintWorkflow,
   parseAgentOverridesInput,
+  parseDurationMs,
   parseWorkflowSpecForOverrides,
   serializeWorkflowSpecForOverrides,
   workflowSourceResolver
 } from "@acpus/core";
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 import { readFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -115,9 +116,16 @@ workflows
   .option("--visualize", "submit and open TUI visualizer")
   .option("--json", "write JSONL observations (follow mode) or JSON (background)")
   .option("--quiet", "only write final output")
+  .option("--poll <duration>", "follow-mode poll interval (e.g. 2s, 1m, 500ms; default 10s, min 1s)", (value: string) => {
+    const ms = parseDurationMs(value, { strict: false });
+    if (ms < 1000) {
+      throw new InvalidArgumentError("--poll must be >= 1s (e.g. 2s, 1m, 500ms)");
+    }
+    return ms;
+  })
   .action(async (
     refOrPath: string,
-    options: { dryRun?: boolean; input?: string; agents?: string; background?: boolean; visualize?: boolean; json?: boolean; quiet?: boolean }
+    options: { dryRun?: boolean; input?: string; agents?: string; background?: boolean; visualize?: boolean; json?: boolean; quiet?: boolean; poll?: number }
   ) => {
     if (options.background && options.visualize) {
       printError("--background and --visualize are mutually exclusive", options);
@@ -183,7 +191,7 @@ workflows
         return;
       }
 
-      const terminalStatus = await followRun(client, runState.runId, { json: options.json });
+      const terminalStatus = await followRun(client, runState.runId, { json: options.json, intervalMs: options.poll });
       process.exitCode = exitCodeForRunStatus(terminalStatus);
     } catch (error) {
       printError(errorMessage(error), options);
@@ -407,11 +415,18 @@ runs
   .option("--visualize", "submit and open TUI visualizer")
   .option("--json", "write JSON output")
   .option("--quiet", "only write final output")
+  .option("--poll <duration>", "follow-mode poll interval (e.g. 2s, 1m, 500ms; default 10s, min 1s)", (value: string) => {
+    const ms = parseDurationMs(value, { strict: false });
+    if (ms < 1000) {
+      throw new InvalidArgumentError("--poll must be >= 1s (e.g. 2s, 1m, 500ms)");
+    }
+    return ms;
+  })
   .description("derive a new Run from a terminal Run, inheriting matching Run Checkpoints from the source")
   .action(async (
     sourceRunId: string,
     refOrPath: string,
-    options: { from?: string; input?: string; agents?: string; dryRun?: boolean; background?: boolean; visualize?: boolean; json?: boolean; quiet?: boolean }
+    options: { from?: string; input?: string; agents?: string; dryRun?: boolean; background?: boolean; visualize?: boolean; json?: boolean; quiet?: boolean; poll?: number }
   ) => {
     if (options.background && options.visualize) {
       printError("--background and --visualize are mutually exclusive", options);
@@ -480,7 +495,7 @@ runs
         return;
       }
 
-      const terminalStatus = await followRun(client, result.run.runId, { json: options.json });
+      const terminalStatus = await followRun(client, result.run.runId, { json: options.json, intervalMs: options.poll ?? undefined });
       process.exitCode = exitCodeForRunStatus(terminalStatus);
     } catch (error) {
       const message = errorMessage(error);

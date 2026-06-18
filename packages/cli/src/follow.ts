@@ -9,13 +9,14 @@
  * Ctrl-C detaches (exit 0) without cancelling the Run.
  */
 
-import type { RunSupervisorClient, RunState, NodeExecutionState, RunStatus } from "@acpus/runtime";
+import type { AgentTelemetry, RunSupervisorClient, RunState, NodeExecutionState, RunStatus } from "@acpus/runtime";
 import { formatObservation, formatTerminalSummary, type ObservationEvent } from "./observations.js";
+import { isContainerKind, collectChildErrors, computeRunDurationMs } from "./runs-show.js";
 
 export interface FollowOptions {
   /** Emit JSONL observations instead of human-readable glyphs */
   json?: boolean;
-  /** Polling interval in milliseconds (default 400) */
+  /** Polling interval in milliseconds (default 10000 = 10s). Parsed from --poll duration string. */
   intervalMs?: number;
 }
 
@@ -28,7 +29,7 @@ export async function followRun(
   runId: string,
   options: FollowOptions = {}
 ): Promise<RunStatus> {
-  const intervalMs = options.intervalMs ?? 400;
+  const intervalMs = options.intervalMs ?? 10_000;
 
   // Pin the supervisor alive while following
   client.clientKind = "follow";
@@ -36,6 +37,8 @@ export async function followRun(
   const lastObserved = new Map<string, NodeExecutionState>();
   let lastRunStatus: RunStatus | undefined;
   let runName = "";
+  // Activity dedup: maps nodeKey → last emitted activity string
+  const lastActivity = new Map<string, string>();
 
   // Register Ctrl-C handler: detach (exit 0) without cancelling
   let detached = false;
@@ -78,32 +81,56 @@ export async function followRun(
       // to avoid duplicate "Run ... completed" lines with different glyphs.
       if (lastRunStatus === undefined || run.status !== lastRunStatus) {
         if (!isTerminal(run.status)) {
-          const event: ObservationEvent = { type: "run", runId, status: run.status };
+          const event: ObservationEvent = {
+            type: "run",
+            runId,
+            status: run.status,
+            workflowName: run.workflowName,
+            workflowRef: run.workflowRef,
+            createdAt: run.createdAt,
+          };
           emit(formatObservation(event, runName, options.json));
         }
         lastRunStatus = run.status;
       }
 
+      // Apply container filtering (same logic as runs-show):
+      // Completed/failed containers without unique errors are skipped.
+      const visibleNodes = filterContainerNodes(nodes);
+
       // Emit Node-level observations for new/changed nodes
-      for (const node of nodes) {
+      for (const node of visibleNodes) {
         const prev = lastObserved.get(node.nodeKey);
         if (!prev || prev.state !== node.state) {
-          const duration = computeDuration(node);
-          const event: ObservationEvent = {
-            type: "node",
-            nodeKey: node.nodeKey,
-            state: node.state,
-            duration,
-            error: node.error
-          };
+          // State change — always emit
+          const event = buildNodeEvent(node);
           emit(formatObservation(event, undefined, options.json));
+          // Update activity dedup for running agents
+          if (node.kind === "run.agent" && node.state === "running" && node.agentTelemetry) {
+            lastActivity.set(node.nodeKey, summarizeActivity(node.agentTelemetry));
+          } else {
+            lastActivity.delete(node.nodeKey);
+          }
+        } else if (node.kind === "run.agent" && node.state === "running" && node.agentTelemetry) {
+          // No state change, but check if activity content changed (dedup)
+          const currentActivity = summarizeActivity(node.agentTelemetry);
+          const prevActivity = lastActivity.get(node.nodeKey);
+          if (currentActivity !== prevActivity) {
+            const event = buildNodeEvent(node);
+            emit(formatObservation(event, undefined, options.json));
+            lastActivity.set(node.nodeKey, currentActivity);
+          }
         }
         lastObserved.set(node.nodeKey, node);
       }
 
       // Check if Run is terminal
       if (isTerminal(run.status)) {
-        const summary = formatTerminalSummary(runId, run.status, runName, options.json);
+        const runDuration = computeRunDurationMs(run);
+        const summary = formatTerminalSummary(runId, run.status, runName, options.json, {
+          runDuration,
+          output: run.status === "completed" ? run.output : undefined,
+        });
         emit(summary);
         return run.status;
       }
@@ -124,9 +151,54 @@ function isTerminal(status: RunStatus): boolean {
   return status === "completed" || status === "failed" || status === "cancelled" || status === "paused";
 }
 
-function computeDuration(node: NodeExecutionState): number | undefined {
-  if (!node.startedAt) return undefined;
-  const start = Date.parse(node.startedAt);
-  const end = node.completedAt ? Date.parse(node.completedAt) : Date.now();
-  return end - start;
+/**
+ * Build an ObservationEvent for a node with all available fields.
+ */
+function buildNodeEvent(node: NodeExecutionState): ObservationEvent {
+  const event: ObservationEvent = {
+    type: "node",
+    nodeKey: node.nodeKey,
+    state: node.state,
+    kind: node.kind,
+    startedAt: node.startedAt,
+    completedAt: node.completedAt,
+    error: node.error,
+    attempt: node.attempt,
+  };
+
+  // Attach rich fields for JSON mode
+  if (node.agentTelemetry) event.agentTelemetry = node.agentTelemetry;
+  if (node.artifactRefs) event.artifactRefs = node.artifactRefs;
+  if (node.state === "completed" && node.output !== undefined && typeof node.output === "object" && node.output !== null) {
+    event.output = node.output as Record<string, unknown>;
+  }
+
+  return event;
+}
+
+/**
+ * Filter out completed/failed container nodes whose errors are duplicated in children.
+ * Mirrors the same logic as runs-show's container filtering.
+ */
+function filterContainerNodes(nodes: NodeExecutionState[]): NodeExecutionState[] {
+  return nodes.filter((node) => {
+    if (!isContainerKind(node.kind)) return true;
+    // Show container if it has a unique error or is in an actionable (non-completed, non-failed) state
+    const childErrors = collectChildErrors(nodes, node.nodeKey);
+    const hasUniqueError = node.error && !childErrors.has(node.error);
+    const isActionableState = node.state !== "completed" && node.state !== "failed";
+    return hasUniqueError || isActionableState;
+  });
+}
+
+/**
+ * Derive a concise activity fingerprint string from agent telemetry for dedup.
+ * Uses the same summary format as the human-readable output.
+ */
+function summarizeActivity(telemetry: AgentTelemetry): string {
+  const attempt = telemetry.attempts.find((a) => a.attempt === telemetry.currentAttempt)
+    ?? telemetry.attempts[telemetry.attempts.length - 1];
+  if (!attempt) return "";
+  // Key fields that change over time — compare these for dedup
+  return `${attempt.updatedAt}|${attempt.tools.totalToolCallCount}|${attempt.tools.recentCalls.map(c => c.toolCallId).join(",")}`;
 }

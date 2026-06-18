@@ -5,7 +5,7 @@ import { stringify as stringifyYaml } from "yaml";
 type ArtifactPathResolver = Pick<RunSupervisorClient, "getArtifactPath">;
 
 // --- Compact kind display names ---
-const COMPACT_KIND: Record<string, string> = {
+export const COMPACT_KIND: Record<string, string> = {
   "run.agent": "agent",
   "run.program": "program",
   pipeline: "pipeline",
@@ -30,7 +30,7 @@ const CONTAINER_KINDS = new Set<string>([
   "subworkflow",
 ]);
 
-function isContainerKind(kind: string): boolean {
+export function isContainerKind(kind: string): boolean {
   return CONTAINER_KINDS.has(kind);
 }
 
@@ -104,7 +104,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 // --- State glyphs ---
-const STATE_GLYPH: Record<string, string> = {
+export const STATE_GLYPH: Record<string, string> = {
   pending: "○",
   running: "⠋",
   awaiting: "⏳",
@@ -114,44 +114,36 @@ const STATE_GLYPH: Record<string, string> = {
   cancelled: "✗",
 };
 
-function formatGlyph(state: string): string {
+export function formatGlyph(state: string): string {
   return STATE_GLYPH[state] ?? "·";
 }
 
 // --- Duration formatting ---
-function formatDuration(isoStart?: string, isoEnd?: string, state?: string, nowMs?: number): string | undefined {
-  if (!isoStart) return undefined;
-  const startMs = Date.parse(isoStart);
-  if (!Number.isFinite(startMs)) return undefined;
-  // For terminal nodes without completedAt, don't inflate duration with Date.now()
-  if (!isoEnd && state !== "running" && state !== "awaiting" && state !== "paused") return undefined;
-  const endMs = isoEnd ? Date.parse(isoEnd) : (nowMs ?? Date.now());
-  if (!Number.isFinite(endMs)) return undefined;
-  const deltaMs = Math.max(0, endMs - startMs);
-  const seconds = Math.floor(deltaMs / 1000);
-  if (seconds < 60) return seconds === 0 ? "<1s" : `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remainSec = seconds % 60;
-  if (minutes < 60) return remainSec > 0 ? `${minutes}m${remainSec}s` : `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  const remainMin = minutes % 60;
-  return remainMin > 0 ? `${hours}h${remainMin}m` : `${hours}h`;
-}
 
-function formatRunDuration(run: RunState): string {
-  // Try to derive from first node's startedAt → last completed node's completedAt
+/**
+ * Compute a Run's wall-clock duration in milliseconds.
+ * Uses the earliest node startedAt → latest node completedAt (or updatedAt fallback).
+ */
+export function computeRunDurationMs(run: RunState): number {
   const nodes = run.nodes ?? [];
   const started = nodes.map(n => n.startedAt).filter((s): s is string => !!s).map(Date.parse).filter(Number.isFinite);
   const ended = nodes.map(n => n.completedAt).filter((s): s is string => !!s).map(Date.parse).filter(Number.isFinite);
 
-  if (started.length === 0) return "<1s";
+  if (started.length === 0) return 0;
 
   const earliest = Math.min(...started);
   const latest = ended.length > 0 ? Math.max(...ended) : Date.parse(run.updatedAt);
 
-  if (!Number.isFinite(latest)) return "<1s";
-  const deltaMs = Math.max(0, latest - earliest);
-  const seconds = Math.floor(deltaMs / 1000);
+  if (!Number.isFinite(latest)) return 0;
+  return Math.max(0, latest - earliest);
+}
+
+/**
+ * Format a duration in milliseconds to a compact string (e.g. "1m30s", "<1s", "2d").
+ * Single source of truth for all duration display in the CLI.
+ */
+export function formatDurationFromMs(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
   if (seconds < 60) return seconds === 0 ? "<1s" : `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
   const remainSec = seconds % 60;
@@ -161,10 +153,26 @@ function formatRunDuration(run: RunState): string {
   return `${Math.floor(hours / 24)}d`;
 }
 
+export function formatDuration(isoStart?: string, isoEnd?: string, state?: string, nowMs?: number): string | undefined {
+  if (!isoStart) return undefined;
+  const startMs = Date.parse(isoStart);
+  if (!Number.isFinite(startMs)) return undefined;
+  // For terminal nodes without completedAt, don't inflate duration with Date.now()
+  if (!isoEnd && state !== "running" && state !== "awaiting" && state !== "paused") return undefined;
+  const endMs = isoEnd ? Date.parse(isoEnd) : (nowMs ?? Date.now());
+  if (!Number.isFinite(endMs)) return undefined;
+  return formatDurationFromMs(Math.max(0, endMs - startMs));
+}
+
+export function formatRunDuration(run: RunState): string {
+  const ms = computeRunDurationMs(run);
+  return ms === 0 ? "<1s" : formatDurationFromMs(ms);
+}
+
 // --- Collect child error messages for dedup ---
 // Scope to children of a specific container (prefix match) to avoid
 // cross-subtree false positives where unrelated subtrees share the same error.
-function collectChildErrors(nodes: NodeExecutionState[], containerPrefix: string): Set<string> {
+export function collectChildErrors(nodes: NodeExecutionState[], containerPrefix: string): Set<string> {
   const childErrors = new Set<string>();
   const prefix = containerPrefix + "/";
   for (const node of nodes) {
@@ -173,6 +181,66 @@ function collectChildErrors(nodes: NodeExecutionState[], containerPrefix: string
     }
   }
   return childErrors;
+}
+
+/**
+ * Format a single node line in the compact runs-show style.
+ * Returns the primary line (e.g. "  ✓ workflow/review  [agent]  1m30s")
+ * plus optional detail lines (error, artifacts, activity).
+ */
+export function formatNodeLines(
+  node: {
+    nodeKey: string;
+    kind: string;
+    state: string;
+    startedAt?: string;
+    completedAt?: string;
+    error?: string;
+    attempt?: number;
+    artifactRefs?: string[];
+  },
+  nowMs: number,
+  activity?: string
+): string[] {
+  const lines: string[] = [];
+  const glyph = formatGlyph(node.state);
+  const kind = COMPACT_KIND[node.kind] ?? node.kind;
+
+  // Build node line
+  const parts: string[] = [node.nodeKey, `[${kind}]`];
+
+  // State text: only show non-completed (completed is implied by ✓ glyph)
+  if (node.state !== "completed") {
+    parts.push(node.state);
+  }
+
+  // Duration
+  const dur = formatDuration(node.startedAt, node.completedAt, node.state, nowMs);
+  if (dur) parts.push(dur);
+
+  // Attempt: only show if > 1
+  if ((node.attempt ?? 1) > 1) {
+    parts.push(`attempt=${node.attempt}`);
+  }
+
+  lines.push(`  ${glyph} ${parts.join("  ")}`);
+
+  // Error: indented detail line
+  if (node.error) {
+    lines.push(`    Error: ${node.error}`);
+  }
+
+  // Artifacts: count only, shown only for failed nodes
+  if (node.artifactRefs?.length && node.state === "failed") {
+    lines.push(`    Artifacts: ${node.artifactRefs.length} files`);
+  }
+
+  // Activity for running agents
+  if (activity) {
+    lines.push(`    Activity: ${activity}`);
+  }
+
+  return lines;
 }
 
 export async function formatRunShow(
@@ -214,41 +282,9 @@ export async function formatRunShow(
       // Fall through
     }
 
-    const glyph = formatGlyph(node.state);
-    const kind = COMPACT_KIND[node.kind] ?? node.kind;
-
-    // Build node line
-    const parts: string[] = [node.nodeKey, `[${kind}]`];
-
-    // State text: only show non-completed (completed is implied by ✓ glyph)
-    if (node.state !== "completed") {
-      parts.push(node.state);
-    }
-
-    // Duration
-    const dur = formatDuration(node.startedAt, node.completedAt, node.state, nowMs);
-    if (dur) parts.push(dur);
-
-    // Attempt: only show if > 1
-    if (node.attempt > 1) {
-      parts.push(`attempt=${node.attempt}`);
-    }
-
-    lines.push(`  ${glyph} ${parts.join("  ")}`);
-
-    // Error: leaf nodes always show; container nodes already filtered by dedup above
-    if (node.error) {
-      lines.push(`    Error: ${node.error}`);
-    }
-
-    // Artifacts: count only, shown only for failed nodes
-    if (node.artifactRefs?.length && node.state === "failed") {
-      lines.push(`    Artifacts: ${node.artifactRefs.length} files`);
-    }
-
-    // Activity for running agents
     const activity = await summarizeRunningAgentActivity(run.runId, node, client, nowMs);
-    if (activity) lines.push(`    Activity: ${activity}`);
+    const nodeLines = formatNodeLines(node, nowMs, activity);
+    lines.push(...nodeLines);
 
     // Awaiting Signal Node: operators must act here, so surface the rendered
     // prompt and the expected payload schema rather than leaving them blind.
@@ -329,7 +365,7 @@ function formatAge(deltaMs: number): string {
 
 const MAX_OUTPUT_LINES = 25;
 
-function formatWorkflowOutput(output: Record<string, unknown> | undefined): string | null {
+export function formatWorkflowOutput(output: Record<string, unknown> | undefined): string | null {
   if (!output) return null;
   const yaml = stringifyYaml(output).trimEnd();
   if (yaml === "{}") return null;
