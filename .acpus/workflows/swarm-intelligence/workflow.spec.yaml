@@ -19,24 +19,31 @@ description: |
   - Empiricist: grounds discussion in real-world evidence, historical precedents,
     and testable predictions
 
-  Termination: the swarm keeps debating until the blackboard stops changing
-  (saturation: consecutive rounds with net board activity at or below
-  saturation_threshold) or max_rounds is reached. Saturation only applies once
-  loop.iter >= min_rounds, guaranteeing a minimum depth of debate. Consensus
-  claims accumulate on the board as the discussion proceeds but do NOT by
-  themselves stop the loop — a single agreed point no longer cuts off deeper
-  debate. max_rounds is bounded by a static max_iterations safety valve of
-  20 rounds.
+  Termination: the swarm keeps debating until it reaches a meta-level semantic
+  stop quorum, the blackboard reaches activity saturation, or max_rounds is
+  reached. Semantic stop is not an ordinary contribution: agents vote
+  ready_to_stop only when they have reviewed their attention set and have no
+  substantive contribution or blocker. Consensus claims accumulate on the board
+  as content state but do NOT by themselves stop the loop. max_rounds is bounded
+  by a static max_iterations safety valve of 50 rounds.
 
   Resilience: the deterministic merge isolates faults per agent — if one
   agent emits malformed output, its contributions are dropped and the agent is
   quarantined for that round while the other agents proceed. References to
   unknown contribution ids are flagged as dangling rather than silently
-  ignored. Both conditions surface as integrity warnings in the next round's
+  ignored. Content-valid packets with minor control-contract issues are kept
+  with protocol warnings, but they cannot advance semantic stop for that round.
+  These conditions surface as integrity warnings in the next round's
   blackboard summary. Every state transition (promotion, contest, withdrawal,
   confidence change, quarantine, dangling reference, round merge) is recorded
   in an append-only blackboard.events log, making the board state an auditable
   projection of that log.
+
+  Current interpretation: this workflow clearly provides cognitive
+  augmentation by making multi-role debate more structured, auditable, and
+  resistant to blind spots. It may exhibit process-level emergence, but that
+  claim remains unproven until external baselines and mechanism ablations
+  validate it. Strong emergence has not been observed.
 
 input:
   topic: string
@@ -45,6 +52,10 @@ input:
   min_rounds?: integer = 3
   saturation_threshold?: integer = 0
   saturation_patience?: integer = 2
+  stop_vote_quorum?: integer = 3
+  stop_patience?: integer = 2
+  ready_confidence_threshold?: integer = 4
+  block_confidence_threshold?: integer = 4
   consensus_confidence?: integer = 4
   output_root?: string = ".acpus/output/swarm-intelligence"
 
@@ -92,7 +103,7 @@ workflow:
           || (
             loop.iter > 0
             && loop.iter >= input.min_rounds
-            && loop.last.output.is_saturated
+            && (loop.last.output.semantic_stop || loop.last.output.is_saturated)
           )
         do:
           # ── Read blackboard ─────────────────────────────────────────
@@ -175,34 +186,56 @@ workflow:
                   - Assumptions that haven't been questioned
                   - Logical gaps in existing arguments
 
-                  Then contribute 1-3 new contributions. You can:
+                  Choose exactly one packet template. Do not mix templates:
+                  - **contribute**: 1-3 substantive contributions, and `stop_vote` must be `{ "vote": "none" }`.
+                  - **quiet**: no contributions, and `stop_vote` must be `{ "vote": "none" }`.
+                  - **ready_to_stop**: no contributions, plus a ready stop vote with `attention_set_reviewed: true`.
+                  - **block_stop**: 1-3 blocker contributions, plus a block stop vote with `unresolved_refs`.
+
+                  Then choose exactly one stance:
+                  - **contribute** if you have 1-3 substantive new objections,
+                    questions, or claims to add
+                  - **quiet** if you have no substantive contribution this
+                    round but are not confident the swarm should stop
+                  - **ready_to_stop** if you reviewed your mandatory attention
+                    set and believe another round has low expected value
+                  - **block_stop** if stopping now would miss a specific
+                    unresolved issue; include 1-3 contributions explaining it
+
+                  If you contribute, you can:
                   - **object** to existing claims/proposals (reference their ID)
                   - **question** assumptions or gaps
                   - **claim** something if you see a risk others missed
 
                   Rules:
-                  - At least one contribution MUST reference a claim from your attention set
-                  - Reference existing contribution IDs using the [id] format
+                  - If stance is contribute or block_stop, at least one
+                    contribution MUST reference a claim from your attention set
+                  - Reference existing contribution IDs as raw strings such as "build-r2-1"; do not include square brackets in JSON references
                   - Be specific and constructive — "this won't work" is not
                     useful; "this won't work because X, and Y would address it" is
                   - Confidence 1-5: how strongly you believe this objection/question
                   - Do NOT repeat contributions already on the blackboard
+                  - Do NOT write a contribution merely to say the discussion is
+                    saturated, that you agree with stopping, or that you have no
+                    new ideas. Use ready_to_stop instead.
+                  - quiet and ready_to_stop MUST use an empty contributions array
 
                   Write your structured output to a JSON file at:
                   ${{ steps.init_blackboard.output.blackboard_dir }}/challenger-round.json
 
-                  The JSON file must have this shape:
-                  {
-                    "contributions": [
-                      {
-                        "type": "objection" | "question" | "claim",
-                        "summary": "one-line summary (max 300 chars)",
-                        "confidence": 1-5,
-                        "references": ["id1", "id2"]
-                      }
-                    ],
-                    "rationale": "Your full thinking process and reasoning"
-                  }
+                  Valid examples:
+
+                  contribute:
+                  {"stance":"contribute","contributions":[{"type":"objection","summary":"...","confidence":5,"references":["build-r2-1"]}],"stop_vote":{"vote":"none"},"rationale":"..."}
+
+                  quiet:
+                  {"stance":"quiet","contributions":[],"stop_vote":{"vote":"none"},"rationale":"..."}
+
+                  ready_to_stop:
+                  {"stance":"ready_to_stop","contributions":[],"stop_vote":{"vote":"ready","confidence":5,"reason":"...","attention_set_reviewed":true,"semantic_terminal_state":"consensus"},"rationale":"..."}
+
+                  block_stop:
+                  {"stance":"block_stop","contributions":[{"type":"objection","summary":"...","confidence":5,"references":["build-r2-1"]}],"stop_vote":{"vote":"block","confidence":5,"reason":"...","unresolved_refs":["build-r2-1"]},"rationale":"..."}
 
                   Return JSON with the file path: {"contributions_path": "<path>"}
                 output:
@@ -239,34 +272,56 @@ workflow:
                   - Proposals that need concrete implementation details
                   - Consensus building opportunities
 
-                  Then contribute 1-3 new contributions. You can:
+                  Choose exactly one packet template. Do not mix templates:
+                  - **contribute**: 1-3 substantive contributions, and `stop_vote` must be `{ "vote": "none" }`.
+                  - **quiet**: no contributions, and `stop_vote` must be `{ "vote": "none" }`.
+                  - **ready_to_stop**: no contributions, plus a ready stop vote with `attention_set_reviewed: true`.
+                  - **block_stop**: 1-3 blocker contributions, plus a block stop vote with `unresolved_refs`.
+
+                  Then choose exactly one stance:
+                  - **contribute** if you have 1-3 substantive new claims,
+                    proposals, or evidence to add
+                  - **quiet** if you have no substantive contribution this
+                    round but are not confident the swarm should stop
+                  - **ready_to_stop** if you reviewed your mandatory attention
+                    set and believe another round has low expected value
+                  - **block_stop** if stopping now would miss a specific
+                    unresolved issue; include 1-3 contributions explaining it
+
+                  If you contribute, you can:
                   - **claim** something based on evidence
                   - **propose** a concrete solution or refinement
                   - **evidence** to support existing claims (reference their ID)
 
                   Rules:
-                  - At least one contribution MUST reference a claim from your attention set
-                  - Reference existing contribution IDs using the [id] format
+                  - If stance is contribute or block_stop, at least one
+                    contribution MUST reference a claim from your attention set
+                  - Reference existing contribution IDs as raw strings such as "build-r2-1"; do not include square brackets in JSON references
                   - When responding to objections, be specific about how your
                     proposal addresses the concern
                   - Confidence 1-5: how strongly you believe this claim/proposal
                   - Do NOT repeat contributions already on the blackboard
+                  - Do NOT write a contribution merely to say the discussion is
+                    saturated, that you agree with stopping, or that you have no
+                    new ideas. Use ready_to_stop instead.
+                  - quiet and ready_to_stop MUST use an empty contributions array
 
                   Write your structured output to a JSON file at:
                   ${{ steps.init_blackboard.output.blackboard_dir }}/builder-round.json
 
-                  The JSON file must have this shape:
-                  {
-                    "contributions": [
-                      {
-                        "type": "claim" | "proposal" | "evidence",
-                        "summary": "one-line summary (max 300 chars)",
-                        "confidence": 1-5,
-                        "references": ["id1", "id2"]
-                      }
-                    ],
-                    "rationale": "Your full thinking process and reasoning"
-                  }
+                  Valid examples:
+
+                  contribute:
+                  {"stance":"contribute","contributions":[{"type":"objection","summary":"...","confidence":5,"references":["build-r2-1"]}],"stop_vote":{"vote":"none"},"rationale":"..."}
+
+                  quiet:
+                  {"stance":"quiet","contributions":[],"stop_vote":{"vote":"none"},"rationale":"..."}
+
+                  ready_to_stop:
+                  {"stance":"ready_to_stop","contributions":[],"stop_vote":{"vote":"ready","confidence":5,"reason":"...","attention_set_reviewed":true,"semantic_terminal_state":"consensus"},"rationale":"..."}
+
+                  block_stop:
+                  {"stance":"block_stop","contributions":[{"type":"objection","summary":"...","confidence":5,"references":["build-r2-1"]}],"stop_vote":{"vote":"block","confidence":5,"reason":"...","unresolved_refs":["build-r2-1"]},"rationale":"..."}
 
                   Return JSON with the file path: {"contributions_path": "<path>"}
                 output:
@@ -303,34 +358,56 @@ workflow:
                   - Patterns across contributions that others may not see
                   - Areas where the discussion is going in circles
 
-                  Then contribute 1-3 new contributions. You can:
+                  Choose exactly one packet template. Do not mix templates:
+                  - **contribute**: 1-3 substantive contributions, and `stop_vote` must be `{ "vote": "none" }`.
+                  - **quiet**: no contributions, and `stop_vote` must be `{ "vote": "none" }`.
+                  - **ready_to_stop**: no contributions, plus a ready stop vote with `attention_set_reviewed: true`.
+                  - **block_stop**: 1-3 blocker contributions, plus a block stop vote with `unresolved_refs`.
+
+                  Then choose exactly one stance:
+                  - **contribute** if you have 1-3 substantive new evidence,
+                    claims, or questions to add
+                  - **quiet** if you have no substantive contribution this
+                    round but are not confident the swarm should stop
+                  - **ready_to_stop** if you reviewed your mandatory attention
+                    set and believe another round has low expected value
+                  - **block_stop** if stopping now would miss a specific
+                    unresolved issue; include 1-3 contributions explaining it
+
+                  If you contribute, you can:
                   - **evidence** by identifying cross-role agreement patterns
                   - **claim** high-confidence consensus points
                   - **question** if the discussion is stuck or missing a dimension
 
                   Rules:
-                  - At least one contribution MUST reference a claim from your attention set
-                  - Reference existing contribution IDs using the [id] format
+                  - If stance is contribute or block_stop, at least one
+                    contribution MUST reference a claim from your attention set
+                  - Reference existing contribution IDs as raw strings such as "build-r2-1"; do not include square brackets in JSON references
                   - Your evidence is especially powerful — you connect dots
                     across roles, so be thorough
                   - Confidence 1-5: how strongly you believe this
                   - Do NOT repeat contributions already on the blackboard
+                  - Do NOT write a contribution merely to say the discussion is
+                    saturated, that you agree with stopping, or that you have no
+                    new ideas. Use ready_to_stop instead.
+                  - quiet and ready_to_stop MUST use an empty contributions array
 
                   Write your structured output to a JSON file at:
                   ${{ steps.init_blackboard.output.blackboard_dir }}/synthesizer-round.json
 
-                  The JSON file must have this shape:
-                  {
-                    "contributions": [
-                      {
-                        "type": "evidence" | "claim" | "question",
-                        "summary": "one-line summary (max 300 chars)",
-                        "confidence": 1-5,
-                        "references": ["id1", "id2"]
-                      }
-                    ],
-                    "rationale": "Your full thinking process and reasoning"
-                  }
+                  Valid examples:
+
+                  contribute:
+                  {"stance":"contribute","contributions":[{"type":"objection","summary":"...","confidence":5,"references":["build-r2-1"]}],"stop_vote":{"vote":"none"},"rationale":"..."}
+
+                  quiet:
+                  {"stance":"quiet","contributions":[],"stop_vote":{"vote":"none"},"rationale":"..."}
+
+                  ready_to_stop:
+                  {"stance":"ready_to_stop","contributions":[],"stop_vote":{"vote":"ready","confidence":5,"reason":"...","attention_set_reviewed":true,"semantic_terminal_state":"consensus"},"rationale":"..."}
+
+                  block_stop:
+                  {"stance":"block_stop","contributions":[{"type":"objection","summary":"...","confidence":5,"references":["build-r2-1"]}],"stop_vote":{"vote":"block","confidence":5,"reason":"...","unresolved_refs":["build-r2-1"]},"rationale":"..."}
 
                   Return JSON with the file path: {"contributions_path": "<path>"}
                 output:
@@ -370,7 +447,23 @@ workflow:
                     or measurement
                   - Overgeneralizations from single examples
 
-                  Then contribute 1-3 new contributions. You can:
+                  Choose exactly one packet template. Do not mix templates:
+                  - **contribute**: 1-3 substantive contributions, and `stop_vote` must be `{ "vote": "none" }`.
+                  - **quiet**: no contributions, and `stop_vote` must be `{ "vote": "none" }`.
+                  - **ready_to_stop**: no contributions, plus a ready stop vote with `attention_set_reviewed: true`.
+                  - **block_stop**: 1-3 blocker contributions, plus a block stop vote with `unresolved_refs`.
+
+                  Then choose exactly one stance:
+                  - **contribute** if you have 1-3 substantive new evidence,
+                    claims, or objections to add
+                  - **quiet** if you have no substantive contribution this
+                    round but are not confident the swarm should stop
+                  - **ready_to_stop** if you reviewed your mandatory attention
+                    set and believe another round has low expected value
+                  - **block_stop** if stopping now would miss a specific
+                    unresolved issue; include 1-3 contributions explaining it
+
+                  If you contribute, you can:
                   - **evidence** from real-world systems, research, or
                     historical cases
                   - **claim** something based on empirical patterns
@@ -378,29 +471,35 @@ workflow:
                     or rests on faulty analogy
 
                   Rules:
-                  - At least one contribution MUST reference a claim from your attention set
-                  - Reference existing contribution IDs using the [id] format
+                  - If stance is contribute or block_stop, at least one
+                    contribution MUST reference a claim from your attention set
+                  - Reference existing contribution IDs as raw strings such as "build-r2-1"; do not include square brackets in JSON references
                   - When citing evidence, be specific: name the system,
                     paper, or historical case — not "studies show"
                   - Confidence 1-5: how strongly you believe this, given
                     the strength of the empirical support
                   - Do NOT repeat contributions already on the blackboard
+                  - Do NOT write a contribution merely to say the discussion is
+                    saturated, that you agree with stopping, or that you have no
+                    new ideas. Use ready_to_stop instead.
+                  - quiet and ready_to_stop MUST use an empty contributions array
 
                   Write your structured output to a JSON file at:
                   ${{ steps.init_blackboard.output.blackboard_dir }}/empiricist-round.json
 
-                  The JSON file must have this shape:
-                  {
-                    "contributions": [
-                      {
-                        "type": "evidence" | "claim" | "objection",
-                        "summary": "one-line summary (max 300 chars)",
-                        "confidence": 1-5,
-                        "references": ["id1", "id2"]
-                      }
-                    ],
-                    "rationale": "Your full thinking process and reasoning"
-                  }
+                  Valid examples:
+
+                  contribute:
+                  {"stance":"contribute","contributions":[{"type":"objection","summary":"...","confidence":5,"references":["build-r2-1"]}],"stop_vote":{"vote":"none"},"rationale":"..."}
+
+                  quiet:
+                  {"stance":"quiet","contributions":[],"stop_vote":{"vote":"none"},"rationale":"..."}
+
+                  ready_to_stop:
+                  {"stance":"ready_to_stop","contributions":[],"stop_vote":{"vote":"ready","confidence":5,"reason":"...","attention_set_reviewed":true,"semantic_terminal_state":"consensus"},"rationale":"..."}
+
+                  block_stop:
+                  {"stance":"block_stop","contributions":[{"type":"objection","summary":"...","confidence":5,"references":["build-r2-1"]}],"stop_vote":{"vote":"block","confidence":5,"reason":"...","unresolved_refs":["build-r2-1"]},"rationale":"..."}
 
                   Return JSON with the file path: {"contributions_path": "<path>"}
                 output:
@@ -417,6 +516,11 @@ workflow:
               - "${{ input.consensus_confidence }}"
               - "${{ input.saturation_threshold }}"
               - "${{ input.saturation_patience }}"
+              - "${{ input.min_rounds }}"
+              - "${{ input.stop_vote_quorum }}"
+              - "${{ input.stop_patience }}"
+              - "${{ input.ready_confidence_threshold }}"
+              - "${{ input.block_confidence_threshold }}"
               - "${{ steps.swarm_agents.output.challenger.output.contributions_path }}"
               - "${{ steps.swarm_agents.output.builder.output.contributions_path }}"
               - "${{ steps.swarm_agents.output.synthesizer.output.contributions_path }}"
@@ -427,16 +531,60 @@ workflow:
             output:
               has_consensus: boolean
               is_saturated: boolean
+              semantic_stop: boolean
               new_contributions_count: integer
               round: integer
               total_contributions: integer
               consensus_count: integer
               quarantined_count: integer
               dangling_reference_count: integer
+              semantic_stop_streak: integer
+              ready_votes: integer
+              block_votes: integer
+              contribute_votes: integer
+              quiet_votes: integer
+              protocol_warning_count: integer
+              cognitive_activity: integer
               blackboard_json_path: string
               blackboard_md_path: string
               momentum_report: string
+              stop_report: string
             timeout: 30s
+
+    # ── Deterministic finalization ────────────────────────────────────
+    - id: finalize_blackboard
+      run: program
+      cmd:
+        - node
+        - ${{ workflow.source_dir }}/scripts/swarm.mjs
+        - finalize
+        - "${{ steps.init_blackboard.output.blackboard_json_path }}"
+        - "${{ input.max_rounds }}"
+      capture:
+        from: stdout
+        parse: json
+      output:
+        exit_reason: string
+        rounds_completed: integer
+        semantic_stop_round: integer
+        semantic_stop_streak: integer
+        semantic_saturation_reached: boolean
+        activity_saturation_reached: boolean
+        stop_quorum_reached: boolean
+        content_consensus_reached: boolean
+        semantic_terminal_state: string
+        total_contributions: integer
+        consensus_count: integer
+        ready_votes: integer
+        block_votes: integer
+        contribute_votes: integer
+        quiet_votes: integer
+        quarantined_count: integer
+        protocol_warning_count: integer
+        blackboard_json_path: string
+        blackboard_md_path: string
+        control_summary: string
+      timeout: 30s
 
     # ── Final summary ─────────────────────────────────────────────────
     - id: final_summary
@@ -451,20 +599,27 @@ workflow:
 
         Topic: ${{ input.topic }}
 
+        Exit reason: ${{ steps.finalize_blackboard.output.exit_reason }}
+        Semantic terminal state: ${{ steps.finalize_blackboard.output.semantic_terminal_state }}
+        Control state: ${{ steps.finalize_blackboard.output.control_summary }}
+
         Read the full blackboard at:
-        ${{ steps.init_blackboard.output.blackboard_md_path }}
+        ${{ steps.finalize_blackboard.output.blackboard_md_path }}
 
         Your report should include:
 
-        1. **Consensus Reached** — What did the swarm agree on? List each
+        1. **Exit** — Why did the workflow stop? Distinguish semantic stop,
+           activity saturation, and max_rounds.
+
+        2. **Consensus Reached** — What did the swarm agree on? List each
            consensus point with its key supporting rationale.
 
-        2. **Open Questions** — What objections or questions remain unresolved?
+        3. **Open Questions** — What objections or questions remain unresolved?
 
-        3. **Key Debates** — What were the most interesting disagreements or
+        4. **Key Debates** — What were the most interesting disagreements or
            turning points in the discussion?
 
-        4. **Recommended Next Steps** — Based on the discussion, what should
+        5. **Recommended Next Steps** — Based on the discussion, what should
            the reader do next?
 
         Write the report to:
@@ -476,9 +631,24 @@ workflow:
 
 outputs:
   blackboard_dir: ${{ steps.init_blackboard.output.blackboard_dir }}
-  blackboard_json: ${{ steps.init_blackboard.output.blackboard_json_path }}
-  blackboard_md: ${{ steps.init_blackboard.output.blackboard_md_path }}
+  blackboard_json: ${{ steps.finalize_blackboard.output.blackboard_json_path }}
+  blackboard_md: ${{ steps.finalize_blackboard.output.blackboard_md_path }}
   summary_path: ${{ steps.final_summary.output.summary_path }}
-  rounds_completed: ${{ steps.swarm_loop.output.round }}
-  total_contributions: ${{ steps.swarm_loop.output.total_contributions }}
-  consensus_reached: ${{ steps.swarm_loop.output.has_consensus }}
+  rounds_completed: ${{ steps.finalize_blackboard.output.rounds_completed }}
+  total_contributions: ${{ steps.finalize_blackboard.output.total_contributions }}
+  content_consensus_reached: ${{ steps.finalize_blackboard.output.content_consensus_reached }}
+  exit_reason: ${{ steps.finalize_blackboard.output.exit_reason }}
+  semantic_saturation_reached: ${{ steps.finalize_blackboard.output.semantic_saturation_reached }}
+  activity_saturation_reached: ${{ steps.finalize_blackboard.output.activity_saturation_reached }}
+  stop_quorum_reached: ${{ steps.finalize_blackboard.output.stop_quorum_reached }}
+  semantic_terminal_state: ${{ steps.finalize_blackboard.output.semantic_terminal_state }}
+  semantic_stop_round: ${{ steps.finalize_blackboard.output.semantic_stop_round }}
+  semantic_stop_streak: ${{ steps.finalize_blackboard.output.semantic_stop_streak }}
+  consensus_count: ${{ steps.finalize_blackboard.output.consensus_count }}
+  ready_votes: ${{ steps.finalize_blackboard.output.ready_votes }}
+  block_votes: ${{ steps.finalize_blackboard.output.block_votes }}
+  contribute_votes: ${{ steps.finalize_blackboard.output.contribute_votes }}
+  quiet_votes: ${{ steps.finalize_blackboard.output.quiet_votes }}
+  quarantined_count: ${{ steps.finalize_blackboard.output.quarantined_count }}
+  protocol_warning_count: ${{ steps.finalize_blackboard.output.protocol_warning_count }}
+  control_summary: ${{ steps.finalize_blackboard.output.control_summary }}

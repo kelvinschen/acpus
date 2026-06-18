@@ -5,7 +5,9 @@
 //   node swarm.mjs summary <blackboard_json_path> [role]
 //   node swarm.mjs attention <blackboard_json_path>
 //   node swarm.mjs merge <blackboard_json_path> <consensus_confidence> <saturation_threshold> <saturation_patience> \
+//     <min_rounds> <stop_vote_quorum> <stop_patience> <ready_confidence_threshold> <block_confidence_threshold> \
 //     <challenger_path> <builder_path> <synthesizer_path> <empiricist_path>
+//   node swarm.mjs finalize <blackboard_json_path> <max_rounds>
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -14,6 +16,21 @@ import { fileURLToPath } from "node:url";
 const ROLES = ["challenger", "builder", "synthesizer", "empiricist"];
 const ACTIVE_CLAIM_LIMIT = 8;
 const WITHDRAWN_COLLAPSE_THRESHOLD = 5;
+const VALID_STANCES = new Set(["contribute", "quiet", "ready_to_stop", "block_stop"]);
+const VALID_VOTES = new Set(["none", "ready", "block"]);
+const VALID_CONTRIBUTION_TYPES = new Set(["objection", "question", "claim", "proposal", "evidence"]);
+const VALID_TERMINAL_STATES = new Set([
+  "consensus",
+  "bounded_disagreement",
+  "external_action_required",
+  "inconclusive",
+]);
+const ROLE_SHORT = {
+  challenger: "chal",
+  builder: "build",
+  synthesizer: "synth",
+  empiricist: "emp",
+};
 
 // Flags claims that the deterministic merge rules will withdraw next round
 // unless an agent supports them, giving the swarm a chance to rescue them.
@@ -36,6 +53,29 @@ export function generateMarkdown(bb) {
   if (bb.context) {
     lines.push("## Context");
     lines.push(bb.context);
+    lines.push("");
+  }
+
+  if (bb.control && bb.control.stop) {
+    const stop = bb.control.stop;
+    lines.push("## Control State");
+    lines.push("");
+    lines.push(`Semantic stop: ${Boolean(stop.semantic_stop)}`);
+    lines.push(`Ready votes: ${stop.ready_votes || 0}`);
+    lines.push(`Block votes: ${stop.block_votes || 0}`);
+    lines.push(`Contribute votes: ${stop.contribute_votes || 0}`);
+    lines.push(`Quiet votes: ${stop.quiet_votes || 0}`);
+    lines.push(`Semantic stop streak: ${stop.semantic_stop_streak || 0}`);
+    if (stop.semantic_terminal_state) {
+      lines.push(`Semantic terminal state: ${stop.semantic_terminal_state}`);
+    }
+    if (stop.blockers && stop.blockers.length > 0) {
+      lines.push("");
+      lines.push("Valid blockers:");
+      for (const blocker of stop.blockers) {
+        lines.push(`- ${blocker.role}: ${blocker.reason}`);
+      }
+    }
     lines.push("");
   }
 
@@ -112,7 +152,7 @@ export function generateMarkdown(bb) {
 
   lines.push("---");
   lines.push(
-    `Round: ${bb.round} | Consensus: ${bb.metrics.has_consensus} | Saturated: ${bb.metrics.is_saturated} | New contributions: ${bb.metrics.new_contributions_count}`
+    `Round: ${bb.round} | Content consensus: ${bb.metrics.has_consensus} | Semantic stop: ${Boolean(bb.metrics.semantic_stop)} | Activity saturated: ${bb.metrics.is_saturated} | New contributions: ${bb.metrics.new_contributions_count}`
   );
 
   return lines.join("\n");
@@ -135,7 +175,20 @@ export function initBlackboard({ outputDir, topic, context = "" }) {
     metrics: {
       has_consensus: false,
       is_saturated: false,
+      semantic_stop: false,
       new_contributions_count: 0,
+    },
+    control: {
+      stop: {
+        semantic_stop: false,
+        semantic_stop_streak: 0,
+        ready_votes: 0,
+        block_votes: 0,
+        contribute_votes: 0,
+        quiet_votes: 0,
+        blockers: [],
+        semantic_terminal_state: null,
+      },
     },
     round: 0,
   };
@@ -308,6 +361,19 @@ export function summarizeBlackboard({ blackboardJsonPath, role }) {
     }
   }
 
+  if (bb.metrics.protocol_warnings && bb.metrics.protocol_warnings.length > 0) {
+    if (
+      !(bb.metrics.quarantined_agents && bb.metrics.quarantined_agents.length > 0) &&
+      !(bb.metrics.dangling_references && bb.metrics.dangling_references.length > 0)
+    ) {
+      lines.push("");
+      lines.push("## ⚠️ Integrity Warnings");
+    }
+    for (const warning of bb.metrics.protocol_warnings) {
+      lines.push(`- Agent ${warning.role} packet had a protocol warning (${warning.reason}); usable content was kept, but semantic stop cannot advance this round.`);
+    }
+  }
+
   if (bb.metrics.momentum_report) {
     const mr = bb.metrics.momentum_report;
     lines.push("");
@@ -320,8 +386,25 @@ export function summarizeBlackboard({ blackboardJsonPath, role }) {
     }
   }
 
+  if (bb.metrics.stop_report) {
+    const sr = bb.metrics.stop_report;
+    lines.push("");
+    lines.push("## Stop Readiness");
+    lines.push(`Ready: ${sr.ready_votes}/${ROLES.length} | Blocks: ${sr.block_votes} | Contributions: ${sr.contribute_votes} | Quiet: ${sr.quiet_votes}`);
+    lines.push(`Semantic stop candidate: ${sr.semantic_stop_candidate} | Streak: ${sr.semantic_stop_streak}`);
+    if (sr.semantic_terminal_state) {
+      lines.push(`Semantic terminal state: ${sr.semantic_terminal_state}`);
+    }
+    if (sr.blockers && sr.blockers.length > 0) {
+      lines.push("Valid blockers:");
+      for (const blocker of sr.blockers) {
+        lines.push(`- ${blocker.role}: ${blocker.reason}`);
+      }
+    }
+  }
+
   lines.push(
-    `Consensus reached: ${bb.metrics.has_consensus} | Saturated: ${bb.metrics.is_saturated}`
+    `Content consensus reached: ${bb.metrics.has_consensus} | Semantic stop: ${Boolean(bb.metrics.semantic_stop)} | Activity saturated: ${bb.metrics.is_saturated}`
   );
 
   return {
@@ -469,26 +552,228 @@ export function assignAttention({ blackboardJsonPath }) {
   return output;
 }
 
-// Reads one agent's contribution file. A single malformed agent output must
-// not abort the whole round, so failures degrade to an empty contribution set
-// with a quarantine reason the merge step records on the board.
-function readContribs(role, filePath) {
-  const resolved = resolve(filePath);
+function parseConfidence(value, fieldName, errors) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 5) {
+    errors.push(`${fieldName} must be an integer from 1 to 5`);
+    return null;
+  }
+  return parsed;
+}
+
+function validateContribution(c, idx, knownIds = null) {
+  const errors = [];
+  const warnings = [];
+  if (!c || typeof c !== "object" || Array.isArray(c)) {
+    return { errors: [`contributions[${idx}] must be an object`] };
+  }
+  if (!VALID_CONTRIBUTION_TYPES.has(c.type)) {
+    errors.push(`contributions[${idx}].type must be one of ${[...VALID_CONTRIBUTION_TYPES].join(", ")}`);
+  }
+  if (typeof c.summary !== "string" || c.summary.trim().length === 0) {
+    errors.push(`contributions[${idx}].summary must be a non-empty string`);
+  }
+  parseConfidence(c.confidence, `contributions[${idx}].confidence`, errors);
+  if (!Array.isArray(c.references) || c.references.some((ref) => typeof ref !== "string" || ref.trim().length === 0)) {
+    errors.push(`contributions[${idx}].references must be an array of non-empty strings`);
+  }
+  if (knownIds) {
+    for (const ref of c.references || []) {
+      if (!knownIds.has(ref)) {
+        errors.push(`contributions[${idx}].references contains unknown id ${ref}`);
+      }
+    }
+  }
+  if (errors.length > 0) return { errors };
+  return {
+    errors: [],
+    contribution: {
+      type: c.type,
+      summary: c.summary.trim().slice(0, 300),
+      confidence: Number(c.confidence),
+      references: c.references,
+    },
+  };
+}
+
+function normalizeRef(ref) {
+  return typeof ref === "string" ? ref.trim().replace(/^\[|\]$/g, "") : ref;
+}
+
+function normalizeRefs(refs) {
+  return Array.isArray(refs) ? refs.map(normalizeRef) : refs;
+}
+
+// Reads one agent's decision packet. A malformed agent output must not abort
+// the whole round, so failures quarantine that role for the round.
+function readAttentionIds(filePath, role) {
+  try {
+    const attentionPath = join(dirname(resolve(filePath)), `attention-${role}.json`);
+    if (!existsSync(attentionPath)) return [];
+    const data = JSON.parse(readFileSync(attentionPath, "utf-8"));
+    return Array.isArray(data.attention_set) ? data.attention_set : [];
+  } catch {
+    return [];
+  }
+}
+
+function readDecisionPacket(role, filePath, options = {}) {
   let data;
   try {
+    const resolved = resolve(filePath);
     data = JSON.parse(readFileSync(resolved, "utf-8"));
   } catch (error) {
-    return { contribs: [], rationale: "", quarantine: `unreadable: ${error.message}` };
+    return { stance: "quarantined", contribs: [], rationale: "", quarantine: `unreadable: ${error.message}` };
   }
 
+  const errors = [];
+  const warnings = [];
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return { stance: "quarantined", contribs: [], rationale: "", quarantine: "decision packet must be an object" };
+  }
+
+  if (!VALID_STANCES.has(data.stance)) {
+    errors.push(`stance must be one of ${[...VALID_STANCES].join(", ")}`);
+  }
   if (!Array.isArray(data.contributions)) {
-    return { contribs: [], rationale: "", quarantine: "contributions field is not an array" };
+    errors.push("contributions field must be an array");
+  }
+
+  if (!("stop_vote" in data)) {
+    errors.push("stop_vote field is required");
+  }
+  if (!("rationale" in data) || typeof data.rationale !== "string") {
+    errors.push("rationale field must be a string");
+  }
+
+  const stopVote = data.stop_vote || {};
+  if (!stopVote || typeof stopVote !== "object" || Array.isArray(stopVote)) {
+    errors.push("stop_vote must be an object");
+  }
+  const rawVote = stopVote.vote || "none";
+  let vote = rawVote;
+  if (!VALID_VOTES.has(vote)) {
+    if (data.stance === "contribute" || data.stance === "quiet") {
+      warnings.push(`ignored invalid stop_vote.vote ${String(rawVote)} for ${data.stance} stance`);
+      vote = "none";
+    } else {
+    errors.push(`stop_vote.vote must be one of ${[...VALID_VOTES].join(", ")}`);
+    }
+  }
+
+  const contributions = [];
+  if (Array.isArray(data.contributions)) {
+    data.contributions.forEach((contribution, idx) => {
+      const validated = validateContribution(contribution, idx);
+      if (validated.errors.length > 0) errors.push(...validated.errors);
+      else contributions.push({
+        ...validated.contribution,
+        references: normalizeRefs(validated.contribution.references),
+      });
+    });
+  }
+
+  const stance = data.stance;
+  if (stance === "contribute") {
+    if (contributions.length < 1 || contributions.length > 3) {
+      errors.push("contribute stance requires 1-3 contributions");
+    }
+    if (vote !== "none") {
+      warnings.push("contribute stance stop_vote was ignored; vote must be none");
+    }
+  } else if (stance === "quiet") {
+    if (contributions.length !== 0) {
+      errors.push("quiet stance requires zero contributions");
+    }
+    if (vote !== "none") {
+      warnings.push("quiet stance stop_vote was ignored; vote must be none");
+    }
+  } else if (stance === "ready_to_stop") {
+    if (contributions.length !== 0) {
+      errors.push("ready_to_stop stance requires zero contributions");
+    }
+    if (vote !== "ready") {
+      errors.push("ready_to_stop stance requires stop_vote.vote to be ready");
+    }
+    const confidence = parseConfidence(stopVote.confidence, "stop_vote.confidence", errors);
+    if (confidence !== null && confidence < options.readyConfidenceThreshold) {
+      errors.push(`ready_to_stop confidence must be >= ${options.readyConfidenceThreshold}`);
+    }
+    if (stopVote.attention_set_reviewed !== true) {
+      errors.push("ready_to_stop requires stop_vote.attention_set_reviewed to be true");
+    }
+    if (typeof stopVote.reason !== "string" || stopVote.reason.trim().length === 0) {
+      errors.push("ready_to_stop requires non-empty stop_vote.reason");
+    }
+    if (
+      stopVote.semantic_terminal_state !== undefined &&
+      !VALID_TERMINAL_STATES.has(stopVote.semantic_terminal_state)
+    ) {
+      errors.push(`stop_vote.semantic_terminal_state must be one of ${[...VALID_TERMINAL_STATES].join(", ")}`);
+    }
+  } else if (stance === "block_stop") {
+    if (contributions.length < 1 || contributions.length > 3) {
+      errors.push("block_stop stance requires 1-3 contributions");
+    }
+    if (vote !== "block") {
+      errors.push("block_stop stance requires stop_vote.vote to be block");
+    }
+    const confidence = parseConfidence(stopVote.confidence, "stop_vote.confidence", errors);
+    if (confidence !== null && confidence < options.blockConfidenceThreshold) {
+      errors.push(`block_stop confidence must be >= ${options.blockConfidenceThreshold}`);
+    }
+    if (typeof stopVote.reason !== "string" || stopVote.reason.trim().length === 0) {
+      errors.push("block_stop requires non-empty stop_vote.reason");
+    }
+    const unresolvedRefs = normalizeRefs(stopVote.unresolved_refs);
+    if (
+      !Array.isArray(unresolvedRefs) ||
+      unresolvedRefs.length === 0 ||
+      unresolvedRefs.some((ref) => typeof ref !== "string" || ref.trim().length === 0)
+    ) {
+      errors.push("block_stop requires stop_vote.unresolved_refs with at least one non-empty string");
+    } else {
+      const attentionIds = readAttentionIds(filePath, role);
+      const contributionRefs = new Set(contributions.flatMap((c) => c.references));
+      for (const ref of unresolvedRefs) {
+        if (attentionIds.length > 0 && !attentionIds.includes(ref)) {
+          errors.push(`block_stop unresolved_ref ${ref} is not in the mandatory attention set`);
+        }
+        if (!contributionRefs.has(ref)) {
+          errors.push(`block_stop unresolved_ref ${ref} must also be referenced by a blocker contribution`);
+        }
+      }
+    }
+  }
+
+  if ((stance === "contribute" || stance === "block_stop") && contributions.length > 0) {
+    const attentionIds = readAttentionIds(filePath, role);
+    if (
+      attentionIds.length > 0 &&
+      !contributions.some((c) => c.references.some((ref) => attentionIds.includes(ref)))
+    ) {
+      errors.push(`${stance} stance requires at least one contribution to reference the mandatory attention set`);
+    }
+  }
+
+  if (errors.length > 0) {
+    return { stance: "quarantined", contribs: [], rationale: "", quarantine: errors.join("; ") };
   }
 
   return {
-    contribs: data.contributions,
+    stance,
+    stopVote: {
+      vote: (stance === "contribute" || stance === "quiet") ? "none" : vote,
+      confidence: Number(stopVote.confidence || 0),
+      reason: typeof stopVote.reason === "string" ? stopVote.reason.trim() : "",
+      attention_set_reviewed: stopVote.attention_set_reviewed === true,
+      semantic_terminal_state: stopVote.semantic_terminal_state || null,
+      unresolved_refs: Array.isArray(stopVote.unresolved_refs) ? normalizeRefs(stopVote.unresolved_refs) : [],
+    },
+    contribs: contributions,
     rationale: data.rationale || "",
     quarantine: null,
+    warnings,
   };
 }
 
@@ -497,11 +782,17 @@ export function mergeContributions({
   consensusConfidence = 4,
   saturationThreshold = 0,
   saturationPatience = 2,
+  minRounds = 3,
+  stopVoteQuorum = 3,
+  stopPatience = 2,
+  readyConfidenceThreshold = 4,
+  blockConfidenceThreshold = 4,
   rolePaths,
 }) {
   if (!blackboardJsonPath || !rolePaths || rolePaths.length < 4) {
     throw new Error(
       "Usage: swarm.mjs merge <bb_json> <consensus_conf> <sat_threshold> <sat_patience> " +
+        "<min_rounds> <stop_vote_quorum> <stop_patience> <ready_conf_threshold> <block_conf_threshold> " +
         "<chal_path> <build_path> <synth_path> <emp_path>"
     );
   }
@@ -519,17 +810,64 @@ export function mergeContributions({
   };
 
   const agentOutputs = [
-    { role: "chal", ...readContribs("challenger", chalPath) },
-    { role: "build", ...readContribs("builder", buildPath) },
-    { role: "synth", ...readContribs("synthesizer", synthPath) },
-    { role: "emp", ...readContribs("empiricist", empPath) },
+    { role: "chal", ...readDecisionPacket("challenger", chalPath, { readyConfidenceThreshold, blockConfidenceThreshold }) },
+    { role: "build", ...readDecisionPacket("builder", buildPath, { readyConfidenceThreshold, blockConfidenceThreshold }) },
+    { role: "synth", ...readDecisionPacket("synthesizer", synthPath, { readyConfidenceThreshold, blockConfidenceThreshold }) },
+    { role: "emp", ...readDecisionPacket("empiricist", empPath, { readyConfidenceThreshold, blockConfidenceThreshold }) },
   ];
 
   const quarantined = [];
+  const protocolWarnings = [];
   for (const out of agentOutputs) {
     if (out.quarantine) {
       quarantined.push({ role: out.role, reason: out.quarantine });
       recordEvent("agent_quarantined", { role: out.role, reason: out.quarantine });
+    }
+    if (out.warnings && out.warnings.length > 0) {
+      for (const warning of out.warnings) {
+        protocolWarnings.push({ role: out.role, reason: warning });
+        recordEvent("protocol_warning", { role: out.role, reason: warning });
+      }
+    }
+  }
+
+  const stopVotes = [];
+  for (const out of agentOutputs) {
+    if (out.quarantine) continue;
+    recordEvent("stance", {
+      role: out.role,
+      stance: out.stance,
+      vote: out.stopVote?.vote || "none",
+    });
+    if (out.stance === "ready_to_stop") {
+      stopVotes.push({
+        role: out.role,
+        vote: "ready",
+        confidence: out.stopVote.confidence,
+        reason: out.stopVote.reason,
+        semantic_terminal_state: out.stopVote.semantic_terminal_state,
+      });
+      recordEvent("stop_vote", {
+        role: out.role,
+        vote: "ready",
+        confidence: out.stopVote.confidence,
+        semantic_terminal_state: out.stopVote.semantic_terminal_state,
+      });
+    }
+    if (out.stance === "block_stop") {
+      stopVotes.push({
+        role: out.role,
+        vote: "block",
+        confidence: out.stopVote.confidence,
+        reason: out.stopVote.reason,
+        unresolved_refs: out.stopVote.unresolved_refs,
+      });
+      recordEvent("stop_vote", {
+        role: out.role,
+        vote: "block",
+        confidence: out.stopVote.confidence,
+        unresolved_refs: out.stopVote.unresolved_refs,
+      });
     }
   }
 
@@ -710,18 +1048,61 @@ export function mergeContributions({
   const roundActivity =
     stateTransitions + momentumTracker.confidenceDeltas.length + engagementCount;
 
+  const readyVotes = agentOutputs.filter((out) => !out.quarantine && out.stance === "ready_to_stop").length;
+  const blockVotes = agentOutputs.filter((out) => !out.quarantine && out.stance === "block_stop").length;
+  const contributeVotes = agentOutputs.filter((out) => !out.quarantine && out.stance === "contribute").length;
+  const quietVotes = agentOutputs.filter((out) => !out.quarantine && out.stance === "quiet").length;
+  const blockers = stopVotes
+    .filter((vote) => vote.vote === "block")
+    .map((vote) => ({
+      role: vote.role,
+      confidence: vote.confidence,
+      reason: vote.reason,
+      unresolved_refs: vote.unresolved_refs || [],
+    }));
+  const terminalStateCounts = {};
+  for (const vote of stopVotes) {
+    if (vote.vote === "ready" && vote.semantic_terminal_state) {
+      terminalStateCounts[vote.semantic_terminal_state] =
+        (terminalStateCounts[vote.semantic_terminal_state] || 0) + 1;
+    }
+  }
+  const semanticTerminalState =
+    Object.entries(terminalStateCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+  const semanticStopCandidate =
+    nextRound >= minRounds &&
+    readyVotes >= stopVoteQuorum &&
+    blockVotes === 0 &&
+    contributeVotes === 0 &&
+    quarantined.length === 0 &&
+    protocolWarnings.length === 0;
+  const previousStopStreak = bb.control?.stop?.semantic_stop_streak || 0;
+  const semanticStopStreak = semanticStopCandidate ? previousStopStreak + 1 : 0;
+  const semanticStop = semanticStopStreak >= stopPatience;
+  const cognitiveActivity = roundActivity + newContributions.length + blockVotes;
+
   const historyEntry = {
     round: nextRound,
     new_contributions_count: newContributions.length,
     round_activity: roundActivity,
+    cognitive_activity: cognitiveActivity,
+    semantic_stop_candidate: semanticStopCandidate,
+    semantic_stop_streak: semanticStopStreak,
+    semantic_stop: semanticStop,
+    ready_votes: readyVotes,
+    block_votes: blockVotes,
+    contribute_votes: contributeVotes,
+    quiet_votes: quietVotes,
+    quarantined_count: quarantined.length,
+    protocol_warning_count: protocolWarnings.length,
   };
   bb.history.push(historyEntry);
 
   const recent = bb.history.slice(-saturationPatience);
   const isSaturated =
-    bb.round >= 2 &&
+    nextRound >= minRounds &&
     recent.length >= saturationPatience &&
-    recent.every((h) => (h.round_activity ?? h.new_contributions_count) <= saturationThreshold);
+    recent.every((h) => (h.cognitive_activity ?? h.round_activity ?? h.new_contributions_count) <= saturationThreshold);
 
   bb.round = nextRound;
 
@@ -737,8 +1118,10 @@ export function mergeContributions({
   bb.metrics = {
     has_consensus: hasConsensus,
     is_saturated: isSaturated,
+    semantic_stop: semanticStop,
     new_contributions_count: newContributions.length,
     quarantined_agents: quarantined,
+    protocol_warnings: protocolWarnings,
     dangling_references: danglingRefs,
     momentum_report: {
       round: nextRound,
@@ -748,6 +1131,40 @@ export function mergeContributions({
       claims_demoted_or_contested: momentumTracker.demotedCount + momentumTracker.contestedCount,
       confidence_net_direction: confidenceNetDirection,
       round_activity: roundActivity,
+      cognitive_activity: cognitiveActivity,
+    },
+    stop_report: {
+      round: nextRound,
+      ready_votes: readyVotes,
+      block_votes: blockVotes,
+      contribute_votes: contributeVotes,
+      quiet_votes: quietVotes,
+      protocol_warning_count: protocolWarnings.length,
+      stop_vote_quorum: stopVoteQuorum,
+      semantic_stop_candidate: semanticStopCandidate,
+      semantic_stop_streak: semanticStopStreak,
+      semantic_stop: semanticStop,
+      blockers,
+      semantic_terminal_state: semanticTerminalState,
+    },
+  };
+  bb.control = {
+    ...(bb.control || {}),
+    stop: {
+      semantic_stop: semanticStop,
+      semantic_stop_candidate: semanticStopCandidate,
+      semantic_stop_streak: semanticStopStreak,
+      ready_votes: readyVotes,
+      block_votes: blockVotes,
+      contribute_votes: contributeVotes,
+      quiet_votes: quietVotes,
+      stop_vote_quorum: stopVoteQuorum,
+      stop_patience: stopPatience,
+      protocol_warning_count: protocolWarnings.length,
+      protocol_warnings: protocolWarnings,
+      blockers,
+      semantic_terminal_state: semanticTerminalState,
+      terminal_state_votes: terminalStateCounts,
     },
   };
 
@@ -759,6 +1176,7 @@ export function mergeContributions({
   return {
     has_consensus: hasConsensus,
     is_saturated: isSaturated,
+    semantic_stop: semanticStop,
     new_contributions_count: newContributions.length,
     round: nextRound,
     total_contributions: bb.contributions.length,
@@ -768,7 +1186,67 @@ export function mergeContributions({
     blackboard_json_path: resolved,
     blackboard_md_path: mdPath,
     momentum_report: JSON.stringify(bb.metrics.momentum_report),
+    stop_report: JSON.stringify(bb.metrics.stop_report),
+    semantic_stop_streak: semanticStopStreak,
+    ready_votes: readyVotes,
+    block_votes: blockVotes,
+    contribute_votes: contributeVotes,
+    quiet_votes: quietVotes,
+    protocol_warning_count: protocolWarnings.length,
+    cognitive_activity: cognitiveActivity,
   };
+}
+
+function chooseExitReason(bb, maxRounds = 50) {
+  if (bb.metrics?.semantic_stop) return "semantic_stop";
+  if (bb.metrics?.is_saturated) return "activity_saturation";
+  if ((bb.round || 0) >= Math.min(maxRounds, 50)) return "max_rounds";
+  return "incomplete";
+}
+
+export function finalizeBlackboard({ blackboardJsonPath, maxRounds = 50 }) {
+  if (!blackboardJsonPath) {
+    throw new Error("Usage: swarm.mjs finalize <blackboard_json_path> <max_rounds>");
+  }
+
+  const resolved = resolve(blackboardJsonPath);
+  const bb = JSON.parse(readFileSync(resolved, "utf-8"));
+  const mdPath = resolved.replace(/blackboard\.json$/, "blackboard.md");
+  const stop = bb.control?.stop || {};
+  const exitReason = chooseExitReason(bb, maxRounds);
+  const consensusCount = bb.contributions.filter((c) => c.status === "consensus").length;
+  const output = {
+    exit_reason: exitReason,
+    rounds_completed: bb.round || 0,
+    semantic_stop_round: bb.metrics?.semantic_stop ? bb.round || 0 : 0,
+    semantic_stop_streak: stop.semantic_stop_streak || 0,
+    semantic_saturation_reached: Boolean(bb.metrics?.semantic_stop),
+    activity_saturation_reached: Boolean(bb.metrics?.is_saturated),
+    stop_quorum_reached: Boolean(stop.semantic_stop_candidate || stop.semantic_stop),
+    content_consensus_reached: Boolean(bb.metrics?.has_consensus),
+    semantic_terminal_state: stop.semantic_terminal_state || "inconclusive",
+    total_contributions: bb.contributions.length,
+    consensus_count: consensusCount,
+    ready_votes: stop.ready_votes || 0,
+    block_votes: stop.block_votes || 0,
+    contribute_votes: stop.contribute_votes || 0,
+    quiet_votes: stop.quiet_votes || 0,
+    quarantined_count: bb.metrics?.quarantined_agents?.length || 0,
+    protocol_warning_count: bb.metrics?.protocol_warnings?.length || 0,
+    blackboard_json_path: resolved,
+    blackboard_md_path: mdPath,
+    control_summary: JSON.stringify({
+      exit_reason: exitReason,
+      stop: bb.control?.stop || {},
+      quarantined_agents: bb.metrics?.quarantined_agents || [],
+      protocol_warnings: bb.metrics?.protocol_warnings || [],
+    }),
+  };
+
+  bb.final = output;
+  writeFileSync(resolved, JSON.stringify(bb, null, 2), "utf-8");
+  writeFileSync(mdPath, generateMarkdown(bb), "utf-8");
+  return output;
 }
 
 function printJson(value) {
@@ -800,25 +1278,51 @@ function main(args) {
         consensusConfStr,
         saturationThresholdStr,
         saturationPatienceStr,
+        minRoundsStr,
+        stopVoteQuorumStr,
+        stopPatienceStr,
+        readyConfidenceThresholdStr,
+        blockConfidenceThresholdStr,
         ...rolePaths
       ] = rest;
       const consensusConfidence = parseInt(consensusConfStr, 10);
       const saturationThreshold = parseInt(saturationThresholdStr, 10);
       const saturationPatience = parseInt(saturationPatienceStr, 10);
+      const minRounds = parseInt(minRoundsStr, 10);
+      const stopVoteQuorum = parseInt(stopVoteQuorumStr, 10);
+      const stopPatience = parseInt(stopPatienceStr, 10);
+      const readyConfidenceThreshold = parseInt(readyConfidenceThresholdStr, 10);
+      const blockConfidenceThreshold = parseInt(blockConfidenceThresholdStr, 10);
       printJson(
         mergeContributions({
           blackboardJsonPath,
           consensusConfidence: Number.isNaN(consensusConfidence) ? 4 : consensusConfidence,
           saturationThreshold: Number.isNaN(saturationThreshold) ? 0 : saturationThreshold,
           saturationPatience: Number.isNaN(saturationPatience) ? 2 : saturationPatience,
+          minRounds: Number.isNaN(minRounds) ? 3 : minRounds,
+          stopVoteQuorum: Number.isNaN(stopVoteQuorum) ? 3 : stopVoteQuorum,
+          stopPatience: Number.isNaN(stopPatience) ? 2 : stopPatience,
+          readyConfidenceThreshold: Number.isNaN(readyConfidenceThreshold) ? 4 : readyConfidenceThreshold,
+          blockConfidenceThreshold: Number.isNaN(blockConfidenceThreshold) ? 4 : blockConfidenceThreshold,
           rolePaths,
+        })
+      );
+      return;
+    }
+    case "finalize": {
+      const [blackboardJsonPath, maxRoundsStr] = rest;
+      const maxRounds = parseInt(maxRoundsStr, 10);
+      printJson(
+        finalizeBlackboard({
+          blackboardJsonPath,
+          maxRounds: Number.isNaN(maxRounds) ? 50 : maxRounds,
         })
       );
       return;
     }
     default:
       throw new Error(
-        "Usage: swarm.mjs <init|summary|attention|merge> [...args]"
+        "Usage: swarm.mjs <init|summary|attention|merge|finalize> [...args]"
       );
   }
 }

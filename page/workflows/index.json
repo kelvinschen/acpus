@@ -113,10 +113,10 @@
   {
     "name": "swarm-intelligence",
     "file": "swarm-intelligence.html",
-    "description": "Swarm intelligence workflow: multiple specialized agents collaborate through a shared blackboard.",
-    "total": 11,
+    "description": "Swarm intelligence workflow: multiple specialized agents (Challenger, Builder, Synthesizer, Empiricist) collaborate through a shared blackboard to explore a topic, debate proposals, and converge on consensus.",
+    "total": 12,
     "counts": {
-      "program": 4,
+      "program": 5,
       "loop": 1,
       "parallel": 1,
       "agent": 5
