@@ -4,7 +4,7 @@
 //   node swarm.mjs init <output_dir> <topic> [context]
 //   node swarm.mjs summary <blackboard_json_path> [role]
 //   node swarm.mjs attention <blackboard_json_path>
-//   node swarm.mjs merge <blackboard_json_path> <consensus_confidence> <saturation_threshold> \
+//   node swarm.mjs merge <blackboard_json_path> <consensus_confidence> <saturation_threshold> <saturation_patience> \
 //     <challenger_path> <builder_path> <synthesizer_path> <empiricist_path>
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -14,6 +14,19 @@ import { fileURLToPath } from "node:url";
 const ROLES = ["challenger", "builder", "synthesizer", "empiricist"];
 const ACTIVE_CLAIM_LIMIT = 8;
 const WITHDRAWN_COLLAPSE_THRESHOLD = 5;
+
+// Flags claims that the deterministic merge rules will withdraw next round
+// unless an agent supports them, giving the swarm a chance to rescue them.
+function withdrawalWarning(c) {
+  const rwe = c.rounds_without_evidence || 0;
+  if (c.status === "contested" && rwe >= 1) {
+    return " ⏳ withdrawn next round unless supported by evidence";
+  }
+  if (c.type === "objection" && c.status === "active" && rwe >= 2) {
+    return " ⏳ withdrawn next round unless backed by new evidence";
+  }
+  return "";
+}
 
 export function generateMarkdown(bb) {
   const lines = [];
@@ -118,6 +131,7 @@ export function initBlackboard({ outputDir, topic, context = "" }) {
     context,
     contributions: [],
     history: [],
+    events: [],
     metrics: {
       has_consensus: false,
       is_saturated: false,
@@ -205,7 +219,7 @@ export function summarizeBlackboard({ blackboardJsonPath, role }) {
             ? ` → refs: ${c.references.join(", ")}`
             : "";
         lines.push(
-          `- [${c.id}] [${c.type}] ${c.summary} ${stars}${tag}${refs}`
+          `- [${c.id}] [${c.type}] ${c.summary} ${stars}${tag}${refs}${withdrawalWarning(c)}`
         );
       }
     } else {
@@ -228,7 +242,7 @@ export function summarizeBlackboard({ blackboardJsonPath, role }) {
             ? ` → refs: ${c.references.join(", ")}`
             : "";
         lines.push(
-          `- [${c.id}] [${c.type}] ${c.summary} ${stars}${tag}${refs}`
+          `- [${c.id}] [${c.type}] ${c.summary} ${stars}${tag}${refs}${withdrawalWarning(c)}`
         );
       }
 
@@ -243,7 +257,7 @@ export function summarizeBlackboard({ blackboardJsonPath, role }) {
               ? ` → refs: ${c.references.join(", ")}`
               : "";
           lines.push(
-            `- [${c.id}] [${c.type}] ${c.summary} ${stars}${tag}${refs}`
+            `- [${c.id}] [${c.type}] ${c.summary} ${stars}${tag}${refs}${withdrawalWarning(c)}`
           );
         }
       }
@@ -276,6 +290,24 @@ export function summarizeBlackboard({ blackboardJsonPath, role }) {
 
   lines.push("---");
 
+  if (bb.metrics.quarantined_agents && bb.metrics.quarantined_agents.length > 0) {
+    lines.push("");
+    lines.push("## ⚠️ Integrity Warnings");
+    for (const q of bb.metrics.quarantined_agents) {
+      lines.push(`- Agent ${q.role} output was quarantined last round (${q.reason}); its contributions were dropped.`);
+    }
+  }
+
+  if (bb.metrics.dangling_references && bb.metrics.dangling_references.length > 0) {
+    if (!(bb.metrics.quarantined_agents && bb.metrics.quarantined_agents.length > 0)) {
+      lines.push("");
+      lines.push("## ⚠️ Integrity Warnings");
+    }
+    for (const d of bb.metrics.dangling_references) {
+      lines.push(`- ${d.from} references unknown id ${d.ref}; the link was ignored.`);
+    }
+  }
+
   if (bb.metrics.momentum_report) {
     const mr = bb.metrics.momentum_report;
     lines.push("");
@@ -283,6 +315,9 @@ export function summarizeBlackboard({ blackboardJsonPath, role }) {
     lines.push(`Round ${mr.round}: ${mr.objections_raised} objections, ${mr.evidence_provided} evidence`);
     lines.push(`Consensus: +${mr.claims_promoted_to_consensus} promoted | Challenges: ${mr.claims_demoted_or_contested} contested/demoted`);
     lines.push(`Confidence trend: ${mr.confidence_net_direction}`);
+    if (typeof mr.round_activity === "number") {
+      lines.push(`Board activity this round: ${mr.round_activity} (saturation triggers when this stays low)`);
+    }
   }
 
   lines.push(
@@ -434,34 +469,39 @@ export function assignAttention({ blackboardJsonPath }) {
   return output;
 }
 
+// Reads one agent's contribution file. A single malformed agent output must
+// not abort the whole round, so failures degrade to an empty contribution set
+// with a quarantine reason the merge step records on the board.
 function readContribs(role, filePath) {
   const resolved = resolve(filePath);
   let data;
   try {
     data = JSON.parse(readFileSync(resolved, "utf-8"));
   } catch (error) {
-    throw new Error(`Invalid contribution file for ${role} at ${resolved}: ${error.message}`);
+    return { contribs: [], rationale: "", quarantine: `unreadable: ${error.message}` };
   }
 
   if (!Array.isArray(data.contributions)) {
-    throw new Error(`Invalid contribution file for ${role} at ${resolved}: contributions must be an array`);
+    return { contribs: [], rationale: "", quarantine: "contributions field is not an array" };
   }
 
   return {
     contribs: data.contributions,
     rationale: data.rationale || "",
+    quarantine: null,
   };
 }
 
 export function mergeContributions({
   blackboardJsonPath,
   consensusConfidence = 4,
-  saturationThreshold = 1,
+  saturationThreshold = 0,
+  saturationPatience = 2,
   rolePaths,
 }) {
   if (!blackboardJsonPath || !rolePaths || rolePaths.length < 4) {
     throw new Error(
-      "Usage: swarm.mjs merge <bb_json> <consensus_conf> <sat_threshold> " +
+      "Usage: swarm.mjs merge <bb_json> <consensus_conf> <sat_threshold> <sat_patience> " +
         "<chal_path> <build_path> <synth_path> <emp_path>"
     );
   }
@@ -472,12 +512,26 @@ export function mergeContributions({
   const nextRound = currentRound + 1;
   const [chalPath, buildPath, synthPath, empPath] = rolePaths;
 
+  if (!Array.isArray(bb.events)) bb.events = [];
+  const events = [];
+  const recordEvent = (type, payload) => {
+    events.push({ round: nextRound, type, ...payload });
+  };
+
   const agentOutputs = [
     { role: "chal", ...readContribs("challenger", chalPath) },
     { role: "build", ...readContribs("builder", buildPath) },
     { role: "synth", ...readContribs("synthesizer", synthPath) },
     { role: "emp", ...readContribs("empiricist", empPath) },
   ];
+
+  const quarantined = [];
+  for (const out of agentOutputs) {
+    if (out.quarantine) {
+      quarantined.push({ role: out.role, reason: out.quarantine });
+      recordEvent("agent_quarantined", { role: out.role, reason: out.quarantine });
+    }
+  }
 
   const newContributions = [];
 
@@ -506,7 +560,25 @@ export function mergeContributions({
     contestedCount: 0,
     demotedCount: 0,
     promotedToConsensus: 0,
+    withdrawnCount: 0,
   };
+
+  // P1: a reference that points at no known contribution (neither a prior
+  // board entry nor a contribution posted this round) is dangling. We record
+  // it and surface a board flag rather than silently ignoring it.
+  const knownIds = new Set([
+    ...bb.contributions.map((c) => c.id),
+    ...newContributions.map((c) => c.id),
+  ]);
+  const danglingRefs = [];
+  for (const nc of newContributions) {
+    for (const ref of nc.references) {
+      if (!knownIds.has(ref)) {
+        danglingRefs.push({ from: nc.id, ref });
+        recordEvent("dangling_reference", { from: nc.id, ref, type: nc.type });
+      }
+    }
+  }
 
   for (const nc of newContributions) {
     if (nc.type === "objection") {
@@ -517,6 +589,7 @@ export function mergeContributions({
         if (nc.confidence > target.confidence) {
           target.status = "contested";
           momentumTracker.contestedCount++;
+          recordEvent("contested", { id: target.id, by: nc.id });
         } else if (nc.confidence === target.confidence) {
           const demotionRanks = nc.confidence - 2;
           if (demotionRanks > 0) {
@@ -524,6 +597,12 @@ export function mergeContributions({
             target.confidence = Math.max(1, target.confidence - demotionRanks);
             momentumTracker.confidenceDeltas.push(target.confidence - before);
             momentumTracker.demotedCount++;
+            recordEvent("confidence_delta", {
+              id: target.id,
+              by: nc.id,
+              from: before,
+              to: target.confidence,
+            });
           }
         }
       }
@@ -539,9 +618,16 @@ export function mergeContributions({
           const before = target.confidence;
           target.confidence = Math.min(5, target.confidence + ranks);
           momentumTracker.confidenceDeltas.push(target.confidence - before);
+          recordEvent("confidence_delta", {
+            id: target.id,
+            by: nc.id,
+            from: before,
+            to: target.confidence,
+          });
         }
         if (target.status === "contested" && target.confidence >= consensusConfidence) {
           target.status = "active";
+          recordEvent("uncontested", { id: target.id, by: nc.id });
         }
         target.rounds_without_evidence = 0;
       }
@@ -553,6 +639,8 @@ export function mergeContributions({
       c.rounds_without_evidence = (c.rounds_without_evidence || 0) + 1;
       if (c.rounds_without_evidence >= 2) {
         c.status = "withdrawn";
+        momentumTracker.withdrawnCount++;
+        recordEvent("withdrawn", { id: c.id, reason: "contested_without_evidence" });
       }
     }
   }
@@ -569,6 +657,8 @@ export function mergeContributions({
         c.rounds_without_evidence = (c.rounds_without_evidence || 0) + 1;
         if (c.rounds_without_evidence >= 3) {
           c.status = "withdrawn";
+          momentumTracker.withdrawnCount++;
+          recordEvent("withdrawn", { id: c.id, reason: "objection_without_evidence" });
         }
       } else {
         c.rounds_without_evidence = 0;
@@ -589,26 +679,57 @@ export function mergeContributions({
           other.references &&
           other.references.includes(c.id)
       );
-      if (!hasActiveObjection) {
+      const hasNewObjection = newContributions.some(
+        (other) =>
+          other.type === "objection" &&
+          other.references &&
+          other.references.includes(c.id)
+      );
+      if (!hasActiveObjection && !hasNewObjection) {
         c.status = "consensus";
         momentumTracker.promotedToConsensus++;
+        recordEvent("promoted", { id: c.id });
       }
     }
   }
 
+  const priorIds = new Set(bb.contributions.map((c) => c.id));
+  const engagementCount = newContributions.filter(
+    (nc) => nc.references && nc.references.some((ref) => priorIds.has(ref))
+  ).length;
+
   bb.contributions.push(...newContributions);
 
   const hasConsensus = bb.contributions.some((c) => c.status === "consensus");
-  const historyEntry = { round: nextRound, new_contributions_count: newContributions.length };
+
+  const stateTransitions =
+    momentumTracker.promotedToConsensus +
+    momentumTracker.contestedCount +
+    momentumTracker.demotedCount +
+    momentumTracker.withdrawnCount;
+  const roundActivity =
+    stateTransitions + momentumTracker.confidenceDeltas.length + engagementCount;
+
+  const historyEntry = {
+    round: nextRound,
+    new_contributions_count: newContributions.length,
+    round_activity: roundActivity,
+  };
   bb.history.push(historyEntry);
 
-  const recentTwo = bb.history.slice(-2);
+  const recent = bb.history.slice(-saturationPatience);
   const isSaturated =
     bb.round >= 2 &&
-    recentTwo.length >= 2 &&
-    recentTwo.every((h) => h.new_contributions_count <= saturationThreshold);
+    recent.length >= saturationPatience &&
+    recent.every((h) => (h.round_activity ?? h.new_contributions_count) <= saturationThreshold);
 
   bb.round = nextRound;
+
+  recordEvent("round_merged", {
+    new_contributions: newContributions.length,
+    round_activity: roundActivity,
+  });
+  bb.events.push(...events);
 
   const confidenceNet = momentumTracker.confidenceDeltas.reduce((sum, d) => sum + d, 0);
   const confidenceNetDirection = confidenceNet > 0 ? "rising" : confidenceNet < 0 ? "falling" : "stable";
@@ -617,6 +738,8 @@ export function mergeContributions({
     has_consensus: hasConsensus,
     is_saturated: isSaturated,
     new_contributions_count: newContributions.length,
+    quarantined_agents: quarantined,
+    dangling_references: danglingRefs,
     momentum_report: {
       round: nextRound,
       objections_raised: newContributions.filter((c) => c.type === "objection").length,
@@ -624,6 +747,7 @@ export function mergeContributions({
       claims_promoted_to_consensus: momentumTracker.promotedToConsensus,
       claims_demoted_or_contested: momentumTracker.demotedCount + momentumTracker.contestedCount,
       confidence_net_direction: confidenceNetDirection,
+      round_activity: roundActivity,
     },
   };
 
@@ -639,6 +763,8 @@ export function mergeContributions({
     round: nextRound,
     total_contributions: bb.contributions.length,
     consensus_count: bb.contributions.filter((c) => c.status === "consensus").length,
+    quarantined_count: quarantined.length,
+    dangling_reference_count: danglingRefs.length,
     blackboard_json_path: resolved,
     blackboard_md_path: mdPath,
     momentum_report: JSON.stringify(bb.metrics.momentum_report),
@@ -673,13 +799,18 @@ function main(args) {
         blackboardJsonPath,
         consensusConfStr,
         saturationThresholdStr,
+        saturationPatienceStr,
         ...rolePaths
       ] = rest;
+      const consensusConfidence = parseInt(consensusConfStr, 10);
+      const saturationThreshold = parseInt(saturationThresholdStr, 10);
+      const saturationPatience = parseInt(saturationPatienceStr, 10);
       printJson(
         mergeContributions({
           blackboardJsonPath,
-          consensusConfidence: parseInt(consensusConfStr, 10) || 4,
-          saturationThreshold: parseInt(saturationThresholdStr, 10) || 1,
+          consensusConfidence: Number.isNaN(consensusConfidence) ? 4 : consensusConfidence,
+          saturationThreshold: Number.isNaN(saturationThreshold) ? 0 : saturationThreshold,
+          saturationPatience: Number.isNaN(saturationPatience) ? 2 : saturationPatience,
           rolePaths,
         })
       );

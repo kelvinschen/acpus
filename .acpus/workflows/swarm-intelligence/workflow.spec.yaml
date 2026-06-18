@@ -19,27 +19,46 @@ description: |
   - Empiricist: grounds discussion in real-world evidence, historical precedents,
     and testable predictions
 
-  Termination: max_rounds, consensus (high-confidence claim with no active
-  objection), or saturation (consecutive low-activity rounds). max_rounds is
-  bounded by a static max_iterations safety valve of 20 rounds.
+  Termination: the swarm keeps debating until the blackboard stops changing
+  (saturation: consecutive rounds with net board activity at or below
+  saturation_threshold) or max_rounds is reached. Saturation only applies once
+  loop.iter >= min_rounds, guaranteeing a minimum depth of debate. Consensus
+  claims accumulate on the board as the discussion proceeds but do NOT by
+  themselves stop the loop — a single agreed point no longer cuts off deeper
+  debate. max_rounds is bounded by a static max_iterations safety valve of
+  20 rounds.
+
+  Resilience: the deterministic merge isolates faults per agent — if one
+  agent emits malformed output, its contributions are dropped and the agent is
+  quarantined for that round while the other agents proceed. References to
+  unknown contribution ids are flagged as dangling rather than silently
+  ignored. Both conditions surface as integrity warnings in the next round's
+  blackboard summary. Every state transition (promotion, contest, withdrawal,
+  confidence change, quarantine, dangling reference, round merge) is recorded
+  in an append-only blackboard.events log, making the board state an auditable
+  projection of that log.
 
 input:
   topic: string
   context?: string = ""
-  max_rounds?: integer = 10
-  saturation_threshold?: integer = 1
+  max_rounds?: integer = 50
+  min_rounds?: integer = 3
+  saturation_threshold?: integer = 0
+  saturation_patience?: integer = 2
   consensus_confidence?: integer = 4
   output_root?: string = ".acpus/output/swarm-intelligence"
 
 agents:
   challenger:
-    use: claude
+    use: pi
+    model: aiden-anthropic/deepseek-v4-pro
   builder:
-    use: pi
-  synthesizer:
     use: claude
-  empiricist:
+  synthesizer:
     use: pi
+    model: aiden-oai/gpt-5.5-paygo
+  empiricist:
+    use: traex
   summarizer:
     use: pi
 
@@ -67,12 +86,13 @@ workflow:
     # ── Swarm loop ────────────────────────────────────────────────────
     - id: swarm_loop
       loop:
-        max_iterations: 20
+        max_iterations: 50
         until: >
           loop.iter >= input.max_rounds
           || (
             loop.iter > 0
-            && (loop.last.output.has_consensus || loop.last.output.is_saturated)
+            && loop.iter >= input.min_rounds
+            && loop.last.output.is_saturated
           )
         do:
           # ── Read blackboard ─────────────────────────────────────────
@@ -396,6 +416,7 @@ workflow:
               - "${{ steps.init_blackboard.output.blackboard_json_path }}"
               - "${{ input.consensus_confidence }}"
               - "${{ input.saturation_threshold }}"
+              - "${{ input.saturation_patience }}"
               - "${{ steps.swarm_agents.output.challenger.output.contributions_path }}"
               - "${{ steps.swarm_agents.output.builder.output.contributions_path }}"
               - "${{ steps.swarm_agents.output.synthesizer.output.contributions_path }}"
@@ -410,6 +431,8 @@ workflow:
               round: integer
               total_contributions: integer
               consensus_count: integer
+              quarantined_count: integer
+              dangling_reference_count: integer
               blackboard_json_path: string
               blackboard_md_path: string
               momentum_report: string
