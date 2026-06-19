@@ -120,8 +120,7 @@ function expressionReferencesWorkflow(source: string): boolean {
 function isRawCelField(kind: IrNode["kind"], key: string): boolean {
   return (kind === "fanout" && key === "over")
     || (kind === "loop" && key === "until")
-    || (kind === "guard" && key === "when")
-    || (kind === "switch" && key === "on");
+    || (kind === "guard" && key === "when");
 }
 
 /**

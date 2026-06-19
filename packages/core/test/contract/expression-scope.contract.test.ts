@@ -275,28 +275,6 @@ outputs:
       expectOk(result);
     });
 
-    it("H2: validates switch.on field paths against the referenced step schema", () => {
-      const result = lintWorkflow(
-        wf(`    - id: pick
-      run: agent
-      use: m
-      prompt: hi
-      output: { mode: string }
-    - id: sw
-      switch:
-        on: steps.pick.output.moed
-        cases:
-          - when: "true"
-            do:
-              - id: b
-                run: agent
-                use: m
-                prompt: hi`)
-      );
-      expect(result.ok).toBe(false);
-      expectDiagnostic(result, { code: "EXPR_UNKNOWN_FIELD", message: "moed" });
-    });
-
     it("M1: rejects an input default that references a step output", () => {
       const result = lintWorkflow(
         `version: 1

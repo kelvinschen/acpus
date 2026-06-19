@@ -278,7 +278,6 @@ workflow:
   steps:
     - id: router
       switch:
-        on: input.kind
         cases:
           - when: input.kind == "a"
             do:

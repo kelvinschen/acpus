@@ -210,7 +210,6 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
       type: "object",
       additionalProperties: false,
       properties: {
-        on: { type: "string" },
         cases: {
           type: "array",
           items: { $ref: "#/$defs/switchCase" }

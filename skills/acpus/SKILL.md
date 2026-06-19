@@ -132,7 +132,7 @@ This path covers writing or editing a Workflow Spec YAML — no CLI commands run
 Key decisions while authoring:
 
 - **Program vs Agent Step**: Program Steps are for deterministic local glue (prepare dirs, compute paths, collect diffs, apply/rollback patches, read state for guards). Agent Steps handle planning, judgment, synthesis, failure interpretation, role boundaries, and cross-round memory. If a Program Step starts encoding those decisions, move that work into an agent prompt and a durable file.
-- **Composite nodes**: guard, loop, fanout, parallel, switch — each has distinct scope variables and output shape. See `references/composite-nodes.md` for syntax and common pitfalls (e.g., parallel output needs double `.output.` level; `loop.last` is undefined on first iteration).
+- **Composite nodes**: guard, loop, fanout, parallel, switch — each has distinct scope variables and output shape. See `references/workflow-spec-schema.md` for the full schema and common pitfalls (e.g., parallel output needs double `.output.` level; `loop.last` is undefined on first iteration).
 - **Expression forms**: raw CEL in `when`, `until`, and expression-valued `over`; `${{ ... }}` interpolation in prompts, command strings, keys, and messages. See `references/expressions-and-outputs.md`.
 - **Output schema**: keep flat and minimal (paths, counts, booleans, durable ids). Do not put the output schema in the prompt — Acpus injects it and retries parse/schema failures. Large artifacts go in files; return their paths.
 - **Helper scripts**: prefer real scripts over long inline shell for repository-local workflows. Dry-run scripts to verify them before integrating.
@@ -148,7 +148,7 @@ Answer conceptual questions without side effects. Common topics and where to fin
 | Topic | Reference |
 |-------|-----------|
 | Fork vs retry semantics, fork inheritance | `references/error-recovery.md` |
-| Composite node types and their scope/output | `references/composite-nodes.md` |
+| Composite node types and their scope/output | `references/workflow-spec-schema.md` |
 | CEL vs `${{ }}` placement rules | `references/expressions-and-outputs.md` |
 | Authoring gotchas and positive/negative patterns | `references/best-practices.md` |
 | Frequent mistakes and fixes | `references/common-errors.md` |
@@ -162,8 +162,8 @@ For deeper reading, link the user to the Source Docs at the bottom of this file.
 Every path above links its relevant references inline. For quick lookup:
 
 - `references/best-practices.md` — gotchas and positive/negative authoring patterns
+- `references/workflow-spec-schema.md` — full schema reference: every field, type, constraint, composite node, and error code
 - `references/expressions-and-outputs.md` — CEL, templates, and output shape rules
-- `references/composite-nodes.md` — guard, loop, fanout, parallel, and switch behavior
 - `references/error-recovery.md` — failure-symptom decision table and fork semantics
 - `references/common-errors.md` — frequent authoring mistakes and runtime errors with fixes
 - `references/agent-selection.md` — choosing acpx-backed worker agents

@@ -349,7 +349,7 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
       kind: "switch",
       outputMerge: outputMergeFor("switch"),
       branches,
-      metadata: pickMetadata(switchSpec, ["on"])
+      metadata: {}
     };
   }
 

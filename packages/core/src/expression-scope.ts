@@ -284,9 +284,6 @@ function nodeConfigExpressions(node: IrNode): NodeConfigExpr[] {
       if (typeof md.when === "string") out.push({ source: md.when, field: "when", rawCel: true });
       pushTemplate(md.message, "message");
       break;
-    case "switch":
-      if (typeof md.on === "string") out.push({ source: md.on, field: "on", rawCel: true });
-      break;
     case "loop":
       if (typeof md.until === "string") out.push({ source: md.until, field: "until", rawCel: true, bodyScoped: true });
       break;
