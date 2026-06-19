@@ -1,5 +1,11 @@
 # @acpus/core
 
+## 0.5.2
+
+### Patch Changes
+
+- f3e99c3: Remove unused helpers and consolidate internal validation and activity-formatting code.
+
 ## 0.5.1
 
 ### Patch Changes

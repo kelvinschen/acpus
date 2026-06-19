@@ -1,5 +1,13 @@
 # @acpus/tui
 
+## 0.5.5
+
+### Patch Changes
+
+- Updated dependencies [f3e99c3]
+  - @acpus/core@0.5.2
+  - @acpus/runtime@0.6.2
+
 ## 0.5.4
 
 ### Patch Changes
