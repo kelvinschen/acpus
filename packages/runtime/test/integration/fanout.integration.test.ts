@@ -93,7 +93,44 @@ workflow:
     const fanoutNode = store.listNodeStates(meta.runId).find((n) => n.nodeId === "map-items");
     expect(fanoutNode?.state).toBe("completed");
     // outputMerge: "array"
-    expect(fanoutNode?.output).toEqual({ output: [{ output: { done: true } }, { output: { done: true } }] });
+    expect(fanoutNode?.output).toEqual({ output: [{ done: true }, { done: true }] });
+  });
+
+  it("produces distinct node keys for nested fanout lanes under different outer items", async () => {
+    const ir = compileYaml(`
+version: 1
+name: nested-fanout-keys
+workflow:
+  steps:
+    - id: outer
+      fanout:
+        over: ["A", "B"]
+        key: \${{ item }}
+        do:
+          - id: inner
+            fanout:
+              over: ["x"]
+              key: \${{ item }}
+              do:
+                - id: work
+                  run: program
+                  cmd: ["work", "\${{ item }}"]
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: {
+        work: { parsedOutput: { ok: true } }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+    const workNodes = store.listNodeStates(meta.runId).filter((n) => n.nodeId === "work");
+    expect(workNodes).toHaveLength(2);
+    expect(new Set(workNodes.map((n) => n.nodeKey)).size).toBe(2);
+    expect(workNodes.some((n) => n.nodeKey.includes("item:A/lane:0") && n.nodeKey.includes("item:x/lane:0"))).toBe(true);
+    expect(workNodes.some((n) => n.nodeKey.includes("item:B/lane:1") && n.nodeKey.includes("item:x/lane:0"))).toBe(true);
   });
 
   it("evaluates item_index arithmetic as integer CEL", async () => {

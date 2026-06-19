@@ -336,8 +336,10 @@ workflow:
       join: diagonal
       parallel:
         - id: left
-          run: program
-          cmd: ["echo", "left"]
+          do:
+            - id: left_step
+              run: program
+              cmd: ["echo", "left"]
 `;
     const result = lintWorkflow(src);
     expect(result.ok).toBe(false);

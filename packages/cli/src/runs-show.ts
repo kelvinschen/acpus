@@ -1,5 +1,6 @@
 import type { AcpusIr, IrNode } from "@acpus/core";
 import type { NodeExecutionState, RunState, RunSupervisorClient } from "@acpus/runtime";
+import { staticNodePathFromKey } from "@acpus/runtime";
 import { stringify as stringifyYaml } from "yaml";
 import { summarizeAgentActivity } from "./agent-activity.js";
 
@@ -36,25 +37,24 @@ export function isContainerKind(kind: string): boolean {
 }
 
 // --- Awaiting Signal Node rendering ---
-// Build a nodeId → IrNode lookup by walking the full IR tree once. Composite
-// nodes expose children via `children` (pipeline/parallel/fanout/loop bodies)
-// and `branches[].children` (switch cases); both must be walked so signal nodes
+// Build a nodePath → IrNode lookup by walking the full IR tree once. Composite
+// nodes expose children via `children` (pipeline/fanout/loop bodies)
+// and `branches[].child` (parallel/switch branch pipelines); both must be walked so signal nodes
 // nested inside any composite are indexed.
-function indexIrNodesById(root: IrNode): Map<string, IrNode> {
-  const byId = new Map<string, IrNode>();
+function indexIrNodesByPath(root: IrNode): Map<string, IrNode> {
+  const byPath = new Map<string, IrNode>();
   const stack: IrNode[] = [root];
   while (stack.length > 0) {
     const node = stack.pop()!;
-    // First write wins is irrelevant here; ids are unique per IR.
-    byId.set(node.id, node);
+    byPath.set(node.nodePath.join("/"), node);
     if (node.children) stack.push(...node.children);
     if (node.branches) {
       for (const branch of node.branches) {
-        if (branch.children) stack.push(...branch.children);
+        stack.push(branch.child);
       }
     }
   }
-  return byId;
+  return byPath;
 }
 
 // Render the prompt and expected payload schema for an awaiting Signal Node so
@@ -252,9 +252,9 @@ export async function formatRunShow(
 ): Promise<string> {
   const lines: string[] = [];
 
-  // Map IR node id → node so awaiting Signal Nodes can surface the prompt and
+  // Map IR nodePath → node so awaiting Signal Nodes can surface the prompt and
   // the expected payload schema the operator must satisfy.
-  const irNodesById = ir ? indexIrNodesById(ir.root) : undefined;
+  const irNodesByPath = ir ? indexIrNodesByPath(ir.root) : undefined;
 
   // --- Compact header ---
   const duration = formatRunDuration(run);
@@ -292,7 +292,7 @@ export async function formatRunShow(
     // Awaiting Signal Node: operators must act here, so surface the rendered
     // prompt and the expected payload schema rather than leaving them blind.
     if (node.kind === "run.signal" && node.state === "awaiting") {
-      for (const detail of formatAwaitingSignal(node, irNodesById?.get(node.nodeId), run.runId)) {
+      for (const detail of formatAwaitingSignal(node, irNodesByPath?.get(staticNodePathFromKey(node.nodeKey)), run.runId)) {
         lines.push(detail);
       }
     }

@@ -113,7 +113,7 @@ export interface IrNode {
 export interface IrBranch {
   id: string;
   when?: string;
-  children: IrNode[];
+  child: IrNode;
 }
 
 export interface NodeKeyTemplate {

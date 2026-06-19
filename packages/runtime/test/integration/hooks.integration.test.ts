@@ -125,7 +125,10 @@ workflow:
   steps:
     - id: boom
       run: program
-      cmd: ["sh", "-c", "exit 4"]
+      cmd:
+        - sh
+        - -c
+        - exit 4
 `);
     const { interpreter, store } = setup(config, { useRealProgramExecutor: true });
     const meta = await interpreter.start(ir, { input: {} });
@@ -144,13 +147,13 @@ name: hook-agent
 agents:
   mock:
     type: command
-    use: "echo stub"
+    use: echo stub
 workflow:
   steps:
     - id: think
       run: agent
       use: mock
-      prompt: "do the thing"
+      prompt: do the thing
 `);
     const { interpreter, store } = setup(config, { agentResponses: { think: { value: "ok" } } });
     const meta = await interpreter.start(ir, { input: {} });
@@ -185,13 +188,13 @@ name: hook-agent-retry
 agents:
   mock:
     type: command
-    use: "echo stub"
+    use: echo stub
 workflow:
   steps:
     - id: think
       run: agent
       use: mock
-      prompt: "go"
+      prompt: go
       retry:
         max: 2
       output:
@@ -219,13 +222,13 @@ name: hook-agent-states
 agents:
   mock:
     type: command
-    use: "echo stub"
+    use: echo stub
 workflow:
   steps:
     - id: think
       run: agent
       use: mock
-      prompt: "go"
+      prompt: go
 `);
     const { interpreter } = setup(config, { agentResponses: { think: { value: "ok" } } });
     const meta = await interpreter.start(ir, { input: {} });
@@ -250,7 +253,7 @@ name: hook-fields
 agents:
   mock:
     type: command
-    use: "echo stub"
+    use: echo stub
     model: sonnet
 workflow:
   steps:
@@ -258,16 +261,18 @@ workflow:
       max_concurrency: 2
       parallel:
         - id: think
-          run: agent
-          use: mock
-          prompt: "go"
+          do:
+            - id: think
+              run: agent
+              use: mock
+              prompt: go
 `);
     const { interpreter } = setup(config, { agentResponses: { think: { value: "ok" } } });
     const meta = await interpreter.start(ir, { input: {} });
     expect(meta.status).toBe("completed");
     const payloads = readFileSync(sink, "utf8").trim().split("\n").map((l) => JSON.parse(l));
     const agentP = payloads.find((p) => p.node_id === "think");
-    expect(agentP.parent_node_kind).toBe("parallel");
+    expect(agentP.parent_node_kind).toBe("pipeline");
     expect(agentP.parent_node_key).toContain("group");
     expect(agentP.agent_type).toBe("command");
     expect(agentP.agent_model).toBe("sonnet");
@@ -288,16 +293,16 @@ name: hook-agent-telemetry
 agents:
   mock:
     type: command
-    use: "echo stub"
+    use: echo stub
 workflow:
   steps:
     - id: think
       run: agent
       use: mock
-      prompt: "go"
+      prompt: go
     - id: program
       run: program
-      cmd: "echo ok"
+      cmd: echo ok
 `);
     const { interpreter } = setup(config, {
       useRealProgramExecutor: true,
@@ -350,7 +355,10 @@ workflow:
   steps:
     - id: boom
       run: program
-      cmd: ["sh", "-c", "exit 3"]
+      cmd:
+        - sh
+        - -c
+        - exit 3
 `);
     const { interpreter } = setup(config, { useRealProgramExecutor: true });
     const first = await interpreter.start(ir, { input: {} });
@@ -375,7 +383,7 @@ workflow:
   steps:
     - id: approve
       run: signal
-      prompt: "ok?"
+      prompt: ok?
       output:
         approved: boolean
       timeout: 30ms

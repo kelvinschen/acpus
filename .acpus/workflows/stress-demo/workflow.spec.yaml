@@ -10,20 +10,23 @@ description: |
 input:
   lanes?:
     type: array
-    default: ["alpha", "beta", "gamma"]
+    default:
+      - alpha
+      - beta
+      - gamma
   max_rounds?: integer = 3
   route_mode?: string = "default"
 agents:
   mock_agent:
     type: command
-    use: "node ./packages/mock-agent/dist/index.js --script ./.acpus/workflows/stress-demo/mock.yaml"
-    cwd: "."
+    use: node ./packages/mock-agent/dist/index.js --script ./.acpus/workflows/stress-demo/mock.yaml
+    cwd: .
 workflow:
   steps:
     - id: fanout_parallel_loop_switch
       fanout:
         over: input.lanes
-        key: "${{ item }}"
+        key: ${{ item }}
         max_concurrency: 1
         join: all
         do:
@@ -31,58 +34,64 @@ workflow:
             max_concurrency: 1
             parallel:
               - id: review_lane
-                run: agent
-                use: mock_agent
-                prompt: "Transcript lane=${{ item_id }} branch=review index=${{ item_index }}"
-                output:
-                  branch: string
-                  lane: string
-                  ok: boolean
+                do:
+                  - id: review_lane_step
+                    run: agent
+                    use: mock_agent
+                    prompt: Transcript lane=${{ item_id }} branch=review index=${{ item_index }}
+                    output:
+                      branch: string
+                      lane: string
+                      ok: boolean
               - id: loop_lane
-                loop:
-                  until: loop.iter >= input.max_rounds
-                  max_iterations: 3
-                  do:
-                    - id: loop_agent
-                      run: agent
-                      use: mock_agent
-                      prompt: "Transcript lane=${{ item_id }} branch=loop round=${{ loop.iter }}"
-                      output:
-                        branch: string
-                        round: integer
-                        continue: boolean
+                do:
+                  - id: loop_lane_step
+                    loop:
+                      until: loop.iter >= input.max_rounds
+                      max_iterations: 3
+                      do:
+                        - id: loop_agent
+                          run: agent
+                          use: mock_agent
+                          prompt: Transcript lane=${{ item_id }} branch=loop round=${{ loop.iter }}
+                          output:
+                            branch: string
+                            round: integer
+                            continue: boolean
               - id: switch_lane
-                switch:
-                  cases:
-                    - when: item == "alpha"
-                      do:
-                        - id: switch_alpha_agent
-                          run: agent
-                          use: mock_agent
-                          prompt: "Transcript lane=${{ item_id }} branch=switch alpha"
-                          output:
-                            branch: string
-                            lane: string
-                            route: string
-                    - when: input.route_mode == "default"
-                      do:
-                        - id: switch_default_agent
-                          run: agent
-                          use: mock_agent
-                          prompt: "Transcript lane=${{ item_id }} branch=switch default"
-                          output:
-                            branch: string
-                            lane: string
-                            route: string
-                  default:
-                    do:
-                      - id: switch_fallback_agent
-                        run: agent
-                        use: mock_agent
-                        prompt: "Transcript lane=${{ item_id }} branch=switch fallback"
-                        output:
-                          branch: string
-                          lane: string
-                          route: string
+                do:
+                  - id: switch_lane_step
+                    switch:
+                      cases:
+                        - when: item == "alpha"
+                          do:
+                            - id: switch_alpha_agent
+                              run: agent
+                              use: mock_agent
+                              prompt: Transcript lane=${{ item_id }} branch=switch alpha
+                              output:
+                                branch: string
+                                lane: string
+                                route: string
+                        - when: input.route_mode == "default"
+                          do:
+                            - id: switch_default_agent
+                              run: agent
+                              use: mock_agent
+                              prompt: Transcript lane=${{ item_id }} branch=switch default
+                              output:
+                                branch: string
+                                lane: string
+                                route: string
+                      default:
+                        do:
+                          - id: switch_fallback_agent
+                            run: agent
+                            use: mock_agent
+                            prompt: Transcript lane=${{ item_id }} branch=switch fallback
+                            output:
+                              branch: string
+                              lane: string
+                              route: string
 outputs:
-  lanes: "${{ steps.fanout_parallel_loop_switch.output }}"
+  lanes: ${{ steps.fanout_parallel_loop_switch.output }}

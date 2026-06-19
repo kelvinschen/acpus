@@ -90,42 +90,20 @@ interface Resolver {
   diagnostics: DiagnosticBag;
 }
 
-/** All step ids strictly inside a node (children/branches, recursive), excluding the node itself. */
-function descendantStepIds(node: IrNode): Set<string> {
-  const out = new Set<string>();
-  const visit = (n: IrNode): void => {
-    for (const child of n.children ?? []) {
-      out.add(child.id);
-      visit(child);
-    }
-    for (const branch of n.branches ?? []) {
-      for (const child of branch.children) {
-        out.add(child.id);
-        visit(child);
-      }
-    }
-  };
-  visit(node);
-  return out;
-}
-
 /**
  * Walk a node's child list, threading step visibility. Visibility rules,
  * deliberately conservative (prefer false negatives over false positives):
  * - Sequential siblings: each child sees the steps declared before it.
- * - When a sibling completes, its id AND all its descendant ids leak to later
- *   siblings (matches the runtime, where loop/switch/guard bodies share the
- *   step context and surface their inner outputs to later steps).
- * - Loop bodies are treated as fully mutual (every body step sees every other),
- *   because re-runs and the `until` check make ordering ambiguous; this only
- *   relaxes detection (never adds false positives).
+ * - When a sibling completes, only its own public step id becomes visible.
+ *   Descendant ids remain private to the composite/pipeline frame.
+ * - Loop `do` bodies compile to a pipeline, so body ordering follows normal
+ *   pipeline sibling visibility.
  */
 function walkChildScope(node: IrNode, inheritedVisible: Set<string>, localsStack: string[][], itemSchema: Record<string, unknown> | undefined, r: Resolver): void {
-  const isLoopBody = node.kind === "loop";
   const isParallel = node.kind === "parallel";
 
   const childLists: IrNode[][] = node.branches
-    ? node.branches.map((b) => b.children)
+    ? node.branches.map((b) => [b.child])
     : node.children
       ? [node.children]
       : [];
@@ -142,19 +120,10 @@ function walkChildScope(node: IrNode, inheritedVisible: Set<string>, localsStack
 
   for (const children of childLists) {
     const running = new Set(inheritedVisible);
-    if (isLoopBody) {
-      for (const child of children) {
-        running.add(child.id);
-        for (const id of descendantStepIds(child)) running.add(id);
-      }
-    }
     for (const child of children) {
       const childVisible = isParallel ? new Set(inheritedVisible) : new Set(running);
       walkNode(child, childVisible, localsStack, itemSchema, r);
-      if (!isLoopBody) {
-        running.add(child.id);
-        for (const id of descendantStepIds(child)) running.add(id);
-      }
+      running.add(child.id);
     }
   }
 }
@@ -164,10 +133,7 @@ function walkNode(node: IrNode, inheritedVisible: Set<string>, localsStack: stri
   const currentLocals = unionLocals(localsStack);
   const nodePath = node.nodePath.join("/");
 
-  // Config expressions can reference this node's own body steps (loop.until,
-  // fanout.key/over). Add the node's descendants so those never false-positive.
   const configVisible = new Set(inheritedVisible);
-  for (const id of descendantStepIds(node)) configVisible.add(id);
 
   for (const cfg of nodeConfigExpressions(node)) {
     const locals = cfg.bodyScoped ? new Set([...currentLocals, ...contract.bodyLocals]) : currentLocals;
@@ -193,6 +159,14 @@ function walkNode(node: IrNode, inheritedVisible: Set<string>, localsStack: stri
   const childItemSchema = node.kind === "fanout" ? fanoutItemSchema(node, r) : itemSchema;
   if ((node.children && node.children.length > 0) || (node.branches && node.branches.length > 0)) {
     walkChildScope(node, inheritedVisible, childLocalsStack, childItemSchema, r);
+  }
+
+  if (node.kind === "pipeline" && isRecord(node.metadata.outputs)) {
+    const outputVisible = new Set(inheritedVisible);
+    for (const child of node.children ?? []) outputVisible.add(child.id);
+    visitStrings(node.metadata.outputs, `${nodePath}.outputs`, (source, path) =>
+      checkTemplateString(source, { visibleSteps: outputVisible, locals: currentLocals, itemSchema, path, isCmd: false }, r)
+    );
   }
 }
 
@@ -347,6 +321,16 @@ function checkReference(ref: ExpressionReference, ctx: ScopeContext, r: Resolver
     return;
   }
 
+  // TODO: Delete after users have migrated. Transitional guard for pre-primary-output loop.last syntax. 
+  if (ref.root === "loop" && isLoopLastEnvelopeReference(ref)) {
+    r.diagnostics.error(
+      "EXPR_LOOP_LAST_ENVELOPE",
+      "loop.last is already the previous body primary output; use loop.last.<field>, not loop.last.output.<field>.",
+      ctx.path
+    );
+    return;
+  }
+
   if (ref.root === "steps") {
     checkStepReference(ref, ctx, r);
     return;
@@ -384,6 +368,13 @@ function checkReference(ref: ExpressionReference, ctx: ScopeContext, r: Resolver
       );
     }
   }
+}
+
+function isLoopLastEnvelopeReference(ref: ExpressionReference): boolean {
+  return ref.segments[0]?.kind === "field" &&
+    ref.segments[0].name === "last" &&
+    ref.segments[1]?.kind === "field" &&
+    ref.segments[1].name === "output";
 }
 
 function checkStepReference(ref: ExpressionReference, ctx: ScopeContext, r: Resolver): void {
@@ -571,7 +562,7 @@ function indexNodes(node: IrNode, out: Map<string, IrNode>): void {
   if (node.id) out.set(node.id, node);
   for (const child of node.children ?? []) indexNodes(child, out);
   for (const branch of node.branches ?? []) {
-    for (const child of branch.children) indexNodes(child, out);
+    indexNodes(branch.child, out);
   }
 }
 

@@ -148,7 +148,7 @@ workflow:
     #    (max_iterations = token-budget analogue) is spent.
     - id: goal_loop
       loop:
-        until: "!loop.last.output.should_continue"
+        until: "!loop.last.should_continue"
         max_iterations: 50
         do:
           - id: build_attempt
@@ -177,7 +177,7 @@ workflow:
 
               Auditor findings from the previous iteration (unmet requirements
               and guidance), if any:
-              ${{ loop.iter == 0 ? "(first iteration)" : steps.audit_attempt.output.audit_summary }}
+              ${{ loop.iter == 0 ? "(first iteration)" : loop.last.audit_summary }}
 
               Persistence rules (Codex/pi goal-mode style):
               - Treat the current workspace, command output, and tests as authoritative.

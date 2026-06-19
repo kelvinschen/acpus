@@ -141,11 +141,32 @@ describe("model overlay", () => {
     expect(round1Rows[0].rowKey).not.toBe(round1Rows[1].rowKey);
   });
 
+  it("renders nested fanout groups under the correct outer lane", () => {
+    const inner = node("inner", "fanout", { children: [node("work", "run.agent")] });
+    const outer = node("outer", "fanout", { children: [inner] });
+    const root = node("workflow", "pipeline", { children: [outer] });
+    const states = [
+      state("work", "workflow/outer/inner/work/item:A/lane:0/item:x/lane:0", "completed"),
+      state("work", "workflow/outer/inner/work/item:B/lane:1/item:x/lane:0", "failed")
+    ];
+
+    const rows = buildRows(buildRenderTree(ir(root), states));
+    const outerGroups = rows.filter((r) => r.irNode.id === "outer" && r.groupDim === "lane");
+    const innerGroups = rows.filter((r) => r.irNode.id === "inner" && r.groupDim === "lane");
+
+    expect(outerGroups.map((r) => r.groupItem)).toEqual(["A", "B"]);
+    expect(innerGroups).toHaveLength(2);
+    expect(innerGroups.every((r) => r.groupItem === "x")).toBe(true);
+    expect(innerGroups.map((r) => r.groupItem)).toEqual(["x", "x"]);
+    expect(innerGroups.map((r) => r.rowKey)).not.toEqual([innerGroups[0].rowKey, innerGroups[0].rowKey]);
+    expect(rows.filter((r) => r.irNode.id === "work")).toHaveLength(2);
+  });
+
   it("derives switch branch labels and predicates", () => {
     const sw = node("decide", "switch", {
       branches: [
-        { id: "case_1", when: "x > 1", children: [node("hot", "run.agent")] },
-        { id: "default", children: [node("cold", "run.agent")] }
+        { id: "case_1", when: "x > 1", child: node("$case_1", "pipeline", { metadata: { generated: true }, children: [node("hot", "run.agent")] }) },
+        { id: "default", child: node("$default", "pipeline", { metadata: { generated: true }, children: [node("cold", "run.agent")] }) }
       ]
     });
     const root = node("workflow", "pipeline", { children: [sw] });
@@ -153,6 +174,71 @@ describe("model overlay", () => {
     const hot = rows.find((r) => r.irNode.id === "hot");
     expect(hot?.branchLabel).toBe("case_1");
     expect(hot?.branchWhen).toBe("x > 1");
+    expect(rows.some((r) => r.irNode.id === "$case_1")).toBe(false);
+    expect(rows.some((r) => r.irNode.id === "$default")).toBe(false);
+  });
+
+  it("hides duplicate generated pipeline rows while matching children by full node path", () => {
+    const leftBody = node("$do", "pipeline", {
+      nodePath: ["workflow", "left", "$do"],
+      keyTemplate: { astVersion: 1, nodePath: "workflow/left/$do" },
+      metadata: { generated: true },
+      children: [node("left_work", "run.agent", {
+        nodePath: ["workflow", "left", "$do", "left_work"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow/left/$do/left_work" }
+      })]
+    });
+    const rightBody = node("$do", "pipeline", {
+      nodePath: ["workflow", "right", "$do"],
+      keyTemplate: { astVersion: 1, nodePath: "workflow/right/$do" },
+      metadata: { generated: true },
+      children: [node("right_work", "run.agent", {
+        nodePath: ["workflow", "right", "$do", "right_work"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow/right/$do/right_work" }
+      })]
+    });
+    const root = node("workflow", "pipeline", {
+      children: [
+        node("left", "fanout", { children: [leftBody] }),
+        node("right", "fanout", { children: [rightBody] })
+      ]
+    });
+    const rows = buildRows(buildRenderTree(ir(root), [
+      state("left_work", "workflow/left/$do/left_work/item:A/lane:0", "completed"),
+      state("right_work", "workflow/right/$do/right_work/item:B/lane:0", "failed")
+    ]));
+
+    const bodyRows = rows.filter((r) => r.irNode.id === "$do");
+    expect(bodyRows).toEqual([]);
+    expect(rows.find((r) => r.irNode.id === "left_work")?.state).toBe("completed");
+    expect(rows.find((r) => r.irNode.id === "right_work")?.state).toBe("failed");
+  });
+
+  it("inlines generated parallel branch pipelines as structure", () => {
+    const par = node("par", "parallel", {
+      branches: [
+        {
+          id: "upper",
+          child: node("$upper", "pipeline", {
+            metadata: { generated: true },
+            children: [node("up", "run.agent")]
+          })
+        },
+        {
+          id: "route",
+          child: node("$route", "pipeline", {
+            metadata: { generated: true },
+            children: [node("route", "run.agent")]
+          })
+        }
+      ]
+    });
+    const root = node("workflow", "pipeline", { children: [par] });
+    const rows = buildRows(buildRenderTree(ir(root), []));
+
+    expect(rows.map((r) => r.irNode.id)).toEqual(["workflow", "par", "up", "route"]);
+    expect(rows.find((r) => r.irNode.id === "up")?.branchLabel).toBe("upper");
+    expect(rows.find((r) => r.irNode.id === "route")?.branchLabel).toBe("route");
   });
 
   it("aggregates multi-instance state with failure precedence", () => {
@@ -213,13 +299,16 @@ describe("model overlay", () => {
   it("draws continuation columns for deeper non-last ancestors", () => {
     // workflow → [par(non-last), tail(last)]; par → [x, y]
     const par = node("par", "parallel", {
-      children: [node("x", "run.agent"), node("y", "run.agent")]
+      branches: [
+        { id: "left", child: node("$left", "pipeline", { metadata: { generated: true }, children: [node("x", "run.agent")] }) },
+        { id: "right", child: node("$right", "pipeline", { metadata: { generated: true }, children: [node("y", "run.agent")] }) }
+      ]
     });
     const root = node("workflow", "pipeline", { children: [par, node("tail", "run.agent")] });
     const rows = buildRows(buildRenderTree(ir(root), []));
     const byId = (id: string) => rows.find((r) => r.irNode.id === id);
     const prefix = (id: string) => byId(id)?.treeSegments.map((s) => s.text).join("") ?? "";
-    // par is a non-last child of root → its children draw a "│  " continuation.
+    // Generated branch pipelines are structural, so x/y sit directly under par.
     expect(prefix("x")).toBe("│  ├─ ");
     expect(prefix("y")).toBe("│  └─ ");
     expect(prefix("tail")).toBe("└─ ");
@@ -227,7 +316,10 @@ describe("model overlay", () => {
 
   it("tracks the owning node kind for guide-line columns", () => {
     const par = node("par", "parallel", {
-      children: [node("x", "run.agent"), node("y", "run.agent")]
+      branches: [
+        { id: "left", child: node("$left", "pipeline", { metadata: { generated: true }, children: [node("x", "run.agent")] }) },
+        { id: "right", child: node("$right", "pipeline", { metadata: { generated: true }, children: [node("y", "run.agent")] }) }
+      ]
     });
     const root = node("workflow", "pipeline", { children: [par, node("tail", "run.agent")] });
     const rows = buildRows(buildRenderTree(ir(root), []));

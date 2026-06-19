@@ -32,6 +32,7 @@ export type Dim = "item" | "lane" | "branch" | "round";
 export interface ParsedKey {
   path: string[];
   dims: Map<Dim, string>;
+  frames: Map<Dim, string>[];
 }
 
 /** A runtime state plus its parsed key (cached). */
@@ -40,14 +41,16 @@ interface ParsedState {
   parsed: ParsedKey;
 }
 
-/** Inherited dimension constraints from ancestors (e.g. {lane:"0", item:"a"}). */
-type Scope = Map<Dim, string>;
+/** Ordered inherited dynamic frames from ancestors. Repeated dims are meaningful across frames. */
+type Scope = Map<Dim, string>[];
 
 interface BuildCtx {
-  /** IR node id → its runtime instances (with parsed keys). */
+  /** IR nodePath → its runtime instances (with parsed keys). */
+  byPath: Map<string, ParsedState[]>;
+  /** Authored IR node id → runtime instances, used only as a compatibility fallback. */
   byId: Map<string, ParsedState[]>;
-  /** IR node id → set of all descendant IR ids (inclusive of self). */
-  descendantIds: Map<string, Set<string>>;
+  /** IR nodePath → all descendant IR nodes (inclusive of self). */
+  descendantNodes: Map<string, IrNode[]>;
 }
 
 const DIM_RE = /^(item|lane|branch|round):(.*)$/;
@@ -61,20 +64,41 @@ const DIM_RE = /^(item|lane|branch|round):(.*)$/;
 export function parseNodeKey(key: string): ParsedKey {
   const path: string[] = [];
   const dims = new Map<Dim, string>();
+  const frames: Map<Dim, string>[] = [];
+  let current = new Map<Dim, string>();
   for (const seg of key.split("/")) {
     const m = DIM_RE.exec(seg);
-    if (m) dims.set(m[1] as Dim, m[2]);
-    else path.push(seg);
+    if (m) {
+      const dim = m[1] as Dim;
+      if ((dim === "item" || dim === "branch" || dim === "round") && current.size > 0) {
+        frames.push(current);
+        current = new Map<Dim, string>();
+      }
+      current.set(dim, m[2]);
+      dims.set(dim, m[2]);
+    } else {
+      if (current.size > 0) {
+        frames.push(current);
+        current = new Map<Dim, string>();
+      }
+      path.push(seg);
+    }
   }
-  return { path, dims };
+  if (current.size > 0) frames.push(current);
+  return { path, dims, frames };
 }
 
 /** An instance belongs to the current subtree iff it matches every fixed dim. */
 function matchesScope(parsed: ParsedKey, scope: Scope): boolean {
-  for (const [dim, val] of scope) {
-    if (parsed.dims.get(dim) !== val) return false;
-  }
-  return true;
+  if (scope.length > parsed.frames.length) return false;
+  return scope.every((scopeFrame, index) => {
+    const parsedFrame = parsed.frames[index];
+    if (!parsedFrame) return false;
+    for (const [dim, value] of scopeFrame) {
+      if (parsedFrame.get(dim) !== value) return false;
+    }
+    return true;
+  });
 }
 
 /** The dynamic dimension a composite kind introduces (causing it to fan). */
@@ -109,28 +133,31 @@ export interface RenderNode {
   groupLabel?: string;
   /** For lane group rows: the fanout item value (shown in DETAILS). */
   groupItem?: string;
+  /** Ordered dynamic dimensions that define this row's runtime scope. */
+  scope?: Scope;
 }
 
 /** Build the full render tree for a run. */
 export function buildRenderTree(ir: AcpusIr, states: NodeExecutionState[]): RenderNode {
+  const byPath = indexByNodePathParsed(states);
   const byId = indexByNodeIdParsed(states);
-  const descendantIds = new Map<string, Set<string>>();
-  collectDescendantIds(ir.root, descendantIds);
-  const ctx: BuildCtx = { byId, descendantIds };
-  return buildNode(ir.root, ctx, new Map(), 0);
+  const descendantNodes = new Map<string, IrNode[]>();
+  collectDescendantNodes(ir.root, descendantNodes);
+  const ctx: BuildCtx = { byPath, byId, descendantNodes };
+  return buildNode(ir.root, ctx, [], 0);
 }
 
-/** Collect, for every IR node, the set of its descendant IR ids (inclusive). */
-function collectDescendantIds(node: IrNode, out: Map<string, Set<string>>): Set<string> {
-  const set = new Set<string>([node.id]);
+/** Collect, for every IR node, all descendant IR nodes (inclusive). */
+function collectDescendantNodes(node: IrNode, out: Map<string, IrNode[]>): IrNode[] {
+  const nodes = [node];
   const kids = node.branches
-    ? node.branches.flatMap((b) => b.children)
+    ? node.branches.map((b) => b.child)
     : node.children ?? [];
   for (const child of kids) {
-    for (const id of collectDescendantIds(child, out)) set.add(id);
+    nodes.push(...collectDescendantNodes(child, out));
   }
-  out.set(node.id, set);
-  return set;
+  out.set(node.nodePath.join("/"), nodes);
+  return nodes;
 }
 
 function buildNode(
@@ -141,7 +168,7 @@ function buildNode(
   branchLabel?: string,
   branchWhen?: string
 ): RenderNode {
-  const scopedInstances = (ctx.byId.get(irNode.id) ?? [])
+  const scopedInstances = instancesForNode(irNode, ctx)
     .filter((p) => matchesScope(p.parsed, scope))
     .map((p) => p.state);
 
@@ -153,13 +180,11 @@ function buildNode(
   const children: RenderNode[] = [];
   if (irNode.branches) {
     for (const branch of irNode.branches) {
-      for (const child of branch.children) {
-        children.push(buildNode(child, ctx, scope, depth + 1, branch.id, branch.when));
-      }
+      children.push(buildNode(branch.child, ctx, scope, depth + 1, branch.id, branch.when));
     }
   } else if (irNode.children) {
     for (const child of irNode.children) {
-      children.push(buildNode(child, ctx, scope, depth + 1));
+      children.push(buildNode(child, ctx, scope, depth + 1, branchLabel, branchWhen));
     }
   }
 
@@ -193,17 +218,19 @@ function buildExpandingNode(
   const descendants = descendantInstances(irNode, ctx, scope);
   const groupValues = [...new Set(
     descendants
-      .map((p) => p.parsed.dims.get(groupDim))
+      .map((p) => nextDimValue(p.parsed, scope, groupDim))
       .filter((v): v is string => v !== undefined)
   )].sort((a, b) => numericCompare(a, b));
 
   const groupRows: RenderNode[] = groupValues.map((gv) => {
-    const childScope: Scope = new Map(scope);
-    childScope.set(groupDim, gv);
+    const childScope: Scope = [...scope];
+    const frame = new Map<Dim, string>();
     if (groupDim === "lane") {
-      const item = itemForLane(descendants, gv);
-      if (item !== undefined) childScope.set("item", item);
+      const item = itemForLane(descendants, scope, gv);
+      if (item !== undefined) frame.set("item", item);
     }
+    frame.set(groupDim, gv);
+    childScope.push(frame);
 
     const groupChildren: RenderNode[] = (irNode.children ?? []).map((child) =>
       buildNode(child, ctx, childScope, depth + 2)
@@ -222,7 +249,8 @@ function buildExpandingNode(
       groupDim,
       groupValue: gv,
       groupLabel: labelForGroup(groupDim, gv, childScope),
-      groupItem: groupDim === "lane" ? childScope.get("item") : undefined
+      groupItem: groupDim === "lane" ? lastScopeValue(childScope, "item") : undefined,
+      scope: childScope
     };
   });
 
@@ -235,40 +263,65 @@ function buildExpandingNode(
     branchWhen,
     summary: summarize(irNode),
     depth,
-    fannedCount: groupValues.length
+    fannedCount: groupValues.length,
+    scope
   };
 }
 
 /** All runtime instances of any IR node in this subtree, scoped to `scope`. */
 function descendantInstances(irNode: IrNode, ctx: BuildCtx, scope: Scope): ParsedState[] {
-  const ids = ctx.descendantIds.get(irNode.id) ?? new Set([irNode.id]);
+  const nodes = ctx.descendantNodes.get(irNode.nodePath.join("/")) ?? [irNode];
   const out: ParsedState[] = [];
-  for (const id of ids) {
-    for (const p of ctx.byId.get(id) ?? []) {
+  for (const node of nodes) {
+    for (const p of instancesForNode(node, ctx)) {
       if (matchesScope(p.parsed, scope)) out.push(p);
     }
   }
   return out;
 }
 
+function instancesForNode(node: IrNode, ctx: BuildCtx): ParsedState[] {
+  const byPath = ctx.byPath.get(node.nodePath.join("/"));
+  if (byPath !== undefined || node.id.startsWith("$")) return byPath ?? [];
+  return ctx.byId.get(node.id) ?? [];
+}
+
 /** Find the fanout item value associated with a lane index. */
-function itemForLane(descendants: ParsedState[], lane: string): string | undefined {
+function itemForLane(descendants: ParsedState[], scope: Scope, lane: string): string | undefined {
   for (const p of descendants) {
-    if (p.parsed.dims.get("lane") === lane) {
-      const item = p.parsed.dims.get("item");
+    const frame = nextFrame(p.parsed, scope);
+    if (frame?.get("lane") === lane) {
+      const item = frame.get("item");
       if (item !== undefined) return item;
     }
   }
   return undefined;
 }
 
+function nextDimValue(parsed: ParsedKey, scope: Scope, dim: Dim): string | undefined {
+  return nextFrame(parsed, scope)?.get(dim);
+}
+
+function nextFrame(parsed: ParsedKey, scope: Scope): Map<Dim, string> | undefined {
+  if (!matchesScope(parsed, scope)) return undefined;
+  return parsed.frames[scope.length];
+}
+
 /** Friendly label for a lane/round group row, e.g. "lane=0 [moduleA]" or "round=2". */
 function labelForGroup(groupDim: Dim, value: string, scope: Scope): string {
   if (groupDim === "lane") {
-    const item = scope.get("item");
+    const item = lastScopeValue(scope, "item");
     return item !== undefined ? `lane=${value} [${item}]` : `lane=${value}`;
   }
   return `${groupDim}=${value}`;
+}
+
+function lastScopeValue(scope: Scope, dim: Dim): string | undefined {
+  for (let i = scope.length - 1; i >= 0; i--) {
+    const value = scope[i]!.get(dim);
+    if (value !== undefined) return value;
+  }
+  return undefined;
 }
 
 /** Compare two dimension values numerically when possible, else lexically. */
@@ -293,7 +346,19 @@ export function indexByNodeId(states: NodeExecutionState[]): Map<string, NodeExe
   return map;
 }
 
-/** Like indexByNodeId but caches each state's parsed key. */
+/** Like indexByNodeId but keyed by static nodePath and with cached parsed keys. */
+function indexByNodePathParsed(states: NodeExecutionState[]): Map<string, ParsedState[]> {
+  const map = new Map<string, ParsedState[]>();
+  for (const s of [...states].sort((a, b) => a.nodeKey.localeCompare(b.nodeKey))) {
+    const parsed = parseNodeKey(s.nodeKey);
+    const path = parsed.path.join("/");
+    const list = map.get(path) ?? [];
+    list.push({ state: s, parsed });
+    map.set(path, list);
+  }
+  return map;
+}
+
 function indexByNodeIdParsed(states: NodeExecutionState[]): Map<string, ParsedState[]> {
   const map = new Map<string, ParsedState[]>();
   for (const s of [...states].sort((a, b) => a.nodeKey.localeCompare(b.nodeKey))) {
@@ -394,6 +459,11 @@ export function buildRows(root: RenderNode): DisplayRow[] {
   return rows;
 }
 
+interface VisibleChildEntry {
+  node: RenderNode;
+  key: string;
+}
+
 function walkRows(
   node: RenderNode,
   rows: DisplayRow[],
@@ -403,6 +473,7 @@ function walkRows(
 ): void {
   const inst = node.instances.length === 1 ? node.instances[0] : undefined;
   const treeSegments = treeSegmentsFor(ancestorIsLast, ancestorKinds);
+  const visualDepth = ancestorIsLast.length;
 
   if (node.type === "group") {
     rows.push({
@@ -410,7 +481,7 @@ function walkRows(
       // appearing under multiple fanout lanes produces distinct group rows.
       rowKey: `${pathKey}/${node.irNode.id}@${node.groupDim}:${node.groupValue}`,
       irNode: node.irNode,
-      depth: node.depth,
+      depth: visualDepth,
       instance: inst,
       state: inst?.state ?? aggregateState(node),
       label: node.groupLabel ?? `${node.groupDim}:${node.groupValue}`,
@@ -426,7 +497,7 @@ function walkRows(
     rows.push({
       rowKey: `${pathKey}/${node.irNode.id}` + (inst ? `#${inst.nodeKey}` : ""),
       irNode: node.irNode,
-      depth: node.depth,
+      depth: visualDepth,
       instance: inst,
       state: inst?.state ?? aggregateState(node),
       label,
@@ -439,15 +510,29 @@ function walkRows(
     });
   }
 
-  node.children.forEach((child, i) =>
+  const visibleChildren = visibleChildEntries(node.children);
+  visibleChildren.forEach((child, i) =>
     walkRows(
-      child,
+      child.node,
       rows,
-      [...ancestorIsLast, i === node.children.length - 1],
+      [...ancestorIsLast, i === visibleChildren.length - 1],
       [...ancestorKinds, node.irNode.kind],
-      `${pathKey}/${i}`
+      `${pathKey}/${child.key}`
     )
   );
+}
+
+function visibleChildEntries(children: RenderNode[], prefix = ""): VisibleChildEntry[] {
+  return children.flatMap((child, index) => {
+    const key = `${prefix}/${index}:${child.irNode.id}`;
+    return isGeneratedPipeline(child)
+      ? visibleChildEntries(child.children, key)
+      : [{ node: child, key }];
+  });
+}
+
+function isGeneratedPipeline(node: RenderNode): boolean {
+  return node.type === "ir" && node.irNode.kind === "pipeline" && node.irNode.metadata.generated === true;
 }
 
 /**
@@ -497,6 +582,7 @@ export function countByState(root: RenderNode): Record<NodeState, number> & { to
   };
   const seen = new Set<string>();
   for (const node of flatten(root)) {
+    if (isGeneratedPipeline(node)) continue;
     for (const inst of node.instances) {
       if (seen.has(inst.nodeKey)) continue;
       seen.add(inst.nodeKey);

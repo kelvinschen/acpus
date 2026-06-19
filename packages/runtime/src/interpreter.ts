@@ -277,9 +277,10 @@ export class WorkflowInterpreter {
         }
         break;
       case "parallel":
-        (node.children ?? []).forEach((child, index) => {
-          const branchDynamic = nestedParallelBranchDynamic(dynamic, index);
-          this.replayNode(child, ctx, runId, branchDynamic, keyPrefix, recorded, reached, evaluator);
+        (node.branches ?? []).forEach((branch) => {
+          const branchDynamic = nestedParallelBranchDynamic(dynamic, branch.id);
+          const branchCtx: ExpressionContext = { ...ctx, steps: { ...ctx.steps } };
+          this.replayNode(branch.child, branchCtx, runId, branchDynamic, keyPrefix, recorded, reached, evaluator);
         });
         break;
       case "fanout": {
@@ -288,7 +289,7 @@ export class WorkflowInterpreter {
         items.forEach((item, index) => {
           const keyCtx: ExpressionContext = { ...ctx, item, item_index: index };
           const itemId = this.extractItemId(item, node.metadata.key as string | undefined, index, keyCtx, evaluator);
-          const itemDynamic: NodeKeyDynamic = { ...dynamic, fanoutItemId: itemId, laneId: String(index) };
+          const itemDynamic = appendDynamicFrame(dynamic, { fanoutItemId: itemId, laneId: String(index) });
           const itemCtx: ExpressionContext = { ...keyCtx, steps: { ...ctx.steps }, item_id: itemId };
           for (const child of node.children ?? []) {
             this.replayNode(child, itemCtx, runId, itemDynamic, keyPrefix, recorded, reached, evaluator);
@@ -300,9 +301,7 @@ export class WorkflowInterpreter {
         for (const branch of node.branches ?? []) {
           const taken = !branch.when || Boolean(evaluator.evaluateExpression(branch.when, ctx));
           if (taken) {
-            for (const child of branch.children) {
-              this.replayNode(child, ctx, runId, dynamic, keyPrefix, recorded, reached, evaluator);
-            }
+            this.replayNode(branch.child, ctx, runId, dynamic, keyPrefix, recorded, reached, evaluator);
             break;
           }
         }
@@ -313,7 +312,7 @@ export class WorkflowInterpreter {
         let lastOutput: unknown;
         for (let iter = 0; iter < maxIterations; iter++) {
           const loopCtx: ExpressionContext = { ...ctx, loop: { iter, last: lastOutput } };
-          const loopDynamic: NodeKeyDynamic = { ...dynamic, loopRound: iter };
+          const loopDynamic = appendDynamicFrame(dynamic, { loopRound: iter });
           if (untilExpr && iter > 0 && evaluator.evaluateExpression(untilExpr, loopCtx)) break;
           // Only descend while this round's children were actually recorded.
           let anyChildReached = false;
@@ -322,7 +321,8 @@ export class WorkflowInterpreter {
             this.replayNode(child, loopCtx, runId, loopDynamic, keyPrefix, recorded, reached, evaluator);
             if (reached.size > before) anyChildReached = true;
             const childKey = withNodeKeyPrefix(keyPrefix, resolveNodeKey(child.keyTemplate, loopDynamic));
-            lastOutput = recorded.get(childKey)?.output ?? lastOutput;
+            const recordedOutput = recorded.get(childKey)?.output;
+            lastOutput = recordedOutput !== undefined ? primaryOutput(recordedOutput) : lastOutput;
           }
           if (!anyChildReached) break;
         }
@@ -368,13 +368,14 @@ export class WorkflowInterpreter {
     this.runControl.resetNodeForRetry(runId, state);
 
     const ctx = this.buildContext(ir, input, runId);
-    this.populateStepOutputs(runId, ctx);
+    const retryTarget = this.hydrateContextForNodeRetry(ir.root, ctx, runId, nodeKey, {});
     // Restore the parent dynamic value-context captured at first execution.
-    this.restoreDynamicContext(ctx, state.dynamicContext);
+    const retryCtx = retryTarget?.ctx ?? ctx;
+    this.restoreDynamicContext(retryCtx, state.dynamicContext);
     // Retry re-runs the executable as a continuation: agents keep the same acpx
     // session name and receive the fixed continuation prompt. The original full
     // node key is preserved for stable identity.
-    await this.executeNode(node, ctx, runId, {}, undefined, true, nodeKey);
+    await this.executeNode(node, retryCtx, runId, retryTarget?.dynamic ?? {}, undefined, true, nodeKey);
   }
 
   // ─── Run-level controls ─────────────────────────────────────────
@@ -626,16 +627,32 @@ export class WorkflowInterpreter {
 
   private async executePipeline(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {
     const children = node.children ?? [];
+    if (node.metadata.implicit === true) {
+      for (const child of children) {
+        try {
+          await this.executeNode(child, ctx, runId, dynamic, keyPrefix);
+        } catch (error) {
+          if (error instanceof ScopeCompleted) return { output: { ...ctx.steps } };
+          throw error;
+        }
+      }
+      return { output: { ...ctx.steps } };
+    }
+
+    const frame: ExpressionContext = { ...ctx, steps: { ...ctx.steps } };
+    let lastOutput: unknown;
     for (const child of children) {
       try {
-        await this.executeNode(child, ctx, runId, dynamic, keyPrefix);
+        lastOutput = await this.executeNode(child, frame, runId, dynamic, keyPrefix);
       } catch (error) {
-        if (error instanceof ScopeCompleted) return { output: error.output };
+        if (error instanceof ScopeCompleted) return { output: primaryOutput(error.output) };
         throw error;
       }
     }
-    // Pipeline output: map of step outputs
-    return { output: { ...ctx.steps } };
+    if (isRecord(node.metadata.outputs)) {
+      return { output: evaluateWorkflowOutputs({ outputs: node.metadata.outputs } as AcpusIr, frame, this.evaluator) };
+    }
+    return { output: primaryOutput(lastOutput) };
   }
 
   private async executeAgent(node: IrNode, ctx: ExpressionContext, runId: string, signal: AbortSignal, nodeKey: string, continuation?: boolean): Promise<LeafResult> {
@@ -884,24 +901,23 @@ export class WorkflowInterpreter {
   }
 
   private async executeParallel(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, nodeKey: string, keyPrefix?: string): Promise<unknown> {
-    const children = node.children ?? [];
+    const branches = node.branches ?? [];
     const maxConcurrency = (node.metadata.max_concurrency as number) ?? this.maxConcurrency;
     const join = (node.metadata.join as string) ?? "all";
 
     if (join === "all") {
-      children.forEach((child, index) => {
-        this.materializePendingNode(runId, child, ctx, nestedParallelBranchDynamic(dynamic, index), keyPrefix);
+      branches.forEach((branch) => {
+        this.materializePendingNode(runId, branch.child, ctx, nestedParallelBranchDynamic(dynamic, branch.id), keyPrefix);
       });
     }
 
     const limit = pLimit(maxConcurrency);
-    // Each branch resolves to { child, output } so race can identify the winner.
-    const branchPromises = children.map((child, index) =>
+    const branchPromises = branches.map((branch) =>
       limit(async () => {
-        const branchDynamic = nestedParallelBranchDynamic(dynamic, index);
+        const branchDynamic = nestedParallelBranchDynamic(dynamic, branch.id);
         let output: unknown;
         try {
-          output = await this.executeNode(child, { ...ctx, steps: { ...ctx.steps } }, runId, branchDynamic, keyPrefix);
+          output = await this.executeNode(branch.child, { ...ctx, steps: { ...ctx.steps } }, runId, branchDynamic, keyPrefix);
         } catch (error) {
           if (error instanceof ScopeCompleted) {
             output = error.output;
@@ -909,7 +925,7 @@ export class WorkflowInterpreter {
             throw error;
           }
         }
-        return { child, output };
+        return { branch, output };
       })
     );
 
@@ -919,8 +935,7 @@ export class WorkflowInterpreter {
         // consumed so their later rejection doesn't surface as unhandled.
         const winner = await Promise.race(branchPromises);
         branchPromises.forEach((p) => void p.catch(() => undefined));
-        const mapOutput: Record<string, unknown> = { [winner.child.id]: winner.output };
-        ctx.steps[winner.child.id] = winner.output;
+        const mapOutput: Record<string, unknown> = { [winner.branch.id]: primaryOutput(winner.output) };
         return { output: mapOutput };
       } catch (error) {
         if (!(error instanceof NodeAbortedError)) {
@@ -936,7 +951,7 @@ export class WorkflowInterpreter {
     // rethrowing, actively cancel the still-running sibling branches so they
     // don't linger in "running" state (they belong to a parallel that has
     // already failed). Siblings transition to "cancelled".
-    let results: { child: IrNode; output: unknown }[];
+    let results: { branch: NonNullable<IrNode["branches"]>[number]; output: unknown }[];
     try {
       results = await Promise.all(branchPromises);
     } catch (error) {
@@ -948,9 +963,8 @@ export class WorkflowInterpreter {
       throw error;
     }
     const mapOutput: Record<string, unknown> = {};
-    for (const { child, output } of results) {
-      mapOutput[child.id] = output;
-      ctx.steps[child.id] = output;
+    for (const { branch, output } of results) {
+      mapOutput[branch.id] = primaryOutput(output);
     }
     return { output: mapOutput };
   }
@@ -966,7 +980,10 @@ export class WorkflowInterpreter {
     const join = (node.metadata.join as string) ?? "all";
     const quorum = node.metadata.quorum as number | undefined;
     const successCriteria = node.metadata.success_criteria as { min_success?: number } | undefined;
-    const children = node.children ?? [];
+    const body = node.children?.[0];
+    if (!body) {
+      throw new Error(`fanout node ${node.id} missing body pipeline`);
+    }
 
     const limit = pLimit(maxConcurrency);
 
@@ -977,7 +994,7 @@ export class WorkflowInterpreter {
     const lanePlan = items.map((item, index) => {
       const keyCtx: ExpressionContext = { ...ctx, item, item_index: index };
       const itemId = this.extractItemId(item, node.metadata.key as string | undefined, index, keyCtx, this.evaluator);
-      const laneDynamic: NodeKeyDynamic = { fanoutItemId: itemId, laneId: String(index) };
+      const laneDynamic = appendDynamicFrame({}, { fanoutItemId: itemId, laneId: String(index) });
       return {
         itemId,
         keyCtx,
@@ -987,10 +1004,8 @@ export class WorkflowInterpreter {
 
     if (join === "all") {
       for (const lane of lanePlan) {
-        const itemDynamic: NodeKeyDynamic = { ...dynamic, ...lane.itemDynamic };
-        for (const child of children) {
-          this.materializePendingNode(runId, child, lane.keyCtx, itemDynamic, keyPrefix);
-        }
+        const itemDynamic = appendDynamicFrames(dynamic, lane.itemDynamic);
+        this.materializePendingNode(runId, body, lane.keyCtx, itemDynamic, keyPrefix);
       }
     }
 
@@ -1008,24 +1023,17 @@ export class WorkflowInterpreter {
     // (operator pause/cancel) re-throws so it propagates to the parent.
     const lanePromises = lanePlan.map((lane) =>
       limit(async (): Promise<LaneResult> => {
-        const itemDynamic: NodeKeyDynamic = { ...dynamic, ...lane.itemDynamic };
+        const itemDynamic = appendDynamicFrames(dynamic, lane.itemDynamic);
         const itemCtx: ExpressionContext = {
           ...lane.keyCtx,
           steps: { ...ctx.steps },
           item_id: lane.itemId
         };
         try {
-          let laneOutput: unknown;
-          for (const child of children) {
-            try {
-              laneOutput = await this.executeNode(child, itemCtx, runId, itemDynamic, keyPrefix);
-            } catch (error) {
-              if (error instanceof ScopeCompleted) return { ok: true, output: error.output };
-              throw error;
-            }
-          }
-          return { ok: true, output: laneOutput };
+          const laneOutput = await this.executeNode(body, itemCtx, runId, itemDynamic, keyPrefix);
+          return { ok: true, output: primaryOutput(laneOutput) };
         } catch (error) {
+          if (error instanceof ScopeCompleted) return { ok: true, output: primaryOutput(error.output) };
           if (error instanceof NodeAbortedError) {
             throw error;
           }
@@ -1102,32 +1110,13 @@ export class WorkflowInterpreter {
     const branches = node.branches ?? [];
 
     for (const branch of branches) {
-      if (branch.when) {
-        const matches = this.evaluator.evaluateExpression(branch.when, ctx);
-        if (matches) {
-          let lastOutput: unknown;
-          for (const child of branch.children) {
-            try {
-              lastOutput = await this.executeNode(child, ctx, runId, dynamic, keyPrefix);
-            } catch (error) {
-              if (error instanceof ScopeCompleted) return { output: error.output };
-              throw error;
-            }
-          }
-          return { output: lastOutput };
-        }
-      } else {
-        // Default branch (no when condition)
-        let lastOutput: unknown;
-        for (const child of branch.children) {
-          try {
-            lastOutput = await this.executeNode(child, ctx, runId, dynamic, keyPrefix);
-          } catch (error) {
-            if (error instanceof ScopeCompleted) return { output: error.output };
-            throw error;
-          }
-        }
-        return { output: lastOutput };
+      if (branch.when && !this.evaluator.evaluateExpression(branch.when, ctx)) continue;
+      // Default branch has no condition and is reached only after earlier cases fail.
+      try {
+        return { output: primaryOutput(await this.executeNode(branch.child, ctx, runId, dynamic, keyPrefix)) };
+      } catch (error) {
+        if (error instanceof ScopeCompleted) return { output: primaryOutput(error.output) };
+        throw error;
       }
     }
 
@@ -1137,7 +1126,10 @@ export class WorkflowInterpreter {
   private async executeLoop(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {
     const untilExpr = node.metadata.until as string;
     const maxIterations = (node.metadata.max_iterations as number) ?? 100;
-    const children = node.children ?? [];
+    const body = node.children?.[0];
+    if (!body) {
+      throw new Error(`loop node ${node.id} missing body pipeline`);
+    }
 
     let lastOutput: unknown;
     for (let iter = 0; iter < maxIterations; iter++) {
@@ -1145,7 +1137,7 @@ export class WorkflowInterpreter {
         ...ctx,
         loop: { iter, last: lastOutput }
       };
-      const loopDynamic: NodeKeyDynamic = { ...dynamic, loopRound: iter };
+      const loopDynamic = appendDynamicFrame(dynamic, { loopRound: iter });
 
       // Check until condition (skip on first iteration)
       if (untilExpr && iter > 0) {
@@ -1153,20 +1145,15 @@ export class WorkflowInterpreter {
         if (done) break;
       }
 
-      // Execute loop body
-      for (const child of children) {
-        try {
-          lastOutput = await this.executeNode(child, loopCtx, runId, loopDynamic, keyPrefix);
-        } catch (error) {
-          if (error instanceof ScopeCompleted) return { output: error.output };
-          throw error;
-        }
+      try {
+        lastOutput = primaryOutput(await this.executeNode(body, loopCtx, runId, loopDynamic, keyPrefix));
+      } catch (error) {
+        if (error instanceof ScopeCompleted) return { output: primaryOutput(error.output) };
+        throw error;
       }
     }
 
-    // outputMerge: "last" — lastOutput is already an { output: ... } envelope
-    // from executeNode, so return it directly (no extra wrapping).
-    return lastOutput ?? { output: {} };
+    return { output: lastOutput ?? {} };
   }
 
   private executeGuard(node: IrNode, ctx: ExpressionContext): GuardExecutionResult {
@@ -1359,12 +1346,52 @@ export class WorkflowInterpreter {
     return { input, steps: {}, workflow: buildWorkflowExpressionContext(ir), run_id: runId };
   }
 
-  private populateStepOutputs(runId: string, ctx: ExpressionContext): void {
-    for (const nodeState of this.store.listNodeStates(runId)) {
-      if (nodeState.state === "completed" && nodeState.output !== undefined) {
-        ctx.steps[nodeState.nodeId] = nodeState.output;
-      }
+
+  private hydrateContextForNodeRetry(
+    node: IrNode,
+    ctx: ExpressionContext,
+    runId: string,
+    targetNodeKey: string,
+    dynamic: NodeKeyDynamic,
+    keyPrefix?: string
+  ): { ctx: ExpressionContext; dynamic: NodeKeyDynamic } | undefined {
+    const nodeKey = withNodeKeyPrefix(keyPrefix, resolveNodeKey(node.keyTemplate, dynamic));
+    if (nodeKey === targetNodeKey) return { ctx, dynamic };
+
+    const state = this.store.readNodeState(runId, nodeKey);
+    if (state?.state === "completed" && state.output !== undefined && node.metadata.implicit !== true) {
+      ctx.steps[node.id] = state.output;
+      return undefined;
     }
+
+    if (node.kind === "pipeline") {
+      const frame = node.metadata.implicit === true ? ctx : { ...ctx, steps: { ...ctx.steps } };
+      for (const child of node.children ?? []) {
+        const found = this.hydrateContextForNodeRetry(child, frame, runId, targetNodeKey, dynamic, keyPrefix);
+        if (found) return found;
+      }
+      return undefined;
+    }
+
+    if (node.kind === "parallel") {
+      for (const branch of node.branches ?? []) {
+        const branchCtx: ExpressionContext = { ...ctx, steps: { ...ctx.steps } };
+        const branchDynamic = nestedParallelBranchDynamic(dynamic, branch.id);
+        const found = this.hydrateContextForNodeRetry(branch.child, branchCtx, runId, targetNodeKey, branchDynamic, keyPrefix);
+        if (found) return found;
+      }
+      return undefined;
+    }
+
+    for (const child of node.children ?? []) {
+      const found = this.hydrateContextForNodeRetry(child, ctx, runId, targetNodeKey, dynamic, keyPrefix);
+      if (found) return found;
+    }
+    for (const branch of node.branches ?? []) {
+      const found = this.hydrateContextForNodeRetry(branch.child, ctx, runId, targetNodeKey, dynamic, keyPrefix);
+      if (found) return found;
+    }
+    return undefined;
   }
 
   /** Extract the parent dynamic value-context (fanout item / loop round) from a context, if any. */
@@ -1388,34 +1415,21 @@ export class WorkflowInterpreter {
   }
 
   private findNodeByKey(root: IrNode, nodeKey: string): IrNode | undefined {
-    // Node keys contain dynamic dimensions (e.g. "workflow/mapped/item:0/lane:0")
-    // but IR nodes have template keys without dynamics. Match by extracting
-    // the nodePath from the resolved key and comparing to the template.
-    // The nodePath is always the prefix before any dynamic segments.
-    // We match by the IR node's id since that's unique and stable.
-    const nodeId = this.extractNodeIdFromKey(nodeKey);
-    return this.findNodeById(root, nodeId);
-  }
-
-  /** Extract the step ID from a resolved node key. The ID is the last path segment before dynamic dims. */
-  private extractNodeIdFromKey(nodeKey: string): string {
     const staticPath = staticNodePathFromKey(nodeKey);
-    return staticPath.split("/").at(-1) ?? nodeKey;
+    return this.findNodeByPath(root, staticPath);
   }
 
-  private findNodeById(root: IrNode, nodeId: string): IrNode | undefined {
-    if (root.id === nodeId) return root;
+  private findNodeByPath(root: IrNode, staticPath: string): IrNode | undefined {
+    if (root.nodePath.join("/") === staticPath) return root;
 
     for (const child of root.children ?? []) {
-      const found = this.findNodeById(child, nodeId);
+      const found = this.findNodeByPath(child, staticPath);
       if (found) return found;
     }
 
     for (const branch of root.branches ?? []) {
-      for (const child of branch.children) {
-        const found = this.findNodeById(child, nodeId);
-        if (found) return found;
-      }
+      const found = this.findNodeByPath(branch.child, staticPath);
+      if (found) return found;
     }
 
     return undefined;
@@ -1686,6 +1700,14 @@ function hookAgentTelemetry(state: NodeExecutionState): HookAgentTelemetry | und
   return result;
 }
 
+function primaryOutput(value: unknown): unknown {
+  return isRecord(value) && "output" in value ? value.output : value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 /** Generate a locally sortable run ID: yyyyMMddHHmmss + 20 uppercase hex chars. */
 export function generateRunId(now = new Date()): string {
   const pad = (n: number): string => String(n).padStart(2, "0");
@@ -1700,13 +1722,53 @@ export function generateRunId(now = new Date()): string {
   return `${timestamp}${randomBytes(10).toString("hex").toUpperCase()}`;
 }
 
-function nestedParallelBranchDynamic(dynamic: NodeKeyDynamic, branchIndex: number): NodeKeyDynamic {
-  const branchId = String(branchIndex);
-  return {
-    ...dynamic,
-    parallelBranchId:
-      dynamic.parallelBranchId === undefined ? branchId : `${dynamic.parallelBranchId}.${branchId}`
-  };
+function nestedParallelBranchDynamic(dynamic: NodeKeyDynamic, branchId: string): NodeKeyDynamic {
+  const current = currentDynamicFrame(dynamic);
+  const nextBranchId = current.parallelBranchId === undefined ? branchId : `${current.parallelBranchId}.${branchId}`;
+  return replaceCurrentDynamicFrame(dynamic, { ...current, parallelBranchId: nextBranchId });
+}
+
+function appendDynamicFrame(dynamic: NodeKeyDynamic, frame: NodeKeyDynamic): NodeKeyDynamic {
+  const frames = [...dynamicFrames(dynamic), frame];
+  return withCollapsedDynamic(frames);
+}
+
+function appendDynamicFrames(dynamic: NodeKeyDynamic, child: NodeKeyDynamic): NodeKeyDynamic {
+  return withCollapsedDynamic([...dynamicFrames(dynamic), ...dynamicFrames(child)]);
+}
+
+function replaceCurrentDynamicFrame(dynamic: NodeKeyDynamic, frame: NodeKeyDynamic): NodeKeyDynamic {
+  const frames = dynamicFrames(dynamic);
+  if (frames.length === 0) return withCollapsedDynamic([frame]);
+  return withCollapsedDynamic([...frames.slice(0, -1), frame]);
+}
+
+function currentDynamicFrame(dynamic: NodeKeyDynamic): NodeKeyDynamic {
+  return dynamicFrames(dynamic).at(-1) ?? {};
+}
+
+function dynamicFrames(dynamic: NodeKeyDynamic): NodeKeyDynamic[] {
+  if (dynamic.frames && dynamic.frames.length > 0) return dynamic.frames;
+  const { frames: _frames, ...frame } = dynamic;
+  return isEmptyDynamicFrame(frame) ? [] : [frame];
+}
+
+function withCollapsedDynamic(frames: NodeKeyDynamic[]): NodeKeyDynamic {
+  const collapsed: NodeKeyDynamic = { frames };
+  for (const frame of frames) {
+    if (frame.loopRound !== undefined) collapsed.loopRound = frame.loopRound;
+    if (frame.fanoutItemId !== undefined) collapsed.fanoutItemId = frame.fanoutItemId;
+    if (frame.laneId !== undefined) collapsed.laneId = frame.laneId;
+    if (frame.parallelBranchId !== undefined) collapsed.parallelBranchId = frame.parallelBranchId;
+  }
+  return collapsed;
+}
+
+function isEmptyDynamicFrame(frame: NodeKeyDynamic): boolean {
+  return frame.loopRound === undefined &&
+    frame.fanoutItemId === undefined &&
+    frame.laneId === undefined &&
+    frame.parallelBranchId === undefined;
 }
 
 /** Find the immediate parent IR node of `childId`, or undefined for the root. */
@@ -1717,11 +1779,9 @@ function findParentNode(node: IrNode, childId: string): IrNode | undefined {
     if (found) return found;
   }
   for (const branch of node.branches ?? []) {
-    for (const child of branch.children) {
-      if (child.id === childId) return node;
-      const found = findParentNode(child, childId);
-      if (found) return found;
-    }
+    if (branch.child.id === childId) return node;
+    const found = findParentNode(branch.child, childId);
+    if (found) return found;
   }
   return undefined;
 }

@@ -3,11 +3,28 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { compileWorkflow, lintWorkflow } from "../../src/index.js";
 import { expectDiagnostic } from "../support/diagnostic-helpers.js";
+import type { IrNode } from "../../src/types.js";
 
 const fixtures = join(import.meta.dirname, "..", "fixtures");
 
 function fixture(name: string): string {
   return readFileSync(join(fixtures, name), "utf8");
+}
+
+function collectIds(node: IrNode): string[] {
+  return [
+    node.id,
+    ...(node.children ?? []).flatMap(collectIds),
+    ...(node.branches ?? []).flatMap((branch) => collectIds(branch.child))
+  ];
+}
+
+function collectNodePaths(node: IrNode): string[] {
+  return [
+    node.nodePath.join("/"),
+    ...(node.children ?? []).flatMap(collectNodePaths),
+    ...(node.branches ?? []).flatMap((branch) => collectNodePaths(branch.child))
+  ];
 }
 
 describe("@acpus/core compiler: composites (outputMerge, IR shape)", () => {
@@ -22,18 +39,126 @@ workflow:
     - id: par
       parallel:
         - id: a
-          run: program
-          cmd: ["echo", "a"]
+          do:
+            - id: step_a
+              run: program
+              cmd: ["echo", "a"]
         - id: b
-          run: program
-          cmd: ["echo", "b"]
+          do:
+            - id: step_b
+              run: program
+              cmd: ["echo", "b"]
 `;
     const result = compileWorkflow(source);
     expect(result.ok).toBe(true);
     const parNode = result.ir?.root.children?.[0];
     expect(parNode?.kind).toBe("parallel");
     expect(parNode?.outputMerge).toBe("map");
-    expect(parNode?.children?.map((c) => c.id)).toEqual(["a", "b"]);
+    expect(parNode?.branches?.map((b) => b.id)).toEqual(["a", "b"]);
+    expect(parNode?.branches?.[0]?.child.children?.map((c) => c.id)).toEqual(["step_a"]);
+  });
+
+  it("generated do pipeline ids are parent-local and nodePaths stay unique", () => {
+    const source = `
+version: 1
+name: generated-ids
+workflow:
+  steps:
+    - id: route_a
+      switch:
+        cases:
+          - when: true
+            do:
+              - id: a
+                run: program
+                cmd: ["echo", "a"]
+        default:
+          do:
+            - id: a_default
+              run: program
+              cmd: ["echo", "a"]
+    - id: route_b
+      switch:
+        cases:
+          - when: false
+            do:
+              - id: b
+                run: program
+                cmd: ["echo", "b"]
+        default:
+          do:
+            - id: b_default
+              run: program
+              cmd: ["echo", "b"]
+    - id: par_a
+      parallel:
+        - id: same
+          do:
+            - id: pa
+              run: program
+              cmd: ["echo", "pa"]
+    - id: par_b
+      parallel:
+        - id: same
+          do:
+            - id: pb
+              run: program
+              cmd: ["echo", "pb"]
+`;
+    const first = compileWorkflow(source);
+    const second = compileWorkflow(source);
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+
+    const ids = collectIds(first.ir!.root).filter((id) => id.startsWith("$"));
+    expect(ids).toEqual(["$case_1", "$default", "$case_1", "$default", "$same", "$same"]);
+    expect(ids).toEqual(collectIds(second.ir!.root).filter((id) => id.startsWith("$")));
+
+    const nodePaths = collectNodePaths(first.ir!.root);
+    expect(nodePaths).toHaveLength(new Set(nodePaths).size);
+    expect(nodePaths).toContain("workflow/route_a/$case_1");
+    expect(nodePaths).toContain("workflow/route_b/$case_1");
+    expect(nodePaths).toContain("workflow/par_a/$same");
+    expect(nodePaths).toContain("workflow/par_b/$same");
+  });
+
+  it("uses short generated ids for fanout and loop bodies", () => {
+    const source = `
+version: 1
+name: generated-do
+workflow:
+  steps:
+    - id: mapped_a
+      fanout:
+        over: [a]
+        do:
+          - id: work_a
+            run: program
+            cmd: ["echo", "a"]
+    - id: mapped_b
+      fanout:
+        over: [b]
+        do:
+          - id: work_b
+            run: program
+            cmd: ["echo", "b"]
+    - id: iter
+      loop:
+        max_iterations: 1
+        do:
+          - id: work_c
+            run: program
+            cmd: ["echo", "c"]
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const ids = collectIds(result.ir!.root).filter((id) => id.startsWith("$"));
+    expect(ids).toEqual(["$do", "$do", "$do"]);
+    expect(collectNodePaths(result.ir!.root)).toEqual(expect.arrayContaining([
+      "workflow/mapped_a/$do",
+      "workflow/mapped_b/$do",
+      "workflow/iter/$do"
+    ]));
   });
 
   it("fanout: outputMerge is array; multi-step lane takes last child", () => {
@@ -61,8 +186,8 @@ workflow:
     const fanoutNode = result.ir?.root.children?.[0];
     expect(fanoutNode?.kind).toBe("fanout");
     expect(fanoutNode?.outputMerge).toBe("array");
-    expect(fanoutNode?.children?.length).toBe(2);
-    expect(fanoutNode?.children?.map((c) => c.id)).toEqual(["step_a", "step_b"]);
+    expect(fanoutNode?.children?.[0]?.kind).toBe("pipeline");
+    expect(fanoutNode?.children?.[0]?.children?.map((c) => c.id)).toEqual(["step_a", "step_b"]);
   });
 
   it("switch: outputMerge is selected; branches and default preserved", () => {
@@ -101,7 +226,7 @@ workflow:
     expect(switchNode?.branches?.[0]?.id).toBe("case_1");
     expect(switchNode?.branches?.[1]?.id).toBe("case_2");
     expect(switchNode?.branches?.[2]?.id).toBe("default");
-    expect(switchNode?.branches?.[0]?.children?.map((c) => c.id)).toEqual(["go"]);
+    expect(switchNode?.branches?.[0]?.child.children?.map((c) => c.id)).toEqual(["go"]);
   });
 
   it("switch without default: only case branches", () => {
@@ -181,8 +306,8 @@ workflow:
     const loopNode = result.ir?.root.children?.[0];
     expect(loopNode?.kind).toBe("loop");
     expect(loopNode?.outputMerge).toBe("last");
-    expect(loopNode?.children?.length).toBe(2);
-    expect(loopNode?.children?.map((c) => c.id)).toEqual(["step_a", "step_b"]);
+    expect(loopNode?.children?.[0]?.kind).toBe("pipeline");
+    expect(loopNode?.children?.[0]?.children?.map((c) => c.id)).toEqual(["step_a", "step_b"]);
   });
 
   it("subworkflow: no outputMerge field", () => {

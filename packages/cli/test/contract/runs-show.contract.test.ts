@@ -1106,14 +1106,14 @@ describe("formatRunShow", () => {
       root: {
         id: "workflow",
         kind: "pipeline",
-        nodePath: [],
+        nodePath: ["workflow"],
         keyTemplate: "workflow",
         metadata: {},
         children: [
           {
             id: "gate",
             kind: "run.signal",
-            nodePath: ["gate"],
+            nodePath: ["workflow", "gate"],
             keyTemplate: "workflow/gate",
             metadata: {
               prompt: "Decide on: ${{ input.topic }}.",
@@ -1176,14 +1176,14 @@ describe("formatRunShow", () => {
       root: {
         id: "workflow",
         kind: "pipeline",
-        nodePath: [],
+        nodePath: ["workflow"],
         keyTemplate: "workflow",
         metadata: {},
         children: [
           {
             id: "gate",
             kind: "run.signal",
-            nodePath: ["gate"],
+            nodePath: ["workflow", "gate"],
             keyTemplate: "workflow/gate",
             metadata: { prompt: "Any object is fine." }
           }
@@ -1207,7 +1207,7 @@ describe("formatRunShow", () => {
       runAttempt: 1,
       nodes: [
         {
-          nodeKey: "workflow/route/case:0/gate",
+          nodeKey: "workflow/route/$case_1/gate",
           nodeId: "gate",
           kind: "run.signal",
           state: "awaiting",
@@ -1236,24 +1236,31 @@ describe("formatRunShow", () => {
           {
             id: "route",
             kind: "switch",
-            nodePath: ["route"],
+            nodePath: ["workflow", "route"],
             keyTemplate: "workflow/route",
             metadata: {},
             branches: [
               {
                 id: "case-0",
-                children: [
-                  {
-                    id: "gate",
-                    kind: "run.signal",
-                    nodePath: ["route", "gate"],
-                    keyTemplate: "workflow/route/gate",
-                    metadata: {
-                      prompt: "Nested decision.",
-                      output: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] }
+                child: {
+                  id: "$case_1",
+                  kind: "pipeline",
+                  nodePath: ["workflow", "route", "$case_1"],
+                  keyTemplate: "workflow/route/$case_1",
+                  metadata: { generated: true },
+                  children: [
+                    {
+                      id: "gate",
+                      kind: "run.signal",
+                      nodePath: ["workflow", "route", "$case_1", "gate"],
+                      keyTemplate: "workflow/route/$case_1/gate",
+                      metadata: {
+                        prompt: "Nested decision.",
+                        output: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] }
+                      }
                     }
-                  }
-                ]
+                  ]
+                }
               }
             ]
           }

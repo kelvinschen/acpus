@@ -88,7 +88,7 @@ Async (fire-and-forget by default), never affect Run/Node outcome. Failures logg
 `node_key`, `node_id`, `node_kind`, `node_attempt`, `loop_round`, `fanout_item_id`, `fanout_item_index`, `parallel_lane_id`
 
 ### Node events only
-`parent_node_key`, `parent_node_kind` (skips the implicit workflow root pipeline), `from_state`, `to_state` (onStateChange only), `error`, `output`, `duration_ms`, `prompt`, `session_key`, `failure_kind`
+`parent_node_key`, `parent_node_kind` (skips the implicit root pipeline and any explicit `pipeline` containers — exposes the leaf's enclosing composite), `from_state`, `to_state` (onStateChange only), `error`, `output`, `duration_ms`, `prompt`, `session_key`, `failure_kind`
 
 ### Composite fields
 `join_strategy` (parallel/fanout), `max_concurrency` (parallel/fanout), `max_iterations` (loop), `subworkflow_spec_path` (subworkflow), `signal_timeout` (signal), `signal_on_timeout` (signal)

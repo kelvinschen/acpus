@@ -96,7 +96,8 @@ Agent definitions are merged with Agent Overrides at Run creation; the frozen IR
 
 Every step is an object with a required `id`:
 
-- `id: <string>` — required, non-empty, no colons (`:`), unique within the spec after include expansion.
+- `id: <string>` — required, matches `^[A-Za-z_][A-Za-z0-9_-]*$`, does not start with `$`, unique within the spec after include expansion.
+- `$` is reserved for generated internal pipeline ids. Generated `do` pipeline ids are parent-local: `$do`, `$case_<1-based-index>`, `$default`, and `$<branch_id>`.
 
 ### Step Kind Dispatch
 
@@ -107,6 +108,7 @@ A step MUST match exactly one of these shapes (enforced by `oneOf`):
 | `run: agent` | Agent Step |
 | `run: program` | Program Step |
 | `run: signal` | Signal Node |
+| `pipeline: [...]` | Pipeline |
 | `parallel: [...]` | Parallel |
 | `fanout: {...}` | Fanout |
 | `switch: {...}` | Switch |
@@ -198,6 +200,22 @@ retry:                          # Agent + Program only
 - `output: {}` (empty map) means accept any object without validation.
 - Result exposed as `{ output: <injected payload> }` at `steps.<id>`.
 
+### Pipeline
+
+```yaml
+- id: <string>
+  pipeline:
+    - id: <string>
+      # ... full step (any kind)
+  outputs:              # optional projection
+    <key>: ${{ steps.<child_id>.output.<field> }}
+```
+
+- Default output: final child's primary output.
+- With `outputs`: evaluated projection after children complete.
+- `fanout.do` / `loop.do` / `switch.cases[].do` / `switch.default.do` compile as generated internal pipelines.
+- `do` lists must be non-empty; authors needing custom public contract use explicit `pipeline` with `outputs`.
+
 ### Parallel
 
 ```yaml
@@ -206,15 +224,21 @@ retry:                          # Agent + Program only
   max_concurrency: <integer ≥ 1>
   parallel:
     - id: <string>
-      # ... full step (any kind)
+      do:
+        - id: <string>
+          # ... full step (any kind)
     - id: <string>
-      # ... full step
+      do:
+        - id: <string>
+          # ... full step
 ```
 
 - `steps.<id>.output` is a **record keyed by branch id**.
+- Branch `id` uses the same safe id rule as step `id` and does not start with `$`.
+- The internal branch pipeline segment is `$<branch_id>`; the public output key is still `<branch_id>`.
 - `join: all` — fail-fast on first branch failure; cancels remaining branches.
 - `join: race` — first branch to complete wins; output is a single-key map.
-- Access pattern: `steps.<parallel_id>.output.<branch_id>.output.<field>`. Note the extra `.output.` layer — parallel is a map of branch ids, and each branch's value is that branch's step envelope, so you need `.output.<branch_id>.output.<field>`. Accessing `steps.<parallel_id>.<branch_id>.output.<field>` (without the first `.output.`) is a common mistake.
+- Access pattern: `steps.<parallel_id>.output.<branch_id>.<field>`. Parallel is a map of branch ids, and each branch value is that branch pipeline's primary output.
 
 ### Fanout
 
@@ -259,7 +283,7 @@ retry:                          # Agent + Program only
 
 - Cases evaluated in order; first truthy match wins.
 - No default → unmatched cases fail the node.
-- `steps.<id>.output` is the selected branch's final child step value (`selected` projection).
+- `steps.<id>.output` is the selected branch pipeline's primary output (`selected` projection).
 - `when` as boolean literal is coerced to string at compile time.
 
 ### Loop
@@ -275,10 +299,10 @@ retry:                          # Agent + Program only
 ```
 
 - `loop.iter` — zero-based iteration counter.
-- `loop.last` — previous iteration body final child step value (absent/undefined on first iteration).
+- `loop.last` — previous iteration body pipeline primary output (absent/undefined on first iteration).
 - `until` is checked after the body completes; always runs at least once.
 - `until` as boolean literal is coerced to string at compile time.
-- `steps.<id>.output` is the last iteration's final child step value (`last` projection).
+- `steps.<id>.output` is the last iteration body pipeline's primary output (`last` projection).
 
 ### Guard
 
@@ -371,7 +395,7 @@ json(value)                              # deterministic JSON string (sorted key
 
 ### Step Visibility
 
-Steps can reference only **previously executed** sibling steps (sequential visibility). Within a loop body, all body steps are mutually visible (relaxed to avoid false positives). Parallel branches and fanout lanes cannot see each other; switch cases cannot see each other.
+Steps can reference only **previously executed** sibling steps (sequential visibility). Within a loop body, all body steps are mutually visible (relaxed to avoid false positives). Within a `pipeline`, steps follow standard sequential visibility. Within a `do` list (fanout.do, loop.do, switch.do), pipeline visibility rules apply and composite-local roots (`item`, `loop.iter`) are additionally available. Parallel branches and fanout lanes cannot see each other; switch cases cannot see each other.
 
 ### Composite Output Shapes
 
@@ -386,7 +410,7 @@ Steps can reference only **previously executed** sibling steps (sequential visib
 | `loop` | `{ output, ... }` (last iteration's final child) | Last projection |
 | `guard` | `{ matched, action, message? }` | Decision envelope |
 | `subworkflow` | `{ <output keys> }` | Child spec's evaluated outputs |
-| `pipeline` | opaque | Root implicit pipeline |
+| `pipeline` | `{ output, ... }` (final child or `outputs` projection) | Pipeline or implicit root pipeline |
 
 ### Static Validation
 
@@ -443,9 +467,10 @@ Compiler diagnostic codes emitted during validation:
 |---|---|
 | `SPEC_SHAPE` | Generic structural error |
 | `SPEC_VERSION` | `version` must be `1` |
-| `STEP_ID` | Missing or invalid step id |
+| `STEP_ID` | Missing or non-string step id |
+| `STEP_ID_INVALID` | Step or branch id violates the safe id pattern |
+| `STEP_ID_RESERVED` | Step or branch id uses reserved `$` prefix |
 | `STEP_ID_DUPLICATE` | Duplicate step id |
-| `STEP_ID_COLON` | Step id contains `:` |
 | `STEP_KIND` | No matching step kind |
 | `STEP_SHAPE` | Unknown step property |
 | `STEP_TIMEOUT` | Invalid timeout format |
@@ -461,6 +486,7 @@ Compiler diagnostic codes emitted during validation:
 | `RETRY_SHAPE` | Invalid retry spec |
 | `FANOUT_OVER` | Missing `fanout.over` |
 | `FANOUT_DO` | Missing or invalid `fanout.do` |
+| `PARALLEL_DO` | Parallel branch missing `do` |
 | `FANOUT_QUORUM` | Missing `quorum` when `join: quorum` |
 | `FANOUT_OVER_TYPE` | Non-primitive in `over` array |
 | `FANOUT_SUCCESS_CRITERIA` | Invalid `success_criteria` |
@@ -498,9 +524,12 @@ Compiler diagnostic codes emitted during validation:
 
 ## Constraints Summary
 
-- `id` must be non-empty, no colons, unique after include expansion.
+- `id` must match `^[A-Za-z_][A-Za-z0-9_-]*$`, must not start with `$`, and must be unique after include expansion.
+- `parallel[].id` must match the same safe id rule and must not start with `$`.
 - `version` must be `1`.
 - Every step must match exactly one kind.
+- `pipeline` must be non-empty, and `pipeline.outputs` must reference children of that pipeline.
+- `do` lists on fanout, loop, and switch must be non-empty.
 - `fanout.over` array elements must be primitives.
 - `fanout` with `join: quorum` requires `quorum`.
 - `program` with `output` requires `capture.parse: json`.

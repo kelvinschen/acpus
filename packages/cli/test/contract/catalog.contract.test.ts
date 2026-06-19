@@ -1,10 +1,34 @@
 import { describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
+import { compileWorkflow } from "@acpus/core";
 import { globalWorkflowRoot, listWorkflowCatalog, resolveWorkflowTarget } from "../../src/catalog.js";
 
 describe("Workflow Catalog", () => {
+  it("keeps checked-in project catalog workflows lint-ready", () => {
+    const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+    const workflows = [
+      ".acpus/workflows/adversarial-feature-implementation-review.workflow.spec.yaml",
+      ".acpus/workflows/codebase-deep-research.workflow.spec.yaml",
+      ".acpus/workflows/goal-driven-development.workflow.spec.yaml",
+      ".acpus/workflows/human-in-the-loop-development.workflow.spec.yaml",
+      ".acpus/workflows/loop-until-green-fix.workflow.spec.yaml",
+      ".acpus/workflows/solution-generate-filter.workflow.spec.yaml",
+      ".acpus/workflows/worktree-implementation-tournament.workflow.spec.yaml",
+      ".acpus/workflows/stress-demo/workflow.spec.yaml",
+      ".acpus/workflows/swarm-intelligence/workflow.spec.yaml"
+    ];
+
+    for (const rel of workflows) {
+      const sourcePath = join(repoRoot, rel);
+      const result = compileWorkflow(readFileSync(sourcePath, "utf8"), { sourcePath });
+      expect(result.diagnostics, rel).toEqual([]);
+      expect(result.ok, rel).toBe(true);
+    }
+  });
+
   it("discovers ready, invalid, and conflict entries from the project catalog", () => {
     const workspace = mkdtempSync(join(tmpdir(), "acpus-catalog-"));
     try {

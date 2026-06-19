@@ -9,8 +9,11 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A Workflow Spec MUST be a YAML object.
 - A Workflow Spec MUST declare `version`, `name`, and `workflow.steps`.
 - `workflow.steps` MUST be an ordered list of Nodes.
-- Every Node MUST declare a stable non-empty `id`.
-- Node ids MUST be unique within the Workflow Spec after includes are expanded.
+- Every user-authored Node MUST declare a stable non-empty `id`.
+- User-authored Node ids MUST match `^[A-Za-z_][A-Za-z0-9_-]*$`.
+- User-authored Node ids MUST be unique within the Workflow Spec after includes are expanded.
+- User-authored Node ids and `parallel` branch ids MUST NOT start with `$`; `$` is reserved for generated internal pipeline ids.
+- User-authored Node ids and `parallel` branch ids MUST be rejected during lint/schema validation when they contain path separators, whitespace, `:`, shell/path-danger characters, or any other character outside the safe id pattern.
 - A Workflow Spec MAY declare top-level `input`.
 - A Workflow Spec MAY declare top-level `agents`.
 - A Workflow Spec MAY declare top-level `outputs`.
@@ -105,7 +108,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A Program Step with `capture.from: file` MUST read `capture.path` (resolved relative to the resolved `cwd`) and parse it per `capture.parse`.
 - A Program Step result MUST be exposed as an envelope `{ output, exit_code }` at `steps.<id>`.
 - A Program Step MUST expose `steps.<id>.exit_code`.
-- Program Step `exit_code` fields on step envelopes MUST be exposed to CEL as integers, including when the envelope is preserved inside composite outputs or `loop.last`.
+- Program Step `exit_code` fields on step envelopes MUST be exposed to CEL as integers.
 - A Program Step MUST persist its stdout and stderr as artifacts (`stdout.log` and `stderr.log`) on every execution, and expose their references.
 - A Program Step MAY declare `expect.exit_code` as a non-empty array of non-negative integers.
 - The default `expect.exit_code` MUST be treated as `[0]` when `expect` is omitted.
@@ -124,10 +127,21 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 
 ### Composite Nodes
 
-- A `parallel` Node MUST contain named child Nodes.
-- Composite child Nodes (`parallel` entries and `fanout`, `switch` case, `switch` default, and `loop` `do` lists) MUST be validated as full Nodes, so unknown or misplaced fields on a nested Node MUST be rejected with the same structural diagnostics as a top-level Node.
+- A `pipeline` Node MUST contain a non-empty ordered `pipeline` list of child Nodes.
+- A `pipeline` Node MAY declare `outputs` as a projection object evaluated after its child Nodes complete.
+- A `pipeline` Node without `outputs` MUST produce `steps.<id>.output` as its final child Node's primary output.
+- A `pipeline` Node with `outputs` MUST produce `steps.<id>.output` as the evaluated projection.
+- `fanout.do`, `loop.do`, `switch.cases[].do`, and `switch.default.do` MUST compile as generated internal pipeline Nodes.
+- Generated internal pipeline ids MUST use parent-local `$` segments: `fanout.do` and `loop.do` compile to `$do`, `switch.cases[n].do` compiles to `$case_<1-based-index>`, `switch.default.do` compiles to `$default`, and each `parallel` branch body compiles to `$<branch_id>`.
+- Generated internal pipeline ids are parent-local and MAY repeat in one compiled Workflow Spec; the durable Node identity MUST be the resolved Node Key derived from the full `nodePath`.
+- Generated internal pipeline ids MUST NOT be visible expression targets. Expressions such as `steps.$do.output` MUST be rejected as unknown step references.
+- `do` lists MUST be non-empty and MUST NOT declare an `outputs` projection; authors who need a custom public contract MUST use an explicit `pipeline` Node.
+- A `parallel` Node MUST contain branch descriptors shaped as `{ id, do }`, where `id` is the public branch key and `do` is a non-empty ordered list of child Nodes.
+- A `parallel` branch id MUST match `^[A-Za-z_][A-Za-z0-9_-]*$` and MUST NOT start with `$`.
+- The generated `$<branch_id>` pipeline segment is internal; the public branch output key remains the branch id, so branch output is read as `steps.<parallel_id>.output.<branch_id>`.
+- Composite child Nodes (`pipeline` children, `parallel` branch `do` lists, and `fanout`, `switch` case, `switch` default, and `loop` `do` lists) MUST be validated as full Nodes, so unknown or misplaced fields on a nested Node MUST be rejected with the same structural diagnostics as a top-level Node.
 - Every Node result MUST be a step value envelope that exposes its primary produced value at `steps.<id>.output`.
-- Nested composite outputs MUST preserve child step values; for example, a parallel branch value, fanout lane value, switch selected value, or loop last value that comes from an Agent Step includes that Agent Step's own `output` field.
+- Composite outputs MUST expose child primary outputs, not child step envelopes: parallel branch values, fanout lane values, switch selected values, and loop last values use the selected body's primary output directly.
 - The root pipeline Node MUST persist an output envelope whose `output` field is a map keyed by direct child step id, where each value is that child step's full step value.
 - A `parallel` Node MUST produce `steps.<id>.output` as a map keyed by branch id.
 - A `parallel` Node MAY declare `join` as `all` or `race`.
@@ -151,13 +165,13 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A `switch` Node MUST evaluate cases in order.
 - A `switch` Node case MAY declare `when` as a boolean or a CEL expression string.
 - A `switch` Node MAY declare a default branch.
-- A `switch` Node MUST produce `steps.<id>.output` as the selected branch's final child step value.
+- A `switch` Node MUST produce `steps.<id>.output` as the selected branch pipeline's primary output.
 - A `loop` Node MAY declare `until` as a boolean or a CEL expression string.
 - A `loop` Node MUST declare `max_iterations`.
 - A `loop` Node MUST expose `loop.iter`.
 - `loop.iter` MUST be exposed to CEL as an integer.
-- A `loop` Node MAY expose prior iteration output as `loop.last`; `loop.last` MUST be the previous iteration body final child step value, including that child's output envelope.
-- A `loop` Node MUST produce `steps.<id>.output` as the final executed iteration body's final child step value.
+- A `loop` Node MAY expose prior iteration output as `loop.last`; `loop.last` MUST be the previous iteration body pipeline primary output.
+- A `loop` Node MUST produce `steps.<id>.output` as the final executed iteration body pipeline primary output.
 - A `subworkflow` Node MUST reference another Workflow Spec path.
 - A `subworkflow` Node MUST be compiled and executed at runtime, with its `input` expressions evaluated against the current context.
 - A `subworkflow` Node MUST nest child Node keys under its own Node key, and MUST be awaited.
@@ -193,7 +207,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A Signal Node with no `timeout` MUST wait indefinitely for an external decision (or a cancel).
 - `on_timeout` MUST be one of `fail` or `default`.
 - A Signal Node with `on_timeout: default` MUST declare `default` as a literal payload object; when `output` is declared, `default` MUST validate against it at compile time.
-- A Signal Node with `on_timeout: default` MUST, on timeout, complete the Node with the declared `default` payload as its `output`.
+- A Signal Node with `on_timeout: default` MUST, on timeout, complete the Node with the declared `default` payload as its primary output at `steps.<id>.output`.
 - A Signal Node with `on_timeout: fail` MUST fail the Node on timeout.
 - The `awaiting` state MUST be distinct from operator `paused`: an external decision resolves an `awaiting` Signal Node, whereas operator pause/resume governs `paused` Nodes.
 - The decision channel is in-memory; if the Run Supervisor restarts while a Signal Node is `awaiting`, the Node MUST be re-executed and wait for a fresh decision. Durable decision recovery is deferred (see roadmap).
@@ -229,7 +243,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 The compiler MUST statically validate expressions against the compiled IR so that classes of runtime failure are surfaced at lint / dry-run time. Validation MUST be fail-quiet: any reference whose shape cannot be determined statically MUST be accepted silently (prefer false negatives over false positives), and static validation MUST NOT throw.
 
 - Expression references MUST be extracted from the parsed CEL AST, not by text matching.
-- A `steps.<id>.output.<path>` reference whose `<id>` declares a closed output schema (an Agent, Program, or Signal Node) MUST be rejected when `<path>` names a field absent from that schema; the diagnostic MUST list the available fields. Path validation MUST stop, accepting the reference, at the first dynamic index, open object, untyped array element, or composite (loop/fanout/parallel/switch/guard) output projection.
+- A `steps.<id>.output.<path>` reference whose `<id>` declares a closed output schema (an Agent, Program, or Signal Node) MUST be rejected when `<path>` names a field absent from that schema; the diagnostic MUST list the available fields. Path validation MUST stop, accepting the reference, at the first dynamic index, open object, untyped array element, or composite (pipeline/loop/fanout/parallel/switch/guard) output projection.
 - An `input.<path>` reference MUST be validated against the compiled input schema under the same closed-schema rule.
 - A `workflow.<path>` reference MUST be validated against the workflow metadata context fields.
 - Inside a `fanout` body whose `over` resolves to a typed array element schema, an `item.<path>` reference MUST be validated against that element schema under the same closed-schema rule.
@@ -250,6 +264,8 @@ The compiler MUST statically validate expressions against the compiled IR so tha
 
 - Compiler tests MUST cover required top-level fields.
 - Compiler tests MUST cover duplicate id diagnostics.
+- Compiler tests MUST cover safe-id validation for user-authored Node ids and `parallel` branch ids.
+- Compiler tests MUST cover repeated parent-local generated internal ids with unique full node paths.
 - Compiler tests MUST cover Agent Step shape validation.
 - Compiler tests MUST cover Agent Step `session_key` validation, expression collection, and IR preservation.
 - Compiler tests MUST cover Program Step shape validation.

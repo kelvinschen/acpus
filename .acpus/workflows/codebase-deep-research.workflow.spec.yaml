@@ -9,20 +9,17 @@ description: |
   paths; agents perform the open-ended codebase research and synthesis.
 
   Output: .acpus/output/codebase-deep-research/<run_id>/
-
 input:
   target_path: string
   research_depth?: string = "deep"
   custom_instructions?: string = "(none)"
   include_patterns?: string = "(none)"
   output_root?: string = ".acpus/output/codebase-deep-research"
-
 agents:
   researcher:
     use: pi
   synthesizer:
     use: pi
-
 workflow:
   steps:
     - id: prepare_output
@@ -60,179 +57,183 @@ workflow:
           performance: string
           api_design: string
           final: string
-
     - id: research
       parallel:
         - id: architecture
-          run: agent
-          use: researcher
-          prompt: |
-            You are a senior software architect researching an Acpus codebase.
-            Keep code identifiers, file paths, and commands verbatim.
+          do:
+            - id: architecture_step
+              run: agent
+              use: researcher
+              prompt: |
+                You are a senior software architect researching an Acpus codebase.
+                Keep code identifiers, file paths, and commands verbatim.
 
-            Target repository: `${{ input.target_path }}`
-            Include patterns: ${{ input.include_patterns }}
-            Depth: ${{ input.research_depth }}
+                Target repository: `${{ input.target_path }}`
+                Include patterns: ${{ input.include_patterns }}
+                Depth: ${{ input.research_depth }}
 
-            Research architecture and design:
-            - Package/module boundaries and dependency direction.
-            - Workflow DSL, compiler, runtime, CLI, and TUI ownership.
-            - Data flow from YAML input through IR, interpreter, artifacts, and output.
-            - Extension points and places where accidental coupling would hurt future work.
-            - Current docs/spec alignment.
+                Research architecture and design:
+                - Package/module boundaries and dependency direction.
+                - Workflow DSL, compiler, runtime, CLI, and TUI ownership.
+                - Data flow from YAML input through IR, interpreter, artifacts, and output.
+                - Extension points and places where accidental coupling would hurt future work.
+                - Current docs/spec alignment.
 
-            Custom instructions:
-            ${{ input.custom_instructions }}
+                Custom instructions:
+                ${{ input.custom_instructions }}
 
-            Write your full Markdown report to:
-            ${{ steps.prepare_output.output.reports.architecture }}
+                Write your full Markdown report to:
+                ${{ steps.prepare_output.output.reports.architecture }}
 
-            Write boundary:
-            - Do not create, modify, or delete files in the target repository.
-            - Only write to the report path above, its parent output directory, or a system temporary directory.
+                Write boundary:
+                - Do not create, modify, or delete files in the target repository.
+                - Only write to the report path above, its parent output directory, or a system temporary directory.
 
-            Return JSON with the report path and finding count. Put the
-            summary in the Markdown report.
-          output:
-            report_path: string
-            findings_count: integer
-          timeout: 25m
-
+                Return JSON with the report path and finding count. Put the
+                summary in the Markdown report.
+              output:
+                report_path: string
+                findings_count: integer
+              timeout: 25m
         - id: quality
-          run: agent
-          use: researcher
-          prompt: |
-            You are a code quality researcher. Keep identifiers, paths, and
-            commands verbatim.
+          do:
+            - id: quality_step
+              run: agent
+              use: researcher
+              prompt: |
+                You are a code quality researcher. Keep identifiers, paths, and
+                commands verbatim.
 
-            Target repository: `${{ input.target_path }}`
-            Include patterns: ${{ input.include_patterns }}
-            Depth: ${{ input.research_depth }}
+                Target repository: `${{ input.target_path }}`
+                Include patterns: ${{ input.include_patterns }}
+                Depth: ${{ input.research_depth }}
 
-            Research code quality:
-            - Test strategy and meaningful gaps.
-            - Type safety, schema validation, and error handling.
-            - Duplication, naming, local conventions, and maintainability risks.
-            - Places where implementation and specs drift.
+                Research code quality:
+                - Test strategy and meaningful gaps.
+                - Type safety, schema validation, and error handling.
+                - Duplication, naming, local conventions, and maintainability risks.
+                - Places where implementation and specs drift.
 
-            Custom instructions:
-            ${{ input.custom_instructions }}
+                Custom instructions:
+                ${{ input.custom_instructions }}
 
-            Write your full Markdown report to:
-            ${{ steps.prepare_output.output.reports.quality }}
+                Write your full Markdown report to:
+                ${{ steps.prepare_output.output.reports.quality }}
 
-            Write boundary:
-            - Do not create, modify, or delete files in the target repository.
-            - Only write to the report path above, its parent output directory, or a system temporary directory.
+                Write boundary:
+                - Do not create, modify, or delete files in the target repository.
+                - Only write to the report path above, its parent output directory, or a system temporary directory.
 
-            Return JSON with the report path and finding count. Put the
-            summary in the Markdown report.
-          output:
-            report_path: string
-            findings_count: integer
-          timeout: 25m
-
+                Return JSON with the report path and finding count. Put the
+                summary in the Markdown report.
+              output:
+                report_path: string
+                findings_count: integer
+              timeout: 25m
         - id: security
-          run: agent
-          use: researcher
-          prompt: |
-            You are a security and robustness researcher. Keep identifiers,
-            paths, and commands verbatim.
+          do:
+            - id: security_step
+              run: agent
+              use: researcher
+              prompt: |
+                You are a security and robustness researcher. Keep identifiers,
+                paths, and commands verbatim.
 
-            Target repository: `${{ input.target_path }}`
-            Include patterns: ${{ input.include_patterns }}
-            Depth: ${{ input.research_depth }}
+                Target repository: `${{ input.target_path }}`
+                Include patterns: ${{ input.include_patterns }}
+                Depth: ${{ input.research_depth }}
 
-            Research security and robustness:
-            - YAML/schema/CEL input validation boundaries.
-            - Program execution, acpx invocation, path handling, artifact storage.
-            - State persistence, crash recovery, cancellation, retry, and concurrency risks.
-            - Secret exposure, command injection, traversal, and unsafe defaults.
+                Research security and robustness:
+                - YAML/schema/CEL input validation boundaries.
+                - Program execution, acpx invocation, path handling, artifact storage.
+                - State persistence, crash recovery, cancellation, retry, and concurrency risks.
+                - Secret exposure, command injection, traversal, and unsafe defaults.
 
-            Custom instructions:
-            ${{ input.custom_instructions }}
+                Custom instructions:
+                ${{ input.custom_instructions }}
 
-            Write your full Markdown report to:
-            ${{ steps.prepare_output.output.reports.security }}
+                Write your full Markdown report to:
+                ${{ steps.prepare_output.output.reports.security }}
 
-            Write boundary:
-            - Do not create, modify, or delete files in the target repository.
-            - Only write to the report path above, its parent output directory, or a system temporary directory.
+                Write boundary:
+                - Do not create, modify, or delete files in the target repository.
+                - Only write to the report path above, its parent output directory, or a system temporary directory.
 
-            Return JSON with the report path and finding count. Put the
-            summary in the Markdown report.
-          output:
-            report_path: string
-            findings_count: integer
-          timeout: 25m
-
+                Return JSON with the report path and finding count. Put the
+                summary in the Markdown report.
+              output:
+                report_path: string
+                findings_count: integer
+              timeout: 25m
         - id: performance
-          run: agent
-          use: researcher
-          prompt: |
-            You are a performance researcher. Keep identifiers, paths, and
-            commands verbatim.
+          do:
+            - id: performance_step
+              run: agent
+              use: researcher
+              prompt: |
+                You are a performance researcher. Keep identifiers, paths, and
+                commands verbatim.
 
-            Target repository: `${{ input.target_path }}`
-            Include patterns: ${{ input.include_patterns }}
-            Depth: ${{ input.research_depth }}
+                Target repository: `${{ input.target_path }}`
+                Include patterns: ${{ input.include_patterns }}
+                Depth: ${{ input.research_depth }}
 
-            Research performance and scale:
-            - Interpreter concurrency, fanout/parallel limits, and cancellation behavior.
-            - File I/O, artifact growth, JSON parsing, transcript handling, and TUI polling.
-            - Hot paths, cold starts, and measurement gaps.
+                Research performance and scale:
+                - Interpreter concurrency, fanout/parallel limits, and cancellation behavior.
+                - File I/O, artifact growth, JSON parsing, transcript handling, and TUI polling.
+                - Hot paths, cold starts, and measurement gaps.
 
-            Custom instructions:
-            ${{ input.custom_instructions }}
+                Custom instructions:
+                ${{ input.custom_instructions }}
 
-            Write your full Markdown report to:
-            ${{ steps.prepare_output.output.reports.performance }}
+                Write your full Markdown report to:
+                ${{ steps.prepare_output.output.reports.performance }}
 
-            Write boundary:
-            - Do not create, modify, or delete files in the target repository.
-            - Only write to the report path above, its parent output directory, or a system temporary directory.
+                Write boundary:
+                - Do not create, modify, or delete files in the target repository.
+                - Only write to the report path above, its parent output directory, or a system temporary directory.
 
-            Return JSON with the report path and finding count. Put the
-            summary in the Markdown report.
-          output:
-            report_path: string
-            findings_count: integer
-          timeout: 25m
-
+                Return JSON with the report path and finding count. Put the
+                summary in the Markdown report.
+              output:
+                report_path: string
+                findings_count: integer
+              timeout: 25m
         - id: api_design
-          run: agent
-          use: researcher
-          prompt: |
-            You are an API and developer-experience researcher. Write the report
-            with identifiers, paths, and commands verbatim.
+          do:
+            - id: api_design_step
+              run: agent
+              use: researcher
+              prompt: |
+                You are an API and developer-experience researcher. Write the report
+                with identifiers, paths, and commands verbatim.
 
-            Target repository: `${{ input.target_path }}`
-            Include patterns: ${{ input.include_patterns }}
-            Depth: ${{ input.research_depth }}
+                Target repository: `${{ input.target_path }}`
+                Include patterns: ${{ input.include_patterns }}
+                Depth: ${{ input.research_depth }}
 
-            Research user-facing interfaces:
-            - CLI commands, JSON outputs, exit codes, and catalog ergonomics.
-            - Workflow DSL, Schema DSL, expression model, and examples.
-            - Runtime/TUI inspectability and operator controls.
-            - Naming clarity against CONTEXT.md.
+                Research user-facing interfaces:
+                - CLI commands, JSON outputs, exit codes, and catalog ergonomics.
+                - Workflow DSL, Schema DSL, expression model, and examples.
+                - Runtime/TUI inspectability and operator controls.
+                - Naming clarity against CONTEXT.md.
 
-            Custom instructions:
-            ${{ input.custom_instructions }}
+                Custom instructions:
+                ${{ input.custom_instructions }}
 
-            Write your full Markdown report to:
-            ${{ steps.prepare_output.output.reports.api_design }}
+                Write your full Markdown report to:
+                ${{ steps.prepare_output.output.reports.api_design }}
 
-            Write boundary:
-            - Do not create, modify, or delete files in the target repository.
-            - Only write to the report path above, its parent output directory, or a system temporary directory.
+                Write boundary:
+                - Do not create, modify, or delete files in the target repository.
+                - Only write to the report path above, its parent output directory, or a system temporary directory.
 
-            Return JSON with the report path and finding count. Put the
-            summary in the Markdown report.
-          output:
-            report_path: string
-            findings_count: integer
-          timeout: 25m
-
+                Return JSON with the report path and finding count. Put the
+                summary in the Markdown report.
+              output:
+                report_path: string
+                findings_count: integer
+              timeout: 25m
     - id: synthesize
       run: agent
       use: synthesizer
@@ -244,11 +245,11 @@ workflow:
         Custom instructions: ${{ input.custom_instructions }}
 
         Read these independent research reports:
-        - Architecture: ${{ steps.research.output.architecture.output.report_path }}
-        - Quality: ${{ steps.research.output.quality.output.report_path }}
-        - Security: ${{ steps.research.output.security.output.report_path }}
-        - Performance: ${{ steps.research.output.performance.output.report_path }}
-        - API design: ${{ steps.research.output.api_design.output.report_path }}
+        - Architecture: ${{ steps.research.output.architecture.report_path }}
+        - Quality: ${{ steps.research.output.quality.report_path }}
+        - Security: ${{ steps.research.output.security.report_path }}
+        - Performance: ${{ steps.research.output.performance.report_path }}
+        - API design: ${{ steps.research.output.api_design.report_path }}
 
         Synthesize by theme, not by source report. Cross-validate claims that
         appear in multiple reports, downgrade weak evidence, identify gaps, and
@@ -269,7 +270,6 @@ workflow:
         single_source: integer
         gaps_identified: integer
       timeout: 30m
-
 outputs:
   report_path: ${{ steps.synthesize.output.report_path }}
   output_dir: ${{ steps.prepare_output.output.output_dir }}

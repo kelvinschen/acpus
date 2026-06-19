@@ -84,7 +84,7 @@ workflow:
     expect(stepNodes.length).toBe(2);
   });
 
-  it("exposes the previous body step envelope through loop.last", async () => {
+  it("exposes the previous body primary output through loop.last", async () => {
     const ir = compileYaml(`
 version: 1
 name: loop-last-envelope-test
@@ -96,7 +96,7 @@ workflow:
   steps:
     - id: iterate
       loop:
-        until: loop.last.output.ok
+        until: loop.last.ok
         max_iterations: 3
         do:
           - id: step
@@ -139,7 +139,7 @@ workflow:
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
-      programResponses: { step: { stdout: "ok" } }
+      programResponses: { step: { parsedOutput: "ok" } }
     });
     cleanups.push(cleanup);
 
@@ -150,7 +150,7 @@ workflow:
     expect(stepNodes).toHaveLength(1);
   });
 
-  it("evaluates loop.last program exit_code arithmetic as integer CEL", async () => {
+  it("evaluates loop.last primary output in CEL", async () => {
     const ir = compileYaml(`
 version: 1
 name: loop-last-exit-code-int-test
@@ -158,7 +158,7 @@ workflow:
   steps:
     - id: iterate
       loop:
-        until: loop.last.exit_code + 1 >= 1
+        until: loop.last == "ok"
         max_iterations: 3
         do:
           - id: step
@@ -167,7 +167,7 @@ workflow:
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
-      programResponses: { step: { stdout: "ok" } }
+      programResponses: { step: { parsedOutput: "ok" } }
     });
     cleanups.push(cleanup);
 
@@ -176,5 +176,43 @@ workflow:
 
     const stepNodes = store.listNodeStates(meta.runId).filter((n) => n.nodeId === "step");
     expect(stepNodes).toHaveLength(1);
+  });
+
+  it("replays loop.last primary output consistently", async () => {
+    const ir = compileYaml(`
+version: 1
+name: loop-last-replay-test
+agents:
+  coder:
+    type: command
+    use: echo stub
+workflow:
+  steps:
+    - id: fix_loop
+      loop:
+        until: loop.last.ok
+        max_iterations: 3
+        do:
+          - id: fix_once
+            run: agent
+            use: coder
+            prompt: fix
+`);
+
+    const { interpreter, cleanup } = createTestInterpreter({
+      agentResponses: {
+        fix_once: {
+          sequence: [
+            { output: { ok: false } },
+            { output: { ok: true } }
+          ]
+        }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+    expect(interpreter.replay(meta.runId).ok).toBe(true);
   });
 });

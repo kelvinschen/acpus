@@ -24,6 +24,14 @@ export interface NodeKeyDynamic {
   fanoutItemId?: string;
   laneId?: string;
   parallelBranchId?: string;
+  frames?: NodeKeyDynamicFrame[];
+}
+
+export interface NodeKeyDynamicFrame {
+  loopRound?: number;
+  fanoutItemId?: string;
+  laneId?: string;
+  parallelBranchId?: string;
 }
 
 // ─── Per-node persisted state ────────────────────────────────────
@@ -31,7 +39,7 @@ export interface NodeKeyDynamic {
 export interface NodeExecutionState {
   /** Resolved key string (e.g. "workflow/mapped/item:file-a/lane:0") */
   nodeKey: string;
-  /** Original IR node id (e.g. "mapped") */
+  /** Original IR node id (not globally unique for generated internal pipelines). */
   nodeId: string;
   /** Node kind from IR */
   kind: IrNodeKind;

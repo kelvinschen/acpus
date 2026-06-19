@@ -16,10 +16,10 @@ name: all-primitives-e2e
 agents:
   coder:
     type: command
-    use: "echo stub"
+    use: echo stub
   reviewer:
     type: command
-    use: "echo stub"
+    use: echo stub
 input:
   mode: string
 workflow:
@@ -27,19 +27,21 @@ workflow:
     - id: build
       run: agent
       use: coder
-      prompt: "Build"
-
+      prompt: Build
     - id: review-parallel
       parallel:
         - id: review-a
-          run: agent
-          use: reviewer
-          prompt: "Review A"
+          do:
+            - id: review-a
+              run: agent
+              use: reviewer
+              prompt: Review A
         - id: review-b
-          run: agent
-          use: reviewer
-          prompt: "Review B"
-
+          do:
+            - id: review-b
+              run: agent
+              use: reviewer
+              prompt: Review B
     - id: route
       switch:
         cases:
@@ -47,12 +49,12 @@ workflow:
             do:
               - id: fast-deploy
                 run: program
-                cmd: "deploy --fast"
+                cmd: deploy --fast
         default:
           do:
             - id: slow-deploy
               run: program
-              cmd: "deploy"
+              cmd: deploy
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({

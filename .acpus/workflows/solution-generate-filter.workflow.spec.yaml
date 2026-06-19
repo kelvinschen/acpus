@@ -8,13 +8,11 @@ description: |
   recommendation. Program Steps only prepare deterministic output paths.
 
   Output: .acpus/output/solution-generate-filter/<run_id>/
-
 input:
   problem: string
   target_path?: string = "."
   constraints?: string = "(none)"
   output_root?: string = ".acpus/output/solution-generate-filter"
-
 agents:
   generator:
     use: pi
@@ -22,7 +20,6 @@ agents:
     use: pi
   synthesizer:
     use: pi
-
 workflow:
   steps:
     - id: prepare_output
@@ -49,11 +46,13 @@ workflow:
       output:
         output_dir: string
         final_path: string
-
     - id: generate_options
       fanout:
-        over: ["minimal", "balanced", "bold"]
-        key: "${{ item }}"
+        over:
+          - minimal
+          - balanced
+          - bold
+        key: ${{ item }}
         max_concurrency: 3
         join: all
         do:
@@ -88,73 +87,74 @@ workflow:
               title: string
               report_path: string
             timeout: 20m
-
     - id: filter_options
       parallel:
         - id: feasibility
-          run: agent
-          use: filter
-          prompt: |
-            Filter these generated options for feasibility in the current Acpus
-            codebase. Prefer evidence over taste.
+          do:
+            - id: feasibility_step
+              run: agent
+              use: filter
+              prompt: |
+                Filter these generated options for feasibility in the current Acpus
+                codebase. Prefer evidence over taste.
 
-            Problem:
-            ${{ input.problem }}
+                Problem:
+                ${{ input.problem }}
 
-            Generated options:
-            - minimal: title=${{ steps.generate_options.output[0].output.title }}, report=${{ steps.generate_options.output[0].output.report_path }}
-            - balanced: title=${{ steps.generate_options.output[1].output.title }}, report=${{ steps.generate_options.output[1].output.report_path }}
-            - bold: title=${{ steps.generate_options.output[2].output.title }}, report=${{ steps.generate_options.output[2].output.report_path }}
+                Generated options:
+                - minimal: title=${{ steps.generate_options.output[0].title }}, report=${{ steps.generate_options.output[0].report_path }}
+                - balanced: title=${{ steps.generate_options.output[1].title }}, report=${{ steps.generate_options.output[1].report_path }}
+                - bold: title=${{ steps.generate_options.output[2].title }}, report=${{ steps.generate_options.output[2].report_path }}
 
-            Read each option report before evaluating.
+                Read each option report before evaluating.
 
-            Write the full feasibility filter report to:
-            ${{ steps.prepare_output.output.output_dir }}/feasibility-filter.md
+                Write the full feasibility filter report to:
+                ${{ steps.prepare_output.output.output_dir }}/feasibility-filter.md
 
-            Write boundary:
-            - Do not create, modify, or delete files in the target repository.
-            - Only write to the filter report path above, the workflow output directory, or a system temporary directory.
+                Write boundary:
+                - Do not create, modify, or delete files in the target repository.
+                - Only write to the filter report path above, the workflow output directory, or a system temporary directory.
 
-            Return JSON with report path and compact counts. Put option-level
-            reasoning in the Markdown report.
-          output:
-            report_path: string
-            kept_count: integer
-            rejected_count: integer
-          timeout: 20m
-
+                Return JSON with report path and compact counts. Put option-level
+                reasoning in the Markdown report.
+              output:
+                report_path: string
+                kept_count: integer
+                rejected_count: integer
+              timeout: 20m
         - id: risk
-          run: agent
-          use: filter
-          prompt: |
-            Filter these generated options for correctness, test, and
-            maintenance risk.
+          do:
+            - id: risk_step
+              run: agent
+              use: filter
+              prompt: |
+                Filter these generated options for correctness, test, and
+                maintenance risk.
 
-            Problem:
-            ${{ input.problem }}
+                Problem:
+                ${{ input.problem }}
 
-            Generated options:
-            - minimal: title=${{ steps.generate_options.output[0].output.title }}, report=${{ steps.generate_options.output[0].output.report_path }}
-            - balanced: title=${{ steps.generate_options.output[1].output.title }}, report=${{ steps.generate_options.output[1].output.report_path }}
-            - bold: title=${{ steps.generate_options.output[2].output.title }}, report=${{ steps.generate_options.output[2].output.report_path }}
+                Generated options:
+                - minimal: title=${{ steps.generate_options.output[0].title }}, report=${{ steps.generate_options.output[0].report_path }}
+                - balanced: title=${{ steps.generate_options.output[1].title }}, report=${{ steps.generate_options.output[1].report_path }}
+                - bold: title=${{ steps.generate_options.output[2].title }}, report=${{ steps.generate_options.output[2].report_path }}
 
-            Read each option report before evaluating.
+                Read each option report before evaluating.
 
-            Write the full risk filter report to:
-            ${{ steps.prepare_output.output.output_dir }}/risk-filter.md
+                Write the full risk filter report to:
+                ${{ steps.prepare_output.output.output_dir }}/risk-filter.md
 
-            Write boundary:
-            - Do not create, modify, or delete files in the target repository.
-            - Only write to the filter report path above, the workflow output directory, or a system temporary directory.
+                Write boundary:
+                - Do not create, modify, or delete files in the target repository.
+                - Only write to the filter report path above, the workflow output directory, or a system temporary directory.
 
-            Return JSON with report path and compact counts. Put option-level
-            reasoning in the Markdown report.
-          output:
-            report_path: string
-            disqualified_count: integer
-            mitigation_count: integer
-          timeout: 20m
-
+                Return JSON with report path and compact counts. Put option-level
+                reasoning in the Markdown report.
+              output:
+                report_path: string
+                disqualified_count: integer
+                mitigation_count: integer
+              timeout: 20m
     - id: synthesize_recommendation
       run: agent
       use: synthesizer
@@ -167,17 +167,17 @@ workflow:
         ${{ input.problem }}
 
         Generated options:
-        - minimal: title=${{ steps.generate_options.output[0].output.title }}, report=${{ steps.generate_options.output[0].output.report_path }}
-        - balanced: title=${{ steps.generate_options.output[1].output.title }}, report=${{ steps.generate_options.output[1].output.report_path }}
-        - bold: title=${{ steps.generate_options.output[2].output.title }}, report=${{ steps.generate_options.output[2].output.report_path }}
+        - minimal: title=${{ steps.generate_options.output[0].title }}, report=${{ steps.generate_options.output[0].report_path }}
+        - balanced: title=${{ steps.generate_options.output[1].title }}, report=${{ steps.generate_options.output[1].report_path }}
+        - bold: title=${{ steps.generate_options.output[2].title }}, report=${{ steps.generate_options.output[2].report_path }}
 
         Read each option report before synthesizing.
 
         Feasibility filter report:
-        ${{ steps.filter_options.output.feasibility.output.report_path }}
+        ${{ steps.filter_options.output.feasibility.report_path }}
 
         Risk filter report:
-        ${{ steps.filter_options.output.risk.output.report_path }}
+        ${{ steps.filter_options.output.risk.report_path }}
 
         Write the final Markdown report to:
         ${{ steps.prepare_output.output.final_path }}
@@ -193,7 +193,6 @@ workflow:
         final_report_path: string
         confidence: string
       timeout: 25m
-
 outputs:
   chosen_title: ${{ steps.synthesize_recommendation.output.chosen_title }}
   final_report_path: ${{ steps.synthesize_recommendation.output.final_report_path }}

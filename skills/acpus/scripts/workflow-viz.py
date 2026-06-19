@@ -117,6 +117,13 @@ def normalize_node(node):
     if "retry" in node:
         common["retry"] = yaml_dump(node["retry"])
 
+    if "pipeline" in node:
+        return {
+            "id": nid, "kind": "pipeline",
+            "body": [normalize_node(n) for n in (node.get("pipeline") or [])],
+            "outputs": yaml_dump(node.get("outputs")),
+            **common,
+        }
     if "loop" in node:
         loop = node["loop"] or {}
         return {
@@ -143,7 +150,14 @@ def normalize_node(node):
         return {
             "id": nid, "kind": "parallel",
             "join": yaml_dump(node.get("join")),
-            "branches": [normalize_node(n) for n in (node["parallel"] or [])],
+            "branches": [
+                {
+                    "id": branch.get("id", ""),
+                    "body": [normalize_node(n) for n in (branch.get("do") or [])],
+                }
+                for branch in (node["parallel"] or [])
+                if isinstance(branch, dict)
+            ],
             **common,
         }
     if "switch" in node:
@@ -215,10 +229,12 @@ def normalize_node(node):
 def count_kinds(nodes, acc):
     for node in nodes:
         acc[node["kind"]] = acc.get(node["kind"], 0) + 1
-        for child_key in ("body", "branches", "default"):
+        for child_key in ("body", "default"):
             child = node.get(child_key)
             if isinstance(child, list):
                 count_kinds(child, acc)
+        for branch in node.get("branches") or []:
+            count_kinds(branch.get("body") or [], acc)
         for case in node.get("cases") or []:
             count_kinds(case["body"], acc)
     return acc
@@ -348,10 +364,12 @@ def attach_run(nodes, by_id):
     """Recurse the model tree, attaching matching run states by node id."""
     for node in nodes:
         node["runStates"] = by_id.get(node["id"], [])
-        for child_key in ("body", "branches", "default"):
+        for child_key in ("body", "default"):
             child = node.get(child_key)
             if isinstance(child, list):
                 attach_run(child, by_id)
+        for branch in node.get("branches") or []:
+            attach_run(branch.get("body") or [], by_id)
         for case in node.get("cases") or []:
             attach_run(case.get("body") or [], by_id)
 
@@ -692,7 +710,7 @@ function keyfield(node){
   }
 }
 
-const COMPOSITE = new Set(["loop","fanout","parallel","switch","subworkflow"]);
+const COMPOSITE = new Set(["pipeline","loop","fanout","parallel","switch","subworkflow"]);
 
 // Distinct instance labels (fanout lanes / loop rounds) found in a subtree's
 // run states — the container node itself runs once, so the multiplicity lives
@@ -701,10 +719,12 @@ function descendantLabels(node){
   const set=new Set();
   function walk(n){
     (n.runStates||[]).forEach(s=>{if(s.label) set.add(s.label);});
-    ["body","branches","default"].forEach(k=>{if(Array.isArray(n[k]))n[k].forEach(walk);});
+    ["body","default"].forEach(k=>{if(Array.isArray(n[k]))n[k].forEach(walk);});
+    (n.branches||[]).forEach(br=>(br.body||[]).forEach(walk));
     (n.cases||[]).forEach(c=>(c.body||[]).forEach(walk));
   }
-  ["body","branches","default"].forEach(k=>{if(Array.isArray(node[k]))node[k].forEach(walk);});
+  ["body","default"].forEach(k=>{if(Array.isArray(node[k]))node[k].forEach(walk);});
+  (node.branches||[]).forEach(br=>(br.body||[]).forEach(walk));
   (node.cases||[]).forEach(c=>(c.body||[]).forEach(walk));
   return set;
 }
@@ -777,7 +797,9 @@ function makeComposite(node){
     select(node._uid,head);
   });
   // body content
-  if(node.kind==="loop"){
+  if(node.kind==="pipeline"){
+    body.appendChild(renderScope(node.body));
+  }else if(node.kind==="loop"){
     body.appendChild(renderScope(node.body));
     const be=document.createElement("div"); be.className="backedge";
     be.textContent="\u21bb repeat until "+(node.until||"(condition)");
@@ -795,7 +817,7 @@ function makeComposite(node){
     (node.branches||[]).forEach(br=>{
       const col=document.createElement("div"); col.className="col";
       const lab=document.createElement("div"); lab.className="collabel"; lab.textContent="branch: "+br.id;
-      col.appendChild(lab); col.appendChild(renderScope([br])); cols.appendChild(col);
+      col.appendChild(lab); col.appendChild(renderScope(br.body)); cols.appendChild(col);
     });
     body.appendChild(cols);
   }else if(node.kind==="switch"){
@@ -928,6 +950,9 @@ function renderDetail(node){
     h+=codeBlock("cmd",node.cmd);
     h+=codeBlock("capture",node.capture)+codeBlock("expect",node.expect)+codeBlock("env",node.env);
     if(!hasRun){h+=outputSchema(node.output);}
+  }else if(node.kind==="pipeline"){
+    h+=metaLine("body nodes",(node.body||[]).length);
+    h+=codeBlock("outputs",node.outputs);
   }else if(node.kind==="guard"){
     h+=codeBlock("when (CEL)",node.when);
     h+=metaLine("then",node.then)+metaLine("else",node.else);

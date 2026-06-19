@@ -64,11 +64,15 @@ Use raw CEL in `when`, `until`, and expression-valued `over`. Use `${{ ... }}` i
 
 When execution fails, inspect the Run, node state, error, and artifacts first. Prefer node retry, resume, signal delivery, or replay before editing the Workflow Spec.
 
+## 12. Use Explicit Pipeline for Custom Output Projection
+
+`do` lists on fanout, loop, and switch compile as generated internal pipelines whose output is the final child's output. If you need a different public contract (e.g., to project selected fields from children), use an explicit `pipeline` node with `outputs`. The implicit pipeline from `do` lists is sufficient for most internal ordering.
+
 ## 13. Default Agent Policy To Full
 
 Agents default to `policy: full`. Only use `policy: read` on agents that never write files or run commands — it maps to `--approve-reads`, which blocks all edit/execute tool calls regardless of target path.
 
-## 12. Always Declare Timeout
+## 14. Always Declare Timeout
 
 `timeout` is in **milliseconds** when a number (`timeout: 300000` = 5 min). String duration syntax is also supported: `timeout: 5m`, `timeout: 30s`, `timeout: 500ms`.
 

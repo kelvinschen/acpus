@@ -51,9 +51,9 @@ workflow:
     const fanoutNode = nodes.find((n) => n.nodeId === "review-files");
     expect(fanoutNode?.state).toBe("completed");
     expect(fanoutNode?.output).toEqual({ output: [
-      { output: { verdict: "ok" } },
-      { output: { verdict: "ok" } },
-      { output: { verdict: "ok" } }
+      { verdict: "ok" },
+      { verdict: "ok" },
+      { verdict: "ok" }
     ] });
 
     // 3 review-one nodes, each with composite nodeKey containing item: and lane:

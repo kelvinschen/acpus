@@ -141,7 +141,7 @@ outputs:
       const result = lintWorkflow(
         wf(`    - id: fix
       loop:
-        until: loop.iter > 0 && loop.last.output.ok
+        until: loop.iter > 0 && loop.last.ok
         max_iterations: 3
         do:
           - id: attempt
@@ -151,6 +151,24 @@ outputs:
             output: { ok: boolean }`)
       );
       expectOk(result);
+    });
+
+    // TODO: Delete after users have migrated. Transitional guard for pre-primary-output loop.last syntax. 
+    it("rejects old loop.last output-envelope syntax", () => {
+      const result = lintWorkflow(
+        wf(`    - id: fix
+      loop:
+        until: loop.iter > 0 && loop.last.output.ok
+        max_iterations: 3
+        do:
+          - id: attempt
+            run: agent
+            use: m
+            prompt: "try"
+            output: { ok: boolean }`)
+      );
+      expect(result.ok).toBe(false);
+      expectDiagnostic(result, { code: "EXPR_LOOP_LAST_ENVELOPE" });
     });
 
     it("rejects a forward reference to a later sibling step", () => {
@@ -164,6 +182,96 @@ outputs:
       use: m
       prompt: hi
       output: { x: string }`)
+      );
+      expect(result.ok).toBe(false);
+      expectDiagnostic(result, { code: "EXPR_UNKNOWN_STEP", message: "not visible" });
+    });
+
+    it("rejects parent references to private composite body steps", () => {
+      const result = lintWorkflow(
+        wf(`    - id: mapped
+      fanout:
+        over: [1]
+        do:
+          - id: inner
+            run: agent
+            use: m
+            prompt: hi
+            output: { ok: boolean }
+    - id: use
+      run: agent
+      use: m
+      prompt: "\${{ steps.inner.output.ok }}"`)
+      );
+      expect(result.ok).toBe(false);
+      expectDiagnostic(result, { code: "EXPR_UNKNOWN_STEP", message: "not visible" });
+    });
+
+    it("rejects composite config references to private body steps", () => {
+      const result = lintWorkflow(
+        wf(`    - id: fix
+      loop:
+        until: steps.attempt.output.ok
+        max_iterations: 3
+        do:
+          - id: attempt
+            run: agent
+            use: m
+            prompt: hi
+            output: { ok: boolean }`)
+      );
+      expect(result.ok).toBe(false);
+      expectDiagnostic(result, { code: "EXPR_UNKNOWN_STEP", message: "not visible" });
+    });
+
+    it("validates explicit pipeline outputs in the pipeline frame only", () => {
+      const ok = lintWorkflow(
+        wf(`    - id: bundle
+      pipeline:
+        - id: first
+          run: agent
+          use: m
+          prompt: hi
+          output: { value: string }
+      outputs:
+        value: "\${{ steps.first.output.value }}"`)
+      );
+      expectOk(ok);
+
+      const bad = lintWorkflow(
+        wf(`    - id: bundle
+      pipeline:
+        - id: nested
+          pipeline:
+            - id: private
+              run: agent
+              use: m
+              prompt: hi
+              output: { value: string }
+      outputs:
+        value: "\${{ steps.private.output.value }}"`)
+      );
+      expect(bad.ok).toBe(false);
+      expectDiagnostic(bad, { code: "EXPR_UNKNOWN_STEP", message: "not visible" });
+    });
+
+    it("rejects sibling parallel branch references", () => {
+      const result = lintWorkflow(
+        wf(`    - id: branches
+      parallel:
+        - id: left
+          do:
+            - id: left_step
+              run: agent
+              use: m
+              prompt: hi
+              output: { value: string }
+        - id: right
+          do:
+            - id: right_step
+              run: agent
+              use: m
+              prompt: "\${{ steps.left_step.output.value }}"`)
       );
       expect(result.ok).toBe(false);
       expectDiagnostic(result, { code: "EXPR_UNKNOWN_STEP", message: "not visible" });

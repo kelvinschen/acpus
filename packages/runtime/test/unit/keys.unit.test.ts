@@ -127,12 +127,11 @@ describe("parseNodeKey", () => {
         parallelBranchId: "1",
         loopRound: 2
       },
-      dynamicFrames: [{
-        fanoutItemId: "file-a",
-        laneId: "0",
-        parallelBranchId: "1",
-        loopRound: 2
-      }]
+      dynamicFrames: [
+        { fanoutItemId: "file-a", laneId: "0" },
+        { parallelBranchId: "1" },
+        { loopRound: 2 }
+      ]
     });
   });
 
@@ -147,9 +146,9 @@ describe("parseNodeKey", () => {
     });
   });
 
-  it("treats dynamic-looking segments as dynamic and relies on compiler colon rejection (B1)", () => {
+  it("treats dynamic-looking segments as dynamic and relies on compiler safe-id rejection (B1)", () => {
     // The runtime treats "branch:blue" as dynamic wherever it appears. The
-    // compiler rejects step IDs with colons, so resolved node keys cannot
+    // compiler rejects unsafe step IDs, so resolved node keys cannot
     // contain an ambiguous static segment like this.
     const result = parseNodeKey("workflow/branch:blue/step-b");
     expect(result.staticPath).toBe("workflow/step-b");
@@ -161,10 +160,10 @@ describe("parseNodeKey", () => {
     expect(result.dynamic).toEqual({ fanoutItemId: "x" });
   });
 
-  it("note: step IDs with colons are rejected by the compiler (B1 belt-and-suspenders)", () => {
+  it("note: dynamic-looking step IDs are rejected by the compiler (B1 belt-and-suspenders)", () => {
     // A key like "workflow/branch:blue" where branch:blue is the last segment
     // WILL be misparsed as dynamic by the runtime. This is a known limitation
-    // that is prevented at the compiler level (step IDs with colons are rejected).
+    // that is prevented at the compiler level (safe step IDs are enforced).
     const result = parseNodeKey("workflow/branch:blue");
     // The runtime can't distinguish this from a real dynamic dimension.
     // The compiler prevents this from ever occurring.
@@ -174,7 +173,7 @@ describe("parseNodeKey", () => {
   it("exposes dynamicFrames for keys with all dynamic dimension types (M1)", () => {
     const result = parseNodeKey("workflow/mapped/item:file-a/lane:0/round:1");
     expect(result.dynamic).toEqual({ fanoutItemId: "file-a", laneId: "0", loopRound: 1 });
-    expect(result.dynamicFrames).toEqual([{ fanoutItemId: "file-a", laneId: "0", loopRound: 1 }]);
+    expect(result.dynamicFrames).toEqual([{ fanoutItemId: "file-a", laneId: "0" }, { loopRound: 1 }]);
   });
 });
 

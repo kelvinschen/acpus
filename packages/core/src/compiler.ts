@@ -26,6 +26,8 @@ import type {
 } from "./types.js";
 
 const ajv = new Ajv({ allErrors: true, strict: false });
+const GENERATED_ID_PREFIX = "$";
+const SAFE_AUTHOR_ID = /^[A-Za-z_][A-Za-z0-9_-]*$/u;
 
 export function compileWorkflow(source: string, options: CompileOptions = {}): CompileResult {
   const diagnostics = new DiagnosticBag();
@@ -221,17 +223,8 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
   // Defensive: Schema already validates id; keep as fallback
   if (typeof step.id !== "string" || step.id.length === 0) {
     context.diagnostics.error("STEP_ID", "Every workflow step must define a non-empty string id.", `${path}.id`);
-  }
-
-  // Reject step IDs containing colons — colons are reserved for dynamic
-  // dimension separators (item:, lane:, branch:, round:) in Node Keys
-  // and for filesystem encoding via encodeNodeKeyForDir.
-  if (typeof step.id === "string" && step.id.includes(":")) {
-    context.diagnostics.error(
-      "STEP_ID_COLON",
-      `Step id '${step.id}' must not contain colons. Colons are reserved for Node Key dynamic dimension separators.`,
-      `${path}.id`
-    );
+  } else {
+    validateAuthorId(step.id, "Step", `${path}.id`, context);
   }
 
   const nodePath = [...parentPath, id];
@@ -284,13 +277,22 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
     };
   }
 
+  if (Array.isArray(step.pipeline)) {
+    return {
+      ...base,
+      kind: "pipeline",
+      children: compileSteps(asSteps(step.pipeline, `${path}.pipeline`, context), nodePath, `${path}.pipeline`, context),
+      metadata: pickMetadata(step, ["outputs"])
+    };
+  }
+
   if (Array.isArray(step.parallel)) {
     return {
       ...base,
       kind: "parallel",
       keyTemplate: keyTemplateForKind("parallel", keyTemplate(nodePath)),
       outputMerge: outputMergeFor("parallel"),
-      children: compileSteps(asSteps(step.parallel, `${path}.parallel`, context), nodePath, `${path}.parallel`, context),
+      branches: compileParallelBranches(step.parallel, nodePath, `${path}.parallel`, context),
       metadata: pickMetadata(step, ["max_concurrency", "join"])
     };
   }
@@ -298,7 +300,9 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
   if (isRecord(step.fanout)) {
     const fanout = step.fanout;
     validateFanout(fanout, path, context);
-    const children = Array.isArray(fanout.do) ? compileSteps(asSteps(fanout.do, `${path}.fanout.do`, context), nodePath, `${path}.fanout.do`, context) : [];
+    const pipelineId = generatedDoId("do");
+    const pipelinePath = [...nodePath, pipelineId];
+    const children = Array.isArray(fanout.do) ? compileSteps(asSteps(fanout.do, `${path}.fanout.do`, context), pipelinePath, `${path}.fanout.do`, context) : [];
     if (!Array.isArray(fanout.do)) {
       context.diagnostics.error("FANOUT_DO", "fanout.do must be an array of steps.", `${path}.fanout.do`);
     }
@@ -307,7 +311,7 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
       kind: "fanout",
       keyTemplate: keyTemplateForKind("fanout", keyTemplate(nodePath)),
       outputMerge: outputMergeFor("fanout"),
-      children,
+      children: [generatedPipeline(pipelineId, children, pipelinePath, `${path}.fanout.do`)],
       metadata: pickMetadata(fanout, ["over", "key", "max_concurrency", "join", "quorum", "success_criteria"])
     };
   }
@@ -330,19 +334,33 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
             context.diagnostics.error("SWITCH_WHEN_TYPE", `switch.case.when must be a boolean or CEL expression string, got ${typeDesc}.`, `${path}.switch.cases[${caseIndex}].when`);
           }
         }
+        const pipelineId = generatedDoId(`case_${caseIndex + 1}`);
+        const pipelinePath = [...nodePath, pipelineId];
         branches.push({
           id: `case_${caseIndex + 1}`,
           when: typeof caseSpec.when === "string" ? caseSpec.when : undefined,
-          children: Array.isArray(caseSpec.do) ? compileSteps(asSteps(caseSpec.do, `${path}.switch.cases[${caseIndex}].do`, context), nodePath, `${path}.switch.cases[${caseIndex}].do`, context) : []
+          child: generatedPipeline(
+            pipelineId,
+            Array.isArray(caseSpec.do) ? compileSteps(asSteps(caseSpec.do, `${path}.switch.cases[${caseIndex}].do`, context), pipelinePath, `${path}.switch.cases[${caseIndex}].do`, context) : [],
+            pipelinePath,
+            `${path}.switch.cases[${caseIndex}].do`
+          )
         });
       });
     } else {
       context.diagnostics.error("SWITCH_CASES", "switch.cases must be an array.", `${path}.switch.cases`);
     }
     if (isRecord(switchSpec.default)) {
+      const pipelineId = generatedDoId("default");
+      const pipelinePath = [...nodePath, pipelineId];
       branches.push({
         id: "default",
-        children: Array.isArray(switchSpec.default.do) ? compileSteps(asSteps(switchSpec.default.do, `${path}.switch.default.do`, context), nodePath, `${path}.switch.default.do`, context) : []
+        child: generatedPipeline(
+          pipelineId,
+          Array.isArray(switchSpec.default.do) ? compileSteps(asSteps(switchSpec.default.do, `${path}.switch.default.do`, context), pipelinePath, `${path}.switch.default.do`, context) : [],
+          pipelinePath,
+          `${path}.switch.default.do`
+        )
       });
     }
     return {
@@ -365,12 +383,21 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
         context.diagnostics.error("LOOP_UNTIL_TYPE", `loop.until must be a boolean or CEL expression string, got ${typeDesc}.`, `${path}.loop.until`);
       }
     }
+    const pipelineId = generatedDoId("do");
+    const pipelinePath = [...nodePath, pipelineId];
     return {
       ...base,
       kind: "loop",
       keyTemplate: keyTemplateForKind("loop", keyTemplate(nodePath)),
       outputMerge: outputMergeFor("loop"),
-      children: Array.isArray(loop.do) ? compileSteps(asSteps(loop.do, `${path}.loop.do`, context), nodePath, `${path}.loop.do`, context) : [],
+      children: [
+        generatedPipeline(
+          pipelineId,
+          Array.isArray(loop.do) ? compileSteps(asSteps(loop.do, `${path}.loop.do`, context), pipelinePath, `${path}.loop.do`, context) : [],
+          pipelinePath,
+          `${path}.loop.do`
+        )
+      ],
       metadata: pickMetadata(loop, ["until", "max_iterations"])
     };
   }
@@ -584,6 +611,7 @@ function validateJsonSchema(schema: unknown, path: string, context: CompileConte
 }
 
 function inferStepKind(step: Record<string, unknown>): string | undefined {
+  if (Array.isArray(step.pipeline)) return "pipeline";
   if (step.run === "agent") return "run.agent";
   if (step.run === "program") return "run.program";
   if (Array.isArray(step.parallel)) return "parallel";
@@ -612,8 +640,17 @@ function collectStepIds(steps: WorkflowStep[], diagnostics: DiagnosticBag): { id
           kinds.set(step.id, kind);
         }
       }
+      if (Array.isArray(step.pipeline)) {
+        visit(asPlainSteps(step.pipeline), `${stepPath}.pipeline`);
+      }
       if (Array.isArray(step.parallel)) {
-        visit(asPlainSteps(step.parallel), `${stepPath}.parallel`);
+        step.parallel.forEach((branch, branchIndex) => {
+          if (isRecord(branch)) {
+            if (Array.isArray(branch.do)) {
+              visit(asPlainSteps(branch.do), `${stepPath}.parallel[${branchIndex}].do`);
+            }
+          }
+        });
       }
       if (isRecord(step.fanout) && Array.isArray(step.fanout.do)) {
         visit(asPlainSteps(step.fanout.do), `${stepPath}.fanout.do`);
@@ -642,6 +679,68 @@ function keyTemplate(nodePath: string[]): NodeKeyTemplate {
     astVersion: 1,
     nodePath: nodePath.join("/")
   };
+}
+
+function generatedDoId(label: string): string {
+  return `${GENERATED_ID_PREFIX}${label}`;
+}
+
+function generatedPipeline(id: string, children: IrNode[], nodePath: string[], sourcePath: string): IrNode {
+  return {
+    id,
+    kind: "pipeline",
+    nodePath,
+    keyTemplate: keyTemplate(nodePath),
+    children,
+    metadata: {
+      generated: true,
+      sourcePath
+    }
+  };
+}
+
+function compileParallelBranches(value: unknown[], parentPath: string[], path: string, context: CompileContext): IrBranch[] {
+  const branchIds = new Set<string>();
+  return value.map((item, index) => {
+    let id = `missing_${index}`;
+    let doChildren: IrNode[] = [];
+    if (!isRecord(item)) {
+      context.diagnostics.error("STEP_SHAPE", "parallel entries must be branch descriptor objects.", `${path}[${index}]`);
+    } else {
+      id = typeof item.id === "string" && item.id.length > 0 ? item.id : id;
+      validateAuthorId(id, "Branch", `${path}[${index}].id`, context);
+      const pipelineId = generatedDoId(id);
+      const pipelinePath = [...parentPath, pipelineId];
+      if (Array.isArray(item.do)) {
+        doChildren = compileSteps(asSteps(item.do, `${path}[${index}].do`, context), pipelinePath, `${path}[${index}].do`, context);
+      }
+      if (branchIds.has(id)) {
+        context.diagnostics.error("STEP_ID_DUPLICATE", `Duplicate parallel branch id '${id}'.`, `${path}[${index}].id`);
+      }
+    }
+    branchIds.add(id);
+    const pipelineId = generatedDoId(id);
+    const pipelinePath = [...parentPath, pipelineId];
+    return {
+      id,
+      child: generatedPipeline(
+        pipelineId,
+        doChildren,
+        pipelinePath,
+        `${path}[${index}].do`
+      )
+    };
+  });
+}
+
+function validateAuthorId(id: string, label: "Step" | "Branch", path: string, context: CompileContext): void {
+  if (id.startsWith(GENERATED_ID_PREFIX)) {
+    context.diagnostics.error("STEP_ID_RESERVED", `${label} id '${id}' must not use reserved internal prefix '${GENERATED_ID_PREFIX}'.`, path);
+    return;
+  }
+  if (!SAFE_AUTHOR_ID.test(id)) {
+    context.diagnostics.error("STEP_ID_INVALID", `${label} id '${id}' must match ${SAFE_AUTHOR_ID.source}.`, path);
+  }
 }
 
 function pickMetadata(source: Record<string, unknown>, keys: string[]): Record<string, unknown> {

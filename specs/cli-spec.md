@@ -121,6 +121,7 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - The single-Run visualizer MUST split Node Details into task-focused tabs and MUST support numeric detail-tab selection with `1` through `9` while the details pane is focused.
 - The single-Run visualizer MUST use Space to collapse or expand the selected row when that row has children, with all rows expanded by default.
 - The single-Run visualizer MUST render a colored `▾` disclosure indicator for expanded collapsible graph rows and a colored `▸` disclosure indicator for collapsed collapsible graph rows.
+- The single-Run visualizer Node Details Summary MUST expose the selected row's full resolved Node Key as `Key` when one exists, so operators can copy it for `runs retry --node`, `runs signal --node`, or `runs fork --from`.
 - The single-Run visualizer MUST treat `p`, `r`, and `c` as Run-level pause, resume, and cancel controls.
 - The single-Run visualizer MUST treat `R` as Node-level retry only when the selected row is a failed executable Node; otherwise `R` MUST apply Run-level retry when the Run is failed.
 - The single-Run visualizer MUST treat `s` as a Signal Node decision only when the selected row is an `awaiting` Signal Node: a single required boolean `output` field is delivered through a y/N quick prompt, and any other (or absent) schema is entered through the operator's `$EDITOR`.

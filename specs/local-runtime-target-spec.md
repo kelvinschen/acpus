@@ -62,8 +62,8 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - The runtime MUST resolve each Node's `NodeKeyTemplate` plus runtime dynamic context (loop round, fanout item ID, lane ID, parallel branch ID) into a stable key string.
 - Node keys MUST always include dynamic dimensions from ancestor scopes, even when the node itself does not use that dimension, to ensure unique keys for nested nodes.
 - Node keys MUST use the encoding `workflow/mapped/item:file-a/lane:0` where dynamic dimensions appear as `type:value` suffix segments.
-- Nested parallel branch keys MUST use dot-separated ancestry encoding (e.g., `branch:0.1` for the second branch inside the first outer branch). This ensures inner branches under different outer branches produce distinct node keys, preventing state collisions.
-- The `isParallelBranchInScope` helper MUST match a dotted branch key against a scope branch using prefix matching: scope `"0"` matches `"0"`, `"0.1"`, `"0.2"`, etc.; scope `"0.1"` matches only `"0.1"` and `"0.1.x"`.
+- Nested parallel branch keys MUST use dot-separated branch-id ancestry encoding (e.g., `branch:left.test` for branch `test` inside branch `left`). This ensures inner branches under different outer branches produce distinct node keys, preventing state collisions.
+- The `isParallelBranchInScope` helper MUST match a dotted branch key against a scope branch using prefix matching: scope `"left"` matches `"left"`, `"left.test"`, `"left.review"`, etc.; scope `"left.test"` matches only `"left.test"` and `"left.test.x"`.
 - `parseNodeKey` MUST return `staticPath`, `staticSegments`, `dynamic` (collapsed, last-value-wins), and `dynamicFrames` (full frame-based parsing where each frame captures one dynamic scope boundary).
 - `isNodeKeyBelowAnyAnchor` MUST test whether a node key is a strict descendant (below, not equal to) any of the provided anchor keys. It MUST be used by Run Control cancellation to prevent cross-subworkflow boundary violations.
 - Fail-fast Run Control cancellation MUST use the cancelled Composite Node's resolved Node Key as the cancellation root. It MUST cancel active descendants of that Composite Node instance, and MUST NOT cancel nodes in a different subworkflow or dynamic instance merely because they share a Node ID or matching inner dynamic dimensions.
@@ -76,7 +76,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 
 - The runtime MUST evaluate `${{ ... }}` expression templates at runtime using a CEL evaluator.
 - The runtime MUST rewrite `loop.` references to `loop_ctx.` before evaluation.
-- The runtime MUST bind Acpus-owned integer context values (`loop.iter`, `item_index`, and Program Step `exit_code` fields on step envelopes, including nested preserved envelopes) as CEL integers.
+- The runtime MUST bind Acpus-owned integer context values (`loop.iter`, `item_index`, and Program Step `exit_code` fields on step envelopes) as CEL integers.
 - The runtime MUST register custom functions: `now()`, `len()`, `startsWith()`, `matches()`, `coalesce()`.
 - `now()` MUST return a deterministic timestamp, not wall-clock time.
 

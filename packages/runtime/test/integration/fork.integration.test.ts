@@ -461,7 +461,7 @@ workflow:
 
     // Mutate the second tally checkpoint to simulate a round-1 failure.
     const checkpoints = store.readCheckpoints(meta.runId);
-    const round1Idx = checkpoints.findIndex((c) => c.nodeKey === "workflow/aggregate/tally/round:1");
+    const round1Idx = checkpoints.findIndex((c) => c.nodeKey.endsWith("/tally/round:1"));
     expect(round1Idx).toBeGreaterThanOrEqual(0);
     const synthetic = checkpoints.map((c, i) => i === round1Idx ? { ...c, state: "failed" as const } : c);
 

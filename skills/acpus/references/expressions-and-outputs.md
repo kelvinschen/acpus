@@ -15,7 +15,7 @@ Use raw CEL where Acpus expects an expression:
 
 - id: repair
   loop:
-    until: loop.iter > 0 && loop.last.output.ok
+    until: loop.iter > 0 && loop.last.ok
     do: [...]
 
 - id: review_files
@@ -44,17 +44,17 @@ These roots are available to CEL and `${{ }}` templates:
 
 ```yaml
 input.<key>          # validated workflow input, including defaults
-steps.<id>.output   # primary output envelope for a prior visible Node
+steps.<id>.output   # primary output for a prior visible Node
 steps.<id>.exit_code # Program Step exit code
 workflow.<field>    # frozen Workflow Spec metadata
 run_id              # current Run id
 ```
 
-Composite body scopes add these local roots:
+Fanout and loop body scopes add these local roots (pipeline does not introduce new roots; its steps share the enclosing scope):
 
 ```yaml
 loop.iter       # zero-based loop iteration
-loop.last       # previous loop body final child output, absent on first iteration
+loop.last       # previous loop body primary output, absent on first iteration
 item            # current fanout item
 item_id         # rendered fanout key, or item index when no key is declared
 item_index      # zero-based fanout item index
@@ -186,7 +186,7 @@ guard:
   when: steps.collect.output.changed_count > 0
 
 loop:
-  until: loop.iter >= input.max_rounds || loop.last.output.done
+  until: loop.iter >= input.max_rounds || loop.last.done
 
 fanout:
   over: input.files.filter(path, path.endsWith(".ts"))
@@ -214,12 +214,15 @@ steps.collect.exit_code
 ```
 
 ```yaml
+# pipeline: steps.<id>.output is the final child's primary output (or its outputs projection)
+steps.setup_and_validate.output.ready
+
 # parallel is a record keyed by branch id
-steps.review_parallel.output.contract.output.report_path
-steps.review_parallel.output.tests.output.report_path
+steps.review_parallel.output.contract.report_path
+steps.review_parallel.output.tests.report_path
 
 # fanout is an array of successful lane outputs
-steps.research_lanes.output[0].output.report_path
+steps.research_lanes.output[0].report_path
 
 # guard decision fields are inside output
 steps.require_ready.output.matched
@@ -231,6 +234,8 @@ steps.human_gate.output.target
 ```
 
 Use `steps.<id>.output` consistently for every Node's primary produced value. Program Steps also expose `steps.<id>.exit_code`.
+
+`do` lists on fanout, loop, and switch compile as generated internal pipelines; their output follows pipeline semantics (final child's output, or the `outputs` projection if declared). The root `workflow.steps` is itself an implicit pipeline, so sibling visibility at the top level is sequential.
 
 ## Output Schema Shape
 

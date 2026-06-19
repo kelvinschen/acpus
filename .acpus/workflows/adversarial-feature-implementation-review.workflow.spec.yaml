@@ -9,7 +9,6 @@ description: |
   contract, correctness, test, maintainability, and synthesis work.
 
   Output: .acpus/output/adversarial-feature-implementation-review/<run_id>/
-
 input:
   target_path: string
   feature_goal: string
@@ -18,13 +17,11 @@ input:
   review_depth?: string = "deep"
   review_instructions?: string = "(none)"
   output_root?: string = ".acpus/output/adversarial-feature-implementation-review"
-
 agents:
   reviewer:
     use: traex
   cross_examiner:
     use: pi
-
 workflow:
   steps:
     - id: collect_context
@@ -109,175 +106,177 @@ workflow:
           maintainability: string
           final: string
       timeout: 5m
-
     - id: require_changed_files
       guard:
         when: steps.collect_context.output.changed_file_count > 0
         then: continue
         else: fail
-        message: "No changed files found for ${{ input.base_ref }}..${{ input.implementation_ref }}."
-
+        message: No changed files found for ${{ input.base_ref }}..${{ input.implementation_ref }}.
     - id: adversarial_reviews
       parallel:
         - id: contract
-          run: agent
-          use: reviewer
-          prompt: |
-            You are a feature contract reviewer. Your goal is to find deviations
-            from requirements, public interfaces, and current specs. Keep identifiers, paths, and commands verbatim.
+          do:
+            - id: contract_step
+              run: agent
+              use: reviewer
+              prompt: |
+                You are a feature contract reviewer. Your goal is to find deviations
+                from requirements, public interfaces, and current specs. Keep identifiers, paths, and commands verbatim.
 
-            Feature goal:
-            ${{ input.feature_goal }}
+                Feature goal:
+                ${{ input.feature_goal }}
 
-            Repository: `${{ steps.collect_context.output.target_path }}`
-            Changed files: ${{ steps.collect_context.output.changed_files_path }}
-            Diff stat: ${{ steps.collect_context.output.diff_stat_path }}
-            Patch: ${{ steps.collect_context.output.patch_path }}
-            Depth: ${{ input.review_depth }}
+                Repository: `${{ steps.collect_context.output.target_path }}`
+                Changed files: ${{ steps.collect_context.output.changed_files_path }}
+                Diff stat: ${{ steps.collect_context.output.diff_stat_path }}
+                Patch: ${{ steps.collect_context.output.patch_path }}
+                Depth: ${{ input.review_depth }}
 
-            Compare the implementation with `specs/`, `CONTEXT.md`, tests, and
-            user-facing APIs. Cite files and lines. Classify uncertain claims as
-            `needs_verification`.
+                Compare the implementation with `specs/`, `CONTEXT.md`, tests, and
+                user-facing APIs. Cite files and lines. Classify uncertain claims as
+                `needs_verification`.
 
-            Custom instructions:
-            ${{ input.review_instructions }}
+                Custom instructions:
+                ${{ input.review_instructions }}
 
-            Write the complete Markdown report to:
-            ${{ steps.collect_context.output.reports.contract }}
+                Write the complete Markdown report to:
+                ${{ steps.collect_context.output.reports.contract }}
 
-            Write boundary:
-            - Do not create, modify, or delete files in the target repository.
-            - Only write to the report path above, its parent output directory, or a system temporary directory.
+                Write boundary:
+                - Do not create, modify, or delete files in the target repository.
+                - Only write to the report path above, its parent output directory, or a system temporary directory.
 
-            Return JSON with the report path and finding counts. Put finding
-            details in the Markdown report, not in JSON output.
-          output:
-            report_path: string
-            blocking_count: integer
-            high_count: integer
-            medium_count: integer
-            needs_verification_count: integer
-          timeout: 30m
-
+                Return JSON with the report path and finding counts. Put finding
+                details in the Markdown report, not in JSON output.
+              output:
+                report_path: string
+                blocking_count: integer
+                high_count: integer
+                medium_count: integer
+                needs_verification_count: integer
+              timeout: 30m
         - id: correctness
-          run: agent
-          use: reviewer
-          prompt: |
-            You are a correctness and edge-case reviewer. Treat the patch as a
-            system under malformed input, weird timing, cancellation, retry,
-            crash recovery, and partial failure. Keep
-            identifiers, paths, and commands verbatim.
+          do:
+            - id: correctness_step
+              run: agent
+              use: reviewer
+              prompt: |
+                You are a correctness and edge-case reviewer. Treat the patch as a
+                system under malformed input, weird timing, cancellation, retry,
+                crash recovery, and partial failure. Keep
+                identifiers, paths, and commands verbatim.
 
-            Feature goal:
-            ${{ input.feature_goal }}
+                Feature goal:
+                ${{ input.feature_goal }}
 
-            Repository: `${{ steps.collect_context.output.target_path }}`
-            Changed files: ${{ steps.collect_context.output.changed_files_path }}
-            Patch: ${{ steps.collect_context.output.patch_path }}
-            Depth: ${{ input.review_depth }}
+                Repository: `${{ steps.collect_context.output.target_path }}`
+                Changed files: ${{ steps.collect_context.output.changed_files_path }}
+                Patch: ${{ steps.collect_context.output.patch_path }}
+                Depth: ${{ input.review_depth }}
 
-            Provide concrete reproduction ideas or tests for each finding.
+                Provide concrete reproduction ideas or tests for each finding.
 
-            Custom instructions:
-            ${{ input.review_instructions }}
+                Custom instructions:
+                ${{ input.review_instructions }}
 
-            Write the complete Markdown report to:
-            ${{ steps.collect_context.output.reports.correctness }}
+                Write the complete Markdown report to:
+                ${{ steps.collect_context.output.reports.correctness }}
 
-            Write boundary:
-            - Do not create, modify, or delete files in the target repository.
-            - Only write to the report path above, its parent output directory, or a system temporary directory.
+                Write boundary:
+                - Do not create, modify, or delete files in the target repository.
+                - Only write to the report path above, its parent output directory, or a system temporary directory.
 
-            Return JSON with the report path and finding counts. Put finding
-            details in the Markdown report, not in JSON output.
-          output:
-            report_path: string
-            blocking_count: integer
-            high_count: integer
-            medium_count: integer
-            needs_verification_count: integer
-          timeout: 30m
-
+                Return JSON with the report path and finding counts. Put finding
+                details in the Markdown report, not in JSON output.
+              output:
+                report_path: string
+                blocking_count: integer
+                high_count: integer
+                medium_count: integer
+                needs_verification_count: integer
+              timeout: 30m
         - id: tests
-          run: agent
-          use: reviewer
-          prompt: |
-            You are a test and verification reviewer. Find whether the tests
-            cover real behavioral risk, not whether they merely exist. Keep identifiers, paths, and commands verbatim.
+          do:
+            - id: tests_step
+              run: agent
+              use: reviewer
+              prompt: |
+                You are a test and verification reviewer. Find whether the tests
+                cover real behavioral risk, not whether they merely exist. Keep identifiers, paths, and commands verbatim.
 
-            Feature goal:
-            ${{ input.feature_goal }}
+                Feature goal:
+                ${{ input.feature_goal }}
 
-            Repository: `${{ steps.collect_context.output.target_path }}`
-            Changed files: ${{ steps.collect_context.output.changed_files_path }}
-            Patch: ${{ steps.collect_context.output.patch_path }}
-            Depth: ${{ input.review_depth }}
+                Repository: `${{ steps.collect_context.output.target_path }}`
+                Changed files: ${{ steps.collect_context.output.changed_files_path }}
+                Patch: ${{ steps.collect_context.output.patch_path }}
+                Depth: ${{ input.review_depth }}
 
-            Look for missing regression, integration, runtime, CLI, and failure
-            cases. For each gap, give the smallest useful test.
+                Look for missing regression, integration, runtime, CLI, and failure
+                cases. For each gap, give the smallest useful test.
 
-            Custom instructions:
-            ${{ input.review_instructions }}
+                Custom instructions:
+                ${{ input.review_instructions }}
 
-            Write the complete Markdown report to:
-            ${{ steps.collect_context.output.reports.tests }}
+                Write the complete Markdown report to:
+                ${{ steps.collect_context.output.reports.tests }}
 
-            Write boundary:
-            - Do not create, modify, or delete files in the target repository.
-            - Only write to the report path above, its parent output directory, or a system temporary directory.
+                Write boundary:
+                - Do not create, modify, or delete files in the target repository.
+                - Only write to the report path above, its parent output directory, or a system temporary directory.
 
-            Return JSON with the report path and finding counts. Put finding
-            details in the Markdown report, not in JSON output.
-          output:
-            report_path: string
-            blocking_count: integer
-            high_count: integer
-            medium_count: integer
-            needs_verification_count: integer
-          timeout: 30m
-
+                Return JSON with the report path and finding counts. Put finding
+                details in the Markdown report, not in JSON output.
+              output:
+                report_path: string
+                blocking_count: integer
+                high_count: integer
+                medium_count: integer
+                needs_verification_count: integer
+              timeout: 30m
         - id: maintainability
-          run: agent
-          use: reviewer
-          prompt: |
-            You are a maintainability and architecture reviewer. Find misplaced
-            complexity and changes that make future Acpus work brittle. Keep identifiers, paths, and commands verbatim.
+          do:
+            - id: maintainability_step
+              run: agent
+              use: reviewer
+              prompt: |
+                You are a maintainability and architecture reviewer. Find misplaced
+                complexity and changes that make future Acpus work brittle. Keep identifiers, paths, and commands verbatim.
 
-            The codebase is under active iteration. Treat feature changes as
-            greenfield current behavior; do not recommend compatibility shims,
-            migration warnings, or legacy diagnostics unless explicitly asked.
+                The codebase is under active iteration. Treat feature changes as
+                greenfield current behavior; do not recommend compatibility shims,
+                migration warnings, or legacy diagnostics unless explicitly asked.
 
-            Feature goal:
-            ${{ input.feature_goal }}
+                Feature goal:
+                ${{ input.feature_goal }}
 
-            Repository: `${{ steps.collect_context.output.target_path }}`
-            Changed files: ${{ steps.collect_context.output.changed_files_path }}
-            Patch: ${{ steps.collect_context.output.patch_path }}
-            Depth: ${{ input.review_depth }}
+                Repository: `${{ steps.collect_context.output.target_path }}`
+                Changed files: ${{ steps.collect_context.output.changed_files_path }}
+                Patch: ${{ steps.collect_context.output.patch_path }}
+                Depth: ${{ input.review_depth }}
 
-            Inspect ownership boundaries, naming, abstraction level,
-            duplication, dependency direction, and spec drift.
+                Inspect ownership boundaries, naming, abstraction level,
+                duplication, dependency direction, and spec drift.
 
-            Custom instructions:
-            ${{ input.review_instructions }}
+                Custom instructions:
+                ${{ input.review_instructions }}
 
-            Write the complete Markdown report to:
-            ${{ steps.collect_context.output.reports.maintainability }}
+                Write the complete Markdown report to:
+                ${{ steps.collect_context.output.reports.maintainability }}
 
-            Write boundary:
-            - Do not create, modify, or delete files in the target repository.
-            - Only write to the report path above, its parent output directory, or a system temporary directory.
+                Write boundary:
+                - Do not create, modify, or delete files in the target repository.
+                - Only write to the report path above, its parent output directory, or a system temporary directory.
 
-            Return JSON with the report path and finding counts. Put finding
-            details in the Markdown report, not in JSON output.
-          output:
-            report_path: string
-            blocking_count: integer
-            high_count: integer
-            medium_count: integer
-            needs_verification_count: integer
-          timeout: 30m
-
+                Return JSON with the report path and finding counts. Put finding
+                details in the Markdown report, not in JSON output.
+              output:
+                report_path: string
+                blocking_count: integer
+                high_count: integer
+                medium_count: integer
+                needs_verification_count: integer
+              timeout: 30m
     - id: cross_examine
       run: agent
       use: cross_examiner
@@ -296,10 +295,10 @@ workflow:
         - Patch: ${{ steps.collect_context.output.patch_path }}
 
         Reports:
-        - Contract: ${{ steps.adversarial_reviews.output.contract.output.report_path }}
-        - Correctness: ${{ steps.adversarial_reviews.output.correctness.output.report_path }}
-        - Tests: ${{ steps.adversarial_reviews.output.tests.output.report_path }}
-        - Maintainability: ${{ steps.adversarial_reviews.output.maintainability.output.report_path }}
+        - Contract: ${{ steps.adversarial_reviews.output.contract.report_path }}
+        - Correctness: ${{ steps.adversarial_reviews.output.correctness.report_path }}
+        - Tests: ${{ steps.adversarial_reviews.output.tests.report_path }}
+        - Maintainability: ${{ steps.adversarial_reviews.output.maintainability.report_path }}
 
         Start with one verdict: `ship`, `ship_with_fixes`, or `block`.
         Include blocking, high, medium, and needs-verification sections, concrete
@@ -322,7 +321,6 @@ workflow:
         blocking_count: integer
         high_count: integer
       timeout: 30m
-
 outputs:
   verdict: ${{ steps.cross_examine.output.verdict }}
   final_report_path: ${{ steps.cross_examine.output.final_report_path }}

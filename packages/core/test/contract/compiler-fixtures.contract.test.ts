@@ -44,9 +44,9 @@ describe("@acpus/core compiler: canonical fixtures", () => {
     const fanoutNode = result.ir?.root.children?.[1];
     expect(fanoutNode?.kind).toBe("fanout");
     expect(fanoutNode?.children?.length).toBe(1);
-    const innerParallel = fanoutNode?.children?.[0];
+    const innerParallel = fanoutNode?.children?.[0]?.children?.[0];
     expect(innerParallel?.kind).toBe("parallel");
-    expect(innerParallel?.children?.length).toBe(3);
+    expect(innerParallel?.branches?.length).toBe(3);
   });
 
   it("compiles Case C: refactor-and-fix (fanout + subworkflow + loop + switch)", () => {
@@ -66,7 +66,7 @@ describe("@acpus/core compiler: canonical fixtures", () => {
     expect(result.schedule?.nodes).toHaveLength(5);
     const loopNode = result.ir?.root.children?.[3];
     expect(loopNode?.kind).toBe("loop");
-    expect(loopNode?.children?.length).toBe(3);
+    expect(loopNode?.children?.[0]?.children?.length).toBe(3);
   });
 
   it("compiles Case D: deep-research (agent + dynamic fanout + loop)", () => {
@@ -79,7 +79,7 @@ describe("@acpus/core compiler: canonical fixtures", () => {
     expect(result.ir?.root.children?.map((n) => n.kind)).toEqual([
       "run.agent",
       "fanout",
-      "loop",
+      "pipeline",
       "run.signal",
       "run.agent"
     ]);
@@ -134,12 +134,12 @@ describe("@acpus/core compiler: canonical fixtures", () => {
     const fanoutNode = result.ir?.root.children?.[1];
     expect(fanoutNode?.kind).toBe("fanout");
     expect(fanoutNode?.outputMerge).toBe("array");
-    const innerParallel = fanoutNode?.children?.[0];
+    const innerParallel = fanoutNode?.children?.[0]?.children?.[0];
     expect(innerParallel?.kind).toBe("parallel");
     expect(innerParallel?.outputMerge).toBe("map");
-    expect(innerParallel?.children?.length).toBe(2);
-    const reviewBranch = innerParallel?.children?.[0];
-    expect(reviewBranch?.id).toBe("review");
+    expect(innerParallel?.branches?.length).toBe(2);
+    const reviewBranch = innerParallel?.branches?.[0]?.child.children?.[0];
+    expect(innerParallel?.branches?.[0]?.id).toBe("review");
     expect(reviewBranch?.kind).toBe("run.agent");
     expect(reviewBranch?.metadata.output).toEqual({
       type: "object",
@@ -160,8 +160,8 @@ describe("@acpus/core compiler: canonical fixtures", () => {
       additionalProperties: false,
       required: ["verdict", "issues"]
     });
-    const testBranch = innerParallel?.children?.[1];
-    expect(testBranch?.id).toBe("test");
+    const testBranch = innerParallel?.branches?.[1]?.child.children?.[0];
+    expect(innerParallel?.branches?.[1]?.id).toBe("test");
     expect(testBranch?.kind).toBe("run.program");
   });
 
@@ -186,19 +186,19 @@ describe("@acpus/core compiler: canonical fixtures", () => {
     expect(fanoutNode?.kind).toBe("fanout");
     expect(fanoutNode?.metadata).toMatchObject({ over: "input.lanes", join: "all", max_concurrency: 1 });
 
-    const parallelNode = fanoutNode?.children?.[0];
+    const parallelNode = fanoutNode?.children?.[0]?.children?.[0];
     expect(parallelNode?.kind).toBe("parallel");
-    expect(parallelNode?.children?.map((n) => [n.id, n.kind])).toEqual([
+    expect(parallelNode?.branches?.map((b) => [b.id, b.child.children?.[0]?.kind])).toEqual([
       ["review_lane", "run.agent"],
       ["loop_lane", "loop"],
       ["switch_lane", "switch"]
     ]);
 
-    const loopNode = parallelNode?.children?.[1];
+    const loopNode = parallelNode?.branches?.[1]?.child.children?.[0];
     expect(loopNode?.outputMerge).toBe("last");
     expect(loopNode?.metadata.until).toBe("loop.iter >= input.max_rounds");
 
-    const switchNode = parallelNode?.children?.[2];
+    const switchNode = parallelNode?.branches?.[2]?.child.children?.[0];
     expect(switchNode?.outputMerge).toBe("selected");
     expect(switchNode?.branches?.map((b) => b.id)).toEqual(["case_1", "case_2", "default"]);
   });
@@ -224,16 +224,19 @@ describe("@acpus/core compiler: canonical fixtures", () => {
     expect(fanoutNode?.outputMerge).toBe("array");
     expect(fanoutNode?.metadata).toMatchObject({ over: "input.items", max_concurrency: 1 });
 
-    const guardNode = fanoutNode?.children?.[0];
+    const bodyPipeline = fanoutNode?.children?.[0];
+    expect(bodyPipeline?.kind).toBe("pipeline");
+
+    const guardNode = bodyPipeline?.children?.[0];
     expect(guardNode?.kind).toBe("guard");
     expect(guardNode?.metadata).toMatchObject({ when: 'item == "skip"', then: "complete", else: "continue" });
 
-    const loopNode = fanoutNode?.children?.[1];
+    const loopNode = bodyPipeline?.children?.[1];
     expect(loopNode?.kind).toBe("loop");
     expect(loopNode?.outputMerge).toBe("last");
     expect(loopNode?.metadata.until).toBe("loop.iter >= input.max_rounds");
 
-    const workNode = loopNode?.children?.[0];
+    const workNode = loopNode?.children?.[0]?.children?.[0];
     expect(workNode?.kind).toBe("run.agent");
     expect(workNode?.id).toBe("work");
     expect(workNode?.metadata.output).toEqual({

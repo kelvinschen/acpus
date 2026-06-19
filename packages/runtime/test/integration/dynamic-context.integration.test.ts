@@ -140,6 +140,70 @@ workflow:
     expect(retried?.cmd).toBe("tick 0");
     expect(retried?.ctx.loop?.iter).toBe(0);
   });
+
+  it("does not leak private sibling branch outputs into node retry context", async () => {
+    const ir = compileYaml(`
+version: 1
+name: retry-frame-scope
+input:
+  ref: string
+workflow:
+  steps:
+    - id: branches
+      parallel:
+        - id: left
+          do:
+            - id: private_left
+              run: program
+              cmd: ["left"]
+        - id: right
+          do:
+            - id: retry_me
+              run: program
+              cmd: ["retry", "\${{ steps[input.ref].output }}"]
+`);
+    const program = new RecordingProgramExecutor(["retry_me"]);
+    const { interpreter, store, cleanup } = makeInterpreter(program);
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: { ref: "private_left" } });
+    expect(meta.status).toBe("failed");
+    const failed = store.listNodeStates(meta.runId).find((n) => n.nodeId === "retry_me");
+    expect(failed?.state).toBe("failed");
+
+    program.renders.length = 0;
+    await expect(interpreter.retryNode(meta.runId, failed!.nodeKey)).rejects.toThrow(/No such key|private_left/);
+    expect(program.renders).toEqual([]);
+  });
+
+  it("hydrates explicit pipeline frame outputs when retrying a pipeline child", async () => {
+    const ir = compileYaml(`
+version: 1
+name: retry-explicit-pipeline-frame
+workflow:
+  steps:
+    - id: bundle
+      pipeline:
+        - id: prepare
+          run: program
+          cmd: ["prepare"]
+        - id: retry_me
+          run: program
+          cmd: ["retry", "\${{ steps.prepare.output }}"]
+`);
+    const program = new RecordingProgramExecutor(["retry_me"]);
+    const { interpreter, store, cleanup } = makeInterpreter(program);
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("failed");
+    const failed = store.listNodeStates(meta.runId).find((n) => n.nodeId === "retry_me");
+    expect(failed?.state).toBe("failed");
+
+    program.renders.length = 0;
+    await interpreter.retryNode(meta.runId, failed!.nodeKey);
+    expect(program.renders.find((r) => r.nodeKey === failed!.nodeKey)?.cmd).toBe("retry prepare");
+  });
 });
 
 describe("Control-plane retry semantics", () => {

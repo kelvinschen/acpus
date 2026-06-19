@@ -36,7 +36,7 @@ interface CanonicalNodeShape {
 interface CanonicalBranchShape {
   id: string;
   when?: string;
-  children: CanonicalNodeShape[];
+  child: CanonicalNodeShape;
 }
 
 function nodeShape(node: IrNode, options: IrNodeHashOptions): CanonicalNodeShape {
@@ -55,14 +55,14 @@ function branchShape(branch: IrBranch, options: IrNodeHashOptions): CanonicalBra
   return {
     id: branch.id,
     when: branch.when,
-    children: branch.children.map((child) => nodeShape(child, options))
+    child: nodeShape(branch.child, options)
   };
 }
 
 function nodeReferencesWorkflow(node: IrNode): boolean {
   if (metadataReferencesWorkflow(node.kind, node.metadata)) return true;
   if (node.branches?.some((branch) =>
-    rawCelReferencesWorkflow(branch.when) || branch.children.some(nodeReferencesWorkflow)
+    rawCelReferencesWorkflow(branch.when) || nodeReferencesWorkflow(branch.child)
   )) return true;
   return node.children?.some(nodeReferencesWorkflow) ?? false;
 }

@@ -23,7 +23,9 @@ workflow:
         message: "blocked: \${{ input.reason }}"
     - id: after
       run: program
-      cmd: ["echo", "after"]
+      cmd:
+        - echo
+        - after
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
@@ -56,7 +58,9 @@ workflow:
         else: fail
     - id: after
       run: program
-      cmd: ["echo", "after"]
+      cmd:
+        - echo
+        - after
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
@@ -86,10 +90,12 @@ workflow:
         when: len(input.items) == 0
         then: complete
         else: continue
-        message: "nothing to do"
+        message: nothing to do
     - id: after
       run: program
-      cmd: ["echo", "after"]
+      cmd:
+        - echo
+        - after
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
@@ -103,6 +109,11 @@ workflow:
     const nodes = store.listNodeStates(meta.runId);
     expect(nodes.find((n) => n.nodeId === "no_work")?.output).toEqual({
       output: { matched: true, action: "complete" }
+    });
+    expect(nodes.find((n) => n.nodeId === "workflow")?.output).toEqual({
+      output: {
+        no_work: { output: { matched: true, action: "complete" } }
+      }
     });
     expect(nodes.find((n) => n.nodeId === "after")).toBeUndefined();
   });
@@ -118,10 +129,12 @@ workflow:
         when: true
         then: continue
         else: fail
-        message: "not exposed on continue"
+        message: not exposed on continue
     - id: after
       run: program
-      cmd: ["echo", "after"]
+      cmd:
+        - echo
+        - after
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
@@ -176,7 +189,9 @@ workflow:
         else: fail
     - id: after
       run: program
-      cmd: ["echo", "after"]
+      cmd:
+        - echo
+        - after
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
@@ -204,7 +219,7 @@ workflow:
     - id: mapped
       fanout:
         over: input.items
-        key: "\${{ item.id }}"
+        key: \${{ item.id }}
         join: all
         do:
           - id: maybe_skip
@@ -212,10 +227,12 @@ workflow:
               when: item.skip
               then: complete
               else: continue
-              message: "skipped \${{ item.id }}"
+              message: skipped \${{ item.id }}
           - id: work
             run: program
-            cmd: ["echo", "\${{ item.id }}"]
+            cmd:
+              - echo
+              - \${{ item.id }}
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
@@ -255,15 +272,21 @@ workflow:
                   else: continue
               - id: case_after
                 run: program
-                cmd: ["echo", "case-after"]
+                cmd:
+                  - echo
+                  - case-after
         default:
           do:
             - id: default_after
               run: program
-              cmd: ["echo", "default-after"]
+              cmd:
+                - echo
+                - default-after
     - id: root_after
       run: program
-      cmd: ["echo", "root-after"]
+      cmd:
+        - echo
+        - root-after
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
@@ -304,10 +327,14 @@ workflow:
               else: continue
           - id: loop_after
             run: program
-            cmd: ["echo", "loop-after"]
+            cmd:
+              - echo
+              - loop-after
     - id: root_after
       run: program
-      cmd: ["echo", "root-after"]
+      cmd:
+        - echo
+        - root-after
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
@@ -323,10 +350,44 @@ workflow:
 
     const nodes = store.listNodeStates(meta.runId);
     expect(nodes.find((n) => n.nodeId === "repeat")?.state).toBe("completed");
-    expect(nodes.find((n) => n.nodeId === "repeat")?.output).toEqual({ output: { output: { matched: true, action: "complete" } } });
+    expect(nodes.find((n) => n.nodeId === "repeat")?.output).toEqual({ output: { matched: true, action: "complete" } });
     expect(nodes.find((n) => n.nodeId === "stop_loop")?.output).toEqual({ output: { matched: true, action: "complete" } });
     expect(nodes.find((n) => n.nodeId === "loop_after")).toBeUndefined();
     expect(nodes.find((n) => n.nodeId === "root_after")?.state).toBe("completed");
+  });
+
+  it("exposes guard complete primary output through an explicit pipeline", async () => {
+    const ir = compileYaml(`
+version: 1
+name: guard-complete-pipeline-output
+workflow:
+  steps:
+    - id: bundle
+      pipeline:
+        - id: stop
+          guard:
+            when: true
+            then: complete
+            else: continue
+        - id: skipped
+          run: program
+          cmd: ["echo", "skipped"]
+    - id: assert_complete
+      guard:
+        when: steps.bundle.output.action == "complete"
+        then: continue
+        else: fail
+`);
+    const { interpreter, store, cleanup } = createTestInterpreter();
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+    const nodes = store.listNodeStates(meta.runId);
+    expect(nodes.find((n) => n.nodeId === "bundle")?.output).toEqual({
+      output: { matched: true, action: "complete" }
+    });
+    expect(nodes.find((n) => n.nodeId === "assert_complete")?.state).toBe("completed");
   });
 
   it("uses existing parallel fail-fast cancellation when a guard fails", async () => {
@@ -339,13 +400,19 @@ workflow:
       max_concurrency: 2
       parallel:
         - id: stop
-          guard:
-            when: false
-            then: continue
-            else: fail
+          do:
+            - id: stop
+              guard:
+                when: false
+                then: continue
+                else: fail
         - id: slow
-          run: program
-          cmd: ["echo", "slow"]
+          do:
+            - id: slow
+              run: program
+              cmd:
+                - echo
+                - slow
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({

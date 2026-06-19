@@ -21,7 +21,7 @@ workflow:
   steps:
     - id: fix-loop
       loop:
-        until: loop.last.output.ok == true
+        until: loop.last.ok == true
         max_iterations: 3
         do:
           - id: fix-once

@@ -95,20 +95,33 @@ interface ForkSource {
 function liftOutOfComposite(nodeKey: string, irIndex: Map<string, IrNodeIndexEntry>): string {
   const staticPath = staticNodePathFromKey(nodeKey);
   const segments = staticPath.split("/");
+  let sawGenerated = false;
   for (let i = segments.length; i >= 1; i--) {
     const candidatePath = segments.slice(0, i).join("/");
     const entry = irIndex.get(candidatePath);
     if (!entry) continue;
-    if (!entry.parentKind || entry.parentKind === "pipeline") {
+    if (entry.node.metadata.generated === true) {
+      sawGenerated = true;
+      continue;
+    }
+    if (!entry.parentKind) {
+      return candidatePath;
+    }
+    if (entry.parentKind === "pipeline" && entry.parentGenerated !== true && (!sawGenerated || isCompositeKind(entry.node.kind))) {
       return candidatePath;
     }
   }
   return nodeKey;
 }
 
+function isCompositeKind(kind: IrNode["kind"]): boolean {
+  return kind === "pipeline" || kind === "parallel" || kind === "fanout" || kind === "switch" || kind === "loop" || kind === "subworkflow";
+}
+
 interface IrNodeIndexEntry {
   node: IrNode;
   parentKind?: IrNode["kind"];
+  parentGenerated?: boolean;
 }
 
 /**
@@ -120,15 +133,13 @@ interface IrNodeIndexEntry {
  */
 function indexIrNodes(ir: AcpusIr): Map<string, IrNodeIndexEntry> {
   const out = new Map<string, IrNodeIndexEntry>();
-  const visit = (node: IrNode, parentKind?: IrNode["kind"]): void => {
-    out.set(node.nodePath.join("/"), { node, parentKind });
+  const visit = (node: IrNode, parentKind?: IrNode["kind"], parentGenerated?: boolean): void => {
+    out.set(node.nodePath.join("/"), { node, parentKind, parentGenerated });
     for (const child of node.children ?? []) {
-      visit(child, node.kind);
+      visit(child, node.kind, node.metadata.generated === true);
     }
     for (const branch of node.branches ?? []) {
-      for (const child of branch.children) {
-        visit(child, node.kind);
-      }
+      visit(branch.child, node.kind, node.metadata.generated === true);
     }
   };
   visit(ir.root);

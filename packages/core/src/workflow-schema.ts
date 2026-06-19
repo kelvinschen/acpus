@@ -7,6 +7,8 @@
  * remains in the hand-written compiler code.
  */
 
+const SAFE_AUTHOR_ID_PATTERN = "^[A-Za-z_][A-Za-z0-9_-]*$";
+
 export const WORKFLOW_SCHEMA: Record<string, unknown> = {
   $defs: {
     // ── Agent definition ──
@@ -38,10 +40,11 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
         id: {
           type: "string",
           minLength: 1,
-          pattern: "^[^:]+$"
+          pattern: SAFE_AUTHOR_ID_PATTERN
         }
       },
       oneOf: [
+        { $ref: "#/$defs/pipelineStep" },
         { $ref: "#/$defs/agentStep" },
         { $ref: "#/$defs/programStep" },
         { $ref: "#/$defs/parallelStep" },
@@ -54,6 +57,25 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
       ]
     },
 
+    pipelineStep: {
+      type: "object",
+      additionalProperties: false,
+      required: ["pipeline"],
+      properties: {
+        id: {
+          type: "string",
+          minLength: 1,
+          pattern: SAFE_AUTHOR_ID_PATTERN
+        },
+        pipeline: {
+          type: "array",
+          minItems: 1,
+          items: { $ref: "#/$defs/step" }
+        },
+        outputs: { type: "object" }
+      }
+    },
+
     agentStep: {
       type: "object",
       additionalProperties: false,
@@ -62,7 +84,7 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
         id: {
           type: "string",
           minLength: 1,
-          pattern: "^[^:]+$"
+          pattern: SAFE_AUTHOR_ID_PATTERN
         },
         run: { const: "agent" },
         use: { type: "string" },
@@ -91,7 +113,7 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
         id: {
           type: "string",
           minLength: 1,
-          pattern: "^[^:]+$"
+          pattern: SAFE_AUTHOR_ID_PATTERN
         },
         run: { const: "program" },
         cmd: {
@@ -122,11 +144,11 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
         id: {
           type: "string",
           minLength: 1,
-          pattern: "^[^:]+$"
+          pattern: SAFE_AUTHOR_ID_PATTERN
         },
         parallel: {
           type: "array",
-          items: { $ref: "#/$defs/step" }
+          items: { $ref: "#/$defs/parallelBranch" }
         },
         max_concurrency: {
           type: "integer",
@@ -139,6 +161,24 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
       }
     },
 
+    parallelBranch: {
+      type: "object",
+      additionalProperties: false,
+      required: ["id", "do"],
+      properties: {
+        id: {
+          type: "string",
+          minLength: 1,
+          pattern: SAFE_AUTHOR_ID_PATTERN
+        },
+        do: {
+          type: "array",
+          minItems: 1,
+          items: { $ref: "#/$defs/step" }
+        }
+      }
+    },
+
     fanoutStep: {
       type: "object",
       additionalProperties: false,
@@ -147,7 +187,7 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
         id: {
           type: "string",
           minLength: 1,
-          pattern: "^[^:]+$"
+          pattern: SAFE_AUTHOR_ID_PATTERN
         },
         fanout: { $ref: "#/$defs/fanoutSpec" }
       }
@@ -178,7 +218,11 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
           minimum: 1
         },
         success_criteria: { $ref: "#/$defs/successCriteriaSpec" },
-        do: { type: "array", items: { $ref: "#/$defs/step" } }
+        do: {
+          type: "array",
+          minItems: 1,
+          items: { $ref: "#/$defs/step" }
+        }
       },
       allOf: [
         // join: quorum → quorum required
@@ -200,7 +244,7 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
         id: {
           type: "string",
           minLength: 1,
-          pattern: "^[^:]+$"
+          pattern: SAFE_AUTHOR_ID_PATTERN
         },
         switch: { $ref: "#/$defs/switchSpec" }
       }
@@ -218,8 +262,13 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
           type: "object",
           additionalProperties: false,
           properties: {
-            do: { type: "array", items: { $ref: "#/$defs/step" } }
-          }
+            do: {
+              type: "array",
+              minItems: 1,
+              items: { $ref: "#/$defs/step" }
+            }
+          },
+          required: ["do"]
         }
       }
     },
@@ -227,6 +276,7 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
     switchCase: {
       type: "object",
       additionalProperties: false,
+      required: ["when", "do"],
       properties: {
         when: {
           oneOf: [
@@ -234,7 +284,11 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
             { type: "boolean" }
           ]
         },
-        do: { type: "array", items: { $ref: "#/$defs/step" } }
+        do: {
+          type: "array",
+          minItems: 1,
+          items: { $ref: "#/$defs/step" }
+        }
       }
     },
 
@@ -246,7 +300,7 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
         id: {
           type: "string",
           minLength: 1,
-          pattern: "^[^:]+$"
+          pattern: SAFE_AUTHOR_ID_PATTERN
         },
         loop: { $ref: "#/$defs/loopSpec" }
       }
@@ -255,7 +309,7 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
     loopSpec: {
       type: "object",
       additionalProperties: false,
-      required: ["max_iterations"],
+      required: ["max_iterations", "do"],
       properties: {
         until: {
           oneOf: [
@@ -264,7 +318,11 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
           ]
         },
         max_iterations: { type: "number" },
-        do: { type: "array", items: { $ref: "#/$defs/step" } }
+        do: {
+          type: "array",
+          minItems: 1,
+          items: { $ref: "#/$defs/step" }
+        }
       }
     },
 
@@ -276,7 +334,7 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
         id: {
           type: "string",
           minLength: 1,
-          pattern: "^[^:]+$"
+          pattern: SAFE_AUTHOR_ID_PATTERN
         },
         guard: { $ref: "#/$defs/guardSpec" }
       }
@@ -315,7 +373,7 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
         id: {
           type: "string",
           minLength: 1,
-          pattern: "^[^:]+$"
+          pattern: SAFE_AUTHOR_ID_PATTERN
         },
         run: { const: "signal" },
         prompt: { type: "string" },
@@ -337,7 +395,7 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
         id: {
           type: "string",
           minLength: 1,
-          pattern: "^[^:]+$"
+          pattern: SAFE_AUTHOR_ID_PATTERN
         },
         subworkflow: { type: "string" },
         input: { type: "object" }     // free-form

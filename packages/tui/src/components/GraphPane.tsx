@@ -44,7 +44,7 @@ export function GraphPane({
       overflow="hidden"
     >
       <Text bold color="magenta">
-        WORKFLOW GRAPH (IR)
+        WORKFLOW GRAPH
       </Text>
       {moreAbove > 0 ? <Text color="gray">  ↑ {moreAbove} more</Text> : null}
       <Box flexDirection="column">

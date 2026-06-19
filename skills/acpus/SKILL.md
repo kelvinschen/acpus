@@ -9,7 +9,7 @@ Acpus is the durable local runner that orchestrates acpx-backed agents through W
 
 ## Core Model: Three Composable Units
 
-Three equal units, freely orchestrated with composite nodes (loop, fanout, parallel, switch, guard) into controllable workflows:
+Three equal units, freely orchestrated with composite nodes (pipeline, loop, fanout, parallel, switch, guard) into controllable workflows:
 
 - **Agent Step** (`run: agent`) — open-ended judgment via an acpx agent.
 - **Program Step** (`run: program`) — deterministic local glue.
@@ -132,7 +132,7 @@ This path covers writing or editing a Workflow Spec YAML — no CLI commands run
 Key decisions while authoring:
 
 - **Program vs Agent Step**: Program Steps are for deterministic local glue (prepare dirs, compute paths, collect diffs, apply/rollback patches, read state for guards). Agent Steps handle planning, judgment, synthesis, failure interpretation, role boundaries, and cross-round memory. If a Program Step starts encoding those decisions, move that work into an agent prompt and a durable file.
-- **Composite nodes**: guard, loop, fanout, parallel, switch — each has distinct scope variables and output shape. See `references/workflow-spec-schema.md` for the full schema and common pitfalls (e.g., parallel output needs double `.output.` level; `loop.last` is undefined on first iteration).
+- **Composite nodes**: pipeline, guard, loop, fanout, parallel, switch — each has distinct scope variables and output shape. `do` lists on fanout/loop/switch compile as generated internal pipelines; use explicit `pipeline` with `outputs` when you need a custom public contract. See `references/workflow-spec-schema.md` for the full schema and common pitfalls (e.g., `parallel` branches are `{ id, do }`; `loop.last` is undefined on first iteration).
 - **Expression forms**: raw CEL in `when`, `until`, and expression-valued `over`; `${{ ... }}` interpolation in prompts, command strings, keys, and messages. See `references/expressions-and-outputs.md`.
 - **Output schema**: keep flat and minimal (paths, counts, booleans, durable ids). Do not put the output schema in the prompt — Acpus injects it and retries parse/schema failures. Large artifacts go in files; return their paths.
 - **Helper scripts**: prefer real scripts over long inline shell for repository-local workflows. Dry-run scripts to verify them before integrating.

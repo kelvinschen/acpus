@@ -24,11 +24,15 @@ workflow:
     - id: branches
       parallel:
         - id: left
-          run: program
-          cmd: ["echo", "left"]
+          do:
+            - id: left_step
+              run: program
+              cmd: ["echo", "left"]
         - id: right
-          run: program
-          cmd: ["echo", "right"]
+          do:
+            - id: right_step
+              run: program
+              cmd: ["echo", "right"]
 
     - id: mapped
       fanout:
@@ -66,7 +70,7 @@ workflow:
 
     - id: fix_loop
       loop:
-        until: loop.iter > 0 && coalesce(loop.last.output.ok, false)
+        until: loop.iter > 0 && coalesce(loop.last.ok, false)
         max_iterations: 2
         do:
           - id: fix_once

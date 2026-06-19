@@ -235,13 +235,32 @@ workflow:
     - id: outer
       parallel:
         - id: inner
-          run: program
-          cmd: ["echo", "hi"]
-          surprise: true
+          do:
+            - id: inner_step
+              run: program
+              cmd: ["echo", "hi"]
+              surprise: true
 `;
     const result = lintWorkflow(src);
     expect(result.ok).toBe(false);
-    expectDiagnostic(result, { code: "STEP_SHAPE", path: "$.workflow.steps[0].parallel[0]", message: "Unknown step property 'surprise'" });
+    expectDiagnostic(result, { code: "STEP_SHAPE", path: "$.workflow.steps[0].parallel[0].do[0]", message: "Unknown step property 'surprise'" });
+  });
+
+  it("reports direct parallel steps as missing branch do", () => {
+    const src = `
+version: 1
+name: test
+workflow:
+  steps:
+    - id: outer
+      parallel:
+        - id: old_style_step
+          run: program
+          cmd: ["echo", "hi"]
+`;
+    const result = lintWorkflow(src);
+    expect(result.ok).toBe(false);
+    expectDiagnostic(result, { code: "PARALLEL_DO", path: "$.workflow.steps[0].parallel[0]", message: "branch descriptors { id, do }" });
   });
 
   it("reports a missing required field on a nested step without ancestor cascade", () => {

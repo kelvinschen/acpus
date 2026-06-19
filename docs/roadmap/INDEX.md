@@ -16,7 +16,7 @@
 
 | PRD M | 状态 | 关键缺口（证据） |
 |---|---|---|
-| M1 编译 / lint / 冻结 IR / dry-run | 完成 | subworkflow 路径未在编译期解析（`packages/core/src/compiler.ts:316`）；非法表达式函数仅产生 warning，不阻断（`packages/core/src/expressions.ts:45`） |
+| M1 编译 / lint / 冻结 IR / dry-run | 完成 | subworkflow 路径未在编译期解析（`packages/core/src/compiler.ts:316`）；非法表达式函数仅产生 warning，不阻断（`packages/core/src/expressions.ts:45`）；显式 `pipeline` Node 与 `do` 统一语义已实现（设计决策参考 [pipeline-and-do-design.md](pipeline-and-do-design.md)，行为见 `specs/`） |
 | M2 本地 durable interpreter | 完成（R1 收尾） | 原缺口（fanout quorum/min_success、parallel race、subworkflow no-op、approval `decision`/`at`、自动 retry）已在 R1 全部实现并测试覆盖 |
 | M3 Program Activity | 完成（R1 收尾） | 原缺口（stdout/stderr artifact、`exit_code` envelope、非零退出作为 step data、`capture.from: file`）已在 R1 全部实现并测试覆盖 |
 | M4 Agent Activity via acpx | 完成（已归档） | Agent Step 经 acpx 真实驱动 ACP agent：session load/resume、固定 continuation prompt、协作式 cancel、partial transcript artifact、按 agent type 路由真实/mock executor、Acpus→acpx→Mock Agent 真实 e2e（#1/#2/#3）均已实现并测试覆盖。完成记录见 `docs/archive/R2-agent-acpx-integration.md` |

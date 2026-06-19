@@ -328,7 +328,7 @@ for (const action of ["pause", "resume", "cancel"] as const) {
 runs
   .command("retry")
   .argument("<runId>", "run ID")
-  .option("--node <key>", "retry a specific node instead of the whole run")
+  .option("--node <nodeKey>", "retry a specific Node Key instead of the whole run")
   .option("--json", "output machine-readable JSON")
   .action(async (runId: string, options: { node?: string; json?: boolean }) => {
     try {
@@ -351,7 +351,7 @@ runs
 runs
   .command("signal")
   .argument("<runId>", "run ID")
-  .requiredOption("--node <key>", "the Signal Node key to deliver the payload to")
+  .requiredOption("--node <nodeKey>", "the Signal Node Key to deliver the payload to")
   .requiredOption("--payload <value>", "inline JSON or path to a YAML/JSON payload object")
   .option("--json", "output machine-readable JSON")
   .description("deliver an external decision payload to a Signal Node awaiting a decision")

@@ -56,22 +56,26 @@ name: parallel-test
 agents:
   coder:
     type: command
-    use: "echo stub"
+    use: echo stub
   reviewer:
     type: command
-    use: "echo stub"
+    use: echo stub
 workflow:
   steps:
     - id: parallel-group
       parallel:
         - id: branch-a
-          run: agent
-          use: coder
-          prompt: "Task A"
+          do:
+            - id: branch-a
+              run: agent
+              use: coder
+              prompt: Task A
         - id: branch-b
-          run: agent
-          use: reviewer
-          prompt: "Task B"
+          do:
+            - id: branch-b
+              run: agent
+              use: reviewer
+              prompt: Task B
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
@@ -100,22 +104,26 @@ name: parallel-shared-session-key
 agents:
   coder:
     type: command
-    use: "echo stub"
+    use: echo stub
 workflow:
   steps:
     - id: parallel-group
       max_concurrency: 2
       parallel:
         - id: branch-a
-          run: agent
-          use: coder
-          session_key: "shared"
-          prompt: "Task A"
+          do:
+            - id: branch-a
+              run: agent
+              use: coder
+              session_key: shared
+              prompt: Task A
         - id: branch-b
-          run: agent
-          use: coder
-          session_key: "shared"
-          prompt: "Task B"
+          do:
+            - id: branch-b
+              run: agent
+              use: coder
+              session_key: shared
+              prompt: Task B
 `);
 
     const tmpDir = mkdtempSync(join(tmpdir(), "acpus-parallel-session-key-"));
@@ -140,19 +148,23 @@ name: parallel-map-test
 agents:
   coder:
     type: command
-    use: "echo stub"
+    use: echo stub
 workflow:
   steps:
     - id: parallel-group
       parallel:
         - id: task-a
-          run: agent
-          use: coder
-          prompt: "A"
+          do:
+            - id: task-a
+              run: agent
+              use: coder
+              prompt: A
         - id: task-b
-          run: agent
-          use: coder
-          prompt: "B"
+          do:
+            - id: task-b
+              run: agent
+              use: coder
+              prompt: B
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
@@ -168,8 +180,54 @@ workflow:
 
     const parallelNode = store.listNodeStates(meta.runId).find((n) => n.nodeId === "parallel-group");
     expect(parallelNode?.state).toBe("completed");
-    // outputMerge: "map" — should have step outputs
-    expect(parallelNode?.output).toBeDefined();
+    expect(parallelNode?.output).toEqual({
+      output: {
+        "task-a": { value: 1 },
+        "task-b": { value: 2 }
+      }
+    });
+  });
+
+  it("merges multi-step parallel branches by branch primary output", async () => {
+    const ir = compileYaml(`
+version: 1
+name: parallel-multi-step-map-test
+workflow:
+  steps:
+    - id: parallel-group
+      parallel:
+        - id: left
+          do:
+            - id: left_prepare
+              run: program
+              cmd: ["echo", "prepare"]
+            - id: left_done
+              run: program
+              cmd: ["echo", "done"]
+        - id: right
+          do:
+            - id: right_done
+              run: program
+              cmd: ["echo", "right"]
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: {
+        left_prepare: { parsedOutput: { ignored: true } },
+        left_done: { parsedOutput: { value: "left" } },
+        right_done: { parsedOutput: { value: "right" } }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+    expect(store.listNodeStates(meta.runId).find((n) => n.nodeId === "parallel-group")?.output).toEqual({
+      output: {
+        left: { value: "left" },
+        right: { value: "right" }
+      }
+    });
   });
 
   it("keeps each concurrent branch's artifact refs isolated (no cross-contamination)", async () => {
@@ -184,11 +242,19 @@ workflow:
     - id: par
       parallel:
         - id: slow
-          run: program
-          cmd: ["echo", "slow"]
+          do:
+            - id: slow
+              run: program
+              cmd:
+                - echo
+                - slow
         - id: fast
-          run: program
-          cmd: ["echo", "fast"]
+          do:
+            - id: fast
+              run: program
+              cmd:
+                - echo
+                - fast
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
@@ -228,11 +294,19 @@ workflow:
       join: all
       parallel:
         - id: boom
-          run: program
-          cmd: ["echo", "boom"]
+          do:
+            - id: boom
+              run: program
+              cmd:
+                - echo
+                - boom
         - id: slow
-          run: program
-          cmd: ["echo", "slow"]
+          do:
+            - id: slow
+              run: program
+              cmd:
+                - echo
+                - slow
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
@@ -265,14 +339,26 @@ workflow:
       max_concurrency: 2
       parallel:
         - id: boom
-          run: program
-          cmd: ["echo", "boom"]
+          do:
+            - id: boom
+              run: program
+              cmd:
+                - echo
+                - boom
         - id: slow
-          run: program
-          cmd: ["echo", "slow"]
+          do:
+            - id: slow
+              run: program
+              cmd:
+                - echo
+                - slow
         - id: queued
-          run: program
-          cmd: ["echo", "queued"]
+          do:
+            - id: queued
+              run: program
+              cmd:
+                - echo
+                - queued
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
@@ -311,17 +397,31 @@ workflow:
       max_concurrency: 2
       parallel:
         - id: inner
-          join: all
-          parallel:
-            - id: boom
-              run: program
-              cmd: ["echo", "boom"]
-            - id: inner-slow
-              run: program
-              cmd: ["echo", "inner-slow"]
+          do:
+            - id: inner
+              join: all
+              parallel:
+                - id: boom
+                  do:
+                    - id: boom
+                      run: program
+                      cmd:
+                        - echo
+                        - boom
+                - id: inner-slow
+                  do:
+                    - id: inner-slow
+                      run: program
+                      cmd:
+                        - echo
+                        - inner-slow
         - id: outer-winner
-          run: program
-          cmd: ["echo", "outer-winner"]
+          do:
+            - id: outer-winner
+              run: program
+              cmd:
+                - echo
+                - outer-winner
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
@@ -345,9 +445,9 @@ workflow:
 
     expect(boom?.state).toBe("failed");
     expect(innerSlow?.state).toBe("cancelled");
-    expect(innerSlow?.nodeKey).toContain("branch:0.1");
+    expect(innerSlow?.nodeKey).toContain("branch:inner.inner-slow");
     expect(outerWinner?.state).toBe("completed");
-    expect(outerWinner?.nodeKey).toContain("branch:1");
+    expect(outerWinner?.nodeKey).toContain("branch:outer-winner");
   });
 
   it("Run-level pause/resume re-executes paused parallel branches", async () => {
@@ -359,11 +459,19 @@ workflow:
     - id: par
       parallel:
         - id: branch-a
-          run: program
-          cmd: ["echo", "a"]
+          do:
+            - id: branch-a
+              run: program
+              cmd:
+                - echo
+                - a
         - id: branch-b
-          run: program
-          cmd: ["echo", "b"]
+          do:
+            - id: branch-b
+              run: program
+              cmd:
+                - echo
+                - b
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
@@ -409,7 +517,9 @@ workflow:
   steps:
     - id: task
       run: program
-      cmd: ["echo", "task"]
+      cmd:
+        - echo
+        - task
 `);
 
     const tmpDir = mkdtempSync(join(tmpdir(), "acpus-pause-clobber-"));
@@ -448,11 +558,19 @@ workflow:
       join: all
       parallel:
         - id: boom
-          run: program
-          cmd: ["echo", "boom"]
+          do:
+            - id: boom
+              run: program
+              cmd:
+                - echo
+                - boom
         - id: slow
-          run: program
-          cmd: ["echo", "slow"]
+          do:
+            - id: slow
+              run: program
+              cmd:
+                - echo
+                - slow
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
@@ -483,16 +601,30 @@ workflow:
     - id: outer
       parallel:
         - id: left
-          parallel:
-            - id: inner_a
-              run: program
-              cmd: ["echo", "a"]
-            - id: inner_b
-              run: program
-              cmd: ["echo", "b"]
+          do:
+            - id: left
+              parallel:
+                - id: inner_a
+                  do:
+                    - id: inner_a
+                      run: program
+                      cmd:
+                        - echo
+                        - a
+                - id: inner_b
+                  do:
+                    - id: inner_b
+                      run: program
+                      cmd:
+                        - echo
+                        - b
         - id: right
-          run: program
-          cmd: ["echo", "right"]
+          do:
+            - id: right
+              run: program
+              cmd:
+                - echo
+                - right
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
@@ -512,21 +644,21 @@ workflow:
     // The outer parallel should have dotted branch keys
     const leftBranch = nodes.find((n) => n.nodeId === "left");
     expect(leftBranch).toBeDefined();
-    expect(leftBranch!.nodeKey).toContain("branch:0");
-    expect(leftBranch!.nodeKey).not.toContain("branch:0."); // "left" is branch 0, not dotted
+    expect(leftBranch!.nodeKey).toContain("branch:left");
+    expect(leftBranch!.nodeKey).not.toContain("branch:left."); // "left" is the outer branch, not dotted
 
-    // Inner branches should have dotted keys like "0.0" and "0.1"
+    // Inner branches should have dotted keys like "left.inner_a" and "left.inner_b"
     const innerA = nodes.find((n) => n.nodeId === "inner_a");
     expect(innerA).toBeDefined();
-    expect(innerA!.nodeKey).toMatch(/branch:0\.0$/);
+    expect(innerA!.nodeKey).toMatch(/branch:left\.inner_a$/);
 
     const innerB = nodes.find((n) => n.nodeId === "inner_b");
     expect(innerB).toBeDefined();
-    expect(innerB!.nodeKey).toMatch(/branch:0\.1$/);
+    expect(innerB!.nodeKey).toMatch(/branch:left\.inner_b$/);
 
     const rightBranch = nodes.find((n) => n.nodeId === "right");
     expect(rightBranch).toBeDefined();
-    expect(rightBranch!.nodeKey).toMatch(/branch:1$/);
+    expect(rightBranch!.nodeKey).toMatch(/branch:right$/);
 
     // Artifact directories must exist for each executable node with artifacts
     const artifactStore = new ArtifactStore(store.getBaseDir());

@@ -97,7 +97,7 @@ workflow:
 
     - id: repair_loop
       loop:
-        until: "!loop.last.output.should_continue"
+        until: "!loop.last.should_continue"
         max_iterations: 5
         do:
           - id: repair_attempt
@@ -121,7 +121,7 @@ workflow:
               ${{ loop.iter }}
 
               Reviewer feedback from previous iteration, if available:
-              ${{ loop.iter == 0 ? "(none)" : steps.review_attempt.output.review_summary }}
+              ${{ loop.iter == 0 ? "(none)" : loop.last.review_summary }}
 
               Repair notes:
               ${{ input.repair_notes }}

@@ -223,18 +223,18 @@ timeout: 5m
 
 ### `loop.last` is `undefined` on first iteration
 
-**Symptom:** CEL expression like `loop.last.output.field` fails on iteration 0.
+**Symptom:** CEL expression like `loop.last.field` fails on iteration 0.
 
 **Root cause:** `loop.last` is undefined (not null) on the first iteration. The `until` condition is only checked after iteration 0, but the condition must handle the initial state.
 
 **Fix:** Guard with `loop.iter > 0`:
 ```yaml
-until: loop.iter > 0 && loop.last.output.quality_ok
+until: loop.iter > 0 && loop.last.quality_ok
 ```
 
 For prompt expressions, use ternary:
 ```yaml
-${{ loop.iter == 0 ? "(first attempt)" : loop.last.output.feedback }}
+${{ loop.iter == 0 ? "(first attempt)" : loop.last.feedback }}
 ```
 
 ---
@@ -296,14 +296,14 @@ working directory, set `cwd: ""` (or a template that renders empty) on that step
 — a declared-but-empty `cwd` resolves to the process cwd and skips the agent
 default. `cwd` must be a string; a non-string value (`cwd: 123`) is a lint error.
 
-### Switch/parallel branch references a sibling via the composite id
+### Switch/parallel/pipeline references a sibling via the composite id
 
 **Symptom:** `Failed to evaluate ... template: No such key: <composite_id>` for a
-node inside a `switch` case or `parallel` branch that references an earlier
-sibling in the same branch.
+node inside a `switch` case, `parallel` branch, or `pipeline` that references an
+earlier sibling in the same scope.
 
-**Root cause:** Inside a branch, sibling nodes are referenced by their own id
-(`steps.<sibling_id>.output`), not through the enclosing composite
+**Root cause:** Inside a branch or pipeline, sibling nodes are referenced by
+their own id (`steps.<sibling_id>.output`), not through the enclosing composite
 (`steps.<switch_id>.<sibling_id>.output`). The composite's own `steps.<id>`
 value does not exist until the composite completes.
 
@@ -329,6 +329,30 @@ value does not exist until the composite completes.
 Outer / earlier scopes (e.g. `steps.review`, `steps.prepare`, `input`) ARE
 visible from inside a branch; only the not-yet-produced composite self-reference
 is not.
+
+### Pipeline `outputs` references an unknown or not-yet-executed child
+
+**Symptom:** A `pipeline` node fails evaluating its `outputs` projection with
+`No such key: <field>` or an unknown-step error.
+
+**Root cause:** `pipeline.outputs` templates reference children of that pipeline.
+A reference to a child id that does not exist, or a field path the child does not
+declare, fails at projection time (after children complete).
+
+**Fix:** Reference only real pipeline children, and use closed-schema field
+paths the child declares:
+```yaml
+- id: setup_and_validate
+  pipeline:
+    - id: validate
+      run: program
+      output: { ready: boolean }
+      cmd: ["bash", "-c", "..."]
+  outputs:
+    # Wrong: steps.setup_and_validate.validate.output.ready → No such key: setup_and_validate
+    # Right: reference the child directly
+    ready: "${{ steps.validate.output.ready }}"
+```
 
 ---
 

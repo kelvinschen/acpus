@@ -25,7 +25,7 @@ class ItemProgramExecutor implements ExecutorAdapter {
 
 class CrossLaneProgramExecutor implements ExecutorAdapter {
   async execute({ node, nodeKey, signal }: ExecutionRequest): Promise<ExecutorResult> {
-    const outerLaneA = nodeKey.includes("workflow/mapped/route/sub_a/item:a/lane:0/");
+    const outerLaneA = nodeKey.includes("item:a/lane:0") && nodeKey.includes("/sub_a/");
     await new Promise((resolve) => setTimeout(resolve, outerLaneA ? 5 : 80));
     if (signal.aborted) {
       return { partial: true, error: "aborted" };
@@ -52,7 +52,7 @@ name: fanout-all-fail
 agents:
   coder:
     type: command
-    use: "echo stub"
+    use: echo stub
 workflow:
   steps:
     - id: mapped
@@ -63,7 +63,7 @@ workflow:
           - id: work
             run: agent
             use: coder
-            prompt: "work"
+            prompt: work
 `);
 
     // Only the first lane has a response; the second lane fails (no response).
@@ -86,7 +86,7 @@ name: fanout-min-success
 agents:
   coder:
     type: command
-    use: "echo stub"
+    use: echo stub
 workflow:
   steps:
     - id: mapped
@@ -99,7 +99,7 @@ workflow:
           - id: work
             run: agent
             use: coder
-            prompt: "work"
+            prompt: work
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
@@ -113,7 +113,7 @@ workflow:
     const fanout = store.listNodeStates(meta.runId).find((n) => n.nodeId === "mapped");
     expect(fanout?.state).toBe("completed");
     // Output is the array of successful lane outputs (one success).
-    expect(fanout?.output).toEqual({ output: [{ output: { ok: true } }] });
+    expect(fanout?.output).toEqual({ output: [{ ok: true }] });
   });
 
   it("join: race completes on the first lane and outputs a single success (default min_success = 1)", async () => {
@@ -123,7 +123,7 @@ name: fanout-race
 agents:
   coder:
     type: command
-    use: "echo stub"
+    use: echo stub
 workflow:
   steps:
     - id: mapped
@@ -134,7 +134,7 @@ workflow:
           - id: work
             run: agent
             use: coder
-            prompt: "work"
+            prompt: work
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
@@ -148,7 +148,7 @@ workflow:
 
     const fanout = store.listNodeStates(meta.runId).find((n) => n.nodeId === "mapped");
     expect(fanout?.state).toBe("completed");
-    expect(fanout?.output).toEqual({ output: [{ output: { who: "fast" } }] });
+    expect(fanout?.output).toEqual({ output: [{ who: "fast" }] });
   });
 
   it("join: quorum completes once the quorum count of lanes settle (default min_success = quorum)", async () => {
@@ -158,7 +158,7 @@ name: fanout-quorum
 agents:
   coder:
     type: command
-    use: "echo stub"
+    use: echo stub
 workflow:
   steps:
     - id: mapped
@@ -170,11 +170,11 @@ workflow:
           - id: work
             run: agent
             use: coder
-            prompt: "work"
+            prompt: work
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
-      agentResponses: { work: { output: { ok: true } } }
+      agentResponses: { work: { ok: true } }
     });
     cleanups.push(cleanup);
 
@@ -184,7 +184,7 @@ workflow:
     const fanout = store.listNodeStates(meta.runId).find((n) => n.nodeId === "mapped");
     expect(fanout?.state).toBe("completed");
     // Quorum of 2 successful lanes satisfies the default min_success.
-    expect(fanout?.output).toEqual({ output: [{ output: { ok: true } }, { output: { ok: true } }] });
+    expect(fanout?.output).toEqual({ output: [{ ok: true }, { ok: true }] });
   });
 
   it("join: all fails fast and cancels still-running nodes across other lanes", async () => {
@@ -206,11 +206,19 @@ workflow:
             join: all
             parallel:
               - id: boom
-                run: program
-                cmd: ["echo", "boom"]
+                do:
+                  - id: boom
+                    run: program
+                    cmd:
+                      - echo
+                      - boom
               - id: slow
-                run: program
-                cmd: ["echo", "slow"]
+                do:
+                  - id: slow
+                    run: program
+                    cmd:
+                      - echo
+                      - slow
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
@@ -248,7 +256,9 @@ workflow:
         do:
           - id: work
             run: program
-            cmd: ["echo", "work"]
+            cmd:
+              - echo
+              - work
 `);
 
     const tmpDir = mkdtempSync(join(tmpdir(), "acpus-fanout-queued-"));
@@ -262,11 +272,12 @@ workflow:
     const meta = await interpreter.start(ir, { input: { items: ["boom", "slow", "queued"] } });
     expect(meta.status).toBe("failed");
 
-    const workNodes = store.listNodeStates(meta.runId).filter((n) => n.nodeId === "work");
-    expect(workNodes).toHaveLength(3);
+    const states = store.listNodeStates(meta.runId);
+    const workNodes = states.filter((n) => n.nodeId === "work");
+    expect(workNodes).toHaveLength(2);
     expect(workNodes.find((n) => n.nodeKey.includes("lane:0"))?.state).toBe("failed");
     expect(workNodes.find((n) => n.nodeKey.includes("lane:1"))?.state).toBe("cancelled");
-    expect(workNodes.find((n) => n.nodeKey.includes("lane:2"))?.state).toBe("cancelled");
+    expect(states.find((n) => n.kind === "pipeline" && n.nodeKey.includes("lane:2"))?.state).toBe("cancelled");
   });
 
   it("join: all fail-fast cancels repeated-dynamic descendants under subworkflow prefixes", async () => {
@@ -297,7 +308,7 @@ workflow:
     - id: mapped
       fanout:
         over: input.items
-        key: ${"${{ item }}"}
+        key: ${"\${{ item }}"}
         join: all
         do:
           - id: route
@@ -307,13 +318,15 @@ workflow:
                   do:
                     - id: boom
                       run: program
-                      cmd: ["echo", "boom"]
+                      cmd:
+                        - echo
+                        - boom
               default:
                 do:
                   - id: sub
                     subworkflow: ${childPath}
                     input:
-                      inner_items: ${"${{ input.inner_items }}"}
+                      inner_items: ${"\${{ input.inner_items }}"}
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
@@ -332,7 +345,8 @@ workflow:
 
     const childSlow = nodes.find((n) => n.nodeId === "child_slow");
     expect(childSlow?.state).toBe("cancelled");
-    expect(childSlow?.nodeKey).toContain("workflow/mapped/route/sub/");
+    expect(childSlow?.nodeKey).toContain("/route/");
+    expect(childSlow?.nodeKey).toContain("/sub/");
     expect(childSlow?.nodeKey).toContain("item:slow/lane:0");
     expect(childSlow?.nodeKey).toContain("item:inner/lane:0");
   });

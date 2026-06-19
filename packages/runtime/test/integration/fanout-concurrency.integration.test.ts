@@ -43,10 +43,10 @@ workflow:
     // outputMerge: "array" — should have 4 results
     expect(fanoutNode?.output).toEqual({
       output: [
-        { output: { done: true } },
-        { output: { done: true } },
-        { output: { done: true } },
-        { output: { done: true } }
+        { done: true },
+        { done: true },
+        { done: true },
+        { done: true }
       ]
     });
   });

@@ -16,20 +16,24 @@ name: parallel-race
 agents:
   coder:
     type: command
-    use: "echo stub"
+    use: echo stub
 workflow:
   steps:
     - id: branches
       join: race
       parallel:
         - id: fast
-          run: agent
-          use: coder
-          prompt: "fast"
+          do:
+            - id: fast
+              run: agent
+              use: coder
+              prompt: fast
         - id: slow
-          run: agent
-          use: coder
-          prompt: "slow"
+          do:
+            - id: slow
+              run: agent
+              use: coder
+              prompt: slow
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
@@ -45,7 +49,7 @@ workflow:
 
     const branches = store.listNodeStates(meta.runId).find((n) => n.nodeId === "branches");
     expect(branches?.state).toBe("completed");
-    expect(branches?.output).toEqual({ output: { fast: { output: { who: "fast" } } } });
+    expect(branches?.output).toEqual({ output: { fast: { who: "fast" } } });
   });
 
   it("join: all returns every branch keyed by id", async () => {
@@ -55,20 +59,24 @@ name: parallel-all
 agents:
   coder:
     type: command
-    use: "echo stub"
+    use: echo stub
 workflow:
   steps:
     - id: branches
       join: all
       parallel:
         - id: a
-          run: agent
-          use: coder
-          prompt: "a"
+          do:
+            - id: a
+              run: agent
+              use: coder
+              prompt: a
         - id: b
-          run: agent
-          use: coder
-          prompt: "b"
+          do:
+            - id: b
+              run: agent
+              use: coder
+              prompt: b
 `);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
@@ -81,8 +89,8 @@ workflow:
 
     const branches = store.listNodeStates(meta.runId).find((n) => n.nodeId === "branches");
     expect(branches?.output).toEqual({ output: {
-      a: { output: { x: 1 } },
-      b: { output: { x: 2 } }
+      a: { x: 1 },
+      b: { x: 2 }
     } });
   });
 });

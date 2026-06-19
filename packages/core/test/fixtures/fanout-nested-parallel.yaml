@@ -22,13 +22,17 @@ workflow:
           - id: review_and_test
             parallel:
               - id: review
-                run: agent
-                use: coder
-                prompt: "Review ${{ item.path }} for issues."
-                output:
-                  verdict: string
-                  issues:
-                    - description: string
+                do:
+                  - id: review_step
+                    run: agent
+                    use: coder
+                    prompt: "Review ${{ item.path }} for issues."
+                    output:
+                      verdict: string
+                      issues:
+                        - description: string
               - id: test
-                run: program
-                cmd: ["make", "test"]
+                do:
+                  - id: test_step
+                    run: program
+                    cmd: ["make", "test"]

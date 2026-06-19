@@ -6,6 +6,8 @@ Diagnose first, then pick the smallest matching recovery.
 acpus runs show <runId> --json
 ```
 
+Use `nodeKey` for Node-level operations. Do not pass a bare Workflow Spec `id`: fanout lanes, loop rounds, branches, and generated internal pipelines can share the same `nodeId`. Get the exact Node Key from `runs show`, `runs show --json` (`nodes[].nodeKey`), or the TUI Node Details `Key` field.
+
 ## Decision Table
 
 | Symptom | Recovery |
@@ -16,7 +18,7 @@ acpus runs show <runId> --json
 | `failureKind: "spawn"` | Command not found. Fix → `runs fork`. |
 | `failureKind: "timeout"` | Declared `timeout` too short or program hung. Raise `timeout` → `runs fork`; `runs retry` first if you suspect transient load. |
 | `failureKind: "killed"` | External SIGKILL or OOM. Investigate host → `runs retry`. |
-| Agent `parse`/`schema` after auto-retries exhausted | Read `attempt-NNN.{response,transcript}` artifacts. Simplify `output:` shape, remove duplicate schema text from prompt → `runs retry --node`. |
+| Agent `parse`/`schema` after auto-retries exhausted | Read `attempt-NNN.{response,transcript}` artifacts. Simplify `output:` shape, remove duplicate schema text from prompt → `runs retry --node <nodeKey>`. |
 | Run took wrong branch / iterated wrong / skipped fanout item | Spec logic bug (guard / fanout `over` / loop `until` / switch case). Edit spec → `runs fork [--from <upstream-nodeKey>]`. |
 | Transient: network blip, race, host hiccup | `runs retry <runId> [--node <nodeKey>]`. |
 | Run paused | `runs resume <runId>`. |

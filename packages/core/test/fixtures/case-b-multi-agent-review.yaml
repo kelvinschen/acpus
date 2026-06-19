@@ -25,29 +25,35 @@ workflow:
           - id: multi_review
             parallel:
               - id: by_claude
-                run: agent
-                use: claude
-                prompt: "Review PR ${{ input.pr_url }} for ${{ item }} issues."
-                output:
-                  issues:
-                    - description: string
-                timeout: 10m
+                do:
+                  - id: by_claude_review
+                    run: agent
+                    use: claude
+                    prompt: "Review PR ${{ input.pr_url }} for ${{ item }} issues."
+                    output:
+                      issues:
+                        - description: string
+                    timeout: 10m
               - id: by_codex
-                run: agent
-                use: codex
-                prompt: "Same task, Codex viewpoint, aspect ${{ item }}."
-                output:
-                  issues:
-                    - description: string
-                timeout: 10m
+                do:
+                  - id: by_codex_review
+                    run: agent
+                    use: codex
+                    prompt: "Same task, Codex viewpoint, aspect ${{ item }}."
+                    output:
+                      issues:
+                        - description: string
+                    timeout: 10m
               - id: by_open
-                run: agent
-                use: open
-                prompt: "Same task, OpenCode viewpoint, aspect ${{ item }}."
-                output:
-                  issues:
-                    - description: string
-                timeout: 10m
+                do:
+                  - id: by_open_review
+                    run: agent
+                    use: open
+                    prompt: "Same task, OpenCode viewpoint, aspect ${{ item }}."
+                    output:
+                      issues:
+                        - description: string
+                    timeout: 10m
 
     - id: aggregate
       run: program

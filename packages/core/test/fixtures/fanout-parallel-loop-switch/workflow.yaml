@@ -26,58 +26,64 @@ workflow:
             max_concurrency: 1
             parallel:
               - id: review_lane
-                run: agent
-                use: mock_agent
-                prompt: "Review lane=${{ item_id }}"
-                output:
-                  branch: string
-                  lane: string
-                  ok: boolean
+                do:
+                  - id: review_lane_agent
+                    run: agent
+                    use: mock_agent
+                    prompt: "Review lane=${{ item_id }}"
+                    output:
+                      branch: string
+                      lane: string
+                      ok: boolean
               - id: loop_lane
-                loop:
-                  until: loop.iter >= input.max_rounds
-                  max_iterations: 3
-                  do:
-                    - id: loop_agent
-                      run: agent
-                      use: mock_agent
-                      prompt: "Loop lane=${{ item_id }} round=${{ loop.iter }}"
-                      output:
-                        branch: string
-                        round: integer
-                        continue: boolean
+                do:
+                  - id: loop_lane_node
+                    loop:
+                      until: loop.iter >= input.max_rounds
+                      max_iterations: 3
+                      do:
+                        - id: loop_agent
+                          run: agent
+                          use: mock_agent
+                          prompt: "Loop lane=${{ item_id }} round=${{ loop.iter }}"
+                          output:
+                            branch: string
+                            round: integer
+                            continue: boolean
               - id: switch_lane
-                switch:
-                  cases:
-                    - when: item == "alpha"
-                      do:
-                        - id: switch_alpha_agent
-                          run: agent
-                          use: mock_agent
-                          prompt: "Switch alpha"
-                          output:
-                            branch: string
-                            lane: string
-                            route: string
-                    - when: input.route_mode == "default"
-                      do:
-                        - id: switch_default_agent
-                          run: agent
-                          use: mock_agent
-                          prompt: "Switch default"
-                          output:
-                            branch: string
-                            lane: string
-                            route: string
-                  default:
-                    do:
-                      - id: switch_fallback_agent
-                        run: agent
-                        use: mock_agent
-                        prompt: "Switch fallback"
-                        output:
-                          branch: string
-                          lane: string
-                          route: string
+                do:
+                  - id: switch_lane_node
+                    switch:
+                      cases:
+                        - when: item == "alpha"
+                          do:
+                            - id: switch_alpha_agent
+                              run: agent
+                              use: mock_agent
+                              prompt: "Switch alpha"
+                              output:
+                                branch: string
+                                lane: string
+                                route: string
+                        - when: input.route_mode == "default"
+                          do:
+                            - id: switch_default_agent
+                              run: agent
+                              use: mock_agent
+                              prompt: "Switch default"
+                              output:
+                                branch: string
+                                lane: string
+                                route: string
+                      default:
+                        do:
+                          - id: switch_fallback_agent
+                            run: agent
+                            use: mock_agent
+                            prompt: "Switch fallback"
+                            output:
+                              branch: string
+                              lane: string
+                              route: string
 outputs:
   lanes: "${{ steps.fanout_parallel_loop_switch.output }}"

@@ -41,35 +41,41 @@ workflow:
             retry: { max: 3 }
 
     - id: refine
-      loop:
-        until: loop.iter > 0 && coalesce(steps.replan.output.coverage, 0) >= 0.9
-        max_iterations: 3
-        do:
-          - id: replan
-            run: agent
-            use: planner
-            prompt: |
-              Given findings ${{ steps.collect.output }} and previous gaps
-              ${{ loop.iter == 0 ? [] : steps.replan.output.gaps }}, propose follow-up sub-questions and an outline.
-            output:
-              gaps:
-                - text: string
-              coverage: number
-              outline_md: string
-          - id: merge
-            run: program
-            cmd: ["acpus-tool", "merge-findings", "--in", ".findings.json"]
-            capture:
-              from: stdout
-              parse: json
+      pipeline:
+        - id: refine_loop
+          loop:
+            until: loop.iter > 0 && coalesce(loop.last.coverage, 0) >= 0.9
+            max_iterations: 3
+            do:
+              - id: replan
+                run: agent
+                use: planner
+                prompt: |
+                  Given findings ${{ steps.collect.output }} and previous gaps
+                  ${{ loop.iter == 0 ? [] : loop.last.gaps }}, propose follow-up sub-questions and an outline.
+                output:
+                  gaps:
+                    - text: string
+                  coverage: number
+                  outline_md: string
+              - id: merge
+                run: program
+                cmd: ["acpus-tool", "merge-findings", "--in", ".findings.json"]
+                capture:
+                  from: stdout
+                  parse: json
+      outputs:
+        gaps: ${{ steps.refine_loop.output.gaps }}
+        coverage: ${{ steps.refine_loop.output.coverage }}
+        outline_md: ${{ steps.refine_loop.output.outline_md }}
 
     - id: human_outline
       run: signal
       prompt: |
         Outline:
-        ${{ steps.replan.output.outline_md }}
+        ${{ steps.refine.output.outline_md }}
 
-        Coverage: ${{ steps.replan.output.coverage }}
+        Coverage: ${{ steps.refine.output.coverage }}
         Approve writing?
       output:
         approved: boolean
@@ -83,7 +89,7 @@ workflow:
       use: writer
       prompt: |
         Write a research report for "${{ input.topic }}"
-        from outline ${{ steps.replan.output.outline_md }}.
+        from outline ${{ steps.refine.output.outline_md }}.
       output:
         report_md: string
 outputs:

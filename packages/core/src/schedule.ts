@@ -17,7 +17,7 @@ function toScheduleNode(node: IrNode): ScheduleNode {
     branches: node.branches?.map((branch) => ({
       id: branch.id,
       when: branch.when,
-      children: branch.children.map(toScheduleNode)
+      children: [toScheduleNode(branch.child)]
     }))
   };
 }

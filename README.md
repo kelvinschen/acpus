@@ -149,6 +149,8 @@ acpus runs fork <runId> review.workflow.yaml --from workflow/review
 acpus runs replay <runId>
 ```
 
+`--node` and `--from` take a full Node Key, not a bare `id` from the Workflow Spec. Copy it from `acpus runs show <runId>`, `acpus runs show <runId> --json` (`nodes[].nodeKey`), or the TUI Node Details `Key` field.
+
 `acpus wf` is an alias for `acpus workflows`.
 
 ## Hooks

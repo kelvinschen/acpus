@@ -125,7 +125,7 @@ workflow:
               `${{ steps.prepare.output.target_path }}`
 
               ## Feedback from the previous round
-              ${{ loop.iter == 0 ? "(first round — no prior feedback)" : json(loop.last.output) }}
+              ${{ loop.iter == 0 ? "(first round — no prior feedback)" : json(loop.last) }}
 
               On round 0, produce the initial implementation plan. On later
               rounds, the feedback above is the reason the previous attempt was
@@ -159,7 +159,7 @@ workflow:
               Read and follow: ${{ steps.plan.output.plan_path }}
 
               ## Feedback from the previous round
-              ${{ loop.iter == 0 ? "(first round — no prior feedback)" : json(loop.last.output) }}
+              ${{ loop.iter == 0 ? "(first round — no prior feedback)" : json(loop.last) }}
 
               Implement the plan by editing files in the current working
               directory (the target repository). Make the smallest correct
@@ -198,7 +198,7 @@ workflow:
               acceptance criteria — correctness first, then design and craft.
 
               ## Feedback from the previous round
-              ${{ loop.iter == 0 ? "(first round — no prior feedback)" : json(loop.last.output) }}
+              ${{ loop.iter == 0 ? "(first round — no prior feedback)" : json(loop.last) }}
 
               Decide: does this change deserve to be promoted to a HUMAN review?
               Set `approved: true` ONLY if you would stake your name on it.

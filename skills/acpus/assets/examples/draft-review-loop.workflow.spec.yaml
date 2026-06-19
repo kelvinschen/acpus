@@ -40,7 +40,7 @@ workflow:
     - id: improve
       loop:
         max_iterations: 4
-        until: loop.iter > 0 && loop.last.output.quality_ok
+        until: loop.iter > 0 && loop.last.quality_ok
         do:
           - id: draft
             run: agent
@@ -52,7 +52,7 @@ workflow:
               ${{ steps.prepare.output.draft_path }}
               Iteration: ${{ loop.iter }}
               Previous feedback:
-              ${{ loop.iter == 0 ? "(first attempt)" : loop.last.output.feedback }}
+              ${{ loop.iter == 0 ? "(first attempt)" : loop.last.feedback }}
               Topic:
               ${{ input.topic }}
             output:

@@ -40,24 +40,27 @@ export function resolveNodeKey(
   dynamic: NodeKeyDynamic = {}
 ): string {
   const parts: string[] = [template.nodePath];
+  const frames = dynamic.frames && dynamic.frames.length > 0 ? dynamic.frames : [dynamic];
 
   // Always include dynamic dimensions when provided, regardless of template flags.
   // The template flags indicate the node *can* have that dimension, but at runtime
   // any ancestor that provides a dimension should be reflected in child keys too.
-  if (dynamic.fanoutItemId !== undefined) {
-    parts.push(`item:${sanitizeValue(String(dynamic.fanoutItemId))}`);
-  }
+  for (const frame of frames) {
+    if (frame.fanoutItemId !== undefined) {
+      parts.push(`item:${sanitizeValue(String(frame.fanoutItemId))}`);
+    }
 
-  if (dynamic.laneId !== undefined) {
-    parts.push(`lane:${sanitizeValue(String(dynamic.laneId))}`);
-  }
+    if (frame.laneId !== undefined) {
+      parts.push(`lane:${sanitizeValue(String(frame.laneId))}`);
+    }
 
-  if (dynamic.parallelBranchId !== undefined) {
-    parts.push(`branch:${sanitizeValue(String(dynamic.parallelBranchId))}`);
-  }
+    if (frame.parallelBranchId !== undefined) {
+      parts.push(`branch:${sanitizeValue(String(frame.parallelBranchId))}`);
+    }
 
-  if (dynamic.loopRound !== undefined) {
-    parts.push(`round:${String(dynamic.loopRound)}`);
+    if (frame.loopRound !== undefined) {
+      parts.push(`round:${String(frame.loopRound)}`);
+    }
   }
 
   return parts.join("/");
@@ -71,10 +74,9 @@ export function resolveNodeKey(
  * that match are treated as dynamic; all others are static.
  *
  * **Ambiguity note**: A step ID like `branch:blue` would match DYNAMIC_SEGMENT
- * and be misparsed as dynamic. This is prevented at the compiler level: step
- * IDs containing colons are rejected by both the JSON Schema `pattern` and the
- * compiler's `STEP_ID_COLON` diagnostic. The runtime parsing relies on this
- * compiler guarantee.
+ * and be misparsed as dynamic. This is prevented at the compiler level:
+ * authored step and branch IDs must match the safe ID pattern. The runtime
+ * parsing relies on this compiler guarantee.
  */
 export function parseNodeKey(nodeKey: string): ParsedNodeKey {
   const segments = nodeKey.split("/");
@@ -134,8 +136,8 @@ function buildDynamicFrames(dynamicSegments: string[]): NodeKeyDynamic[] {
     const [kind, ...rest] = segment.split(":");
     const value = rest.join(":");
 
-    // A new fanout item starts a new scope frame
-    if (kind === "item" && !isEmptyDynamicScope(current)) {
+    // item starts a fanout frame; branch/round start their own composite frames.
+    if ((kind === "item" || kind === "branch" || kind === "round") && !isEmptyDynamicScope(current)) {
       frames.push(current);
       current = {};
     }
@@ -263,39 +265,33 @@ export function isNodeKeyInDynamicScope(nodeKey: string, dynamic: NodeKeyDynamic
     return true;
   }
 
-  for (const frame of collectDynamicFrames(nodeKey)) {
-    if (isDynamicFrameInScope(frame, dynamic)) {
-      return true;
-    }
-  }
-
-  return false;
+  const requiredFrames = dynamicFrames(dynamic);
+  return isDynamicFrameSubsequence(requiredFrames, collectDynamicFrames(nodeKey));
 }
 
-function isDynamicFrameInScope(frame: DynamicFrame, dynamic: NodeKeyDynamic): boolean {
-  if (
-    dynamic.fanoutItemId !== undefined &&
-    frame.fanoutItemId !== sanitizeValue(String(dynamic.fanoutItemId))
-  ) {
-    return false;
+function isDynamicFrameSubsequence(requiredFrames: NodeKeyDynamic[], nodeFrames: NodeKeyDynamic[]): boolean {
+  let nodeIndex = 0;
+  for (const required of requiredFrames) {
+    let matched = false;
+    for (; nodeIndex < nodeFrames.length; nodeIndex++) {
+      if (isDynamicFrameScopeMatch(nodeFrames[nodeIndex]!, required)) {
+        matched = true;
+        nodeIndex++;
+        break;
+      }
+    }
+    if (!matched) return false;
   }
-
-  if (dynamic.laneId !== undefined && frame.laneId !== sanitizeValue(String(dynamic.laneId))) {
-    return false;
-  }
-
-  if (
-    dynamic.parallelBranchId !== undefined &&
-    !isParallelBranchInScope(frame.parallelBranchId, dynamic.parallelBranchId)
-  ) {
-    return false;
-  }
-
-  if (dynamic.loopRound !== undefined && frame.loopRound !== dynamic.loopRound) {
-    return false;
-  }
-
   return true;
+}
+
+function isDynamicFrameScopeMatch(frame: DynamicFrame, required: NodeKeyDynamic): boolean {
+  return (
+    (required.fanoutItemId === undefined || frame.fanoutItemId === required.fanoutItemId) &&
+    (required.laneId === undefined || frame.laneId === required.laneId) &&
+    (required.parallelBranchId === undefined || isParallelBranchInScope(frame.parallelBranchId, required.parallelBranchId)) &&
+    (required.loopRound === undefined || frame.loopRound === required.loopRound)
+  );
 }
 
 function collectDynamicFrames(nodeKey: string): DynamicFrame[] {
@@ -312,8 +308,8 @@ function collectDynamicFrames(nodeKey: string): DynamicFrame[] {
     const [kind, ...rest] = segment.split(":");
     const value = rest.join(":");
 
-    // A new fanout item starts a new scope frame
-    if (kind === "item" && !isEmptyDynamicScope(current)) {
+    // item starts a fanout frame; branch/round start their own composite frames.
+    if ((kind === "item" || kind === "branch" || kind === "round") && !isEmptyDynamicScope(current)) {
       pushDynamicFrame(frames, current);
       current = {};
     }
@@ -335,6 +331,25 @@ function collectDynamicFrames(nodeKey: string): DynamicFrame[] {
   }
 
   pushDynamicFrame(frames, current);
+  return frames;
+}
+
+function dynamicFrames(dynamic: NodeKeyDynamic): NodeKeyDynamic[] {
+  if (dynamic.frames && dynamic.frames.length > 0) return dynamic.frames;
+  const { frames: _frames, ...frame } = dynamic;
+  return isEmptyDynamicScope(frame) ? [] : splitDynamicFrame(frame);
+}
+
+function splitDynamicFrame(frame: NodeKeyDynamic): NodeKeyDynamic[] {
+  const frames: NodeKeyDynamic[] = [];
+  if (frame.fanoutItemId !== undefined || frame.laneId !== undefined) {
+    frames.push({
+      fanoutItemId: frame.fanoutItemId === undefined ? undefined : sanitizeValue(String(frame.fanoutItemId)),
+      laneId: frame.laneId === undefined ? undefined : sanitizeValue(String(frame.laneId))
+    });
+  }
+  if (frame.parallelBranchId !== undefined) frames.push({ parallelBranchId: sanitizeValue(String(frame.parallelBranchId)) });
+  if (frame.loopRound !== undefined) frames.push({ loopRound: frame.loopRound });
   return frames;
 }
 

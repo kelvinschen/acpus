@@ -78,6 +78,7 @@ function mapErrors(errors: ErrorObject[], diagnostics: DiagnosticBag, spec: unkn
         const code = classifyError(err, path);
         if (code === "STEP_KIND") continue;
         if (err.keyword === "if") continue;
+        if (code === "STEP_SHAPE" && isDirectParallelStepNoiseAtAbsolutePath(err, absolutePath, spec)) continue;
         const dedupeKey = `${absolutePath}|${code}|${err.keyword}|${JSON.stringify(err.params)}`;
         if (reportedStepSubErrors.has(dedupeKey)) continue;
         reportedStepSubErrors.add(dedupeKey);
@@ -113,6 +114,7 @@ function mapErrors(errors: ErrorObject[], diagnostics: DiagnosticBag, spec: unkn
 
     const path = toPath(err.instancePath);
     const code = classifyError(err, path);
+    if (code === "STEP_SHAPE" && isDirectParallelStepNoise(err, spec)) continue;
     const message = formatMessage(err, code, path);
     diagnostics.error(code, message, path);
   }
@@ -127,6 +129,7 @@ function inferStepBranch(stepData: unknown): string | undefined {
   if (data.run === "agent") return "agentStep";
   if (data.run === "program") return "programStep";
   if (data.run === "signal") return "signalStep";
+  if ("pipeline" in data) return "pipelineStep";
   if ("parallel" in data) return "parallelStep";
   if ("fanout" in data) return "fanoutStep";
   if ("switch" in data) return "switchStep";
@@ -161,6 +164,23 @@ function navigate(spec: unknown, instancePath: string): unknown {
   return cur;
 }
 
+function isDirectParallelStepNoise(err: ErrorObject, spec: unknown): boolean {
+  if (err.keyword !== "additionalProperties") return false;
+  if (!/\/parallel\/\d+$/.test(err.instancePath)) return false;
+  const value = navigate(spec, err.instancePath);
+  return isParallelBranchMissingDo(value);
+}
+
+function isDirectParallelStepNoiseAtAbsolutePath(err: ErrorObject, absolutePath: string, spec: unknown): boolean {
+  if (err.keyword !== "additionalProperties") return false;
+  if (!/\/parallel\/\d+$/.test(absolutePath)) return false;
+  return isParallelBranchMissingDo(navigate(spec, absolutePath));
+}
+
+function isParallelBranchMissingDo(value: unknown): boolean {
+  return typeof value === "object" && value !== null && !Object.prototype.hasOwnProperty.call(value, "do");
+}
+
 /** Decode a JSON Pointer token (~1 → /, ~0 → ~). */
 function decodePointer(token: string): string {
   return token.replace(/~1/g, "/").replace(/~0/g, "~");
@@ -173,11 +193,11 @@ function prefixPath(stepPath: string, localPath: string): string {
 
 /**
  * True when a branch-local instancePath points inside a nested child step (an
- * entry in a `do` or `parallel` list). Such errors belong to that child step's
+ * entry in a `do` or `pipeline` list). Such errors belong to that child step's
  * own oneOf iteration, not the enclosing step.
  */
 function isWithinNestedStep(localPath: string): boolean {
-  return /\/(do|parallel)\/\d+(\/|$)/.test(localPath);
+  return /\/(do|pipeline)\/\d+(\/|$)/.test(localPath);
 }
 
 // ── Error classification ──
@@ -204,6 +224,9 @@ function classifyError(err: ErrorObject, path: string): string {
     case "minimum":
     case "exclusiveMinimum":
       return classifyMinimum(err, path);
+
+    case "pattern":
+      return path.endsWith(".id") ? "STEP_ID_INVALID" : "SPEC_SHAPE";
 
     default:
       return "SPEC_SHAPE";
@@ -254,7 +277,9 @@ function classifyRequired(missing: string, path: string): string {
     case "over":
       return "FANOUT_OVER";
     case "do":
-      return "FANOUT_DO";
+      return path.includes(".parallel[") ? "PARALLEL_DO" : "FANOUT_DO";
+    case "pipeline":
+      return "STEP_KIND";
     case "quorum":
       return "FANOUT_QUORUM";
     case "cmd":
@@ -376,6 +401,10 @@ function classifyType(err: ErrorObject, path: string): string {
     return "FANOUT_OVER_TYPE";
   }
 
+  if (/\.pipeline$/.test(path)) {
+    return "STEP_SHAPE";
+  }
+
   if (/\.guard\.when$/.test(path)) {
     return "GUARD_WHEN_TYPE";
   }
@@ -458,6 +487,11 @@ function formatMessage(err: ErrorObject, code: string, path: string): string {
       return formatMinimumMessage(code, path);
     }
 
+    case "pattern": {
+      if (code === "STEP_ID_INVALID") return "Author ids must match ^[A-Za-z_][A-Za-z0-9_-]*$ and must not start with '$'.";
+      return err.message ?? "Schema validation error.";
+    }
+
     default:
       return err.message ?? "Schema validation error.";
   }
@@ -479,6 +513,8 @@ function formatRequiredMessage(missing: string, code: string, _path: string): st
       return "fanout.over is required.";
     case "FANOUT_DO":
       return "fanout.do must be an array of steps.";
+    case "PARALLEL_DO":
+      return "parallel entries are branch descriptors { id, do }, not direct steps; wrap branch steps under do.";
     case "FANOUT_QUORUM":
       return "fanout.quorum must be a positive integer when join is quorum.";
     case "CAPTURE_FROM":

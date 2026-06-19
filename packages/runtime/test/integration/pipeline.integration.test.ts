@@ -119,4 +119,81 @@ workflow:
     const failStep = store.listNodeStates(meta.runId).find((n) => n.nodeId === "fail-step");
     expect(failStep?.state).toBe("failed");
   });
+
+  it("explicit pipeline returns the final child primary output", async () => {
+    const ir = compileYaml(`
+version: 1
+name: explicit-pipeline-default-output
+agents:
+  coder:
+    type: command
+    use: echo stub
+workflow:
+  steps:
+    - id: bundle
+      pipeline:
+        - id: first
+          run: agent
+          use: coder
+          prompt: first
+        - id: last
+          run: agent
+          use: coder
+          prompt: last
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      agentResponses: {
+        first: { value: "first" },
+        last: { value: "last" }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+    expect(store.listNodeStates(meta.runId).find((n) => n.nodeId === "bundle")?.output).toEqual({
+      output: { value: "last" }
+    });
+  });
+
+  it("explicit pipeline outputs projection can expose intermediate child values", async () => {
+    const ir = compileYaml(`
+version: 1
+name: explicit-pipeline-projection
+agents:
+  coder:
+    type: command
+    use: echo stub
+workflow:
+  steps:
+    - id: bundle
+      pipeline:
+        - id: first
+          run: agent
+          use: coder
+          prompt: first
+        - id: last
+          run: agent
+          use: coder
+          prompt: last
+      outputs:
+        first_value: \${{ steps.first.output.value }}
+        last_value: \${{ steps.last.output.value }}
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      agentResponses: {
+        first: { value: "first" },
+        last: { value: "last" }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+    expect(store.listNodeStates(meta.runId).find((n) => n.nodeId === "bundle")?.output).toEqual({
+      output: { first_value: "first", last_value: "last" }
+    });
+  });
 });
