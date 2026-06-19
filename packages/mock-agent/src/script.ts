@@ -5,8 +5,8 @@ import { parseDurationMs } from "@acpus/core";
 export { parseDurationMs } from "@acpus/core";
 
 export type MockRespond =
-  | { type: "text"; text: string; stream?: MockStream; crash_after_chunks?: number; exit_code?: number }
-  | { type: "json"; payload: unknown; stream?: MockStream; crash_after_chunks?: number; exit_code?: number }
+  | { type: "text"; text: string; stream?: MockStream; crash_after_chunks?: number; hang_after_chunks?: number; exit_code?: number }
+  | { type: "json"; payload: unknown; stream?: MockStream; crash_after_chunks?: number; hang_after_chunks?: number; exit_code?: number }
   | { type: "error"; error: { code?: string | number; message: string } }
   | { type: "hang" };
 
@@ -185,11 +185,15 @@ function parseRespond(value: unknown, path: string): MockRespond {
     if (typeof value.text !== "string") {
       throw new Error(`${path}.text must be a string.`);
     }
+    const crash_after_chunks = positiveIntegerOrUndefined(value.crash_after_chunks, `${path}.crash_after_chunks`);
+    const hang_after_chunks = positiveIntegerOrUndefined(value.hang_after_chunks, `${path}.hang_after_chunks`);
+    assertSingleChunkInterrupt(crash_after_chunks, hang_after_chunks, path);
     return {
       type: "text",
       text: value.text,
       stream: parseStream(value.stream, `${path}.stream`),
-      crash_after_chunks: positiveIntegerOrUndefined(value.crash_after_chunks, `${path}.crash_after_chunks`),
+      crash_after_chunks,
+      hang_after_chunks,
       exit_code: nonNegativeIntegerOrDefault(value.exit_code, undefined, `${path}.exit_code`)
     };
   }
@@ -197,11 +201,15 @@ function parseRespond(value: unknown, path: string): MockRespond {
     if (!("payload" in value)) {
       throw new Error(`${path}.payload is required for json responses.`);
     }
+    const crash_after_chunks = positiveIntegerOrUndefined(value.crash_after_chunks, `${path}.crash_after_chunks`);
+    const hang_after_chunks = positiveIntegerOrUndefined(value.hang_after_chunks, `${path}.hang_after_chunks`);
+    assertSingleChunkInterrupt(crash_after_chunks, hang_after_chunks, path);
     return {
       type: "json",
       payload: value.payload,
       stream: parseStream(value.stream, `${path}.stream`),
-      crash_after_chunks: positiveIntegerOrUndefined(value.crash_after_chunks, `${path}.crash_after_chunks`),
+      crash_after_chunks,
+      hang_after_chunks,
       exit_code: nonNegativeIntegerOrDefault(value.exit_code, undefined, `${path}.exit_code`)
     };
   }
@@ -292,6 +300,12 @@ function nonNegativeIntegerOrDefault(value: unknown, fallback: number | undefine
     throw new Error(`${path} must be a non-negative integer.`);
   }
   return value;
+}
+
+function assertSingleChunkInterrupt(crashAfter: number | undefined, hangAfter: number | undefined, path: string): void {
+  if (crashAfter !== undefined && hangAfter !== undefined) {
+    throw new Error(`${path} must not define both crash_after_chunks and hang_after_chunks.`);
+  }
 }
 
 function errorMessage(error: unknown): string {

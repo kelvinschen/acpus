@@ -167,6 +167,24 @@ describe("@acpus/mock-agent protocol", () => {
     await expect(prompt).resolves.toMatchObject({ stopReason: "cancelled" });
   });
 
+  it("cancels after scripted response chunks", async () => {
+    const agent = spawnAgent(integrationScriptPath);
+    await agent.connection.initialize({ protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
+    const session = await agent.connection.newSession({ cwd: repoRoot, mcpServers: [] });
+
+    const prompt = agent.connection.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: "text", text: "stream chunks" }]
+    });
+    await waitForUpdates(agent.client, 1);
+    await waitForTraceEvent(agent.tracePath, "hang");
+    await agent.connection.cancel({ sessionId: session.sessionId });
+
+    await expect(prompt).resolves.toMatchObject({ stopReason: "cancelled" });
+    const events = readTrace(agent.tracePath).map((event) => event.event);
+    expect(events).toEqual(expect.arrayContaining(["session/update", "hang", "session/cancel", "cancelled"]));
+  });
+
   it("exits with scripted code after crash_after_chunks", async () => {
     const agent = spawnAgent(integrationScriptPath);
     await agent.connection.initialize({ protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });

@@ -1,5 +1,17 @@
 import { describe, it, expect, afterEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { compileYaml, createTestInterpreter, waitForNodeState } from "../interpreter/helper.js";
+
+const fixtures = join(import.meta.dirname, "../../../core/test/fixtures");
+const compositeFixturePath = join(fixtures, "composite-e2e/workflow.yaml");
+
+function compileCompositeFixture() {
+  return compileYaml(readFileSync(compositeFixturePath, "utf8").replace(
+    /use: "node \.\/packages\/mock-agent\/dist\/index\.js --script \.\/packages\/core\/test\/fixtures\/composite-e2e\/mock\.yaml"/,
+    'use: "echo stub"'
+  ));
+}
 
 describe("Fanout execution", () => {
   const cleanups: Array<() => void> = [];
@@ -186,5 +198,46 @@ input:
 
     const runMeta = store.readRunMeta(runId);
     expect(runMeta?.status).toBe("completed");
+  });
+
+  it("executes fanout guard loop topology with stable node keys and outputs", async () => {
+    const ir = compileCompositeFixture();
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      agentResponses: {
+        work: { item: "fixture", round: 0, ok: true }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+
+    const nodes = store.listNodeStates(meta.runId);
+    const workNodes = nodes
+      .filter((n) => n.nodeId === "work")
+      .sort((a, b) => a.nodeKey.localeCompare(b.nodeKey));
+    expect(workNodes).toHaveLength(4);
+    expect(workNodes.map((n) => n.nodeKey.match(/(item:.*$)/)?.[1] ?? n.nodeKey).sort()).toEqual([
+      "item:alpha/lane:0/round:0",
+      "item:alpha/lane:0/round:1",
+      "item:beta/lane:1/round:0",
+      "item:beta/lane:1/round:1",
+    ]);
+    for (const node of workNodes) {
+      expect(node.nodeKey).toMatch(/item:/);
+      expect(node.nodeKey).toMatch(/lane:/);
+      expect(node.nodeKey).toMatch(/round:/);
+      expect(node.output).toEqual({ output: { item: "fixture", round: 0, ok: true } });
+    }
+
+    const skippedGuard = nodes.find((n) => n.nodeId === "skip_lane" && n.nodeKey.includes("item:skip"));
+    expect(skippedGuard?.state).toBe("completed");
+    expect(skippedGuard?.output).toEqual({ output: { matched: true, action: "complete" } });
+    expect(nodes.some((n) => n.nodeId === "work" && n.nodeKey.includes("item:skip"))).toBe(false);
+
+    const fanoutNode = nodes.find((n) => n.nodeId === "composite");
+    expect(fanoutNode?.state).toBe("completed");
+    expect(fanoutNode?.output).toEqual({ output: [expect.anything(), expect.anything(), expect.anything()] });
   });
 });

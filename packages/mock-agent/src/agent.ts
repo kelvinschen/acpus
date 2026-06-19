@@ -166,6 +166,13 @@ export class MockAgent {
         process.exit(exitCode);
       }
 
+      if (response.hang_after_chunks !== undefined && index + 1 >= response.hang_after_chunks) {
+        this.trace.write({ event: "hang", sessionId: params.sessionId, ruleName, chunkIndex: index });
+        await waitUntilAborted(abortController.signal);
+        this.trace.write({ event: "cancelled", sessionId: params.sessionId, ruleName, chunkIndex: index });
+        return { stopReason: "cancelled", userMessageId: params.messageId };
+      }
+
       if (intervalMs > 0) {
         await delay(intervalMs, undefined, { signal: abortController.signal }).catch(() => undefined);
         if (abortController.signal.aborted) {

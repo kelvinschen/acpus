@@ -103,6 +103,13 @@ rules:
     expect(responseText(continuation.response)).toBe(JSON.stringify({ branch: "review", continued: true }));
   });
 
+  it("parses hang-after-chunks responses", () => {
+    const script = parseMockScript(fixture("integration.yaml"));
+    const selected = selectResponse(script, "stream chunks");
+
+    expect(selected.response).toMatchObject({ type: "text", hang_after_chunks: 1 });
+  });
+
   it("parses integration-test session controls", () => {
     const script = parseMockScript(fixture("integration.yaml"));
 
@@ -112,6 +119,25 @@ rules:
 
   it("rejects invalid scripts", () => {
     expect(() => parseMockScript(fixture("invalid.yaml"))).toThrow(/type must be text, json, error, or hang/);
+  });
+
+  it("rejects responses with both crash_after_chunks and hang_after_chunks", () => {
+    expect(() => parseMockScript(`
+version: 1
+agent_id: invalid-interrupt
+default_response:
+  type: text
+  text: default
+rules:
+  - name: invalid
+    when:
+      prompt_contains: "invalid"
+    respond:
+      type: text
+      text: invalid
+      crash_after_chunks: 1
+      hang_after_chunks: 1
+`)).toThrow(/must not define both crash_after_chunks and hang_after_chunks/);
   });
 
   it("splits response text into deterministic chunks", () => {

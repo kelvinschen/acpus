@@ -27,6 +27,16 @@ rules:
       prompt_contains: "hang"
     respond:
       type: hang
+  - name: hang-after-chunks-rule
+    when:
+      prompt_contains: "stream chunks"
+    respond:
+      type: text
+      text: "streamed before hang"
+      stream:
+        chunks: 2
+        chunk_interval: 0ms
+      hang_after_chunks: 1
   - name: crash-rule
     when:
       prompt_contains: "crash"
