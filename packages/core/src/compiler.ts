@@ -8,6 +8,7 @@ import { createExpressionCollector } from "./expressions.js";
 import { validateScopedExpressions } from "./expression-scope.js";
 import { createSchedule } from "./schedule.js";
 import { compileSchemaDsl } from "./schema/index.js";
+import { isRecord } from "./schema/helpers.js";
 import { parseDurationMs } from "./duration.js";
 import { validateWithSchema } from "./schema-validator.js";
 import type {
@@ -669,10 +670,6 @@ function isWorkflowSpec(value: unknown): value is WorkflowSpec {
     isRecord(value.workflow) &&
     Array.isArray(value.workflow.steps)
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function digest(source: string): string {

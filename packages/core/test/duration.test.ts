@@ -66,4 +66,18 @@ describe("parseDurationMs", () => {
   it("handles large values", () => {
     expect(parseDurationMs("24h")).toBe(86400000);
   });
+
+  it("rejects values beyond safe integer range", () => {
+    const huge = `${"9".repeat(400)}h`;
+    expect(parseDurationMs(huge)).toBe(0);
+    expect(() => parseDurationMs(huge, { strict: true })).toThrow(
+      `Invalid duration '${huge}'. Use ms, s, m, or h.`
+    );
+  });
+
+  it("rejects decimal, uppercase, and spaced units", () => {
+    expect(parseDurationMs("1.5s")).toBe(0);
+    expect(parseDurationMs("1H")).toBe(0);
+    expect(parseDurationMs("1 s")).toBe(0);
+  });
 });

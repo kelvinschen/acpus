@@ -57,16 +57,10 @@ importers:
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
-      ms:
-        specifier: ^2.1.3
-        version: 2.1.3
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
     devDependencies:
-      '@types/ms':
-        specifier: ^2.1.0
-        version: 2.1.0
       '@types/node':
         specifier: ^22.15.30
         version: 22.19.19
@@ -578,9 +572,6 @@ packages:
 
   '@types/estree@1.0.9':
     resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
-
-  '@types/ms@2.1.0':
-    resolution: {integrity: sha512-GsCCIZDE/p3i96vtEqx+7dBUGXrc7zeSK3wwPHIaRThS+9OhWIXRqzs4d6k1SVU8g91DrNRWxWUGhp5KXQb2VA==}
 
   '@types/node@12.20.55':
     resolution: {integrity: sha512-J8xLz7q2OFulZ2cyGTLE1TbbZcjpno7FaN6zdJNrgAdrJ+DZzh/uFR6YrTb4C+nXakvud8Q4+rbhoIWlYQbUFQ==}
@@ -1158,9 +1149,6 @@ packages:
   mri@1.2.0:
     resolution: {integrity: sha512-tzzskb3bG8LvYGFF/mDTpq3jpI6Q9wc3LEmBaghu+DdCssd1FakN7Bc0hVNmEyGq1bq3RgfkCb3cmQLpNPOroA==}
     engines: {node: '>=4'}
-
-  ms@2.1.3:
-    resolution: {integrity: sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==}
 
   nanoid@3.3.12:
     resolution: {integrity: sha512-ZB9RH/39qpq5Vu6Y+NmUaFhQR6pp+M2Xt76XBnEwDaGcVAqhlvxrl3B2bKS5D3NH3QR76v3aSrKaF/Kiy7lEtQ==}
@@ -1998,8 +1986,6 @@ snapshots:
 
   '@types/estree@1.0.9': {}
 
-  '@types/ms@2.1.0': {}
-
   '@types/node@12.20.55': {}
 
   '@types/node@22.19.19':
@@ -2547,8 +2533,6 @@ snapshots:
   mimic-fn@2.1.0: {}
 
   mri@1.2.0: {}
-
-  ms@2.1.3: {}
 
   nanoid@3.3.12: {}
 

@@ -6,6 +6,7 @@ import { parse as parseYaml } from "yaml";
 import {
   EVENT_NAMES,
   INJECTOR_NAMES,
+  validateHookConfigShape,
   type EventHookHandler,
   type EventName,
   type HookConfig,
@@ -83,73 +84,9 @@ export class HookConfigLoader {
 
 /** Validate the minimal command-only hook config shape used by the runtime. */
 function validateHookConfig(config: HookConfig, path: string): void {
-  if (!config || typeof config !== "object" || Array.isArray(config)) {
-    throw new Error(`${path}: hook config must be an object`);
-  }
-  validateGroup(config.injectors, "injectors", path, INJECTOR_NAMES);
-  validateGroup(config.events, "events", path, EVENT_NAMES);
-}
-
-function validateGroup(
-  group: Partial<Record<string, unknown[]>> | undefined,
-  groupName: string,
-  path: string,
-  allowedNames: readonly string[]
-): void {
-  for (const [hookName, handlers] of Object.entries(group ?? {})) {
-    if (!allowedNames.includes(hookName)) {
-      throw new Error(`${path}: unknown hook name '${hookName}' in ${groupName}`);
-    }
-    if (!Array.isArray(handlers)) {
-      throw new Error(`${path}: ${groupName}.${hookName} must be an array`);
-    }
-    handlers.forEach((handler, index) => validateHandler(handler, `${path}: ${groupName}.${hookName}[${index}]`, groupName));
-  }
-}
-
-function validateHandler(handler: unknown, label: string, groupName: string): void {
-  if (!handler || typeof handler !== "object") {
-    throw new Error(`${label} must be an object`);
-  }
-  const h = handler as Record<string, unknown>;
-  const allowedFields = groupName === "injectors"
-    ? new Set(["command", "timeout", "env", "cwd", "on_failure"])
-    : new Set(["command", "timeout", "env", "cwd", "sync"]);
-  for (const field of Object.keys(h)) {
-    if (!allowedFields.has(field)) {
-      throw new Error(`${label}.${field} is not supported`);
-    }
-  }
-  if (typeof h.command !== "string" || h.command.length === 0) {
-    throw new Error(`${label}.command must be a non-empty string`);
-  }
-  if ("timeout" in h && typeof h.timeout !== "string") {
-    throw new Error(`${label}.timeout must be a string`);
-  }
-  if ("cwd" in h && typeof h.cwd !== "string") {
-    throw new Error(`${label}.cwd must be a string`);
-  }
-  if ("env" in h && !isStringRecord(h.env)) {
-    throw new Error(`${label}.env must be a string map`);
-  }
-  if (groupName === "injectors") {
-    if ("sync" in h) throw new Error(`${label}.sync is supported only on event handlers`);
-    if ("on_failure" in h && h.on_failure !== "fail" && h.on_failure !== "skip") {
-      throw new Error(`${label}.on_failure must be "fail" or "skip"`);
-    }
-  } else {
-    if ("on_failure" in h) throw new Error(`${label}.on_failure is supported only on injector handlers`);
-    if ("sync" in h && typeof h.sync !== "boolean") {
-      throw new Error(`${label}.sync must be boolean`);
-    }
-  }
-}
-
-function isStringRecord(value: unknown): value is Record<string, string> {
-  return Boolean(value)
-    && typeof value === "object"
-    && !Array.isArray(value)
-    && Object.values(value as Record<string, unknown>).every((v) => typeof v === "string");
+  const [issue] = validateHookConfigShape(config);
+  if (!issue) return;
+  throw new Error(`${path}: ${issue.path ? `${issue.path} ` : ""}${issue.message}`);
 }
 
 /** Concatenate handler arrays per key; global handlers precede project handlers. */

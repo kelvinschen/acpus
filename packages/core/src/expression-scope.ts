@@ -2,6 +2,7 @@ import type { DiagnosticBag } from "./diagnostics.js";
 import type { IrNode } from "./types.js";
 import { COMPOSITE_CONTRACTS } from "./composite-contract.js";
 import { EXPRESSION_PATTERN } from "./expressions-shared.js";
+import { isRecord } from "./schema/helpers.js";
 import {
   extractReferences,
   isStaticReference,
@@ -593,8 +594,4 @@ function visitStrings(value: unknown, path: string, visit: (source: string, path
   if (isRecord(value)) {
     for (const [key, child] of Object.entries(value)) visitStrings(child, `${path}.${key}`, visit);
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

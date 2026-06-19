@@ -36,25 +36,53 @@ describe("acpus hooks CLI", () => {
   it("validate --json returns ok for a well-formed project config", async () => {
     const cwd = workspaceWith({ events: { afterRun: [{ command: "echo hi" }] } });
     const result = await run(cwd, ["hooks", "validate", "--project", cwd, "--json"]);
+    const payload = JSON.parse(result.stdout);
     expect(result.exitCode).toBe(0);
-    expect(JSON.parse(result.stdout).ok).toBe(true);
+    expect(payload.ok).toBe(true);
+    expect(payload.diagnostics).toContainEqual({
+      injectorOrEvent: "afterRun",
+      index: 0,
+      source: "project",
+      ok: true
+    });
+  });
+
+  it("validate text output reports configured valid handlers", async () => {
+    const cwd = workspaceWith({ events: { afterRun: [{ command: "echo hi" }] } });
+    const result = await run(cwd, ["hooks", "validate", "--project", cwd]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("[ok] project afterRun#0");
+    expect(result.stdout).not.toContain("No hooks configured");
   });
 
   it("validate exits 1 for a malformed handler", async () => {
     const cwd = workspaceWith({ injectors: { beforeAgentExec: [{}] } });
     const result = await run(cwd, ["hooks", "validate", "--project", cwd, "--json"]);
+    const payload = JSON.parse(result.stdout);
     expect(result.exitCode).toBe(1);
-    expect(JSON.parse(result.stdout).ok).toBe(false);
-    expect(JSON.parse(result.stdout).parseError).toContain("command must be a non-empty string");
+    expect(payload.ok).toBe(false);
+    expect(payload.parseError).toBeUndefined();
+    expect(payload.diagnostics).toContainEqual({
+      injectorOrEvent: "beforeAgentExec",
+      index: 0,
+      source: "project",
+      ok: false,
+      message: "command must be a non-empty string"
+    });
   });
 
-  it("validate reports load errors without duplicating the file path", async () => {
-    const cwd = workspaceWith({ events: { afterRun: [{}] } });
+  it("validate reports unknown hook names as diagnostics", async () => {
+    const cwd = workspaceWith({ events: { afterrun: [{ command: "x" }] } });
     const result = await run(cwd, ["hooks", "validate", "--project", cwd, "--json"]);
     const payload = JSON.parse(result.stdout);
     expect(result.exitCode).toBe(1);
-    expect(payload.parseError).toContain(".acpus/hooks.yaml:");
-    expect(payload.parseError.match(/hooks\.yaml/g)).toHaveLength(1);
+    expect(payload.parseError).toBeUndefined();
+    expect(payload.diagnostics).toContainEqual({
+      injectorOrEvent: "afterrun",
+      source: "project",
+      ok: false,
+      message: "unknown hook name 'afterrun' in events"
+    });
   });
 
   it("list shows merged handlers grouped by injectors/events", async () => {

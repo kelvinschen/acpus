@@ -188,14 +188,19 @@ function parseSpecSummary(source: string): { name?: string; description?: string
 }
 
 function isWorkflowCandidate(filename: string): boolean {
-  return filename === "workflow.yaml"
-    || filename === "workflow.yml"
-    || filename === "workflow.spec.yaml"
-    || filename === "workflow.spec.yml"
-    || filename.endsWith(".workflow.yaml")
-    || filename.endsWith(".workflow.yml")
-    || filename.endsWith(".workflow.spec.yaml")
-    || filename.endsWith(".workflow.spec.yml");
+  const exact = new Set([
+    "workflow.yaml",
+    "workflow.yml",
+    "workflow.spec.yaml",
+    "workflow.spec.yml"
+  ]);
+  if (exact.has(filename)) return true;
+  return [
+    ".workflow.yaml",
+    ".workflow.yml",
+    ".workflow.spec.yaml",
+    ".workflow.spec.yml"
+  ].some((suffix) => filename.endsWith(suffix));
 }
 
 export function looksLikeWorkflowPath(target: string): boolean {

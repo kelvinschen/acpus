@@ -1,19 +1,20 @@
 import { Command } from "commander";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { parse as parseYaml } from "yaml";
 import {
   HookConfigLoader,
   globalHookConfigPath,
   projectHookConfigPath,
   isEmptyHookConfig
 } from "@acpus/runtime";
-import { INJECTOR_NAMES, EVENT_NAMES, type EventHookHandler, type HookConfig, type HookHandler, type InjectorHookHandler } from "@acpus/core";
+import { INJECTOR_NAMES, EVENT_NAMES, validateHookConfigShape, type HookConfig, type HookHandler } from "@acpus/core";
 
 const EXIT_OK = 0;
 const EXIT_FAIL = 1;
 
 interface HandlerDiagnostic {
   injectorOrEvent: string;
-  index: number;
+  index?: number;
   source: "global" | "project";
   ok: boolean;
   message?: string;
@@ -31,7 +32,6 @@ export function buildHooksCommand(): Command {
     .option("--json", "output JSON")
     .action((opts: { global?: boolean; project?: string; json?: boolean }) => {
       const workspace = opts.project ?? process.cwd();
-      const loader = new HookConfigLoader(workspace);
       const diagnostics: HandlerDiagnostic[] = [];
 
       const layers: Array<{ source: "global" | "project"; path: string }> = [];
@@ -42,8 +42,7 @@ export function buildHooksCommand(): Command {
       for (const layer of layers) {
         if (!existsSync(layer.path)) continue;
         try {
-          const loaded = loader.loadLayer(layer.path);
-          validateConfigShape(loaded.config, layer.source, diagnostics);
+          validateConfigShape(readHookConfigForValidation(layer.path), layer.source, diagnostics);
         } catch (error) {
           parseError = error instanceof Error ? error.message : String(error);
           break;
@@ -60,7 +59,8 @@ export function buildHooksCommand(): Command {
       } else {
         for (const d of diagnostics) {
           const status = d.ok ? "ok" : "error";
-          process.stdout.write(`[${status}] ${d.source} ${d.injectorOrEvent}#${d.index}${d.message ? `: ${d.message}` : ""}\n`);
+          const index = d.index === undefined ? "" : `#${d.index}`;
+          process.stdout.write(`[${status}] ${d.source} ${d.injectorOrEvent}${index}${d.message ? `: ${d.message}` : ""}\n`);
         }
       }
       process.exitCode = ok ? EXIT_OK : EXIT_FAIL;
@@ -138,59 +138,38 @@ function describeHandler(handler: HookHandler): string {
 
 /** Validate handler field completeness for one config layer. */
 function validateConfigShape(config: HookConfig, source: "global" | "project", out: HandlerDiagnostic[]): void {
-  const checkGroup = (
-    group: Partial<Record<string, HookHandler[]>> | undefined,
-    allowed: readonly string[],
-    kind: "injector" | "event"
-  ): void => {
-    for (const [key, handlers] of Object.entries(group ?? {})) {
-      const keyOk = allowed.includes(key);
-      (handlers ?? []).forEach((handler, index) => {
-        const message = validateHandler(handler, kind, keyOk ? undefined : `unknown hook name '${key}'`);
-        out.push({ injectorOrEvent: key, index, source, ok: !message, message });
-      });
+  const configured = configuredHandlers(config);
+  for (const handler of configured) {
+    out.push({ ...handler, source, ok: true });
+  }
+  for (const issue of validateHookConfigShape(config)) {
+    const injectorOrEvent = issue.hookName ?? issue.path ?? "$";
+    const existing = issue.handlerIndex === undefined ? undefined : out.find((item) =>
+      item.source === source &&
+      item.injectorOrEvent === injectorOrEvent &&
+      item.index === issue.handlerIndex
+    );
+    if (existing) {
+      existing.ok = false;
+      existing.message = existing.message ? `${existing.message}; ${issue.message}` : issue.message;
+    } else {
+      out.push({ injectorOrEvent, index: issue.handlerIndex, source, ok: false, message: issue.message });
     }
-  };
-  checkGroup(config.injectors as Partial<Record<string, InjectorHookHandler[]>> | undefined, INJECTOR_NAMES, "injector");
-  checkGroup(config.events as Partial<Record<string, EventHookHandler[]>> | undefined, EVENT_NAMES, "event");
+  }
 }
 
-/** Returns an error message when a handler is malformed, or undefined when valid. */
-function validateHandler(handler: HookHandler, kind: "injector" | "event", prefix?: string): string | undefined {
-  const errors: string[] = [];
-  if (prefix) errors.push(prefix);
-  if (!handler || typeof handler !== "object") {
-    errors.push("handler must be an object");
-    return errors.join("; ");
-  }
-  const allowedFields = kind === "injector"
-    ? new Set(["command", "timeout", "env", "cwd", "on_failure"])
-    : new Set(["command", "timeout", "env", "cwd", "sync"]);
-  for (const field of Object.keys(handler as unknown as Record<string, unknown>)) {
-    if (!allowedFields.has(field)) errors.push(`${field} is not supported`);
-  }
-  if (typeof handler.command !== "string" || handler.command.length === 0) {
-    errors.push("command must be a non-empty string");
-  }
-  const maybe = handler as HookHandler & { on_failure?: unknown; sync?: unknown; timeout?: unknown; cwd?: unknown; env?: unknown };
-  if (maybe.timeout !== undefined && typeof maybe.timeout !== "string") errors.push("timeout must be a string");
-  if (maybe.cwd !== undefined && typeof maybe.cwd !== "string") errors.push("cwd must be a string");
-  if (maybe.env !== undefined && !isStringRecord(maybe.env)) errors.push("env must be a string map");
-  if (kind === "injector") {
-    if (maybe.on_failure !== undefined && maybe.on_failure !== "fail" && maybe.on_failure !== "skip") {
-      errors.push(`invalid on_failure '${String(maybe.on_failure)}'`);
-    }
-    if (maybe.sync !== undefined) errors.push("sync is supported only on event handlers");
-  } else {
-    if (maybe.on_failure !== undefined) errors.push("on_failure is supported only on injector handlers");
-    if (maybe.sync !== undefined && typeof maybe.sync !== "boolean") errors.push("sync must be boolean");
-  }
-  return errors.length > 0 ? errors.join("; ") : undefined;
+function readHookConfigForValidation(path: string): HookConfig {
+  const raw = readFileSync(path, "utf8").trim();
+  return raw.length === 0 ? {} : parseYaml(raw) as HookConfig;
 }
 
-function isStringRecord(value: unknown): value is Record<string, string> {
-  return Boolean(value)
-    && typeof value === "object"
-    && !Array.isArray(value)
-    && Object.values(value as Record<string, unknown>).every((v) => typeof v === "string");
+function configuredHandlers(config: HookConfig): Array<Omit<HandlerDiagnostic, "source">> {
+  const out: Array<Omit<HandlerDiagnostic, "source">> = [];
+  for (const [key, handlers] of Object.entries(config.injectors ?? {})) {
+    if (Array.isArray(handlers)) handlers.forEach((_, index) => out.push({ injectorOrEvent: key, index, ok: true }));
+  }
+  for (const [key, handlers] of Object.entries(config.events ?? {})) {
+    if (Array.isArray(handlers)) handlers.forEach((_, index) => out.push({ injectorOrEvent: key, index, ok: true }));
+  }
+  return out;
 }

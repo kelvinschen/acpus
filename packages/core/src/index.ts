@@ -31,6 +31,8 @@ export type { CompositeContract, OutputShapeKind } from "./composite-contract.js
 export { parseDurationMs } from "./duration.js";
 export type { ParseDurationOptions } from "./duration.js";
 export { INJECTOR_NAMES, EVENT_NAMES } from "./hooks.js";
+export { validateHookConfigShape } from "./hook-validation.js";
+export type { HookValidationIssue } from "./hook-validation.js";
 export type {
   InjectorName,
   EventName,

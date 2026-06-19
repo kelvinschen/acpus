@@ -37,25 +37,6 @@ export type BoundaryReason =
   | "non-completed"        // checkpoint's prior state was not `completed`
   | "operator-override";   // operator forced an earlier origin via override
 
-export interface MaterializeForkOptions {
-  /** Run ID to assign to the new Forked Run. */
-  forkRunId: string;
-  /** Frozen IR snapshot for the new Forked Run. */
-  ir: AcpusIr;
-  /** Explicit input override. When omitted, the source Run input is inherited. */
-  input?: Record<string, unknown>;
-  /** Catalog ref used to start this Forked Run, when applicable. */
-  workflowRef?: string;
-  /** Absolute Workflow Spec path used to compile this Forked Run. */
-  workflowSourcePath?: string;
-  /** Effective submit-time Agent Overrides applied before this Run's IR was frozen. */
-  agentOverrides?: AgentOverrides;
-  /** Non-fatal warnings produced while resolving submit-time metadata. */
-  submissionWarnings?: AgentOverrideWarning[];
-  /** True when the Forked Run should preserve a source Run's hook-disabled metadata. */
-  skipHooks?: boolean;
-}
-
 export interface PlanForkedRunOptions {
   /** Run ID of the prior terminal Run. */
   sourceRunId: string;

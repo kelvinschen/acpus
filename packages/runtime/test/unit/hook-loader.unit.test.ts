@@ -99,6 +99,17 @@ describe("HookConfigLoader", () => {
     expect(() => new HookConfigLoader(workspace).load()).toThrow(/unknown hook name 'afterrun'/);
   });
 
+  it("reports group paths without duplicating labels", () => {
+    writeProjectRaw({ events: { afterRun: "x" } });
+    expect(() => new HookConfigLoader(workspace).load()).toThrow(/events\.afterRun must be an array/);
+    expect(() => new HookConfigLoader(workspace).load()).not.toThrow(/events\.afterRun events\.afterRun/);
+  });
+
+  it("reports handler field paths consistently", () => {
+    writeProjectRaw({ injectors: { beforeAgentExec: [{ command: "x", on_failure: "later" }] } });
+    expect(() => new HookConfigLoader(workspace).load()).toThrow(/injectors\.beforeAgentExec\[0\] on_failure must be "fail" or "skip"/);
+  });
+
   it("rejects unsupported handler fields at load time", () => {
     writeProjectRaw({ events: { afterRun: [{ command: "x", extra: true }] } });
     expect(() => new HookConfigLoader(workspace).load()).toThrow(/extra is not supported/);

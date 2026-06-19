@@ -545,15 +545,6 @@ function formatMinimumMessage(code: string, _path: string): string {
   }
 }
 
-// ── Path utilities ──
-
-/** Higher specificity = more precise code. SPEC_SHAPE is the most generic. */
-function codeSpecificity(code: string): number {
-  if (code === "SPEC_SHAPE") return 0;
-  if (code === "STEP_SHAPE" || code === "AGENT_SHAPE") return 1;
-  return 2; // All specific codes (STEP_TIMEOUT, STEP_ON_ERROR, etc.)
-}
-
 /** Convert Ajv instancePath ("/workflow/steps/0/run") to $-path ("$.workflow.steps[0].run") */
 function toPath(instancePath: string): string {
   if (!instancePath) return "$";

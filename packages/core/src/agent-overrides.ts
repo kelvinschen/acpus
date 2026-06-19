@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
+import { isRecord } from "./schema/helpers.js";
 import type { AgentSpec, WorkflowSpec } from "./types.js";
 
 export type AgentOverrides = Record<string, AgentOverride>;
@@ -266,8 +267,4 @@ function looksLikePath(value: string): boolean {
     || trimmed.startsWith("~")
     || trimmed.includes("/")
     || SUPPORTED_FILE_EXTENSIONS.has(extname(trimmed).toLowerCase());
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

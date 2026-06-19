@@ -1,17 +1,21 @@
-import ms from "ms";
-
 export interface ParseDurationOptions {
   /** If true, throws on invalid/unparseable input. Default: false (returns 0). */
   strict?: boolean;
 }
+
+const UNIT_MS: Record<string, number> = {
+  ms: 1,
+  s: 1000,
+  m: 60_000,
+  h: 3_600_000
+};
 
 /**
  * Parse a duration string (e.g. "30s", "5m", "1h", "500ms") into milliseconds.
  * Returns 0 for undefined input. By default returns 0 for invalid input;
  * set `{ strict: true }` to throw instead.
  *
- * Only supports ms/s/m/h units (delegates arithmetic to the `ms` library
- * but rejects formats like "2 days" that `ms` would accept).
+ * Only supports ms/s/m/h units.
  */
 export function parseDurationMs(value: string | undefined, options?: ParseDurationOptions): number {
   if (value === undefined) return 0;
@@ -21,8 +25,8 @@ export function parseDurationMs(value: string | undefined, options?: ParseDurati
     if (options?.strict) throw new Error(`Invalid duration '${value}'. Use ms, s, m, or h.`);
     return 0;
   }
-  const result = ms(trimmed as ms.StringValue);
-  if (Number.isNaN(result)) {
+  const result = Number(match[1]) * UNIT_MS[match[2] ?? "ms"];
+  if (!Number.isSafeInteger(result)) {
     if (options?.strict) throw new Error(`Invalid duration '${value}'. Use ms, s, m, or h.`);
     return 0;
   }

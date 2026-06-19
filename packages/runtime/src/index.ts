@@ -91,7 +91,6 @@ export type {
   ForkPlan,
   BoundaryReason,
   PlanForkedRunOptions,
-  MaterializeForkOptions,
   MaterializeForkedRunOptions,
   MaterializedFork
 } from "./fork.js";
