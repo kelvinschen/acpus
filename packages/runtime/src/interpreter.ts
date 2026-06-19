@@ -20,6 +20,12 @@ import { randomBytes } from "node:crypto";
 import pLimit from "p-limit";
 import { AgentTelemetryAccumulator, upsertAgentAttemptTelemetry } from "./agent-telemetry.js";
 import { buildWorkflowExpressionContext } from "./workflow-context.js";
+import { HookRunner, HookFailureError } from "./hooks/runner.js";
+import { HookJournal } from "./hooks/journal.js";
+import { basePayload, runScope, withNodeFields, type RunScope } from "./hooks/payload.js";
+import type { AgentInjectorResult, EventName, HookAgentTelemetry, HookPayload, InjectorName, InjectorResult, ProgramInjectorResult } from "@acpus/core";
+import { isRunTerminal } from "./types.js";
+import { join } from "node:path";
 
 /**
  * The core IR interpreter that drives state transitions, orchestrates
@@ -35,6 +41,17 @@ export class WorkflowInterpreter {
   private readonly runControl: RunControl;
   private readonly maxConcurrency: number;
   private readonly sleep: (ms: number) => Promise<void>;
+  /** Frozen hook runner for this Run; undefined disables all hook machinery. */
+  private readonly hookRunner?: HookRunner;
+  /** Lazily-created per-Run injector journal (only when injectors fire). */
+  private hookJournal?: HookJournal;
+  /**
+   * Per-node leaf execution metadata for hook onNodeComplete/Error payloads,
+   * keyed by node key. Populated by executeProgram/executeAgent and deleted by
+   * executeNode once the node's terminal lifecycle events have fired, so the map
+   * never accumulates across a long-lived Run.
+   */
+  private readonly leafMeta = new Map<string, LeafHookMeta>();
 
   /** Pending external-decision resolvers for Signal Nodes awaiting a payload,
    *  keyed by "runId:nodeKey". An entry exists only while a node is `awaiting`.
@@ -60,6 +77,7 @@ export class WorkflowInterpreter {
     this.runControl = new RunControl(store);
     this.maxConcurrency = options?.maxConcurrency ?? 10;
     this.sleep = options?.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+    this.hookRunner = options?.hookRunner;
   }
 
   /**
@@ -82,7 +100,8 @@ export class WorkflowInterpreter {
       workflowRef: opts.workflowRef,
       workflowSourcePath: opts.workflowSourcePath,
       agentOverrides: opts.agentOverrides,
-      submissionWarnings: opts.submissionWarnings
+      submissionWarnings: opts.submissionWarnings,
+      skipHooks: opts.skipHooks
     });
   }
 
@@ -91,6 +110,18 @@ export class WorkflowInterpreter {
    */
   async runToCompletion(ir: AcpusIr, opts: RunOptions, runId: string): Promise<import("./types.js").RunState> {
     const meta = this.store.readRunMeta(runId)!;
+    const scope = this.hookRunner ? runScope(ir, meta) : undefined;
+    // `beforeRun` fires only at the first execution entry (no node states yet),
+    // never on retry/resume where the Run is already underway.
+    const isFirstExecution = this.store.listNodeStates(runId).length === 0;
+    if (scope && isFirstExecution) {
+      await this.emitRunEvent("beforeRun", scope, (p) => {
+        p.input = opts.input;
+        p.run_attempt = meta.runAttempt;
+        p.ir_digest = meta.irDigest;
+      });
+    }
+    const runStartedAt = Date.now();
     try {
       const ctx = this.buildContext(ir, opts.input, runId);
       await this.executeNode(ir.root, ctx, runId, {});
@@ -122,6 +153,18 @@ export class WorkflowInterpreter {
 
     meta.updatedAt = new Date().toISOString();
     this.store.writeRunMeta(runId, meta);
+
+    // `afterRun` fires once the Run reaches a terminal status.
+    if (scope && isRunTerminal(meta.status)) {
+      await this.emitRunEvent("afterRun", scope, (p) => {
+        p.run_status = meta.status;
+        p.run_attempt = meta.runAttempt;
+        p.ir_digest = meta.irDigest;
+        p.duration_ms = Date.now() - runStartedAt;
+        if (meta.output !== undefined) p.output = meta.output;
+        if (meta.error !== undefined) p.error = meta.error;
+      });
+    }
     return meta;
   }
 
@@ -418,6 +461,7 @@ export class WorkflowInterpreter {
     this.runControl.registerAbortController(runId, nodeKey, controller);
 
     // Transition to running
+    const fromState = state.state;
     if (canTransition(state.state, "running")) {
       state.state = transition(state.state, "running") as NodeState;
     }
@@ -432,6 +476,9 @@ export class WorkflowInterpreter {
       if (snapshot) state.dynamicContext = snapshot;
     }
     this.store.writeNodeState(runId, state);
+    if (fromState !== "running") {
+      await this.emitNodeLifecycle(runId, "onNodeStart", node, nodeKey, state, dynamic, ctx, fromState);
+    }
 
     try {
       let output: unknown;
@@ -504,7 +551,10 @@ export class WorkflowInterpreter {
       state.output = output;
       if (artifactRefs) state.artifactRefs = artifactRefs;
       state.completedAt = new Date().toISOString();
+      // A Signal Node completes from `awaiting`, every other leaf from `running`.
+      const completeFrom: NodeState = node.kind === "run.signal" ? "awaiting" : "running";
       this.store.writeNodeState(runId, state);
+      await this.emitNodeLifecycle(runId, "onNodeComplete", node, nodeKey, state, dynamic, ctx, completeFrom);
 
       // Add output to step context
       ctx.steps[node.id] = output;
@@ -532,6 +582,11 @@ export class WorkflowInterpreter {
         if (error.artifactRefs) state.artifactRefs = error.artifactRefs;
         this.syncAgentTelemetryFromDisk(runId, nodeKey, state);
         this.store.writeNodeState(runId, state);
+        await this.emitNodeLifecycle(
+          runId,
+          error.state === "paused" ? "onNodePaused" : "onNodeCancelled",
+          node, nodeKey, state, dynamic, ctx, "running"
+        );
         throw error;
       }
 
@@ -558,9 +613,12 @@ export class WorkflowInterpreter {
       this.syncAgentTelemetryFromDisk(runId, nodeKey, state);
       state.completedAt = new Date().toISOString();
       this.store.writeNodeState(runId, state);
+      await this.emitNodeLifecycle(runId, "onNodeError", node, nodeKey, state, dynamic, ctx, "running", error);
       throw error;
     } finally {
       this.runControl.clearInFlightNode(runId, nodeKey);
+      // Drop per-node leaf hook metadata so the map never grows across a Run.
+      this.clearLeafMeta(nodeKey);
     }
   }
 
@@ -587,6 +645,14 @@ export class WorkflowInterpreter {
     const backoffMs = retry?.backoff ? parseDurationMs(retry.backoff) : 5e3;
     const allArtifactRefs: string[] = [...(this.store.readNodeState(runId, nodeKey)?.artifactRefs ?? [])];
 
+    // Run `beforeAgentExec` once per Agent Step execution (per persisted attempt),
+    // not per internal parse/schema auto-retry iteration. The returned prompt
+    // prefix is prepended to every rendered prompt below.
+    const injectedPrompt = await this.runInjector("beforeAgentExec", node, ctx, runId, nodeKey, (p) => {
+      p.agent_use = (node.metadata.agent as { use?: string } | undefined)?.use;
+      p.is_continuation = Boolean(continuation);
+    }) as AgentInjectorResult | undefined;
+
     // `attempt` is local to this executor call and controls parse/schema
     // auto-retry. The persisted `state.attempt` is the durable attempt sequence
     // used for node state and artifact filenames across pause/resume/manual retry.
@@ -602,6 +668,9 @@ export class WorkflowInterpreter {
         throw new LeafExecutionError(
           `Agent step '${node.id}' (use: ${use}) failed (config): Failed to evaluate agent configuration template: ${error instanceof Error ? error.message : String(error)}`
         );
+      }
+      if (injectedPrompt?.prependPrompt) {
+        preparedPrompt = `${injectedPrompt.prependPrompt}\n\n${preparedPrompt}`;
       }
 
       const rawAcpDebug = process.env.ACPUS_AGENT_RAW_ACP_DEBUG === "1";
@@ -703,6 +772,20 @@ export class WorkflowInterpreter {
         continue;
       }
 
+      // Stash agent detail for hook onNodeComplete/Error payloads (terminal attempt).
+      if (this.hookRunner) {
+        const agent = node.metadata.agent as { use?: string; model?: string; type?: string } | undefined;
+        this.leafMeta.set(nodeKey, {
+          failureKind: result.failureKind,
+          agentModel: agent?.model,
+          agentType: agent?.type,
+          agentPolicy: (node.metadata.policy as string | undefined) ?? (agent as { policy?: string } | undefined)?.policy,
+          sessionKey: renderedSessionKey,
+          agentExitCode: result.exitCode,
+          agentResponseText: result.responseText
+        });
+      }
+
       if (result.failureKind || (result.error && !result.partial)) {
         const use = (node.metadata.agent as { use?: string } | undefined)?.use ?? "?";
         throw new LeafExecutionError(
@@ -721,7 +804,30 @@ export class WorkflowInterpreter {
   }
 
   private async executeProgram(node: IrNode, ctx: ExpressionContext, runId: string, signal: AbortSignal, nodeKey: string): Promise<LeafResult> {
-    const result = await this.programExecutor.execute({ node, context: ctx, signal, nodeKey });
+    // Run `beforeProgramExec` before the executor call. cmd/env render inside
+    // the executor, so injected env is passed through ExecutionRequest and the
+    // executor merges it into the subprocess environment.
+    const injected = await this.runInjector("beforeProgramExec", node, ctx, runId, nodeKey) as ProgramInjectorResult | undefined;
+    const result = await this.programExecutor.execute({
+      node,
+      context: ctx,
+      signal,
+      nodeKey,
+      injectedEnv: injected?.env
+    });
+
+    // Stash rendered command/env/output for hook onNodeComplete/Error payloads.
+    if (this.hookRunner) {
+      this.leafMeta.set(nodeKey, {
+        failureKind: result.failureKind,
+        command: result.command,
+        shell: result.shell,
+        subprocessEnv: result.subprocessEnv,
+        exitCode: result.exitCode,
+        stdout: result.stdout,
+        stderr: result.stderr
+      });
+    }
 
     // Operator abort → paused/cancelled (carry output on the abort error).
     if (result.partial) {
@@ -1117,8 +1223,11 @@ export class WorkflowInterpreter {
     // machine); a signal payload resolves it, a cancel aborts it.
     const enterState = this.store.readNodeState(runId, nodeKey);
     if (enterState && canTransition(enterState.state, "awaiting")) {
+      const from = enterState.state;
       enterState.state = transition(enterState.state, "awaiting") as NodeState;
       this.store.writeNodeState(runId, enterState);
+      // Surface the running → awaiting transition to onStateChange observers.
+      await this.emitNodeLifecycle(runId, "onStateChange", node, nodeKey, enterState, this.dynamicFromCtx(ctx), ctx, from);
     }
 
     return new Promise<unknown>((resolve, reject) => {
@@ -1319,6 +1428,187 @@ export class WorkflowInterpreter {
     }
     return String(index ?? 0);
   }
+
+  // ─── Hook integration ───────────────────────────────────────────
+
+  /** Run scope for the active Run, derived from the frozen IR + metadata. */
+  private resolveRunScope(runId: string): RunScope | undefined {
+    if (!this.hookRunner) return undefined;
+    const ir = this.store.readIr(runId);
+    const meta = this.store.readRunMeta(runId);
+    if (!ir || !meta) return undefined;
+    return runScope(ir, meta);
+  }
+
+  /** Lazily create the per-Run injector journal. */
+  private journalFor(runId: string): HookJournal {
+    if (!this.hookJournal) {
+      this.hookJournal = new HookJournal(join(this.store.getBaseDir(), runId));
+    }
+    return this.hookJournal;
+  }
+
+  /**
+   * Run an injector for a node, journaling each handler invocation. Returns the
+   * merged InjectorResult, or undefined when no hook runner / no handlers.
+   * An injector failure under `fail` policy propagates as HookFailureError,
+   * which executeNode maps to a node failure with failureKind hook_failure.
+   */
+  private async runInjector(
+    name: InjectorName,
+    node: IrNode,
+    ctx: ExpressionContext,
+    runId: string,
+    nodeKey: string,
+    enrich?: (payload: HookPayload) => void
+  ): Promise<InjectorResult | undefined> {
+    if (!this.hookRunner || !this.hookRunner.hasInjector(name)) return undefined;
+    const scope = this.resolveRunScope(runId);
+    if (!scope) return undefined;
+
+    const state = this.store.readNodeState(runId, nodeKey);
+    const nodeAttempt = state?.attempt ?? 1;
+    const isRetry = nodeAttempt > 1;
+    const payload = withNodeFields(basePayload(scope, name), node, nodeKey, state, this.dynamicFromCtx(ctx), ctx);
+    payload.is_retry = isRetry;
+    // Note: `beforeAgentExec` runs before the prompt is rendered, so we do NOT
+    // surface state.renderedPrompt here — it would be absent on first execution
+    // and stale on retry. The rendered prompt is carried by lifecycle events.
+    enrich?.(payload);
+
+    const journal = this.journalFor(runId);
+    return this.hookRunner.runInjector(name, payload, (handlerIndex, result, durationMs) => {
+      journal.append({
+        node_key: nodeKey,
+        injector: name,
+        handler_index: handlerIndex,
+        node_attempt: nodeAttempt,
+        is_retry: isRetry,
+        prepend_prompt: name === "beforeAgentExec" ? ((result as AgentInjectorResult).prependPrompt ?? null) : null,
+        env: (result as ProgramInjectorResult).env ?? null,
+        timestamp: new Date().toISOString(),
+        duration_ms: durationMs
+      });
+    });
+  }
+
+  /** Fire a node lifecycle event plus onStateChange for an actual transition. */
+  private async emitNodeLifecycle(
+    runId: string,
+    name: EventName,
+    node: IrNode,
+    nodeKey: string,
+    state: NodeExecutionState,
+    dynamic: NodeKeyDynamic,
+    ctx: ExpressionContext,
+    fromState: NodeState,
+    error?: unknown
+  ): Promise<void> {
+    if (!this.hookRunner) return;
+    const firesSpecific = this.hookRunner.hasEvent(name);
+    const firesStateChange = this.hookRunner.hasEvent("onStateChange");
+    if (!firesSpecific && !firesStateChange) return;
+    const scope = this.resolveRunScope(runId);
+    if (!scope) return;
+    const hookFailure = error instanceof HookFailureError;
+
+    const build = (eventName: string): HookPayload => {
+      const p = withNodeFields(basePayload(scope, eventName), node, nodeKey, state, dynamic, ctx);
+      if (state.output !== undefined) p.output = state.output;
+      if (state.startedAt && state.completedAt) {
+        p.duration_ms = Date.parse(state.completedAt) - Date.parse(state.startedAt);
+      }
+      // beforeAgentExec aside, lifecycle events carry the rendered prompt.
+      if (state.renderedPrompt) p.prompt = state.renderedPrompt;
+      if (state.renderedSessionKey) p.session_key = state.renderedSessionKey;
+      if (node.kind === "run.agent") {
+        const telemetry = hookAgentTelemetry(state);
+        if (telemetry) p.agent_telemetry = telemetry;
+      }
+      if (error !== undefined) p.error = error instanceof Error ? error.message : String(error);
+      this.fillParentFields(runId, node, nodeKey, p);
+      fillCompositeFields(node, p);
+      const leaf = this.leafMeta.get(nodeKey);
+      if (leaf) {
+        if (leaf.failureKind !== undefined) p.failure_kind = leaf.failureKind;
+        // Program detail.
+        if (leaf.command !== undefined) p.command = leaf.command;
+        if (leaf.shell !== undefined) p.shell = leaf.shell;
+        if (leaf.subprocessEnv !== undefined) p.subprocess_env = leaf.subprocessEnv;
+        if (leaf.exitCode !== undefined) p.exit_code = leaf.exitCode;
+        if (leaf.stdout !== undefined) p.stdout = leaf.stdout;
+        if (leaf.stderr !== undefined) p.stderr = leaf.stderr;
+        // Agent detail.
+        if (leaf.agentModel !== undefined) p.agent_model = leaf.agentModel;
+        if (leaf.agentType !== undefined) p.agent_type = leaf.agentType;
+        if (leaf.agentPolicy !== undefined) p.agent_policy = leaf.agentPolicy;
+        if (leaf.sessionKey !== undefined) p.session_key = leaf.sessionKey;
+        if (leaf.agentExitCode !== undefined) p.agent_exit_code = leaf.agentExitCode;
+        if (leaf.agentResponseText !== undefined) p.agent_response_text = leaf.agentResponseText;
+      } else if (hookFailure) {
+        // A node that failed because an injector failed under `fail` policy.
+        p.failure_kind = "hook_failure";
+      }
+      return p;
+    };
+
+    // The specific lifecycle event (onNodeStart/Complete/... ); onStateChange is
+    // never emitted via this branch — it always carries from/to below.
+    if (firesSpecific && name !== "onStateChange") await this.hookRunner.emitEvent(name, build(name));
+    // onStateChange only fires when the state field actually changed.
+    if (firesStateChange && fromState !== state.state) {
+      const p = build("onStateChange");
+      p.from_state = fromState;
+      p.to_state = state.state;
+      await this.hookRunner.emitEvent("onStateChange", p);
+    }
+  }
+
+  /** Fire a run-level event (beforeRun / afterRun). */
+  private async emitRunEvent(name: EventName, scope: RunScope, enrich: (payload: HookPayload) => void): Promise<void> {
+    if (!this.hookRunner || !this.hookRunner.hasEvent(name)) return;
+    const payload = basePayload(scope, name);
+    enrich(payload);
+    await this.hookRunner.emitEvent(name, payload);
+  }
+
+  /** Recover the dynamic key dimensions from an expression context. */
+  private dynamicFromCtx(ctx: ExpressionContext): NodeKeyDynamic {
+    const dynamic: NodeKeyDynamic = {};
+    if (ctx.loop?.iter !== undefined) dynamic.loopRound = ctx.loop.iter;
+    if (ctx.item_id !== undefined) dynamic.fanoutItemId = ctx.item_id;
+    return dynamic;
+  }
+
+  /**
+   * Populate parent_node_key/parent_node_kind from the Run's frozen IR. The
+   * parent's resolved key shares this node's dynamic prefix, so we map the
+   * static parent path onto the dynamic portion of the child key.
+   */
+  private fillParentFields(runId: string, node: IrNode, nodeKey: string, payload: HookPayload): void {
+    const ir = this.store.readIr(runId);
+    if (!ir) return;
+    const parent = findParentNode(ir.root, node.id);
+    if (!parent || parent.id === ir.root.id && parent.kind === "pipeline") {
+      // The workflow root is an implicit container; only surface real parents.
+      if (!parent || parent.nodePath.length === 0) return;
+    }
+    if (!parent) return;
+    payload.parent_node_kind = parent.kind;
+    // The child static path is parent path + child id; the parent's resolved key
+    // is the child key with the trailing static `/childId` segment removed.
+    const childStatic = staticNodePathFromKey(nodeKey);
+    const childIdSeg = `/${node.id}`;
+    if (childStatic.endsWith(childIdSeg)) {
+      const idx = nodeKey.lastIndexOf(childIdSeg);
+      if (idx > 0) payload.parent_node_key = nodeKey.slice(0, idx);
+    }
+  }
+
+  /** Drop per-node leaf metadata once its terminal events have fired. */
+  private clearLeafMeta(nodeKey: string): void {
+    this.leafMeta.delete(nodeKey);
+  }
 }
 
 /** Result of a single fanout lane: success carries the output, failure the message. */
@@ -1343,6 +1633,59 @@ interface LeafResult {
   artifactRefs?: string[];
 }
 
+/** Leaf execution detail captured for hook onNodeComplete/Error payloads. */
+interface LeafHookMeta {
+  /** Failure classification when the leaf failed (program failureKind or hook_failure). */
+  failureKind?: string;
+  // Program
+  command?: string;
+  shell?: boolean;
+  subprocessEnv?: Record<string, string>;
+  exitCode?: number;
+  stdout?: string;
+  stderr?: string;
+  // Agent
+  agentModel?: string;
+  agentType?: string;
+  agentPolicy?: string;
+  sessionKey?: string;
+  agentExitCode?: number;
+  agentResponseText?: string;
+}
+
+function hookAgentTelemetry(state: NodeExecutionState): HookAgentTelemetry | undefined {
+  const telemetry = state.agentTelemetry;
+  const attempt = telemetry?.attempts.find((item) => item.attempt === telemetry.currentAttempt)
+    ?? telemetry?.attempts[telemetry.attempts.length - 1];
+  if (!attempt) return undefined;
+
+  const result: HookAgentTelemetry = {
+    attempt: attempt.attempt,
+    state: attempt.state,
+    updated_at: attempt.updatedAt
+  };
+  if (attempt.completedAt) result.completed_at = attempt.completedAt;
+  if (attempt.context) {
+    result.context = {
+      used: attempt.context.used,
+      size: attempt.context.size,
+      updated_at: attempt.context.updatedAt
+    };
+  }
+  if (attempt.tokenUsage) {
+    result.token_usage = {
+      source: attempt.tokenUsage.source
+    };
+    if (attempt.tokenUsage.inputTokens !== undefined) result.token_usage.input_tokens = attempt.tokenUsage.inputTokens;
+    if (attempt.tokenUsage.outputTokens !== undefined) result.token_usage.output_tokens = attempt.tokenUsage.outputTokens;
+    if (attempt.tokenUsage.cachedReadTokens !== undefined) result.token_usage.cached_read_tokens = attempt.tokenUsage.cachedReadTokens;
+    if (attempt.tokenUsage.cachedWriteTokens !== undefined) result.token_usage.cached_write_tokens = attempt.tokenUsage.cachedWriteTokens;
+    if (attempt.tokenUsage.thoughtTokens !== undefined) result.token_usage.thought_tokens = attempt.tokenUsage.thoughtTokens;
+    if (attempt.tokenUsage.totalTokens !== undefined) result.token_usage.total_tokens = attempt.tokenUsage.totalTokens;
+  }
+  return result;
+}
+
 /** Generate a locally sortable run ID: yyyyMMddHHmmss + 20 uppercase hex chars. */
 export function generateRunId(now = new Date()): string {
   const pad = (n: number): string => String(n).padStart(2, "0");
@@ -1364,6 +1707,50 @@ function nestedParallelBranchDynamic(dynamic: NodeKeyDynamic, branchIndex: numbe
     parallelBranchId:
       dynamic.parallelBranchId === undefined ? branchId : `${dynamic.parallelBranchId}.${branchId}`
   };
+}
+
+/** Find the immediate parent IR node of `childId`, or undefined for the root. */
+function findParentNode(node: IrNode, childId: string): IrNode | undefined {
+  for (const child of node.children ?? []) {
+    if (child.id === childId) return node;
+    const found = findParentNode(child, childId);
+    if (found) return found;
+  }
+  for (const branch of node.branches ?? []) {
+    for (const child of branch.children) {
+      if (child.id === childId) return node;
+      const found = findParentNode(child, childId);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
+/** Populate composite-container-specific payload fields from node metadata. */
+function fillCompositeFields(node: IrNode, p: HookPayload): void {
+  const m = node.metadata;
+  switch (node.kind) {
+    case "parallel":
+      if (typeof m.join === "string") p.join_strategy = m.join;
+      if (typeof m.max_concurrency === "number") p.max_concurrency = m.max_concurrency;
+      break;
+    case "fanout":
+      if (typeof m.join === "string") p.join_strategy = m.join;
+      if (typeof m.max_concurrency === "number") p.max_concurrency = m.max_concurrency;
+      break;
+    case "loop":
+      if (typeof m.max_iterations === "number") p.max_iterations = m.max_iterations;
+      break;
+    case "subworkflow":
+      if (typeof m.subworkflow === "string") p.subworkflow_spec_path = m.subworkflow;
+      break;
+    case "run.signal":
+      if (typeof m.timeout === "string") p.signal_timeout = m.timeout;
+      if (typeof m.on_timeout === "string") p.signal_on_timeout = m.on_timeout;
+      break;
+    default:
+      break;
+  }
 }
 
 class NodeAbortedError extends Error {

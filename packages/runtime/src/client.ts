@@ -46,12 +46,13 @@ export class RunSupervisorClient {
     input?: Record<string, unknown>,
     sourcePath?: string,
     workflowRef?: string,
-    agentOverrides?: AgentOverrides
+    agentOverrides?: AgentOverrides,
+    skipHooks?: boolean
   ): Promise<RunState> {
     const res = await fetch(`${this.baseUrl}/runs`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...this.headers() },
-      body: JSON.stringify({ spec, input, sourcePath, workflowRef, agentOverrides })
+      body: JSON.stringify({ spec, input, sourcePath, workflowRef, agentOverrides, skipHooks })
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));

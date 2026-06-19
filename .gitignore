@@ -5,6 +5,8 @@ coverage/
 .DS_Store
 .acpus/state/
 .acpus/output/
+.acpus/scripts/
+.acpus/hooks.yaml
 *.tsbuildinfo
 mock-trace.jsonl
 .pnpm-store

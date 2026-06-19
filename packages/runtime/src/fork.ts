@@ -52,6 +52,8 @@ export interface MaterializeForkOptions {
   agentOverrides?: AgentOverrides;
   /** Non-fatal warnings produced while resolving submit-time metadata. */
   submissionWarnings?: AgentOverrideWarning[];
+  /** True when the Forked Run should preserve a source Run's hook-disabled metadata. */
+  skipHooks?: boolean;
 }
 
 export interface PlanForkedRunOptions {
@@ -76,6 +78,8 @@ export interface MaterializeForkedRunOptions extends PlanForkedRunOptions {
   agentOverrides?: AgentOverrides;
   /** Non-fatal warnings produced while resolving submit-time metadata. */
   submissionWarnings?: AgentOverrideWarning[];
+  /** True when the Forked Run should preserve a source Run's hook-disabled metadata. */
+  skipHooks?: boolean;
   /** Reuse a dry-run Fork Plan when the caller already computed one. */
   plan?: ForkPlan;
 }
@@ -295,7 +299,8 @@ export function materializeForkedRun(
     workflowRef: options.workflowRef,
     workflowSourcePath: options.workflowSourcePath,
     agentOverrides: options.agentOverrides,
-    submissionWarnings: options.submissionWarnings
+    submissionWarnings: options.submissionWarnings,
+    skipHooks: options.skipHooks
   });
 
   try {
@@ -322,6 +327,13 @@ export function materializeForkedRun(
       forkOriginNodeKey: plan.forkOriginNodeKey,
       inheritedNodeCount: plan.inheritedNodeKeys.length
     };
+    // Inherit the source Run's frozen hook configuration so the Forked Run
+    // observes and injects under the same hooks as its origin.
+    const hookSnapshot = store.readHookConfig(plan.sourceRunId);
+    if (hookSnapshot) {
+      store.writeHookConfig(options.forkRunId, hookSnapshot);
+      meta.hookConfigHash = hookSnapshot.hash;
+    }
     store.writeRunMeta(options.forkRunId, meta);
   }
 

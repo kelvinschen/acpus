@@ -13,7 +13,7 @@ import {
 import { dirname, join } from "node:path";
 import { encodeNodeKeyForFs, encodeNodeKeyForDir } from "./keys.js";
 import { ArtifactReferences } from "./artifacts.js";
-import type { AcpusIr, AgentOverrideWarning, AgentOverrides } from "@acpus/core";
+import type { AcpusIr, AgentOverrideWarning, AgentOverrides, HookConfigSnapshot } from "@acpus/core";
 import type { AgentTelemetry, NodeExecutionState, RunCheckpoint, RunCleanItem, RunCleanResult, RunState } from "./types.js";
 import { isRunTerminal } from "./types.js";
 
@@ -68,6 +68,7 @@ export class RunStore {
       lineage?: import("./types.js").RunLineage;
       agentOverrides?: AgentOverrides;
       submissionWarnings?: AgentOverrideWarning[];
+      skipHooks?: boolean;
     }
   ): RunState {
     validateRunId(runId);
@@ -97,7 +98,8 @@ export class RunStore {
       runAttempt: 1,
       lineage: source?.lineage,
       agentOverrides: source?.agentOverrides,
-      submissionWarnings: source?.submissionWarnings
+      submissionWarnings: source?.submissionWarnings,
+      skipHooks: source?.skipHooks
     };
     this.writeRunMeta(runId, meta);
     // Empty checkpoints index — appended to as Nodes reach terminal state.
@@ -115,6 +117,26 @@ export class RunStore {
   readInput(runId: string): Record<string, unknown> | undefined {
     validateRunId(runId);
     return this.readJson<Record<string, unknown>>(join(this.runDir(runId), "input.json"));
+  }
+
+  // ─── Hook configuration snapshot ───────────────────────────────
+
+  /** Write the frozen merged hook configuration snapshot (once, on first run). */
+  writeHookConfig(runId: string, snapshot: HookConfigSnapshot): void {
+    validateRunId(runId);
+    this.atomicWriteJson(this.hookConfigPath(runId), snapshot);
+  }
+
+  /** Read the frozen hook configuration snapshot. Undefined when no hooks apply. */
+  readHookConfig(runId: string): HookConfigSnapshot | undefined {
+    validateRunId(runId);
+    return this.readJson<HookConfigSnapshot>(this.hookConfigPath(runId));
+  }
+
+  /** True when this Run has a frozen hook configuration on disk. */
+  hasHookConfig(runId: string): boolean {
+    validateRunId(runId);
+    return existsSync(this.hookConfigPath(runId));
   }
 
   // ─── Run metadata ──────────────────────────────────────────────
@@ -344,6 +366,10 @@ export class RunStore {
 
   private checkpointsIndexPath(runId: string): string {
     return join(this.runDir(runId), "checkpoints.index.json");
+  }
+
+  private hookConfigPath(runId: string): string {
+    return join(this.runDir(runId), "hook-config.json");
   }
 
   /** Write JSON via temp file + atomic rename for crash safety. */

@@ -84,6 +84,43 @@ describe("Supervisor HTTP API", () => {
     expect(await pollRunStatus(data.runId)).toBe("completed");
   });
 
+  it("records skipHooks and does not freeze hook config for skipped runs", async () => {
+    mkdirSync(join(tmpDir, ".acpus"), { recursive: true });
+    const hookPath = join(tmpDir, ".acpus", "hooks.yaml");
+    writeFileSync(hookPath, "events:\n  beforeRun:\n    - command: echo hook\n", "utf8");
+    const res = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: SPEC_YAML, input: {}, skipHooks: true })
+    });
+    expect(res.status).toBe(201);
+    const data = await res.json();
+    expect(data.skipHooks).toBe(true);
+    expect(data.hookConfigHash).toBeUndefined();
+    expect(store.hasHookConfig(data.runId)).toBe(false);
+    expect(store.readRunMeta(data.runId)?.skipHooks).toBe(true);
+    expect(await pollRunStatus(data.runId)).toBe("completed");
+    unlinkSync(hookPath);
+  });
+
+  it("returns hookConfigHash in the initial response when hooks are frozen", async () => {
+    mkdirSync(join(tmpDir, ".acpus"), { recursive: true });
+    const hookPath = join(tmpDir, ".acpus", "hooks.yaml");
+    writeFileSync(hookPath, "events:\n  afterRun:\n    - command: echo hook\n", "utf8");
+    const res = await fetch(`${baseUrl}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: SPEC_YAML, input: {} })
+    });
+    expect(res.status).toBe(201);
+    const data = await res.json();
+    expect(data.hookConfigHash).toMatch(/^sha256:/);
+    expect(store.readRunMeta(data.runId)?.hookConfigHash).toBe(data.hookConfigHash);
+    expect(store.hasHookConfig(data.runId)).toBe(true);
+    expect(await pollRunStatus(data.runId)).toBe("completed");
+    unlinkSync(hookPath);
+  });
+
   it("applies Agent Overrides through POST /runs and exposes persisted metadata", async () => {
     const res = await fetch(`${baseUrl}/runs`, {
       method: "POST",

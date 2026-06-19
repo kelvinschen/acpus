@@ -19,6 +19,8 @@ import type { RunState } from "./types.js";
 import { isRunTerminal } from "./types.js";
 import { ForkError, materializeForkedRun, planForkedRun, type ForkPlan } from "./fork.js";
 import { ArtifactReferences } from "./artifacts.js";
+import { HookConfigLoader } from "./hooks/loader.js";
+import { HookRunner } from "./hooks/runner.js";
 
 /** Pattern that matches unsafe runId characters (path traversal, separators, null). */
 const UNSAFE_RUN_ID = /(^|\/)\.\.?(\/|$)|[\\:\0]/;
@@ -61,6 +63,7 @@ export function createSupervisorApp(
   let healthEndpoint = "";
   const workspaceRoot = resolve(config.workspace ?? process.cwd());
   const sourceResolver = workflowSourceResolver(workspaceRoot);
+  const hookConfigLoader = new HookConfigLoader(workspaceRoot);
 
   /** Refresh lease on every request with client headers. */
   function refreshLease(clientId: string | undefined, clientKind: string | undefined): void {
@@ -108,7 +111,28 @@ export function createSupervisorApp(
   /** Create an interpreter bound to this supervisor's store + executors. */
   function newInterpreter(runId?: string): WorkflowInterpreter {
     const nowTimestamp = runId ? store.readRunMeta(runId)?.createdAt : undefined;
-    return new WorkflowInterpreter(store, agentExecutor, programExecutor, { nowTimestamp });
+    // Rebuild the frozen hook runner from the Run's persisted snapshot so retry,
+    // resume, and fork executions all reuse the same frozen configuration.
+    const snapshot = runId ? store.readHookConfig(runId) : undefined;
+    const hookRunner = snapshot ? new HookRunner(snapshot.mergedConfig) : undefined;
+    return new WorkflowInterpreter(store, agentExecutor, programExecutor, { nowTimestamp, hookRunner });
+  }
+
+  /**
+   * Freeze the merged hook configuration for a newly-created Run. Writes
+   * hook-config.json and records the hash on Run metadata when any hooks apply;
+   * otherwise leaves no file and no hash so the Run incurs zero hook overhead.
+   */
+  function freezeHookConfig(runId: string): RunState | undefined {
+    const snapshot = hookConfigLoader.freeze();
+    if (!snapshot) return;
+    store.writeHookConfig(runId, snapshot);
+    const meta = store.readRunMeta(runId);
+    if (meta) {
+      meta.hookConfigHash = snapshot.hash;
+      store.writeRunMeta(runId, meta);
+      return meta;
+    }
   }
 
   /**
@@ -254,6 +278,7 @@ export function createSupervisorApp(
       sourcePath?: string;
       workflowRef?: string;
       agentOverrides?: import("@acpus/core").AgentOverrides;
+      skipHooks?: boolean;
     }>();
     if (!body.spec) {
       return c.json({ error: "spec is required" }, 400);
@@ -295,7 +320,8 @@ export function createSupervisorApp(
         input: body.input ?? {},
         workflowRef: body.workflowRef,
         workflowSourcePath: sourcePath,
-        ...optionalSubmissionMetadata(submitMetadata)
+        ...optionalSubmissionMetadata(submitMetadata),
+        skipHooks: Boolean(body.skipHooks)
       });
     } catch (error) {
       if (error instanceof InputValidationFailure) {
@@ -303,6 +329,9 @@ export function createSupervisorApp(
       }
       throw error;
     }
+    // Freeze hook configuration once at Run creation unless this submission
+    // explicitly disabled hooks. Retry/resume reuse the Run's frozen state.
+    if (!body.skipHooks) runState = freezeHookConfig(runState.runId) ?? runState;
     const interpreter = newInterpreter(runState.runId);
     interpreters.set(runState.runId, interpreter);
     lastActiveAt = Date.now();
@@ -633,7 +662,8 @@ export function createSupervisorApp(
         workflowRef: body.workflowRef ?? priorMeta.workflowRef,
         workflowSourcePath: sourcePath ?? priorMeta.workflowSourcePath,
         plan,
-        ...optionalSubmissionMetadata(submitMetadata)
+        ...optionalSubmissionMetadata(submitMetadata),
+        skipHooks: priorMeta.skipHooks
       });
     } catch (error) {
       if (error instanceof InputValidationFailure) {

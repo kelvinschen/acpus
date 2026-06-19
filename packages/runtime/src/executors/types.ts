@@ -20,6 +20,8 @@ export interface ExecutionRequest {
   continuation?: boolean;
   /** True when this is a parse/schema auto-retry iteration (continuation prompt + schema section). */
   retry?: boolean;
+  /** Injected env from beforeProgramExec; the executor merges into the child env. */
+  injectedEnv?: Record<string, string>;
   /** Called with raw stdout/stderr chunks while the executor is still running. */
   onStream?: (stream: "stdout" | "stderr", chunk: string) => void;
 }

@@ -36,6 +36,7 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - `acpus workflows run <ref-or-path> --visualize --json` MUST be rejected as invalid because the visualizer and JSONL observation stream are mutually exclusive.
 - During foreground follow or `--visualize`, Ctrl-C MUST detach the CLI from the Run without cancelling the Run, and the CLI MUST exit successfully.
 - `acpus workflows run <ref-or-path> --dry-run` MUST compile to IR and print schedule projection without ensuring a Run Supervisor and without executing Agent Steps or Program Steps.
+- `acpus workflows run <ref-or-path> --skip-hooks` MUST submit a new Run without loading, freezing, or executing hooks. The submitted Run metadata MUST include `skipHooks: true`, and retry/resume MUST continue to use that Run's frozen hook state. `--dry-run --skip-hooks` MUST be accepted and MUST have no effect on dry-run output.
 - The CLI MUST accept `--input <value>` for `run`, where `<value>` is either inline JSON or a path to a `.json`, `.yaml`, or `.yml` input file.
 - The CLI MUST accept `--agents <value>` for `workflows run` and `runs fork`, where `<value>` is either inline JSON/YAML or a path to a `.json`, `.yaml`, or `.yml` Agent Overrides object.
 - The CLI MUST NOT expose a singular `--agent` flag in v1.
@@ -162,6 +163,7 @@ The Acpus CLI is the local command-line surface for discovering Workflow Specs, 
 - CLI tests MUST cover `workflows list` and `wf list`.
 - CLI tests MUST cover `workflows show` entry details and diagnostics.
 - CLI tests MUST cover `workflows run --dry-run` JSON output.
+- CLI tests MUST cover `workflows run --dry-run --skip-hooks` being accepted.
 - CLI tests MUST cover inline JSON input and file input.
 - CLI tests MUST cover `workflows run --dry-run --agents` JSON output including `agentOverrides` and `submissionWarnings`.
 - CLI tests MUST cover human submission warnings on stderr and JSON warning suppression for `workflows run --agents` and `runs fork --agents`.

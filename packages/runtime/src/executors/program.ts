@@ -31,7 +31,7 @@ export class ProgramExecutor implements ExecutorAdapter {
     this.evaluator = evaluator ?? new ExpressionEvaluator();
   }
 
-  async execute({ node, context, signal }: ExecutionRequest): Promise<ExecutorResult> {
+  async execute({ node, context, signal, injectedEnv }: ExecutionRequest): Promise<ExecutorResult> {
     const cmdTemplate = node.metadata.cmd;
     const timeoutRaw = node.metadata.timeout;
     const capture = node.metadata.capture as Record<string, unknown> | undefined;
@@ -46,6 +46,7 @@ export class ProgramExecutor implements ExecutorAdapter {
     const shell = typeof cmd === "string";
     const args = Array.isArray(cmd) ? cmd.slice(1) : [];
     const command = Array.isArray(cmd) ? cmd[0] : cmd;
+    const renderedCommand = Array.isArray(cmd) ? cmd.join(" ") : cmd;
     // Numeric timeout is milliseconds directly; string timeout is a duration.
     const timeoutMs = typeof timeoutRaw === "number" && timeoutRaw > 0
       ? timeoutRaw
@@ -55,10 +56,15 @@ export class ProgramExecutor implements ExecutorAdapter {
 
     // Evaluate env templates. A bad expression (e.g. referencing an unknown step)
     // is a user-facing error, not a spawn failure — catch and report clearly.
+    // Hook-injected env layers on top of the step's env.
     let env: Record<string, string>;
     let cwd: string;
     try {
-      env = { ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined) as [string, string][]), ...this.evaluateEnv(node.metadata.env as Record<string, unknown> | undefined, context) };
+      env = {
+        ...(Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined)) as Record<string, string>),
+        ...this.evaluateEnv(node.metadata.env as Record<string, unknown> | undefined, context),
+        ...(injectedEnv ?? {})
+      };
       cwd = this.resolveCwd(node.metadata.cwd, context);
     } catch (error) {
       return {
@@ -68,6 +74,8 @@ export class ProgramExecutor implements ExecutorAdapter {
         stderr: ""
       };
     }
+
+    const meta = { command: renderedCommand, shell, subprocessEnv: env };
 
     let result;
     try {
@@ -188,7 +196,7 @@ export class ProgramExecutor implements ExecutorAdapter {
       }
     }
 
-    return { exitCode, output, stdout, stderr };
+    return { exitCode, output, stdout, stderr, ...meta };
   }
 
   private resolveCmd(cmd: unknown, context: ExpressionContext): string | string[] {

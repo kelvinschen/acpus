@@ -49,6 +49,16 @@ describe("acpus CLI", () => {
     expect(payload.schedule.nodes).toHaveLength(9);
   });
 
+  it("accepts --skip-hooks in dry-run mode", async () => {
+    const result = await execaNode(cliEntry, ["workflows", "run", join(fixtureDir, "all-primitives.yaml"), "--dry-run", "--json", "--skip-hooks"], {
+      nodeOptions: ["--import", "tsx", "--conditions=development"]
+    });
+    const payload = JSON.parse(result.stdout);
+
+    expect(payload.ok).toBe(true);
+    expect(payload.ir.name).toBe("all-primitives");
+  });
+
   it("prints dry-run Agent Overrides in JSON output", async () => {
     const tempDir = join(repoRoot, ".tmp-tests", "agent-overrides-dry-run");
     rmSync(tempDir, { recursive: true, force: true });

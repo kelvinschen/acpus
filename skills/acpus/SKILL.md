@@ -25,6 +25,7 @@ Before acting, decide which path the user's request falls into. A single convers
 | **Recover** | Reports a failed or stalled Run, asks why something went wrong, or wants to fix/retry/fork. |
 | **Run Existing** | Wants to execute a Workflow Spec or catalog playbook (with or without agent overrides). |
 | **Author / Adapt** | Wants to write or edit a Workflow Spec, choose composite node types, or adapt a playbook. |
+| **Configure Hooks** | Wants to set up, validate, or inspect hook configuration (hooks.yaml, injectors, events). See `references/hooks-config.md`. |
 | **Explain** | Asks what Acpus is, how a concept works (CEL, composites, fork semantics…), or wants conceptual guidance with no side effects. |
 
 > **Prerequisite for all action paths** — verify the CLI first: `acpus --version`. If missing, ask before installing: `npm install -g acpus`.
@@ -152,6 +153,7 @@ Answer conceptual questions without side effects. Common topics and where to fin
 | Authoring gotchas and positive/negative patterns | `references/best-practices.md` |
 | Frequent mistakes and fixes | `references/common-errors.md` |
 | Agent selection by task shape | `references/agent-selection.md` |
+| Hook system configuration and payloads | `references/hooks-config.md` |
 
 For deeper reading, link the user to the Source Docs at the bottom of this file.
 
@@ -166,6 +168,7 @@ Every path above links its relevant references inline. For quick lookup:
 - `references/common-errors.md` — frequent authoring mistakes and runtime errors with fixes
 - `references/agent-selection.md` — choosing acpx-backed worker agents
 - `references/background-run-polling.md` — efficient polling cadence for background Runs
+- `references/hooks-config.md` — hook system config, payload fields, injector/event specs, journal format
 - `references/playbooks.md` — GitHub source and raw links for public Agent Workflow Playbooks
   (`codebase-deep-research`, `adversarial-feature-implementation-review`,
   `solution-generate-filter`, `worktree-implementation-tournament`, `loop-until-green-fix`,

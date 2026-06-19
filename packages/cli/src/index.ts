@@ -26,6 +26,7 @@ import { printCompile, printError, printLint } from "./output.js";
 import { ensureSupervisor, EXIT_SUPERVISOR_ERROR, isSupervisorConnectionError } from "./supervisor.js";
 import { followRun } from "./follow.js";
 import { formatRunShow } from "./runs-show.js";
+import { buildHooksCommand } from "./hooks.js";
 import type { RunCleanResult, RunStatus } from "@acpus/runtime";
 import { ForkRejectedError } from "@acpus/runtime";
 
@@ -114,6 +115,7 @@ workflows
   .option("--agents <value>", "inline JSON/YAML or path to JSON/YAML Agent Overrides object")
   .option("--background", "submit and return immediately (no follow)")
   .option("--visualize", "submit and open TUI visualizer")
+  .option("--skip-hooks", "submit this run without loading or executing hooks")
   .option("--json", "write JSONL observations (follow mode) or JSON (background)")
   .option("--quiet", "only write final output")
   .option("--poll <duration>", "follow-mode poll interval (e.g. 2s, 1m, 500ms; default 10s, min 1s)", (value: string) => {
@@ -125,7 +127,7 @@ workflows
   })
   .action(async (
     refOrPath: string,
-    options: { dryRun?: boolean; input?: string; agents?: string; background?: boolean; visualize?: boolean; json?: boolean; quiet?: boolean; poll?: number }
+    options: { dryRun?: boolean; input?: string; agents?: string; background?: boolean; visualize?: boolean; skipHooks?: boolean; json?: boolean; quiet?: boolean; poll?: number }
   ) => {
     if (options.background && options.visualize) {
       printError("--background and --visualize are mutually exclusive", options);
@@ -168,7 +170,7 @@ workflows
       }
 
       const client = await ensureSupervisor();
-      const runState = await client.startRun(target.source, parsedInput, target.sourcePath, target.workflowRef, parsedAgentOverrides);
+      const runState = await client.startRun(target.source, parsedInput, target.sourcePath, target.workflowRef, parsedAgentOverrides, Boolean(options.skipHooks));
 
       if (options.background) {
         if (options.json) {
@@ -511,6 +513,8 @@ runs
   });
 
 program.addCommand(runs);
+
+program.addCommand(buildHooksCommand());
 
 program.parse();
 

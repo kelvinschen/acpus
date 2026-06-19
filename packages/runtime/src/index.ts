@@ -95,3 +95,9 @@ export type {
   MaterializeForkedRunOptions,
   MaterializedFork
 } from "./fork.js";
+
+// ─── Hooks ───────────────────────────────────────────────────────
+export { HookConfigLoader, mergeHookConfigs, hashHookConfig, isEmptyHookConfig, globalHookConfigPath, projectHookConfigPath } from "./hooks/loader.js";
+export type { LoadedLayer } from "./hooks/loader.js";
+export { HookRunner, HookFailureError } from "./hooks/runner.js";
+export { HookJournal } from "./hooks/journal.js";

@@ -132,6 +132,10 @@ export interface RunState {
   agentOverrides?: AgentOverrides;
   /** Non-fatal warnings produced while resolving submit-time metadata. */
   submissionWarnings?: AgentOverrideWarning[];
+  /** Hash of the frozen merged hook configuration; absent when no hooks apply. */
+  hookConfigHash?: string;
+  /** True when this Run was submitted with hooks intentionally disabled. */
+  skipHooks?: boolean;
   /** Node states included when inspecting a specific run (GET /runs/:runId) */
   nodes?: NodeExecutionState[];
 }
@@ -165,7 +169,7 @@ export interface WorkflowExpressionContext {
  * whether a node is non-recoverable (→ failed) and whether an agent response
  * failure is retryable (parse/schema).
  */
-export type FailureKind = "parse" | "schema" | "spawn" | "timeout" | "killed" | "capture" | "exit" | "config";
+export type FailureKind = "parse" | "schema" | "spawn" | "timeout" | "killed" | "capture" | "exit" | "config" | "hook_failure";
 
 export interface ExecutorResult {
   output?: unknown;
@@ -180,6 +184,12 @@ export interface ExecutorResult {
   stdout?: string;
   /** Raw process stderr, captured as an artifact by the interpreter. */
   stderr?: string;
+  /** Rendered Program command, surfaced for hook onNodeComplete/Error events. */
+  command?: string;
+  /** Whether the Program command ran with shell semantics. */
+  shell?: boolean;
+  /** Effective Program subprocess environment, surfaced for hook events. */
+  subprocessEnv?: Record<string, string>;
   /** Failure classification when execution did not succeed. */
   failureKind?: FailureKind;
   /** True if the executor was aborted mid-execution */
@@ -280,6 +290,8 @@ export interface InterpreterOptions {
   nowTimestamp?: string;
   /** Injectable sleep used for retry backoff (default: real setTimeout). */
   sleep?: (ms: number) => Promise<void>;
+  /** Frozen hook runner for this Run; absent disables all hook machinery. */
+  hookRunner?: import("./hooks/runner.js").HookRunner;
 }
 
 export interface RunOptions {
@@ -295,6 +307,8 @@ export interface RunOptions {
   agentOverrides?: AgentOverrides;
   /** Non-fatal warnings produced while resolving submit-time metadata. */
   submissionWarnings?: AgentOverrideWarning[];
+  /** True when hook loading/freezing/execution is disabled for this new Run. */
+  skipHooks?: boolean;
 }
 
 // ─── Supervisor types ────────────────────────────────────────────
