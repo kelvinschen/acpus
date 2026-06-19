@@ -1,5 +1,11 @@
 # acpus
 
+## 0.4.6
+
+### Patch Changes
+
+- 73ee3ad: Bind Acpus-owned runtime counters as CEL integers.
+
 ## 0.4.5
 
 ### Patch Changes
