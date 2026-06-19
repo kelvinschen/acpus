@@ -133,6 +133,35 @@ workflow:
     expect((node?.output as { exit_code: number }).exit_code).toBe(1);
   });
 
+  it("evaluates program exit_code arithmetic as integer CEL", async () => {
+    const ir = compileYaml(`
+version: 1
+name: program-exit-code-int-test
+workflow:
+  steps:
+    - id: seed
+      run: program
+      cmd: ["true"]
+    - id: after
+      run: program
+      cmd: ["echo", "\${{ steps.seed.exit_code + 1 }}"]
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: {
+        seed: { stdout: "" },
+        after: { stdout: "ok" }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+
+    const after = store.listNodeStates(meta.runId).find((n) => n.nodeId === "after");
+    expect(after?.state).toBe("completed");
+  });
+
   it("fails the node on a non-recoverable failure", async () => {
     const ir = compileYaml(`
 version: 1

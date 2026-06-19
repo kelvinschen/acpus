@@ -76,6 +76,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 
 - The runtime MUST evaluate `${{ ... }}` expression templates at runtime using a CEL evaluator.
 - The runtime MUST rewrite `loop.` references to `loop_ctx.` before evaluation.
+- The runtime MUST bind Acpus-owned integer context values (`loop.iter`, `item_index`, and Program Step `exit_code` fields on step envelopes, including nested preserved envelopes) as CEL integers.
 - The runtime MUST register custom functions: `now()`, `len()`, `startsWith()`, `matches()`, `coalesce()`.
 - `now()` MUST return a deterministic timestamp, not wall-clock time.
 

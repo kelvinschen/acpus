@@ -28,6 +28,33 @@ function normalizeForJson(value: unknown): unknown {
   return value;
 }
 
+function celInt(value: number): bigint | number {
+  return Number.isSafeInteger(value) ? BigInt(value) : value;
+}
+
+function bindLoop(loop: ExpressionContext["loop"]): Record<string, unknown> | undefined {
+  if (!loop) return undefined;
+  return { ...loop, iter: celInt(loop.iter), last: bindStepValue(loop.last) };
+}
+
+function bindSteps(steps: ExpressionContext["steps"]): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(steps).map(([id, value]) => [id, bindStepValue(value)]));
+}
+
+function bindStepValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(bindStepValue);
+  if (value instanceof Map) return value;
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const bound = Object.fromEntries(Object.entries(record).map(([key, child]) => [key, bindStepValue(child)]));
+    if ("output" in record && typeof record.exit_code === "number" && Number.isSafeInteger(record.exit_code)) {
+      bound.exit_code = BigInt(record.exit_code);
+    }
+    return bound;
+  }
+  return value;
+}
+
 /**
  * Wraps @marcbachmann/cel-js to evaluate ${{ expr }} templates and raw CEL
  * expressions. Registers custom functions (now, len, startsWith, matches,
@@ -120,14 +147,14 @@ export class ExpressionEvaluator {
   private buildBindings(ctx: ExpressionContext): Record<string, unknown> {
     const bindings: Record<string, unknown> = {
       input: ctx.input,
-      steps: ctx.steps,
+      steps: bindSteps(ctx.steps),
       workflow: ctx.workflow,
       run_id: ctx.run_id
     };
 
     if (ctx.loop !== undefined) {
       // toCelParseSource rewrites loop. → loop_ctx.
-      bindings.loop_ctx = ctx.loop;
+      bindings.loop_ctx = bindLoop(ctx.loop);
     }
 
     if (ctx.item !== undefined) {
@@ -139,7 +166,7 @@ export class ExpressionEvaluator {
     }
 
     if (ctx.item_index !== undefined) {
-      bindings.item_index = ctx.item_index;
+      bindings.item_index = celInt(ctx.item_index);
     }
 
     return bindings;

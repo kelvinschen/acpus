@@ -105,6 +105,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A Program Step with `capture.from: file` MUST read `capture.path` (resolved relative to the resolved `cwd`) and parse it per `capture.parse`.
 - A Program Step result MUST be exposed as an envelope `{ output, exit_code }` at `steps.<id>`.
 - A Program Step MUST expose `steps.<id>.exit_code`.
+- Program Step `exit_code` fields on step envelopes MUST be exposed to CEL as integers, including when the envelope is preserved inside composite outputs or `loop.last`.
 - A Program Step MUST persist its stdout and stderr as artifacts (`stdout.log` and `stderr.log`) on every execution, and expose their references.
 - A Program Step MAY declare `expect.exit_code` as a non-empty array of non-negative integers.
 - The default `expect.exit_code` MUST be treated as `[0]` when `expect` is omitted.
@@ -145,6 +146,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - When `success_criteria.min_success` is absent, the default MUST follow the wait strategy: `all` requires all lanes, `race` requires 1, and `quorum` requires `quorum`.
 - A `fanout` Node MUST produce `steps.<id>.output` as an array of the successful lane outputs.
 - A `fanout` Node MUST expose `item`, `item_id`, and `item_index` inside its body.
+- `item_index` MUST be exposed to CEL as an integer.
 - A `switch` Node MUST select at most one branch.
 - A `switch` Node MUST evaluate cases in order.
 - A `switch` Node case MAY declare `when` as a boolean or a CEL expression string.
@@ -153,6 +155,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A `loop` Node MAY declare `until` as a boolean or a CEL expression string.
 - A `loop` Node MUST declare `max_iterations`.
 - A `loop` Node MUST expose `loop.iter`.
+- `loop.iter` MUST be exposed to CEL as an integer.
 - A `loop` Node MAY expose prior iteration output as `loop.last`; `loop.last` MUST be the previous iteration body final child step value, including that child's output envelope.
 - A `loop` Node MUST produce `steps.<id>.output` as the final executed iteration body's final child step value.
 - A `subworkflow` Node MUST reference another Workflow Spec path.

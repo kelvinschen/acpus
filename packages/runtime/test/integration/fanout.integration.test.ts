@@ -96,6 +96,36 @@ workflow:
     expect(fanoutNode?.output).toEqual({ output: [{ output: { done: true } }, { output: { done: true } }] });
   });
 
+  it("evaluates item_index arithmetic as integer CEL", async () => {
+    const ir = compileYaml(`
+version: 1
+name: fanout-item-index-int-test
+workflow:
+  steps:
+    - id: map-items
+      fanout:
+        over: input.items
+        do:
+          - id: process
+            run: program
+            cmd: ["process", "\${{ item_index + 1 }}"]
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: {
+        process: { stdout: "ok" }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: { items: ["x", "y"] } });
+    expect(meta.status).toBe("completed");
+
+    const nodes = store.listNodeStates(meta.runId).filter((n) => n.nodeId === "process");
+    expect(nodes).toHaveLength(2);
+    nodes.forEach((n) => expect(n.state).toBe("completed"));
+  });
+
   it("retry preserves a fanout lane's composite node key (stable identity)", async () => {
     // A fanout lane agent step fails (no mock response). Retrying that lane must
     // re-execute under its ORIGINAL composite key (with item/lane dims), not a

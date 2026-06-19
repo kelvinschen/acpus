@@ -121,4 +121,60 @@ workflow:
       output: { ok: true }
     });
   });
+
+  it("evaluates loop.iter arithmetic as integer CEL", async () => {
+    const ir = compileYaml(`
+version: 1
+name: loop-iter-int-test
+workflow:
+  steps:
+    - id: iterate
+      loop:
+        until: loop.iter + 1 >= 2
+        max_iterations: 3
+        do:
+          - id: step
+            run: program
+            cmd: ["tick", "\${{ loop.iter }}"]
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: { step: { stdout: "ok" } }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+
+    const stepNodes = store.listNodeStates(meta.runId).filter((n) => n.nodeId === "step");
+    expect(stepNodes).toHaveLength(1);
+  });
+
+  it("evaluates loop.last program exit_code arithmetic as integer CEL", async () => {
+    const ir = compileYaml(`
+version: 1
+name: loop-last-exit-code-int-test
+workflow:
+  steps:
+    - id: iterate
+      loop:
+        until: loop.last.exit_code + 1 >= 1
+        max_iterations: 3
+        do:
+          - id: step
+            run: program
+            cmd: ["tick", "\${{ loop.iter }}"]
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: { step: { stdout: "ok" } }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+
+    const stepNodes = store.listNodeStates(meta.runId).filter((n) => n.nodeId === "step");
+    expect(stepNodes).toHaveLength(1);
+  });
 });

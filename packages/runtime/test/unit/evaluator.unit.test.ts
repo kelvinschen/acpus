@@ -60,6 +60,25 @@ describe("ExpressionEvaluator", () => {
       expect(Number(evaluator.evaluateExpression("loop.iter", ctx))).toBe(5);
     });
 
+    it("binds runtime counters as CEL integers", () => {
+      const ctx = baseCtx({
+        loop: { iter: 1 },
+        item: "file-a",
+        item_id: "file-a",
+        item_index: 1,
+        steps: {
+          seed: { output: "ok", exit_code: 0 },
+          looped: { output: { output: "ok", exit_code: 0 } },
+          user: { output: { exit_code: 1 } }
+        }
+      });
+      expect(evaluator.evaluateExpression("loop.iter + 1 >= 2", ctx)).toBe(true);
+      expect(evaluator.evaluateExpression("item_index + 1 >= 2", ctx)).toBe(true);
+      expect(evaluator.evaluateExpression("steps.seed.exit_code + 1 >= 1", ctx)).toBe(true);
+      expect(evaluator.evaluateExpression("steps.looped.output.exit_code + 1 >= 1", ctx)).toBe(true);
+      expect(() => evaluator.evaluateExpression("steps.user.output.exit_code + 1 >= 2", ctx)).toThrow(/no such overload/);
+    });
+
     it("evaluates fanout item context", () => {
       const ctx = baseCtx({ item: "file-a", item_id: "file-a", item_index: 0 });
       expect(evaluator.evaluateExpression("item", ctx)).toBe("file-a");
