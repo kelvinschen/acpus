@@ -1,6 +1,6 @@
 {
   "name": "@acpus/core",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Workflow Spec compiler and validation core for Acpus",
   "keywords": [
     "acp",
