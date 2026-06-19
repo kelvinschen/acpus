@@ -1,5 +1,15 @@
 # @acpus/tui
 
+## 0.5.4
+
+### Patch Changes
+
+- b93c0de: Migrate package build and typecheck scripts to TypeScript 7 native preview via `tsgo`.
+- Updated dependencies [6448339]
+- Updated dependencies [b93c0de]
+  - @acpus/core@0.5.1
+  - @acpus/runtime@0.6.1
+
 ## 0.5.3
 
 ### Patch Changes

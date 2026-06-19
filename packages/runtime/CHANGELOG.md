@@ -1,5 +1,15 @@
 # @acpus/runtime
 
+## 0.6.1
+
+### Patch Changes
+
+- 6448339: Add the Acpus hook system with YAML configuration, command handlers, injector and event payload types, frozen per-run hook config, hook journaling, and `acpus hooks` inspection commands. Workflows can now be submitted with `--skip-hooks` to disable hook loading and execution for a single new run.
+- b93c0de: Migrate package build and typecheck scripts to TypeScript 7 native preview via `tsgo`.
+- Updated dependencies [6448339]
+- Updated dependencies [b93c0de]
+  - @acpus/core@0.5.1
+
 ## 0.6.0
 
 ### Minor Changes
