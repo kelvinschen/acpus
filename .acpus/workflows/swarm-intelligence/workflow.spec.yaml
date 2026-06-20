@@ -62,18 +62,14 @@ input:
 agents:
   challenger:
     use: pi
-    model: aiden-anthropic/deepseek-v4-flash
   builder:
-    use: pi
-    model: aiden-anthropic/deepseek-v4-flash
+    use: claude
   synthesizer:
-    use: pi
-    model: aiden-anthropic/deepseek-v4-flash
+    use: codex
   empiricist:
-    use: traex
+    use: opencode
   summarizer:
     use: pi
-    model: aiden-anthropic/deepseek-v4-flash
 workflow:
   steps:
     - id: init_blackboard
