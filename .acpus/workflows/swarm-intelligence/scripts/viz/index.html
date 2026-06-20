@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Swarm Intelligence — Live Blackboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@100..900&family=Noto+Serif:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&family=Noto+Serif+SC:wght@200..900&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/markdown-it@14/dist/markdown-it.min.js"></script>
+  </head>
+  <body>
+    <header class="masthead">
+      <div class="topic-block">
+        <div class="product-label">Swarm Intelligence</div>
+        <h1 class="title" id="topic-title">Live Blackboard</h1>
+        <div class="context-row">
+          <p class="topic-context" id="topic-context" hidden></p>
+          <details class="brief-details" id="brief-details">
+            <summary>Brief</summary>
+            <div class="brief-body">
+              <h2>Topic</h2>
+              <p id="brief-topic-full"></p>
+              <h2 id="brief-context-heading">Context</h2>
+              <p id="brief-context-full"></p>
+              <h2>Source</h2>
+              <div class="brief-meta">
+                <span class="data-src" id="data-src">data: ./blackboard.json</span>
+                <span id="ts-info">—</span>
+              </div>
+            </div>
+          </details>
+          <div class="masthead-meta">
+            <span class="meta-pair"><label>Rounds</label><strong id="meta-rounds">—</strong></span>
+            <span class="meta-pair"><label>Exit</label><strong id="meta-exit">—</strong></span>
+            <span class="live-badge" id="live-badge" title="Live updates from the workflow"><span class="dot"></span>LIVE</span>
+            <a class="icon-action" href="https://github.com/kelvinschen/acpus" target="_blank" rel="noreferrer" aria-label="Open Acpus on GitHub" title="Open Acpus on GitHub">
+              <svg class="github-mark" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M10.226 17.284c-2.965-.36-5.054-2.493-5.054-5.256 0-1.123.404-2.336 1.078-3.144-.292-.741-.247-2.314.09-2.965.898-.112 2.111.36 2.83 1.01.853-.269 1.752-.404 2.853-.404 1.1 0 1.999.135 2.807.382.696-.629 1.932-1.1 2.83-.988.315.606.36 2.179.067 2.942.72.854 1.101 2 1.101 3.167 0 2.763-2.089 4.852-5.098 5.234.763.494 1.28 1.572 1.28 2.807v2.336c0 .674.561 1.056 1.235.786 4.066-1.55 7.255-5.615 7.255-10.646C23.5 6.188 18.334 1 11.978 1 5.62 1 .5 6.188.5 12.545c0 4.986 3.167 9.12 7.435 10.669.606.225 1.19-.18 1.19-.786V20.63a2.9 2.9 0 0 1-1.078.224c-1.483 0-2.359-.808-2.987-2.313-.247-.607-.517-.966-1.034-1.033-.27-.023-.359-.135-.359-.27 0-.27.45-.471.898-.471.652 0 1.213.404 1.797 1.235.45.651.921.943 1.483.943.561 0 .92-.202 1.437-.719.382-.381.674-.718.944-.943"></path>
+              </svg>
+            </a>
+            <button class="icon-action" id="help-open" aria-label="Open help" title="Open help">
+              <i data-lucide="circle-question-mark"></i>
+            </button>
+          </div>
+        </div>
+      </div>
+      <nav class="tabs">
+        <button class="tab is-active" data-tab="chronicle"><span class="num">1</span>Chronicle</button>
+        <button class="tab" data-tab="graph"><span class="num">2</span>Graph</button>
+        <button class="tab" data-tab="trajectory"><span class="num">3</span>Trajectory</button>
+        <button class="tab" data-tab="scorecard"><span class="num">4</span>Scorecard</button>
+      </nav>
+    </header>
+
+    <main class="layout">
+      <aside class="sidebar">
+        <section class="card">
+          <h2 class="overline">Rounds</h2>
+          <div class="round-pills" id="round-pills"></div>
+        </section>
+
+        <section class="card">
+          <h2 class="overline">Terminal State</h2>
+          <ul class="terminal-list" id="terminal-list"></ul>
+        </section>
+
+        <section class="card">
+          <h2 class="overline">Votes (Final)</h2>
+          <ul class="votes-list" id="votes-list"></ul>
+        </section>
+
+        <section class="card">
+          <h2 class="overline">Legend</h2>
+          <h3 class="micro">Roles</h3>
+          <ul class="legend-list">
+            <li><span class="dot role-chal"></span>Challenger</li>
+            <li><span class="dot role-build"></span>Builder</li>
+            <li><span class="dot role-synth"></span>Synthesizer</li>
+            <li><span class="dot role-emp"></span>Empiricist</li>
+          </ul>
+          <h3 class="micro">Confidence (1–5)</h3>
+          <div class="confidence-scale">
+            <span>1</span><span>2</span><span>3</span><span>4</span><span class="hi">5</span>
+          </div>
+        </section>
+
+        <section class="card hint">
+          <h3 class="micro">Keyboard Shortcuts</h3>
+          <dl>
+            <dt>←</dt><dd>previous round</dd>
+            <dt>→</dt><dd>next round</dd>
+            <dt>1 2 3 4</dt><dd>switch view</dd>
+            <dt>Esc</dt><dd>close drawer</dd>
+          </dl>
+        </section>
+      </aside>
+
+      <section class="content">
+        <div class="view view-chronicle is-active" id="view-chronicle"></div>
+        <div class="view view-graph" id="view-graph">
+          <div class="graph-toolbar">
+            <span class="micro">Min edge confidence</span>
+            <select id="graph-min-weight">
+              <option value="1">≥ 1</option>
+              <option value="2">≥ 2</option>
+              <option value="3">≥ 3</option>
+              <option value="4">≥ 4</option>
+              <option value="5">= 5</option>
+            </select>
+          </div>
+          <div class="graph-scroll">
+            <svg id="graph-svg" viewBox="0 0 900 640" preserveAspectRatio="xMinYMin meet"></svg>
+          </div>
+        </div>
+        <div class="view view-trajectory" id="view-trajectory">
+          <div class="traj-grid"></div>
+        </div>
+        <div class="view view-scorecard" id="view-scorecard"></div>
+      </section>
+
+      <aside class="drawer is-collapsed" id="drawer">
+        <button class="drawer-close" id="drawer-close" aria-label="Close detail">×</button>
+        <div class="drawer-body" id="drawer-body">
+          <p class="muted">Select a contribution from the Chronicle or Graph to see its full record.</p>
+        </div>
+      </aside>
+    </main>
+
+    <dialog class="help-dialog" id="help-dialog">
+      <div class="help-panel">
+        <button class="dialog-close" id="help-close" aria-label="Close help">×</button>
+        <h2>Swarm Blackboard</h2>
+        <p>
+          This page visualizes a multi-role Acpus workflow. Four agents debate
+          a topic through a shared blackboard while deterministic merge rules
+          track claims, objections, evidence, consensus, and stop readiness.
+        </p>
+
+        <section>
+          <h3>Views</h3>
+          <dl>
+            <dt>Chronicle</dt><dd>Round-by-round contributions grouped by role.</dd>
+            <dt>Graph</dt><dd>A round-by-role swarm map. Reference lines use neutral color; after selecting a contribution, solid lines are its references and dashed lines are contributions that reference it.</dd>
+            <dt>Trajectory</dt><dd>How the board changes over time.</dd>
+            <dt>Scorecard</dt><dd>Final summary, counts, terminal state, and unresolved material.</dd>
+          </dl>
+        </section>
+
+        <section>
+          <h3>Roles</h3>
+          <dl>
+            <dt>Challenger</dt><dd>Finds weaknesses and raises objections.</dd>
+            <dt>Builder</dt><dd>Turns discussion into concrete proposals and supporting claims.</dd>
+            <dt>Synthesizer</dt><dd>Connects patterns and identifies agreement.</dd>
+            <dt>Empiricist</dt><dd>Grounds claims in evidence, precedent, and testable checks.</dd>
+          </dl>
+        </section>
+
+        <section>
+          <h3>Terms</h3>
+          <dl>
+            <dt>Claim</dt><dd>A statement the swarm may support, contest, or promote.</dd>
+            <dt>Proposal</dt><dd>A concrete option or recommendation.</dd>
+            <dt>Objection</dt><dd>A challenge to an existing contribution.</dd>
+            <dt>Evidence</dt><dd>Support that can raise confidence or resolve a contest.</dd>
+            <dt>Reference</dt><dd>A link from one contribution to another.</dd>
+          </dl>
+        </section>
+
+        <section>
+          <h3>Terminal State</h3>
+          <dl>
+            <dt>Active</dt><dd>A live contribution still available for review, support, objection, or promotion.</dd>
+            <dt>Contested</dt><dd>A contribution challenged by a strong objection and waiting for evidence or resolution.</dd>
+            <dt>Consensus</dt><dd>A high-confidence contribution with no unresolved objection under the merge rules.</dd>
+            <dt>Withdrawn</dt><dd>A contribution removed from active debate after remaining unresolved or unsupported.</dd>
+          </dl>
+        </section>
+
+        <section>
+          <h3>Rules</h3>
+          <ul>
+            <li>Confidence runs from 1 to 5.</li>
+            <li>Strong objections can mark claims as contested.</li>
+            <li>Evidence can increase confidence and restore contested claims.</li>
+            <li>High-confidence active claims can become consensus.</li>
+            <li>Agents can vote ready to stop only after reviewing their assigned attention set.</li>
+            <li>Valid block votes prevent semantic stop when unresolved issues remain.</li>
+          </ul>
+        </section>
+      </div>
+    </dialog>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

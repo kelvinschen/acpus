@@ -36,7 +36,7 @@ Before acting, decide which path the user's request falls into. A single convers
 
 ## Inspect / Monitor
 
-1. **Always prefer the compact text format** — it is designed to minimize context window usage. Only switch to `--json` when you need exact node keys, artifact refs the text format omits:
+1. **Always prefer the compact text format** — it is designed to minimize context window usage. Only switch to `--json` when you need structured output to pipe into `jq`/`grep` for exact node keys, artifact refs, or field extraction the text format omits:
 
    ```sh
    acpus runs show <runId>

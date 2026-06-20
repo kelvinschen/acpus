@@ -57,19 +57,23 @@ input:
   block_confidence_threshold?: integer = 4
   consensus_confidence?: integer = 4
   output_root?: string = ".acpus/output/swarm-intelligence"
+  serve_viz?: boolean = false
+  language?: string = "english"
 agents:
   challenger:
     use: pi
-    model: aiden-anthropic/deepseek-v4-pro
+    model: aiden-anthropic/deepseek-v4-flash
   builder:
-    use: claude
+    use: pi
+    model: aiden-anthropic/deepseek-v4-flash
   synthesizer:
     use: pi
-    model: aiden-oai/gpt-5.5-paygo
+    model: aiden-anthropic/deepseek-v4-flash
   empiricist:
     use: traex
   summarizer:
     use: pi
+    model: aiden-anthropic/deepseek-v4-flash
 workflow:
   steps:
     - id: init_blackboard
@@ -89,6 +93,28 @@ workflow:
         blackboard_md_path: string
         blackboard_dir: string
       timeout: 30s
+    - id: start_viz_server
+      run: program
+      cmd:
+        - node
+        - ${{ workflow.source_dir }}/scripts/viz/viz-server.mjs
+        - start
+        - ${{ input.serve_viz }}
+        - ${{ steps.init_blackboard.output.blackboard_dir }}
+      capture:
+        from: stdout
+        parse: json
+      output:
+        enabled: boolean
+        url: string
+        port: integer
+        pid: integer
+        blackboard_dir: string
+        log: string
+        ready: boolean
+        ttl_ms: integer
+        started_at: string
+        expires_at: string
     - id: swarm_loop
       loop:
         max_iterations: 50
@@ -153,6 +179,8 @@ workflow:
                       Your role is to find weaknesses, raise objections, and
                       question assumptions. You are the critical voice that
                       prevents groupthink.
+
+                      Write all your contributions and rationale in ${{ input.language }}.
 
                       ## Current Blackboard Summary
                       ${{ steps.read_blackboard.output.summary }}
@@ -238,6 +266,8 @@ workflow:
                       Your role is to construct solutions, strengthen arguments,
                       and respond to objections with concrete proposals. You are
                       the constructive voice that moves the discussion forward.
+
+                      Write all your contributions and rationale in ${{ input.language }}.
 
                       ## Current Blackboard Summary
                       ${{ steps.read_blackboard.output.summary }}
@@ -325,6 +355,8 @@ workflow:
                       different perspectives. You are the integrative voice that
                       reveals what the group collectively knows.
 
+                      Write all your contributions and rationale in ${{ input.language }}.
+
                       ## Current Blackboard Summary
                       ${{ steps.read_blackboard.output.summary }}
 
@@ -411,6 +443,8 @@ workflow:
                       historical precedents, and testable predictions. You are the
                       empirical voice that distinguishes sound arguments from
                       plausible-but-untested speculation.
+
+                      Write all your contributions and rationale in ${{ input.language }}.
 
                       ## Current Blackboard Summary
                       ${{ steps.read_blackboard.output.summary }}
@@ -577,6 +611,8 @@ workflow:
         discussion on a topic. Your job is to read the final blackboard and
         write a clear, human-friendly summary report.
 
+        Write the entire report in ${{ input.language }}.
+
         Topic: ${{ input.topic }}
 
         Exit reason: ${{ steps.finalize_blackboard.output.exit_reason }}
@@ -613,6 +649,8 @@ outputs:
   blackboard_json: ${{ steps.finalize_blackboard.output.blackboard_json_path }}
   blackboard_md: ${{ steps.finalize_blackboard.output.blackboard_md_path }}
   summary_path: ${{ steps.final_summary.output.summary_path }}
+  viz_url: ${{ steps.start_viz_server.output.url }}
+  viz_pid: ${{ steps.start_viz_server.output.pid }}
   rounds_completed: ${{ steps.finalize_blackboard.output.rounds_completed }}
   total_contributions: ${{ steps.finalize_blackboard.output.total_contributions }}
   content_consensus_reached: ${{ steps.finalize_blackboard.output.content_consensus_reached }}

@@ -12,6 +12,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { jsonrepair } from "./lib/jsonrepair.js";
 
 const ROLES = ["challenger", "builder", "synthesizer", "empiricist"];
 const ACTIVE_CLAIM_LIMIT = 8;
@@ -604,6 +605,15 @@ function normalizeRefs(refs) {
   return Array.isArray(refs) ? refs.map(normalizeRef) : refs;
 }
 
+function readJsonFile(filePath) {
+  const raw = readFileSync(resolve(filePath), "utf-8");
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return JSON.parse(jsonrepair(raw));
+  }
+}
+
 // Reads one agent's decision packet. A malformed agent output must not abort
 // the whole round, so failures quarantine that role for the round.
 function readAttentionIds(filePath, role) {
@@ -620,8 +630,7 @@ function readAttentionIds(filePath, role) {
 function readDecisionPacket(role, filePath, options = {}) {
   let data;
   try {
-    const resolved = resolve(filePath);
-    data = JSON.parse(readFileSync(resolved, "utf-8"));
+    data = readJsonFile(filePath);
   } catch (error) {
     return { stance: "quarantined", contribs: [], rationale: "", quarantine: `unreadable: ${error.message}` };
   }
