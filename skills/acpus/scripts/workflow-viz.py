@@ -485,6 +485,11 @@ a:hover{text-decoration:underline}
 .ver{font-family:"Source Code Pro",monospace;font-size:12px;color:var(--bg-hard);background:var(--yellow);
   padding:1px 8px;border-radius:10px;font-weight:600}
 .src{color:var(--muted);font-family:"Source Code Pro",monospace;font-size:12px}
+.gh-link{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:13px;
+  color:var(--fg-dim);background:var(--surface);border:1px solid var(--border);
+  border-radius:10px;padding:3px 11px;transition:.14s;text-decoration:none;font-weight:600}
+.gh-link:hover{background:var(--surface2);border-color:var(--yellow);color:var(--fg)}
+.gh-link svg{fill:currentColor}
 .home{margin-left:auto;font-size:13px}
 .pills{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center}
 .pill{display:inline-flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--border);
@@ -1006,11 +1011,13 @@ function renderTopbar(){
     runHead='<span class="runpill '+esc(rm.status)+'">'+esc(stateGlyph(rm.status))+' '+esc(rm.status)+'</span>'
       +'<span class="src">run '+esc(rm.runId)+'</span>';
   }
+  const gh='<a class="gh-link" href="https://github.com/kelvinschen/acpus" target="_blank" rel="noopener">'
+    +'<svg viewBox="0 0 16 16" width="16" height="16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>GitHub</a>';
   document.getElementById("topbar").innerHTML=
     '<div class="tb-head"><h1>'+esc(MODEL.name)+'</h1>'
     +(MODEL.version!==""?'<span class="ver">v'+esc(MODEL.version)+'</span>':'')
     +runHead
-    +'<span class="src">'+esc(MODEL.source)+'</span></div>'
+    +'<span class="src">'+esc(MODEL.source)+'</span>'+gh+'</div>'
     +'<div class="pills">'+pills+(desc?'&nbsp;'+desc:'')+'</div>';
   if(MODEL.description){
     document.body.insertAdjacentHTML('beforeend',

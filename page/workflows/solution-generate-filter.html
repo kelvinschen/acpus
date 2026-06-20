@@ -35,6 +35,11 @@ a:hover{text-decoration:underline}
 .ver{font-family:"Source Code Pro",monospace;font-size:12px;color:var(--bg-hard);background:var(--yellow);
   padding:1px 8px;border-radius:10px;font-weight:600}
 .src{color:var(--muted);font-family:"Source Code Pro",monospace;font-size:12px}
+.gh-link{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:13px;
+  color:var(--fg-dim);background:var(--surface);border:1px solid var(--border);
+  border-radius:10px;padding:3px 11px;transition:.14s;text-decoration:none;font-weight:600}
+.gh-link:hover{background:var(--surface2);border-color:var(--yellow);color:var(--fg)}
+.gh-link svg{fill:currentColor}
 .home{margin-left:auto;font-size:13px}
 .pills{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center}
 .pill{display:inline-flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--border);
@@ -162,6 +167,36 @@ a:hover{text-decoration:underline}
 .empty{color:var(--muted);font-style:italic}
 .metaline{font-size:12px;color:var(--fg-dim);font-family:"Source Code Pro",monospace;margin:2px 0}
 .metaline b{color:var(--fg)}
+
+/* run overlay */
+.node{position:relative}
+.st-badge{position:absolute;top:-7px;right:-7px;width:18px;height:18px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;font-family:"Source Code Pro",monospace;
+  font-size:11px;font-weight:700;border:1px solid var(--bg-hard);color:var(--bg-hard);z-index:2}
+.st-completed{background:var(--green)} .st-failed{background:var(--red)}
+.st-running{background:var(--yellow)} .st-awaiting{background:var(--blue)}
+.st-paused{background:var(--aqua)} .st-cancelled{background:var(--purple)} .st-pending{background:var(--muted)}
+.runbar{display:flex;align-items:center;gap:8px;margin-left:auto;font-family:"Source Code Pro",monospace;
+  font-size:11px;color:var(--fg-dim)}
+.runbar .seg{display:inline-flex;align-items:center;gap:3px}
+.runbar .ok{color:var(--green)} .runbar .bad{color:var(--red)} .runbar .run{color:var(--yellow)}
+.st-completed-fg{color:var(--green)} .st-failed-fg{color:var(--red)} .st-running-fg{color:var(--yellow)}
+.st-paused-fg{color:var(--aqua)} .st-cancelled-fg{color:var(--purple)}
+.composite.run-completed{border-color:var(--green)} .composite.run-failed{border-color:var(--red)}
+.runpill{display:inline-flex;align-items:center;gap:5px;border-radius:12px;padding:2px 10px;font-size:12px;
+  font-family:"Source Code Pro",monospace;font-weight:600;color:var(--bg-hard)}
+.runpill.completed{background:var(--green)} .runpill.failed{background:var(--red)}
+.runpill.running{background:var(--yellow)} .runpill.paused{background:var(--aqua)}
+.runpill.cancelled{background:var(--muted)}
+.inst{border:1px solid var(--border);border-radius:8px;margin:8px 0 0;background:var(--bg-soft);overflow:hidden}
+.inst>.ihead{display:flex;align-items:center;gap:8px;padding:7px 10px;cursor:pointer;font-size:12px;
+  font-family:"Source Code Pro",monospace}
+.inst>.ihead:hover{background:rgba(255,255,255,.04)}
+.inst>.ihead .ilabel{font-weight:600;color:var(--aqua)}
+.inst>.ihead .itoggle{margin-left:auto;color:var(--muted)}
+.inst .ibody{padding:0 10px 10px;border-top:1px solid var(--border)}
+.inst .ibody.collapsed{display:none}
+.st-dot{display:inline-block;width:9px;height:9px;border-radius:50%}
 *{scrollbar-width:none}
 *::-webkit-scrollbar{display:none}
 </style>
@@ -191,13 +226,29 @@ a:hover{text-decoration:underline}
   </div>
 </div>
 <script>
-const MODEL = {"name": "solution-generate-filter", "version": 1, "description": "Dynamic workflow pattern: generate-and-filter.\n\nGenerates multiple solution directions for an Acpus maintainer problem, has\nindependent agents filter and critique them, then synthesizes a ranked\nrecommendation. Program Steps only prepare deterministic output paths.\n\nOutput: .acpus/output/solution-generate-filter/<run_id>/", "source": "solution-generate-filter.workflow.spec.yaml", "inputs": [{"name": "problem", "optional": false, "type": "string", "default": null}, {"name": "target_path", "optional": true, "type": "string", "default": "\".\""}, {"name": "constraints", "optional": true, "type": "string", "default": "\"(none)\""}, {"name": "output_root", "optional": true, "type": "string", "default": "\".acpus/output/solution-generate-filter\""}], "agents": [{"name": "generator", "type": "builtin", "use": "pi", "model": null, "cwd": null, "env": null}, {"name": "filter", "type": "builtin", "use": "pi", "model": null, "cwd": null, "env": null}, {"name": "synthesizer", "type": "builtin", "use": "pi", "model": null, "cwd": null, "env": null}], "nodes": [{"id": "prepare_output", "kind": "program", "cmd": "bash\n-c\nset -euo pipefail\npython3 - <<'PY'\nimport json\nimport pathlib\n\nout = pathlib.Path(\"${{ input.output_root }}\").resolve() / \"${{ run_id }}\"\nout.mkdir(parents=True, exist_ok=True)\nprint(json.dumps({\n    \"output_dir\": str(out),\n    \"final_path\": str(out / \"recommendation.md\"),\n}))\nPY\n", "cmd_key": "set -euo pipefail\npython3 - <<'PY'\nimport json\nimport pathlib\n\nout = pathlib.Path(\"${{ input.output_root }}\").resolve() / \"${{ run_id }}\"\nout.mkdir(parents=True, exist_ok=True)\nprint(json.dumps({\n    \"output_dir\": str(out),\n    \"final_path\": str(out / \"recommendation.md\"),\n}))\nPY\n", "capture": "from: stdout\nparse: json", "expect": "", "env": "", "output": "output_dir: string\nfinal_path: string"}, {"id": "generate_options", "kind": "fanout", "over": "- minimal\n- balanced\n- bold", "fanoutKey": "${{ item }}", "join": "all", "max_concurrency": "3\n...", "quorum": "", "success_criteria": "", "body": [{"id": "propose", "kind": "agent", "use": "generator", "prompt": "Generate one solution option for this Acpus maintainer problem.\nYour lane is `${{ item }}`. Keep identifiers, file paths, and\ncommands verbatim.\n\nProblem:\n${{ input.problem }}\n\nTarget repository:\n${{ input.target_path }}\n\nConstraints:\n${{ input.constraints }}\n\nFocus:\n- `minimal`: smallest useful change.\n- `balanced`: pragmatic high-confidence change.\n- `bold`: larger simplification or redesign.\n\nWrite the option detail to:\n${{ steps.prepare_output.output.output_dir }}/${{ item }}-option.md\n\nReturn JSON with only lane, title, and report path.\n", "output": "lane: string\ntitle: string\nreport_path: string", "timeout": "20m"}]}, {"id": "filter_options", "kind": "parallel", "join": "", "branches": [{"id": "feasibility", "kind": "agent", "use": "filter", "prompt": "Filter these generated options for feasibility in the current Acpus\ncodebase. Prefer evidence over taste.\n\nProblem:\n${{ input.problem }}\n\nGenerated options:\n- minimal: title=${{ steps.generate_options.output[0].output.title }}, report=${{ steps.generate_options.output[0].output.report_path }}\n- balanced: title=${{ steps.generate_options.output[1].output.title }}, report=${{ steps.generate_options.output[1].output.report_path }}\n- bold: title=${{ steps.generate_options.output[2].output.title }}, report=${{ steps.generate_options.output[2].output.report_path }}\n\nRead each option report before evaluating.\n\nWrite the full feasibility filter report to:\n${{ steps.prepare_output.output.output_dir }}/feasibility-filter.md\n\nWrite boundary:\n- Do not create, modify, or delete files in the target repository.\n- Only write to the filter report path above, the workflow output directory, or a system temporary directory.\n\nReturn JSON with report path and compact counts. Put option-level\nreasoning in the Markdown report.\n", "output": "report_path: string\nkept_count: integer\nrejected_count: integer", "timeout": "20m"}, {"id": "risk", "kind": "agent", "use": "filter", "prompt": "Filter these generated options for correctness, test, and\nmaintenance risk.\n\nProblem:\n${{ input.problem }}\n\nGenerated options:\n- minimal: title=${{ steps.generate_options.output[0].output.title }}, report=${{ steps.generate_options.output[0].output.report_path }}\n- balanced: title=${{ steps.generate_options.output[1].output.title }}, report=${{ steps.generate_options.output[1].output.report_path }}\n- bold: title=${{ steps.generate_options.output[2].output.title }}, report=${{ steps.generate_options.output[2].output.report_path }}\n\nRead each option report before evaluating.\n\nWrite the full risk filter report to:\n${{ steps.prepare_output.output.output_dir }}/risk-filter.md\n\nWrite boundary:\n- Do not create, modify, or delete files in the target repository.\n- Only write to the filter report path above, the workflow output directory, or a system temporary directory.\n\nReturn JSON with report path and compact counts. Put option-level\nreasoning in the Markdown report.\n", "output": "report_path: string\ndisqualified_count: integer\nmitigation_count: integer", "timeout": "20m"}]}, {"id": "synthesize_recommendation", "kind": "agent", "use": "synthesizer", "prompt": "Synthesize the generated options and filters into one ranked\nrecommendation for Acpus maintainers. Keep identifiers, file paths, and\ncommands verbatim.\n\nProblem:\n${{ input.problem }}\n\nGenerated options:\n- minimal: title=${{ steps.generate_options.output[0].output.title }}, report=${{ steps.generate_options.output[0].output.report_path }}\n- balanced: title=${{ steps.generate_options.output[1].output.title }}, report=${{ steps.generate_options.output[1].output.report_path }}\n- bold: title=${{ steps.generate_options.output[2].output.title }}, report=${{ steps.generate_options.output[2].output.report_path }}\n\nRead each option report before synthesizing.\n\nFeasibility filter report:\n${{ steps.filter_options.output.feasibility.output.report_path }}\n\nRisk filter report:\n${{ steps.filter_options.output.risk.output.report_path }}\n\nWrite the final Markdown report to:\n${{ steps.prepare_output.output.final_path }}\n\nWrite boundary:\n- Do not create, modify, or delete files in the target repository.\n- Only write to the final report path above, its parent output directory, or a system temporary directory.\n\nReturn JSON with the chosen option, final report path, and confidence.\nPut the implementation outline in the Markdown report.\n", "output": "chosen_title: string\nfinal_report_path: string\nconfidence: string", "timeout": "25m"}], "outputs": [{"key": "chosen_title", "expr": "${{ steps.synthesize_recommendation.output.chosen_title }}"}, {"key": "final_report_path", "expr": "${{ steps.synthesize_recommendation.output.final_report_path }}"}, {"key": "output_dir", "expr": "${{ steps.prepare_output.output.output_dir }}"}], "counts": {"program": 1, "fanout": 1, "agent": 4, "parallel": 1}, "total": 7, "kindMeta": {"pipeline": {"symbol": "▣", "color": "#98971a", "label": "Pipeline"}, "agent": {"symbol": "✦", "color": "#689d6a", "label": "Agent"}, "program": {"symbol": "$", "color": "#d79921", "label": "Program"}, "parallel": {"symbol": "▥", "color": "#83a598", "label": "Parallel"}, "fanout": {"symbol": "◬", "color": "#b16286", "label": "Fanout"}, "switch": {"symbol": "◇", "color": "#458588", "label": "Switch"}, "loop": {"symbol": "↻", "color": "#fabd2f", "label": "Loop"}, "guard": {"symbol": "◈", "color": "#fb4934", "label": "Guard"}, "signal": {"symbol": "◌", "color": "#a89984", "label": "Signal"}, "subworkflow": {"symbol": "▧", "color": "#928374", "label": "Subworkflow"}}};
+const MODEL = {"name": "solution-generate-filter", "version": 1, "description": "Dynamic workflow pattern: generate-and-filter.\n\nGenerates multiple solution directions for an Acpus maintainer problem, has\nindependent agents filter and critique them, then synthesizes a ranked\nrecommendation. Program Steps only prepare deterministic output paths.\n\nOutput: .acpus/output/solution-generate-filter/<run_id>/", "source": "solution-generate-filter.workflow.spec.yaml", "inputs": [{"name": "problem", "optional": false, "type": "string", "default": null}, {"name": "target_path", "optional": true, "type": "string", "default": "\".\""}, {"name": "constraints", "optional": true, "type": "string", "default": "\"(none)\""}, {"name": "output_root", "optional": true, "type": "string", "default": "\".acpus/output/solution-generate-filter\""}], "agents": [{"name": "generator", "type": "builtin", "use": "pi", "model": null, "cwd": null, "env": null}, {"name": "filter", "type": "builtin", "use": "pi", "model": null, "cwd": null, "env": null}, {"name": "synthesizer", "type": "builtin", "use": "pi", "model": null, "cwd": null, "env": null}], "nodes": [{"id": "prepare_output", "kind": "program", "cmd": "bash\n-c\nset -euo pipefail\npython3 - <<'PY'\nimport json\nimport pathlib\n\nout = pathlib.Path(\"${{ input.output_root }}\").resolve() / \"${{ run_id }}\"\nout.mkdir(parents=True, exist_ok=True)\nprint(json.dumps({\n    \"output_dir\": str(out),\n    \"final_path\": str(out / \"recommendation.md\"),\n}))\nPY\n", "cmd_key": "set -euo pipefail\npython3 - <<'PY'\nimport json\nimport pathlib\n\nout = pathlib.Path(\"${{ input.output_root }}\").resolve() / \"${{ run_id }}\"\nout.mkdir(parents=True, exist_ok=True)\nprint(json.dumps({\n    \"output_dir\": str(out),\n    \"final_path\": str(out / \"recommendation.md\"),\n}))\nPY\n", "capture": "from: stdout\nparse: json", "expect": "", "env": "", "output": "output_dir: string\nfinal_path: string"}, {"id": "generate_options", "kind": "fanout", "over": "- minimal\n- balanced\n- bold", "fanoutKey": "${{ item }}", "join": "all", "max_concurrency": "3\n...", "quorum": "", "success_criteria": "", "body": [{"id": "propose", "kind": "agent", "use": "generator", "prompt": "Generate one solution option for this Acpus maintainer problem.\nYour lane is `${{ item }}`. Keep identifiers, file paths, and\ncommands verbatim.\n\nProblem:\n${{ input.problem }}\n\nTarget repository:\n${{ input.target_path }}\n\nConstraints:\n${{ input.constraints }}\n\nFocus:\n- `minimal`: smallest useful change.\n- `balanced`: pragmatic high-confidence change.\n- `bold`: larger simplification or redesign.\n\nWrite the option detail to:\n${{ steps.prepare_output.output.output_dir }}/${{ item }}-option.md\n\nReturn JSON with only lane, title, and report path.\n", "output": "lane: string\ntitle: string\nreport_path: string", "timeout": "20m"}]}, {"id": "filter_options", "kind": "parallel", "join": "", "branches": [{"id": "feasibility", "body": [{"id": "feasibility_step", "kind": "agent", "use": "filter", "prompt": "Filter these generated options for feasibility in the current Acpus\ncodebase. Prefer evidence over taste.\n\nProblem:\n${{ input.problem }}\n\nGenerated options:\n- minimal: title=${{ steps.generate_options.output[0].title }}, report=${{ steps.generate_options.output[0].report_path }}\n- balanced: title=${{ steps.generate_options.output[1].title }}, report=${{ steps.generate_options.output[1].report_path }}\n- bold: title=${{ steps.generate_options.output[2].title }}, report=${{ steps.generate_options.output[2].report_path }}\n\nRead each option report before evaluating.\n\nWrite the full feasibility filter report to:\n${{ steps.prepare_output.output.output_dir }}/feasibility-filter.md\n\nWrite boundary:\n- Do not create, modify, or delete files in the target repository.\n- Only write to the filter report path above, the workflow output directory, or a system temporary directory.\n\nReturn JSON with report path and compact counts. Put option-level\nreasoning in the Markdown report.\n", "output": "report_path: string\nkept_count: integer\nrejected_count: integer", "timeout": "20m"}]}, {"id": "risk", "body": [{"id": "risk_step", "kind": "agent", "use": "filter", "prompt": "Filter these generated options for correctness, test, and\nmaintenance risk.\n\nProblem:\n${{ input.problem }}\n\nGenerated options:\n- minimal: title=${{ steps.generate_options.output[0].title }}, report=${{ steps.generate_options.output[0].report_path }}\n- balanced: title=${{ steps.generate_options.output[1].title }}, report=${{ steps.generate_options.output[1].report_path }}\n- bold: title=${{ steps.generate_options.output[2].title }}, report=${{ steps.generate_options.output[2].report_path }}\n\nRead each option report before evaluating.\n\nWrite the full risk filter report to:\n${{ steps.prepare_output.output.output_dir }}/risk-filter.md\n\nWrite boundary:\n- Do not create, modify, or delete files in the target repository.\n- Only write to the filter report path above, the workflow output directory, or a system temporary directory.\n\nReturn JSON with report path and compact counts. Put option-level\nreasoning in the Markdown report.\n", "output": "report_path: string\ndisqualified_count: integer\nmitigation_count: integer", "timeout": "20m"}]}]}, {"id": "synthesize_recommendation", "kind": "agent", "use": "synthesizer", "prompt": "Synthesize the generated options and filters into one ranked\nrecommendation for Acpus maintainers. Keep identifiers, file paths, and\ncommands verbatim.\n\nProblem:\n${{ input.problem }}\n\nGenerated options:\n- minimal: title=${{ steps.generate_options.output[0].title }}, report=${{ steps.generate_options.output[0].report_path }}\n- balanced: title=${{ steps.generate_options.output[1].title }}, report=${{ steps.generate_options.output[1].report_path }}\n- bold: title=${{ steps.generate_options.output[2].title }}, report=${{ steps.generate_options.output[2].report_path }}\n\nRead each option report before synthesizing.\n\nFeasibility filter report:\n${{ steps.filter_options.output.feasibility.report_path }}\n\nRisk filter report:\n${{ steps.filter_options.output.risk.report_path }}\n\nWrite the final Markdown report to:\n${{ steps.prepare_output.output.final_path }}\n\nWrite boundary:\n- Do not create, modify, or delete files in the target repository.\n- Only write to the final report path above, its parent output directory, or a system temporary directory.\n\nReturn JSON with the chosen option, final report path, and confidence.\nPut the implementation outline in the Markdown report.\n", "output": "chosen_title: string\nfinal_report_path: string\nconfidence: string", "timeout": "25m"}], "outputs": [{"key": "chosen_title", "expr": "${{ steps.synthesize_recommendation.output.chosen_title }}"}, {"key": "final_report_path", "expr": "${{ steps.synthesize_recommendation.output.final_report_path }}"}, {"key": "output_dir", "expr": "${{ steps.prepare_output.output.output_dir }}"}], "counts": {"program": 1, "fanout": 1, "agent": 4, "parallel": 1}, "total": 7, "kindMeta": {"pipeline": {"symbol": "▣", "color": "#98971a", "label": "Pipeline"}, "agent": {"symbol": "✦", "color": "#689d6a", "label": "Agent"}, "program": {"symbol": "$", "color": "#d79921", "label": "Program"}, "parallel": {"symbol": "▥", "color": "#83a598", "label": "Parallel"}, "fanout": {"symbol": "◬", "color": "#b16286", "label": "Fanout"}, "switch": {"symbol": "◇", "color": "#458588", "label": "Switch"}, "loop": {"symbol": "↻", "color": "#fabd2f", "label": "Loop"}, "guard": {"symbol": "◈", "color": "#fb4934", "label": "Guard"}, "signal": {"symbol": "◌", "color": "#a89984", "label": "Signal"}, "subworkflow": {"symbol": "▧", "color": "#928374", "label": "Subworkflow"}}, "mode": "spec"};
 const KM = MODEL.kindMeta;
 let UID = 0;
 const REG = {};
 
 function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));}
 function kmeta(kind){return KM[kind]||{symbol:"\u25cb",color:"#928374",label:kind};}
+
+const RUN = MODEL.mode==="run";
+// State glyphs mirror the TUI (packages/tui/src/theme.ts STATE_STYLES).
+const STATE_GLYPH={pending:"\u25cb",running:"\u25b7",awaiting:"\u25f7",
+  completed:"\u2713",failed:"\u2717",paused:"=",cancelled:"\u2298"};
+function stateGlyph(s){return STATE_GLYPH[s]||"\u25cb";}
+// Roll up many instances (fanout lanes / loop rounds) into one summary state.
+function rollup(states){
+  const c={};(states||[]).forEach(s=>{c[s.state]=(c[s.state]||0)+1;});
+  let overall="completed";
+  if(c.failed) overall="failed";
+  else if(c.running||c.awaiting||c.pending) overall="running";
+  else if(c.cancelled||c.paused) overall="paused";
+  else if(!(states||[]).length) overall="";
+  return {counts:c,overall:overall,total:(states||[]).length};
+}
 
 function keyfield(node){
   switch(node.kind){
@@ -214,13 +265,38 @@ function keyfield(node){
   }
 }
 
-const COMPOSITE = new Set(["loop","fanout","parallel","switch","subworkflow"]);
+const COMPOSITE = new Set(["pipeline","loop","fanout","parallel","switch","subworkflow"]);
+
+// Distinct instance labels (fanout lanes / loop rounds) found in a subtree's
+// run states — the container node itself runs once, so the multiplicity lives
+// in its descendants' dynamic keys.
+function descendantLabels(node){
+  const set=new Set();
+  function walk(n){
+    (n.runStates||[]).forEach(s=>{if(s.label) set.add(s.label);});
+    ["body","default"].forEach(k=>{if(Array.isArray(n[k]))n[k].forEach(walk);});
+    (n.branches||[]).forEach(br=>(br.body||[]).forEach(walk));
+    (n.cases||[]).forEach(c=>(c.body||[]).forEach(walk));
+  }
+  ["body","default"].forEach(k=>{if(Array.isArray(node[k]))node[k].forEach(walk);});
+  (node.branches||[]).forEach(br=>(br.body||[]).forEach(walk));
+  (node.cases||[]).forEach(c=>(c.body||[]).forEach(walk));
+  return set;
+}
+
+function statusBadge(node){
+  if(!RUN) return "";
+  const ru=rollup(node.runStates);
+  if(!ru.total) return "";
+  return '<span class="st-badge st-'+ru.overall+'" title="'+esc(ru.overall)+'">'+esc(stateGlyph(ru.overall))+'</span>';
+}
 
 function makeLeaf(node){
   const m=kmeta(node.kind); node._uid="n"+(UID++); REG[node._uid]=node;
   const el=document.createElement("div");
   el.className="node kind-"+node.kind; el.style.borderLeftColor=m.color; el.dataset.uid=node._uid;
-  el.innerHTML='<div class="row1"><span class="sym" style="color:'+m.color+'">'+esc(m.symbol)+'</span>'
+  el.innerHTML=statusBadge(node)
+    +'<div class="row1"><span class="sym" style="color:'+m.color+'">'+esc(m.symbol)+'</span>'
     +'<span class="nid">'+esc(node.id)+'</span>'
     +'<span class="badge" style="background:'+m.color+'">'+esc(node.kind.toUpperCase())+'</span></div>'
     +(keyfield(node)?'<div class="keyline">'+esc(keyfield(node))+'</div>':'');
@@ -228,16 +304,42 @@ function makeLeaf(node){
   return el;
 }
 
+function runBar(node){
+  if(!RUN) return "";
+  // Fanout/loop containers run once; their multiplicity is the lanes/rounds in
+  // the body. Show that count plus the container's own overall outcome.
+  if(node.kind==="fanout"||node.kind==="loop"){
+    const n=descendantLabels(node).size;
+    const own=rollup(node.runStates);
+    if(!n&&!own.total) return "";
+    const unit=node.kind==="loop"?"round":"lane";
+    const segs=[];
+    if(n) segs.push('<span class="seg">\u00d7'+n+' '+unit+(n>1?"s":"")+'</span>');
+    if(own.total) segs.push('<span class="seg st-'+own.overall+'-fg">'+esc(stateGlyph(own.overall))+' '+esc(own.overall)+'</span>');
+    return '<span class="runbar">'+segs.join("")+'</span>';
+  }
+  const ru=rollup(node.runStates);
+  if(!ru.total) return "";
+  const segs=['<span class="seg">\u00d7'+ru.total+'</span>'];
+  if(ru.counts.completed) segs.push('<span class="seg ok">'+esc(stateGlyph("completed"))+ru.counts.completed+'</span>');
+  if(ru.counts.failed) segs.push('<span class="seg bad">'+esc(stateGlyph("failed"))+ru.counts.failed+'</span>');
+  const rest=ru.total-(ru.counts.completed||0)-(ru.counts.failed||0);
+  if(rest>0) segs.push('<span class="seg run">'+esc(stateGlyph("running"))+rest+'</span>');
+  return '<span class="runbar">'+segs.join("")+'</span>';
+}
+
 function makeComposite(node){
   const m=kmeta(node.kind); node._uid="n"+(UID++); REG[node._uid]=node;
   const box=document.createElement("div");
   box.className="composite kind-"+node.kind; box.style.borderColor=m.color;
+  if(RUN){const ru=rollup(node.runStates);if(ru.total)box.classList.add("run-"+ru.overall);}
   const head=document.createElement("div");
   head.className="chead"; head.dataset.uid=node._uid;
   head.innerHTML='<span class="sym" style="color:'+m.color+'">'+esc(m.symbol)+'</span>'
     +'<span class="nid">'+esc(node.id)+'</span>'
     +'<span class="badge" style="background:'+m.color+'">'+esc(node.kind.toUpperCase())+'</span>'
     +'<span class="keyfield">'+esc(keyfield(node))+'</span>'
+    +runBar(node)
     +'<span class="toggle">\u25be</span>';
   const body=document.createElement("div"); body.className="cbody";
   head.addEventListener("click",e=>{
@@ -250,14 +352,17 @@ function makeComposite(node){
     select(node._uid,head);
   });
   // body content
-  if(node.kind==="loop"){
+  if(node.kind==="pipeline"){
+    body.appendChild(renderScope(node.body));
+  }else if(node.kind==="loop"){
     body.appendChild(renderScope(node.body));
     const be=document.createElement("div"); be.className="backedge";
     be.textContent="\u21bb repeat until "+(node.until||"(condition)");
     body.appendChild(be);
   }else if(node.kind==="fanout"){
     const badge=document.createElement("span"); badge.className="fanout-badge";
-    badge.textContent="×N"; box.appendChild(badge);
+    const lanes=RUN?descendantLabels(node).size:0;
+    badge.textContent=lanes?("\u00d7"+lanes):"\u00d7N"; box.appendChild(badge);
     const hint=document.createElement("div"); hint.className="lanehint";
     hint.textContent="\u25ec lane template  ["+(node.fanoutKey||node.over||"item")+"]"+(node.join?("  · join "+node.join):"");
     body.appendChild(hint);
@@ -267,7 +372,7 @@ function makeComposite(node){
     (node.branches||[]).forEach(br=>{
       const col=document.createElement("div"); col.className="col";
       const lab=document.createElement("div"); lab.className="collabel"; lab.textContent="branch: "+br.id;
-      col.appendChild(lab); col.appendChild(renderScope([br])); cols.appendChild(col);
+      col.appendChild(lab); col.appendChild(renderScope(br.body)); cols.appendChild(col);
     });
     body.appendChild(cols);
   }else if(node.kind==="switch"){
@@ -356,8 +461,38 @@ function outputSchema(val){
   return codeBlock("output schema",val);
 }
 
+function instTiming(s){
+  const bits=[];
+  if(s.attempt!=null) bits.push("attempt "+s.attempt);
+  if(s.startedAt) bits.push("start "+s.startedAt);
+  if(s.completedAt) bits.push("end "+s.completedAt);
+  return bits.join("  ·  ");
+}
+function renderInstances(states,opts){
+  // One collapsible block per executed instance (fanout lane / loop round / single run).
+  let h='<div class="fieldlabel">Run \u00b7 '+states.length+' execution(s)</div>';
+  states.forEach((s,i)=>{
+    const open=states.length===1;
+    const label=s.label||("#"+i);
+    h+='<div class="inst"><div class="ihead">'
+      +'<span class="st-dot st-'+s.state+'"></span>'
+      +'<span class="ilabel">'+esc(label)+'</span>'
+      +'<span class="ftype">'+esc(s.state)+'</span>'
+      +'<span class="itoggle">'+(open?"\u25be":"\u25b8")+'</span></div>'
+      +'<div class="ibody'+(open?"":" collapsed")+'">'
+      +(instTiming(s)?'<div class="metaline">'+esc(instTiming(s))+'</div>':'')
+      +(s.error?codeBlock("error",s.error):"")
+      +(opts.prompt&&s.renderedPrompt?codeBlock("rendered prompt",s.renderedPrompt):"")
+      +(s.output?codeBlock("output",s.output):"")
+      +'</div></div>';
+  });
+  return h;
+}
+
 function renderDetail(node){
   const m=kmeta(node.kind);
+  const rs=RUN?(node.runStates||[]):[];
+  const hasRun=rs.length>0;
   let h='<div class="dhead"><span class="sym" style="color:'+m.color+'">'+esc(m.symbol)+'</span>'
     +'<span class="nid">'+esc(node.id)+'</span>'
     +'<span class="badge" style="background:'+m.color+'">'+esc(m.label)+'</span></div>';
@@ -365,12 +500,14 @@ function renderDetail(node){
     +metaLine("session_key",node.session_key)+metaLine("retry",node.retry);
   if(node.kind==="agent"){
     h+=metaLine("use",node.use);
-    h+=outputSchema(node.output);
-    h+=codeBlock("prompt",node.prompt);
+    if(!hasRun){h+=outputSchema(node.output);h+=codeBlock("prompt",node.prompt);}
   }else if(node.kind==="program"){
     h+=codeBlock("cmd",node.cmd);
     h+=codeBlock("capture",node.capture)+codeBlock("expect",node.expect)+codeBlock("env",node.env);
-    h+=outputSchema(node.output);
+    if(!hasRun){h+=outputSchema(node.output);}
+  }else if(node.kind==="pipeline"){
+    h+=metaLine("body nodes",(node.body||[]).length);
+    h+=codeBlock("outputs",node.outputs);
   }else if(node.kind==="guard"){
     h+=codeBlock("when (CEL)",node.when);
     h+=metaLine("then",node.then)+metaLine("else",node.else);
@@ -394,10 +531,21 @@ function renderDetail(node){
     h+=metaLine("ref",node.ref); h+=codeBlock("input",node.input);
   }else if(node.kind==="signal"){
     h+=metaLine("on_timeout",node.on_timeout);
-    h+=outputSchema(node.output);
-    h+=codeBlock("prompt",node.prompt)+codeBlock("default",node.default);
+    if(!hasRun){h+=outputSchema(node.output)+codeBlock("prompt",node.prompt)+codeBlock("default",node.default);}
   }
-  document.getElementById("detail").innerHTML='<div class="panetitle">Node Detail</div>'+h;
+  if(hasRun){
+    const wantsPrompt=(node.kind==="agent"||node.kind==="signal");
+    h+=renderInstances(rs,{prompt:wantsPrompt});
+  }
+  const el=document.getElementById("detail");
+  el.innerHTML='<div class="panetitle">Node Detail</div>'+h;
+  el.querySelectorAll(".inst .ihead").forEach(head=>{
+    head.addEventListener("click",()=>{
+      const body=head.nextElementSibling;const tog=head.querySelector(".itoggle");
+      body.classList.toggle("collapsed");
+      tog.textContent=body.classList.contains("collapsed")?"\u25b8":"\u25be";
+    });
+  });
 }
 
 function renderTopbar(){
@@ -407,10 +555,19 @@ function renderTopbar(){
     pills+='<span class="pill"><span class="dot" style="background:'+m.color+'"></span>'+esc(m.label)+' \u00d7'+MODEL.counts[k]+'</span>';
   });
   const desc=MODEL.description?('<button class="desc-btn" onclick="document.getElementById(\'desc-overlay\').classList.add(\'open\')">description</button>'):'';
+  let runHead="";
+  if(RUN){
+    const rm=MODEL.runMeta;
+    runHead='<span class="runpill '+esc(rm.status)+'">'+esc(stateGlyph(rm.status))+' '+esc(rm.status)+'</span>'
+      +'<span class="src">run '+esc(rm.runId)+'</span>';
+  }
+  const gh='<a class="gh-link" href="https://github.com/kelvinschen/acpus" target="_blank" rel="noopener">'
+    +'<svg viewBox="0 0 16 16" width="16" height="16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>GitHub</a>';
   document.getElementById("topbar").innerHTML=
     '<div class="tb-head"><h1>'+esc(MODEL.name)+'</h1>'
     +(MODEL.version!==""?'<span class="ver">v'+esc(MODEL.version)+'</span>':'')
-    +'<span class="src">'+esc(MODEL.source)+'</span></div>'
+    +runHead
+    +'<span class="src">'+esc(MODEL.source)+'</span>'+gh+'</div>'
     +'<div class="pills">'+pills+(desc?'&nbsp;'+desc:'')+'</div>';
   if(MODEL.description){
     document.body.insertAdjacentHTML('beforeend',
@@ -422,6 +579,8 @@ function renderTopbar(){
 
 function renderWfIO(){
   let h='<div class="panetitle">Workflow I/O</div>';
+  const runIn={};(RUN?(MODEL.runMeta.input||[]):[]).forEach(e=>{runIn[e.key]=e.value;});
+  const runOut={};(RUN?(MODEL.runMeta.output||[]):[]).forEach(e=>{runOut[e.key]=e.value;});
   if(MODEL.agents.length){
     h+='<div class="io-section"><div class="io-label">Agents</div>';
     MODEL.agents.forEach(a=>{
@@ -434,21 +593,30 @@ function renderWfIO(){
     h+='</div>';
   }
   if(MODEL.inputs.length){
-    h+='<div class="io-section"><div class="io-label">Inputs</div>';
+    h+='<div class="io-section"><div class="io-label">Inputs'+(RUN?' (resolved)':'')+'</div>';
     MODEL.inputs.forEach(i=>{
+      const hasVal=RUN&&Object.prototype.hasOwnProperty.call(runIn,i.name);
       h+='<div class="item"><div class="name">'+esc(i.name)+' '
         +'<span class="tag '+(i.optional?'opt':'req')+'">'+(i.optional?'optional':'required')+'</span></div>'
         +'<div class="kv"><span class="k">type</span><span class="v">'+esc(i.type||'-')+'</span>'
-        +(i.default!=null?'<span class="k">default</span><span class="v">'+esc(i.default)+'</span>':'')+'</div></div>';
+        +(i.default!=null?'<span class="k">default</span><span class="v">'+esc(i.default)+'</span>':'')+'</div>'
+        +(hasVal?'<pre class="codeblock">'+esc(runIn[i.name])+'</pre>':'')+'</div>';
     });
     h+='</div>';
   }
   if(MODEL.outputs.length){
-    h+='<div class="io-section"><div class="io-label">Outputs</div>';
+    h+='<div class="io-section"><div class="io-label">Outputs'+(RUN?' (resolved)':'')+'</div>';
     MODEL.outputs.forEach(o=>{
-      h+='<div class="item"><div class="name">'+esc(o.key)+'</div><pre class="codeblock">'+esc(o.expr)+'</pre></div>';
+      const hasVal=RUN&&Object.prototype.hasOwnProperty.call(runOut,o.key);
+      const body=hasVal?runOut[o.key]:o.expr;
+      h+='<div class="item"><div class="name">'+esc(o.key)+(hasVal?'':(RUN?' <span class="tag">expr</span>':''))+'</div>'
+        +'<pre class="codeblock">'+esc(body)+'</pre></div>';
     });
     h+='</div>';
+  }
+  if(RUN&&MODEL.runMeta.error){
+    h+='<div class="io-section"><div class="io-label">Run Error</div>'
+      +'<pre class="codeblock">'+esc(MODEL.runMeta.error)+'</pre></div>';
   }
   if(!MODEL.inputs.length&&!MODEL.outputs.length&&!MODEL.agents.length){h+='<div class="empty">none</div>';}
   document.getElementById("wf-io").innerHTML=h;
