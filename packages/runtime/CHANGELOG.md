@@ -1,5 +1,13 @@
 # @acpus/runtime
 
+## 0.6.3
+
+### Patch Changes
+
+- 0ee059f: Use short generated workflow node keys and clean up generated pipeline display.
+- Updated dependencies [0ee059f]
+  - @acpus/core@0.5.3
+
 ## 0.6.2
 
 ### Patch Changes
