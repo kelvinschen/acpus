@@ -456,39 +456,13 @@ function validateAgentStep(step: WorkflowStep, path: string, context: CompileCon
   if ((step as Record<string, unknown>).retry !== undefined) {
     validateRetry((step as Record<string, unknown>).retry, path, context);
   }
-  if (isRecord(step.output)) {
-    // output.schema deprecation check (semantic, not structural)
-    if ("schema" in step.output) {
-      context.diagnostics.error("OUTPUT_SHAPE", "The 'schema' key in agent output is no longer supported as a JSON Schema escape hatch. Use the Acpus Schema DSL directly (e.g. output: { field: string }).", `${path}.output.schema`);
-    }
-    const { schema, errors } = compileSchemaDsl(step.output);
-    for (const err of errors) {
-      context.diagnostics.error("OUTPUT_SHAPE", err.message, `${path}.output.${err.field}`);
-    }
-    if (errors.length === 0) {
-      validateJsonSchema(schema, `${path}.output`, context);
-    }
-    step.output = schema;
-  }
+  compileOutputSchema(step, path, context);
 }
 
 function validateProgramStep(step: WorkflowStep, path: string, context: CompileContext): void {
-  if (isRecord(step.output)) {
-    // output.schema deprecation check (semantic, not structural)
-    if ("schema" in step.output) {
-      context.diagnostics.error("OUTPUT_SHAPE", "The 'schema' key in program output is no longer supported as a JSON Schema escape hatch. Use the Acpus Schema DSL directly (e.g. output: { field: string }).", `${path}.output.schema`);
-    }
-    const { schema, errors } = compileSchemaDsl(step.output);
-    for (const err of errors) {
-      context.diagnostics.error("OUTPUT_SHAPE", err.message, `${path}.output.${err.field}`);
-    }
-    if (errors.length === 0) {
-      validateJsonSchema(schema, `${path}.output`, context);
-    }
-    step.output = schema;
-  }
+  const outputSchema = compileOutputSchema(step, path, context);
   // Enforce: output schema requires capture.parse: json
-  if (isRecord(step.output)) {
+  if (outputSchema) {
     const capture = step.capture as Record<string, unknown> | undefined;
     if (!capture || capture.parse !== "json") {
       context.diagnostics.error("OUTPUT_REQUIRES_JSON", "run: program output schema requires capture.parse: json.", `${path}.output`);
@@ -531,33 +505,7 @@ function validateSignalStep(step: WorkflowStep, path: string, context: CompileCo
     }
   }
 
-  // Compile the optional output schema DSL into JSON Schema, mirroring Agent and
-  // Program steps. When omitted (or an empty map), the injected payload is
-  // accepted unvalidated.
-  let outputSchema: Record<string, unknown> | undefined;
-  if (isRecord(step.output) && Object.keys(step.output).length > 0) {
-    if ("schema" in step.output) {
-      context.diagnostics.error("OUTPUT_SHAPE", "The 'schema' key in signal output is no longer supported as a JSON Schema escape hatch. Use the Acpus Schema DSL directly (e.g. output: { field: string }).", `${path}.output.schema`);
-    }
-    const { schema, errors } = compileSchemaDsl(step.output);
-    for (const err of errors) {
-      context.diagnostics.error("OUTPUT_SHAPE", err.message, `${path}.output.${err.field}`);
-    }
-    if (errors.length === 0) {
-      validateJsonSchema(schema, `${path}.output`, context);
-      outputSchema = schema;
-      step.output = schema;
-    } else {
-      // Guarantee the IR invariant: metadata.output is either undefined or a
-      // valid compiled JSON Schema — never a partial schema or raw DSL.
-      step.output = undefined;
-    }
-  } else {
-    // `output: {}` (empty map) means "accept any object", identical to omitting
-    // output. Clear it so metadata.output stays undefined rather than compiling
-    // to a schema that rejects every non-empty payload.
-    delete (step as Record<string, unknown>).output;
-  }
+  const outputSchema = compileOutputSchema(step, path, context);
 
   // When `on_timeout: default`, validate the literal `default` payload at compile
   // time so an invalid default is a lint error, not a runtime surprise.
@@ -572,6 +520,27 @@ function validateSignalStep(step: WorkflowStep, path: string, context: CompileCo
       context.diagnostics.error("SIGNAL_DEFAULT", `signal.default does not match the declared output schema: ${ajv.errorsText(validate.errors)}`, `${path}.default`);
     }
   }
+}
+
+function compileOutputSchema(step: WorkflowStep, path: string, context: CompileContext): Record<string, unknown> | undefined {
+  if (!isRecord(step.output) || Object.keys(step.output).length === 0) {
+    delete step.output;
+    return undefined;
+  }
+  if ("schema" in step.output) {
+    context.diagnostics.error("OUTPUT_SHAPE", "The 'schema' key in output is no longer supported as a JSON Schema escape hatch. Use the Acpus Schema DSL directly (e.g. output: { field: string }).", `${path}.output.schema`);
+  }
+  const { schema, errors } = compileSchemaDsl(step.output);
+  for (const err of errors) {
+    context.diagnostics.error("OUTPUT_SHAPE", err.message, `${path}.output.${err.field}`);
+  }
+  if (errors.length > 0) {
+    delete step.output;
+    return undefined;
+  }
+  validateJsonSchema(schema, `${path}.output`, context);
+  step.output = schema;
+  return schema;
 }
 
 function validateRetry(retry: unknown, path: string, context: CompileContext): void {

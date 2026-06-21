@@ -1,8 +1,124 @@
 import { describe, expect, it } from "vitest";
 import { lintWorkflow } from "../../src/index.js";
+import { WORKFLOW_SCHEMA } from "../../src/workflow-schema.js";
 import { expectDiagnostic } from "../support/diagnostic-helpers.js";
 
 describe("Schema validation: unknown fields", () => {
+  it("has diagnostic branch inference coverage for every current step schema branch", () => {
+    const cases = [
+      {
+        branch: "agentStep",
+        step: `id: s
+      run: agent
+      use: mock
+      prompt: "x"
+      extra: true`
+      },
+      {
+        branch: "programStep",
+        step: `id: s
+      run: program
+      cmd: ["echo", "x"]
+      extra: true`
+      },
+      {
+        branch: "signalStep",
+        step: `id: s
+      run: signal
+      prompt: "OK?"
+      extra: true`
+      },
+      {
+        branch: "pipelineStep",
+        step: `id: s
+      pipeline:
+        - id: child
+          run: program
+          cmd: ["echo", "x"]
+      extra: true`
+      },
+      {
+        branch: "parallelStep",
+        step: `id: s
+      parallel:
+        - id: left
+          do:
+            - id: child
+              run: program
+              cmd: ["echo", "x"]
+      extra: true`
+      },
+      {
+        branch: "fanoutStep",
+        step: `id: s
+      fanout:
+        over: [1]
+        do:
+          - id: child
+            run: program
+            cmd: ["echo", "x"]
+      extra: true`
+      },
+      {
+        branch: "switchStep",
+        step: `id: s
+      switch:
+        cases:
+          - when: "true"
+            do:
+              - id: child
+                run: program
+                cmd: ["echo", "x"]
+      extra: true`
+      },
+      {
+        branch: "loopStep",
+        step: `id: s
+      loop:
+        max_iterations: 1
+        do:
+          - id: child
+            run: program
+            cmd: ["echo", "x"]
+      extra: true`
+      },
+      {
+        branch: "guardStep",
+        step: `id: s
+      guard:
+        when: "true"
+        then: continue
+        else: fail
+      extra: true`
+      },
+      {
+        branch: "subworkflowStep",
+        step: `id: s
+      subworkflow: ./child.yaml
+      extra: true`
+      }
+    ];
+
+    const schemaBranches = ((WORKFLOW_SCHEMA.$defs as Record<string, unknown>).step as { oneOf: Array<{ $ref: string }> }).oneOf
+      .map((entry) => entry.$ref.replace("#/$defs/", ""))
+      .sort();
+    expect(cases.map((item) => item.branch).sort()).toEqual(schemaBranches);
+
+    for (const item of cases) {
+      const result = lintWorkflow(`
+version: 1
+name: test
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - ${item.step}
+`);
+      expectDiagnostic(result, { code: "STEP_SHAPE", path: "$.workflow.steps[0]", message: "Unknown step property 'extra'" });
+      expect(result.diagnostics.some((d) => d.code === "STEP_KIND")).toBe(false);
+    }
+  });
+
   it("rejects unknown top-level property", () => {
     const src = `
 version: 1

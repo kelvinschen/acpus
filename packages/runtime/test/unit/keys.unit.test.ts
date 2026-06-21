@@ -1,7 +1,12 @@
 import { describe, it, expect } from "vitest";
 import {
   resolveNodeKey,
+  appendDynamicFrame,
+  appendDynamicFrames,
   parseNodeKey,
+  currentDynamicFrame,
+  nestedParallelBranchDynamic,
+  replaceCurrentDynamicFrame,
   staticNodePathFromKey,
   isNodeKeyAtOrBelow,
   isNodeKeyInDynamicScope,
@@ -174,6 +179,56 @@ describe("parseNodeKey", () => {
     const result = parseNodeKey("workflow/mapped/item:file-a/lane:0/round:1");
     expect(result.dynamic).toEqual({ fanoutItemId: "file-a", laneId: "0", loopRound: 1 });
     expect(result.dynamicFrames).toEqual([{ fanoutItemId: "file-a", laneId: "0" }, { loopRound: 1 }]);
+  });
+});
+
+describe("dynamic frame helpers", () => {
+  it("preserves runtime frame boundaries while appending and replacing frames", () => {
+    expect(appendDynamicFrame({ fanoutItemId: "outer", laneId: "0" }, { loopRound: 1 })).toEqual({
+      fanoutItemId: "outer",
+      laneId: "0",
+      loopRound: 1,
+      frames: [{ fanoutItemId: "outer", laneId: "0" }, { loopRound: 1 }]
+    });
+
+    expect(
+      appendDynamicFrames(
+        { fanoutItemId: "outer", laneId: "0" },
+        { frames: [{ parallelBranchId: "left" }, { loopRound: 2 }], parallelBranchId: "left", loopRound: 2 }
+      )
+    ).toEqual({
+      fanoutItemId: "outer",
+      laneId: "0",
+      parallelBranchId: "left",
+      loopRound: 2,
+      frames: [{ fanoutItemId: "outer", laneId: "0" }, { parallelBranchId: "left" }, { loopRound: 2 }]
+    });
+
+    expect(
+      replaceCurrentDynamicFrame(
+        {
+          fanoutItemId: "outer",
+          laneId: "0",
+          loopRound: 1,
+          frames: [{ fanoutItemId: "outer", laneId: "0" }, { loopRound: 1 }]
+        },
+        { loopRound: 2 }
+      )
+    ).toEqual({
+      fanoutItemId: "outer",
+      laneId: "0",
+      loopRound: 2,
+      frames: [{ fanoutItemId: "outer", laneId: "0" }, { loopRound: 2 }]
+    });
+
+    expect(currentDynamicFrame({ fanoutItemId: "outer", laneId: "0" })).toEqual({ fanoutItemId: "outer", laneId: "0" });
+  });
+
+  it("nests parallel branches inside the current runtime frame", () => {
+    expect(nestedParallelBranchDynamic({ parallelBranchId: "outer" }, "inner")).toEqual({
+      parallelBranchId: "outer.inner",
+      frames: [{ parallelBranchId: "outer.inner" }]
+    });
   });
 });
 

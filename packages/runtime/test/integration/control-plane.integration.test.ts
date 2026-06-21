@@ -75,6 +75,12 @@ workflow:
     expect(store.readNodeState(meta.runId, "workflow/awaiting")?.state).toBe("cancelled");
     expect(store.readNodeState(meta.runId, "workflow/paused")?.state).toBe("cancelled");
     expect(store.readNodeState(meta.runId, "workflow/unvisited")).toBeUndefined();
+    expect(store.readCheckpoints(meta.runId).map((checkpoint) => [checkpoint.nodeKey, checkpoint.state]).sort()).toEqual([
+      ["workflow/awaiting", "cancelled"],
+      ["workflow/paused", "cancelled"],
+      ["workflow/pending", "cancelled"],
+      ["workflow/running", "cancelled"]
+    ]);
   });
 
   it("resumes paused and stale nodes while preserving completed nodes", async () => {
@@ -201,8 +207,17 @@ workflow:
 
     writeNode(store, meta.runId, "workflow/running", "running", "run.program", "running");
     writeNode(store, meta.runId, "workflow/awaiting", "awaiting", "run.signal", "awaiting");
-    writeNode(store, meta.runId, "workflow/completed", "completed", "run.program", "completed");
+    store.writeTerminalNodeState(meta.runId, {
+      nodeKey: "workflow/completed",
+      nodeId: "completed",
+      kind: "run.program",
+      state: "completed",
+      attempt: 1,
+      definitionHash: "sha256:completed",
+      completedAt: "2025-01-01T00:01:00Z"
+    });
     writeNode(store, meta.runId, "workflow/failed", "failed", "run.program", "failed");
+    const checkpointsBeforeRecovery = store.readCheckpoints(meta.runId);
 
     interpreter.recoverStaleNodes(meta.runId);
 
@@ -210,6 +225,7 @@ workflow:
     expect(store.readNodeState(meta.runId, "workflow/awaiting")?.state).toBe("pending");
     expect(store.readNodeState(meta.runId, "workflow/completed")?.state).toBe("completed");
     expect(store.readNodeState(meta.runId, "workflow/failed")?.state).toBe("failed");
+    expect(store.readCheckpoints(meta.runId)).toEqual(checkpointsBeforeRecovery);
   });
 
   it("Node Retry rejects non-failed or non-executable nodes and does not increment runAttempt", async () => {
@@ -250,6 +266,7 @@ function writeNode(
     nodeKey,
     nodeId,
     kind,
+    definitionHash: `sha256:${nodeId}`,
     state,
     attempt: 1,
     ...extra

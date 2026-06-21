@@ -148,14 +148,14 @@ export class RunControl {
     for (const nodeState of this.store.listNodeStates(runId)) {
       if (nodeState.state === "paused" && canTransition(nodeState.state, "cancelled")) {
         nodeState.state = transition(nodeState.state, "cancelled") as NodeState;
-        this.store.writeNodeState(runId, nodeState);
+        this.store.writeTerminalNodeState(runId, nodeState);
       }
     }
 
     for (const nodeState of this.store.listNodeStates(runId)) {
       if (nodeState.state === "pending") {
         nodeState.state = cancelPendingForRunCancel(nodeState.state);
-        this.store.writeNodeState(runId, nodeState);
+        this.store.writeTerminalNodeState(runId, nodeState);
       }
     }
 
@@ -225,7 +225,7 @@ export class RunControl {
     }
     if (this.schedulingCancelled.get(runId) && state.state === "pending") {
       state.state = cancelPendingForRunCancel(state.state);
-      this.store.writeNodeState(runId, state);
+      this.store.writeTerminalNodeState(runId, state);
       return "cancelled";
     }
     return undefined;
@@ -275,10 +275,10 @@ export class RunControl {
     const state = this.store.readNodeState(runId, nodeKey);
     if (state?.state === "pending") {
       state.state = cancelPendingForRunCancel(state.state);
-      this.store.writeNodeState(runId, state);
+      this.store.writeTerminalNodeState(runId, state);
     } else if (state && canTransition(state.state, "cancelled")) {
       state.state = transition(state.state, "cancelled") as NodeState;
-      this.store.writeNodeState(runId, state);
+      this.store.writeTerminalNodeState(runId, state);
     }
   }
 

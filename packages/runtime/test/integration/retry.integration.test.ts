@@ -25,28 +25,35 @@ workflow:
       prompt: "Try"
 `);
 
-    // First run: no mock response → failure
-    const { interpreter, store, cleanup } = createTestInterpreter({});
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      agentResponses: {
+        "retry-step": {
+          sequence: [
+            { failureKind: "spawn" },
+            { output: { ok: true } }
+          ]
+        }
+      }
+    });
     cleanups.push(cleanup);
 
     const meta = await interpreter.start(ir, { input: {} });
     expect(meta.status).toBe("failed");
 
-    const failNode = store.listNodeStates(meta.runId).find((n) => n.nodeId === "retry-step");
-    expect(failNode?.state).toBe("failed");
+    const failedCheckpoint = store.readCheckpoints(meta.runId).find((checkpoint) => checkpoint.nodeKey === "workflow/retry-step");
+    expect(failedCheckpoint).toMatchObject({ sequence: 1, state: "failed" });
 
-    // Now retry — this time we need a new interpreter with responses
-    const { interpreter: interp2, store: store2, cleanup: cleanup2 } = createTestInterpreter({
-      agentResponses: { "retry-step": { success: true } }
-    });
-    cleanups.push(cleanup2);
+    await interpreter.retryNode(meta.runId, "workflow/retry-step");
 
-    // Start fresh run
-    const meta2 = await interp2.start(ir, { input: {} });
-    expect(meta2.status).toBe("completed");
-
-    const successNode = store2.listNodeStates(meta2.runId).find((n) => n.nodeId === "retry-step");
+    const successNode = store.listNodeStates(meta.runId).find((n) => n.nodeId === "retry-step");
     expect(successNode?.state).toBe("completed");
+    expect(successNode?.output).toEqual({ output: { ok: true } });
+
+    expect(store.readCheckpoints(meta.runId).filter((checkpoint) => checkpoint.nodeKey === "workflow/retry-step")).toEqual([{
+      ...failedCheckpoint!,
+      state: "completed",
+      completedAt: expect.any(String)
+    }]);
   });
 
   it("increments runAttempt only for Run-level retry", async () => {

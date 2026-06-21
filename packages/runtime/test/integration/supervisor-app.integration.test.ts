@@ -3,7 +3,7 @@ import { createSupervisorApp } from "../../src/supervisor-app.js";
 import { RunStore } from "../../src/store.js";
 import { StubAgentExecutor } from "../support/stub-agent.js";
 import { MockProgramExecutor } from "../../src/executors/mock-program.js";
-import type { ExecutorAdapter, ExecutionRequest } from "../../src/executors/types.js";
+import type { AgentExecutionRequest, ExecutorAdapter } from "../../src/executors/types.js";
 import type { ExecutorResult } from "../../src/types.js";
 import type { Server } from "node:http";
 import { serve } from "@hono/node-server";
@@ -877,7 +877,7 @@ workflow:
     return { baseUrl: `http://127.0.0.1:${port}`, server, store };
   }
 
-  async function bootSupervisorWithAgent(agentExecutor: ExecutorAdapter): Promise<{ baseUrl: string; server: Server; store: RunStore }> {
+  async function bootSupervisorWithAgent(agentExecutor: ExecutorAdapter<AgentExecutionRequest>): Promise<{ baseUrl: string; server: Server; store: RunStore }> {
     const store = new RunStore(runsDir);
     const programExecutor = new MockProgramExecutor({});
     const { app } = createSupervisorApp({ stateDir: tmpDir, workspace: tmpDir }, store, agentExecutor, programExecutor);
@@ -937,13 +937,13 @@ workflow:
       session_key: "clock-\${{ now() }}"
       prompt: "Test"
 `;
-    class RecordingAgentExecutor implements ExecutorAdapter {
+    class RecordingAgentExecutor implements ExecutorAdapter<AgentExecutionRequest> {
       constructor(
         private readonly results: ExecutorResult[],
         readonly seen: string[]
       ) {}
 
-      async execute(request: ExecutionRequest): Promise<ExecutorResult> {
+      async execute(request: AgentExecutionRequest): Promise<ExecutorResult> {
         this.seen.push(request.sessionKey ?? "");
         return this.results.shift() ?? { output: { result: "done" } };
       }

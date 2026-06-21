@@ -3,14 +3,14 @@ import { compileYaml, createTestInterpreter } from "../interpreter/helper.js";
 import { WorkflowInterpreter } from "../../src/interpreter.js";
 import { RunStore } from "../../src/store.js";
 import { StubAgentExecutor } from "../support/stub-agent.js";
-import type { ExecutorAdapter, ExecutionRequest } from "../../src/executors/types.js";
+import type { ExecutorAdapter, ProgramExecutionRequest } from "../../src/executors/types.js";
 import type { ExecutorResult } from "../../src/types.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-class ItemProgramExecutor implements ExecutorAdapter {
-  async execute({ context, signal }: ExecutionRequest): Promise<ExecutorResult> {
+class ItemProgramExecutor implements ExecutorAdapter<ProgramExecutionRequest> {
+  async execute({ context, signal }: ProgramExecutionRequest): Promise<ExecutorResult> {
     if (context.item === "boom") {
       await new Promise((resolve) => setTimeout(resolve, 5));
       return { failureKind: "timeout", error: "boom", stdout: "", stderr: "" };
@@ -23,8 +23,8 @@ class ItemProgramExecutor implements ExecutorAdapter {
   }
 }
 
-class CrossLaneProgramExecutor implements ExecutorAdapter {
-  async execute({ node, nodeKey, signal }: ExecutionRequest): Promise<ExecutorResult> {
+class CrossLaneProgramExecutor implements ExecutorAdapter<ProgramExecutionRequest> {
+  async execute({ node, nodeKey, signal }: ProgramExecutionRequest): Promise<ExecutorResult> {
     const outerLaneA = nodeKey.includes("item:a/lane:0") && nodeKey.includes("/sub_a/");
     await new Promise((resolve) => setTimeout(resolve, outerLaneA ? 5 : 80));
     if (signal.aborted) {

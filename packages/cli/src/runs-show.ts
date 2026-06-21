@@ -184,6 +184,14 @@ export function collectChildErrors(nodes: NodeExecutionState[], containerPrefix:
   return childErrors;
 }
 
+export function shouldShowNode(node: NodeExecutionState, allNodes: NodeExecutionState[]): boolean {
+  if (!isContainerKind(node.kind)) return true;
+  const childErrors = collectChildErrors(allNodes, node.nodeKey);
+  const hasUniqueError = node.error && !childErrors.has(node.error);
+  const isActionableState = node.state !== "completed" && node.state !== "failed";
+  return Boolean(hasUniqueError || isActionableState);
+}
+
 /**
  * Format a single node line in the compact runs-show style.
  * Returns the primary line (e.g. "  ✓ workflow/review  [agent]  1m30s")
@@ -271,17 +279,7 @@ export async function formatRunShow(
   const nodes = run.nodes ?? [];
 
   for (const node of nodes) {
-    if (isContainerKind(node.kind)) {
-      // Show container if any of these apply:
-      // 1. Has a unique error not duplicated in children
-      // 2. Is in a non-completed, non-failed state (pending, running, awaiting, paused) — conveys meaningful status
-      // Skip if: completed (derivable), or failed with a bubbled error (shown at child)
-      const childErrors = collectChildErrors(nodes, node.nodeKey);
-      const hasUniqueError = node.error && !childErrors.has(node.error);
-      const isActionableState = node.state !== "completed" && node.state !== "failed";
-      if (!hasUniqueError && !isActionableState) continue;
-      // Fall through
-    }
+    if (!shouldShowNode(node, nodes)) continue;
 
     const activity = node.kind === "run.agent" && node.state === "running"
       ? summarizeAgentActivity(node.agentTelemetry, nowMs)

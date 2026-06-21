@@ -72,9 +72,9 @@ describe("RunStore hook configuration", () => {
 
   it("a forked run inherits the source run's frozen hook configuration", () => {
     const ir = makeIr();
-    // Source run with a completed leaf checkpoint and a frozen hook config.
+    // Source run with a completed root state and a frozen hook config.
     store.initRun("source", ir, {});
-    store.writeNodeState("source", {
+    store.writeTerminalNodeState("source", {
       ...createInitialNodeState("workflow", "workflow", "pipeline", ir.root.keyTemplate ? "sha256:x" : undefined),
       state: "completed",
       completedAt: new Date().toISOString()
@@ -99,7 +99,7 @@ describe("RunStore hook configuration", () => {
   it("a forked run inherits skipHooks metadata from a skipped source run", () => {
     const ir = makeIr();
     store.initRun("source", ir, {}, { skipHooks: true });
-    store.writeNodeState("source", {
+    store.writeTerminalNodeState("source", {
       ...createInitialNodeState("workflow", "workflow", "pipeline", ir.root.keyTemplate ? "sha256:x" : undefined),
       state: "completed",
       completedAt: new Date().toISOString()

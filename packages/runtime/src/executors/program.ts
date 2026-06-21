@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { Ajv } from "ajv";
 import { parseDurationMs } from "@acpus/core";
 import type { ExpressionContext, ExecutorResult } from "../types.js";
-import type { ExecutorAdapter, ExecutionRequest } from "./types.js";
+import type { ExecutorAdapter, ProgramExecutionRequest } from "./types.js";
 import { ExpressionEvaluator } from "../evaluator.js";
 import { schemaValidationError } from "./output-preview.js";
 
@@ -23,7 +23,7 @@ import { schemaValidationError } from "./output-preview.js";
  * Other non-recoverable conditions — timeout, signal kill, spawn failure,
  * capture parse failure — also fail the node via `failureKind`.
  */
-export class ProgramExecutor implements ExecutorAdapter {
+export class ProgramExecutor implements ExecutorAdapter<ProgramExecutionRequest> {
   private readonly evaluator: ExpressionEvaluator;
   private readonly ajv = new Ajv({ allErrors: true, strict: false });
 
@@ -31,7 +31,7 @@ export class ProgramExecutor implements ExecutorAdapter {
     this.evaluator = evaluator ?? new ExpressionEvaluator();
   }
 
-  async execute({ node, context, signal, injectedEnv }: ExecutionRequest): Promise<ExecutorResult> {
+  async execute({ node, context, signal, injectedEnv }: ProgramExecutionRequest): Promise<ExecutorResult> {
     const cmdTemplate = node.metadata.cmd;
     const timeoutRaw = node.metadata.timeout;
     const capture = node.metadata.capture as Record<string, unknown> | undefined;

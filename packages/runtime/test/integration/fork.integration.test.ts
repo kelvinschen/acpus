@@ -353,6 +353,9 @@ workflow:
     // Artifact directory must exist for the fork Run.
     const buildArtifactDir = store.artifactsDir(forkRunId, "workflow/build");
     expect(existsSync(buildArtifactDir)).toBe(true);
+    expect(store.readCheckpoints(forkRunId).map((checkpoint) => checkpoint.nodeKey)).toEqual(
+      checkpoints.map((checkpoint) => checkpoint.nodeKey)
+    );
   });
 
   it("operator override defaults to the inheritance boundary when omitted", async () => {
@@ -459,16 +462,15 @@ workflow:
     const meta = await interpreter.start(ir, { input: {} });
     expect(meta.status).toBe("completed");
 
-    // Mutate the second tally checkpoint to simulate a round-1 failure.
+    // Rewrite the second tally checkpoint to simulate a round-1 failure.
     const checkpoints = store.readCheckpoints(meta.runId);
     const round1Idx = checkpoints.findIndex((c) => c.nodeKey.endsWith("/tally/round:1"));
     expect(round1Idx).toBeGreaterThanOrEqual(0);
     const synthetic = checkpoints.map((c, i) => i === round1Idx ? { ...c, state: "failed" as const } : c);
-
-    store.appendCheckpoint(meta.runId, {
-      nodeKey: synthetic[round1Idx]!.nodeKey,
+    const round1State = store.readNodeState(meta.runId, synthetic[round1Idx]!.nodeKey)!;
+    store.writeTerminalNodeState(meta.runId, {
+      ...round1State,
       state: "failed",
-      definitionHash: synthetic[round1Idx]!.definitionHash,
       completedAt: synthetic[round1Idx]!.completedAt
     });
 

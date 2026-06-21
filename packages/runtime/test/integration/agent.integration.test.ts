@@ -3,17 +3,17 @@ import { compileYaml, createTestInterpreter } from "../interpreter/helper.js";
 import { WorkflowInterpreter } from "../../src/interpreter.js";
 import { RunStore } from "../../src/store.js";
 import { MockProgramExecutor } from "../../src/executors/mock-program.js";
-import type { ExecutorAdapter, ExecutionRequest } from "../../src/executors/types.js";
+import type { AgentExecutionRequest, ExecutorAdapter } from "../../src/executors/types.js";
 import type { ExecutorResult } from "../../src/types.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-class RecordingAgentExecutor implements ExecutorAdapter {
+class RecordingAgentExecutor implements ExecutorAdapter<AgentExecutionRequest> {
   calls = 0;
   sessionKeys: Array<string | undefined> = [];
 
-  async execute(request: ExecutionRequest): Promise<ExecutorResult> {
+  async execute(request: AgentExecutionRequest): Promise<ExecutorResult> {
     this.calls++;
     this.sessionKeys.push(request.sessionKey);
     return { output: { ok: true } };

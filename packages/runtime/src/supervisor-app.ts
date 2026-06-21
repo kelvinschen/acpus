@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { RunStore } from "./store.js";
-import type { ExecutorAdapter } from "./executors/types.js";
+import type { AgentExecutionRequest, ExecutorAdapter, ProgramExecutionRequest } from "./executors/types.js";
 import type { SupervisorConfig, RunSummary, SupervisorHealth } from "./types.js";
 import { WorkflowInterpreter, generateRunId } from "./interpreter.js";
 import { InputValidationFailure } from "./validate-input.js";
@@ -38,8 +38,8 @@ const UNSAFE_RUN_ID = /(^|\/)\.\.?(\/|$)|[\\:\0]/;
 export function createSupervisorApp(
   config: SupervisorConfig,
   store: RunStore,
-  agentExecutor: ExecutorAdapter,
-  programExecutor: ExecutorAdapter
+  agentExecutor: ExecutorAdapter<AgentExecutionRequest>,
+  programExecutor: ExecutorAdapter<ProgramExecutionRequest>
 ) {
   const app = new Hono();
 

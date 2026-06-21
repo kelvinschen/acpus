@@ -33,7 +33,13 @@ export type {
 } from "./types.js";
 
 // ─── Executor contract ───────────────────────────────────────────
-export type { ExecutorAdapter, ExecutionRequest } from "./executors/types.js";
+export type {
+  AgentExecutionRequest,
+  BaseExecutionRequest,
+  ExecutorAdapter,
+  ExecutionRequest,
+  ProgramExecutionRequest
+} from "./executors/types.js";
 
 // ─── Keys ────────────────────────────────────────────────────────
 export {

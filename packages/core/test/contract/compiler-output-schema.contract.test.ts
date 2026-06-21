@@ -149,6 +149,39 @@ workflow:
     expect(askNode?.metadata.output).toBeUndefined();
   });
 
+  it("treats empty output maps as no declared schema", () => {
+    const cases = [
+      `
+version: 1
+name: agent-empty-output
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: mock
+      prompt: "x"
+      output: {}
+`,
+      `
+version: 1
+name: program-empty-output
+workflow:
+  steps:
+    - id: run_it
+      run: program
+      cmd: ["echo", "hello"]
+      output: {}
+`
+    ];
+    for (const source of cases) {
+      const result = compileWorkflow(source);
+      expect(result.ok).toBe(true);
+      expect(result.ir?.root.children?.[0]?.metadata.output).toBeUndefined();
+    }
+  });
+
   it("rejects unsupported object-form schema keys in agent output", () => {
     const source = `
 version: 1
@@ -328,6 +361,63 @@ workflow:
     expect(schemaDiag).toBeDefined();
     expect(schemaDiag!.message).toContain("no longer supported");
     expect(schemaDiag!.message).toContain("escape hatch");
+  });
+
+  it("does not store partial output schema metadata after DSL compile errors", () => {
+    const source = `
+version: 1
+name: partial-output-error
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: mock
+      prompt: "x"
+      output:
+        good: string
+        bad: unsupported
+`;
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expectDiagnostic(result, { code: "OUTPUT_SHAPE" });
+
+    const compiled = compileWorkflow(source, { strict: false });
+    expect(compiled.ir?.root.children?.[0]?.metadata.output).toBeUndefined();
+  });
+
+  it("compiles equivalent output schema metadata across agent, program, and signal nodes", () => {
+    const source = `
+version: 1
+name: shared-output-schema
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: mock
+      prompt: "x"
+      output:
+        status: string
+    - id: parse
+      run: program
+      cmd: ["echo", '{"status":"ok"}']
+      capture: { from: stdout, parse: json }
+      output:
+        status: string
+    - id: gate
+      run: signal
+      prompt: "OK?"
+      output:
+        status: string
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const [agent, program, signal] = result.ir?.root.children ?? [];
+    expect(agent?.metadata.output).toEqual(program?.metadata.output);
+    expect(program?.metadata.output).toEqual(signal?.metadata.output);
   });
 
   it("stores program-step capture in metadata.capture (not metadata.output)", () => {

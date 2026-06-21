@@ -123,4 +123,58 @@ describe("hashIrNode", () => {
 
     expect(hashIrNode(originalIr.root.children![0]!)).not.toBe(hashIrNode(overrideIr.root.children![0]!));
   });
+
+  it("includes workflow metadata in hashes for raw-CEL fanout over, loop until, and guard when", () => {
+    const source = [
+      "version: 1",
+      "name: workflow-raw-cel-hash",
+      "workflow:",
+      "  steps:",
+      "    - id: fan",
+      "      fanout:",
+      "        over: \"workflow.name == 'a' ? [1] : [2]\"",
+      "        do:",
+      "          - id: echo_fan",
+      "            run: program",
+      "            cmd: echo fan",
+      "    - id: loop_it",
+      "      loop:",
+      "        until: workflow.name == 'done'",
+      "        max_iterations: 1",
+      "        do:",
+      "          - id: echo_loop",
+      "            run: program",
+      "            cmd: echo loop",
+      "    - id: gate",
+      "      guard:",
+      "        when: workflow.name == 'ok'",
+      "        then: continue",
+      "        else: fail"
+    ].join("\n");
+    const ir = compileWorkflow(source).ir!;
+
+    for (const node of ir.root.children!) {
+      expect(hashIrNode(node, { workflow: { name: "a" } })).not.toBe(hashIrNode(node, { workflow: { name: "b" } }));
+    }
+  });
+
+  it("includes workflow metadata in hashes for switch case when through branch handling", () => {
+    const source = [
+      "version: 1",
+      "name: switch-workflow-hash",
+      "workflow:",
+      "  steps:",
+      "    - id: route",
+      "      switch:",
+      "        cases:",
+      "          - when: workflow.name == 'a'",
+      "            do:",
+      "              - id: echo_case",
+      "                run: program",
+      "                cmd: echo case"
+    ].join("\n");
+    const node = compileWorkflow(source).ir!.root.children![0]!;
+
+    expect(hashIrNode(node, { workflow: { name: "a" } })).not.toBe(hashIrNode(node, { workflow: { name: "b" } }));
+  });
 });

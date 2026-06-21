@@ -1,5 +1,3 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { extname, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { isRecord } from "./schema/helpers.js";
 import type { AgentSpec, WorkflowSpec } from "./types.js";
@@ -32,32 +30,6 @@ export interface ApplyAgentOverridesResult {
 }
 
 const SUPPORTED_OVERRIDE_FIELDS = new Set(["type", "use", "model", "cwd", "env", "policy"]);
-const SUPPORTED_FILE_EXTENSIONS = new Set([".json", ".yaml", ".yml"]);
-
-export function parseAgentOverridesInput(value: string | undefined, cwd = process.cwd()): AgentOverrides | undefined {
-  if (value === undefined) return undefined;
-
-  const possiblePath = resolve(cwd, value);
-  if (existsSync(possiblePath)) {
-    const stat = statSync(possiblePath);
-    if (stat.isDirectory()) {
-      throw new Error("--agents must be a JSON/YAML file or inline JSON/YAML object, not a directory.");
-    }
-    const extension = extname(possiblePath).toLowerCase();
-    if (!SUPPORTED_FILE_EXTENSIONS.has(extension)) {
-      throw new Error("--agents file must use .json, .yaml, or .yml.");
-    }
-    const contents = readFileSync(possiblePath, "utf8");
-    const parsed = extension === ".json" ? JSON.parse(contents) : parseYaml(contents);
-    return validateAgentOverrides(parsed, "--agents");
-  }
-
-  if (looksLikePath(value)) {
-    throw new Error(`--agents file not found: ${value}`);
-  }
-
-  return validateAgentOverrides(parseYaml(value), "--agents");
-}
 
 export function parseWorkflowSpecForOverrides(source: string): WorkflowSpec {
   const parsed = parseYaml(source);
@@ -255,16 +227,4 @@ function cloneAgents(agents: Record<string, AgentSpec>): Record<string, AgentSpe
       }
     ])
   );
-}
-
-function looksLikePath(value: string): boolean {
-  const trimmed = value.trim();
-  if (trimmed.startsWith("{") || trimmed.includes("\n") || /^[A-Za-z0-9_.-]+\s*:/.test(trimmed)) {
-    return false;
-  }
-  return trimmed.startsWith(".")
-    || trimmed.startsWith("/")
-    || trimmed.startsWith("~")
-    || trimmed.includes("/")
-    || SUPPORTED_FILE_EXTENSIONS.has(extname(trimmed).toLowerCase());
 }

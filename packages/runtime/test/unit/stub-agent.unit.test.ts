@@ -18,13 +18,17 @@ function baseCtx(): ExpressionContext {
   return { input: {}, steps: {}, workflow: { name: "test", description: "", source_path: "", source_dir: "" }, run_id: "test" };
 }
 
+function execute(executor: StubAgentExecutor, node: IrNode, signal = new AbortController().signal) {
+  return executor.execute({ kind: "agent", node, context: baseCtx(), signal, nodeKey: node.id });
+}
+
 describe("StubAgentExecutor", () => {
   it("returns stub output for configured step", async () => {
     const executor = new StubAgentExecutor({
       "test-step": { output: { result: "done" } }
     });
     const node = makeAgentNode({ prompt: "Do something" });
-    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+    const result = await execute(executor, node);
     expect(result.output).toEqual({ result: "done" });
     expect(result.error).toBeUndefined();
   });
@@ -32,7 +36,7 @@ describe("StubAgentExecutor", () => {
   it("returns error for unconfigured step", async () => {
     const executor = new StubAgentExecutor({});
     const node = makeAgentNode({ prompt: "Do something" });
-    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+    const result = await execute(executor, node);
     expect(result.error).toContain("No stub response");
   });
 
@@ -46,7 +50,7 @@ describe("StubAgentExecutor", () => {
     // Abort immediately
     controller.abort();
 
-    const result = await executor.execute({ node, context: baseCtx(), signal: controller.signal, nodeKey: node.id });
+    const result = await execute(executor, node, controller.signal);
     expect(result.partial).toBe(true);
   });
 
@@ -55,7 +59,7 @@ describe("StubAgentExecutor", () => {
       "test-step": { failureKind: "schema", output: { bad: true } }
     });
     const node = makeAgentNode({ prompt: "Score it" });
-    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+    const result = await execute(executor, node);
     expect(result.failureKind).toBe("schema");
     expect(result.error).toContain("Simulated schema failure");
   });
@@ -73,15 +77,15 @@ describe("StubAgentExecutor", () => {
     const signal = new AbortController().signal;
 
     // First call → parse failure
-    const r1 = await executor.execute({ node, context: baseCtx(), signal, nodeKey: node.id });
+    const r1 = await execute(executor, node, signal);
     expect(r1.failureKind).toBe("parse");
 
     // Second call → success
-    const r2 = await executor.execute({ node, context: baseCtx(), signal, nodeKey: node.id });
+    const r2 = await execute(executor, node, signal);
     expect(r2.output).toEqual({ ok: true });
 
     // Third call → still returns last element
-    const r3 = await executor.execute({ node, context: baseCtx(), signal, nodeKey: node.id });
+    const r3 = await execute(executor, node, signal);
     expect(r3.output).toEqual({ ok: true });
   });
 
@@ -95,7 +99,7 @@ describe("StubAgentExecutor", () => {
     // Abort after a short delay (before the 200ms delay completes)
     setTimeout(() => controller.abort(), 50);
 
-    const result = await executor.execute({ node, context: baseCtx(), signal: controller.signal, nodeKey: node.id });
+    const result = await execute(executor, node, controller.signal);
     expect(result.partial).toBe(true);
   });
 });

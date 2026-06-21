@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { applyAgentOverrides, parseAgentOverridesInput } from "../../src/agent-overrides.js";
+import { applyAgentOverrides, validateAgentOverrides } from "../../src/agent-overrides.js";
 import type { WorkflowSpec } from "../../src/types.js";
 
 function spec(): WorkflowSpec {
@@ -31,53 +28,19 @@ function spec(): WorkflowSpec {
 }
 
 describe("Agent Overrides", () => {
-  it("parses inline YAML and JSON objects", () => {
-    expect(parseAgentOverridesInput("implementer: { model: gpt-5.1 }")).toEqual({
-      implementer: { model: "gpt-5.1" }
-    });
-    expect(parseAgentOverridesInput('{"implementer":{"model":"gpt-5.1"}}')).toEqual({
-      implementer: { model: "gpt-5.1" }
-    });
-  });
-
-  it("parses existing JSON/YAML files and rejects missing path-like values", () => {
-    const dir = mkdtempSync(join(tmpdir(), "acpus-agent-overrides-"));
-    try {
-      writeFileSync(join(dir, "agents.json"), JSON.stringify({ implementer: { model: "gpt-5.1" } }));
-      writeFileSync(join(dir, "agents.yaml"), "implementer:\n  cwd: ./packages/core\n");
-      expect(parseAgentOverridesInput("agents.json", dir)).toEqual({ implementer: { model: "gpt-5.1" } });
-      expect(parseAgentOverridesInput("agents.yaml", dir)).toEqual({ implementer: { cwd: "./packages/core" } });
-      expect(() => parseAgentOverridesInput("./missing.yaml", dir)).toThrow(/file not found/);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
   it("rejects invalid shapes and unsupported fields", () => {
-    expect(() => parseAgentOverridesInput("[]")).toThrow(/object/);
-    expect(() => parseAgentOverridesInput("implementer: {}")).toThrow(/must not be empty/);
-    expect(() => parseAgentOverridesInput("implementer: { tools_allowlist: [] }")).toThrow(/not supported/);
-    expect(() => parseAgentOverridesInput("implementer: { type: other, use: codex }")).toThrow(/builtin/);
-    expect(() => parseAgentOverridesInput("implementer: { type: builtin }")).toThrow(/type and use together/);
-    expect(() => parseAgentOverridesInput("implementer: { model: null }")).toThrow(/null/);
-    expect(() => parseAgentOverridesInput("implementer: { cwd: null }")).toThrow(/cwd/);
-    expect(() => parseAgentOverridesInput("implementer: { cwd: '' }")).toThrow(/cwd/);
-    expect(() => parseAgentOverridesInput("implementer: { cwd: 42 }")).toThrow(/cwd/);
-    expect(() => parseAgentOverridesInput("implementer: { cwd: [] }")).toThrow(/cwd/);
-    expect(() => parseAgentOverridesInput("implementer: { cwd: { nested: true } }")).toThrow(/cwd/);
-    expect(() => parseAgentOverridesInput("implementer: { env: [] }")).toThrow(/env/);
-  });
-
-  it("rejects unsupported file extensions and directories", () => {
-    const dir = mkdtempSync(join(tmpdir(), "acpus-agent-overrides-"));
-    try {
-      mkdirSync(join(dir, "nested"));
-      writeFileSync(join(dir, "agents.txt"), "implementer: { model: gpt-5.1 }");
-      expect(() => parseAgentOverridesInput("nested", dir)).toThrow(/directory/);
-      expect(() => parseAgentOverridesInput("agents.txt", dir)).toThrow(/json/i);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    expect(() => validateAgentOverrides([])).toThrow(/object/);
+    expect(() => validateAgentOverrides({ implementer: {} })).toThrow(/must not be empty/);
+    expect(() => validateAgentOverrides({ implementer: { tools_allowlist: [] } })).toThrow(/not supported/);
+    expect(() => validateAgentOverrides({ implementer: { type: "other", use: "codex" } })).toThrow(/builtin/);
+    expect(() => validateAgentOverrides({ implementer: { type: "builtin" } })).toThrow(/type and use together/);
+    expect(() => validateAgentOverrides({ implementer: { model: null } })).toThrow(/null/);
+    expect(() => validateAgentOverrides({ implementer: { cwd: null } })).toThrow(/cwd/);
+    expect(() => validateAgentOverrides({ implementer: { cwd: "" } })).toThrow(/cwd/);
+    expect(() => validateAgentOverrides({ implementer: { cwd: 42 } })).toThrow(/cwd/);
+    expect(() => validateAgentOverrides({ implementer: { cwd: [] } })).toThrow(/cwd/);
+    expect(() => validateAgentOverrides({ implementer: { cwd: { nested: true } } })).toThrow(/cwd/);
+    expect(() => validateAgentOverrides({ implementer: { env: [] } })).toThrow(/env/);
   });
 
   it("merges scalar fields and env key-level without deleting other agent fields", () => {
@@ -143,20 +106,20 @@ describe("Agent Overrides", () => {
     });
   });
 
-  it("parses --agents YAML with policy: read", () => {
-    expect(parseAgentOverridesInput("implementer: { policy: read }")).toEqual({
+  it("validates policy: read", () => {
+    expect(validateAgentOverrides({ implementer: { policy: "read" } })).toEqual({
       implementer: { policy: "read" }
     });
   });
 
-  it("parses --agents YAML with policy: full", () => {
-    expect(parseAgentOverridesInput("reviewer: { policy: full }")).toEqual({
+  it("validates policy: full", () => {
+    expect(validateAgentOverrides({ reviewer: { policy: "full" } })).toEqual({
       reviewer: { policy: "full" }
     });
   });
 
   it("rejects invalid policy value in --agents", () => {
-    expect(() => parseAgentOverridesInput("implementer: { policy: write }")).toThrow(/policy/);
+    expect(() => validateAgentOverrides({ implementer: { policy: "write" } })).toThrow(/policy/);
   });
 
   it("override policy replaces agent definition policy", () => {

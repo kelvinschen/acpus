@@ -23,7 +23,7 @@
  */
 
 import type { AcpusIr, IrNode, IrNodeKind } from "@acpus/core";
-import type { NodeExecutionState, NodeState } from "@acpus/runtime";
+import { parseNodeKey as parseRuntimeNodeKey, type NodeExecutionState, type NodeState, type ParsedNodeKey } from "@acpus/runtime";
 
 /** A dynamic dimension type encoded in node keys. */
 export type Dim = "item" | "lane" | "branch" | "round";
@@ -53,39 +53,32 @@ interface BuildCtx {
   descendantNodes: Map<string, IrNode[]>;
 }
 
-const DIM_RE = /^(item|lane|branch|round):(.*)$/;
+function parseNodeKey(key: string): ParsedKey {
+  const parsed = parseRuntimeNodeKey(key);
+  return adaptParsedNodeKey(parsed);
+}
 
-/**
- * Parse a node key into static path segments and dynamic dimensions.
- * Mirrors runtime/src/keys.ts: dimensions are `type:value` segments appended at
- * the tail in a fixed order. Last-write-wins for repeated dims (documents the
- * nested same-kind composite limitation).
- */
-export function parseNodeKey(key: string): ParsedKey {
-  const path: string[] = [];
+function adaptParsedNodeKey(parsed: ParsedNodeKey): ParsedKey {
   const dims = new Map<Dim, string>();
-  const frames: Map<Dim, string>[] = [];
-  let current = new Map<Dim, string>();
-  for (const seg of key.split("/")) {
-    const m = DIM_RE.exec(seg);
-    if (m) {
-      const dim = m[1] as Dim;
-      if ((dim === "item" || dim === "branch" || dim === "round") && current.size > 0) {
-        frames.push(current);
-        current = new Map<Dim, string>();
-      }
-      current.set(dim, m[2]);
-      dims.set(dim, m[2]);
-    } else {
-      if (current.size > 0) {
-        frames.push(current);
-        current = new Map<Dim, string>();
-      }
-      path.push(seg);
-    }
-  }
-  if (current.size > 0) frames.push(current);
-  return { path, dims, frames };
+  addDynamicDims(dims, parsed.dynamic);
+  return {
+    path: parsed.staticSegments,
+    dims,
+    frames: parsed.dynamicFrames.map(dynamicFrameToMap)
+  };
+}
+
+function dynamicFrameToMap(frame: ParsedNodeKey["dynamic"]): Map<Dim, string> {
+  const map = new Map<Dim, string>();
+  addDynamicDims(map, frame);
+  return map;
+}
+
+function addDynamicDims(map: Map<Dim, string>, dynamic: ParsedNodeKey["dynamic"]): void {
+  if (dynamic.fanoutItemId !== undefined) map.set("item", dynamic.fanoutItemId);
+  if (dynamic.laneId !== undefined) map.set("lane", dynamic.laneId);
+  if (dynamic.parallelBranchId !== undefined) map.set("branch", dynamic.parallelBranchId);
+  if (dynamic.loopRound !== undefined) map.set("round", String(dynamic.loopRound));
 }
 
 /** An instance belongs to the current subtree iff it matches every fixed dim. */

@@ -11,7 +11,7 @@
 
 import type { AgentTelemetry, RunSupervisorClient, RunState, NodeExecutionState, RunStatus } from "@acpus/runtime";
 import { formatObservation, formatTerminalSummary, type ObservationEvent } from "./observations.js";
-import { isContainerKind, collectChildErrors, computeRunDurationMs } from "./runs-show.js";
+import { computeRunDurationMs, shouldShowNode } from "./runs-show.js";
 
 export interface FollowOptions {
   /** Emit JSONL observations instead of human-readable glyphs */
@@ -94,9 +94,7 @@ export async function followRun(
         lastRunStatus = run.status;
       }
 
-      // Apply container filtering (same logic as runs-show):
-      // Completed/failed containers without unique errors are skipped.
-      const visibleNodes = filterContainerNodes(nodes);
+      const visibleNodes = nodes.filter((node) => shouldShowNode(node, nodes));
 
       // Emit Node-level observations for new/changed nodes
       for (const node of visibleNodes) {
@@ -174,21 +172,6 @@ function buildNodeEvent(node: NodeExecutionState): ObservationEvent {
   }
 
   return event;
-}
-
-/**
- * Filter out completed/failed container nodes whose errors are duplicated in children.
- * Mirrors the same logic as runs-show's container filtering.
- */
-function filterContainerNodes(nodes: NodeExecutionState[]): NodeExecutionState[] {
-  return nodes.filter((node) => {
-    if (!isContainerKind(node.kind)) return true;
-    // Show container if it has a unique error or is in an actionable (non-completed, non-failed) state
-    const childErrors = collectChildErrors(nodes, node.nodeKey);
-    const hasUniqueError = node.error && !childErrors.has(node.error);
-    const isActionableState = node.state !== "completed" && node.state !== "failed";
-    return hasUniqueError || isActionableState;
-  });
 }
 
 /**

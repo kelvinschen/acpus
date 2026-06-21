@@ -30,6 +30,47 @@ describe("followRun", () => {
 
     expect(client.getRun).toHaveBeenCalledTimes(1);
   });
+
+  it("emits only nodes visible by runs-show container filtering", async () => {
+    const run: RunState = {
+      runId: "run-visible",
+      workflowName: "visible-workflow",
+      status: "completed",
+      irDigest: "sha256:ir",
+      inputDigest: "sha256:input",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:01.000Z",
+      runAttempt: 1,
+      nodes: []
+    };
+    const nodes: NonNullable<RunState["nodes"]> = [
+      { nodeKey: "workflow", nodeId: "workflow", kind: "pipeline", state: "completed", attempt: 1 },
+      { nodeKey: "workflow/running", nodeId: "running", kind: "loop", state: "running", attempt: 1 },
+      { nodeKey: "workflow/check", nodeId: "check", kind: "guard", state: "completed", attempt: 1 },
+      { nodeKey: "workflow/build", nodeId: "build", kind: "run.program", state: "completed", attempt: 1 }
+    ];
+    const client = {
+      clientKind: undefined,
+      getRun: vi.fn(async () => run),
+      getNodeStates: vi.fn(async () => nodes)
+    };
+    let output = "";
+    const write = vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => {
+      output += chunk.toString();
+      return true;
+    });
+
+    try {
+      await expect(followRun(client as any, "run-visible", { intervalMs: 1 })).resolves.toBe("completed");
+    } finally {
+      write.mockRestore();
+    }
+
+    expect(output).not.toContain("workflow  [pipeline]");
+    expect(output).toContain("workflow/running  [loop]  running");
+    expect(output).toContain("workflow/check  [guard]");
+    expect(output).toContain("workflow/build  [program]");
+  });
 });
 
 describe("formatObservation", () => {

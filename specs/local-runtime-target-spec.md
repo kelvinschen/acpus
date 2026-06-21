@@ -95,8 +95,12 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - The runtime MUST provide a StubAgentExecutor in test helpers for fast unit tests (no acpx, no mock scripts, no Ajv validation).
 - The runtime MUST support a real ProgramExecutor using `execa` for local subprocess execution.
 - The runtime MUST support a real AgentExecutor spawning `acpx` via `execa` for ACP session management.
-- Executor adapters MUST implement a single `execute(request)` method receiving an `ExecutionRequest` with `node`, `context`, `signal`, `nodeKey`, and optional prepared execution fields including `prompt`, `sessionKey`, `continuation`, `retry`, and `onStream`.
-- When an Agent Step declares `session_key`, the interpreter MUST pass the rendered semantic key to the Agent executor as `ExecutionRequest.sessionKey`.
+- Executor adapters MUST implement a single `execute(request)` method. `ExecutorAdapter` MAY be specialized with a request subtype.
+- Every executor request MUST include `node`, `context`, `signal`, `nodeKey`, and a discriminator `kind`.
+- Agent executor requests MUST use `kind: "agent"` and MAY include prepared Agent execution fields: `prompt`, `sessionKey`, `continuation`, `retry`, and `onStream`.
+- Program executor requests MUST use `kind: "program"` and MAY include `injectedEnv` from `beforeProgramExec`.
+- Agent-only request fields MUST NOT be required by Program executors, and Program-only request fields MUST NOT be required by Agent executors.
+- When an Agent Step declares `session_key`, the interpreter MUST pass the rendered semantic key to the Agent executor as `AgentExecutionRequest.sessionKey`.
 - The interpreter MUST persist the rendered Agent prompt prepared for the current Agent executor call on the Agent Node state as `renderedPrompt`.
 - The interpreter MUST persist the rendered Signal Node prompt (with expressions resolved) on the Signal Node state as `renderedPrompt` before entering `awaiting`, so operators can see what decision is requested without inspecting the frozen IR.
 - When an Agent Step declares `session_key`, the interpreter MUST persist the rendered semantic key on the Agent Node state as `renderedSessionKey`; Agent Steps without explicit `session_key` MUST omit `renderedSessionKey`.

@@ -71,6 +71,7 @@ describe("RunStore", () => {
         nodeKey: "workflow/step-a",
         nodeId: "step-a",
         kind: "run.agent",
+        definitionHash: "sha256:step-a",
         state: "completed",
         attempt: 1,
         startedAt: "2025-01-01T00:00:00Z",
@@ -82,6 +83,92 @@ describe("RunStore", () => {
       const read = store.readNodeState("run-001", "workflow/step-a");
 
       expect(read).toEqual(state);
+      expect(store.readCheckpoints("run-001")).toEqual([]);
+    });
+
+    it("records a checkpoint for a checkpointable terminal state write", () => {
+      store.initRun("run-001", makeIr(), {});
+
+      store.writeTerminalNodeState("run-001", {
+        nodeKey: "workflow/step-a",
+        nodeId: "step-a",
+        kind: "run.program",
+        definitionHash: "sha256:step-a",
+        state: "completed",
+        attempt: 1,
+        completedAt: "2025-01-01T00:01:00Z"
+      });
+
+      expect(store.readCheckpoints("run-001")).toEqual([{
+        sequence: 1,
+        nodeKey: "workflow/step-a",
+        state: "completed",
+        definitionHash: "sha256:step-a",
+        completedAt: "2025-01-01T00:01:00Z"
+      }]);
+    });
+
+    it("rejects non-terminal writes through the terminal state API", () => {
+      store.initRun("run-001", makeIr(), {});
+
+      expect(() => store.writeTerminalNodeState("run-001", {
+        nodeKey: "workflow/step-a",
+        nodeId: "step-a",
+        kind: "run.program",
+        definitionHash: "sha256:step-a",
+        state: "running",
+        attempt: 1
+      })).toThrow(/not terminal/);
+    });
+
+    it("replaces a checkpoint for the same Node Key while preserving sequence", () => {
+      store.initRun("run-001", makeIr(), {});
+
+      store.writeTerminalNodeState("run-001", {
+        nodeKey: "workflow/step-a",
+        nodeId: "step-a",
+        kind: "run.program",
+        definitionHash: "sha256:step-a",
+        state: "failed",
+        attempt: 1,
+        completedAt: "2025-01-01T00:01:00Z",
+        error: "boom"
+      });
+      store.writeTerminalNodeState("run-001", {
+        nodeKey: "workflow/step-b",
+        nodeId: "step-b",
+        kind: "run.program",
+        definitionHash: "sha256:step-b",
+        state: "completed",
+        attempt: 1,
+        completedAt: "2025-01-01T00:02:00Z"
+      });
+      store.writeTerminalNodeState("run-001", {
+        nodeKey: "workflow/step-a",
+        nodeId: "step-a",
+        kind: "run.program",
+        definitionHash: "sha256:step-a",
+        state: "completed",
+        attempt: 2,
+        completedAt: "2025-01-01T00:03:00Z"
+      });
+
+      expect(store.readCheckpoints("run-001")).toEqual([
+        {
+          sequence: 1,
+          nodeKey: "workflow/step-a",
+          state: "completed",
+          definitionHash: "sha256:step-a",
+          completedAt: "2025-01-01T00:03:00Z"
+        },
+        {
+          sequence: 2,
+          nodeKey: "workflow/step-b",
+          state: "completed",
+          definitionHash: "sha256:step-b",
+          completedAt: "2025-01-01T00:02:00Z"
+        }
+      ]);
     });
 
     it("returns undefined for missing key", () => {

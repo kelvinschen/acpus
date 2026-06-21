@@ -153,13 +153,21 @@ export class RunStore {
 
   // ─── Node state ────────────────────────────────────────────────
 
-  /** Atomically write node execution state. */
+  /** Atomically write node execution state without recording a Run Checkpoint. */
   writeNodeState(runId: string, state: NodeExecutionState): void {
     validateRunId(runId);
     const filename = encodeNodeKeyForFs(state.nodeKey);
     this.atomicWriteJson(join(this.runDir(runId), "nodes", filename), state);
-    if (isTerminal(state.state) && state.definitionHash && isCheckpointableKind(state.kind)) {
-      this.appendCheckpoint(runId, {
+  }
+
+  /** Atomically write a terminal node state and record its Run Checkpoint when checkpointable. */
+  writeTerminalNodeState(runId: string, state: NodeExecutionState): void {
+    if (!isTerminal(state.state)) {
+      throw new Error(`Cannot write terminal node state for ${state.nodeKey}: state '${state.state}' is not terminal`);
+    }
+    this.writeNodeState(runId, state);
+    if (state.definitionHash && isCheckpointableKind(state.kind)) {
+      this.recordNodeCheckpoint(runId, {
         nodeKey: state.nodeKey,
         state: state.state,
         definitionHash: state.definitionHash,
@@ -214,27 +222,6 @@ export class RunStore {
   // ─── Checkpoints ───────────────────────────────────────────────
 
   /**
-   * Append a Run Checkpoint for a Node that has just reached a terminal state.
-   * Idempotent on `nodeKey`: if a checkpoint for this Node Key already exists,
-   * its entry is replaced in-place to reflect the latest terminal outcome
-   * (e.g., a Node Retry that flips failed → completed). Sequence numbers
-   * remain monotonic for new entries.
-   */
-  appendCheckpoint(runId: string, checkpoint: Omit<RunCheckpoint, "sequence">): void {
-    validateRunId(runId);
-    const path = this.checkpointsIndexPath(runId);
-    const entries = this.readJson<RunCheckpoint[]>(path) ?? [];
-    const existing = entries.findIndex((entry) => entry.nodeKey === checkpoint.nodeKey);
-    if (existing >= 0) {
-      entries[existing] = { ...checkpoint, sequence: entries[existing].sequence };
-    } else {
-      const nextSequence = entries.reduce((max, entry) => Math.max(max, entry.sequence), 0) + 1;
-      entries.push({ ...checkpoint, sequence: nextSequence });
-    }
-    this.atomicWriteJson(path, entries);
-  }
-
-  /**
    * Read the ordered Run Checkpoints for a Run. Returns an empty array when
    * the run was created before checkpoints existed (in which case the Run is
    * not forkable — callers MUST treat absence as ineligible for fork).
@@ -255,8 +242,7 @@ export class RunStore {
   /**
    * Copy a Node's persisted state and artifact directory from a prior Run into
    * a Forked Run, used when applying a fork plan. Replaces any existing entry
-   * and copies the artifact directory recursively. The caller is responsible
-   * for also calling appendCheckpoint to register the inherited Node.
+   * and copies the artifact directory recursively.
    */
   inheritNodeFromRun(targetRunId: string, sourceRunId: string, nodeKey: string): void {
     validateRunId(targetRunId);
@@ -284,9 +270,9 @@ export class RunStore {
       cpSync(sourceDir, targetDir, { recursive: true });
     }
 
-    // Persist Node state last; this is also what auto-appends the checkpoint,
-    // so observers never see a checkpoint before its artifacts exist.
-    this.writeNodeState(targetRunId, targetState);
+    // Persist Node state last, then record the checkpoint, so observers never
+    // see a checkpoint before its artifacts exist.
+    this.writeTerminalNodeState(targetRunId, targetState);
   }
 
   cleanTerminalRuns(options: { dryRun?: boolean } = {}): RunCleanResult {
@@ -370,6 +356,27 @@ export class RunStore {
 
   private hookConfigPath(runId: string): string {
     return join(this.runDir(runId), "hook-config.json");
+  }
+
+  /**
+   * Record a Run Checkpoint for a Node that has just reached a terminal state.
+   * Idempotent on `nodeKey`: if a checkpoint for this Node Key already exists,
+   * its entry is replaced in-place to reflect the latest terminal outcome
+   * (e.g., a Node Retry that flips failed -> completed). Sequence numbers
+   * remain monotonic for new entries.
+   */
+  private recordNodeCheckpoint(runId: string, checkpoint: Omit<RunCheckpoint, "sequence">): void {
+    validateRunId(runId);
+    const path = this.checkpointsIndexPath(runId);
+    const entries = this.readJson<RunCheckpoint[]>(path) ?? [];
+    const existing = entries.findIndex((entry) => entry.nodeKey === checkpoint.nodeKey);
+    if (existing >= 0) {
+      entries[existing] = { ...checkpoint, sequence: entries[existing].sequence };
+    } else {
+      const nextSequence = entries.reduce((max, entry) => Math.max(max, entry.sequence), 0) + 1;
+      entries.push({ ...checkpoint, sequence: nextSequence });
+    }
+    this.atomicWriteJson(path, entries);
   }
 
   /** Write JSON via temp file + atomic rename for crash safety. */

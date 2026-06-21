@@ -340,6 +340,46 @@ function dynamicFrames(dynamic: NodeKeyDynamic): NodeKeyDynamic[] {
   return isEmptyDynamicScope(frame) ? [] : splitDynamicFrame(frame);
 }
 
+export function appendDynamicFrame(dynamic: NodeKeyDynamic, frame: NodeKeyDynamic): NodeKeyDynamic {
+  return collapseDynamicFrames([...runtimeDynamicFrames(dynamic), frame]);
+}
+
+export function appendDynamicFrames(dynamic: NodeKeyDynamic, child: NodeKeyDynamic): NodeKeyDynamic {
+  return collapseDynamicFrames([...runtimeDynamicFrames(dynamic), ...runtimeDynamicFrames(child)]);
+}
+
+export function replaceCurrentDynamicFrame(dynamic: NodeKeyDynamic, frame: NodeKeyDynamic): NodeKeyDynamic {
+  const frames = runtimeDynamicFrames(dynamic);
+  return collapseDynamicFrames(frames.length === 0 ? [frame] : [...frames.slice(0, -1), frame]);
+}
+
+export function currentDynamicFrame(dynamic: NodeKeyDynamic): NodeKeyDynamic {
+  return runtimeDynamicFrames(dynamic).at(-1) ?? {};
+}
+
+export function nestedParallelBranchDynamic(dynamic: NodeKeyDynamic, branchId: string): NodeKeyDynamic {
+  const current = currentDynamicFrame(dynamic);
+  const nextBranchId = current.parallelBranchId === undefined ? branchId : `${current.parallelBranchId}.${branchId}`;
+  return replaceCurrentDynamicFrame(dynamic, { ...current, parallelBranchId: nextBranchId });
+}
+
+export function collapseDynamicFrames(frames: NodeKeyDynamic[]): NodeKeyDynamic {
+  const collapsed: NodeKeyDynamic = { frames };
+  for (const frame of frames) {
+    if (frame.loopRound !== undefined) collapsed.loopRound = frame.loopRound;
+    if (frame.fanoutItemId !== undefined) collapsed.fanoutItemId = frame.fanoutItemId;
+    if (frame.laneId !== undefined) collapsed.laneId = frame.laneId;
+    if (frame.parallelBranchId !== undefined) collapsed.parallelBranchId = frame.parallelBranchId;
+  }
+  return collapsed;
+}
+
+function runtimeDynamicFrames(dynamic: NodeKeyDynamic): NodeKeyDynamic[] {
+  if (dynamic.frames && dynamic.frames.length > 0) return dynamic.frames;
+  const { frames: _frames, ...frame } = dynamic;
+  return isEmptyDynamicScope(frame) ? [] : [frame];
+}
+
 function splitDynamicFrame(frame: NodeKeyDynamic): NodeKeyDynamic[] {
   const frames: NodeKeyDynamic[] = [];
   if (frame.fanoutItemId !== undefined || frame.laneId !== undefined) {

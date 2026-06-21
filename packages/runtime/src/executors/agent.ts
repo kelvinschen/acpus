@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { parseDurationMs, type AgentSpec } from "@acpus/core";
 import type { ExpressionContext, ExecutorResult } from "../types.js";
-import type { ExecutorAdapter, ExecutionRequest } from "./types.js";
+import type { AgentExecutionRequest, ExecutorAdapter } from "./types.js";
 import { ExpressionEvaluator } from "../evaluator.js";
 import { Ajv } from "ajv";
 import { jsonrepair } from "jsonrepair";
@@ -30,7 +30,7 @@ const DEFAULT_CANCEL_GRACE_MS = 5000;
  *   NDJSON stream; stdout buffering is disabled so the full stream is not
  *   retained in memory.
  */
-export class AgentExecutor implements ExecutorAdapter {
+export class AgentExecutor implements ExecutorAdapter<AgentExecutionRequest> {
   private readonly evaluator: ExpressionEvaluator;
   private readonly ajv: Ajv;
   private readonly acpxPath?: string;
@@ -43,7 +43,7 @@ export class AgentExecutor implements ExecutorAdapter {
     this.cancelGraceMs = options?.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS;
   }
 
-  async execute({ node, context, signal, nodeKey, prompt: preparedPrompt, sessionKey: preparedSessionKey, continuation, retry, onStream }: ExecutionRequest): Promise<ExecutorResult> {
+  async execute({ node, context, signal, nodeKey, prompt: preparedPrompt, sessionKey: preparedSessionKey, continuation, retry, onStream }: AgentExecutionRequest): Promise<ExecutorResult> {
     const agent = node.metadata.agent as AgentSpec | undefined;
     if (!agent) {
       return { failureKind: "spawn", error: `Agent step '${node.id}' has no resolved agent definition` };

@@ -6,6 +6,13 @@
 
 export const EXPRESSION_PATTERN = /\$\{\{\s*([\s\S]*?)\s*\}\}/g;
 
+const RAW_CEL_FIELD_NAMES = new Set(["over", "until", "when"]);
+
+export function rawCelFieldName(pathOrKey: string): string | undefined {
+  const fieldName = pathOrKey.split(".").pop() ?? "";
+  return RAW_CEL_FIELD_NAMES.has(fieldName) ? fieldName : undefined;
+}
+
 /**
  * The CEL parser/evaluator does not allow `loop` as a bare identifier root in
  * every position, so Acpus rewrites the logical `loop.` scope to `loop_ctx.`

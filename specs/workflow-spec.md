@@ -253,6 +253,7 @@ The compiler MUST statically validate expressions against the compiled IR so tha
 - A scope-local root (`loop`, `item`, `item_id`, `item_index`) used outside the composite body that introduces it MUST be rejected.
 - A `steps.<id>` reference to a step that is not visible at the referencing position (a later sibling, or a step in a sibling branch) MUST be rejected; the diagnostic MUST list the visible steps.
 - A `${{ }}` expression spliced into a Program Step `cmd` element that statically evaluates to a non-scalar value (an object, an array, or a `json(...)` call) MUST produce a warning advising the author to route the value through `env:`. Values placed in `env:` MUST NOT be flagged.
+- A `${{ }}` expression spliced into any non-`cmd` template string that statically evaluates to a structured value (an object or array) MUST produce an `EXPR_STRUCTURED_TEMPLATE` warning. Wrapping the value with `json(value)` MUST suppress this warning and indicate intentional JSON text rendering. Unknown or dynamic shapes MUST NOT be flagged.
 - The static-validation rules MUST source every Node kind's output projection and body-local scope from a single shared composite contract that the compiler also uses to build the IR, so a new composite kind is described in exactly one place.
 
 ### Local Runtime Boundary

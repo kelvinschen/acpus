@@ -17,13 +17,17 @@ function baseCtx(): ExpressionContext {
   return { input: {}, steps: {}, workflow: { name: "test", description: "", source_path: "", source_dir: "" }, run_id: "test" };
 }
 
+function execute(executor: MockProgramExecutor, node: IrNode, signal = new AbortController().signal) {
+  return executor.execute({ kind: "program", node, context: baseCtx(), signal, nodeKey: node.id });
+}
+
 describe("MockProgramExecutor", () => {
   it("returns mock output for configured step", async () => {
     const executor = new MockProgramExecutor({
       "test-cmd": { parsedOutput: { files: ["a.txt"] } }
     });
     const node = makeProgramNode({ cmd: ["ls"] });
-    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+    const result = await execute(executor, node);
 
     expect(result.output).toEqual({ files: ["a.txt"] });
     expect(result.exitCode).toBe(0);
@@ -34,7 +38,7 @@ describe("MockProgramExecutor", () => {
       "test-cmd": { exitCode: 1, stdout: "failed" }
     });
     const node = makeProgramNode({ cmd: ["exit", "1"] });
-    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+    const result = await execute(executor, node);
 
     expect(result.failureKind).toBe("exit");
     expect(result.exitCode).toBe(1);
@@ -46,7 +50,7 @@ describe("MockProgramExecutor", () => {
       "test-cmd": { exitCode: 1, stdout: "tests failed" }
     });
     const node = makeProgramNode({ cmd: ["pnpm", "test"], expect: { exit_code: [0, 1] } });
-    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+    const result = await execute(executor, node);
 
     expect(result.exitCode).toBe(1);
     expect(result.failureKind).toBeUndefined();
@@ -57,7 +61,7 @@ describe("MockProgramExecutor", () => {
       "test-cmd": { failureKind: "timeout" }
     });
     const node = makeProgramNode({ cmd: ["sleep", "1"] });
-    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+    const result = await execute(executor, node);
 
     expect(result.failureKind).toBe("timeout");
   });
@@ -70,7 +74,7 @@ describe("MockProgramExecutor", () => {
       cmd: "echo",
       capture: { from: "stdout", parse: "json" }
     });
-    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+    const result = await execute(executor, node);
 
     expect(result.output).toEqual({ key: "value" });
   });
@@ -92,7 +96,7 @@ describe("MockProgramExecutor", () => {
         additionalProperties: false
       }
     });
-    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+    const result = await execute(executor, node);
 
     expect(result.failureKind).toBe("schema");
     expect(result.error).toContain('captured output preview: {"count":"not-a-number"}');
@@ -116,7 +120,7 @@ describe("MockProgramExecutor", () => {
         additionalProperties: false
       }
     });
-    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+    const result = await execute(executor, node);
 
     expect(result.failureKind).toBe("schema");
     expect(result.error).toContain('captured output preview: {"count":"not-a-number"}');
@@ -131,7 +135,7 @@ describe("MockProgramExecutor", () => {
     const controller = new AbortController();
     controller.abort();
 
-    const result = await executor.execute({ node, context: baseCtx(), signal: controller.signal, nodeKey: node.id });
+    const result = await execute(executor, node, controller.signal);
     expect(result.partial).toBe(true);
   });
 });

@@ -3,7 +3,7 @@ import { compileYaml } from "../interpreter/helper.js";
 import { RunStore } from "../../src/store.js";
 import { WorkflowInterpreter } from "../../src/interpreter.js";
 import { StubAgentExecutor } from "../support/stub-agent.js";
-import type { ExecutorAdapter, ExecutionRequest } from "../../src/executors/types.js";
+import type { ExecutorAdapter, ProgramExecutionRequest } from "../../src/executors/types.js";
 import type { ExecutorResult, ExpressionContext } from "../../src/types.js";
 import { ExpressionEvaluator } from "../../src/evaluator.js";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
  * dynamic item/loop context). It can be told to fail on the first call to a
  * given step so retry re-enters the leaf.
  */
-class RecordingProgramExecutor implements ExecutorAdapter {
+class RecordingProgramExecutor implements ExecutorAdapter<ProgramExecutionRequest> {
   readonly renders: Array<{ nodeKey: string; cmd: string; ctx: ExpressionContext }> = [];
   private readonly evaluator = new ExpressionEvaluator();
   private readonly failFirst: Set<string>;
@@ -26,7 +26,7 @@ class RecordingProgramExecutor implements ExecutorAdapter {
     this.failFirst = new Set(failFirst);
   }
 
-  async execute({ node, context, nodeKey }: ExecutionRequest): Promise<ExecutorResult> {
+  async execute({ node, context, nodeKey }: ProgramExecutionRequest): Promise<ExecutorResult> {
     const cmdTemplate = node.metadata.cmd as string | string[] | undefined;
     const cmd = Array.isArray(cmdTemplate)
       ? cmdTemplate.map((c) => this.evaluator.evaluateTemplate(c, context)).join(" ")
@@ -41,7 +41,7 @@ class RecordingProgramExecutor implements ExecutorAdapter {
   }
 }
 
-function makeInterpreter(program: ExecutorAdapter): { interpreter: WorkflowInterpreter; store: RunStore; cleanup: () => void } {
+function makeInterpreter(program: ExecutorAdapter<ProgramExecutionRequest>): { interpreter: WorkflowInterpreter; store: RunStore; cleanup: () => void } {
   const tmpDir = mkdtempSync(join(tmpdir(), "acpus-dynctx-"));
   const store = new RunStore(tmpDir);
   const agent = new StubAgentExecutor({});

@@ -1,5 +1,5 @@
 import type { ExecutorResult, FailureKind } from "../types.js";
-import type { ExecutorAdapter, ExecutionRequest } from "./types.js";
+import type { ExecutorAdapter, ProgramExecutionRequest } from "./types.js";
 import { ExpressionEvaluator } from "../evaluator.js";
 import { Ajv } from "ajv";
 import { schemaValidationError } from "./output-preview.js";
@@ -20,7 +20,7 @@ export interface MockProgramResponse {
  * Mock program executor for testing. Takes a step-id → {stdout, exitCode, parsedOutput} map,
  * resolves cmd template, handles capture config.
  */
-export class MockProgramExecutor implements ExecutorAdapter {
+export class MockProgramExecutor implements ExecutorAdapter<ProgramExecutionRequest> {
   private readonly responses: Map<string, MockProgramResponse>;
   private readonly evaluator: ExpressionEvaluator;
   private readonly ajv = new Ajv({ allErrors: true, strict: false });
@@ -30,7 +30,7 @@ export class MockProgramExecutor implements ExecutorAdapter {
     this.evaluator = evaluator ?? new ExpressionEvaluator();
   }
 
-  async execute({ node, context, signal }: ExecutionRequest): Promise<ExecutorResult> {
+  async execute({ node, context, signal }: ProgramExecutionRequest): Promise<ExecutorResult> {
     const stepId = node.id;
     const response = this.responses.get(stepId);
     if (!response) {

@@ -46,6 +46,10 @@ interface ScopeContext {
   path: string;
   /** True when validating a `cmd` array element (enables shell-safety check). */
   isCmd: boolean;
+  /** True when this expression came from `${{ }}` template interpolation. */
+  rawTemplate: boolean;
+  /** True when a whole-field `${{ expr }}` preserves the expression's native value. */
+  nativeSingleExpression: boolean;
 }
 
 export function validateScopedExpressions(input: ScopedValidationInput): void {
@@ -66,10 +70,12 @@ export function validateScopedExpressions(input: ScopedValidationInput): void {
     visibleSteps: allStepIds,
     locals: new Set<string>(),
     path,
-    isCmd: false
+    isCmd: false,
+    rawTemplate: false,
+    nativeSingleExpression: false
   });
 
-  visitStrings(outputs, "$.outputs", (source, path) => checkTemplateString(source, topScope(path), r));
+  visitStrings(outputs, "$.outputs", (source, path) => checkTemplateString(source, { ...topScope(path), nativeSingleExpression: true }, r));
   visitStrings(agents, "$.agents", (source, path) => checkTemplateString(source, topScope(path), r));
 
   // input defaults are evaluated before any step runs, so no step is visible;
@@ -78,7 +84,9 @@ export function validateScopedExpressions(input: ScopedValidationInput): void {
     visibleSteps: new Set<string>(),
     locals: new Set<string>(),
     path,
-    isCmd: false
+    isCmd: false,
+    rawTemplate: false,
+    nativeSingleExpression: false
   });
   visitStrings(inputSchema, "$.input", (source, path) => checkTemplateString(source, inputScope(path), r));
 }
@@ -113,7 +121,7 @@ function walkChildScope(node: IrNode, inheritedVisible: Set<string>, localsStack
     const currentLocals = unionLocals(localsStack);
     for (const branch of node.branches) {
       if (branch.when !== undefined) {
-        checkRawCelString(branch.when, { visibleSteps: inheritedVisible, locals: currentLocals, itemSchema, path: `${node.nodePath.join("/")}.when`, isCmd: false }, r);
+        checkRawCelString(branch.when, { visibleSteps: inheritedVisible, locals: currentLocals, itemSchema, path: `${node.nodePath.join("/")}.when`, isCmd: false, rawTemplate: false, nativeSingleExpression: false }, r);
       }
     }
   }
@@ -144,7 +152,9 @@ function walkNode(node: IrNode, inheritedVisible: Set<string>, localsStack: stri
       locals,
       itemSchema: cfgItemSchema,
       path: `${nodePath}.${cfg.field}`,
-      isCmd: cfg.isCmd === true
+      isCmd: cfg.isCmd === true,
+      rawTemplate: false,
+      nativeSingleExpression: cfg.nativeSingleExpression === true
     };
     if (cfg.rawCel) {
       checkRawCelString(cfg.source, ctx, r);
@@ -165,7 +175,7 @@ function walkNode(node: IrNode, inheritedVisible: Set<string>, localsStack: stri
     const outputVisible = new Set(inheritedVisible);
     for (const child of node.children ?? []) outputVisible.add(child.id);
     visitStrings(node.metadata.outputs, `${nodePath}.outputs`, (source, path) =>
-      checkTemplateString(source, { visibleSteps: outputVisible, locals: currentLocals, itemSchema, path, isCmd: false }, r)
+      checkTemplateString(source, { visibleSteps: outputVisible, locals: currentLocals, itemSchema, path, isCmd: false, rawTemplate: false, nativeSingleExpression: true }, r)
     );
   }
 }
@@ -225,6 +235,7 @@ interface NodeConfigExpr {
   rawCel: boolean;
   bodyScoped?: boolean;
   isCmd?: boolean;
+  nativeSingleExpression?: boolean;
 }
 
 /** Yield the expression-bearing config strings for a node, by kind. */
@@ -268,7 +279,9 @@ function nodeConfigExpressions(node: IrNode): NodeConfigExpr[] {
       break;
     case "subworkflow":
       if (isRecord(md.input)) {
-        for (const [key, value] of Object.entries(md.input)) pushTemplate(value, `input.${key}`);
+        for (const [key, value] of Object.entries(md.input)) {
+          if (typeof value === "string") out.push({ source: value, field: `input.${key}`, rawCel: false, nativeSingleExpression: true });
+        }
       }
       break;
     default:
@@ -279,10 +292,21 @@ function nodeConfigExpressions(node: IrNode): NodeConfigExpr[] {
 
 /** Validate every ${{ }} expression inside a template string. */
 function checkTemplateString(value: string, ctx: ScopeContext, r: Resolver): void {
-  for (const match of value.matchAll(EXPRESSION_PATTERN)) {
+  const matches = [...value.matchAll(EXPRESSION_PATTERN)];
+  if (matches.length === 1) {
+    const match = matches[0]!;
+    const before = value.slice(0, match.index).trim();
+    const after = value.slice(match.index! + match[0].length).trim();
+    if (before === "" && after === "") {
+      checkExpression((match[1] ?? "").trim(), ctx.nativeSingleExpression ? ctx : { ...ctx, rawTemplate: true }, r);
+      EXPRESSION_PATTERN.lastIndex = 0;
+      return;
+    }
+  }
+  for (const match of matches) {
     const source = (match[1] ?? "").trim();
     if (source.length === 0) continue;
-    checkExpression(source, ctx, r);
+    checkExpression(source, { ...ctx, rawTemplate: true }, r);
   }
   EXPRESSION_PATTERN.lastIndex = 0;
 }
@@ -307,6 +331,8 @@ function checkExpression(source: string, ctx: ScopeContext, r: Resolver): void {
 
   if (ctx.isCmd) {
     checkCmdScalar(source, references, functions, ctx, r);
+  } else if (ctx.rawTemplate) {
+    checkStructuredTemplate(source, references, functions, ctx, r);
   }
 }
 
@@ -337,7 +363,7 @@ function checkReference(ref: ExpressionReference, ctx: ScopeContext, r: Resolver
   }
 
   if (ref.root === "input") {
-    const result = walkSchema(r.inputSchema, ref.segments, 0);
+    const result = walkInputSchema(r.inputSchema, ref.segments);
     if (result.error) {
       r.diagnostics.error(
         "EXPR_UNKNOWN_FIELD",
@@ -426,6 +452,18 @@ function resolveStepType(ref: ExpressionReference, r: Resolver, ctx?: ScopeConte
 
   // seg1 === "output": project per the node's output shape.
   const shape = COMPOSITE_CONTRACTS[node.kind].outputShape;
+  if (ref.segments.length === 2) {
+    switch (shape) {
+      case "array":
+        return "array";
+      case "map":
+      case "decision":
+      case "selected":
+        return "object";
+      default:
+        break;
+    }
+  }
   if (shape !== "schema" && shape !== "payload") return "unknown"; // composite/dyn projection
 
   const schema = node.metadata.output;
@@ -468,13 +506,7 @@ function checkCmdScalar(
     nonScalar = true;
   } else if (references.length === 1 && isStaticReference(references[0]!)) {
     const ref = references[0]!;
-    const kind = ref.root === "steps"
-      ? resolveStepType(ref, r)
-      : ref.root === "input"
-        ? walkSchema(r.inputSchema, ref.segments, 0).kind
-        : ref.root === "workflow"
-          ? walkSchema(WORKFLOW_CONTEXT_SCHEMA, ref.segments, 0).kind
-          : "unknown";
+    const kind = resolveReferenceKind(ref, r, ctx);
     if (kind === "object" || kind === "array") {
       nonScalar = true;
       label = referenceToString(ref);
@@ -490,13 +522,58 @@ function checkCmdScalar(
   }
 }
 
+function checkStructuredTemplate(
+  source: string,
+  references: ExpressionReference[],
+  functions: string[],
+  ctx: ScopeContext,
+  r: Resolver
+): void {
+  if (functions.includes("json")) return;
+  if (references.length !== 1 || !isStaticReference(references[0]!)) return;
+
+  const ref = references[0]!;
+  const kind = resolveReferenceKind(ref, r, ctx);
+  if (kind !== "object" && kind !== "array") return;
+
+  r.diagnostics.warning(
+    "EXPR_STRUCTURED_TEMPLATE",
+    `Expression '${referenceToString(ref)}' evaluates to a structured value in a template string; wrap it with json(...) when JSON text is intended.`,
+    ctx.path
+  );
+}
+
+function resolveReferenceKind(ref: ExpressionReference, r: Resolver, ctx?: ScopeContext): ResolvedKind {
+  switch (ref.root) {
+    case "steps":
+      return resolveStepType(ref, r);
+    case "input":
+      return walkInputSchema(r.inputSchema, ref.segments).kind;
+    case "workflow":
+      return walkSchema(WORKFLOW_CONTEXT_SCHEMA, ref.segments, 0).kind;
+    case "item":
+      return ctx?.itemSchema ? walkSchema(ctx.itemSchema, ref.segments, 0).kind : "unknown";
+    default:
+      return "unknown";
+  }
+}
+
+function walkInputSchema(schema: Record<string, unknown>, segments: ExpressionReference["segments"]): SchemaWalkResult {
+  return walkSchema(schema, segments, 0, { allowOpenRootFields: true });
+}
+
 interface SchemaWalkResult {
   kind: ResolvedKind;
   error?: { field: string; available: string[] };
 }
 
 /** Walk JSON-Schema segments from `start`. Stops (kind=unknown) on any open/dyn shape. */
-function walkSchema(schema: Record<string, unknown>, segments: ExpressionReference["segments"], start: number): SchemaWalkResult {
+function walkSchema(
+  schema: Record<string, unknown>,
+  segments: ExpressionReference["segments"],
+  start: number,
+  options: { allowOpenRootFields?: boolean } = {}
+): SchemaWalkResult {
   let cur: Record<string, unknown> = schema;
   for (let i = start; i < segments.length; i++) {
     const seg = segments[i]!;
@@ -508,12 +585,13 @@ function walkSchema(schema: Record<string, unknown>, segments: ExpressionReferen
       return { kind: "unknown" };
     }
     // field segment
-    if (isClosedObject(cur)) {
+    if (isClosedObject(cur) || (options.allowOpenRootFields === true && i === start && isRecord(cur.properties))) {
       const properties = cur.properties as Record<string, unknown>;
       if (Object.prototype.hasOwnProperty.call(properties, seg.name)) {
         cur = properties[seg.name] as Record<string, unknown>;
         continue;
       }
+      if (!isClosedObject(cur)) return { kind: "unknown" };
       return { kind: "unknown", error: { field: seg.name, available: Object.keys(properties) } };
     }
     // open object / scalar / dyn — cannot validate this access

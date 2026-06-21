@@ -3,7 +3,6 @@ import {
   applyAgentOverrides,
   compileWorkflow,
   lintWorkflow,
-  parseAgentOverridesInput,
   parseDurationMs,
   parseWorkflowSpecForOverrides,
   serializeWorkflowSpecForOverrides,
@@ -28,7 +27,8 @@ import { followRun } from "./follow.js";
 import { formatRunShow } from "./runs-show.js";
 import { buildHooksCommand } from "./hooks.js";
 import type { RunCleanResult, RunStatus } from "@acpus/runtime";
-import { ForkRejectedError } from "@acpus/runtime";
+import { ForkRejectedError, type RunSupervisorClient } from "@acpus/runtime";
+import { parseAgentOverridesInput } from "./agent-overrides.js";
 
 const EXIT_DSL_STATIC_ERROR = 10;
 const EXIT_RUNTIME_ERROR = 20;
@@ -129,16 +129,7 @@ workflows
     refOrPath: string,
     options: { dryRun?: boolean; input?: string; agents?: string; background?: boolean; visualize?: boolean; skipHooks?: boolean; json?: boolean; quiet?: boolean; poll?: number }
   ) => {
-    if (options.background && options.visualize) {
-      printError("--background and --visualize are mutually exclusive", options);
-      process.exitCode = EXIT_CLI_ERROR;
-      return;
-    }
-    if (options.visualize && options.json) {
-      printError("--visualize and --json are mutually exclusive", options);
-      process.exitCode = EXIT_CLI_ERROR;
-      return;
-    }
+    if (rejectConflictingSubmissionOptions(options)) return;
 
     try {
       const target = resolveWorkflowTarget(refOrPath);
@@ -187,8 +178,7 @@ workflows
       printSubmissionWarnings(runState.submissionWarnings ?? [], options);
 
       if (options.visualize) {
-        const { runTui } = await import("@acpus/tui");
-        await runTui({ runId: runState.runId, endpoint: (client as any).baseUrl as string });
+        await launchVisualizer(client, runState.runId);
         process.exitCode = 0;
         return;
       }
@@ -289,14 +279,11 @@ runs
           return;
         }
         const client = await ensureSupervisor();
-        const endpoint = (client as any).baseUrl as string;
-        await serveTui({ runId, endpoint, listen: options.serve });
+        await serveTui({ runId, endpoint: client.endpoint, listen: options.serve });
         return;
       }
       const client = await ensureSupervisor();
-      const endpoint = (client as any).baseUrl as string;
-      const { runTui } = await import("@acpus/tui");
-      await runTui({ runId, endpoint });
+      await launchVisualizer(client, runId);
     } catch (error) {
       printError(errorMessage(error), { json: false, quiet: false });
       process.exitCode = isSupervisorConnectionError(error) ? EXIT_SUPERVISOR_ERROR : EXIT_RUNTIME_ERROR;
@@ -430,16 +417,7 @@ runs
     refOrPath: string,
     options: { from?: string; input?: string; agents?: string; dryRun?: boolean; background?: boolean; visualize?: boolean; json?: boolean; quiet?: boolean; poll?: number }
   ) => {
-    if (options.background && options.visualize) {
-      printError("--background and --visualize are mutually exclusive", options);
-      process.exitCode = EXIT_CLI_ERROR;
-      return;
-    }
-    if (options.visualize && options.json) {
-      printError("--visualize and --json are mutually exclusive", options);
-      process.exitCode = EXIT_CLI_ERROR;
-      return;
-    }
+    if (rejectConflictingSubmissionOptions(options)) return;
     try {
       const target = resolveWorkflowTarget(refOrPath);
       const parsedInput = parseInput(options.input);
@@ -491,8 +469,7 @@ runs
       printSubmissionWarnings(result.run.submissionWarnings ?? [], options);
 
       if (options.visualize) {
-        const { runTui } = await import("@acpus/tui");
-        await runTui({ runId: result.run.runId, endpoint: (client as any).baseUrl as string });
+        await launchVisualizer(client, result.run.runId);
         process.exitCode = 0;
         return;
       }
@@ -594,6 +571,25 @@ function printSubmissionWarnings(
   for (const warning of warnings) {
     console.error(`WARNING ${warning.code} ${warning.agent}: ${warning.message}`);
   }
+}
+
+function rejectConflictingSubmissionOptions(options: { background?: boolean; visualize?: boolean; json?: boolean; quiet?: boolean }): boolean {
+  if (options.background && options.visualize) {
+    printError("--background and --visualize are mutually exclusive", options);
+    process.exitCode = EXIT_CLI_ERROR;
+    return true;
+  }
+  if (options.visualize && options.json) {
+    printError("--visualize and --json are mutually exclusive", options);
+    process.exitCode = EXIT_CLI_ERROR;
+    return true;
+  }
+  return false;
+}
+
+async function launchVisualizer(client: RunSupervisorClient, runId?: string): Promise<void> {
+  const { runTui } = await import("@acpus/tui");
+  await runTui({ runId, endpoint: client.endpoint });
 }
 
 function formatBytes(bytes: number): string {

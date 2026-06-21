@@ -4,7 +4,6 @@ export {
   applyAgentOverrides,
   emptyAgentOverrideResult,
   optionalSubmissionMetadata,
-  parseAgentOverridesInput,
   parseWorkflowSpecForOverrides,
   serializeWorkflowSpecForOverrides,
   validateAgentOverrides

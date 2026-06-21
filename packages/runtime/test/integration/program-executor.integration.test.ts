@@ -17,6 +17,15 @@ function baseCtx(): ExpressionContext {
   return { input: {}, steps: {}, workflow: { name: "test", description: "", source_path: "", source_dir: "" }, run_id: "test" };
 }
 
+function execute(
+  executor: ProgramExecutor,
+  node: IrNode,
+  context: ExpressionContext = baseCtx(),
+  signal = new AbortController().signal
+) {
+  return executor.execute({ kind: "program", node, context, signal, nodeKey: node.id });
+}
+
 describe("ProgramExecutor", () => {
   async function withEnv<T>(updates: Record<string, string | undefined>, fn: () => Promise<T>): Promise<T> {
     const previous = new Map<string, string | undefined>();
@@ -47,7 +56,7 @@ describe("ProgramExecutor", () => {
       cmd: "echo hello",
       capture: { from: "stdout", parse: "text" }
     });
-    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+    const result = await execute(executor, node);
     expect(result.exitCode).toBe(0);
     expect((result.output as string).trim()).toBe("hello");
   });
@@ -59,7 +68,7 @@ describe("ProgramExecutor", () => {
         cmd: "printf '%s' \"$ACPUS_PROGRAM_SHELL_TEST\"",
         capture: { from: "stdout", parse: "text" }
       });
-      const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+      const result = await execute(executor, node);
       expect(result.exitCode).toBe(0);
       expect(result.output).toBe("from-shell-env");
     });
@@ -72,7 +81,7 @@ describe("ProgramExecutor", () => {
         cmd: [process.execPath, "-e", "console.log(process.argv[1])", "$ACPUS_PROGRAM_ARRAY_TEST"],
         capture: { from: "stdout", parse: "text" }
       });
-      const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+      const result = await execute(executor, node);
       expect(result.exitCode).toBe(0);
       expect((result.output as string).trim()).toBe("$ACPUS_PROGRAM_ARRAY_TEST");
     });
@@ -85,7 +94,7 @@ describe("ProgramExecutor", () => {
         cmd: [process.execPath, "-e", "console.log(JSON.stringify({ inherited: process.env.ACPUS_PROGRAM_INHERITED_ENV ?? null }))"],
         capture: { from: "stdout", parse: "json" }
       });
-      const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+      const result = await execute(executor, node);
       expect(result.exitCode).toBe(0);
       expect(result.output).toEqual({ inherited: "visible-to-program" });
     });
@@ -108,7 +117,7 @@ describe("ProgramExecutor", () => {
         capture: { from: "stdout", parse: "json" }
       });
       const ctx: ExpressionContext = { ...baseCtx(), input: { override: "step-value" } };
-      const result = await executor.execute({ node, context: ctx, signal: new AbortController().signal, nodeKey: node.id });
+      const result = await execute(executor, node, ctx);
       expect(result.exitCode).toBe(0);
       expect(result.output).toEqual({
         override: "step-value",
@@ -124,7 +133,7 @@ describe("ProgramExecutor", () => {
       cmd: 'echo \'{"key":"value"}\'',
       capture: { from: "stdout", parse: "json" }
     });
-    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+    const result = await execute(executor, node);
     expect(result.exitCode).toBe(0);
     expect(result.output).toEqual({ key: "value" });
   });
@@ -141,7 +150,7 @@ describe("ProgramExecutor", () => {
         additionalProperties: false
       }
     });
-    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+    const result = await execute(executor, node);
     expect(result.failureKind).toBe("schema");
     expect(result.error).toContain("Output validation failed:");
     expect(result.error).toContain("must be integer");
@@ -152,7 +161,7 @@ describe("ProgramExecutor", () => {
   it("fails the node fast when exit code is not allow-listed (default `[0]`)", async () => {
     const executor = new ProgramExecutor();
     const node = makeProgramNode({ cmd: "exit 1" });
-    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+    const result = await execute(executor, node);
     expect(result.failureKind).toBe("exit");
     expect(result.exitCode).toBe(1);
     expect(result.error).toMatch(/exit_code=1/);
@@ -161,7 +170,7 @@ describe("ProgramExecutor", () => {
   it("includes a stderr tail in the failure message", async () => {
     const executor = new ProgramExecutor();
     const node = makeProgramNode({ cmd: "echo 'syntax: bad' 1>&2; exit 2" });
-    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+    const result = await execute(executor, node);
     expect(result.failureKind).toBe("exit");
     expect(result.error).toMatch(/syntax: bad/);
   });
@@ -169,7 +178,7 @@ describe("ProgramExecutor", () => {
   it("treats an allow-listed non-zero exit as step data, not failure", async () => {
     const executor = new ProgramExecutor();
     const node = makeProgramNode({ cmd: "exit 1", expect: { exit_code: [0, 1] } });
-    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+    const result = await execute(executor, node);
     expect(result.exitCode).toBe(1);
     expect(result.error).toBeUndefined();
     expect(result.failureKind).toBeUndefined();
@@ -182,14 +191,14 @@ describe("ProgramExecutor", () => {
       capture: { from: "stdout", parse: "json" },
       output: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] }
     });
-    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+    const result = await execute(executor, node);
     expect(result.failureKind).toBe("exit");
   });
 
   it("classifies a missing command as a spawn failure", async () => {
     const executor = new ProgramExecutor();
     const node = makeProgramNode({ cmd: ["this-command-does-not-exist-xyz"] });
-    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+    const result = await execute(executor, node);
     expect(result.failureKind).toBe("spawn");
   });
 
@@ -206,7 +215,7 @@ describe("ProgramExecutor", () => {
         cmd: "echo ignored",
         capture: { from: "file", parse: "json", path: filePath }
       });
-      const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+      const result = await execute(executor, node);
       expect(result.exitCode).toBe(0);
       expect(result.output).toEqual({ from: "file" });
     } finally {
@@ -220,7 +229,7 @@ describe("ProgramExecutor", () => {
       cmd: "echo ignored",
       capture: { from: "file", parse: "json", path: "/nonexistent/acpus-missing.json" }
     });
-    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+    const result = await execute(executor, node);
     expect(result.failureKind).toBe("capture");
   });
 
@@ -232,7 +241,7 @@ describe("ProgramExecutor", () => {
     // Abort immediately
     setTimeout(() => controller.abort(), 10);
 
-    const result = await executor.execute({ node, context: baseCtx(), signal: controller.signal, nodeKey: node.id });
+    const result = await execute(executor, node, baseCtx(), controller.signal);
     expect(result.partial).toBe(true);
   });
 
@@ -243,7 +252,7 @@ describe("ProgramExecutor", () => {
       capture: { from: "stdout", parse: "text" }
     });
     const ctx: ExpressionContext = { ...baseCtx(), input: { name: "world" } };
-    const result = await executor.execute({ node, context: ctx, signal: new AbortController().signal, nodeKey: node.id });
+    const result = await execute(executor, node, ctx);
     expect(result.exitCode).toBe(0);
     expect((result.output as string).trim()).toBe("world");
   });
@@ -261,7 +270,7 @@ describe("ProgramExecutor", () => {
         capture: { from: "stdout", parse: "text" }
       });
       const ctx: ExpressionContext = { ...baseCtx(), input: { dir } };
-      const result = await executor.execute({ node, context: ctx, signal: new AbortController().signal, nodeKey: node.id });
+      const result = await execute(executor, node, ctx);
       expect(result.exitCode).toBe(0);
       expect((result.output as string).trim()).toBe(dir);
     } finally {
@@ -282,7 +291,7 @@ describe("ProgramExecutor", () => {
         cwd: dir,
         capture: { from: "file", parse: "json", path: "out.json" }
       });
-      const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+      const result = await execute(executor, node);
       expect(result.exitCode).toBe(0);
       expect(result.output).toEqual({ from: "cwd-relative" });
     } finally {
@@ -304,7 +313,7 @@ describe("ProgramExecutor", () => {
         cwd: rel,
         capture: { from: "stdout", parse: "text" }
       });
-      const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+      const result = await execute(executor, node);
       expect(result.exitCode).toBe(0);
       expect((result.output as string).trim()).toBe(abs);
     } finally {
@@ -320,7 +329,7 @@ describe("ProgramExecutor", () => {
       capture: { from: "stdout", parse: "text" }
     });
     const ctx: ExpressionContext = { ...baseCtx(), input: { empty: "" } };
-    const result = await executor.execute({ node, context: ctx, signal: new AbortController().signal, nodeKey: node.id });
+    const result = await execute(executor, node, ctx);
     expect(result.exitCode).toBe(0);
     expect((result.output as string).trim()).toBe(process.cwd());
   });
@@ -331,7 +340,7 @@ describe("ProgramExecutor", () => {
       cmd: "echo hi",
       cwd: "${{ missing.value }}"
     });
-    const result = await executor.execute({ node, context: baseCtx(), signal: new AbortController().signal, nodeKey: node.id });
+    const result = await execute(executor, node);
     expect(result.failureKind).toBe("config");
     expect(result.error).toContain("Failed to evaluate configuration template");
   });

@@ -9,6 +9,147 @@ function wf(body: string): string {
 }
 
 describe("@acpus/core compiler: scoped expression validation", () => {
+  describe("structured template interpolation", () => {
+    it("warns when structured input values are interpolated into template strings", () => {
+      for (const prompt of ["Payload ${{ input.payload }}", "${{ input.payload }}", "${{ input.payload }} / ${{ input.name }}"]) {
+        const result = lintWorkflow(
+          wf(`    - id: ask
+      run: agent
+      use: m
+      prompt: "${prompt}"`).replace("name: t\n", "name: t\ninput:\n  name: string\n  payload:\n    title: string\n")
+        );
+        expectDiagnostic(result, { code: "EXPR_STRUCTURED_TEMPLATE", path: "workflow/ask.prompt" });
+      }
+    });
+
+    it("warns when structured step outputs are interpolated into template strings", () => {
+      const result = lintWorkflow(
+        wf(`    - id: collect
+      run: agent
+      use: m
+      prompt: hi
+      output:
+        items:
+          - title: string
+    - id: ask
+      run: agent
+      use: m
+      prompt: "Items \${{ steps.collect.output.items }}"`)
+      );
+      expectDiagnostic(result, { code: "EXPR_STRUCTURED_TEMPLATE", path: "workflow/ask.prompt" });
+    });
+
+    it("warns when known fanout item objects are interpolated into template strings", () => {
+      const result = lintWorkflow(
+        wf(`    - id: collect
+      run: agent
+      use: m
+      prompt: hi
+      output:
+        items:
+          - title: string
+    - id: each
+      fanout:
+        over: steps.collect.output.items
+        key: "\${{ item.title }}"
+        do:
+          - id: ask
+            run: agent
+            use: m
+            prompt: "Item \${{ item }}"`)
+      );
+      expectDiagnostic(result, { code: "EXPR_STRUCTURED_TEMPLATE", path: "workflow/each/$do/ask.prompt" });
+    });
+
+    it("does not warn for explicit json text or scalar schema fields", () => {
+      const result = lintWorkflow(
+        wf(`    - id: collect
+      run: agent
+      use: m
+      prompt: hi
+      output: { summary: string }
+    - id: json_text
+      run: agent
+      use: m
+      prompt: "Payload \${{ json(input.payload) }}"
+    - id: scalar
+      run: agent
+      use: m
+      prompt: "Summary \${{ steps.collect.output.summary }}"`).replace("name: t\n", "name: t\ninput:\n  payload:\n    title: string\n")
+      );
+      expectNoDiagnostic(result, "EXPR_STRUCTURED_TEMPLATE");
+    });
+
+    it("keeps cmd-specific structured interpolation warning without duplicate generic warning", () => {
+      const result = lintWorkflow(
+        `version: 1
+name: t
+input:
+  payload:
+    title: string
+workflow:
+  steps:
+    - id: run_it
+      run: program
+      cmd: "echo \${{ input.payload }}"
+`
+      );
+      expectDiagnostic(result, { code: "EXPR_NONSCALAR_IN_CMD", path: "workflow/run_it.cmd" });
+      expectNoDiagnostic(result, "EXPR_STRUCTURED_TEMPLATE");
+    });
+
+    it("warns on cwd, session_key, env, and fanout key template fields", () => {
+      const result = lintWorkflow(
+        wf(`    - id: ask
+      run: agent
+      use: m
+      prompt: x
+      cwd: "repo/\${{ input.payload }}"
+      session_key: "s-\${{ input.payload }}"
+    - id: run_it
+      run: program
+      cmd: ["echo", "x"]
+      env:
+        PAYLOAD: "v=\${{ input.payload }}"
+    - id: each
+      fanout:
+        over: [1]
+        key: "k-\${{ input.payload }}"
+        do:
+          - id: child
+            run: program
+            cmd: ["echo", "x"]`).replace("name: t\n", "name: t\ninput:\n  payload:\n    title: string\n")
+      );
+      expect(result.diagnostics.filter((d) => d.code === "EXPR_STRUCTURED_TEMPLATE")).toEqual([
+        expect.objectContaining({ path: "workflow/ask.cwd" }),
+        expect.objectContaining({ path: "workflow/ask.session_key" }),
+        expect.objectContaining({ path: "workflow/run_it.env.PAYLOAD" }),
+        expect.objectContaining({ path: "workflow/each.key" })
+      ]);
+    });
+
+    it("does not warn for native single-expression outputs and subworkflow input", () => {
+      const result = lintWorkflow(
+        wf(`    - id: wrap
+      pipeline:
+        - id: collect
+          run: agent
+          use: m
+          prompt: hi
+          output:
+            payload:
+              title: string
+      outputs:
+        payload: "\${{ steps.collect.output.payload }}"
+    - id: child
+      subworkflow: ./child.yaml
+      input:
+        payload: "\${{ steps.wrap.output.payload }}"`)
+      );
+      expectNoDiagnostic(result, "EXPR_STRUCTURED_TEMPLATE");
+    });
+  });
+
   describe("field-path validity (A)", () => {
     it("rejects a misspelled output field and lists available fields", () => {
       const result = lintWorkflow(

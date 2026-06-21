@@ -1,8 +1,32 @@
-import type { RunState } from "@acpus/runtime";
+import type { NodeExecutionState, RunState } from "@acpus/runtime";
 import { describe, expect, it } from "vitest";
-import { formatRunShow } from "../../src/runs-show.js";
+import { formatRunShow, shouldShowNode } from "../../src/runs-show.js";
 
 describe("formatRunShow", () => {
+  describe("shouldShowNode", () => {
+    const node = (overrides: Partial<NodeExecutionState>): NodeExecutionState => ({
+      nodeKey: "workflow/build",
+      nodeId: "build",
+      kind: "run.program",
+      state: "completed",
+      attempt: 1,
+      ...overrides
+    });
+
+    it.each([
+      ["non-container node", node({}), true],
+      ["completed container without unique errors", node({ nodeKey: "workflow", nodeId: "workflow", kind: "pipeline" }), false],
+      ["running container", node({ nodeKey: "workflow", nodeId: "workflow", kind: "pipeline", state: "running" }), true],
+      ["pending container", node({ nodeKey: "workflow/loop", nodeId: "loop", kind: "loop", state: "pending", attempt: 0 }), true],
+      ["failed container with unique error", node({ nodeKey: "workflow", nodeId: "workflow", kind: "pipeline", state: "failed", error: "pipeline error" }), true],
+      ["Guard Node", node({ nodeKey: "workflow/check", nodeId: "check", kind: "guard" }), true],
+    ])("%s", (_name, candidate, expected) => {
+      const child = node({ nodeKey: "workflow/build", error: "child error", state: candidate.state === "failed" ? "failed" : "completed" });
+
+      expect(shouldShowNode(candidate, [candidate, child])).toBe(expected);
+    });
+  });
+
   it("prints compact activity for running Agent Steps from Node telemetry", async () => {
     const run: RunState = {
       runId: "run-1",

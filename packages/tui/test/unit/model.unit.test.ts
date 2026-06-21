@@ -7,7 +7,6 @@ import {
   countByState,
   aggregateState,
   indexByNodeId,
-  parseNodeKey,
   formatDuration,
   formatElapsed
 } from "../../src/model.js";
@@ -253,15 +252,6 @@ describe("model overlay", () => {
     const fanoutNode = tree.children[0];
     expect(fanoutNode.irNode.id).toBe("mapped");
     expect(aggregateState(fanoutNode)).toBe("failed");
-  });
-
-  it("parses node keys into path and dynamic dims", () => {
-    const p = parseNodeKey("workflow/mapped/work/item:file-a/lane:0/branch:1/round:2");
-    expect(p.path).toEqual(["workflow", "mapped", "work"]);
-    expect(p.dims.get("item")).toBe("file-a");
-    expect(p.dims.get("lane")).toBe("0");
-    expect(p.dims.get("branch")).toBe("1");
-    expect(p.dims.get("round")).toBe("2");
   });
 
   it("expands loop rounds with numeric ordering; (×N) on the loop", () => {

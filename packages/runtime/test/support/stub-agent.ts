@@ -1,5 +1,5 @@
 import type { ExecutorResult, FailureKind } from "../../src/types.js";
-import type { ExecutorAdapter, ExecutionRequest } from "../../src/executors/types.js";
+import type { AgentExecutionRequest, ExecutorAdapter } from "../../src/executors/types.js";
 
 /**
  * A lightweight test double for agent execution. Takes a step-id → response
@@ -10,7 +10,7 @@ import type { ExecutorAdapter, ExecutionRequest } from "../../src/executors/type
  * explicitly. Real schema validation is covered by E2E tests that use the
  * acpx-backed AgentExecutor.
  */
-export class StubAgentExecutor implements ExecutorAdapter {
+export class StubAgentExecutor implements ExecutorAdapter<AgentExecutionRequest> {
   private readonly responses: Map<string, StubAgentResponse>;
   private readonly callCounts: Map<string, number> = new Map();
 
@@ -18,7 +18,7 @@ export class StubAgentExecutor implements ExecutorAdapter {
     this.responses = new Map(Object.entries(responses));
   }
 
-  async execute({ node, signal, prompt: preparedPrompt, onStream }: ExecutionRequest): Promise<ExecutorResult> {
+  async execute({ node, signal, prompt: preparedPrompt, onStream }: AgentExecutionRequest): Promise<ExecutorResult> {
     const stepId = node.id;
     const response = this.responses.get(stepId);
     const prompt = preparedPrompt ?? String(node.metadata.prompt ?? "");

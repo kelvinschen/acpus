@@ -14,14 +14,14 @@ import type { ForkPlan } from "./fork.js";
 import { randomUUID } from "node:crypto";
 
 export class RunSupervisorClient {
-  private readonly baseUrl: string;
+  readonly endpoint: string;
   /** Client identity for lease tracking on the supervisor. */
   readonly clientId: string;
   /** When set, includes x-acpus-client-kind header to pin the supervisor alive. */
   clientKind?: "follow" | "visualize";
 
   constructor(baseUrl: string) {
-    this.baseUrl = baseUrl;
+    this.endpoint = baseUrl;
     this.clientId = randomUUID();
   }
 
@@ -36,7 +36,7 @@ export class RunSupervisorClient {
   }
 
   async health(): Promise<SupervisorHealth> {
-    const res = await fetch(`${this.baseUrl}/health`, { headers: this.headers() });
+    const res = await fetch(`${this.endpoint}/health`, { headers: this.headers() });
     if (!res.ok) throw new Error(`Health check failed: ${res.status}`);
     return res.json() as Promise<SupervisorHealth>;
   }
@@ -49,7 +49,7 @@ export class RunSupervisorClient {
     agentOverrides?: AgentOverrides,
     skipHooks?: boolean
   ): Promise<RunState> {
-    const res = await fetch(`${this.baseUrl}/runs`, {
+    const res = await fetch(`${this.endpoint}/runs`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...this.headers() },
       body: JSON.stringify({ spec, input, sourcePath, workflowRef, agentOverrides, skipHooks })
@@ -62,13 +62,13 @@ export class RunSupervisorClient {
   }
 
   async listRuns(): Promise<RunSummary[]> {
-    const res = await fetch(`${this.baseUrl}/runs`, { headers: this.headers() });
+    const res = await fetch(`${this.endpoint}/runs`, { headers: this.headers() });
     if (!res.ok) throw new Error(`Failed to list runs: ${res.status}`);
     return res.json() as Promise<RunSummary[]>;
   }
 
   async cleanRuns(options: { dryRun?: boolean } = {}): Promise<RunCleanResult> {
-    const res = await fetch(`${this.baseUrl}/runs/clean`, {
+    const res = await fetch(`${this.endpoint}/runs/clean`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...this.headers() },
       body: JSON.stringify({ dryRun: Boolean(options.dryRun) })
@@ -78,19 +78,19 @@ export class RunSupervisorClient {
   }
 
   async getRun(runId: string): Promise<RunState> {
-    const res = await fetch(`${this.baseUrl}/runs/${runId}`, { headers: this.headers() });
+    const res = await fetch(`${this.endpoint}/runs/${runId}`, { headers: this.headers() });
     if (!res.ok) throw new Error(`Run not found: ${runId}`);
     return res.json() as Promise<RunState>;
   }
 
   async getIr(runId: string): Promise<AcpusIr> {
-    const res = await fetch(`${this.baseUrl}/runs/${runId}/ir`, { headers: this.headers() });
+    const res = await fetch(`${this.endpoint}/runs/${runId}/ir`, { headers: this.headers() });
     if (!res.ok) throw new Error(`IR not found: ${runId}`);
     return res.json() as Promise<AcpusIr>;
   }
 
   async getInput(runId: string): Promise<Record<string, unknown>> {
-    const res = await fetch(`${this.baseUrl}/runs/${runId}/input`, { headers: this.headers() });
+    const res = await fetch(`${this.endpoint}/runs/${runId}/input`, { headers: this.headers() });
     if (!res.ok) throw new Error(`Input not found: ${runId}`);
     const body = (await res.json()) as { input: Record<string, unknown> };
     return body.input;
@@ -98,27 +98,27 @@ export class RunSupervisorClient {
 
   /** Resolve an artifact:// URI to its absolute filesystem path on the supervisor host. */
   async getArtifactPath(runId: string, uri: string): Promise<string> {
-    const res = await fetch(`${this.baseUrl}/runs/${runId}/artifact-path?uri=${encodeURIComponent(uri)}`, { headers: this.headers() });
+    const res = await fetch(`${this.endpoint}/runs/${runId}/artifact-path?uri=${encodeURIComponent(uri)}`, { headers: this.headers() });
     if (!res.ok) throw new Error(`Failed to resolve artifact path: ${res.status}`);
     const body = (await res.json()) as { absPath: string };
     return body.absPath;
   }
 
   async getNodeStates(runId: string): Promise<NodeExecutionState[]> {
-    const res = await fetch(`${this.baseUrl}/runs/${runId}/nodes`, { headers: this.headers() });
+    const res = await fetch(`${this.endpoint}/runs/${runId}/nodes`, { headers: this.headers() });
     if (!res.ok) throw new Error(`Failed to get node states: ${res.status}`);
     return res.json() as Promise<NodeExecutionState[]>;
   }
 
   async getNode(runId: string, nodeKey: string): Promise<NodeExecutionState> {
-    const res = await fetch(`${this.baseUrl}/runs/${runId}/node?key=${encodeURIComponent(nodeKey)}`, { headers: this.headers() });
+    const res = await fetch(`${this.endpoint}/runs/${runId}/node?key=${encodeURIComponent(nodeKey)}`, { headers: this.headers() });
     if (!res.ok) throw new Error(`Node not found: ${nodeKey}`);
     return res.json() as Promise<NodeExecutionState>;
   }
 
   async retryNode(runId: string, nodeKey: string): Promise<NodeExecutionState> {
     const res = await fetch(
-      `${this.baseUrl}/runs/${runId}/retry?key=${encodeURIComponent(nodeKey)}`,
+      `${this.endpoint}/runs/${runId}/retry?key=${encodeURIComponent(nodeKey)}`,
       { method: "POST", headers: this.headers() }
     );
     if (!res.ok) {
@@ -136,7 +136,7 @@ export class RunSupervisorClient {
    */
   async signalNode(runId: string, nodeKey: string, payload: Record<string, unknown>): Promise<NodeExecutionState> {
     const res = await fetch(
-      `${this.baseUrl}/runs/${runId}/signal?key=${encodeURIComponent(nodeKey)}`,
+      `${this.endpoint}/runs/${runId}/signal?key=${encodeURIComponent(nodeKey)}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json", ...this.headers() },
@@ -169,13 +169,13 @@ export class RunSupervisorClient {
   }
 
   async getOutput(runId: string): Promise<{ status: string; output: Record<string, unknown> }> {
-    const res = await fetch(`${this.baseUrl}/runs/${runId}/output`, { headers: this.headers() });
+    const res = await fetch(`${this.endpoint}/runs/${runId}/output`, { headers: this.headers() });
     if (!res.ok) throw new Error(`Failed to get output: ${res.status}`);
     return res.json() as Promise<{ status: string; output: Record<string, unknown> }>;
   }
 
   async replay(runId: string): Promise<ReplayResult> {
-    const res = await fetch(`${this.baseUrl}/runs/${runId}/replay`, { method: "POST", headers: this.headers() });
+    const res = await fetch(`${this.endpoint}/runs/${runId}/replay`, { method: "POST", headers: this.headers() });
     if (!res.ok) throw new Error(`Failed to replay run: ${res.status}`);
     return res.json() as Promise<ReplayResult>;
   }
@@ -199,7 +199,7 @@ export class RunSupervisorClient {
       agentOverrides?: AgentOverrides;
     } = {}
   ): Promise<{ run?: RunState; plan: ForkPlan; dryRun?: boolean; agentOverrides?: AgentOverrides; submissionWarnings?: AgentOverrideWarning[] }> {
-    const res = await fetch(`${this.baseUrl}/runs/${sourceRunId}/fork`, {
+    const res = await fetch(`${this.endpoint}/runs/${sourceRunId}/fork`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...this.headers() },
       body: JSON.stringify({ spec, ...options })
@@ -222,7 +222,7 @@ export class RunSupervisorClient {
     action: "pause" | "resume" | "cancel" | "retry"
   ): Promise<RunState> {
     const res = await fetch(
-      `${this.baseUrl}/runs/${runId}/${action}`,
+      `${this.endpoint}/runs/${runId}/${action}`,
       { method: "POST", headers: this.headers() }
     );
     if (!res.ok) {

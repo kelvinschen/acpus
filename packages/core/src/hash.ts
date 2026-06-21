@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { IrBranch, IrNode } from "./types.js";
 import { extractReferences } from "./cel-ast.js";
-import { EXPRESSION_PATTERN } from "./expressions-shared.js";
+import { EXPRESSION_PATTERN, rawCelFieldName } from "./expressions-shared.js";
 
 /**
  * Compute a stable canonical hash of an IR Node, including its full subtree.
@@ -118,9 +118,10 @@ function expressionReferencesWorkflow(source: string): boolean {
 }
 
 function isRawCelField(kind: IrNode["kind"], key: string): boolean {
-  return (kind === "fanout" && key === "over")
-    || (kind === "loop" && key === "until")
-    || (kind === "guard" && key === "when");
+  const fieldName = rawCelFieldName(key);
+  return (kind === "fanout" && fieldName === "over")
+    || (kind === "loop" && fieldName === "until")
+    || (kind === "guard" && fieldName === "when");
 }
 
 /**

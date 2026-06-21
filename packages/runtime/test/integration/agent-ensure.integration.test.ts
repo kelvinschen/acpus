@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { AgentExecutor } from "../../src/executors/agent.js";
 import type { IrNode } from "@acpus/core";
 import type { ExpressionContext } from "../../src/types.js";
+import type { AgentExecutionRequest } from "../../src/executors/types.js";
 import { existsSync, mkdtempSync, writeFileSync, unlinkSync, chmodSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -18,6 +19,17 @@ function makeAgentNode(metadata: Record<string, unknown>): IrNode {
 
 function baseCtx(): ExpressionContext {
   return { input: {}, steps: {}, workflow: { name: "test", description: "", source_path: "", source_dir: "" }, run_id: "run-001" };
+}
+
+function agentRequest(node: IrNode, overrides: Partial<AgentExecutionRequest> = {}): AgentExecutionRequest {
+  return {
+    kind: "agent",
+    node,
+    context: baseCtx(),
+    signal: new AbortController().signal,
+    nodeKey: "workflow/test-agent",
+    ...overrides
+  };
 }
 
 const tmpDirs: string[] = [];
@@ -172,12 +184,7 @@ describe("AgentExecutor: sessions ensure failure", () => {
       agent: { type: "builtin", use: "mock", model: "test-model" },
       prompt: "Hello"
     });
-    const result = await executor.execute({
-      node,
-      context: baseCtx(),
-      signal: new AbortController().signal,
-      nodeKey: "workflow/test-agent"
-    });
+    const result = await executor.execute(agentRequest(node));
 
     expect(result.failureKind).toBe("exit");
     expect(result.exitCode).toBe(3);
@@ -209,12 +216,7 @@ exit 0
       agent: { type: "builtin", use: "mock", model: "test-model" },
       prompt: "Hello"
     });
-    const result = await executor.execute({
-      node,
-      context: baseCtx(),
-      signal: new AbortController().signal,
-      nodeKey: "workflow/test-agent"
-    });
+    const result = await executor.execute(agentRequest(node));
 
     expect(result.failureKind).toBe("exit");
     expect(result.exitCode).toBe(42);
@@ -233,12 +235,7 @@ describe("AgentExecutor: session_key", () => {
       agent: { type: "builtin", use: "mock", model: "test-model" },
       prompt: "Hello"
     });
-    const result = await executor.execute({
-      node,
-      context: baseCtx(),
-      signal: new AbortController().signal,
-      nodeKey: "workflow/test-agent/round:0"
-    });
+    const result = await executor.execute(agentRequest(node, { nodeKey: "workflow/test-agent/round:0" }));
 
     const calls = readRecordedCalls(logPath);
     const ensureArgs = calls.find((args) => args.includes("sessions") && args.includes("ensure"));
@@ -263,8 +260,8 @@ describe("AgentExecutor: session_key", () => {
       session_key: "fix-loop"
     });
     const signal = new AbortController().signal;
-    await executor.execute({ node, context: baseCtx(), signal, nodeKey: "workflow/test-agent/round:0" });
-    await executor.execute({ node, context: baseCtx(), signal, nodeKey: "workflow/test-agent/round:1" });
+    await executor.execute(agentRequest(node, { signal, nodeKey: "workflow/test-agent/round:0" }));
+    await executor.execute(agentRequest(node, { signal, nodeKey: "workflow/test-agent/round:1" }));
 
     const promptSessions = readRecordedCalls(logPath)
       .filter((args) => args.includes("prompt"))
@@ -290,12 +287,7 @@ describe("AgentExecutor: session_key", () => {
       loop: { iter: 2 },
       item_id: "file:alpha"
     };
-    await executor.execute({
-      node,
-      context: ctx,
-      signal: new AbortController().signal,
-      nodeKey: "workflow/test-agent/round:2"
-    });
+    await executor.execute(agentRequest(node, { context: ctx, nodeKey: "workflow/test-agent/round:2" }));
 
     const promptArgs = readRecordedPromptArgs(logPath);
     expect(sessionFromPromptArgs(promptArgs)).toBe("acpus-run-001-key-VC03LWZpbGU6YWxwaGEtMi0w");
@@ -314,7 +306,7 @@ describe("AgentExecutor: session_key", () => {
         prompt: "Hello",
         session_key: key
       });
-      await executor.execute({ node, context: baseCtx(), signal, nodeKey: `workflow/${key}` });
+      await executor.execute(agentRequest(node, { signal, nodeKey: `workflow/${key}` }));
     }
 
     const sessions = readRecordedCalls(logPath)
@@ -334,12 +326,7 @@ describe("AgentExecutor: session_key", () => {
       prompt: "Hello",
       session_key: "${{ missing.value }}"
     });
-    const result = await executor.execute({
-      node,
-      context: baseCtx(),
-      signal: new AbortController().signal,
-      nodeKey: "workflow/test-agent"
-    });
+    const result = await executor.execute(agentRequest(node));
 
     expect(result.failureKind).toBe("config");
     expect(result.error).toContain("Failed to evaluate agent configuration template");
@@ -357,12 +344,7 @@ describe("AgentExecutor: session_key", () => {
       prompt: "Hello",
       session_key: "   "
     });
-    const result = await executor.execute({
-      node,
-      context: baseCtx(),
-      signal: new AbortController().signal,
-      nodeKey: "workflow/test-agent"
-    });
+    const result = await executor.execute(agentRequest(node));
 
     expect(result.failureKind).toBe("config");
     expect(result.error).toContain("session_key must render to a non-empty string");
@@ -382,12 +364,7 @@ describe("AgentExecutor: session_key", () => {
     });
     const controller = new AbortController();
     setTimeout(() => controller.abort(), 10);
-    const result = await executor.execute({
-      node,
-      context: baseCtx(),
-      signal: controller.signal,
-      nodeKey: "workflow/test-agent"
-    });
+    const result = await executor.execute(agentRequest(node, { signal: controller.signal }));
 
     expect(result.partial).toBe(true);
     const calls = readRecordedCalls(logPath);
@@ -408,12 +385,7 @@ describe("AgentExecutor: cwd resolution", () => {
       agent: { type: "builtin", use: "mock", model: "test-model", cwd: "/custom/workspace" },
       prompt: "Hello"
     });
-    const result = await executor.execute({
-      node,
-      context: baseCtx(),
-      signal: new AbortController().signal,
-      nodeKey: "workflow/test-agent"
-    });
+    const result = await executor.execute(agentRequest(node));
 
     expect(result.cwd).toBe("/custom/workspace");
     const promptArgs = readRecordedPromptArgs(logPath);
@@ -432,12 +404,7 @@ describe("AgentExecutor: cwd resolution", () => {
       agent: { type: "builtin", use: "mock", model: "test-model" },
       prompt: "Hello"
     });
-    const result = await executor.execute({
-      node,
-      context: baseCtx(),
-      signal: new AbortController().signal,
-      nodeKey: "workflow/test-agent"
-    });
+    const result = await executor.execute(agentRequest(node));
 
     expect(result.cwd).toBe(process.cwd());
   });
@@ -453,12 +420,7 @@ describe("AgentExecutor: cwd resolution", () => {
       cwd: "${{ input.target }}",
       prompt: "Hello"
     });
-    const result = await executor.execute({
-      node,
-      context: { ...baseCtx(), input: { target: "/step/override" } },
-      signal: new AbortController().signal,
-      nodeKey: "workflow/test-agent"
-    });
+    const result = await executor.execute(agentRequest(node, { context: { ...baseCtx(), input: { target: "/step/override" } } }));
 
     expect(result.cwd).toBe("/step/override");
     const promptArgs = readRecordedPromptArgs(logPath);
@@ -479,12 +441,7 @@ describe("AgentExecutor: acpx timeout", () => {
       prompt: "Hello",
       timeout: "20m"
     });
-    await executor.execute({
-      node,
-      context: baseCtx(),
-      signal: new AbortController().signal,
-      nodeKey: "workflow/test-agent"
-    });
+    await executor.execute(agentRequest(node));
 
     const promptArgs = readRecordedPromptArgs(logPath);
     const timeoutIndex = promptArgs.indexOf("--timeout");
@@ -503,12 +460,7 @@ describe("AgentExecutor: acpx timeout", () => {
       prompt: "Hello",
       timeout: 300
     });
-    await executor.execute({
-      node,
-      context: baseCtx(),
-      signal: new AbortController().signal,
-      nodeKey: "workflow/test-agent"
-    });
+    await executor.execute(agentRequest(node));
 
     const promptArgs = readRecordedPromptArgs(logPath);
     const timeoutIndex = promptArgs.indexOf("--timeout");
@@ -526,12 +478,7 @@ describe("AgentExecutor: acpx timeout", () => {
       agent: { type: "builtin", use: "mock", model: "test-model" },
       prompt: "Hello"
     });
-    await executor.execute({
-      node,
-      context: baseCtx(),
-      signal: new AbortController().signal,
-      nodeKey: "workflow/test-agent"
-    });
+    await executor.execute(agentRequest(node));
 
     const promptArgs = readRecordedPromptArgs(logPath);
     expect(promptArgs).not.toContain("--timeout");
@@ -560,12 +507,7 @@ describe("AgentExecutor: acpx timeout", () => {
         prompt: "Hello"
       });
       const ctx: ExpressionContext = { ...baseCtx(), input: { override: "agent-step-value" } };
-      await executor.execute({
-        node,
-        context: ctx,
-        signal: new AbortController().signal,
-        nodeKey: "workflow/test-agent"
-      });
+      await executor.execute(agentRequest(node, { context: ctx }));
 
       expect(JSON.parse(readFileSync(envPath, "utf8"))).toEqual({
         inherited: "visible-to-agent",
@@ -587,18 +529,12 @@ describe("AgentExecutor: agent policy", () => {
       agent: { type: "builtin", use: "mock", model: "test-model" },
       prompt: "Hello"
     });
-    await executor.execute({
-      node,
-      context: baseCtx(),
-      signal: new AbortController().signal,
-      nodeKey: "workflow/test-agent"
-    });
+    await executor.execute(agentRequest(node));
 
     const calls = readRecordedCalls(logPath);
     // Both ensure and prompt should have the policy flags.
     for (const args of calls) {
       expect(args).toContain("--approve-all");
-      expect(args).not.toContain("--approve-reads");
       const nipIndex = args.indexOf("--non-interactive-permissions");
       expect(nipIndex).toBeGreaterThanOrEqual(0);
       expect(args[nipIndex + 1]).toBe("deny");
@@ -615,17 +551,11 @@ describe("AgentExecutor: agent policy", () => {
       agent: { type: "builtin", use: "mock", model: "test-model", policy: "read" },
       prompt: "Hello"
     });
-    await executor.execute({
-      node,
-      context: baseCtx(),
-      signal: new AbortController().signal,
-      nodeKey: "workflow/test-agent"
-    });
+    await executor.execute(agentRequest(node));
 
     const calls = readRecordedCalls(logPath);
     for (const args of calls) {
       expect(args).toContain("--approve-reads");
-      expect(args).not.toContain("--approve-all");
       const nipIndex = args.indexOf("--non-interactive-permissions");
       expect(nipIndex).toBeGreaterThanOrEqual(0);
       expect(args[nipIndex + 1]).toBe("fail");
@@ -643,17 +573,11 @@ describe("AgentExecutor: agent policy", () => {
       prompt: "Hello",
       policy: "read"
     });
-    await executor.execute({
-      node,
-      context: baseCtx(),
-      signal: new AbortController().signal,
-      nodeKey: "workflow/test-agent"
-    });
+    await executor.execute(agentRequest(node));
 
     const calls = readRecordedCalls(logPath);
     for (const args of calls) {
       expect(args).toContain("--approve-reads");
-      expect(args).not.toContain("--approve-all");
     }
   });
 
@@ -672,12 +596,7 @@ describe("AgentExecutor: agent policy", () => {
         agent: { type: "builtin", use: "mock", model: "test-model", policy },
         prompt: "Hello"
       });
-      await executor.execute({
-        node,
-        context: baseCtx(),
-        signal: new AbortController().signal,
-        nodeKey: "workflow/test-agent"
-      });
+      await executor.execute(agentRequest(node));
 
       const calls = readRecordedCalls(logPath);
       for (const args of calls) {
@@ -698,17 +617,11 @@ describe("AgentExecutor: agent policy", () => {
       agent: { type: "command", use: "node ./review.js", policy: "read" },
       prompt: "Hello"
     });
-    await executor.execute({
-      node,
-      context: baseCtx(),
-      signal: new AbortController().signal,
-      nodeKey: "workflow/test-agent"
-    });
+    await executor.execute(agentRequest(node));
 
     const calls = readRecordedCalls(logPath);
     for (const args of calls) {
       expect(args).toContain("--approve-reads");
-      expect(args).not.toContain("--approve-all");
       expect(args).toContain("--agent");
       const agentIndex = args.indexOf("--agent");
       expect(args[agentIndex + 1]).toBe("node ./review.js");

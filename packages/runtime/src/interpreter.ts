@@ -5,11 +5,18 @@ import { dirname, resolve } from "node:path";
 import type { AgentAttemptTelemetry, AgentAttemptTelemetryState, ExpressionContext, InterpreterOptions, NodeKeyDynamic, RunOptions } from "./types.js";
 import { RunStore } from "./store.js";
 import { ExpressionEvaluator } from "./evaluator.js";
-import { resolveNodeKey, staticNodePathFromKey, withNodeKeyPrefix } from "./keys.js";
+import {
+  appendDynamicFrame,
+  appendDynamicFrames,
+  nestedParallelBranchDynamic,
+  resolveNodeKey,
+  staticNodePathFromKey,
+  withNodeKeyPrefix
+} from "./keys.js";
 import { canTransition, transition, createInitialNodeState } from "./state-machine.js";
 import { ArtifactStore } from "./artifacts.js";
 import { AttemptArtifactRecorder } from "./attempt-artifacts.js";
-import type { ExecutorAdapter } from "./executors/types.js";
+import type { AgentExecutionRequest, ExecutorAdapter, ProgramExecutionRequest } from "./executors/types.js";
 import { renderAgentRequestPrompt, renderAgentSessionKey } from "./executors/agent.js";
 import type { NodeExecutionState, NodeState, ReplayResult, ReplayMismatch } from "./types.js";
 import { validateInput } from "./validate-input.js";
@@ -34,8 +41,8 @@ import { join } from "node:path";
 export class WorkflowInterpreter {
   private readonly store: RunStore;
   private readonly evaluator: ExpressionEvaluator;
-  private readonly agentExecutor: ExecutorAdapter;
-  private readonly programExecutor: ExecutorAdapter;
+  private readonly agentExecutor: ExecutorAdapter<AgentExecutionRequest>;
+  private readonly programExecutor: ExecutorAdapter<ProgramExecutionRequest>;
   private readonly artifactStore: ArtifactStore;
   private readonly attemptArtifacts: AttemptArtifactRecorder;
   private readonly runControl: RunControl;
@@ -64,8 +71,8 @@ export class WorkflowInterpreter {
 
   constructor(
     store: RunStore,
-    agentExecutor: ExecutorAdapter,
-    programExecutor: ExecutorAdapter,
+    agentExecutor: ExecutorAdapter<AgentExecutionRequest>,
+    programExecutor: ExecutorAdapter<ProgramExecutionRequest>,
     options?: InterpreterOptions
   ) {
     this.store = store;
@@ -142,7 +149,7 @@ export class WorkflowInterpreter {
           rootState.state = "failed";
           rootState.error = meta.error;
           rootState.completedAt = new Date().toISOString();
-          this.store.writeNodeState(runId, rootState);
+          this.store.writeTerminalNodeState(runId, rootState);
         }
       }
     } finally {
@@ -554,7 +561,7 @@ export class WorkflowInterpreter {
       state.completedAt = new Date().toISOString();
       // A Signal Node completes from `awaiting`, every other leaf from `running`.
       const completeFrom: NodeState = node.kind === "run.signal" ? "awaiting" : "running";
-      this.store.writeNodeState(runId, state);
+      this.store.writeTerminalNodeState(runId, state);
       await this.emitNodeLifecycle(runId, "onNodeComplete", node, nodeKey, state, dynamic, ctx, completeFrom);
 
       // Add output to step context
@@ -582,7 +589,11 @@ export class WorkflowInterpreter {
         if (error.output !== undefined) state.output = error.output;
         if (error.artifactRefs) state.artifactRefs = error.artifactRefs;
         this.syncAgentTelemetryFromDisk(runId, nodeKey, state);
-        this.store.writeNodeState(runId, state);
+        if (state.state === "cancelled") {
+          this.store.writeTerminalNodeState(runId, state);
+        } else {
+          this.store.writeNodeState(runId, state);
+        }
         await this.emitNodeLifecycle(
           runId,
           error.state === "paused" ? "onNodePaused" : "onNodeCancelled",
@@ -613,7 +624,7 @@ export class WorkflowInterpreter {
       }
       this.syncAgentTelemetryFromDisk(runId, nodeKey, state);
       state.completedAt = new Date().toISOString();
-      this.store.writeNodeState(runId, state);
+      this.store.writeTerminalNodeState(runId, state);
       await this.emitNodeLifecycle(runId, "onNodeError", node, nodeKey, state, dynamic, ctx, "running", error);
       throw error;
     } finally {
@@ -711,6 +722,7 @@ export class WorkflowInterpreter {
       this.publishRunningAgentAttempt(runId, nodeKey, allArtifactRefs, activity.snapshot("running"));
 
       const result = await this.agentExecutor.execute({
+        kind: "agent",
         node,
         context: ctx,
         signal,
@@ -826,6 +838,7 @@ export class WorkflowInterpreter {
     // executor merges it into the subprocess environment.
     const injected = await this.runInjector("beforeProgramExec", node, ctx, runId, nodeKey) as ProgramInjectorResult | undefined;
     const result = await this.programExecutor.execute({
+      kind: "program",
       node,
       context: ctx,
       signal,
@@ -1720,55 +1733,6 @@ export function generateRunId(now = new Date()): string {
     pad(now.getSeconds())
   ].join("");
   return `${timestamp}${randomBytes(10).toString("hex").toUpperCase()}`;
-}
-
-function nestedParallelBranchDynamic(dynamic: NodeKeyDynamic, branchId: string): NodeKeyDynamic {
-  const current = currentDynamicFrame(dynamic);
-  const nextBranchId = current.parallelBranchId === undefined ? branchId : `${current.parallelBranchId}.${branchId}`;
-  return replaceCurrentDynamicFrame(dynamic, { ...current, parallelBranchId: nextBranchId });
-}
-
-function appendDynamicFrame(dynamic: NodeKeyDynamic, frame: NodeKeyDynamic): NodeKeyDynamic {
-  const frames = [...dynamicFrames(dynamic), frame];
-  return withCollapsedDynamic(frames);
-}
-
-function appendDynamicFrames(dynamic: NodeKeyDynamic, child: NodeKeyDynamic): NodeKeyDynamic {
-  return withCollapsedDynamic([...dynamicFrames(dynamic), ...dynamicFrames(child)]);
-}
-
-function replaceCurrentDynamicFrame(dynamic: NodeKeyDynamic, frame: NodeKeyDynamic): NodeKeyDynamic {
-  const frames = dynamicFrames(dynamic);
-  if (frames.length === 0) return withCollapsedDynamic([frame]);
-  return withCollapsedDynamic([...frames.slice(0, -1), frame]);
-}
-
-function currentDynamicFrame(dynamic: NodeKeyDynamic): NodeKeyDynamic {
-  return dynamicFrames(dynamic).at(-1) ?? {};
-}
-
-function dynamicFrames(dynamic: NodeKeyDynamic): NodeKeyDynamic[] {
-  if (dynamic.frames && dynamic.frames.length > 0) return dynamic.frames;
-  const { frames: _frames, ...frame } = dynamic;
-  return isEmptyDynamicFrame(frame) ? [] : [frame];
-}
-
-function withCollapsedDynamic(frames: NodeKeyDynamic[]): NodeKeyDynamic {
-  const collapsed: NodeKeyDynamic = { frames };
-  for (const frame of frames) {
-    if (frame.loopRound !== undefined) collapsed.loopRound = frame.loopRound;
-    if (frame.fanoutItemId !== undefined) collapsed.fanoutItemId = frame.fanoutItemId;
-    if (frame.laneId !== undefined) collapsed.laneId = frame.laneId;
-    if (frame.parallelBranchId !== undefined) collapsed.parallelBranchId = frame.parallelBranchId;
-  }
-  return collapsed;
-}
-
-function isEmptyDynamicFrame(frame: NodeKeyDynamic): boolean {
-  return frame.loopRound === undefined &&
-    frame.fanoutItemId === undefined &&
-    frame.laneId === undefined &&
-    frame.parallelBranchId === undefined;
 }
 
 /** Find the immediate parent IR node of `childId`, or undefined for the root. */

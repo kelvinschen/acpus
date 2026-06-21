@@ -1,14 +1,10 @@
 import { extractReferences } from "./cel-ast.js";
 import { createAcpusCelEnvironment } from "./cel-environment.js";
-import { EXPRESSION_PATTERN, toCelParseSource } from "./expressions-shared.js";
+import { EXPRESSION_PATTERN, rawCelFieldName, toCelParseSource } from "./expressions-shared.js";
 import type { DiagnosticBag } from "./diagnostics.js";
 import type { IrExpression } from "./types.js";
 
-export { EXPRESSION_PATTERN, toCelParseSource } from "./expressions-shared.js";
-
-/** Fields that are evaluated as raw CEL (evaluateExpression), not templates.
- *  Using ${{ }} in these fields causes a runtime CEL parse error. */
-const RAW_CEL_FIELDS = new Set(["over", "until", "when"]);
+export { EXPRESSION_PATTERN, rawCelFieldName, toCelParseSource } from "./expressions-shared.js";
 
 export interface ExpressionCollector {
   expressions: IrExpression[];
@@ -20,8 +16,8 @@ export function createExpressionCollector(diagnostics: DiagnosticBag, knownStepI
   const celEnv = createAcpusCelEnvironment();
 
   function collectFromString(value: string, path: string): void {
-    const fieldName = path.split(".").pop() ?? "";
-    const isRawCel = RAW_CEL_FIELDS.has(fieldName);
+    const fieldName = rawCelFieldName(path);
+    const isRawCel = fieldName !== undefined;
     const hasTemplate = EXPRESSION_PATTERN.test(value);
     EXPRESSION_PATTERN.lastIndex = 0;
 

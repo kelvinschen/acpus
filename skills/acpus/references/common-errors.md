@@ -69,6 +69,7 @@ The dispatched reviews returned:
 ${{ json(steps.dispatch.output) }}
 ```
 Reach for a single scalar field (`${{ steps.x.output.count }}`) when you only need one value; use `json(...)` when you intentionally want the whole structure inline.
+For fanout-and-synthesize workflows, do not pass `steps.<fanout_id>.output` raw into the synthesizer prompt; pass `json(steps.<fanout_id>.output)` or write the review array to a file and pass the path.
 
 ---
 

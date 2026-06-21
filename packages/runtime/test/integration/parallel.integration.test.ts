@@ -5,16 +5,16 @@ import { encodeNodeKeyForDir } from "../../src/keys.js";
 import { WorkflowInterpreter } from "../../src/interpreter.js";
 import { RunStore } from "../../src/store.js";
 import { StubAgentExecutor } from "../support/stub-agent.js";
-import type { ExecutorAdapter, ExecutionRequest } from "../../src/executors/types.js";
+import type { AgentExecutionRequest, ExecutorAdapter, ProgramExecutionRequest } from "../../src/executors/types.js";
 import type { ExecutorResult } from "../../src/types.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-class AbortIgnoringProgramExecutor implements ExecutorAdapter {
+class AbortIgnoringProgramExecutor implements ExecutorAdapter<ProgramExecutionRequest> {
   constructor(private readonly resumeAfterAbort: () => void) {}
 
-  async execute({ signal }: ExecutionRequest): Promise<ExecutorResult> {
+  async execute({ signal }: ProgramExecutionRequest): Promise<ExecutorResult> {
     if (!signal.aborted) {
       await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
     }
@@ -23,12 +23,12 @@ class AbortIgnoringProgramExecutor implements ExecutorAdapter {
   }
 }
 
-class ConcurrentSessionKeyAgentExecutor implements ExecutorAdapter {
+class ConcurrentSessionKeyAgentExecutor implements ExecutorAdapter<AgentExecutionRequest> {
   inFlight = 0;
   maxInFlight = 0;
   sessionKeys: string[] = [];
 
-  async execute(request: ExecutionRequest): Promise<ExecutorResult> {
+  async execute(request: AgentExecutionRequest): Promise<ExecutorResult> {
     this.sessionKeys.push(request.sessionKey ?? "");
     this.inFlight++;
     this.maxInFlight = Math.max(this.maxInFlight, this.inFlight);
