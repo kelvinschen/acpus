@@ -12,6 +12,10 @@
   <img src="https://img.shields.io/node/v/acpus?label=node" alt="Node version">
 </p>
 
+<p align="center">
+  <a href="README.zh.md">中文文档</a>
+</p>
+
 Acpus is a local durable workflow runner that puts three execution primitives on equal footing — **Agent**, **Program**, and **Signal** — and lets you orchestrate them with composable control flow into structured, pauseable, replayable Runs.
 
 ## Design
@@ -49,10 +53,10 @@ Every Run is a frozen snapshot: inputs, workflow IR, and agent definitions are c
 ## Quick Start
 
 > [!TIP]
-> Copy this prompt into your agent to have it discover and run Acpus workflows for you:
+> Copy this prompt into your agent to have it install the Acpus skill and explain what Acpus can do:
 >
 > ```text
-> Read github.com/kelvinschen/acpus to understand Acpus. Follow the README to install the Acpus skill, then inspect the available Workflow Specs, choose or draft a workflow for my task, lint it, run it with Acpus, and report the Run status, artifacts, outputs, and useful next controls.
+> Explore github.com/kelvinschen/acpus to understand Acpus, then follow the README to install the Acpus CLI and skill. After installing them, explain what kinds of tasks Acpus can help me complete.
 > ```
 
 Install the CLI:
@@ -148,8 +152,6 @@ acpus runs fork <runId> review.workflow.yaml --dry-run
 acpus runs fork <runId> review.workflow.yaml --from workflow/review
 acpus runs replay <runId>
 ```
-
-`--node` and `--from` take a full Node Key, not a bare `id` from the Workflow Spec. Copy it from `acpus runs show <runId>`, `acpus runs show <runId> --json` (`nodes[].nodeKey`), or the TUI Node Details `Key` field.
 
 `acpus wf` is an alias for `acpus workflows`.
 
