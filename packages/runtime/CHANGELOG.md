@@ -1,5 +1,13 @@
 # @acpus/runtime
 
+## 0.6.4
+
+### Patch Changes
+
+- 7313e8e: Delegate CEL expression validation to cel-js and share Acpus CEL environment registration between compiler lint and runtime evaluation.
+- Updated dependencies [7313e8e]
+  - @acpus/core@0.5.4
+
 ## 0.6.3
 
 ### Patch Changes
