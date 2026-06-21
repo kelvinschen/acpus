@@ -1,5 +1,7 @@
 # Pipeline and `do` Design Proposal
 
+> 状态：已完成并归档（2026-06）。本文为历史 roadmap / design-decision 记录，不代表当前实现真相；当前行为以 `specs/`（尤其是 `specs/workflow-spec.md`）为准。
+
 This design has been adopted and implemented. Current behavior is described by
 `specs/` (especially `specs/workflow-spec.md`). This document is retained as a
 design-decision reference.
