@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseDurationMs } from "../src/duration.js";
+import { parseDurationMs } from "../../src/duration.js";
 
 describe("parseDurationMs", () => {
   it("returns 0 for undefined input", () => {

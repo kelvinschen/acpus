@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { workflowSourceResolver, createIncludeResolver } from "../src/index.js";
+import { workflowSourceResolver, createIncludeResolver } from "../../src/index.js";
 
 describe("workflow source resolver", () => {
   it("validates and returns realpath for readable source paths at any location", () => {

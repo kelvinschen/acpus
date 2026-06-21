@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compileSchemaDsl } from "../src/schema/dsl.js";
+import { compileSchemaDsl } from "../../src/schema/dsl.js";
 
 describe("compileSchemaDsl", () => {
   it("exposes recursive schema DSL compiler as an independent module", () => {

@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { compileWorkflow, hashIrNode } from "../src/index.js";
-import { applyAgentOverrides } from "../src/agent-overrides.js";
+import { compileWorkflow, hashIrNode } from "../../src/index.js";
+import { applyAgentOverrides } from "../../src/agent-overrides.js";
 import { parse as parseYaml } from "yaml";
-import type { IrNode } from "../src/types.js";
+import type { IrNode } from "../../src/types.js";
 
 function programNode(metadata: Record<string, unknown>): IrNode {
   return {
