@@ -12,9 +12,9 @@
   <img src="https://img.shields.io/node/v/acpus?label=node" alt="Node version">
 </p>
 
-Acpus 是一个本地工作流 (workflow) 执行器。它把三种执行原语放在同等位置：**Agent**、**Program** 和 **Signal**，并允许你用可组合的控制流把它们编排成复杂且高效的工作流。
+Acpus 是一个面向 AI 的本地持久化工作流框架。三种执行原语——**Agent**、**Program** 和 **Signal**——通过可组合的控制流编排为结构化、可暂停、可重放的 Run。让你喜爱的 Agent（任何能够使用 Skill 的 Agent：Codex、Pi、Claude、OpenCode 等）来编写 workflow，运行并跟踪它的状态，在有必要的时候响应 Signal，最终完成一项复杂的任务。尽管你可以通过 Signal 介入，但相信你的 Agent 能够做出合理的判断。
 
-如果你了解 Claude Code 的 [dynamic workflows](https://claude.com/blog/a-harness-for-every-task-dynamic-workflows-in-claude-code)，可以把 Acpus 看作它的声明式对应：用 YAML spec 代替生成脚本，编排任意 [支持 ACP 协议的 agent](https://github.com/openclaw/acpx/tree/main/agents)（Codex、Pi、OpenCode、Claude Code 等）而非单一运行时，并通过 Signal 节点支持 human-in-the-loop。
+如果你了解 Claude Code 的 [dynamic workflows](https://claude.com/blog/a-harness-for-every-task-dynamic-workflows-in-claude-code)，Acpus 就是同一个思路的持久化版本。Claude Code 生成的脚本会随对话结束而消失；Acpus 则把 spec 编译成冻结 IR，可跨崩溃、暂停和重启存活；能跑在任意 [支持 ACP 协议的 agent](https://github.com/openclaw/acpx/tree/main/agents)（Codex、Pi、OpenCode、Claude Code 等）上，而非绑定单一运行时；运行中的 Acpus Run 还能通过 Signal 从外部注入决策来控制——而 Dynamic workflows 脚本在运行途中无法接受用户输入。
 
 ## 设计
 
@@ -69,7 +69,7 @@ npm install -g acpus
 npx skills add kelvinschen/acpus --skill acpus
 ```
 
-创建一个 Workflow Spec：
+撰写 Workflow Spec——让你的 agent 来写：
 
 ```yaml
 # review.workflow.yaml

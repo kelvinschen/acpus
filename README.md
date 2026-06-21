@@ -16,9 +16,9 @@
   <a href="README.zh.md">中文文档</a>
 </p>
 
-Acpus is a local durable workflow runner that puts three execution primitives on equal footing — **Agent**, **Program**, and **Signal** — and lets you orchestrate them with composable control flow into structured, pauseable, replayable Runs.
+Acpus is a local durable harness for AI-first workflows. Three execution primitives — **Agent**, **Program**, and **Signal** — compose with control flow into structured, pauseable, replayable Runs. Let your favorite agent (any Skill-capable agent: Codex, Pi, Claude, OpenCode, …) write the workflow, run it, track its state, answer the Signal nodes when needed, and carry a complex task all the way to done. You can step in through a Signal whenever you want — but trust your agent to make the call.
 
-If you've seen Claude Code's [dynamic workflows](https://claude.com/blog/a-harness-for-every-task-dynamic-workflows-in-claude-code), think of Acpus as the declarative counterpart: YAML specs instead of generated scripts, any [ACP-compatible agent](https://github.com/openclaw/acpx/tree/main/agents) (Codex, Pi, OpenCode, Claude Code, …) instead of a single runtime, and human-in-the-loop via Signal nodes.
+If you've seen Claude Code's [dynamic workflows](https://claude.com/blog/a-harness-for-every-task-dynamic-workflows-in-claude-code), Acpus is the durable take on the same idea. Claude Code generates scripts that vanish when the turn ends; Acpus compiles the spec into frozen IR that survives crashes, pauses, and restarts; it runs against any [ACP-compatible agent](https://github.com/openclaw/acpx/tree/main/agents) (Codex, Pi, OpenCode, Claude Code, …) rather than a single runtime; and an in-flight Acpus Run can be steered from the outside by injecting a decision through a Signal — where the dynamic-workflow script offers no mid-run user input.
 
 ## Design
 
@@ -73,7 +73,7 @@ Install the Acpus skill for your agent:
 npx skills add kelvinschen/acpus --skill acpus
 ```
 
-Create a Workflow Spec:
+Author a Workflow Spec — let your agent do it:
 
 ```yaml
 # review.workflow.yaml

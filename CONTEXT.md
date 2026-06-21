@@ -1,6 +1,6 @@
 # Acpus
 
-Acpus is a workflow authoring and orchestration context for durable ACP agent work. The language below names workflow concepts, not implementation modules.
+Acpus is a durable harness for AI-first ACP workflows: a first-class harness designed for agents, aimed at letting an agent author, run, and track spec results. The language below names workflow concepts, not implementation modules.
 
 ## Language
 

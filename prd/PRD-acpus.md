@@ -1,4 +1,4 @@
-# PRD: acpus - Local Durable ACP Workflow Runner
+# PRD: acpus - Local Durable Harness for AI-First ACP Workflows
 
 > Status: Draft aligned with local-runtime target
 > Stack: TypeScript, Temporal as the local durable execution kernel, acpx, ACP
@@ -18,13 +18,13 @@ Historical design notes and earlier distributed-runtime assumptions live under `
 
 ## Problem Statement
 
-Developers want to run long, failure-prone coding workflows that combine ACP agents, local commands, branching, fan-out, loops, approvals, and resumable state. Today this work is usually driven by ad-hoc prompts or scripts. If the terminal closes, the machine sleeps, a process crashes, or an operator cancels mid-turn, the developer loses clear workflow state and must reconstruct what happened.
+Agents are already writing and driving long, failure-prone coding workflows — ACP agents, local commands, branching, fan-out, loops, approvals, resumable state — but today that work runs in the open: ad-hoc prompts and throwaway scripts. Close the terminal, let the machine sleep, crash a process, or cancel mid-turn, and the workflow state is gone; the agent has to reconstruct what happened from scratch. What's missing is a durable harness that lets these workflows survive crashes, pauses, and restarts.
 
 Acpus should solve this as a local CLI tool: one machine, local workspace, local agents, local programs, durable local control state, and explicit artifacts. It should not become a distributed job platform.
 
 ## Solution
 
-`acpus` is a CLI-first workflow runner. A user writes a YAML Workflow Spec; Acpus compiles it into a frozen IR snapshot; a local durable runtime interprets that IR and dispatches executable work to local Activities.
+`acpus` is a CLI-first durable harness built for agents to drive. A spec is written in YAML — typically by an agent through the acpus skill — and Acpus compiles it into a frozen IR snapshot; a local durable runtime interprets that IR and dispatches executable work to local Activities. A single steering agent can run the whole loop: author the spec, launch the Run, follow it, and answer the Signal nodes that pause it. Humans can step in at any of those points, but the design doesn't depend on one.
 
 Agent Steps run through `acpx`, which owns ACP session lifecycle, queue ownership, session loading, session resumption, cooperative cancellation, and agent registry resolution. Acpus owns workflow scheduling, node state, retry, timeout, pause, resume, cancel, output validation, and artifact references.
 
@@ -32,7 +32,7 @@ Program Steps run as local subprocesses on the same host. Agent Steps and Progra
 
 ## Goals
 
-1. Provide a YAML-first way to describe durable local agent workflows.
+1. Give agents a durable harness for local agent workflows, with YAML specs as the authoring format.
 2. Make every Workflow Run reproducible from frozen inputs and frozen IR.
 3. Let developers pause, resume, cancel, retry, inspect, and replay local Runs.
 4. Preserve ACP agent context across process crashes through acpx session loading/resumption.
