@@ -1,5 +1,21 @@
 # @acpus/tui
 
+## 0.5.8
+
+### Patch Changes
+
+- 7e9ec7d: refactor: extract keys module, consolidate test projects, add agent-overrides CLI layer
+  - Extract run keys (forkID, resume replay strategy) into standalone keys module
+  - Consolidate vitest projects under unified test runner config
+  - Add agent-overrides CLI surface with contract tests
+  - Simplify agent-ensure integration tests: remove redundant assertions
+  - Clean up compiler, expression-scope, interpreter, store modules
+  - Expand hash unit tests with edge cases
+  - Compress store fields from address/port to host/port tuple
+- Updated dependencies [7e9ec7d]
+  - @acpus/core@0.5.5
+  - @acpus/runtime@0.6.5
+
 ## 0.5.7
 
 ### Patch Changes
