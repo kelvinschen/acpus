@@ -590,7 +590,7 @@ agents:
     type: command
     use: "echo stub"
     env:
-      BROKEN: "\${{ missing_var }}"
+      BROKEN: "\${{ input.missing_config }}"
 workflow:
   steps:
     - id: work

@@ -17,25 +17,43 @@ agents:
 workflow:
   steps:
     - id: prepare
-      run: program
-      timeout: 30s
-      cmd:
-        - bash
-        - -c
-        - |
-          set -euo pipefail
-          OUT="${{ input.output_root }}/${{ run_id }}"
-          mkdir -p "$OUT"
-          node -e '
-          const out = process.argv[1];
-          console.log(JSON.stringify({output_dir: out, draft_path: out + "/draft.md"}));
-          ' "$OUT"
-      capture:
-        from: stdout
-        parse: json
-      output:
-        output_dir: string
-        draft_path: string
+      pipeline:
+        - id: make_output_dir
+          run: program
+          timeout: 30s
+          cmd:
+            - bash
+            - -c
+            - |
+              set -euo pipefail
+              OUT="${{ input.output_root }}/${{ run_id }}"
+              mkdir -p "$OUT"
+              node -e 'console.log(JSON.stringify({output_dir: process.argv[1]}))' "$OUT"
+          capture:
+            from: stdout
+            parse: json
+          output:
+            output_dir: string
+
+        - id: draft_manifest
+          run: program
+          timeout: 30s
+          cmd:
+            - node
+            - -e
+            - |
+              const out = process.env.OUT;
+              console.log(JSON.stringify({draft_path: out + "/draft.md"}));
+          env:
+            OUT: ${{ steps.make_output_dir.output.output_dir }}
+          capture:
+            from: stdout
+            parse: json
+          output:
+            draft_path: string
+      outputs:
+        output_dir: ${{ steps.make_output_dir.output.output_dir }}
+        draft_path: ${{ steps.draft_manifest.output.draft_path }}
 
     - id: improve
       loop:

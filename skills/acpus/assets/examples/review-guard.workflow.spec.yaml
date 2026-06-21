@@ -31,6 +31,40 @@ workflow:
         then: continue
         else: complete
 
+    - id: route
+      switch:
+        cases:
+          - when: steps.review.output.issue_count > 3
+            do:
+              - id: major_route
+                run: program
+                cmd:
+                  - node
+                  - -e
+                  - |
+                    console.log(JSON.stringify({route: "major", approval_required: true}));
+                capture:
+                  from: stdout
+                  parse: json
+                output:
+                  route: string
+                  approval_required: boolean
+        default:
+          do:
+            - id: minor_route
+              run: program
+              cmd:
+                - node
+                - -e
+                - |
+                  console.log(JSON.stringify({route: "minor", approval_required: false}));
+              capture:
+                from: stdout
+                parse: json
+              output:
+                route: string
+                approval_required: boolean
+
     - id: draft
       run: agent
       use: drafter
@@ -45,7 +79,29 @@ workflow:
         draft_path: string
         resolved_count: integer
 
+    - id: approval
+      run: signal
+      prompt: |
+        Approve the drafted fix for ${{ input.topic }}?
+        Route: ${{ steps.route.output.route }}
+        Draft path: ${{ steps.draft.output.draft_path }}
+      output:
+        approved: boolean
+      timeout: 30m
+      on_timeout: default
+      default:
+        approved: false
+
+    - id: followup_loop
+      subworkflow: ./draft-review-loop.workflow.spec.yaml
+      input:
+        topic: "Follow-up for ${{ input.topic }}"
+        output_root: ".acpus/output/example-review-guard/followup"
+
 outputs:
   issue_count: ${{ steps.review.output.issue_count }}
   draft_path: "${{ has(steps.draft) ? steps.draft.output.draft_path : '' }}"
   resolved_count: "${{ has(steps.draft) ? steps.draft.output.resolved_count : 0 }}"
+  route: "${{ has(steps.route) ? steps.route.output.route : '' }}"
+  approved: "${{ has(steps.approval) ? steps.approval.output.approved : false }}"
+  followup_draft_path: "${{ has(steps.followup_loop) ? steps.followup_loop.output.draft_path : '' }}"

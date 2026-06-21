@@ -48,6 +48,47 @@ workflow:
       output:
         topics: [{ topic: string, focus: string }]
 
+    - id: preflight
+      parallel:
+        - id: topic_count
+          do:
+            - id: count_topics
+              run: program
+              timeout: 30s
+              cmd:
+                - node
+                - -e
+                - |
+                  const topics = JSON.parse(process.env.TOPICS);
+                  console.log(JSON.stringify({count: topics.length}));
+              env:
+                TOPICS: ${{ json(steps.identify.output.topics) }}
+              capture:
+                from: stdout
+                parse: json
+              output:
+                count: integer
+        - id: critical_scan
+          do:
+            - id: scan_focus
+              run: program
+              timeout: 30s
+              cmd:
+                - node
+                - -e
+                - |
+                  const topics = JSON.parse(process.env.TOPICS);
+                  console.log(JSON.stringify({needs_deep_review: topics.some(t => /security|risk|critical/i.test(t.focus))}));
+              env:
+                TOPICS: ${{ json(steps.identify.output.topics) }}
+              capture:
+                from: stdout
+                parse: json
+              output:
+                needs_deep_review: boolean
+      join: all
+      max_concurrency: 2
+
     - id: review_topics
       fanout:
         over: steps.identify.output.topics
@@ -75,6 +116,7 @@ workflow:
       timeout: 15m
       prompt: |
         Synthesize findings from ${{ len(steps.review_topics.output) }} topic reviews.
+        Preflight counted ${{ steps.preflight.output.topic_count.count }} topics.
         Each review wrote its report to the output directory:
         ${{ steps.prepare.output.output_dir }}/
         Read every .md file in that directory and produce a cross-validated summary.
