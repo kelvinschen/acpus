@@ -119,13 +119,13 @@ events:
   # Agent nodes may include partial prompt/telemetry/artifact-related fields.
   onNodePaused:
     - command: >-
-        node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const p=JSON.parse(s||"{}");console.error(`[hook:onNodePaused] ${p.node_key} state=${p.to_state??p.node_kind}`);})'
+        node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const p=JSON.parse(s||"{}");console.error(`[hook:onNodePaused] ${p.node_key} kind=${p.node_kind}`);})'
       timeout: 30s
 
   # onNodeCancelled fires when a node is cancelled by operator control.
   onNodeCancelled:
     - command: >-
-        node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const p=JSON.parse(s||"{}");console.error(`[hook:onNodeCancelled] ${p.node_key} state=${p.to_state??p.node_kind}`);})'
+        node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const p=JSON.parse(s||"{}");console.error(`[hook:onNodeCancelled] ${p.node_key} kind=${p.node_kind}`);})'
       timeout: 30s
 
   # onStateChange fires only for real state transitions, never for telemetry-only

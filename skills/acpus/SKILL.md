@@ -46,7 +46,7 @@ Before acting, decide which path the user's request falls into. A single convers
 
    `artifact://runs/<runId>/nodes/<nodeKey>/<file>` → `.acpus/state/runs/<runId>/artifacts/<encoded-key>/<file>` (`/` → `:`).
 
-3. For long-running background Runs, poll with decreasing intervals (5 → 4 → 3 → 2 min, repeat). On each poll, check the `Activity:` line for Agent Steps to see transcript freshness, tool-call count, and recent tools. See `references/background-run-polling.md` for the full cadence table.
+3. For long-running background Runs, poll with decreasing intervals (5 → 4 → 3 → 2 → 2 min, repeat). On each poll, check the `Activity:` line for Agent Steps to see transcript freshness, tool-call count, and recent tools. See `references/background-run-polling.md` for the full cadence table.
 
 4. If the user wants to observe a background Run themselves, serve the read-only visualizer:
 
@@ -96,7 +96,7 @@ See `references/error-recovery.md` for the failure-symptom decision table and fo
 
 ## Run Existing
 
-1. If the user did not name worker agents, ask which acpx-supported agents to use. If they say "choose freely", inspect `acpx --help` and match by task shape (planning/review → `claude`, `pi`; implementation → `codex`, `cursor`, `trae`; custom ACP server → `type: command`). See `references/agent-selection.md`.
+1. If the user did not name worker agents, ask which acpx-supported agents to use. If they say "choose freely", inspect `acpx --help` and match by task shape (builtin support → `claude`, `pi`, `codex`, `cursor`, `trae`, `opencode`, `kiro`, etc; custom ACP server → `type: command`). See `references/agent-selection.md`.
 
 2. Prefer existing playbooks before inventing a new Workflow Spec:
 

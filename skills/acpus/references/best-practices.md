@@ -66,7 +66,7 @@ When execution fails, inspect the Run, node state, error, and artifacts first. P
 
 ## 12. Use Explicit Pipeline for Custom Output Projection
 
-`do` lists on fanout, loop, and switch compile as generated internal pipelines whose output is the final child's output. If you need a different public contract (e.g., to project selected fields from children), use an explicit `pipeline` node with `outputs`. The implicit pipeline from `do` lists is sufficient for most internal ordering.
+`do` lists on fanout, loop, and switch compile as generated internal pipelines whose output is the final child's primary output. `do` lists MUST NOT declare an `outputs` projection. If you need a custom public contract (e.g., to project selected fields from children), use an explicit `pipeline` Node with `outputs`.
 
 ## 13. Default Agent Policy To Full
 

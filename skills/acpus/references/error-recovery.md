@@ -12,7 +12,7 @@ Use `nodeKey` for Node-level operations. Do not pass a bare Workflow Spec `id`: 
 
 | Symptom | Recovery |
 |---|---|
-| `failureKind: "exit"`, exit_code ≠ 0, stderr-tail in error | Spec bug (typo, missing tool, bad PATH). Edit spec → `runs fork`. |
+| `failureKind: "exit"`, exit_code ≠ 0, stderr-tail in error | **Program Step**: spec bug (typo, missing tool, bad PATH). Edit spec → `runs fork`. **Agent Step**: timeout reports as `exit` (not `timeout`). Raise `timeout` → `runs fork`; `runs retry` if transient. |
 | `failureKind: "schema"` on a Program Step | Stdout didn't match `output:` schema. Fix script or relax schema → `runs fork`. |
 | `failureKind: "capture"` | `capture.parse: json` but stdout not JSON, or `capture.from: file` path missing. Fix → `runs fork`. |
 | `failureKind: "spawn"` | Command not found. Fix → `runs fork`. |

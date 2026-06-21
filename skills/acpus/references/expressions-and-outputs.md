@@ -136,7 +136,7 @@ json(steps.plan.output)       # deterministic JSON string, sorted object keys
 Notes:
 
 - `now()` is fixed for the workflow execution clock; do not use wall-clock APIs in scripts to make expression decisions.
-- `len()` is an Acpus alias for string/list length. `cel-js` also supports CEL's built-in `size(...)` and receiver `.size()` forms.
+- `len()` is the Acpus function for string/list length. Do not use `size()` — it is not in Acpus's allowed function set and will produce a compile-time `EXPR_UNKNOWN_ROOT` warning (use `len()` instead).
 - `json(value)` is the safe way to embed objects or arrays in prompts or env values. Without it, JavaScript stringification may produce `[object Object]`.
 - `matches(string, pattern)` returns `false` for invalid regular expressions.
 - `coalesce(...)` treats only `null` and `undefined` as absent; empty string, `0`, and `false` are real values.
@@ -235,7 +235,7 @@ steps.human_gate.output.target
 
 Use `steps.<id>.output` consistently for every Node's primary produced value. Program Steps also expose `steps.<id>.exit_code`.
 
-`do` lists on fanout, loop, and switch compile as generated internal pipelines; their output follows pipeline semantics (final child's output, or the `outputs` projection if declared). The root `workflow.steps` is itself an implicit pipeline, so sibling visibility at the top level is sequential.
+`do` lists on fanout, loop, and switch compile as generated internal pipelines whose output is the final child's primary output. `do` lists MUST NOT declare an `outputs` projection; use an explicit `pipeline` Node for custom public contracts. The root `workflow.steps` is itself an implicit pipeline, so sibling visibility at the top level is sequential.
 
 ## Output Schema Shape
 

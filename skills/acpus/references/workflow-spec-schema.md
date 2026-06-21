@@ -80,7 +80,7 @@ agents:
     type: builtin           # default, or "command"
     use: <string>           # required — acpx adapter name or launch command
     model: <string>         # optional
-    cwd: <any>              # optional, runtime-coerced
+    cwd: <string>             # optional, template-evaluated
     env: <object>           # optional, free-form string→string
     policy: read | full     # default: full
 ```
@@ -188,7 +188,7 @@ retry:                          # Agent + Program only
   run: signal
   prompt: <string>          # required — operator-facing description template
   output: <SchemaDSL>       # optional — validates injected payload
-  timeout: <duration>         # optional — string only, no raw ms; requires on_timeout when set
+  timeout: <duration | number>    # optional — string "5m"/"30s"/"1h" or number (ms); requires on_timeout when set
   on_timeout: fail | default # required when timeout is set
   default: <object>          # required when on_timeout: default
 ```
@@ -318,7 +318,7 @@ retry:                          # Agent + Program only
 - `continue` — complete guard, continue to next sibling in scope.
 - `fail` — fail the guard node with `message` (or `Guard '<id>' failed`).
 - `complete` — complete guard AND complete the current scope (skip later siblings). Inside a fanout lane or parallel branch, this affects only that lane/branch. At the root scope, it completes the entire Run.
-- `steps.<id>.output` contains `{ matched: boolean, action: string, message?: string }`.
+- `steps.<id>.output` contains `{ matched: boolean, action: string }`; `message` is included only when action is `fail` and `guard.message` is declared.
 - `when` as boolean literal is coerced to string at compile time.
 
 ### Subworkflow
@@ -391,7 +391,7 @@ coalesce(a, b, ..., fallback)            # first non-null, non-undefined
 json(value)                              # deterministic JSON string (sorted keys)
 ```
 
-`cel-js` built-ins also available: `string()`, `int()`, `double()`, `bool()`, `size()`, `.startsWith()`, `.endsWith()`, `.contains()`, `.lowerAscii()`, `.upperAscii()`, `.trim()`, `.matches()`, `.join()`, list macros (`exists`, `all`, `exists_one`, `filter`, `map`, `has`).
+`cel-js` built-ins also available: `string()`, `int()`, `double()`, `bool()`, `.startsWith()`, `.endsWith()`, `.contains()`, `.lowerAscii()`, `.upperAscii()`, `.trim()`, `.matches()`, `.join()`, list macros (`exists`, `all`, `exists_one`, `filter`, `map`, `has`). Note: `size()` is NOT in Acpus's allowed function set — use `len()` instead.
 
 ### Step Visibility
 
@@ -404,13 +404,13 @@ Steps can reference only **previously executed** sibling steps (sequential visib
 | `run.agent` | `{ <schema fields> }` | Validated against declared schema |
 | `run.program` | `{ <schema fields> }` | Validated against declared schema |
 | `run.signal` | `{ <injected fields> }` | The injected payload object |
-| `parallel` | `{ <branch_id>: { output, ... } }` | Map keyed by branch id |
-| `fanout` | `[{ output, ... }, ...]` | Array of successful lane outputs |
-| `switch` | `{ output, ... }` (selected branch's final child) | Selected projection |
-| `loop` | `{ output, ... }` (last iteration's final child) | Last projection |
-| `guard` | `{ matched, action, message? }` | Decision envelope |
+| `parallel` | `{ <branch_id>: <primary_output> }` | Map of branch primary outputs keyed by branch id |
+| `fanout` | `[<primary_output>, ...]` | Array of successful lane primary outputs |
+| `switch` | `<primary_output>` | Selected branch's primary output |
+| `loop` | `<primary_output>` | Last iteration body's primary output |
+| `guard` | `{ matched, action }` (+ `message` when `fail` with declared `guard.message`) | Decision record |
 | `subworkflow` | `{ <output keys> }` | Child spec's evaluated outputs |
-| `pipeline` | `{ output, ... }` (final child or `outputs` projection) | Pipeline or implicit root pipeline |
+| `pipeline` | `<primary_output>` (final child) or `{ <keys> }` (`outputs` projection) | Normal pipeline exposes final child's primary output; explicit `outputs` exposes the evaluated output map |
 
 ### Static Validation
 
@@ -529,7 +529,7 @@ Compiler diagnostic codes emitted during validation:
 - `version` must be `1`.
 - Every step must match exactly one kind.
 - `pipeline` must be non-empty, and `pipeline.outputs` must reference children of that pipeline.
-- `do` lists on fanout, loop, and switch must be non-empty.
+- `do` lists on fanout, loop, switch, and parallel branches must be non-empty.
 - `fanout.over` array elements must be primitives.
 - `fanout` with `join: quorum` requires `quorum`.
 - `program` with `output` requires `capture.parse: json`.

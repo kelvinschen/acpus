@@ -75,7 +75,6 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - An Agent Step with `output` present MUST produce a JSON object that matches the declared output schema, exposed at `steps.<id>.output`.
 - An Agent Step result MUST be exposed as an envelope `{ output }` at `steps.<id>`, so the produced object is read through `steps.<id>.output`.
 - Agent response output parse failures and schema failures MUST be handled as continuation retries when retry attempts remain.
-- An Agent Step MAY declare `retry` as an object with a non-negative integer `max` and an optional duration `backoff`.
 - `retry.max` MUST count extra retry attempts after the initial execution.
 - An Agent Step with `output` present and no explicit `retry.max` MUST default to `retry.max: 2` for Agent response output parse and schema failures.
 - `retry.max: 0` MUST disable automatic Agent response output retry.
@@ -84,8 +83,9 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 
 ### Step Common Fields
 
-- A step MAY declare `timeout` as a duration string or number (in milliseconds).
-- A step MAY declare `on_error` as one of `fail`, `retry`, or `skip`.
+- A step MAY declare `timeout` as a duration string or number (in milliseconds). Signal Nodes use `timeout` only with a paired `on_timeout`.
+- Agent and Program Steps MAY declare `on_error` as one of `fail`, `retry`, or `skip`; the default is `fail`. Signal Nodes do not support `on_error`.
+- Agent and Program Steps MAY declare `retry` as an object with a non-negative integer `max` (extra attempts after the initial one) and an optional `backoff` duration.
 
 ### Program Steps
 
@@ -145,6 +145,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - The root pipeline Node MUST persist an output envelope whose `output` field is a map keyed by direct child step id, where each value is that child step's full step value.
 - A `parallel` Node MUST produce `steps.<id>.output` as a map keyed by branch id.
 - A `parallel` Node MAY declare `join` as `all` or `race`.
+- A `parallel` Node MAY declare `max_concurrency` as an integer greater than or equal to 1 to cap concurrent branch execution.
 - A `parallel` Node with `join: race` MUST produce `steps.<id>.output` as a single-key map containing only the first branch to complete; losing branches are not cancelled.
 - A `parallel` Node with `join: all` MUST fail fast on the first branch failure; when it does, its still-running or pending sibling branches in the same invocation MUST be cancelled (transition to `cancelled`) rather than left in `running`.
 - A `fanout` Node MUST declare `over` as an array or a CEL expression string.

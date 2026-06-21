@@ -32,7 +32,7 @@ Frequent authoring mistakes and runtime errors. Each entry shows the symptom, ro
    ```
 
 3. **Loop output shape mismatch.**
-   A loop node's `steps.<id>.output` is the last child step's output (not a struct with `iter` or `last` fields). `loop.iter` and `loop.last` are scope variables available only inside the loop body.
+   A loop node's `steps.<id>.output` is the last iteration body's primary output (not a struct with `iter` or `last` fields). `loop.iter` and `loop.last` are scope variables available only inside the loop body.
 
    **Fix:** Never reference `steps.<loop_id>.output.iter` or `steps.<loop_id>.output.last` outside the loop. If you need iteration count in `outputs:`, have the last loop body step include it in its output schema.
 
