@@ -14,6 +14,8 @@
 
 Acpus 是一个本地工作流 (workflow) 执行器。它把三种执行原语放在同等位置：**Agent**、**Program** 和 **Signal**，并允许你用可组合的控制流把它们编排成复杂且高效的工作流。
 
+如果你了解 Claude Code 的 [dynamic workflows](https://claude.com/blog/a-harness-for-every-task-dynamic-workflows-in-claude-code)，可以把 Acpus 看作它的声明式对应：用 YAML spec 代替生成脚本，编排任意 [支持 ACP 协议的 agent](https://github.com/openclaw/acpx/tree/main/agents)（Codex、Pi、OpenCode、Claude Code 等）而非单一运行时，并通过 Signal 节点支持 human-in-the-loop。
+
 ## 设计
 
 ### 三种执行原语
@@ -179,6 +181,10 @@ Hooks 是位于 Workflow Specs 之外的 **runtime platform layer**，不会被�
 你的 agent 可以通过 Acpus skill 为 Workflow Specs 和 Runs 生成交互式可视化页面。
 
 → [在 GitHub Pages 浏览生成的 workflow spec visualizations](https://kelvinschen.github.io/acpus/workflows/)
+
+## 延伸阅读
+
+- [Dynamic Workflows in Claude Code](https://claude.com/blog/a-harness-for-every-task-dynamic-workflows-in-claude-code) — Acpus 的设计灵感来源于这篇关于多 agent 编排模式（fan-out、adversarial verify、tournament、loop-until-done）的文章。
 
 ## 文档
 

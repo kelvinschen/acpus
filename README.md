@@ -18,6 +18,8 @@
 
 Acpus is a local durable workflow runner that puts three execution primitives on equal footing — **Agent**, **Program**, and **Signal** — and lets you orchestrate them with composable control flow into structured, pauseable, replayable Runs.
 
+If you've seen Claude Code's [dynamic workflows](https://claude.com/blog/a-harness-for-every-task-dynamic-workflows-in-claude-code), think of Acpus as the declarative counterpart: YAML specs instead of generated scripts, any [ACP-compatible agent](https://github.com/openclaw/acpx/tree/main/agents) (Codex, Pi, OpenCode, Claude Code, …) instead of a single runtime, and human-in-the-loop via Signal nodes.
+
 ## Design
 
 ### Three Execution Primitives
@@ -183,6 +185,10 @@ The project catalog includes runnable playbooks for common agent workflow patter
 Your agent can generate interactive visualization pages for Workflow Specs and Runs using the Acpus skill. (It it different from the TUI visualizer)
 
 → [Browse generated workflow spec visualizations on GitHub Pages](https://kelvinschen.github.io/acpus/workflows/)
+
+## Further Reading
+
+- [Dynamic Workflows in Claude Code](https://claude.com/blog/a-harness-for-every-task-dynamic-workflows-in-claude-code) — Acpus was inspired by this post on multi-agent orchestration patterns (fan-out, adversarial verify, tournament, loop-until-done). 
 
 ## Documentation
 
