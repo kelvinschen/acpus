@@ -391,7 +391,7 @@ coalesce(a, b, ..., fallback)            # first non-null, non-undefined
 json(value)                              # deterministic JSON string (sorted keys)
 ```
 
-`cel-js` built-ins also available: `string()`, `int()`, `double()`, `bool()`, `.startsWith()`, `.endsWith()`, `.contains()`, `.lowerAscii()`, `.upperAscii()`, `.trim()`, `.matches()`, `.join()`, list macros (`exists`, `all`, `exists_one`, `filter`, `map`, `has`). Note: `size()` is NOT in Acpus's allowed function set — use `len()` instead.
+`cel-js` built-ins are also available according to `@marcbachmann/cel-js` semantics: `string()`, `int()`, `double()`, `bool()`, `size()`, `.startsWith()`, `.endsWith()`, `.contains()`, `.lowerAscii()`, `.upperAscii()`, `.trim()`, `.matches()`, `.join()`, and list macros (`exists`, `all`, `exists_one`, `filter`, `map`, `has`).
 
 ### Step Visibility
 
@@ -507,8 +507,9 @@ Compiler diagnostic codes emitted during validation:
 | `OUTPUT_REQUIRES_JSON` | `output` requires `capture.parse: json` |
 | `INPUT_SHAPE` | Invalid input schema |
 | `EXPR_PARSE` | CEL parse error |
+| `EXPR_CEL` | CEL type/function/macro validation error |
 | `EXPR_EMPTY` | Empty expression |
-| `EXPR_UNKNOWN_ROOT` | Unknown context root or function |
+| `EXPR_UNKNOWN_ROOT` | Unknown context root |
 | `EXPR_UNKNOWN_STEP` | Unknown or invisible step reference |
 | `EXPR_UNKNOWN_FIELD` | Unknown field on schema |
 | `EXPR_ROOT_OUT_OF_SCOPE` | Scoped local used outside its body |

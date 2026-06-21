@@ -176,8 +176,8 @@ workflow:
     expect(store.listNodeStates(meta.runId).find((n) => n.nodeId === "assert_output")?.state).toBe("completed");
   });
 
-  it("evaluation error fails guard node", async () => {
-    const ir = compileYaml(`
+  it("rejects unknown guard roots at compile time", async () => {
+    expect(() => compileYaml(`
 version: 1
 name: guard-evaluation-error-test
 workflow:
@@ -192,22 +192,7 @@ workflow:
       cmd:
         - echo
         - after
-`);
-
-    const { interpreter, store, cleanup } = createTestInterpreter({
-      programResponses: { after: { stdout: "after" } }
-    });
-    cleanups.push(cleanup);
-
-    const meta = await interpreter.start(ir, { input: {} });
-    expect(meta.status).toBe("failed");
-
-    const nodes = store.listNodeStates(meta.runId);
-    const guard = nodes.find((n) => n.nodeId === "check");
-    expect(guard?.state).toBe("failed");
-    expect(guard?.error).toEqual(expect.any(String));
-    expect(guard?.error).not.toBe("");
-    expect(nodes.find((n) => n.nodeId === "after")).toBeUndefined();
+`)).toThrow(/Unknown variable: nonexistent_var/);
   });
 
   it("completes only the current fanout lane", async () => {

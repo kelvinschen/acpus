@@ -238,11 +238,13 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - Subworkflow execution MUST expose the child Workflow Spec's own `workflow.*` context while evaluating child steps and child top-level `outputs`.
 - `now()` MUST be bound to the deterministic workflow clock.
 - `json(value)` MUST serialize its argument to a JSON string with deterministic (sorted) object key order, so an object or array can be embedded into a template string instead of stringifying to `[object Object]`.
+- The compiler and runtime MUST use the same Acpus CEL environment registration for context roots and custom functions.
 
 #### Static Validation
 
-The compiler MUST statically validate expressions against the compiled IR so that classes of runtime failure are surfaced at lint / dry-run time. Validation MUST be fail-quiet: any reference whose shape cannot be determined statically MUST be accepted silently (prefer false negatives over false positives), and static validation MUST NOT throw.
+The compiler MUST statically validate expressions against the compiled IR so that classes of runtime failure are surfaced at lint / dry-run time. Validation MUST be fail-quiet for workflow shape that cannot be determined statically (prefer false negatives over false positives), and static validation MUST NOT throw.
 
+- CEL syntax, built-ins, macros, function overloads, unknown roots, and unknown functions MUST be validated through `cel-js` with Acpus context roots and custom functions registered. Acpus MUST NOT maintain a separate whitelist for standard `cel-js` built-ins or macros.
 - Expression references MUST be extracted from the parsed CEL AST, not by text matching.
 - A `steps.<id>.output.<path>` reference whose `<id>` declares a closed output schema (an Agent, Program, or Signal Node) MUST be rejected when `<path>` names a field absent from that schema; the diagnostic MUST list the available fields. Path validation MUST stop, accepting the reference, at the first dynamic index, open object, untyped array element, or composite (pipeline/loop/fanout/parallel/switch/guard) output projection.
 - An `input.<path>` reference MUST be validated against the compiled input schema under the same closed-schema rule.

@@ -42,7 +42,7 @@ export function compileWorkflow(source: string, options: CompileOptions = {}): C
   const compileOptions: CompileOptions = { ...options, sourcePath };
   const expanded = expandIncludes(parsed, compileOptions, diagnostics, new Set());
   validateWithSchema(expanded, diagnostics);
-  const { ids: stepIds, kinds: stepKinds } = collectStepIds(expanded.workflow.steps, diagnostics);
+  const stepIds = collectStepIds(expanded.workflow.steps, diagnostics);
   const context: CompileContext = {
     diagnostics,
     stepIds,
@@ -63,7 +63,7 @@ export function compileWorkflow(source: string, options: CompileOptions = {}): C
     }
   };
 
-  const expressionCollector = createExpressionCollector(diagnostics, stepIds, stepKinds);
+  const expressionCollector = createExpressionCollector(diagnostics, stepIds);
   expressionCollector.visit(expanded.input ?? {}, "$.input");
   expressionCollector.visit(expanded.agents ?? {}, "$.agents");
   expressionCollector.visit(expanded.workflow.steps, "$.workflow.steps");
@@ -610,23 +610,8 @@ function validateJsonSchema(schema: unknown, path: string, context: CompileConte
   }
 }
 
-function inferStepKind(step: Record<string, unknown>): string | undefined {
-  if (Array.isArray(step.pipeline)) return "pipeline";
-  if (step.run === "agent") return "run.agent";
-  if (step.run === "program") return "run.program";
-  if (Array.isArray(step.parallel)) return "parallel";
-  if (isRecord(step.fanout)) return "fanout";
-  if (isRecord(step.switch)) return "switch";
-  if (isRecord(step.loop)) return "loop";
-  if (isRecord(step.guard)) return "guard";
-  if (step.run === "signal") return "run.signal";
-  if (typeof step.subworkflow === "string") return "subworkflow";
-  return undefined;
-}
-
-function collectStepIds(steps: WorkflowStep[], diagnostics: DiagnosticBag): { ids: Set<string>; kinds: Map<string, string> } {
+function collectStepIds(steps: WorkflowStep[], diagnostics: DiagnosticBag): Set<string> {
   const ids = new Set<string>();
-  const kinds = new Map<string, string>();
   const visit = (items: WorkflowStep[], path: string): void => {
     items.forEach((step, index) => {
       const stepPath = `${path}[${index}]`;
@@ -635,10 +620,6 @@ function collectStepIds(steps: WorkflowStep[], diagnostics: DiagnosticBag): { id
           diagnostics.error("STEP_ID_DUPLICATE", `Duplicate step id '${step.id}'.`, `${stepPath}.id`);
         }
         ids.add(step.id);
-        const kind = inferStepKind(step as Record<string, unknown>);
-        if (kind) {
-          kinds.set(step.id, kind);
-        }
       }
       if (Array.isArray(step.pipeline)) {
         visit(asPlainSteps(step.pipeline), `${stepPath}.pipeline`);
@@ -671,7 +652,7 @@ function collectStepIds(steps: WorkflowStep[], diagnostics: DiagnosticBag): { id
     });
   };
   visit(steps, "$.workflow.steps");
-  return { ids, kinds };
+  return ids;
 }
 
 function keyTemplate(nodePath: string[]): NodeKeyTemplate {

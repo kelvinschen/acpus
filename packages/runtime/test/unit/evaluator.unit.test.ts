@@ -142,6 +142,14 @@ describe("ExpressionEvaluator", () => {
     });
   });
 
+  describe("cel-js built-ins", () => {
+    it("evaluates standard list macros through the shared CEL environment", () => {
+      const ctx = baseCtx({ input: { scores: [1n, 2n, 3n] } });
+      expect(evaluator.evaluateExpression("input.scores.exists(score, score > 2)", ctx)).toBe(true);
+      expect(evaluator.evaluateExpression("input.scores.map(score, score * 2)", ctx)).toEqual([2n, 4n, 6n]);
+    });
+  });
+
   describe("evaluateOverExpression", () => {
     it("evaluates fanout over expression returning array", () => {
       const ctx = baseCtx({ input: { files: ["a.txt", "b.txt"] } });

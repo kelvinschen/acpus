@@ -17,7 +17,7 @@ export interface ExpressionReference {
 
 export interface ExtractResult {
   references: ExpressionReference[];
-  /** Names of standalone function calls (e.g. `len`, `json`); excludes methods. */
+  /** Names of standalone function calls. Used only for Acpus shape checks. */
   functions: string[];
   parseError?: string;
 }
@@ -33,9 +33,8 @@ function isAstNode(value: unknown): value is AstNode {
 }
 
 /**
- * Parse a CEL source string and extract every identifier-rooted access chain,
- * standalone function-call names, and any reference nested inside index
- * expressions, function arguments, operators, lists, and maps.
+ * Parse a CEL source string and extract every identifier-rooted access chain and
+ * standalone function-call name needed by Acpus workflow validation.
  *
  * Fail-quiet by contract: on parse failure we return the error text (so the
  * caller can emit EXPR_PARSE) and empty results rather than throwing.
@@ -50,7 +49,7 @@ export function extractReferences(source: string): ExtractResult {
 
   const references: ExpressionReference[] = [];
   const functions: string[] = [];
-  collect(ast, references, functions);
+  collect(ast, references, functions, new Set());
   return { references, functions };
 }
 
@@ -69,17 +68,18 @@ export function isStaticReference(ref: ExpressionReference): boolean {
 }
 
 /** Resolve a node into a chain if it is rooted at an identifier; else null. */
-function asChain(node: AstNode): { root: string; segments: ReferenceSegment[]; inner: AstNode[] } | null {
+function asChain(node: AstNode, scope: Set<string>): { root: string; segments: ReferenceSegment[]; inner: AstNode[] } | null {
   if (node.op === "id") {
     const name = node.args;
     if (typeof name !== "string") return null;
+    if (scope.has(name)) return null;
     return { root: normalizeRoot(name), segments: [], inner: [] };
   }
 
   if (node.op === ".") {
     const [base, field] = node.args as [unknown, unknown];
     if (!isAstNode(base) || typeof field !== "string") return null;
-    const baseChain = asChain(base);
+    const baseChain = asChain(base, scope);
     if (!baseChain) return null;
     return {
       root: baseChain.root,
@@ -91,7 +91,7 @@ function asChain(node: AstNode): { root: string; segments: ReferenceSegment[]; i
   if (node.op === "[]") {
     const [base, indexNode] = node.args as [unknown, unknown];
     if (!isAstNode(base)) return null;
-    const baseChain = asChain(base);
+    const baseChain = asChain(base, scope);
     if (!baseChain) return null;
     return {
       root: baseChain.root,
@@ -103,7 +103,7 @@ function asChain(node: AstNode): { root: string; segments: ReferenceSegment[]; i
   return null;
 }
 
-function collect(node: AstNode, refs: ExpressionReference[], functions: string[]): void {
+function collect(node: AstNode, refs: ExpressionReference[], functions: string[], scope: Set<string>): void {
   // Standalone function call: args = [name, [argNodes]]. Method (receiver)
   // calls (`rcall`) are not name-validated, matching prior regex behavior, but
   // their operands are still walked below.
@@ -111,29 +111,52 @@ function collect(node: AstNode, refs: ExpressionReference[], functions: string[]
     const [name, callArgs] = node.args as [unknown, unknown];
     if (typeof name === "string") functions.push(name);
     if (Array.isArray(callArgs)) {
-      for (const arg of callArgs) if (isAstNode(arg)) collect(arg, refs, functions);
+      for (const arg of callArgs) if (isAstNode(arg)) collect(arg, refs, functions, scope);
     }
     return;
   }
 
-  const chain = asChain(node);
-  if (chain) {
-    refs.push({ root: chain.root, segments: chain.segments });
-    for (const innerNode of chain.inner) collect(innerNode, refs, functions);
+  // Receiver calls may be CEL macros. Their local binding semantics are owned by
+  // cel-js type checking; reference extraction keeps only workflow dependencies.
+  if (node.op === "rcall") {
+    const [name, receiver, params] = node.args as [unknown, unknown, unknown];
+    if (isAstNode(receiver)) collect(receiver, refs, functions, scope);
+    if (Array.isArray(params)) {
+      const scoped = macroScope(name, params, scope);
+      if (scoped) walkChildren(params.slice(1), refs, functions, scoped);
+      else walkChildren(params, refs, functions, scope);
+    }
     return;
   }
 
-  walkChildren(node.args, refs, functions);
+  const chain = asChain(node, scope);
+  if (chain) {
+    refs.push({ root: chain.root, segments: chain.segments });
+    for (const innerNode of chain.inner) collect(innerNode, refs, functions, scope);
+    return;
+  }
+
+  walkChildren(node.args, refs, functions, scope);
+}
+
+const BINDING_MACROS = new Set(["all", "exists", "exists_one", "filter", "map", "bind"]);
+
+function macroScope(name: unknown, params: unknown[], scope: Set<string>): Set<string> | null {
+  if (typeof name !== "string" || !BINDING_MACROS.has(name)) return null;
+  const first = params[0];
+  if (!isAstNode(first) || first.op !== "id") return null;
+  const localName = first.args;
+  return typeof localName === "string" ? new Set([...scope, localName]) : null;
 }
 
 /** Recurse into any nested AST nodes held in an args payload. */
-function walkChildren(args: unknown, refs: ExpressionReference[], functions: string[]): void {
+function walkChildren(args: unknown, refs: ExpressionReference[], functions: string[], scope: Set<string>): void {
   if (isAstNode(args)) {
-    collect(args, refs, functions);
+    collect(args, refs, functions, scope);
     return;
   }
   if (Array.isArray(args)) {
-    for (const child of args) walkChildren(child, refs, functions);
+    for (const child of args) walkChildren(child, refs, functions, scope);
   }
 }
 

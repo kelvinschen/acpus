@@ -42,22 +42,15 @@ Frequent authoring mistakes and runtime errors. Each entry shows the symptom, ro
 
 **Root cause:** CEL does not support property-style `.length` on arrays.
 
-**Fix:** Use `len()` — the Acpus-registered custom CEL function:
+**Fix:** Use a CEL length function such as `size()` or Acpus helper `len()`:
 ```yaml
 # Wrong
 ${{ steps.review_topics.output.length }}
 
 # Correct
+${{ size(steps.review_topics.output) }}
 ${{ len(steps.review_topics.output) }}
 ```
-
-### `EXPR_UNKNOWN_ROOT` warning on `size()`
-
-**Symptom:** Compile-time warning that `size` is not part of the M1 DSL context.
-
-**Root cause:** `size()` works at runtime (provided by the CEL library) but is not in Acpus's allowed function set. The runtime-registered function is `len()`.
-
-**Fix:** Replace `size()` with `len()`.
 
 ### Object/array interpolated as `[object Object]`
 

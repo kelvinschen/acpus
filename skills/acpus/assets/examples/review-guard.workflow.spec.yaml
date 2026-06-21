@@ -29,8 +29,7 @@ workflow:
       guard:
         when: steps.review.output.issue_count > 0
         then: continue
-        else: fail
-        message: "No issues found for ${{ input.topic }}"
+        else: complete
 
     - id: draft
       run: agent
@@ -48,5 +47,5 @@ workflow:
 
 outputs:
   issue_count: ${{ steps.review.output.issue_count }}
-  draft_path: ${{ steps.draft.output.draft_path }}
-  resolved_count: ${{ steps.draft.output.resolved_count }}
+  draft_path: "${{ has(steps.draft) ? steps.draft.output.draft_path : '' }}"
+  resolved_count: "${{ has(steps.draft) ? steps.draft.output.resolved_count : 0 }}"

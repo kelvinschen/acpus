@@ -42,6 +42,19 @@ describe("extractReferences", () => {
     expect(fromMethod.references.some((r) => r.root === "input")).toBe(true);
   });
 
+  it("does not collect CEL macro locals as workflow references", () => {
+    const { references } = extractReferences("input.items.filter(x, x > steps.s.output.threshold)");
+    expect(references.map(referenceToString)).toEqual([
+      "input.items",
+      "steps.s.output.threshold"
+    ]);
+  });
+
+  it("collects receiver method argument references", () => {
+    const { references } = extractReferences("input.name.startsWith(prefix)");
+    expect(references.map(referenceToString)).toEqual(["input.name", "prefix"]);
+  });
+
   it("walks references inside function arguments and operators", () => {
     const { references } = extractReferences("coalesce(steps.a.output.x, input.y) > 0");
     const roots = references.map((r) => r.root).sort();

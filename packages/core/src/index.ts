@@ -16,11 +16,10 @@ export type { CompileSchemaDslResult, SchemaDslError, CompileSchemaDslOptions } 
 export type { WorkflowSourceResolver } from "./source-resolver.js";
 export {
   EXPRESSION_PATTERN,
-  ALLOWED_ROOTS,
-  ALLOWED_FUNCTIONS,
   toCelParseSource,
   createExpressionCollector
 } from "./expressions.js";
+export { createAcpusCelEnvironment } from "./cel-environment.js";
 export type { ExpressionCollector } from "./expressions.js";
 export { extractReferences, referenceToString, isStaticReference } from "./cel-ast.js";
 export type { ExpressionReference, ReferenceSegment, ExtractResult } from "./cel-ast.js";

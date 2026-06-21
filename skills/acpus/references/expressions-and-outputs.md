@@ -136,7 +136,7 @@ json(steps.plan.output)       # deterministic JSON string, sorted object keys
 Notes:
 
 - `now()` is fixed for the workflow execution clock; do not use wall-clock APIs in scripts to make expression decisions.
-- `len()` is the Acpus function for string/list length. Do not use `size()` — it is not in Acpus's allowed function set and will produce a compile-time `EXPR_UNKNOWN_ROOT` warning (use `len()` instead).
+- `len()` is the Acpus helper for string/list length. Standard CEL `size()` is also available through `cel-js`.
 - `json(value)` is the safe way to embed objects or arrays in prompts or env values. Without it, JavaScript stringification may produce `[object Object]`.
 - `matches(string, pattern)` returns `false` for invalid regular expressions.
 - `coalesce(...)` treats only `null` and `undefined` as absent; empty string, `0`, and `false` are real values.
@@ -159,7 +159,7 @@ input.path.matches("\\.tsx?$")
 ["a", "b"].join(",")
 ```
 
-Prefer the Acpus helpers above when they are documented for workflow specs; other `cel-js` built-ins follow `@marcbachmann/cel-js` behavior and may surface parser/type errors directly.
+Unknown roots, unknown functions, invalid overloads, and invalid macro forms are lint errors. Standard `cel-js` built-ins and macros follow `@marcbachmann/cel-js` behavior.
 
 ## List Macros
 

@@ -1,4 +1,5 @@
 import { extractReferences } from "./cel-ast.js";
+import { createAcpusCelEnvironment } from "./cel-environment.js";
 import { EXPRESSION_PATTERN, toCelParseSource } from "./expressions-shared.js";
 import type { DiagnosticBag } from "./diagnostics.js";
 import type { IrExpression } from "./types.js";
@@ -9,22 +10,22 @@ export { EXPRESSION_PATTERN, toCelParseSource } from "./expressions-shared.js";
  *  Using ${{ }} in these fields causes a runtime CEL parse error. */
 const RAW_CEL_FIELDS = new Set(["over", "until", "when"]);
 
-export const ALLOWED_ROOTS = new Set(["input", "steps", "workflow", "loop", "item", "item_id", "item_index", "run_id"]);
-export const ALLOWED_FUNCTIONS = new Set(["now", "len", "startsWith", "matches", "coalesce", "json"]);
-
 export interface ExpressionCollector {
   expressions: IrExpression[];
   visit(value: unknown, path: string): void;
 }
 
-export function createExpressionCollector(diagnostics: DiagnosticBag, knownStepIds: Set<string>, stepKinds: Map<string, string>): ExpressionCollector {
+export function createExpressionCollector(diagnostics: DiagnosticBag, knownStepIds: Set<string>): ExpressionCollector {
   const expressions: IrExpression[] = [];
+  const celEnv = createAcpusCelEnvironment();
 
   function collectFromString(value: string, path: string): void {
     const fieldName = path.split(".").pop() ?? "";
+    const isRawCel = RAW_CEL_FIELDS.has(fieldName);
+    const hasTemplate = EXPRESSION_PATTERN.test(value);
+    EXPRESSION_PATTERN.lastIndex = 0;
 
-    // Warn if ${{ }} appears in a raw-CEL field
-    if (RAW_CEL_FIELDS.has(fieldName) && EXPRESSION_PATTERN.test(value)) {
+    if (isRawCel && hasTemplate) {
       diagnostics.warning(
         "EXPR_TEMPLATE_IN_CEL",
         `Field '${fieldName}' is evaluated as raw CEL — remove ${{ }} wrappers or the expression will fail at runtime.`,
@@ -32,8 +33,10 @@ export function createExpressionCollector(diagnostics: DiagnosticBag, knownStepI
       );
     }
 
-    // Reset regex lastIndex after test() calls above (test() with /g advances it)
-    EXPRESSION_PATTERN.lastIndex = 0;
+    if (isRawCel && !hasTemplate) {
+      collectExpression(value.trim(), path);
+      return;
+    }
 
     for (const match of value.matchAll(EXPRESSION_PATTERN)) {
       const source = match[1]?.trim() ?? "";
@@ -41,44 +44,44 @@ export function createExpressionCollector(diagnostics: DiagnosticBag, knownStepI
         diagnostics.error("EXPR_EMPTY", "Expression cannot be empty.", path);
         continue;
       }
+      collectExpression(source, path);
+    }
+  }
 
-      const { references, functions, parseError } = extractReferences(source);
-      if (parseError) {
-        diagnostics.error("EXPR_PARSE", `Invalid CEL expression: ${parseError}`, path);
-        continue;
-      }
+  function collectExpression(source: string, path: string): void {
+    if (source.length === 0) return;
+    const check = celEnv.check(toCelParseSource(source));
+    if (!check.valid) {
+      const error = check.error;
+      diagnostics.error(celDiagnosticCode(error), `Invalid CEL expression: ${errorMessage(error)}`, path);
+      return;
+    }
 
-      const stepReferences: string[] = [];
-      for (const ref of references) {
-        // Unknown root (not an allowed context variable). Functions are reported
-        // separately below so a function name is never mistaken for a root.
-        if (!ALLOWED_ROOTS.has(ref.root)) {
-          diagnostics.warning("EXPR_UNKNOWN_ROOT", `Expression root '${ref.root}' is not part of the M1 DSL context.`, path);
-        }
-        if (ref.root === "steps") {
-          const first = ref.segments[0];
-          if (first && first.kind === "field") {
-            stepReferences.push(first.name);
-            if (!knownStepIds.has(first.name)) {
-              diagnostics.error("EXPR_UNKNOWN_STEP", `Expression references unknown step '${first.name}'.`, path);
-            }
+    const { references, parseError } = extractReferences(source);
+    if (parseError) {
+      diagnostics.error("EXPR_PARSE", `Invalid CEL expression: ${parseError}`, path);
+      return;
+    }
+
+    const stepReferences: string[] = [];
+    for (const ref of references) {
+      if (ref.root === "steps") {
+        const first = ref.segments[0];
+        if (first && first.kind === "field") {
+          stepReferences.push(first.name);
+          if (!knownStepIds.has(first.name)) {
+            diagnostics.error("EXPR_UNKNOWN_STEP", `Expression references unknown step '${first.name}'.`, path);
           }
         }
       }
-
-      for (const fn of functions) {
-        if (!ALLOWED_FUNCTIONS.has(fn)) {
-          diagnostics.warning("EXPR_UNKNOWN_ROOT", `Expression function '${fn}' is not part of the M1 DSL context.`, path);
-        }
-      }
-
-      expressions.push({
-        id: `expr_${expressions.length + 1}`,
-        source,
-        path,
-        references: stepReferences
-      });
     }
+
+    expressions.push({
+      id: `expr_${expressions.length + 1}`,
+      source,
+      path,
+      references: stepReferences
+    });
   }
 
   function visit(value: unknown, path: string): void {
@@ -102,4 +105,18 @@ export function createExpressionCollector(diagnostics: DiagnosticBag, knownStepI
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function celDiagnosticCode(error: unknown): string {
+  if (isCelError(error, "ParseError")) return "EXPR_PARSE";
+  if (isCelError(error, "TypeError") && error.code === "unknown_variable") return "EXPR_UNKNOWN_ROOT";
+  return "EXPR_CEL";
+}
+
+function isCelError(error: unknown, name: string): error is { name: string; code?: string; message?: string } {
+  return typeof error === "object" && error !== null && (error as { name?: unknown }).name === name;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

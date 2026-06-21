@@ -5,7 +5,7 @@ import { createExpressionCollector } from "../../src/expressions.js";
 describe("createExpressionCollector", () => {
   it("rejects expressions referencing unknown steps", () => {
     const diagnostics = new DiagnosticBag();
-    const collector = createExpressionCollector(diagnostics, new Set(["known_step"]), new Map());
+    const collector = createExpressionCollector(diagnostics, new Set(["known_step"]));
     collector.visit("${{ steps.ghost.output.x }}", "$.test");
     expect(diagnostics.diagnostics).toEqual([
       expect.objectContaining({ code: "EXPR_UNKNOWN_STEP", message: expect.stringContaining("ghost") })
@@ -14,7 +14,7 @@ describe("createExpressionCollector", () => {
 
   it("rejects invalid CEL expressions", () => {
     const diagnostics = new DiagnosticBag();
-    const collector = createExpressionCollector(diagnostics, new Set(), new Map());
+    const collector = createExpressionCollector(diagnostics, new Set());
     collector.visit("${{ + }}", "$.test");
     expect(diagnostics.diagnostics).toEqual([
       expect.objectContaining({ code: "EXPR_PARSE" })
@@ -23,25 +23,25 @@ describe("createExpressionCollector", () => {
 
   it("accepts valid expressions referencing known steps", () => {
     const diagnostics = new DiagnosticBag();
-    const collector = createExpressionCollector(diagnostics, new Set(["discover"]), new Map([["discover", "run.agent"]]));
+    const collector = createExpressionCollector(diagnostics, new Set(["discover"]));
     collector.visit("${{ steps.discover.output.files }}", "$.test");
     expect(diagnostics.diagnostics).toEqual([]);
     expect(collector.expressions).toHaveLength(1);
     expect(collector.expressions[0].references).toEqual(["discover"]);
   });
 
-  it("warns on unknown root names in expressions", () => {
+  it("errors on unknown root names in expressions", () => {
     const diagnostics = new DiagnosticBag();
-    const collector = createExpressionCollector(diagnostics, new Set(), new Map());
+    const collector = createExpressionCollector(diagnostics, new Set());
     collector.visit("${{ unknown_var.x }}", "$.test");
     expect(diagnostics.diagnostics).toEqual([
-      expect.objectContaining({ code: "EXPR_UNKNOWN_ROOT" })
+      expect.objectContaining({ code: "EXPR_UNKNOWN_ROOT", severity: "error" })
     ]);
   });
 
-  it("accepts allowed root names without warning", () => {
+  it("accepts registered context roots", () => {
     const diagnostics = new DiagnosticBag();
-    const collector = createExpressionCollector(diagnostics, new Set(), new Map());
+    const collector = createExpressionCollector(diagnostics, new Set());
     collector.visit("${{ input.x }}", "$.test");
     collector.visit("${{ workflow.source_dir }}", "$.test-workflow");
     collector.visit("${{ item.y }}", "$.test2");
@@ -49,25 +49,35 @@ describe("createExpressionCollector", () => {
     expect(diagnostics.diagnostics).toEqual([]);
   });
 
-  it("accepts the json() function without warning", () => {
+  it("accepts Acpus custom functions", () => {
     const diagnostics = new DiagnosticBag();
-    const collector = createExpressionCollector(diagnostics, new Set(["s"]), new Map([["s", "run.agent"]]));
+    const collector = createExpressionCollector(diagnostics, new Set(["s"]));
     collector.visit("${{ json(steps.s.output) }}", "$.test");
     expect(diagnostics.diagnostics).toEqual([]);
   });
 
-  it("warns on the unregistered hash() function (no silent lint pass)", () => {
+  it("accepts cel-js built-in standalone functions", () => {
     const diagnostics = new DiagnosticBag();
-    const collector = createExpressionCollector(diagnostics, new Set(["s"]), new Map([["s", "run.agent"]]));
+    const collector = createExpressionCollector(diagnostics, new Set());
+    collector.visit("${{ size(input.items) }}", "$.test1");
+    collector.visit("${{ string(input.count) }}", "$.test2");
+    collector.visit("${{ int(input.count) }}", "$.test3");
+    collector.visit("${{ bool(input.flag) }}", "$.test4");
+    expect(diagnostics.diagnostics).toEqual([]);
+  });
+
+  it("errors on unregistered functions", () => {
+    const diagnostics = new DiagnosticBag();
+    const collector = createExpressionCollector(diagnostics, new Set(["s"]));
     collector.visit("${{ hash(steps.s.output) }}", "$.test");
     expect(diagnostics.diagnostics).toEqual([
-      expect.objectContaining({ code: "EXPR_UNKNOWN_ROOT" })
+      expect.objectContaining({ code: "EXPR_CEL", severity: "error" })
     ]);
   });
 
   it("rejects empty expressions", () => {
     const diagnostics = new DiagnosticBag();
-    const collector = createExpressionCollector(diagnostics, new Set(), new Map());
+    const collector = createExpressionCollector(diagnostics, new Set());
     collector.visit("${{   }}", "$.test");
     expect(diagnostics.diagnostics).toEqual([
       expect.objectContaining({ code: "EXPR_EMPTY" })
@@ -76,7 +86,7 @@ describe("createExpressionCollector", () => {
 
   it("collects multiple expressions from a nested object", () => {
     const diagnostics = new DiagnosticBag();
-    const collector = createExpressionCollector(diagnostics, new Set(["step_a", "step_b"]), new Map([["step_a", "run.agent"], ["step_b", "run.program"]]));
+    const collector = createExpressionCollector(diagnostics, new Set(["step_a", "step_b"]));
     collector.visit({ key1: "${{ steps.step_a.output.x }}", nested: { key2: "${{ steps.step_b.output.y }}" } }, "$.test");
     expect(collector.expressions).toHaveLength(2);
     expect(collector.expressions[0].references).toEqual(["step_a"]);
@@ -85,7 +95,7 @@ describe("createExpressionCollector", () => {
 
   it("warns when ${{ }} appears in raw-CEL fields (over, until, when)", () => {
     const diagnostics = new DiagnosticBag();
-    const collector = createExpressionCollector(diagnostics, new Set(["discover", "gate"]), new Map([["discover", "run.agent"], ["gate", "run.signal"]]));
+    const collector = createExpressionCollector(diagnostics, new Set(["discover", "gate"]));
 
     collector.visit("${{ steps.discover.output.files }}", "$.workflow.steps[0].fanout.over");
     collector.visit("${{ loop.iter >= 2 }}", "$.workflow.steps[1].loop.until");
@@ -100,7 +110,7 @@ describe("createExpressionCollector", () => {
 
   it("does not warn when raw-CEL fields lack ${{ }}", () => {
     const diagnostics = new DiagnosticBag();
-    const collector = createExpressionCollector(diagnostics, new Set(), new Map());
+    const collector = createExpressionCollector(diagnostics, new Set(["discover", "gate"]));
 
     collector.visit("steps.discover.output.files", "$.workflow.steps[0].fanout.over");
     collector.visit("loop.iter >= 2", "$.workflow.steps[1].loop.until");
@@ -111,7 +121,7 @@ describe("createExpressionCollector", () => {
 
   it("does not warn when key uses ${{ }} template syntax", () => {
     const diagnostics = new DiagnosticBag();
-    const collector = createExpressionCollector(diagnostics, new Set(), new Map());
+    const collector = createExpressionCollector(diagnostics, new Set());
 
     collector.visit("${{ item.path }}", "$.workflow.steps[0].fanout.key");
 
@@ -120,69 +130,74 @@ describe("createExpressionCollector", () => {
     expect(warnings).toEqual([]);
   });
 
-  it("allows .output on a composite step (fanout)", () => {
+  it("allows known step references without shape validation", () => {
     const diagnostics = new DiagnosticBag();
-    const kinds = new Map([["research", "fanout"]]);
-    const collector = createExpressionCollector(diagnostics, new Set(["research"]), kinds);
-    collector.visit("${{ steps.research.output.architecture.filepath }}", "$.test");
-    expect(diagnostics.diagnostics).toEqual([]);
-  });
-
-  it("allows .output on a composite step (parallel)", () => {
-    const diagnostics = new DiagnosticBag();
-    const kinds = new Map([["analyze", "parallel"]]);
-    const collector = createExpressionCollector(diagnostics, new Set(["analyze"]), kinds);
-    collector.visit("${{ steps.analyze.output }}", "$.test");
-    expect(diagnostics.diagnostics).toEqual([]);
-  });
-
-  it("allows .output on a composite step (loop/switch)", () => {
-    const diagnostics = new DiagnosticBag();
-    const kinds = new Map([["refine", "loop"], ["route", "switch"]]);
-    const collector = createExpressionCollector(diagnostics, new Set(["refine", "route"]), kinds);
-    collector.visit("${{ steps.refine.output.result }}", "$.test1");
-    collector.visit("${{ steps.route.output.chosen }}", "$.test2");
-    expect(diagnostics.diagnostics).toEqual([]);
-  });
-
-  it("allows .output on leaf steps (run.agent, run.program)", () => {
-    const diagnostics = new DiagnosticBag();
-    const kinds = new Map([["discover", "run.agent"], ["build", "run.program"]]);
-    const collector = createExpressionCollector(diagnostics, new Set(["discover", "build"]), kinds);
-    collector.visit("${{ steps.discover.output.files }}", "$.test1");
-    collector.visit("${{ steps.build.output.artifact }}", "$.test2");
-    expect(diagnostics.diagnostics).toEqual([]);
-  });
-
-  it("does not error when composite step is accessed without .output", () => {
-    const diagnostics = new DiagnosticBag();
-    const kinds = new Map([["research", "fanout"]]);
-    const collector = createExpressionCollector(diagnostics, new Set(["research"]), kinds);
-    collector.visit("${{ steps.research }}", "$.test");
-    expect(diagnostics.diagnostics).toEqual([]);
-  });
-
-  it("allows .output on a subworkflow step", () => {
-    const diagnostics = new DiagnosticBag();
-    const kinds = new Map([["sub", "subworkflow"]]);
-    const collector = createExpressionCollector(diagnostics, new Set(["sub"]), kinds);
-    collector.visit("${{ steps.sub.output.result }}", "$.test");
-    expect(diagnostics.diagnostics).toEqual([]);
-  });
-
-  it("allows fanout lane access through the node output envelope", () => {
-    const diagnostics = new DiagnosticBag();
-    const kinds = new Map([["research", "fanout"]]);
-    const collector = createExpressionCollector(diagnostics, new Set(["research"]), kinds);
-    collector.visit("${{ steps.research.output[0].output.filepath }}", "$.test");
-    expect(diagnostics.diagnostics).toEqual([]);
-  });
-
-  it("does not error when step kind is unknown (not in stepKinds)", () => {
-    const diagnostics = new DiagnosticBag();
-    const kinds = new Map(); // no kind for "mystery"
-    const collector = createExpressionCollector(diagnostics, new Set(["mystery"]), kinds);
+    const collector = createExpressionCollector(diagnostics, new Set(["mystery"]));
     collector.visit("${{ steps.mystery.output.x }}", "$.test");
     expect(diagnostics.diagnostics).toEqual([]);
+  });
+
+  it("accepts filter macro binding variables", () => {
+    const diagnostics = new DiagnosticBag();
+    const collector = createExpressionCollector(diagnostics, new Set());
+    collector.visit("${{ input.items.filter(x, x > 0) }}", "$.test");
+    expect(diagnostics.diagnostics).toEqual([]);
+  });
+
+  it("accepts map macro binding variables", () => {
+    const diagnostics = new DiagnosticBag();
+    const collector = createExpressionCollector(diagnostics, new Set());
+    collector.visit("${{ input.numbers.map(n, n * 2) }}", "$.test");
+    expect(diagnostics.diagnostics).toEqual([]);
+  });
+
+  it("does not warn on 3-arg map macro binding variable", () => {
+    const diagnostics = new DiagnosticBag();
+    const collector = createExpressionCollector(diagnostics, new Set());
+    collector.visit("${{ input.items.map(x, x > 0, x * 2) }}", "$.test");
+    expect(diagnostics.diagnostics).toEqual([]);
+  });
+
+  it("accepts cel.bind macro binding variables", () => {
+    const diagnostics = new DiagnosticBag();
+    const collector = createExpressionCollector(diagnostics, new Set());
+    collector.visit("${{ cel.bind(y, 5, y + 1) }}", "$.test");
+    expect(diagnostics.diagnostics).toEqual([]);
+  });
+
+  it("rejects invalid macro arguments through cel-js", () => {
+    const diagnostics = new DiagnosticBag();
+    const collector = createExpressionCollector(diagnostics, new Set());
+    collector.visit("${{ input.items.filter(1, true) }}", "$.test");
+    expect(diagnostics.diagnostics).toEqual([
+      expect.objectContaining({ code: "EXPR_PARSE", severity: "error" })
+    ]);
+  });
+
+  it("collects workflow references inside nested macros", () => {
+    const diagnostics = new DiagnosticBag();
+    const collector = createExpressionCollector(diagnostics, new Set(["s"]));
+    collector.visit("${{ input.groups.exists(g, g.items.exists(x, x > steps.s.output.threshold)) }}", "$.test");
+    expect(diagnostics.diagnostics).toEqual([]);
+    expect(collector.expressions[0].references).toEqual(["s"]);
+  });
+
+  it("still collects receiver reference from macro calls", () => {
+    const diagnostics = new DiagnosticBag();
+    const collector = createExpressionCollector(diagnostics, new Set(["s"]));
+    collector.visit("${{ steps.s.output.items.filter(x, x > 0) }}", "$.test");
+    expect(diagnostics.diagnostics).toEqual([]);
+    // The receiver `steps.s.output.items` is still collected; `s` resolves as
+    // a step reference while the binding var `x` is filtered out.
+    expect(collector.expressions[0].references).toEqual(["s"]);
+  });
+
+  it("collects other roots alongside binding var in macro body", () => {
+    const diagnostics = new DiagnosticBag();
+    const collector = createExpressionCollector(diagnostics, new Set(["s"]));
+    collector.visit("${{ input.items.filter(x, x > steps.s.output.threshold) }}", "$.test");
+    // `x` is filtered out, but `steps.s` is still collected
+    expect(diagnostics.diagnostics).toEqual([]);
+    expect(collector.expressions[0].references).toEqual(["s"]);
   });
 });
