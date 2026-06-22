@@ -2,6 +2,25 @@
 
 Compact full-schema reference for AI agents authoring or validating Acpus Workflow Spec YAML. Every field, constraint, and interaction defined here is enforced by the compiler (structural) or runtime (behavioral). No prose — just the schema.
 
+## Contents
+
+- [Top-Level Shape](#top-level-shape)
+- [Schema DSL](#schema-dsl)
+- [Agents](#agents)
+- [Steps](#steps)
+- [Pipeline](#pipeline)
+- [Parallel](#parallel)
+- [Fanout](#fanout)
+- [Switch](#switch)
+- [Loop](#loop)
+- [Guard](#guard)
+- [Expressions](#expressions)
+- [Outputs](#outputs)
+- [Retry](#retry)
+- [Timeout](#timeout)
+- [Error Codes](#error-codes)
+- [Constraints Summary](#constraints-summary)
+
 ## Top-Level Shape
 
 ```yaml
@@ -300,7 +319,7 @@ retry:                          # Agent + Program only
 
 - `loop.iter` — zero-based iteration counter.
 - `loop.last` — previous iteration body pipeline primary output (absent/undefined on first iteration).
-- `until` is checked after the body completes; always runs at least once.
+- `until` is skipped on iteration 0, then checked at the start of each later iteration against the previous body output; loops always run at least once.
 - `until` as boolean literal is coerced to string at compile time.
 - `steps.<id>.output` is the last iteration body pipeline's primary output (`last` projection).
 
@@ -317,7 +336,7 @@ retry:                          # Agent + Program only
 
 - `continue` — complete guard, continue to next sibling in scope.
 - `fail` — fail the guard node with `message` (or `Guard '<id>' failed`).
-- `complete` — complete guard AND complete the current scope (skip later siblings). Inside a fanout lane or parallel branch, this affects only that lane/branch. At the root scope, it completes the entire Run.
+- `complete` — complete guard AND complete the current scope (skip later siblings). Inside a loop body pipeline, this ends that iteration body only; the outer loop still follows `until` and `max_iterations`. Inside a fanout lane or parallel branch, this affects only that lane/branch. At the root scope, it completes the entire Run.
 - `steps.<id>.output` contains `{ matched: boolean, action: string }`; `message` is included only when action is `fail` and `guard.message` is declared.
 - `when` as boolean literal is coerced to string at compile time.
 

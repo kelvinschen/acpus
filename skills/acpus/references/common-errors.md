@@ -2,6 +2,16 @@
 
 Frequent authoring mistakes and runtime errors. Each entry shows the symptom, root cause, and fix.
 
+## Contents
+
+- [Expression Errors](#expression-errors)
+- [Schema Errors](#schema-errors)
+- [Interpolation Errors](#interpolation-errors)
+- [Timeout Errors](#timeout-errors)
+- [Loop Errors](#loop-errors)
+- [Fanout Errors](#fanout-errors)
+- [Agent Errors](#agent-errors)
+
 ---
 
 ## Expression Errors
@@ -219,7 +229,7 @@ timeout: 5m
 
 **Symptom:** CEL expression like `loop.last.field` fails on iteration 0.
 
-**Root cause:** `loop.last` is undefined (not null) on the first iteration. The `until` condition is only checked after iteration 0, but the condition must handle the initial state.
+**Root cause:** `loop.last` is undefined (not null) on the first iteration. Field access such as `loop.last.field` throws before helpers like `coalesce()` can run.
 
 **Fix:** Guard with `loop.iter > 0`:
 ```yaml

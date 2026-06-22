@@ -2,6 +2,17 @@
 
 Acpus evaluates expressions with `@marcbachmann/cel-js` and adds a small set of Acpus-specific context roots and helper functions. CEL is for deterministic value selection and control flow, not for file I/O, shell execution, randomness, or wall-clock reads.
 
+## Contents
+
+- [CEL vs Template Interpolation](#cel-vs-template-interpolation)
+- [Context Roots](#context-roots)
+- [CEL Operators And Literals](#cel-operators-and-literals)
+- [Functions](#functions)
+- [List Macros](#list-macros)
+- [Placement Rules](#placement-rules)
+- [Step Output Shapes](#step-output-shapes)
+- [Output Schema Shape](#output-schema-shape)
+
 ## CEL vs Template Interpolation
 
 Use raw CEL where Acpus expects an expression:
@@ -54,7 +65,7 @@ Fanout and loop body scopes add these local roots (pipeline does not introduce n
 
 ```yaml
 loop.iter       # zero-based loop iteration
-loop.last       # previous loop body primary output, absent on first iteration
+loop.last       # previous loop body primary output; undefined on first iteration
 item            # current fanout item
 item_id         # rendered fanout key, or item index when no key is declared
 item_index      # zero-based fanout item index

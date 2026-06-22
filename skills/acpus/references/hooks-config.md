@@ -2,6 +2,20 @@
 
 High-density reference for AI agents. Read when the user asks about configuring hooks, writing hook handlers, or understanding hook behavior.
 
+## Contents
+
+- [Config Files](#config-files)
+- [Handler Types](#handler-types)
+- [Handler Protocol](#handler-protocol)
+- [Injectors](#injectors-2)
+- [Events](#events-8)
+- [Payload Fields](#payload-fields-hookpayload)
+- [Journal](#journal)
+- [CLI](#cli)
+- [Config Validation](#config-validation-load-time)
+- [Config Freezing](#config-freezing)
+- [Fork Inheritance](#fork-inheritance)
+
 ## Config Files
 
 - `~/.acpus/hooks.yaml` — global (applies to all Runs)
