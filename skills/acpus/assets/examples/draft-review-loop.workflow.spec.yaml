@@ -58,6 +58,7 @@ workflow:
     - id: improve
       loop:
         max_iterations: 4
+        # loop.last is undefined on iteration 0; guard it before reading fields.
         until: loop.iter > 0 && loop.last.quality_ok
         do:
           - id: draft

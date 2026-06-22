@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "bin": {
-    "acpus-mock-agent": "./dist/index.js"
+    "acpus-mock-agent": "./bin/acpus-mock-agent.js"
   },
   "exports": {
     ".": {
@@ -15,6 +15,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
+    "bin",
     "dist"
   ],
   "scripts": {

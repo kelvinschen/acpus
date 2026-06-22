@@ -92,7 +92,7 @@ workflow:
     - id: review_topics
       fanout:
         over: steps.identify.output.topics
-        key: "${{ item.topic }}"
+        key: "${{ item_index }}-${{ item.topic }}"
         join: all
         do:
           - id: review
@@ -110,12 +110,37 @@ workflow:
               finding_count: integer
               has_critical: boolean
 
+    - id: summarize_reviews
+      run: program
+      timeout: 30s
+      cmd:
+        - node
+        - -e
+        - |
+          const reviews = JSON.parse(process.env.REVIEWS);
+          console.log(JSON.stringify({
+            review_count: reviews.length,
+            total_findings: reviews.reduce((sum, r) => sum + r.finding_count, 0),
+            has_critical: reviews.some(r => r.has_critical)
+          }));
+      env:
+        REVIEWS: ${{ json(steps.review_topics.output) }}
+      capture:
+        from: stdout
+        parse: json
+      output:
+        review_count: integer
+        total_findings: integer
+        has_critical: boolean
+
     - id: synthesize
       run: agent
       use: synthesizer
       timeout: 15m
       prompt: |
-        Synthesize findings from ${{ len(steps.review_topics.output) }} topic reviews.
+        Synthesize findings from ${{ steps.summarize_reviews.output.review_count }} topic reviews.
+        Total findings reported: ${{ steps.summarize_reviews.output.total_findings }}
+        Any critical findings: ${{ steps.summarize_reviews.output.has_critical }}
         Preflight counted ${{ steps.preflight.output.topic_count.count }} topics.
         Each review wrote its report to the output directory:
         ${{ steps.prepare.output.output_dir }}/
@@ -126,7 +151,8 @@ workflow:
         overall_risk: string
 
 outputs:
-  topics_reviewed: ${{ len(steps.review_topics.output) }}
+  topics_reviewed: ${{ steps.summarize_reviews.output.review_count }}
+  first_review_path: ${{ steps.review_topics.output[0].report_path }}
   report_path: ${{ steps.synthesize.output.report_path }}
   total_findings: ${{ steps.synthesize.output.total_findings }}
   overall_risk: ${{ steps.synthesize.output.overall_risk }}

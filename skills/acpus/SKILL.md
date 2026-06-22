@@ -1,13 +1,13 @@
 ---
 name: acpus
-description: Load when the user works with Acpus — the local durable runner that orchestrates acpx-backed agents through Workflow Specs, Runs, and catalog playbooks. Trigger on any mention of Acpus, acpx, Acpus Workflow Spec, Acpus Run, or catalog playbook, even if the user only says "workflow" when context clearly means Acpus (e.g., they reference the acpus CLI, acpx agents, or Acpus-specific concepts like fork/retry/resume of runs). Do not load for CI/CD pipelines, GitHub Actions, Airflow, Temporal, or any workflow or orchestration request that does not involve Acpus or acpx.
+description: Helps work with Acpus, the local durable runner for acpx-backed agents, Workflow Specs, Runs, and catalog playbooks. Use when the user mentions Acpus, acpx, Acpus Workflow Spec, Acpus Run, catalog playbooks, or Acpus-specific workflow operations such as fork, retry, resume, signal, replay, hooks, or Run artifacts. Do not use for unrelated CI/CD pipelines, GitHub Actions, Airflow, Temporal, or generic workflow orchestration.
 ---
 
 # Acpus
 
 Acpus is the durable local runner that orchestrates acpx-backed agents through Workflow Specs, Runs, and catalog playbooks. Keep this file as the operating hub; read the referenced files only when the task needs that detail.
 
-## Core Model: Three Composable Units
+## Core Model
 
 Three equal units, freely orchestrated with composite nodes (pipeline, loop, fanout, parallel, switch, guard) into controllable workflows:
 
@@ -129,16 +129,24 @@ See `references/error-recovery.md` for the failure-symptom decision table and fo
 
 This path covers writing or editing a Workflow Spec YAML — no CLI commands run the spec here; use **Run Existing** for that.
 
-Key decisions while authoring:
+### Authoring Defaults
 
 - **Program vs Agent Step**: Program Steps are for deterministic local glue (prepare dirs, compute paths, collect diffs, apply/rollback patches, read state for guards). Agent Steps handle planning, judgment, synthesis, failure interpretation, role boundaries, and cross-round memory. If a Program Step starts encoding those decisions, move that work into an agent prompt and a durable file.
-- **Composite nodes**: pipeline, guard, loop, fanout, parallel, switch — each has distinct scope variables and output shape. `do` lists on fanout/loop/switch compile as generated internal pipelines; use explicit `pipeline` with `outputs` when you need a custom public contract. See `references/workflow-spec-schema.md` for the full schema and common pitfalls (e.g., `parallel` branches are `{ id, do }`; `loop.last` is undefined on first iteration).
+- **Composite nodes**: pipeline, guard, loop, fanout, parallel, switch — each has distinct scope variables and output shape. `do` lists on fanout/loop/switch compile as generated internal pipelines; use explicit `pipeline` with `outputs` when you need a custom public contract. See `references/workflow-spec-schema.md` for the full schema.
 - **Expression forms**: raw CEL in `when`, `until`, and expression-valued `over`; `${{ ... }}` interpolation in prompts, command strings, keys, and messages. See `references/expressions-and-outputs.md`.
 - **Structured values in strings**: never inject a whole object/array expression directly into prompt or command text; it renders as `[object Object]`. Use `json(...)`, a file artifact, or `env:` depending on where the value is consumed.
 - **Output schema**: keep flat and minimal (paths, counts, booleans, durable ids). Do not put the output schema in the prompt — Acpus injects it and retries parse/schema failures. Large artifacts go in files; return their paths.
 - **Helper scripts**: prefer real scripts over long inline shell for repository-local workflows. Dry-run scripts to verify them before integrating.
 - **Timeouts**: bare number = milliseconds; string duration (`5m`, `30s`) also supported. Signal Nodes with a `timeout` require `on_timeout` (`fail` or `default`).
 - **Examples**: see `assets/examples/` for copyable Specs — `review-guard` (simple, guard), `draft-review-loop` (medium, loop), `topic-fanout-synthesis` (complex, fanout).
+
+### High-Friction Rules
+
+- `fanout.output`: array, not key map.
+- `loop.last`: previous body output; undefined on iter 0.
+- `until`: skipped on iter 0; then checks previous output before each body run.
+- `guard complete`: current scope only; loop continues by `until`/`max_iterations`.
+- First-iter fallback: use `loop.iter == 0 ? x : loop.last.field`, not `coalesce(loop.last.field, x)`.
 
 ---
 
@@ -158,25 +166,23 @@ Answer conceptual questions without side effects. Common topics and where to fin
 
 For deeper reading, link the user to the Source Docs at the bottom of this file.
 
-## Reference Index
+## Reference Map
 
-Every path above links its relevant references inline. For quick lookup:
+Read only the files needed for the task:
 
-- `references/best-practices.md` — gotchas and positive/negative authoring patterns
-- `references/workflow-spec-schema.md` — full schema reference: every field, type, constraint, composite node, and error code
-- `references/expressions-and-outputs.md` — CEL, templates, and output shape rules
-- `references/error-recovery.md` — failure-symptom decision table and fork semantics
-- `references/common-errors.md` — frequent authoring mistakes and runtime errors with fixes
-- `references/agent-selection.md` — choosing acpx-backed worker agents
-- `references/background-run-polling.md` — efficient polling cadence for background Runs
-- `references/hooks-config.md` — hook system config, payload fields, injector/event specs, journal format
-- `references/playbooks.md` — GitHub source and raw links for public Agent Workflow Playbooks
-  (`codebase-deep-research`, `adversarial-feature-implementation-review`,
-  `solution-generate-filter`, `worktree-implementation-tournament`, `loop-until-green-fix`,
-  `goal-driven-development`, `subagent-driven`, `human-in-the-loop-development`,
-  `swarm-intelligence`)
-- `scripts/workflow-viz.py` — generate an HTML visualization for a Spec (`python3 scripts/workflow-viz.py <spec.yaml> [-o out.html]`), or for an executed Run with real node outputs/state overlaid (`python3 scripts/workflow-viz.py --run .acpus/state/runs/<runId>/ [-o out.html]`)
-- `assets/examples/` — copyable Workflow Spec examples: `review-guard`, `draft-review-loop`, `topic-fanout-synthesis`
+| Need | Read |
+|------|------|
+| Authoring rules, schema fields, composite shapes | `references/workflow-spec-schema.md` |
+| CEL, `${{ }}`, output shapes, `json()`, macros | `references/expressions-and-outputs.md` |
+| Debug a failed authoring/run pattern | `references/common-errors.md` |
+| General authoring heuristics | `references/best-practices.md` |
+| Fork/retry/resume/replay decisions | `references/error-recovery.md` |
+| Choosing acpx worker agents | `references/agent-selection.md` |
+| Background Run polling | `references/background-run-polling.md` |
+| Hook config and payloads | `references/hooks-config.md` |
+| Public playbook links | `references/playbooks.md` |
+
+`scripts/workflow-viz.py` generates an HTML visualization for a Spec or executed Run. `assets/examples/` contains copyable Specs: `review-guard`, `draft-review-loop`, `topic-fanout-synthesis`.
 
 ## Source Docs
 
