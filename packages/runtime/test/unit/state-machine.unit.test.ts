@@ -15,85 +15,45 @@ import type { NodeState } from "../../src/types.js";
 
 describe("Node State Machine", () => {
   describe("canTransition", () => {
-    it("allows pending → running", () => {
-      expect(canTransition("pending", "running")).toBe(true);
+    const states: NodeState[] = ["pending", "running", "awaiting", "completed", "failed", "paused", "cancelled"];
+
+    // Legal lifecycle transitions
+    const legal: [NodeState, NodeState][] = [
+      ["pending", "running"],
+      ["running", "completed"],
+      ["running", "failed"],
+      ["running", "paused"],
+      ["running", "cancelled"],
+      ["running", "awaiting"],
+      ["awaiting", "completed"],
+      ["awaiting", "cancelled"],
+      ["paused", "cancelled"],
+    ];
+    it.each(legal)("allows %s -> %s", (from, to) => {
+      expect(canTransition(from, to)).toBe(true);
     });
 
-    it("allows running → completed", () => {
-      expect(canTransition("running", "completed")).toBe(true);
+    // Illegal lifecycle shortcuts and control-plane mismatches
+    const illegal: [NodeState, NodeState][] = [
+      ["awaiting", "paused"],
+      ["paused", "running"],
+      ["running", "pending"],
+      ["failed", "pending"],
+      ["pending", "completed"],
+      ["pending", "cancelled"],
+    ];
+    it.each(illegal)("rejects %s -> %s", (from, to) => {
+      expect(canTransition(from, to)).toBe(false);
     });
 
-    it("allows running → failed", () => {
-      expect(canTransition("running", "failed")).toBe(true);
-    });
-
-    it("allows running → paused", () => {
-      expect(canTransition("running", "paused")).toBe(true);
-    });
-
-    it("allows running → cancelled", () => {
-      expect(canTransition("running", "cancelled")).toBe(true);
-    });
-
-    it("allows running → awaiting", () => {
-      expect(canTransition("running", "awaiting")).toBe(true);
-    });
-
-    it("allows awaiting → completed (human decision delivered)", () => {
-      expect(canTransition("awaiting", "completed")).toBe(true);
-    });
-
-    it("allows awaiting → cancelled (operator cancel)", () => {
-      expect(canTransition("awaiting", "cancelled")).toBe(true);
-    });
-
-    it("rejects awaiting → paused (awaiting is distinct from operator pause)", () => {
-      expect(canTransition("awaiting", "paused")).toBe(false);
-    });
-
-    it("rejects paused → running (Run resume is a control-plane reset)", () => {
-      expect(canTransition("paused", "running")).toBe(false);
-    });
-
-    it("allows paused → cancelled", () => {
-      expect(canTransition("paused", "cancelled")).toBe(true);
-    });
-
-    it("rejects running → pending (control-plane reset, not a lifecycle transition)", () => {
-      expect(canTransition("running", "pending")).toBe(false);
-    });
-
-    it("rejects failed → pending (control-plane reset, not a lifecycle transition)", () => {
-      expect(canTransition("failed", "pending")).toBe(false);
-    });
-
-    it("rejects pending → completed (must go through running)", () => {
-      expect(canTransition("pending", "completed")).toBe(false);
-    });
-
-    it("rejects pending → cancelled (Run cancel uses a control-plane operation)", () => {
-      expect(canTransition("pending", "cancelled")).toBe(false);
-    });
-
-    it("rejects completed → any (terminal)", () => {
-      const states: NodeState[] = ["pending", "running", "awaiting", "completed", "failed", "paused", "cancelled"];
-      for (const to of states) {
-        expect(canTransition("completed", to)).toBe(false);
-      }
-    });
-
-    it("rejects failed → any (terminal; retry is a control-plane reset, not a transition)", () => {
-      const states: NodeState[] = ["pending", "running", "awaiting", "completed", "failed", "paused", "cancelled"];
-      for (const to of states) {
-        expect(canTransition("failed", to)).toBe(false);
-      }
-    });
-
-    it("rejects cancelled → any (terminal)", () => {
-      const states: NodeState[] = ["pending", "running", "awaiting", "completed", "failed", "paused", "cancelled"];
-      for (const to of states) {
-        expect(canTransition("cancelled", to)).toBe(false);
-      }
+    // Terminal states reject all transitions (retry is a control-plane reset)
+    const terminal: [NodeState, NodeState][] = [
+      ...states.map((to): [NodeState, NodeState] => ["completed", to]),
+      ...states.map((to): [NodeState, NodeState] => ["failed", to]),
+      ...states.map((to): [NodeState, NodeState] => ["cancelled", to]),
+    ];
+    it.each(terminal)("rejects %s -> %s (terminal)", (from, to) => {
+      expect(canTransition(from, to)).toBe(false);
     });
   });
 

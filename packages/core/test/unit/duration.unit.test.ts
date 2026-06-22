@@ -6,56 +6,34 @@ describe("parseDurationMs", () => {
     expect(parseDurationMs(undefined)).toBe(0);
   });
 
-  it("parses milliseconds", () => {
-    expect(parseDurationMs("500ms")).toBe(500);
+  it.each([
+    ["500ms", 500],
+    ["30s", 30000],
+    ["5m", 300000],
+    ["1h", 3600000],
+    ["100", 100],
+  ])("parses %s as %d milliseconds", (input, expected) => {
+    expect(parseDurationMs(input)).toBe(expected);
   });
 
-  it("parses seconds", () => {
-    expect(parseDurationMs("30s")).toBe(30000);
-  });
+  it.each(["abc", "2d", "", "1.5s", "1H", "1 s"])(
+    "returns 0 for invalid input %j by default",
+    (input) => {
+      expect(parseDurationMs(input)).toBe(0);
+    }
+  );
 
-  it("parses minutes", () => {
-    expect(parseDurationMs("5m")).toBe(300000);
-  });
-
-  it("parses hours", () => {
-    expect(parseDurationMs("1h")).toBe(3600000);
-  });
-
-  it("parses a bare number as milliseconds", () => {
-    expect(parseDurationMs("100")).toBe(100);
-  });
-
-  it("returns 0 for invalid input by default", () => {
-    expect(parseDurationMs("abc")).toBe(0);
-  });
-
-  it("returns 0 for unsupported unit by default", () => {
-    expect(parseDurationMs("2d")).toBe(0);
-  });
-
-  it("throws for invalid input in strict mode", () => {
-    expect(() => parseDurationMs("abc", { strict: true })).toThrow(
-      "Invalid duration 'abc'. Use ms, s, m, or h."
-    );
-  });
-
-  it("throws for unsupported unit in strict mode", () => {
-    expect(() => parseDurationMs("2d", { strict: true })).toThrow(
-      "Invalid duration '2d'. Use ms, s, m, or h."
-    );
-  });
+  it.each(["abc", "2d", ""])(
+    "throws for invalid input %j in strict mode",
+    (input) => {
+      expect(() => parseDurationMs(input, { strict: true })).toThrow(
+        `Invalid duration '${input}'. Use ms, s, m, or h.`
+      );
+    }
+  );
 
   it("trims whitespace before parsing", () => {
     expect(parseDurationMs("  30s  ")).toBe(30000);
-  });
-
-  it("returns 0 for empty string", () => {
-    expect(parseDurationMs("")).toBe(0);
-  });
-
-  it("throws for empty string in strict mode", () => {
-    expect(() => parseDurationMs("", { strict: true })).toThrow();
   });
 
   it("handles zero values", () => {
@@ -73,11 +51,5 @@ describe("parseDurationMs", () => {
     expect(() => parseDurationMs(huge, { strict: true })).toThrow(
       `Invalid duration '${huge}'. Use ms, s, m, or h.`
     );
-  });
-
-  it("rejects decimal, uppercase, and spaced units", () => {
-    expect(parseDurationMs("1.5s")).toBe(0);
-    expect(parseDurationMs("1H")).toBe(0);
-    expect(parseDurationMs("1 s")).toBe(0);
   });
 });

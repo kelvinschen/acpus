@@ -71,14 +71,11 @@ describe("validateInput", () => {
     }
   });
 
-  it("passes any input when schema is empty ({})", () => {
-    const result = validateInput({}, { anything: "goes", here: 42 });
-    expect(result).toEqual({ anything: "goes", here: 42 });
-  });
-
-  it("passes any input when schema has no properties or required", () => {
-    const result = validateInput({ type: "object" }, { foo: "bar" });
-    expect(result).toEqual({ foo: "bar" });
+  it.each([
+    ["empty schema", {}, { anything: "goes", here: 42 }],
+    ["object schema with no properties or required", { type: "object" }, { foo: "bar" }],
+  ])("passes any input for %s", (_label, schema, input) => {
+    expect(validateInput(schema, input)).toEqual(input);
   });
 
   it("validates nested objects", () => {

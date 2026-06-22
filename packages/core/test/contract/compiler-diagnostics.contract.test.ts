@@ -311,26 +311,24 @@ workflow:
     expectDiagnostic(result, { code: "SPEC_SHAPE", path: "$.workflow.steps[0].session_key" });
   });
 
-  it("rejects unsafe step ids", () => {
-    for (const id of ["branch:blue", "with/slash", "with space", "$internal", "bad;cmd", "1bad"]) {
-      const source = `
+  it("rejects unsafe authored ids", () => {
+    const unsafeIds = ["branch:blue", "item:my-step", "with/slash", "with space", "$internal", "bad;cmd", "1bad"];
+    const locations = [
+      {
+        name: "step",
+        sourceFor: (id: string) => `
 version: 1
-name: unsafe-id
+name: unsafe-step-id
 workflow:
   steps:
     - id: "${id}"
       run: program
       cmd: ["echo", "hi"]
-`;
-      const result = lintWorkflow(source);
-      expect(result.ok).toBe(false);
-      expectDiagnostic(result, { code: id.startsWith("$") ? "STEP_ID_RESERVED" : "STEP_ID_INVALID" });
-    }
-  });
-
-  it("rejects unsafe parallel branch ids", () => {
-    for (const id of ["branch:blue", "with/slash", "with space", "$internal", "bad;cmd", "1bad"]) {
-      const source = `
+`
+      },
+      {
+        name: "parallel branch",
+        sourceFor: (id: string) => `
 version: 1
 name: unsafe-branch-id
 workflow:
@@ -342,45 +340,24 @@ workflow:
             - id: child
               run: program
               cmd: ["echo", "hi"]
-`;
-      const result = lintWorkflow(source);
-      expect(result.ok).toBe(false);
-      expectDiagnostic(result, { code: id.startsWith("$") ? "STEP_ID_RESERVED" : "STEP_ID_INVALID" });
+`
+      }
+    ];
+
+    for (const { name, sourceFor } of locations) {
+      for (const id of unsafeIds) {
+        const result = lintWorkflow(sourceFor(id));
+        expect(result.ok, `${name} ${id}`).toBe(false);
+        expectDiagnostic(result, { code: id.startsWith("$") ? "STEP_ID_RESERVED" : "STEP_ID_INVALID" });
+      }
     }
   });
 
-  it("rejects step ids containing colons", () => {
-    const source = `
-version: 1
-name: colon-id
-workflow:
-  steps:
-    - id: "branch:blue"
-      run: program
-      cmd: ["echo", "hi"]
-`;
-    const result = lintWorkflow(source);
-    expect(result.ok).toBe(false);
-    expectDiagnostic(result, { code: "STEP_ID_INVALID" });
-  });
-
-  it("rejects step ids with item: prefix (reserved dynamic dimension)", () => {
-    const source = `
-version: 1
-name: item-id
-workflow:
-  steps:
-    - id: "item:my-step"
-      run: program
-      cmd: ["echo", "hi"]
-`;
-    const result = lintWorkflow(source);
-    expect(result.ok).toBe(false);
-    expectDiagnostic(result, { code: "STEP_ID_INVALID" });
-  });
-
-  it("rejects duplicate step ids across sibling steps", () => {
-    const source = `
+  it("rejects duplicate step ids", () => {
+    const cases = [
+      {
+        name: "sibling steps",
+        source: `
 version: 1
 name: dup-id
 workflow:
@@ -391,14 +368,11 @@ workflow:
     - id: s1
       run: program
       cmd: ["echo", "b"]
-`;
-    const result = lintWorkflow(source);
-    expect(result.ok).toBe(false);
-    expectDiagnostic(result, { code: "STEP_ID_DUPLICATE" });
-  });
-
-  it("rejects duplicate step ids across nested steps", () => {
-    const source = `
+`
+      },
+      {
+        name: "nested steps",
+        source: `
 version: 1
 name: dup-id-nested
 workflow:
@@ -413,9 +387,14 @@ workflow:
             - id: s1
               run: program
               cmd: ["echo", "b"]
-`;
-    const result = lintWorkflow(source);
-    expect(result.ok).toBe(false);
-    expectDiagnostic(result, { code: "STEP_ID_DUPLICATE" });
+`
+      }
+    ];
+
+    for (const { name, source } of cases) {
+      const result = lintWorkflow(source);
+      expect(result.ok, name).toBe(false);
+      expectDiagnostic(result, { code: "STEP_ID_DUPLICATE" });
+    }
   });
 });
