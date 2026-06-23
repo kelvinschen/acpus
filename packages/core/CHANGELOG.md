@@ -1,5 +1,17 @@
 # @acpus/core
 
+## 0.6.0
+
+### Minor Changes
+
+- d2cc4d7: Add first-class `if` conditional workflow nodes with `then` and optional `else` branches, selected-branch output propagation, runtime execution/replay/fork support, and CLI/TUI display support.
+
+  Keep `switch` exhaustive by requiring `default`, and update built-in workflow examples plus generated workflow visualization pages to use and render `if` where it replaces two-way routing.
+
+### Patch Changes
+
+- 40fea23: add schema validation for switch default case
+
 ## 0.5.6
 
 ### Patch Changes
