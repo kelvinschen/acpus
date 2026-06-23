@@ -98,6 +98,19 @@
     }
   },
   {
+    "name": "skill-optimizer",
+    "file": "skill-optimizer.html",
+    "description": "Iteratively optimize an agent skill through automated",
+    "total": 26,
+    "counts": {
+      "program": 14,
+      "switch": 3,
+      "agent": 6,
+      "loop": 1,
+      "fanout": 2
+    }
+  },
+  {
     "name": "stress-demo",
     "file": "stress-demo.html",
     "description": "TUI stress workflow: nested fanout → parallel → loop → switch using the ACP",
