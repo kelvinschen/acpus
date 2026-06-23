@@ -1,6 +1,6 @@
 {
   "name": "@acpus/tui",
-  "version": "0.5.8",
+  "version": "0.5.9",
   "description": "Terminal visualizer for Acpus workflow runs",
   "keywords": [
     "acp",
