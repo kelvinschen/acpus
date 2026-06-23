@@ -22,13 +22,13 @@ input:
 
 agents:
   test_designer:
-    use: pi
+    use: traex
   executor:
     use: claude
   evaluator:
     use: claude
   improver:
-    use: traex
+    use: codex
 
 workflow:
   steps:
@@ -592,6 +592,21 @@ workflow:
                         committed: boolean
                         sha: string
                       timeout: 30s
+              default:
+                do:
+                  - id: skip_improve
+                    run: program
+                    cmd:
+                      - node
+                      - -e
+                      - "console.log(JSON.stringify({round:0,committed:false,sha:''}))"
+                    capture:
+                      from: stdout
+                      parse: json
+                    output:
+                      round: integer
+                      committed: boolean
+                      sha: string
 
           - id: finish_round
             run: program
