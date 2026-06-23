@@ -341,7 +341,7 @@ function encodeSessionKey(sessionKey: string): string {
 
 /** Render the declared output schema as an explicit contract section appended to the prompt. */
 function schemaSection(outputSchema: Record<string, unknown>): string {
-  return `\n\n# OUTPUT SCHEMA\n**After completing the task, your final response MUST be exactly one JSON object that conforms to this schema, with no Markdown, prose, or extra keys.**\n${JSON.stringify(outputSchema, null, 2)}`;
+  return `\n\n# OUTPUT SCHEMA\n**After completing the task, your final response MUST be exactly one JSON object that conforms to this schema, with no Markdown or prose. Extra keys are accepted but are not available to later workflow expressions.**\n${JSON.stringify(outputSchema, null, 2)}`;
 }
 
 /**

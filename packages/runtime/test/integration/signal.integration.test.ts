@@ -158,6 +158,50 @@ ${output}
     expect(node?.output).toEqual({ output: { approved: false } });
   });
 
+  it("rejects extra fields for schema-backed signal payloads", async () => {
+    const ir = signalIr();
+    const { interpreter, store, cleanup } = createTestInterpreter({});
+    cleanups.push(cleanup);
+
+    const meta = interpreter.initRun(ir, { input: {} });
+    const done = interpreter.runToCompletion(ir, { input: {} }, meta.runId);
+
+    await waitForNode(store, meta.runId, "signal-step", (s) => s === "awaiting");
+    const nodeKey = store.listNodeStates(meta.runId).find((n) => n.nodeId === "signal-step")!.nodeKey;
+
+    expect(() => interpreter.submitSignal(meta.runId, nodeKey, { approved: true, extra: "nope" })).toThrow(/validation failed/i);
+    expect(store.listNodeStates(meta.runId).find((n) => n.nodeId === "signal-step")?.state).toBe("awaiting");
+    interpreter.submitSignal(meta.runId, nodeKey, { approved: true });
+
+    const finalMeta = await done;
+    expect(finalMeta.status).toBe("completed");
+    const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "signal-step");
+    expect(node?.output).toEqual({ output: { approved: true } });
+  });
+
+  it("rejects nested extra fields for schema-backed signal payloads", async () => {
+    const ir = signalIr(`      output:
+        decision:
+          approved: boolean`);
+    const { interpreter, store, cleanup } = createTestInterpreter({});
+    cleanups.push(cleanup);
+
+    const meta = interpreter.initRun(ir, { input: {} });
+    const done = interpreter.runToCompletion(ir, { input: {} }, meta.runId);
+
+    await waitForNode(store, meta.runId, "signal-step", (s) => s === "awaiting");
+    const nodeKey = store.listNodeStates(meta.runId).find((n) => n.nodeId === "signal-step")!.nodeKey;
+
+    expect(() => interpreter.submitSignal(meta.runId, nodeKey, { decision: { approved: true, extra: "nope" } })).toThrow(/validation failed/i);
+    expect(store.listNodeStates(meta.runId).find((n) => n.nodeId === "signal-step")?.state).toBe("awaiting");
+    interpreter.submitSignal(meta.runId, nodeKey, { decision: { approved: true } });
+
+    const finalMeta = await done;
+    expect(finalMeta.status).toBe("completed");
+    const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "signal-step");
+    expect(node?.output).toEqual({ output: { decision: { approved: true } } });
+  });
+
   it("submitSignal throws when the node is not awaiting", async () => {
     const ir = signalIr();
     const { interpreter, cleanup } = createTestInterpreter({});

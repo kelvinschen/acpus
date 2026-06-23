@@ -86,7 +86,8 @@ nested: [[string]]        # array of arrays of strings
 
 ### Compilation Rules
 
-- All object types get `additionalProperties: false` (closed objects).
+- Agent and Program output schemas validate declared fields and allow extra object keys.
+- Signal output schemas are strict and reject extra object keys.
 - A field with a default value is omitted from `required` unless `required: true` is set.
 - The `?` suffix makes a field optional regardless of defaults.
 - Default values are parsed: integers, floats, `true`/`false`/`null`, quoted strings, bare strings.
@@ -435,7 +436,7 @@ Steps can reference only **previously executed** sibling steps (sequential visib
 
 The compiler validates expressions at compile time:
 
-- **Closed-schema field paths**: `steps.<id>.output.<field>` is checked against the declared output schema; unknown fields are errors.
+- **Declared output field paths**: `steps.<id>.output.<field>` and `steps.<id>.output["field"]` are checked against the declared output schema; unknown fields are errors even when Agent/Program runtime output preserves extra fields.
 - **Input field paths**: `input.<field>` is checked against the compiled input schema.
 - **Workflow metadata**: `workflow.<field>` is checked against the known metadata fields.
 - **Fanout item**: `item.<field>` is checked against the element schema when `over` resolves to a typed array.
@@ -561,4 +562,4 @@ Compiler diagnostic codes emitted during validation:
 - `${{ }}` must not wrap raw CEL fields (`when`, `until`, `over`).
 - Step references must be to visible (previously executed) steps.
 - `retry.backoff` and `timeout` strings must match `(\d+)(ms|s|m|h)?`.
-- All object types in compiled schemas are closed (`additionalProperties: false`).
+- Agent and Program outputs preserve extra runtime fields in Node state, but workflow expressions can only read declared output fields; bare `object` fields project as `{}` unless nested fields are declared. Signal output schemas remain closed (`additionalProperties: false`).

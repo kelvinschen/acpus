@@ -34,7 +34,7 @@ Leave Program Steps at the default `expect.exit_code: [0]` unless a non-zero cod
 
 Declare `output:` in YAML. Acpus injects the schema prompt and automatically retries agent replies that fail JSON extraction or schema validation. In the prompt, say what to accomplish and where to write large artifacts.
 
-The output schema is strict by default — extra fields not declared in `output:` will cause validation failure.
+Agent and Program outputs may include extra fields; Acpus preserves them in Node state, but later workflow expressions can only read fields declared in `output:`.
 
 ## 5. Use Session Keys Sparingly
 

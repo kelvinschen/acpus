@@ -25,12 +25,19 @@ describe("extractReferences", () => {
     expect(references[0]!.root).toBe("loop");
   });
 
-  it("marks index access as a non-static segment", () => {
+  it("treats numeric index access as a static bracket segment", () => {
     const { references } = extractReferences("steps.research.output[0].output.filepath");
     const ref = references[0]!;
     expect(ref.root).toBe("steps");
-    expect(isStaticReference(ref)).toBe(false);
-    expect(referenceToString(ref)).toBe("steps.research.output[].output.filepath");
+    expect(isStaticReference(ref)).toBe(true);
+    expect(referenceToString(ref)).toBe("steps.research.output[0].output.filepath");
+  });
+
+  it("treats string index access as a static field segment", () => {
+    const { references } = extractReferences('steps.collect.output["report_path"]');
+    const ref = references[0]!;
+    expect(isStaticReference(ref)).toBe(true);
+    expect(referenceToString(ref)).toBe('steps.collect.output["report_path"]');
   });
 
   it("collects standalone function names but not method calls", () => {

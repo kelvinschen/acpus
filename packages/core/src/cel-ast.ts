@@ -3,10 +3,13 @@ import { toCelParseSource } from "./expressions-shared.js";
 
 /**
  * One segment of a reference access chain. A `field` segment is a static member
- * access (`.name`); an `index` segment is a dynamic `[...]` access whose result
- * shape is unknown (so field-path validation stops there).
+ * access (`.name`); a `bracket` segment is a static `[...]` access; an `index`
+ * segment is a dynamic `[...]` access whose result shape is unknown.
  */
-export type ReferenceSegment = { kind: "field"; name: string } | { kind: "index" };
+export type ReferenceSegment =
+  | { kind: "field"; name: string }
+  | { kind: "bracket"; value: string | number }
+  | { kind: "index" };
 
 /** A resolved access chain rooted at a CEL identifier, e.g. `steps.x.output.f`. */
 export interface ExpressionReference {
@@ -57,14 +60,16 @@ export function extractReferences(source: string): ExtractResult {
 export function referenceToString(ref: ExpressionReference): string {
   let out = ref.root;
   for (const seg of ref.segments) {
-    out += seg.kind === "field" ? `.${seg.name}` : "[]";
+    if (seg.kind === "field") out += `.${seg.name}`;
+    else if (seg.kind === "bracket") out += `[${JSON.stringify(seg.value)}]`;
+    else out += "[]";
   }
   return out;
 }
 
 /** Whether a reference contains no dynamic `[index]` segments. */
 export function isStaticReference(ref: ExpressionReference): boolean {
-  return ref.segments.every((seg) => seg.kind === "field");
+  return ref.segments.every((seg) => seg.kind !== "index");
 }
 
 /** Resolve a node into a chain if it is rooted at an identifier; else null. */
@@ -93,14 +98,23 @@ function asChain(node: AstNode, scope: Set<string>): { root: string; segments: R
     if (!isAstNode(base)) return null;
     const baseChain = asChain(base, scope);
     if (!baseChain) return null;
+    const staticIndex = staticBracketIndex(indexNode);
     return {
       root: baseChain.root,
-      segments: [...baseChain.segments, { kind: "index" }],
-      inner: isAstNode(indexNode) ? [...baseChain.inner, indexNode] : baseChain.inner
+      segments: [...baseChain.segments, staticIndex !== undefined ? { kind: "bracket", value: staticIndex } : { kind: "index" }],
+      inner: staticIndex === undefined && isAstNode(indexNode) ? [...baseChain.inner, indexNode] : baseChain.inner
     };
   }
 
   return null;
+}
+
+function staticBracketIndex(node: unknown): string | number | undefined {
+  if (!isAstNode(node) || node.op !== "value") return undefined;
+  if (typeof node.args === "string") return node.args;
+  if (typeof node.args === "number") return node.args;
+  if (typeof node.args === "bigint") return Number(node.args);
+  return undefined;
 }
 
 function collect(node: AstNode, refs: ExpressionReference[], functions: string[], scope: Set<string>): void {

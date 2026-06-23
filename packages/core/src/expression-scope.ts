@@ -208,16 +208,22 @@ function fanoutItemSchema(node: IrNode, r: Resolver): Record<string, unknown> | 
   return undefined;
 }
 
-/** Resolve segments to the schema node they point at, or undefined if not closed. */
+/** Resolve segments to the declared schema node they point at, or undefined if unknown/open. */
 function resolveSchemaNode(schema: Record<string, unknown>, segments: ExpressionReference["segments"], start: number): Record<string, unknown> | undefined {
   let cur: Record<string, unknown> = schema;
   for (let i = start; i < segments.length; i++) {
-    const seg = segments[i]!;
-    if (seg.kind === "index") {
-      if (cur.type === "array" && isRecord(cur.items)) { cur = cur.items; continue; }
+    const rawSeg = segments[i]!;
+    const seg = rawSeg.kind === "bracket" && typeof rawSeg.value === "string" && cur.type === "object"
+      ? { kind: "field" as const, name: rawSeg.value }
+      : rawSeg;
+    if (seg.kind === "index" || seg.kind === "bracket") {
+      if (cur.type === "array" && (seg.kind === "index" || typeof seg.value === "number") && isRecord(cur.items)) {
+        cur = cur.items;
+        continue;
+      }
       return undefined;
     }
-    if (isClosedObject(cur)) {
+    if (hasDeclaredProperties(cur)) {
       const properties = cur.properties as Record<string, unknown>;
       if (Object.prototype.hasOwnProperty.call(properties, seg.name)) {
         cur = properties[seg.name] as Record<string, unknown>;
@@ -385,7 +391,7 @@ function checkReference(ref: ExpressionReference, ctx: ScopeContext, r: Resolver
   }
 
   if (ref.root === "item" && ctx.itemSchema) {
-    const result = walkSchema(ctx.itemSchema, ref.segments, 0);
+    const result = walkSchema(ctx.itemSchema, ref.segments, 0, { requireDeclaredFields: true });
     if (result.error) {
       r.diagnostics.error(
         "EXPR_UNKNOWN_FIELD",
@@ -469,7 +475,7 @@ function resolveStepType(ref: ExpressionReference, r: Resolver, ctx?: ScopeConte
   const schema = node.metadata.output;
   if (!isRecord(schema)) return "unknown"; // no declared schema → dyn
 
-  const result = walkSchema(schema, ref.segments, 2);
+  const result = walkSchema(schema, ref.segments, 2, { requireDeclaredFields: true });
   if (result.error && ctx) {
     r.diagnostics.error(
       "EXPR_UNKNOWN_FIELD",
@@ -552,7 +558,7 @@ function resolveReferenceKind(ref: ExpressionReference, r: Resolver, ctx?: Scope
     case "workflow":
       return walkSchema(WORKFLOW_CONTEXT_SCHEMA, ref.segments, 0).kind;
     case "item":
-      return ctx?.itemSchema ? walkSchema(ctx.itemSchema, ref.segments, 0).kind : "unknown";
+      return ctx?.itemSchema ? walkSchema(ctx.itemSchema, ref.segments, 0, { requireDeclaredFields: true }).kind : "unknown";
     default:
       return "unknown";
   }
@@ -567,32 +573,48 @@ interface SchemaWalkResult {
   error?: { field: string; available: string[] };
 }
 
-/** Walk JSON-Schema segments from `start`. Stops (kind=unknown) on any open/dyn shape. */
+/** Walk JSON-Schema segments from `start`. Stops (kind=unknown) on open/dyn shapes unless declared fields are required. */
 function walkSchema(
   schema: Record<string, unknown>,
   segments: ExpressionReference["segments"],
   start: number,
-  options: { allowOpenRootFields?: boolean } = {}
+  options: { allowOpenRootFields?: boolean; requireDeclaredFields?: boolean } = {}
 ): SchemaWalkResult {
   let cur: Record<string, unknown> = schema;
   for (let i = start; i < segments.length; i++) {
-    const seg = segments[i]!;
-    if (seg.kind === "index") {
-      if (cur.type === "array" && isRecord(cur.items)) {
-        cur = cur.items;
-        continue;
+    const rawSeg = segments[i]!;
+    const seg = rawSeg.kind === "bracket" && typeof rawSeg.value === "string" && cur.type === "object"
+      ? { kind: "field" as const, name: rawSeg.value }
+      : rawSeg;
+    if (seg.kind === "index" || seg.kind === "bracket") {
+      if (cur.type === "array") {
+        const validArrayIndex = seg.kind === "index" || typeof seg.value === "number";
+        if (validArrayIndex && isRecord(cur.items)) {
+          cur = cur.items;
+          continue;
+        }
+        if (options.requireDeclaredFields === true) {
+          return { kind: "unknown", error: { field: "[]", available: [] } };
+        }
+        return { kind: "unknown" };
+      }
+      if (options.requireDeclaredFields === true) {
+        return { kind: "unknown", error: { field: "[]", available: declaredPropertyNames(cur) } };
       }
       return { kind: "unknown" };
     }
     // field segment
-    if (isClosedObject(cur) || (options.allowOpenRootFields === true && i === start && isRecord(cur.properties))) {
+    if (hasDeclaredProperties(cur) || (options.allowOpenRootFields === true && i === start && isRecord(cur.properties))) {
       const properties = cur.properties as Record<string, unknown>;
       if (Object.prototype.hasOwnProperty.call(properties, seg.name)) {
         cur = properties[seg.name] as Record<string, unknown>;
         continue;
       }
-      if (!isClosedObject(cur)) return { kind: "unknown" };
+      if (options.requireDeclaredFields !== true && !isClosedObject(cur)) return { kind: "unknown" };
       return { kind: "unknown", error: { field: seg.name, available: Object.keys(properties) } };
+    }
+    if (options.requireDeclaredFields === true && cur.type === "object") {
+      return { kind: "unknown", error: { field: seg.name, available: [] } };
     }
     // open object / scalar / dyn — cannot validate this access
     return { kind: "unknown" };
@@ -602,6 +624,14 @@ function walkSchema(
 
 function isClosedObject(schema: Record<string, unknown>): boolean {
   return schema.type === "object" && isRecord(schema.properties) && schema.additionalProperties === false;
+}
+
+function hasDeclaredProperties(schema: Record<string, unknown>): boolean {
+  return schema.type === "object" && isRecord(schema.properties);
+}
+
+function declaredPropertyNames(schema: Record<string, unknown>): string[] {
+  return hasDeclaredProperties(schema) ? Object.keys(schema.properties as Record<string, unknown>) : [];
 }
 
 function schemaKind(schema: Record<string, unknown>): ResolvedKind {

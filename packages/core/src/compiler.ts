@@ -456,11 +456,11 @@ function validateAgentStep(step: WorkflowStep, path: string, context: CompileCon
   if ((step as Record<string, unknown>).retry !== undefined) {
     validateRetry((step as Record<string, unknown>).retry, path, context);
   }
-  compileOutputSchema(step, path, context);
+  compileOutputSchema(step, path, context, false);
 }
 
 function validateProgramStep(step: WorkflowStep, path: string, context: CompileContext): void {
-  const outputSchema = compileOutputSchema(step, path, context);
+  const outputSchema = compileOutputSchema(step, path, context, false);
   // Enforce: output schema requires capture.parse: json
   if (outputSchema) {
     const capture = step.capture as Record<string, unknown> | undefined;
@@ -505,7 +505,7 @@ function validateSignalStep(step: WorkflowStep, path: string, context: CompileCo
     }
   }
 
-  const outputSchema = compileOutputSchema(step, path, context);
+  const outputSchema = compileOutputSchema(step, path, context, true);
 
   // When `on_timeout: default`, validate the literal `default` payload at compile
   // time so an invalid default is a lint error, not a runtime surprise.
@@ -522,7 +522,7 @@ function validateSignalStep(step: WorkflowStep, path: string, context: CompileCo
   }
 }
 
-function compileOutputSchema(step: WorkflowStep, path: string, context: CompileContext): Record<string, unknown> | undefined {
+function compileOutputSchema(step: WorkflowStep, path: string, context: CompileContext, strictObjectKeys: boolean): Record<string, unknown> | undefined {
   if (!isRecord(step.output) || Object.keys(step.output).length === 0) {
     delete step.output;
     return undefined;
@@ -530,7 +530,7 @@ function compileOutputSchema(step: WorkflowStep, path: string, context: CompileC
   if ("schema" in step.output) {
     context.diagnostics.error("OUTPUT_SHAPE", "The 'schema' key in output is no longer supported as a JSON Schema escape hatch. Use the Acpus Schema DSL directly (e.g. output: { field: string }).", `${path}.output.schema`);
   }
-  const { schema, errors } = compileSchemaDsl(step.output);
+  const { schema, errors } = compileSchemaDsl(step.output, { strictObjectKeys });
   for (const err of errors) {
     context.diagnostics.error("OUTPUT_SHAPE", err.message, `${path}.output.${err.field}`);
   }

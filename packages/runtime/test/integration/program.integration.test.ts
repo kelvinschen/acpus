@@ -274,6 +274,43 @@ workflow:
     expect((node?.output as { output?: unknown })?.output).toEqual({ count: 5 });
   });
 
+  it("preserves extra program output fields but exposes only declared fields to expressions", async () => {
+    const ir = compileYaml(`
+version: 1
+name: program-output-projection
+workflow:
+  steps:
+    - id: parse_json
+      run: program
+      cmd: ["echo", '{"ok": true, "extra": "kept"}']
+      capture:
+        from: stdout
+        parse: json
+      output:
+        ok: boolean
+outputs:
+  projected: "\${{ steps.parse_json.output }}"
+  projected_json: "\${{ json(steps.parse_json.output) }}"
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: {
+        "parse_json": { parsedOutput: { ok: true, extra: "kept" } }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+    expect(meta.output).toEqual({
+      projected: { ok: true },
+      projected_json: '{"ok":true}'
+    });
+
+    const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "parse_json");
+    expect(node?.output).toEqual({ output: { ok: true, extra: "kept" }, exit_code: 0 });
+  });
+
   it("fails the node when captured output does not match program output schema", async () => {
     const ir = compileYaml(`
 version: 1

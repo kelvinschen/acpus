@@ -200,7 +200,7 @@ workflow:
       expectNoDiagnostic(result, "EXPR_UNKNOWN_FIELD");
     });
 
-    it("stops descending at an open object without false positives", () => {
+    it("rejects fields under a bare object unless nested fields are declared", () => {
       const result = lintWorkflow(
         wf(`    - id: collect
       run: agent
@@ -212,7 +212,87 @@ workflow:
       use: m
       prompt: "got \${{ steps.collect.output.meta.whatever }}"`)
       );
+      expect(result.ok).toBe(false);
+      expectDiagnostic(result, { code: "EXPR_UNKNOWN_FIELD", message: "whatever" });
+    });
+
+    it("rejects undeclared string-index output fields", () => {
+      const result = lintWorkflow(
+        wf(`    - id: collect
+      run: agent
+      use: m
+      prompt: hi
+      output: { report_path: string }
+    - id: use
+      run: agent
+      use: m
+      prompt: "got \${{ steps.collect.output[\\"extra\\"] }}"`)
+      );
+      expect(result.ok).toBe(false);
+      expectDiagnostic(result, { code: "EXPR_UNKNOWN_FIELD", message: "extra" });
+    });
+
+    it("rejects dynamic indexes on schema object outputs", () => {
+      const result = lintWorkflow(
+        wf(`    - id: collect
+      run: agent
+      use: m
+      prompt: hi
+      output: { report_path: string }
+    - id: use
+      run: agent
+      use: m
+      prompt: "got \${{ steps.collect.output[input.key] }}"`)
+      );
+      expect(result.ok).toBe(false);
+      expectDiagnostic(result, { code: "EXPR_UNKNOWN_FIELD", message: "[]" });
+    });
+
+    it("rejects indexes into untyped output arrays", () => {
+      const result = lintWorkflow(
+        wf(`    - id: collect
+      run: agent
+      use: m
+      prompt: hi
+      output: { items: array }
+    - id: use
+      run: agent
+      use: m
+      prompt: "got \${{ steps.collect.output.items[0] }}"`)
+      );
+      expect(result.ok).toBe(false);
+      expectDiagnostic(result, { code: "EXPR_UNKNOWN_FIELD", message: "[]" });
+    });
+
+    it("allows indexes into output arrays with declared item schemas", () => {
+      const result = lintWorkflow(
+        wf(`    - id: collect
+      run: agent
+      use: m
+      prompt: hi
+      output: { items: [{ title: string }] }
+    - id: use
+      run: agent
+      use: m
+      prompt: "got \${{ steps.collect.output.items[0].title }}"`)
+      );
       expectOk(result);
+    });
+
+    it("rejects string indexes on output arrays instead of treating them as object fields", () => {
+      const result = lintWorkflow(
+        wf(`    - id: collect
+      run: agent
+      use: m
+      prompt: hi
+      output: { items: [{ title: string }] }
+    - id: use
+      run: agent
+      use: m
+      prompt: "got \${{ steps.collect.output.items[\\"0\\"].hidden }}"`)
+      );
+      expect(result.ok).toBe(false);
+      expectDiagnostic(result, { code: "EXPR_UNKNOWN_FIELD", message: "[]" });
     });
 
     it("validates the fanout item element schema", () => {
@@ -233,6 +313,26 @@ workflow:
       );
       expect(result.ok).toBe(false);
       expectDiagnostic(result, { code: "EXPR_UNKNOWN_FIELD", message: "fanout item" });
+    });
+
+    it("does not infer fanout item schema through a string-indexed array access", () => {
+      const result = lintWorkflow(
+        wf(`    - id: plan
+      run: agent
+      use: m
+      prompt: hi
+      output: { topics: [{ topic: string, focus: string }] }
+    - id: fan
+      fanout:
+        over: steps.plan.output.topics["0"]
+        do:
+          - id: each
+            run: agent
+            use: m
+            prompt: "review \${{ item.hidden }}"`)
+      );
+      expect(result.ok).toBe(false);
+      expectDiagnostic(result, { code: "EXPR_UNKNOWN_FIELD", message: "[]" });
     });
 
     it("accepts workflow metadata fields in expressions", () => {

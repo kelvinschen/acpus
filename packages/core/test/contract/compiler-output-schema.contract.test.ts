@@ -29,7 +29,6 @@ workflow:
         plan_md: { type: "string" },
         commit_sha: { type: "string" }
       },
-      additionalProperties: false,
       required: ["plan_md"]
     });
   });
@@ -66,13 +65,11 @@ workflow:
               description: { type: "string" },
               severity: { type: "string" }
             },
-            additionalProperties: false,
             required: ["description"]
           }
         },
         summary: { type: "string" }
       },
-      additionalProperties: false,
       required: ["issues"]
     });
   });
@@ -116,15 +113,12 @@ workflow:
               properties: {
                 count: { type: "integer" }
               },
-              additionalProperties: false,
               required: ["count"]
             }
           },
-          additionalProperties: false,
           required: ["title", "tags"]
         }
       },
-      additionalProperties: false,
       required: ["report"]
     });
   });
@@ -253,7 +247,6 @@ workflow:
     expect(node?.metadata.output).toEqual({
       type: "object",
       properties: { count: { type: "integer" } },
-      additionalProperties: false,
       required: ["count"]
     });
   });
@@ -387,7 +380,7 @@ workflow:
     expect(compiled.ir?.root.children?.[0]?.metadata.output).toBeUndefined();
   });
 
-  it("compiles equivalent output schema metadata across agent, program, and signal nodes", () => {
+  it("compiles open agent/program output metadata and strict signal output metadata", () => {
     const source = `
 version: 1
 name: shared-output-schema
@@ -417,7 +410,12 @@ workflow:
     expect(result.ok).toBe(true);
     const [agent, program, signal] = result.ir?.root.children ?? [];
     expect(agent?.metadata.output).toEqual(program?.metadata.output);
-    expect(program?.metadata.output).toEqual(signal?.metadata.output);
+    expect(agent?.metadata.output).not.toHaveProperty("additionalProperties");
+    const agentOutput = agent?.metadata.output as Record<string, unknown>;
+    expect(signal?.metadata.output).toEqual({
+      ...agentOutput,
+      additionalProperties: false
+    });
   });
 
   it("stores program-step capture in metadata.capture (not metadata.output)", () => {

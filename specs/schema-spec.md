@@ -20,7 +20,9 @@ The Acpus Schema DSL is a concise YAML-native syntax for declaring structured da
 - A single-item YAML list containing `string` MUST declare an array of strings.
 - A single-item YAML list containing a nested object schema map MUST declare an array of objects matching that nested schema.
 - Compiled schemas MUST include nested object and array item structure.
-- Compiled schemas MUST include `additionalProperties: false` on all object types, including root objects, nested objects, and bare `object` type fields.
+- The Schema DSL compiler MUST support strict and open object-key modes.
+- In strict object-key mode, compiled schemas MUST include `additionalProperties: false` on all object types, including root objects, nested objects, and bare `object` type fields.
+- In open object-key mode, compiled object schemas MUST omit `additionalProperties: false`, so validation allows fields beyond the declared properties.
 - Object-form field declarations MAY use only `type`, `required`, `default`, and `description` keys.
 - Object-form field declarations with unsupported schema keys such as `items`, `properties`, or `elements` MUST be rejected instead of silently ignored.
 - Object-form `description` MUST be preserved only when it is a string.
@@ -30,5 +32,5 @@ The Acpus Schema DSL is a concise YAML-native syntax for declaring structured da
 
 - Compiler tests MUST cover Schema DSL primitive fields, optional fields, aliases, defaults, object-form declarations, and invalid field types.
 - Compiler tests MUST cover nested objects, arrays of objects, arrays of primitives, nested arrays, and optional nested fields.
-- Compiler tests MUST cover closed object compilation with `additionalProperties: false`.
+- Compiler tests MUST cover strict object compilation with `additionalProperties: false` and open object compilation without it.
 - Compiler tests MUST cover unsupported object-form schema keys.

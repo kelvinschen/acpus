@@ -152,12 +152,10 @@ describe("@acpus/core compiler: canonical fixtures", () => {
             properties: {
               description: { type: "string" },
             },
-            additionalProperties: false,
             required: ["description"],
           },
         },
       },
-      additionalProperties: false,
       required: ["verdict", "issues"]
     });
     const testBranch = innerParallel?.branches?.[1]?.child.children?.[0];
@@ -246,7 +244,6 @@ describe("@acpus/core compiler: canonical fixtures", () => {
         round: { type: "integer" },
         ok: { type: "boolean" }
       },
-      additionalProperties: false,
       required: ["item", "round", "ok"]
     });
   });

@@ -275,7 +275,7 @@ export class WorkflowInterpreter {
     // Feed the recorded output into the step context so downstream decisions
     // re-derive identically. Leaves contribute their output; containers below
     // populate ctx.steps for their own children as they descend.
-    if (rec.output !== undefined) ctx.steps[node.id] = rec.output;
+    if (rec.output !== undefined) ctx.steps[node.id] = expressionOutputForNode(node, rec.output);
 
     switch (node.kind) {
       case "pipeline":
@@ -329,7 +329,7 @@ export class WorkflowInterpreter {
             if (reached.size > before) anyChildReached = true;
             const childKey = withNodeKeyPrefix(keyPrefix, resolveNodeKey(child.keyTemplate, loopDynamic));
             const recordedOutput = recorded.get(childKey)?.output;
-            lastOutput = recordedOutput !== undefined ? primaryOutput(recordedOutput) : lastOutput;
+            lastOutput = recordedOutput !== undefined ? primaryOutput(expressionOutputForNode(child, recordedOutput)) : lastOutput;
           }
           if (!anyChildReached) break;
         }
@@ -441,8 +441,9 @@ export class WorkflowInterpreter {
     // Check if already completed (from prior run)
     const existing = this.store.readNodeState(runId, nodeKey);
     if (existing?.state === "completed") {
-      ctx.steps[node.id] = existing.output;
-      return existing.output;
+      const expressionOutput = expressionOutputForNode(node, existing.output);
+      ctx.steps[node.id] = expressionOutput;
+      return expressionOutput;
     }
     if (existing?.state === "cancelled" || existing?.state === "paused") {
       throw new NodeAbortedError(nodeKey, existing.state);
@@ -540,10 +541,12 @@ export class WorkflowInterpreter {
           throw new Error(`Unknown node kind: ${node.kind}`);
       }
 
+      const expressionOutput = expressionOutputForNode(node, output);
+
       // If a Run-level resume already re-entered this node, a late result from
       // the old attempt must not overwrite the newer attempt's state.
       if (this.runControl.isStaleAttemptOnDisk(runId, nodeKey, state.attempt, state.startedAt)) {
-        return output;
+        return expressionOutput;
       }
       this.runControl.syncInFrameAttemptFromDisk(runId, nodeKey, state);
       this.syncAgentTelemetryFromDisk(runId, nodeKey, state);
@@ -565,13 +568,13 @@ export class WorkflowInterpreter {
       await this.emitNodeLifecycle(runId, "onNodeComplete", node, nodeKey, state, dynamic, ctx, completeFrom);
 
       // Add output to step context
-      ctx.steps[node.id] = output;
+      ctx.steps[node.id] = expressionOutput;
 
       if (completeScope) {
-        throw new ScopeCompleted(output);
+        throw new ScopeCompleted(expressionOutput);
       }
 
-      return output;
+      return expressionOutput;
     } catch (error) {
       if (error instanceof ScopeCompleted) {
         throw error;
@@ -1373,7 +1376,7 @@ export class WorkflowInterpreter {
 
     const state = this.store.readNodeState(runId, nodeKey);
     if (state?.state === "completed" && state.output !== undefined && node.metadata.implicit !== true) {
-      ctx.steps[node.id] = state.output;
+      ctx.steps[node.id] = expressionOutputForNode(node, state.output);
       return undefined;
     }
 
@@ -1715,6 +1718,43 @@ function hookAgentTelemetry(state: NodeExecutionState): HookAgentTelemetry | und
 
 function primaryOutput(value: unknown): unknown {
   return isRecord(value) && "output" in value ? value.output : value;
+}
+
+function expressionOutputForNode(node: IrNode, output: unknown): unknown {
+  if ((node.kind !== "run.agent" && node.kind !== "run.program") || !isRecord(output)) {
+    return output;
+  }
+  const schema = node.metadata.output;
+  if (!isRecord(schema) || !("output" in output)) {
+    return output;
+  }
+  return {
+    ...output,
+    output: projectValueBySchema(output.output, schema)
+  };
+}
+
+function projectValueBySchema(value: unknown, schema: Record<string, unknown>): unknown {
+  if (schema.type === "array") {
+    if (!Array.isArray(value) || !isRecord(schema.items)) return value;
+    return value.map((item) => projectValueBySchema(item, schema.items as Record<string, unknown>));
+  }
+
+  if (schema.type !== "object" || !isRecord(value)) {
+    return value;
+  }
+
+  if (!isRecord(schema.properties)) {
+    return {};
+  }
+
+  const projected: Record<string, unknown> = {};
+  for (const [key, childSchema] of Object.entries(schema.properties)) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) {
+      projected[key] = isRecord(childSchema) ? projectValueBySchema(value[key], childSchema) : value[key];
+    }
+  }
+  return projected;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

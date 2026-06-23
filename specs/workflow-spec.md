@@ -72,8 +72,8 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - An Agent Step MAY declare `output` using the Acpus Schema DSL defined in [Schema Spec](schema-spec.md).
 - An Agent Step `output` declared with the Acpus Schema DSL MUST compile nested object and array item structure into the Agent Step output schema stored in the IR.
 - An Agent Step MUST declare `output` as an object when `output` is present.
-- An Agent Step with `output` present MUST produce a JSON object that matches the declared output schema, exposed at `steps.<id>.output`.
-- An Agent Step result MUST be exposed as an envelope `{ output }` at `steps.<id>`, so the produced object is read through `steps.<id>.output`.
+- An Agent Step with `output` present MUST produce a JSON object whose declared fields match the output schema; additional fields MUST be accepted and preserved in persisted Node output.
+- An Agent Step result MUST be exposed as an envelope `{ output }` at `steps.<id>`, so the produced object is read through `steps.<id>.output`; workflow expressions MUST see only the fields declared in `output`.
 - Agent response output parse failures and schema failures MUST be handled as continuation retries when retry attempts remain.
 - `retry.max` MUST count extra retry attempts after the initial execution.
 - An Agent Step with `output` present and no explicit `retry.max` MUST default to `retry.max: 2` for Agent response output parse and schema failures.
@@ -121,7 +121,8 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A Program Step `output` declared with the Acpus Schema DSL MUST compile nested object and array item structure into the Program Step output schema stored in the IR.
 - A Program Step MUST declare `output` as an object when `output` is present.
 - A Program Step with `output` present MUST declare `capture.parse: json`; output schema validation requires parsed JSON output.
-- A Program Step with `output` present MUST produce a JSON object that matches the declared output schema.
+- A Program Step with `output` present MUST produce a JSON object whose declared fields match the output schema; additional fields MUST be accepted and preserved in persisted Node output.
+- A Program Step result MUST expose only declared output fields to workflow expressions while preserving the full captured output in persisted Node output.
 - Program Step output schema validation failures MUST be treated as non-recoverable failures (the Node fails with `failureKind: "schema"`).
 - Program Step output schema validation failure diagnostics MUST include schema validation details and SHOULD include a bounded captured-output preview.
 
@@ -199,10 +200,10 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 
 - A Signal Node MUST use `run: signal`.
 - A Signal Node MUST declare `prompt` as an operator-facing description template string.
-- A Signal Node MAY declare `output` using the Acpus Schema DSL defined in [Schema Spec](schema-spec.md); when omitted or declared as an empty map (`output: {}`), any injected payload object is accepted without validation, mirroring Agent and Program steps.
+- A Signal Node MAY declare `output` using the Acpus Schema DSL defined in [Schema Spec](schema-spec.md); when omitted or declared as an empty map (`output: {}`), any injected payload object is accepted without validation.
 - A Signal Node MUST enter the `awaiting` Node state while blocked on an external decision.
 - An external decision MUST be delivered through the Run Supervisor signal channel as a JSON payload object.
-- When `output` is declared, the injected payload MUST validate against it; a non-conforming payload MUST be rejected without resolving the Node, and the Node MUST remain `awaiting`.
+- When `output` is declared, the injected payload MUST validate strictly against it, including rejecting undeclared extra fields; a non-conforming payload MUST be rejected without resolving the Node, and the Node MUST remain `awaiting`.
 - A Signal Node MUST produce an output envelope whose `output` field is exactly the injected payload object, with no added envelope metadata.
 - A Signal Node MAY declare `timeout` as a duration string or number (in milliseconds). When `timeout` is declared, `on_timeout` MUST also be declared.
 - A Signal Node with no `timeout` MUST wait indefinitely for an external decision (or a cancel).
@@ -246,10 +247,10 @@ The compiler MUST statically validate expressions against the compiled IR so tha
 
 - CEL syntax, built-ins, macros, function overloads, unknown roots, and unknown functions MUST be validated through `cel-js` with Acpus context roots and custom functions registered. Acpus MUST NOT maintain a separate whitelist for standard `cel-js` built-ins or macros.
 - Expression references MUST be extracted from the parsed CEL AST, not by text matching.
-- A `steps.<id>.output.<path>` reference whose `<id>` declares a closed output schema (an Agent, Program, or Signal Node) MUST be rejected when `<path>` names a field absent from that schema; the diagnostic MUST list the available fields. Path validation MUST stop, accepting the reference, at the first dynamic index, open object, untyped array element, or composite (pipeline/loop/fanout/parallel/switch/guard) output projection.
-- An `input.<path>` reference MUST be validated against the compiled input schema under the same closed-schema rule.
+- A `steps.<id>.output.<path>` reference whose `<id>` declares an output schema (an Agent, Program, or Signal Node) MUST be rejected when `<path>` names a field absent from the schema's declared properties; the diagnostic MUST list the available fields. Static string indexes such as `steps.<id>.output["field"]` MUST be treated as field references. Dynamic indexes MUST be accepted only when they index an array with declared `items`; path validation MUST stop, accepting the reference, at the first scalar, unknown, or composite (pipeline/loop/fanout/parallel/switch/guard) output projection.
+- An `input.<path>` reference MUST be validated against the compiled input schema where declared properties make the path statically knowable, and MUST fail quietly at open or dynamic input shapes.
 - A `workflow.<path>` reference MUST be validated against the workflow metadata context fields.
-- Inside a `fanout` body whose `over` resolves to a typed array element schema, an `item.<path>` reference MUST be validated against that element schema under the same closed-schema rule.
+- Inside a `fanout` body whose `over` resolves to a typed array element schema, an `item.<path>` reference MUST be validated against that element schema under the same declared-property rule.
 - A scope-local root (`loop`, `item`, `item_id`, `item_index`) used outside the composite body that introduces it MUST be rejected.
 - A `steps.<id>` reference to a step that is not visible at the referencing position (a later sibling, or a step in a sibling branch) MUST be rejected; the diagnostic MUST list the visible steps.
 - A `${{ }}` expression spliced into a Program Step `cmd` element that statically evaluates to a non-scalar value (an object, an array, or a `json(...)` call) MUST produce a warning advising the author to route the value through `env:`. Values placed in `env:` MUST NOT be flagged.
@@ -280,7 +281,8 @@ The compiler MUST statically validate expressions against the compiled IR so tha
 - Compiler tests MUST cover Signal Node shape validation, optional `output` schema compilation, and `default` payload validation against a declared `output` schema.
 - Compiler tests MUST cover include expansion and include cycle diagnostics.
 - Compiler tests MUST cover expression collection and validation.
-- Compiler tests MUST cover scope-aware expression validation: closed-schema field-path rejection with available-field reporting, fail-quiet acceptance of dyn / open / composite shapes, out-of-scope local roots, step visibility, fanout `item` element-schema validation, and the non-scalar-in-`cmd` warning.
+- Compiler tests MUST cover scope-aware expression validation: declared-property field-path rejection with available-field reporting, fail-quiet acceptance of dyn / composite shapes, out-of-scope local roots, step visibility, fanout `item` element-schema validation, and the non-scalar-in-`cmd` warning.
+- Compiler tests MUST cover declared-property field-path rejection for open Agent and Program output schemas, including static string indexes and dynamic indexes on schema object outputs.
 - Compiler tests MUST cover workflow metadata context references and rejection of unknown `workflow.*` fields.
 - Compiler tests MUST assert that every IR Node kind has an entry in the shared composite contract.
 - Compiler tests MUST cover output schema validation.
@@ -291,5 +293,7 @@ The compiler MUST statically validate expressions against the compiled IR so tha
 - Runtime tests MUST cover Program Step default fail-fast on non-allow-listed exit codes and `expect.exit_code` opt-out.
 - Runtime tests MUST cover deterministic replay.
 - Runtime tests MUST cover Signal Nodes: entering `awaiting`, schema-validated payload injection, rejection of a non-conforming payload while staying `awaiting`, and `on_timeout` `fail` and `default` behavior.
+- Runtime tests MUST cover Agent and Program output extras being preserved in persisted Node state while workflow expressions and composite parent outputs see only declared fields.
+- Runtime tests MUST cover Signal Node rejection of undeclared extra payload fields when an output schema is declared.
 - Runtime tests MUST cover top-level `outputs` projection and failure when declared `outputs` cannot be evaluated.
 - Runtime tests MUST cover workflow metadata context in top-level `outputs`, empty source path fallback, retry/resume context reconstruction, and subworkflow child metadata context.

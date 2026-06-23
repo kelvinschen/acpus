@@ -176,6 +176,34 @@ workflow:
     const result = compileWorkflow(src);
     expect(result.ok).toBe(true);
     const gate = result.ir!.root.children!.find((n) => n.id === "gate");
-    expect(gate?.metadata.output).toMatchObject({ type: "object", properties: { approved: { type: "boolean" } } });
+    expect(gate?.metadata.output).toMatchObject({
+      type: "object",
+      properties: { approved: { type: "boolean" } },
+      additionalProperties: false
+    });
+  });
+
+  it("rejects signal.default with nested extra fields", () => {
+    const src = `
+version: 1
+name: test
+workflow:
+  steps:
+    - id: gate
+      run: signal
+      prompt: "OK?"
+      timeout: 1s
+      on_timeout: default
+      default:
+        decision:
+          approved: true
+          extra: nope
+      output:
+        decision:
+          approved: boolean
+`;
+    const result = lintWorkflow(src);
+    expect(result.ok).toBe(false);
+    expectDiagnostic(result, { code: "SIGNAL_DEFAULT" });
   });
 });

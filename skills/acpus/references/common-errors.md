@@ -85,13 +85,13 @@ For fanout-and-synthesize workflows, do not pass `steps.<fanout_id>.output` raw 
 
 ## Schema Errors
 
-### `failureKind: "schema"` — extra fields in agent output
+### `EXPR_UNKNOWN_FIELD` — reading extra fields from agent or program output
 
-**Symptom:** Agent step fails schema validation after auto-retries exhausted.
+**Symptom:** Lint/dry-run rejects a reference such as `steps.review.output.notes` even though the Agent or Program returned `notes`.
 
-**Root cause:** Output schema is strict by default — any field not declared in `output:` causes validation failure. Agents may return extra fields (reasoning, metadata, etc.).
+**Root cause:** Agent and Program extra output fields are preserved in Node state, but workflow expressions can only depend on fields declared in `output:`.
 
-**Fix:** Only declare fields you need in `output:`. The prompt should say "Output schema is strict — no extra fields allowed." If the agent still adds extras, simplify the output shape.
+**Fix:** Add every field that downstream workflow logic needs to `output:`. Keep non-contract detail in artifacts or leave it as persisted Node output for inspection.
 
 ### `failureKind: "capture"` — Program Step stdout not JSON
 
@@ -343,8 +343,8 @@ is not.
 A reference to a child id that does not exist, or a field path the child does not
 declare, fails at projection time (after children complete).
 
-**Fix:** Reference only real pipeline children, and use closed-schema field
-paths the child declares:
+**Fix:** Reference only real pipeline children, and use declared field paths the
+child exposes:
 ```yaml
 - id: setup_and_validate
   pipeline:

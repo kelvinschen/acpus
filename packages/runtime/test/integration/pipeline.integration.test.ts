@@ -157,6 +157,47 @@ workflow:
     });
   });
 
+  it("explicit pipeline default output uses declared-field projection from its final child", async () => {
+    const ir = compileYaml(`
+version: 1
+name: explicit-pipeline-projected-default-output
+agents:
+  coder:
+    type: command
+    use: echo stub
+workflow:
+  steps:
+    - id: bundle
+      pipeline:
+        - id: last
+          run: agent
+          use: coder
+          prompt: last
+          output:
+            value: string
+            meta: object
+outputs:
+  bundle_output: "\${{ steps.bundle.output }}"
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      agentResponses: {
+        last: { value: "last", extra: "hidden", meta: { secret: "hidden" } }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+    expect(meta.output).toEqual({ bundle_output: { value: "last", meta: {} } });
+    expect(store.listNodeStates(meta.runId).find((n) => n.nodeId === "last")?.output).toEqual({
+      output: { value: "last", extra: "hidden", meta: { secret: "hidden" } }
+    });
+    expect(store.listNodeStates(meta.runId).find((n) => n.nodeId === "bundle")?.output).toEqual({
+      output: { value: "last", meta: {} }
+    });
+  });
+
   it("explicit pipeline outputs projection can expose intermediate child values", async () => {
     const ir = compileYaml(`
 version: 1

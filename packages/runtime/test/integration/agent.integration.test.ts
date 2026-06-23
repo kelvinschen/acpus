@@ -87,6 +87,70 @@ workflow:
     expect(node?.output).toEqual({ output: { score: 8.5 } });
   });
 
+  it("preserves extra agent output fields but exposes only declared fields to expressions", async () => {
+    const ir = compileYaml(`
+version: 1
+name: agent-output-projection
+agents:
+  coder:
+    type: command
+    use: "echo stub"
+workflow:
+  steps:
+    - id: review
+      run: agent
+      use: coder
+      prompt: "Output structured data"
+      output:
+        ok: boolean
+        report:
+          title: string
+          items:
+            - name: string
+        meta: object
+outputs:
+  projected: "\${{ steps.review.output }}"
+  projected_json: "\${{ json(steps.review.output) }}"
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      agentResponses: {
+        review: {
+          ok: true,
+          extra: "kept",
+          report: {
+            title: "summary",
+            extra: "hidden",
+            items: [{ name: "one", extra: "hidden" }]
+          },
+          meta: { secret: "hidden" }
+        }
+      }
+    });
+    cleanups.push(cleanup);
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+    expect(meta.output).toEqual({
+      projected: { ok: true, report: { title: "summary", items: [{ name: "one" }] }, meta: {} },
+      projected_json: '{"meta":{},"ok":true,"report":{"items":[{"name":"one"}],"title":"summary"}}'
+    });
+
+    const node = store.listNodeStates(meta.runId).find((n) => n.nodeId === "review");
+    expect(node?.output).toEqual({
+      output: {
+        ok: true,
+        extra: "kept",
+        report: {
+          title: "summary",
+          extra: "hidden",
+          items: [{ name: "one", extra: "hidden" }]
+        },
+        meta: { secret: "hidden" }
+      }
+    });
+  });
+
   it("rejects blank rendered session_key before dispatching to the agent executor", async () => {
     const ir = compileYaml(`
 version: 1
