@@ -1,5 +1,19 @@
 # @acpus/runtime
 
+## 0.7.0
+
+### Minor Changes
+
+- d2cc4d7: Add first-class `if` conditional workflow nodes with `then` and optional `else` branches, selected-branch output propagation, runtime execution/replay/fork support, and CLI/TUI display support.
+
+  Keep `switch` exhaustive by requiring `default`, and update built-in workflow examples plus generated workflow visualization pages to use and render `if` where it replaces two-way routing.
+
+### Patch Changes
+
+- Updated dependencies [d2cc4d7]
+- Updated dependencies [40fea23]
+  - @acpus/core@0.6.0
+
 ## 0.6.6
 
 ### Patch Changes
