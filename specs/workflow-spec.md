@@ -166,7 +166,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A `switch` Node MUST select at most one branch.
 - A `switch` Node MUST evaluate cases in order.
 - A `switch` Node case MAY declare `when` as a boolean or a CEL expression string.
-- A `switch` Node MAY declare a default branch.
+- A `switch` Node MUST declare a default branch.
 - A `switch` Node MUST produce `steps.<id>.output` as the selected branch pipeline's primary output.
 - A `loop` Node MAY declare `until` as a boolean or a CEL expression string.
 - A `loop` Node MUST declare `max_iterations`.
@@ -276,6 +276,7 @@ The compiler MUST statically validate expressions against the compiled IR so tha
 - Compiler tests MUST cover Program Step shape validation.
 - Compiler tests MUST cover `expect.exit_code` shape validation.
 - Compiler tests MUST cover composite Node compilation.
+- Compiler tests MUST cover rejection of `switch` Nodes without a default branch.
 - Compiler tests MUST cover unknown-field rejection on Nodes nested inside composite `do` and `parallel` lists.
 - Compiler tests MUST cover Guard Node shape validation, compilation, and expression collection.
 - Compiler tests MUST cover Signal Node shape validation, optional `output` schema compilation, and `default` payload validation against a declared `output` schema.

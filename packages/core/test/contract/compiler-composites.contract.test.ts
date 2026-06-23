@@ -229,7 +229,7 @@ workflow:
     expect(switchNode?.branches?.[0]?.child.children?.map((c) => c.id)).toEqual(["go"]);
   });
 
-  it("switch without default: only case branches", () => {
+  it("rejects switch without default", () => {
     const source = `
 version: 1
 name: switch-no-default
@@ -246,12 +246,13 @@ workflow:
                 run: program
                 cmd: ["echo", "ok"]
 `;
-    const result = compileWorkflow(source);
-    expect(result.ok).toBe(true);
-    const switchNode = result.ir?.root.children?.[0];
-    expect(switchNode?.outputMerge).toBe("selected");
-    expect(switchNode?.branches?.length).toBe(1);
-    expect(switchNode?.branches?.[0]?.id).toBe("case_1");
+    const result = lintWorkflow(source);
+    expect(result.ok).toBe(false);
+    expectDiagnostic(result, {
+      code: "SPEC_SHAPE",
+      path: "$.workflow.steps[0].switch",
+      message: "Missing required property 'default'"
+    });
   });
 
   it("guard: compiles deterministic scoped control actions", () => {

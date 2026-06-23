@@ -295,14 +295,14 @@ retry:                          # Agent + Program only
         do:
           - id: <string>
             # ... full step
-    default:                # optional
+    default:                # required
       do:
         - id: <string>
           # ... full step
 ```
 
 - Cases evaluated in order; first truthy match wins.
-- No default → unmatched cases fail the node.
+- `default` is required so unmatched cases have an explicit branch.
 - `steps.<id>.output` is the selected branch pipeline's primary output (`selected` projection).
 - `when` as boolean literal is coerced to string at compile time.
 

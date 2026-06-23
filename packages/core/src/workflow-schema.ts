@@ -253,6 +253,7 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
     switchSpec: {
       type: "object",
       additionalProperties: false,
+      required: ["cases", "default"],
       properties: {
         cases: {
           type: "array",

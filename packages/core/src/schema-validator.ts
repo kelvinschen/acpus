@@ -295,7 +295,7 @@ function classifyRequired(missing: string, path: string): string {
     case "on_timeout":
       return "SIGNAL_ON_TIMEOUT";
     case "default":
-      return "SIGNAL_DEFAULT";
+      return ctx === "switch-spec" ? "SPEC_SHAPE" : "SIGNAL_DEFAULT";
     case "max_iterations":
       return "LOOP_MAX_ITERATIONS";
     case "when":
