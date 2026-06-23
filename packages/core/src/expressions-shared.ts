@@ -9,6 +9,7 @@ export const EXPRESSION_PATTERN = /\$\{\{\s*([\s\S]*?)\s*\}\}/g;
 const RAW_CEL_FIELD_NAMES = new Set(["over", "until", "when"]);
 
 export function rawCelFieldName(pathOrKey: string): string | undefined {
+  if (/\.if\.condition$/.test(pathOrKey)) return "condition";
   const fieldName = pathOrKey.split(".").pop() ?? "";
   return RAW_CEL_FIELD_NAMES.has(fieldName) ? fieldName : undefined;
 }

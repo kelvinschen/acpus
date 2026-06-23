@@ -16,6 +16,7 @@ describe("formatRunShow", () => {
     it.each([
       ["non-container node", node({}), true],
       ["completed container without unique errors", node({ nodeKey: "workflow", nodeId: "workflow", kind: "pipeline" }), false],
+      ["completed if container without unique errors", node({ nodeKey: "workflow/maybe", nodeId: "maybe", kind: "if" }), false],
       ["running container", node({ nodeKey: "workflow", nodeId: "workflow", kind: "pipeline", state: "running" }), true],
       ["pending container", node({ nodeKey: "workflow/loop", nodeId: "loop", kind: "loop", state: "pending", attempt: 0 }), true],
       ["failed container with unique error", node({ nodeKey: "workflow", nodeId: "workflow", kind: "pipeline", state: "failed", error: "pipeline error" }), true],

@@ -26,6 +26,7 @@ KIND_META = {
     "program": {"symbol": "$", "color": "#d79921", "label": "Program"},
     "parallel": {"symbol": "\u25a5", "color": "#83a598", "label": "Parallel"},
     "fanout": {"symbol": "\u25ec", "color": "#b16286", "label": "Fanout"},
+    "if": {"symbol": "?", "color": "#83a598", "label": "If"},
     "switch": {"symbol": "\u25c7", "color": "#458588", "label": "Switch"},
     "loop": {"symbol": "\u21bb", "color": "#fabd2f", "label": "Loop"},
     "guard": {"symbol": "\u25c8", "color": "#fb4934", "label": "Guard"},
@@ -172,6 +173,16 @@ def normalize_node(node):
         if sw.get("default") is not None:
             default = [normalize_node(n) for n in (sw["default"].get("do") or [])]
         return {"id": nid, "kind": "switch", "cases": cases, "default": default, **common}
+    if "if" in node:
+        cond = node["if"] or {}
+        return {
+            "id": nid,
+            "kind": "if",
+            "condition": yaml_dump(cond.get("condition")),
+            "then": [normalize_node(n) for n in (cond.get("then") or [])],
+            "else": [normalize_node(n) for n in (cond.get("else") or [])] if cond.get("else") is not None else None,
+            **common,
+        }
     if "guard" in node:
         g = node["guard"] or {}
         return {
@@ -229,7 +240,7 @@ def normalize_node(node):
 def count_kinds(nodes, acc):
     for node in nodes:
         acc[node["kind"]] = acc.get(node["kind"], 0) + 1
-        for child_key in ("body", "default"):
+        for child_key in ("body", "default", "then", "else"):
             child = node.get(child_key)
             if isinstance(child, list):
                 count_kinds(child, acc)
@@ -364,7 +375,7 @@ def attach_run(nodes, by_id):
     """Recurse the model tree, attaching matching run states by node id."""
     for node in nodes:
         node["runStates"] = by_id.get(node["id"], [])
-        for child_key in ("body", "default"):
+        for child_key in ("body", "default", "then", "else"):
             child = node.get(child_key)
             if isinstance(child, list):
                 attach_run(child, by_id)
@@ -465,7 +476,7 @@ TEMPLATE = r"""<!DOCTYPE html>
   --red:#fb4934; --green:#b8bb26; --yellow:#fabd2f; --blue:#83a598;
   --purple:#d3869b; --aqua:#8ec07c; --orange:#fe8019;
   --k-pipeline:#98971a; --k-agent:#689d6a; --k-program:#d79921; --k-parallel:#83a598;
-  --k-fanout:#b16286; --k-switch:#458588; --k-loop:#fabd2f; --k-guard:#fb4934;
+  --k-fanout:#b16286; --k-if:#83a598; --k-switch:#458588; --k-loop:#fabd2f; --k-guard:#fb4934;
   --k-signal:#a89984; --k-subworkflow:#928374;
 }
 *{box-sizing:border-box}
@@ -707,6 +718,7 @@ function keyfield(node){
     case "guard": return node.when?("when: "+node.when):"";
     case "loop": return "until: "+(node.until||"-")+(node.max_iterations?("  ·  max "+node.max_iterations):"");
     case "fanout": return "over: "+(node.over||"-")+(node.fanoutKey?("  ·  key "+node.fanoutKey):"");
+    case "if": return node.condition?("condition: "+node.condition):"";
     case "switch": return ((node.cases||[]).length)+" case(s)"+(node.default?" + default":"");
     case "parallel": return (node.join?("join: "+node.join+"  ·  "):"")+((node.branches||[]).length)+" branch(es)";
     case "subworkflow": return node.ref?("ref: "+node.ref):"";
@@ -715,7 +727,7 @@ function keyfield(node){
   }
 }
 
-const COMPOSITE = new Set(["pipeline","loop","fanout","parallel","switch","subworkflow"]);
+const COMPOSITE = new Set(["pipeline","loop","fanout","parallel","if","switch","subworkflow"]);
 
 // Distinct instance labels (fanout lanes / loop rounds) found in a subtree's
 // run states — the container node itself runs once, so the multiplicity lives
@@ -825,6 +837,16 @@ function makeComposite(node){
       col.appendChild(lab); col.appendChild(renderScope(br.body)); cols.appendChild(col);
     });
     body.appendChild(cols);
+  }else if(node.kind==="if"){
+    const lanes=document.createElement("div"); lanes.className="switch-lanes";
+    const thenLane=document.createElement("div"); thenLane.className="switch-lane";
+    const thenLabel=document.createElement("div"); thenLabel.className="sl-label"; thenLabel.textContent="then";
+    thenLane.appendChild(thenLabel); thenLane.appendChild(renderScope(node.then)); lanes.appendChild(thenLane);
+    const d=document.createElement("div");d.className="switch-divider";lanes.appendChild(d);
+    const elseLane=document.createElement("div"); elseLane.className="switch-lane";
+    const elseLabel=document.createElement("div"); elseLabel.className="sl-label"; elseLabel.textContent="else";
+    elseLane.appendChild(elseLabel); elseLane.appendChild(renderScope(node.else)); lanes.appendChild(elseLane);
+    body.appendChild(lanes);
   }else if(node.kind==="switch"){
     const lanes=document.createElement("div"); lanes.className="switch-lanes";
     (node.cases||[]).forEach((c,i)=>{
@@ -974,6 +996,10 @@ function renderDetail(node){
     h+=metaLine("body nodes",(node.body||[]).length);
   }else if(node.kind==="parallel"){
     h+=metaLine("join",node.join)+metaLine("branches",(node.branches||[]).map(b=>b.id).join(", "));
+  }else if(node.kind==="if"){
+    h+=codeBlock("condition (CEL)",node.condition);
+    h+=metaLine("then nodes",(node.then||[]).length);
+    h+=metaLine("else nodes",node.else?(node.else||[]).length:"none");
   }else if(node.kind==="switch"){
     (node.cases||[]).forEach((c,i)=>{h+=codeBlock("case "+i+" when",c.when);});
     h+=metaLine("default",node.default?"yes":"no");

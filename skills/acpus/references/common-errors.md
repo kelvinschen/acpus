@@ -300,11 +300,11 @@ working directory, set `cwd: ""` (or a template that renders empty) on that step
 — a declared-but-empty `cwd` resolves to the process cwd and skips the agent
 default. `cwd` must be a string; a non-string value (`cwd: 123`) is a lint error.
 
-### Switch/parallel/pipeline references a sibling via the composite id
+### Composite branch/pipeline references a sibling via the composite id
 
 **Symptom:** `Failed to evaluate ... template: No such key: <composite_id>` for a
-node inside a `switch` case, `parallel` branch, or `pipeline` that references an
-earlier sibling in the same scope.
+node inside an `if` branch, `switch` case, `parallel` branch, or `pipeline` that
+references an earlier sibling in the same scope.
 
 **Root cause:** Inside a branch or pipeline, sibling nodes are referenced by
 their own id (`steps.<sibling_id>.output`), not through the enclosing composite

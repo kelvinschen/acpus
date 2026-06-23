@@ -32,7 +32,7 @@
       "guard": 2,
       "agent": 5,
       "loop": 1,
-      "switch": 1
+      "if": 1
     }
   },
   {
@@ -44,7 +44,7 @@
       "program": 4,
       "loop": 1,
       "agent": 4,
-      "switch": 1,
+      "if": 1,
       "signal": 1,
       "guard": 1
     }
@@ -101,10 +101,10 @@
     "name": "skill-optimizer",
     "file": "skill-optimizer.html",
     "description": "Iteratively optimize an agent skill through automated",
-    "total": 26,
+    "total": 27,
     "counts": {
-      "program": 14,
-      "switch": 3,
+      "program": 15,
+      "if": 3,
       "agent": 6,
       "loop": 1,
       "fanout": 2

@@ -32,38 +32,36 @@ workflow:
         else: complete
 
     - id: route
-      switch:
-        cases:
-          - when: steps.review.output.issue_count > 3
-            do:
-              - id: major_route
-                run: program
-                cmd:
-                  - node
-                  - -e
-                  - |
-                    console.log(JSON.stringify({route: "major", approval_required: true}));
-                capture:
-                  from: stdout
-                  parse: json
-                output:
-                  route: string
-                  approval_required: boolean
-        default:
-          do:
-            - id: minor_route
-              run: program
-              cmd:
-                - node
-                - -e
-                - |
-                  console.log(JSON.stringify({route: "minor", approval_required: false}));
-              capture:
-                from: stdout
-                parse: json
-              output:
-                route: string
-                approval_required: boolean
+      if:
+        condition: steps.review.output.issue_count > 3
+        then:
+          - id: major_route
+            run: program
+            cmd:
+              - node
+              - -e
+              - |
+                console.log(JSON.stringify({route: "major", approval_required: true}));
+            capture:
+              from: stdout
+              parse: json
+            output:
+              route: string
+              approval_required: boolean
+        else:
+          - id: minor_route
+            run: program
+            cmd:
+              - node
+              - -e
+              - |
+                console.log(JSON.stringify({route: "minor", approval_required: false}));
+            capture:
+              from: stdout
+              parse: json
+            output:
+              route: string
+              approval_required: boolean
 
     - id: draft
       run: agent

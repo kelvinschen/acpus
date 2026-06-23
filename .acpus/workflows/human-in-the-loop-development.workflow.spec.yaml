@@ -220,89 +220,87 @@ workflow:
           #    carried straight to the next round. Both branches emit the same
           #    {approved, source, feedback} shape so downstream nodes are stable.
           - id: route
-            switch:
-              cases:
-                - when: steps.review.output.approved
-                  do:
-                    # ── Human stays in the loop: block for an external decision ──
-                    - id: human_gate
-                      run: signal
-                      prompt: |
-                        The reviewer APPROVED round ${{ loop.iter }} and is
-                        promoting it for your review.
+            if:
+              condition: steps.review.output.approved
+              then:
+                # ── Human stays in the loop: block for an external decision ──
+                - id: human_gate
+                  run: signal
+                  prompt: |
+                    The reviewer APPROVED round ${{ loop.iter }} and is
+                    promoting it for your review.
 
-                        Reviewer feedback: ${{ steps.review.output.feedback }}
-                        Review report: ${{ steps.review.output.report_path }}
-                        Plan: ${{ steps.plan.output.plan_path }}
+                    Reviewer feedback: ${{ steps.review.output.feedback }}
+                    Review report: ${{ steps.review.output.report_path }}
+                    Plan: ${{ steps.plan.output.plan_path }}
 
-                        Inspect the working tree at:
-                        ${{ steps.prepare.output.target_path }}
+                    Inspect the working tree at:
+                    ${{ steps.prepare.output.target_path }}
 
-                        Deliver your decision as a JSON payload:
-                          approved: true  to accept and finish the loop
-                          approved: false to send it back for another round
-                          notes:    your reasoning. When rejecting, be specific —
-                                    this text is fed to the planner, implementer,
-                                    and reviewer as the thing they must fix.
-                      output:
-                        approved: boolean
-                        notes: string
-                    # ── Normalize the human decision into the merged shape ──
-                    - id: human_outcome
-                      run: program
-                      env:
-                        HITL_APPROVED: "${{ steps.human_gate.output.approved }}"
-                        HITL_NOTES: "${{ steps.human_gate.output.notes }}"
-                      cmd:
-                        - bash
-                        - -c
-                        - |
-                          set -euo pipefail
-                          python3 <<'PY'
-                          import json, os
-                          approved = os.environ.get("HITL_APPROVED", "").strip().lower() == "true"
-                          print(json.dumps({
-                              "approved": approved,
-                              "source": "human",
-                              "feedback": os.environ.get("HITL_NOTES", ""),
-                          }))
-                          PY
-                      capture:
-                        from: stdout
-                        parse: json
-                      output:
-                        approved: boolean
-                        source: string
-                        feedback: string
-                      timeout: 1m
-              default:
-                do:
-                  # ── Reviewer rejected: carry its feedback to the next round ──
-                  - id: reviewer_outcome
-                    run: program
-                    env:
-                      HITL_FEEDBACK: "${{ steps.review.output.feedback }}"
-                    cmd:
-                      - bash
-                      - -c
-                      - |
-                        set -euo pipefail
-                        python3 <<'PY'
-                        import json, os
-                        print(json.dumps({
-                            "approved": False,
-                            "source": "reviewer",
-                            "feedback": os.environ.get("HITL_FEEDBACK", ""),
-                        }))
-                        PY
-                    capture:
-                      from: stdout
-                      parse: json
-                    output:
-                      approved: boolean
-                      source: string
-                      feedback: string
-                    timeout: 1m
+                    Deliver your decision as a JSON payload:
+                      approved: true  to accept and finish the loop
+                      approved: false to send it back for another round
+                      notes:    your reasoning. When rejecting, be specific —
+                                this text is fed to the planner, implementer,
+                                and reviewer as the thing they must fix.
+                  output:
+                    approved: boolean
+                    notes: string
+                # ── Normalize the human decision into the merged shape ──
+                - id: human_outcome
+                  run: program
+                  env:
+                    HITL_APPROVED: "${{ steps.human_gate.output.approved }}"
+                    HITL_NOTES: "${{ steps.human_gate.output.notes }}"
+                  cmd:
+                    - bash
+                    - -c
+                    - |
+                      set -euo pipefail
+                      python3 <<'PY'
+                      import json, os
+                      approved = os.environ.get("HITL_APPROVED", "").strip().lower() == "true"
+                      print(json.dumps({
+                          "approved": approved,
+                          "source": "human",
+                          "feedback": os.environ.get("HITL_NOTES", ""),
+                      }))
+                      PY
+                  capture:
+                    from: stdout
+                    parse: json
+                  output:
+                    approved: boolean
+                    source: string
+                    feedback: string
+                  timeout: 1m
+              else:
+                # ── Reviewer rejected: carry its feedback to the next round ──
+                - id: reviewer_outcome
+                  run: program
+                  env:
+                    HITL_FEEDBACK: "${{ steps.review.output.feedback }}"
+                  cmd:
+                    - bash
+                    - -c
+                    - |
+                      set -euo pipefail
+                      python3 <<'PY'
+                      import json, os
+                      print(json.dumps({
+                          "approved": False,
+                          "source": "reviewer",
+                          "feedback": os.environ.get("HITL_FEEDBACK", ""),
+                      }))
+                      PY
+                  capture:
+                    from: stdout
+                    parse: json
+                  output:
+                    approved: boolean
+                    source: string
+                    feedback: string
+                  timeout: 1m
 
           # ── Merge this round's outcome into the durable feedback log. The
           #    loop carries THIS node's output as loop.last to the next round.

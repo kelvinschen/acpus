@@ -75,6 +75,7 @@ export type IrNodeKind =
   | "run.signal"
   | "parallel"
   | "fanout"
+  | "if"
   | "switch"
   | "loop"
   | "guard"
@@ -113,6 +114,7 @@ export interface IrNode {
 export interface IrBranch {
   id: string;
   when?: string;
+  whenPath?: string;
   child: IrNode;
 }
 

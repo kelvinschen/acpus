@@ -171,7 +171,12 @@ describe("hashIrNode", () => {
       "            do:",
       "              - id: echo_case",
       "                run: program",
-      "                cmd: echo case"
+      "                cmd: echo case",
+      "        default:",
+      "          do:",
+      "            - id: echo_default",
+      "              run: program",
+      "              cmd: echo default"
     ].join("\n");
     const node = compileWorkflow(source).ir!.root.children![0]!;
 

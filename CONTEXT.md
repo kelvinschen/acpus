@@ -29,7 +29,7 @@ A stable, addressable unit inside a Workflow.
 _Avoid_: task, stage
 
 **Composite Node**:
-A Node that controls other Nodes, such as parallel, fanout, switch, loop, or subworkflow.
+A Node that controls other Nodes, such as parallel, fanout, if, switch, loop, or subworkflow.
 _Avoid_: container step, control block
 
 **Guard Node**:

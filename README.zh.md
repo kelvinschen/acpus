@@ -37,12 +37,13 @@ Signal Node 是统一的外部决策通道。同一个 `acpus runs signal` 机�
 | Pipeline | 隐式 composite | 按顺序执行步骤；每一步的输出可供后续步骤使用。 |
 | Parallel | composite | 并发运行具名分支，并用 `all` 或 `race` 汇合。 |
 | Fanout | composite | 对动态列表中的每一项运行同一段 body，支持 `max_concurrency`、`join` 策略和 `success_criteria`。 |
+| If | composite | 条件成立时执行 `then` body，并可声明可选的 `else` body。 |
 | Loop | composite | 重复执行 body，直到条件满足，并用 `max_iterations` 作为安全上限。 |
 | Switch | composite | 按顺序判断条件，选择一个分支执行。 |
 | Guard | guard | 确定性的内联决策：根据条件 `continue`、`fail` 或 `complete` 当前 scope。 |
 | Subworkflow | composite | 把另一个 Workflow Spec 作为子 scope 调用。 |
 
-Composite nodes 可以任意嵌套。比如一个 fanout lane 里可以有 loop，loop 里可以有 parallel，parallel 里再包含 agent 和 program steps。Guard nodes 也可以出现在任意 scope：在 fanout lane 内只影响当前 lane；在 root 作用域则可以 fail 或 complete 整个 Run。
+Composite nodes 可以任意嵌套。比如一个 fanout lane 里可以有 if block 或 loop，loop 里可以有 parallel，parallel 里再包含 agent 和 program steps。Guard nodes 也可以出现在任意 scope：在 fanout lane 内只影响当前 lane；在 root 作用域则可以 fail 或 complete 整个 Run。
 
 ### 持久化可控制的运行
 

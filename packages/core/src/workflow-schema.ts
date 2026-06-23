@@ -49,6 +49,7 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
         { $ref: "#/$defs/programStep" },
         { $ref: "#/$defs/parallelStep" },
         { $ref: "#/$defs/fanoutStep" },
+        { $ref: "#/$defs/ifStep" },
         { $ref: "#/$defs/switchStep" },
         { $ref: "#/$defs/loopStep" },
         { $ref: "#/$defs/guardStep" },
@@ -234,6 +235,44 @@ export const WORKFLOW_SCHEMA: Record<string, unknown> = {
           then: { required: ["quorum"] }
         }
       ]
+    },
+
+    ifStep: {
+      type: "object",
+      additionalProperties: false,
+      required: ["if"],
+      properties: {
+        id: {
+          type: "string",
+          minLength: 1,
+          pattern: SAFE_AUTHOR_ID_PATTERN
+        },
+        if: { $ref: "#/$defs/ifSpec" }
+      }
+    },
+
+    ifSpec: {
+      type: "object",
+      additionalProperties: false,
+      required: ["condition", "then"],
+      properties: {
+        condition: {
+          oneOf: [
+            { type: "string" },
+            { type: "boolean" }
+          ]
+        },
+        then: {
+          type: "array",
+          minItems: 1,
+          items: { $ref: "#/$defs/step" }
+        },
+        else: {
+          type: "array",
+          minItems: 1,
+          items: { $ref: "#/$defs/step" }
+        }
+      }
     },
 
     switchStep: {

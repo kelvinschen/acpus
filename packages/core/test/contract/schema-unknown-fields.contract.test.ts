@@ -72,6 +72,17 @@ describe("Schema validation: unknown fields", () => {
       extra: true`
       },
       {
+        branch: "ifStep",
+        step: `id: s
+      if:
+        condition: "true"
+        then:
+          - id: child
+            run: program
+            cmd: ["echo", "x"]
+      extra: true`
+      },
+      {
         branch: "loopStep",
         step: `id: s
       loop:
@@ -425,6 +436,57 @@ workflow:
     const result = lintWorkflow(src);
     expect(result.ok).toBe(false);
     expectDiagnostic(result, { code: "STEP_SHAPE", path: "$.workflow.steps[0].switch.cases[0].do[0]", message: "Unknown step property 'surprise'" });
+  });
+
+  it("rejects unknown step property nested in an if then list", () => {
+    const src = `
+version: 1
+name: test
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: maybe
+      if:
+        condition: input.enabled
+        then:
+          - id: handle
+            run: agent
+            use: mock
+            prompt: "x"
+            surprise: true
+`;
+    const result = lintWorkflow(src);
+    expect(result.ok).toBe(false);
+    expectDiagnostic(result, { code: "STEP_SHAPE", path: "$.workflow.steps[0].if.then[0]", message: "Unknown step property 'surprise'" });
+  });
+
+  it("rejects unknown step property nested in an if else list", () => {
+    const src = `
+version: 1
+name: test
+agents:
+  mock: { type: command, use: "echo stub" }
+workflow:
+  steps:
+    - id: maybe
+      if:
+        condition: input.enabled
+        then:
+          - id: enabled
+            run: agent
+            use: mock
+            prompt: "x"
+        else:
+          - id: handle
+            run: agent
+            use: mock
+            prompt: "x"
+            surprise: true
+`;
+    const result = lintWorkflow(src);
+    expect(result.ok).toBe(false);
+    expectDiagnostic(result, { code: "STEP_SHAPE", path: "$.workflow.steps[0].if.else[0]", message: "Unknown step property 'surprise'" });
   });
 
   it("accepts step-level cwd on agent and program steps", () => {

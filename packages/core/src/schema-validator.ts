@@ -92,7 +92,7 @@ function mapErrors(errors: ErrorObject[], diagnostics: DiagnosticBag, spec: unkn
 
     // No intended branch could be inferred (or none of its errors classified) —
     // the step truly has no matching kind.
-    diagnostics.error("STEP_KIND", "Step must define one of run: agent, run: program, run: signal, parallel, fanout, switch, loop, guard, subworkflow, or include.", toPath(stepPath));
+    diagnostics.error("STEP_KIND", "Step must define one of run: agent, run: program, run: signal, parallel, fanout, if, switch, loop, guard, subworkflow, or include.", toPath(stepPath));
   }
 
   // Now process all remaining errors (non-step-oneOf sub-errors, and errors
@@ -132,6 +132,7 @@ function inferStepBranch(stepData: unknown): string | undefined {
   if ("pipeline" in data) return "pipelineStep";
   if ("parallel" in data) return "parallelStep";
   if ("fanout" in data) return "fanoutStep";
+  if ("if" in data) return "ifStep";
   if ("switch" in data) return "switchStep";
   if ("loop" in data) return "loopStep";
   if ("guard" in data) return "guardStep";
@@ -193,11 +194,11 @@ function prefixPath(stepPath: string, localPath: string): string {
 
 /**
  * True when a branch-local instancePath points inside a nested child step (an
- * entry in a `do` or `pipeline` list). Such errors belong to that child step's
+ * entry in a `do`, `then`, `else`, or `pipeline` list). Such errors belong to that child step's
  * own oneOf iteration, not the enclosing step.
  */
 function isWithinNestedStep(localPath: string): boolean {
-  return /\/(do|pipeline)\/\d+(\/|$)/.test(localPath);
+  return /\/(do|then|else|pipeline)\/\d+(\/|$)/.test(localPath);
 }
 
 // ── Error classification ──
@@ -223,6 +224,7 @@ function classifyError(err: ErrorObject, path: string): string {
 
     case "minimum":
     case "exclusiveMinimum":
+    case "minItems":
       return classifyMinimum(err, path);
 
     case "pattern":
@@ -242,6 +244,8 @@ function classifyAdditionalProperties(err: ErrorObject, path: string): string {
     case "step":
       return "STEP_SHAPE";
     case "fanout":
+      return "STEP_SHAPE";
+    case "if":
       return "STEP_SHAPE";
     case "switch-case":
       return "STEP_SHAPE";
@@ -278,6 +282,10 @@ function classifyRequired(missing: string, path: string): string {
       return "FANOUT_OVER";
     case "do":
       return path.includes(".parallel[") ? "PARALLEL_DO" : "FANOUT_DO";
+    case "condition":
+      return ctx === "if" ? "STEP_SHAPE" : "SPEC_SHAPE";
+    case "then":
+      return ctx === "if" ? "STEP_SHAPE" : ctx === "guard" ? "GUARD_ACTION" : "SPEC_SHAPE";
     case "pipeline":
       return "STEP_KIND";
     case "quorum":
@@ -300,7 +308,6 @@ function classifyRequired(missing: string, path: string): string {
       return "LOOP_MAX_ITERATIONS";
     case "when":
       return ctx === "guard" ? "GUARD_WHEN" : "SPEC_SHAPE";
-    case "then":
     case "else":
       return ctx === "guard" ? "GUARD_ACTION" : "SPEC_SHAPE";
     case "max":
@@ -401,6 +408,14 @@ function classifyType(err: ErrorObject, path: string): string {
     return "FANOUT_OVER_TYPE";
   }
 
+  if (/\.if\.condition$/.test(path)) {
+    return "STEP_SHAPE";
+  }
+
+  if (/\.if\.(then|else)$/.test(path)) {
+    return "STEP_SHAPE";
+  }
+
   if (/\.pipeline$/.test(path)) {
     return "STEP_SHAPE";
   }
@@ -427,6 +442,10 @@ function classifyType(err: ErrorObject, path: string): string {
 }
 
 function classifyMinimum(err: ErrorObject, path: string): string {
+  if (/\.if\.(then|else)$/.test(path)) {
+    return "STEP_SHAPE";
+  }
+
   // retry.max minimum violation
   if (/\.retry\.max$/.test(path)) {
     return "RETRY_SHAPE";
@@ -487,6 +506,10 @@ function formatMessage(err: ErrorObject, code: string, path: string): string {
       return formatMinimumMessage(code, path);
     }
 
+    case "minItems": {
+      return formatMinimumMessage(code, path);
+    }
+
     case "pattern": {
       if (code === "STEP_ID_INVALID") return "Author ids must match ^[A-Za-z_][A-Za-z0-9_-]*$ and must not start with '$'.";
       return err.message ?? "Schema validation error.";
@@ -517,6 +540,10 @@ function formatRequiredMessage(missing: string, code: string, _path: string): st
       return "parallel entries are branch descriptors { id, do }, not direct steps; wrap branch steps under do.";
     case "FANOUT_QUORUM":
       return "fanout.quorum must be a positive integer when join is quorum.";
+    case "STEP_SHAPE":
+      if (missing === "condition") return "if.condition is required.";
+      if (missing === "then") return "if.then must be a non-empty array of steps.";
+      return `Missing required property '${missing}'.`;
     case "CAPTURE_FROM":
       return "run: program capture.from must be stdout or file.";
     case "CAPTURE_PARSE":
@@ -559,6 +586,11 @@ function formatTypeMessage(code: string, path: string, expectedType: string): st
       return `run: program output must be an object when present.`;
     case "FANOUT_OVER_TYPE":
       return `fanout.over must be an array or CEL expression string.`;
+    case "STEP_SHAPE":
+      if (/\.if\.condition$/.test(path)) return `if.condition must be a boolean or CEL expression string.`;
+      if (/\.if\.then$/.test(path)) return `if.then must be a non-empty array of steps.`;
+      if (/\.if\.else$/.test(path)) return `if.else must be a non-empty array of steps when present.`;
+      return `Must be of type ${expectedType}.`;
     case "GUARD_WHEN_TYPE":
       return `guard.when must be a boolean or CEL expression string.`;
     case "GUARD_MESSAGE":
@@ -570,6 +602,10 @@ function formatTypeMessage(code: string, path: string, expectedType: string): st
 
 function formatMinimumMessage(code: string, _path: string): string {
   switch (code) {
+    case "STEP_SHAPE":
+      if (/\.if\.then$/.test(_path)) return "if.then must be a non-empty array of steps.";
+      if (/\.if\.else$/.test(_path)) return "if.else must be a non-empty array of steps when present.";
+      return "Value must be a positive integer.";
     case "RETRY_SHAPE":
       return "retry.max must be a non-negative integer.";
     case "FANOUT_SUCCESS_CRITERIA":
@@ -608,14 +644,17 @@ function pathContext(path: string): string {
     return "agent";
   }
   // A step entry itself — top-level `steps[n]` or a nested composite child
-  // (`do[n]` / `parallel[n]`). Checked before the composite-keyword cases so a
+  // (`do[n]` / `then[n]` / `else[n]` / `parallel[n]`). Checked before the composite-keyword cases so a
   // nested step entry resolves to "step" rather than its enclosing composite.
-  if (/\.(steps|do|parallel)\[\d+\]$/.test(path)) {
+  if (/\.(steps|do|then|else|parallel)\[\d+\]$/.test(path)) {
     return "step";
   }
   if (/\.fanout\b/.test(path)) {
     if (/\.fanout\.success_criteria/.test(path)) return "success-criteria";
     return "fanout";
+  }
+  if (/\.if\b/.test(path)) {
+    return "if";
   }
   if (/\.capture\b/.test(path)) {
     return "capture";
@@ -646,10 +685,11 @@ function pathContext(path: string): string {
 
 /** Check if an instancePath looks like a step (an entry in a steps/do/parallel list). */
 function isStepPath(instancePath: string): boolean {
-  // Steps live directly in `workflow.steps`, composite `do` lists, or a
-  // `parallel` list. Each is an array whose entries are full Nodes, so a step
-  // entry path ends with one of those array names followed by a numeric index.
-  return /\/(steps|do|parallel)\/\d+$/.test(instancePath);
+  // Steps live directly in `workflow.steps` or nested body lists (`do`,
+  // `then`, `else`, or `parallel`). Each is an array whose entries are full
+  // Nodes, so a step entry path ends with one of those array names followed by
+  // a numeric index.
+  return /\/(steps|do|then|else|parallel)\/\d+$/.test(instancePath);
 }
 
 /** Check if errPath is a sub-path of any of the given parent paths. */

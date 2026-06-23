@@ -121,7 +121,7 @@ function walkChildScope(node: IrNode, inheritedVisible: Set<string>, localsStack
     const currentLocals = unionLocals(localsStack);
     for (const branch of node.branches) {
       if (branch.when !== undefined) {
-        checkRawCelString(branch.when, { visibleSteps: inheritedVisible, locals: currentLocals, itemSchema, path: `${node.nodePath.join("/")}.when`, isCmd: false, rawTemplate: false, nativeSingleExpression: false }, r);
+        checkRawCelString(branch.when, { visibleSteps: inheritedVisible, locals: currentLocals, itemSchema, path: branch.whenPath ?? `${node.nodePath.join("/")}.when`, isCmd: false, rawTemplate: false, nativeSingleExpression: false }, r);
       }
     }
   }

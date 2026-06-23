@@ -1,6 +1,6 @@
 import type { AcpusIr, AgentOverrideWarning, AgentOverrides, IrNode } from "@acpus/core";
 import { hashIrNode } from "@acpus/core";
-import type { RunCheckpoint, RunState } from "./types.js";
+import type { NodeExecutionState, RunCheckpoint, RunState } from "./types.js";
 import { isRunTerminal } from "./types.js";
 import type { RunStore } from "./store.js";
 import { isNodeKeyAtOrBelow, staticNodePathFromKey } from "./keys.js";
@@ -77,6 +77,7 @@ export interface MaterializedFork {
 interface ForkSource {
   prior: RunState;
   checkpoints: RunCheckpoint[];
+  nodeStates: Map<string, NodeExecutionState>;
 }
 
 /**
@@ -87,7 +88,7 @@ interface ForkSource {
  * (see ADR-0007 / CONTEXT.md `Fork Origin`).
  *
  * Lifts ONLY when the checkpoint's static path resolves to a Node nested
- * inside a Composite body (`parallel`, `fanout`, `loop`, `switch`,
+ * inside a Composite body (`parallel`, `fanout`, `if`, `loop`, `switch`,
  * `subworkflow`). Top-level Nodes and Composite Nodes themselves are returned
  * as-is. Unknown Node Keys (boundary "missing-in-new-spec") fall back to the
  * checkpoint key — those will be re-resolved by the operator anyway.
@@ -115,7 +116,7 @@ function liftOutOfComposite(nodeKey: string, irIndex: Map<string, IrNodeIndexEnt
 }
 
 function isCompositeKind(kind: IrNode["kind"]): boolean {
-  return kind === "pipeline" || kind === "parallel" || kind === "fanout" || kind === "switch" || kind === "loop" || kind === "subworkflow";
+  return kind === "pipeline" || kind === "parallel" || kind === "fanout" || kind === "if" || kind === "switch" || kind === "loop" || kind === "subworkflow";
 }
 
 interface IrNodeIndexEntry {
@@ -128,7 +129,7 @@ interface IrNodeIndexEntry {
  * Walk the IR collecting one entry per static Node, keyed by its joined
  * `nodePath`. Composite container Nodes are themselves indexed (so they can
  * appear in the "valid Fork Origin" set when their parent is a pipeline);
- * Nodes nested inside Composite bodies (parallel/fanout/loop/switch) are also
+ * Nodes nested inside Composite bodies (parallel/fanout/if/loop/switch) are also
  * indexed but flagged as not eligible for Fork Origin via parentKind.
  */
 function indexIrNodes(ir: AcpusIr): Map<string, IrNodeIndexEntry> {
@@ -151,12 +152,14 @@ function indexIrNodes(ir: AcpusIr): Map<string, IrNodeIndexEntry> {
  *
  * @param prior     prior Run metadata (must be in a terminal state)
  * @param checkpoints  prior Run's ordered Run Checkpoints
+ * @param priorNodeStates source Run node states, used for control-flow ancestor hashes
  * @param newIr     compiled IR of the new (possibly modified) Workflow Spec
  * @param overrideOriginNodeKey  optional operator-specified Fork Origin
  */
 function computeForkPlan(
   prior: RunState,
   checkpoints: RunCheckpoint[],
+  priorNodeStates: Map<string, NodeExecutionState>,
   newIr: AcpusIr,
   overrideOriginNodeKey?: string
 ): ForkPlan {
@@ -175,6 +178,12 @@ function computeForkPlan(
     if (!irEntry) {
       defaultOrigin = liftOutOfComposite(checkpoint.nodeKey, irIndex);
       boundaryReason = "missing-in-new-spec";
+      break;
+    }
+    const changedBranchingAncestor = changedBranchingAncestorNodeKey(checkpoint.nodeKey, irIndex, priorNodeStates, newIr);
+    if (changedBranchingAncestor) {
+      defaultOrigin = liftOutOfComposite(changedBranchingAncestor, irIndex);
+      boundaryReason = "hash-mismatch";
       break;
     }
     if (checkpoint.state !== "completed") {
@@ -245,7 +254,7 @@ function computeForkPlan(
 
 export function planForkedRun(store: RunStore, options: PlanForkedRunOptions): ForkPlan {
   const source = readForkSource(store, options.sourceRunId);
-  return computeForkPlan(source.prior, source.checkpoints, options.ir, options.overrideOriginNodeKey);
+  return computeForkPlan(source.prior, source.checkpoints, source.nodeStates, options.ir, options.overrideOriginNodeKey);
 }
 
 /**
@@ -348,8 +357,36 @@ function readForkSource(store: RunStore, sourceRunId: string): ForkSource {
   }
   return {
     prior,
-    checkpoints: store.readCheckpoints(sourceRunId)
+    checkpoints: store.readCheckpoints(sourceRunId),
+    nodeStates: new Map(store.listNodeStates(sourceRunId).map((state) => [state.nodeKey, state]))
   };
+}
+
+function changedBranchingAncestorNodeKey(
+  nodeKey: string,
+  irIndex: Map<string, IrNodeIndexEntry>,
+  priorNodeStates: Map<string, NodeExecutionState>,
+  newIr: AcpusIr
+): string | undefined {
+  const workflow = buildWorkflowExpressionContext(newIr);
+  const staticPath = staticNodePathFromKey(nodeKey);
+  const segments = staticPath.split("/");
+  for (let i = 1; i < segments.length; i++) {
+    const ancestorStaticPath = segments.slice(0, i).join("/");
+    const ancestor = irIndex.get(ancestorStaticPath)?.node;
+    if (ancestor?.kind !== "if" && ancestor?.kind !== "switch") continue;
+    const ancestorNodeKey = nodeKeyWithSameDynamics(nodeKey, ancestorStaticPath);
+    const priorState = priorNodeStates.get(ancestorNodeKey);
+    if (priorState?.definitionHash && priorState.definitionHash !== hashIrNode(ancestor, { workflow })) {
+      return ancestorNodeKey;
+    }
+  }
+  return undefined;
+}
+
+function nodeKeyWithSameDynamics(nodeKey: string, staticPath: string): string {
+  const dynamicSegments = nodeKey.split("/").filter((segment) => /^(item|lane|round|branch):/u.test(segment));
+  return [staticPath, ...dynamicSegments].join("/");
 }
 
 export class ForkError extends Error {

@@ -47,7 +47,7 @@ acpus runs fork <sourceRunId> <fixed-spec> --from <nodeKey>          # force ear
 
 - Allowed only on terminal Runs (`completed`, `failed`, `cancelled`).
 - Inheritance keyed by Node Key + state==`completed` + Node Definition Hash. First mismatch is the boundary; that Node and everything after it executes fresh.
-- Container Nodes (pipeline, parallel, fanout, switch, loop, subworkflow) are never inherited themselves — only their leaves are. Fork re-evaluates control flow against the new spec.
+- Container Nodes (pipeline, parallel, fanout, if, switch, loop, subworkflow) are never inherited themselves — only their leaves are. Fork re-evaluates control flow against the new spec.
 - `--from <nodeKey>` MUST be a top-level Node or a Composite Node, never a Node inside a Composite body. CLI rejects with exit code 21 otherwise.
 - Inherited artifacts are physically copied into the fork Run; deleting the source Run is safe.
 - `acpus runs show <forkRunId>` displays `Forked From: <sourceRunId> (origin=…, inherited=N)`.

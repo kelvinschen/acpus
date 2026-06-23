@@ -316,6 +316,58 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
     };
   }
 
+  if (isRecord(step.if)) {
+    const ifSpec = step.if;
+    let condition: string | undefined;
+    if (ifSpec.condition !== undefined) {
+      if (typeof ifSpec.condition === "boolean") {
+        condition = String(ifSpec.condition);
+      } else if (typeof ifSpec.condition === "string") {
+        condition = ifSpec.condition;
+      } else if (typeof ifSpec.condition !== "string") {
+        const typeDesc = ifSpec.condition === null ? "null" : typeof ifSpec.condition;
+        context.diagnostics.error("IF_CONDITION_TYPE", `if.condition must be a boolean or CEL expression string, got ${typeDesc}.`, `${path}.if.condition`);
+      }
+    }
+
+    const branches: IrBranch[] = [];
+    const thenPipelineId = generatedDoId("then");
+    const thenPipelinePath = [...nodePath, thenPipelineId];
+    branches.push({
+      id: "then",
+      when: condition,
+      whenPath: `${path}.if.condition`,
+      child: generatedPipeline(
+        thenPipelineId,
+        Array.isArray(ifSpec.then) ? compileSteps(asSteps(ifSpec.then, `${path}.if.then`, context), thenPipelinePath, `${path}.if.then`, context) : [],
+        thenPipelinePath,
+        `${path}.if.then`
+      )
+    });
+
+    if (Array.isArray(ifSpec.else)) {
+      const elsePipelineId = generatedDoId("else");
+      const elsePipelinePath = [...nodePath, elsePipelineId];
+      branches.push({
+        id: "else",
+        child: generatedPipeline(
+          elsePipelineId,
+          compileSteps(asSteps(ifSpec.else, `${path}.if.else`, context), elsePipelinePath, `${path}.if.else`, context),
+          elsePipelinePath,
+          `${path}.if.else`
+        )
+      });
+    }
+
+    return {
+      ...base,
+      kind: "if",
+      outputMerge: outputMergeFor("if"),
+      branches,
+      metadata: {}
+    };
+  }
+
   if (isRecord(step.switch)) {
     const switchSpec = step.switch;
     const branches: IrBranch[] = [];
@@ -326,9 +378,12 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
           return;
         }
         // Coerce `when`: boolean → string, string → pass through, else error.
+        let when: string | undefined;
         if (caseSpec.when !== undefined) {
           if (typeof caseSpec.when === "boolean") {
-            caseSpec.when = String(caseSpec.when);
+            when = String(caseSpec.when);
+          } else if (typeof caseSpec.when === "string") {
+            when = caseSpec.when;
           } else if (typeof caseSpec.when !== "string") {
             const typeDesc = caseSpec.when === null ? "null" : typeof caseSpec.when;
             context.diagnostics.error("SWITCH_WHEN_TYPE", `switch.case.when must be a boolean or CEL expression string, got ${typeDesc}.`, `${path}.switch.cases[${caseIndex}].when`);
@@ -338,7 +393,8 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
         const pipelinePath = [...nodePath, pipelineId];
         branches.push({
           id: `case_${caseIndex + 1}`,
-          when: typeof caseSpec.when === "string" ? caseSpec.when : undefined,
+          when,
+          whenPath: `${path}.switch.cases[${caseIndex}].when`,
           child: generatedPipeline(
             pipelineId,
             Array.isArray(caseSpec.do) ? compileSteps(asSteps(caseSpec.do, `${path}.switch.cases[${caseIndex}].do`, context), pipelinePath, `${path}.switch.cases[${caseIndex}].do`, context) : [],
@@ -440,7 +496,7 @@ function compileStep(step: WorkflowStep, parentPath: string[], path: string, con
   }
 
   // Defensive: Schema already validates step kind; keep as fallback
-  context.diagnostics.error("STEP_KIND", "Step must define one of run: agent, run: program, run: signal, parallel, fanout, switch, loop, guard, subworkflow, or include.", path);
+  context.diagnostics.error("STEP_KIND", "Step must define one of run: agent, run: program, run: signal, parallel, fanout, if, switch, loop, guard, subworkflow, or include.", path);
   return {
     ...base,
     kind: "run.program",
@@ -604,6 +660,12 @@ function collectStepIds(steps: WorkflowStep[], diagnostics: DiagnosticBag): Set<
       }
       if (isRecord(step.fanout) && Array.isArray(step.fanout.do)) {
         visit(asPlainSteps(step.fanout.do), `${stepPath}.fanout.do`);
+      }
+      if (isRecord(step.if) && Array.isArray(step.if.then)) {
+        visit(asPlainSteps(step.if.then), `${stepPath}.if.then`);
+      }
+      if (isRecord(step.if) && Array.isArray(step.if.else)) {
+        visit(asPlainSteps(step.if.else), `${stepPath}.if.else`);
       }
       if (isRecord(step.switch) && Array.isArray(step.switch.cases)) {
         step.switch.cases.forEach((caseSpec, caseIndex) => {

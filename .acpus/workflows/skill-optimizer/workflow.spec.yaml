@@ -70,90 +70,88 @@ workflow:
       timeout: 30s
 
     - id: design_tests
-      switch:
-        cases:
-          - when: input.eval_cases_path == ""
-            do:
-              - id: generate_tests
-                run: agent
-                use: test_designer
-                timeout: 10m
-                prompt: |
-                  You are designing the final eval set for an agent skill optimizer.
+      if:
+        condition: input.eval_cases_path == ""
+        then:
+          - id: generate_tests
+            run: agent
+            use: test_designer
+            timeout: 10m
+            prompt: |
+              You are designing the final eval set for an agent skill optimizer.
 
-                  Skill directory:
-                  ${{ steps.init.output.skill_dir }}
+              Skill directory:
+              ${{ steps.init.output.skill_dir }}
 
-                  Optimization focus:
-                  ${{ steps.init.output.focus }}
+              Optimization focus:
+              ${{ steps.init.output.focus }}
 
-                  Design exactly ${{ steps.init.output.test_case_count }} final test
-                  cases. Each case should be realistic, concrete, discriminating,
-                  and executable by a fresh agent in this repository.
+              Design exactly ${{ steps.init.output.test_case_count }} final test
+              cases. Each case should be realistic, concrete, discriminating,
+              and executable by a fresh agent in this repository.
 
-                  Read the skill before designing tests.
+              Read the skill before designing tests.
 
-                  Good prompts look like real user requests:
-                  - concrete enough to act on;
-                  - with filenames, issue numbers, labels, user context, or
-                    repository paths when those details matter;
-                  - enough substance that the skill would actually help;
-                  - self-contained, with any needed session history, source
-                    material, user decisions, files, or in-progress plan included
-                    directly in the prompt or as explicit existing paths.
+              Good prompts look like real user requests:
+              - concrete enough to act on;
+              - with filenames, issue numbers, labels, user context, or
+                repository paths when those details matter;
+              - enough substance that the skill would actually help;
+              - self-contained, with any needed session history, source
+                material, user decisions, files, or in-progress plan included
+                directly in the prompt or as explicit existing paths.
 
-                  Avoid weak prompts:
-                  - abstract one-liners that any agent can handle without the skill;
-                  - hidden-context tasks like "continue the previous refactor";
-                  - requests that require discovering an unstated plan from git history;
-                  - broad repository research unless broad research is the skill's
-                    actual purpose.
+              Avoid weak prompts:
+              - abstract one-liners that any agent can handle without the skill;
+              - hidden-context tasks like "continue the previous refactor";
+              - requests that require discovering an unstated plan from git history;
+              - broad repository research unless broad research is the skill's
+                actual purpose.
 
-                  Include coverage:
-                  - at least one normal should_trigger=true case;
-                  - if the count allows it, one tricky near-miss
-                    should_trigger=false case that shares vocabulary with the
-                    skill but needs a different workflow;
-                  - focus-specific cases that expose the optimization dimension.
+              Include coverage:
+              - at least one normal should_trigger=true case;
+              - if the count allows it, one tricky near-miss
+                should_trigger=false case that shares vocabulary with the
+                skill but needs a different workflow;
+              - focus-specific cases that expose the optimization dimension.
 
-                  For recall focus, design raw trigger queries only: no output
-                  path, no test id, no "eval task" wording. Positive cases must
-                  be substantive requests where the skill should naturally help;
-                  negative cases must be near-misses, not unrelated easy tasks.
+              For recall focus, design raw trigger queries only: no output
+              path, no test id, no "eval task" wording. Positive cases must
+              be substantive requests where the skill should naturally help;
+              negative cases must be near-misses, not unrelated easy tasks.
 
-                  For each case, include concise expected_behavior items when
-                  they are obvious.
+              For each case, include concise expected_behavior items when
+              they are obvious.
 
-                  Return JSON with test_cases only. These are the final generated
-                  eval cases.
-                output:
-                  test_cases:
-                    - id: string
-                      prompt: string
-                      should_trigger?: boolean
-                      expected_behavior?:
-                        - string
-                      files?:
-                        - string
-                      split?: string
-        default:
-          do:
-            - id: skip_generated_tests
-              run: program
-              cmd:
-                - node
-                - -e
-                - "console.log(JSON.stringify({test_cases:[]}))"
-              capture:
-                from: stdout
-                parse: json
-              output:
-                test_cases:
-                  - id: string
-                    prompt: string
-                    should_trigger?: boolean
-                    files?:
-                      - string
+              Return JSON with test_cases only. These are the final generated
+              eval cases.
+            output:
+              test_cases:
+                - id: string
+                  prompt: string
+                  should_trigger?: boolean
+                  expected_behavior?:
+                    - string
+                  files?:
+                    - string
+                  split?: string
+        else:
+          - id: skip_generated_tests
+            run: program
+            cmd:
+              - node
+              - -e
+              - "console.log(JSON.stringify({test_cases:[]}))"
+            capture:
+              from: stdout
+              parse: json
+            output:
+              test_cases:
+                - id: string
+                  prompt: string
+                  should_trigger?: boolean
+                  files?:
+                    - string
 
     - id: normalize_tests
       run: program
@@ -225,112 +223,110 @@ workflow:
             timeout: 30s
 
           - id: round_eval
-            switch:
-              cases:
-                - when: steps.init.output.focus == "recall"
-                  do:
-                    - id: run_trigger_cases
-                      fanout:
-                        over: steps.prepare_round.output.case_jobs
-                        key: "${{ item.key }}"
-                        join: all
-                        do:
-                          - id: trigger_executor
-                            run: agent
-                            use: executor
-                            cwd: "${{ steps.prepare_round.output.worktree_path }}"
-                            session_key: skill-optimizer-trigger-${{ item.key }}
-                            timeout: 15m
-                            prompt: |
-                              ${{ item.execution_prompt }}
+            if:
+              condition: steps.init.output.focus == "recall"
+              then:
+                - id: run_trigger_cases
+                  fanout:
+                    over: steps.prepare_round.output.case_jobs
+                    key: "${{ item.key }}"
+                    join: all
+                    do:
+                      - id: trigger_executor
+                        run: agent
+                        use: executor
+                        cwd: "${{ steps.prepare_round.output.worktree_path }}"
+                        session_key: skill-optimizer-trigger-${{ item.key }}
+                        timeout: 15m
+                        prompt: |
+                          ${{ item.execution_prompt }}
 
-                          - id: report_skills
-                            run: agent
-                            use: executor
-                            cwd: "${{ steps.prepare_round.output.worktree_path }}"
-                            session_key: skill-optimizer-trigger-${{ item.key }}
-                            timeout: 5m
-                            prompt: |
-                              For the task you just completed, report which agent
-                              skills you actually loaded or applied while doing it.
+                      - id: report_skills
+                        run: agent
+                        use: executor
+                        cwd: "${{ steps.prepare_round.output.worktree_path }}"
+                        session_key: skill-optimizer-trigger-${{ item.key }}
+                        timeout: 5m
+                        prompt: |
+                          For the task you just completed, report which agent
+                          skills you actually loaded or applied while doing it.
 
-                              List only skills you genuinely used, by name or
-                              path. Do not list skills you merely noticed were
-                              available. If you used none, return an empty list.
-                            output:
-                              used_skills:
-                                - string
-                              reason: string
+                          List only skills you genuinely used, by name or
+                          path. Do not list skills you merely noticed were
+                          available. If you used none, return an empty list.
+                        output:
+                          used_skills:
+                            - string
+                          reason: string
 
-                          - id: collect_trigger_report
-                            run: program
-                            cmd:
-                              - node
-                              - ${{ workflow.source_dir }}/scripts/skill-optimizer.mjs
-                              - collect-trigger-report
-                              - ${{ steps.init.output.state_path }}
-                              - ${{ item.test_key }}
-                              - ${{ item.key }}
-                              - ${{ item.trigger_result_path }}
-                            env:
-                              USED_SKILLS: ${{ json(steps.report_skills.output.used_skills) }}
-                              REASON: ${{ steps.report_skills.output.reason }}
-                            capture:
-                              from: stdout
-                              parse: json
-                            output:
-                              test_id: string
-                              test_key: string
-                              key: string
-                              triggered: boolean
-                              used_target_skill: boolean
-                              trigger_result_path: string
-                            timeout: 30s
+                      - id: collect_trigger_report
+                        run: program
+                        cmd:
+                          - node
+                          - ${{ workflow.source_dir }}/scripts/skill-optimizer.mjs
+                          - collect-trigger-report
+                          - ${{ steps.init.output.state_path }}
+                          - ${{ item.test_key }}
+                          - ${{ item.key }}
+                          - ${{ item.trigger_result_path }}
+                        env:
+                          USED_SKILLS: ${{ json(steps.report_skills.output.used_skills) }}
+                          REASON: ${{ steps.report_skills.output.reason }}
+                        capture:
+                          from: stdout
+                          parse: json
+                        output:
+                          test_id: string
+                          test_key: string
+                          key: string
+                          triggered: boolean
+                          used_target_skill: boolean
+                          trigger_result_path: string
+                        timeout: 30s
 
-                    - id: aggregate_trigger_round
-                      run: program
-                      cmd:
-                        - node
-                        - ${{ workflow.source_dir }}/scripts/skill-optimizer.mjs
-                        - aggregate-trigger-eval
-                        - ${{ steps.init.output.state_path }}
-                        - ${{ loop.iter }}
-                      env:
-                        TRIGGER_RESULTS: ${{ json(steps.run_trigger_cases.output) }}
-                      capture:
-                        from: stdout
-                        parse: json
-                      output: &round_eval_output
-                        round: integer
-                        avg_score: number
-                        train_avg_score: number
-                        holdout_avg_score: number
-                        best_score: number
-                        current_best_score: number
-                        can_improve: boolean
-                        evaluation_count: integer
-                        train_count: integer
-                        holdout_count: integer
-                        weakest_test: string
-                        weakest_score: number
-                        weakest_dimension: string
-                        stagnation_rounds: integer
-                        skill_line_count: integer
-                        original_line_count: integer
-                        line_budget: integer
-                        violation_count: integer
-                        check_pass_rate: number
-                        summary_path: string
-                        improvement_summary_path: string
-                      timeout: 30s
-              default:
-                do:
-                  - id: run_cases
-                    fanout:
-                      over: steps.prepare_round.output.case_jobs
-                      key: "${{ item.key }}"
-                      join: all
-                      do:
+                - id: aggregate_trigger_round
+                  run: program
+                  cmd:
+                    - node
+                    - ${{ workflow.source_dir }}/scripts/skill-optimizer.mjs
+                    - aggregate-trigger-eval
+                    - ${{ steps.init.output.state_path }}
+                    - ${{ loop.iter }}
+                  env:
+                    TRIGGER_RESULTS: ${{ json(steps.run_trigger_cases.output) }}
+                  capture:
+                    from: stdout
+                    parse: json
+                  output: &round_eval_output
+                    round: integer
+                    avg_score: number
+                    train_avg_score: number
+                    holdout_avg_score: number
+                    best_score: number
+                    current_best_score: number
+                    can_improve: boolean
+                    evaluation_count: integer
+                    train_count: integer
+                    holdout_count: integer
+                    weakest_test: string
+                    weakest_score: number
+                    weakest_dimension: string
+                    stagnation_rounds: integer
+                    skill_line_count: integer
+                    original_line_count: integer
+                    line_budget: integer
+                    violation_count: integer
+                    check_pass_rate: number
+                    summary_path: string
+                    improvement_summary_path: string
+                  timeout: 30s
+              else:
+                - id: run_cases
+                  fanout:
+                    over: steps.prepare_round.output.case_jobs
+                    key: "${{ item.key }}"
+                    join: all
+                    do:
                         - id: executor
                           run: agent
                           use: executor
@@ -474,21 +470,21 @@ workflow:
                             evaluation_path: string
                           timeout: 30s
 
-                  - id: aggregate_round
-                    run: program
-                    cmd:
-                      - node
-                      - ${{ workflow.source_dir }}/scripts/skill-optimizer.mjs
-                      - aggregate-round
-                      - ${{ steps.init.output.state_path }}
-                      - ${{ loop.iter }}
-                    env:
-                      EVALUATIONS: ${{ json(steps.run_cases.output) }}
-                    capture:
-                      from: stdout
-                      parse: json
-                    output: *round_eval_output
-                    timeout: 30s
+                - id: aggregate_round
+                  run: program
+                  cmd:
+                    - node
+                    - ${{ workflow.source_dir }}/scripts/skill-optimizer.mjs
+                    - aggregate-round
+                    - ${{ steps.init.output.state_path }}
+                    - ${{ loop.iter }}
+                  env:
+                    EVALUATIONS: ${{ json(steps.run_cases.output) }}
+                  capture:
+                    from: stdout
+                    parse: json
+                  output: *round_eval_output
+                  timeout: 30s
 
           - id: record_evaluated
             run: program
@@ -509,104 +505,102 @@ workflow:
             timeout: 30s
 
           - id: maybe_improve
-            switch:
-              cases:
-                - when: loop.iter < input.max_iterations
-                  do:
-                    - id: improve_skill
-                      run: agent
-                      use: improver
-                      cwd: "${{ steps.prepare_round.output.worktree_path }}"
-                      session_key: skill-optimizer-improver
-                      timeout: 15m
-                      prompt: |
-                        You are a skill improver.
+            if:
+              condition: loop.iter < input.max_iterations
+              then:
+                - id: improve_skill
+                  run: agent
+                  use: improver
+                  cwd: "${{ steps.prepare_round.output.worktree_path }}"
+                  session_key: skill-optimizer-improver
+                  timeout: 15m
+                  prompt: |
+                    You are a skill improver.
 
-                        Optimization focus:
-                        ${{ steps.init.output.focus }}
+                    Optimization focus:
+                    ${{ steps.init.output.focus }}
 
-                        Current skill directory:
-                        ${{ steps.prepare_round.output.skill_dir }}
+                    Current skill directory:
+                    ${{ steps.prepare_round.output.skill_dir }}
 
-                        Edit the skill in place inside this isolated worktree:
-                        ${{ steps.prepare_round.output.worktree_path }}
+                    Edit the skill in place inside this isolated worktree:
+                    ${{ steps.prepare_round.output.worktree_path }}
 
-                        Write an improvement manifest JSON object to:
-                        ${{ steps.prepare_round.output.improvement_manifest_path }}
+                    Write an improvement manifest JSON object to:
+                    ${{ steps.prepare_round.output.improvement_manifest_path }}
 
-                        Manifest fields:
-                        - can_improve: boolean
-                        - changed: boolean
-                        - changes_summary: array of strings
+                    Manifest fields:
+                    - can_improve: boolean
+                    - changed: boolean
+                    - changes_summary: array of strings
 
-                        Iteration:
-                        ${{ loop.iter }}
+                    Iteration:
+                    ${{ loop.iter }}
 
-                        Evaluation summary:
-                        - Weighted average score: ${{ steps.round_eval.output.avg_score }}
-                        - Train average score: ${{ steps.round_eval.output.train_avg_score }}
-                        - Holdout average score: ${{ steps.round_eval.output.holdout_avg_score }}
-                        - Best score so far: ${{ steps.round_eval.output.best_score }}
-                        - Stagnation rounds: ${{ steps.round_eval.output.stagnation_rounds }}
-                        - Weakest test: ${{ steps.round_eval.output.weakest_test }}
-                        - Weakest score: ${{ steps.round_eval.output.weakest_score }}
-                        - Weakest dimension: ${{ steps.round_eval.output.weakest_dimension }}
-                        - Violation count: ${{ steps.round_eval.output.violation_count }}
-                        - Deterministic check pass rate: ${{ steps.round_eval.output.check_pass_rate }}
-                        - Current skill line count: ${{ steps.round_eval.output.skill_line_count }}
-                        - Original skill line count: ${{ steps.round_eval.output.original_line_count }}
-                        - Line budget: ${{ steps.round_eval.output.line_budget }}
+                    Evaluation summary:
+                    - Weighted average score: ${{ steps.round_eval.output.avg_score }}
+                    - Train average score: ${{ steps.round_eval.output.train_avg_score }}
+                    - Holdout average score: ${{ steps.round_eval.output.holdout_avg_score }}
+                    - Best score so far: ${{ steps.round_eval.output.best_score }}
+                    - Stagnation rounds: ${{ steps.round_eval.output.stagnation_rounds }}
+                    - Weakest test: ${{ steps.round_eval.output.weakest_test }}
+                    - Weakest score: ${{ steps.round_eval.output.weakest_score }}
+                    - Weakest dimension: ${{ steps.round_eval.output.weakest_dimension }}
+                    - Violation count: ${{ steps.round_eval.output.violation_count }}
+                    - Deterministic check pass rate: ${{ steps.round_eval.output.check_pass_rate }}
+                    - Current skill line count: ${{ steps.round_eval.output.skill_line_count }}
+                    - Original skill line count: ${{ steps.round_eval.output.original_line_count }}
+                    - Line budget: ${{ steps.round_eval.output.line_budget }}
 
-                        Train-only improvement details:
-                        ${{ steps.round_eval.output.improvement_summary_path }}
+                    Train-only improvement details:
+                    ${{ steps.round_eval.output.improvement_summary_path }}
 
-                        Rules:
-                        - Read the current SKILL.md and referenced files before editing.
-                        - Read the train-only improvement details before editing.
-                        - Modify only the skill directory inside the isolated worktree.
-                        - Keep SKILL.md at or below the line budget.
-                        - Move detailed examples/checklists into references/ when needed.
-                        - Do not overfit one test case; generalize across the evaluation.
-                        - Do not use holdout-only feedback to choose edits.
-                        - Preserve frontmatter unless recall/triggering is the problem.
-                        - In recall focus, prefer improving frontmatter description;
-                          leave body workflow quality for a separate non-recall pass.
-                        - If no useful improvement remains, leave the skill unchanged and
-                          set changed=false in the manifest.
+                    Rules:
+                    - Read the current SKILL.md and referenced files before editing.
+                    - Read the train-only improvement details before editing.
+                    - Modify only the skill directory inside the isolated worktree.
+                    - Keep SKILL.md at or below the line budget.
+                    - Move detailed examples/checklists into references/ when needed.
+                    - Do not overfit one test case; generalize across the evaluation.
+                    - Do not use holdout-only feedback to choose edits.
+                    - Preserve frontmatter unless recall/triggering is the problem.
+                    - In recall focus, prefer improving frontmatter description;
+                      leave body workflow quality for a separate non-recall pass.
+                    - If no useful improvement remains, leave the skill unchanged and
+                      set changed=false in the manifest.
 
-                        Do not rely on final-message JSON. The manifest file is the
-                        contract consumed by the workflow.
+                    Do not rely on final-message JSON. The manifest file is the
+                    contract consumed by the workflow.
 
-                    - id: commit_candidate
-                      run: program
-                      cmd:
-                        - node
-                        - ${{ workflow.source_dir }}/scripts/skill-optimizer.mjs
-                        - commit-candidate
-                        - ${{ steps.init.output.state_path }}
-                      capture:
-                        from: stdout
-                        parse: json
-                      output:
-                        round: integer
-                        committed: boolean
-                        sha: string
-                      timeout: 30s
-              default:
-                do:
-                  - id: skip_improve
-                    run: program
-                    cmd:
-                      - node
-                      - -e
-                      - "console.log(JSON.stringify({round:0,committed:false,sha:''}))"
-                    capture:
-                      from: stdout
-                      parse: json
-                    output:
-                      round: integer
-                      committed: boolean
-                      sha: string
+                - id: commit_candidate
+                  run: program
+                  cmd:
+                    - node
+                    - ${{ workflow.source_dir }}/scripts/skill-optimizer.mjs
+                    - commit-candidate
+                    - ${{ steps.init.output.state_path }}
+                  capture:
+                    from: stdout
+                    parse: json
+                  output:
+                    round: integer
+                    committed: boolean
+                    sha: string
+                  timeout: 30s
+              else:
+                - id: skip_improve
+                  run: program
+                  cmd:
+                    - node
+                    - -e
+                    - "console.log(JSON.stringify({round:0,committed:false,sha:''}))"
+                  capture:
+                    from: stdout
+                    parse: json
+                  output:
+                    round: integer
+                    committed: boolean
+                    sha: string
 
           - id: finish_round
             run: program

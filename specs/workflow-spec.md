@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Workflow Specs are YAML documents that declare local durable workflows made of Agent Steps, Program Steps, Composite Nodes, Guard Nodes, Signal Nodes, inputs, agents, and outputs.
+Workflow Specs are YAML documents that declare local durable workflows made of Agent Steps, Program Steps, Composite Nodes, If Nodes, Guard Nodes, Signal Nodes, inputs, agents, and outputs.
 
 ## Requirements
 
@@ -132,15 +132,15 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A `pipeline` Node MAY declare `outputs` as a projection object evaluated after its child Nodes complete.
 - A `pipeline` Node without `outputs` MUST produce `steps.<id>.output` as its final child Node's primary output.
 - A `pipeline` Node with `outputs` MUST produce `steps.<id>.output` as the evaluated projection.
-- `fanout.do`, `loop.do`, `switch.cases[].do`, and `switch.default.do` MUST compile as generated internal pipeline Nodes.
-- Generated internal pipeline ids MUST use parent-local `$` segments: `fanout.do` and `loop.do` compile to `$do`, `switch.cases[n].do` compiles to `$case_<1-based-index>`, `switch.default.do` compiles to `$default`, and each `parallel` branch body compiles to `$<branch_id>`.
+- `fanout.do`, `loop.do`, `if.then`, `if.else`, `switch.cases[].do`, and `switch.default.do` MUST compile as generated internal pipeline Nodes.
+- Generated internal pipeline ids MUST use parent-local `$` segments: `fanout.do` and `loop.do` compile to `$do`, `if.then` compiles to `$then`, `if.else` compiles to `$else`, `switch.cases[n].do` compiles to `$case_<1-based-index>`, `switch.default.do` compiles to `$default`, and each `parallel` branch body compiles to `$<branch_id>`.
 - Generated internal pipeline ids are parent-local and MAY repeat in one compiled Workflow Spec; the durable Node identity MUST be the resolved Node Key derived from the full `nodePath`.
 - Generated internal pipeline ids MUST NOT be visible expression targets. Expressions such as `steps.$do.output` MUST be rejected as unknown step references.
 - `do` lists MUST be non-empty and MUST NOT declare an `outputs` projection; authors who need a custom public contract MUST use an explicit `pipeline` Node.
 - A `parallel` Node MUST contain branch descriptors shaped as `{ id, do }`, where `id` is the public branch key and `do` is a non-empty ordered list of child Nodes.
 - A `parallel` branch id MUST match `^[A-Za-z_][A-Za-z0-9_-]*$` and MUST NOT start with `$`.
 - The generated `$<branch_id>` pipeline segment is internal; the public branch output key remains the branch id, so branch output is read as `steps.<parallel_id>.output.<branch_id>`.
-- Composite child Nodes (`pipeline` children, `parallel` branch `do` lists, and `fanout`, `switch` case, `switch` default, and `loop` `do` lists) MUST be validated as full Nodes, so unknown or misplaced fields on a nested Node MUST be rejected with the same structural diagnostics as a top-level Node.
+- Composite child Nodes (`pipeline` children, `parallel` branch `do` lists, and `fanout`, `if`, `switch` case, `switch` default, and `loop` body lists) MUST be validated as full Nodes, so unknown or misplaced fields on a nested Node MUST be rejected with the same structural diagnostics as a top-level Node.
 - Every Node result MUST be a step value envelope that exposes its primary produced value at `steps.<id>.output`.
 - Composite outputs MUST expose child primary outputs, not child step envelopes: parallel branch values, fanout lane values, switch selected values, and loop last values use the selected body's primary output directly.
 - The root pipeline Node MUST persist an output envelope whose `output` field is a map keyed by direct child step id, where each value is that child step's full step value.
@@ -163,6 +163,14 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - A `fanout` Node MUST produce `steps.<id>.output` as an array of the successful lane outputs.
 - A `fanout` Node MUST expose `item`, `item_id`, and `item_index` inside its body.
 - `item_index` MUST be exposed to CEL as an integer.
+- An `if` Node MUST declare `if.condition` as a boolean or a CEL expression string.
+- An `if` Node MUST declare `if.then` as a non-empty ordered list of child Nodes.
+- An `if` Node MAY declare `if.else` as a non-empty ordered list of child Nodes.
+- `if.then` and `if.else` MUST have the same body semantics as `do` lists and MUST NOT declare an `outputs` projection.
+- An `if` Node MUST execute `if.then` when `if.condition` evaluates truthy.
+- An `if` Node MUST execute `if.else` when `if.condition` evaluates falsey and `if.else` is declared.
+- An `if` Node with falsey `if.condition` and no `if.else` MUST complete without executing child Nodes and MUST produce `{}` at `steps.<id>.output`.
+- An `if` Node MUST produce `steps.<id>.output` as the selected branch pipeline's primary output when a branch executes.
 - A `switch` Node MUST select at most one branch.
 - A `switch` Node MUST evaluate cases in order.
 - A `switch` Node case MAY declare `when` as a boolean or a CEL expression string.
@@ -247,7 +255,7 @@ The compiler MUST statically validate expressions against the compiled IR so tha
 
 - CEL syntax, built-ins, macros, function overloads, unknown roots, and unknown functions MUST be validated through `cel-js` with Acpus context roots and custom functions registered. Acpus MUST NOT maintain a separate whitelist for standard `cel-js` built-ins or macros.
 - Expression references MUST be extracted from the parsed CEL AST, not by text matching.
-- A `steps.<id>.output.<path>` reference whose `<id>` declares an output schema (an Agent, Program, or Signal Node) MUST be rejected when `<path>` names a field absent from the schema's declared properties; the diagnostic MUST list the available fields. Static string indexes such as `steps.<id>.output["field"]` MUST be treated as field references. Dynamic indexes MUST be accepted only when they index an array with declared `items`; path validation MUST stop, accepting the reference, at the first scalar, unknown, or composite (pipeline/loop/fanout/parallel/switch/guard) output projection.
+- A `steps.<id>.output.<path>` reference whose `<id>` declares an output schema (an Agent, Program, or Signal Node) MUST be rejected when `<path>` names a field absent from the schema's declared properties; the diagnostic MUST list the available fields. Static string indexes such as `steps.<id>.output["field"]` MUST be treated as field references. Dynamic indexes MUST be accepted only when they index an array with declared `items`; path validation MUST stop, accepting the reference, at the first scalar, unknown, or composite (pipeline/loop/fanout/parallel/if/switch/guard) output projection.
 - An `input.<path>` reference MUST be validated against the compiled input schema where declared properties make the path statically knowable, and MUST fail quietly at open or dynamic input shapes.
 - A `workflow.<path>` reference MUST be validated against the workflow metadata context fields.
 - Inside a `fanout` body whose `over` resolves to a typed array element schema, an `item.<path>` reference MUST be validated against that element schema under the same declared-property rule.
@@ -276,8 +284,9 @@ The compiler MUST statically validate expressions against the compiled IR so tha
 - Compiler tests MUST cover Program Step shape validation.
 - Compiler tests MUST cover `expect.exit_code` shape validation.
 - Compiler tests MUST cover composite Node compilation.
+- Compiler tests MUST cover If Node shape validation, generated branch pipelines, output projection, and expression scope.
 - Compiler tests MUST cover rejection of `switch` Nodes without a default branch.
-- Compiler tests MUST cover unknown-field rejection on Nodes nested inside composite `do` and `parallel` lists.
+- Compiler tests MUST cover unknown-field rejection on Nodes nested inside composite `do`, `then`, `else`, and `parallel` lists.
 - Compiler tests MUST cover Guard Node shape validation, compilation, and expression collection.
 - Compiler tests MUST cover Signal Node shape validation, optional `output` schema compilation, and `default` payload validation against a declared `output` schema.
 - Compiler tests MUST cover include expansion and include cycle diagnostics.

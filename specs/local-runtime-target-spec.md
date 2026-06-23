@@ -268,7 +268,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - The runtime MUST expose a `POST /runs/:runId/fork` Run Supervisor route accepting a Workflow Spec, optional `sourcePath`, `workflowRef`, `input`, `overrideOriginNodeKey`, `dryRun`, and `agentOverrides`.
 - Fork submission MUST be rejected with a conflict error when the source Run is in a non-terminal state (`running`, `paused`, or `awaiting`) or when the source Run has no checkpoint index.
 - Fork planning MUST scan the source Run's checkpoints in `sequence` order and inherit each Node whose Node Key has a matching static counterpart in the new Spec, whose prior state is `completed`, and whose Node Definition Hash matches the new compiled IR; inheritance MUST stop at the first Node failing any of these checks (the inheritance boundary).
-- The default Fork Origin MUST be the inheritance boundary determined by the scan; an operator override MAY force an earlier Origin but MUST NOT be a Node inside a Composite (`parallel`, `fanout`, `loop`, `switch`, `subworkflow`) body.
+- The default Fork Origin MUST be the inheritance boundary determined by the scan; an operator override MAY force an earlier Origin but MUST NOT be a Node inside a Composite (`parallel`, `fanout`, `if`, `loop`, `switch`, `subworkflow`) body.
 - A Forked Run MUST be its own Run with its own frozen IR snapshot and MUST NOT mutate the source Run.
 - A Forked Run MUST inherit the source Run's persisted effective Agent Override map by default. Missing `agentOverrides` on an older source Run MUST be treated as an empty map.
 - Fork Agent Override resolution MUST filter inherited override entries to agents still declared by the repaired top-level Workflow Spec, MUST emit `INHERITED_AGENT_OVERRIDE_SKIPPED` for skipped inherited entries, and MUST NOT reject the fork solely because an inherited override no longer has a matching agent.
@@ -305,7 +305,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - The runtime MUST support deterministic replay of a persisted Run that re-walks the frozen IR snapshot and verifies that the reconstructed Node topology matches the persisted Run.
 - Replay MUST NOT execute Agent Steps or Program Steps, MUST NOT write to disk, and MUST NOT re-read mutable YAML.
 - Replay MUST be self-deterministic: it MUST reuse the recorded run ID and a frozen clock (the Run's `createdAt`) so the re-walk does not depend on wall-clock time, and MUST NOT depend on random values or large artifact payloads.
-- Replay MUST feed recorded per-Node outputs back into the expression context so control-flow decisions (switch branches, loop rounds, fanout lanes) are re-derived deterministically.
+- Replay MUST feed recorded per-Node outputs back into the expression context so control-flow decisions (if branches, switch branches, loop rounds, fanout lanes) are re-derived deterministically.
 - Replay MUST report a structured result indicating success or a list of discrepancies between the recorded and replayed Node topology (the set of reached Node keys); per-Node terminal-state and output equivalence verification is out of scope for this milestone.
 - Replay MUST remain read-only even when invoked through a lazily started Run Supervisor.
 

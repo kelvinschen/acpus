@@ -9,7 +9,7 @@ Acpus is the durable local runner that orchestrates acpx-backed agents through W
 
 ## Core Model
 
-Three equal units, freely orchestrated with composite nodes (pipeline, loop, fanout, parallel, switch, guard) into controllable workflows:
+Three equal units, freely orchestrated with composite nodes (pipeline, loop, fanout, parallel, if, switch, guard) into controllable workflows:
 
 - **Agent Step** (`run: agent`) — open-ended judgment via an acpx agent.
 - **Program Step** (`run: program`) — deterministic local glue.

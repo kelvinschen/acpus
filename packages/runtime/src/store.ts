@@ -410,7 +410,7 @@ function isTerminal(state: NodeExecutionState["state"]): boolean {
 
 /**
  * Whether a Node Kind should produce a Run Checkpoint when reaching a terminal
- * state. Composite container Nodes (pipeline, parallel, fanout, switch, loop,
+ * state. Composite container Nodes (pipeline, parallel, fanout, if, switch, loop,
  * subworkflow) record an aggregate outcome whose meaning depends on their
  * children; inheriting them in a Forked Run would short-circuit the container
  * body wholesale (the interpreter treats any persisted completed as done).

@@ -8,7 +8,7 @@ import type { IrNodeKind, NodeKeyTemplate, OutputMerge } from "./types.js";
  * - `last`     — loop: last child's output (shape resolved lazily, treated dyn).
  * - `array`    — fanout: array of lane outputs (treated dyn past `.output`).
  * - `map`      — parallel: record keyed by branch id (treated dyn past `.output`).
- * - `selected` — switch: one selected branch output (dyn).
+ * - `selected` — if/switch: one selected branch output (dyn).
  * - `decision` — guard: deterministic control decision (dyn).
  * - `opaque`   — pipeline / subworkflow: shape unknown (dyn).
  */
@@ -93,6 +93,14 @@ export const COMPOSITE_CONTRACTS: Record<IrNodeKind, CompositeContract> = {
     bodyScopedConfigFields: ["key"],
     selfVisibleInBody: false,
     outputShape: "array"
+  },
+  if: {
+    outputMerge: "selected",
+    keyDimensions: [],
+    bodyLocals: [],
+    bodyScopedConfigFields: [],
+    selfVisibleInBody: false,
+    outputShape: "selected"
   },
   switch: {
     outputMerge: "selected",

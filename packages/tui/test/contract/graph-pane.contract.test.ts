@@ -98,6 +98,27 @@ describe("GraphRow", () => {
     expect(text).not.toContain("✓ collect ▸");
   });
 
+  it("renders if kind symbols as conditional markers", () => {
+    const row: DisplayRow = {
+      rowKey: "if",
+      irNode: {
+        id: "maybe",
+        kind: "if",
+        nodePath: ["workflow", "maybe"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow/maybe" },
+        metadata: {}
+      },
+      depth: 0,
+      state: "completed",
+      label: "maybe",
+      isHeader: true,
+      treeSegments: []
+    };
+
+    const text = collectText(GraphRow({ row, selected: false }));
+    expect(text).toContain("✓ maybe ?");
+  });
+
   it("renders colored disclosure indicators for collapsible graph rows", () => {
     const row: DisplayRow = {
       rowKey: "parallel",

@@ -93,18 +93,20 @@ describe("createExpressionCollector", () => {
     expect(collector.expressions[1].references).toEqual(["step_b"]);
   });
 
-  it("warns when ${{ }} appears in raw-CEL fields (over, until, when)", () => {
+  it("warns when ${{ }} appears in raw-CEL fields (over, until, when, if.condition)", () => {
     const diagnostics = new DiagnosticBag();
     const collector = createExpressionCollector(diagnostics, new Set(["discover", "gate"]));
 
     collector.visit("${{ steps.discover.output.files }}", "$.workflow.steps[0].fanout.over");
     collector.visit("${{ loop.iter >= 2 }}", "$.workflow.steps[1].loop.until");
     collector.visit("${{ steps.gate.output.approved }}", "$.workflow.steps[2].switch.cases[0].when");
+    collector.visit("${{ input.enabled }}", "$.workflow.steps[3].if.condition");
 
     expect(diagnostics.diagnostics).toEqual([
       expect.objectContaining({ code: "EXPR_TEMPLATE_IN_CEL", path: expect.stringContaining("over") }),
       expect.objectContaining({ code: "EXPR_TEMPLATE_IN_CEL", path: expect.stringContaining("until") }),
-      expect.objectContaining({ code: "EXPR_TEMPLATE_IN_CEL", path: expect.stringContaining("when") })
+      expect.objectContaining({ code: "EXPR_TEMPLATE_IN_CEL", path: expect.stringContaining("when") }),
+      expect.objectContaining({ code: "EXPR_TEMPLATE_IN_CEL", path: expect.stringContaining("condition") })
     ]);
   });
 
@@ -115,8 +117,19 @@ describe("createExpressionCollector", () => {
     collector.visit("steps.discover.output.files", "$.workflow.steps[0].fanout.over");
     collector.visit("loop.iter >= 2", "$.workflow.steps[1].loop.until");
     collector.visit("steps.gate.output.approved", "$.workflow.steps[2].switch.cases[0].when");
+    collector.visit("input.enabled", "$.workflow.steps[3].if.condition");
 
     expect(diagnostics.diagnostics).toEqual([]);
+  });
+
+  it("does not treat ordinary fields named condition as raw CEL", () => {
+    const diagnostics = new DiagnosticBag();
+    const collector = createExpressionCollector(diagnostics, new Set());
+
+    collector.visit("not cel", "$.workflow.steps[0].env.condition");
+
+    expect(diagnostics.diagnostics).toEqual([]);
+    expect(collector.expressions).toEqual([]);
   });
 
   it("does not warn when key uses ${{ }} template syntax", () => {

@@ -111,7 +111,7 @@ export interface RenderNode {
   instances: NodeExecutionState[];
   /** Child render nodes. */
   children: RenderNode[];
-  /** For switch branches: the case label and predicate. */
+  /** For if/switch branches: the branch label and predicate. */
   branchLabel?: string;
   branchWhen?: string;
   /** Composite summary derived from metadata (e.g. "over=files join=quorum"). */
@@ -603,6 +603,10 @@ function summarize(node: IrNode): string | undefined {
       if (typeof m.join === "string") parts.push(`join=${String(m.join)}`);
       if (typeof m.max_concurrency === "number") parts.push(`conc=${m.max_concurrency}`);
       return parts.length ? parts.join(" ") : undefined;
+    }
+    case "if": {
+      const condition = node.branches?.find((branch) => branch.id === "then")?.when;
+      return typeof condition === "string" ? `condition ${condition}` : undefined;
     }
     case "switch":
       return typeof m.on === "string" ? `on ${m.on}` : undefined;

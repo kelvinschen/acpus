@@ -517,6 +517,65 @@ outputs:
       expect(result.ok).toBe(false);
       expectDiagnostic(result, { code: "EXPR_UNKNOWN_STEP", message: "not visible" });
     });
+
+    it("rejects references across if branches and from parents to if body steps", () => {
+      const crossBranch = lintWorkflow(
+        wf(`    - id: maybe
+      if:
+        condition: input.enabled
+        then:
+          - id: then_step
+            run: agent
+            use: m
+            prompt: hi
+            output: { value: string }
+        else:
+          - id: else_step
+            run: agent
+            use: m
+            prompt: "\${{ steps.then_step.output.value }}"`)
+      );
+      expect(crossBranch.ok).toBe(false);
+      expectDiagnostic(crossBranch, { code: "EXPR_UNKNOWN_STEP", message: "not visible" });
+
+      const parentUse = lintWorkflow(
+        wf(`    - id: maybe
+      if:
+        condition: input.enabled
+        then:
+          - id: then_step
+            run: agent
+            use: m
+            prompt: hi
+            output: { value: string }
+    - id: use
+      run: agent
+      use: m
+      prompt: "\${{ steps.then_step.output.value }}"`)
+      );
+      expect(parentUse.ok).toBe(false);
+      expectDiagnostic(parentUse, { code: "EXPR_UNKNOWN_STEP", message: "not visible" });
+    });
+
+    it("reports if.condition scope errors at the authored condition path", () => {
+      const result = lintWorkflow(
+        wf(`    - id: maybe
+      if:
+        condition: steps.later.output.ok
+        then:
+          - id: now
+            run: agent
+            use: m
+            prompt: hi
+    - id: later
+      run: agent
+      use: m
+      prompt: hi
+      output: { ok: boolean }`)
+      );
+      expect(result.ok).toBe(false);
+      expectDiagnostic(result, { code: "EXPR_UNKNOWN_STEP", path: "$.workflow.steps[0].if.condition", message: "not visible" });
+    });
   });
 
   describe("shell safety (B)", () => {

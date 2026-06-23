@@ -13,6 +13,7 @@ const ALL_KINDS: IrNodeKind[] = [
   "run.signal",
   "parallel",
   "fanout",
+  "if",
   "switch",
   "loop",
   "guard",

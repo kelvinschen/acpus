@@ -116,6 +116,58 @@ describe("Forked Run", () => {
     expect(plan.boundaryReason).toBe("all-completed");
   });
 
+  it("does not inherit if branch children when the if condition definition changes", async () => {
+    const sourceIr = compileYaml(`
+version: 1
+name: fork-if-condition
+workflow:
+  steps:
+    - id: maybe
+      if:
+        condition: true
+        then:
+          - id: enabled
+            run: program
+            cmd: ["echo", "enabled"]
+    - id: publish
+      run: program
+      cmd: ["echo", "publish"]
+`);
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: {
+        enabled: { parsedOutput: "enabled" },
+        publish: { parsedOutput: "publish" }
+      }
+    });
+    cleanups.push(cleanup);
+    const meta = await interpreter.start(sourceIr, { input: {} });
+    expect(meta.status).toBe("completed");
+    expect(store.readCheckpoints(meta.runId).map((checkpoint) => checkpoint.nodeKey)).toContain("workflow/maybe/$then/enabled");
+
+    const newIr = compileYaml(`
+version: 1
+name: fork-if-condition
+workflow:
+  steps:
+    - id: maybe
+      if:
+        condition: false
+        then:
+          - id: enabled
+            run: program
+            cmd: ["echo", "enabled"]
+    - id: publish
+      run: program
+      cmd: ["echo", "publish"]
+`);
+    const plan = planForkedRun(store, { sourceRunId: meta.runId, ir: newIr });
+
+    expect(plan.inheritedNodeKeys).not.toContain("workflow/maybe/$then/enabled");
+    expect(plan.inheritedNodeKeys).not.toContain("workflow/publish");
+    expect(plan.forkOriginNodeKey).toBe("workflow/maybe");
+    expect(plan.boundaryReason).toBe("hash-mismatch");
+  });
+
   it("truncates inheritance at the first hash mismatch", async () => {
     const ir = compileYaml(SPEC_V1);
     const { interpreter, store, cleanup } = createTestInterpreter({

@@ -11,6 +11,7 @@ Compact full-schema reference for AI agents authoring or validating Acpus Workfl
 - [Pipeline](#pipeline)
 - [Parallel](#parallel)
 - [Fanout](#fanout)
+- [If](#if)
 - [Switch](#switch)
 - [Loop](#loop)
 - [Guard](#guard)
@@ -117,7 +118,7 @@ Agent definitions are merged with Agent Overrides at Run creation; the frozen IR
 Every step is an object with a required `id`:
 
 - `id: <string>` — required, matches `^[A-Za-z_][A-Za-z0-9_-]*$`, does not start with `$`, unique within the spec after include expansion.
-- `$` is reserved for generated internal pipeline ids. Generated `do` pipeline ids are parent-local: `$do`, `$case_<1-based-index>`, `$default`, and `$<branch_id>`.
+- `$` is reserved for generated internal pipeline ids. Generated body pipeline ids are parent-local: `$do`, `$then`, `$else`, `$case_<1-based-index>`, `$default`, and `$<branch_id>`.
 
 ### Step Kind Dispatch
 
@@ -131,6 +132,7 @@ A step MUST match exactly one of these shapes (enforced by `oneOf`):
 | `pipeline: [...]` | Pipeline |
 | `parallel: [...]` | Parallel |
 | `fanout: {...}` | Fanout |
+| `if: {...}` | If |
 | `switch: {...}` | Switch |
 | `loop: {...}` | Loop |
 | `guard: {...}` | Guard |
@@ -233,7 +235,7 @@ retry:                          # Agent + Program only
 
 - Default output: final child's primary output.
 - With `outputs`: evaluated projection after children complete.
-- `fanout.do` / `loop.do` / `switch.cases[].do` / `switch.default.do` compile as generated internal pipelines.
+- `fanout.do` / `loop.do` / `if.then` / `if.else` / `switch.cases[].do` / `switch.default.do` compile as generated internal pipelines.
 - `do` lists must be non-empty; authors needing custom public contract use explicit `pipeline` with `outputs`.
 
 ### Parallel
@@ -284,6 +286,25 @@ retry:                          # Agent + Program only
 - `join: all` — fail-fast on first lane failure; `join: race` / `join: quorum` — capture failed lanes, don't abort.
 - `success_criteria.min_success` — how many successful lanes needed for overall success. Default: `all`→all lanes, `race`→1, `quorum`→`quorum`. Only use `quorum`/`success_criteria` when partial success is acceptable.
 - `key` is a template — supports `${{ item.<field> }}`.
+
+### If
+
+```yaml
+- id: <string>
+  if:
+    condition: <string | boolean>  # raw CEL or boolean literal
+    then:
+      - id: <string>
+        # ... full step
+    else:                          # optional
+      - id: <string>
+        # ... full step
+```
+
+- `condition` truthy → execute `then`; falsey with `else` → execute `else`; falsey without `else` → complete with `{}`.
+- `then` / `else` match `do` body semantics: full Nodes, sequential pipeline visibility, final child primary output, no body-level `outputs`.
+- Generated internal pipeline ids: `$then` and `$else`.
+- `steps.<id>.output` is the selected branch pipeline's primary output (`selected` projection), or `{}` when no branch executes.
 
 ### Switch
 
@@ -415,7 +436,7 @@ json(value)                              # deterministic JSON string (sorted key
 
 ### Step Visibility
 
-Steps can reference only **previously executed** sibling steps (sequential visibility). Within a loop body, all body steps are mutually visible (relaxed to avoid false positives). Within a `pipeline`, steps follow standard sequential visibility. Within a `do` list (fanout.do, loop.do, switch.do), pipeline visibility rules apply and composite-local roots (`item`, `loop.iter`) are additionally available. Parallel branches and fanout lanes cannot see each other; switch cases cannot see each other.
+Steps can reference only **previously executed** sibling steps (sequential visibility). Within a loop body, all body steps are mutually visible (relaxed to avoid false positives). Within a `pipeline`, steps follow standard sequential visibility. Within a body list (fanout.do, loop.do, if.then, if.else, switch.do), pipeline visibility rules apply and composite-local roots (`item`, `loop.iter`) are additionally available. Parallel branches, fanout lanes, if branches, and switch cases cannot see each other.
 
 ### Composite Output Shapes
 
@@ -426,6 +447,7 @@ Steps can reference only **previously executed** sibling steps (sequential visib
 | `run.signal` | `{ <injected fields> }` | The injected payload object |
 | `parallel` | `{ <branch_id>: <primary_output> }` | Map of branch primary outputs keyed by branch id |
 | `fanout` | `[<primary_output>, ...]` | Array of successful lane primary outputs |
+| `if` | `<primary_output>` or `{}` | Selected branch's primary output, or empty object when false without `else` |
 | `switch` | `<primary_output>` | Selected branch's primary output |
 | `loop` | `<primary_output>` | Last iteration body's primary output |
 | `guard` | `{ matched, action }` (+ `message` when `fail` with declared `guard.message`) | Decision record |
@@ -516,6 +538,7 @@ Compiler diagnostic codes emitted during validation:
 | `SWITCH_CASE` | Invalid switch case entry |
 | `SWITCH_CASES` | `switch.cases` must be an array |
 | `SWITCH_WHEN_TYPE` | Invalid `when` type in switch case |
+| `IF_CONDITION_TYPE` | Invalid `if.condition` type |
 | `GUARD_WHEN` | Missing `guard.when` |
 | `GUARD_WHEN_TYPE` | Invalid `when` type |
 | `GUARD_ACTION` | Invalid `then`/`else` value |
@@ -550,7 +573,7 @@ Compiler diagnostic codes emitted during validation:
 - `version` must be `1`.
 - Every step must match exactly one kind.
 - `pipeline` must be non-empty, and `pipeline.outputs` must reference children of that pipeline.
-- `do` lists on fanout, loop, switch, and parallel branches must be non-empty.
+- Body lists on fanout, loop, if, switch, and parallel branches must be non-empty.
 - `fanout.over` array elements must be primitives.
 - `fanout` with `join: quorum` requires `quorum`.
 - `program` with `output` requires `capture.parse: json`.

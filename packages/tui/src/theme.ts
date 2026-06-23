@@ -39,6 +39,7 @@ export const KIND_LABELS: Record<IrNodeKind, string> = {
   "run.program": "PROGRAM",
   parallel: "PARALLEL",
   fanout: "FANOUT",
+  if: "IF",
   switch: "SWITCH",
   loop: "LOOP",
   guard: "GUARD",
@@ -59,6 +60,7 @@ export const KIND_STYLES: Record<IrNodeKind, KindStyle> = {
   "run.program": { symbol: "$", color: "yellow", label: "Program" },
   parallel: { symbol: "▥", color: "blueBright", label: "Parallel" },
   fanout: { symbol: "◬", color: "magenta", label: "Fanout" },
+  if: { symbol: "?", color: "blueBright", label: "If" },
   switch: { symbol: "◇", color: "blue", label: "Switch" },
   loop: { symbol: "↻", color: "yellowBright", label: "Loop" },
   guard: { symbol: "◈", color: "redBright", label: "Guard" },
@@ -71,6 +73,7 @@ export const COMPOSITE_KINDS: ReadonlySet<IrNodeKind> = new Set<IrNodeKind>([
   "pipeline",
   "parallel",
   "fanout",
+  "if",
   "switch",
   "loop",
   "subworkflow"

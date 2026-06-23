@@ -264,69 +264,67 @@ workflow:
     #    Otherwise: a graceful degraded summary (the budget_limited / blocked
     #    analogue) so the run hands off honestly.
     - id: finalize
-      switch:
-        cases:
-          - when: steps.goal_loop.output.goal_met
-            do:
-              - id: success_summary
-                run: agent
-                use: summarizer
-                prompt: |
-                  The goal was verified as met. Produce a concise completion
-                  summary for the user.
+      if:
+        condition: steps.goal_loop.output.goal_met
+        then:
+          - id: success_summary
+            run: agent
+            use: summarizer
+            prompt: |
+              The goal was verified as met. Produce a concise completion
+              summary for the user.
 
-                  Goal:
-                  ${{ input.goal }}
+              Goal:
+              ${{ input.goal }}
 
-                  Final audit summary:
-                  ${{ steps.goal_loop.output.audit_summary }}
+              Final audit summary:
+              ${{ steps.goal_loop.output.audit_summary }}
 
-                  Requirement checklist:
-                  ${{ steps.prepare_output.output.checklist_path }}
+              Requirement checklist:
+              ${{ steps.prepare_output.output.checklist_path }}
 
-                  Workspace (changes were made here):
-                  ${{ steps.prepare_output.output.workspace_path }}
+              Workspace (changes were made here):
+              ${{ steps.prepare_output.output.workspace_path }}
 
-                  Summarize what was accomplished, how it was verified, and what
-                  the user should review. Write it to:
-                  ${{ steps.prepare_output.output.summary_path }}
+              Summarize what was accomplished, how it was verified, and what
+              the user should review. Write it to:
+              ${{ steps.prepare_output.output.summary_path }}
 
-                  Return JSON with the summary path.
-                output:
-                  summary_path: string
-                timeout: 15m
-        default:
-          do:
-            - id: degraded_summary
-              run: agent
-              use: summarizer
-              prompt: |
-                The goal was NOT completed within the iteration budget, or the
-                auditor marked it blocked. Produce an honest hand-off summary
-                (the goal-mode "budget_limited / blocked" graceful stop).
+              Return JSON with the summary path.
+            output:
+              summary_path: string
+            timeout: 15m
+        else:
+          - id: degraded_summary
+            run: agent
+            use: summarizer
+            prompt: |
+              The goal was NOT completed within the iteration budget, or the
+              auditor marked it blocked. Produce an honest hand-off summary
+              (the goal-mode "budget_limited / blocked" graceful stop).
 
-                Goal:
-                ${{ input.goal }}
+              Goal:
+              ${{ input.goal }}
 
-                Final audit summary:
-                ${{ steps.goal_loop.output.audit_summary }}
+              Final audit summary:
+              ${{ steps.goal_loop.output.audit_summary }}
 
-                Blocked:
-                ${{ steps.goal_loop.output.blocked }}
+              Blocked:
+              ${{ steps.goal_loop.output.blocked }}
 
-                Still-unmet requirements:
-                ${{ steps.goal_loop.output.unmet_requirements }}
+              Still-unmet requirements:
+              ${{ steps.goal_loop.output.unmet_requirements }}
 
-                Workspace (work in progress lives here):
-                ${{ steps.prepare_output.output.workspace_path }}
+              Workspace (work in progress lives here):
+              ${{ steps.prepare_output.output.workspace_path }}
 
-                Write a concise progress + next-steps summary to:
-                ${{ steps.prepare_output.output.summary_path }}
+              Write a concise progress + next-steps summary to:
+              ${{ steps.prepare_output.output.summary_path }}
 
-                Return JSON with the summary path.
-              output:
-                summary_path: string
-              timeout: 20m
+              Return JSON with the summary path.
+            output:
+              summary_path: string
+            timeout: 20m
 
     # 5. Root-level outcome gate: the Run completes only if the goal was met,
     #    otherwise it fails (so "budget exhausted / blocked" is a clear failure,

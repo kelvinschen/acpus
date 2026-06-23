@@ -255,6 +255,171 @@ workflow:
     });
   });
 
+  it("if: outputMerge is selected; then and else compile as generated pipelines", () => {
+    const source = `
+version: 1
+name: if-output
+workflow:
+  steps:
+    - id: maybe
+      if:
+        condition: input.enabled
+        then:
+          - id: enabled
+            run: program
+            cmd: ["echo", "enabled"]
+        else:
+          - id: disabled
+            run: program
+            cmd: ["echo", "disabled"]
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const ifNode = result.ir?.root.children?.[0];
+    expect(ifNode?.kind).toBe("if");
+    expect(ifNode?.outputMerge).toBe("selected");
+    expect(ifNode?.branches?.map((b) => b.id)).toEqual(["then", "else"]);
+    expect(ifNode?.branches?.[0]?.when).toBe("input.enabled");
+    expect(collectIds(ifNode!)).toEqual(["maybe", "$then", "enabled", "$else", "disabled"]);
+    expect(collectNodePaths(ifNode!)).toEqual([
+      "workflow/maybe",
+      "workflow/maybe/$then",
+      "workflow/maybe/$then/enabled",
+      "workflow/maybe/$else",
+      "workflow/maybe/$else/disabled"
+    ]);
+  });
+
+  it("if: omits the else branch when else is not declared", () => {
+    const source = `
+version: 1
+name: if-no-else
+workflow:
+  steps:
+    - id: maybe
+      if:
+        condition: input.enabled
+        then:
+          - id: enabled
+            run: program
+            cmd: ["echo", "enabled"]
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const ifNode = result.ir?.root.children?.[0];
+    expect(ifNode?.kind).toBe("if");
+    expect(ifNode?.branches?.map((b) => b.id)).toEqual(["then"]);
+  });
+
+  it("coerces if boolean condition to string", () => {
+    const source = `
+version: 1
+name: if-bool-condition
+workflow:
+  steps:
+    - id: maybe
+      if:
+        condition: false
+        then:
+          - id: enabled
+            run: program
+            cmd: ["echo", "enabled"]
+`;
+    const result = compileWorkflow(source);
+    expect(result.ok).toBe(true);
+    const ifNode = result.ir?.root.children?.[0];
+    expect(ifNode?.kind).toBe("if");
+    expect(ifNode?.branches?.[0]?.when).toBe("false");
+  });
+
+  it("rejects invalid if shapes", () => {
+    const missingCondition = lintWorkflow(`
+version: 1
+name: if-missing-condition
+workflow:
+  steps:
+    - id: maybe
+      if:
+        then:
+          - id: enabled
+            run: program
+            cmd: ["echo", "enabled"]
+`);
+    expect(missingCondition.ok).toBe(false);
+    expectDiagnostic(missingCondition, { code: "STEP_SHAPE", path: "$.workflow.steps[0].if", message: "if.condition is required" });
+
+    const missingThen = lintWorkflow(`
+version: 1
+name: if-missing-then
+workflow:
+  steps:
+    - id: maybe
+      if:
+        condition: input.enabled
+`);
+    expect(missingThen.ok).toBe(false);
+    expectDiagnostic(missingThen, { code: "STEP_SHAPE", path: "$.workflow.steps[0].if", message: "if.then" });
+
+    const emptyThen = lintWorkflow(`
+version: 1
+name: if-empty-then
+workflow:
+  steps:
+    - id: maybe
+      if:
+        condition: input.enabled
+        then: []
+`);
+    expect(emptyThen.ok).toBe(false);
+    expectDiagnostic(emptyThen, { code: "STEP_SHAPE", path: "$.workflow.steps[0].if.then", message: "if.then must be a non-empty array of steps" });
+
+    const invalidThen = lintWorkflow(`
+version: 1
+name: if-invalid-then
+workflow:
+  steps:
+    - id: maybe
+      if:
+        condition: input.enabled
+        then: 42
+`);
+    expect(invalidThen.ok).toBe(false);
+    expectDiagnostic(invalidThen, { code: "STEP_SHAPE", path: "$.workflow.steps[0].if.then", message: "if.then must be a non-empty array of steps" });
+
+    const emptyElse = lintWorkflow(`
+version: 1
+name: if-empty-else
+workflow:
+  steps:
+    - id: maybe
+      if:
+        condition: input.enabled
+        then:
+          - id: enabled
+            run: program
+            cmd: ["echo", "enabled"]
+        else: []
+`);
+    expect(emptyElse.ok).toBe(false);
+    expectDiagnostic(emptyElse, { code: "STEP_SHAPE", path: "$.workflow.steps[0].if.else", message: "if.else must be a non-empty array of steps" });
+
+    const invalidCondition = lintWorkflow(`
+version: 1
+name: if-invalid-condition
+workflow:
+  steps:
+    - id: maybe
+      if:
+        condition: 42
+        then:
+          - id: enabled
+            run: program
+            cmd: ["echo", "enabled"]
+`);
+    expect(invalidCondition.ok).toBe(false);
+    expectDiagnostic(invalidCondition, { code: "IF_CONDITION_TYPE", path: "$.workflow.steps[0].if.condition" });
+  });
+
   it("guard: compiles deterministic scoped control actions", () => {
     const source = `
 version: 1

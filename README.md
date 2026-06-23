@@ -41,12 +41,13 @@ These primitives are orchestrated through **Composite Nodes** and **Guard Nodes*
 | Pipeline | (implicit) | Steps execute sequentially; each step's output is available to later steps. |
 | Parallel | composite | Run named branches concurrently; join with `all` or `race`. |
 | Fanout | composite | Run the same body over a dynamic list of items, with `max_concurrency`, `join` strategy, and `success_criteria`. |
+| If | composite | Execute a `then` body when a condition is true, with an optional `else` body. |
 | Loop | composite | Repeat a body until a condition is met, with `max_iterations` as a safety bound. |
 | Switch | composite | Select exactly one branch by evaluating conditions in order. |
 | Guard | guard | Deterministic inline decision: `continue`, `fail`, or `complete` the current scope based on a condition. |
 | Subworkflow | composite | Invoke another Workflow Spec as a child scope. |
 
-Composite nodes can nest arbitrarily — a fanout lane can contain a loop that contains a parallel block that contains agent and program steps. Guard nodes work at any scope: inside a fanout lane they affect only that lane; at the root they can fail or complete the entire Run.
+Composite nodes can nest arbitrarily — a fanout lane can contain an if block or loop that contains a parallel block that contains agent and program steps. Guard nodes work at any scope: inside a fanout lane they affect only that lane; at the root they can fail or complete the entire Run.
 
 ### Runs Are Durable and Controllable
 

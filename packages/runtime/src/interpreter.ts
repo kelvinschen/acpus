@@ -304,6 +304,7 @@ export class WorkflowInterpreter {
         });
         break;
       }
+      case "if":
       case "switch":
         for (const branch of node.branches ?? []) {
           const taken = !branch.when || Boolean(evaluator.evaluateExpression(branch.when, ctx));
@@ -518,6 +519,9 @@ export class WorkflowInterpreter {
           break;
         case "fanout":
           output = await this.executeFanout(node, ctx, runId, dynamic, nodeKey, keyPrefix);
+          break;
+        case "if":
+          output = await this.executeIf(node, ctx, runId, dynamic, keyPrefix);
           break;
         case "switch":
           output = await this.executeSwitch(node, ctx, runId, dynamic, keyPrefix);
@@ -1137,6 +1141,22 @@ export class WorkflowInterpreter {
     }
 
     throw new Error(`Switch node ${node.id}: no branch matched and no default`);
+  }
+
+  private async executeIf(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {
+    const branches = node.branches ?? [];
+
+    for (const branch of branches) {
+      if (branch.when && !this.evaluator.evaluateExpression(branch.when, ctx)) continue;
+      try {
+        return { output: primaryOutput(await this.executeNode(branch.child, ctx, runId, dynamic, keyPrefix)) };
+      } catch (error) {
+        if (error instanceof ScopeCompleted) return { output: primaryOutput(error.output) };
+        throw error;
+      }
+    }
+
+    return { output: {} };
   }
 
   private async executeLoop(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {
