@@ -12,7 +12,7 @@ function collectText(node: unknown): string {
 }
 
 describe("GraphRow", () => {
-  it("renders kind symbols, bracket branch labels, and no per-node attempt marker", () => {
+  it("renders kind symbols without inline branch labels or per-node attempt marker", () => {
     const row: DisplayRow = {
       rowKey: "row",
       irNode: {
@@ -39,11 +39,64 @@ describe("GraphRow", () => {
     };
 
     const text = collectText(GraphRow({ row, selected: false }));
-    expect(text).toContain("▷ switch_alpha_agent ✦ [case_1]");
+    expect(text).toContain("▷ switch_alpha_agent ✦");
     expect(text).not.toContain("▷ ✦ switch_alpha_agent");
+    expect(text).not.toContain("[case_1]");
     expect(text).not.toContain("«case_1»");
     expect(text).not.toContain("[AGENT]");
     expect(text).not.toContain("↺2");
+  });
+
+  it("renders branch header rows as plain structure labels", () => {
+    const row: DisplayRow = {
+      rowKey: "case_1",
+      irNode: {
+        id: "route",
+        kind: "switch",
+        nodePath: ["workflow", "route"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow/route" },
+        metadata: {}
+      },
+      depth: 1,
+      state: "completed",
+      label: "case_1",
+      isHeader: true,
+      rowKind: "branch",
+      branchLabel: "case_1",
+      branchWhen: "input.mode == 'fast'",
+      treeSegments: [{ text: "├─ ", ownerKind: "switch" }]
+    };
+
+    const text = collectText(GraphRow({ row, selected: false }));
+    expect(text).toContain("├─ ✓ case_1 ▾");
+    expect(text).not.toContain("◇");
+    expect(text).not.toContain("[case_1]");
+    expect(text).not.toContain("input.mode");
+    expect(collapseIndicatorForRow(row, true)).toEqual({ glyph: "▸", color: "blue" });
+  });
+
+  it("does not render flow summaries in graph rows", () => {
+    const row: DisplayRow = {
+      rowKey: "loop",
+      irNode: {
+        id: "loop",
+        kind: "loop",
+        nodePath: ["workflow", "loop"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow/loop" },
+        metadata: {}
+      },
+      depth: 0,
+      state: "running",
+      label: "loop",
+      isHeader: true,
+      summary: "max=3 until input.done",
+      treeSegments: []
+    };
+
+    const text = collectText(GraphRow({ row, selected: false }));
+    expect(text).toContain("▷ loop ↻");
+    expect(text).not.toContain("max=3");
+    expect(text).not.toContain("until input.done");
   });
 
   it("renders guard kind symbols after the node name", () => {

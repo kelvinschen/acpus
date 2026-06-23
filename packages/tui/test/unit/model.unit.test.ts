@@ -23,6 +23,21 @@ function node(id: string, kind: IrNode["kind"], extra: Partial<IrNode> = {}): Ir
   };
 }
 
+function branchPipeline(parentPath: string[], branchId: string, childId: string): IrNode {
+  const pipelineId = branchId === "default" ? "$default" : `$${branchId}`;
+  const pipelinePath = [...parentPath, pipelineId];
+  const childPath = [...pipelinePath, childId];
+  return node(pipelineId, "pipeline", {
+    nodePath: pipelinePath,
+    keyTemplate: { astVersion: 1, nodePath: pipelinePath.join("/") },
+    metadata: { generated: true },
+    children: [node(childId, "run.agent", {
+      nodePath: childPath,
+      keyTemplate: { astVersion: 1, nodePath: childPath.join("/") }
+    })]
+  });
+}
+
 function state(
   nodeId: string,
   nodeKey: string,
@@ -161,20 +176,114 @@ describe("model overlay", () => {
     expect(rows.filter((r) => r.irNode.id === "work")).toHaveLength(2);
   });
 
-  it("derives switch branch labels and predicates", () => {
+  it("renders if branches as synthetic headers", () => {
+    const maybe = node("maybe", "if", {
+      branches: [
+        { id: "then", when: "input.enabled", child: branchPipeline(["workflow", "maybe"], "then", "enabled") },
+        { id: "else", child: branchPipeline(["workflow", "maybe"], "else", "disabled") }
+      ]
+    });
+    const root = node("workflow", "pipeline", { children: [maybe] });
+    const rows = buildRows(buildRenderTree(ir(root), []));
+
+    expect(rows.map((r) => r.label)).toEqual(["workflow", "maybe", "then", "enabled", "else", "disabled"]);
+    expect(rows.filter((r) => r.rowKind === "branch").map((r) => [r.label, r.branchWhen])).toEqual([
+      ["then", "input.enabled"],
+      ["else", undefined]
+    ]);
+    expect(rows.filter((r) => r.rowKind === "branch").every((r) => r.isHeader)).toBe(true);
+    expect(rows.some((r) => r.irNode.id === "$then")).toBe(false);
+    expect(rows.some((r) => r.irNode.id === "$else")).toBe(false);
+  });
+
+  it("renders switch branches as synthetic headers", () => {
     const sw = node("decide", "switch", {
       branches: [
-        { id: "case_1", when: "x > 1", child: node("$case_1", "pipeline", { metadata: { generated: true }, children: [node("hot", "run.agent")] }) },
-        { id: "default", child: node("$default", "pipeline", { metadata: { generated: true }, children: [node("cold", "run.agent")] }) }
+        { id: "case_1", when: "x > 1", child: branchPipeline(["workflow", "decide"], "case_1", "hot") },
+        { id: "default", child: branchPipeline(["workflow", "decide"], "default", "cold") }
       ]
     });
     const root = node("workflow", "pipeline", { children: [sw] });
     const rows = buildRows(buildRenderTree(ir(root), []));
-    const hot = rows.find((r) => r.irNode.id === "hot");
-    expect(hot?.branchLabel).toBe("case_1");
-    expect(hot?.branchWhen).toBe("x > 1");
+
+    expect(rows.map((r) => r.label)).toEqual(["workflow", "decide", "case_1", "hot", "default", "cold"]);
+    expect(rows.filter((r) => r.rowKind === "branch").map((r) => [r.label, r.branchWhen])).toEqual([
+      ["case_1", "x > 1"],
+      ["default", undefined]
+    ]);
+    expect(rows.filter((r) => r.rowKind === "branch").every((r) => r.isHeader)).toBe(true);
     expect(rows.some((r) => r.irNode.id === "$case_1")).toBe(false);
     expect(rows.some((r) => r.irNode.id === "$default")).toBe(false);
+  });
+
+  it("keeps untaken if branches visible without runtime state", () => {
+    const maybe = node("maybe", "if", {
+      branches: [
+        { id: "then", when: "input.enabled", child: branchPipeline(["workflow", "maybe"], "then", "enabled") },
+        { id: "else", child: branchPipeline(["workflow", "maybe"], "else", "disabled") }
+      ]
+    });
+    const root = node("workflow", "pipeline", { children: [maybe] });
+    const rows = buildRows(buildRenderTree(ir(root), [
+      state("maybe", "workflow/maybe", "completed", 1, "if"),
+      state("enabled", "workflow/maybe/$then/enabled", "completed")
+    ]));
+
+    expect(rows.find((r) => r.label === "enabled")?.state).toBe("completed");
+    expect(rows.find((r) => r.label === "disabled")?.state).toBeUndefined();
+    expect(rows.find((r) => r.label === "then" && r.rowKind === "branch")?.state).toBe("completed");
+    expect(rows.find((r) => r.label === "else" && r.rowKind === "branch")?.state).toBeUndefined();
+    expect(rows.filter((r) => r.rowKind === "branch").map((r) => r.label)).toEqual(["then", "else"]);
+  });
+
+  it("keeps untaken switch branches visible without runtime state", () => {
+    const sw = node("decide", "switch", {
+      branches: [
+        { id: "case_1", when: "x > 1", child: branchPipeline(["workflow", "decide"], "case_1", "hot") },
+        { id: "default", child: branchPipeline(["workflow", "decide"], "default", "cold") }
+      ]
+    });
+    const root = node("workflow", "pipeline", { children: [sw] });
+    const rows = buildRows(buildRenderTree(ir(root), [
+      state("decide", "workflow/decide", "completed", 1, "switch"),
+      state("cold", "workflow/decide/$default/cold", "completed")
+    ]));
+
+    expect(rows.find((r) => r.label === "hot")?.state).toBeUndefined();
+    expect(rows.find((r) => r.label === "cold")?.state).toBe("completed");
+    expect(rows.find((r) => r.label === "case_1" && r.rowKind === "branch")?.state).toBeUndefined();
+    expect(rows.find((r) => r.label === "default" && r.rowKind === "branch")?.state).toBe("completed");
+    expect(rows.filter((r) => r.rowKind === "branch").map((r) => r.label)).toEqual(["case_1", "default"]);
+  });
+
+  it("scopes branch rows independently under fanout lanes", () => {
+    const maybe = node("maybe", "if", {
+      branches: [
+        { id: "then", when: "item.enabled", child: branchPipeline(["workflow", "mapped", "maybe"], "then", "enabled") },
+        { id: "else", child: branchPipeline(["workflow", "mapped", "maybe"], "else", "disabled") }
+      ],
+      nodePath: ["workflow", "mapped", "maybe"],
+      keyTemplate: { astVersion: 1, nodePath: "workflow/mapped/maybe" }
+    });
+    const fan = node("mapped", "fanout", {
+      children: [maybe],
+      nodePath: ["workflow", "mapped"],
+      keyTemplate: { astVersion: 1, nodePath: "workflow/mapped" }
+    });
+    const root = node("workflow", "pipeline", { children: [fan] });
+    const rows = buildRows(buildRenderTree(ir(root), [
+      state("enabled", "workflow/mapped/maybe/$then/enabled/item:a/lane:0", "completed"),
+      state("disabled", "workflow/mapped/maybe/$else/disabled/item:b/lane:1", "failed")
+    ]));
+
+    expect(new Set(rows.map((r) => r.rowKey)).size).toBe(rows.length);
+    const branchRows = rows.filter((r) => r.rowKind === "branch");
+    expect(branchRows.map((r) => [r.label, r.state])).toEqual([
+      ["then", "completed"],
+      ["else", undefined],
+      ["then", undefined],
+      ["else", "failed"]
+    ]);
   });
 
   it("hides duplicate generated pipeline rows while matching children by full node path", () => {

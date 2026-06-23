@@ -77,7 +77,9 @@ export function GraphRow({
   const style = styleForState(row.state);
   const kindStyle = styleForKind(row.irNode.kind);
   const isGroup = row.groupDim !== undefined;
-  const composite = !isGroup && isComposite(row.irNode.kind);
+  const isBranch = row.rowKind === "branch";
+  const plainStructureLabel = isBranch || isGroup;
+  const composite = !plainStructureLabel && isComposite(row.irNode.kind);
   const indicator = collapseIndicatorForRow(row, collapsed);
 
   const dur = row.instance ? formatDuration(row.instance.startedAt, row.instance.completedAt, freezeAt) : "";
@@ -94,17 +96,15 @@ export function GraphRow({
       ))}
       <Text color={selected ? "black" : undefined} backgroundColor={selected ? "cyan" : undefined}>
         <Text color={style.color}>{style.glyph} </Text>
-        {isGroup ? (
+        {plainStructureLabel ? (
           <Text color="yellow" bold>
             {row.label}
           </Text>
         ) : (
           <Text bold={composite}>{row.label}</Text>
         )}
-        <Text color={kindStyle.color}> {kindStyle.symbol}</Text>
+        {isBranch ? null : <Text color={kindStyle.color}> {kindStyle.symbol}</Text>}
         {indicator ? <Text color={indicator.color}> {indicator.glyph}</Text> : null}
-        {row.branchLabel ? <Text color="yellow"> [{row.branchLabel}]</Text> : null}
-        {row.summary ? <Text color="gray"> ({row.summary})</Text> : null}
       </Text>
       {dur ? <Text color="gray">  {dur}</Text> : null}
     </Text>

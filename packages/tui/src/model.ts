@@ -126,8 +126,6 @@ export interface RenderNode {
   groupLabel?: string;
   /** For lane group rows: the fanout item value (shown in DETAILS). */
   groupItem?: string;
-  /** Ordered dynamic dimensions that define this row's runtime scope. */
-  scope?: Scope;
 }
 
 /** Build the full render tree for a run. */
@@ -242,8 +240,7 @@ function buildExpandingNode(
       groupDim,
       groupValue: gv,
       groupLabel: labelForGroup(groupDim, gv, childScope),
-      groupItem: groupDim === "lane" ? lastScopeValue(childScope, "item") : undefined,
-      scope: childScope
+      groupItem: groupDim === "lane" ? lastScopeValue(childScope, "item") : undefined
     };
   });
 
@@ -256,8 +253,7 @@ function buildExpandingNode(
     branchWhen,
     summary: summarize(irNode),
     depth,
-    fannedCount: groupValues.length,
-    scope
+    fannedCount: groupValues.length
   };
 }
 
@@ -377,6 +373,8 @@ export function flatten(root: RenderNode): RenderNode[] {
  * A single selectable/displayable row.
  */
 export interface DisplayRow {
+  /** Real node, fanout/loop group, or branch label inserted for if/switch. */
+  rowKind?: "node" | "group" | "branch";
   /** Stable key for React + selection. */
   rowKey: string;
   irNode: IrNode;
@@ -448,7 +446,7 @@ function treeSegmentsFor(ancestorIsLast: boolean[], ancestorKinds: IrNodeKind[])
 /** Build the display-ordered, selectable rows for the whole tree. */
 export function buildRows(root: RenderNode): DisplayRow[] {
   const rows: DisplayRow[] = [];
-  walkRows(root, rows, [], [], "");
+  walkRows(root, rows, [], [], [], "");
   return rows;
 }
 
@@ -462,14 +460,34 @@ function walkRows(
   rows: DisplayRow[],
   ancestorIsLast: boolean[],
   ancestorKinds: IrNodeKind[],
+  ancestorNodes: IrNode[],
   pathKey: string
 ): void {
   const inst = node.instances.length === 1 ? node.instances[0] : undefined;
   const treeSegments = treeSegmentsFor(ancestorIsLast, ancestorKinds);
   const visualDepth = ancestorIsLast.length;
 
+  const parentNode = ancestorNodes[ancestorNodes.length - 1];
+  const branchHeader = branchHeaderFor(node, parentNode);
+  if (branchHeader) {
+    rows.push({
+      rowKind: "branch",
+      rowKey: `${pathKey}/branch:${branchHeader.label}`,
+      irNode: branchHeader.parent,
+      depth: visualDepth,
+      state: aggregateState(node),
+      label: branchHeader.label,
+      isHeader: true,
+      summary: summarize(branchHeader.parent),
+      branchLabel: branchHeader.label,
+      branchWhen: branchHeader.when,
+      treeSegments
+    });
+  }
+
   if (node.type === "group") {
     rows.push({
+      rowKind: "group",
       // pathKey makes rowKey globally unique: the same IR node (e.g. a LOOP)
       // appearing under multiple fanout lanes produces distinct group rows.
       rowKey: `${pathKey}/${node.irNode.id}@${node.groupDim}:${node.groupValue}`,
@@ -485,9 +503,10 @@ function walkRows(
       groupItem: node.groupItem,
       treeSegments
     });
-  } else {
+  } else if (!branchHeader) {
     const label = node.fannedCount !== undefined ? `${node.irNode.id} (×${node.fannedCount})` : node.irNode.id;
     rows.push({
+      rowKind: "node",
       rowKey: `${pathKey}/${node.irNode.id}` + (inst ? `#${inst.nodeKey}` : ""),
       irNode: node.irNode,
       depth: visualDepth,
@@ -503,23 +522,33 @@ function walkRows(
     });
   }
 
-  const visibleChildren = visibleChildEntries(node.children);
+  const visibleChildren = visibleChildEntries(node.children, node.irNode);
   visibleChildren.forEach((child, i) =>
     walkRows(
       child.node,
       rows,
       [...ancestorIsLast, i === visibleChildren.length - 1],
       [...ancestorKinds, node.irNode.kind],
+      [...ancestorNodes, node.irNode],
       `${pathKey}/${child.key}`
     )
   );
 }
 
-function visibleChildEntries(children: RenderNode[], prefix = ""): VisibleChildEntry[] {
+function branchHeaderFor(node: RenderNode, parent?: IrNode): { parent: IrNode; label: string; when?: string } | undefined {
+  if (parent?.kind !== "if" && parent?.kind !== "switch") return undefined;
+  if (node.type !== "ir") return undefined;
+  if (node.irNode.kind !== "pipeline" || node.irNode.metadata.generated !== true) return undefined;
+  const label = node.branchLabel;
+  if (label === undefined) return undefined;
+  return { parent, label, when: node.branchWhen };
+}
+
+function visibleChildEntries(children: RenderNode[], parent: IrNode, prefix = ""): VisibleChildEntry[] {
   return children.flatMap((child, index) => {
     const key = `${prefix}/${index}:${child.irNode.id}`;
-    return isGeneratedPipeline(child)
-      ? visibleChildEntries(child.children, key)
+    return isGeneratedPipeline(child) && !branchHeaderFor(child, parent)
+      ? visibleChildEntries(child.children, child.irNode, key)
       : [{ node: child, key }];
   });
 }

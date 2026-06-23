@@ -420,6 +420,34 @@ describe("buildDetailLines", () => {
     expect(summaryText).not.toContain("…");
   });
 
+  it("renders synthetic branch header details with branch and parent flow", () => {
+    const row = makeRow({
+      irNode: {
+        id: "maybe",
+        kind: "if",
+        nodePath: ["workflow", "maybe"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow/maybe" },
+        metadata: {}
+      },
+      label: "then",
+      rowKind: "branch",
+      branchLabel: "then",
+      branchWhen: "input.enabled",
+      summary: "condition input.enabled",
+      isHeader: true
+    });
+
+    const sections = buildDetailSections(row, 80, {});
+    const summaryText = formatDetailLinesPlainText(sections.find((section) => section.key === "summary")?.lines ?? []);
+
+    expect(summaryText).toContain("Node: then");
+    expect(summaryText).toContain("Kind: IF ?");
+    expect(summaryText).toContain("Branch: then");
+    expect(summaryText).toContain("When: input.enabled");
+    expect(summaryText).toContain("Definition");
+    expect(summaryText).toContain("Flow: condition input.enabled");
+  });
+
   it("omits Guard definition message when no message is declared", () => {
     const row = makeRow({
       irNode: {
