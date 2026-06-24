@@ -47,6 +47,10 @@ Good question: "Which acpx-supported worker agents should this workflow use for 
 
 4. Keep roles explicit in the Workflow Spec: `planner`, `researcher`, `implementer`, `reviewer`, `judge`, `fixer`.
 
+## Timeout
+
+Timeout is a last-resort safety net, not a tuning knob — lower is not better. Agent runtimes vary widely; set timeout with comfortable headroom above the task's expected duration (e.g. 30m for simple tasks, 1h for moderate, 2h+ for complex).
+
 ## Temporary Agent Overrides
 
 Use Agent Overrides when the user wants to reuse an existing Workflow Spec but temporarily run one submission with different agents. This is most common before starting a new Run:
