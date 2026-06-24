@@ -1,5 +1,11 @@
 # @acpus/runtime
 
+## 0.7.1
+
+### Patch Changes
+
+- b19b54d: Bound node storage paths with auditable indexes, persist subworkflow boundary input, and refine TUI details and fanout lane labels.
+
 ## 0.7.0
 
 ### Minor Changes
