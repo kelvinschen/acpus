@@ -5,265 +5,725 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Acpus &mdash; Every run is an opus.</title>
     <link rel="icon" href="./logo/logo-favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&family=Source+Sans+3:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600&display=swap"
       rel="stylesheet" />
     <style>
       :root {
-        --ink: #1a1a1a;
-        --paper: #f5f1e6;
-        --paper-soft: #fbf8ef;
-        --gold: #b7892c;
-        --rule: #c8b98a;
-        --muted: #555;
-        --blue: #163f8f;
+        --obsidian: #0e1117;
+        --slate: #1c2333;
+        --card-bg: #151a24;
+        --vellum: #f6f3eb;
+        --gilt: #c9a84c;
+        --gilt-dim: #a08738;
+        --iron: #2a4365;
+        --iron-light: #3d6098;
+        --green: #7ec8a0;
+        --fescue: #8b8072;
+        --mist: #b5afa6;
+        --line-dark: rgba(201, 168, 76, 0.14);
+        --line-light: rgba(14, 17, 23, 0.1);
       }
-      * {
+
+      *,
+      *::before,
+      *::after {
         box-sizing: border-box;
+      }
+
+      * {
         margin: 0;
       }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
       body {
-        background: var(--paper);
-        color: var(--ink);
-        font-family: "IBM Plex Sans", system-ui, sans-serif;
+        background: var(--obsidian);
+        color: var(--vellum);
+        font-family: "Source Sans 3", system-ui, sans-serif;
         line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
       }
-      a {
-        color: inherit;
-      }
-      .hero {
-        max-width: 980px;
-        margin: 0 auto;
-        padding: 82px 28px 48px;
-        text-align: center;
-        border-bottom: 1px solid var(--rule);
-      }
-      .hero img.mark {
-        width: 156px;
-        height: 156px;
-      }
-      h1 {
-        font-family: "Cormorant Garamond", Georgia, serif;
-        font-size: 84px;
-        font-weight: 500;
-        margin: 12px 0 4px;
-      }
-      .tagline {
-        font-family: "Cormorant Garamond", Georgia, serif;
-        font-style: italic;
-        font-size: 23px;
-        margin-bottom: 16px;
-      }
-      .positioning {
-        max-width: 700px;
-        margin: 0 auto 28px;
-        color: var(--muted);
-        font-size: 17px;
-      }
-      .opus-line {
-        display: block;
-        margin-top: 10px;
-      }
-      .actions {
-        display: flex;
-        justify-content: center;
-        gap: 12px;
-        flex-wrap: wrap;
-      }
-      .button {
-        border: 1px solid var(--ink);
-        padding: 10px 16px;
-        text-decoration: none;
-        font-family: "IBM Plex Mono", monospace;
-        font-size: 12px;
-        letter-spacing: 0;
-        text-transform: uppercase;
-      }
-      .button.primary {
-        background: var(--ink);
-        color: var(--paper);
-      }
-      main {
-        max-width: 980px;
-        margin: 0 auto;
-        padding: 48px 28px 84px;
-      }
-      section {
-        padding: 36px 0;
-        border-bottom: 1px solid var(--rule);
-      }
-      section:last-child {
-        border-bottom: 0;
-      }
-      h2 {
-        font-family: "Cormorant Garamond", Georgia, serif;
-        font-size: 36px;
-        font-weight: 600;
-        line-height: 1.1;
-      }
-      h2 small {
-        display: block;
-        margin-bottom: 8px;
-        color: var(--gold);
-        font-family: "IBM Plex Mono", monospace;
-        font-size: 11px;
-        letter-spacing: 0;
-        text-transform: uppercase;
-      }
-      h3 {
-        font-size: 18px;
-        margin-bottom: 8px;
-      }
-      p {
-        color: #444;
-        margin-bottom: 14px;
-      }
-      code,
-      pre,
-      summary {
-        font-family: "IBM Plex Mono", monospace;
-      }
-      pre {
-        background: var(--ink);
-        color: var(--paper);
+
+      img,
+      svg {
         max-width: 100%;
-        padding: 18px 20px;
-        overflow-x: auto;
-        border-left: 3px solid var(--gold);
-        font-size: 13px;
+      }
+
+      a {
+        color: var(--gilt);
+        text-decoration: none;
+        transition: color 180ms ease;
+      }
+
+      a:hover {
+        color: var(--vellum);
+      }
+
+      .hero {
+        position: relative;
+        min-height: 96svh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        padding: 72px 24px 64px;
+      }
+
+      .hero-grid {
+        position: absolute;
+        inset: 0;
+        background-image:
+          linear-gradient(rgba(201, 168, 76, 0.06) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(201, 168, 76, 0.06) 1px, transparent 1px);
+        background-size: 48px 48px;
+        mask-image: radial-gradient(ellipse 68% 52% at 50% 44%, #000 16%, transparent 72%);
+        -webkit-mask-image: radial-gradient(ellipse 68% 52% at 50% 44%, #000 16%, transparent 72%);
+        pointer-events: none;
+      }
+
+      .hero::after {
+        position: absolute;
+        right: 0;
+        bottom: 0;
+        left: 0;
+        height: 180px;
+        pointer-events: none;
+        content: "";
+        background: linear-gradient(180deg, transparent, rgba(14, 17, 23, 0.94));
+      }
+
+      .hero-content {
+        position: relative;
+        z-index: 1;
+        max-width: 760px;
+        text-align: center;
+      }
+
+      .hero-mark {
+        width: 138px;
+        height: 138px;
+        margin: 0 auto 24px;
+        opacity: 0;
+        animation: fadeUp 760ms ease-out 80ms forwards;
+      }
+
+      h1,
+      h2 {
+        font-family: "Playfair Display", Georgia, serif;
+      }
+
+      .hero h1 {
+        font-size: clamp(56px, 10vw, 98px);
+        font-weight: 500;
+        line-height: 1;
+        margin-bottom: 8px;
+        opacity: 0;
+        animation: fadeUp 760ms ease-out 220ms forwards;
+      }
+
+      .tagline {
+        color: var(--gilt);
+        font-family: "Playfair Display", Georgia, serif;
+        font-size: clamp(18px, 3vw, 24px);
+        font-style: italic;
+        font-weight: 400;
+        margin-bottom: 28px;
+        opacity: 0;
+        animation: fadeUp 760ms ease-out 360ms forwards;
+      }
+
+      .positioning {
+        max-width: 590px;
+        margin: 0 auto 34px;
+        color: var(--mist);
+        font-size: 17px;
+        line-height: 1.65;
+        opacity: 0;
+        animation: fadeUp 760ms ease-out 500ms forwards;
+      }
+
+      .install-command {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 54px;
+        gap: 12px;
+        max-width: 100%;
+        padding: 14px 24px;
+        border: 1px solid rgba(201, 168, 76, 0.28);
+        border-radius: 8px;
+        background: var(--slate);
+        color: var(--vellum);
+        cursor: pointer;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 14px;
+        opacity: 0;
+        transition:
+          background 180ms ease,
+          border-color 180ms ease,
+          transform 180ms ease;
+        animation: fadeUp 760ms ease-out 640ms forwards;
+      }
+
+      .install-command:hover,
+      .install-command:focus-visible {
+        border-color: var(--gilt);
+        background: var(--card-bg);
+        outline: none;
+        transform: translateY(-1px);
+      }
+
+      .install-command .dollar {
+        color: var(--gilt);
+        user-select: none;
+      }
+
+      .install-copied {
+        position: absolute;
+        right: 14px;
+        color: var(--gilt);
+        font-family: "Source Sans 3", system-ui, sans-serif;
+        font-size: 12px;
+        opacity: 0;
+        transform: translateY(4px);
+        transition:
+          opacity 180ms ease,
+          transform 180ms ease;
+      }
+
+      .install-command.is-copied .install-copied {
+        opacity: 1;
+        transform: translateY(-12px);
+      }
+
+      .hero-links {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 22px;
+        margin-top: 24px;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 12px;
+        letter-spacing: 0.05em;
+        opacity: 0;
+        text-transform: uppercase;
+        animation: fadeUp 760ms ease-out 780ms forwards;
+      }
+
+      .hero-links a {
+        color: var(--fescue);
+      }
+
+      .hero-links a:hover {
+        color: var(--gilt);
+      }
+
+      section {
+        padding: 96px 24px;
+      }
+
+      .section-dark {
+        background: var(--obsidian);
+        color: var(--vellum);
+      }
+
+      .section-light {
+        background: var(--vellum);
+        color: var(--obsidian);
+      }
+
+      .section-light a {
+        color: var(--iron);
+      }
+
+      .section-light a:hover {
+        color: var(--iron-light);
+      }
+
+      .container {
+        max-width: 1080px;
+        margin: 0 auto;
+      }
+
+      .eyebrow {
+        color: var(--gilt);
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.12em;
+        margin-bottom: 12px;
+        text-transform: uppercase;
+      }
+
+      .section-light .eyebrow {
+        color: var(--gilt-dim);
+      }
+
+      h2 {
+        font-size: clamp(32px, 5vw, 48px);
+        font-weight: 600;
+        line-height: 1.15;
+        margin-bottom: 20px;
+      }
+
+      .lede {
+        max-width: 650px;
+        font-size: 17px;
         line-height: 1.65;
       }
-      .rule {
-        width: 58px;
-        height: 1px;
-        background: var(--ink);
-        margin: 14px 0 28px;
+
+      .section-dark .lede {
+        color: var(--mist);
       }
-      .lede {
-        max-width: 760px;
+
+      .section-light .lede {
+        color: var(--fescue);
       }
-      .note {
-        color: var(--muted);
-        font-size: 14px;
-        margin-top: 20px;
+
+      #features {
+        padding-top: 116px;
       }
-      .note a {
-        color: var(--blue);
-      }
-      .full-command {
-        margin-top: 18px;
-      }
-      .spec-details {
-        margin-top: 18px;
-        border-top: 1px solid var(--rule);
-        border-bottom: 1px solid var(--rule);
-        background: rgba(255, 250, 240, 0.48);
-      }
-      .spec-details summary {
-        cursor: pointer;
-        padding: 14px 0;
-        color: var(--blue);
-        font-size: 12px;
-        font-weight: 500;
-        letter-spacing: 0;
-        text-transform: uppercase;
-      }
-      .spec-details pre {
-        margin-bottom: 18px;
-      }
-      .diagram {
-        width: 100%;
-        border: 1px solid var(--rule);
-        background: var(--paper-soft);
-      }
-      .steps,
-      .playbooks,
-      .agent-list {
+
+      .features-grid,
+      .agent-grid,
+      .playbooks-grid {
         display: grid;
         gap: 20px;
       }
-      .steps {
-        grid-template-columns: repeat(3, 1fr);
+
+      .features-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        margin-top: 56px;
       }
-      .playbooks {
-        grid-template-columns: repeat(2, 1fr);
-        margin-top: 22px;
-      }
-      .step-num {
-        color: var(--gold);
-        font-family: "IBM Plex Mono", monospace;
-        font-size: 11px;
-        letter-spacing: 0;
-        margin-bottom: 8px;
-      }
-      .template,
-      .agent {
-        border-top: 1px solid var(--rule);
-        padding-top: 14px;
-      }
-      .template a {
-        color: var(--blue);
-        font-family: "IBM Plex Mono", monospace;
-        font-size: 13px;
-        text-decoration-thickness: 1px;
-        text-underline-offset: 3px;
-      }
-      .agent-list {
-        grid-template-columns: repeat(2, 1fr);
-        margin: 26px 0 18px;
-      }
-      .agent {
+
+      .feature-card {
         min-width: 0;
+        padding: 30px 26px;
+        border: 1px solid var(--line-dark);
+        border-radius: 8px;
+        background: var(--card-bg);
+        transition:
+          border-color 220ms ease,
+          transform 220ms ease,
+          background 220ms ease;
       }
-      .agent strong {
-        display: block;
-        font-size: 15px;
+
+      .feature-card:hover {
+        border-color: rgba(201, 168, 76, 0.38);
+        background: #171d29;
+        transform: translateY(-3px);
       }
-      .agent span {
-        color: var(--muted);
-        font-size: 12px;
+
+      .feature-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 36px;
+        height: 36px;
+        margin-bottom: 20px;
+        color: var(--gilt);
+        font-family: "JetBrains Mono", monospace;
+        font-size: 30px;
+        font-weight: 600;
+        line-height: 1;
       }
-      .fine-print {
-        color: #666;
+
+      .feature-icon-set {
+        justify-content: flex-start;
+        gap: 8px;
+        width: 100%;
+        font-size: 22px;
+      }
+
+      .feature-card h3,
+      .agent-card h3 {
+        color: var(--vellum);
+        font-size: 18px;
+        font-weight: 700;
+        line-height: 1.25;
+        margin-bottom: 10px;
+      }
+
+      .feature-card p,
+      .agent-card p {
+        color: var(--mist);
+        font-size: 14px;
+        line-height: 1.6;
+      }
+
+      .code-block {
+        margin-top: 28px;
+        overflow-x: auto;
+        padding: 20px 24px;
+        border: 1px solid rgba(201, 168, 76, 0.16);
+        border-radius: 8px;
+        background: var(--slate);
+      }
+
+      .code-block pre {
+        color: var(--vellum);
+        font-family: "JetBrains Mono", monospace;
         font-size: 13px;
+        line-height: 1.7;
+        white-space: pre;
       }
-      footer {
-        max-width: 980px;
-        margin: 0 auto;
-        padding: 28px;
+
+      .code-block .prompt {
+        color: var(--gilt);
+      }
+
+      .code-block .flag {
+        color: var(--iron-light);
+      }
+
+      .code-block .string {
+        color: var(--green);
+      }
+
+      .spec-details {
+        margin-top: 20px;
+        overflow: hidden;
+        border: 1px solid var(--line-light);
+        border-radius: 8px;
+      }
+
+      .spec-details summary {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 14px 20px;
+        background: rgba(42, 67, 101, 0.04);
+        color: var(--iron);
+        cursor: pointer;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 12px;
+        font-weight: 500;
+        letter-spacing: 0.05em;
+        list-style: none;
+        text-transform: uppercase;
+        transition:
+          background 180ms ease,
+          color 180ms ease;
+      }
+
+      .spec-details summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .spec-details summary::before {
+        color: var(--gilt-dim);
+        content: "+";
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      .spec-details[open] summary {
+        background: rgba(42, 67, 101, 0.08);
+      }
+
+      .spec-details[open] summary::before {
+        content: "-";
+      }
+
+      .spec-details .details-body {
+        opacity: 0;
+        transform: translateY(-6px);
+        transition:
+          opacity 180ms ease,
+          transform 180ms ease;
+      }
+
+      .spec-details[open] .details-body {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      .spec-details .code-block {
+        margin: 0;
+        border: 0;
+        border-radius: 0;
+      }
+
+      .primitives {
+        display: grid;
+        margin-top: 48px;
+        overflow: hidden;
+        border: 1px solid var(--line-light);
+        border-radius: 8px;
+      }
+
+      .primitive {
+        display: grid;
+        grid-template-columns: 145px 1fr 1fr;
+        border-bottom: 1px solid rgba(14, 17, 23, 0.07);
+      }
+
+      .primitive:last-child {
+        border-bottom: 0;
+      }
+
+      .primitive-name,
+      .primitive-does,
+      .primitive-who {
+        display: flex;
+        align-items: center;
+        padding: 18px 20px;
+      }
+
+      .primitive-name {
+        background: rgba(42, 67, 101, 0.06);
+        color: var(--iron);
+        font-family: "JetBrains Mono", monospace;
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .primitive-does,
+      .primitive-who {
+        color: var(--fescue);
+        font-size: 14px;
+      }
+
+      .primitive-does {
+        border-right: 1px solid rgba(14, 17, 23, 0.07);
+      }
+
+      .agent-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        margin-top: 32px;
+      }
+
+      .agent-card {
+        min-width: 0;
+        padding-top: 18px;
+      }
+
+      .playbooks-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        margin-top: 48px;
+      }
+
+      .playbook-card {
+        min-width: 0;
+        padding-top: 24px;
+        border-top: 2px solid var(--gilt);
+      }
+
+      .playbook-card a {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 13px;
+        font-weight: 500;
+      }
+
+      .playbook-card p {
+        color: var(--fescue);
+        font-size: 14px;
+        line-height: 1.55;
+        margin-top: 10px;
+      }
+
+      .catalog-note {
+        margin-top: 32px;
+        color: var(--fescue);
+        font-size: 14px;
+      }
+
+      .cta-section {
         text-align: center;
-        border-top: 1px solid var(--rule);
-        color: #666;
-        font-family: "Cormorant Garamond", Georgia, serif;
+      }
+
+      .cta-section h2,
+      .cta-section .lede {
+        margin-right: auto;
+        margin-left: auto;
+      }
+
+      .cta-actions {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 16px;
+        margin-top: 40px;
+      }
+
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 46px;
+        padding: 13px 24px;
+        border: 1px solid var(--gilt);
+        border-radius: 6px;
+        color: var(--vellum);
+        font-family: "JetBrains Mono", monospace;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        transition:
+          background 180ms ease,
+          border-color 180ms ease,
+          color 180ms ease,
+          transform 180ms ease;
+      }
+
+      .btn:hover,
+      .btn:focus-visible {
+        background: var(--gilt);
+        color: var(--obsidian);
+        outline: none;
+        transform: translateY(-1px);
+      }
+
+      .btn-secondary {
+        border-color: var(--fescue);
+        color: var(--mist);
+      }
+
+      .btn-secondary:hover,
+      .btn-secondary:focus-visible {
+        border-color: var(--vellum);
+        background: transparent;
+        color: var(--vellum);
+      }
+
+      footer {
+        padding: 40px 24px;
+        border-top: 1px solid var(--line-dark);
+        text-align: center;
+      }
+
+      footer p {
+        color: var(--fescue);
+        font-family: "Playfair Display", Georgia, serif;
+        font-size: 15px;
         font-style: italic;
       }
+
       footer a {
-        color: var(--gold);
-        font-family: "IBM Plex Mono", monospace;
-        font-size: 12px;
+        color: var(--gilt-dim);
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
         font-style: normal;
-        letter-spacing: 0;
-        text-decoration: none;
+        letter-spacing: 0.06em;
         text-transform: uppercase;
       }
-      @media (max-width: 760px) {
-        .steps,
-        .playbooks,
-        .agent-list {
+
+      footer a:hover {
+        color: var(--gilt);
+      }
+
+      .reveal {
+        opacity: 0;
+        transform: translateY(20px);
+        transition:
+          opacity 620ms ease,
+          transform 620ms ease;
+      }
+
+      .reveal.is-visible {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      @keyframes fadeUp {
+        from {
+          opacity: 0;
+          transform: translateY(16px);
+        }
+
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      @media (max-width: 840px) {
+        .features-grid,
+        .agent-grid,
+        .playbooks-grid {
           grid-template-columns: 1fr;
         }
+
+        .primitive {
+          grid-template-columns: 1fr;
+        }
+
+        .primitive-name {
+          border-bottom: 1px solid rgba(14, 17, 23, 0.07);
+        }
+
+        .primitive-does {
+          border-right: 0;
+          border-bottom: 1px solid rgba(14, 17, 23, 0.07);
+        }
+      }
+
+      @media (max-width: 540px) {
+        section {
+          padding: 68px 20px;
+        }
+
         .hero {
-          padding-top: 48px;
+          min-height: auto;
+          padding: 52px 20px 56px;
         }
-        .hero img.mark {
-          width: 128px;
-          height: 128px;
+
+        .hero-mark {
+          width: 104px;
+          height: 104px;
         }
-        h1 {
-          font-size: 58px;
+
+        .install-command {
+          width: 100%;
+          padding: 12px 18px;
+          font-size: 13px;
         }
-        pre {
-          font-size: 12px;
+
+        .install-copied {
+          position: static;
+          margin-left: 2px;
+        }
+
+        .feature-card {
+          padding: 24px 20px;
+        }
+
+        .code-block {
+          padding: 18px 16px;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+
+        *,
+        *::before,
+        *::after {
+          animation-duration: 1ms !important;
+          animation-iteration-count: 1 !important;
+          scroll-behavior: auto !important;
+          transition-duration: 1ms !important;
+        }
+
+        .reveal,
+        .hero-mark,
+        .hero h1,
+        .tagline,
+        .positioning,
+        .install-command,
+        .hero-links {
+          opacity: 1;
+          transform: none;
         }
       }
     </style>
@@ -271,171 +731,334 @@
 
   <body>
     <header class="hero">
-      <img class="mark" src="./logo/logo-opus-mark.svg" alt="Acpus opus mark" />
-      <h1>Acpus</h1>
-      <p class="tagline">Every run is an opus.</p>
-      <p class="positioning">
-        A local durable workflow runner for humans and agents. Prompt your
-        agent to orchestrate a complex Workflow Spec with any acpx-supported
-        agent you like, then run it with Acpus.
-        <span class="opus-line">
-          Since a single workflow can conduct a substantial cast of agents,
-          <em>every run is an opus</em>.
-        </span>
-      </p>
-      <div class="actions">
-        <a class="button primary" href="https://github.com/kelvinschen/acpus">View GitHub</a>
-        <a class="button" href="https://www.npmjs.com/package/acpus">Install from npm</a>
+      <div class="hero-grid" aria-hidden="true"></div>
+      <div class="hero-content">
+        <img class="hero-mark" src="./logo/logo-opus-mark.svg" alt="Acpus mark" />
+        <h1>Acpus</h1>
+        <p class="tagline">Every run is an opus.</p>
+        <p class="positioning">
+          A local durable workflow engine for AI agents. Define specs in YAML,
+          conduct Runs that survive crashes, and control every node from the terminal.
+          </p>
+        <button class="install-command" type="button" data-copy="npm install -g acpus" aria-label="Copy install command">
+          <span class="dollar">$</span>
+          <span class="cmd">npm install -g acpus</span>
+          <span class="install-copied" aria-live="polite">copied</span>
+        </button>
+        <nav class="hero-links" aria-label="Primary links">
+          <a href="https://github.com/kelvinschen/acpus">GitHub</a>
+          <a href="https://www.npmjs.com/package/acpus">npm</a>
+          <a href="#features">Features</a>
+          <a href="./workflows/index.html">Visualize</a>
+        </nav>
       </div>
     </header>
 
     <main>
-      <section>
-        <h2><small>Quick Start</small>Install and run</h2>
-        <div class="rule"></div>
-        <p class="lede">
-          Install the CLI, lint a Workflow Spec, submit a durable local Run,
-          and open the terminal visualizer.
-        </p>
-        <pre class="full-command"><code>npm install -g acpus
+      <section id="features" class="section-dark">
+        <div class="container reveal">
+          <p class="eyebrow">Capabilities</p>
+          <h2>Built for agents,<br />engineered for reliability</h2>
+          <p class="lede">
+            Three execution primitives compose with control flow into structured,
+            pauseable, replayable Runs: local by default, durable by design.
+          </p>
+      
+          <div class="features-grid">
+            <article class="feature-card">
+              <span class="feature-icon feature-icon-set" aria-hidden="true">▥ ◬ ↻ ◇</span>
+              <h3>Composable control flow</h3>
+              <p>Parallel, fanout, if, switch, loop, and guard blocks compose into one inspectable workflow graph.</p>
+            </article>
+      
+            <article class="feature-card">
+              <span class="feature-icon" aria-hidden="true">✓</span>
+              <h3>Durable execution</h3>
+              <p>Every Run captures inputs, compiled IR, and agent definitions so node state and artifacts survive restarts.
+              </p>
+            </article>
+      
+            <article class="feature-card">
+              <span class="feature-icon feature-icon-set" aria-hidden="true">▷ = ↻</span>
+              <h3>Run control</h3>
+              <p>Pause, resume, retry failed nodes, replay finished Runs, or fork from prior work with CLI commands.</p>
+            </article>
+      
+            <article class="feature-card">
+              <span class="feature-icon" aria-hidden="true">✦</span>
+              <h3>Agent steps</h3>
+              <p>Prompt ACP-compatible agents such as Codex, Claude, Pi, OpenCode, and capture structured output.</p>
+            </article>
+      
+            <article class="feature-card">
+              <span class="feature-icon" aria-hidden="true">◌</span>
+              <h3>Signal nodes</h3>
+              <p>Suspend a Run until a JSON payload arrives from a person or an agent steering the workflow.</p>
+            </article>
+      
+            <article class="feature-card">
+              <span class="feature-icon" aria-hidden="true">▧</span>
+              <h3>Workflow catalog</h3>
+              <p>Discover, inspect, lint, and run catalog playbooks by reference before adapting them for your task.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+      
+      <section class="section-light">
+        <div class="container reveal">
+          <p class="eyebrow">Quick start</p>
+          <h2>Install, lint, run</h2>
+          <p class="lede">
+            Install the CLI, lint a Workflow Spec, submit a durable local Run,
+            and open the terminal visualizer.
+          </p>
+<div class="code-block">
+  <pre><span class="prompt">$</span> npm install -g acpus
 
-acpus workflows lint review.workflow.yaml
-acpus workflows run review.workflow.yaml --input '{"topic":"release readiness"}'
-acpus runs visualize</code></pre>
+<span class="prompt">$</span> acpus workflows lint review.workflow.yaml
+<span class="prompt">$</span> acpus workflows run review.workflow.yaml <span class="flag">--input</span> <span
+  class="string">'{"topic":"release readiness"}'</span>
+<span class="prompt">$</span> acpus runs visualize</pre>
+</div>
 
-        <details class="spec-details">
-          <summary>View the Workflow Spec</summary>
-          <pre><code>version: 1
+          <details class="spec-details">
+            <summary>View the Workflow Spec</summary>
+            <div class="details-body">
+              <div class="code-block">
+                <pre># review.workflow.yaml
 name: quick-review
+version: 1
+description: quick review with multi agents
 input:
   topic: string
 agents:
-  reviewer:
+  codex:
     use: codex
+  claude:
+  use: claude
+  opencode:
+  use: opencode
 workflow:
   steps:
-    - id: review
-      run: agent
-      use: reviewer
-      prompt: |
-        Review this topic and return concise JSON:
-        ${{ input.topic }}
-      output:
-        risk_count: integer
+    - id: reviews
+    join: all
+    parallel:
+    - id: codex
+    do:
+    - id: codex_review
+    run: agent
+    use: codex
+    prompt: |
+    Review for correctness and maintainability:
+    ${{ input.topic }}
+    output:
+    risks: string
+    ready: boolean
+    - id: claude
+    do:
+    - id: claude_review
+    run: agent
+    use: claude
+    prompt: |
+    Review for product risk and edge cases:
+    ${{ input.topic }}
+    output:
+    risks: string
+    ready: boolean
+    - id: opencode
+    do:
+    - id: opencode_review
+    run: agent
+              use: opencode
+              prompt: |
+                Review for implementation gaps:
+                ${{ input.topic }}
+                output:
+                risks: string
+                ready: boolean
+                
+                - id: synthesize
+                run: agent
+                use: codex
+                prompt: |
+                Synthesize these parallel reviews into a release call:
+                ${{ json(steps.reviews.output) }}
+                output:
+                summary: string
+                issue_count: integer
         ready: boolean
 outputs:
-  risk_count: ${{ steps.review.output.risk_count }}
-  ready: ${{ steps.review.output.ready }}</code></pre>
-        </details>
+  summary: ${{ steps.synthesize.output.summary }}
+  issue_count: ${{ steps.synthesize.output.issue_count }}
+  ready: ${{ steps.synthesize.output.ready }}</pre>
+  </div>
+  </div>
+  </details>
+        </div>
       </section>
 
-      <section>
-        <h2><small>Run Pattern</small>A workflow run, by example</h2>
-        <div class="rule"></div>
-        <p class="lede">
-          Acpus separates the YAML spec and durable Run from the workflow block.
-          This example uses adversarial review to show programs, guards,
-          parallel agents, synthesis, and output in one Run.
-        </p>
-        <img
-          class="diagram"
-          src="./img/acpus-user-flow.svg"
-          alt="YAML review spec and durable Acpus Run feeding a workflow block with shared context, a change gate, parallel adversarial reviews, synthesis, and final report output" />
-      </section>
+      <section class="section-light">
+        <div class="container reveal">
+          <p class="eyebrow">Primitives</p>
+          <h2>Three execution primitives</h2>
+          <p class="lede">
+            Every workflow step is an Agent, Program, or Signal. Composites and
+            guards orchestrate them into larger durable workflows.
+            </p>
 
-      <section>
-        <h2><small>Use It</small>Core workflow loop</h2>
-        <div class="rule"></div>
-        <div class="steps">
-          <div>
-            <p class="step-num">01</p>
-            <h3>Define</h3>
-            <p>Write YAML specs with structured inputs, ACP agents, local programs, and output schemas.</p>
-          </div>
-          <div>
-            <p class="step-num">02</p>
-            <h3>Conduct</h3>
-            <p>Run specs by path or Catalog ref. The local supervisor persists node state, artifacts, and snapshots.</p>
-          </div>
-          <div>
-            <p class="step-num">03</p>
-            <h3>Control</h3>
-            <p>Pause, resume, retry, approve, replay completed Runs, and inspect details in the visualizer.</p>
+          <div class="primitives">
+            <div class="primitive">
+              <div class="primitive-name">agent</div>
+              <div class="primitive-does">Prompts an ACP agent and expects structured output</div>
+              <div class="primitive-who">Open-ended judgment, synthesis, review</div>
+            </div>
+            <div class="primitive">
+              <div class="primitive-name">program</div>
+              <div class="primitive-does">Runs a local subprocess and captures output</div>
+              <div class="primitive-who">Deterministic glue, file prep, validation</div>
+            </div>
+            <div class="primitive">
+              <div class="primitive-name">signal</div>
+              <div class="primitive-does">Pauses until a JSON payload arrives</div>
+              <div class="primitive-who">Human approval or an external decider</div>
+            </div>
           </div>
         </div>
       </section>
 
-      <section>
-        <h2><small>Agents</small>Use it with your agent</h2>
-        <div class="rule"></div>
-        <p class="lede">
-          Install the Acpus skill into the agent you already use. That agent can
-          author Workflow Specs, run Acpus commands, and coordinate any worker
-          agent supported by
-          <a href="https://github.com/openclaw/acpx">acpx</a>
-          through durable local Runs.
-        </p>
-        <pre><code>npx skills add kelvinschen/acpus --skill acpus</code></pre>
-        <div class="agent-list" aria-label="Ways agents use Acpus">
-          <div class="agent">
-            <strong>Your orchestrating agent</strong>
-            <span>Claude, Codex, Pi, Trae, or any skills-capable agent can use the Acpus skill to write and run workflows.</span>
+      <section class="section-dark">
+        <div class="container reveal">
+          <p class="eyebrow">Use it with your agent</p>
+          <h2>Install the Acpus skill</h2>
+          <p class="lede">
+            Your orchestrating agent can author Workflow Specs, run Acpus commands,
+            and coordinate any worker agent supported by acpx through local Runs.
+            </p>
+<div class="code-block">
+  <pre><span class="prompt">$</span> npx skills add kelvinschen/acpus <span class="flag">--skill</span> acpus</pre>
           </div>
-          <div class="agent">
-            <strong>Your worker agents</strong>
-            <span>Any agent supported by acpx can be selected inside the Workflow Spec and executed as an Agent Step.</span>
+<div class="agent-grid" aria-label="Ways agents use Acpus">
+  <article class="agent-card">
+    <h3>Your orchestrating agent</h3>
+    <p>Claude, Codex, Pi, Trae, or another skills-capable agent can use the Acpus skill to write and run workflows.</p>
+  </article>
+  <article class="agent-card">
+    <h3>Your worker agents</h3>
+    <p>Any acpx-supported agent can be selected inside the Workflow Spec and executed as an Agent Step.</p>
+  </article>
           </div>
         </div>
       </section>
 
-      <section>
-        <h2><small>Catalog</small>Agent Workflow Playbooks</h2>
-        <div class="rule"></div>
-        <p class="lede">
-          Playbooks are runnable starting points. Your agent can inspect them,
-          adapt the pattern, and extend it into task-specific workflows.
-        </p>
-        <div class="playbooks">
-          <div class="template">
-            <a href="./workflows/goal-driven-development.html">goal-driven-development</a>
-            <p>Goal Driven Development: decompose a goal into a frozen requirement checklist, then loop build-audit until every requirement is verified met or the budget is exhausted.</p>
+      <section class="section-light">
+        <div class="container reveal">
+          <p class="eyebrow">Catalog</p>
+          <h2>Agent Workflow Playbooks</h2>
+          <p class="lede">
+            Playbooks are runnable starting points. Your agent can inspect them,
+            adapt the pattern, and extend it into task-specific workflows.
+          </p>
+<div class="playbooks-grid">
+  <article class="playbook-card">
+    <a href="./workflows/goal-driven-development.html">goal-driven-development</a>
+              <p>Decompose a goal into a frozen requirement checklist, then loop build-audit until every requirement is verified.</p>
+              </article>
+              <article class="playbook-card">
+                <a href="./workflows/codebase-deep-research.html">codebase-deep-research</a>
+                <p>Fan out independent research agents and synthesize a final report.</p>
+            </article>
+            <article class="playbook-card">
+              <a href="./workflows/worktree-implementation-tournament.html">worktree-implementation-tournament</a>
+              <p>Run competing implementations in isolated worktrees and apply the winner.</p>
+            </article>
+            <article class="playbook-card">
+              <a href="./workflows/loop-until-green-fix.html">loop-until-green-fix</a>
+              <p>Iterate agent repair attempts until verification passes, then apply the passing patch.</p>
+            </article>
           </div>
-          <div class="template">
-            <a href="./workflows/codebase-deep-research.html">codebase-deep-research</a>
-            <p>Fan out independent research agents and synthesize a final report.</p>
-          </div>
-          <div class="template">
-            <a href="./workflows/worktree-implementation-tournament.html">worktree-implementation-tournament</a>
-            <p>Run competing implementations in isolated worktrees and apply the winner.</p>
-          </div>
-          <div class="template">
-            <a href="./workflows/loop-until-green-fix.html">loop-until-green-fix</a>
-            <p>Iterate agent repair attempts until verification passes, then apply the passing patch.</p>
-          </div>
+<p class="catalog-note">
+  Explore all workflow specs with interactive digraphs in the
+  <a href="./workflows/index.html">Workflow Visualize</a>.
+</p>
         </div>
-        <p class="note">
-          Featured playbooks shown here. Explore all workflow specs with interactive digraphs in the
-          <a href="./workflows/index.html">Workflow Visualizer</a>.
-        </p>
       </section>
 
-      <section>
-        <h2><small>Visualizer</small>Interactive workflow diagrams</h2>
-        <div class="rule"></div>
-        <p class="lede">
-          Every workflow spec rendered as an interactive digraph. Click nodes to inspect
-          agents, programs, guards, loops, and fanout bodies. Expand composite nodes to
-          see inner steps.
-        </p>
-        <div class="actions" style="justify-content:flex-start;margin-top:18px;">
-          <a class="button primary" href="./workflows/index.html">Browse all workflows</a>
+      <section class="section-dark">
+        <div class="container cta-section reveal">
+          <p class="eyebrow">Get started</p>
+          <h2>Conduct your first opus</h2>
+          <p class="lede">
+            Install the CLI, add the skill to your agent, and run a workflow
+            from the terminal.
+            </p>
+          <div class="cta-actions">
+            <a class="btn" href="https://github.com/kelvinschen/acpus">View GitHub</a>
+            <a class="btn btn-secondary" href="https://www.npmjs.com/package/acpus">npm package</a>
+            <a class="btn btn-secondary" href="./workflows/index.html">Workflow Visualize</a>
+          </div>
         </div>
       </section>
     </main>
 
     <footer>
-      Acpus &nbsp;·&nbsp; 2026 &nbsp;·&nbsp;
-      <a href="https://github.com/kelvinschen/acpus">GitHub</a>
+      <p>
+        Acpus &nbsp;&middot;&nbsp; 2026 &nbsp;&middot;&nbsp;
+        <a href="https://github.com/kelvinschen/acpus">GitHub</a>
+      </p>
     </footer>
+<script>
+  const copyButton = document.querySelector("[data-copy]");
+  const revealTargets = document.querySelectorAll(".reveal");
+
+  async function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return;
+      } catch {
+        // Fall through for browsers that expose Clipboard API but block writes.
+      }
+    }
+
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.append(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    textarea.remove();
+  }
+
+  copyButton?.addEventListener("click", async () => {
+    const command = copyButton.dataset.copy || "";
+    try {
+      await copyText(command);
+      copyButton.classList.add("is-copied");
+      window.setTimeout(() => copyButton.classList.remove("is-copied"), 1500);
+    } catch {
+      copyButton.classList.remove("is-copied");
+    }
+  });
+
+  if ("IntersectionObserver" in window) {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          entry.target.classList.add("is-visible");
+          observer.unobserve(entry.target);
+        });
+      },
+      { threshold: 0.18 }
+    );
+
+    revealTargets.forEach((target) => observer.observe(target));
+  } else {
+    revealTargets.forEach((target) => target.classList.add("is-visible"));
+  }
+</script>
   </body>
 </html>
