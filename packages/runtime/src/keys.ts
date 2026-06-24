@@ -3,6 +3,8 @@ import type { NodeKeyTemplate } from "@acpus/core";
 import type { NodeKeyDynamic } from "./types.js";
 
 const DYNAMIC_SEGMENT = /^(item|lane|round|branch):/u;
+const STORAGE_KEY_SLUG_LENGTH = 70;
+const STORAGE_KEY_HASH_LENGTH = 16;
 
 export interface ParsedNodeKey {
   nodeKey: string;
@@ -430,10 +432,16 @@ export function nodeKeyToStorageKey(nodeKey: string): string {
   const slug = nodeKey
     .replace(/[^A-Za-z0-9._-]+/g, "-")
     .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 80)
     .replace(/^-|-$/g, "");
   const safeSlug = !slug || slug === "." || slug === ".." ? "node" : slug;
-  const hash = createHash("sha256").update(nodeKey).digest("hex").slice(0, 32);
-  return `${safeSlug}--${hash}`;
+  const hash = createHash("sha256").update(nodeKey).digest("hex").slice(0, STORAGE_KEY_HASH_LENGTH);
+  return `${shortenStorageSlug(safeSlug)}--${hash}`;
+}
+
+function shortenStorageSlug(slug: string): string {
+  if (slug.length <= STORAGE_KEY_SLUG_LENGTH) return slug;
+
+  const tailLength = Math.floor((STORAGE_KEY_SLUG_LENGTH - "...".length) / 2);
+  const headLength = STORAGE_KEY_SLUG_LENGTH - "...".length - tailLength;
+  return `${slug.slice(0, headLength)}...${slug.slice(-tailLength)}`;
 }

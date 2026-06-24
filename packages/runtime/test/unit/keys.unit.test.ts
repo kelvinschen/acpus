@@ -422,30 +422,43 @@ describe("nodeKeyToStorageKey", () => {
 
     expect(nodeKeyToStorageKey(key)).toBe(storageKey);
     expect(storageKey.length).toBeLessThan(120);
-    expect(storageKey).toMatch(/^workflow-mapped-item-file-a-lane-0--[a-f0-9]{32}$/);
+    expect(storageKey).toMatch(/^workflow-mapped-item-file-a-lane-0--[a-f0-9]{16}$/);
   });
 
   it("bounds very long node keys", () => {
     const key = `workflow/${"x".repeat(500)}/step`;
     const storageKey = nodeKeyToStorageKey(key);
+    const [slug] = storageKey.split("--");
 
-    expect(storageKey.length).toBe(114);
-    expect(storageKey).toMatch(/^[A-Za-z0-9._-]+--[a-f0-9]{32}$/);
+    expect(storageKey.length).toBeLessThan(120);
+    expect(slug.length).toBeLessThanOrEqual(70);
+    expect(storageKey).toMatch(/^[A-Za-z0-9._-]+--[a-f0-9]{16}$/);
+  });
+
+  it("preserves the head and tail of long readable slugs", () => {
+    const storageKey = nodeKeyToStorageKey(`workflow/${"middle-".repeat(80)}/final-step`);
+    const [slug] = storageKey.split("--");
+
+    expect(slug.length).toBeLessThanOrEqual(70);
+    expect(slug).toMatch(/^workflow-middle-/);
+    expect(slug).toContain("...");
+    expect(slug).toMatch(/middle-final-step$/);
   });
 
   it("uses hash entropy when readable slugs collide", () => {
-    const prefix = "workflow/" + "same-segment-".repeat(10);
-    const left = nodeKeyToStorageKey(`${prefix}/left`);
-    const right = nodeKeyToStorageKey(`${prefix}/right`);
+    const prefix = `workflow/${"same-head-".repeat(8)}`;
+    const suffix = `${"same-tail-".repeat(8)}step`;
+    const left = nodeKeyToStorageKey(`${prefix}/left/${suffix}`);
+    const right = nodeKeyToStorageKey(`${prefix}/right/${suffix}`);
 
     expect(left.split("--")[0]).toBe(right.split("--")[0]);
     expect(left).not.toBe(right);
   });
 
   it("falls back to node when the slug has no usable characters", () => {
-    expect(nodeKeyToStorageKey("////::::")).toMatch(/^node--[a-f0-9]{32}$/);
-    expect(nodeKeyToStorageKey(".")).toMatch(/^node--[a-f0-9]{32}$/);
-    expect(nodeKeyToStorageKey("..")).toMatch(/^node--[a-f0-9]{32}$/);
+    expect(nodeKeyToStorageKey("////::::")).toMatch(/^node--[a-f0-9]{16}$/);
+    expect(nodeKeyToStorageKey(".")).toMatch(/^node--[a-f0-9]{16}$/);
+    expect(nodeKeyToStorageKey("..")).toMatch(/^node--[a-f0-9]{16}$/);
   });
 
   it("keeps storage keys as a single safe path component", () => {
