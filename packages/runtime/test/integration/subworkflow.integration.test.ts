@@ -1,11 +1,23 @@
 import { describe, it, expect, afterEach } from "vitest";
+import { compileWorkflow } from "@acpus/core";
 import { compileYaml, createTestInterpreter } from "../interpreter/helper.js";
-import { mkdtempSync, realpathSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 describe("Subworkflow execution", () => {
   const cleanups: Array<() => void> = [];
+
+  function compileFile(path: string) {
+    const result = compileWorkflow(readFileSync(path, "utf8"), {
+      sourcePath: path,
+      includeResolver: () => { throw new Error("no includes expected"); }
+    });
+    if (!result.ok || !result.ir) {
+      throw new Error("Compilation failed");
+    }
+    return result.ir;
+  }
 
   afterEach(() => {
     cleanups.forEach((c) => c());
@@ -333,16 +345,7 @@ workflow:
       subworkflow: child.yaml
 `);
 
-    // Read and compile the parent with sourcePath so relative resolution works.
-    const { compileWorkflow } = await import("@acpus/core");
-    const result = compileWorkflow(readFileSync(parentPath, "utf8"), {
-      sourcePath: parentPath,
-      includeResolver: () => { throw new Error("no includes expected"); }
-    });
-    if (!result.ok || !result.ir) {
-      throw new Error("Compilation failed");
-    }
-    const ir = result.ir;
+    const ir = compileFile(parentPath);
 
     const { interpreter, store, cleanup } = createTestInterpreter({
       programResponses: { "child-step": { parsedOutput: { done: true }, stdout: "hi" } }
@@ -376,5 +379,239 @@ workflow:
     const sub = store.listNodeStates(meta.runId).find((n) => n.nodeId === "sub");
     expect(sub?.state).toBe("failed");
     expect(sub?.error).toMatch(/does not exist or is not readable/);
+  });
+
+  it("allows parallel branches to call the same subworkflow without false cycle detection", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-subwf-parallel-"));
+    const childPath = join(dir, "child.yaml");
+    writeFileSync(childPath, `
+version: 1
+name: child-parallel
+workflow:
+  steps:
+    - id: child_step
+      run: program
+      cmd: ["echo", "hi"]
+`);
+
+    const ir = compileYaml(`
+version: 1
+name: parent-parallel
+workflow:
+  steps:
+    - id: par
+      parallel:
+        - id: branch_a
+          do:
+            - id: call_a
+              subworkflow: ${childPath}
+        - id: branch_b
+          do:
+            - id: call_b
+              subworkflow: ${childPath}
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: { child_step: { parsedOutput: { done: true }, stdout: "hi" } }
+    });
+    cleanups.push(cleanup);
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+
+    const par = store.listNodeStates(meta.runId).find((n) => n.nodeId === "par");
+    expect(par?.state).toBe("completed");
+  });
+
+  it("allows fanout lanes to call the same subworkflow without false cycle detection", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-subwf-fanout-"));
+    const childPath = join(dir, "child.yaml");
+    writeFileSync(childPath, `
+version: 1
+name: child-fanout
+workflow:
+  steps:
+    - id: child_step
+      run: program
+      cmd: ["echo", "hi"]
+`);
+
+    const ir = compileYaml(`
+version: 1
+name: parent-fanout
+input:
+  items: [string]
+workflow:
+  steps:
+    - id: fan
+      fanout:
+        over: input.items
+        join: all
+        do:
+          - id: call_item
+            subworkflow: ${childPath}
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: { child_step: { parsedOutput: { done: true }, stdout: "hi" } }
+    });
+    cleanups.push(cleanup);
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+
+    const meta = await interpreter.start(ir, { input: { items: ["a", "b", "c"] } });
+    expect(meta.status).toBe("completed");
+
+    const fan = store.listNodeStates(meta.runId).find((n) => n.nodeId === "fan");
+    expect(fan?.state).toBe("completed");
+  });
+
+  it("detects genuine subworkflow cycles across nested calls", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-subwf-nested-cycle-"));
+    const childPath = join(dir, "child.yaml");
+    const grandchildPath = join(dir, "grandchild.yaml");
+    // grandchild → child → creates A→B→A cycle
+    writeFileSync(grandchildPath, `
+version: 1
+name: grandchild-cycle
+workflow:
+  steps:
+    - id: back_to_child
+      subworkflow: ${childPath}
+`);
+    writeFileSync(childPath, `
+version: 1
+name: child-cycle
+workflow:
+  steps:
+    - id: call_grandchild
+      subworkflow: ${grandchildPath}
+`);
+
+    const ir = compileYaml(`
+version: 1
+name: parent-nested-cycle
+workflow:
+  steps:
+    - id: sub
+      subworkflow: ${childPath}
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({});
+    cleanups.push(cleanup);
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("failed");
+
+    const sub = store.listNodeStates(meta.runId).find((n) => n.nodeId === "sub");
+    expect(sub?.state).toBe("failed");
+    expect(sub?.error).toMatch(/cycle/i);
+  });
+
+  it("resolves relative subworkflows inside child parallel branches from the child spec directory", async () => {
+    const parentDir = realpathSync(mkdtempSync(join(tmpdir(), "acpus-subwf-child-parallel-")));
+    const childDir = join(parentDir, "child");
+    mkdirSync(childDir);
+    const parentPath = join(parentDir, "parent.yaml");
+    const childPath = join(childDir, "child.yaml");
+    const grandchildPath = join(childDir, "grandchild.yaml");
+    writeFileSync(grandchildPath, `
+version: 1
+name: grandchild-relative-parallel
+workflow:
+  steps:
+    - id: grand_step
+      run: program
+      cmd: ["echo", "hi"]
+`);
+    writeFileSync(childPath, `
+version: 1
+name: child-relative-parallel
+workflow:
+  steps:
+    - id: child_parallel
+      parallel:
+        - id: branch_a
+          do:
+            - id: call_a
+              subworkflow: grandchild.yaml
+        - id: branch_b
+          do:
+            - id: call_b
+              subworkflow: grandchild.yaml
+`);
+    writeFileSync(parentPath, `
+version: 1
+name: parent-relative-parallel
+workflow:
+  steps:
+    - id: sub
+      subworkflow: child/child.yaml
+`);
+
+    const ir = compileFile(parentPath);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: { grand_step: { parsedOutput: { done: true }, stdout: "hi" } }
+    });
+    cleanups.push(cleanup);
+    cleanups.push(() => rmSync(parentDir, { recursive: true, force: true }));
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("completed");
+
+    const childParallel = store.listNodeStates(meta.runId).find((n) => n.nodeId === "child_parallel");
+    expect(childParallel?.state).toBe("completed");
+  });
+
+  it("preserves subworkflow cycle detection after child loop dynamics", async () => {
+    const parentDir = realpathSync(mkdtempSync(join(tmpdir(), "acpus-subwf-loop-cycle-")));
+    const childDir = join(parentDir, "child");
+    mkdirSync(childDir);
+    const parentPath = join(parentDir, "parent.yaml");
+    const childPath = join(childDir, "child.yaml");
+    const grandchildPath = join(childDir, "grandchild.yaml");
+    writeFileSync(grandchildPath, `
+version: 1
+name: grandchild-loop-cycle
+workflow:
+  steps:
+    - id: back_to_child
+      subworkflow: child.yaml
+`);
+    writeFileSync(childPath, `
+version: 1
+name: child-loop-cycle
+workflow:
+  steps:
+    - id: child_loop
+      loop:
+        max_iterations: 1
+        do:
+          - id: call_grandchild
+            subworkflow: grandchild.yaml
+`);
+    writeFileSync(parentPath, `
+version: 1
+name: parent-loop-cycle
+workflow:
+  steps:
+    - id: sub
+      subworkflow: child/child.yaml
+`);
+
+    const ir = compileFile(parentPath);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({});
+    cleanups.push(cleanup);
+    cleanups.push(() => rmSync(parentDir, { recursive: true, force: true }));
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("failed");
+
+    const sub = store.listNodeStates(meta.runId).find((n) => n.nodeId === "sub");
+    expect(sub?.state).toBe("failed");
+    expect(sub?.error).toMatch(/cycle/i);
   });
 });

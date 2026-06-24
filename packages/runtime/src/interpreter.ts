@@ -34,6 +34,12 @@ import type { AgentInjectorResult, EventName, HookAgentTelemetry, HookPayload, I
 import { isRunTerminal } from "./types.js";
 import { join } from "node:path";
 
+type ExecutionDynamic = NodeKeyDynamic & {
+  /** Subworkflow execution context; not part of node key identity. */
+  subworkflowPaths?: ReadonlySet<string>;
+  currentSpecPath?: string;
+};
+
 /**
  * The core IR interpreter that drives state transitions, orchestrates
  * execution, and persists state.
@@ -65,9 +71,6 @@ export class WorkflowInterpreter {
    *  The resolver validates the payload against the node's output schema and
    *  throws on mismatch, leaving the node `awaiting`. */
   private readonly signalResolvers: Map<string, (payload: unknown) => void> = new Map();
-
-  /** Absolute paths of subworkflow specs currently on the execution stack (cycle guard). */
-  private readonly subworkflowStack: Set<string> = new Set();
 
   constructor(
     store: RunStore,
@@ -428,7 +431,7 @@ export class WorkflowInterpreter {
     node: IrNode,
     ctx: ExpressionContext,
     runId: string,
-    dynamic: NodeKeyDynamic,
+    dynamic: ExecutionDynamic,
     keyPrefix?: string,
     isContinuation?: boolean,
     overrideNodeKey?: string
@@ -643,7 +646,7 @@ export class WorkflowInterpreter {
 
   // ─── Kind-specific execution ───────────────────────────────────
 
-  private async executePipeline(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {
+  private async executePipeline(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: ExecutionDynamic, keyPrefix?: string): Promise<unknown> {
     const children = node.children ?? [];
     if (node.metadata.implicit === true) {
       for (const child of children) {
@@ -920,21 +923,22 @@ export class WorkflowInterpreter {
     state.renderedPrompt = persisted?.renderedPrompt ?? state.renderedPrompt;
   }
 
-  private async executeParallel(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, nodeKey: string, keyPrefix?: string): Promise<unknown> {
+  private async executeParallel(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: ExecutionDynamic, nodeKey: string, keyPrefix?: string): Promise<unknown> {
     const branches = node.branches ?? [];
     const maxConcurrency = (node.metadata.max_concurrency as number) ?? this.maxConcurrency;
     const join = (node.metadata.join as string) ?? "all";
 
     if (join === "all") {
       branches.forEach((branch) => {
-        this.materializePendingNode(runId, branch.child, ctx, nestedParallelBranchDynamic(dynamic, branch.id), keyPrefix);
+        const branchDynamic = this.withExecutionContext(dynamic, nestedParallelBranchDynamic(dynamic, branch.id));
+        this.materializePendingNode(runId, branch.child, ctx, branchDynamic, keyPrefix);
       });
     }
 
     const limit = pLimit(maxConcurrency);
     const branchPromises = branches.map((branch) =>
       limit(async () => {
-        const branchDynamic = nestedParallelBranchDynamic(dynamic, branch.id);
+        const branchDynamic = this.withExecutionContext(dynamic, nestedParallelBranchDynamic(dynamic, branch.id));
         let output: unknown;
         try {
           output = await this.executeNode(branch.child, { ...ctx, steps: { ...ctx.steps } }, runId, branchDynamic, keyPrefix);
@@ -989,7 +993,7 @@ export class WorkflowInterpreter {
     return { output: mapOutput };
   }
 
-  private async executeFanout(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, nodeKey: string, keyPrefix?: string): Promise<unknown> {
+  private async executeFanout(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: ExecutionDynamic, nodeKey: string, keyPrefix?: string): Promise<unknown> {
     const overExpr = node.metadata.over as string;
     if (!overExpr) {
       throw new Error(`fanout node ${node.id} missing 'over' expression`);
@@ -1024,7 +1028,7 @@ export class WorkflowInterpreter {
 
     if (join === "all") {
       for (const lane of lanePlan) {
-        const itemDynamic = appendDynamicFrames(dynamic, lane.itemDynamic);
+        const itemDynamic = this.withExecutionContext(dynamic, appendDynamicFrames(dynamic, lane.itemDynamic));
         this.materializePendingNode(runId, body, lane.keyCtx, itemDynamic, keyPrefix);
       }
     }
@@ -1043,7 +1047,7 @@ export class WorkflowInterpreter {
     // (operator pause/cancel) re-throws so it propagates to the parent.
     const lanePromises = lanePlan.map((lane) =>
       limit(async (): Promise<LaneResult> => {
-        const itemDynamic = appendDynamicFrames(dynamic, lane.itemDynamic);
+        const itemDynamic = this.withExecutionContext(dynamic, appendDynamicFrames(dynamic, lane.itemDynamic));
         const itemCtx: ExpressionContext = {
           ...lane.keyCtx,
           steps: { ...ctx.steps },
@@ -1119,14 +1123,14 @@ export class WorkflowInterpreter {
     return Promise.all(lanePromises);
   }
 
-  private materializePendingNode(runId: string, node: IrNode, ctx: ExpressionContext, dynamic: NodeKeyDynamic, keyPrefix?: string): void {
+  private materializePendingNode(runId: string, node: IrNode, ctx: ExpressionContext, dynamic: ExecutionDynamic, keyPrefix?: string): void {
     const resolved = resolveNodeKey(node.keyTemplate, dynamic);
     const nodeKey = withNodeKeyPrefix(keyPrefix, resolved);
     if (this.store.readNodeState(runId, nodeKey)) return;
     this.store.writeNodeState(runId, createInitialNodeState(nodeKey, node.id, node.kind, hashIrNode(node, { workflow: ctx.workflow })));
   }
 
-  private async executeSwitch(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {
+  private async executeSwitch(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: ExecutionDynamic, keyPrefix?: string): Promise<unknown> {
     const branches = node.branches ?? [];
 
     for (const branch of branches) {
@@ -1143,7 +1147,7 @@ export class WorkflowInterpreter {
     throw new Error(`Switch node ${node.id}: no branch matched and no default`);
   }
 
-  private async executeIf(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {
+  private async executeIf(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: ExecutionDynamic, keyPrefix?: string): Promise<unknown> {
     const branches = node.branches ?? [];
 
     for (const branch of branches) {
@@ -1159,7 +1163,7 @@ export class WorkflowInterpreter {
     return { output: {} };
   }
 
-  private async executeLoop(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, keyPrefix?: string): Promise<unknown> {
+  private async executeLoop(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: ExecutionDynamic, keyPrefix?: string): Promise<unknown> {
     const untilExpr = node.metadata.until as string;
     const maxIterations = (node.metadata.max_iterations as number) ?? 100;
     const body = node.children?.[0];
@@ -1173,7 +1177,7 @@ export class WorkflowInterpreter {
         ...ctx,
         loop: { iter, last: lastOutput }
       };
-      const loopDynamic = appendDynamicFrame(dynamic, { loopRound: iter });
+      const loopDynamic = this.withExecutionContext(dynamic, appendDynamicFrame(dynamic, { loopRound: iter }));
 
       // Check until condition (skip on first iteration)
       if (untilExpr && iter > 0) {
@@ -1315,18 +1319,19 @@ export class WorkflowInterpreter {
     resolver(payload);
   }
 
-  private async executeSubworkflow(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: NodeKeyDynamic, nodeKey: string): Promise<unknown> {
+  private async executeSubworkflow(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: ExecutionDynamic, nodeKey: string): Promise<unknown> {
     const specPath = node.metadata.subworkflow as string;
     const inputSpec = node.metadata.input as Record<string, unknown> | undefined;
 
-    // Resolve the child spec path relative to the parent spec, falling back to cwd.
-    const parentIr = this.store.readIr(runId);
-    const baseDir = parentIr?.source.path ? dirname(parentIr.source.path) : process.cwd();
+    const baseDir = dynamic.currentSpecPath
+      ? dirname(dynamic.currentSpecPath)
+      : (this.store.readIr(runId)?.source.path ? dirname(this.store.readIr(runId)!.source.path!) : process.cwd());
     const childAbs = resolve(baseDir, specPath);
     const childReal = this.resolveExistingSourcePath(childAbs, `Subworkflow path '${specPath}' does not exist or is not readable`);
 
-    // Cycle guard across nested subworkflows (uses real path).
-    if (this.subworkflowStack.has(childReal)) {
+    // Per-path guard: parallel siblings may call the same child independently.
+    const currentPaths = dynamic.subworkflowPaths;
+    if (currentPaths?.has(childReal)) {
       throw new Error(`Subworkflow cycle detected for '${specPath}'`);
     }
 
@@ -1356,16 +1361,13 @@ export class WorkflowInterpreter {
     // Validate subworkflow input against the child IR's compiled input schema.
     const validatedChildInput = validateInput(compiled.ir.input, childInput);
 
-    // Execute the child root as a nested pipeline. Child node keys are nested
-    // under this subworkflow's node key to stay unique within the run.
-    this.subworkflowStack.add(childReal);
-    try {
-      const childCtx = this.buildContext(compiled.ir, validatedChildInput, runId);
-      await this.executeNode(compiled.ir.root, childCtx, runId, dynamic, nodeKey);
-      return { output: evaluateWorkflowOutputs(compiled.ir, childCtx, this.evaluator) };
-    } finally {
-      this.subworkflowStack.delete(childReal);
-    }
+    const childPaths = new Set(currentPaths);
+    childPaths.add(childReal);
+    const childDynamic = { ...dynamic, subworkflowPaths: childPaths, currentSpecPath: childReal };
+
+    const childCtx = this.buildContext(compiled.ir, validatedChildInput, runId);
+    await this.executeNode(compiled.ir.root, childCtx, runId, childDynamic, nodeKey);
+    return { output: evaluateWorkflowOutputs(compiled.ir, childCtx, this.evaluator) };
   }
 
   private resolveExistingSourcePath(path: string, message: string): string {
@@ -1377,6 +1379,14 @@ export class WorkflowInterpreter {
   }
 
   // ─── Helpers ────────────────────────────────────────────────────
+
+  private withExecutionContext(parent: ExecutionDynamic, dynamic: NodeKeyDynamic): ExecutionDynamic {
+    return {
+      ...dynamic,
+      subworkflowPaths: parent.subworkflowPaths,
+      currentSpecPath: parent.currentSpecPath
+    };
+  }
 
   private buildContext(ir: AcpusIr, input: Record<string, unknown>, runId: string): ExpressionContext {
     return { input, steps: {}, workflow: buildWorkflowExpressionContext(ir), run_id: runId };
