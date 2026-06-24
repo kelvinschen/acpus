@@ -193,8 +193,10 @@ function buildNode(
 
 /**
  * Build a fanout/loop container that expands into one synthetic group row per
- * lane/round value. Each group's subtree is scoped to that value, so every
- * descendant resolves to a single instance and "(×N)" appears only here.
+ * lane/round value. Fanout lanes display their resolved item id as "item=..."
+ * to align with loop labels like "round=...". Each group's subtree is scoped
+ * to that value, so every descendant resolves to a single instance and "(×N)"
+ * appears only here.
  */
 function buildExpandingNode(
   irNode: IrNode,
@@ -239,7 +241,7 @@ function buildExpandingNode(
       depth: depth + 1,
       groupDim,
       groupValue: gv,
-      groupLabel: labelForGroup(groupDim, gv, childScope),
+      groupLabel: labelForGroup(irNode, groupDim, gv, childScope),
       groupItem: groupDim === "lane" ? lastScopeValue(childScope, "item") : undefined
     };
   });
@@ -296,11 +298,10 @@ function nextFrame(parsed: ParsedKey, scope: Scope): Map<Dim, string> | undefine
   return parsed.frames[scope.length];
 }
 
-/** Friendly label for a lane/round group row, e.g. "lane=0 [moduleA]" or "round=2". */
-function labelForGroup(groupDim: Dim, value: string, scope: Scope): string {
+/** Friendly label for a lane/round group row, e.g. "item=moduleA" or "round=2". */
+function labelForGroup(irNode: IrNode, groupDim: Dim, value: string, scope: Scope): string {
   if (groupDim === "lane") {
-    const item = lastScopeValue(scope, "item");
-    return item !== undefined ? `lane=${value} [${item}]` : `lane=${value}`;
+    return `item=${lastScopeValue(scope, "item") ?? value}`;
   }
   return `${groupDim}=${value}`;
 }

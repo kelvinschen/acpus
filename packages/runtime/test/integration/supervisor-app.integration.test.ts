@@ -7,9 +7,10 @@ import type { AgentExecutionRequest, ExecutorAdapter } from "../../src/executors
 import type { ExecutorResult } from "../../src/types.js";
 import type { Server } from "node:http";
 import { serve } from "@hono/node-server";
-import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { nodeKeyToStorageKey } from "../../src/keys.js";
 
 const SPEC_YAML = `
 version: 1
@@ -473,6 +474,10 @@ workflow:
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.absPath.startsWith("/")).toBe(true);
+    expect(body.absPath).toContain(join("artifacts", nodeKeyToStorageKey("workflow/step-a"), "attempt-001.telemetry.json"));
+    expect(body.absPath).not.toContain("workflow:step-a");
+    expect(existsSync(body.absPath)).toBe(true);
+    expect(readFileSync(body.absPath, "utf8").length).toBeGreaterThan(0);
   });
 
   it("returns 400 for a malformed artifact uri", async () => {

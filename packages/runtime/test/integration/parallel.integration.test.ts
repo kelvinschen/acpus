@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { compileYaml, createTestInterpreter, waitForNodeState } from "../interpreter/helper.js";
 import { ArtifactStore } from "../../src/artifacts.js";
-import { encodeNodeKeyForDir } from "../../src/keys.js";
+import { nodeKeyToStorageKey } from "../../src/keys.js";
 import { WorkflowInterpreter } from "../../src/interpreter.js";
 import { RunStore } from "../../src/store.js";
 import { StubAgentExecutor } from "../support/stub-agent.js";
@@ -664,7 +664,7 @@ workflow:
     const artifactStore = new ArtifactStore(store.getBaseDir());
     for (const node of [innerA!, innerB!, rightBranch!]) {
       if (node.artifactRefs && node.artifactRefs.length > 0) {
-        const dir = join(store.getBaseDir(), meta.runId, "artifacts", encodeNodeKeyForDir(node.nodeKey));
+        const dir = join(store.getBaseDir(), meta.runId, "artifacts", nodeKeyToStorageKey(node.nodeKey));
         const { existsSync } = await import("node:fs");
         expect(existsSync(dir)).toBe(true);
       }

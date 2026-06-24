@@ -80,7 +80,7 @@ describe("model overlay", () => {
   });
 
   it("expands fanout into per-lane groups; (×N) only on the fanout", () => {
-    const fan = node("mapped", "fanout", { children: [node("work", "run.agent")] });
+    const fan = node("mapped", "fanout", { metadata: { key: "item" }, children: [node("work", "run.agent")] });
     const root = node("workflow", "pipeline", { children: [fan] });
     const states = [
       state("work", "workflow/mapped/work/item:a/lane:0", "completed"),
@@ -95,9 +95,9 @@ describe("model overlay", () => {
     const mapped = rows.find((r) => r.irNode.id === "mapped");
     expect(mapped?.label).toContain("×2");
 
-    // Two synthetic lane group rows, labeled "lane=N [item]".
+    // Two synthetic lane group rows, labeled by the resolved fanout item id.
     const groups = rows.filter((r) => r.groupDim === "lane");
-    expect(groups.map((g) => g.label)).toEqual(["lane=0 [a]", "lane=1 [b]"]);
+    expect(groups.map((g) => g.label)).toEqual(["item=a", "item=b"]);
     expect(groups.map((g) => g.groupItem)).toEqual(["a", "b"]);
 
     // The work node appears once per lane, each a single instance, no "×".
@@ -107,6 +107,21 @@ describe("model overlay", () => {
       expect(w.label).toBe("work");
       expect(w.instance).toBeDefined();
     }
+  });
+
+  it("labels fanout lanes by item id fallback when no key is declared", () => {
+    const fan = node("mapped", "fanout", { children: [node("work", "run.agent")] });
+    const root = node("workflow", "pipeline", { children: [fan] });
+    const states = [
+      state("work", "workflow/mapped/work/item:0/lane:0", "completed"),
+      state("work", "workflow/mapped/work/item:1/lane:1", "running")
+    ];
+
+    const rows = buildRows(buildRenderTree(ir(root), states));
+    const groups = rows.filter((r) => r.groupDim === "lane");
+
+    expect(groups.map((g) => g.label)).toEqual(["item=0", "item=1"]);
+    expect(groups.map((g) => g.groupItem)).toEqual(["0", "1"]);
   });
 
   it("does not mark parallel children with (×N) under a fanout", () => {
@@ -157,7 +172,7 @@ describe("model overlay", () => {
 
   it("renders nested fanout groups under the correct outer lane", () => {
     const inner = node("inner", "fanout", { children: [node("work", "run.agent")] });
-    const outer = node("outer", "fanout", { children: [inner] });
+    const outer = node("outer", "fanout", { metadata: { key: "item" }, children: [inner] });
     const root = node("workflow", "pipeline", { children: [outer] });
     const states = [
       state("work", "workflow/outer/inner/work/item:A/lane:0/item:x/lane:0", "completed"),
@@ -169,9 +184,11 @@ describe("model overlay", () => {
     const innerGroups = rows.filter((r) => r.irNode.id === "inner" && r.groupDim === "lane");
 
     expect(outerGroups.map((r) => r.groupItem)).toEqual(["A", "B"]);
+    expect(outerGroups.map((r) => r.label)).toEqual(["item=A", "item=B"]);
     expect(innerGroups).toHaveLength(2);
     expect(innerGroups.every((r) => r.groupItem === "x")).toBe(true);
     expect(innerGroups.map((r) => r.groupItem)).toEqual(["x", "x"]);
+    expect(innerGroups.map((r) => r.label)).toEqual(["item=x", "item=x"]);
     expect(innerGroups.map((r) => r.rowKey)).not.toEqual([innerGroups[0].rowKey, innerGroups[0].rowKey]);
     expect(rows.filter((r) => r.irNode.id === "work")).toHaveLength(2);
   });

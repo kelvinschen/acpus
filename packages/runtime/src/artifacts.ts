@@ -8,7 +8,8 @@ import {
   writeFileSync
 } from "node:fs";
 import { join, resolve } from "node:path";
-import { encodeNodeKeyForDir } from "./keys.js";
+import { nodeKeyToStorageKey } from "./keys.js";
+import { validateRunId } from "./run-id.js";
 import type { ArtifactRef } from "./types.js";
 
 const ARTIFACT_URI_PREFIX = "artifact://runs/";
@@ -25,6 +26,7 @@ export interface ParsedArtifactReference {
 
 export const ArtifactReferences = {
   make(runId: string, nodeKey: string, filename: string): ArtifactRef {
+    validateRunId(runId);
     validateArtifactFilename(filename);
     const encodedNodeKey = encodeURIComponent(nodeKey);
     const uri = `${ARTIFACT_URI_PREFIX}${runId}/nodes/${encodedNodeKey}/${filename}`;
@@ -83,7 +85,7 @@ export const ArtifactReferences = {
       return undefined;
     }
 
-    const safeNodeDir = encodeNodeKeyForDir(ref.nodeKey);
+    const safeNodeDir = nodeKeyToStorageKey(ref.nodeKey);
     if (!isSafeUriPathSegment(safeNodeDir)) return undefined;
 
     const runDir = join(baseDir, ref.runId);
@@ -168,7 +170,8 @@ export class ArtifactStore {
   // ─── Internal helpers ──────────────────────────────────────────
 
   private nodeDir(runId: string, nodeKey: string): string {
-    const safeKey = encodeNodeKeyForDir(nodeKey);
+    validateRunId(runId);
+    const safeKey = nodeKeyToStorageKey(nodeKey);
     return join(this.baseDir, runId, "artifacts", safeKey);
   }
 }

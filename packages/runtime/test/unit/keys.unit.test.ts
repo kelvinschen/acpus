@@ -12,8 +12,7 @@ import {
   isNodeKeyInDynamicScope,
   isNodeKeyBelowAnyAnchor,
   withNodeKeyPrefix,
-  encodeNodeKeyForFs,
-  encodeNodeKeyForDir
+  nodeKeyToStorageKey
 } from "../../src/keys.js";
 import type { NodeKeyTemplate } from "@acpus/core";
 
@@ -416,39 +415,40 @@ describe("withNodeKeyPrefix", () => {
   });
 });
 
-describe("encodeNodeKeyForFs", () => {
-  it("encodes a plain key with .json suffix", () => {
-    expect(encodeNodeKeyForFs("workflow/step-a")).toBe("workflow:step-a.json");
+describe("nodeKeyToStorageKey", () => {
+  it("generates a stable bounded readable storage key", () => {
+    const key = "workflow/mapped/item:file-a/lane:0";
+    const storageKey = nodeKeyToStorageKey(key);
+
+    expect(nodeKeyToStorageKey(key)).toBe(storageKey);
+    expect(storageKey.length).toBeLessThan(120);
+    expect(storageKey).toMatch(/^workflow-mapped-item-file-a-lane-0--[a-f0-9]{32}$/);
   });
 
-  it("encodes a deeply nested key", () => {
-    expect(encodeNodeKeyForFs("workflow/mapped/item:file-a/lane:0")).toBe(
-      "workflow:mapped:item:file-a:lane:0.json"
-    );
+  it("bounds very long node keys", () => {
+    const key = `workflow/${"x".repeat(500)}/step`;
+    const storageKey = nodeKeyToStorageKey(key);
+
+    expect(storageKey.length).toBe(114);
+    expect(storageKey).toMatch(/^[A-Za-z0-9._-]+--[a-f0-9]{32}$/);
   });
 
-  it("returns .json for a key with no slashes", () => {
-    expect(encodeNodeKeyForFs("root")).toBe("root.json");
-  });
-});
+  it("uses hash entropy when readable slugs collide", () => {
+    const prefix = "workflow/" + "same-segment-".repeat(10);
+    const left = nodeKeyToStorageKey(`${prefix}/left`);
+    const right = nodeKeyToStorageKey(`${prefix}/right`);
 
-describe("encodeNodeKeyForDir", () => {
-  it("encodes a plain key without suffix", () => {
-    expect(encodeNodeKeyForDir("workflow/step-a")).toBe("workflow:step-a");
-  });
-
-  it("encodes a deeply nested key", () => {
-    expect(encodeNodeKeyForDir("workflow/mapped/item:file-a/lane:0")).toBe(
-      "workflow:mapped:item:file-a:lane:0"
-    );
+    expect(left.split("--")[0]).toBe(right.split("--")[0]);
+    expect(left).not.toBe(right);
   });
 
-  it("returns key unchanged when no slashes", () => {
-    expect(encodeNodeKeyForDir("root")).toBe("root");
+  it("falls back to node when the slug has no usable characters", () => {
+    expect(nodeKeyToStorageKey("////::::")).toMatch(/^node--[a-f0-9]{32}$/);
+    expect(nodeKeyToStorageKey(".")).toMatch(/^node--[a-f0-9]{32}$/);
+    expect(nodeKeyToStorageKey("..")).toMatch(/^node--[a-f0-9]{32}$/);
   });
 
-  it("is consistent with encodeNodeKeyForFs (minus suffix)", () => {
-    const key = "workflow/mapped/item:x/lane:0";
-    expect(encodeNodeKeyForFs(key)).toBe(encodeNodeKeyForDir(key) + ".json");
+  it("keeps storage keys as a single safe path component", () => {
+    expect(nodeKeyToStorageKey("workflow/a/b:c d")).not.toMatch(/[\\/:]/);
   });
 });

@@ -21,9 +21,7 @@ import { ForkError, materializeForkedRun, planForkedRun, type ForkPlan } from ".
 import { ArtifactReferences } from "./artifacts.js";
 import { HookConfigLoader } from "./hooks/loader.js";
 import { HookRunner } from "./hooks/runner.js";
-
-/** Pattern that matches unsafe runId characters (path traversal, separators, null). */
-const UNSAFE_RUN_ID = /(^|\/)\.\.?(\/|$)|[\\:\0]/;
+import { isUnsafeRunId } from "./run-id.js";
 
 /**
  * Creates a Hono HTTP app for the acpus Run Supervisor.
@@ -186,7 +184,7 @@ export function createSupervisorApp(
 
   app.use("/runs/:runId/*", async (c, next) => {
     const runId = c.req.param("runId");
-    if (!runId || UNSAFE_RUN_ID.test(runId)) {
+    if (isUnsafeRunId(runId)) {
       return c.json({ error: "Invalid runId format" }, 400);
     }
     await next();

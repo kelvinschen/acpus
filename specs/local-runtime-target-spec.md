@@ -55,7 +55,6 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Run metadata `agentOverrides` MUST persist the final effective single-layer Agent Override map applied before IR creation when that map is non-empty. Run metadata `submissionWarnings` MUST persist submit-time warning objects with `code`, `agent`, and `message` when warnings exist.
 - Execution, resume, retry, and replay MUST depend on `ir.json` and MUST NOT read Agent Override files or use Agent Override metadata to alter execution after Run creation.
 - The runtime MUST persist, for each executable leaf Node, a snapshot of its parent dynamic value-context (fanout item, loop round) so retry can rebuild the expression context without re-deriving ancestor scopes; the snapshot MUST contain only value context, never large artifact payloads.
-- The runtime MUST write node keys as filesystem-safe filenames by replacing `/` with `:`.
 
 ### Node Keys
 
@@ -67,7 +66,9 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - `parseNodeKey` MUST return `staticPath`, `staticSegments`, `dynamic` (collapsed, last-value-wins), and `dynamicFrames` (full frame-based parsing where each frame captures one dynamic scope boundary).
 - `isNodeKeyBelowAnyAnchor` MUST test whether a node key is a strict descendant (below, not equal to) any of the provided anchor keys. It MUST be used by Run Control cancellation to prevent cross-subworkflow boundary violations.
 - Fail-fast Run Control cancellation MUST use the cancelled Composite Node's resolved Node Key as the cancellation root. It MUST cancel active descendants of that Composite Node instance, and MUST NOT cancel nodes in a different subworkflow or dynamic instance merely because they share a Node ID or matching inner dynamic dimensions.
-- `ArtifactReferences` MUST provide `make`, `parse`, `tryParse`, `rewriteRunId`, and `resolvePath` methods. Artifact URI node-key segments MUST use percent-encoded resolved Node Keys, while artifact storage directories MUST use filesystem-safe Node Keys. `parse` MUST return `ParsedArtifactReference` with `encodedNodeKey` (URI-encoded form) and `nodeKey` (decoded resolved form for state lookups) such that `parse(make(...).uri).nodeKey` round-trips correctly.
+- `ArtifactReferences` MUST provide `make`, `parse`, `tryParse`, `rewriteRunId`, and `resolvePath` methods. Artifact URI node-key segments MUST use percent-encoded resolved Node Keys, while artifact storage directories MUST use deterministic bounded storage keys derived from resolved Node Keys. `parse` MUST return `ParsedArtifactReference` with `encodedNodeKey` (URI-encoded form) and `nodeKey` (decoded resolved form for state lookups) such that `parse(make(...).uri).nodeKey` round-trips correctly.
+- The runtime MUST store Node state and Node artifacts under bounded filesystem path components derived from resolved Node Keys, not under raw or slash-flattened Node Keys. The storage key MUST include a human-readable slug plus collision-resistant hash material and MUST remain below common filesystem component limits.
+- The runtime MUST persist `node-index.jsonl` under each Run directory as an audit index mapping full resolved Node Keys to bounded storage keys and relative Node state/artifact paths. Paths in the index MUST be relative to the Run directory. The index MUST be derived from persisted Node state; runtime addressing MUST NOT depend on it as the only source of truth.
 - `planForkedRun` MUST own source Run eligibility, Run Checkpoint reading, Node Definition Hash comparison, and Fork Origin derivation for Forked Runs.
 - `materializeForkedRun` MUST own input inheritance, explicit input validation, inherited Node state and Artifact materialization, Run Checkpoint registration, and lineage persistence for Forked Runs.
 - `materializeForkedRun` MUST wrap inheritance in try/catch; on failure, it MUST write a `cancelled` run meta with lineage before re-throwing. The returned `MaterializedFork.run` MUST include lineage (re-read after writing).
@@ -156,6 +157,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 
 - The runtime MUST store node artifacts on the local filesystem under `.acpus/state/runs/<runId>/artifacts/`.
 - Artifact references MUST use the URI format `artifact://runs/<runId>/nodes/<nodeKey>/<filename>`.
+- Artifact files MUST be stored under `.acpus/state/runs/<runId>/artifacts/<storageKey>/`, where `<storageKey>` is the bounded storage key derived from the full resolved Node Key.
 - The runtime MUST reject artifact filenames containing `/`, `\`, or `..` to prevent directory traversal.
 
 ### Subworkflows
@@ -167,6 +169,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Subworkflow file reads and compilation MUST occur in the runtime layer, never in `@acpus/core`.
 - The runtime MUST guard against subworkflow cycles by tracking specs currently on the execution stack.
 - Subworkflow child Node keys MUST be prefixed with the parent subworkflow Node key to stay unique within the run.
+- Subworkflow Node state MUST persist the evaluated and validated child Workflow input as `NodeExecutionState.input` for observation and debugging. Other Node kinds MUST NOT populate this field unless they introduce an explicit Workflow-boundary input.
 
 ### Run Supervisor
 

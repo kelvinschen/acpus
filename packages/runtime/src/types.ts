@@ -55,6 +55,8 @@ export interface NodeExecutionState {
   completedAt?: string;
   /** Error message if state is "failed" */
   error?: string;
+  /** Evaluated runtime input boundary for nodes that enter a child workflow. */
+  input?: Record<string, unknown>;
   /** Node output (validated against schema for agents) */
   output?: unknown;
   /** References to artifacts stored for this node */

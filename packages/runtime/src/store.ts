@@ -11,8 +11,9 @@ import {
   writeFileSync
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { encodeNodeKeyForFs, encodeNodeKeyForDir } from "./keys.js";
+import { nodeKeyToStorageKey } from "./keys.js";
 import { ArtifactReferences } from "./artifacts.js";
+import { isUnsafeRunId, validateRunId } from "./run-id.js";
 import type { AcpusIr, AgentOverrideWarning, AgentOverrides, HookConfigSnapshot } from "@acpus/core";
 import type { AgentTelemetry, NodeExecutionState, RunCheckpoint, RunCleanItem, RunCleanResult, RunState } from "./types.js";
 import { isRunTerminal } from "./types.js";
@@ -28,28 +29,26 @@ import { isRunTerminal } from "./types.js";
  *         input.json         # resolved input
  *         run-meta.json      # RunState
  *         nodes/
- *           workflow:step-a.json      # NodeExecutionState
- *           workflow:mapped:item:0:lane:0.json
+ *           <storage_key>.json        # NodeExecutionState
  *         artifacts/
- *           workflow:step-a/
+ *           <storage_key>/
  *             transcript.json
  *             stdout.txt
+ *         node-index.jsonl # nodeKey -> storage paths for audit
  */
-/**
- * Validate a runId is safe for filesystem path construction.
- * Rejects path traversal (..), path separators, and null bytes.
- * Does NOT require strict UUID format — tests may use short IDs like "run-1".
- */
-const UNSAFE_RUN_ID = /(^|\/)\.\.?(\/|$)|[\\:\0]/;
-
-function validateRunId(runId: string): void {
-  if (!runId || UNSAFE_RUN_ID.test(runId)) {
-    throw new Error(`Invalid runId: '${runId}' contains unsafe path characters`);
-  }
+interface NodeIndexEntry {
+  nodeKey: string;
+  storageKey: string;
+  nodeId: string;
+  kind: NodeExecutionState["kind"];
+  state: NodeExecutionState["state"];
+  statePath: string;
+  artifactDir: string;
 }
 
 export class RunStore {
   private readonly baseDir: string;
+  private readonly indexedRunIds = new Set<string>();
 
   constructor(baseDir?: string) {
     this.baseDir = baseDir ?? join(process.cwd(), ".acpus", "state", "runs");
@@ -156,8 +155,9 @@ export class RunStore {
   /** Atomically write node execution state without recording a Run Checkpoint. */
   writeNodeState(runId: string, state: NodeExecutionState): void {
     validateRunId(runId);
-    const filename = encodeNodeKeyForFs(state.nodeKey);
+    const filename = this.nodeStateFilename(state.nodeKey);
     this.atomicWriteJson(join(this.runDir(runId), "nodes", filename), state);
+    this.upsertNodeIndex(runId, state);
   }
 
   /** Atomically write a terminal node state and record its Run Checkpoint when checkpointable. */
@@ -179,7 +179,7 @@ export class RunStore {
   /** Read node execution state. Returns undefined if not found. */
   readNodeState(runId: string, nodeKey: string): NodeExecutionState | undefined {
     validateRunId(runId);
-    const filename = encodeNodeKeyForFs(nodeKey);
+    const filename = this.nodeStateFilename(nodeKey);
     return this.readJson<NodeExecutionState>(join(this.runDir(runId), "nodes", filename));
   }
 
@@ -208,7 +208,7 @@ export class RunStore {
   /** Get the artifacts directory for a node. */
   artifactsDir(runId: string, nodeKey: string): string {
     validateRunId(runId);
-    const dir = join(this.runDir(runId), "artifacts", encodeNodeKeyForDir(nodeKey));
+    const dir = join(this.runDir(runId), this.nodeArtifactDir(nodeKey));
     mkdirSync(dir, { recursive: true });
     return dir;
   }
@@ -263,8 +263,8 @@ export class RunStore {
     // write does not leave dangling artifactRefs URIs on disk. cpSync is
     // recursive and creates the destination; the source dir may legitimately
     // not exist for Nodes that produced no artifacts.
-    const sourceDir = join(this.runDir(sourceRunId), "artifacts", encodeNodeKeyForDir(nodeKey));
-    const targetDir = join(this.runDir(targetRunId), "artifacts", encodeNodeKeyForDir(nodeKey));
+    const sourceDir = join(this.runDir(sourceRunId), this.nodeArtifactDir(nodeKey));
+    const targetDir = join(this.runDir(targetRunId), this.nodeArtifactDir(nodeKey));
     if (existsSync(sourceDir)) {
       mkdirSync(dirname(targetDir), { recursive: true });
       cpSync(sourceDir, targetDir, { recursive: true });
@@ -336,12 +336,12 @@ export class RunStore {
   }
 
   /**
-   * Resolve an `artifact://runs/<runId>/nodes/<safeKey>/<filename>` URI to its
+   * Resolve an `artifact://runs/<runId>/nodes/<encodedNodeKey>/<filename>` URI to its
    * absolute filesystem path. Pure (no mkdir). Returns undefined for malformed
-   * URIs. Mirrors ArtifactStore's layout: <baseDir>/<runId>/artifacts/<safeKey>/<filename>.
+   * URIs. Mirrors ArtifactStore's layout: <baseDir>/<runId>/artifacts/<storageKey>/<filename>.
    */
   resolveArtifactPath(uri: string): string | undefined {
-    return ArtifactReferences.resolvePath(this.baseDir, uri, (runId) => !runId || UNSAFE_RUN_ID.test(runId));
+    return ArtifactReferences.resolvePath(this.baseDir, uri, isUnsafeRunId);
   }
 
   // ─── Internal helpers ──────────────────────────────────────────
@@ -356,6 +356,63 @@ export class RunStore {
 
   private hookConfigPath(runId: string): string {
     return join(this.runDir(runId), "hook-config.json");
+  }
+
+  private nodeIndexPath(runId: string): string {
+    return join(this.runDir(runId), "node-index.jsonl");
+  }
+
+  private nodeStateFilename(nodeKey: string): string {
+    return `${nodeKeyToStorageKey(nodeKey)}.json`;
+  }
+
+  private nodeArtifactDir(nodeKey: string): string {
+    return join("artifacts", nodeKeyToStorageKey(nodeKey));
+  }
+
+  private upsertNodeIndex(runId: string, state: NodeExecutionState): void {
+    const entries = this.readNodeIndex(runId) ?? this.rebuildNodeIndexEntries(runId);
+    const entry = this.nodeIndexEntry(state);
+    const existing = entries.findIndex((item) => item.nodeKey === state.nodeKey);
+    if (existing >= 0) {
+      entries[existing] = entry;
+    } else {
+      entries.push(entry);
+    }
+    entries.sort((a, b) => a.nodeKey.localeCompare(b.nodeKey));
+    this.atomicWriteText(this.nodeIndexPath(runId), `${entries.map((item) => JSON.stringify(item)).join("\n")}\n`);
+    this.indexedRunIds.add(runId);
+  }
+
+  private readNodeIndex(runId: string): NodeIndexEntry[] | undefined {
+    if (!this.indexedRunIds.has(runId)) return undefined;
+    const path = this.nodeIndexPath(runId);
+    if (!existsSync(path)) return undefined;
+    try {
+      return readFileSync(path, "utf8")
+        .split(/\r?\n/u)
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as NodeIndexEntry);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private rebuildNodeIndexEntries(runId: string): NodeIndexEntry[] {
+    return this.listNodeStates(runId).map((state) => this.nodeIndexEntry(state));
+  }
+
+  private nodeIndexEntry(state: NodeExecutionState): NodeIndexEntry {
+    const storageKey = nodeKeyToStorageKey(state.nodeKey);
+    return {
+      nodeKey: state.nodeKey,
+      storageKey,
+      nodeId: state.nodeId,
+      kind: state.kind,
+      state: state.state,
+      statePath: `nodes/${storageKey}.json`,
+      artifactDir: `artifacts/${storageKey}`
+    };
   }
 
   /**
@@ -381,10 +438,15 @@ export class RunStore {
 
   /** Write JSON via temp file + atomic rename for crash safety. */
   private atomicWriteJson(filePath: string, data: unknown): void {
+    this.atomicWriteText(filePath, JSON.stringify(data, null, 2));
+  }
+
+  /** Write text via temp file + atomic rename for crash safety. */
+  private atomicWriteText(filePath: string, content: string): void {
     const dir = dirname(filePath);
     mkdirSync(dir, { recursive: true });
     const tmpPath = filePath + ".tmp";
-    writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf8");
+    writeFileSync(tmpPath, content, "utf8");
     renameSync(tmpPath, filePath);
   }
 

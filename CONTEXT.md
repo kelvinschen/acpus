@@ -65,7 +65,7 @@ An ACP-compatible Agent used to produce deterministic responses for repeatable W
 _Avoid_: fake runtime, simulator
 
 **Node Key**:
-A stable filesystem-safe string that identifies a Node within a Run, resolved from the IR NodeKeyTemplate plus runtime dynamic context (loop round, fanout item, parallel branch).
+A stable logical string that identifies a Node within a Run, resolved from the IR NodeKeyTemplate plus runtime dynamic context (loop round, fanout item, parallel branch). Runtime storage maps Node Keys to bounded filesystem storage keys.
 _Avoid_: task id, step path
 
 **Node State Machine**:

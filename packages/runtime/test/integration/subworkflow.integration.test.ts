@@ -162,6 +162,207 @@ outputs:
     });
   });
 
+  it("persists evaluated child input for a successful subworkflow", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-subwf-input-"));
+    const parentPath = join(dir, "parent.yaml");
+    const childPath = join(dir, "child.yaml");
+    const expectedInput = {
+      amount: 42.5,
+      tags: ["alpha", "beta"],
+      payload: {
+        title: "Nested payload",
+        nested: {
+          score: 7,
+          flags: [true, false]
+        }
+      }
+    };
+
+    writeFileSync(childPath, `
+version: 1
+name: child-input-observation
+input:
+  amount: number
+  tags: [string]
+  payload:
+    title: string
+    nested:
+      score: integer
+      flags: [boolean]
+workflow:
+  steps:
+    - id: inspect_complex
+      run: program
+      cmd:
+        - ${JSON.stringify(process.execPath)}
+        - -e
+        - |
+          const tags = JSON.parse(process.env.TAGS_JSON);
+          const payload = JSON.parse(process.env.PAYLOAD_JSON);
+          console.log(JSON.stringify({
+            amount: Number(process.env.AMOUNT),
+            tags,
+            payload
+          }));
+      env:
+        AMOUNT: "\${{ input.amount }}"
+        TAGS_JSON: "\${{ json(input.tags) }}"
+        PAYLOAD_JSON: "\${{ json(input.payload) }}"
+      capture:
+        from: stdout
+        parse: json
+      output:
+        amount: number
+        tags: [string]
+        payload:
+          title: string
+          nested:
+            score: integer
+            flags: [boolean]
+outputs:
+  amount: \${{ steps.inspect_complex.output.amount }}
+  tags: \${{ steps.inspect_complex.output.tags }}
+  payload: \${{ steps.inspect_complex.output.payload }}
+`);
+
+    writeFileSync(parentPath, `
+version: 1
+name: parent-input-observation
+workflow:
+  steps:
+    - id: make_complex
+      run: program
+      cmd:
+        - ${JSON.stringify(process.execPath)}
+        - -e
+        - |
+          console.log(JSON.stringify({
+            amount: 42.5,
+            tags: ["alpha", "beta"],
+            payload: {
+              title: "Nested payload",
+              nested: {
+                score: 7,
+                flags: [true, false]
+              }
+            }
+          }));
+      capture:
+        from: stdout
+        parse: json
+      output:
+        amount: number
+        tags: [string]
+        payload:
+          title: string
+          nested:
+            score: integer
+            flags: [boolean]
+    - id: sub
+      subworkflow: child.yaml
+      input:
+        amount: "\${{ steps.make_complex.output.amount }}"
+        tags: "\${{ steps.make_complex.output.tags }}"
+        payload: "\${{ steps.make_complex.output.payload }}"
+outputs:
+  amount: \${{ steps.sub.output.amount }}
+  tags: \${{ steps.sub.output.tags }}
+  payload: \${{ steps.sub.output.payload }}
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({ useRealProgramExecutor: true });
+    cleanups.push(cleanup);
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+
+    const meta = await interpreter.start(compileFile(parentPath), { input: {} });
+    expect(meta.status).toBe("completed");
+    expect(meta.output).toEqual(expectedInput);
+
+    const sub = store.listNodeStates(meta.runId).find((n) => n.nodeId === "sub");
+    expect(sub?.state).toBe("completed");
+    expect(sub?.input).toEqual(expectedInput);
+
+    const child = store.listNodeStates(meta.runId).find((n) => n.nodeId === "inspect_complex");
+    expect(child?.output).toEqual({ output: expectedInput, exit_code: 0 });
+  });
+
+  it("keeps evaluated child input when the child workflow fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acpus-subwf-input-failure-"));
+    const childPath = join(dir, "child.yaml");
+    const expectedInput = {
+      amount: 3,
+      tags: ["will", "fail"],
+      payload: {
+        title: "Still visible",
+        nested: {
+          score: 9,
+          flags: [false]
+        }
+      }
+    };
+
+    writeFileSync(childPath, `
+version: 1
+name: child-input-failure
+input:
+  amount: number
+  tags: [string]
+  payload:
+    title: string
+    nested:
+      score: integer
+      flags: [boolean]
+workflow:
+  steps:
+    - id: fail_child
+      run: program
+      cmd: ["echo", "boom"]
+`);
+
+    const ir = compileYaml(`
+version: 1
+name: parent-input-failure
+workflow:
+  steps:
+    - id: make_complex
+      run: program
+      cmd: ["echo", "{}"]
+      capture:
+        from: stdout
+        parse: json
+      output:
+        amount: number
+        tags: [string]
+        payload:
+          title: string
+          nested:
+            score: integer
+            flags: [boolean]
+    - id: sub
+      subworkflow: ${childPath}
+      input:
+        amount: "\${{ steps.make_complex.output.amount }}"
+        tags: "\${{ steps.make_complex.output.tags }}"
+        payload: "\${{ steps.make_complex.output.payload }}"
+`);
+
+    const { interpreter, store, cleanup } = createTestInterpreter({
+      programResponses: {
+        make_complex: { parsedOutput: expectedInput, stdout: JSON.stringify(expectedInput) },
+        fail_child: { failureKind: "spawn", stderr: "boom" }
+      }
+    });
+    cleanups.push(cleanup);
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+
+    const meta = await interpreter.start(ir, { input: {} });
+    expect(meta.status).toBe("failed");
+
+    const sub = store.listNodeStates(meta.runId).find((n) => n.nodeId === "sub");
+    expect(sub?.state).toBe("failed");
+    expect(sub?.input).toEqual(expectedInput);
+  });
+
   it("fails when the child spec cannot be found", async () => {
     const ir = compileYaml(`
 version: 1

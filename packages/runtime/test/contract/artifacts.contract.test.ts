@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ArtifactReferences, ArtifactStore } from "../../src/artifacts.js";
+import { nodeKeyToStorageKey } from "../../src/keys.js";
+import { isUnsafeRunId } from "../../src/run-id.js";
 
 describe("ArtifactStore", () => {
   let tmpDir: string;
@@ -34,6 +36,16 @@ describe("ArtifactStore", () => {
       store.write("run-001", "workflow/step-a", "data.bin", buffer);
       const content = store.read("run-001", "workflow/step-a", "data.bin");
       expect(Buffer.from(content)).toEqual(buffer);
+    });
+
+    it("rejects unsafe run IDs before constructing artifact paths", () => {
+      for (const runId of ["", "../escape", "a/b", "a\\b", "a:b", "a\0b"]) {
+        expect(() => store.write(runId, "workflow/step-a", "output.txt", "x")).toThrow("Invalid runId");
+        expect(() => store.create(runId, "workflow/step-a", "output.txt")).toThrow("Invalid runId");
+        expect(() => store.append(runId, "workflow/step-a", "output.txt", "x")).toThrow("Invalid runId");
+        expect(() => store.read(runId, "workflow/step-a", "output.txt")).toThrow("Invalid runId");
+        expect(() => store.list(runId, "workflow/step-a")).toThrow("Invalid runId");
+      }
     });
   });
 
@@ -116,6 +128,18 @@ describe("ArtifactStore", () => {
       );
     });
 
+    it("rejects unsafe run IDs when constructing artifact refs", () => {
+      for (const runId of ["", "../escape", "a/b", "a\\b", "a:b", "a\0b"]) {
+        expect(() => ArtifactReferences.make(runId, "workflow/step-a", "output.txt")).toThrow("Invalid runId");
+      }
+    });
+
+    it("parses unsafe run IDs as URI syntax, but refuses to resolve them to paths", () => {
+      const uri = "artifact://runs/../nodes/workflow%2Fstep-a/output.txt";
+      expect(ArtifactReferences.parse(uri).runId).toBe("..");
+      expect(ArtifactReferences.resolvePath(tmpDir, uri, isUnsafeRunId)).toBeUndefined();
+    });
+
     it("rewrites only the run ID segment of matching artifact refs", () => {
       const source = "artifact://runs/source-run/nodes/workflow%2Fstep-a/output.txt";
       expect(ArtifactReferences.rewriteRunId(source, "source-run", "target-run")).toBe(
@@ -130,7 +154,7 @@ describe("ArtifactStore", () => {
     it("resolves artifact refs to safe host paths under the runs base directory", () => {
       const uri = "artifact://runs/run-001/nodes/workflow%2Fstep-a/output.txt";
       expect(ArtifactReferences.resolvePath(tmpDir, uri, () => false)).toBe(
-        join(tmpDir, "run-001", "artifacts", "workflow:step-a", "output.txt")
+        join(tmpDir, "run-001", "artifacts", nodeKeyToStorageKey("workflow/step-a"), "output.txt")
       );
 
       expect(ArtifactReferences.resolvePath(tmpDir, "not-an-artifact", () => false)).toBeUndefined();
@@ -172,14 +196,14 @@ describe("ArtifactStore", () => {
         )
       ).toBeUndefined();
 
-      // Mixed traversal in encoded node key parts
+      const traversalLookingNodeKey = "workflow/../step-a";
       expect(
         ArtifactReferences.resolvePath(
           tmpDir,
-          "artifact://runs/run-001/nodes/workflow%3A..%3Astep-a/output.txt",
+          `artifact://runs/run-001/nodes/${encodeURIComponent(traversalLookingNodeKey)}/output.txt`,
           () => false
         )
-      ).toBeUndefined();
+      ).toBe(join(tmpDir, "run-001", "artifacts", nodeKeyToStorageKey(traversalLookingNodeKey), "output.txt"));
     });
   });
 });

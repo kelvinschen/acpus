@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { NodeKeyTemplate } from "@acpus/core";
 import type { NodeKeyDynamic } from "./types.js";
 
@@ -424,22 +425,15 @@ function sanitizeValue(value: string): string {
   return value.replace(/[/\\:*?"<>|]/g, "_");
 }
 
-/**
- * Encode a node key for use as a filesystem filename.
- * Replaces "/" with ":" to flatten the hierarchical key into a flat name,
- * then appends ".json".
- * This encoding must be used consistently across store.ts and artifacts.ts.
- */
-export function encodeNodeKeyForFs(nodeKey: string): string {
-  return encodeNodeKeyForDir(nodeKey) + ".json";
-}
-
-/**
- * Encode a node key for use as a filesystem directory name.
- * Replaces "/" with ":" to flatten the hierarchical key into a flat name.
- * Use this when you need the encoded key without a file extension
- * (e.g., artifact directories, path segments).
- */
-export function encodeNodeKeyForDir(nodeKey: string): string {
-  return nodeKey.replace(/\//g, ":");
+/** Deterministic bounded storage key for filesystem path components. */
+export function nodeKeyToStorageKey(nodeKey: string): string {
+  const slug = nodeKey
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 80)
+    .replace(/^-|-$/g, "");
+  const safeSlug = !slug || slug === "." || slug === ".." ? "node" : slug;
+  const hash = createHash("sha256").update(nodeKey).digest("hex").slice(0, 32);
+  return `${safeSlug}--${hash}`;
 }

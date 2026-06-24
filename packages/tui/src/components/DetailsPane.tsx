@@ -215,6 +215,16 @@ function textLines(s: string, cols: number, color?: string): DetailLine[] {
   );
 }
 
+function jsonDetailSection(key: Extract<DetailSectionKey, "input" | "output">, label: string, value: unknown, cols: number): DetailSection {
+  const text = JSON.stringify(value, null, 2) ?? String(value);
+  return {
+    key,
+    label,
+    lines: [blank(), heading(`${label}:`), ...textLines(text, cols)],
+    richContent: { kind: "json", data: value }
+  };
+}
+
 /**
  * Flatten the selected row into a single array of colored lines. Pure: callers
  * (App) reuse it to compute the scroll bound, then pass the result to the pane.
@@ -330,27 +340,15 @@ export function buildDetailSections(
 
   // ── Root Workflow input ──
   if (isRootWorkflow && runBoundary?.input !== undefined) {
-    const inputValue = runBoundary.input;
-    const inputText = JSON.stringify(inputValue, null, 2) ?? String(inputValue);
-    sections.push({
-      key: "input",
-      label: "Input",
-      lines: [blank(), heading("Input:"), ...textLines(inputText, cols)],
-      richContent: { kind: "json", data: inputValue }
-    });
+    sections.push(jsonDetailSection("input", "Input", runBoundary.input, cols));
+  } else if (!isRootWorkflow && inst?.input !== undefined) {
+    sections.push(jsonDetailSection("input", "Input", inst.input, cols));
   }
 
   // ── Output ──
   if (isRootWorkflow) {
     if (runBoundary?.status === "completed") {
-      const outputValue = runBoundary.output ?? {};
-      const outputText = JSON.stringify(outputValue, null, 2) ?? String(outputValue);
-      sections.push({
-        key: "output",
-        label: "Output",
-        lines: [blank(), heading("Output:"), ...textLines(outputText, cols)],
-        richContent: { kind: "json", data: outputValue }
-      });
+      sections.push(jsonDetailSection("output", "Output", runBoundary.output ?? {}, cols));
     }
   } else if (row.irNode.kind === "run.agent" && agentAttempt?.output) {
     const outputText = agentAttempt.output.preview;

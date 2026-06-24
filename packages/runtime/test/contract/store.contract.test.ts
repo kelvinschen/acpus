@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, readdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { RunStore } from "../../src/store.js";
+import { nodeKeyToStorageKey } from "../../src/keys.js";
 import type { AcpusIr } from "@acpus/core";
 import type { NodeExecutionState } from "../../src/types.js";
 
@@ -84,6 +85,121 @@ describe("RunStore", () => {
 
       expect(read).toEqual(state);
       expect(store.readCheckpoints("run-001")).toEqual([]);
+    });
+
+    it("persists node state under bounded storage keys and indexes it for audit", () => {
+      store.initRun("run-001", makeIr(), {});
+      const nodeKey = `workflow/${"very-long-segment-".repeat(30)}/step-a`;
+      const storageKey = nodeKeyToStorageKey(nodeKey);
+      const state: NodeExecutionState = {
+        nodeKey,
+        nodeId: "step-a",
+        kind: "run.program",
+        state: "running",
+        attempt: 1
+      };
+
+      store.writeNodeState("run-001", state);
+
+      const statePath = join(tmpDir, "run-001", "nodes", `${storageKey}.json`);
+      expect(existsSync(statePath)).toBe(true);
+      expect(readFileSync(statePath, "utf8")).toContain(nodeKey);
+      expect(store.readNodeState("run-001", nodeKey)).toEqual(state);
+
+      const index = readFileSync(join(tmpDir, "run-001", "node-index.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(index).toEqual([{
+        nodeKey,
+        storageKey,
+        nodeId: "step-a",
+        kind: "run.program",
+        state: "running",
+        statePath: `nodes/${storageKey}.json`,
+        artifactDir: `artifacts/${storageKey}`
+      }]);
+    });
+
+    it("upserts node-index entries when a node state changes", () => {
+      store.initRun("run-001", makeIr(), {});
+      const nodeKey = "workflow/step-a";
+
+      store.writeNodeState("run-001", {
+        nodeKey,
+        nodeId: "step-a",
+        kind: "run.program",
+        state: "running",
+        attempt: 1
+      });
+      store.writeNodeState("run-001", {
+        nodeKey,
+        nodeId: "step-a",
+        kind: "run.program",
+        state: "completed",
+        attempt: 1
+      });
+
+      const lines = readFileSync(join(tmpDir, "run-001", "node-index.jsonl"), "utf8").trim().split("\n");
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0]!).state).toBe("completed");
+    });
+
+    it("rebuilds node-index from node states when the existing index is corrupt", () => {
+      store.initRun("run-001", makeIr(), {});
+      const firstNodeKey = "workflow/step-a";
+      const secondNodeKey = "workflow/step-b";
+      const firstState: NodeExecutionState = {
+        nodeKey: firstNodeKey,
+        nodeId: "step-a",
+        kind: "run.program",
+        state: "completed",
+        attempt: 1
+      };
+
+      store.writeNodeState("run-001", firstState);
+      writeFileSync(join(tmpDir, "run-001", "node-index.jsonl"), "{not-json}\n", "utf8");
+      expect(store.readNodeState("run-001", firstNodeKey)).toEqual(firstState);
+      store.writeNodeState("run-001", {
+        nodeKey: secondNodeKey,
+        nodeId: "step-b",
+        kind: "run.program",
+        state: "running",
+        attempt: 1
+      });
+
+      const entries = readFileSync(join(tmpDir, "run-001", "node-index.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(entries.map((entry) => entry.nodeKey)).toEqual([firstNodeKey, secondNodeKey]);
+      expect(entries).toContainEqual(expect.objectContaining({
+        nodeKey: firstNodeKey,
+        storageKey: nodeKeyToStorageKey(firstNodeKey),
+        state: "completed"
+      }));
+      expect(entries).toContainEqual(expect.objectContaining({
+        nodeKey: secondNodeKey,
+        storageKey: nodeKeyToStorageKey(secondNodeKey),
+        state: "running"
+      }));
+    });
+
+    it("reads node state without node-index", () => {
+      store.initRun("run-001", makeIr(), {});
+      const nodeKey = "workflow/step-a";
+      const state: NodeExecutionState = {
+        nodeKey,
+        nodeId: "step-a",
+        kind: "run.program",
+        state: "completed",
+        attempt: 1
+      };
+
+      store.writeNodeState("run-001", state);
+      unlinkSync(join(tmpDir, "run-001", "node-index.jsonl"));
+
+      expect(store.readNodeState("run-001", nodeKey)).toEqual(state);
     });
 
     it("records a checkpoint for a checkpointable terminal state write", () => {

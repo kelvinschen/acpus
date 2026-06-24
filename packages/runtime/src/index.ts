@@ -49,9 +49,7 @@ export {
   isNodeKeyAtOrBelow,
   isNodeKeyInDynamicScope,
   isNodeKeyBelowAnyAnchor,
-  withNodeKeyPrefix,
-  encodeNodeKeyForFs,
-  encodeNodeKeyForDir
+  withNodeKeyPrefix
 } from "./keys.js";
 export type { ParsedNodeKey } from "./keys.js";
 

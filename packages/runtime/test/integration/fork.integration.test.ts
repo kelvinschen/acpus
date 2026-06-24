@@ -1,10 +1,11 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { compileYaml, createTestInterpreter } from "../interpreter/helper.js";
 import { ForkError, materializeForkedRun, planForkedRun } from "../../src/fork.js";
 import { applyAgentOverrides, parseWorkflowSpecForOverrides } from "@acpus/core";
+import { nodeKeyToStorageKey } from "../../src/keys.js";
 
 const SPEC_V1 = `
 version: 1
@@ -402,9 +403,23 @@ workflow:
     expect(inheritedBuild?.artifactRefs?.length).toBeGreaterThan(0);
     expect(inheritedBuild?.artifactRefs?.every((uri) => uri.includes(`artifact://runs/${forkRunId}/`))).toBe(true);
     expect(inheritedBuild?.artifactRefs?.some((uri) => uri.includes(`artifact://runs/${sourceMeta.runId}/`))).toBe(false);
-    // Artifact directory must exist for the fork Run.
-    const buildArtifactDir = store.artifactsDir(forkRunId, "workflow/build");
-    expect(existsSync(buildArtifactDir)).toBe(true);
+    const stdoutRef = inheritedBuild?.artifactRefs?.find((uri) => uri.endsWith("/stdout.log"));
+    expect(stdoutRef).toBeDefined();
+    const stdoutPath = store.resolveArtifactPath(stdoutRef!);
+    expect(stdoutPath).toBeDefined();
+    expect(existsSync(stdoutPath!)).toBe(true);
+    expect(readFileSync(stdoutPath!, "utf8").trim()).toBe("built");
+    const storageKey = nodeKeyToStorageKey("workflow/build");
+    const index = readFileSync(join(store.getBaseDir(), forkRunId, "node-index.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(index).toContainEqual(expect.objectContaining({
+      nodeKey: "workflow/build",
+      storageKey,
+      statePath: `nodes/${storageKey}.json`,
+      artifactDir: `artifacts/${storageKey}`
+    }));
     expect(store.readCheckpoints(forkRunId).map((checkpoint) => checkpoint.nodeKey)).toEqual(
       checkpoints.map((checkpoint) => checkpoint.nodeKey)
     );

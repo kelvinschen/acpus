@@ -377,6 +377,69 @@ describe("buildDetailLines", () => {
     });
   });
 
+  it("renders persisted subworkflow input before output", () => {
+    const input = {
+      amount: 42.5,
+      tags: ["alpha", "beta"],
+      payload: {
+        title: "Nested payload",
+        nested: { score: 7 }
+      }
+    };
+    const row = makeRow({
+      irNode: {
+        id: "sub",
+        kind: "subworkflow",
+        nodePath: ["workflow", "sub"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow/sub" },
+        metadata: { subworkflow: "./child.yaml" }
+      },
+      label: "sub",
+      nodeKey: "workflow/sub",
+      instance: {
+        nodeKey: "workflow/sub",
+        nodeId: "sub",
+        kind: "subworkflow",
+        state: "completed",
+        attempt: 1,
+        input,
+        output: { output: { ok: true } }
+      }
+    });
+
+    const sections = buildDetailSections(row, 80, {});
+    expect(sections.map((section) => section.key)).toEqual(["summary", "input", "output"]);
+    expect(sections.find((section) => section.key === "input")?.richContent).toEqual({
+      kind: "json",
+      data: input
+    });
+    expect(formatDetailLinesPlainText(sections.find((section) => section.key === "input")?.lines ?? [])).toContain("\"amount\": 42.5");
+  });
+
+  it("does not render Input for ordinary composites without persisted input", () => {
+    const row = makeRow({
+      irNode: {
+        id: "parallel-node",
+        kind: "parallel",
+        nodePath: ["workflow", "parallel-node"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow/parallel-node" },
+        metadata: {}
+      },
+      label: "parallel-node",
+      nodeKey: "workflow/parallel-node",
+      instance: {
+        nodeKey: "workflow/parallel-node",
+        nodeId: "parallel-node",
+        kind: "parallel",
+        state: "completed",
+        attempt: 1,
+        output: { output: { left: { ok: true } } }
+      }
+    });
+
+    expect(buildDetailSections(row, 80, {}).map((section) => section.key)).toEqual(["summary", "output"]);
+  });
+
   it("renders Guard definitions with wrapped conditions and optional message", () => {
     const longWhen = "input.changed_files.exists(path, path.endsWith('.ts') || path.endsWith('.tsx')) && steps.collect_context.output.has_changes";
     const row = makeRow({
@@ -521,6 +584,30 @@ describe("buildDetailLines", () => {
     expect(summaryText).toContain("loop.iter: 2");
     expect(summaryText).toContain("Use: traex");
     expect(summaryText).toContain("Session key: shared-session");
+  });
+
+  it("keeps full lane details when fanout headers use the resolved item id", () => {
+    const row = makeRow({
+      rowKind: "group",
+      label: "item=alpha",
+      groupDim: "lane",
+      groupValue: "0",
+      groupItem: "alpha",
+      irNode: {
+        id: "mapped",
+        kind: "fanout",
+        nodePath: ["workflow", "mapped"],
+        keyTemplate: { astVersion: 1, nodePath: "workflow/mapped" },
+        metadata: { key: "item" }
+      }
+    });
+
+    const sections = buildDetailSections(row, 80, {});
+    const summaryText = formatDetailLinesPlainText(sections.find((section) => section.key === "summary")?.lines ?? []);
+
+    expect(summaryText).toContain("Node: item=alpha");
+    expect(summaryText).toContain("Lane: 0");
+    expect(summaryText).toContain("Item: alpha");
   });
 
   it("omits Agent session key from Summary when no explicit session_key was rendered", () => {

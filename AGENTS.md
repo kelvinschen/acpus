@@ -29,7 +29,16 @@ Bias toward subtraction. The best code is the shortest that works. Every line mu
 
 ### Self-check, then cut
 `delete` dead code · `stdlib` reinvented stdlib · `native` platform dupes · `yagni` single-user abstractions · `shrink` verbose logic.
-Nothing left to cut → ship.
+
+## The Way of Good Test
+- **Maps to a concrete risk** — articulate the specific failure mode the test guards against.
+- **Targets the lowest stable layer** — test a pure rule directly; never boot the full CLI to verify it.
+- **Deterministic & hermetic** — identical input always yields identical output; no external/shared state.
+- **Minimal, intent-revealing setup** — the variable under test is visible at a glance in the test body.
+- **Strong oracle** — assert exact results: return value, diagnostic code/path, exit code, or status.
+- **Refactor-resistant** — survives implementation changes as long as the contract holds.
+- **Clear failure signal** — test name + diff reveal which rule was violated.
+- **Cost proportional to risk** — reserve expensive E2E tests for high-value cross-layer risks.
 
 
 ## Build Maintenance

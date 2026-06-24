@@ -542,7 +542,7 @@ export class WorkflowInterpreter {
           output = await this.executeSignal(node, ctx, runId, controller.signal, nodeKey);
           break;
         case "subworkflow":
-          output = await this.executeSubworkflow(node, ctx, runId, dynamic, nodeKey);
+          output = await this.executeSubworkflow(node, ctx, runId, dynamic, nodeKey, state);
           break;
         default:
           throw new Error(`Unknown node kind: ${node.kind}`);
@@ -1319,7 +1319,14 @@ export class WorkflowInterpreter {
     resolver(payload);
   }
 
-  private async executeSubworkflow(node: IrNode, ctx: ExpressionContext, runId: string, dynamic: ExecutionDynamic, nodeKey: string): Promise<unknown> {
+  private async executeSubworkflow(
+    node: IrNode,
+    ctx: ExpressionContext,
+    runId: string,
+    dynamic: ExecutionDynamic,
+    nodeKey: string,
+    state: NodeExecutionState
+  ): Promise<unknown> {
     const specPath = node.metadata.subworkflow as string;
     const inputSpec = node.metadata.input as Record<string, unknown> | undefined;
 
@@ -1360,6 +1367,8 @@ export class WorkflowInterpreter {
 
     // Validate subworkflow input against the child IR's compiled input schema.
     const validatedChildInput = validateInput(compiled.ir.input, childInput);
+    state.input = validatedChildInput;
+    this.store.writeNodeState(runId, state);
 
     const childPaths = new Set(currentPaths);
     childPaths.add(childReal);
