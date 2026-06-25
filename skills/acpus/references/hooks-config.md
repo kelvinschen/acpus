@@ -168,10 +168,12 @@ Append-only JSONL at `.acpus/state/runs/<runId>/hook-journal.jsonl`. One entry p
 ## CLI
 
 ```sh
-acpus hooks validate [--global] [--project <path>] [--json]
+acpus hooks validate [--global] [--project <workspace-dir>] [--json]
 acpus hooks list [--json] [--source]
-acpus hooks path [--global]
+acpus hooks path
 ```
+
+`acpus hooks path` prints hook file paths to edit. For project validation, pass the workspace directory, e.g. `acpus hooks validate --project "$PWD"`, not `.acpus/hooks.yaml`.
 
 ## Config Validation (load-time)
 

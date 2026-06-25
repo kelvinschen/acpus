@@ -25,9 +25,9 @@ agents:
 
 ## If The User Does Not Name Agents
 
-Ask which agents to use. Do not silently assume.
+Inspect the Workflow Spec's top-level `agents:` keys before writing overrides. For catalog refs, run `acpus workflows show <ref>` to get the source path, then read that YAML. Then ask which acpx-supported agents to map to those keys. Do not silently assume.
 
-Good question: "Which acpx-supported worker agents should this workflow use for planning, implementation, and review?"
+Good question: "Which acpx-supported agents should map to these Workflow agent keys: <actual keys from the spec>?"
 
 ## If The User Says To Choose Freely
 
@@ -53,7 +53,7 @@ Timeout is a last-resort safety net, not a tuning knob — lower is not better. 
 
 ## Temporary Agent Overrides
 
-Use Agent Overrides when the user wants to reuse an existing Workflow Spec but temporarily run one submission with different agents. This is most common before starting a new Run:
+Use Agent Overrides when the user wants to reuse an existing Workflow Spec but temporarily run one submission with different agents. Overrides must be keyed by existing top-level agent names. This is most common before starting a new Run:
 
 ```sh
 acpus workflows run <workflow-or-ref> --dry-run --agents '{"reviewer":{"type":"builtin","use":"claude","model":"opus"}}'

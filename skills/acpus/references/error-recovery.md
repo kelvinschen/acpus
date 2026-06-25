@@ -18,24 +18,24 @@ Use `nodeKey` for Node-level operations. Do not pass a bare Workflow Spec `id`: 
 | `failureKind: "spawn"` | Command not found. Fix → `runs fork`. |
 | `failureKind: "timeout"` | Declared `timeout` too short or program hung. Raise `timeout` → `runs fork`; `runs retry` first if you suspect transient load. |
 | `failureKind: "killed"` | External SIGKILL or OOM. Investigate host → `runs retry`. |
-| Agent `parse`/`schema` after auto-retries exhausted | Read `attempt-NNN.{response,transcript}` artifacts. Simplify `output:` shape, remove duplicate schema text from prompt → `runs retry --node <nodeKey>`. |
+| Agent `parse`/`schema` after auto-retries exhausted | Read `attempt-NNN.response.md`, `attempt-NNN.prompt.md`, `attempt-NNN.telemetry.json`, and stderr artifacts when present. If the schema/prompt/spec is wrong, edit spec → `runs fork`. If the spec is fine and the response was transiently malformed, use `runs retry <runId> --node <nodeKey>`. |
 | Run took wrong branch / iterated wrong / skipped fanout item | Spec logic bug (guard / fanout `over` / loop `until` / switch case). Edit spec → `runs fork [--from <upstream-nodeKey>]`. |
 | Transient: network blip, race, host hiccup | `runs retry <runId> [--node <nodeKey>]`. |
-| Run paused | `runs resume <runId>`. |
-| Node `awaiting` (Signal Node) | `runs signal <runId> --node <nodeKey> --payload '<json>'`. |
-| Verifying determinism / topology drift | `runs replay <runId>`. No execution, no writes. |
+| Run paused | `runs resume <runId>`; accepted only for paused Runs. |
+| Node `awaiting` (Signal Node) | `runs signal <runId> --node <nodeKey> --payload '<json>'`; deliver only an explicit user decision or a workflow-delegated unambiguous payload. |
+| Verifying determinism / topology drift | `runs replay <runId>`. No execution, no workspace writes. |
 
 Rule of thumb: **spec is wrong → fork; spec is fine, environment hiccup → retry.**
 
 ## Artifact Paths
 
+Artifact refs use this URI shape:
+
 ```text
-artifact://runs/<runId>/nodes/<nodeKey>/<filename>
-↓ resolves to
-.acpus/state/runs/<runId>/artifacts/<encoded-node-key>/<filename>
+artifact://runs/<runId>/nodes/<encodedNodeKey>/<filename>
 ```
 
-`<encoded-node-key>` is the node key with `/` replaced by `:`. e.g. `workflow/review/branch:0` → `workflow:review:branch:0`.
+The URI node-key segment is percent-encoded from the resolved Node Key. Do not manually derive the filesystem path from the Node Key. Artifact directories use bounded storage keys, not raw or slash-flattened Node Keys. Use artifact paths from `runs show`, `runs show --json`, or `.acpus/state/runs/<runId>/node-index.jsonl`.
 
 ## Fork Semantics
 

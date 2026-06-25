@@ -40,13 +40,13 @@ Agent and Program outputs may include extra fields; Acpus preserves them in Node
 
 Use Agent Step `session_key` only when materialized steps need shared working context, such as a loop repair agent that should remember prior failed attempts. Do not use it as a default; independent Agent Steps should keep separate sessions.
 
-## 6. Signal Nodes Are Human-In-The-Loop
+## 6. Signal Nodes Need Authorized Decisions
 
-Use Signal Nodes for external decisions injected into a running Workflow. An agent can prepare a decision brief, risk note, or patch summary, but it must not call `acpus runs signal` unless the user explicitly gave that decision.
+Use Signal Nodes for external decisions injected into a running Workflow. An agent can prepare a decision brief, risk note, or patch summary, but it must not call `acpus runs signal` unless the user explicitly gave the decision or the Workflow explicitly delegated that decision and the payload is clear from Run state/artifacts.
 
 ## 7. Poll Background Runs Deliberately
 
-For long background runs, inspect less often over time and prefer the compact human view until you need exact artifact refs. Use `background-run-polling.md` for the cadence. Avoid tight loops around `runs show --json`.
+For long background runs, inspect less often over time and prefer the compact human view until you need exact artifact refs. Avoid tight loops around `runs show --json`.
 
 ## 8. Adapt Playbooks To The Situation
 
@@ -54,7 +54,7 @@ When starting from a playbook, rewrite input names, prompts, file boundaries, an
 
 ## 9. Ask About Agents
 
-If the user has not named worker agents, ask which acpx-supported agents to use. If the user says to choose freely, inspect `acpx --help`, then choose available agents that fit the work.
+Inspect the Workflow Spec or catalog source for top-level agent keys before asking for agent choices. Ask which acpx-supported agents should map to those keys. If the user says to choose freely, inspect `acpx --help`, then choose available agents that fit the work.
 
 ## 10. Use Expressions In The Right Form
 

@@ -32,14 +32,15 @@ description: |
   a repo where uncommitted changes are acceptable (ideally a dedicated branch or
   worktree).
 
-  Deliver the human decision via:
-    acpus runs signal <run_id> --node workflow/dev_loop/route/human_gate \
+  Deliver the human decision by copying the exact awaiting Signal Node key from
+  `acpus runs show <run_id>`, then running one of:
+    acpus runs signal <run_id> --node <nodeKey> \
       --payload '{"approved": true, "notes": "ship it"}'
-    acpus runs signal <run_id> --node workflow/dev_loop/route/human_gate \
+    acpus runs signal <run_id> --node <nodeKey> \
       --payload '{"approved": false, "notes": "the error path is still wrong"}'
 
   Override agents via CLI, e.g.:
-    --agents '{"planner":{"use":"pi"},"implementer":{"use":"claude"},"reviewer":{"use":"pi"},"summarizer":{"use":"pi"}}'
+    --agents '{"planner":{"type":"builtin","use":"pi"},"implementer":{"type":"builtin","use":"claude"},"reviewer":{"type":"builtin","use":"pi"},"summarizer":{"type":"builtin","use":"pi"}}'
 
   Output: .acpus/output/human-in-the-loop-development/<run_id>/
 
