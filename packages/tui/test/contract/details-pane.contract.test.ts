@@ -9,7 +9,7 @@ import {
   formatTokenUsage
 } from "../../src/components/DetailsPane.js";
 import type { DisplayRow } from "../../src/model.js";
-import type { IrNode } from "@acpus/core";
+import type { IrNode } from "../../src/acpus.js";
 
 // ─── buildDetailLines tests ─────────────────────────────────────
 

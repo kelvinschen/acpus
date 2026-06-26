@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
-import type { NodeState } from "@acpus/runtime";
+import type { NodeState } from "../acpus.js";
 import { KIND_STYLES, STATE_STYLES } from "../theme.js";
 
 export interface OverviewMessage {

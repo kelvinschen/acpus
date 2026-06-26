@@ -1,0 +1,24 @@
+[package]
+name = "acpus-mock-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+acpus-core = { path = "../acpus-core" }
+anyhow.workspace = true
+clap.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+tokio.workspace = true
+
+[lib]
+name = "acpus_mock_agent"
+path = "src/lib.rs"

@@ -45,6 +45,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 
 - The runtime MUST persist per-node state as individual JSON files with atomic write (temp file + rename) for crash safety.
 - The runtime MUST persist run-level metadata (run ID, workflow name, optional workflow ref, workflow source path, status, IR digest, input digest, retry generation, evaluated output, error, effective Agent Overrides, and submission warnings) separately from node state.
+- Run metadata `status` MUST be one of `running`, `completed`, `failed`, `paused`, or `cancelled`; a Signal Node waiting in `awaiting` MUST keep the Run status as `running`.
 - Run metadata MUST include `runAttempt`, starting at `1` for a new Run and incrementing by `1` only when a Run-level retry is accepted.
 - Run metadata MUST include `output` when the Run completes successfully; this field MUST contain the evaluated top-level Workflow `outputs`.
 - Run metadata MUST include `error` when the Run fails with a Run-level error; this field MUST be a string.
@@ -269,7 +270,7 @@ Acpus runtime execution is a local CLI orchestration boundary for durable single
 - Each persisted Node state MUST carry the Node Definition Hash that produced it; the runtime MUST treat the hash as opaque outside of fork planning.
 - A Node Definition Hash MUST include the Workflow metadata context (`workflow.name`, `workflow.description`, `workflow.source_path`, `workflow.source_dir`) when that Node or its descendant subtree references `workflow.*`; changing the Workflow source path or other referenced Workflow metadata MUST prevent inheritance of affected Nodes in Forked Runs.
 - The runtime MUST expose a `POST /runs/:runId/fork` Run Supervisor route accepting a Workflow Spec, optional `sourcePath`, `workflowRef`, `input`, `overrideOriginNodeKey`, `dryRun`, and `agentOverrides`.
-- Fork submission MUST be rejected with a conflict error when the source Run is in a non-terminal state (`running`, `paused`, or `awaiting`) or when the source Run has no checkpoint index.
+- Fork submission MUST be rejected with a conflict error when the source Run is in a non-terminal state (`running` or `paused`) or when the source Run has no checkpoint index.
 - Fork planning MUST scan the source Run's checkpoints in `sequence` order and inherit each Node whose Node Key has a matching static counterpart in the new Spec, whose prior state is `completed`, and whose Node Definition Hash matches the new compiled IR; inheritance MUST stop at the first Node failing any of these checks (the inheritance boundary).
 - The default Fork Origin MUST be the inheritance boundary determined by the scan; an operator override MAY force an earlier Origin but MUST NOT be a Node inside a Composite (`parallel`, `fanout`, `if`, `loop`, `switch`, `subworkflow`) body.
 - A Forked Run MUST be its own Run with its own frozen IR snapshot and MUST NOT mutate the source Run.

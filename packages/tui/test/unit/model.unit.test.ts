@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import type { AcpusIr, IrNode } from "@acpus/core";
-import type { NodeExecutionState } from "@acpus/runtime";
+import type { AcpusIr, IrNode } from "../../src/acpus.js";
+import type { NodeExecutionState } from "../../src/acpus.js";
 import {
   buildRenderTree,
   buildRows,

@@ -1,0 +1,29 @@
+[package]
+name = "acpus-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+acpus-core = { path = "../acpus-core" }
+acpus-runtime = { path = "../acpus-runtime" }
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+tokio.workspace = true
+
+[[bin]]
+name = "acpus"
+path = "src/main.rs"
+
+[dev-dependencies]
+tempfile.workspace = true

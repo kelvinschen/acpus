@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { render } from "ink";
-import { RunSupervisorClient } from "@acpus/runtime";
+import { RunSupervisorClient } from "./acpus.js";
 import { App, type TuiRefreshMode } from "./components/App.js";
 import { RunPicker } from "./components/RunPicker.js";
 

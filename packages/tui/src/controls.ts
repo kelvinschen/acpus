@@ -3,7 +3,7 @@
  * client-side by state so we only attempt actions that can succeed.
  */
 
-import type { RunSupervisorClient, NodeExecutionState, NodeState, RunStatus } from "@acpus/runtime";
+import type { RunSupervisorClient, NodeExecutionState, NodeState, RunState, RunStatus } from "./acpus.js";
 
 export type ControlAction = "pause" | "resume" | "cancel" | "retry" | "signal";
 
@@ -77,7 +77,7 @@ export async function applyRunControl(
   client: RunSupervisorClient,
   action: ControlAction,
   runId: string
-): Promise<import("@acpus/runtime").RunState> {
+): Promise<RunState> {
   switch (action) {
     case "pause":
       return client.pauseRun(runId);

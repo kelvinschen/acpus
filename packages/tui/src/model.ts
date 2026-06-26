@@ -22,8 +22,8 @@
  * fanout/loop container that actually fans.
  */
 
-import type { AcpusIr, IrNode, IrNodeKind } from "@acpus/core";
-import { parseNodeKey as parseRuntimeNodeKey, type NodeExecutionState, type NodeState, type ParsedNodeKey } from "@acpus/runtime";
+import type { AcpusIr, IrNode, IrNodeKind } from "./acpus.js";
+import { parseNodeKey as parseRuntimeNodeKey, type NodeExecutionState, type NodeState, type ParsedNodeKey } from "./acpus.js";
 
 /** A dynamic dimension type encoded in node keys. */
 export type Dim = "item" | "lane" | "branch" | "round";

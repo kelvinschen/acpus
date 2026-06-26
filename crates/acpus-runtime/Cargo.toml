@@ -1,0 +1,30 @@
+[package]
+name = "acpus-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+acpus-core = { path = "../acpus-core" }
+anyhow.workspace = true
+axum.workspace = true
+chrono.workspace = true
+futures-util.workspace = true
+hex.workspace = true
+jsonrepair-rs.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true
+tempfile.workspace = true

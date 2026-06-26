@@ -49,11 +49,10 @@
   "scripts": {
     "build": "tsgo -p tsconfig.json",
     "typecheck": "tsgo -p tsconfig.json --noEmit",
+    "test": "cd ../.. && vitest run packages/tui/test",
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@acpus/core": "workspace:*",
-    "@acpus/runtime": "workspace:*",
     "@wterm/dom": "0.3.0",
     "ink": "^6.8.0",
     "node-pty": "1.2.0-beta.13",

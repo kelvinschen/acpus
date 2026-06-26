@@ -4,8 +4,8 @@
  * the reference image's invented states (queued / needs-review / retried).
  */
 
-import type { NodeState } from "@acpus/runtime";
-import type { IrNodeKind } from "@acpus/core";
+import type { NodeState } from "./acpus.js";
+import type { IrNodeKind } from "./acpus.js";
 
 export interface StateStyle {
   glyph: string;

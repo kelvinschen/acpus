@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdin } from "ink";
-import type { AgentTelemetry, RunSupervisorClient } from "@acpus/runtime";
+import type { AgentTelemetry, RunSupervisorClient } from "../acpus.js";
 import { useRunPoller, isTerminal } from "../poller.js";
 import { buildRenderTree, buildRows, countByState, formatElapsed } from "../model.js";
 import {

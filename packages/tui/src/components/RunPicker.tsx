@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
-import type { RunSupervisorClient, RunSummary } from "@acpus/runtime";
+import type { RunSupervisorClient, RunSummary } from "../acpus.js";
 
 type RunPickerAction = "up" | "down" | "select" | "quit";
 

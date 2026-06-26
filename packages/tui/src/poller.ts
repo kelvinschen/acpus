@@ -5,8 +5,8 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import type { AcpusIr } from "@acpus/core";
-import type { RunSupervisorClient, NodeExecutionState, RunState } from "@acpus/runtime";
+import type { AcpusIr } from "./acpus.js";
+import type { RunSupervisorClient, NodeExecutionState, RunState } from "./acpus.js";
 
 export interface RunSnapshot {
   ir?: AcpusIr;

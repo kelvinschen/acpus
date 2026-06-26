@@ -1,7 +1,0 @@
-version: 1
-name: include-child
-workflow:
-  steps:
-    - id: step_b
-      run: program
-      cmd: ["echo", "child"]

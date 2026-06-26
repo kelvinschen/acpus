@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
-import type { AgentTokenUsage, AgentToolCallTelemetry, AgentTelemetry } from "@acpus/runtime";
+import type { AgentTokenUsage, AgentToolCallTelemetry, AgentTelemetry } from "../acpus.js";
 import type { DisplayRow } from "../model.js";
 import { formatDuration } from "../model.js";
 import { KIND_LABELS, styleForKind, styleForState } from "../theme.js";

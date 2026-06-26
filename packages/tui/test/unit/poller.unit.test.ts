@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { NodeExecutionState, RunState } from "@acpus/runtime";
+import type { NodeExecutionState, RunState } from "../../src/acpus.js";
 import { snapshotFingerprint } from "../../src/poller.js";
 
 const run: RunState = {
