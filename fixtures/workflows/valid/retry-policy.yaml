@@ -1,0 +1,28 @@
+version: 1
+name: retry-policy
+agents:
+  mock:
+    type: command
+    use: echo
+workflow:
+  steps:
+    - id: agent_retry
+      run: agent
+      use: mock
+      prompt: "Return a JSON object."
+      retry:
+        max: 2
+        backoff: 10ms
+      output:
+        ok: boolean
+    - id: program_retry
+      run: program
+      cmd: "printf '{\"ok\":true}'"
+      capture:
+        stdout: true
+        parse: json
+      retry:
+        max: 1
+        backoff: 5ms
+      output:
+        ok: boolean

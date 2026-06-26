@@ -1,0 +1,12 @@
+version: 1
+name: basic-agent
+agents:
+  mock:
+    type: command
+    use: echo
+workflow:
+  steps:
+    - id: ask
+      run: agent
+      use: mock
+      prompt: "Summarize the current migration state."

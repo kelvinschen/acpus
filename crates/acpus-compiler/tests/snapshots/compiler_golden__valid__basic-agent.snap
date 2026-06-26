@@ -1,0 +1,83 @@
+---
+source: crates/acpus-compiler/tests/compiler_golden.rs
+expression: snapshot
+---
+{
+  "diagnostics": [],
+  "ir": {
+    "agents": {
+      "mock": {
+        "policy": "full",
+        "type": "command",
+        "use": "echo"
+      }
+    },
+    "astVersion": 1,
+    "expressions": [],
+    "input": {},
+    "irVersion": 1,
+    "name": "basic-agent",
+    "outputs": {},
+    "root": {
+      "children": [
+        {
+          "id": "ask",
+          "keyTemplate": {
+            "astVersion": 1,
+            "fanoutItemId": true,
+            "laneId": true,
+            "loopRound": true,
+            "nodePath": "workflow/ask",
+            "parallelBranchId": true
+          },
+          "kind": "run.agent",
+          "metadata": {
+            "agent": {
+              "policy": "full",
+              "type": "command",
+              "use": "echo"
+            },
+            "prompt": "Summarize the current migration state.",
+            "run": "agent",
+            "use": "mock"
+          },
+          "nodePath": [
+            "workflow",
+            "ask"
+          ]
+        }
+      ],
+      "id": "workflow",
+      "keyTemplate": {
+        "astVersion": 1,
+        "fanoutItemId": true,
+        "laneId": true,
+        "loopRound": true,
+        "nodePath": "workflow",
+        "parallelBranchId": true
+      },
+      "kind": "pipeline",
+      "metadata": {
+        "implicit": true
+      },
+      "nodePath": [
+        "workflow"
+      ],
+      "outputMerge": "map"
+    },
+    "source": {
+      "digest": "sha256:8329b6a660cc4855bdf91e1ecaf46498cb596109659808e812f083abcb054000",
+      "path": "$FIXTURES/valid/basic-agent.yaml"
+    }
+  },
+  "schedule": {
+    "nodes": [
+      {
+        "id": "ask",
+        "kind": "run.agent",
+        "nodePath": "workflow/ask"
+      }
+    ],
+    "workflow": "basic-agent"
+  }
+}

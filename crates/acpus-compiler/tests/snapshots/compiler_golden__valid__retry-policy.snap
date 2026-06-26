@@ -1,0 +1,144 @@
+---
+source: crates/acpus-compiler/tests/compiler_golden.rs
+expression: snapshot
+---
+{
+  "diagnostics": [],
+  "ir": {
+    "agents": {
+      "mock": {
+        "policy": "full",
+        "type": "command",
+        "use": "echo"
+      }
+    },
+    "astVersion": 1,
+    "expressions": [],
+    "input": {},
+    "irVersion": 1,
+    "name": "retry-policy",
+    "outputs": {},
+    "root": {
+      "children": [
+        {
+          "id": "agent_retry",
+          "keyTemplate": {
+            "astVersion": 1,
+            "fanoutItemId": true,
+            "laneId": true,
+            "loopRound": true,
+            "nodePath": "workflow/agent_retry",
+            "parallelBranchId": true
+          },
+          "kind": "run.agent",
+          "metadata": {
+            "agent": {
+              "policy": "full",
+              "type": "command",
+              "use": "echo"
+            },
+            "output": {
+              "additionalProperties": false,
+              "properties": {
+                "ok": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "ok"
+              ],
+              "type": "object"
+            },
+            "prompt": "Return a JSON object.",
+            "retry": {
+              "backoff": "10ms",
+              "max": 2
+            },
+            "run": "agent",
+            "use": "mock"
+          },
+          "nodePath": [
+            "workflow",
+            "agent_retry"
+          ]
+        },
+        {
+          "id": "program_retry",
+          "keyTemplate": {
+            "astVersion": 1,
+            "fanoutItemId": true,
+            "laneId": true,
+            "loopRound": true,
+            "nodePath": "workflow/program_retry",
+            "parallelBranchId": true
+          },
+          "kind": "run.program",
+          "metadata": {
+            "capture": {
+              "parse": "json",
+              "stdout": true
+            },
+            "cmd": "printf '{\"ok\":true}'",
+            "output": {
+              "additionalProperties": false,
+              "properties": {
+                "ok": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "ok"
+              ],
+              "type": "object"
+            },
+            "retry": {
+              "backoff": "5ms",
+              "max": 1
+            },
+            "run": "program"
+          },
+          "nodePath": [
+            "workflow",
+            "program_retry"
+          ]
+        }
+      ],
+      "id": "workflow",
+      "keyTemplate": {
+        "astVersion": 1,
+        "fanoutItemId": true,
+        "laneId": true,
+        "loopRound": true,
+        "nodePath": "workflow",
+        "parallelBranchId": true
+      },
+      "kind": "pipeline",
+      "metadata": {
+        "implicit": true
+      },
+      "nodePath": [
+        "workflow"
+      ],
+      "outputMerge": "map"
+    },
+    "source": {
+      "digest": "sha256:b8337dccd71984fc77ab1e5db2f63b27395c73ca88fb0be7afe3f398f2cdeedb",
+      "path": "$FIXTURES/valid/retry-policy.yaml"
+    }
+  },
+  "schedule": {
+    "nodes": [
+      {
+        "id": "agent_retry",
+        "kind": "run.agent",
+        "nodePath": "workflow/agent_retry"
+      },
+      {
+        "id": "program_retry",
+        "kind": "run.program",
+        "nodePath": "workflow/program_retry"
+      }
+    ],
+    "workflow": "retry-policy"
+  }
+}

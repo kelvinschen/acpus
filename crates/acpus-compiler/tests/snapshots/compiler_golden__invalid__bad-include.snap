@@ -1,0 +1,12 @@
+---
+source: crates/acpus-compiler/tests/compiler_golden.rs
+expression: snapshot
+---
+[
+  {
+    "code": "INCLUDE_RESOLUTION",
+    "message": "Include path 'does-not-exist.yaml' does not exist or is not readable",
+    "path": "$.workflow.steps[0].include",
+    "severity": "error"
+  }
+]

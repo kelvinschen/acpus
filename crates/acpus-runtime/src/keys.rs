@@ -1,5 +1,5 @@
 use crate::NodeKeyDynamic;
-use acpus_core::NodeKeyTemplate;
+use acpus_ir::NodeKeyTemplate;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 

@@ -1,0 +1,12 @@
+---
+source: crates/acpus-compiler/tests/compiler_golden.rs
+expression: snapshot
+---
+[
+  {
+    "code": "EXPR_UNKNOWN_STEP",
+    "message": "Expression references unknown step 'missing'.",
+    "path": "workflow/build.cmd",
+    "severity": "error"
+  }
+]

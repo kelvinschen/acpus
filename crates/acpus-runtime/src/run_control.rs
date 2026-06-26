@@ -155,7 +155,8 @@ fn run_status_text(status: RunStatus) -> &'static str {
 mod tests {
     use super::*;
     use crate::{RunCreateOptions, RunStore, create_initial_node_state};
-    use acpus_core::{CompileOptions, IrNodeKind, compile_workflow};
+    use acpus_core::{CompileOptions, compile_workflow};
+    use acpus_ir::IrNodeKind;
     use serde_json::json;
 
     #[test]

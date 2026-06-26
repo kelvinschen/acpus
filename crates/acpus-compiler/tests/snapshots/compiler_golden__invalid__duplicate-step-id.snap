@@ -1,0 +1,12 @@
+---
+source: crates/acpus-compiler/tests/compiler_golden.rs
+expression: snapshot
+---
+[
+  {
+    "code": "STEP_ID_DUPLICATE",
+    "message": "Duplicate step id 'build' previously declared at $.workflow.steps[0].",
+    "path": "$.workflow.steps[1].id",
+    "severity": "error"
+  }
+]

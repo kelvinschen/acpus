@@ -1,0 +1,121 @@
+---
+source: crates/acpus-compiler/tests/compiler_golden.rs
+expression: snapshot
+---
+{
+  "diagnostics": [],
+  "ir": {
+    "agents": {},
+    "astVersion": 1,
+    "expressions": [],
+    "input": {},
+    "irVersion": 1,
+    "name": "include-basic",
+    "outputs": {},
+    "root": {
+      "children": [
+        {
+          "id": "before",
+          "keyTemplate": {
+            "astVersion": 1,
+            "fanoutItemId": true,
+            "laneId": true,
+            "loopRound": true,
+            "nodePath": "workflow/before",
+            "parallelBranchId": true
+          },
+          "kind": "run.program",
+          "metadata": {
+            "cmd": "echo before",
+            "run": "program"
+          },
+          "nodePath": [
+            "workflow",
+            "before"
+          ]
+        },
+        {
+          "id": "included",
+          "keyTemplate": {
+            "astVersion": 1,
+            "fanoutItemId": true,
+            "laneId": true,
+            "loopRound": true,
+            "nodePath": "workflow/included",
+            "parallelBranchId": true
+          },
+          "kind": "run.program",
+          "metadata": {
+            "cmd": "echo included",
+            "run": "program"
+          },
+          "nodePath": [
+            "workflow",
+            "included"
+          ]
+        },
+        {
+          "id": "after",
+          "keyTemplate": {
+            "astVersion": 1,
+            "fanoutItemId": true,
+            "laneId": true,
+            "loopRound": true,
+            "nodePath": "workflow/after",
+            "parallelBranchId": true
+          },
+          "kind": "run.program",
+          "metadata": {
+            "cmd": "echo after",
+            "run": "program"
+          },
+          "nodePath": [
+            "workflow",
+            "after"
+          ]
+        }
+      ],
+      "id": "workflow",
+      "keyTemplate": {
+        "astVersion": 1,
+        "fanoutItemId": true,
+        "laneId": true,
+        "loopRound": true,
+        "nodePath": "workflow",
+        "parallelBranchId": true
+      },
+      "kind": "pipeline",
+      "metadata": {
+        "implicit": true
+      },
+      "nodePath": [
+        "workflow"
+      ],
+      "outputMerge": "map"
+    },
+    "source": {
+      "digest": "sha256:c74b1a3aff23e939e8de96a6c26c03e314968c2d2c925adf8849154199d48cce",
+      "path": "$FIXTURES/valid/include-basic.yaml"
+    }
+  },
+  "schedule": {
+    "nodes": [
+      {
+        "id": "before",
+        "kind": "run.program",
+        "nodePath": "workflow/before"
+      },
+      {
+        "id": "included",
+        "kind": "run.program",
+        "nodePath": "workflow/included"
+      },
+      {
+        "id": "after",
+        "kind": "run.program",
+        "nodePath": "workflow/after"
+      }
+    ],
+    "workflow": "include-basic"
+  }
+}

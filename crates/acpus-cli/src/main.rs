@@ -7,8 +7,9 @@ use acpus_core::{
     is_empty_hook_config, lint_workflow, validate_hook_config_shape,
 };
 use acpus_runtime::{
-    HookConfigLoader, RunStore, Supervisor, global_hook_config_path, project_hook_config_path,
+    HookConfigLoader, RunStore, global_hook_config_path, project_hook_config_path,
 };
+use acpus_supervisor::{Supervisor, SupervisorMetadata};
 use anyhow::{Context, bail};
 use clap::{Args, Parser, Subcommand};
 use serde::{Serialize, de::DeserializeOwned};
@@ -33,7 +34,8 @@ const EXIT_USER_CANCEL: u8 = 2;
 #[command(
     name = "acpus",
     version,
-    about = "Local durable workflow runner for ACP agents"
+    about = "Local durable workflow runner for ACP agents",
+    long_about = "Run, inspect, and control durable local ACP workflow runs from the current workspace."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -43,13 +45,13 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     #[command(
-        alias = "wf",
+        visible_alias = "wf",
         about = "Discover, inspect, lint, and run Workflow Specs"
     )]
     Workflows(WorkflowCommand),
     #[command(about = "List, inspect, clean, visualize, and control Workflow Runs")]
     Runs(RunCommand),
-    #[command(about = "Inspect and validate hook configuration")]
+    #[command(about = "Inspect and validate Acpus runtime hook configuration")]
     Hooks(HookCommand),
     #[command(hide = true)]
     Supervisor(SupervisorCommand),
@@ -65,49 +67,80 @@ struct WorkflowCommand {
 enum WorkflowSubcommand {
     #[command(about = "Validate a Workflow Spec")]
     Lint {
+        #[arg(
+            value_name = "refOrPath",
+            help = "Workflow Catalog ref/name or workflow YAML spec path"
+        )]
         target: String,
-        #[arg(long)]
+        #[arg(long, help = "Treat warnings as errors")]
         strict: bool,
-        #[arg(long)]
+        #[arg(long, help = "Write JSON output")]
         json: bool,
-        #[arg(long)]
+        #[arg(long, help = "Only write final output")]
         quiet: bool,
     },
-    #[command(about = "Start a Workflow Run")]
+    #[command(
+        about = "Start a Workflow Run",
+        long_about = "Start a Workflow Run through the workspace supervisor, then follow it until terminal status unless --background, --visualize, or --dry-run is used.",
+        after_help = "Examples:\n  acpus workflows run project:build\n  acpus wf run ./workflow.yaml --input input.json\n  acpus workflows run project:deploy --agents agents.yaml --background\n  acpus workflows run ./workflow.yaml --dry-run --json"
+    )]
     Run(RunWorkflow),
     #[command(about = "List catalog workflows")]
     List {
-        #[arg(long)]
+        #[arg(long, help = "Write JSON output")]
         json: bool,
     },
     #[command(about = "Show catalog workflow details")]
     Show {
+        #[arg(
+            value_name = "refOrName",
+            help = "Workflow Catalog ref or unique workflow name"
+        )]
         target: String,
-        #[arg(long)]
+        #[arg(long, help = "Write JSON output")]
         json: bool,
     },
 }
 
 #[derive(Args)]
 struct RunWorkflow {
+    #[arg(
+        value_name = "refOrPath",
+        help = "Workflow Catalog ref/name or workflow YAML spec path"
+    )]
     target: String,
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "value",
+        help = "Inline JSON/YAML object or path to a .json/.yaml/.yml input object file"
+    )]
     input: Option<String>,
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "value",
+        help = "Inline JSON/YAML object or path to a .json/.yaml/.yml Agent Overrides object file"
+    )]
     agents: Option<String>,
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "duration",
+        help = "Follow-mode poll interval such as 2s, 1m, or 1000ms; default 10s, minimum 1s"
+    )]
     poll: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Compile to IR and print the schedule without execution")]
     dry_run: bool,
-    #[arg(long)]
+    #[arg(long, help = "Submit and return immediately without following the run")]
     background: bool,
-    #[arg(long)]
+    #[arg(long, help = "Submit and open the TUI visualizer")]
     visualize: bool,
-    #[arg(long)]
+    #[arg(long, help = "Submit without loading, freezing, or executing hooks")]
     skip_hooks: bool,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Write JSONL observations in follow mode or one JSON object in background/dry-run mode"
+    )]
     json: bool,
-    #[arg(long)]
+    #[arg(long, help = "Only write final output")]
     quiet: bool,
 }
 
@@ -121,95 +154,163 @@ struct RunCommand {
 enum RunSubcommand {
     #[command(about = "List Workflow Runs")]
     List {
-        #[arg(long)]
+        #[arg(long, help = "Write JSON output")]
         json: bool,
     },
     #[command(about = "Inspect a Workflow Run")]
     Show {
+        #[arg(value_name = "runId", help = "Run ID to inspect")]
         run_id: String,
-        #[arg(long)]
+        #[arg(long, help = "Write JSON output")]
         json: bool,
     },
     #[command(about = "Pause an active Workflow Run")]
     Pause {
+        #[arg(value_name = "runId", help = "Run ID to pause")]
         run_id: String,
-        #[arg(long)]
+        #[arg(long, help = "Write JSON output")]
         json: bool,
     },
     #[command(about = "Resume a paused Workflow Run")]
     Resume {
+        #[arg(value_name = "runId", help = "Run ID to resume")]
         run_id: String,
-        #[arg(long)]
+        #[arg(long, help = "Write JSON output")]
         json: bool,
     },
-    #[command(about = "Deliver an external decision payload to a Signal Node")]
+    #[command(
+        about = "Deliver an external decision payload to a Signal Node",
+        long_about = "Deliver an external decision payload to a Signal Node that is currently awaiting input.",
+        after_help = "Examples:\n  acpus runs signal run_01 --node approve --payload '{\"approved\":true}'\n  acpus runs signal run_01 --node approve --payload decision.yaml --json"
+    )]
     Signal {
+        #[arg(
+            value_name = "runId",
+            help = "Run ID containing the awaiting Signal Node"
+        )]
         run_id: String,
-        #[arg(long)]
+        #[arg(
+            long,
+            value_name = "nodeKey",
+            help = "Signal Node Key to deliver the payload to"
+        )]
         node: String,
-        #[arg(long)]
+        #[arg(
+            long,
+            value_name = "value",
+            help = "Inline JSON/YAML object or path to a .json/.yaml/.yml payload object file"
+        )]
         payload: String,
-        #[arg(long)]
+        #[arg(long, help = "Write JSON output")]
         json: bool,
     },
     #[command(about = "Cancel a Workflow Run")]
     Cancel {
+        #[arg(value_name = "runId", help = "Run ID to cancel")]
         run_id: String,
-        #[arg(long)]
+        #[arg(long, help = "Write JSON output")]
         json: bool,
     },
     #[command(about = "Retry a Run or specific Node")]
     Retry {
+        #[arg(value_name = "runId", help = "Run ID to retry")]
         run_id: String,
-        #[arg(long)]
+        #[arg(
+            long,
+            value_name = "nodeKey",
+            help = "Retry a specific failed executable Node Key instead of the whole run"
+        )]
         node: Option<String>,
-        #[arg(long)]
+        #[arg(long, help = "Write JSON output")]
         json: bool,
     },
     #[command(about = "Replay a Run and verify deterministic interpretation")]
     Replay {
+        #[arg(value_name = "runId", help = "Run ID to replay")]
         run_id: String,
-        #[arg(long)]
+        #[arg(long, help = "Write JSON output")]
         json: bool,
     },
-    #[command(about = "Open or serve the run visualizer")]
+    #[command(
+        about = "Open or serve the run visualizer",
+        long_about = "Open the terminal visualizer, or serve a read-only browser visualizer when --serve is provided.",
+        after_help = "Examples:\n  acpus runs visualize\n  acpus runs visualize run_01\n  acpus runs visualize run_01 --serve\n  acpus runs visualize --serve 127.0.0.1:3000"
+    )]
     Visualize {
+        #[arg(
+            value_name = "runId",
+            help = "Run ID to observe; omit to pick from a list"
+        )]
         run_id: Option<String>,
-        #[arg(long, num_args = 0..=1, default_missing_value = "")]
+        #[arg(
+            long,
+            value_name = "listen",
+            num_args = 0..=1,
+            default_missing_value = "",
+            help = "Serve a read-only browser visualizer, optionally on a port or host:port"
+        )]
         serve: Option<String>,
     },
-    #[command(about = "Fork a terminal Run from matching checkpoints")]
+    #[command(
+        about = "Fork a terminal Run from matching checkpoints",
+        long_about = "Derive a new Run from a terminal source Run, inheriting matching checkpoints from the source.",
+        after_help = "Examples:\n  acpus runs fork run_01 ./fixed.workflow.yaml\n  acpus runs fork run_01 project:fixed --from build --dry-run\n  acpus runs fork run_01 ./fixed.workflow.yaml --input input.yaml --agents agents.yaml --background"
+    )]
     Fork(ForkRun),
     #[command(about = "Delete terminal Run directories")]
     Clean {
-        #[arg(long)]
+        #[arg(long, help = "Report deletions without removing Run directories")]
         dry_run: bool,
-        #[arg(long)]
+        #[arg(long, help = "Write JSON output")]
         json: bool,
     },
 }
 
 #[derive(Args)]
 struct ForkRun {
+    #[arg(
+        value_name = "sourceRunId",
+        help = "Terminal source Run ID to fork from"
+    )]
     source_run_id: String,
+    #[arg(
+        value_name = "refOrPath",
+        help = "Workflow Catalog ref/name or repaired workflow YAML spec path"
+    )]
     target: String,
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "value",
+        help = "Inline JSON/YAML object or path to a .json/.yaml/.yml input object file; defaults to source input"
+    )]
     input: Option<String>,
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "value",
+        help = "Inline JSON/YAML object or path to a .json/.yaml/.yml Agent Overrides object file"
+    )]
     agents: Option<String>,
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "duration",
+        help = "Follow-mode poll interval such as 2s, 1m, or 1000ms; default 10s, minimum 1s"
+    )]
     poll: Option<String>,
-    #[arg(long = "from")]
+    #[arg(
+        long = "from",
+        value_name = "nodeKey",
+        help = "Force the Fork Origin to a specific top-level or composite Node Key"
+    )]
     from_node: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Compute the fork plan without creating a new Run")]
     dry_run: bool,
-    #[arg(long)]
+    #[arg(long, help = "Submit and return immediately without following the run")]
     background: bool,
-    #[arg(long)]
+    #[arg(long, help = "Submit and open the TUI visualizer")]
     visualize: bool,
-    #[arg(long)]
+    #[arg(long, help = "Write JSON output")]
     json: bool,
-    #[arg(long)]
+    #[arg(long, help = "Only write final output")]
     quiet: bool,
 }
 
@@ -221,26 +322,34 @@ struct HookCommand {
 
 #[derive(Subcommand)]
 enum HookSubcommand {
-    #[command(about = "Validate hook configuration")]
+    #[command(
+        about = "Validate hook configuration",
+        long_about = "Validate global and project hook configuration files without running hook handlers.",
+        after_help = "Examples:\n  acpus hooks validate\n  acpus hooks validate --global\n  acpus hooks validate --project /path/to/workspace --json"
+    )]
     Validate {
-        #[arg(long = "global")]
+        #[arg(long = "global", help = "Validate only the global ~/.acpus/hooks.yaml")]
         global_only: bool,
-        #[arg(long)]
+        #[arg(
+            long,
+            value_name = "path",
+            help = "Validate the project hooks.yaml under the given workspace path"
+        )]
         project: Option<PathBuf>,
-        #[arg(long)]
+        #[arg(long, help = "Write JSON output")]
         json: bool,
     },
     #[command(about = "List hook configuration")]
     List {
-        #[arg(long)]
+        #[arg(long, help = "Write JSON output")]
         json: bool,
-        #[arg(long)]
+        #[arg(long, help = "Show each handler's source layer")]
         source: bool,
     },
     #[command(name = "path")]
     #[command(about = "Print hook configuration paths")]
     Paths {
-        #[arg(long = "global")]
+        #[arg(long = "global", help = "Print only the global hook path")]
         global_only: bool,
     },
 }
@@ -356,7 +465,8 @@ async fn run_workflow(args: RunWorkflow) -> anyhow::Result<()> {
     {
         return Err(cli_failure(EXIT_CLI_ERROR, args.json, message));
     }
-    let target = catalog::resolve_workflow_target(&args.target, &std::env::current_dir()?)?;
+    let target = catalog::resolve_workflow_target(&args.target, &std::env::current_dir()?)
+        .map_err(|error| workflow_lookup_error(error, args.json))?;
     let result = compile_workflow_path(
         &target.path,
         CompileOptions {
@@ -1109,7 +1219,8 @@ async fn fork_run(args: ForkRun) -> anyhow::Result<()> {
         return Err(cli_failure(EXIT_CLI_ERROR, args.json, message));
     }
     let workspace = std::env::current_dir()?;
-    let target = catalog::resolve_workflow_target(&args.target, &workspace)?;
+    let target = catalog::resolve_workflow_target(&args.target, &workspace)
+        .map_err(|error| workflow_lookup_error(error, args.json))?;
     let input = match args.input {
         Some(raw) => Some(parse_object_arg(&raw, "--input")?),
         None => None,
@@ -1224,12 +1335,12 @@ fn validate_visualizer_listen(value: Option<&str>) -> anyhow::Result<()> {
     }
     let Some((host, port)) = raw.rsplit_once(':') else {
         anyhow::bail!(
-            "Invalid listen value '{raw}'. Use '--serve <port>' or put the run id before --serve."
+            "Invalid listen value '{raw}'.\nHint: use '--serve <port>' or '--serve <host:port>'; if '{raw}' is a Run ID, put it before --serve."
         );
     };
     anyhow::ensure!(
         !host.is_empty() && !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()),
-        "Invalid listen value '{raw}'. Use '--serve <port>' or put the run id before --serve."
+        "Invalid listen value '{raw}'.\nHint: use '--serve <port>' or '--serve <host:port>'; if '{raw}' is a Run ID, put it before --serve."
     );
     parse_visualizer_port(port, raw)?;
     Ok(())
@@ -1470,9 +1581,7 @@ fn api_error_body(body: &str) -> (u8, String) {
     (code, message)
 }
 
-async fn ensure_workspace_supervisor(
-    workspace: &Path,
-) -> anyhow::Result<acpus_runtime::SupervisorMetadata> {
+async fn ensure_workspace_supervisor(workspace: &Path) -> anyhow::Result<SupervisorMetadata> {
     let workspace = workspace.canonicalize()?;
     let store = RunStore::new(&workspace);
     let metadata_path = supervisor_metadata_path(&store);
@@ -1489,10 +1598,7 @@ async fn ensure_workspace_supervisor(
     spawn_supervisor(&workspace, &store.state_dir, &metadata_path).await
 }
 
-async fn validate_supervisor_metadata(
-    path: &Path,
-    workspace: &Path,
-) -> Option<acpus_runtime::SupervisorMetadata> {
+async fn validate_supervisor_metadata(path: &Path, workspace: &Path) -> Option<SupervisorMetadata> {
     let metadata = read_supervisor_metadata(path)?;
     if metadata.schema_version != 1
         || metadata.workspace.canonicalize().ok()? != workspace
@@ -1518,7 +1624,7 @@ async fn validate_supervisor_metadata(
     Some(metadata)
 }
 
-fn read_supervisor_metadata(path: &Path) -> Option<acpus_runtime::SupervisorMetadata> {
+fn read_supervisor_metadata(path: &Path) -> Option<SupervisorMetadata> {
     serde_json::from_slice(&fs::read(path).ok()?).ok()
 }
 
@@ -1526,7 +1632,7 @@ async fn spawn_supervisor(
     workspace: &Path,
     state_dir: &Path,
     metadata_path: &Path,
-) -> anyhow::Result<acpus_runtime::SupervisorMetadata> {
+) -> anyhow::Result<SupervisorMetadata> {
     fs::create_dir_all(state_dir)?;
     let log = OpenOptions::new()
         .create(true)
@@ -1782,7 +1888,7 @@ fn parse_object_arg(raw: &str, label: &str) -> anyhow::Result<Value> {
     let value: Value = if path.exists() {
         anyhow::ensure!(
             !path.is_dir(),
-            "{label} must be a JSON/YAML file or inline JSON object, not a directory."
+            "{label} must be a JSON/YAML file or inline JSON/YAML object, not a directory.\nHint: pass a file such as input.json or an inline object such as '{{\"key\":\"value\"}}'."
         );
         let extension = path
             .extension()
@@ -1798,18 +1904,37 @@ fn parse_object_arg(raw: &str, label: &str) -> anyhow::Result<Value> {
     } else {
         anyhow::ensure!(
             !looks_like_object_path(raw),
-            "{label} file not found: {raw}"
+            "{label} file not found: {raw}\nHint: check the path, or pass an inline JSON/YAML object instead."
         );
-        serde_json::from_str(raw)
-            .with_context(|| format!("{label} must be inline JSON or an existing JSON/YAML file"))?
+        parse_inline_object_value(raw).with_context(|| {
+            format!(
+                "{label} must be inline JSON/YAML or an existing .json/.yaml/.yml file.\nHint: inline values must resolve to an object, for example '{{\"approved\":true}}'."
+            )
+        })?
     };
-    anyhow::ensure!(value.is_object(), "{label} must resolve to an object.");
+    anyhow::ensure!(
+        value.is_object(),
+        "{label} must resolve to an object.\nHint: wrap scalars or arrays in an object, for example '{{\"value\": ...}}'."
+    );
     Ok(value)
+}
+
+fn parse_inline_object_value(raw: &str) -> anyhow::Result<Value> {
+    serde_json::from_str(raw)
+        .or_else(|_| serde_yaml::from_str(raw))
+        .context("failed to parse inline JSON/YAML")
 }
 
 fn looks_like_object_path(value: &str) -> bool {
     let trimmed = value.trim();
-    if trimmed.starts_with('{') {
+    if trimmed.starts_with('{')
+        || trimmed.contains('\n')
+        || trimmed
+            .chars()
+            .take_while(|c| !c.is_whitespace())
+            .collect::<String>()
+            .ends_with(':')
+    {
         return false;
     }
     let extension = PathBuf::from(trimmed)
@@ -1826,7 +1951,11 @@ fn looks_like_object_path(value: &str) -> bool {
 
 fn parse_poll_interval(raw: Option<&str>) -> anyhow::Result<std::time::Duration> {
     let ms = match raw {
-        Some(value) => acpus_core::parse_duration_ms(value, Some(1_000))?,
+        Some(value) => acpus_core::parse_duration_ms(value, Some(1_000)).with_context(|| {
+            format!(
+                "Invalid --poll value '{value}'.\nHint: use a duration like 2s, 1m, or 1000ms; minimum is 1s."
+            )
+        })?,
         None => 10_000,
     };
     Ok(std::time::Duration::from_millis(ms))
@@ -1850,11 +1979,32 @@ fn reject_conflicting_submission_options(
     as_json: bool,
 ) -> Option<&'static str> {
     if background && visualize {
-        Some("--background and --visualize are mutually exclusive")
+        Some(
+            "--background and --visualize are mutually exclusive.\nHint: choose --background to detach, or --visualize to attach the TUI.",
+        )
     } else if visualize && as_json {
-        Some("--visualize and --json are mutually exclusive")
+        Some(
+            "--visualize and --json are mutually exclusive.\nHint: use --json for machine-readable follow output, or --visualize for the TUI.",
+        )
     } else {
         None
+    }
+}
+
+fn workflow_lookup_error(error: anyhow::Error, as_json: bool) -> anyhow::Error {
+    if as_json {
+        return error;
+    }
+    let message = error.to_string();
+    if message.contains("Workflow '")
+        || message.contains("Workflow Spec path not found")
+        || message.contains("ambiguous")
+    {
+        anyhow::anyhow!(
+            "{message}\nHint: run `acpus workflows list` to see catalog refs, or pass a workflow path like ./workflow.yaml."
+        )
+    } else {
+        error
     }
 }
 
@@ -2641,6 +2791,140 @@ fn status_text_node(status: acpus_runtime::NodeState) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::error::ErrorKind;
+
+    fn cli_help(args: &[&str]) -> String {
+        let mut argv = vec!["acpus"];
+        argv.extend(args.iter().copied());
+        argv.push("--help");
+        let error = match Cli::try_parse_from(argv) {
+            Ok(_) => panic!("expected help to stop parsing"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), ErrorKind::DisplayHelp);
+        error.to_string()
+    }
+
+    fn assert_contains_all(text: &str, needles: &[&str]) {
+        for needle in needles {
+            assert!(text.contains(needle), "missing {needle:?} in:\n{text}");
+        }
+    }
+
+    #[test]
+    fn root_help_is_user_facing_and_keeps_supervisor_hidden() {
+        let help = cli_help(&[]);
+
+        assert_contains_all(
+            &help,
+            &[
+                "Run, inspect, and control durable local ACP workflow runs",
+                "workflows",
+                "wf",
+                "runs",
+                "hooks",
+            ],
+        );
+        assert!(!help.contains("supervisor"));
+    }
+
+    #[test]
+    fn workflow_help_describes_targets_inputs_and_examples() {
+        let group_help = cli_help(&["workflows"]);
+        assert_contains_all(&group_help, &["lint", "run", "list", "show"]);
+
+        let run_help = cli_help(&["workflows", "run"]);
+        assert_contains_all(
+            &run_help,
+            &[
+                "<refOrPath>",
+                "Workflow Catalog ref/name or workflow YAML spec path",
+                "--input <value>",
+                "Inline JSON/YAML object or path to a .json/.yaml/.yml input object file",
+                "--agents <value>",
+                "Agent Overrides object file",
+                "--poll <duration>",
+                "default 10s, minimum 1s",
+                "--skip-hooks",
+                "Examples:",
+            ],
+        );
+        assert!(!run_help.contains("<TARGET>"));
+    }
+
+    #[test]
+    fn runs_help_describes_complex_commands_and_examples() {
+        let group_help = cli_help(&["runs"]);
+        assert_contains_all(
+            &group_help,
+            &[
+                "list",
+                "show",
+                "signal",
+                "retry",
+                "visualize",
+                "fork",
+                "clean",
+            ],
+        );
+
+        let fork_help = cli_help(&["runs", "fork"]);
+        assert_contains_all(
+            &fork_help,
+            &[
+                "<sourceRunId>",
+                "<refOrPath>",
+                "--from <nodeKey>",
+                "Fork Origin",
+                "--input <value>",
+                "--agents <value>",
+                "--poll <duration>",
+                "Examples:",
+            ],
+        );
+
+        let signal_help = cli_help(&["runs", "signal"]);
+        assert_contains_all(
+            &signal_help,
+            &[
+                "<runId>",
+                "--node <nodeKey>",
+                "Signal Node Key",
+                "--payload <value>",
+                "Inline JSON/YAML object or path to a .json/.yaml/.yml payload object file",
+                "Examples:",
+            ],
+        );
+
+        let visualize_help = cli_help(&["runs", "visualize"]);
+        assert_contains_all(
+            &visualize_help,
+            &[
+                "[runId]",
+                "--serve [<listen>]",
+                "port or host:port",
+                "Examples:",
+            ],
+        );
+        assert!(!signal_help.contains("<RUN_ID>"));
+    }
+
+    #[test]
+    fn hooks_help_describes_validation_sources_and_examples() {
+        let help = cli_help(&["hooks", "validate"]);
+
+        assert_contains_all(
+            &help,
+            &[
+                "--global",
+                "global ~/.acpus/hooks.yaml",
+                "--project <path>",
+                "workspace path",
+                "--json",
+                "Examples:",
+            ],
+        );
+    }
 
     #[test]
     fn parse_object_arg_accepts_inline_json_object() {
@@ -2708,9 +2992,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_object_arg_rejects_inline_scalar_and_yaml() {
+    fn parse_object_arg_accepts_inline_yaml_object_and_rejects_scalar() {
+        assert_eq!(
+            parse_object_arg("files:\n  - a.rs", "--input").unwrap(),
+            json!({ "files": ["a.rs"] })
+        );
         assert!(parse_object_arg("1", "--input").is_err());
-        assert!(parse_object_arg("files:\n  - a.rs", "--input").is_err());
     }
 
     #[test]
@@ -2757,14 +3044,12 @@ mod tests {
     fn invalid_signal_payload_preserves_json_error_mode_before_supervisor() {
         let error = parse_signal_payload("not-json", true).unwrap_err();
 
-        assert_eq!(
-            classify_cli_error(&error),
-            (
-                EXIT_RUNTIME_ERROR,
-                true,
-                Some("--payload must be inline JSON or an existing JSON/YAML file".to_string())
-            )
-        );
+        let (code, as_json, message) = classify_cli_error(&error);
+        assert_eq!(code, EXIT_RUNTIME_ERROR);
+        assert!(as_json);
+        let message = message.unwrap();
+        assert!(message.contains("--payload must resolve to an object"));
+        assert!(message.contains("Hint:"));
     }
 
     #[tokio::test]
@@ -2894,7 +3179,9 @@ mod tests {
             parse_poll_interval(Some("1000ms")).unwrap(),
             Duration::from_secs(1)
         );
-        assert!(parse_poll_interval(Some("500ms")).is_err());
+        let error = parse_poll_interval(Some("500ms")).unwrap_err();
+        assert!(error.to_string().contains("Invalid --poll value '500ms'"));
+        assert!(error.to_string().contains("minimum is 1s"));
     }
 
     #[test]
@@ -2903,7 +3190,12 @@ mod tests {
             foreground_poll_interval(false, false, Some("2s")).unwrap(),
             Some(Duration::from_secs(2))
         );
-        assert!(foreground_poll_interval(false, false, Some("500ms")).is_err());
+        assert!(
+            foreground_poll_interval(false, false, Some("500ms"))
+                .unwrap_err()
+                .to_string()
+                .contains("Hint:")
+        );
         assert_eq!(
             foreground_poll_interval(true, false, Some("500ms")).unwrap(),
             None
@@ -3361,11 +3653,15 @@ workflow:
     fn visualize_conflicts_match_cli_contract() {
         assert_eq!(
             reject_conflicting_submission_options(true, true, false),
-            Some("--background and --visualize are mutually exclusive")
+            Some(
+                "--background and --visualize are mutually exclusive.\nHint: choose --background to detach, or --visualize to attach the TUI."
+            )
         );
         assert_eq!(
             reject_conflicting_submission_options(false, true, true),
-            Some("--visualize and --json are mutually exclusive")
+            Some(
+                "--visualize and --json are mutually exclusive.\nHint: use --json for machine-readable follow output, or --visualize for the TUI."
+            )
         );
         assert_eq!(
             reject_conflicting_submission_options(false, true, false),
@@ -3441,7 +3737,7 @@ workflow:
 
         let error = validate_run_command_before_supervisor(&command.command).unwrap_err();
 
-        assert!(error.to_string().contains("put the run id before --serve"));
+        assert!(error.to_string().contains("put it before --serve"));
         assert_eq!(classify_cli_error(&error).0, EXIT_CLI_ERROR);
     }
 
@@ -3849,10 +4145,7 @@ workflow:
         let server = tokio::spawn({
             let store = store.clone();
             async move {
-                acpus_runtime::Supervisor::new(store)
-                    .serve(addr)
-                    .await
-                    .unwrap();
+                Supervisor::new(store).serve(addr).await.unwrap();
             }
         });
 
@@ -3919,7 +4212,7 @@ workflow:
         assert!(state_dir.join("supervisor.lock").exists());
     }
 
-    async fn wait_for_supervisor_metadata(path: &Path) -> acpus_runtime::SupervisorMetadata {
+    async fn wait_for_supervisor_metadata(path: &Path) -> SupervisorMetadata {
         for _ in 0..50 {
             if let Some(metadata) = read_supervisor_metadata(path) {
                 return metadata;

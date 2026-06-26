@@ -1,0 +1,98 @@
+---
+source: crates/acpus-compiler/tests/compiler_golden.rs
+expression: snapshot
+---
+{
+  "diagnostics": [],
+  "ir": {
+    "agents": {},
+    "astVersion": 1,
+    "expressions": [
+      {
+        "id": "expr_1",
+        "path": "$.outputs.ok",
+        "references": [
+          "build"
+        ],
+        "source": "steps.build.output.ok"
+      }
+    ],
+    "input": {},
+    "irVersion": 1,
+    "name": "program-json-output",
+    "outputs": {
+      "ok": "${{ steps.build.output.ok }}"
+    },
+    "root": {
+      "children": [
+        {
+          "id": "build",
+          "keyTemplate": {
+            "astVersion": 1,
+            "fanoutItemId": true,
+            "laneId": true,
+            "loopRound": true,
+            "nodePath": "workflow/build",
+            "parallelBranchId": true
+          },
+          "kind": "run.program",
+          "metadata": {
+            "capture": {
+              "parse": "json",
+              "stdout": true
+            },
+            "cmd": "printf '{\"ok\":true}'",
+            "output": {
+              "additionalProperties": false,
+              "properties": {
+                "ok": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "ok"
+              ],
+              "type": "object"
+            },
+            "run": "program"
+          },
+          "nodePath": [
+            "workflow",
+            "build"
+          ]
+        }
+      ],
+      "id": "workflow",
+      "keyTemplate": {
+        "astVersion": 1,
+        "fanoutItemId": true,
+        "laneId": true,
+        "loopRound": true,
+        "nodePath": "workflow",
+        "parallelBranchId": true
+      },
+      "kind": "pipeline",
+      "metadata": {
+        "implicit": true
+      },
+      "nodePath": [
+        "workflow"
+      ],
+      "outputMerge": "map"
+    },
+    "source": {
+      "digest": "sha256:405668bba388fd7edffa3014a4e5f7168ec441619dc31664cc83ee6782e1a078",
+      "path": "$FIXTURES/valid/program-json-output.yaml"
+    }
+  },
+  "schedule": {
+    "nodes": [
+      {
+        "id": "build",
+        "kind": "run.program",
+        "nodePath": "workflow/build"
+      }
+    ],
+    "workflow": "program-json-output"
+  }
+}

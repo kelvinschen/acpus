@@ -1,0 +1,7 @@
+version: 1
+name: include-basic-child
+workflow:
+  steps:
+    - id: included
+      run: program
+      cmd: echo included

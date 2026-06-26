@@ -11,9 +11,14 @@
     "acpus": "cargo run -q -p acpus-cli --",
     "acpus:release": "./target/release/acpus",
     "build": "cargo build --workspace --release && pnpm --filter @acpus/tui build",
-    "typecheck": "pnpm --filter @acpus/tui typecheck",
-    "test": "cargo test --workspace && vitest run packages/tui/test",
-    "clean": "cargo clean && pnpm --filter @acpus/tui clean"
+    "bindings": "just bindings",
+    "bindings:check": "just bindings-check",
+    "ci": "just ci",
+    "e2e": "just e2e",
+    "lint": "just clippy",
+    "typecheck": "just typecheck",
+    "test": "just test-rs && just test-ts",
+    "clean": "just clean"
   },
   "devDependencies": {
     "@types/node": "^22.15.30",

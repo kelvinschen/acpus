@@ -1,0 +1,30 @@
+[package]
+name = "acpus-supervisor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+acpus-core.workspace = true
+acpus-ir.workspace = true
+acpus-runtime.workspace = true
+acpus-runtime-api.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+chrono.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+utoipa.workspace = true
+utoipa-axum.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio.workspace = true

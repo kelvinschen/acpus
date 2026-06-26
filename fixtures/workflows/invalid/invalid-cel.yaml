@@ -1,0 +1,7 @@
+version: 1
+name: invalid-cel
+workflow:
+  steps:
+    - id: build
+      run: program
+      cmd: "echo ${{ steps.missing.output.value }}"

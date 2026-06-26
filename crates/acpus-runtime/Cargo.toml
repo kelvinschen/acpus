@@ -11,13 +11,15 @@ workspace = true
 
 [dependencies]
 acpus-core = { path = "../acpus-core" }
+acpus-expr.workspace = true
+acpus-ir.workspace = true
+acpus-runtime-api.workspace = true
+acpus-store.workspace = true
 anyhow.workspace = true
-axum.workspace = true
 chrono.workspace = true
 futures-util.workspace = true
 hex.workspace = true
 jsonrepair-rs.workspace = true
-rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
@@ -26,5 +28,4 @@ thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-reqwest.workspace = true
 tempfile.workspace = true

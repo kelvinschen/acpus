@@ -1,0 +1,2109 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "acpus-supervisor",
+    "description": "",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [],
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupervisorHealth"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runs": {
+      "get": {
+        "tags": [],
+        "operationId": "list_runs",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RunSummary"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [],
+        "operationId": "submit_run",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunState"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runs/clean": {
+      "post": {
+        "tags": [],
+        "operationId": "clean_runs",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CleanRunsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunCleanResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runs/{run_id}": {
+      "get": {
+        "tags": [],
+        "operationId": "show_run",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunState"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runs/{run_id}/artifact-path": {
+      "get": {
+        "tags": [],
+        "operationId": "artifact_path",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "uri",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactPathResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runs/{run_id}/cancel": {
+      "post": {
+        "tags": [],
+        "operationId": "cancel_run",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunState"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runs/{run_id}/fork": {
+      "post": {
+        "tags": [],
+        "operationId": "fork_run",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForkRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForkRunResponse"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForkRunResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runs/{run_id}/input": {
+      "get": {
+        "tags": [],
+        "operationId": "show_input",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunInputResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runs/{run_id}/ir": {
+      "get": {
+        "tags": [],
+        "operationId": "show_ir",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcpusIr"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runs/{run_id}/node": {
+      "get": {
+        "tags": [],
+        "operationId": "show_node",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeExecutionState"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runs/{run_id}/nodes": {
+      "get": {
+        "tags": [],
+        "operationId": "list_nodes",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/NodeExecutionState"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runs/{run_id}/output": {
+      "get": {
+        "tags": [],
+        "operationId": "show_output",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunOutputResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runs/{run_id}/pause": {
+      "post": {
+        "tags": [],
+        "operationId": "pause_run",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunState"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runs/{run_id}/replay": {
+      "post": {
+        "tags": [],
+        "operationId": "replay_run_route",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplayResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runs/{run_id}/resume": {
+      "post": {
+        "tags": [],
+        "operationId": "resume_run",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunState"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runs/{run_id}/retry": {
+      "post": {
+        "tags": [],
+        "operationId": "retry_run_query",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetryRouteResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runs/{run_id}/signal": {
+      "post": {
+        "tags": [],
+        "operationId": "signal_node",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeExecutionState"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AcpusIr": {
+        "type": "object",
+        "required": [
+          "irVersion",
+          "astVersion",
+          "source",
+          "name",
+          "root"
+        ],
+        "properties": {
+          "agents": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AgentSpec"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "astVersion": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expressions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IrExpression"
+            }
+          },
+          "input": {},
+          "irVersion": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "outputs": {},
+          "root": {
+            "$ref": "#/components/schemas/IrNode"
+          },
+          "runtimeInput": {},
+          "source": {
+            "$ref": "#/components/schemas/IrSource"
+          }
+        }
+      },
+      "AgentAttemptTelemetry": {
+        "type": "object",
+        "required": [
+          "attempt",
+          "state",
+          "startedAt",
+          "updatedAt",
+          "tools"
+        ],
+        "properties": {
+          "acpxRecordId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "attempt": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "completedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "context": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AgentContextUsage"
+              }
+            ]
+          },
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "input": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AgentIoPreview"
+              }
+            ]
+          },
+          "output": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AgentIoPreview"
+              }
+            ]
+          },
+          "startedAt": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/AgentAttemptTelemetryState"
+          },
+          "tokenUsage": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AgentTokenUsage"
+              }
+            ]
+          },
+          "tools": {
+            "$ref": "#/components/schemas/AgentToolsTelemetry"
+          },
+          "updatedAt": {
+            "type": "string"
+          }
+        }
+      },
+      "AgentAttemptTelemetryState": {
+        "type": "string",
+        "enum": [
+          "running",
+          "completed",
+          "failed",
+          "paused",
+          "cancelled"
+        ]
+      },
+      "AgentContextUsage": {
+        "type": "object",
+        "required": [
+          "used",
+          "size",
+          "updatedAt"
+        ],
+        "properties": {
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "used": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "AgentIoPreview": {
+        "type": "object",
+        "required": [
+          "preview",
+          "truncated",
+          "originalBytes",
+          "headBytes"
+        ],
+        "properties": {
+          "artifactRef": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/String"
+              }
+            ]
+          },
+          "headBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "originalBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "preview": {
+            "type": "string"
+          },
+          "tailBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AgentPolicy": {
+        "type": "string",
+        "enum": [
+          "read",
+          "full"
+        ]
+      },
+      "AgentSpec": {
+        "type": "object",
+        "properties": {
+          "cwd": {},
+          "env": {
+            "type": "object",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "policy": {
+            "$ref": "#/components/schemas/AgentPolicy"
+          },
+          "type": {
+            "$ref": "#/components/schemas/AgentType"
+          },
+          "use": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "AgentTelemetry": {
+        "type": "object",
+        "required": [
+          "currentAttempt",
+          "attempts"
+        ],
+        "properties": {
+          "attempts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentAttemptTelemetry"
+            }
+          },
+          "currentAttempt": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "AgentTokenUsage": {
+        "type": "object",
+        "required": [
+          "source"
+        ],
+        "properties": {
+          "cachedReadTokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "cachedWriteTokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "inputTokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "outputTokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "source": {
+            "type": "string"
+          },
+          "thoughtTokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "totalTokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "AgentToolCallTelemetry": {
+        "type": "object",
+        "required": [
+          "toolCallId",
+          "startedAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "completedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "startedAt": {
+            "type": "string"
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "toolCallId": {
+            "type": "string"
+          },
+          "toolName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updatedAt": {
+            "type": "string"
+          }
+        }
+      },
+      "AgentToolsTelemetry": {
+        "type": "object",
+        "required": [
+          "totalToolCallCount",
+          "droppedToolCallCount",
+          "recentCalls"
+        ],
+        "properties": {
+          "droppedToolCallCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "recentCalls": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentToolCallTelemetry"
+            }
+          },
+          "totalToolCallCount": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "AgentType": {
+        "type": "string",
+        "enum": [
+          "builtin",
+          "command"
+        ]
+      },
+      "ApiErrorBody": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "code": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ApiErrorCode"
+              }
+            ]
+          },
+          "details": {},
+          "error": {
+            "type": "string"
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ApiErrorCode": {
+        "type": "string",
+        "enum": [
+          "bad-request",
+          "not-found",
+          "conflict",
+          "unprocessable-entity",
+          "internal",
+          "fork-rejected"
+        ]
+      },
+      "ArtifactPathResponse": {
+        "type": "object",
+        "required": [
+          "absPath"
+        ],
+        "properties": {
+          "absPath": {
+            "type": "string"
+          }
+        }
+      },
+      "CleanRunsRequest": {
+        "type": "object",
+        "properties": {
+          "dryRun": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ForkCreatedResponse": {
+        "type": "object",
+        "required": [
+          "run",
+          "plan"
+        ],
+        "properties": {
+          "plan": {
+            "$ref": "#/components/schemas/ForkPlan"
+          },
+          "run": {
+            "$ref": "#/components/schemas/RunState"
+          }
+        }
+      },
+      "ForkDryRunResponse": {
+        "type": "object",
+        "required": [
+          "dryRun",
+          "plan",
+          "agentOverrides",
+          "submissionWarnings"
+        ],
+        "properties": {
+          "agentOverrides": {
+            "type": "object"
+          },
+          "dryRun": {
+            "type": "boolean"
+          },
+          "plan": {
+            "$ref": "#/components/schemas/ForkPlan"
+          },
+          "submissionWarnings": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      },
+      "ForkPlan": {
+        "type": "object",
+        "required": [
+          "sourceRunId",
+          "inheritedNodeKeys",
+          "defaultForkOriginNodeKey",
+          "forkOriginNodeKey",
+          "boundaryReason"
+        ],
+        "properties": {
+          "boundaryReason": {
+            "type": "string"
+          },
+          "defaultForkOriginNodeKey": {
+            "$ref": "#/components/schemas/String"
+          },
+          "forkOriginNodeKey": {
+            "$ref": "#/components/schemas/String"
+          },
+          "inheritedNodeKeys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/String"
+            }
+          },
+          "sourceRunId": {
+            "$ref": "#/components/schemas/String"
+          }
+        }
+      },
+      "ForkRunRequest": {
+        "type": "object",
+        "properties": {
+          "agentOverrides": {
+            "type": "object"
+          },
+          "dryRun": {
+            "type": "boolean"
+          },
+          "input": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "overrideOriginNodeKey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sourcePath": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "spec": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workflowRef": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ForkRunResponse": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ForkDryRunResponse"
+          },
+          {
+            "$ref": "#/components/schemas/ForkCreatedResponse"
+          }
+        ]
+      },
+      "IrBranch": {
+        "type": "object",
+        "required": [
+          "id",
+          "child"
+        ],
+        "properties": {
+          "child": {
+            "$ref": "#/components/schemas/IrNode"
+          },
+          "id": {
+            "type": "string"
+          },
+          "when": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "whenPath": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "IrExpression": {
+        "type": "object",
+        "required": [
+          "id",
+          "source",
+          "path"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "references": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "source": {
+            "type": "string"
+          }
+        }
+      },
+      "IrNode": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "nodePath",
+          "keyTemplate"
+        ],
+        "properties": {
+          "branches": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IrBranch"
+            }
+          },
+          "children": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IrNode"
+            }
+          },
+          "id": {
+            "type": "string"
+          },
+          "keyTemplate": {
+            "$ref": "#/components/schemas/NodeKeyTemplate"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/IrNodeKind"
+          },
+          "metadata": {},
+          "nodePath": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "outputMerge": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/OutputMerge"
+              }
+            ]
+          }
+        }
+      },
+      "IrNodeKind": {
+        "type": "string",
+        "enum": [
+          "pipeline",
+          "run.agent",
+          "run.program",
+          "run.signal",
+          "parallel",
+          "fanout",
+          "if",
+          "switch",
+          "loop",
+          "guard",
+          "subworkflow"
+        ]
+      },
+      "IrSource": {
+        "type": "object",
+        "required": [
+          "digest"
+        ],
+        "properties": {
+          "digest": {
+            "type": "string"
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "LoopDynamicContext": {
+        "type": "object",
+        "required": [
+          "iter"
+        ],
+        "properties": {
+          "iter": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "last": {}
+        }
+      },
+      "NodeDynamicContext": {
+        "type": "object",
+        "properties": {
+          "item": {},
+          "item_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "item_index": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "loop": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/LoopDynamicContext"
+              }
+            ]
+          }
+        }
+      },
+      "NodeExecutionState": {
+        "type": "object",
+        "required": [
+          "nodeKey",
+          "nodeId",
+          "kind",
+          "state",
+          "attempt"
+        ],
+        "properties": {
+          "agentTelemetry": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AgentTelemetry"
+              }
+            ]
+          },
+          "artifactRefs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/String"
+            }
+          },
+          "attempt": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "completedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "definitionHash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dynamicContext": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/NodeDynamicContext"
+              }
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "failureKind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "input": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/IrNodeKind"
+          },
+          "nodeId": {
+            "$ref": "#/components/schemas/String"
+          },
+          "nodeKey": {
+            "$ref": "#/components/schemas/String"
+          },
+          "output": {},
+          "renderedPrompt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "renderedSessionKey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "startedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "state": {
+            "$ref": "#/components/schemas/NodeState"
+          }
+        }
+      },
+      "NodeKeyTemplate": {
+        "type": "object",
+        "required": [
+          "astVersion",
+          "nodePath"
+        ],
+        "properties": {
+          "astVersion": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "fanoutItemId": {
+            "type": "boolean"
+          },
+          "laneId": {
+            "type": "boolean"
+          },
+          "loopRound": {
+            "type": "boolean"
+          },
+          "nodePath": {
+            "type": "string"
+          },
+          "parallelBranchId": {
+            "type": "boolean"
+          }
+        }
+      },
+      "NodeState": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "running",
+          "awaiting",
+          "completed",
+          "failed",
+          "paused",
+          "cancelled"
+        ]
+      },
+      "OutputMerge": {
+        "type": "string",
+        "enum": [
+          "map",
+          "array",
+          "selected",
+          "last"
+        ]
+      },
+      "ReplayMismatch": {
+        "type": "object",
+        "required": [
+          "nodeKey",
+          "kind"
+        ],
+        "properties": {
+          "actual": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/NodeState"
+              }
+            ]
+          },
+          "expected": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/NodeState"
+              }
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ReplayMismatchKind"
+          },
+          "nodeKey": {
+            "$ref": "#/components/schemas/String"
+          }
+        }
+      },
+      "ReplayMismatchKind": {
+        "type": "string",
+        "enum": [
+          "state",
+          "missing-in-replay",
+          "unexpected-in-replay"
+        ]
+      },
+      "ReplayResult": {
+        "type": "object",
+        "required": [
+          "runId",
+          "ok",
+          "mismatches"
+        ],
+        "properties": {
+          "mismatches": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReplayMismatch"
+            }
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "runId": {
+            "$ref": "#/components/schemas/String"
+          }
+        }
+      },
+      "RetryRouteResponse": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/RunState"
+          },
+          {
+            "$ref": "#/components/schemas/NodeExecutionState"
+          }
+        ]
+      },
+      "RunCleanItem": {
+        "type": "object",
+        "required": [
+          "runId",
+          "bytes"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runId": {
+            "$ref": "#/components/schemas/String"
+          },
+          "status": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RunStatus"
+              }
+            ]
+          }
+        }
+      },
+      "RunCleanResult": {
+        "type": "object",
+        "required": [
+          "dryRun",
+          "deletedCount",
+          "skippedCount",
+          "bytesReclaimed",
+          "deleted",
+          "skipped"
+        ],
+        "properties": {
+          "bytesReclaimed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "deleted": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunCleanItem"
+            }
+          },
+          "deletedCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "dryRun": {
+            "type": "boolean"
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunCleanItem"
+            }
+          },
+          "skippedCount": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "RunInputResponse": {
+        "type": "object",
+        "required": [
+          "input"
+        ],
+        "properties": {
+          "input": {
+            "type": "object"
+          }
+        }
+      },
+      "RunLineage": {
+        "type": "object",
+        "required": [
+          "sourceRunId",
+          "forkOriginNodeKey",
+          "inheritedNodeCount"
+        ],
+        "properties": {
+          "forkOriginNodeKey": {
+            "$ref": "#/components/schemas/String"
+          },
+          "inheritedNodeCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sourceRunId": {
+            "$ref": "#/components/schemas/String"
+          }
+        }
+      },
+      "RunOutputResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "output"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "output": {
+            "type": "object"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          }
+        }
+      },
+      "RunState": {
+        "type": "object",
+        "required": [
+          "runId",
+          "workflowName",
+          "status",
+          "irDigest",
+          "inputDigest",
+          "createdAt",
+          "updatedAt",
+          "runAttempt"
+        ],
+        "properties": {
+          "agentOverrides": {
+            "type": "object",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hookConfigHash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "inputDigest": {
+            "type": "string"
+          },
+          "irDigest": {
+            "type": "string"
+          },
+          "lineage": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RunLineage"
+              }
+            ]
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NodeExecutionState"
+            }
+          },
+          "output": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "runAttempt": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "runId": {
+            "$ref": "#/components/schemas/String"
+          },
+          "skipHooks": {
+            "type": "boolean"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "submissionWarnings": {
+            "type": "array",
+            "items": {}
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "workflowName": {
+            "type": "string"
+          },
+          "workflowRef": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workflowSourcePath": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "RunStatus": {
+        "type": "string",
+        "enum": [
+          "running",
+          "completed",
+          "failed",
+          "paused",
+          "cancelled"
+        ]
+      },
+      "RunSummary": {
+        "type": "object",
+        "required": [
+          "runId",
+          "workflowName",
+          "status",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lineage": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RunLineage"
+              }
+            ]
+          },
+          "runId": {
+            "$ref": "#/components/schemas/String"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "workflowName": {
+            "type": "string"
+          },
+          "workflowRef": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workflowSourcePath": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "String": {
+        "type": "string"
+      },
+      "SubmitRunRequest": {
+        "type": "object",
+        "properties": {
+          "agentOverrides": {
+            "type": "object"
+          },
+          "input": {},
+          "ir": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AcpusIr"
+              }
+            ]
+          },
+          "skipHooks": {
+            "type": "boolean"
+          },
+          "sourcePath": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "spec": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "submissionWarnings": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "workflowRef": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "SupervisorHealth": {
+        "type": "object",
+        "required": [
+          "ok",
+          "schemaVersion",
+          "workspace",
+          "pid",
+          "endpoint",
+          "startedAt",
+          "version",
+          "runningCount",
+          "activeClients"
+        ],
+        "properties": {
+          "activeClients": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "pid": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "runningCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "schemaVersion": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "startedAt": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "workspace": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

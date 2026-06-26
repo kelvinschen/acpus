@@ -159,26 +159,6 @@ pub struct AgentInjectorResult {
     pub prepend_prompt: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct HookJournalEntry {
-    pub sequence: u64,
-    #[serde(rename = "node_key")]
-    pub node_key: String,
-    pub injector: String,
-    #[serde(rename = "handler_index")]
-    pub handler_index: usize,
-    #[serde(rename = "node_attempt")]
-    pub node_attempt: u32,
-    #[serde(rename = "is_retry")]
-    pub is_retry: bool,
-    #[serde(rename = "prepend_prompt")]
-    pub prepend_prompt: Option<String>,
-    pub env: Option<BTreeMap<String, String>>,
-    pub timestamp: String,
-    #[serde(rename = "duration_ms")]
-    pub duration_ms: u128,
-}
-
 impl HookRunner {
     pub fn new(config: HookConfig) -> Self {
         Self { config }

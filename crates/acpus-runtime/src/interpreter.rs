@@ -11,10 +11,11 @@ use crate::{
     static_node_path_from_key, upsert_agent_attempt_telemetry, with_node_key_prefix,
 };
 use acpus_core::{
-    AcpusIr, AgentPolicy, AgentType, EvalContext, IrNode, IrNodeKind, SchemaDslError, eval_cel,
-    hash_ir_node_with_workflow, parse_duration_ms, project_schema_value, render_template,
-    validate_json_schema_value, validate_schema_value,
+    SchemaDslError, parse_duration_ms, project_schema_value, validate_json_schema_value,
+    validate_schema_value,
 };
+use acpus_expr::{EvalContext, eval_cel, render_template};
+use acpus_ir::{AcpusIr, AgentPolicy, AgentType, IrNode, IrNodeKind, hash_ir_node_with_workflow};
 use chrono::Utc;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use serde_json::{Map, Value, json};

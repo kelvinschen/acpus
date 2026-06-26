@@ -1,0 +1,11 @@
+version: 1
+name: include-basic
+workflow:
+  steps:
+    - id: before
+      run: program
+      cmd: echo before
+    - include: include-basic.child.yaml
+    - id: after
+      run: program
+      cmd: echo after

@@ -3,7 +3,8 @@ use crate::{
     NodeExecutionState, NodeKeyDynamic, NodeState, RunStore, append_dynamic_frame,
     nested_parallel_branch_dynamic, resolve_node_key, with_node_key_prefix,
 };
-use acpus_core::{AcpusIr, EvalContext, IrBranch, IrNode, IrNodeKind, eval_cel, render_template};
+use acpus_expr::{EvalContext, eval_cel, render_template};
+use acpus_ir::{AcpusIr, IrBranch, IrNode, IrNodeKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{
@@ -420,7 +421,8 @@ fn resolve_context_path(expr: &str, ctx: &EvalContext) -> Option<Value> {
 mod tests {
     use super::*;
     use crate::{NodeState, RunStatus};
-    use acpus_core::{CompileOptions, compile_workflow, hash_ir_node};
+    use acpus_core::{CompileOptions, compile_workflow};
+    use acpus_ir::hash_ir_node;
     use chrono::Utc;
     use serde_json::json;
 

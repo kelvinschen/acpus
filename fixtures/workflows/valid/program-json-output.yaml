@@ -1,0 +1,14 @@
+version: 1
+name: program-json-output
+workflow:
+  steps:
+    - id: build
+      run: program
+      cmd: "printf '{\"ok\":true}'"
+      capture:
+        stdout: true
+        parse: json
+      output:
+        ok: boolean
+outputs:
+  ok: "${{ steps.build.output.ok }}"

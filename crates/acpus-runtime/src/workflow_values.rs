@@ -1,6 +1,6 @@
-use acpus_core::{
-    AcpusIr, CompileOptions, EvalContext, compile_workflow, eval_cel, render_template,
-};
+use acpus_core::{CompileOptions, compile_workflow};
+use acpus_expr::{EvalContext, eval_cel, render_template};
+use acpus_ir::AcpusIr;
 use serde_json::{Map, Value};
 use std::{fs, path::PathBuf};
 

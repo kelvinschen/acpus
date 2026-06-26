@@ -1,0 +1,6 @@
+name: missing-version
+workflow:
+  steps:
+    - id: build
+      run: program
+      cmd: echo ok

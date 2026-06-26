@@ -1,0 +1,32 @@
+{
+  "name": "@acpus/bindings",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src/generated/types.ts",
+    "src/generated/openapi.json",
+    "src/generated/openapi.ts"
+  ],
+  "scripts": {
+    "generate:openapi": "openapi-typescript src/generated/openapi.json -o src/generated/openapi.ts",
+    "build": "tsgo -p tsconfig.json",
+    "typecheck": "tsgo -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "openapi-fetch": "^0.17.0"
+  },
+  "devDependencies": {
+    "openapi-typescript": "^7.13.0"
+  }
+}

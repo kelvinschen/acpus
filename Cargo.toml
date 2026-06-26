@@ -1,5 +1,13 @@
 [workspace]
 members = [
+  "crates/acpus-spec",
+  "crates/acpus-ir",
+  "crates/acpus-expr",
+  "crates/acpus-compiler",
+  "crates/acpus-runtime-api",
+  "crates/acpus-store",
+  "crates/acpus-supervisor",
+  "crates/acpus-testkit",
   "crates/acpus-core",
   "crates/acpus-runtime",
   "crates/acpus-cli",
@@ -22,6 +30,16 @@ lto = "thin"
 codegen-units = 1
 
 [workspace.dependencies]
+acpus-compiler = { path = "crates/acpus-compiler" }
+acpus-core = { path = "crates/acpus-core" }
+acpus-expr = { path = "crates/acpus-expr" }
+acpus-ir = { path = "crates/acpus-ir" }
+acpus-runtime = { path = "crates/acpus-runtime" }
+acpus-runtime-api = { path = "crates/acpus-runtime-api" }
+acpus-spec = { path = "crates/acpus-spec" }
+acpus-store = { path = "crates/acpus-store" }
+acpus-supervisor = { path = "crates/acpus-supervisor" }
+acpus-testkit = { path = "crates/acpus-testkit" }
 anyhow = "1.0.100"
 axum = "0.8.9"
 cel = { version = "0.13.0", features = ["json"] }
@@ -30,6 +48,7 @@ clap = { version = "4.6.1", features = ["derive"] }
 futures-util = "0.3.32"
 hex = "0.4.3"
 jsonrepair-rs = { version = "0.2.1", features = ["serde"] }
+insta = { version = "1.43.2", features = ["json"] }
 rand = "0.9.2"
 regex = "1.12.2"
 reqwest = { version = "0.12.25", default-features = false, features = ["json"] }
@@ -40,3 +59,6 @@ sha2 = "0.10.9"
 tempfile = "3.24.0"
 thiserror = "2.0.17"
 tokio = { version = "1.48.0", features = ["full"] }
+ts-rs = { version = "12.0.1", features = ["chrono-impl", "serde-json-impl"] }
+utoipa = { version = "5.5.0", features = ["chrono", "axum_extras"] }
+utoipa-axum = "0.2.0"

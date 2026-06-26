@@ -1,0 +1,18 @@
+[package]
+name = "acpus-expr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+acpus-ir.workspace = true
+acpus-spec.workspace = true
+cel.workspace = true
+regex.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

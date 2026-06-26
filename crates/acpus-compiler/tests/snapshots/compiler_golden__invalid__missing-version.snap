@@ -1,0 +1,12 @@
+---
+source: crates/acpus-compiler/tests/compiler_golden.rs
+expression: snapshot
+---
+[
+  {
+    "code": "REQUIRED",
+    "message": "missing required field 'version'",
+    "path": "$.version",
+    "severity": "error"
+  }
+]

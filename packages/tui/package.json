@@ -53,6 +53,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@acpus/bindings": "workspace:*",
     "@wterm/dom": "0.3.0",
     "ink": "^6.8.0",
     "node-pty": "1.2.0-beta.13",

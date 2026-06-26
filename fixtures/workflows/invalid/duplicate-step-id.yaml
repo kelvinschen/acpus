@@ -1,0 +1,10 @@
+version: 1
+name: duplicate-step-id
+workflow:
+  steps:
+    - id: build
+      run: program
+      cmd: echo one
+    - id: build
+      run: program
+      cmd: echo two

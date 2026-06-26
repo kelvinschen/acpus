@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 acpus-core = { path = "../acpus-core" }
 acpus-runtime = { path = "../acpus-runtime" }
+acpus-supervisor = { path = "../acpus-supervisor" }
 anyhow.workspace = true
 chrono.workspace = true
 clap.workspace = true
@@ -26,4 +27,6 @@ name = "acpus"
 path = "src/main.rs"
 
 [dev-dependencies]
+acpus-runtime-api.workspace = true
+acpus-testkit.workspace = true
 tempfile.workspace = true
