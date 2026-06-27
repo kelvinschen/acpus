@@ -3,10 +3,10 @@ dist/
 coverage/
 .tmp-tests/
 .DS_Store
-.acpus/state/
-.acpus/output/
-.acpus/scripts/
-.acpus/hooks.yaml
+legacy/.acpus/state/
+legacy/.acpus/output/
+legacy/.acpus/scripts/
+legacy/.acpus/hooks.yaml
 *.tsbuildinfo
 mock-trace.jsonl
 .pnpm-store

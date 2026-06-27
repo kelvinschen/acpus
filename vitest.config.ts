@@ -8,6 +8,7 @@ const regressionTests = "packages/*/test/**/*.regression.test.ts";
 
 export default defineConfig({
   test: {
+    passWithNoTests: true,
     coverage: {
       reporter: ["text", "html"]
     },

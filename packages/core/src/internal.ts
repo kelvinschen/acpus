@@ -1,0 +1,11 @@
+export const EXPR = Symbol.for("acpus.expr");
+export const SCHEMA = Symbol.for("acpus.schema");
+export const TEMPLATE = Symbol.for("acpus.template");
+export const TASK = Symbol.for("acpus.task");
+export const AGENT_RUN = Symbol.for("acpus.agent_run");
+export const AGENT_DEF = Symbol.for("acpus.agent_def");
+export const SIGNAL_RUN = Symbol.for("acpus.signal_run");
+export const WORKFLOW = Symbol.for("acpus.workflow");
+export const NODE_REF = Symbol.for("acpus.node_ref");
+export const OUTPUT_TOKEN = Symbol.for("acpus.output_token");
+export const SECRET = Symbol.for("acpus.secret");

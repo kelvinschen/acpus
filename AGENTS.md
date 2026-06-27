@@ -1,6 +1,8 @@
 # Agent Instructions — Acpus
 
-Maintenance rules for whom working on this codebase. Follow these rules alongside the terminology defined in `CONTEXT.md`.
+Maintenance rules for whom working on this codebase.
+
+> The codebase is being rebuilt on the TypeScript-first core (`@acpus/core` in `packages/core`). The previous YAML Workflow-Spec implementation and its docs (including the old `CONTEXT.md` terminology) are archived, read-only, under `legacy/`.
 
 ## Specification Maintenance
 - If a code change does not require a SPEC update, the final response MUST state why.
@@ -8,7 +10,7 @@ Maintenance rules for whom working on this codebase. Follow these rules alongsid
 - The codebase is under active iteration; treat feature changes as greenfield current behavior, and do not add migration warnings, legacy-field diagnostics, or compatibility shims, or backward-compatibility unless explicitly requested.
 - After a breaking change, SPECs and tests MUST describe and validate only the new current behavior; do not add assertions or wording whose only purpose is to document or reject removed behavior.
 - Future plans, backlog, and capability gaps MUST live in `docs/roadmap/`, not `specs/`.
-- Historical plans, validation records, roadmap, and handoff notes MUST live in `docs/archive/` and MUST NOT be treated as current implementation truth.
+- Historical plans, validation records, roadmap, and handoff notes MUST live under `legacy/` and MUST NOT be treated as current implementation truth.
 - SPEC files MUST use the template and RFC 2119 language defined in `specs/INDEX.md`.
 
 

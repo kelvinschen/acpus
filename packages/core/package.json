@@ -1,26 +1,17 @@
 {
   "name": "@acpus/core",
-  "version": "0.6.0",
-  "description": "Workflow Spec compiler and validation core for Acpus",
+  "version": "0.3.0-core-alpha",
+  "private": true,
+  "type": "module",
+  "description": "Acpus TypeScript Workflow Core: Zod 4 schema bridge, Acpus Expr IR, zx/core-backed Task command wrapper, compiler, and validator.",
   "keywords": [
-    "acp",
+    "acpus",
     "workflow",
     "compiler",
     "schema",
-    "orchestrator"
+    "ir"
   ],
   "license": "MIT",
-  "author": "kkkyran",
-  "homepage": "https://github.com/kelvinschen/acpus#readme",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/kelvinschen/acpus.git",
-    "directory": "packages/core"
-  },
-  "bugs": {
-    "url": "https://github.com/kelvinschen/acpus/issues"
-  },
-  "type": "module",
   "engines": {
     "node": ">=22"
   },
@@ -33,23 +24,23 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "acpus-core": "./dist/cli.js"
+  },
   "files": [
     "dist",
     "README.md",
     "LICENSE"
   ],
-  "publishConfig": {
-    "access": "public"
-  },
   "scripts": {
     "build": "tsgo -p tsconfig.json",
-    "typecheck": "tsgo -p tsconfig.json --noEmit",
+    "typecheck": "tsgo -p tsconfig.json --noEmit && tsgo -p tsconfig.examples.json --noEmit",
+    "emit:example": "tsx src/cli.ts examples/release.workflow.ts --out examples/release.ir.json --pretty",
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@marcbachmann/cel-js": "^7.6.1",
-    "ajv": "^8.20.0",
-    "yaml": "^2.9.0"
+    "zod": "^4.4.3",
+    "zx": "^8.8.5"
   },
   "devDependencies": {
     "@types/node": "^22.15.30"

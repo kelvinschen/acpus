@@ -26,12 +26,11 @@ One short paragraph describing the current feature boundary.
 
 ## Specs
 
-- [Core Workflow Spec](core-workflow-spec.md)
-- [Core Expression Spec](core-expression-spec.md)
-
-## Note on scope
-
-These specs describe the current TypeScript-first core (`@acpus/core`) that
-compiles typed workflow modules to a frozen IR. The previous YAML Workflow-Spec
-implementation and its specs are archived under `legacy/` and are not current
-truth. Future plans and known gaps live in `docs/roadmap/`.
+- [Build Toolchain Spec](build-toolchain-spec.md)
+- [CLI Spec](cli-spec.md)
+- [Hooks Spec](hooks-spec.md)
+- [Local Runtime Target Spec](local-runtime-target-spec.md)
+- [Mock Agent Spec](mock-agent-spec.md)
+- [Schema Spec](schema-spec.md)
+- [Workflow Spec](workflow-spec.md)
+- [Workflow Catalog Spec](workflow-catalog-spec.md)

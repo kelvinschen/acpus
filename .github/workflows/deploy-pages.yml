@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "page/**"
+      - "legacy/page/**"
   workflow_dispatch:
 
 permissions:
@@ -24,7 +24,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: page
+          path: legacy/page
 
   deploy:
     needs: build
