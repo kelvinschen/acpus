@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { compileWorkflowModule } from "./compiler.js";
+import { compileWorkflowModule } from "./module.js";
 
 function usage(): never {
-  console.error(`Usage: acpus-core <workflow.js> [--out path] [--pretty]\n\nExamples:\n  node dist/cli.js dist/examples/release.workflow.js --pretty\n  tsx src/cli.ts examples/release.workflow.ts --out examples/release.ir.json --pretty`);
+  console.error(`Usage: acpus-core <workflow.js> [--out path] [--pretty]\n\nExamples:\n  node dist/compiler/cli.js dist/examples/release.workflow.js --pretty\n  tsx src/compiler/cli.ts examples/release.workflow.ts --out examples/release.ir.json --pretty`);
   process.exit(2);
 }
 

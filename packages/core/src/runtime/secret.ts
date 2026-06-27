@@ -1,6 +1,7 @@
-import { refExpr, type OutputAccessor, valueToExprIR } from "./expr.js";
-import { SECRET } from "./internal.js";
-import type { ExprIR, SecretRefIR } from "./ir.js";
+import { valueToExprIR } from "../expressions/expr.js";
+import { refExpr, type OutputAccessor } from "../graph/refs.js";
+import { SECRET } from "../internal/symbols.js";
+import type { ExprIR, SecretRefIR } from "../ir/types.js";
 
 export const runtime = {
   runId: refExpr<string>(["runtime", "runId"]),

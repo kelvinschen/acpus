@@ -2,12 +2,10 @@ import {
   defineWorkflow,
   z,
   agent,
-  task,
-  md,
+  template,
   where,
   all,
   max,
-  json,
 } from "../src/index.js";
 import normalizePackage, { NormalizePackageOutput } from "./tasks/normalize-package.task.js";
 
@@ -73,7 +71,7 @@ export default defineWorkflow({
 
     cwd: input.repoPath,
 
-    run: task(async ({ input, $, artifact, log }) => {
+    run: async ({ input, $, artifact, log }) => {
       log.info(`Preparing release ${input.version}`);
 
       const changed = await $`
@@ -104,7 +102,7 @@ export default defineWorkflow({
         diff: await artifact.writeText("diff.patch", diff.stdout, { mediaType: "text/x-patch" }),
         changelogDraft: await artifact.writeText("CHANGELOG_DRAFT.md", changelog, { mediaType: "text/markdown" }),
       };
-    }),
+    },
 
     timeout: "5m",
   });
@@ -118,7 +116,7 @@ export default defineWorkflow({
 
     cwd: input.repoPath,
 
-    run: task(async ({ input, $, artifact }) => {
+    run: async ({ $, artifact }) => {
       const result = await $`
         pnpm test
       `.allowExitCode([0, 1]);
@@ -128,7 +126,7 @@ export default defineWorkflow({
         summary: result.exitCode === 0 ? "Tests passed." : "Tests failed. See attached log.",
         log: await artifact.writeText("test.log", result.stdout + result.stderr, { mediaType: "text/plain" }),
       };
-    }),
+    },
 
     env: {
       CI: "true",
@@ -140,7 +138,7 @@ export default defineWorkflow({
   step.guard("require_tests", {
     when: where(tests.output, { passed: true }),
     otherwise: "fail",
-    message: md`
+    message: template`
       Tests failed.
 
       Summary:
@@ -169,19 +167,19 @@ export default defineWorkflow({
 
       output: ReviewOut,
 
-      run: agent({
+      run: ({ input }) => ({
         use: "reviewer",
-        prompt: ({ focus, packageName, diff, changelogDraft, testSummary }) => md`
-          Review package ${packageName} for ${focus}.
+        prompt: template`
+          Review package ${input.packageName} for ${input.focus}.
 
           Diff:
-          ${diff}
+          ${input.diff}
 
           Changelog draft:
-          ${changelogDraft}
+          ${input.changelogDraft}
 
           Test summary:
-          ${testSummary}
+          ${input.testSummary}
 
           Return JSON matching the declared schema.
         `,
@@ -199,11 +197,11 @@ export default defineWorkflow({
       }),
     ),
     otherwise: "fail",
-    message: md`
+    message: template`
       One or more reviews failed.
 
       Review outputs:
-      ${json(reviews.map(review => review.output))}
+      ${reviews.map(review => review.output)}
     `,
   });
 
@@ -219,22 +217,22 @@ export default defineWorkflow({
       summary: z.string(),
     }),
 
-    run: agent({
+    run: ({ input: summaryInput }) => ({
       use: "summarizer",
-      prompt: ({ version, packageName, reviews, changelogDraft }) => md`
+      prompt: template`
         Write a concise release readiness summary.
 
         Package:
-        ${packageName}
+        ${summaryInput.packageName}
 
         Version:
-        ${version}
+        ${summaryInput.version}
 
         Changelog draft:
-        ${changelogDraft}
+        ${summaryInput.changelogDraft}
 
         Reviews:
-        ${json(reviews)}
+        ${summaryInput.reviews}
       `,
     }),
   });

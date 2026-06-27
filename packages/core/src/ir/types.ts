@@ -36,13 +36,12 @@ export type ExprIR =
 
 export type TemplateIR = {
   kind: "template";
-  format: "markdown" | "text" | "json";
   parts: TemplatePartIR[];
 };
 
 export type TemplatePartIR =
   | { kind: "text"; value: string }
-  | { kind: "expr"; expr: ExprIR; renderAs?: "text" | "json" | "artifact" };
+  | { kind: "expr"; expr: ExprIR };
 
 export type DurationIR = string;
 

@@ -201,9 +201,9 @@
         },
         "run": {
           "kind": "task_run",
-          "bundleId": "task_3b70fd984438f01f",
+          "bundleId": "task_e1baf2ab42c9a2b7",
           "exportName": "default",
-          "digest": "sha256:3b70fd984438f01fec461ad6a3fbcfd045be3e2660e1e93be7765c9380cd57e4",
+          "digest": "sha256:e1baf2ab42c9a2b7f447a0523449dafea257bc7cbd9b0de76a65331508562174",
           "runtime": "node",
           "inline": true
         },
@@ -250,7 +250,6 @@
         "otherwise": "fail",
         "message": {
           "kind": "template",
-          "format": "markdown",
           "parts": [
             {
               "kind": "text",
@@ -266,8 +265,7 @@
                   "output",
                   "summary"
                 ]
-              },
-              "renderAs": "text"
+              }
             },
             {
               "kind": "text",
@@ -283,8 +281,7 @@
                   "output",
                   "log"
                 ]
-              },
-              "renderAs": "text"
+              }
             },
             {
               "kind": "text",
@@ -370,7 +367,6 @@
           "use": "reviewer",
           "prompt": {
             "kind": "template",
-            "format": "markdown",
             "parts": [
               {
                 "kind": "text",
@@ -386,8 +382,7 @@
                     "output",
                     "normalized"
                   ]
-                },
-                "renderAs": "text"
+                }
               },
               {
                 "kind": "text",
@@ -398,8 +393,7 @@
                 "expr": {
                   "kind": "literal",
                   "value": "security and supply-chain risks"
-                },
-                "renderAs": "text"
+                }
               },
               {
                 "kind": "text",
@@ -415,8 +409,7 @@
                     "output",
                     "diff"
                   ]
-                },
-                "renderAs": "text"
+                }
               },
               {
                 "kind": "text",
@@ -432,8 +425,7 @@
                     "output",
                     "changelogDraft"
                   ]
-                },
-                "renderAs": "text"
+                }
               },
               {
                 "kind": "text",
@@ -449,8 +441,7 @@
                     "output",
                     "summary"
                   ]
-                },
-                "renderAs": "text"
+                }
               },
               {
                 "kind": "text",
@@ -538,7 +529,6 @@
           "use": "reviewer",
           "prompt": {
             "kind": "template",
-            "format": "markdown",
             "parts": [
               {
                 "kind": "text",
@@ -554,8 +544,7 @@
                     "output",
                     "normalized"
                   ]
-                },
-                "renderAs": "text"
+                }
               },
               {
                 "kind": "text",
@@ -566,8 +555,7 @@
                 "expr": {
                   "kind": "literal",
                   "value": "performance regressions"
-                },
-                "renderAs": "text"
+                }
               },
               {
                 "kind": "text",
@@ -583,8 +571,7 @@
                     "output",
                     "diff"
                   ]
-                },
-                "renderAs": "text"
+                }
               },
               {
                 "kind": "text",
@@ -600,8 +587,7 @@
                     "output",
                     "changelogDraft"
                   ]
-                },
-                "renderAs": "text"
+                }
               },
               {
                 "kind": "text",
@@ -617,8 +603,7 @@
                     "output",
                     "summary"
                   ]
-                },
-                "renderAs": "text"
+                }
               },
               {
                 "kind": "text",
@@ -706,7 +691,6 @@
           "use": "reviewer",
           "prompt": {
             "kind": "template",
-            "format": "markdown",
             "parts": [
               {
                 "kind": "text",
@@ -722,8 +706,7 @@
                     "output",
                     "normalized"
                   ]
-                },
-                "renderAs": "text"
+                }
               },
               {
                 "kind": "text",
@@ -734,8 +717,7 @@
                 "expr": {
                   "kind": "literal",
                   "value": "documentation and release-note gaps"
-                },
-                "renderAs": "text"
+                }
               },
               {
                 "kind": "text",
@@ -751,8 +733,7 @@
                     "output",
                     "diff"
                   ]
-                },
-                "renderAs": "text"
+                }
               },
               {
                 "kind": "text",
@@ -768,8 +749,7 @@
                     "output",
                     "changelogDraft"
                   ]
-                },
-                "renderAs": "text"
+                }
               },
               {
                 "kind": "text",
@@ -785,8 +765,7 @@
                     "output",
                     "summary"
                   ]
-                },
-                "renderAs": "text"
+                }
               },
               {
                 "kind": "text",
@@ -976,7 +955,6 @@
         "otherwise": "fail",
         "message": {
           "kind": "template",
-          "format": "markdown",
           "parts": [
             {
               "kind": "text",
@@ -985,44 +963,34 @@
             {
               "kind": "expr",
               "expr": {
-                "kind": "call",
-                "fn": "json",
-                "args": [
+                "kind": "array",
+                "items": [
                   {
-                    "kind": "array",
-                    "items": [
-                      {
-                        "kind": "ref",
-                        "path": [
-                          "nodes",
-                          "review_security",
-                          "output"
-                        ]
-                      },
-                      {
-                        "kind": "ref",
-                        "path": [
-                          "nodes",
-                          "review_performance",
-                          "output"
-                        ]
-                      },
-                      {
-                        "kind": "ref",
-                        "path": [
-                          "nodes",
-                          "review_docs",
-                          "output"
-                        ]
-                      }
+                    "kind": "ref",
+                    "path": [
+                      "nodes",
+                      "review_security",
+                      "output"
+                    ]
+                  },
+                  {
+                    "kind": "ref",
+                    "path": [
+                      "nodes",
+                      "review_performance",
+                      "output"
+                    ]
+                  },
+                  {
+                    "kind": "ref",
+                    "path": [
+                      "nodes",
+                      "review_docs",
+                      "output"
                     ]
                   }
-                ],
-                "type": {
-                  "kind": "string"
-                }
-              },
-              "renderAs": "json"
+                ]
+              }
             },
             {
               "kind": "text",
@@ -1107,7 +1075,6 @@
           "use": "summarizer",
           "prompt": {
             "kind": "template",
-            "format": "markdown",
             "parts": [
               {
                 "kind": "text",
@@ -1123,8 +1090,7 @@
                     "output",
                     "normalized"
                   ]
-                },
-                "renderAs": "text"
+                }
               },
               {
                 "kind": "text",
@@ -1138,8 +1104,7 @@
                     "input",
                     "version"
                   ]
-                },
-                "renderAs": "text"
+                }
               },
               {
                 "kind": "text",
@@ -1155,8 +1120,7 @@
                     "output",
                     "changelogDraft"
                   ]
-                },
-                "renderAs": "text"
+                }
               },
               {
                 "kind": "text",
@@ -1165,44 +1129,34 @@
               {
                 "kind": "expr",
                 "expr": {
-                  "kind": "call",
-                  "fn": "json",
-                  "args": [
+                  "kind": "array",
+                  "items": [
                     {
-                      "kind": "array",
-                      "items": [
-                        {
-                          "kind": "ref",
-                          "path": [
-                            "nodes",
-                            "review_security",
-                            "output"
-                          ]
-                        },
-                        {
-                          "kind": "ref",
-                          "path": [
-                            "nodes",
-                            "review_performance",
-                            "output"
-                          ]
-                        },
-                        {
-                          "kind": "ref",
-                          "path": [
-                            "nodes",
-                            "review_docs",
-                            "output"
-                          ]
-                        }
+                      "kind": "ref",
+                      "path": [
+                        "nodes",
+                        "review_security",
+                        "output"
+                      ]
+                    },
+                    {
+                      "kind": "ref",
+                      "path": [
+                        "nodes",
+                        "review_performance",
+                        "output"
+                      ]
+                    },
+                    {
+                      "kind": "ref",
+                      "path": [
+                        "nodes",
+                        "review_docs",
+                        "output"
                       ]
                     }
-                  ],
-                  "type": {
-                    "kind": "string"
-                  }
-                },
-                "renderAs": "json"
+                  ]
+                }
               },
               {
                 "kind": "text",
@@ -1334,11 +1288,11 @@
         "inline": true,
         "note": "Core-alpha records Function#toString as a task source placeholder. Production must AST-extract and bundle task functions."
       },
-      "task_3b70fd984438f01f": {
-        "id": "task_3b70fd984438f01f",
-        "digest": "sha256:3b70fd984438f01fec461ad6a3fbcfd045be3e2660e1e93be7765c9380cd57e4",
+      "task_e1baf2ab42c9a2b7": {
+        "id": "task_e1baf2ab42c9a2b7",
+        "digest": "sha256:e1baf2ab42c9a2b7f447a0523449dafea257bc7cbd9b0de76a65331508562174",
         "runtime": "node",
-        "source": "async({input:input2,$,artifact})=>{const result=await $`\n        pnpm test\n      `.allowExitCode([0,1]);return{passed:result.exitCode===0,summary:result.exitCode===0?\"Tests passed.\":\"Tests failed. See attached log.\",log:await artifact.writeText(\"test.log\",result.stdout+result.stderr,{mediaType:\"text/plain\"})}}",
+        "source": "async({$,artifact})=>{const result=await $`\n        pnpm test\n      `.allowExitCode([0,1]);return{passed:result.exitCode===0,summary:result.exitCode===0?\"Tests passed.\":\"Tests failed. See attached log.\",log:await artifact.writeText(\"test.log\",result.stdout+result.stderr,{mediaType:\"text/plain\"})}}",
         "inline": true,
         "note": "Core-alpha records Function#toString as a task source placeholder. Production must AST-extract and bundle task functions."
       }
@@ -1350,14 +1304,14 @@
     "taskBundleDigests": {
       "task_3e2a7b561c40651f": "sha256:3e2a7b561c40651f09e852859b1830363f067dff7d96afd8123f25675c15b791",
       "task_18ce45b37ee7749c": "sha256:18ce45b37ee7749cbbf608d868e665ed34cd9e7f501e3aedd230c7a93097233f",
-      "task_3b70fd984438f01f": "sha256:3b70fd984438f01fec461ad6a3fbcfd045be3e2660e1e93be7765c9380cd57e4"
+      "task_e1baf2ab42c9a2b7": "sha256:e1baf2ab42c9a2b7f447a0523449dafea257bc7cbd9b0de76a65331508562174"
     },
-    "generatedAt": "2026-06-27T14:21:39.125Z",
+    "generatedAt": "2026-06-27T16:45:36.127Z",
     "notes": [
       "Core-alpha compiler executes workflow modules as trusted code.",
       "Core-alpha task source capture is not production bundling; see docs/ROADMAP.md."
     ],
-    "workflowSourceDigest": "sha256:df3a9a55cbebedbb38dc1b7c71735d1ce59ee408cfcd5eae0caf421b039b4a60"
+    "workflowSourceDigest": "sha256:10c10c3ca465bd39d76a5ad2beb0357f975779869d8b2a7c016945b2f0c6a7c8"
   },
   "diagnostics": [
     {

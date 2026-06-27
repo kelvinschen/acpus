@@ -1,4 +1,4 @@
-import type { DiagnosticIR, ExprIR, NodeIR, SchemaIR, ScopeIR, WorkflowIR } from "./ir.js";
+import type { DiagnosticIR, ExprIR, NodeIR, SchemaIR, ScopeIR, WorkflowIR } from "./types.js";
 
 export function validateWorkflowIR(ir: WorkflowIR): DiagnosticIR[] {
   const diagnostics: DiagnosticIR[] = [];

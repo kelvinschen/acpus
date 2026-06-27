@@ -4,7 +4,7 @@ This package is a Core implementation of the Acpus TypeScript Workflow v2 direct
 
 - TypeScript workflow files generate a typed graph and compile to canonical IR.
 - Schema authoring uses **Zod 4** plus Acpus boundary extensions: `z.path()`, `z.artifact()`, `z.secretRef()`.
-- Expr authoring supports Prisma/Mongo-style `where(...)` plus named operators like `and`, `lte`, `all`, `max`, and `json`.
+- Expr authoring supports Prisma/Mongo-style `where(...)` plus named operators like `and`, `lte`, `all`, and `max`.
 - Program nodes are replaced by trusted local **Task** nodes.
 - Task command ergonomics use an Acpus-owned `$` wrapper backed by `zx/core`.
 - Task permissions are intentionally removed from Core. Security isolation belongs to the runner/container/profile layer, not to per-node authoring syntax.
@@ -44,10 +44,8 @@ import {
   defineWorkflow,
   z,
   agent,
-  task,
-  md,
+  template,
   where,
-  json,
   runtime,
 } from "@acpus/core";
 
@@ -73,22 +71,22 @@ export default defineWorkflow({
     input: { repoPath: input.repoPath },
     output: z.object({ patch: z.artifact("text/x-patch") }),
     cwd: input.repoPath,
-    run: task(async ({ $, artifact }) => {
+    run: async ({ $, artifact }) => {
       const result = await $`git diff`;
       return {
         patch: await artifact.writeText("diff.patch", result.stdout, {
           mediaType: "text/x-patch",
         }),
       };
-    }),
+    },
   });
 
   const review = step.agent("review", {
     input: { patch: diff.output.patch },
     output: ReviewOut,
-    run: agent({
+    run: ({ input }) => ({
       use: "reviewer",
-      prompt: ({ patch }) => md`Review this diff:\n\n${patch}`,
+      prompt: template`Review this diff:\n\n${input.patch}`,
     }),
   });
 
@@ -99,7 +97,7 @@ export default defineWorkflow({
       issues: { length: 0 },
     }),
     otherwise: "fail",
-    message: md`Review failed:\n${json(review.output)}`,
+    message: template`Review failed:\n${review.output}`,
   });
 
   return output({

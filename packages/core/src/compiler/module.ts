@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { compileWorkflowDefinition, isWorkflowDefinition } from "./builder.js";
-import type { WorkflowIR } from "./ir.js";
+import { compileWorkflowDefinition, isWorkflowDefinition } from "../graph/builder.js";
+import type { WorkflowIR } from "../ir/types.js";
 
 export type CompileOptions = {
   sourcePath?: string;

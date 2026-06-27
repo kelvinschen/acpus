@@ -11,12 +11,12 @@
 - The core MUST expose `defineWorkflow(...).build(...)` as the workflow entry point, where `build` receives `{ input, step, output }`.
 - During graph construction, `input.*` fields MUST be exposed as `Expr<T>` tokens, not concrete values.
 - Agent definitions MUST be declared at workflow top-level under `agents` via `agent.define(...)`.
-- The public API MUST include at least: `defineWorkflow`, `z`, `agent`, `task`, `signal`, `md`, `where`, `and`, `not`, `lte`, `all`, `max`, `json`, `runtime`, `secret`.
+- The public API MUST include at least: `defineWorkflow`, `z`, `agent`, `task`, `signal`, `template`, `where`, `and`, `not`, `lte`, `all`, `max`, `runtime`, `secret`.
 
 ```ts
 import {
   defineWorkflow, z, agent, task, signal,
-  md, where, and, not, lte, all, max, json, runtime, secret,
+  template, where, and, not, lte, all, max, runtime, secret,
 } from "@acpus/core";
 
 export default defineWorkflow({
@@ -41,7 +41,7 @@ export default defineWorkflow({
 - The core MUST own the canonical expression IR (`ExprIR`); it MUST NOT use CEL or JSON Logic as the canonical layer.
 - The core MUST support Prisma/Mongo-style `where(...)` filters and MUST lower them to primitive `ExprIR` calls.
 - `where(...)` MUST accept Mongo aliases (e.g. `$lte`, `$regex`).
-- The core MUST support named operators: `literal`, `not`, `and`, `or`, `all`, `any`, `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `len`, `contains`, `startsWith`, `endsWith`, `matches`, `coalesce`, `json`, `max`, `min`, `where`.
+- The core MUST support named operators: `literal`, `not`, `and`, `or`, `all`, `any`, `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `len`, `contains`, `startsWith`, `endsWith`, `matches`, `coalesce`, `max`, `min`, `where`.
 - Collection helpers (`all`, `max`, ...) MUST operate on compile-time arrays via selector callbacks; runtime arrays MUST use `step.fanout(...)`.
 
 ```ts
@@ -52,18 +52,26 @@ all(reviews, review => review.output.ready);
 
 ### Templates
 
-- The core MUST provide tagged templates `md` and `text` plus `jsonTemplate`, producing `TemplateIR` with text and expression parts.
-- `json(...)` MUST render objects and arrays inside templates and MUST mark the part as JSON rendering.
+- The core MUST provide a single tagged template helper named `template`, producing `TemplateIR` with text and expression parts.
+- Plain string prompts/messages MUST compile to `TemplateIR` with one text part.
+- Template interpolation MUST preserve expressions in `TemplateIR`; object, array, and artifact rendering policy belongs to the runtime template renderer.
 
 ### Nodes
 
 - Executable nodes (Agent, Task, Signal) MUST share the shape `step.kind("id", { input, output, run, ...options })`.
+- Executable node `run` typing MUST be derived from that node's `input` object.
+- Agent and Signal `run` callbacks MUST receive graph-time typed input values for prompt construction.
+- Inline Task `run` functions MUST receive runtime typed input values unwrapped from the node's graph-time input expressions.
 - The core MUST provide `step.guard(...)` with `when`, `otherwise`, and `message`.
 - The core MUST provide composite nodes `step.if`, `step.switch`, `step.parallel`, `step.fanout`, `step.loop`, each producing composite node IR containing child scopes.
+- Composite callbacks MUST receive a `ScopeContext` containing `{ step, output }`.
+- Each composite callback MUST define an implicit pipeline scope: child steps execute sequentially and can reference earlier sibling outputs in that scope.
+- Parent scopes MUST access a composite node only through that node's projected `output`; internal child steps are not part of the parent scope's public contract.
 
 #### Task
 
-- A Task MUST be authored as trusted local code via `task(async ctx => ...)`.
+- An inline Task MUST be authored as trusted local code directly on `step.task(...).run`.
+- A reusable Task MUST be authored via `task.define({ input, output }).run(...)`.
 - The core MUST NOT expose a per-task `permissions` field; security isolation is delegated to the runner/container/profile layer.
 - Task options MUST support `input`, `output`, `run`, and MAY support `params`, `cwd`, `env`, `timeout`, `retry`, and `execution` (`shell`, `defaultCommandTimeout`).
 
@@ -74,13 +82,13 @@ const tests = step.task("run_tests", {
   cwd: input.repoPath,
   env: { CI: "true" },
   timeout: "15m",
-  run: task(async ({ $, artifact }) => {
+  run: async ({ $, artifact }) => {
     const result = await $`pnpm test`.allowExitCode([0, 1]);
     return {
       passed: result.exitCode === 0,
       log: await artifact.writeText("test.log", result.stdout + result.stderr),
     };
-  }),
+  },
 });
 ```
 
@@ -92,7 +100,9 @@ const tests = step.task("run_tests", {
 
 - Task code MUST receive `ctx.$`, an Acpus-owned wrapper backed by `zx/core`.
 - The wrapper MUST NOT be treated as a permission gate. It exists for command spans, stdout/stderr capture, timeout/abort integration, redaction, result normalization, and future artifact integration.
-- The wrapper MUST support at least: `` $`cmd` ``, `.allowExitCode([...])`, `.timeout("10m")`, `.json<T>()`, `.text()`, `.lines()`, `$.cmd(exe, args)`, and `` $.shell`...` ``.
+- The wrapper MUST mirror the core `zx/core` surface so task authors use familiar `$` syntax: shared method signatures (`nothrow`, `timeout`, `text`, `json`, `lines`) MUST be derived from zx `ProcessPromise` and stay assignable to it.
+- The wrapper MUST support at least: `` $`cmd` ``, the zx-style configurator `` $({ cwd, env, timeout, nothrow, allowExitCode })`cmd` ``, `.allowExitCode([...])`, `.nothrow()`, `.timeout("10m")`, `.json<T>()`, `.text()`, and `.lines()`.
+- The wrapper MUST NOT expose non-zx helpers (`$.cmd`, `$.shell`, `$.raw`); programmatic arguments use zx array interpolation (`` $`${exe} ${args}` ``).
 
 ### IR contract
 

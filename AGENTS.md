@@ -2,7 +2,7 @@
 
 Maintenance rules for whom working on this codebase.
 
-> The codebase is being rebuilt on the TypeScript-first core (`@acpus/core` in `packages/core`). The previous YAML Workflow-Spec implementation and its docs (including the old `CONTEXT.md` terminology) are archived, read-only, under `legacy/`.
+> The codebase is being rebuilt on the TypeScript-first core (`@acpus/core` in `packages/core`). The previous YAML Workflow-Spec implementation and its docs (including the old `CONTEXT.md` terminology) are archived, read-only, under `legacy/`. since it havn't published, no compatibility concern.
 
 ## Specification Maintenance
 - If a code change does not require a SPEC update, the final response MUST state why.
