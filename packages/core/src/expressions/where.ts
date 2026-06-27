@@ -27,6 +27,14 @@ export type NumberWhere = number | {
   gte?: number;
   in?: readonly number[];
   notIn?: readonly number[];
+  $eq?: number;
+  $ne?: number;
+  $lt?: number;
+  $lte?: number;
+  $gt?: number;
+  $gte?: number;
+  $in?: readonly number[];
+  $nin?: readonly number[];
 };
 
 export type StringWhere = string | {
@@ -38,9 +46,19 @@ export type StringWhere = string | {
   matches?: string;
   in?: readonly string[];
   notIn?: readonly string[];
+  $eq?: string;
+  $ne?: string;
+  $regex?: string;
+  $in?: readonly string[];
+  $nin?: readonly string[];
 };
 
-export type BooleanWhere = boolean | { eq?: boolean; ne?: boolean };
+export type BooleanWhere = boolean | {
+  eq?: boolean;
+  ne?: boolean;
+  $eq?: boolean;
+  $ne?: boolean;
+};
 
 export type ArrayWhere<Item> = {
   isEmpty?: boolean;
@@ -66,6 +84,9 @@ export type ObjectWhere<T> = {
   AND?: ObjectWhere<T>[];
   OR?: ObjectWhere<T>[];
   NOT?: ObjectWhere<T>;
+  $and?: ObjectWhere<T>[];
+  $or?: ObjectWhere<T>[];
+  $not?: ObjectWhere<T>;
 };
 
 export function where<T>(target: OutputAccessor<T>, filter: Where<T>): Expr<boolean>;
@@ -78,13 +99,14 @@ export function where(target: any, filter: any): Expr<boolean> {
 function lowerWhere(target: any, filter: any): Expr<boolean> {
   if (typeof filter === "boolean" || typeof filter === "string" || typeof filter === "number" || filter === null) return eq(target, filter as any);
   if (!filter || typeof filter !== "object" || Array.isArray(filter)) return eq(target, filter);
+  if (isOperatorObject(filter)) return lowerOperator(target, filter);
 
   const clauses: WorkflowValue<boolean>[] = [];
   const entries = Object.entries(filter) as Array<[string, any]>;
   for (const [key, value] of entries) {
-    if (key === "AND") clauses.push(and(...value.map((v: any) => lowerWhere(target, v))));
-    else if (key === "OR") clauses.push(or(...value.map((v: any) => lowerWhere(target, v))));
-    else if (key === "NOT") clauses.push(not(lowerWhere(target, value)));
+    if (key === "AND" || key === "$and") clauses.push(and(...value.map((v: any) => lowerWhere(target, v))));
+    else if (key === "OR" || key === "$or") clauses.push(or(...value.map((v: any) => lowerWhere(target, v))));
+    else if (key === "NOT" || key === "$not") clauses.push(not(lowerWhere(target, value)));
     else if (isOperatorObject(value)) clauses.push(lowerOperator(target[key], value));
     else clauses.push(lowerWhere(target[key], value));
   }
@@ -97,11 +119,23 @@ function isOperatorObject(value: any): boolean {
   return Object.keys(value).some(k => OPERATOR_KEYS.has(k));
 }
 
-const OPERATOR_KEYS = new Set(["eq", "ne", "lt", "lte", "gt", "gte", "in", "notIn", "contains", "startsWith", "endsWith", "matches", "length", "isEmpty"]);
+const OPERATOR_ALIASES: Record<string, string> = {
+  $eq: "eq",
+  $ne: "ne",
+  $lt: "lt",
+  $lte: "lte",
+  $gt: "gt",
+  $gte: "gte",
+  $in: "in",
+  $nin: "notIn",
+  $regex: "matches",
+};
+const OPERATOR_KEYS = new Set(["eq", "ne", "lt", "lte", "gt", "gte", "in", "notIn", "contains", "startsWith", "endsWith", "matches", "length", "isEmpty", ...Object.keys(OPERATOR_ALIASES)]);
 
 function lowerOperator(target: any, spec: Record<string, any>): Expr<boolean> {
   const clauses: WorkflowValue<boolean>[] = [];
-  for (const [op, value] of Object.entries(spec)) {
+  for (const [rawOp, value] of Object.entries(spec)) {
+    const op = OPERATOR_ALIASES[rawOp] ?? rawOp;
     switch (op) {
       case "eq": clauses.push(eq(target, value)); break;
       case "ne": clauses.push(ne(target, value)); break;
@@ -117,7 +151,7 @@ function lowerOperator(target: any, spec: Record<string, any>): Expr<boolean> {
       case "matches": clauses.push(matches(target, value)); break;
       case "length": clauses.push(lowerWhere(len(target), value)); break;
       case "isEmpty": clauses.push(value ? eq(len(target), 0) : gt(len(target), 0)); break;
-      default: throw new Error(`Unsupported where operator: ${op}`);
+      default: throw new Error(`Unsupported where operator: ${rawOp}`);
     }
   }
   return clauses.length === 0 ? literal(true) : clauses.length === 1 ? clauses[0] as Expr<boolean> : and(...clauses);
