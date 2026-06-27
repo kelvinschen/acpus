@@ -8,6 +8,7 @@ import {
   secret,
   task,
   template,
+  toSchemaIR,
   where,
   z,
 } from "../src/index.js";
@@ -44,7 +45,6 @@ describe("workflow compilation", () => {
     }).build(({ input, step, output }) => {
       const normalized = step.task("normalize_package", {
         input: { packageName: input.packageName },
-        output: NormalizeOutput,
         run: normalizePackage,
         params: { strict: true },
       });
@@ -111,6 +111,7 @@ describe("workflow compilation", () => {
     expect(ir.root.nodes[0]).toMatchObject({
       kind: "task",
       run: { inline: false },
+      outputSchema: toSchemaIR(NormalizeOutput),
       params: { strict: true },
       inputs: {
         packageName: { kind: "ref", path: ["input", "packageName"] },

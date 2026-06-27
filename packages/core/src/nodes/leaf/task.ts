@@ -7,11 +7,8 @@ import type { DiagnosticIR, JsonObject, RetryIR, TaskBundleIR, TaskNodeIR } from
 import type { TaskFunction } from "../../runtime/task-context.js";
 import type { RuntimeInput, StepInput } from "./shared.js";
 
-export type TaskToken<Input = any, Output = any, Params extends JsonObject = JsonObject> = {
+type BaseTaskToken<Input, Output, Params extends JsonObject> = {
   readonly [TASK]: true;
-  readonly kind: "inline" | "external";
-  readonly input?: Schema<Input>;
-  readonly output?: Schema<Output>;
   readonly params?: Params;
   readonly fn: TaskFunction<Input, Output, Params>;
   readonly source: string;
@@ -20,10 +17,23 @@ export type TaskToken<Input = any, Output = any, Params extends JsonObject = Jso
   toBundleIR(): TaskBundleIR;
 };
 
-export type TaskStepSpec<Input extends StepInput, OutSchema extends Schema<any>> = {
-  input: Input;
-  output: OutSchema;
-  run: TaskFunction<RuntimeInput<Input>, InferSchema<OutSchema>, any> | TaskToken<RuntimeInput<Input>, InferSchema<OutSchema>, any>;
+export type InlineTaskToken<Input = any, Output = any, Params extends JsonObject = JsonObject> = BaseTaskToken<Input, Output, Params> & {
+  readonly kind: "inline";
+  readonly input?: undefined;
+  readonly output?: undefined;
+};
+
+export type ReusableTaskToken<Input = any, Output = any, Params extends JsonObject = JsonObject> = BaseTaskToken<Input, Output, Params> & {
+  readonly kind: "external";
+  readonly input: Schema<Input>;
+  readonly output: Schema<Output>;
+};
+
+export type TaskToken<Input = any, Output = any, Params extends JsonObject = JsonObject> =
+  | InlineTaskToken<Input, Output, Params>
+  | ReusableTaskToken<Input, Output, Params>;
+
+type TaskStepOptions = {
   params?: JsonObject;
   cwd?: unknown;
   env?: Record<string, unknown>;
@@ -35,6 +45,22 @@ export type TaskStepSpec<Input extends StepInput, OutSchema extends Schema<any>>
     commandRunner?: "acpus-zx-core" | "custom";
   };
 };
+
+export type InlineTaskStepSpec<Input extends StepInput, OutSchema extends Schema<any>> = TaskStepOptions & {
+  input: Input;
+  output: OutSchema;
+  run: TaskFunction<RuntimeInput<Input>, InferSchema<OutSchema>, any>;
+};
+
+export type ReusableTaskStepSpec<Input extends StepInput, TaskInput, Output> = TaskStepOptions & {
+  input: Input;
+  output?: never;
+  run: ReusableTaskToken<TaskInput, Output, any>;
+};
+
+export type TaskStepSpec<Input extends StepInput, OutSchema extends Schema<any> = Schema<any>> =
+  | InlineTaskStepSpec<Input, OutSchema>
+  | ReusableTaskStepSpec<Input, any, any>;
 
 function digest(source: string): string {
   return `sha256:${createHash("sha256").update(source).digest("hex")}`;
@@ -74,15 +100,15 @@ function makeTaskToken<Input, Output, Params extends JsonObject>(args: {
   } as TaskToken<Input, Output, Params>;
 }
 
-export function createInlineTaskToken<Input, Output, Params extends JsonObject = JsonObject>(fn: TaskFunction<Input, Output, Params>): TaskToken<Input, Output, Params> {
-  return makeTaskToken({ kind: "inline", fn });
+export function createInlineTaskToken<Input, Output, Params extends JsonObject = JsonObject>(fn: TaskFunction<Input, Output, Params>): InlineTaskToken<Input, Output, Params> {
+  return makeTaskToken({ kind: "inline", fn }) as InlineTaskToken<Input, Output, Params>;
 }
 
 export interface TaskFactory {
   define<InputSchema extends Schema<any>, OutputSchema extends Schema<any>>(config: { input: InputSchema; output: OutputSchema }): {
     input: InputSchema;
     output: OutputSchema;
-    run(fn: TaskFunction<InferSchema<InputSchema>, InferSchema<OutputSchema>>): TaskToken<InferSchema<InputSchema>, InferSchema<OutputSchema>>;
+    run(fn: TaskFunction<InferSchema<InputSchema>, InferSchema<OutputSchema>>): ReusableTaskToken<InferSchema<InputSchema>, InferSchema<OutputSchema>>;
   };
   isToken(value: unknown): value is TaskToken<any, any, any>;
 }
@@ -94,8 +120,8 @@ export const task: TaskFactory = {
     return {
       input: config.input,
       output: config.output,
-      run(fn: TaskFunction<Input, Output>): TaskToken<Input, Output> {
-        return makeTaskToken({ kind: "external", input: config.input, output: config.output, fn });
+      run(fn: TaskFunction<Input, Output>): ReusableTaskToken<Input, Output> {
+        return makeTaskToken({ kind: "external", input: config.input, output: config.output, fn }) as ReusableTaskToken<Input, Output>;
       },
     };
   },
@@ -104,16 +130,23 @@ export const task: TaskFactory = {
   },
 };
 
-export const defineTask = task.define;
-
-export function buildTaskNode<const Input extends StepInput, OutSchema extends Schema<any>>(
+export function buildTaskNode<const Input extends StepInput>(
   id: string,
-  spec: TaskStepSpec<Input, OutSchema>,
+  spec: TaskStepSpec<Input>,
   taskBundles: Record<string, TaskBundleIR>,
   diagnostics: DiagnosticIR[],
 ): TaskNodeIR {
   assertStableId(id, diagnostics);
-  const run = typeof spec.run === "function" ? createInlineTaskToken(spec.run) : spec.run;
+  let run: TaskToken<RuntimeInput<Input>, any, any>;
+  let outputSchema: Schema<any>;
+  if (typeof spec.run === "function") {
+    const inlineSpec = spec as InlineTaskStepSpec<Input, Schema<any>>;
+    run = createInlineTaskToken(inlineSpec.run);
+    outputSchema = inlineSpec.output;
+  } else {
+    run = spec.run;
+    outputSchema = spec.run.output;
+  }
   if (!task.isToken(run)) {
     diagnostics.push({ code: "T000", severity: "error", message: `Task node '${id}' must use run: async ctx => ... or a task.define(...).run(...) token.` });
   }
@@ -123,7 +156,7 @@ export function buildTaskNode<const Input extends StepInput, OutSchema extends S
     id,
     kind: "task",
     inputs: inputsToIR(spec.input),
-    outputSchema: toSchemaIR(spec.output),
+    outputSchema: toSchemaIR(outputSchema),
     run: {
       kind: "task_run",
       bundleId: bundle.id,

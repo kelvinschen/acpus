@@ -36,11 +36,8 @@ pnpm typecheck
 pnpm test        # vitest (suites pass with no tests yet)
 ```
 
-Compile the example workflow to IR:
-
-```sh
-pnpm --filter @acpus/core emit:example
-```
+The core package intentionally does not expose a CLI; command-line entry points
+will live in separate packages.
 
 ## Documentation
 

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`@acpus/core` is the TypeScript-first authoring and compile layer for Acpus. Workflow authors write typed TypeScript modules that build a graph and compile to a frozen, serializable `WorkflowIR` (`irVersion: 2`) that a runtime consumes. The core provides workflow authoring, a Zod 4 schema bridge, an Acpus-owned expression IR, prompt templates, Agent / Task / Signal executable nodes, composite nodes, and compilation to IR with structural validation. It is an authoring layer only; it does not execute, persist, replay, or fork runs.
+`@acpus/core` is the TypeScript-first authoring and compile layer for Acpus. Workflow authors write typed TypeScript modules that build a graph and compile to a frozen, serializable `WorkflowIR` (`irVersion: 2`) that a runtime consumes. The core provides workflow authoring, a Zod 4 schema bridge, an Acpus-owned expression IR, prompt templates, Agent / Task / Signal executable nodes, composite nodes, and compilation to IR with structural validation. It is an authoring layer only; it does not provide a CLI, execute, persist, replay, or fork runs.
 
 ## Requirements
 
@@ -72,8 +72,10 @@ all(reviews, review => review.output.ready);
 
 - An inline Task MUST be authored as trusted local code directly on `step.task(...).run`.
 - A reusable Task MUST be authored via `task.define({ input, output }).run(...)`.
+- A reusable Task node MUST use the Task's declared output schema and MUST NOT repeat `output` at the `step.task(...)` call site.
 - The core MUST NOT expose a per-task `permissions` field; security isolation is delegated to the runner/container/profile layer.
-- Task options MUST support `input`, `output`, `run`, and MAY support `params`, `cwd`, `env`, `timeout`, `retry`, and `execution` (`shell`, `defaultCommandTimeout`).
+- Inline Task options MUST support `input`, `output`, and `run`; reusable Task node options MUST support `input` and `run`.
+- Task node options MAY support `params`, `cwd`, `env`, `timeout`, `retry`, and `execution` (`shell`, `defaultCommandTimeout`).
 
 ```ts
 const tests = step.task("run_tests", {
@@ -133,5 +135,5 @@ type WorkflowIR = {
 
 - Tests MUST cover `toSchemaIR` acceptance of the boundary subset and rejection of unsupported Zod features (`transform`, `custom`, `date`, `map`, `set`, etc.).
 - Tests MUST cover `where(...)` lowering to primitive `ExprIR` calls, including Mongo aliases and AND/OR/NOT composition.
-- Tests MUST cover that compiling the example workflow produces a valid `WorkflowIR` (`irVersion: 2`) with no live Zod/function references and with the trusted-import diagnostic present.
-- The example MUST compile end-to-end: `pnpm --filter @acpus/core emit:example` MUST regenerate `examples/release.ir.json`.
+- Tests MUST cover that compiling a workflow module through `compileWorkflowModule(...)` produces a valid `WorkflowIR` (`irVersion: 2`) with no live Zod/function references and with the trusted-import diagnostic present.
+- The core package MUST NOT expose a binary or command-line entry point; CLI behavior belongs in a separate package.

@@ -60,7 +60,7 @@ Detailed guidance lives in `docs/development-testing.md`.
 - `*.unit.test.ts`: pure functions such as schema lowering, expression lowering, template lowering, secret/env lowering.
 - `*.contract.test.ts`: public API and stable serialized contracts such as diagnostic codes/paths and IR shape.
 - `*.integration.test.ts`: cross-layer authoring/compiler flows such as `defineWorkflow` -> graph -> compiler -> validator.
-- `*.e2e.test.ts`: user-facing command/package paths such as the compiler CLI and checked-in examples.
+- `*.e2e.test.ts`: user-facing command/package paths for packages that provide commands.
 - `*.regression.test.ts`: one minimal reproduction for a fixed bug that is likely to return.
 
 ## Build Maintenance

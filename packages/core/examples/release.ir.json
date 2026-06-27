@@ -1306,12 +1306,12 @@
       "task_18ce45b37ee7749c": "sha256:18ce45b37ee7749cbbf608d868e665ed34cd9e7f501e3aedd230c7a93097233f",
       "task_e1baf2ab42c9a2b7": "sha256:e1baf2ab42c9a2b7f447a0523449dafea257bc7cbd9b0de76a65331508562174"
     },
-    "generatedAt": "2026-06-27T16:45:36.127Z",
+    "generatedAt": "2026-06-27T17:47:07.785Z",
     "notes": [
       "Core-alpha compiler executes workflow modules as trusted code.",
       "Core-alpha task source capture is not production bundling; see docs/ROADMAP.md."
     ],
-    "workflowSourceDigest": "sha256:10c10c3ca465bd39d76a5ad2beb0357f975779869d8b2a7c016945b2f0c6a7c8"
+    "workflowSourceDigest": "sha256:e6b48e06dfbc0ec5b64012bbb9df521b93211ad3d9cb15a90ce97b75ecde82d1"
   },
   "diagnostics": [
     {

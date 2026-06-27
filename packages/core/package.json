@@ -24,9 +24,6 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "bin": {
-    "acpus-core": "./dist/compiler/cli.js"
-  },
   "files": [
     "dist",
     "README.md",
@@ -35,7 +32,6 @@
   "scripts": {
     "build": "tsgo -p tsconfig.json",
     "typecheck": "tsgo -p tsconfig.json --noEmit && tsgo -p tsconfig.examples.json --noEmit",
-    "emit:example": "tsx src/compiler/cli.ts examples/release.workflow.ts --out examples/release.ir.json --pretty",
     "clean": "rm -rf dist"
   },
   "dependencies": {

@@ -28,14 +28,9 @@ zx  ^8.8.5
 
 ```bash
 pnpm --filter @acpus/core typecheck
-pnpm --filter @acpus/core emit:example
 ```
 
-The example compiles to:
-
-```txt
-examples/release.ir.json
-```
+The checked-in example workflow and compiled IR live under `examples/`.
 
 ## Minimal workflow
 

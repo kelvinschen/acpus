@@ -4,8 +4,9 @@ import { makeNodeRef, refExpr, type NodeRef, type OutputAccessor } from "./refs.
 import { toSchemaIR, type InferSchema, type Schema } from "../schema/index.js";
 import { agent, type AgentDefinition } from "../nodes/leaf/agent.js";
 import { buildAgentNode, type AgentStepSpec } from "../nodes/leaf/agent.js";
-import { buildTaskNode, type TaskStepSpec } from "../nodes/leaf/task.js";
+import { buildTaskNode, type InlineTaskStepSpec, type ReusableTaskStepSpec, type TaskStepSpec } from "../nodes/leaf/task.js";
 import { buildSignalNode, type SignalStepSpec } from "../nodes/leaf/signal.js";
+import type { RuntimeInput } from "../nodes/leaf/shared.js";
 import { buildGuardNode, type GuardSpec } from "../nodes/control/guard.js";
 import { buildIfNode, type IfStepSpec } from "../nodes/composite/if.js";
 import { buildSwitchNode, type SwitchStepSpec } from "../nodes/composite/switch.js";
@@ -85,8 +86,18 @@ export class StepBuilder {
 
   task<const Input extends Record<string, unknown>, OutSchema extends Schema<any>>(
     id: string,
-    spec: TaskStepSpec<Input, OutSchema>,
-  ): NodeRef<InferSchema<OutSchema>> {
+    spec: InlineTaskStepSpec<Input, OutSchema>,
+  ): NodeRef<InferSchema<OutSchema>>;
+
+  task<const Input extends Record<string, unknown>, TaskInput, Output>(
+    id: string,
+    spec: ReusableTaskStepSpec<Input, TaskInput, Output> & (RuntimeInput<Input> extends TaskInput ? unknown : never),
+  ): NodeRef<Output>;
+
+  task<const Input extends Record<string, unknown>>(
+    id: string,
+    spec: TaskStepSpec<Input>,
+  ): NodeRef<any> {
     this.nodes.push(buildTaskNode(id, spec, this.taskBundles, this.diagnostics));
     return makeNodeRef(id);
   }

@@ -1,4 +1,4 @@
-import { defineWorkflow, z, agent, task, template, type ScopeContext } from "../src/index.js";
+import { defineWorkflow, z, agent, task, template, type Expr, type ScopeContext } from "../src/index.js";
 
 const PackageOut = z.object({
   packageName: z.string(),
@@ -76,17 +76,22 @@ export default defineWorkflow({
     },
   });
 
-  step.task("typed_reusable_task_input", {
+  const reusable = step.task("typed_reusable_task_input", {
     input: {
       packageName: input.packageName,
       version: input.version,
     },
-    output: PackageOut,
     run: reusablePackageTask,
   });
 
+  const reusableVersion: Expr<string> = reusable.output.version;
+  // @ts-expect-error reusable task output is inferred from task.define as string.
+  const badReusableVersion: Expr<number> = reusable.output.version;
+  void reusableVersion;
+  void badReusableVersion;
+
   // @ts-expect-error reusable tasks require every declared task input field.
-  step.task("typed_reusable_task_missing_input", { input: { packageName: input.packageName }, output: PackageOut, run: reusablePackageTask });
+  step.task("typed_reusable_task_missing_input", { input: { packageName: input.packageName }, run: reusablePackageTask });
 
   const nested = step.if("typed_nested_scope", {
     when: review.output.ok,

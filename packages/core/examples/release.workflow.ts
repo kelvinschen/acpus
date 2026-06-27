@@ -7,7 +7,7 @@ import {
   all,
   max,
 } from "../src/index.js";
-import normalizePackage, { NormalizePackageOutput } from "./tasks/normalize-package.task.js";
+import normalizePackage from "./tasks/normalize-package.task.js";
 
 const PrepareReleaseOut = z.object({
   changedFiles: z.array(z.path()),
@@ -54,7 +54,6 @@ export default defineWorkflow({
     input: {
       packageName: input.packageName,
     },
-    output: NormalizePackageOutput,
     run: normalizePackage,
   });
 

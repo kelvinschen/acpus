@@ -16,10 +16,10 @@ The root Vitest config groups tests by filename. Choose the cheapest project tha
 
 | Project | Filename | Use for | Avoid |
 | --- | --- | --- | --- |
-| Unit | `*.unit.test.ts` | Pure functions: schema lowering, expression lowering, template lowering, id validation helpers, secret/env lowering. | Dynamic import, filesystem, CLI, subprocesses, real commands. |
+| Unit | `*.unit.test.ts` | Pure functions: schema lowering, expression lowering, template lowering, id validation helpers, secret/env lowering. | Dynamic import, filesystem, subprocesses, real commands. |
 | Contract | `*.contract.test.ts` | Public API exports, stable IR shape, diagnostic codes/paths, compatibility between spec and serialized contracts. | Implementation details and incidental ordering except where the contract requires it. |
 | Integration | `*.integration.test.ts` | Cross-layer authoring flows such as `defineWorkflow` -> graph builder -> compiler -> validator. Composite node shape and task-bundle wiring belong here. | Real agents, external services, shelling out to package managers. |
-| E2E | `*.e2e.test.ts` | The final user-facing path: CLI, checked-in examples, file output, package entrypoint smoke tests. | Fine-grained lowering assertions that would make refactors noisy. |
+| E2E | `*.e2e.test.ts` | Final user-facing command paths in packages that provide commands. | Fine-grained lowering assertions that would make refactors noisy. |
 | Regression | `*.regression.test.ts` | A minimal reproduction for a fixed bug that is likely to return. Include the failure mode in the test name. | Broad feature coverage; move that to unit/integration once generalized. |
 
 ## Test design rules
@@ -45,7 +45,7 @@ The initial core test foundation should cover these chains:
 - IR validator: invalid workflow names, schemas, duplicate node ids, empty refs, missing agents, and task-bundle mismatches produce stable diagnostic codes and paths.
 - Workflow compiler: a representative workflow compiles leaf nodes, guards, templates, secrets, task bundles, agent definitions, and outputs into validated `WorkflowIR`.
 - Composite nodes: `step.if`, `step.parallel`, `step.fanout`, and `step.loop` compile child scopes and projected outputs without invoking any runtime.
-- CLI E2E: the checked-in release example emits JSON with `irVersion: 2`, expected node ids, task bundles, outputs, and the trusted-import compiler diagnostic.
+- Module compiler: a checked-in workflow module fixture compiles through `compileWorkflowModule(...)` with `irVersion: 2`, expected node ids, task bundles, outputs, and the trusted-import compiler diagnostic.
 
 ## Commands
 
@@ -62,11 +62,7 @@ pnpm typecheck
 
 For changes limited to docs or specs, tests may be skipped only when there is no executable behavior to validate; say that explicitly in the handoff.
 
-For checked-in generated artifacts, run the package script that regenerates them instead of editing by hand. For the core example IR:
-
-```bash
-pnpm --filter @acpus/core emit:example
-```
+For checked-in generated artifacts, run the package script that owns that artifact instead of editing by hand.
 
 ## PR checklist
 

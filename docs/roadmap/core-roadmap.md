@@ -19,7 +19,7 @@ This roadmap starts from the current `@acpus/core` authoring and compile layer (
 
 Replace the `Function#toString()` placeholder with production bundling.
 
-- AST extraction for inline `task(async ctx => ...)` and external `defineTask(...).run(...)`.
+- AST extraction for inline `task(async ctx => ...)` and external `task.define(...).run(...)`.
 - Local import-graph bundling, source maps, and a digest over the final bundle.
 - Frozen task bundle assets in the IR lock.
 - Closure-capture diagnostics — hard errors when a Task captures workflow `Expr`, `step`, or graph builder state, or uses non-deterministic top-level values; warnings when a Task imports raw `zx`, imports `child_process` directly, or reads `process.env` instead of task-level `env`.
