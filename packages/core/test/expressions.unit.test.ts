@@ -62,6 +62,38 @@ describe("expression lowering", () => {
     });
   });
 
+  it("lowers primitive where filters and Mongo aliases to the same primitives", () => {
+    const risk = refExpr<number>(["nodes", "review", "output", "riskCount"]);
+    const summary = refExpr<string>(["nodes", "review", "output", "summary"]);
+
+    expect(where(risk, { $gte: 1, $lte: 3 }).ir).toEqual({
+      kind: "call",
+      fn: "and",
+      type: booleanType,
+      args: [
+        {
+          kind: "call",
+          fn: "gte",
+          type: booleanType,
+          args: [ref(["nodes", "review", "output", "riskCount"]), literal(1)],
+        },
+        {
+          kind: "call",
+          fn: "lte",
+          type: booleanType,
+          args: [ref(["nodes", "review", "output", "riskCount"]), literal(3)],
+        },
+      ],
+    });
+
+    expect(where(summary, { $regex: "ready" }).ir).toEqual({
+      kind: "call",
+      fn: "matches",
+      type: booleanType,
+      args: [ref(["nodes", "review", "output", "summary"]), literal("ready")],
+    });
+  });
+
   it("lowers collection helpers with selector callbacks", () => {
     const reviews = [
       refExpr<{ ready: boolean; riskCount: number }>(["reviews", "0"]),
