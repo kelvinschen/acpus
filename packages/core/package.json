@@ -3,7 +3,7 @@
   "version": "0.3.0-core-alpha",
   "private": true,
   "type": "module",
-  "description": "Acpus TypeScript Workflow Core: Zod 4 schema bridge, Acpus Expr IR, zx/core-backed Task command wrapper, compiler, and validator.",
+  "description": "Acpus TypeScript Workflow Core: Schema bridge, Acpus Expr IR, zx/core-backed Task command wrapper, compiler, and validator.",
   "keywords": [
     "acpus",
     "workflow",
@@ -31,7 +31,7 @@
   ],
   "scripts": {
     "build": "tsgo -p tsconfig.json",
-    "typecheck": "tsgo -p tsconfig.json --noEmit && tsgo -p tsconfig.examples.json --noEmit",
+    "typecheck": "tsgo -p tsconfig.json --noEmit && tsgo -p tsconfig.fixtures.json --noEmit",
     "clean": "rm -rf dist"
   },
   "dependencies": {

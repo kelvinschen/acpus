@@ -1,4 +1,5 @@
 import { call, expr, type Expr, type WorkflowValue } from "./expr.js";
+import { refExpr, type OutputAccessor } from "../graph/refs.js";
 
 export function literal<T extends string | number | boolean | null>(value: T): Expr<T> {
   return expr<T>({ kind: "literal", value });
@@ -40,12 +41,18 @@ export function gte(a: WorkflowValue<number>, b: WorkflowValue<number>): Expr<bo
   return call<boolean>("gte", [a, b], { kind: "boolean" });
 }
 
-export function len<T>(value: WorkflowValue<T[] | string>): Expr<number> {
+export function len<T>(value: WorkflowValue<readonly T[] | string>): Expr<number> {
   return call<number>("len", [value], { kind: "integer" });
 }
 
-export function contains<T>(container: WorkflowValue<T[] | string>, item: WorkflowValue<T | string>): Expr<boolean> {
-  return call<boolean>("contains", [container, item], { kind: "boolean" });
+export function includes(collection: WorkflowValue<string>, value: WorkflowValue<string>): Expr<boolean>;
+export function includes<T>(collection: WorkflowValue<readonly T[]>, value: WorkflowValue<T>): Expr<boolean>;
+export function includes(collection: any, value: any): Expr<boolean> {
+  return call<boolean>("includes", [collection, value], { kind: "boolean" });
+}
+
+export function isEmpty<T extends readonly unknown[] | string>(value: WorkflowValue<T>): Expr<boolean> {
+  return eq(call<number>("len", [value], { kind: "integer" }), 0);
 }
 
 export function startsWith(value: WorkflowValue<string>, prefix: WorkflowValue<string>): Expr<boolean> {
@@ -62,6 +69,20 @@ export function matches(value: WorkflowValue<string>, pattern: WorkflowValue<str
 
 export function coalesce<T>(...values: WorkflowValue<T | null | undefined>[]): Expr<T> {
   return call<T>("coalesce", values);
+}
+
+export function fallback<T, D>(value: WorkflowValue<T>, defaultValue: WorkflowValue<D>): Expr<NonNullable<T> | D> {
+  return call<NonNullable<T> | D>("coalesce", [value, defaultValue]);
+}
+
+export function head<T>(array: OutputAccessor<readonly T[]>): OutputAccessor<T | undefined> {
+  return nth(array, 0);
+}
+
+export function nth<T>(array: OutputAccessor<readonly T[]>, index: number): OutputAccessor<T | undefined> {
+  if (!Number.isInteger(index) || index < 0) throw new Error("nth(array, index) requires a non-negative integer index.");
+  if (array.ir.kind !== "ref") throw new Error("nth(array, index) only supports ref-backed workflow arrays.");
+  return refExpr<T | undefined>([...array.ir.path, String(index)]);
 }
 
 export function all(values: Array<WorkflowValue<boolean>>): Expr<boolean>;

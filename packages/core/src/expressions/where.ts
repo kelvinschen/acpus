@@ -1,12 +1,12 @@
 import type { OutputAccessor } from "../graph/refs.js";
-import { call, type Expr, type WorkflowValue } from "./expr.js";
+import { isExpr, type Expr, type WorkflowValue } from "./expr.js";
 import {
   and,
-  contains,
   endsWith,
   eq,
   gt,
   gte,
+  includes,
   len,
   literal,
   lt,
@@ -18,52 +18,52 @@ import {
   startsWith,
 } from "./operators.js";
 
-export type NumberWhere = number | {
-  eq?: number;
-  ne?: number;
-  lt?: number;
-  lte?: number;
-  gt?: number;
-  gte?: number;
-  in?: readonly number[];
-  notIn?: readonly number[];
-  $eq?: number;
-  $ne?: number;
-  $lt?: number;
-  $lte?: number;
-  $gt?: number;
-  $gte?: number;
-  $in?: readonly number[];
-  $nin?: readonly number[];
+export type NumberWhere = WorkflowValue<number> | {
+  eq?: WorkflowValue<number>;
+  ne?: WorkflowValue<number>;
+  lt?: WorkflowValue<number>;
+  lte?: WorkflowValue<number>;
+  gt?: WorkflowValue<number>;
+  gte?: WorkflowValue<number>;
+  in?: WorkflowValue<readonly number[]>;
+  notIn?: WorkflowValue<readonly number[]>;
+  $eq?: WorkflowValue<number>;
+  $ne?: WorkflowValue<number>;
+  $lt?: WorkflowValue<number>;
+  $lte?: WorkflowValue<number>;
+  $gt?: WorkflowValue<number>;
+  $gte?: WorkflowValue<number>;
+  $in?: WorkflowValue<readonly number[]>;
+  $nin?: WorkflowValue<readonly number[]>;
 };
 
-export type StringWhere = string | {
-  eq?: string;
-  ne?: string;
-  contains?: string;
-  startsWith?: string;
-  endsWith?: string;
-  matches?: string;
-  in?: readonly string[];
-  notIn?: readonly string[];
-  $eq?: string;
-  $ne?: string;
-  $regex?: string;
-  $in?: readonly string[];
-  $nin?: readonly string[];
+export type StringWhere = WorkflowValue<string> | {
+  eq?: WorkflowValue<string>;
+  ne?: WorkflowValue<string>;
+  contains?: WorkflowValue<string>;
+  startsWith?: WorkflowValue<string>;
+  endsWith?: WorkflowValue<string>;
+  matches?: WorkflowValue<string>;
+  in?: WorkflowValue<readonly string[]>;
+  notIn?: WorkflowValue<readonly string[]>;
+  $eq?: WorkflowValue<string>;
+  $ne?: WorkflowValue<string>;
+  $regex?: WorkflowValue<string>;
+  $in?: WorkflowValue<readonly string[]>;
+  $nin?: WorkflowValue<readonly string[]>;
 };
 
-export type BooleanWhere = boolean | {
-  eq?: boolean;
-  ne?: boolean;
-  $eq?: boolean;
-  $ne?: boolean;
+export type BooleanWhere = WorkflowValue<boolean> | {
+  eq?: WorkflowValue<boolean>;
+  ne?: WorkflowValue<boolean>;
+  $eq?: WorkflowValue<boolean>;
+  $ne?: WorkflowValue<boolean>;
 };
 
 export type ArrayWhere<Item> = {
   isEmpty?: boolean;
   length?: NumberWhere;
-  contains?: Item;
+  contains?: WorkflowValue<Item>;
 };
 
 export type Where<T> = T extends string
@@ -72,7 +72,7 @@ export type Where<T> = T extends string
     ? NumberWhere
     : T extends boolean
       ? BooleanWhere
-      : T extends Array<infer Item>
+      : T extends readonly (infer Item)[]
         ? ArrayWhere<Item>
         : T extends object
           ? ObjectWhere<T>
@@ -91,12 +91,12 @@ export type ObjectWhere<T> = {
 
 export function where<T>(target: OutputAccessor<T>, filter: Where<T>): Expr<boolean>;
 export function where<T>(target: Expr<T>, filter: Where<T>): Expr<boolean>;
-export function where(target: any, filter: any): Expr<boolean>;
 export function where(target: any, filter: any): Expr<boolean> {
   return lowerWhere(target, filter);
 }
 
 function lowerWhere(target: any, filter: any): Expr<boolean> {
+  if (isExpr(filter)) return eq(target, filter);
   if (typeof filter === "boolean" || typeof filter === "string" || typeof filter === "number" || filter === null) return eq(target, filter as any);
   if (!filter || typeof filter !== "object" || Array.isArray(filter)) return eq(target, filter);
   if (isOperatorObject(filter)) return lowerOperator(target, filter);
@@ -143,9 +143,9 @@ function lowerOperator(target: any, spec: Record<string, any>): Expr<boolean> {
       case "lte": clauses.push(lte(target, value)); break;
       case "gt": clauses.push(gt(target, value)); break;
       case "gte": clauses.push(gte(target, value)); break;
-      case "in": clauses.push(call<boolean>("in", [target, value], { kind: "boolean" })); break;
-      case "notIn": clauses.push(not(call<boolean>("in", [target, value], { kind: "boolean" }))); break;
-      case "contains": clauses.push(contains(target, value)); break;
+      case "in": clauses.push(includes(value, target)); break;
+      case "notIn": clauses.push(not(includes(value, target))); break;
+      case "contains": clauses.push(includes(target, value)); break;
       case "startsWith": clauses.push(startsWith(target, value)); break;
       case "endsWith": clauses.push(endsWith(target, value)); break;
       case "matches": clauses.push(matches(target, value)); break;

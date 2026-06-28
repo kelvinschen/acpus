@@ -30,7 +30,7 @@ zx  ^8.8.5
 pnpm --filter @acpus/core typecheck
 ```
 
-The checked-in example workflow and compiled IR live under `examples/`.
+Representative workflow compiler fixtures live under `test/fixtures/workflows/`; this package does not maintain a separate examples tree.
 
 ## Minimal workflow
 
@@ -38,10 +38,8 @@ The checked-in example workflow and compiled IR live under `examples/`.
 import {
   defineWorkflow,
   z,
-  agent,
   template,
   where,
-  runtime,
 } from "@acpus/core";
 
 const ReviewOut = z.object({
@@ -54,44 +52,44 @@ const ReviewOut = z.object({
 export default defineWorkflow({
   name: "quick-review",
 
-  input: z.object({
+  inputSchema: z.object({
     repoPath: z.path(),
   }),
 
   agents: {
-    reviewer: agent.define({ provider: "codex", policy: "read" }),
+    reviewer: { use: "codex", policy: "read" },
   },
 }).build(({ input, step, output }) => {
-  const diff = step.task("diff", {
-    input: { repoPath: input.repoPath },
-    output: z.object({ patch: z.artifact("text/x-patch") }),
+  const diff = step("diff").task({
+    outputSchema: z.object({ patch: z.artifact("text/x-patch") }),
     cwd: input.repoPath,
-    run: async ({ $, artifact }) => {
-      const result = await $`git diff`;
-      return {
-        patch: await artifact.writeText("diff.patch", result.stdout, {
-          mediaType: "text/x-patch",
-        }),
-      };
+    run: {
+      input: {},
+      exec: async ({ $, artifact }) => {
+        const result = await $`git diff`;
+        return {
+          patch: await artifact.writeText("diff.patch", result.stdout, {
+            mediaType: "text/x-patch",
+          }),
+        };
+      },
     },
   });
 
-  const review = step.agent("review", {
-    input: { patch: diff.output.patch },
-    output: ReviewOut,
-    run: ({ input }) => ({
-      use: "reviewer",
-      prompt: template`Review this diff:\n\n${input.patch}`,
-    }),
+  const review = step("review").agent({
+    outputSchema: ReviewOut,
+    run: {
+      agent: "reviewer",
+      prompt: template`Review this diff:\n\n${diff.output.patch}`,
+    },
   });
 
-  step.guard("require_ready", {
-    when: where(review.output, {
+  step("require_ready").assert({
+    condition: where(review.output, {
       ready: true,
       riskCount: { lte: 3 },
       issues: { length: 0 },
     }),
-    otherwise: "fail",
     message: template`Review failed:\n${review.output}`,
   });
 

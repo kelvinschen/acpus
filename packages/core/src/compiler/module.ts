@@ -13,8 +13,7 @@ export type CompileOptions = {
 export async function compileWorkflowModule(entry: string, options: CompileOptions = {}): Promise<WorkflowIR> {
   const absolute = resolve(entry);
   const source = await readFile(absolute, "utf8");
-  const cacheBuster = encodeURIComponent(`${Date.now()}-${Math.random()}`);
-  const mod = await import(`${pathToFileURL(absolute).href}?acpus=${cacheBuster}`);
+  const mod = await import(pathToFileURL(absolute).href);
   const def = mod.default;
   if (!isWorkflowDefinition(def)) throw new Error(`Default export of ${entry} is not an Acpus workflow definition.`);
   const ir = compileWorkflowDefinition(def, { source: options.sourcePath ?? entry });

@@ -13,13 +13,12 @@ This roadmap starts from the current `@acpus/core` authoring and compile layer (
 - Support more Zod 4 representable schemas.
 - Improve errors for unsupported boundary schemas, with source-path context in `toSchemaIR` errors.
 - Decide whether `.refine()` is accepted as runtime-only validation or rejected at boundaries.
-- Add coverage for optional/default/nullable, nested objects, records, unions, Acpus metadata extensions, and rejected features (transforms/custom/date/map/set/etc.).
 
 ## Phase 2: Task bundling
 
 Replace the `Function#toString()` placeholder with production bundling.
 
-- AST extraction for inline `task(async ctx => ...)` and external `task.define(...).run(...)`.
+- AST extraction for inline `step("id").task({ outputSchema, run: { input, exec } })` and external `task.define({ inputSchema, outputSchema, exec })`.
 - Local import-graph bundling, source maps, and a digest over the final bundle.
 - Frozen task bundle assets in the IR lock.
 - Closure-capture diagnostics — hard errors when a Task captures workflow `Expr`, `step`, or graph builder state, or uses non-deterministic top-level values; warnings when a Task imports raw `zx`, imports `child_process` directly, or reads `process.env` instead of task-level `env`.
@@ -34,12 +33,12 @@ Replace the `Function#toString()` placeholder with production bundling.
 ## Phase 4: Expr evaluator
 
 - Implement a runtime evaluator for `ExprIR` (the full operator set, including where-lowered calls).
-- Add type-aware validation: guard `when` must be boolean, fanout `over` should be array-like, loop `until` must be boolean.
+- Add type-aware validation: assert authoring `condition` must be boolean, fanout `over` should be array-like, loop stop condition must be boolean.
 
 ## Phase 5: Agent and Signal executors
 
-- Agent executor: evaluate inputs, render prompt templates, run the selected agent definition, parse/validate output, record transcript/artifacts, retry on output parse/schema failures.
-- Signal executor: evaluate inputs, render prompt, enter awaiting state, validate payload, resume the graph.
+- Agent executor: evaluate refs in `run.prompt`, `run.cwd`, `run.env`, and `run.session`, render prompt templates, run the selected agent definition, parse/validate output, record transcript/artifacts, retry on output parse/schema failures.
+- Signal executor: evaluate refs in `run.prompt`, render prompt, enter awaiting state, validate payload, resume the graph.
 
 ## Phase 6: runtime persistence
 
@@ -63,4 +62,4 @@ This remains outside core authoring syntax.
 
 ## Phase 9: developer experience
 
-- VS Code snippets, a graph visualizer, `acpus wf explain`, `acpus task test`, diagnostics with source maps, and a migration helper from the previous API.
+- VS Code snippets, a graph visualizer, `acpus wf explain`, `acpus task test`, and diagnostics with source maps.

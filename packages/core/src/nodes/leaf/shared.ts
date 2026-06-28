@@ -1,6 +1,8 @@
-import type { Expr } from "../../expressions/expr.js";
+import type { AnyWorkflowValue, Expr, WorkflowValue } from "../../expressions/expr.js";
+import type { SecretToken } from "../../runtime/secret.js";
 
-export type StepInput = Record<string, unknown>;
+export type StepInput = Record<string, AnyWorkflowValue>;
+export type EnvInput = Record<string, WorkflowValue<string> | SecretToken>;
 
 export type GraphInput<Input extends StepInput> = {
   readonly [K in keyof Input]: Input[K];

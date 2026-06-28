@@ -1,30 +1,60 @@
 import { assertStableId, stripUndefined } from "../../graph/lowering.js";
-import { toSchemaIR, type Schema } from "../../schema/index.js";
-import type { DiagnosticIR, ParallelNodeIR, ScopeIR } from "../../ir/types.js";
-import type { BuildScope, JoinMode, ScopeCallback } from "./shared.js";
+import type { Simplify, ValueOf } from "../../internal/type-utils.js";
+import { toSchemaIR, type InferSchema, type Schema } from "../../schema/index.js";
+import type { DiagnosticIR, ParallelBranchIR, ParallelNodeIR } from "../../ir/types.js";
+import type { BuildScope, ObjectSchema, ParallelStrategy, ScopeCallback, ScopeOutput } from "./shared.js";
 
-export type ParallelStepSpec<Branches extends Record<string, ScopeCallback>> = {
-  branches: Branches;
-  join?: JoinMode;
-  maxConcurrency?: number;
-  output?: Schema<any>;
+export type ParallelBranchSpec<OutSchema extends ObjectSchema, AgentKey extends string = string> = {
+  outputSchema: OutSchema;
+  do: ScopeCallback<ScopeOutput<InferSchema<OutSchema>>, AgentKey>;
 };
 
-export function buildParallelNode<Branches extends Record<string, ScopeCallback>>(
+export type ParallelStepSpec<
+  Branches extends Record<string, ObjectSchema> = Record<string, ObjectSchema>,
+  Strategy extends ParallelStrategy = "all",
+  AgentKey extends string = string,
+> = Simplify<{
+  branches: { [K in keyof Branches]: ParallelBranchSpec<Branches[K], AgentKey> };
+  maxConcurrency?: number;
+} & (Strategy extends "race" ? { strategy: "race" } : { strategy?: "all" })>;
+
+type BranchOutputs<Branches extends Record<string, ObjectSchema>> = {
+  readonly [K in keyof Branches]: InferSchema<Branches[K]>;
+};
+
+export type ParallelNodeRefOutput<
+  Branches extends Record<string, ObjectSchema>,
+  Strategy extends ParallelStrategy,
+> = Strategy extends "race"
+  ? {
+      winner: Extract<keyof Branches, string>;
+      result: ValueOf<BranchOutputs<Branches>>;
+    }
+  : BranchOutputs<Branches>;
+
+export function buildParallelNode<
+  Branches extends Record<string, ObjectSchema>,
+  Strategy extends ParallelStrategy,
+  AgentKey extends string = string,
+>(
   id: string,
-  spec: ParallelStepSpec<Branches>,
+  spec: ParallelStepSpec<Branches, Strategy, AgentKey>,
   diagnostics: DiagnosticIR[],
-  buildScope: BuildScope,
+  buildScope: BuildScope<AgentKey>,
 ): ParallelNodeIR {
   assertStableId(id, diagnostics);
-  const branches: Record<string, ScopeIR> = {};
-  for (const [key, fn] of Object.entries(spec.branches)) branches[key] = buildScope(fn);
+  const branches: Record<string, ParallelBranchIR> = {};
+  for (const [key, branch] of Object.entries(spec.branches) as Array<[string, ParallelBranchSpec<ObjectSchema, AgentKey>]>) {
+    branches[key] = {
+      outputSchema: toSchemaIR(branch.outputSchema),
+      scope: buildScope<{}, ScopeOutput<InferSchema<typeof branch.outputSchema>>>(branch.do),
+    };
+  }
   return stripUndefined({
     id,
     kind: "parallel",
     branches,
-    join: spec.join,
+    strategy: spec.strategy ?? "all",
     maxConcurrency: spec.maxConcurrency,
-    outputSchema: spec.output ? toSchemaIR(spec.output) : undefined,
   }) as ParallelNodeIR;
 }

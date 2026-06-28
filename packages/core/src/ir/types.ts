@@ -59,7 +59,7 @@ export type SecretRefIR = {
 export type AgentDefinitionIR =
   | {
       kind: "agent_definition";
-      provider: string;
+      use: string;
       model?: string;
       policy?: "read" | "full";
       cwd?: ExprIR;
@@ -79,13 +79,12 @@ export type NodeIR =
   | AgentNodeIR
   | TaskNodeIR
   | SignalNodeIR
-  | GuardNodeIR
+  | AssertNodeIR
   | IfNodeIR
   | SwitchNodeIR
   | ParallelNodeIR
   | FanoutNodeIR
-  | LoopNodeIR
-  | CallNodeIR;
+  | LoopNodeIR;
 
 export type BaseNodeIR = {
   id: string;
@@ -94,7 +93,6 @@ export type BaseNodeIR = {
 
 export type AgentNodeIR = BaseNodeIR & {
   kind: "agent";
-  inputs: Record<string, ExprIR>;
   outputSchema?: SchemaIR;
   run: AgentRunIR;
   timeout?: DurationIR;
@@ -103,7 +101,7 @@ export type AgentNodeIR = BaseNodeIR & {
 
 export type AgentRunIR = {
   kind: "agent_run";
-  use: string;
+  agent: string;
   prompt: TemplateIR;
   policy?: "read" | "full";
   session?: { key?: TemplateIR };
@@ -124,6 +122,7 @@ export type TaskNodeIR = BaseNodeIR & {
   execution?: {
     shell?: "bash" | "powershell" | "pwsh";
     defaultCommandTimeout?: DurationIR;
+    commandRunner?: "acpus-zx-core" | "custom";
   };
 };
 
@@ -138,11 +137,10 @@ export type TaskRunIR = {
 
 export type SignalNodeIR = BaseNodeIR & {
   kind: "signal";
-  inputs: Record<string, ExprIR>;
   outputSchema: SchemaIR;
   run: SignalRunIR;
   timeout?: DurationIR;
-  onTimeout?: { action: "fail" | "complete"; message?: string };
+  onTimeout?: { action: "fail"; message?: string };
 };
 
 export type SignalRunIR = {
@@ -150,11 +148,9 @@ export type SignalRunIR = {
   prompt: TemplateIR;
 };
 
-export type GuardNodeIR = BaseNodeIR & {
-  kind: "guard";
-  when: ExprIR;
-  then?: "continue" | "fail" | "complete";
-  otherwise: "continue" | "fail" | "complete";
+export type AssertNodeIR = BaseNodeIR & {
+  kind: "assert";
+  condition: ExprIR;
   message?: TemplateIR;
 };
 
@@ -165,53 +161,51 @@ export type ScopeIR = {
 
 export type IfNodeIR = BaseNodeIR & {
   kind: "if";
-  when: ExprIR;
+  condition: ExprIR;
   then: ScopeIR;
-  otherwise?: ScopeIR;
+  else?: ScopeIR;
   outputSchema?: SchemaIR;
 };
 
 export type SwitchNodeIR = BaseNodeIR & {
   kind: "switch";
   cases: Array<{ when: ExprIR; then: ScopeIR }>;
-  otherwise?: ScopeIR;
+  default?: ScopeIR;
   outputSchema?: SchemaIR;
+};
+
+export type ParallelBranchIR = {
+  outputSchema: SchemaIR;
+  scope: ScopeIR;
 };
 
 export type ParallelNodeIR = BaseNodeIR & {
   kind: "parallel";
-  branches: Record<string, ScopeIR>;
-  join?: "all" | "race";
+  branches: Record<string, ParallelBranchIR>;
+  strategy: "all" | "race";
   maxConcurrency?: number;
-  outputSchema?: SchemaIR;
 };
 
-export type FanoutNodeIR = BaseNodeIR & {
+type BaseFanoutNodeIR = BaseNodeIR & {
   kind: "fanout";
   over: ExprIR;
-  itemSchema?: SchemaIR;
   key?: TemplateIR;
   do: ScopeIR;
-  join?: "all" | "race" | "quorum";
   maxConcurrency?: number;
-  quorum?: number;
-  outputSchema?: SchemaIR;
+  itemOutputSchema: SchemaIR;
 };
+
+export type FanoutNodeIR =
+  | (BaseFanoutNodeIR & { strategy: "all"; count?: never })
+  | (BaseFanoutNodeIR & { strategy: "quorum"; count: number });
 
 export type LoopNodeIR = BaseNodeIR & {
   kind: "loop";
   maxIterations: number;
   do: ScopeIR;
-  until: ExprIR;
-  onMaxIterations?: "fail" | "complete";
-  outputSchema?: SchemaIR;
-};
-
-export type CallNodeIR = BaseNodeIR & {
-  kind: "call";
-  workflow: string;
-  inputs: Record<string, ExprIR>;
-  outputSchema?: SchemaIR;
+  stopWhen: ExprIR;
+  onExhausted?: "fail" | "returnLast";
+  outputSchema: SchemaIR;
 };
 
 export type TaskBundleIR = {

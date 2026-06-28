@@ -9,6 +9,7 @@ Acpus core owns its canonical expression IR (`ExprIR`). The public authoring sur
 ### Authoring styles
 
 - The core MUST support a Prisma/Mongo-style `where(target, filter)` surface and MUST lower it to primitive `ExprIR` calls.
+- `where(...)` filter values MUST accept corresponding workflow values, including refs, literal arrays, ref-backed arrays for `in` / `notIn`, and arrays containing refs. `isEmpty` MUST remain a boolean literal selector.
 
 ```ts
 where(review.output, { ready: true, riskCount: { lte: 3 }, issues: { length: 0 } });
@@ -24,21 +25,30 @@ where(review.output, { ready: true, riskCount: { lte: 3 }, issues: { length: 0 }
 
 ```ts
 and(where(review.output, { ready: true }), lte(review.output.riskCount, 3));
+or(includes(statuses, status), isEmpty(issues));
 ```
 
-- The core MUST support collection helpers over compile-time arrays via selector callbacks; these MUST NOT be used for runtime arrays (use `step.fanout(...)`).
+- The core MUST support collection helpers over compile-time arrays via selector callbacks; these MUST NOT be used for runtime arrays (use `step("id").fanout(...)`).
 
 ```ts
 all(reviews, review => review.output.ready);
 max(reviews, review => review.output.riskCount);
 ```
 
+- The core MUST support `head(array)` and `nth(array, index)` for ref-backed workflow arrays. These helpers MUST lower to index ref paths and MUST return accessors typed as possibly `undefined`.
+
+```ts
+fallback(head(reviews.output).summary, "(none)");
+nth(reviews.output, 1).ready;
+```
+
 ### Operator set
 
 - Number comparisons MUST include: `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in`, `notIn`.
-- String operators MUST include: `eq`, `ne`, `contains`, `startsWith`, `endsWith`, `matches`, `in`, `notIn`.
+- String operators MUST include: `eq`, `ne`, `contains` in `where(...)` filters, `includes`, `startsWith`, `endsWith`, `matches`, `in`, `notIn`.
 - Boolean operators MUST include: `true`, `false`, `eq`, `ne`.
-- Array operators MUST include: `length`, `contains`, `isEmpty`.
+- Array operators MUST include: `length`, `contains` in `where(...)` filters, `includes`, `isEmpty`.
+- Ref-backed array access helpers MUST include: `head`, `nth`.
 - Logical combinators MUST include: `AND`, `OR`, `NOT`.
 
 ### Canonical layer ownership
@@ -49,6 +59,8 @@ max(reviews, review => review.output.riskCount);
 
 ## Verification
 
-- Tests MUST cover that `where(...)` lowers to the documented primitive `ExprIR` calls, including the field-shorthand cases (`true` → `eq`, `{ length: 0 }` → `eq(len(...), 0)`).
+- Tests MUST cover that `where(...)` lowers to the documented primitive `ExprIR` calls, including the field-shorthand cases (`true` → `eq`, `{ length: 0 }` → `eq(len(...), 0)`) and workflow-value filters.
 - Tests MUST cover Mongo aliases (e.g. `$lte`, `$regex`) lowering to the same primitives as their named counterparts.
 - Tests MUST cover compile-time collection helpers (`all`, `max`) producing logical/aggregate `ExprIR` over the selected refs.
+- Tests MUST cover `head(...)` and `nth(...)` lowering to index ref paths.
+- Tests MUST cover `includes(...)` and `isEmpty(...)` direct helpers.

@@ -19,11 +19,11 @@ serializable IR which a runtime consumes.
 - TypeScript workflow authoring via `defineWorkflow(...).build(...)`.
 - A **Zod 4** schema bridge with Acpus boundary extensions (`z.path`, `z.artifact`, `z.secretRef`), canonicalized to a durable `SchemaIR`.
 - An Acpus-owned expression IR (`ExprIR`) with Prisma/Mongo-style `where(...)` filters and named operators — no CEL/JSON Logic as the canonical layer.
-- Agent / Task / Signal executable nodes sharing a unified `input / output / run` shape, plus composite nodes (`if`, `switch`, `parallel`, `fanout`, `loop`) and guards.
+- Agent / Task / Signal executable nodes with explicit `run` boundaries and schema contract fields (`inputSchema`, `outputSchema`, `itemOutputSchema`), plus composite nodes (`if`, `switch`, `parallel`, `fanout`, `loop`) and boolean `assert` nodes.
 - Trusted local **Task** nodes (replacing program nodes) with an Acpus-owned `$` command wrapper backed by `zx/core`. Security isolation is delegated to the runner/container/profile layer, not per-node syntax.
 - Compilation to a frozen `WorkflowIR` (`irVersion: 2`) with structural validation.
 
-A minimal example and its compiled IR live in `packages/core/examples/`.
+Representative workflow compiler fixtures live in `packages/core/test/fixtures/workflows/`.
 
 ## Development
 

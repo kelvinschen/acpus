@@ -1,4 +1,5 @@
 import { EXPR } from "../internal/symbols.js";
+import type { IsAny } from "../internal/type-utils.js";
 import type { ExprIR, TypeIR } from "../ir/types.js";
 
 export interface Expr<T> {
@@ -7,7 +8,27 @@ export interface Expr<T> {
   readonly ir: ExprIR;
 }
 
-export type WorkflowValue<T = any> = Expr<T> | T | WorkflowValue<any>[] | { [key: string]: WorkflowValue<any> };
+export type WorkflowPrimitive = string | number | boolean | null;
+export type AnyWorkflowValue =
+  | Expr<any>
+  | WorkflowPrimitive
+  | readonly AnyWorkflowValue[]
+  | { readonly [key: string]: AnyWorkflowValue };
+
+type WorkflowLiteralValue<T> =
+  T extends undefined
+    ? never
+    : T extends WorkflowPrimitive
+      ? T
+      : T extends readonly (infer Item)[]
+      ? readonly WorkflowValue<Item>[]
+      : T extends object
+        ? { readonly [K in keyof T]: WorkflowValue<T[K]> }
+        : never;
+
+export type WorkflowValue<T = any> = IsAny<T> extends true
+  ? AnyWorkflowValue
+  : Expr<T> | WorkflowLiteralValue<T>;
 
 class ExprImpl<T> implements Expr<T> {
   readonly [EXPR] = true as const;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { all, max, refExpr, where } from "../src/index.js";
+import { all, head, includes, isEmpty, max, nth, refExpr, where } from "../src/index.js";
 
 const booleanType = { kind: "boolean" };
 const integerType = { kind: "integer" };
@@ -54,9 +54,82 @@ describe("expression lowering", () => {
         },
         {
           kind: "call",
-          fn: "contains",
+          fn: "includes",
           type: booleanType,
           args: [ref(["nodes", "review", "output", "summary"]), literal("ok")],
+        },
+      ],
+    });
+  });
+
+  it("lowers where workflow-value filters to primitive calls", () => {
+    const review = refExpr<{
+      ready: boolean;
+      branch: string;
+      score: number;
+      tag: string;
+    }>(["nodes", "review", "output"]);
+    const input = refExpr<{
+      ready: boolean;
+      branch: string;
+      minScore: number;
+      allowedTags: readonly string[];
+      rejectedTags: readonly string[];
+    }>(["workflow", "input"]);
+
+    expect(where(review, {
+      ready: input.ready,
+      branch: input.branch,
+      score: { gte: input.minScore },
+      tag: { in: input.allowedTags, notIn: input.rejectedTags },
+    }).ir).toEqual({
+      kind: "call",
+      fn: "and",
+      type: booleanType,
+      args: [
+        {
+          kind: "call",
+          fn: "eq",
+          type: booleanType,
+          args: [ref(["nodes", "review", "output", "ready"]), ref(["workflow", "input", "ready"])],
+        },
+        {
+          kind: "call",
+          fn: "eq",
+          type: booleanType,
+          args: [ref(["nodes", "review", "output", "branch"]), ref(["workflow", "input", "branch"])],
+        },
+        {
+          kind: "call",
+          fn: "gte",
+          type: booleanType,
+          args: [ref(["nodes", "review", "output", "score"]), ref(["workflow", "input", "minScore"])],
+        },
+        {
+          kind: "call",
+          fn: "and",
+          type: booleanType,
+          args: [
+            {
+              kind: "call",
+              fn: "includes",
+              type: booleanType,
+              args: [ref(["workflow", "input", "allowedTags"]), ref(["nodes", "review", "output", "tag"])],
+            },
+            {
+              kind: "call",
+              fn: "not",
+              type: booleanType,
+              args: [
+                {
+                  kind: "call",
+                  fn: "includes",
+                  type: booleanType,
+                  args: [ref(["workflow", "input", "rejectedTags"]), ref(["nodes", "review", "output", "tag"])],
+                },
+              ],
+            },
+          ],
         },
       ],
     });
@@ -121,6 +194,45 @@ describe("expression lowering", () => {
           kind: "array",
           items: [ref(["reviews", "0", "riskCount"]), ref(["reviews", "1", "riskCount"])],
         },
+      ],
+    });
+  });
+
+  it("lowers ref-backed collection access helpers to index ref paths", () => {
+    const reviews = refExpr<Array<{ ready: boolean; summary: string }>>(["nodes", "reviews", "output"]);
+
+    expect(head(reviews).summary.ir).toEqual(ref(["nodes", "reviews", "output", "0", "summary"]));
+    expect(nth(reviews, 2).ready.ir).toEqual(ref(["nodes", "reviews", "output", "2", "ready"]));
+  });
+
+  it("lowers lodash-style collection helpers", () => {
+    const tags = refExpr<readonly string[]>(["workflow", "input", "tags"]);
+    const summary = refExpr<string>(["nodes", "review", "output", "summary"]);
+
+    expect(includes(tags, "ready").ir).toEqual({
+      kind: "call",
+      fn: "includes",
+      type: booleanType,
+      args: [ref(["workflow", "input", "tags"]), literal("ready")],
+    });
+    expect(includes(summary, "ready").ir).toEqual({
+      kind: "call",
+      fn: "includes",
+      type: booleanType,
+      args: [ref(["nodes", "review", "output", "summary"]), literal("ready")],
+    });
+    expect(isEmpty(tags).ir).toEqual({
+      kind: "call",
+      fn: "eq",
+      type: booleanType,
+      args: [
+        {
+          kind: "call",
+          fn: "len",
+          type: integerType,
+          args: [ref(["workflow", "input", "tags"])],
+        },
+        literal(0),
       ],
     });
   });

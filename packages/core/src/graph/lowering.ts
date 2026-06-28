@@ -1,16 +1,18 @@
 import { valueToExprIR } from "../expressions/expr.js";
 import { secretOrExprToIR } from "../runtime/secret.js";
+import type { AnyWorkflowValue } from "../expressions/expr.js";
 import type { DiagnosticIR, ExprIR, SecretRefIR } from "../ir/types.js";
+import type { EnvInput } from "../nodes/leaf/shared.js";
 
-export function inputsToIR(input?: Record<string, unknown>): Record<string, ExprIR> {
+export function inputsToIR(input?: Record<string, AnyWorkflowValue>): Record<string, ExprIR> {
   const result: Record<string, ExprIR> = {};
   for (const [key, value] of Object.entries(input ?? {})) result[key] = valueToExprIR(value);
   return result;
 }
 
-export function envToIR(env: Record<string, unknown>): Record<string, ExprIR | SecretRefIR>;
-export function envToIR(env?: Record<string, unknown>): Record<string, ExprIR | SecretRefIR> | undefined;
-export function envToIR(env?: Record<string, unknown>): Record<string, ExprIR | SecretRefIR> | undefined {
+export function envToIR(env: EnvInput): Record<string, ExprIR | SecretRefIR>;
+export function envToIR(env?: EnvInput): Record<string, ExprIR | SecretRefIR> | undefined;
+export function envToIR(env?: EnvInput): Record<string, ExprIR | SecretRefIR> | undefined {
   if (!env) return undefined;
   const out: Record<string, ExprIR | SecretRefIR> = {};
   for (const [key, value] of Object.entries(env)) out[key] = secretOrExprToIR(value);
