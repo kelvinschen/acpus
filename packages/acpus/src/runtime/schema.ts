@@ -138,13 +138,15 @@ function parseObject(schema: Extract<TypeIR, { kind: "object" }>, value: unknown
   const out: Record<string, unknown> = {};
   const required = new Set(schema.required);
   for (const [key, fieldSchema] of Object.entries(schema.fields)) {
+    const field = fieldSchema as RuntimeSchema;
     const hasKey = Object.prototype.hasOwnProperty.call(value, key);
-    const parsed = parseValue(fieldSchema as RuntimeSchema, value[key], `${path}.${key}`, issues);
-    if (parsed !== undefined || hasKey) out[key] = parsed;
-    if (!hasKey && required.has(key)) {
-      const field = fieldSchema as RuntimeSchema;
-      if (!field.optional && field.default === undefined) issue(issues, `${path}.${key}`, "is required", field.kind, "undefined");
+    if (!hasKey) {
+      if (field.default !== undefined) out[key] = cloneJson(field.default);
+      else if (required.has(key) && !field.optional) issue(issues, `${path}.${key}`, "is required", field.kind, "undefined");
+      continue;
     }
+    const parsed = parseValue(field, value[key], `${path}.${key}`, issues);
+    if (parsed !== undefined) out[key] = parsed;
   }
   if (!schema.additionalProperties) {
     for (const key of Object.keys(value)) {
