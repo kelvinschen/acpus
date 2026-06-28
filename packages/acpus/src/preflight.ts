@@ -4,7 +4,7 @@ import { join, relative, resolve } from "node:path";
 import type { WorkflowIR } from "@acpus/core";
 import { compileWorkflow } from "./compile.js";
 import { CliError } from "./errors.js";
-import { summarizeWorkflow, type CliResult } from "./output.js";
+import { summarizeWorkflow, type CliResult, type WorkflowSummary } from "./output.js";
 import { createScratchDir, typecheckWorkflow } from "./typecheck.js";
 
 export type PreflightOptions = {
@@ -12,7 +12,37 @@ export type PreflightOptions = {
   cwd: string;
 };
 
+export type PreflightArtifact = {
+  dir: string;
+  irDigest: string;
+  sourceGraphDigest: string;
+};
+
+export type PreflightWorkflowResult = {
+  ir: WorkflowIR;
+  workflowPath: string;
+  summary: WorkflowSummary;
+  artifact: PreflightArtifact;
+  diagnostics: WorkflowIR["diagnostics"];
+  taskBundleCount: number;
+};
+
 export async function runPreflight(options: PreflightOptions): Promise<CliResult & { ok: true; phase: "dry-run" }> {
+  const result = await preflightWorkflow(options);
+  return {
+    ok: true,
+    phase: "dry-run",
+    message: "Workflow dry-run passed.",
+    workflow: result.summary,
+    diagnostics: result.diagnostics,
+    preflightDir: result.artifact.dir,
+    irDigest: result.artifact.irDigest,
+    taskBundleCount: result.taskBundleCount,
+    sourceGraphDigest: result.artifact.sourceGraphDigest,
+  };
+}
+
+export async function preflightWorkflow(options: PreflightOptions): Promise<PreflightWorkflowResult> {
   const workflowPath = resolve(options.cwd, options.workflow);
   const scratchDir = await createScratchDir();
   try {
@@ -47,28 +77,20 @@ export async function runPreflight(options: PreflightOptions): Promise<CliResult
     }
 
     const artifact = await writePreflightArtifact(compiled.ir, workflowPath, options.cwd);
-
     return {
-      ok: true,
-      phase: "dry-run",
-      message: "Workflow dry-run passed.",
-      workflow: summary,
+      ir: compiled.ir,
+      workflowPath,
+      summary,
+      artifact,
       diagnostics: compiled.ir.diagnostics,
-      preflightDir: artifact.dir,
-      irDigest: artifact.irDigest,
       taskBundleCount: Object.keys(compiled.ir.assets.taskBundles).length,
-      sourceGraphDigest: artifact.sourceGraphDigest,
     };
   } finally {
     await rm(scratchDir, { recursive: true, force: true });
   }
 }
 
-async function writePreflightArtifact(ir: WorkflowIR, workflowPath: string, cwd: string): Promise<{
-  dir: string;
-  irDigest: string;
-  sourceGraphDigest: string;
-}> {
+async function writePreflightArtifact(ir: WorkflowIR, workflowPath: string, cwd: string): Promise<PreflightArtifact> {
   const irJson = `${JSON.stringify(ir, null, 2)}\n`;
   const irDigest = digest(irJson);
   const sourceGraphDigest = digest([
