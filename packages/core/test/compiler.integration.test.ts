@@ -22,14 +22,10 @@ describe("workflow module compiler", () => {
     ]);
     expect(ir.root.nodes.map(node => node.kind)).toEqual(["task", "agent", "assert"]);
     expect(Object.keys(ir.assets.taskBundles)).toHaveLength(1);
-    expect(Object.values(ir.assets.taskBundles).every(bundle => bundle.digest.startsWith("sha256:"))).toBe(true);
+    expectProductionBundles(ir.assets.taskBundles);
+    expect(Object.values(ir.assets.taskBundles)[0]?.source).toContain("slugifyPackageName");
     expect(ir.lock.workflowSourceDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
-    expect(ir.diagnostics).toEqual([
-      expect.objectContaining({
-        code: "C001",
-        severity: "warning",
-      }),
-    ]);
+    expect(ir.diagnostics).toEqual([]);
     expect(Object.keys(ir.outputs).sort()).toEqual(["ready", "slug"]);
   });
 
@@ -66,19 +62,87 @@ describe("workflow module compiler", () => {
     expect(Object.keys(ir.assets.taskBundles)).toHaveLength(3);
     expect(Object.values(ir.assets.taskBundles).some(bundle => bundle.inline === false)).toBe(true);
     expect(Object.values(ir.assets.taskBundles).some(bundle => bundle.inline === true)).toBe(true);
+    expectProductionBundles(ir.assets.taskBundles);
     expect(ir.lock.workflowSourceDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
-    expect(ir.diagnostics).toEqual([
-      expect.objectContaining({
-        code: "C001",
-        severity: "warning",
-      }),
-    ]);
+    expect(ir.diagnostics).toEqual([]);
     expect(Object.keys(ir.outputs).sort()).toEqual([
       "changelogDraft",
       "maxRiskCount",
       "ready",
       "summary",
     ]);
+  });
+
+  it("rejects reusable tasks that are private workflow-local values", async () => {
+    const entry = fileURLToPath(new URL("fixtures/workflows/local-task.workflow.ts", import.meta.url));
+    const ir = await compileWorkflowModule(entry, {
+      sourcePath: "packages/core/test/fixtures/workflows/local-task.workflow.ts",
+    });
+
+    expect(ir.diagnostics).toContainEqual(expect.objectContaining({
+      code: "TB004",
+      severity: "error",
+      path: expect.stringMatching(/^assets\.taskBundles\..+\.sourceFile$/),
+    }));
+  });
+
+  it("rejects inline tasks that capture workflow-module scope", async () => {
+    const entry = fileURLToPath(new URL("fixtures/workflows/inline-capture.workflow.ts", import.meta.url));
+    const ir = await compileWorkflowModule(entry, {
+      sourcePath: "packages/core/test/fixtures/workflows/inline-capture.workflow.ts",
+    });
+
+    expect(ir.diagnostics).toContainEqual(expect.objectContaining({
+      code: "TB007",
+      severity: "error",
+      path: expect.stringMatching(/^assets\.taskBundles\..+\.source$/),
+    }));
+  });
+
+  it("bundles a reusable task dependency graph including third-party imports", async () => {
+    const entry = fileURLToPath(new URL("fixtures/workflows/third-party-task.workflow.ts", import.meta.url));
+    const ir = await compileWorkflowModule(entry, {
+      sourcePath: "packages/core/test/fixtures/workflows/third-party-task.workflow.ts",
+    });
+
+    expect(ir.diagnostics).toEqual([]);
+    const bundle = Object.values(ir.assets.taskBundles)[0];
+    expect(bundle?.inline).toBe(false);
+    expect(bundle?.sourceFile?.endsWith("tasks/check-version.task.ts")).toBe(true);
+    // The third-party dependency must be inlined into the frozen bundle source,
+    // not left as a bare import for the runtime to re-resolve.
+    expect(bundle?.source).not.toMatch(/from\s+["']zod["']/);
+    expect(bundle?.source).toContain("safeParse");
+  });
+
+  it("derives reusable task provenance from source, stable across compiles", async () => {
+    // Guards the Error.stack -> static-source provenance migration: provenance
+    // must be a deterministic function of the source, not of call timing.
+    const entry = fileURLToPath(new URL("fixtures/workflows/third-party-task.workflow.ts", import.meta.url));
+    const first = await compileWorkflowModule(entry, { sourcePath: "x" });
+    const second = await compileWorkflowModule(entry, { sourcePath: "x" });
+
+    const a = Object.values(first.assets.taskBundles)[0];
+    const b = Object.values(second.assets.taskBundles)[0];
+    expect(a?.sourceFile).toBe(b?.sourceFile);
+    expect(a?.digest).toBe(b?.digest);
+    expect(first.lock.taskBundleDigests).toEqual(second.lock.taskBundleDigests);
+  });
+
+  it("fails closed when a valid and an invalid task share one bundle id", async () => {
+    const entry = fileURLToPath(new URL("fixtures/workflows/shared-bundle.workflow.ts", import.meta.url));
+    const ir = await compileWorkflowModule(entry, {
+      sourcePath: "packages/core/test/fixtures/workflows/shared-bundle.workflow.ts",
+    });
+
+    // Both task nodes collapse to one bundle id; the workflow-local callsite
+    // must still be rejected even though the valid callsite is declared first.
+    expect(Object.keys(ir.assets.taskBundles)).toHaveLength(1);
+    expect(ir.root.nodes.map(node => node.kind === "task" && node.run.bundleId)).toEqual([
+      Object.keys(ir.assets.taskBundles)[0],
+      Object.keys(ir.assets.taskBundles)[0],
+    ]);
+    expect(ir.diagnostics).toContainEqual(expect.objectContaining({ code: "TB004", severity: "error" }));
   });
 
   it("compiles a representative orchestration fixture with composite scopes", async () => {
@@ -111,12 +175,7 @@ describe("workflow module compiler", () => {
       "task",
     ]);
     expect(ir.lock.workflowSourceDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
-    expect(ir.diagnostics).toEqual([
-      expect.objectContaining({
-        code: "C001",
-        severity: "warning",
-      }),
-    ]);
+    expect(ir.diagnostics).toEqual([]);
     expect(Object.keys(ir.outputs).sort()).toEqual([
       "approved",
       "first_lane",
@@ -318,6 +377,12 @@ describe("workflow module compiler", () => {
     });
   });
 });
+
+function expectProductionBundles(bundles: Record<string, { digest: string; source?: string; note?: string }>): void {
+  expect(Object.values(bundles).every(bundle => bundle.digest.startsWith("sha256:"))).toBe(true);
+  expect(Object.values(bundles).every(bundle => typeof bundle.source === "string" && bundle.source.length > 0)).toBe(true);
+  expect(Object.values(bundles).every(bundle => bundle.note === undefined)).toBe(true);
+}
 
 function collectKinds(scope: ScopeIR): NodeIR["kind"][] {
   const kinds: NodeIR["kind"][] = [];

@@ -9,11 +9,12 @@ export function validateWorkflowIR(ir: WorkflowIR): DiagnosticIR[] {
   validateSchema(ir.inputSchema, diagnostics, "inputSchema");
   validateAgents(ir.agents, diagnostics);
   const ids = new Set<string>();
-  validateScope(ir.root, diagnostics, { path: "root", ids, agents: new Set(Object.keys(ir.agents)), taskBundles: new Set(Object.keys(ir.assets.taskBundles)) });
+  validateScope(ir.root, diagnostics, { path: "root", ids, agents: new Set(Object.keys(ir.agents)), taskBundles: new Map(Object.entries(ir.assets.taskBundles)) });
   for (const [id, bundle] of Object.entries(ir.assets.taskBundles)) {
-    validateKnownFields(bundle, ["id", "digest", "runtime", "source", "sourceFile", "inline", "note"], diagnostics, `assets.taskBundles.${id}`);
+    validateKnownFields(bundle, ["id", "digest", "runtime", "source", "sourceFile", "inline"], diagnostics, `assets.taskBundles.${id}`);
     if (id !== bundle.id) diagnostics.push({ code: "T004", severity: "error", message: `Task bundle key '${id}' does not match bundle id '${bundle.id}'.`, path: `assets.taskBundles.${id}` });
     if (!bundle.digest.startsWith("sha256:")) diagnostics.push({ code: "T005", severity: "error", message: `Task bundle '${id}' digest must be sha256:...`, path: `assets.taskBundles.${id}.digest` });
+    if (typeof bundle.source !== "string" || bundle.source.length === 0) diagnostics.push({ code: "T006", severity: "error", message: `Task bundle '${id}' must include bundled source.`, path: `assets.taskBundles.${id}.source` });
   }
   return diagnostics;
 }
@@ -53,7 +54,7 @@ type ScopeContext = {
   path: string;
   ids: Set<string>;
   agents: Set<string>;
-  taskBundles: Set<string>;
+  taskBundles: Map<string, WorkflowIR["assets"]["taskBundles"][string]>;
 };
 
 function validateScope(scope: unknown, diagnostics: DiagnosticIR[], ctx: ScopeContext): void {
@@ -95,6 +96,7 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
       validateTaskRun(node.run, diagnostics, `${path}.run`);
       const bundleId = isRecord(node.run) && typeof node.run.bundleId === "string" ? node.run.bundleId : undefined;
       if (bundleId && !ctx.taskBundles.has(bundleId)) diagnostics.push({ code: "T001", severity: "error", message: `Task node '${node.id}' references missing task bundle '${bundleId}'.`, path: `${path}.run.bundleId` });
+      if (bundleId && ctx.taskBundles.has(bundleId)) validateTaskRunDigest(node.run, ctx.taskBundles.get(bundleId), diagnostics, `${path}.run`);
       validateExprObject(node.inputs, diagnostics, `${path}.inputs`);
       validateRequiredSchema(node.outputSchema, diagnostics, `${path}.outputSchema`);
       if (node.cwd) validateExpr(node.cwd, diagnostics, `${path}.cwd`);
@@ -222,6 +224,18 @@ function validateTaskRun(run: unknown, diagnostics: DiagnosticIR[], path: string
   validateKnownFields(run, ["kind", "bundleId", "exportName", "digest", "runtime", "inline"], diagnostics, path);
   if (run.kind !== "task_run") diagnostics.push({ code: "T007", severity: "error", message: "Task run kind must be task_run.", path: `${path}.kind` });
   if (typeof run.bundleId !== "string" || run.bundleId.length === 0) diagnostics.push({ code: "T007", severity: "error", message: "Task run bundleId must be a non-empty string.", path: `${path}.bundleId` });
+}
+
+function validateTaskRunDigest(run: unknown, bundle: WorkflowIR["assets"]["taskBundles"][string] | undefined, diagnostics: DiagnosticIR[], path: string): void {
+  if (!isRecord(run) || !bundle) return;
+  if (run.digest !== bundle.digest) {
+    diagnostics.push({
+      code: "T008",
+      severity: "error",
+      message: `Task run digest '${String(run.digest)}' does not match bundle digest '${bundle.digest}'.`,
+      path: `${path}.digest`,
+    });
+  }
 }
 
 function validateSignalRun(run: unknown, diagnostics: DiagnosticIR[], path: string): void {

@@ -7,8 +7,9 @@ runtime, you author them as typed **TypeScript** modules that compile to a froze
 serializable IR which a runtime consumes.
 
 > **Status: foundation rewrite in progress.** This repository currently contains
-> the new core (`@acpus/core`) — the authoring and compile layer. The runtime,
-> TUI, and CLI are being rebuilt on top of it. The previous YAML Workflow-Spec
+> the new core (`@acpus/core`) — the authoring and compile layer — plus the first
+> `acpus run --dry-run` CLI gate. The runtime and TUI are being rebuilt on top of
+> them. The previous YAML Workflow-Spec
 > implementation (the full runtime, TUI, CLI, catalog, skill, and site) is
 > preserved, read-only, under [`legacy/`](legacy/README.md).
 
@@ -21,13 +22,28 @@ serializable IR which a runtime consumes.
 - An Acpus-owned expression IR (`ExprIR`) with Prisma/Mongo-style `where(...)` filters and named operators — no CEL/JSON Logic as the canonical layer.
 - Agent / Task / Signal executable nodes with explicit `run` boundaries and schema contract fields (`inputSchema`, `outputSchema`, `itemOutputSchema`), plus composite nodes (`if`, `switch`, `parallel`, `fanout`, `loop`) and boolean `assert` nodes.
 - Trusted local **Task** nodes (replacing program nodes) with an Acpus-owned `$` command wrapper backed by `zx/core`. Security isolation is delegated to the runner/container/profile layer, not per-node syntax.
-- Compilation to a frozen `WorkflowIR` (`irVersion: 2`) with structural validation.
+- Compilation to a frozen `WorkflowIR` (`irVersion: 2`) with structural validation
+  and bundled Task assets.
 
 Representative workflow compiler fixtures live in `packages/core/test/fixtures/workflows/`.
 
+## CLI
+
+The new `acpus` package currently exposes the pre-run gate only:
+
+```sh
+pnpm --filter acpus build
+pnpm exec acpus run packages/core/test/fixtures/workflows/module.workflow.ts --dry-run
+```
+
+`acpus run <workflow.ts> --dry-run` typechecks, compiles, validates, and writes
+`.acpus/preflight/<id>/` with frozen IR, bundled task assets, and a lock file.
+Runtime execution is intentionally not implemented yet, so
+`acpus run <workflow.ts>` without `--dry-run` fails.
+
 ## Development
 
-This is a pnpm workspace. The new core is currently the only workspace member.
+This is a pnpm workspace containing the TypeScript core and the new CLI package.
 
 ```sh
 pnpm install
@@ -37,7 +53,7 @@ pnpm test        # vitest (suites pass with no tests yet)
 ```
 
 The core package intentionally does not expose a CLI; command-line entry points
-will live in separate packages.
+live in `packages/acpus`.
 
 ## Documentation
 
@@ -46,6 +62,7 @@ Current design truth lives in `specs/`; future plans and known gaps live in `doc
 - [Specs Index](specs/INDEX.md)
 - [Core Workflow Spec](specs/core-workflow-spec.md)
 - [Core Expression Spec](specs/core-expression-spec.md)
+- [CLI Spec](specs/cli-spec.md)
 - [Roadmap Index](docs/roadmap/INDEX.md) · [Core Roadmap](docs/roadmap/core-roadmap.md)
 
 The previous implementation and its documentation are archived under [`legacy/`](legacy/README.md).

@@ -64,6 +64,7 @@ describe("WorkflowIR diagnostics contract", () => {
       "E001",
       "T004",
       "T005",
+      "T006",
     ]);
     expect(diagnostics).toContainEqual(expect.objectContaining({
       code: "A001",
@@ -76,6 +77,10 @@ describe("WorkflowIR diagnostics contract", () => {
     expect(diagnostics).toContainEqual(expect.objectContaining({
       code: "T005",
       path: "assets.taskBundles.wrong_key.digest",
+    }));
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: "T006",
+      path: "assets.taskBundles.wrong_key.source",
     }));
   });
 
@@ -527,5 +532,51 @@ describe("WorkflowIR diagnostics contract", () => {
       expect.objectContaining({ code: "SC000", path: "root.nodes.parallel_without_branch_schema.branches.branch.outputSchema" }),
       expect.objectContaining({ code: "SC000", path: "root.nodes.fanout_without_item_schema.itemOutputSchema" }),
     ]));
+  });
+
+  it("requires task run digest to match the bundled task digest", () => {
+    const ir: WorkflowIR = {
+      irVersion: 2,
+      name: "task_digest_mismatch",
+      agents: {},
+      root: {
+        nodes: [{
+          id: "run_task",
+          kind: "task",
+          inputs: {},
+          outputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
+          run: {
+            kind: "task_run",
+            bundleId: "task_a",
+            exportName: "default",
+            digest: "sha256:wrong",
+            runtime: "node",
+          },
+        }],
+      },
+      outputs: {},
+      assets: {
+        taskBundles: {
+          task_a: {
+            id: "task_a",
+            digest: "sha256:correct",
+            runtime: "node",
+            source: "export default async function task() {}\n",
+          },
+        },
+      },
+      lock: {
+        acpusCoreVersion: "test",
+        taskBundleDigests: { task_a: "sha256:correct" },
+        generatedAt: "2026-01-01T00:00:00.000Z",
+        notes: [],
+      },
+      diagnostics: [],
+    };
+
+    expect(validateWorkflowIR(ir)).toContainEqual(expect.objectContaining({
+      code: "T008",
+      path: "root.nodes.run_task.run.digest",
+    }));
   });
 });

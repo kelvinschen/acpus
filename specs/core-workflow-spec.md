@@ -138,6 +138,8 @@ all(reviews, (review) => review.output.ready);
 
 - An inline Task MUST be authored as trusted local code directly in `step("id").task({ run: { input, exec } })`.
 - A reusable Task MUST be authored via `task.define({ inputSchema, outputSchema, exec })`.
+- A reusable Task MUST live in its own task module and MUST be referenced at the call site by an identifier imported directly from that module. A reusable Task MUST NOT be a workflow-local value, and its import MUST NOT be routed through a barrel or re-export module.
+- An inline Task `exec` MUST be self-contained: it MUST reference only its own parameters, its own local declarations, and runtime globals. It MUST NOT capture workflow-module scope (helpers, imports, or graph builder values). Shared logic or dependency-backed logic MUST be moved into a reusable Task module.
 - A reusable Task node MUST use the Task's declared `outputSchema` and MUST NOT repeat `outputSchema` at the `step("id").task(...)` call site.
 - A reusable Task definition's `inputSchema` MUST be the runtime input schema for its `exec` function; a reusable Task node call site's `input` MUST be the graph expression binding for that schema.
 - The core MUST NOT expose a per-task `permissions` field; security isolation is delegated to the runner/container/profile layer.
@@ -203,12 +205,16 @@ type WorkflowIR = {
 
 ### Compile behavior
 
-- `compileWorkflowModule(entry)` MUST read the source, import the module, run `build(...)`, lower to IR, attach a `workflowSourceDigest`, and append `validateWorkflowIR(...)` diagnostics.
-- While the compiler uses trusted dynamic `import()` (not a production sandbox) and records inline Task source via `Function#toString()`, it MUST emit a diagnostic flagging that this is not a production-grade deterministic compile. (See `docs/roadmap/core-roadmap.md` for the planned replacement.)
+- `compileWorkflowModule(entry)` MUST read the source, import the module, run `build(...)`, lower to IR, attach a `workflowSourceDigest`, statically analyze task provenance, bundle Task assets, synchronize task run digests, and append `validateWorkflowIR(...)` diagnostics.
+- Task provenance MUST be resolved by static analysis of the workflow source (TypeScript parser only; no type checker), not by runtime stack inspection. For each `step("id").task(...)` call site, the analyzer MUST determine whether the task is inline or reusable, MUST resolve a reusable task to the task module file it is directly imported from, and MUST emit an error diagnostic when an authoring boundary is violated.
+- Task bundles MUST contain bundled ESM source and a `sha256:` digest of that bundled source. The task run digest in each node MUST match its bundle digest.
+- Reusable Task definitions MAY import local modules and JavaScript npm dependencies; the compiler MUST bundle that dependency graph into the Task bundle from the statically resolved source file. Node built-ins remain runtime externals.
+- Inline Task source MUST be bundled as a self-contained function. The compiler MUST emit an error diagnostic when an inline Task is not self-contained, when a reusable Task is a workflow-local value or routed through a re-export, or when a referenced module export is not a `task.define(...)` task.
 
 ## Verification
 
 - Tests MUST cover `toSchemaIR` acceptance of the boundary subset and rejection of unsupported Zod features (`transform`, `custom`, `date`, `map`, `set`, etc.).
 - Tests MUST cover `where(...)` lowering to primitive `ExprIR` calls, including workflow-value filters, Mongo aliases, and AND/OR/NOT composition.
-- Tests MUST cover that compiling a workflow module through `compileWorkflowModule(...)` produces a valid `WorkflowIR` (`irVersion: 2`) with no live Zod/function references and with the trusted-import diagnostic present.
+- Tests MUST cover that compiling a workflow module through `compileWorkflowModule(...)` produces a valid `WorkflowIR` (`irVersion: 2`) with no live Zod/function references and bundled Task assets, including a reusable task whose third-party dependency graph is inlined into the bundle source.
+- Tests MUST cover the static provenance gate: rejecting workflow-local reusable tasks, re-exported reusable tasks, module exports that are not `task.define(...)`, and inline tasks that capture workflow-module scope.
 - The core package MUST NOT expose a binary or command-line entry point; CLI behavior belongs in a separate package.

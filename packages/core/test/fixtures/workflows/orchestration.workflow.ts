@@ -175,7 +175,7 @@ export default defineWorkflow({
         outputSchema: Approval,
         run: {
           input: {},
-          exec: async () => ({
+          exec: async ({ $ }) => ({
             approved: true,
             notes: "auto-approved",
           }),

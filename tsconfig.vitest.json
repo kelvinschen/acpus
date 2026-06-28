@@ -9,6 +9,8 @@
     "noEmit": true
   },
   "include": [
+    "packages/acpus/src/**/*.ts",
+    "packages/acpus/test/**/*.ts",
     "packages/core/src/**/*.ts",
     "packages/core/test/fixtures/**/*.ts",
     "packages/core/test/**/*.type.test-d.ts"

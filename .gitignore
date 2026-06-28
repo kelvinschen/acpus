@@ -2,6 +2,7 @@ node_modules/
 dist/
 coverage/
 .tmp-tests/
+.acpus/
 .DS_Store
 legacy/.acpus/state/
 legacy/.acpus/output/

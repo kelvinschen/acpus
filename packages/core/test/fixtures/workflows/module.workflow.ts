@@ -1,25 +1,13 @@
 import {
   defineWorkflow,
-  task,
   template,
   where,
   z,
 } from "@acpus/core";
-
-const NormalizeOutput = z.object({
-  slug: z.string(),
-});
+import normalizePackage from "./tasks/normalize-package.task.js";
 
 const ReviewOutput = z.object({
   ready: z.boolean(),
-});
-
-const normalizePackage = task.define({
-  inputSchema: z.object({ packageName: z.string() }),
-  outputSchema: NormalizeOutput,
-  exec: async ({ input }) => ({
-    slug: input.packageName.trim().toLowerCase().replaceAll(" ", "-"),
-  }),
 });
 
 export default defineWorkflow({

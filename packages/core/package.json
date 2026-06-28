@@ -35,6 +35,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "esbuild": "^0.28.0",
+    "typescript": "^5.9.0",
     "zod": "^4.4.3",
     "zx": "^8.8.5"
   },

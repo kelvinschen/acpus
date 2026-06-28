@@ -24,6 +24,8 @@
     "clean": "pnpm -r clean"
   },
   "devDependencies": {
+    "@acpus/core": "workspace:*",
+    "acpus": "workspace:*",
     "@changesets/cli": "^2.31.0",
     "@types/node": "^22.15.30",
     "@typescript/native-preview": "7.0.0-dev.20260421.2",

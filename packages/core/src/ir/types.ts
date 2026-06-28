@@ -215,7 +215,6 @@ export type TaskBundleIR = {
   source?: string;
   sourceFile?: string;
   inline?: boolean;
-  note?: string;
 };
 
 export type SourceLocationIR = {

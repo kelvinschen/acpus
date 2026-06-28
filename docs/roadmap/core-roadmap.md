@@ -1,12 +1,13 @@
 # Core Roadmap
 
-This roadmap starts from the current `@acpus/core` authoring and compile layer (Zod 4 schema bridge, Acpus Expr IR, zx/core-backed Task wrapper, compile to `WorkflowIR`, structural validation). Implemented behavior is specified in `specs/`; this file tracks only unfinished work and known gaps.
+This roadmap starts from the current `@acpus/core` authoring and compile layer plus the `acpus run --dry-run` pre-run gate. Implemented behavior is specified in `specs/`; this file tracks only unfinished work and known gaps.
 
 ## Known gaps in the current core
 
-- The compiler dynamically imports workflow modules as trusted local code. This is acceptable for core development but is not a deterministic compile environment for untrusted catalogs. A `C001` diagnostic flags this today.
-- Inline Task source is captured with `Function#toString()` as a placeholder, not real AST extraction or bundling.
+- Workflow modules are user-owned TypeScript scripts and are executed during compile to build the graph. Acpus does not attempt to sandbox user-authored workflow code.
+- Task provenance is gated by a TypeScript parser-only static analyzer. It resolves reusable tasks through direct relative imports only; barrel/re-export indirection is rejected rather than followed.
 - `validateWorkflowIR(...)` is structural only; it is not yet a typed semantic validator.
+- The CLI only supports `run --dry-run`; real runtime execution is not implemented.
 
 ## Phase 1: harden the Zod bridge
 
@@ -14,17 +15,15 @@ This roadmap starts from the current `@acpus/core` authoring and compile layer (
 - Improve errors for unsupported boundary schemas, with source-path context in `toSchemaIR` errors.
 - Decide whether `.refine()` is accepted as runtime-only validation or rejected at boundaries.
 
-## Phase 2: Task bundling
+## Phase 2: Task bundling follow-ups
 
-Replace the `Function#toString()` placeholder with production bundling.
+- Attach source-location (`line`/`column`) context to provenance diagnostics (TB004–TB007).
+- Add source maps for bundled Task assets.
+- Extend inline self-containment warnings beyond the current hard free-identifier gate: warn when a Task imports raw `zx`, imports `child_process` directly, or reads `process.env` instead of task-level `env`.
 
-- AST extraction for inline `step("id").task({ outputSchema, run: { input, exec } })` and external `task.define({ inputSchema, outputSchema, exec })`.
-- Local import-graph bundling, source maps, and a digest over the final bundle.
-- Frozen task bundle assets in the IR lock.
-- Closure-capture diagnostics — hard errors when a Task captures workflow `Expr`, `step`, or graph builder state, or uses non-deterministic top-level values; warnings when a Task imports raw `zx`, imports `child_process` directly, or reads `process.env` instead of task-level `env`.
+## Phase 3: Runtime scheduler and Task executor
 
-## Phase 3: Task runtime executor
-
+- Extend `acpus run` beyond `--dry-run` once scheduler state exists.
 - Evaluate Task input `ExprIR`, parse with the Zod schema when available, load the bundle by digest, construct `TaskContext`, and create the Acpus `$` wrapper.
 - Collect command spans, capture stdout/stderr, implement the artifact API, validate returned output, and persist `output.json`.
 - Classify failures: throw, timeout, subprocess_exit, output_schema, artifact, internal.
@@ -47,7 +46,7 @@ Replace the `Function#toString()` placeholder with production bundling.
 
 ## Phase 7: lint plugin
 
-- Error rules: no `Expr` in JS `if`/`while`/ternary; no JS logical/comparison operators over `Expr`; no runtime array `.map()`; no dynamic node id from `Expr`; no untagged template containing `Expr`; no Task closure capture of workflow values.
+- Error rules: no `Expr` in JS `if`/`while`/ternary; no JS logical/comparison operators over `Expr`; no runtime array `.map()`; no dynamic node id from `Expr`; no untagged template containing `Expr`. These are editor-time mirrors; Task closure capture is already a compile-time gate (TB007).
 - Warnings: prefer `ctx.$` over raw `zx`; prefer task-level `env` and `secret(...)` for redaction; prefer returning `ArtifactRef` over long-lived absolute paths.
 
 ## Phase 8: runner profiles

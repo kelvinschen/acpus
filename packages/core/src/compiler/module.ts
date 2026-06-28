@@ -1,13 +1,17 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { compileWorkflowDefinition, isWorkflowDefinition } from "../graph/builder.js";
+import { validateWorkflowIR } from "../ir/validator.js";
 import type { WorkflowIR } from "../ir/types.js";
+import { bundleWorkflowTasks } from "./task-bundler.js";
+import { analyzeWorkflowTasks } from "./task-provenance.js";
 
 export type CompileOptions = {
   sourcePath?: string;
-  trusted?: boolean;
+  cwd?: string;
+  conditions?: string[];
 };
 
 export async function compileWorkflowModule(entry: string, options: CompileOptions = {}): Promise<WorkflowIR> {
@@ -16,15 +20,14 @@ export async function compileWorkflowModule(entry: string, options: CompileOptio
   const mod = await import(pathToFileURL(absolute).href);
   const def = mod.default;
   if (!isWorkflowDefinition(def)) throw new Error(`Default export of ${entry} is not an Acpus workflow definition.`);
-  const ir = compileWorkflowDefinition(def, { source: options.sourcePath ?? entry });
+  const ir = compileWorkflowDefinition(def, { source: options.sourcePath ?? entry, validate: false });
   ir.lock.workflowSourceDigest = `sha256:${createHash("sha256").update(source).digest("hex")}`;
-  if (!options.trusted) {
-    ir.diagnostics.push({
-      code: "C001",
-      severity: "warning",
-      message: "Core-alpha compileWorkflowModule uses trusted dynamic import. Production must use deterministic sandbox/bundling.",
-      path: "compiler",
-    });
-  }
+  const analysis = await analyzeWorkflowTasks(absolute, source);
+  await bundleWorkflowTasks(ir, {
+    cwd: options.cwd ?? dirname(absolute),
+    analysis,
+    ...(options.conditions ? { conditions: options.conditions } : {}),
+  });
+  ir.diagnostics.push(...validateWorkflowIR(ir));
   return ir;
 }

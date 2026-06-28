@@ -28,6 +28,7 @@ One short paragraph describing the current feature boundary.
 
 - [Core Workflow Spec](core-workflow-spec.md)
 - [Core Expression Spec](core-expression-spec.md)
+- [CLI Spec](cli-spec.md)
 
 ## Note on scope
 

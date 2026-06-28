@@ -1,4 +1,5 @@
 import { task, z } from "@acpus/core";
+import { slugifyPackageName } from "./slug.js";
 
 export const NormalizePackageInput = z.object({
   packageName: z.string(),
@@ -14,11 +15,7 @@ export default task.define({
   outputSchema: NormalizePackageOutput,
   exec: async ({ input, log }) => {
     const normalized = input.packageName.trim();
-    const slug = normalized
-      .toLowerCase()
-      .replace(/^@/, "")
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "");
+    const slug = slugifyPackageName(normalized);
 
     log.info("Normalized package", { normalized, slug });
 

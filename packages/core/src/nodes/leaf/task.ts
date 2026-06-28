@@ -76,9 +76,8 @@ function makeTaskToken<Input, Output, Params extends JsonObject>(args: {
   outputSchema?: Schema<Output>;
   params?: Params;
   fn: TaskFunction<Input, Output, Params>;
-  sourcePrefix?: string;
 }): TaskToken<Input, Output, Params> {
-  const source = `${args.sourcePrefix ?? ""}${args.fn.toString()}`;
+  const source = args.fn.toString();
   const hash = digest(source);
   const bundleId = `task_${hash.slice("sha256:".length, "sha256:".length + 16)}`;
   return {
@@ -98,7 +97,6 @@ function makeTaskToken<Input, Output, Params extends JsonObject>(args: {
         runtime: "node",
         source,
         inline: args.kind === "inline",
-        note: "Core-alpha records Function#toString as a task source placeholder. Production must AST-extract and bundle task functions.",
       };
     },
   } as TaskToken<Input, Output, Params>;

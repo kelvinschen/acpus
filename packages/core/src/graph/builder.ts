@@ -313,7 +313,7 @@ function invalidAgentDefinition(diagnostics: DiagnosticIR[], path: string, messa
   diagnostics.push({ code: "A002", severity: "error", message, path });
 }
 
-export function compileWorkflowDefinition(definition: WorkflowDefinition<any, any>, options?: { source?: string }): WorkflowIR {
+export function compileWorkflowDefinition(definition: WorkflowDefinition<any, any>, options?: { source?: string; validate?: boolean }): WorkflowIR {
   const diagnostics: DiagnosticIR[] = [];
   const taskBundles: Record<string, TaskBundleIR> = {};
   const builder = new GraphBuildState(taskBundles, diagnostics);
@@ -335,13 +335,13 @@ export function compileWorkflowDefinition(definition: WorkflowDefinition<any, an
       taskBundleDigests: Object.fromEntries(Object.entries(taskBundles).map(([id, bundle]) => [id, bundle.digest])),
       generatedAt: new Date().toISOString(),
       notes: [
-        "Core-alpha compiler executes workflow modules as trusted code.",
-        "Core-alpha task source capture is not production bundling; see docs/ROADMAP.md.",
+        "Workflow definition was lowered into Acpus IR.",
+        "Production module compilation bundles task assets before preflight admission.",
       ],
     },
     diagnostics,
   }) as WorkflowIR;
 
-  ir.diagnostics.push(...validateWorkflowIR(ir));
+  if (options?.validate !== false) ir.diagnostics.push(...validateWorkflowIR(ir));
   return ir;
 }
