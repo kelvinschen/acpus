@@ -21,7 +21,6 @@ type SupervisorCommandOptions = {
 
 export function createSupervisorCommand(ctx: SupervisorCommandContext): Command {
   return new Command("supervisor")
-    .hideHelp()
     .exitOverride()
     .description("Run the workspace-local Acpus runtime supervisor.")
     .option("--workspace <path>", "workspace directory")
