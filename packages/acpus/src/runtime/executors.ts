@@ -1,6 +1,6 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { AgentNodeIR, JsonObject, JsonValue, SecretRefIR, TaskNodeIR, WorkflowIR } from "@acpus/core";
@@ -59,7 +59,7 @@ export async function executeTask(node: TaskNodeIR, args: NodeExecutionArgs): Pr
   const dollar = createDollar({
     cwd: resolve(cwd),
     env: mergedEnv,
-    onSpan: span => spans.push({ ...span }),
+    onSpan: span => spans.push(span),
   }, defaultCommandTimeout ? { timeout: defaultCommandTimeout } : {});
   const controller = new AbortController();
   const taskContext: TaskContext<JsonValue, JsonObject> = {
@@ -95,8 +95,12 @@ export async function executeAgent(node: AgentNodeIR, ir: WorkflowIR, args: Node
   const agentDefinition = ir.agents[node.run.agent];
   if (!agentDefinition) throw new RuntimeExecutionError("agent_definition", `Agent '${node.run.agent}' is not defined.`);
   const prompt = renderTemplate(node.run.prompt, args.evalContext);
-  const cwd = node.run.cwd ? String(evalExpr(node.run.cwd, args.evalContext)) : args.runtime.workspaceDir;
-  const env = resolveEnv(node.run.env, args.evalContext);
+  const cwdExpr = node.run.cwd ?? agentDefinition.cwd;
+  const cwd = cwdExpr ? String(evalExpr(cwdExpr, args.evalContext)) : args.runtime.workspaceDir;
+  const env = {
+    ...resolveEnv(agentDefinition.env, args.evalContext),
+    ...resolveEnv(node.run.env, args.evalContext),
+  };
   const artifact = createArtifactApi({ node, nodeKey: args.nodeKey, attempt: args.attempt, runtime: args.runtime });
 
   const command = agentDefinition.kind === "agent_command"
@@ -124,10 +128,11 @@ export async function executeAgent(node: AgentNodeIR, ir: WorkflowIR, args: Node
       outputSchema: node.outputSchema ?? null,
       policy: node.run.policy ?? agentDefinition.policy ?? null,
     };
+    const timeoutMs = node.timeout ? parseDurationMs(node.timeout) : undefined;
     const result = await runAgentCommand(command, JSON.stringify(payload, null, 2), {
       cwd: resolve(cwd),
       env: mergeEnv(process.env, env),
-      timeoutMs: node.timeout ? parseDurationMs(node.timeout) : undefined,
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
     });
     transcript = [
       `# Agent ${node.run.agent}`,
@@ -185,16 +190,16 @@ function createArtifactApi(args: {
 }) {
   const attemptDir = join(args.runtime.runDir, "artifacts", sanitizePath(args.nodeKey), `attempt-${args.attempt}`);
   return {
-    async writeText(name: string, content: string, options?: { mediaType?: string }) {
+    async writeText(name: string, content: string, options?: { mediaType?: string | undefined }) {
       return writeArtifact(name, Buffer.from(content, "utf8"), options?.mediaType ?? "text/plain");
     },
     async writeJson(name: string, value: unknown) {
       return writeArtifact(name, Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8"), "application/json");
     },
-    async writeBytes(name: string, value: Uint8Array, options?: { mediaType?: string }) {
+    async writeBytes(name: string, value: Uint8Array, options?: { mediaType?: string | undefined }) {
       return writeArtifact(name, Buffer.from(value), options?.mediaType ?? "application/octet-stream");
     },
-    async fromFile(path: string, options?: { name?: string; mediaType?: string }) {
+    async fromFile(path: string, options?: { name?: string | undefined; mediaType?: string | undefined }) {
       const source = resolve(path);
       const bytes = await readFile(source);
       return writeArtifact(options?.name ?? basename(source), bytes, options?.mediaType ?? "application/octet-stream");
@@ -226,25 +231,6 @@ function createArtifactApi(args: {
       mediaType,
     };
   }
-}
-
-export async function copyArtifactIntoRun(args: {
-  sourceRunDir: string;
-  targetRunDir: string;
-  sourceRelativePath: string;
-  targetRelativePath?: string;
-}): Promise<{ relativePath: string; digest: string; size: number }> {
-  const source = join(args.sourceRunDir, args.sourceRelativePath);
-  const targetRelativePath = args.targetRelativePath ?? join("artifacts", "inherited", `${randomUUID()}-${basename(args.sourceRelativePath)}`).replaceAll("\\", "/");
-  const target = join(args.targetRunDir, targetRelativePath);
-  await mkdir(resolve(target, "..").replace(/\/[^/]*$/, ""), { recursive: true }).catch(async () => {
-    await mkdir(join(target, ".."), { recursive: true });
-  });
-  await mkdir(join(target, ".."), { recursive: true }).catch(() => undefined);
-  await copyFile(source, target);
-  const bytes = await readFile(target);
-  const metadata = await stat(target);
-  return { relativePath: targetRelativePath, digest: digestBytes(bytes), size: metadata.size };
 }
 
 function makeLogApi(store: RuntimeStore, runId: string, nodeKey: string, attempt: number, logs: JsonValue[]) {
@@ -291,7 +277,7 @@ function parseDurationMs(duration: string): number | undefined {
   return amount * factor;
 }
 
-function runAgentCommand(command: string, stdin: string, options: { cwd: string; env: Record<string, string>; timeoutMs?: number }): Promise<{ exitCode: number | null; stdout: string; stderr: string }> {
+function runAgentCommand(command: string, stdin: string, options: { cwd: string; env: Record<string, string>; timeoutMs?: number | undefined }): Promise<{ exitCode: number | null; stdout: string; stderr: string }> {
   return new Promise(resolveProcess => {
     const child = spawn(command, [], { cwd: options.cwd, env: options.env, shell: true, stdio: ["pipe", "pipe", "pipe"] });
     const stdout: Buffer[] = [];
