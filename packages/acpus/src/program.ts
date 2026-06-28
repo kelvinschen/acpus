@@ -2,6 +2,7 @@ import type { Writable } from "node:stream";
 import { Command, CommanderError } from "commander";
 import { createRuntimeCommands } from "./commands/runtime.js";
 import { createRunCommand } from "./commands/run.js";
+import { createSupervisorCommand } from "./commands/supervisor.js";
 import { CliError, usageError } from "./errors.js";
 import { writeResult } from "./output.js";
 
@@ -59,6 +60,7 @@ function createProgram(io: CliIo, setExitCode: (code: number) => void, wantsJson
   };
   program.addCommand(createRunCommand(context));
   for (const command of createRuntimeCommands(context)) program.addCommand(command);
+  program.addCommand(createSupervisorCommand(context));
 
   return program;
 }
