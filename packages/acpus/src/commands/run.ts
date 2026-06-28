@@ -3,7 +3,7 @@ import { Command } from "commander";
 import { CliError } from "../errors.js";
 import { writeResult, type OutputFormat, type CliResult } from "../output.js";
 import { preflightWorkflow, runPreflight } from "../preflight.js";
-import { RuntimeEngine, RuntimeExecutionError, type StoredRun } from "../runtime/index.js";
+import { RuntimeEngine, RuntimeExecutionError, spawnSupervisor, type StoredRun } from "../runtime/index.js";
 import { readJsonOption } from "./json.js";
 
 export type RunCommandContext = {
@@ -38,7 +38,7 @@ export function createRunCommand(ctx: RunCommandContext): Command {
     .option("--dry-run", "run the pre-run gate without executing the workflow")
     .option("--input <json>", "workflow input JSON")
     .option("--input-file <path>", "read workflow input JSON from a file")
-    .option("--background", "admit the run without executing the foreground scheduler")
+    .option("--background", "admit the run and wake the workspace supervisor")
     .option("--agent-stub", "allow agent nodes without a configured local runner by returning schema-shaped defaults")
     .option("--json", "print a structured JSON result")
     .action(async (workflow: string, options: RunCommandOptions) => {
@@ -61,9 +61,10 @@ export function createRunCommand(ctx: RunCommandContext): Command {
             dryRunArtifact: preflight.artifact.dir,
           },
         });
+        const supervisor = options.background ? await spawnSupervisor(ctx.cwd) : undefined;
         const finalRun = options.background ? admitted : await engine.execute(admitted.runId, { agentStub: options.agentStub ?? false });
         const result = runResult(finalRun, engine, {
-          message: options.background ? "Workflow run admitted." : statusMessage(finalRun.status),
+          message: options.background ? backgroundMessage(supervisor?.started ?? false) : statusMessage(finalRun.status),
           workflow: preflight.summary,
           preflightDir: preflight.artifact.dir,
           irDigest: preflight.artifact.irDigest,
@@ -101,6 +102,10 @@ function runResult(run: StoredRun, engine: RuntimeEngine, extra: Partial<CliResu
     nodes: engine.store.listNodeStates(run.runId),
     artifacts: engine.store.listArtifacts(run.runId),
   };
+}
+
+function backgroundMessage(started: boolean): string {
+  return started ? "Workflow run admitted and supervisor started." : "Workflow run admitted; supervisor already healthy.";
 }
 
 function statusMessage(status: string): string {
