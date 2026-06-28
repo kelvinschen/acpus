@@ -3,7 +3,7 @@
   "version": "0.6.0-alpha",
   "private": true,
   "type": "module",
-  "description": "Acpus CLI for TypeScript workflow pre-run validation.",
+  "description": "Acpus CLI and local durable runtime for TypeScript workflows.",
   "license": "MIT",
   "engines": {
     "node": ">=22"
