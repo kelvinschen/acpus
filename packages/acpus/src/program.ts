@@ -1,5 +1,6 @@
 import type { Writable } from "node:stream";
 import { Command, CommanderError } from "commander";
+import { createRuntimeCommands } from "./commands/runtime.js";
 import { createRunCommand } from "./commands/run.js";
 import { CliError, usageError } from "./errors.js";
 import { writeResult } from "./output.js";
@@ -51,11 +52,13 @@ function createProgram(io: CliIo, setExitCode: (code: number) => void, wantsJson
       outputError: (text, write) => write(text),
     });
 
-  program.addCommand(createRunCommand({
+  const context = {
     ...io,
     wantsJson,
     setExitCode,
-  }));
+  };
+  program.addCommand(createRunCommand(context));
+  for (const command of createRuntimeCommands(context)) program.addCommand(command);
 
   return program;
 }
