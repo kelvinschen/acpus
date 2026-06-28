@@ -9,6 +9,8 @@ export type SpawnSupervisorResult = {
   generation: number;
 };
 
+export type SpawnSupervisorOptions = ExecuteOptions;
+
 export type RunSupervisorOptions = ExecuteOptions & {
   generation: number;
   once?: boolean | undefined;
@@ -18,16 +20,17 @@ export type RunSupervisorOptions = ExecuteOptions & {
 const PROTOCOL_VERSION = 1;
 const HEARTBEAT_FRESH_MS = 10_000;
 
-export async function spawnSupervisor(workspaceDir: string): Promise<SpawnSupervisorResult> {
+export async function spawnSupervisor(workspaceDir: string, options: SpawnSupervisorOptions = {}): Promise<SpawnSupervisorResult> {
   const workspaceRealpath = await realpath(workspaceDir);
   const store = RuntimeStore.open(workspaceRealpath);
   const claimed = claimSupervisorLease(store, workspaceRealpath);
   if (!claimed.started) return claimed;
 
   const cliPath = fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "../cli.ts" : "../cli.js", import.meta.url));
+  const supervisorArgs = [cliPath, "supervisor", "--workspace", workspaceRealpath, "--generation", String(claimed.generation), ...(options.agentStub ? ["--agent-stub"] : [])];
   const args = import.meta.url.endsWith(".ts")
-    ? ["--import", await import.meta.resolve("tsx"), cliPath, "supervisor", "--workspace", workspaceRealpath, "--generation", String(claimed.generation)]
-    : [cliPath, "supervisor", "--workspace", workspaceRealpath, "--generation", String(claimed.generation)];
+    ? ["--import", await import.meta.resolve("tsx"), ...supervisorArgs]
+    : supervisorArgs;
   const child = spawn(process.execPath, args, {
     cwd: workspaceRealpath,
     detached: true,
