@@ -29,12 +29,13 @@ Representative workflow compiler fixtures live in `packages/core/test/fixtures/w
 
 ## CLI
 
-The `acpus` package exposes both the pre-run gate and the foreground durable runtime:
+The `acpus` package exposes the pre-run gate, foreground durable runtime, and background supervisor wakeup:
 
 ```sh
 pnpm --filter acpus build
 pnpm exec acpus run packages/core/test/fixtures/workflows/module.workflow.ts --dry-run
 pnpm exec acpus run workflow.ts --input-file input.json
+pnpm exec acpus run workflow.ts --background
 pnpm exec acpus runs
 pnpm exec acpus show <run-id>
 pnpm exec acpus signal <run-id> <signal-node-id> --input '{"approved":true}'
@@ -47,7 +48,8 @@ pnpm exec acpus fork <run-id> --execute
 `.acpus/preflight/<id>/`, admits immutable IR/input/task bundle metadata into
 `.acpus/state/runtime.db`, copies task bundles into `.acpus/runs/<run-id>/`, and
 executes the scheduler. Use `--dry-run` to stop after preflight and `--background`
-to admit without foreground execution.
+to admit the run and wake a workspace-local detached Node supervisor through the
+SQLite lease.
 
 ## Development
 
