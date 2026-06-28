@@ -61,8 +61,9 @@ export function createRunCommand(ctx: RunCommandContext): Command {
             dryRunArtifact: preflight.artifact.dir,
           },
         });
-        const supervisor = options.background ? await spawnSupervisor(ctx.cwd) : undefined;
-        const finalRun = options.background ? admitted : await engine.execute(admitted.runId, { agentStub: options.agentStub ?? false });
+        const agentStub = options.agentStub ?? false;
+        const supervisor = options.background ? await spawnSupervisor(ctx.cwd, { agentStub }) : undefined;
+        const finalRun = options.background ? admitted : await engine.execute(admitted.runId, { agentStub });
         const result = runResult(finalRun, engine, {
           message: options.background ? backgroundMessage(supervisor?.started ?? false) : statusMessage(finalRun.status),
           workflow: preflight.summary,
