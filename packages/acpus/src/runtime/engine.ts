@@ -8,13 +8,13 @@ import { parseSchemaIR, validationMessage } from "./schema.js";
 import { digestText, now, RuntimeStore, runtimeId, type StoredRun } from "./store.js";
 
 export type AdmitWorkflowOptions = {
-  workflowPath?: string;
-  preflightDir?: string;
-  metadata?: JsonValue;
+  workflowPath?: string | undefined;
+  preflightDir?: string | undefined;
+  metadata?: JsonValue | undefined;
 };
 
 export type ExecuteOptions = {
-  agentStub?: boolean;
+  agentStub?: boolean | undefined;
 };
 
 export type ReplayResult = {
@@ -26,9 +26,9 @@ export type ReplayResult = {
 };
 
 export type ForkOptions = {
-  ir?: WorkflowIR;
-  input?: JsonValue;
-  metadata?: JsonValue;
+  ir?: WorkflowIR | undefined;
+  input?: JsonValue | undefined;
+  metadata?: JsonValue | undefined;
 };
 
 type RunContext = {
@@ -59,7 +59,7 @@ export class RuntimeEngine {
     return new RuntimeEngine(workspaceDir, RuntimeStore.open(workspaceDir));
   }
 
-  constructor(readonly workspaceDir: string, store?: RuntimeStore) {
+  constructor(readonly workspaceDir: string, store?: RuntimeStore | undefined) {
     this.store = store ?? RuntimeStore.open(workspaceDir);
   }
 
@@ -163,7 +163,7 @@ export class RuntimeEngine {
     return this.execute(runId, options);
   }
 
-  async retryRun(runId: string, nodeKey?: string, options: ExecuteOptions = {}): Promise<StoredRun> {
+  async retryRun(runId: string, nodeKey?: string | undefined, options: ExecuteOptions = {}): Promise<StoredRun> {
     this.requireRun(runId);
     this.store.retry(runId, nodeKey);
     return this.execute(runId, options);
@@ -229,7 +229,7 @@ export class RuntimeEngine {
           nodeKey: state.nodeKey,
           nodeId: state.nodeId,
           attempt: state.attempt,
-          mediaType: artifact.mediaType,
+          ...(artifact.mediaType ? { mediaType: artifact.mediaType } : {}),
           digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
           size: bytes.byteLength,
           relativePath,
@@ -243,8 +243,8 @@ export class RuntimeEngine {
         kind: state.kind,
         status: "succeeded",
         attempt: state.attempt,
-        startedAt: state.startedAt,
-        endedAt: state.endedAt,
+        ...(state.startedAt ? { startedAt: state.startedAt } : {}),
+        ...(state.endedAt ? { endedAt: state.endedAt } : {}),
         output: rewriteArtifactUris(state.output, uriMap),
         metadata: toJsonValue({ inheritedFrom: sourceRunId, sourceNodeKey: state.nodeKey }),
       });
@@ -271,6 +271,7 @@ export class RuntimeEngine {
     }
 
     const attempt = (existing?.attempt ?? 0) + 1;
+    const startedAt = now();
     this.store.setNodeState({
       runId: context.runtime.runId,
       nodeKey: key,
@@ -278,7 +279,7 @@ export class RuntimeEngine {
       kind: node.kind,
       status: "running",
       attempt,
-      startedAt: now(),
+      startedAt,
     });
 
     try {
@@ -292,7 +293,7 @@ export class RuntimeEngine {
         kind: node.kind,
         status: "succeeded",
         attempt,
-        startedAt: existing?.startedAt ?? now(),
+        startedAt,
         endedAt: now(),
         output: checkedOutput,
         metadata: result.metadata,
@@ -307,7 +308,7 @@ export class RuntimeEngine {
           kind: node.kind,
           status: "awaiting_signal",
           attempt,
-          startedAt: now(),
+          startedAt,
           metadata: error.metadata,
         });
         throw error;
@@ -320,7 +321,7 @@ export class RuntimeEngine {
           kind: node.kind,
           status: "failed",
           attempt,
-          startedAt: now(),
+          startedAt,
           endedAt: now(),
           error: this.errorJson(error),
         });
@@ -393,7 +394,7 @@ export class RuntimeEngine {
       const raced = await Promise.race(entries.map(async ([name, branch]) => ({ name, output: await this.executeScope(branch.scope, `${nodeKey}/branch-${name}`, cloneContext(context)) })));
       return { output: toJsonValue({ [raced.name]: raced.output }), metadata: toJsonValue({ strategy: "race", winner: raced.name }) };
     }
-    const results = await mapLimit(entries, node.maxConcurrency ?? entries.length || 1, async ([name, branch]) => {
+    const results = await mapLimit(entries, node.maxConcurrency ?? (entries.length || 1), async ([name, branch]) => {
       const output = await this.executeScope(branch.scope, `${nodeKey}/branch-${name}`, cloneContext(context));
       const parsed = parseSchemaIR(branch.outputSchema, output, `nodes.${node.id}.branches.${name}.output`);
       if (!parsed.ok) throw new RuntimeExecutionError("parallel_branch_schema", `Parallel branch '${name}' output is invalid: ${validationMessage(parsed.issues)}`, { issues: parsed.issues as unknown as JsonValue });
@@ -405,7 +406,7 @@ export class RuntimeEngine {
   private async executeFanout(node: Extract<NodeIR, { kind: "fanout" }>, nodeKey: string, context: RunContext): Promise<ExecutorResult> {
     const items = evalObjectExprs({ over: node.over }, this.evalContext(context)).over;
     if (!Array.isArray(items)) throw new RuntimeExecutionError("fanout_input", `Fanout '${node.id}' expected an array.`);
-    const outputs = await mapLimit(items.map((item, itemIndex) => ({ item, itemIndex })), node.maxConcurrency ?? items.length || 1, async itemState => {
+    const outputs = await mapLimit(items.map((item, itemIndex) => ({ item, itemIndex })), node.maxConcurrency ?? (items.length || 1), async itemState => {
       const itemContext = cloneContext(context);
       itemContext.fanout[node.id] = { item: itemState.item, itemIndex: itemState.itemIndex };
       const key = node.key ? renderTemplate(node.key, this.evalContext(itemContext)) : String(itemState.itemIndex);
@@ -457,7 +458,7 @@ export class RuntimeEngine {
       runtime: {
         store: this.store,
         workspaceDir: this.workspaceDir,
-        runId: runtimeRunIdFromDir(runDir),
+        runId: basename(runDir),
         runDir,
         outputDir: join(runDir, "output"),
         agentStub: options.agentStub ?? false,
@@ -465,7 +466,7 @@ export class RuntimeEngine {
     };
   }
 
-  private evalContext(context: RunContext, nodeId?: string): EvalRuntimeContext {
+  private evalContext(context: RunContext, nodeId?: string | undefined): EvalRuntimeContext {
     return {
       input: context.input,
       nodes: context.nodes,
@@ -522,14 +523,13 @@ function cloneContext(context: RunContext): RunContext {
 async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length) as R[];
   let next = 0;
-  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length || 1)) }, async () => {
+  const workerCount = Math.max(1, Math.min(Math.max(1, limit), items.length || 1));
+  const workers = Array.from({ length: workerCount }, async () => {
     for (;;) {
       const index = next;
       next += 1;
       if (index >= items.length) return;
-      const item = items[index];
-      if (item === undefined) return;
-      results[index] = await fn(item);
+      results[index] = await fn(items[index] as T);
     }
   });
   await Promise.all(workers);
@@ -539,7 +539,7 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
 function collectDefinitionDigests(scope: ScopeIR, out = new Map<string, string>()): Map<string, string> {
   for (const node of scope.nodes) {
     const shallow = { ...node } as Record<string, unknown>;
-    if ("source" in shallow) delete shallow.source;
+    delete shallow.source;
     out.set(node.id, `sha256:${createHash("sha256").update(stableStringify(shallow)).digest("hex")}`);
     if (node.kind === "if") {
       collectDefinitionDigests(node.then, out);
@@ -566,10 +566,6 @@ function rewriteArtifactUris(value: JsonValue, uriMap: Map<string, string>): Jso
   for (const [key, item] of Object.entries(value)) out[key] = rewriteArtifactUris(item, uriMap);
   if (uri) out.uri = uri;
   return out;
-}
-
-function runtimeRunIdFromDir(runDir: string): string {
-  return basename(runDir);
 }
 
 function sanitizeKey(value: string): string {
