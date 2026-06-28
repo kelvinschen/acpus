@@ -5,9 +5,9 @@ import { usageError } from "../errors.js";
 
 export async function readJsonOption(args: {
   cwd: string;
-  input?: string;
-  inputFile?: string;
-  defaultValue?: JsonValue;
+  input?: string | undefined;
+  inputFile?: string | undefined;
+  defaultValue?: JsonValue | undefined;
 }): Promise<JsonValue> {
   if (args.input && args.inputFile) throw usageError("Use either --input or --input-file, not both.");
   if (args.inputFile) return parseJson(await readFile(resolve(args.cwd, args.inputFile), "utf8"), `--input-file ${args.inputFile}`);
