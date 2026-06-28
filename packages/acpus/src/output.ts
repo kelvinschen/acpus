@@ -1,7 +1,7 @@
 import type { Writable } from "node:stream";
 import type { DiagnosticIR, WorkflowIR } from "@acpus/core";
 
-export type ResultPhase = "usage" | "typecheck" | "compile" | "validate" | "dry-run";
+export type ResultPhase = "usage" | "typecheck" | "compile" | "validate" | "dry-run" | "run" | "status" | "control" | "fork" | "replay";
 
 export type WorkflowSummary = {
   name: string;
@@ -16,6 +16,16 @@ export type WorkflowSummary = {
   };
 };
 
+export type RuntimeRunSummary = {
+  runId: string;
+  workflowName: string;
+  status: string;
+  admittedAt: string;
+  startedAt?: string;
+  endedAt?: string;
+  runDir?: string;
+};
+
 export type CliResult = {
   ok: boolean;
   phase: ResultPhase;
@@ -27,6 +37,16 @@ export type CliResult = {
   irDigest?: string;
   taskBundleCount?: number;
   sourceGraphDigest?: string;
+  runId?: string;
+  status?: string;
+  runDir?: string;
+  output?: unknown;
+  error?: unknown;
+  runs?: RuntimeRunSummary[];
+  nodes?: unknown[];
+  artifacts?: unknown[];
+  replay?: unknown;
+  forkedFrom?: string;
 };
 
 export type OutputFormat = "text" | "json";
@@ -48,7 +68,29 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
   }
   if (result.preflightDir) stream.write(`Preflight: ${result.preflightDir}\n`);
   if (result.irDigest) stream.write(`IR digest: ${result.irDigest}\n`);
+  if (result.sourceGraphDigest) stream.write(`Source graph digest: ${result.sourceGraphDigest}\n`);
   if (result.taskBundleCount !== undefined) stream.write(`Task bundles: ${result.taskBundleCount}\n`);
+  if (result.runId) stream.write(`Run: ${result.runId}\n`);
+  if (result.status) stream.write(`Status: ${result.status}\n`);
+  if (result.runDir) stream.write(`Run dir: ${result.runDir}\n`);
+  if (result.forkedFrom) stream.write(`Forked from: ${result.forkedFrom}\n`);
+  if (result.runs?.length) {
+    stream.write("\nRuns:\n");
+    for (const run of result.runs) {
+      stream.write(`- ${run.runId} ${run.status} ${run.workflowName} admitted=${run.admittedAt}${run.endedAt ? ` ended=${run.endedAt}` : ""}\n`);
+    }
+  }
+  if (result.nodes?.length) {
+    stream.write("\nNodes:\n");
+    for (const node of result.nodes) stream.write(`${JSON.stringify(node)}\n`);
+  }
+  if (result.artifacts?.length) {
+    stream.write("\nArtifacts:\n");
+    for (const artifact of result.artifacts) stream.write(`${JSON.stringify(artifact)}\n`);
+  }
+  if (result.output !== undefined) stream.write(`\nOutput:\n${JSON.stringify(result.output, null, 2)}\n`);
+  if (result.error !== undefined) stream.write(`\nError:\n${JSON.stringify(result.error, null, 2)}\n`);
+  if (result.replay !== undefined) stream.write(`\nReplay:\n${JSON.stringify(result.replay, null, 2)}\n`);
   if (result.typecheck) {
     if (result.typecheck.stdout) stream.write(`\n${result.typecheck.stdout}`);
     if (result.typecheck.stderr) stream.write(`\n${result.typecheck.stderr}`);
