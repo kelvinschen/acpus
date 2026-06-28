@@ -7,11 +7,11 @@ runtime, you author them as typed **TypeScript** modules that compile to a froze
 serializable IR which a runtime consumes.
 
 > **Status: foundation rewrite in progress.** This repository currently contains
-> the new core (`@acpus/core`) — the authoring and compile layer — plus the first
-> `acpus run --dry-run` CLI gate. The runtime and TUI are being rebuilt on top of
-> them. The previous YAML Workflow-Spec
-> implementation (the full runtime, TUI, CLI, catalog, skill, and site) is
-> preserved, read-only, under [`legacy/`](legacy/README.md).
+> the new core (`@acpus/core`) — the authoring and compile layer — plus the new
+> `acpus` CLI package with preflight admission and a local durable runtime. The
+> TUI is still being rebuilt. The previous YAML Workflow-Spec implementation
+> (the full runtime, TUI, CLI, catalog, skill, and site) is preserved, read-only,
+> under [`legacy/`](legacy/README.md).
 
 ## The new core
 
@@ -29,17 +29,25 @@ Representative workflow compiler fixtures live in `packages/core/test/fixtures/w
 
 ## CLI
 
-The new `acpus` package currently exposes the pre-run gate only:
+The `acpus` package exposes both the pre-run gate and the foreground durable runtime:
 
 ```sh
 pnpm --filter acpus build
 pnpm exec acpus run packages/core/test/fixtures/workflows/module.workflow.ts --dry-run
+pnpm exec acpus run workflow.ts --input-file input.json
+pnpm exec acpus runs
+pnpm exec acpus show <run-id>
+pnpm exec acpus signal <run-id> <signal-node-id> --input '{"approved":true}'
+pnpm exec acpus retry <run-id> --node failing-node
+pnpm exec acpus replay <run-id>
+pnpm exec acpus fork <run-id> --execute
 ```
 
-`acpus run <workflow.ts> --dry-run` typechecks, compiles, validates, and writes
-`.acpus/preflight/<id>/` with frozen IR, bundled task assets, and a lock file.
-Runtime execution is intentionally not implemented yet, so
-`acpus run <workflow.ts>` without `--dry-run` fails.
+`acpus run <workflow.ts>` typechecks, compiles, validates, writes
+`.acpus/preflight/<id>/`, admits immutable IR/input/task bundle metadata into
+`.acpus/state/runtime.db`, copies task bundles into `.acpus/runs/<run-id>/`, and
+executes the scheduler. Use `--dry-run` to stop after preflight and `--background`
+to admit without foreground execution.
 
 ## Development
 
@@ -49,7 +57,7 @@ This is a pnpm workspace containing the TypeScript core and the new CLI package.
 pnpm install
 pnpm build       # tsgo build of packages/*
 pnpm typecheck
-pnpm test        # vitest (suites pass with no tests yet)
+pnpm test        # vitest
 ```
 
 The core package intentionally does not expose a CLI; command-line entry points
