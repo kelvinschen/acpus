@@ -2,67 +2,53 @@
 
 ## Purpose
 
-Acpus core owns its canonical expression IR (`ExprIR`). The public authoring surface intentionally avoids raw expression strings: authors express conditions and derived values through structured TypeScript (`where(...)` filters, named operators, and typed output refs), which the core lowers to a serializable expression IR consumed by the runtime, visualizers, and validators.
+`@acpus/core/expression` owns Acpus expression authoring primitives and the canonical serializable `ExprIR` construction layer. Authors express conditions and derived values through typed refs, `where(...)` filters, named helpers, and collection helpers. Evaluation belongs to runtime consumers.
 
 ## Requirements
 
-### Authoring styles
+### Public API
 
-- The core MUST support a Prisma/Mongo-style `where(target, filter)` surface and MUST lower it to primitive `ExprIR` calls.
-- `where(...)` filter values MUST accept corresponding workflow values, including refs, literal arrays, ref-backed arrays for `in` / `notIn`, and arrays containing refs. `isEmpty` MUST remain a boolean literal selector.
+- The expression public API MUST be exported from `@acpus/core/expression`.
+- The root `@acpus/core` entrypoint MUST NOT export the full expression helper set.
+- The expression entrypoint MUST export `expr`, `isExpr`, `valueToExprIR`, `literal`, `not`, `and`, `or`, `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `len`, `includes`, `isEmpty`, `startsWith`, `endsWith`, `matches`, `coalesce`, `fallback`, `head`, `nth`, `all`, `any`, `max`, `min`, `where`, `exprOps`, `pick`, and `refExpr`.
+- The expression entrypoint MUST export the public expression and where-filter types.
 
-```ts
-where(review.output, { ready: true, riskCount: { lte: 3 }, issues: { length: 0 } });
-// lowers to:
-// and(
-//   eq(review.output.ready, true),
-//   lte(review.output.riskCount, 3),
-//   eq(len(review.output.issues), 0),
-// )
-```
+### Expression Construction
 
-- The core MUST support named operators usable directly and in composition with `where(...)`.
-- The expression public API MUST be exported from `@acpus/core/expression`; the root `@acpus/core` entrypoint MUST NOT export the full expression helper set.
+- `ExprIR` MUST be the canonical expression storage form.
+- `expr(ir)` MUST wrap a serializable expression IR as a typed workflow expression.
+- `valueToExprIR(value)` MUST lower workflow values to literal, ref, array, object, template, or call expression IR.
+- Literal helpers MUST lower primitive values to `literal` expression IR.
+- Named operators MUST lower to `call` expression IR with stable function names.
+- Logical combinators MUST include `not`, `and`, and `or`.
+- Comparison helpers MUST include `eq`, `ne`, `lt`, `lte`, `gt`, and `gte`.
+- String helpers MUST include `includes`, `startsWith`, `endsWith`, and `matches`.
+- Array/string length helpers MUST include `len`, `includes`, and `isEmpty`.
+- Nullish fallback MUST be represented by `coalesce`; `fallback` MUST lower to the same semantics.
 
-```ts
-import { and, includes, isEmpty, lte, or, where } from "@acpus/core/expression";
+### Where Filters
 
-and(where(review.output, { ready: true }), lte(review.output.riskCount, 3));
-or(includes(statuses, status), isEmpty(issues));
-```
+- `where(target, filter)` MUST support Prisma/Mongo-style object filters and lower them to primitive `ExprIR` calls.
+- Field shorthand values MUST lower to equality checks.
+- Field `{ length: n }` filters MUST lower to `eq(len(field), n)`.
+- Mongo aliases such as `$lte` and `$regex` MUST lower to the same primitive calls as their named counterparts.
+- `in` and `notIn` MUST be supported as `where(...)` filter operators only; they MUST NOT be direct public helper functions.
+- `where(...)` filter values MUST accept workflow values, including refs, literal arrays, ref-backed arrays for `in` / `notIn`, and arrays containing refs.
+- Array `isEmpty` in `where(...)` MUST remain a boolean literal selector.
 
-- The core MUST support collection helpers over compile-time arrays via selector callbacks; these MUST NOT be used for runtime arrays (use `step("id").fanout(...)`).
+### Accessors And Collections
 
-```ts
-all(reviews, review => review.output.ready);
-max(reviews, review => review.output.riskCount);
-```
-
-- The core MUST support `head(array)` and `nth(array, index)` for ref-backed workflow arrays. These helpers MUST lower to index ref paths and MUST return accessors typed as possibly `undefined`.
-
-```ts
-fallback(head(reviews.output).summary, "(none)");
-nth(reviews.output, 1).ready;
-```
-
-### Operator set
-
-- Number comparisons MUST include: `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in`, `notIn`.
-- String operators MUST include: `eq`, `ne`, `contains` in `where(...)` filters, `includes`, `startsWith`, `endsWith`, `matches`, `in`, `notIn`.
-- Boolean operators MUST include: `true`, `false`, `eq`, `ne`.
-- Array operators MUST include: `length`, `contains` in `where(...)` filters, `includes`, `isEmpty`.
-- Ref-backed array access helpers MUST include: `head`, `nth`.
-- Logical combinators MUST include: `AND`, `OR`, `NOT`.
-
-### Canonical layer ownership
-
-- `ExprIR` MUST be the canonical expression layer; the core MUST NOT adopt CEL or JSON Logic as the canonical authoring or storage form.
-- The expression layer MUST serve typed refs, dependency collection, source mapping, graph visualization, schema-aware field diagnostics, scope-visibility validation, and stable IR serialization — not evaluation alone.
+- `pick(source, keys)` MUST return a plain object fragment of same-name output accessors without creating nodes or a distinct IR shape.
+- `head(array)` and `nth(array, index)` MUST support ref-backed workflow arrays and lower to index ref paths.
+- `nth` MUST require a zero-based non-negative integer index.
+- `head` and `nth` MUST return accessors typed as possibly `undefined`.
+- `all`, `any`, `max`, and `min` MUST support compile-time arrays via selector callbacks.
+- Collection helpers over runtime arrays MUST be expressed with workflow fanout nodes rather than selector callbacks.
 
 ## Verification
 
-- Tests MUST cover that `where(...)` lowers to the documented primitive `ExprIR` calls, including the field-shorthand cases (`true` → `eq`, `{ length: 0 }` → `eq(len(...), 0)`) and workflow-value filters.
-- Tests MUST cover Mongo aliases (e.g. `$lte`, `$regex`) lowering to the same primitives as their named counterparts.
-- Tests MUST cover compile-time collection helpers (`all`, `max`) producing logical/aggregate `ExprIR` over the selected refs.
-- Tests MUST cover `head(...)` and `nth(...)` lowering to index ref paths.
-- Tests MUST cover `includes(...)` and `isEmpty(...)` direct helpers.
+- Tests MUST cover `where(...)` lowering, including shorthand equality, `{ length: 0 }`, Mongo aliases, workflow-value filters, and `in` / `notIn` filters.
+- Tests MUST cover named operator lowering and composition with `where(...)`.
+- Tests MUST cover `includes(...)`, `isEmpty(...)`, `fallback(...)`, `head(...)`, and `nth(...)`.
+- Tests MUST cover compile-time collection helpers over selected refs.
+- Type tests MUST cover expression helper imports from `@acpus/core/expression`.

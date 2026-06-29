@@ -325,7 +325,7 @@ describe("WorkflowIR diagnostics contract", () => {
     }));
   });
 
-  it("rejects unspecified IR fields instead of tolerating old aliases", () => {
+  it("rejects fields outside the closed IR shape", () => {
     const outputSchema = {
       kind: "object" as const,
       fields: {},

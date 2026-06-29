@@ -116,11 +116,11 @@ Core no longer has per-task `permissions`. A Task is trusted code selected by th
 
 ### `$` is still Acpus-owned
 
-Task code receives `ctx.$`; it should not import raw `zx` directly in normal use. The wrapper is not a permission gate. It exists so Acpus can attach command spans, timeouts, abort handling, stdout/stderr capture, redaction, and future artifact integration.
+Task code receives `ctx.$`; it should not import raw `zx` directly in normal use. The wrapper is not a permission gate. It exists so Acpus can attach command spans, timeouts, abort handling, stdout/stderr capture, redaction, and artifact writes.
 
-## Important current limitations
+## Package boundary
 
-This is a Core package, not a complete runtime.
+This is the Core authoring and IR package, not the workflow module compiler, runtime scheduler, CLI, or agent process executor.
 
 Implemented:
 
@@ -132,14 +132,4 @@ Implemented:
 - compile to WorkflowIR
 - zx/core-backed `$` wrapper shape
 
-Still roadmap:
-
-- real Task executor
-- AST-based Task extraction/bundling
-- deterministic compile sandbox
-- ESLint rules
-- Agent executor
-- Signal executor
-- runtime persistence/replay/fork
-
-See [`specs/core-workflow-spec.md`](../../specs/core-workflow-spec.md) and [`docs/roadmap/core-roadmap.md`](../../docs/roadmap/core-roadmap.md).
+See [`specs/core-spec.md`](../../specs/core-spec.md) and [`docs/roadmap/core-roadmap.md`](../../docs/roadmap/core-roadmap.md).

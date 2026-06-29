@@ -2,13 +2,16 @@
 
 Command-line entry point for Acpus TypeScript workflows.
 
-Current scope is the pre-run gate:
+Primary workflow entry point:
 
 ```sh
-acpus run workflow.ts --dry-run
+acpus run workflow.ts --input '{"ready":true}'
 ```
 
-The command typechecks the workflow module, compiles it through `@acpus/core`,
-validates the resulting `WorkflowIR`, and writes `.acpus/preflight/<id>/` with
-the frozen IR, bundled task assets, and lock file. Runtime execution is not
-implemented yet.
+`acpus run workflow.ts --dry-run` typechecks and prepares the workflow through
+`@acpus/workflow-compiler`, validates the resulting `WorkflowIR`, and writes
+`.acpus/preflight/<id>/` with the IR, bundled task assets, and lock file.
+
+Without `--dry-run`, `acpus run` delegates prepared workflows to `@acpus/runtime`
+and reports the admitted run. The `acpus runs` command group inspects and
+controls durable runs.
