@@ -5,26 +5,26 @@ import type { WorkflowValue } from "../../expressions/expr.js";
 import type { DiagnosticIR, SwitchNodeIR } from "../../ir/types.js";
 import type { ScopeCallback, BuildScope, ObjectSchema, SchemaScopeOutput } from "./shared.js";
 
-type SwitchStepSpecBase<OutSchema extends ObjectSchema | undefined, AgentKey extends string> = {
-  cases: Array<{ when: WorkflowValue<boolean>; then: ScopeCallback<SchemaScopeOutput<OutSchema>, AgentKey> }>;
+type SwitchStepSpecBase<OutSchema extends ObjectSchema | undefined> = {
+  cases: Array<{ when: WorkflowValue<boolean>; then: ScopeCallback<SchemaScopeOutput<OutSchema>> }>;
 };
 
-export type SwitchStepSpec<OutSchema extends ObjectSchema | undefined = ObjectSchema | undefined, AgentKey extends string = string> =
+export type SwitchStepSpec<OutSchema extends ObjectSchema | undefined = ObjectSchema | undefined> =
   OutSchema extends ObjectSchema
-    ? SwitchStepSpecBase<OutSchema, AgentKey> & {
+    ? SwitchStepSpecBase<OutSchema> & {
         outputSchema: OutSchema;
-        default: ScopeCallback<SchemaScopeOutput<OutSchema>, AgentKey>;
+        default: ScopeCallback<SchemaScopeOutput<OutSchema>>;
       }
-    : SwitchStepSpecBase<undefined, AgentKey> & {
+    : SwitchStepSpecBase<undefined> & {
         outputSchema?: undefined;
-        default?: ScopeCallback<SchemaScopeOutput<undefined>, AgentKey>;
+        default?: ScopeCallback<SchemaScopeOutput<undefined>>;
       };
 
-export function buildSwitchNode<OutSchema extends ObjectSchema | undefined, AgentKey extends string = string>(
+export function buildSwitchNode<OutSchema extends ObjectSchema | undefined>(
   id: string,
-  spec: SwitchStepSpec<OutSchema, AgentKey>,
+  spec: SwitchStepSpec<OutSchema>,
   diagnostics: DiagnosticIR[],
-  buildScope: BuildScope<AgentKey>,
+  buildScope: BuildScope,
 ): SwitchNodeIR {
   assertStableId(id, diagnostics);
   return stripUndefined({

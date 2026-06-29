@@ -3,7 +3,7 @@ import type { ExprIR, TemplateIR } from "@acpus/core/ir";
 export type EvaluationScope = {
   input?: unknown;
   nodes?: Record<string, { status?: string; output?: unknown }>;
-  runtime?: Record<string, unknown>;
+  meta?: Record<string, unknown>;
   fanout?: Record<string, unknown>;
   loop?: Record<string, unknown>;
 };
@@ -31,8 +31,8 @@ export function renderTemplate(template: TemplateIR, scope: EvaluationScope): st
 
 function resolvePath(scope: EvaluationScope, path: string[]): unknown {
   const normalized = path[0] === "workflow" && path[1] === "input" ? ["input", ...path.slice(2)] : path;
-  if (!["input", "nodes", "runtime", "fanout", "loop"].includes(normalized[0] ?? "")) {
-    throw new Error(`Unsupported runtime ref root: ${path[0] ?? "(empty)"}.`);
+  if (!["input", "nodes", "meta", "fanout", "loop"].includes(normalized[0] ?? "")) {
+    throw new Error(`Unsupported expression ref root: ${path[0] ?? "(empty)"}.`);
   }
   let value: unknown = scope;
   for (const segment of normalized) {

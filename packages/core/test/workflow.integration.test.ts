@@ -41,7 +41,7 @@ describe("workflow compilation", () => {
           env: { REVIEW_TOKEN: secret("REVIEW_TOKEN") },
         },
       },
-    }).build(({ input, step, output }) => {
+    }).build(({ input, agents, meta, step, output }) => {
       const normalized = step("normalize_package").task({
         run: {
           task: normalizePackage,
@@ -74,7 +74,7 @@ describe("workflow compilation", () => {
       const review = step("review").agent({
         outputSchema: ReviewOutput,
         run: {
-          agent: "reviewer",
+          agent: agents.reviewer,
           prompt: template`Review ${tests.output.summary}`,
           session: { key: template`release:${tests.output.summary}` },
           cwd: input.repoPath,
@@ -98,6 +98,7 @@ describe("workflow compilation", () => {
         ...pick(review.output, ["ready", "summary"]),
         approved: humanGate.output.approved,
         slug: normalized.output.slug,
+        runId: meta.runId,
       });
     });
 
@@ -245,6 +246,7 @@ describe("workflow compilation", () => {
         kind: "ref",
         path: ["nodes", "normalize_package", "output", "slug"],
       },
+      runId: { kind: "ref", path: ["meta", "runId"] },
     });
     expect(Object.values(ir.assets.taskBundles)).toHaveLength(2);
     expect(
@@ -531,10 +533,10 @@ describe("workflow compilation", () => {
           options: { mode: "batch" },
         },
       },
-    }).build(({ step, output }) => {
+    }).build(({ agents, step, output }) => {
       step("run_worker").agent({
         run: {
-          agent: "worker",
+          agent: agents.worker,
           prompt: "Run worker",
         },
       });

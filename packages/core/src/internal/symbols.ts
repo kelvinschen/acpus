@@ -6,3 +6,4 @@ export const WORKFLOW = Symbol.for("acpus.workflow");
 export const NODE_REF = Symbol.for("acpus.node_ref");
 export const OUTPUT_TOKEN = Symbol.for("acpus.output_token");
 export const SECRET = Symbol.for("acpus.secret");
+export const AGENT_TOKEN = Symbol.for("acpus.agent_token");

@@ -10,7 +10,6 @@ describe("@acpus/core public API", () => {
   it("keeps the root entrypoint focused on minimal workflow authoring", () => {
     expect(Object.keys(core).sort()).toEqual([
       "defineWorkflow",
-      "runtime",
       "s",
       "secret",
       "task",
@@ -81,7 +80,6 @@ describe("@acpus/core public API", () => {
   it("exports runtime helpers from the runtime entrypoint", () => {
     expect(Object.keys(runtime).sort()).toEqual([
       "createDollar",
-      "runtime",
       "secret",
     ]);
   });

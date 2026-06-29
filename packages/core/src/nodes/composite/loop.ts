@@ -7,19 +7,19 @@ import type { ScopeIdentity } from "../../graph/scope.js";
 import type { DiagnosticIR, LoopNodeIR } from "../../ir/types.js";
 import type { BuildScope, LoopScopeContext, LoopStopContext, ObjectSchema, ScopeOutput } from "./shared.js";
 
-export type LoopStepSpec<OutSchema extends ObjectSchema, AgentKey extends string = string> = {
+export type LoopStepSpec<OutSchema extends ObjectSchema> = {
   maxIterations: number;
-  do: <Scope extends ScopeIdentity>(ctx: LoopScopeContext<ScopeOutput<InferSchema<OutSchema>>, AgentKey, Scope>) => ReturnType<LoopScopeContext<ScopeOutput<InferSchema<OutSchema>>, AgentKey, Scope>["output"]>;
+  do: <Scope extends ScopeIdentity>(ctx: LoopScopeContext<ScopeOutput<InferSchema<OutSchema>>, Scope>) => ReturnType<LoopScopeContext<ScopeOutput<InferSchema<OutSchema>>, Scope>["output"]>;
   stopWhen: (ctx: LoopStopContext<ScopeOutput<InferSchema<OutSchema>>>) => WorkflowValue<boolean>;
   outputSchema: OutSchema;
   onExhausted?: "fail" | "returnLast";
 };
 
-export function buildLoopNode<OutSchema extends ObjectSchema, AgentKey extends string = string>(
+export function buildLoopNode<OutSchema extends ObjectSchema>(
   id: string,
-  spec: LoopStepSpec<OutSchema, AgentKey>,
+  spec: LoopStepSpec<OutSchema>,
   diagnostics: DiagnosticIR[],
-  buildScope: BuildScope<AgentKey>,
+  buildScope: BuildScope,
 ): LoopNodeIR {
   assertStableId(id, diagnostics);
   const iter = refExpr<number>(["loop", id, "iter"]);

@@ -8,23 +8,25 @@
 
 ### Public API
 
-- The root `@acpus/core` entrypoint MUST expose the minimal workflow authoring surface: `defineWorkflow`, `z`, `s`, `task`, `template`, `runtime`, and `secret`.
+- The root `@acpus/core` entrypoint MUST expose the minimal workflow authoring surface: `defineWorkflow`, `z`, `s`, `task`, `template`, and `secret`.
 - `@acpus/core/workflow` MUST expose `defineWorkflow`, `compileWorkflowDefinition`, and `isWorkflowDefinition`.
 - `@acpus/core/schema` MUST expose schema authoring, parsing, validation, and lowering helpers, including `z`, `s`, `isSchema`, `parseSchema`, `safeParseSchema`, `validateValue`, `toSchemaIR`, `toJSONSchema`, `schemaToJsonSchema`, and `assertBoundarySchema`.
-- `@acpus/core/runtime` MUST expose the task command wrapper factory `createDollar`, runtime refs, secret tokens, and related task runtime types.
+- `@acpus/core/runtime` MUST expose the task command wrapper factory `createDollar`, secret tokens, and related task runtime types.
 - `@acpus/core/ir` MUST expose `validateWorkflowIR` and public IR types.
 - The core package MUST NOT expose a binary; command behavior belongs to the `acpus` CLI package.
 
 ### Workflow Authoring
 
-- The core MUST expose `defineWorkflow(...).build(...)` as the workflow entry point, where `build` receives `{ input, step, output }`.
+- The core MUST expose `defineWorkflow(...).build(...)` as the workflow entry point, where `build` receives `{ input, agents, meta, step, output }`.
 - During graph construction, `input.*` fields MUST be exposed as `Expr<T>` tokens.
+- During graph construction, `meta.runId`, `meta.workflowPath`, `meta.workflowName`, and `meta.workspaceDir` MUST be exposed as run-level `Expr<string>` tokens.
 - Agent definitions MUST be declared at workflow top level under `agents` as plain object definitions.
 - `{ use, model?, ... }` MUST define a provider-backed agent and `{ command, ... }` MUST define a command-backed agent.
 - Agent definition `use` and `command` MUST be mutually exclusive.
 - Top-level agent definitions MUST be authoring specs without an IR `kind` field.
 - Command-backed agent definitions MUST NOT declare `model`; model selection belongs to provider-backed `{ use, model?, ... }` definitions.
-- Agent node `run.agent` MUST reference a key declared in workflow top-level `agents`, and TypeScript authoring MUST type-check it against those keys.
+- The `build` context `agents` member MUST expose one typed token for each key declared in workflow top-level `agents`.
+- Agent node `run.agent` MUST use an agent token from the `build` context `agents` member.
 - When authors extract an `agents` object before passing it to `defineWorkflow(...)`, they SHOULD preserve literal keys, for example with `satisfies AgentMap`.
 
 ### Schema Layer
@@ -48,7 +50,7 @@
 - Runtime bindings, accessors, and output helpers MUST continue to use `input` and `output`.
 - Executable nodes MUST use `run` as the execution boundary and top-level `outputSchema` as the downstream contract boundary.
 - Node ids MUST be bound through `step("id")`; node kind methods MUST receive only the kind-specific spec.
-- Agent nodes MUST use `step("id").agent({ outputSchema?, run: { agent, prompt, policy?, session?, cwd?, env? }, timeout?, retry? })`.
+- Agent nodes MUST use `step("id").agent({ outputSchema?, run: { agent: agents.<key>, prompt, policy?, session?, cwd?, env? }, timeout?, retry? })`.
 - Signal nodes MUST use `step("id").signal({ outputSchema, run: { prompt }, timeout?, onTimeout? })`.
 - Signal `onTimeout`, when present, MUST use `{ action: "fail", message? }`.
 - Task nodes MUST use `run.input` as the explicit expression-to-runtime-value boundary.

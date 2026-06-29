@@ -1,6 +1,7 @@
 import { envToIR, assertStableId, stripUndefined } from "../../graph/lowering.js";
 import { templateToIR, type Template } from "../../template/template.js";
 import { valueToExprIR } from "../../expressions/expr.js";
+import { AGENT_TOKEN } from "../../internal/symbols.js";
 import { toSchemaIR, type Schema } from "../../schema/index.js";
 import type { WorkflowValue } from "../../expressions/expr.js";
 import type { AgentDefinitionIR, AgentNodeIR, AgentRunIR, DiagnosticIR, JsonObject, RetryIR } from "../../ir/types.js";
@@ -30,8 +31,17 @@ export type AgentCommandSpec = {
 
 export type AgentDefinitionSpec = AgentUseSpec | AgentCommandSpec;
 
-export type AgentRunSpec<Use extends string = never> = {
-  agent: Use;
+export type AgentToken<Key extends string = string> = {
+  readonly [AGENT_TOKEN]: true;
+  readonly key: Key;
+};
+
+export function agentToken<Key extends string>(key: Key): AgentToken<Key> {
+  return { [AGENT_TOKEN]: true as const, key };
+}
+
+export type AgentRunSpec = {
+  agent: AgentToken;
   prompt: Template | string;
   policy?: "read" | "full";
   session?: { key?: Template | string };
@@ -41,10 +51,9 @@ export type AgentRunSpec<Use extends string = never> = {
 
 export type AgentStepSpec<
   OutSchema extends Schema<any> | undefined = Schema<any> | undefined,
-  Use extends string = never,
 > = {
   outputSchema?: OutSchema;
-  run: AgentRunSpec<Use>;
+  run: AgentRunSpec;
   timeout?: string;
   retry?: RetryIR;
 };
@@ -71,10 +80,10 @@ export function agentDefinitionToIR(spec: AgentDefinitionSpec): AgentDefinitionI
   }) as AgentDefinitionIR;
 }
 
-function agentRunToIR(spec: AgentRunSpec<string>): AgentRunIR {
+function agentRunToIR(spec: AgentRunSpec): AgentRunIR {
   return stripUndefined({
     kind: "agent_run",
-    agent: spec.agent,
+    agent: spec.agent.key,
     prompt: templateToIR(spec.prompt),
     policy: spec.policy,
     session: spec.session?.key === undefined ? undefined : { key: templateToIR(spec.session.key) },
@@ -83,9 +92,9 @@ function agentRunToIR(spec: AgentRunSpec<string>): AgentRunIR {
   }) as AgentRunIR;
 }
 
-export function buildAgentNode<OutSchema extends Schema<any> | undefined, Use extends string = string>(
+export function buildAgentNode<OutSchema extends Schema<any> | undefined>(
   id: string,
-  spec: AgentStepSpec<OutSchema, Use>,
+  spec: AgentStepSpec<OutSchema>,
   diagnostics: DiagnosticIR[],
 ): AgentNodeIR {
   assertStableId(id, diagnostics);

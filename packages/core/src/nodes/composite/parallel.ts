@@ -4,17 +4,16 @@ import { toSchemaIR, type InferSchema, type Schema } from "../../schema/index.js
 import type { DiagnosticIR, ParallelBranchIR, ParallelNodeIR } from "../../ir/types.js";
 import type { BuildScope, ObjectSchema, ParallelStrategy, ScopeCallback, ScopeOutput } from "./shared.js";
 
-export type ParallelBranchSpec<OutSchema extends ObjectSchema, AgentKey extends string = string> = {
+export type ParallelBranchSpec<OutSchema extends ObjectSchema> = {
   outputSchema: OutSchema;
-  do: ScopeCallback<ScopeOutput<InferSchema<OutSchema>>, AgentKey>;
+  do: ScopeCallback<ScopeOutput<InferSchema<OutSchema>>>;
 };
 
 export type ParallelStepSpec<
   Branches extends Record<string, ObjectSchema> = Record<string, ObjectSchema>,
   Strategy extends ParallelStrategy = "all",
-  AgentKey extends string = string,
 > = Simplify<{
-  branches: { [K in keyof Branches]: ParallelBranchSpec<Branches[K], AgentKey> };
+  branches: { [K in keyof Branches]: ParallelBranchSpec<Branches[K]> };
   maxConcurrency?: number;
 } & (Strategy extends "race" ? { strategy: "race" } : { strategy?: "all" })>;
 
@@ -35,16 +34,15 @@ export type ParallelNodeRefOutput<
 export function buildParallelNode<
   Branches extends Record<string, ObjectSchema>,
   Strategy extends ParallelStrategy,
-  AgentKey extends string = string,
 >(
   id: string,
-  spec: ParallelStepSpec<Branches, Strategy, AgentKey>,
+  spec: ParallelStepSpec<Branches, Strategy>,
   diagnostics: DiagnosticIR[],
-  buildScope: BuildScope<AgentKey>,
+  buildScope: BuildScope,
 ): ParallelNodeIR {
   assertStableId(id, diagnostics);
   const branches: Record<string, ParallelBranchIR> = {};
-  for (const [key, branch] of Object.entries(spec.branches) as Array<[string, ParallelBranchSpec<ObjectSchema, AgentKey>]>) {
+  for (const [key, branch] of Object.entries(spec.branches) as Array<[string, ParallelBranchSpec<ObjectSchema>]>) {
     branches[key] = {
       outputSchema: toSchemaIR(branch.outputSchema),
       scope: buildScope<{}, ScopeOutput<InferSchema<typeof branch.outputSchema>>>(branch.do),

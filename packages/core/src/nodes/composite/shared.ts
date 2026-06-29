@@ -7,10 +7,10 @@ import type { InferSchema, Schema } from "../../schema/index.js";
 export type ObjectSchema = Schema<Record<string, unknown>>;
 export type ScopeOutput<Output> = Output extends object ? Output : Record<string, unknown>;
 export type SchemaScopeOutput<OutSchema> = OutSchema extends ObjectSchema ? ScopeOutput<InferSchema<OutSchema>> : Record<string, unknown>;
-export type ScopeCallback<Output extends object = Record<string, unknown>, AgentKey extends string = string> =
-  <Scope extends ScopeIdentity>(ctx: ScopeContext<Output, AgentKey, Scope>) => ReturnType<ScopeContext<Output, AgentKey, Scope>["output"]>;
-export type BuildScope<AgentKey extends string = string> = <Extra extends object = {}, Output extends object = Record<string, unknown>>(
-  fn: <Scope extends ScopeIdentity>(ctx: ScopeContext<Output, AgentKey, Scope> & Extra) => ReturnType<ScopeContext<Output, AgentKey, Scope>["output"]>,
+export type ScopeCallback<Output extends object = Record<string, unknown>> =
+  <Scope extends ScopeIdentity>(ctx: ScopeContext<Output, Scope>) => ReturnType<ScopeContext<Output, Scope>["output"]>;
+export type BuildScope = <Extra extends object = {}, Output extends object = Record<string, unknown>>(
+  fn: <Scope extends ScopeIdentity>(ctx: ScopeContext<Output, Scope> & Extra) => ReturnType<ScopeContext<Output, Scope>["output"]>,
   extra?: Extra,
 ) => ScopeIR;
 
@@ -27,12 +27,12 @@ export type ArrayItem<Over> =
     : Over extends readonly (infer Value)[] ? RuntimeValueOf<Value>
       : never;
 
-export type FanoutScopeContext<Item = any, Output extends object = Record<string, unknown>, AgentKey extends string = string, Scope = ScopeIdentity> = ScopeContext<Output, AgentKey, Scope> & {
+export type FanoutScopeContext<Item = any, Output extends object = Record<string, unknown>, Scope = ScopeIdentity> = ScopeContext<Output, Scope> & {
   item: OutputAccessor<Item>;
   itemIndex: Expr<number>;
 };
 
-export type LoopScopeContext<Output extends object, AgentKey extends string = string, Scope = ScopeIdentity> = ScopeContext<Output, AgentKey, Scope> & {
+export type LoopScopeContext<Output extends object, Scope = ScopeIdentity> = ScopeContext<Output, Scope> & {
   iter: Expr<number>;
   previous: OutputAccessor<Output | undefined>;
 };

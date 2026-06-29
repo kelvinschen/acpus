@@ -7,6 +7,6 @@ export type { Template } from "./template/template.js";
 export { task } from "./nodes/leaf/task.js";
 export type { TaskToken } from "./nodes/leaf/task.js";
 export type { TaskContext, TaskFunction } from "./runtime/task-context.js";
-export type { AgentCommandSpec, AgentDefinitionSpec, AgentRunSpec, AgentUseSpec } from "./nodes/leaf/agent.js";
+export type { AgentCommandSpec, AgentDefinitionSpec, AgentRunSpec, AgentToken, AgentUseSpec } from "./nodes/leaf/agent.js";
 export type { SignalRunSpec } from "./nodes/leaf/signal.js";
-export { runtime, secret } from "./runtime/secret.js";
+export { secret } from "./runtime/secret.js";

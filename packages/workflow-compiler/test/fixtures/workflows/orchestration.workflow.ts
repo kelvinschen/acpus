@@ -58,7 +58,7 @@ export default defineWorkflow({
     worker: { use: "codex" },
     reviewer: { use: "codex", policy: "read" },
   },
-}).build(({ input, step, output }) => {
+}).build(({ input, agents, meta, step, output }) => {
   const lanes = step("lanes").fanout({
     maxConcurrency: 3,
     over: input.lanes,
@@ -74,7 +74,7 @@ export default defineWorkflow({
               const review = step("review_lane").agent({
                 outputSchema: LaneReview,
                 run: {
-                  agent: "reviewer",
+                  agent: agents.reviewer,
                   prompt: template`Review lane ${item.id} in ${item.mode} mode.`,
                 },
               });
@@ -91,7 +91,7 @@ export default defineWorkflow({
                   const repair = step("repair_round").agent({
                     outputSchema: LaneRepair,
                     run: {
-                      agent: "worker",
+                      agent: agents.worker,
                       prompt: template`
                         Repair lane ${item.id}.
                         Round: ${iter}
@@ -127,7 +127,7 @@ export default defineWorkflow({
                       const auto = step("auto_route").agent({
                         outputSchema: LaneRoute,
                         run: {
-                          agent: "worker",
+                          agent: agents.worker,
                           prompt: template`Choose automatic route for ${item.id}.`,
                         },
                       });
@@ -139,7 +139,7 @@ export default defineWorkflow({
                   const manual = step("manual_route").agent({
                     outputSchema: LaneRoute,
                     run: {
-                      agent: "worker",
+                      agent: agents.worker,
                       prompt: template`Choose manual route for ${item.id}.`,
                     },
                   });
@@ -198,5 +198,6 @@ export default defineWorkflow({
     first_lane: fallback(head(lanes.output).lane, ""),
     first_route: fallback(head(lanes.output).route, ""),
     first_review_ok: where(head(lanes.output), { review_ok: true }),
+    run_id: meta.runId,
   });
 });

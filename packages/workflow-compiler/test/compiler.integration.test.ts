@@ -65,6 +65,7 @@ describe.concurrent("workflow module compiler", () => {
 
     expect(ir.name).toBe("orchestration-fixture");
     expect(ir.diagnostics).toEqual([]);
+    expect(ir.outputs.run_id).toEqual({ kind: "ref", path: ["meta", "runId"] });
     expect([...new Set(collectKinds(ir.root))].sort()).toEqual([
       "agent",
       "assert",

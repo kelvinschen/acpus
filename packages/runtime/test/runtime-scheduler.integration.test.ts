@@ -137,8 +137,8 @@ describe("runtime non-agent scheduler skeleton", () => {
     const agent = compileWorkflowDefinition(defineWorkflow({
       name: "needs_agent_executor",
       agents: { reviewer: { use: "mock" } },
-    }).build(({ step, output }) => {
-      step("review").agent({ run: { agent: "reviewer", prompt: "review" } });
+    }).build(({ agents, step, output }) => {
+      step("review").agent({ run: { agent: agents.reviewer, prompt: "review" } });
       return output({});
     }));
     await expect(executeWorkflow(agent, {})).rejects.toThrow("Executable node 'review' (agent) requires a node executor.");

@@ -59,7 +59,7 @@ export default defineWorkflow({
   agents: {
     reviewer: { use: "codex", policy: "read" },
   },
-}).build(({ input, step, output }) => {
+}).build(({ input, agents, step, output }) => {
   const diff = step("diff").task({
     outputSchema: z.object({ patch: z.artifact("text/x-patch") }),
     run: {
@@ -79,7 +79,7 @@ export default defineWorkflow({
   const review = step("review").agent({
     outputSchema: ReviewOut,
     run: {
-      agent: "reviewer",
+      agent: agents.reviewer,
       prompt: template`Review this diff:\n\n${diff.output.patch}`,
     },
   });

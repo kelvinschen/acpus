@@ -15,6 +15,7 @@ export type RuntimeExecutionOptions = {
   agentExecutor?: (node: AgentNodeIR, scope: EvaluationScope) => Promise<unknown>;
   signalPayloads?: Record<string, unknown>;
   completedNodes?: Record<string, unknown>;
+  meta?: Record<string, unknown>;
 };
 
 export class ExecutorRequiredError extends Error {
@@ -60,7 +61,7 @@ type SchedulerScope = EvaluationScope & {
 };
 
 export async function executeWorkflow(ir: WorkflowIR, input: JsonValue, options: RuntimeExecutionOptions = {}): Promise<NonAgentExecutionResult> {
-  const scope = createRootScope(input);
+  const scope = createRootScope(input, options.meta ?? {});
   for (const [nodeId, output] of Object.entries(options.completedNodes ?? {})) {
     const state = { status: "completed" as const, output };
     scope.nodes[nodeId] = state;
@@ -253,12 +254,12 @@ function validateNodeOutput(node: NodeIR, output: unknown): unknown {
   return output;
 }
 
-function createRootScope(input: JsonValue): SchedulerScope {
+function createRootScope(input: JsonValue, meta: Record<string, unknown>): SchedulerScope {
   return {
     input,
     nodes: {},
     executedNodes: {},
-    runtime: {},
+    meta,
     fanout: {},
     loop: {},
   };
@@ -269,7 +270,7 @@ function createChildScope(parent: SchedulerScope, overrides: Partial<EvaluationS
     input: parent.input,
     nodes: { ...parent.nodes },
     executedNodes,
-    runtime: overrides.runtime ?? { ...parent.runtime },
+    meta: overrides.meta ?? { ...parent.meta },
     fanout: overrides.fanout ?? { ...parent.fanout },
     loop: overrides.loop ?? { ...parent.loop },
   };

@@ -7,12 +7,11 @@ import {
   z,
   type ScopeContext,
   type StepDeclaration,
-  type StepFactory,
   type StepInput,
   type AgentMap,
   type AgentDefinitionSpec,
   type AgentRunSpec,
-  type AgentStepSpec,
+  type AgentToken,
   type TaskStepSpec,
 } from "../src/index.js";
 import { includes, isEmpty, pick, where, type Expr, type WorkflowValue } from "../src/expression.js";
@@ -28,57 +27,43 @@ test("step declaration object exposes kind methods", () => {
   });
 });
 
-test("bare agent authoring aliases do not widen use keys", () => {
+test("build context exposes run-level meta refs", () => {
+  defineWorkflow({ name: "typed-meta" }).build(({ meta, output }) => {
+    assertType<Expr<string>>(meta.runId);
+    assertType<Expr<string>>(meta.workflowPath);
+    assertType<Expr<string>>(meta.workflowName);
+    assertType<Expr<string>>(meta.workspaceDir);
+    // @ts-expect-error meta is run-level only.
+    meta.nodeId;
+    return output({
+      runId: meta.runId,
+      workflowPath: meta.workflowPath,
+      workflowName: meta.workflowName,
+      workspaceDir: meta.workspaceDir,
+    });
+  });
+});
+
+test("agent run specs require agent tokens", () => {
+  const reviewer = null as unknown as AgentToken<"reviewer">;
   const declaration = {} as StepDeclaration;
-  declaration.agent({
-    run: {
-      // @ts-expect-error bare StepDeclaration has no valid agent reference keys.
-      agent: "reviewer",
-      prompt: "bad",
-    },
-  });
-
-  const factory = {} as StepFactory;
-  factory("review").agent({
-    run: {
-      // @ts-expect-error bare StepFactory has no valid agent reference keys.
-      agent: "reviewer",
-      prompt: "bad",
-    },
-  });
-
-  const scope = {} as ScopeContext;
-  scope.step("review").agent({
-    run: {
-      // @ts-expect-error bare ScopeContext has no valid agent reference keys.
-      agent: "reviewer",
-      prompt: "bad",
-    },
-  });
+  declaration.agent({ run: { agent: reviewer, prompt: "ok" } });
 
   const runSpec: AgentRunSpec = {
-    // @ts-expect-error bare AgentRunSpec has no valid agent reference keys.
+    agent: reviewer,
+    prompt: "ok",
+  };
+  const badRunSpec: AgentRunSpec = {
+    // @ts-expect-error agent runs accept tokens, not string keys.
     agent: "reviewer",
     prompt: "bad",
   };
 
-  const stepSpec: AgentStepSpec = {
-    run: {
-      // @ts-expect-error bare AgentStepSpec has no valid agent reference keys.
-      agent: "reviewer",
-      prompt: "bad",
-    },
-  };
-
-  assertType<AgentRunSpec<"reviewer">>({ agent: "reviewer", prompt: "ok" });
-  assertType<AgentStepSpec<undefined, "reviewer">>({
-    run: { agent: "reviewer", prompt: "ok" },
-  });
   void runSpec;
-  void stepSpec;
+  void badRunSpec;
 });
 
-test("agent reference is typed from top-level agent keys", () => {
+test("agent tokens are typed from top-level agent keys", () => {
   const extractedAgents = {
     reviewer: { use: "codex", policy: "read" },
   } satisfies AgentMap;
@@ -104,20 +89,16 @@ test("agent reference is typed from top-level agent keys", () => {
   defineWorkflow({
     name: "typed-extracted-agent-keys",
     agents: extractedAgents,
-  }).build(({ step, output }) => {
+  }).build(({ agents, step, output }) => {
+    assertType<AgentToken<"reviewer">>(agents.reviewer);
     step("typed_extracted_agent_key_ok").agent({
       run: {
-        agent: "reviewer",
+        agent: agents.reviewer,
         prompt: "ok",
       },
     });
-    step("typed_extracted_agent_bad_key").agent({
-      run: {
-        // @ts-expect-error extracted agents should preserve literal keys with satisfies AgentMap.
-        agent: "missing",
-        prompt: "bad",
-      },
-    });
+    // @ts-expect-error extracted agents preserve literal keys with satisfies AgentMap.
+    agents.missing;
     return output({});
   });
 
@@ -128,56 +109,54 @@ test("agent reference is typed from top-level agent keys", () => {
       worker: { command: "acpx worker", policy: "full" },
       summarizer: { use: "codex", policy: "read" },
     },
-  }).build(({ step, output }) => {
-    assertType<StepDeclaration<"reviewer" | "worker" | "summarizer">>(step("typed_agent_key_declaration"));
+  }).build(({ agents, step, output }) => {
+    assertType<StepDeclaration>(step("typed_agent_key_declaration"));
+    assertType<AgentToken<"reviewer">>(agents.reviewer);
+    assertType<AgentToken<"worker">>(agents.worker);
+    assertType<AgentToken<"summarizer">>(agents.summarizer);
 
     step("typed_agent_key_ok").agent({
       run: {
-        agent: "reviewer",
+        agent: agents.reviewer,
         prompt: "ok",
       },
     });
 
     step("typed_agent_command_key_ok").agent({
       run: {
-        agent: "worker",
+        agent: agents.worker,
         prompt: "ok",
       },
     });
 
     step("typed_agent_summarizer_key_ok").agent({
       run: {
-        agent: "summarizer",
+        agent: agents.summarizer,
         prompt: "ok",
       },
     });
 
-    step("typed_agent_bad_key").agent({
-      run: {
-        // @ts-expect-error agent reference must reference a declared top-level agent key.
-        agent: "missing",
-        prompt: "bad",
-      },
-    });
+    // @ts-expect-error agent reference must come from a declared top-level agent key.
+    agents.missing;
 
     step("typed_agent_nested_scope").if({
       condition: true,
       then: ({ step, output }) => {
         step("typed_nested_agent_key_ok").agent({
           run: {
-            agent: "worker",
+            agent: agents.worker,
             prompt: "ok",
           },
         });
-        step("typed_nested_agent_bad_key").agent({
-          run: {
-            // @ts-expect-error nested scope agent reference inherits top-level agent keys.
-            agent: "missing",
-            prompt: "bad",
-          },
-        });
+        // @ts-expect-error nested scopes use root agent tokens by closure.
+        agents.missing;
         return output({});
       },
+    });
+    step("typed_nested_scope_has_no_agents_param").if({
+      condition: true,
+      // @ts-expect-error composite callbacks do not receive agents; close over root build agents instead.
+      then: ({ agents, output }) => output({}),
     });
 
     step("typed_agent_switch_scope").switch({
@@ -185,11 +164,10 @@ test("agent reference is typed from top-level agent keys", () => {
         {
           when: true,
           then: ({ step, output }) => {
-            step("typed_switch_agent_bad_key").agent({
+            step("typed_switch_agent_key_ok").agent({
               run: {
-                // @ts-expect-error switch scope agent reference inherits top-level agent keys.
-                agent: "missing",
-                prompt: "bad",
+                agent: agents.worker,
+                prompt: "ok",
               },
             });
             return output({});
@@ -203,11 +181,10 @@ test("agent reference is typed from top-level agent keys", () => {
         left: {
           outputSchema: z.object({ ok: z.boolean() }),
           do: ({ step, output }) => {
-            step("typed_parallel_agent_bad_key").agent({
+            step("typed_parallel_agent_key_ok").agent({
               run: {
-                // @ts-expect-error parallel branch agent reference inherits top-level agent keys.
-                agent: "missing",
-                prompt: "bad",
+                agent: agents.worker,
+                prompt: "ok",
               },
             });
             return output({ ok: true });
@@ -220,11 +197,10 @@ test("agent reference is typed from top-level agent keys", () => {
       over: ["a"],
       itemOutputSchema: z.object({ ok: z.boolean() }),
       do: ({ step, output }) => {
-        step("typed_fanout_agent_bad_key").agent({
+        step("typed_fanout_agent_key_ok").agent({
           run: {
-            // @ts-expect-error fanout body agent reference inherits top-level agent keys.
-            agent: "missing",
-            prompt: "bad",
+            agent: agents.worker,
+            prompt: "ok",
           },
         });
         return output({ ok: true });
@@ -235,11 +211,10 @@ test("agent reference is typed from top-level agent keys", () => {
       maxIterations: 1,
       outputSchema: z.object({ done: z.boolean() }),
       do: ({ step, output }) => {
-        step("typed_loop_agent_bad_key").agent({
+        step("typed_loop_agent_key_ok").agent({
           run: {
-            // @ts-expect-error loop body agent reference inherits top-level agent keys.
-            agent: "missing",
-            prompt: "bad",
+            agent: agents.worker,
+            prompt: "ok",
           },
         });
         return output({ done: true });
@@ -252,10 +227,12 @@ test("agent reference is typed from top-level agent keys", () => {
 });
 
 test("agent nodes require declared agents", () => {
-  defineWorkflow({ name: "typed-agent-requires-registry" }).build(({ step, output }) => {
+  defineWorkflow({ name: "typed-agent-requires-registry" }).build(({ agents, step, output }) => {
+    // @ts-expect-error workflows without top-level agents have no agent tokens.
+    agents.reviewer;
     step("typed_agent_without_registry").agent({
       run: {
-        // @ts-expect-error workflows without top-level agents have no valid agent reference keys.
+        // @ts-expect-error agent runs accept tokens, not string keys.
         agent: "reviewer",
         prompt: "bad",
       },
@@ -337,8 +314,8 @@ test("task run input and reusable task output are strongly typed", () => {
     agents: {
       reviewer: { use: "codex", policy: "read" },
     },
-  }).build(({ input, step, output }) => {
-    const nestedScope = <Scope,>({ step, output }: ScopeContext<Record<string, unknown>, "reviewer", Scope>) => {
+  }).build(({ input, agents, step, output }) => {
+    const nestedScope = <Scope,>({ step, output }: ScopeContext<Record<string, unknown>, Scope>) => {
       const first = step("nested_first").task({
         outputSchema: z.object({ packageName: z.string() }),
         run: {
@@ -369,7 +346,7 @@ test("task run input and reusable task output are strongly typed", () => {
     const review = step("typed_agent_direct_refs").agent({
       outputSchema: z.object({ ok: z.boolean() }),
       run: {
-        agent: "reviewer",
+        agent: agents.reviewer,
         prompt: template`Review ${input.packageName} ${input.version}`,
       },
     });
@@ -490,11 +467,11 @@ test("agent run options accept only string cwd and string or secret env values",
     agents: {
       reviewer: { use: "codex", policy: "read" },
     },
-  }).build(({ input, step, output }) => {
+  }).build(({ input, agents, step, output }) => {
     const review = step("typed_agent_options").agent({
       outputSchema: z.object({ ok: z.boolean() }),
       run: {
-        agent: "reviewer",
+        agent: agents.reviewer,
         prompt: template`Review ${input.packageName}`,
         cwd: input.repoPath,
         env: {
@@ -507,7 +484,7 @@ test("agent run options accept only string cwd and string or secret env values",
 
     step("typed_bad_agent_cwd").agent({
       run: {
-        agent: "reviewer",
+        agent: agents.reviewer,
         prompt: "bad",
         // @ts-expect-error agent cwd must be a string workflow value.
         cwd: 123,
@@ -516,7 +493,7 @@ test("agent run options accept only string cwd and string or secret env values",
 
     step("typed_bad_agent_env").agent({
       run: {
-        agent: "reviewer",
+        agent: agents.reviewer,
         prompt: "bad",
         env: {
           // @ts-expect-error agent env values must be string workflow values or secrets.

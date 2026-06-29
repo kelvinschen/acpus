@@ -16,6 +16,7 @@ export async function advanceRun(cwd: string, store: RuntimeStore, runId: string
   if (!frozen) throw new Error(`Run '${runId}' was not found.`);
   try {
     const execution = await executeWorkflow(frozen.ir, frozen.input, {
+      meta: frozen.meta,
       signalPayloads: store.getSignalPayloads(runId),
       completedNodes: store.getCompletedNodeOutputs(runId),
       taskExecutor: (node, scope) => executeTaskNode(node, scope, { cwd, runId, store }),

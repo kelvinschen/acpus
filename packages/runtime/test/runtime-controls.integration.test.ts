@@ -8,6 +8,7 @@ import {
   admitSyntheticWorkflow,
   failingPureWorkflow,
   inputEchoWorkflow,
+  metaWorkflow,
   missingProviderWorkflow,
   prepareSyntheticWorkflow,
   replacementTaskWorkflow,
@@ -69,6 +70,35 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       expect(forkArtifacts.map(row => row.id)).not.toEqual(sourceArtifacts.map(row => row.id));
       expect(forkArtifacts.map(({ id: _id, ...row }) => row)).toEqual(sourceArtifacts.map(({ id: _id, ...row }) => row));
       await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({ output: { ok: true } });
+    });
+  }, 15_000);
+
+  it("forks completed runs with fork-local meta outputs", async () => {
+    await withRuntimeWorkspace("runtime-fork-meta", async workspace => {
+      const source = await admitSyntheticWorkflow(workspace, metaWorkflow());
+      expect(source.status).toBe("completed");
+
+      const fork = await mutateRun(workspace, source.run.id, "fork");
+
+      expect(fork?.run.status).toBe("completed");
+      expect(fork?.run.id).not.toBe(source.run.id);
+      await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({
+        output: {
+          runId: fork!.run.id,
+          workflowPath: "cli-meta.workflow.ts",
+          workflowName: "cli-meta",
+          workspaceDir: workspace,
+        },
+      });
+      await expect(replayRun(workspace, fork!.run.id)).resolves.toMatchObject({
+        ok: true,
+        actual: {
+          runId: fork!.run.id,
+          workflowPath: "cli-meta.workflow.ts",
+          workflowName: "cli-meta",
+          workspaceDir: workspace,
+        },
+      });
     });
   }, 15_000);
 

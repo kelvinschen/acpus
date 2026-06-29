@@ -8,6 +8,10 @@ import { compileWorkflowDefinition, type WorkflowDefinition } from "@acpus/core/
 
 // @ts-expect-error expression helpers must not be exported from the root entrypoint.
 import { where as rootWhere } from "@acpus/core";
+// @ts-expect-error workflow meta is exposed through build context, not root package values.
+import { runtime as rootRuntime } from "@acpus/core";
+// @ts-expect-error workflow meta is exposed through build context, not runtime subpath values.
+import { runtime as runtimeRef } from "@acpus/core/runtime";
 // @ts-expect-error expression types must not be exported from the root entrypoint.
 import type { Expr as RootExpr } from "@acpus/core";
 // @ts-expect-error IR types must not be exported from the root entrypoint.
@@ -38,6 +42,8 @@ test("public package subpaths expose the intended type surface", () => {
   assertType(validateValue(Input, { ready: true }));
 
   void rootWhere;
+  void rootRuntime;
+  void runtimeRef;
   void (null as unknown as RootExpr);
   void (null as unknown as RootWorkflowIR);
 });

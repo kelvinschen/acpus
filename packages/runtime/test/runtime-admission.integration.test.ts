@@ -9,6 +9,7 @@ import {
   defaultRefInputWorkflow,
   failingPureWorkflow,
   failingTaskWorkflow,
+  metaWorkflow,
   prepareSyntheticWorkflow,
   runtimeRow,
   runtimeRows,
@@ -44,6 +45,30 @@ describe.concurrent("runtime admission use cases", () => {
         expect.objectContaining({ sequence: 1, type: "run.admitted" }),
         expect.objectContaining({ sequence: 2, type: "run.completed" }),
       ]);
+    });
+  });
+
+  it("injects run-level workflow meta into expressions and replay", async () => {
+    await withRuntimeWorkspace("runtime-meta", async workspace => {
+      const admitted = await admitSyntheticWorkflow(workspace, metaWorkflow());
+      expect(admitted.status).toBe("completed");
+      await expect(getRun(workspace, admitted.run.id)).resolves.toMatchObject({
+        output: {
+          runId: admitted.run.id,
+          workflowPath: "cli-meta.workflow.ts",
+          workflowName: "cli-meta",
+          workspaceDir: workspace,
+        },
+      });
+      await expect(replayRun(workspace, admitted.run.id)).resolves.toMatchObject({
+        ok: true,
+        actual: {
+          runId: admitted.run.id,
+          workflowPath: "cli-meta.workflow.ts",
+          workflowName: "cli-meta",
+          workspaceDir: workspace,
+        },
+      });
     });
   });
 

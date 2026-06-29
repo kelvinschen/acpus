@@ -36,14 +36,14 @@ export type OutputValues<T extends object> = {
 
 export type TypedOutputHelper<Output extends object, Scope = ScopeIdentity> = (values: OutputValues<Output>) => OutputToken<OutputValues<Output>, Scope>;
 
-export type ScopeContext<Output extends object = Record<string, unknown>, AgentKey extends string = never, Scope = ScopeIdentity> = {
-  step: StepFactory<AgentKey>;
+export type ScopeContext<Output extends object = Record<string, unknown>, Scope = ScopeIdentity> = {
+  step: StepFactory;
   output: TypedOutputHelper<Output, Scope>;
 };
 
-type ScopeBuildState<AgentKey extends string = string> = {
+type ScopeBuildState = {
   readonly nodes: NodeIR[];
-  readonly step: StepFactory<AgentKey>;
+  readonly step: StepFactory;
 };
 
 export function makeOutputToken<T extends Record<string, unknown>, Scope = RootOutputScope>(values: T): OutputToken<T, Scope> {
@@ -56,10 +56,10 @@ export function isOutputToken(value: unknown): value is OutputToken<any, any> {
   return Boolean(value && typeof value === "object" && (value as any)[OUTPUT_TOKEN]);
 }
 
-export function buildImplicitScope<AgentKey extends string, Extra extends object>(
+export function buildImplicitScope<Extra extends object>(
   diagnostics: DiagnosticIR[],
-  child: ScopeBuildState<AgentKey>,
-  fn: (ctx: ScopeContext<any, AgentKey> & Extra) => OutputToken<any, any>,
+  child: ScopeBuildState,
+  fn: (ctx: ScopeContext<any> & Extra) => OutputToken<any, any>,
   extra: Extra,
 ): ScopeIR {
   const result = fn({ step: child.step, output: makeOutputToken, ...extra });

@@ -8,11 +8,11 @@ const ref = (path: string[]): ExprIR => ({ kind: "ref", path });
 const call = (fn: string, args: ExprIR[]): ExprIR => ({ kind: "call", fn, args });
 
 describe("runtime expression evaluator", () => {
-  it("resolves workflow, node, runtime, fanout, and loop refs", () => {
+  it("resolves workflow, node, meta, fanout, and loop refs", () => {
     const scope = {
       input: { packageName: "core", items: [{ id: "a" }] },
       nodes: { prepare: { output: { ok: true } } },
-      runtime: { runId: "run_1" },
+      meta: { runId: "run_1" },
       fanout: { lane: { item: { id: "b" }, itemIndex: 3 } },
       loop: { retry: { iter: 2, previous: { summary: "again" }, result: { done: true } } },
     };
@@ -20,7 +20,7 @@ describe("runtime expression evaluator", () => {
     expect(evaluateExpr(ref(["workflow", "input", "packageName"]), scope)).toBe("core");
     expect(evaluateExpr(ref(["input", "items", "0", "id"]), scope)).toBe("a");
     expect(evaluateExpr(ref(["nodes", "prepare", "output", "ok"]), scope)).toBe(true);
-    expect(evaluateExpr(ref(["runtime", "runId"]), scope)).toBe("run_1");
+    expect(evaluateExpr(ref(["meta", "runId"]), scope)).toBe("run_1");
     expect(evaluateExpr(ref(["fanout", "lane", "item", "id"]), scope)).toBe("b");
     expect(evaluateExpr(ref(["fanout", "lane", "itemIndex"]), scope)).toBe(3);
     expect(evaluateExpr(ref(["loop", "retry", "iter"]), scope)).toBe(2);
@@ -157,6 +157,6 @@ describe("runtime expression evaluator", () => {
     expect(() => evaluateExpr(call("all", [literal({})]), {})).toThrow("all(...) expected array");
     expect(() => evaluateExpr(call("min", [{ kind: "array", items: [literal("x")] }]), {})).toThrow("min(...) expected number");
     expect(() => evaluateExpr(call("matches", [literal(1), literal("x")]), {})).toThrow("matches(...) expected string");
-    expect(() => evaluateExpr(ref(["workflow", "name"]), {})).toThrow("Unsupported runtime ref root: workflow");
+    expect(() => evaluateExpr(ref(["workflow", "name"]), {})).toThrow("Unsupported expression ref root: workflow");
   });
 });

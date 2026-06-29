@@ -8,11 +8,11 @@ import type { DiagnosticIR, FanoutNodeIR } from "../../ir/types.js";
 import type { ScopeIdentity } from "../../graph/scope.js";
 import type { ArrayItem, BuildScope, FanoutScopeContext, FanoutStrategy, ObjectSchema, SchemaScopeOutput, WorkflowArrayValue } from "./shared.js";
 
-type BaseFanoutStepSpec<Over extends WorkflowArrayValue<any>, OutSchema extends ObjectSchema, AgentKey extends string = string> = {
+type BaseFanoutStepSpec<Over extends WorkflowArrayValue<any>, OutSchema extends ObjectSchema> = {
   over: Over;
-  key?: Template | string | ((ctx: Pick<FanoutScopeContext<ArrayItem<Over>, Record<string, unknown>, AgentKey>, "item" | "itemIndex">) => Template | string);
+  key?: Template | string | ((ctx: Pick<FanoutScopeContext<ArrayItem<Over>, Record<string, unknown>>, "item" | "itemIndex">) => Template | string);
   maxConcurrency?: number;
-  do: <Scope extends ScopeIdentity>(ctx: FanoutScopeContext<ArrayItem<Over>, SchemaScopeOutput<OutSchema>, AgentKey, Scope>) => ReturnType<FanoutScopeContext<ArrayItem<Over>, SchemaScopeOutput<OutSchema>, AgentKey, Scope>["output"]>;
+  do: <Scope extends ScopeIdentity>(ctx: FanoutScopeContext<ArrayItem<Over>, SchemaScopeOutput<OutSchema>, Scope>) => ReturnType<FanoutScopeContext<ArrayItem<Over>, SchemaScopeOutput<OutSchema>, Scope>["output"]>;
   itemOutputSchema: OutSchema;
 };
 
@@ -20,10 +20,9 @@ export type FanoutStepSpec<
   Over extends WorkflowArrayValue<any> = WorkflowArrayValue<any>,
   OutSchema extends ObjectSchema = ObjectSchema,
   Strategy extends FanoutStrategy = FanoutStrategy,
-  AgentKey extends string = string,
 > = Strategy extends "quorum"
-  ? Simplify<BaseFanoutStepSpec<Over, OutSchema, AgentKey> & { strategy: "quorum"; count: number }>
-  : Simplify<BaseFanoutStepSpec<Over, OutSchema, AgentKey> & { strategy?: "all"; count?: never }>;
+  ? Simplify<BaseFanoutStepSpec<Over, OutSchema> & { strategy: "quorum"; count: number }>
+  : Simplify<BaseFanoutStepSpec<Over, OutSchema> & { strategy?: "all"; count?: never }>;
 
 export type FanoutNodeRefOutput<
   OutSchema extends ObjectSchema,
@@ -36,12 +35,11 @@ export function buildFanoutNode<
   Over extends WorkflowArrayValue<any>,
   OutSchema extends ObjectSchema,
   Strategy extends FanoutStrategy,
-  AgentKey extends string = string,
 >(
   id: string,
-  spec: FanoutStepSpec<Over, OutSchema, Strategy, AgentKey>,
+  spec: FanoutStepSpec<Over, OutSchema, Strategy>,
   diagnostics: DiagnosticIR[],
-  buildScope: BuildScope<AgentKey>,
+  buildScope: BuildScope,
 ): FanoutNodeIR {
   assertStableId(id, diagnostics);
   const item = refExpr<ArrayItem<Over>>(["fanout", id, "item"]);

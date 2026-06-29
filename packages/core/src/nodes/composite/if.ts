@@ -5,27 +5,27 @@ import type { WorkflowValue } from "../../expressions/expr.js";
 import type { DiagnosticIR, IfNodeIR } from "../../ir/types.js";
 import type { ScopeCallback, BuildScope, ObjectSchema, SchemaScopeOutput } from "./shared.js";
 
-type IfStepSpecBase<OutSchema extends ObjectSchema | undefined, AgentKey extends string> = {
+type IfStepSpecBase<OutSchema extends ObjectSchema | undefined> = {
   condition: WorkflowValue<boolean>;
-  then: ScopeCallback<SchemaScopeOutput<OutSchema>, AgentKey>;
+  then: ScopeCallback<SchemaScopeOutput<OutSchema>>;
 };
 
-export type IfStepSpec<OutSchema extends ObjectSchema | undefined = ObjectSchema | undefined, AgentKey extends string = string> =
+export type IfStepSpec<OutSchema extends ObjectSchema | undefined = ObjectSchema | undefined> =
   OutSchema extends ObjectSchema
-    ? IfStepSpecBase<OutSchema, AgentKey> & {
+    ? IfStepSpecBase<OutSchema> & {
         outputSchema: OutSchema;
-        else: ScopeCallback<SchemaScopeOutput<OutSchema>, AgentKey>;
+        else: ScopeCallback<SchemaScopeOutput<OutSchema>>;
       }
-    : IfStepSpecBase<undefined, AgentKey> & {
+    : IfStepSpecBase<undefined> & {
         outputSchema?: undefined;
-        else?: ScopeCallback<SchemaScopeOutput<undefined>, AgentKey>;
+        else?: ScopeCallback<SchemaScopeOutput<undefined>>;
       };
 
-export function buildIfNode<OutSchema extends ObjectSchema | undefined, AgentKey extends string = string>(
+export function buildIfNode<OutSchema extends ObjectSchema | undefined>(
   id: string,
-  spec: IfStepSpec<OutSchema, AgentKey>,
+  spec: IfStepSpec<OutSchema>,
   diagnostics: DiagnosticIR[],
-  buildScope: BuildScope<AgentKey>,
+  buildScope: BuildScope,
 ): IfNodeIR {
   assertStableId(id, diagnostics);
   return stripUndefined({

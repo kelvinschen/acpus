@@ -1,15 +1,6 @@
 import { valueToExprIR } from "../expressions/expr.js";
-import { refExpr, type OutputAccessor } from "../graph/refs.js";
 import { SECRET } from "../internal/symbols.js";
 import type { ExprIR, SecretRefIR } from "../ir/types.js";
-
-export const runtime = {
-  runId: refExpr<string>(["runtime", "runId"]),
-  nodeId: refExpr<string>(["runtime", "nodeId"]),
-  workspaceDir: refExpr<string>(["runtime", "workspaceDir"]),
-  outputDir: refExpr<string>(["runtime", "outputDir"]),
-  now: refExpr<string>(["runtime", "now"]),
-} satisfies Record<string, OutputAccessor<any>>;
 
 export type SecretToken = {
   readonly [SECRET]: true;

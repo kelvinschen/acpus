@@ -51,7 +51,7 @@ export default defineWorkflow({
       policy: "read",
     },
   },
-}).build(({ input, step, output }) => {
+}).build(({ input, agents, step, output }) => {
   const packageInfo = step("normalize_package").task({
     run: {
       task: localDependencyTask,
@@ -179,7 +179,7 @@ export default defineWorkflow({
     step(`review_${id}`).agent({
       outputSchema: ReviewOut,
       run: {
-        agent: "reviewer",
+        agent: agents.reviewer,
         prompt: template`
           Review package ${packageInfo.output.normalized} for ${focus}.
 
@@ -220,7 +220,7 @@ export default defineWorkflow({
       summary: z.string(),
     }),
     run: {
-      agent: "summarizer",
+      agent: agents.summarizer,
       prompt: template`
         Write a concise release readiness summary.
 

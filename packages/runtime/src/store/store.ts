@@ -133,6 +133,7 @@ export type SignalRunInput = {
 export type FrozenRun = {
   ir: WorkflowIR;
   input: JsonValue;
+  meta: Record<string, string>;
 };
 
 export type ClaimSupervisorInput = {
@@ -595,14 +596,21 @@ class SqliteRuntimeStore implements RuntimeStore {
 
   getFrozenRun(runId: string): FrozenRun | undefined {
     const row = this.db.prepare(`
-      SELECT workflow_ir_json, input_json
+      SELECT runs.id, runs.name, runs.workflow_entry, run_inputs.workflow_ir_json, run_inputs.input_json
       FROM run_inputs
-      WHERE run_id = ?
-    `).get(runId) as RunInputRow | undefined;
+      JOIN runs ON runs.id = run_inputs.run_id
+      WHERE run_inputs.run_id = ?
+    `).get(runId) as (RunInputRow & { id: string; name: string; workflow_entry: string }) | undefined;
     if (!row?.workflow_ir_json) return undefined;
     return {
       ir: JSON.parse(row.workflow_ir_json) as WorkflowIR,
       input: JSON.parse(row.input_json) as JsonValue,
+      meta: {
+        runId: String(row.id),
+        workflowPath: String(row.workflow_entry),
+        workflowName: String(row.name),
+        workspaceDir: resolve(this.cwd),
+      },
     };
   }
 
@@ -614,7 +622,7 @@ class SqliteRuntimeStore implements RuntimeStore {
     const row = this.db.prepare("SELECT output_json FROM run_inputs WHERE run_id = ?").get(runId) as { output_json: string | null } | undefined;
     if (!row?.output_json) return { ok: false, runId, artifacts, projection };
     const expected = JSON.parse(row.output_json) as JsonValue;
-    const actual = evaluateRecordedOutputs(frozen.ir.outputs, this.getCompletedNodeOutputs(runId), frozen.input);
+    const actual = evaluateRecordedOutputs(frozen.ir.outputs, this.getCompletedNodeOutputs(runId), frozen.input, frozen.meta);
     const outputOk = JSON.stringify(sortJson(actual)) === JSON.stringify(sortJson(expected));
     const artifactsOk = artifacts.missing.length === 0 && artifacts.invalid.length === 0 && artifacts.mismatched.length === 0;
     return {
@@ -898,10 +906,28 @@ class SqliteRuntimeStore implements RuntimeStore {
       FROM artifacts
       WHERE run_id = ?
     `).all(runId).filter(artifact => inheritableNodeKeys.has(String(artifact.node_key))) as ArtifactRow[];
+    const nodeRows = this.db.prepare("SELECT node_key, node_id, status, output_json, error_json, attempt FROM node_states WHERE run_id = ?").all(runId);
     const artifactIdMap = Object.fromEntries(artifacts.map(artifact => [
       String(artifact.id),
       `artifact_${randomUUID()}`,
     ]));
+    const forkOutputJson = source.status === "completed" && !replacement && input.output_json
+      ? forkCompletedOutputJson({
+          outputs: forkIr.outputs,
+          nodeRows,
+          inheritableNodeKeys,
+          inputJson: forkInputJson,
+          meta: {
+            runId: forkId,
+            workflowPath: forkWorkflowEntry,
+            workflowName: forkName,
+            workspaceDir: resolve(this.cwd),
+          },
+          sourceRunId: runId,
+          forkRunId: forkId,
+          artifactIdMap,
+        })
+      : null;
     if (sourceRunDir) {
       try {
         await mkdir(dirname(stagedForkRunPath), { recursive: true });
@@ -935,7 +961,7 @@ class SqliteRuntimeStore implements RuntimeStore {
         forkId,
         forkIrJson,
         forkInputJson,
-        source.status === "completed" && !replacement && input.output_json ? rewriteArtifactRefs(input.output_json, runId, forkId, artifactIdMap) : null,
+        forkOutputJson,
         forkLockJson,
         forkTaskBundleCount,
         forkPackageLockDigest,
@@ -946,9 +972,14 @@ class SqliteRuntimeStore implements RuntimeStore {
         INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
         VALUES (?, 1, 'run.forked', NULL, ?, ?, ?)
       `).run(forkId, stableJson({ sourceRunId: runId }), now, `fork:${forkId}:${runId}`);
-      const rows = this.db.prepare("SELECT node_key, node_id, status, output_json, error_json, attempt FROM node_states WHERE run_id = ?").all(runId);
+      if (forkStatus === "completed" && forkOutputJson) {
+        this.db.prepare(`
+          INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
+          VALUES (?, 2, 'run.completed', NULL, ?, ?, ?)
+        `).run(forkId, stableJson({ output: JSON.parse(forkOutputJson) as JsonValue }), now, `complete:${forkId}`);
+      }
       const insertedNodeKeys = new Set<string>();
-      for (const row of rows) {
+      for (const row of nodeRows) {
         if (!irNodeKeys.has(String(row.node_key))) continue;
         insertedNodeKeys.add(String(row.node_key));
         this.db.prepare(`
@@ -1521,14 +1552,35 @@ function rebuildTerminalProjection(events: Array<{ type: string; payload_json: s
   return {};
 }
 
-function evaluateRecordedOutputs(outputs: Record<string, ExprIR>, nodes: Record<string, unknown>, input: JsonValue): JsonValue {
+function evaluateRecordedOutputs(outputs: Record<string, ExprIR>, nodes: Record<string, unknown>, input: JsonValue, meta: Record<string, string>): JsonValue {
   return assertJsonValue(Object.fromEntries(Object.entries(outputs).map(([key, expr]) => [
     key,
     evaluateExpr(expr, {
       input,
+      meta,
       nodes: Object.fromEntries(Object.entries(nodes).map(([nodeKey, output]) => [nodeKey, { status: "completed", output }])),
     }),
   ])), "replay output");
+}
+
+function forkCompletedOutputJson(args: {
+  outputs: Record<string, ExprIR>;
+  nodeRows: Array<Record<string, unknown>>;
+  inheritableNodeKeys: Set<string>;
+  inputJson: string;
+  meta: Record<string, string>;
+  sourceRunId: string;
+  forkRunId: string;
+  artifactIdMap: Record<string, string>;
+}): string {
+  const nodes = Object.fromEntries(args.nodeRows
+    .filter(row => args.inheritableNodeKeys.has(String(row.node_key)) && row.output_json)
+    .map(row => [
+      String(row.node_key),
+      JSON.parse(rewriteArtifactRefs(String(row.output_json), args.sourceRunId, args.forkRunId, args.artifactIdMap)) as unknown,
+    ]));
+  const output = evaluateRecordedOutputs(args.outputs, nodes, JSON.parse(args.inputJson) as JsonValue, args.meta);
+  return rewriteArtifactRefs(stableJson(output), args.sourceRunId, args.forkRunId, args.artifactIdMap);
 }
 
 function rewriteArtifactRefs(json: string, sourceRunId: string, forkRunId: string, artifactIds: Record<string, string>): string {

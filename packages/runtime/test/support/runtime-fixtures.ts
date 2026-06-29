@@ -68,6 +68,20 @@ export function validWorkflow() {
   });
 }
 
+export function metaWorkflow() {
+  return defineWorkflow({
+    name: "cli-meta",
+  }).build(({ meta, step, output }) => {
+    step("ready").assert({ condition: true });
+    return output({
+      runId: meta.runId,
+      workflowPath: meta.workflowPath,
+      workflowName: meta.workflowName,
+      workspaceDir: meta.workspaceDir,
+    });
+  });
+}
+
 export function defaultRefInputWorkflow() {
   return defineWorkflow({
     name: "cli-default-ref-input",
@@ -190,8 +204,8 @@ export function missingProviderWorkflow() {
   return defineWorkflow({
     name: "cli-agent",
     agents: { reviewer: { use: "missing-provider" } },
-  }).build(({ step, output }) => {
-    step("review").agent({ run: { agent: "reviewer", prompt: "review" } });
+  }).build(({ agents, step, output }) => {
+    step("review").agent({ run: { agent: agents.reviewer, prompt: "review" } });
     return output({});
   });
 }
