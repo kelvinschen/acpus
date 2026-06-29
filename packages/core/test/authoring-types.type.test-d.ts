@@ -1,15 +1,10 @@
 import { assertType, expectTypeOf, test } from "vitest";
 import {
   defineWorkflow,
-  includes,
-  isEmpty,
-  pick,
   secret,
   task,
   template,
-  where,
   z,
-  type Expr,
   type ScopeContext,
   type StepDeclaration,
   type StepFactory,
@@ -19,8 +14,8 @@ import {
   type AgentRunSpec,
   type AgentStepSpec,
   type TaskStepSpec,
-  type WorkflowValue,
 } from "../src/index.js";
+import { includes, isEmpty, pick, where, type Expr, type WorkflowValue } from "../src/expression.js";
 
 test("step declaration object exposes kind methods", () => {
   defineWorkflow({ name: "typed-step-declaration" }).build(({ input, step, output }) => {

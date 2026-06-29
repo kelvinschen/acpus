@@ -8,7 +8,7 @@ import type {
   WorkflowPreparationFailure,
 } from "@acpus/workflow-compiler";
 import { WorkflowPreparationError, compileWorkflowModule, prepareWorkflow, writePreflightArtifact } from "@acpus/workflow-compiler";
-import type { WorkflowIR } from "@acpus/core";
+import type { WorkflowIR } from "@acpus/core/ir";
 
 test("@acpus/workflow-compiler public types describe the package boundary", () => {
   expectTypeOf(compileWorkflowModule).toEqualTypeOf<(entry: string, options?: CompileOptions) => Promise<WorkflowIR>>();

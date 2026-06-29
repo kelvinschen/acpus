@@ -1,20 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
-  compileWorkflowDefinition,
   defineWorkflow,
-  eq,
-  fallback,
-  head,
-  matches,
-  or,
-  pick,
   secret,
   task,
   template,
-  toSchemaIR,
-  where,
   z,
 } from "../src/index.js";
+import { compileWorkflowDefinition } from "../src/workflow.js";
+import { eq, fallback, head, matches, or, pick, where } from "../src/expression.js";
+import { toSchemaIR } from "../src/schema.js";
 
 const NormalizeInput = z.object({ packageName: z.string() });
 const NormalizeOutput = z.object({ normalized: z.string(), slug: z.string() });

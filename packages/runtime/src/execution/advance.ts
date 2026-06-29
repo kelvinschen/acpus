@@ -1,4 +1,4 @@
-import type { JsonValue } from "@acpus/core";
+import type { JsonValue } from "@acpus/core/ir";
 import { getProviderCommandFromEnv } from "@acpus/agent-executor";
 import { executeAgentNode } from "./agent-node.js";
 import { ExecutorRequiredError, RuntimeNodeError, SignalAwaitingError, executeWorkflow } from "./scheduler.js";

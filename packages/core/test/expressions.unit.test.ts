@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { all, head, includes, isEmpty, max, nth, refExpr, where } from "../src/index.js";
-import type { ExprIR } from "../src/index.js";
+import { all, head, includes, isEmpty, max, nth, refExpr, where } from "../src/expression.js";
+import type { ExprIR } from "../src/ir.js";
 
 const booleanType = { kind: "boolean" };
 const integerType = { kind: "integer" };

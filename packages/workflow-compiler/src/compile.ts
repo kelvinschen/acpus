@@ -1,7 +1,7 @@
 import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { WorkflowIR } from "@acpus/core";
+import type { WorkflowIR } from "@acpus/core/ir";
 import { runProcess } from "./process.js";
 
 export type CompileWorkerResult =

@@ -3,7 +3,10 @@ import { copyFile, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promis
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
-import { compileWorkflowDefinition, defineWorkflow, where, z, type JsonValue, type NodeIR, type ScopeIR, type WorkflowDefinition, type WorkflowIR } from "@acpus/core";
+import { defineWorkflow, z } from "@acpus/core";
+import { where } from "@acpus/core/expression";
+import { type WorkflowDefinition, compileWorkflowDefinition } from "@acpus/core/workflow";
+import type { JsonValue, NodeIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
 import { admitWorkflowRun, normalizeWorkflowInput, type PreparedRunWorkflow, type RunWorkflowLockArtifact } from "@acpus/runtime";
 import { prepareWorkflow } from "@acpus/workflow-compiler";
 

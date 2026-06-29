@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateWorkflowIR, type WorkflowIR } from "../src/index.js";
+import { validateWorkflowIR, type WorkflowIR } from "../src/ir.js";
 
 describe("WorkflowIR diagnostics contract", () => {
   it("returns stable diagnostic codes and paths for invalid IR", () => {

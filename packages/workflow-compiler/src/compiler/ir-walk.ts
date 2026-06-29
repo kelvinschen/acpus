@@ -1,4 +1,4 @@
-import type { ScopeIR, TaskNodeIR } from "@acpus/core";
+import type { ScopeIR, TaskNodeIR } from "@acpus/core/ir";
 
 export function forEachTaskNode(scope: ScopeIR, visit: (node: TaskNodeIR) => void): void {
   for (const node of scope.nodes) {

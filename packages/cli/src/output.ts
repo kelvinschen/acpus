@@ -1,5 +1,5 @@
 import type { Writable } from "node:stream";
-import type { DiagnosticIR, WorkflowIR } from "@acpus/core";
+import type { DiagnosticIR, WorkflowIR } from "@acpus/core/ir";
 import type { ReplayResult, RunDetails, RunRecord, RuntimeCommandRecord } from "@acpus/runtime";
 
 export type ResultPhase = "usage" | "typecheck" | "compile" | "validate" | "dry-run" | "admit" | "inspect";

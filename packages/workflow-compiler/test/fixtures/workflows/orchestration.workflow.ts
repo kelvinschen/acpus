@@ -1,14 +1,16 @@
 import {
   defineWorkflow,
+  template,
+  z,
+} from "@acpus/core";
+import {
   eq,
   fallback,
   head,
   not,
   pick,
-  template,
   where,
-  z,
-} from "@acpus/core";
+} from "@acpus/core/expression";
 
 const Lane = z.object({
   id: z.string(),

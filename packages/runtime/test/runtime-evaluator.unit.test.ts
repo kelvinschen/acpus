@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { refExpr, where } from "@acpus/core";
-import type { ExprIR, TemplateIR } from "@acpus/core";
+import { refExpr, where } from "@acpus/core/expression";
+import type { ExprIR, TemplateIR } from "@acpus/core/ir";
 import { evaluateExpr, renderTemplate } from "../src/evaluation/evaluator.js";
 
 const literal = (value: unknown): ExprIR => ({ kind: "literal", value });

@@ -40,12 +40,16 @@ async function writeTypecheckConfig(entry: string, cwd: string, scratchDir: stri
     tsBuildInfoFile: join(scratchDir, ".tsbuildinfo"),
   };
 
-  const coreSource = join(cwd, "packages/core/src/index.ts");
+  const coreSourceDir = join(cwd, "packages/core/src");
+  const coreSource = join(coreSourceDir, "index.ts");
   if (await exists(coreSource)) {
     // Workspace development should typecheck workflows against live core source.
     // Published installs must omit this condition and resolve normal package dist.
     compilerOptions.customConditions = ["development"];
-    compilerOptions.paths = { "@acpus/core": [configRelative(scratchDir, coreSource)] };
+    compilerOptions.paths = {
+      "@acpus/core": [configRelative(scratchDir, coreSource)],
+      "@acpus/core/*": [configRelative(scratchDir, join(coreSourceDir, "*.ts"))],
+    };
   }
 
   const config: Record<string, unknown> = { compilerOptions, files: [entry] };

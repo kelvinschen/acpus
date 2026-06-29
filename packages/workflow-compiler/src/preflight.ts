@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
-import type { WorkflowIR } from "@acpus/core";
+import type { WorkflowIR } from "@acpus/core/ir";
 import { compileWorkflow } from "./compile.js";
 import { createScratchDir, type TypecheckResult, typecheckWorkflow } from "./typecheck.js";
 

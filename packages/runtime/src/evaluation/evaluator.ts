@@ -1,4 +1,4 @@
-import type { ExprIR, TemplateIR } from "@acpus/core";
+import type { ExprIR, TemplateIR } from "@acpus/core/ir";
 
 export type EvaluationScope = {
   input?: unknown;

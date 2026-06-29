@@ -3,7 +3,7 @@ import { basename, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import type { WorkflowIR } from "@acpus/core";
+import type { WorkflowIR } from "@acpus/core/ir";
 import type { WorkflowPreparationFailure } from "@acpus/workflow-compiler";
 import { WorkflowPreparationError, prepareWorkflow, writePreflightArtifact } from "@acpus/workflow-compiler";
 

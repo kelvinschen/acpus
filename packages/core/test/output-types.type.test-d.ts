@@ -1,12 +1,9 @@
 import { assertType, expectTypeOf, test } from "vitest";
 import {
   defineWorkflow,
-  fallback,
-  head,
-  nth,
   z,
-  type Expr,
 } from "../src/index.js";
+import { fallback, head, nth, type Expr } from "../src/expression.js";
 
 const LoopOut = z.object({
   done: z.boolean(),

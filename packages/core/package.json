@@ -20,6 +20,31 @@
       "development": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./expression": {
+      "development": "./src/expression.ts",
+      "types": "./dist/expression.d.ts",
+      "default": "./dist/expression.js"
+    },
+    "./schema": {
+      "development": "./src/schema.ts",
+      "types": "./dist/schema.d.ts",
+      "default": "./dist/schema.js"
+    },
+    "./workflow": {
+      "development": "./src/workflow.ts",
+      "types": "./dist/workflow.d.ts",
+      "default": "./dist/workflow.js"
+    },
+    "./runtime": {
+      "development": "./src/runtime.ts",
+      "types": "./dist/runtime.d.ts",
+      "default": "./dist/runtime.js"
+    },
+    "./ir": {
+      "development": "./src/ir.ts",
+      "types": "./dist/ir.d.ts",
+      "default": "./dist/ir.js"
     }
   },
   "main": "./dist/index.js",

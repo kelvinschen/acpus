@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { compileWorkflowDefinition, defineWorkflow, eq, fallback, head, literal, matches, or, template, where, z } from "@acpus/core";
+import { defineWorkflow, template, z } from "@acpus/core";
+import { eq, fallback, head, literal, matches, or, where } from "@acpus/core/expression";
+import { compileWorkflowDefinition } from "@acpus/core/workflow";
 import { executeWorkflow } from "../src/execution/scheduler.js";
 
 describe("runtime non-agent scheduler skeleton", () => {

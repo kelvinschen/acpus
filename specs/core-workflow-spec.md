@@ -17,7 +17,13 @@
 - Agent node `run.agent` MUST reference a key declared in workflow top-level `agents`; TypeScript authoring MUST type-check `run.agent` against those declared keys, and IR MUST serialize it as `AgentRunIR.agent`, the stable string key consumed by runners.
 - When authors extract the `agents` object before passing it to `defineWorkflow(...)`, they SHOULD preserve literal keys, for example with `satisfies AgentMap`; annotating it as a broad `AgentMap` widens keys to `string` and gives up authoring-time key checking.
 - Top-level `agents.*.use` MUST mean the tool/worker id for that agent definition; agent node `run.agent` MUST mean the declared top-level agent key.
-- The public API MUST include at least: `defineWorkflow`, `z`, `task`, `template`, `pick`, `fallback`, `head`, `nth`, `where`, `includes`, `isEmpty`, `and`, `not`, `lte`, `all`, `max`, `runtime`, `secret`.
+- The root public API (`@acpus/core`) MUST be the minimal workflow authoring entrypoint and MUST include: `defineWorkflow`, `z`, `s`, `task`, `template`, `runtime`, and `secret`.
+- Expression authoring helpers MUST be exported from `@acpus/core/expression`, including: `expr`, `isExpr`, `valueToExprIR`, `literal`, `not`, `and`, `or`, `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `len`, `includes`, `isEmpty`, `startsWith`, `endsWith`, `matches`, `coalesce`, `fallback`, `head`, `nth`, `all`, `any`, `max`, `min`, `where`, `exprOps`, `pick`, and `refExpr`.
+- The root `@acpus/core` entrypoint MUST NOT export the full expression helper set or expression-specific types; authors MUST import those from `@acpus/core/expression`.
+- Schema helpers outside the root `z` / `s` authoring aliases MUST be exported from `@acpus/core/schema`, including `isSchema` and `validateValue`.
+- Workflow compiler helpers (`compileWorkflowDefinition`, `isWorkflowDefinition`) MUST be exported from `@acpus/core/workflow`.
+- Runtime helper APIs such as `createDollar` MUST be exported from `@acpus/core/runtime`.
+- IR types and `validateWorkflowIR` MUST be exported from `@acpus/core/ir`.
 
 ```ts
 import {
@@ -25,6 +31,10 @@ import {
   z,
   task,
   template,
+  runtime,
+  secret,
+} from "@acpus/core";
+import {
   pick,
   fallback,
   head,
@@ -37,9 +47,7 @@ import {
   lte,
   all,
   max,
-  runtime,
-  secret,
-} from "@acpus/core";
+} from "@acpus/core/expression";
 
 export default defineWorkflow({
   name: "release-readiness",

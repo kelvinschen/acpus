@@ -22,8 +22,11 @@ where(review.output, { ready: true, riskCount: { lte: 3 }, issues: { length: 0 }
 ```
 
 - The core MUST support named operators usable directly and in composition with `where(...)`.
+- The expression public API MUST be exported from `@acpus/core/expression`; the root `@acpus/core` entrypoint MUST NOT export the full expression helper set.
 
 ```ts
+import { and, includes, isEmpty, lte, or, where } from "@acpus/core/expression";
+
 and(where(review.output, { ready: true }), lte(review.output.riskCount, 3));
 or(includes(statuses, status), isEmpty(issues));
 ```
@@ -55,7 +58,6 @@ nth(reviews.output, 1).ready;
 
 - `ExprIR` MUST be the canonical expression layer; the core MUST NOT adopt CEL or JSON Logic as the canonical authoring or storage form.
 - The expression layer MUST serve typed refs, dependency collection, source mapping, graph visualization, schema-aware field diagnostics, scope-visibility validation, and stable IR serialization — not evaluation alone.
-- Any future interop (JSON Logic import/export, a CEL backend, or an `unsafeExpr("...")` escape hatch) MUST remain optional and MUST NOT become the primary authoring surface.
 
 ## Verification
 

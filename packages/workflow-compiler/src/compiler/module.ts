@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { compileWorkflowDefinition, isWorkflowDefinition, validateWorkflowIR, type WorkflowIR } from "@acpus/core";
+import { compileWorkflowDefinition, isWorkflowDefinition } from "@acpus/core/workflow";
+import { validateWorkflowIR, type WorkflowIR } from "@acpus/core/ir";
 import { bundleWorkflowTasks } from "./task-bundler.js";
 import { analyzeWorkflowTasks } from "./task-provenance.js";
 

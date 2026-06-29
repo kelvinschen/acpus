@@ -1,4 +1,5 @@
-import { defineWorkflow, where, z } from "@acpus/core";
+import { defineWorkflow, z } from "@acpus/core";
+import { where } from "@acpus/core/expression";
 
 export default defineWorkflow({
   name: "runtime-wiring",

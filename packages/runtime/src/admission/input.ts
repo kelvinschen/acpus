@@ -1,4 +1,4 @@
-import type { JsonValue, WorkflowIR } from "@acpus/core";
+import type { JsonValue, WorkflowIR } from "@acpus/core/ir";
 import { findSignalNode } from "../execution/ir.js";
 import { normalizeValue } from "../evaluation/schema.js";
 

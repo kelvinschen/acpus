@@ -1,4 +1,4 @@
-import type { AgentDefinitionIR, AgentNodeIR, WorkflowIR } from "@acpus/core";
+import type { AgentDefinitionIR, AgentNodeIR, WorkflowIR } from "@acpus/core/ir";
 import { AgentProviderRequiredError, executeAgentRequest } from "@acpus/agent-executor";
 import { evaluateExpr, renderTemplate, type EvaluationScope } from "../evaluation/evaluator.js";
 import { normalizeValue } from "../evaluation/schema.js";

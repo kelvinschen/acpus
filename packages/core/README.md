@@ -39,8 +39,8 @@ import {
   defineWorkflow,
   z,
   template,
-  where,
 } from "@acpus/core";
+import { where } from "@acpus/core/expression";
 
 const ReviewOut = z.object({
   ready: z.boolean(),

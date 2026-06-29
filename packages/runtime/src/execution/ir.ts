@@ -1,4 +1,4 @@
-import type { NodeIR, ScopeIR, SignalNodeIR } from "@acpus/core";
+import type { NodeIR, ScopeIR, SignalNodeIR } from "@acpus/core/ir";
 
 export function findSignalNode(scope: ScopeIR, nodeId: string): SignalNodeIR | undefined {
   const node = findNode(scope, nodeId);

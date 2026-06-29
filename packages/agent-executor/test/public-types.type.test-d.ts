@@ -1,5 +1,5 @@
 import { assertType, expectTypeOf, test } from "vitest";
-import type { AgentNodeIR } from "@acpus/core";
+import type { AgentNodeIR } from "@acpus/core/ir";
 import type { AgentExecutionRequest } from "@acpus/agent-executor";
 import { executeAgentRequest, getProviderCommandFromEnv } from "@acpus/agent-executor";
 

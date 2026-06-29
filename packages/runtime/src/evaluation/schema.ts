@@ -1,4 +1,4 @@
-import type { JsonValue, SchemaIR, TypeIR } from "@acpus/core";
+import type { JsonValue, SchemaIR, TypeIR } from "@acpus/core/ir";
 
 type RuntimeSchema = TypeIR & { optional?: boolean; nullable?: boolean; default?: JsonValue };
 

@@ -3,7 +3,7 @@ import { access, cp, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { ExprIR, JsonValue, ScopeIR, WorkflowIR } from "@acpus/core";
+import type { ExprIR, JsonValue, ScopeIR, WorkflowIR } from "@acpus/core/ir";
 import { evaluateExpr } from "../evaluation/evaluator.js";
 
 export type RunStatus = "pending" | "running" | "paused" | "awaiting" | "failed" | "completed" | "canceled";

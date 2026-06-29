@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 import { build } from "esbuild";
-import type { DiagnosticIR, TaskBundleIR, WorkflowIR } from "@acpus/core";
+import type { DiagnosticIR, TaskBundleIR, WorkflowIR } from "@acpus/core/ir";
 import { forEachTaskNode } from "./ir-walk.js";
 import type { AnalyzedTask, WorkflowTaskAnalysis } from "./task-provenance.js";
 

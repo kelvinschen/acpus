@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { safeParseSchema, toSchemaIR, z } from "../src/index.js";
+import { safeParseSchema, toSchemaIR, z } from "../src/schema.js";
 
 describe("schema boundary lowering", () => {
   it("lowers the supported Zod boundary subset to durable SchemaIR", () => {

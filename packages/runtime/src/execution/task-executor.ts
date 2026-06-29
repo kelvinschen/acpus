@@ -2,7 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { createDollar, type ArtifactRef, type CommandBuilder, type Dollar, type JsonObject, type TaskContext, type TaskFunction, type TaskNodeIR } from "@acpus/core";
+import type { ArtifactRef } from "@acpus/core/schema";
+import { createDollar, type CommandBuilder, type Dollar, type TaskContext, type TaskFunction } from "@acpus/core/runtime";
+import type { JsonObject, TaskNodeIR } from "@acpus/core/ir";
 import { evaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
 import type { RuntimeStore } from "../store/store.js";
 

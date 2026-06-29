@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   compileWorkflowModule,
 } from "../src/index.js";
-import type { NodeIR, ScopeIR, WorkflowIR } from "@acpus/core";
+import type { NodeIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
 
 describe.concurrent("workflow module compiler", () => {
   it("compiles a TypeScript workflow module with reusable, inline, and third-party task bundles", async () => {
