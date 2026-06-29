@@ -95,10 +95,10 @@ all(reviews, (review) => review.output.ready);
 - Agent nodes MUST use the shape `step("id").agent({ outputSchema?, run: { agent, prompt, policy?, session?, cwd?, env? }, timeout?, retry? })`.
 - Signal nodes MUST use the shape `step("id").signal({ outputSchema, run: { prompt }, timeout?, onTimeout? })`.
 - Signal `onTimeout`, when present, MUST use `{ action: "fail", message? }`; signal timeout MUST NOT support successful completion without a payload. If `timeout` is set and `onTimeout` is omitted, timeout MUST fail without a custom message.
-- Inline Task nodes MUST use `run.input` as their explicit Expr-to-runtime-value boundary. Reusable Task node call sites MUST use top-level `input` as their graph expression binding.
+- Task nodes MUST use `run.input` as their explicit Expr-to-runtime-value boundary for both inline and reusable task invocations.
 - Task input binding values MUST be graph-lowerable workflow values: refs, primitive literals, arrays, and plain objects composed of those values.
-- Inline Task nodes MUST use the shape `step("id").task({ outputSchema, run: { input, exec }, ...options })`.
-- Reusable Task nodes MUST use the shape `step("id").task({ task, input, ...options })` and MUST take their output schema from the reusable Task token.
+- Inline Task nodes MUST use the shape `step("id").task({ outputSchema, run: { input, exec, params?, cwd?, env?, execution? }, timeout?, retry? })`.
+- Reusable Task nodes MUST use the shape `step("id").task({ run: { task, input, params?, cwd?, env?, execution? }, timeout?, retry? })` and MUST take their output schema from the reusable Task token.
 - Agent and Signal nodes MUST NOT require node-level `input`; their graph dependencies are expressed by refs inside `run.prompt`, `run.cwd`, `run.env`, and `run.session`. Serialized Agent and Signal node IR MUST NOT include an `inputs` field.
 - Agent and Task `cwd` MUST be a string workflow value. Agent and Task `env` values MUST be string workflow values or `secret(...)` tokens.
 - Inline Task `run.exec` functions MUST receive runtime typed input values unwrapped from `run.input` graph-time expressions.
@@ -141,19 +141,19 @@ all(reviews, (review) => review.output.ready);
 - A reusable Task MUST live in its own task module and MUST be referenced at the call site by an identifier imported directly from that module. A reusable Task MUST NOT be a workflow-local value, and its import MUST NOT be routed through a barrel or re-export module.
 - An inline Task `exec` MUST be self-contained: it MUST reference only its own parameters, its own local declarations, and runtime globals. It MUST NOT capture workflow-module scope (helpers, imports, or graph builder values). Shared logic or dependency-backed logic MUST be moved into a reusable Task module.
 - A reusable Task node MUST use the Task's declared `outputSchema` and MUST NOT repeat `outputSchema` at the `step("id").task(...)` call site.
-- A reusable Task definition's `inputSchema` MUST be the runtime input schema for its `exec` function; a reusable Task node call site's `input` MUST be the graph expression binding for that schema.
+- A reusable Task definition's `inputSchema` MUST be the runtime input schema for its `exec` function; a reusable Task node call site's `run.input` MUST be the graph expression binding for that schema.
 - The core MUST NOT expose a per-task `permissions` field; security isolation is delegated to the runner/container/profile layer.
-- Inline Task options MUST support `outputSchema` and `run: { input, exec }`; reusable Task node options MUST support `task` and `input`.
-- Task node options MAY support `params`, `cwd`, `env`, `timeout`, `retry`, and `execution` (`shell`, `defaultCommandTimeout`, `commandRunner`).
+- Inline Task options MUST support `outputSchema` and `run: { input, exec, params?, cwd?, env?, execution? }`; reusable Task node options MUST support `run: { task, input, params?, cwd?, env?, execution? }`.
+- Task node lifecycle options MAY support top-level `timeout` and `retry`. Task invocation options MAY support `run.params`, `run.cwd`, `run.env`, and `run.execution` (`shell`, `defaultCommandTimeout`, `commandRunner`).
 
 ```ts
 const tests = step("run_tests").task({
   outputSchema: z.object({ passed: z.boolean(), log: z.artifact("text/plain") }),
-  cwd: input.repoPath,
-  env: { CI: "true" },
   timeout: "15m",
   run: {
     input: { repoPath: input.repoPath },
+    cwd: input.repoPath,
+    env: { CI: "true" },
     exec: async ({ input, $, artifact }) => {
       const result = await $({ cwd: input.repoPath })`pnpm test`.allowExitCode([
         0, 1,
@@ -202,6 +202,7 @@ type WorkflowIR = {
 ```
 
 - `TaskNodeIR` MUST NOT carry a `permissions` field.
+- `TaskNodeIR` MUST NOT carry task invocation fields such as `input`, `params`, `cwd`, `env`, or `execution` at node top-level. Those fields belong to `TaskRunIR`.
 
 ### Compile behavior
 

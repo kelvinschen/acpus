@@ -1,0 +1,41 @@
+{
+  "name": "@acpus/workflow-compiler",
+  "version": "0.1.0-alpha",
+  "private": true,
+  "type": "module",
+  "description": "Acpus workflow module compiler and frozen workflow preparation.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsgo -p tsconfig.json",
+    "typecheck": "tsgo -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@acpus/core": "workspace:*",
+    "@typescript/native-preview": "7.0.0-dev.20260421.2",
+    "esbuild": "^0.28.0",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "slash": "^3.0.0"
+  }
+}

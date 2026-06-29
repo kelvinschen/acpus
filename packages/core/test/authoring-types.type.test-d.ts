@@ -418,10 +418,12 @@ test("task run input and reusable task output are strongly typed", () => {
     });
 
     const reusable = step("typed_reusable_task_input").task({
-      task: reusablePackageTask,
-      input: {
-        packageName: input.packageName,
-        version: input.version,
+      run: {
+        task: reusablePackageTask,
+        input: {
+          packageName: input.packageName,
+          version: input.version,
+        },
       },
     });
 
@@ -431,15 +433,19 @@ test("task run input and reusable task output are strongly typed", () => {
 
     // @ts-expect-error reusable tasks require every declared task input field.
     step("typed_reusable_task_missing_input").task({
-      task: reusablePackageTask,
-      input: { packageName: input.packageName },
+      run: {
+        task: reusablePackageTask,
+        input: { packageName: input.packageName },
+      },
     });
 
     step("typed_reusable_task_rejects_output").task({
-      task: reusablePackageTask,
-      input: {
-        packageName: input.packageName,
-        version: input.version,
+      run: {
+        task: reusablePackageTask,
+        input: {
+          packageName: input.packageName,
+          version: input.version,
+        },
       },
       // @ts-expect-error reusable tasks take output schema from task.define.
       outputSchema: PackageOut,
@@ -694,13 +700,13 @@ test("task run input accepts only graph-lowerable workflow values", () => {
 test("task options accept only string cwd and string or secret env values", () => {
   const goodTaskOptions = {
     outputSchema: z.object({ packageName: z.string(), version: z.string() }),
-    cwd: "packages/core",
-    env: {
-      STATIC: "true",
-      TOKEN: secret("PACKAGE_TOKEN"),
-    },
     run: {
       input: { packageName: "core", version: "1.0.0" },
+      cwd: "packages/core",
+      env: {
+        STATIC: "true",
+        TOKEN: secret("PACKAGE_TOKEN"),
+      },
       exec: async ({ input }) => input,
     },
   } satisfies TaskStepSpec<{ packageName: "core"; version: "1.0.0" }>;
@@ -708,22 +714,22 @@ test("task options accept only string cwd and string or secret env values", () =
 
   const badTaskCwd = {
     outputSchema: z.object({ packageName: z.string(), version: z.string() }),
-    // @ts-expect-error task cwd must be a string workflow value.
-    cwd: 123,
     run: {
       input: { packageName: "core", version: "1.0.0" },
+      // @ts-expect-error task cwd must be a string workflow value.
+      cwd: 123,
       exec: async ({ input }) => input,
     },
   } satisfies TaskStepSpec<{ packageName: "core"; version: "1.0.0" }>;
 
   const badTaskEnv = {
     outputSchema: z.object({ packageName: z.string(), version: z.string() }),
-    env: {
-      // @ts-expect-error task env values must be string workflow values or secrets.
-      DEBUG: true,
-    },
     run: {
       input: { packageName: "core", version: "1.0.0" },
+      env: {
+        // @ts-expect-error task env values must be string workflow values or secrets.
+        DEBUG: true,
+      },
       exec: async ({ input }) => input,
     },
   } satisfies TaskStepSpec<{ packageName: "core"; version: "1.0.0" }>;

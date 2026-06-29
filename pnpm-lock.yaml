@@ -8,9 +8,18 @@ importers:
 
   .:
     devDependencies:
+      '@acpus/agent-executor':
+        specifier: workspace:*
+        version: link:packages/agent-executor
       '@acpus/core':
         specifier: workspace:*
         version: link:packages/core
+      '@acpus/runtime':
+        specifier: workspace:*
+        version: link:packages/runtime
+      '@acpus/workflow-compiler':
+        specifier: workspace:*
+        version: link:packages/workflow-compiler
       '@changesets/cli':
         specifier: ^2.31.0
         version: 2.31.0(@types/node@22.19.19)
@@ -22,7 +31,7 @@ importers:
         version: 7.0.0-dev.20260421.2
       acpus:
         specifier: workspace:*
-        version: link:packages/acpus
+        version: link:packages/cli
       tsx:
         specifier: ^4.20.3
         version: 4.22.4
@@ -30,14 +39,23 @@ importers:
         specifier: ^4.1.8
         version: 4.1.8(@types/node@22.19.19)(vite@8.0.16(@types/node@22.19.19)(esbuild@0.28.0)(tsx@4.22.4)(yaml@2.9.0))
 
-  packages/acpus:
+  packages/agent-executor:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.15.30
+        version: 22.19.19
+
+  packages/cli:
     dependencies:
       '@acpus/core':
         specifier: workspace:*
         version: link:../core
-      '@typescript/native-preview':
-        specifier: 7.0.0-dev.20260421.2
-        version: 7.0.0-dev.20260421.2
+      '@acpus/runtime':
+        specifier: workspace:*
+        version: link:../runtime
+      '@acpus/workflow-compiler':
+        specifier: workspace:*
+        version: link:../workflow-compiler
       commander:
         specifier: ^15.0.0
         version: 15.0.0
@@ -51,12 +69,6 @@ importers:
 
   packages/core:
     dependencies:
-      esbuild:
-        specifier: ^0.28.0
-        version: 0.28.0
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -67,6 +79,44 @@ importers:
       '@types/node':
         specifier: ^22.15.30
         version: 22.19.19
+
+  packages/runtime:
+    dependencies:
+      '@acpus/agent-executor':
+        specifier: workspace:*
+        version: link:../agent-executor
+      '@acpus/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@types/node':
+        specifier: ^22.15.30
+        version: 22.19.19
+
+  packages/workflow-compiler:
+    dependencies:
+      '@acpus/core':
+        specifier: workspace:*
+        version: link:../core
+      '@typescript/native-preview':
+        specifier: 7.0.0-dev.20260421.2
+        version: 7.0.0-dev.20260421.2
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.0
+      tsx:
+        specifier: ^4.20.3
+        version: 4.22.4
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+    devDependencies:
+      '@types/node':
+        specifier: ^22.15.30
+        version: 22.19.19
+      slash:
+        specifier: ^3.0.0
+        version: 3.0.0
 
 packages:
 

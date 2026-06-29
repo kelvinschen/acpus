@@ -30,8 +30,8 @@ export function buildSwitchNode<OutSchema extends ObjectSchema | undefined, Agen
   return stripUndefined({
     id,
     kind: "switch",
+    outputSchema: spec.outputSchema ? toSchemaIR(spec.outputSchema) : undefined,
     cases: spec.cases.map(c => ({ when: valueToExprIR(c.when), then: buildScope<{}, SchemaScopeOutput<OutSchema>>(c.then as any) })),
     default: spec.default ? buildScope<{}, SchemaScopeOutput<OutSchema>>(spec.default as any) : undefined,
-    outputSchema: spec.outputSchema ? toSchemaIR(spec.outputSchema) : undefined,
   }) as SwitchNodeIR;
 }

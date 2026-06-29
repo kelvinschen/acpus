@@ -62,9 +62,9 @@ export default defineWorkflow({
 }).build(({ input, step, output }) => {
   const diff = step("diff").task({
     outputSchema: z.object({ patch: z.artifact("text/x-patch") }),
-    cwd: input.repoPath,
     run: {
       input: {},
+      cwd: input.repoPath,
       exec: async ({ $, artifact }) => {
         const result = await $`git diff`;
         return {

@@ -10,5 +10,3 @@ This directory tracks Acpus future plans, backlog, and capability gaps. Current 
 ## Roadmap
 
 - [Core Roadmap](core-roadmap.md) — the path from the current authoring/compile core to a full runtime (Task bundling, executors, persistence, lint plugin, runner profiles).
-- [Core Node Semantics Roadmap](core-node-semantics-roadmap.md) — unresolved node semantic gaps for TypeScript-first workflow contracts.
-- [Core AI Ergonomics Roadmap](core-ai-ergonomics-roadmap.md) — unresolved AI/LLM authoring ergonomics candidates.

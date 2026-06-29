@@ -1,6 +1,5 @@
-export { defineWorkflow, compileWorkflowDefinition } from "./graph/builder.js";
+export { defineWorkflow, compileWorkflowDefinition, isWorkflowDefinition } from "./graph/builder.js";
 export type { AgentMap, BuildContext, OutputHelper, OutputToken, OutputValue, OutputValues, TypedOutputHelper, WorkflowDefinition, StepDeclaration, StepFactory, StepInput, GraphInput, RuntimeInput, ScopeContext, AgentStepSpec, TaskStepSpec, SignalStepSpec } from "./graph/builder.js";
-export { compileWorkflowModule } from "./compiler/module.js";
 export { z, s, parseSchema, safeParseSchema, toSchemaIR, toJSONSchema, schemaToJsonSchema, assertBoundarySchema } from "./schema/index.js";
 export type { ArtifactRef, InferSchema, Schema, SecretRef, ValidationIssue, ParseResult } from "./schema/index.js";
 export {

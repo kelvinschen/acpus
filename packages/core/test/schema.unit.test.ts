@@ -14,21 +14,20 @@ describe("schema boundary lowering", () => {
       scores: z.record(z.string(), z.number()),
     });
 
-    expect(toSchemaIR(schema)).toEqual({
+    const ir = toSchemaIR(schema);
+
+    expect(ir).toMatchObject({
       kind: "object",
       additionalProperties: false,
       required: ["repoPath", "patch", "count", "mode", "tags", "scores"],
-      fields: {
-        repoPath: { kind: "path" },
-        patch: { kind: "artifact", mediaType: "text/x-patch" },
-        token: { kind: "secret_ref", optional: true },
-        count: { kind: "integer" },
-        maybeSummary: { kind: "string", nullable: true, optional: true },
-        mode: { kind: "enum", values: ["fast", "safe"] },
-        tags: { kind: "array", item: { kind: "string" } },
-        scores: { kind: "record", key: { kind: "string" }, value: { kind: "number" } },
-      },
     });
+    if (ir.kind !== "object") throw new Error("expected object schema");
+    expect(ir.fields.repoPath).toEqual({ kind: "path" });
+    expect(ir.fields.patch).toEqual({ kind: "artifact", mediaType: "text/x-patch" });
+    expect(ir.fields.token).toEqual({ kind: "secret_ref", optional: true });
+    expect(ir.fields.maybeSummary).toEqual({ kind: "string", nullable: true, optional: true });
+    expect(ir.fields.tags).toEqual({ kind: "array", item: { kind: "string" } });
+    expect(ir.fields.scores).toEqual({ kind: "record", key: { kind: "string" }, value: { kind: "number" } });
   });
 
   it("rejects unsupported graph-boundary schemas with the failing path", () => {

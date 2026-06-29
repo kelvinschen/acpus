@@ -92,16 +92,12 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
       break;
     }
     case "task": {
-      validateKnownFields(node, ["id", "source", "kind", "inputs", "outputSchema", "run", "params", "cwd", "env", "timeout", "retry", "execution"], diagnostics, path);
+      validateKnownFields(node, ["id", "source", "kind", "outputSchema", "run", "timeout", "retry"], diagnostics, path);
       validateTaskRun(node.run, diagnostics, `${path}.run`);
       const bundleId = isRecord(node.run) && typeof node.run.bundleId === "string" ? node.run.bundleId : undefined;
       if (bundleId && !ctx.taskBundles.has(bundleId)) diagnostics.push({ code: "T001", severity: "error", message: `Task node '${node.id}' references missing task bundle '${bundleId}'.`, path: `${path}.run.bundleId` });
       if (bundleId && ctx.taskBundles.has(bundleId)) validateTaskRunDigest(node.run, ctx.taskBundles.get(bundleId), diagnostics, `${path}.run`);
-      validateExprObject(node.inputs, diagnostics, `${path}.inputs`);
       validateRequiredSchema(node.outputSchema, diagnostics, `${path}.outputSchema`);
-      if (node.cwd) validateExpr(node.cwd, diagnostics, `${path}.cwd`);
-      validateEnv(node.env, diagnostics, `${path}.env`);
-      validateTaskExecution(node.execution, diagnostics, `${path}.execution`);
       break;
     }
     case "signal": {
@@ -221,9 +217,13 @@ function validateTaskRun(run: unknown, diagnostics: DiagnosticIR[], path: string
     diagnostics.push({ code: "T007", severity: "error", message: "Task run must be an object.", path });
     return;
   }
-  validateKnownFields(run, ["kind", "bundleId", "exportName", "digest", "runtime", "inline"], diagnostics, path);
+  validateKnownFields(run, ["kind", "input", "bundleId", "exportName", "digest", "runtime", "inline", "params", "cwd", "env", "execution"], diagnostics, path);
   if (run.kind !== "task_run") diagnostics.push({ code: "T007", severity: "error", message: "Task run kind must be task_run.", path: `${path}.kind` });
+  validateExprObject(run.input, diagnostics, `${path}.input`);
   if (typeof run.bundleId !== "string" || run.bundleId.length === 0) diagnostics.push({ code: "T007", severity: "error", message: "Task run bundleId must be a non-empty string.", path: `${path}.bundleId` });
+  if (run.cwd) validateExpr(run.cwd, diagnostics, `${path}.cwd`);
+  validateEnv(run.env, diagnostics, `${path}.env`);
+  validateTaskExecution(run.execution, diagnostics, `${path}.execution`);
 }
 
 function validateTaskRunDigest(run: unknown, bundle: WorkflowIR["assets"]["taskBundles"][string] | undefined, diagnostics: DiagnosticIR[], path: string): void {

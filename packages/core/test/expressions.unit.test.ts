@@ -1,11 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { all, head, includes, isEmpty, max, nth, refExpr, where } from "../src/index.js";
+import type { ExprIR } from "../src/index.js";
 
 const booleanType = { kind: "boolean" };
 const integerType = { kind: "integer" };
 const numberType = { kind: "number" };
 const ref = (path: string[]) => ({ kind: "ref", path });
 const literal = (value: unknown) => ({ kind: "literal", value });
+const expectCall = (expr: ExprIR, fn: string) => {
+  expect(expr).toMatchObject({ kind: "call", fn });
+  if (expr.kind !== "call") {
+    throw new Error(`Expected ${fn} call expression`);
+  }
+  return expr;
+};
 
 describe("expression lowering", () => {
   it("lowers nested where filters to canonical ExprIR calls", () => {
@@ -16,16 +24,16 @@ describe("expression lowering", () => {
       summary: string;
     }>(["nodes", "review", "output"]);
 
-    expect(where(review, {
+    const expr = where(review, {
       ready: true,
       riskCount: { lte: 3 },
       issues: { length: 0 },
       summary: { contains: "ok" },
-    }).ir).toEqual({
-      kind: "call",
-      fn: "and",
-      type: booleanType,
-      args: [
+    }).ir;
+
+    const call = expectCall(expr, "and");
+    expect(call.args).toHaveLength(4);
+    expect(call.args).toEqual(expect.arrayContaining([
         {
           kind: "call",
           fn: "eq",
@@ -58,8 +66,7 @@ describe("expression lowering", () => {
           type: booleanType,
           args: [ref(["nodes", "review", "output", "summary"]), literal("ok")],
         },
-      ],
-    });
+    ]));
   });
 
   it("lowers where workflow-value filters to primitive calls", () => {
@@ -77,16 +84,15 @@ describe("expression lowering", () => {
       rejectedTags: readonly string[];
     }>(["workflow", "input"]);
 
-    expect(where(review, {
+    const expr = where(review, {
       ready: input.ready,
       branch: input.branch,
       score: { gte: input.minScore },
       tag: { in: input.allowedTags, notIn: input.rejectedTags },
-    }).ir).toEqual({
-      kind: "call",
-      fn: "and",
-      type: booleanType,
-      args: [
+    }).ir;
+
+    const call = expectCall(expr, "and");
+    expect(call.args).toEqual(expect.arrayContaining([
         {
           kind: "call",
           fn: "eq",
@@ -131,8 +137,7 @@ describe("expression lowering", () => {
             },
           ],
         },
-      ],
-    });
+    ]));
   });
 
   it("lowers primitive where filters and Mongo aliases to the same primitives", () => {

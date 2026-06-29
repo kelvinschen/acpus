@@ -1,0 +1,34 @@
+{
+  "name": "acpus",
+  "version": "0.6.0-alpha",
+  "private": true,
+  "type": "module",
+  "description": "Acpus CLI for TypeScript workflow validation and durable run admission.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "bin": {
+    "acpus": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsgo -p tsconfig.json",
+    "typecheck": "tsgo -p tsconfig.json --noEmit && tsgo -p tsconfig.fixtures.json --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@acpus/core": "workspace:*",
+    "@acpus/runtime": "workspace:*",
+    "@acpus/workflow-compiler": "workspace:*",
+    "commander": "^15.0.0",
+    "tsx": "^4.20.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30"
+  }
+}

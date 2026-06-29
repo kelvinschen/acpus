@@ -49,25 +49,27 @@ describe("workflow compilation", () => {
       },
     }).build(({ input, step, output }) => {
       const normalized = step("normalize_package").task({
-        task: normalizePackage,
-        input: { packageName: input.packageName },
-        params: { strict: true },
+        run: {
+          task: normalizePackage,
+          input: { packageName: input.packageName },
+          params: { strict: true },
+        },
       });
 
       const tests = step("run_tests").task({
         outputSchema: TestOutput,
         run: {
           input: { slug: normalized.output.slug },
+          cwd: input.repoPath,
+          env: {
+            CI: "true",
+            PACKAGE_TOKEN: secret("PACKAGE_TOKEN"),
+          },
           exec: async ({ input }) => ({
             passed: true,
             summary: `ok:${input.slug}`,
           }),
         },
-        env: {
-          CI: "true",
-          PACKAGE_TOKEN: secret("PACKAGE_TOKEN"),
-        },
-        cwd: input.repoPath,
       });
 
       step("require_tests").assert({
@@ -136,26 +138,30 @@ describe("workflow compilation", () => {
     });
     expect(ir.root.nodes[0]).toMatchObject({
       kind: "task",
-      run: { inline: false },
       outputSchema: toSchemaIR(NormalizeOutput),
-      params: { strict: true },
-      inputs: {
-        packageName: { kind: "ref", path: ["input", "packageName"] },
+      run: {
+        inline: false,
+        params: { strict: true },
+        input: {
+          packageName: { kind: "ref", path: ["input", "packageName"] },
+        },
       },
     });
     expect(ir.root.nodes[1]).toMatchObject({
       kind: "task",
-      run: { inline: true },
-      inputs: {
-        slug: {
-          kind: "ref",
-          path: ["nodes", "normalize_package", "output", "slug"],
+      run: {
+        inline: true,
+        input: {
+          slug: {
+            kind: "ref",
+            path: ["nodes", "normalize_package", "output", "slug"],
+          },
         },
-      },
-      cwd: { kind: "ref", path: ["input", "repoPath"] },
-      env: {
-        CI: { kind: "literal", value: "true" },
-        PACKAGE_TOKEN: { kind: "secret", name: "PACKAGE_TOKEN" },
+        cwd: { kind: "ref", path: ["input", "repoPath"] },
+        env: {
+          CI: { kind: "literal", value: "true" },
+          PACKAGE_TOKEN: { kind: "secret", name: "PACKAGE_TOKEN" },
+        },
       },
     });
     expect(ir.root.nodes[2]).toMatchObject({
@@ -459,7 +465,6 @@ describe("workflow compilation", () => {
       step("bad_task").task({
         run: {
           input: {},
-          task: normalizePackage,
         },
       } as any);
       return output({});
@@ -479,7 +484,7 @@ describe("workflow compilation", () => {
     expect(ir.root.nodes[0]).toMatchObject({
       id: "bad_task",
       kind: "task",
-      inputs: {},
+      run: { input: {} },
     });
   });
 

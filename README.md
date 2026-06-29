@@ -25,7 +25,7 @@ serializable IR which a runtime consumes.
 - Compilation to a frozen `WorkflowIR` (`irVersion: 2`) with structural validation
   and bundled Task assets.
 
-Representative workflow compiler fixtures live in `packages/core/test/fixtures/workflows/`.
+Representative workflow compiler fixtures live in `packages/workflow-compiler/test/fixtures/workflows/`.
 
 ## CLI
 
@@ -33,7 +33,7 @@ The new `acpus` package currently exposes the pre-run gate only:
 
 ```sh
 pnpm --filter acpus build
-pnpm exec acpus run packages/core/test/fixtures/workflows/module.workflow.ts --dry-run
+pnpm exec acpus run packages/workflow-compiler/test/fixtures/workflows/module.workflow.ts --dry-run
 ```
 
 `acpus run <workflow.ts> --dry-run` typechecks, compiles, validates, and writes
@@ -53,7 +53,7 @@ pnpm test        # vitest (suites pass with no tests yet)
 ```
 
 The core package intentionally does not expose a CLI; command-line entry points
-live in `packages/acpus`.
+live in `packages/cli`.
 
 ## Documentation
 

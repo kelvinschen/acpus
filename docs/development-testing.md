@@ -39,7 +39,7 @@ Use Vitest type tests for TypeScript authoring contracts that can regress withou
 
 Keep reusable type-level helpers in `packages/core/src/internal/type-utils.ts`. Core does not directly depend on `type-fest`; if a new generic helper is needed, copy or adapt a small type-fest-style definition only after checking license, TypeScript compatibility, public `.d.ts` impact, and whether it changes public authoring semantics.
 
-Put compiler workflow fixtures under `packages/core/test/fixtures/workflows/` as standard `.workflow.ts` modules. Core does not maintain a separate user-facing `packages/core/examples/` tree; representative fixtures carry workflow authoring coverage. Fixtures should import the public package entrypoint (`@acpus/core`) so tests exercise package export resolution rather than source-relative paths.
+Put compiler workflow fixtures under `packages/workflow-compiler/test/fixtures/workflows/` as standard `.workflow.ts` modules. Compiler fixtures should import the public package entrypoint (`@acpus/core`) so tests exercise package export resolution rather than source-relative paths. Core tests should use in-memory `defineWorkflow(...)` definitions or pure IR slices, not file module fixtures.
 
 When a spec says a behavior MUST exist, add or update a test in the same change. If implementation and spec disagree, either fix the implementation or update the spec to the new current behavior.
 
@@ -50,8 +50,8 @@ The initial core test foundation should cover these chains:
 - Schema: supported Zod boundary subset lowers to `SchemaIR`; unsupported boundary features fail with the offending path; parse issues use Acpus-style paths.
 - Expressions: `where(...)` field shorthand, primitive filters, Mongo aliases, logical composition, and collection helpers lower to canonical `ExprIR` calls.
 - IR validator: invalid workflow names, schemas, duplicate node ids, empty refs, missing agents, and task-bundle mismatches produce stable diagnostic codes and paths.
-- Workflow compiler: representative workflow fixtures compile leaf nodes, assertions, templates, secrets, task bundles, agent definitions, and outputs into validated `WorkflowIR`.
-- Composite nodes: the orchestration fixture covers `step.if`, `step.switch`, `step.parallel`, `step.fanout`, `step.loop`, and `step.signal` child scopes and projected outputs without invoking any runtime.
+- Workflow compiler: representative workflow-compiler package fixtures compile leaf nodes, assertions, templates, secrets, task bundles, agent definitions, and outputs into validated `WorkflowIR`.
+- Composite nodes: the workflow-compiler orchestration fixture covers `step.if`, `step.switch`, `step.parallel`, `step.fanout`, `step.loop`, and `step.signal` child scopes and projected outputs without invoking any runtime.
 - Type contracts: ref/output helper inference, nullable `previous` access, `fallback(...)` narrowing, and schema-aware composite `output({...})` checks are covered by `*.type.test-d.ts`.
 - Module compiler: a checked-in workflow module fixture compiles through `compileWorkflowModule(...)` with `irVersion: 2`, expected node ids, task bundles, outputs, and the trusted-import compiler diagnostic.
 

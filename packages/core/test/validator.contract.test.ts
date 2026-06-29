@@ -490,8 +490,7 @@ describe("WorkflowIR diagnostics contract", () => {
           {
             id: "task_without_schema",
             kind: "task",
-            inputs: {},
-            run: { kind: "task_run", bundleId: "missing", exportName: "default", digest: "sha256:x", runtime: "node" },
+            run: { kind: "task_run", input: {}, bundleId: "missing", exportName: "default", digest: "sha256:x", runtime: "node" },
           },
           {
             id: "signal_without_schema",
@@ -543,10 +542,10 @@ describe("WorkflowIR diagnostics contract", () => {
         nodes: [{
           id: "run_task",
           kind: "task",
-          inputs: {},
           outputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
           run: {
             kind: "task_run",
+            input: {},
             bundleId: "task_a",
             exportName: "default",
             digest: "sha256:wrong",

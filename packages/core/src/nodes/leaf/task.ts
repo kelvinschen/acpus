@@ -39,8 +39,6 @@ type TaskStepOptions = {
   params?: JsonObject;
   cwd?: WorkflowValue<string>;
   env?: EnvInput;
-  timeout?: string;
-  retry?: RetryIR;
   execution?: {
     shell?: "bash" | "powershell" | "pwsh";
     defaultCommandTimeout?: string;
@@ -48,18 +46,25 @@ type TaskStepOptions = {
   };
 };
 
-export type InlineTaskStepSpec<Input extends StepInput, OutSchema extends Schema<any>> = Simplify<TaskStepOptions & {
+type TaskNodeOptions = {
+  timeout?: string;
+  retry?: RetryIR;
+};
+
+export type InlineTaskStepSpec<Input extends StepInput, OutSchema extends Schema<any>> = Simplify<TaskNodeOptions & {
   outputSchema: OutSchema;
-  run: {
+  run: TaskStepOptions & {
     input: Input;
     exec: TaskFunction<RuntimeInput<Input>, InferSchema<OutSchema>, any>;
   };
 }>;
 
-export type ReusableTaskStepSpec<Input extends StepInput, TaskInput, Output> = Simplify<TaskStepOptions & {
+export type ReusableTaskStepSpec<Input extends StepInput, TaskInput, Output> = Simplify<TaskNodeOptions & {
   outputSchema?: never;
-  input: Input;
-  task: ReusableTaskToken<TaskInput, Output, any>;
+  run: TaskStepOptions & {
+    input: Input;
+    task: ReusableTaskToken<TaskInput, Output, any>;
+  };
 }>;
 
 export type TaskStepSpec<Input extends StepInput, OutSchema extends Schema<any> = Schema<any>> =
@@ -152,13 +157,13 @@ export function buildTaskNode<const Input extends StepInput>(
     run = createInlineTaskToken(inlineSpec.run.exec);
     outputSchema = inlineSpec.outputSchema;
     inputBindings = inlineSpec.run.input;
-  } else if ("task" in spec && task.isToken(spec.task)) {
+  } else if (maybeRun && typeof maybeRun === "object" && "task" in maybeRun && task.isToken(maybeRun.task)) {
     const reusableSpec = spec as ReusableTaskStepSpec<Input, any, any>;
-    run = reusableSpec.task;
+    run = reusableSpec.run.task;
     outputSchema = run.outputSchema;
-    inputBindings = reusableSpec.input;
+    inputBindings = reusableSpec.run.input;
   } else {
-    diagnostics.push({ code: "T000", severity: "error", message: `Task node '${id}' must use inline { outputSchema, run: { input, exec } } or reusable { input, task }.` });
+    diagnostics.push({ code: "T000", severity: "error", message: `Task node '${id}' must use inline { outputSchema, run: { input, exec } } or reusable { run: { input, task } }.` });
     validTask = false;
     run = undefined as unknown as TaskToken<RuntimeInput<Input>, any, any>;
     outputSchema = ("outputSchema" in spec && spec.outputSchema ? spec.outputSchema : z.unknown()) as Schema<any>;
@@ -166,30 +171,34 @@ export function buildTaskNode<const Input extends StepInput>(
   }
   const bundle = validTask ? run.toBundleIR() : undefined;
   if (bundle) taskBundles[bundle.id] = bundle;
+  const runOptions = maybeRun && typeof maybeRun === "object"
+    ? maybeRun as TaskStepOptions
+    : {};
   return stripUndefined({
     id,
     kind: "task",
-    inputs: inputsToIR(inputBindings),
     outputSchema: toSchemaIR(outputSchema),
     run: bundle ? {
       kind: "task_run",
+      input: inputsToIR(inputBindings),
       bundleId: bundle.id,
       exportName: "default",
       digest: bundle.digest,
       runtime: "node",
       inline: run.kind === "inline",
+      params: runOptions.params ?? (validTask ? run.params : undefined),
+      cwd: runOptions.cwd === undefined ? undefined : valueToExprIR(runOptions.cwd),
+      env: envToIR(runOptions.env),
+      execution: runOptions.execution,
     } : {
       kind: "task_run",
+      input: {},
       bundleId: `invalid_task_${id}`,
       exportName: "default",
       digest: "invalid",
       runtime: "node",
       inline: true,
     },
-    params: spec.params ?? (validTask ? run.params : undefined),
-    cwd: spec.cwd === undefined ? undefined : valueToExprIR(spec.cwd),
-    env: envToIR(spec.env),
-    execution: spec.execution,
     timeout: spec.timeout,
     retry: spec.retry,
   }) as TaskNodeIR;

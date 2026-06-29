@@ -52,13 +52,13 @@ export function buildFanoutNode<
     kind: "fanout",
     over: valueToExprIR(spec.over),
     key: key ? templateToIR(key) : undefined,
-    do: buildScope<{ item: typeof item; itemIndex: typeof itemIndex }, SchemaScopeOutput<OutSchema>>(spec.do, {
-      item,
-      itemIndex,
-    }),
     strategy: spec.strategy ?? "all",
     maxConcurrency: spec.maxConcurrency,
     count: (spec as { count?: number }).count,
     itemOutputSchema: toSchemaIR(spec.itemOutputSchema),
+    do: buildScope<{ item: typeof item; itemIndex: typeof itemIndex }, SchemaScopeOutput<OutSchema>>(spec.do, {
+      item,
+      itemIndex,
+    }),
   }) as FanoutNodeIR;
 }

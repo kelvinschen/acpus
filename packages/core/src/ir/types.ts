@@ -111,28 +111,28 @@ export type AgentRunIR = {
 
 export type TaskNodeIR = BaseNodeIR & {
   kind: "task";
-  inputs: Record<string, ExprIR>;
   outputSchema: SchemaIR;
   run: TaskRunIR;
-  params?: JsonObject;
-  cwd?: ExprIR;
-  env?: Record<string, ExprIR | SecretRefIR>;
   timeout?: DurationIR;
   retry?: RetryIR;
-  execution?: {
-    shell?: "bash" | "powershell" | "pwsh";
-    defaultCommandTimeout?: DurationIR;
-    commandRunner?: "acpus-zx-core" | "custom";
-  };
 };
 
 export type TaskRunIR = {
   kind: "task_run";
+  input: Record<string, ExprIR>;
   bundleId: string;
   exportName: string;
   digest: string;
   runtime: "node";
   inline?: boolean;
+  params?: JsonObject;
+  cwd?: ExprIR;
+  env?: Record<string, ExprIR | SecretRefIR>;
+  execution?: {
+    shell?: "bash" | "powershell" | "pwsh";
+    defaultCommandTimeout?: DurationIR;
+    commandRunner?: "acpus-zx-core" | "custom";
+  };
 };
 
 export type SignalNodeIR = BaseNodeIR & {

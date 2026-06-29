@@ -53,8 +53,8 @@ export function buildParallelNode<
   return stripUndefined({
     id,
     kind: "parallel",
-    branches,
     strategy: spec.strategy ?? "all",
     maxConcurrency: spec.maxConcurrency,
+    branches,
   }) as ParallelNodeIR;
 }

@@ -31,9 +31,9 @@ export function buildIfNode<OutSchema extends ObjectSchema | undefined, AgentKey
   return stripUndefined({
     id,
     kind: "if",
+    outputSchema: spec.outputSchema ? toSchemaIR(spec.outputSchema) : undefined,
     condition: valueToExprIR(spec.condition),
     then: buildScope<{}, SchemaScopeOutput<OutSchema>>(spec.then as any),
     else: spec.else ? buildScope<{}, SchemaScopeOutput<OutSchema>>(spec.else as any) : undefined,
-    outputSchema: spec.outputSchema ? toSchemaIR(spec.outputSchema) : undefined,
   }) as IfNodeIR;
 }

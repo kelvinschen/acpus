@@ -28,13 +28,13 @@ export function buildLoopNode<OutSchema extends ObjectSchema, AgentKey extends s
   return stripUndefined({
     id,
     kind: "loop",
+    outputSchema: toSchemaIR(spec.outputSchema),
     maxIterations: spec.maxIterations,
+    stopWhen: valueToExprIR(spec.stopWhen({ iter, result })),
+    onExhausted: spec.onExhausted,
     do: buildScope<{ iter: typeof iter; previous: typeof previous }, ScopeOutput<InferSchema<OutSchema>>>(spec.do, {
       iter,
       previous,
     }),
-    stopWhen: valueToExprIR(spec.stopWhen({ iter, result })),
-    outputSchema: toSchemaIR(spec.outputSchema),
-    onExhausted: spec.onExhausted,
   }) as LoopNodeIR;
 }

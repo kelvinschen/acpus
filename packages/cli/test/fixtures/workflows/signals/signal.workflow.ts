@@ -1,0 +1,10 @@
+import { defineWorkflow, z } from "@acpus/core";
+
+export default defineWorkflow({
+  name: "cli-signal",
+}).build(({ step, output }) => {
+  step("before").assert({ condition: true });
+  const approval = step("approve").signal({ outputSchema: z.object({ ok: z.boolean() }), run: { prompt: "approve" } });
+  step("after").assert({ condition: approval.output.ok });
+  return output({ ok: approval.output.ok });
+});

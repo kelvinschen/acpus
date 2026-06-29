@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import * as core from "../src/index.js";
 
 describe("@acpus/core public API", () => {
-  it("exports the current authoring, schema, expression, compiler, and runtime surface", () => {
+  it("exports the current authoring, schema, expression, IR validation, and runtime surface", () => {
     expect(Object.keys(core).sort()).toEqual([
       "all",
       "and",
@@ -10,7 +10,6 @@ describe("@acpus/core public API", () => {
       "assertBoundarySchema",
       "coalesce",
       "compileWorkflowDefinition",
-      "compileWorkflowModule",
       "createDollar",
       "defineWorkflow",
       "endsWith",
@@ -24,6 +23,7 @@ describe("@acpus/core public API", () => {
       "includes",
       "isEmpty",
       "isExpr",
+      "isWorkflowDefinition",
       "len",
       "literal",
       "lt",
