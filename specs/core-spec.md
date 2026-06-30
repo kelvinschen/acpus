@@ -75,7 +75,7 @@
 - Fanout `itemOutputSchema` MUST represent the per-item output contract and serialize as `FanoutNodeIR.itemOutputSchema`.
 - Loop bodies MUST receive `iter` and `previous`; `previous` MUST be typed as possibly `undefined`.
 - Loop `stopWhen({ iter, result })` MUST return a boolean workflow value and lower to `LoopNodeIR.stopWhen`.
-- Required output fields MUST NOT accept nullable or optional refs unless the author explicitly removes the nullish case, for example with `fallback(...)`.
+- Required output fields MUST NOT accept nullable or optional refs unless the author explicitly removes the nullish case, for example with `coalesce(...)`.
 
 ### Task Authoring And Runtime Context Types
 

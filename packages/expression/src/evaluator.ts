@@ -102,9 +102,9 @@ function evaluateCall(fn: string, args: ExprIR[], adapter: ExpressionEvaluatorAd
       return evaluateMap(fn, args, adapter, env);
     case "filter":
       return evaluateFilter(fn, args, adapter, env);
-    case "all":
+    case "every":
       return args.length === 1 ? arrayArg(fn, evaluate(args[0]!, adapter, env)).every(value => booleanArg(fn, value)) : evaluateQuantifier(fn, args, adapter, env, false);
-    case "any":
+    case "some":
       return args.length === 1 ? arrayArg(fn, evaluate(args[0]!, adapter, env)).some(value => booleanArg(fn, value)) : evaluateQuantifier(fn, args, adapter, env, true);
     case "max":
       requireArity(fn, args, 1);

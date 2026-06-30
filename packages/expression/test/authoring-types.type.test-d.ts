@@ -1,15 +1,14 @@
 import { assertType, test } from "vitest";
 import {
-  all,
-  any,
   coalesce,
-  fallback,
+  every,
   filter,
   get,
   head,
   ifElse,
   map,
   pick,
+  some,
   where,
   type Expr,
   type OutputAccessor,
@@ -22,10 +21,19 @@ import { expr as rootExpr } from "@acpus/expression";
 import { refExpr as rootRefExpr } from "@acpus/expression";
 // @ts-expect-error valueToExprIR is exported from @acpus/expression/ir, not the root.
 import { valueToExprIR as rootValueToExprIR } from "@acpus/expression";
+// @ts-expect-error all was removed; use every.
+import { all as rootAll } from "@acpus/expression";
+// @ts-expect-error any was removed; use some.
+import { any as rootAny } from "@acpus/expression";
+// @ts-expect-error fallback was removed; use coalesce.
+import { fallback as rootFallback } from "@acpus/expression";
 
 void rootExpr;
 void rootRefExpr;
 void rootValueToExprIR;
+void rootAll;
+void rootAny;
+void rootFallback;
 
 type Item = {
   done: boolean;
@@ -40,13 +48,12 @@ const maybeUser = refExpr<{ deletedAt: string | null; tags: readonly string[] }>
 test("authoring helpers infer core expression shapes", () => {
   assertType<WorkflowValue<string>>("literal");
   assertType<OutputAccessor<readonly Item[]>>(items);
-  assertType<Expr<boolean>>(all(items, () => true));
-  assertType<Expr<boolean>>(any(items, () => false));
+  assertType<Expr<boolean>>(every(items, () => true));
+  assertType<Expr<boolean>>(some(items, () => false));
   assertType<Expr<readonly Item[]>>(filter(items, () => true));
   assertType<Expr<readonly string[]>>(map(items, () => "name"));
   assertType<Expr<Item | undefined>>(head(items));
   assertType<Expr<Item | undefined>>(get(items, 0));
-  assertType<Expr<string>>(fallback(maybeName, "unknown"));
   assertType<Expr<string>>(coalesce(maybeName, "unknown"));
   assertType<Expr<string | number>>(ifElse(refExpr<boolean>(["input", "ok"]), "ok", 1));
   assertType<Expr<boolean>>(where(head(items), { done: true }));
@@ -58,8 +65,8 @@ test("authoring helpers infer core expression shapes", () => {
 test("authoring helpers reject unknown values where static typing can prove it", () => {
   // @ts-expect-error coalesce requires at least one value.
   coalesce();
-  // @ts-expect-error all callbacks must produce booleans.
-  all(items, () => "done");
+  // @ts-expect-error every callbacks must produce booleans.
+  every(items, () => "done");
   // @ts-expect-error dynamic array get uses numeric keys.
   get(items, "0");
   // @ts-expect-error where rejects unknown typed object keys.

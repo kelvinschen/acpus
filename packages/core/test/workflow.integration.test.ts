@@ -6,7 +6,7 @@ import {
   z,
 } from "../src/index.js";
 import { compileWorkflowDefinition } from "../src/workflow.js";
-import { eq, fallback, head, matches, or, pick, template, where } from "@acpus/expression";
+import { coalesce, eq, head, matches, or, pick, template, where } from "@acpus/expression";
 import { toSchemaIR } from "../src/schema.js";
 
 const NormalizeInput = z.object({ packageName: z.string() });
@@ -309,7 +309,7 @@ describe("workflow compilation", () => {
         do: ({ iter, previous }) =>
           ({
             done: eq(iter, 2),
-            summary: fallback(previous.summary, "first"),
+            summary: coalesce(previous.summary, "first"),
           }),
         stopWhen: ({ iter, result }) =>
           or(eq(iter, 3), where(result, { done: true })),
@@ -319,7 +319,7 @@ describe("workflow compilation", () => {
       return {
         status: gate.output.status,
         fastStatus: checks.output.fast.status,
-        firstItemOk: fallback(head(perItem.output).ok, false),
+        firstItemOk: coalesce(head(perItem.output).ok, false),
         done: retry.output.done,
       };
     });

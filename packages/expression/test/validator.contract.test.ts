@@ -13,6 +13,18 @@ describe("expression validator", () => {
       message: "Unknown expression operator 'unknown'.",
       path: "$.fn",
     }]);
+    expect(validateExprIR({ kind: "call", fn: "all", args: [] })).toEqual([{
+      code: "EX001",
+      severity: "error",
+      message: "Unknown expression operator 'all'.",
+      path: "$.fn",
+    }]);
+    expect(validateExprIR({ kind: "call", fn: "any", args: [] })).toEqual([{
+      code: "EX001",
+      severity: "error",
+      message: "Unknown expression operator 'any'.",
+      path: "$.fn",
+    }]);
   });
 
   it("validates arity and lambda placement", () => {

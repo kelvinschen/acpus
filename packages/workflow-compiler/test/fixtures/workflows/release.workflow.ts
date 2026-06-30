@@ -4,7 +4,7 @@ import {
 } from "@acpus/core";
 import {
   where,
-  all,
+  every,
   max,
   template,
 } from "@acpus/expression";
@@ -201,7 +201,7 @@ export default defineWorkflow({
   );
 
   step("require_all_reviews_ready").assert({
-    condition: all(reviews.map((review) =>
+    condition: every(reviews.map((review) =>
       where(review.output, {
         ready: true,
         riskCount: { lte: 3 },
@@ -240,7 +240,7 @@ export default defineWorkflow({
   });
 
   return {
-    ready: all(reviews.map((review) => review.output.ready)),
+    ready: every(reviews.map((review) => review.output.ready)),
     maxRiskCount: max(reviews.map((review) => review.output.riskCount)),
     summary: summary.output.summary,
     changelogDraft: prepare.output.changelogDraft,

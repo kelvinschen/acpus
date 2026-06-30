@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { defineWorkflow, z } from "@acpus/core";
-import { eq, fallback, head, matches, or, template, where } from "@acpus/expression";
+import { coalesce, eq, head, matches, or, template, where } from "@acpus/expression";
 import { compileWorkflowDefinition } from "@acpus/core/workflow";
 import { executeWorkflow } from "../src/execution/scheduler.js";
 
@@ -55,7 +55,7 @@ describe("runtime non-agent scheduler skeleton", () => {
         outputSchema: z.object({ done: z.boolean(), summary: z.string() }),
         do: ({ iter, previous }) => ({
           done: eq(iter, 2),
-          summary: fallback(previous.summary, "first"),
+          summary: coalesce(previous.summary, "first"),
         }),
         stopWhen: ({ iter, result }) => or(eq(iter, 3), where(result, { done: true })),
         onExhausted: "returnLast",
@@ -65,7 +65,7 @@ describe("runtime non-agent scheduler skeleton", () => {
         status: gate.output.status,
         fastStatus: checks.output.fast.status,
         routeCode: checks.output.route.code,
-        firstItem: fallback(head(perItem.output).label, "none"),
+        firstItem: coalesce(head(perItem.output).label, "none"),
         done: retry.output.done,
         summary: retry.output.summary,
       };
@@ -254,7 +254,7 @@ describe("runtime non-agent scheduler skeleton", () => {
         outputSchema: z.object({ iter: z.number(), previousIter: z.number() }),
         do: ({ iter, previous }) => ({
           iter,
-          previousIter: fallback(previous.iter, -1),
+          previousIter: coalesce(previous.iter, -1),
         }),
         stopWhen: () => false,
         onExhausted: "returnLast",

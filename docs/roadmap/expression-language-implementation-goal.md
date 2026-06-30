@@ -81,8 +81,8 @@ Exit criteria:
 - [x] Add `/ir`, `/validator`, and `/evaluator` subpath skeletons.
 - [x] Add public API contract tests for expression root and subpaths.
 - [x] Add type test skeletons for core authoring cases:
-  `map`, `filter`, `all`, `any`, `get`, `head`, `where`, `ifElse`,
-  `fallback`, and unknown rejection.
+  `map`, `filter`, `every`, `some`, `get`, `head`, `where`, `ifElse`,
+  `coalesce`, and unknown rejection.
 - [x] Add unit test skeletons for lowering, evaluator semantics, template
   formatting, and structural equality.
 - [x] Add validator contract test skeletons for diagnostics and `EX###` codes.
@@ -124,14 +124,15 @@ Exit criteria:
 - [x] Implement the closed internal operator registry.
 - [x] Implement root authoring helpers:
   `not`, `and`, `or`, `ifElse`, `eq`, `ne`, `lt`, `lte`, `gt`, `gte`,
-  `coalesce`, `fallback`, `len`, `includes`, `isEmpty`, `startsWith`,
-  `endsWith`, `matches`, `get`, `head`, `all`, `any`, `filter`, `map`,
-  `max`, `min`, `where`, `pick`, and `template`.
+  `coalesce`, `len`, `includes`, `isEmpty`, `startsWith`, `endsWith`,
+  `matches`, `get`, `head`, `every`, `some`, `filter`, `map`, `max`, `min`,
+  `where`, `pick`, and `template`.
 - [x] Remove `nth`.
 - [x] Remove `exprOps`.
 - [x] Keep `head(array)` as sugar for `get(array, 0)`.
 - [x] Keep `isEmpty(value)` as sugar for `eq(len(value), 0)`.
-- [x] Keep `fallback(value, defaultValue)` as sugar for `coalesce`.
+- [x] Keep `coalesce(value, defaultValue)` as the two-argument nullish fallback form.
+- [x] Remove `fallback`.
 - [x] Remove selector overloads for `max` and `min`; projection is expressed
   with `map`.
 - [x] Keep future helpers out of v1: arithmetic, `sum`, `avg`, `count`, `find`,
@@ -155,8 +156,8 @@ Exit criteria:
 - [x] Implement structural equality with SameValueZero primitives.
 - [x] Implement safe path/get behavior and unsupported root delegation to host
   adapter.
-- [x] Implement JS-style collection iteration for `map`, `filter`, `all`, and
-  `any`, with strict expression callback result checks.
+- [x] Implement JS-style collection iteration for `map`, `filter`, `every`, and
+  `some`, with strict expression callback result checks.
 - [x] Implement `max` and `min` with numeric item checks and `Math.max/min`
   numeric result semantics.
 - [x] Implement template formatting:

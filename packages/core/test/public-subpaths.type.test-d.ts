@@ -1,6 +1,6 @@
 import { assertType, expectTypeOf, test } from "vitest";
 import { defineWorkflow, task, z, type TaskContext } from "@acpus/core";
-import { fallback, template, where, type Expr, type WorkflowValue } from "@acpus/expression";
+import { coalesce, template, where, type Expr, type WorkflowValue } from "@acpus/expression";
 import { refExpr, type ExprIR } from "@acpus/expression/ir";
 import { validateWorkflowIR, type WorkflowIR } from "@acpus/core/ir";
 import { createDollar, type Dollar } from "@acpus/core/runtime";
@@ -26,7 +26,7 @@ test("public package subpaths expose the intended type surface", () => {
   expectTypeOf(refExpr<InputValue>(["input"])).toEqualTypeOf<Expr<InputValue> & { readonly ready: Expr<boolean>; readonly name: Expr<string | undefined> }>();
   assertType<Expr<boolean>>(where(refExpr<InputValue>(["input"]), { ready: true }));
   assertType<WorkflowValue<string | undefined>>(refExpr<InputValue>(["input"]).name);
-  assertType<Expr<string>>(fallback(refExpr<InputValue>(["input"]).name, ""));
+  assertType<Expr<string>>(coalesce(refExpr<InputValue>(["input"]).name, ""));
 
   const definition = defineWorkflow({ name: "package-subpath-types", inputSchema: Input }).build(({ input }) => ({ ready: input.ready }));
   assertType<WorkflowDefinition<any, any>>(definition);

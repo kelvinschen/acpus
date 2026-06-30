@@ -8,7 +8,7 @@
 
 ### Public API
 
-- The root `@acpus/expression` entrypoint MUST expose the authoring surface: `isExpr`, `not`, `and`, `or`, `ifElse`, `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `coalesce`, `fallback`, `len`, `includes`, `isEmpty`, `startsWith`, `endsWith`, `matches`, `get`, `head`, `all`, `any`, `filter`, `map`, `max`, `min`, `where`, `pick`, `template`, and the public `Expr`, `OutputAccessor`, and `WorkflowValue` types.
+- The root `@acpus/expression` entrypoint MUST expose the authoring surface: `isExpr`, `not`, `and`, `or`, `ifElse`, `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `coalesce`, `len`, `includes`, `isEmpty`, `startsWith`, `endsWith`, `matches`, `get`, `head`, `every`, `some`, `filter`, `map`, `max`, `min`, `where`, `pick`, `template`, and the public `Expr`, `OutputAccessor`, and `WorkflowValue` types.
 - The root `@acpus/expression` entrypoint MUST NOT export raw construction helpers such as `expr`, `refExpr`, or `valueToExprIR`.
 - `@acpus/expression/ir` MUST expose serializable IR and JSON types plus advanced construction helpers needed by package internals and tests.
 - `@acpus/expression/evaluator` MUST expose generic expression and template evaluators.
@@ -43,8 +43,8 @@
 - Comparison helpers MUST include `eq`, `ne`, `lt`, `lte`, `gt`, and `gte`.
 - String helpers MUST include `includes`, `startsWith`, `endsWith`, and `matches`.
 - Array/string length helpers MUST include `len` and `isEmpty`.
-- Nullish fallback MUST be represented by `coalesce`; `coalesce` MUST accept at least one operand, and `fallback` MUST lower to the same operator.
-- `all` and `any` MUST support both boolean arrays and runtime array lambda predicates.
+- Nullish fallback MUST be represented by `coalesce`; `coalesce` MUST accept at least one operand.
+- `every` and `some` MUST support both boolean arrays and runtime array lambda predicates.
 - `filter` and `map` MUST require runtime array lambda callbacks.
 - `max` and `min` MUST accept one numeric array expression and MUST follow `Math.max(...values)` and `Math.min(...values)` semantics, including empty arrays and non-finite JavaScript numbers.
 

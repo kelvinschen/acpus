@@ -121,7 +121,7 @@ expression diagnostics rather than reusing the old core `E###` expression codes.
 - Lambda appears only in operator argument positions that explicitly consume it.
   There is no generic `apply(lambda, args)` operator.
 - Runtime evaluates a lambda only through the consuming operator, such as `map`,
-  `filter`, `all`, or `any`.
+  `filter`, `every`, or `some`.
 - Lambda params use stable internal positional binding ids. User parameter names
   from TypeScript source do not affect serialized IR.
 - Lambda params carry optional value type metadata. Lambda nodes do not carry a
@@ -217,11 +217,11 @@ expression diagnostics rather than reusing the old core `E###` expression codes.
   than exposing it as a serialized value. Safe path/get misses return the
   sentinel, adapter `undefined` results are normalized to it, and it never appears
   in public JSON outputs.
-- `coalesce` and `fallback` handle `null` and internal missing values.
+- `coalesce` handles `null` and internal missing values.
 - `coalesce` is the canonical variadic nullish operator and evaluates left to
-  right until the first non-nullish value. `fallback(value, defaultValue)` is a
-  two-argument ergonomic helper that lowers to `coalesce` and narrows nullish out
-  of the first value's type while unioning the default type.
+  right until the first non-nullish value. `coalesce(value, defaultValue)` is a
+  valid two-argument form that narrows nullish out of the first value's type
+  while unioning the default type.
 - Path access behaves like safe optional access: missing object fields, array
   indexes outside the runtime array, and subfield access through a missing value
   evaluate to an internal missing value rather than throwing immediately.
@@ -233,7 +233,7 @@ expression diagnostics rather than reusing the old core `E###` expression codes.
 - Boundary outputs validate against JSON-compatible schemas so unresolved
   missing values do not leak into required output fields.
 - Literal/projection `undefined` is rejected. Authors use `null` or
-  `fallback(..., null)` when they want a JSON absence value.
+  `coalesce(..., null)` when they want a JSON absence value.
 - `valueToExprIR` rejects raw `undefined`, including undefined object fields and
   array items, during authoring/lowering. The evaluator's internal missing
   sentinel is never produced by value lowering.
@@ -255,7 +255,7 @@ expression diagnostics rather than reusing the old core `E###` expression codes.
   fields are ignored.
 - Projection object field names are static authoring-time keys. Dynamic keys and
   conditional field omission are outside the core projection model; nullable
-  fields are expressed with `null` or `fallback(..., null)`.
+  fields are expressed with `null` or `coalesce(..., null)`.
 - Non-plain objects such as `Date`, `RegExp`, `Map`, `Set`, class instances,
   promises, errors, and functions are rejected by expression lowering.
 - `Expr<unknown>` can exist as an external JSON value token, but typed operators
@@ -354,21 +354,21 @@ to that helper set.
 Initial runtime-array scoped helpers:
 
 ```ts
-all(input.items, (item, index) => item.done)
-any(input.items, item => eq(item.status, "failed"))
+every(input.items, (item, index) => item.done)
+some(input.items, item => eq(item.status, "failed"))
 filter(input.items, item => item.done)
 map(input.items, item => ({ id: item.id, done: item.done }))
 ```
 
-Runtime `all` and `any` evaluate array items in index order with short-circuit
-semantics. Empty arrays follow standard quantifier semantics: `all([])` is true,
-and `any([])` is false.
-Runtime `map`, `filter`, `all`, and `any` follow JavaScript array method
+Runtime `every` and `some` evaluate array items in index order with short-circuit
+semantics. Empty arrays follow standard quantifier semantics: `every([])` is true,
+and `some([])` is false.
+Runtime `map`, `filter`, `every`, and `some` follow JavaScript array method
 iteration semantics. Invoked callbacks are checked according to expression
 operator rules, but runtime sparse arrays are not separately validated by the
 evaluator. `filter` preserves original item order, and `map` follows JS `map`
 result-shape behavior.
-`all`, `any`, and `filter` callback results are boolean. They do not use
+`every`, `some`, and `filter` callback results are boolean. They do not use
 JavaScript truthiness coercion.
 `map` callback results can be any JSON-compatible workflow value, including
 null, arrays, and plain objects. The result type is inferred as an array of the
@@ -376,14 +376,14 @@ callback result value type.
 `filter` returns the original item value shape, following JavaScript filter
 semantics. Projection is expressed by composing `filter` with `map`.
 Collection operators require evaluated array inputs. Null or internal missing
-array inputs fail loudly; authors use `fallback(arrayValue, [])` when they want
+array inputs fail loudly; authors use `coalesce(arrayValue, [])` when they want
 nullish arrays to behave as empty arrays.
 
 Existing static array forms remain useful for fixed collections:
 
 ```ts
-all([a.output.ok, b.output.ok])
-any([a.output.failed, b.output.failed])
+every([a.output.ok, b.output.ok])
+some([a.output.failed, b.output.failed])
 ```
 
 Future operators such as `reduce`, `find`, `sum`, `count`, `groupBy`, `sortBy`,
@@ -402,7 +402,7 @@ kernel:
 - String/collection primitives: `len`, `includes`, `startsWith`, `endsWith`,
   `matches`
 - Dynamic access: `get`
-- Scoped collection operators: `all`, `any`, `filter`, `map`
+- Scoped collection operators: `every`, `some`, `filter`, `map`
 - Existing static aggregators: `max`, `min`
 
 Public helpers lower to operators in this closed registry, and `where` remains
@@ -411,8 +411,8 @@ ad hoc behavior outside the registry.
 
 Ergonomic semantic helpers are allowed when they significantly improve authoring
 clarity and lower to canonical operators without adding unique runtime
-semantics. Examples include `isEmpty(value)` lowering to `eq(len(value), 0)`,
-`fallback` lowering to `coalesce`, and `head` lowering to `get(array, 0)`.
+semantics. Examples include `isEmpty(value)` lowering to `eq(len(value), 0)` and
+`head` lowering to `get(array, 0)`.
 Predicate string helpers stay in the first surface: `includes`, `startsWith`,
 `endsWith`, and `matches`. String transform helpers such as `trim`, `lowercase`,
 `uppercase`, `replace`, `split`, and substring helpers are future candidates, not
@@ -446,7 +446,7 @@ The canonical public interface remains named helpers exported from
 `@acpus/expression`:
 
 ```ts
-all(input.items, item => item.done)
+every(input.items, item => item.done)
 map(input.items, item => ({ id: item.id }))
 eq(item.status, "done")
 ```
@@ -528,8 +528,8 @@ Planned removals from `where`:
   and `not`.
 - `isEmpty`; authors use `where(x, { length: 0 })`, `eq(len(x), 0)`, or
   `gt(len(x), 0)`.
-- Nested collection query forms such as `some`, `every`, and `none`; authors use
-  lambda collection helpers.
+- Nested collection query-object forms such as `none`; authors use lambda
+  collection helpers for collection predicates.
 
 Object-target `where` is field-wise only:
 
@@ -636,7 +636,7 @@ The implementation order moves from the expression kernel outward:
    structural equality, and scoped collection operators.
 5. Teach the expression validator closed operator checks, lambda placement,
    lambda scope stack, var binding, and basic type metadata checks.
-6. Add public runtime-array helpers such as `all`, `any`, `filter`, `map`, and
+6. Add public runtime-array helpers such as `every`, `some`, `filter`, `map`, and
    `get`, while preserving useful static-array helper forms.
 7. Refit `where` after the canonical operator semantics are stable.
 8. Update `@acpus/core` to depend on `@acpus/expression` for workflow authoring

@@ -5,7 +5,7 @@ import {
   type InferSchema,
   type OutputValues,
 } from "../src/index.js";
-import { fallback, get, head, type Expr } from "@acpus/expression";
+import { coalesce, get, head, type Expr } from "@acpus/expression";
 
 const LoopOut = z.object({
   done: z.boolean(),
@@ -26,17 +26,17 @@ const ParallelOut = z.object({
   right: z.object({ count: z.number() }),
 });
 
-test("loop previous output is optional and required outputs need fallback", () => {
+test("loop previous output is optional and required outputs need coalesce", () => {
   defineWorkflow({ name: "typed-loop-output" }).build(({ step }) => {
     const loop = step("loop").loop({
       maxIterations: 2,
       outputSchema: LoopOut,
       do: ({ previous }) => {
         expectTypeOf(previous.summary).toEqualTypeOf<Expr<string | undefined>>();
-        expectTypeOf(fallback(previous.summary, "(none)")).toEqualTypeOf<Expr<string>>();
+        expectTypeOf(coalesce(previous.summary, "(none)")).toEqualTypeOf<Expr<string>>();
         return {
           done: false,
-          summary: fallback(previous.summary, "(none)"),
+          summary: coalesce(previous.summary, "(none)"),
         };
       },
       stopWhen: ({ result }) => result.done,
@@ -269,7 +269,7 @@ test("fanout over must be a typed array and strategy controls final output", () 
     });
 
     return {
-      first: fallback(head(allItems.output).id, ""),
+      first: coalesce(head(allItems.output).id, ""),
       accepted: quorum.output.accepted,
     };
   });

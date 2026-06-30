@@ -1,12 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  all,
   and,
-  any,
   coalesce,
   eq,
   endsWith,
-  fallback,
+  every,
   filter,
   get,
   gt,
@@ -25,6 +23,7 @@ import {
   ne,
   not,
   or,
+  some,
   startsWith,
   template,
 } from "@acpus/expression";
@@ -59,7 +58,7 @@ describe("expression operators", () => {
         { kind: "literal", value: 0 },
       ],
     });
-    expect(fallback(refExpr<string | null>(["input", "name"]), "unknown").ir).toEqual({
+    expect(coalesce(refExpr<string | null>(["input", "name"]), "unknown").ir).toEqual({
       kind: "call",
       fn: "coalesce",
       args: [{ kind: "ref", path: ["input", "name"] }, { kind: "literal", value: "unknown" }],
@@ -68,8 +67,8 @@ describe("expression operators", () => {
 
   it("lowers collection helpers with lambdas", () => {
     const items = refExpr<readonly { done: boolean; score: number }[]>(["input", "items"]);
-    expect(all(items, item => item.done).ir).toMatchObject({ kind: "call", fn: "all" });
-    expect(any(items, item => item.done).ir).toMatchObject({ kind: "call", fn: "any" });
+    expect(every(items, item => item.done).ir).toMatchObject({ kind: "call", fn: "every" });
+    expect(some(items, item => item.done).ir).toMatchObject({ kind: "call", fn: "some" });
     expect(filter(items, item => item.done).ir).toMatchObject({ kind: "call", fn: "filter" });
     expect(map(items, item => item.score).ir).toMatchObject({ kind: "call", fn: "map" });
   });

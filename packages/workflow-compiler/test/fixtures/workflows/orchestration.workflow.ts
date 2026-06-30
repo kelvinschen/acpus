@@ -4,7 +4,7 @@ import {
 } from "@acpus/core";
 import {
   eq,
-  fallback,
+  coalesce,
   head,
   not,
   pick,
@@ -95,7 +95,7 @@ export default defineWorkflow({
                       prompt: template`
                         Repair lane ${item.id}.
                         Round: ${iter}
-                        Previous summary: ${fallback(previous.summary, "(none)")}
+                        Previous summary: ${coalesce(previous.summary, "(none)")}
                       `,
                     },
                   });
@@ -153,7 +153,7 @@ export default defineWorkflow({
       });
 
       return {
-        lane: fallback(item.id, ""),
+        lane: coalesce(item.id, "(none)"),
         review_ok: laneParallel.output.review.ok,
         route: laneParallel.output.route.route,
         repair_summary: laneParallel.output.repair.summary,
@@ -195,8 +195,8 @@ export default defineWorkflow({
   return {
     approved: approval.output.approved,
     notes: approval.output.notes,
-    first_lane: fallback(head(lanes.output).lane, ""),
-    first_route: fallback(head(lanes.output).route, ""),
+    first_lane: coalesce(head(lanes.output).lane, "(none)"),
+    first_route: coalesce(head(lanes.output).route, "(none)"),
     first_review_ok: where(head(lanes.output), { review_ok: true }),
     run_id: meta.runId,
   };

@@ -4,7 +4,7 @@ This package is a Core implementation of the Acpus TypeScript Workflow v2 direct
 
 - TypeScript workflow files generate a typed graph and compile to canonical IR.
 - Schema authoring uses **Zod 4** plus Acpus boundary extensions: `z.path()`, `z.artifact()`, `z.secretRef()`.
-- Expr authoring lives in `@acpus/expression` and supports `where(...)` plus named operators like `and`, `lte`, `all`, and `max`.
+- Expr authoring lives in `@acpus/expression` and supports `where(...)` plus named operators like `and`, `lte`, `every`, and `max`.
 - Program nodes are replaced by trusted local **Task** nodes.
 - Task command ergonomics use an Acpus-owned `$` wrapper backed by `zx/core`.
 - Task permissions are intentionally removed from Core. Security isolation belongs to the runner/container/profile layer, not to per-node authoring syntax.

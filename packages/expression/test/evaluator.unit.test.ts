@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { evaluateExpr, ExpressionEvaluationError, renderTemplate } from "@acpus/expression/evaluator";
-import { all, any, coalesce, filter, get, ifElse, map, max, min, template } from "@acpus/expression";
+import { coalesce, every, filter, get, ifElse, map, max, min, some, template } from "@acpus/expression";
 import { refExpr } from "@acpus/expression/ir";
 
 describe("expression evaluator", () => {
@@ -63,10 +63,10 @@ describe("expression evaluator", () => {
     const items = refExpr<readonly { done: boolean; score: number }[]>(["input", "items"]);
     expect(evaluateExpr(map(items, item => item.score).ir, adapter)).toEqual([2, 5]);
     expect(evaluateExpr(filter(items, item => item.done).ir, adapter)).toEqual([{ done: true, score: 2 }]);
-    expect(evaluateExpr(all(items, item => item.done).ir, adapter)).toBe(false);
-    expect(evaluateExpr(any(items, item => item.done).ir, adapter)).toBe(true);
-    expect(evaluateExpr(all([]).ir, adapter)).toBe(true);
-    expect(evaluateExpr(any([]).ir, adapter)).toBe(false);
+    expect(evaluateExpr(every(items, item => item.done).ir, adapter)).toBe(false);
+    expect(evaluateExpr(some(items, item => item.done).ir, adapter)).toBe(true);
+    expect(evaluateExpr(every([]).ir, adapter)).toBe(true);
+    expect(evaluateExpr(some([]).ir, adapter)).toBe(false);
     expect(() => evaluateExpr({
       kind: "call",
       fn: "filter",

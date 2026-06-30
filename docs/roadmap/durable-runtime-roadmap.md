@@ -227,7 +227,7 @@
 
 #### Operators
 
-当前实现：runtime 通过 `@acpus/expression/evaluator` 执行 expression package 拥有的当前 operator 集合，包括 `ifElse`、`get`、`map`、`filter`、lambda 版 `all`/`any`，以及基础逻辑、比较、字符串、长度、`coalesce`、`max`、`min` 等 helper lowered calls。
+当前实现：runtime 通过 `@acpus/expression/evaluator` 执行 expression package 拥有的当前 operator 集合，包括 `ifElse`、`get`、`map`、`filter`、lambda 版 `every`/`some`，以及基础逻辑、比较、字符串、长度、`coalesce`、`max`、`min` 等 helper lowered calls。
 
 证据：`packages/runtime/src/evaluation/evaluator.ts`, `packages/expression/src/evaluator.ts`
 

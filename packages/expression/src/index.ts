@@ -66,7 +66,6 @@ export function lte(a: WorkflowValue<number>, b: WorkflowValue<number>): Expr<bo
 export function gt(a: WorkflowValue<number>, b: WorkflowValue<number>): Expr<boolean> { return callExpr<boolean>("gt", [a, b]); }
 export function gte(a: WorkflowValue<number>, b: WorkflowValue<number>): Expr<boolean> { return callExpr<boolean>("gte", [a, b]); }
 export function coalesce<T>(value: WorkflowValue<T | null | undefined>, ...values: WorkflowValue<T | null | undefined>[]): Expr<NonNullable<T>> { return callExpr<NonNullable<T>>("coalesce", [value, ...values]); }
-export function fallback<T, D>(value: WorkflowValue<T>, defaultValue: WorkflowValue<D>): Expr<NonNullable<T> | D> { return callExpr<NonNullable<T> | D>("coalesce", [value, defaultValue]); }
 export function len(value: WorkflowValue<readonly unknown[] | string>): Expr<number> { return callExpr<number>("len", [value]); }
 export function includes(_collection: WorkflowValue<string>, _value: WorkflowValue<string>): Expr<boolean>;
 export function includes<T>(_collection: WorkflowValue<readonly T[]>, _value: WorkflowValue<T>): Expr<boolean>;
@@ -81,15 +80,15 @@ export function get(target?: unknown, key?: unknown): OutputAccessor<unknown> {
   return callExpr<unknown>("get", [target, key]);
 }
 export function head<T>(array: WorkflowValue<readonly T[]>): OutputAccessor<T | undefined> { return get(array, 0); }
-export function all<T>(_array: WorkflowValue<readonly T[]>, _predicate: Predicate<T>): Expr<boolean>;
-export function all(_values: WorkflowValue<readonly boolean[]>): Expr<boolean>;
-export function all<T>(array?: WorkflowValue<readonly T[]> | WorkflowValue<readonly boolean[]>, predicate?: Predicate<T>): Expr<boolean> {
-  return predicate ? scopedCollection<boolean, T>("all", array as WorkflowValue<readonly T[]>, predicate) : callExpr<boolean>("all", [array]);
+export function every<T>(_array: WorkflowValue<readonly T[]>, _predicate: Predicate<T>): Expr<boolean>;
+export function every(_values: WorkflowValue<readonly boolean[]>): Expr<boolean>;
+export function every<T>(array?: WorkflowValue<readonly T[]> | WorkflowValue<readonly boolean[]>, predicate?: Predicate<T>): Expr<boolean> {
+  return predicate ? scopedCollection<boolean, T>("every", array as WorkflowValue<readonly T[]>, predicate) : callExpr<boolean>("every", [array]);
 }
-export function any<T>(_array: WorkflowValue<readonly T[]>, _predicate: Predicate<T>): Expr<boolean>;
-export function any(_values: WorkflowValue<readonly boolean[]>): Expr<boolean>;
-export function any<T>(array?: WorkflowValue<readonly T[]> | WorkflowValue<readonly boolean[]>, predicate?: Predicate<T>): Expr<boolean> {
-  return predicate ? scopedCollection<boolean, T>("any", array as WorkflowValue<readonly T[]>, predicate) : callExpr<boolean>("any", [array]);
+export function some<T>(_array: WorkflowValue<readonly T[]>, _predicate: Predicate<T>): Expr<boolean>;
+export function some(_values: WorkflowValue<readonly boolean[]>): Expr<boolean>;
+export function some<T>(array?: WorkflowValue<readonly T[]> | WorkflowValue<readonly boolean[]>, predicate?: Predicate<T>): Expr<boolean> {
+  return predicate ? scopedCollection<boolean, T>("some", array as WorkflowValue<readonly T[]>, predicate) : callExpr<boolean>("some", [array]);
 }
 export function filter<T>(array: WorkflowValue<readonly T[]>, predicate: Predicate<T>): Expr<readonly T[]> {
   return scopedCollection<readonly T[], T>("filter", array, predicate);
