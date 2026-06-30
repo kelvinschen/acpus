@@ -62,23 +62,23 @@ export function validWorkflow() {
   return defineWorkflow({
     name: "cli-valid",
     inputSchema: z.object({ ready: z.boolean() }),
-  }).build(({ input, step, output }) => {
+  }).build(({ input, step }) => {
     step("require_ready").assert({ condition: where(input, { ready: true }) });
-    return output({ ready: input.ready });
+    return { ready: input.ready };
   });
 }
 
 export function metaWorkflow() {
   return defineWorkflow({
     name: "cli-meta",
-  }).build(({ meta, step, output }) => {
+  }).build(({ meta, step }) => {
     step("ready").assert({ condition: true });
-    return output({
+    return {
       runId: meta.runId,
       workflowPath: meta.workflowPath,
       workflowName: meta.workflowName,
       workspaceDir: meta.workspaceDir,
-    });
+    };
   });
 }
 
@@ -90,13 +90,13 @@ export function defaultRefInputWorkflow() {
       patch: z.artifact("text/plain"),
       token: z.secretRef(),
     }),
-  }).build(({ input, output }) => output({ base: input.base, patch: input.patch, token: input.token }));
+  }).build(({ input }) => ({ base: input.base, patch: input.patch, token: input.token }));
 }
 
 export function taskArtifactWorkflow() {
   return defineWorkflow({
     name: "cli-task",
-  }).build(({ step, output }) => {
+  }).build(({ step }) => {
     const result = step("local_task").task({
       outputSchema: z.object({ ok: z.boolean(), artifact: z.artifact("text/plain") }),
       run: {
@@ -107,7 +107,7 @@ export function taskArtifactWorkflow() {
         }),
       },
     });
-    return output({ ok: result.output.ok, artifact: result.output.artifact });
+    return { ok: result.output.ok, artifact: result.output.artifact };
   });
 }
 
@@ -115,7 +115,7 @@ export function taskInvocationOptionsWorkflow() {
   return defineWorkflow({
     name: "runtime-task-invocation-options",
     inputSchema: z.object({ workDir: z.path() }),
-  }).build(({ input, step, output }) => {
+  }).build(({ input, step }) => {
     const result = step("inspect_invocation").task({
       outputSchema: z.object({
         inputName: z.string(),
@@ -140,19 +140,19 @@ export function taskInvocationOptionsWorkflow() {
         },
       },
     });
-    return output({
+    return {
       inputName: result.output.inputName,
       cwd: result.output.cwd,
       envValue: result.output.envValue,
       paramsMode: result.output.paramsMode,
-    });
+    };
   });
 }
 
 export function replacementTaskWorkflow() {
   return defineWorkflow({
     name: "cli-task-replacement",
-  }).build(({ step, output }) => {
+  }).build(({ step }) => {
     const result = step("local_task").task({
       outputSchema: z.object({ ok: z.boolean(), artifact: z.artifact("text/plain") }),
       run: {
@@ -170,14 +170,14 @@ export function replacementTaskWorkflow() {
         exec: async () => ({ extra: true }),
       },
     });
-    return output({ ok: result.output.ok, artifact: result.output.artifact, extra: extra.output.extra });
+    return { ok: result.output.ok, artifact: result.output.artifact, extra: extra.output.extra };
   });
 }
 
 export function failingTaskWorkflow() {
   return defineWorkflow({
     name: "cli-failing-task",
-  }).build(({ step, output }) => {
+  }).build(({ step }) => {
     step("boom").task({
       outputSchema: z.object({ ok: z.boolean() }),
       run: {
@@ -187,16 +187,16 @@ export function failingTaskWorkflow() {
         },
       },
     });
-    return output({});
+    return {};
   });
 }
 
 export function failingPureWorkflow() {
   return defineWorkflow({
     name: "cli-failing-pure",
-  }).build(({ step, output }) => {
+  }).build(({ step }) => {
     step("fail").assert({ condition: false });
-    return output({});
+    return {};
   });
 }
 
@@ -204,9 +204,9 @@ export function missingProviderWorkflow() {
   return defineWorkflow({
     name: "cli-agent",
     agents: { reviewer: { use: "missing-provider" } },
-  }).build(({ agents, step, output }) => {
+  }).build(({ agents, step }) => {
     step("review").agent({ run: { agent: agents.reviewer, prompt: "review" } });
-    return output({});
+    return {};
   });
 }
 
@@ -214,23 +214,23 @@ export function inputEchoWorkflow() {
   return defineWorkflow({
     name: "cli-input-echo",
     inputSchema: z.object({ value: z.string() }),
-  }).build(({ input, step, output }) => {
+  }).build(({ input, step }) => {
     step("echo").assert({ condition: true });
-    return output({ value: input.value });
+    return { value: input.value };
   });
 }
 
 export function signalWorkflow() {
   return defineWorkflow({
     name: "cli-signal",
-  }).build(({ step, output }) => {
+  }).build(({ step }) => {
     step("before").assert({ condition: true });
     const approval = step("approve").signal({
       outputSchema: z.object({ ok: z.boolean() }),
       run: { prompt: "approve" },
     });
     step("after").assert({ condition: approval.output.ok });
-    return output({ ok: approval.output.ok });
+    return { ok: approval.output.ok };
   });
 }
 

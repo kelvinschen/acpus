@@ -27,7 +27,7 @@ test("public package subpaths expose the intended type surface", () => {
   assertType<WorkflowValue<string | undefined>>(refExpr<InputValue>(["input"]).name);
   assertType<Expr<string>>(fallback(refExpr<InputValue>(["input"]).name, ""));
 
-  const definition = defineWorkflow({ name: "package-subpath-types", inputSchema: Input }).build(({ input, output }) => output({ ready: input.ready }));
+  const definition = defineWorkflow({ name: "package-subpath-types", inputSchema: Input }).build(({ input }) => ({ ready: input.ready }));
   assertType<WorkflowDefinition<any, any>>(definition);
   assertType<WorkflowIR>(compileWorkflowDefinition(definition));
   assertType<ExprIR>({ kind: "literal", value: true });

@@ -5,14 +5,14 @@ import type { Simplify } from "../../internal/type-utils.js";
 import { templateToIR, type Template } from "../../template/template.js";
 import { toSchemaIR, type InferSchema, type Schema } from "../../schema/index.js";
 import type { DiagnosticIR, FanoutNodeIR } from "../../ir/types.js";
-import type { ScopeIdentity } from "../../graph/scope.js";
+import type { OutputValues } from "../../graph/scope.js";
 import type { ArrayItem, BuildScope, FanoutScopeContext, FanoutStrategy, ObjectSchema, SchemaScopeOutput, WorkflowArrayValue } from "./shared.js";
 
 type BaseFanoutStepSpec<Over extends WorkflowArrayValue<any>, OutSchema extends ObjectSchema> = {
   over: Over;
-  key?: Template | string | ((ctx: Pick<FanoutScopeContext<ArrayItem<Over>, Record<string, unknown>>, "item" | "itemIndex">) => Template | string);
+  key?: Template | string | ((ctx: Pick<FanoutScopeContext<ArrayItem<Over>>, "item" | "itemIndex">) => Template | string);
   maxConcurrency?: number;
-  do: <Scope extends ScopeIdentity>(ctx: FanoutScopeContext<ArrayItem<Over>, SchemaScopeOutput<OutSchema>, Scope>) => ReturnType<FanoutScopeContext<ArrayItem<Over>, SchemaScopeOutput<OutSchema>, Scope>["output"]>;
+  do: (ctx: FanoutScopeContext<ArrayItem<Over>>) => OutputValues<SchemaScopeOutput<OutSchema>>;
   itemOutputSchema: OutSchema;
 };
 

@@ -41,7 +41,7 @@ describe("workflow compilation", () => {
           env: { REVIEW_TOKEN: secret("REVIEW_TOKEN") },
         },
       },
-    }).build(({ input, agents, meta, step, output }) => {
+    }).build(({ input, agents, meta, step }) => {
       const normalized = step("normalize_package").task({
         run: {
           task: normalizePackage,
@@ -94,12 +94,12 @@ describe("workflow compilation", () => {
         },
       });
 
-      return output({
+      return {
         ...pick(review.output, ["ready", "summary"]),
         approved: humanGate.output.approved,
         slug: normalized.output.slug,
         runId: meta.runId,
-      });
+      };
     });
 
     const ir = compileWorkflowDefinition(definition, {
@@ -271,23 +271,23 @@ describe("workflow compilation", () => {
         items: z.array(z.string()),
         shouldRun: z.boolean(),
       }),
-    }).build(({ input, step, output }) => {
+    }).build(({ input, step }) => {
       const gate = step("gate").if({
         condition: input.shouldRun,
         outputSchema: StatusOutput,
-        then: ({ output }) => output({ status: "run" }),
-        else: ({ output }) => output({ status: "skip" }),
+        then: () => ({ status: "run" }),
+        else: () => ({ status: "skip" }),
       });
 
       const checks = step("checks").parallel({
         branches: {
           fast: {
             outputSchema: StatusOutput,
-            do: ({ output }) => output(pick(gate.output, ["status"])),
+            do: () => (pick(gate.output, ["status"])),
           },
           slow: {
             outputSchema: z.object({ done: z.boolean() }),
-            do: ({ output }) => output({ done: true }),
+            do: () => ({ done: true }),
           },
         },
         maxConcurrency: 2,
@@ -297,15 +297,15 @@ describe("workflow compilation", () => {
         over: input.items,
         key: ({ item, itemIndex }) => template`item-${item}-${itemIndex}`,
         itemOutputSchema: z.object({ ok: z.boolean() }),
-        do: ({ item, output }) => output({ ok: matches(item, ".+") }),
+        do: ({ item }) => ({ ok: matches(item, ".+") }),
         maxConcurrency: 4,
       });
 
       const retry = step("retry_until_done").loop({
         maxIterations: 3,
         outputSchema: z.object({ done: z.boolean(), summary: z.string() }),
-        do: ({ iter, previous, output }) =>
-          output({
+        do: ({ iter, previous }) =>
+          ({
             done: eq(iter, 2),
             summary: fallback(previous.summary, "first"),
           }),
@@ -314,12 +314,12 @@ describe("workflow compilation", () => {
         onExhausted: "returnLast",
       });
 
-      return output({
+      return {
         status: gate.output.status,
         fastStatus: checks.output.fast.status,
         firstItemOk: fallback(head(perItem.output).ok, false),
         done: retry.output.done,
-      });
+      };
     });
 
     const ir = compileWorkflowDefinition(definition);
@@ -457,13 +457,13 @@ describe("workflow compilation", () => {
   });
 
   it("diagnoses malformed task specs without crashing compilation", () => {
-    const definition = defineWorkflow({ name: "malformed_task" }).build(({ step, output }) => {
+    const definition = defineWorkflow({ name: "malformed_task" }).build(({ step }) => {
       step("bad_task").task({
         run: {
           input: {},
         },
       } as any);
-      return output({});
+      return {};
     });
 
     const ir = compileWorkflowDefinition(definition);
@@ -486,7 +486,7 @@ describe("workflow compilation", () => {
 
   it("omits optional timeout and exhaustion policy fields for default fail semantics", () => {
     const Output = z.object({ ok: z.boolean() });
-    const definition = defineWorkflow({ name: "default_fail_policies" }).build(({ step, output }) => {
+    const definition = defineWorkflow({ name: "default_fail_policies" }).build(({ step }) => {
       const signal = step("approval").signal({
         outputSchema: Output,
         timeout: "1m",
@@ -495,10 +495,10 @@ describe("workflow compilation", () => {
       const loop = step("retry").loop({
         maxIterations: 1,
         outputSchema: Output,
-        do: ({ output }) => output({ ok: true }),
+        do: () => ({ ok: true }),
         stopWhen: ({ result }) => result.ok,
       });
-      return output({ ok: signal.output.ok, loop_ok: loop.output.ok });
+      return { ok: signal.output.ok, loop_ok: loop.output.ok };
     });
 
     const ir = compileWorkflowDefinition(definition);
@@ -533,14 +533,14 @@ describe("workflow compilation", () => {
           options: { mode: "batch" },
         },
       },
-    }).build(({ agents, step, output }) => {
+    }).build(({ agents, step }) => {
       step("run_worker").agent({
         run: {
           agent: agents.worker,
           prompt: "Run worker",
         },
       });
-      return output({});
+      return {};
     });
 
     const validIr = compileWorkflowDefinition(valid);
@@ -571,7 +571,7 @@ describe("workflow compilation", () => {
         mixed: { use: "codex", command: "acpx worker" },
         ir_shaped: { kind: "agent_definition", use: "codex" },
       } as any,
-    }).build(({ output }) => output({}));
+    }).build(() => ({}));
 
     const malformedIr = compileWorkflowDefinition(malformed);
 
@@ -600,17 +600,17 @@ describe("workflow compilation", () => {
       inputSchema: z.object({
         items: z.array(Item),
       }),
-    }).build(({ input, step, output }) => {
+    }).build(({ input, step }) => {
       const race = step("first_check").parallel({
         strategy: "race",
         branches: {
           fast: {
             outputSchema: Result,
-            do: ({ output }) => output({ id: "fast", ok: true }),
+            do: () => ({ id: "fast", ok: true }),
           },
           slow: {
             outputSchema: Result,
-            do: ({ output }) => output({ id: "slow", ok: true }),
+            do: () => ({ id: "slow", ok: true }),
           },
         },
       });
@@ -620,14 +620,14 @@ describe("workflow compilation", () => {
         count: 2,
         over: input.items,
         itemOutputSchema: Result,
-        do: ({ item, output }) => output({ id: item.id, ok: true }),
+        do: ({ item }) => ({ id: item.id, ok: true }),
       });
 
-      return output({
+      return {
         winner: race.output.winner,
         result: race.output.result,
         accepted: quorum.output.accepted,
-      });
+      };
     });
 
     const ir = compileWorkflowDefinition(definition);

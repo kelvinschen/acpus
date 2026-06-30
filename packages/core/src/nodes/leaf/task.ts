@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { TASK } from "../../internal/symbols.js";
 import type { Simplify } from "../../internal/type-utils.js";
-import { envToIR, inputsToIR, assertStableId, stripUndefined } from "../../graph/lowering.js";
+import { envToIR, bindingsToIR, assertStableId, stripUndefined } from "../../graph/lowering.js";
 import { valueToExprIR } from "../../expressions/expr.js";
 import { toSchemaIR, z, type InferSchema, type Schema } from "../../schema/index.js";
 import type { WorkflowValue } from "../../expressions/expr.js";
@@ -180,7 +180,7 @@ export function buildTaskNode<const Input extends StepInput>(
     outputSchema: toSchemaIR(outputSchema),
     run: bundle ? {
       kind: "task_run",
-      input: inputsToIR(inputBindings),
+      input: bindingsToIR(inputBindings),
       bundleId: bundle.id,
       exportName: "default",
       digest: bundle.digest,

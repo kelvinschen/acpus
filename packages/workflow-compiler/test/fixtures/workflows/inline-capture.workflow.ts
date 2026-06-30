@@ -4,7 +4,7 @@ const PREFIX = "outer-";
 
 export default defineWorkflow({
   name: "inline-capture-fixture",
-}).build(({ step, output }) => {
+}).build(({ step }) => {
   const result = step("capture").task({
     outputSchema: z.object({ slug: z.string() }),
     run: {
@@ -15,5 +15,5 @@ export default defineWorkflow({
     },
   });
 
-  return output({ slug: result.output.slug });
+  return { slug: result.output.slug };
 });

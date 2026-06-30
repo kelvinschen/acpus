@@ -18,7 +18,7 @@ The root Vitest config groups tests by filename. Choose the cheapest project tha
 | --- | --- | --- | --- |
 | Unit | `*.unit.test.ts` | Pure functions: schema lowering, expression lowering, template lowering, id validation helpers, secret/env lowering. | Dynamic import, filesystem, subprocesses, real commands. |
 | Contract | `*.contract.test.ts` | Public API exports, stable IR shape, diagnostic codes/paths, compatibility between spec and serialized contracts. | Implementation details and incidental ordering except where the contract requires it. |
-| Type contract | `*.type.test-d.ts` | Public TypeScript authoring contracts: inferred refs, helper return types, expected compile errors, and schema-aware `output({...})` checks. | Runtime behavior, lowering assertions, broad source compilation already covered by `pnpm typecheck`. |
+| Type contract | `*.type.test-d.ts` | Public TypeScript authoring contracts: inferred refs, callback return types, expected compile errors, and schema-aware scope output checks. | Runtime behavior, lowering assertions, broad source compilation already covered by `pnpm typecheck`. |
 | Integration | `*.integration.test.ts` | Cross-layer authoring flows such as `defineWorkflow` -> graph builder -> compiler -> validator. Composite node shape and task-bundle wiring belong here. | Real agents, external services, shelling out to package managers. |
 | E2E | `*.e2e.test.ts` | Final user-facing command paths in packages that provide commands. | Fine-grained lowering assertions that would make refactors noisy. |
 | Regression | `*.regression.test.ts` | A minimal reproduction for a fixed bug that is likely to return. Include the failure mode in the test name. | Broad feature coverage; move that to unit/integration once generalized. |
@@ -52,7 +52,7 @@ The initial core test foundation should cover these chains:
 - IR validator: invalid workflow names, schemas, duplicate node ids, empty refs, missing agents, and task-bundle mismatches produce stable diagnostic codes and paths.
 - Workflow compiler: representative workflow-compiler package fixtures compile leaf nodes, assertions, templates, secrets, task bundles, agent definitions, and outputs into validated `WorkflowIR`.
 - Composite nodes: the workflow-compiler orchestration fixture covers `step.if`, `step.switch`, `step.parallel`, `step.fanout`, `step.loop`, and `step.signal` child scopes and projected outputs without invoking any runtime.
-- Type contracts: ref/output helper inference, nullable `previous` access, `fallback(...)` narrowing, and schema-aware composite `output({...})` checks are covered by `*.type.test-d.ts`.
+- Type contracts: ref/return-type inference, nullable `previous` access, `fallback(...)` narrowing, and schema-aware composite scope output checks are covered by `*.type.test-d.ts`.
 - Module compiler: a checked-in workflow module fixture compiles through `compileWorkflowModule(...)` with `irVersion: 2`, expected node ids, task bundles, outputs, and the trusted-import compiler diagnostic.
 
 ## Commands

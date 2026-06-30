@@ -5,4 +5,4 @@ const value: string = 1;
 export default defineWorkflow({
   name: "cli-type-error",
   inputSchema: z.object({ ready: z.boolean() }),
-}).build(({ input, output }) => output({ ready: input.ready, value }));
+}).build(({ input }) => ({ ready: input.ready, value }));

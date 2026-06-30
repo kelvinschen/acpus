@@ -17,30 +17,30 @@ import {
 import { includes, isEmpty, pick, where, type Expr, type WorkflowValue } from "../src/expression.js";
 
 test("step declaration object exposes kind methods", () => {
-  defineWorkflow({ name: "typed-step-declaration" }).build(({ input, step, output }) => {
+  defineWorkflow({ name: "typed-step-declaration" }).build(({ input, step }) => {
     // @ts-expect-error workflows without inputSchema have no input fields.
     input.repoPath;
     const declaration = step("require_true");
     assertType<StepDeclaration>(declaration);
     assertType<void>(declaration.assert({ condition: true }));
-    return output({});
+    return {};
   });
 });
 
 test("build context exposes run-level meta refs", () => {
-  defineWorkflow({ name: "typed-meta" }).build(({ meta, output }) => {
+  defineWorkflow({ name: "typed-meta" }).build(({ meta }) => {
     assertType<Expr<string>>(meta.runId);
     assertType<Expr<string>>(meta.workflowPath);
     assertType<Expr<string>>(meta.workflowName);
     assertType<Expr<string>>(meta.workspaceDir);
     // @ts-expect-error meta is run-level only.
     meta.nodeId;
-    return output({
+    return {
       runId: meta.runId,
       workflowPath: meta.workflowPath,
       workflowName: meta.workflowName,
       workspaceDir: meta.workspaceDir,
-    });
+    };
   });
 });
 
@@ -89,7 +89,7 @@ test("agent tokens are typed from top-level agent keys", () => {
   defineWorkflow({
     name: "typed-extracted-agent-keys",
     agents: extractedAgents,
-  }).build(({ agents, step, output }) => {
+  }).build(({ agents, step }) => {
     assertType<AgentToken<"reviewer">>(agents.reviewer);
     step("typed_extracted_agent_key_ok").agent({
       run: {
@@ -99,7 +99,7 @@ test("agent tokens are typed from top-level agent keys", () => {
     });
     // @ts-expect-error extracted agents preserve literal keys with satisfies AgentMap.
     agents.missing;
-    return output({});
+    return {};
   });
 
   defineWorkflow({
@@ -109,7 +109,7 @@ test("agent tokens are typed from top-level agent keys", () => {
       worker: { command: "acpx worker", policy: "full" },
       summarizer: { use: "codex", policy: "read" },
     },
-  }).build(({ agents, step, output }) => {
+  }).build(({ agents, step }) => {
     assertType<StepDeclaration>(step("typed_agent_key_declaration"));
     assertType<AgentToken<"reviewer">>(agents.reviewer);
     assertType<AgentToken<"worker">>(agents.worker);
@@ -141,7 +141,7 @@ test("agent tokens are typed from top-level agent keys", () => {
 
     step("typed_agent_nested_scope").if({
       condition: true,
-      then: ({ step, output }) => {
+      then: ({ step }) => {
         step("typed_nested_agent_key_ok").agent({
           run: {
             agent: agents.worker,
@@ -150,27 +150,27 @@ test("agent tokens are typed from top-level agent keys", () => {
         });
         // @ts-expect-error nested scopes use root agent tokens by closure.
         agents.missing;
-        return output({});
+        return {};
       },
     });
     step("typed_nested_scope_has_no_agents_param").if({
       condition: true,
       // @ts-expect-error composite callbacks do not receive agents; close over root build agents instead.
-      then: ({ agents, output }) => output({}),
+      then: ({ agents }) => ({}),
     });
 
     step("typed_agent_switch_scope").switch({
       cases: [
         {
           when: true,
-          then: ({ step, output }) => {
+          then: ({ step }) => {
             step("typed_switch_agent_key_ok").agent({
               run: {
                 agent: agents.worker,
                 prompt: "ok",
               },
             });
-            return output({});
+            return {};
           },
         },
       ],
@@ -180,14 +180,14 @@ test("agent tokens are typed from top-level agent keys", () => {
       branches: {
         left: {
           outputSchema: z.object({ ok: z.boolean() }),
-          do: ({ step, output }) => {
+          do: ({ step }) => {
             step("typed_parallel_agent_key_ok").agent({
               run: {
                 agent: agents.worker,
                 prompt: "ok",
               },
             });
-            return output({ ok: true });
+            return { ok: true };
           },
         },
       },
@@ -196,38 +196,38 @@ test("agent tokens are typed from top-level agent keys", () => {
     step("typed_agent_fanout_scope").fanout({
       over: ["a"],
       itemOutputSchema: z.object({ ok: z.boolean() }),
-      do: ({ step, output }) => {
+      do: ({ step }) => {
         step("typed_fanout_agent_key_ok").agent({
           run: {
             agent: agents.worker,
             prompt: "ok",
           },
         });
-        return output({ ok: true });
+        return { ok: true };
       },
     });
 
     step("typed_agent_loop_scope").loop({
       maxIterations: 1,
       outputSchema: z.object({ done: z.boolean() }),
-      do: ({ step, output }) => {
+      do: ({ step }) => {
         step("typed_loop_agent_key_ok").agent({
           run: {
             agent: agents.worker,
             prompt: "ok",
           },
         });
-        return output({ done: true });
+        return { done: true };
       },
       stopWhen: ({ result }) => result.done,
     });
 
-    return output({});
+    return {};
   });
 });
 
 test("agent nodes require declared agents", () => {
-  defineWorkflow({ name: "typed-agent-requires-registry" }).build(({ agents, step, output }) => {
+  defineWorkflow({ name: "typed-agent-requires-registry" }).build(({ agents, step }) => {
     // @ts-expect-error workflows without top-level agents have no agent tokens.
     agents.reviewer;
     step("typed_agent_without_registry").agent({
@@ -238,7 +238,7 @@ test("agent nodes require declared agents", () => {
       },
     });
 
-    return output({});
+    return {};
   });
 });
 
@@ -249,7 +249,7 @@ test("pick preserves selected output key types", () => {
     report_path: z.path(),
   });
 
-  defineWorkflow({ name: "typed-pick" }).build(({ step, output }) => {
+  defineWorkflow({ name: "typed-pick" }).build(({ step }) => {
     const review = step("review").task({
       outputSchema: ReviewOut,
       run: {
@@ -272,16 +272,16 @@ test("pick preserves selected output key types", () => {
     const fanout = step("items").fanout({
       over: ["a", "b"],
       itemOutputSchema: z.object({ ok: z.boolean() }),
-      do: ({ output }) => output({ ok: true }),
+      do: () => ({ ok: true }),
     });
 
     // @ts-expect-error pick only supports object-like output accessors, not arrays.
     pick(fanout.output, ["ok"]);
 
-    return output({
+    return {
       ...picked,
       report_path: review.output.report_path,
-    });
+    };
   });
 });
 
@@ -314,8 +314,8 @@ test("task run input and reusable task output are strongly typed", () => {
     agents: {
       reviewer: { use: "codex", policy: "read" },
     },
-  }).build(({ input, agents, step, output }) => {
-    const nestedScope = <Scope,>({ step, output }: ScopeContext<Record<string, unknown>, Scope>) => {
+  }).build(({ input, agents, step }) => {
+    const nestedScope = ({ step }: ScopeContext) => {
       const first = step("nested_first").task({
         outputSchema: z.object({ packageName: z.string() }),
         run: {
@@ -328,19 +328,19 @@ test("task run input and reusable task output are strongly typed", () => {
         branches: {
           left: {
             outputSchema: z.object({ packageName: z.string() }),
-            do: ({ output }) => output({ packageName: first.output.packageName }),
+            do: () => ({ packageName: first.output.packageName }),
           },
           right: {
             outputSchema: z.object({ version: z.string() }),
-            do: ({ output }) => output({ version: input.version }),
+            do: () => ({ version: input.version }),
           },
         },
       });
 
-      return output({
+      return {
         packageName: first.output.packageName,
         branches: branches.output,
-      });
+      };
     };
 
     const review = step("typed_agent_direct_refs").agent({
@@ -426,15 +426,15 @@ test("task run input and reusable task output are strongly typed", () => {
     const nested = step("typed_nested_scope").if({
       condition: review.output.ok,
       then: nestedScope,
-      else: ({ output }) =>
-        output({ packageName: input.packageName, branches: {} }),
+      else: () =>
+        ({ packageName: input.packageName, branches: {} }),
     });
 
-    return output({
+    return {
       ok: gate.output.approved,
       version: inline.output.version,
       nested: nested.output,
-    });
+    };
   });
 });
 
@@ -467,7 +467,7 @@ test("agent run options accept only string cwd and string or secret env values",
     agents: {
       reviewer: { use: "codex", policy: "read" },
     },
-  }).build(({ input, agents, step, output }) => {
+  }).build(({ input, agents, step }) => {
     const review = step("typed_agent_options").agent({
       outputSchema: z.object({ ok: z.boolean() }),
       run: {
@@ -502,7 +502,7 @@ test("agent run options accept only string cwd and string or secret env values",
       },
     });
 
-    return output({ ok: review.output.ok });
+    return { ok: review.output.ok };
   });
 });
 
@@ -516,7 +516,7 @@ test("boolean node conditions require boolean workflow values", () => {
       minScore: z.number(),
       allowedTags: z.array(z.string()),
     }),
-  }).build(({ input, step, output }) => {
+  }).build(({ input, step }) => {
     const review = step("typed_condition_source").task({
       outputSchema: z.object({
         ok: z.boolean(),
@@ -583,20 +583,20 @@ test("boolean node conditions require boolean workflow values", () => {
     const gate = step("typed_if_condition").if({
       condition: input.shouldRun,
       outputSchema: z.object({ ok: z.boolean() }),
-      then: ({ output }) => output({ ok: true }),
-      else: ({ output }) => output({ ok: false }),
+      then: () => ({ ok: true }),
+      else: () => ({ ok: false }),
     });
 
     step("typed_if_bad_condition").if({
       // @ts-expect-error if condition must be a boolean workflow value.
       condition: input.packageName,
-      then: ({ output }) => output({}),
+      then: () => ({}),
     });
 
     step("typed_switch_condition").switch({
       outputSchema: z.object({ ok: z.boolean() }),
-      cases: [{ when: review.output.ok, then: ({ output }) => output({ ok: true }) }],
-      default: ({ output }) => output({ ok: false }),
+      cases: [{ when: review.output.ok, then: () => ({ ok: true }) }],
+      default: () => ({ ok: false }),
     });
 
     step("typed_switch_bad_condition").switch({
@@ -604,7 +604,7 @@ test("boolean node conditions require boolean workflow values", () => {
         {
           // @ts-expect-error switch case condition must be a boolean workflow value.
           when: input.packageName,
-          then: ({ output }) => output({}),
+          then: () => ({}),
         },
       ],
     });
@@ -612,7 +612,7 @@ test("boolean node conditions require boolean workflow values", () => {
     step("typed_loop_condition").loop({
       maxIterations: 1,
       outputSchema: z.object({ done: z.boolean() }),
-      do: ({ output }) => output({ done: true }),
+      do: () => ({ done: true }),
       stopWhen: ({ result }) => result.done,
       onExhausted: "fail",
     });
@@ -620,7 +620,7 @@ test("boolean node conditions require boolean workflow values", () => {
     const returnLastLoop = step("typed_loop_return_last").loop({
       maxIterations: 1,
       outputSchema: z.object({ done: z.boolean() }),
-      do: ({ output }) => output({ done: true }),
+      do: () => ({ done: true }),
       stopWhen: ({ result }) => result.done,
       onExhausted: "returnLast",
     });
@@ -629,7 +629,7 @@ test("boolean node conditions require boolean workflow values", () => {
     step("typed_bad_loop_exhausted").loop({
       maxIterations: 1,
       outputSchema: z.object({ done: z.boolean() }),
-      do: ({ output }) => output({ done: false }),
+      do: () => ({ done: false }),
       stopWhen: ({ result }) => result.done,
       // @ts-expect-error loop exhaustion only supports fail or returnLast.
       onExhausted: "continue",
@@ -638,12 +638,12 @@ test("boolean node conditions require boolean workflow values", () => {
     step("typed_bad_loop_stop").loop({
       maxIterations: 1,
       outputSchema: z.object({ done: z.boolean() }),
-      do: ({ output }) => output({ done: false }),
+      do: () => ({ done: false }),
       // @ts-expect-error loop stopWhen must return a boolean workflow value.
       stopWhen: () => ({ done: true }),
     });
 
-    return output({ ok: gate.output.ok });
+    return { ok: gate.output.ok };
   });
 });
 

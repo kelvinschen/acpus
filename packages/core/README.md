@@ -59,7 +59,7 @@ export default defineWorkflow({
   agents: {
     reviewer: { use: "codex", policy: "read" },
   },
-}).build(({ input, agents, step, output }) => {
+}).build(({ input, agents, step }) => {
   const diff = step("diff").task({
     outputSchema: z.object({ patch: z.artifact("text/x-patch") }),
     run: {
@@ -93,10 +93,10 @@ export default defineWorkflow({
     message: template`Review failed:\n${review.output}`,
   });
 
-  return output({
+  return {
     ready: review.output.ready,
     summary: review.output.summary,
-  });
+  };
 });
 ```
 

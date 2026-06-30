@@ -13,9 +13,9 @@ const localDup = task.define({
 
 export default defineWorkflow({
   name: "shared-bundle-fixture",
-}).build(({ step, output }) => {
+}).build(({ step }) => {
   const good = step("good_call").task({ run: { task: sharedOk, input: {} } });
   step("bad_call").task({ run: { task: localDup, input: {} } });
 
-  return output({ ok: good.output.ok });
+  return { ok: good.output.ok };
 });

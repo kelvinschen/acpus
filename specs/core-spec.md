@@ -17,7 +17,7 @@
 
 ### Workflow Authoring
 
-- The core MUST expose `defineWorkflow(...).build(...)` as the workflow entry point, where `build` receives `{ input, agents, meta, step, output }`.
+- The core MUST expose `defineWorkflow(...).build(...)` as the workflow entry point, where `build` receives `{ input, agents, meta, step }`.
 - During graph construction, `input.*` fields MUST be exposed as `Expr<T>` tokens.
 - During graph construction, `meta.runId`, `meta.workflowPath`, `meta.workflowName`, and `meta.workspaceDir` MUST be exposed as run-level `Expr<string>` tokens.
 - Agent definitions MUST be declared at workflow top level under `agents` as plain object definitions.
@@ -47,7 +47,7 @@
 ### Nodes
 
 - Schema contract fields MUST use the `Schema` suffix: `inputSchema`, `outputSchema`, and `itemOutputSchema`.
-- Runtime bindings, accessors, and output helpers MUST continue to use `input` and `output`.
+- Runtime bindings and accessors MUST continue to use `input` and `output`; scopes MUST declare their `output` by returning a plain object, not by calling an output helper.
 - Executable nodes MUST use `run` as the execution boundary and top-level `outputSchema` as the downstream contract boundary.
 - Node ids MUST be bound through `step("id")`; node kind methods MUST receive only the kind-specific spec.
 - Agent nodes MUST use `step("id").agent({ outputSchema?, run: { agent: agents.<key>, prompt, policy?, session?, cwd?, env? }, timeout?, retry? })`.
@@ -62,10 +62,10 @@
 - Assert nodes MUST use `step("id").assert({ condition, message? })`.
 - Assert nodes MUST serialize only `condition` and optional `message`, and MUST produce no output.
 - Composite nodes MUST include `step("id").if`, `switch`, `parallel`, `fanout`, and `loop`, each producing child-scope IR.
-- Composite callbacks MUST receive a `ScopeContext` containing `{ step, output }`.
+- Composite callbacks MUST receive a `ScopeContext` containing `{ step }`.
 - Parent scopes MUST access a composite node only through that node's projected `output`.
-- Composite callbacks for nodes that declare an `outputSchema` MUST type-check `output({...})` values against that schema.
-- Composite callbacks MUST return the `output({...})` token produced by the callback's own `ScopeContext`.
+- Composite callbacks for nodes that declare an `outputSchema` MUST type-check the returned output object's field types and required fields against that schema; output fields outside the schema MUST be rejected at IR build time (see IR And Validation), because callback return values do not receive compile-time excess-property checks.
+- Composite callbacks MUST declare their scope output by returning a plain object whose fields satisfy the scope's `outputSchema`.
 - Array output accessors MUST support numeric index refs.
 - `head(array)` and `nth(array, index)` MUST return accessors typed as possibly `undefined` and lower to index ref paths.
 - If nodes MUST use `step("id").if({ condition, outputSchema?, then, else? })`.
@@ -92,7 +92,7 @@
 
 - `compileWorkflowDefinition(definition)` MUST lower an in-memory workflow definition to serializable `WorkflowIR` with `irVersion: 2`.
 - `WorkflowIR`, node IR, scope IR, schema IR, template IR, expression IR, agent definitions, task runs, and task bundles MUST use closed serialized object shapes.
-- `validateWorkflowIR(ir)` MUST diagnose unknown fields, malformed agent definitions, malformed node runs, invalid expressions/templates/schemas, missing composite outputs, missing task bundles, and task run digest mismatches.
+- `validateWorkflowIR(ir)` MUST diagnose unknown fields, malformed agent definitions, malformed node runs, invalid expressions/templates/schemas, missing composite outputs, scope output fields outside a node's declared `outputSchema`, missing task bundles, and task run digest mismatches.
 - `WorkflowIR.assets.taskBundles` MUST contain task bundle metadata emitted by core authoring; production bundling belongs to `@acpus/workflow-compiler`.
 - Task invocation fields such as `input`, `params`, `cwd`, `env`, and `execution` MUST belong to `TaskRunIR`, not the task node top level.
 

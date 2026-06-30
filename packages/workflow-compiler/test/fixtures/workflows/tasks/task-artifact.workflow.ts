@@ -2,7 +2,7 @@ import { defineWorkflow, z } from "@acpus/core";
 
 export default defineWorkflow({
   name: "cli-task",
-}).build(({ step, output }) => {
+}).build(({ step }) => {
   const result = step("local_task").task({
     outputSchema: z.object({ ok: z.boolean(), artifact: z.artifact("text/plain") }),
     run: {
@@ -13,5 +13,5 @@ export default defineWorkflow({
       }),
     },
   });
-  return output({ ok: result.output.ok, artifact: result.output.artifact });
+  return { ok: result.output.ok, artifact: result.output.artifact };
 });

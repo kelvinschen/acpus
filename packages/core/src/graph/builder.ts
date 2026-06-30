@@ -1,5 +1,6 @@
 import { WORKFLOW } from "../internal/symbols.js";
 import { makeNodeRef, refExpr, type NodeRef, type OutputAccessor } from "./refs.js";
+import type { AnyWorkflowValue } from "../expressions/expr.js";
 import { toSchemaIR, type InferSchema, type Schema } from "../schema/index.js";
 import { agentDefinitionToIR, agentToken, buildAgentNode, type AgentDefinitionSpec, type AgentStepSpec, type AgentToken } from "../nodes/leaf/agent.js";
 import { buildTaskNode, type InlineTaskStepSpec, type ReusableTaskStepSpec, type TaskStepSpec } from "../nodes/leaf/task.js";
@@ -11,8 +12,8 @@ import { buildSwitchNode, type SwitchStepSpec } from "../nodes/composite/switch.
 import { buildParallelNode, type ParallelNodeRefOutput, type ParallelStepSpec } from "../nodes/composite/parallel.js";
 import { buildFanoutNode, type FanoutNodeRefOutput, type FanoutStepSpec } from "../nodes/composite/fanout.js";
 import { buildLoopNode, type LoopStepSpec } from "../nodes/composite/loop.js";
-import { buildImplicitScope as buildScopeIR, isOutputToken, makeOutputToken, type OutputHelper, type OutputToken, type ScopeContext, type ScopeIdentity } from "./scope.js";
-import { stripUndefined } from "./lowering.js";
+import { buildImplicitScope as buildScopeIR, isOutputObject, type OutputValues, type ScopeContext } from "./scope.js";
+import { bindingsToIR, stripUndefined } from "./lowering.js";
 import type { FanoutStrategy, ObjectSchema, ParallelStrategy, WorkflowArrayValue } from "../nodes/composite/shared.js";
 import type {
   AgentDefinitionIR,
@@ -30,7 +31,7 @@ export type { AgentStepSpec } from "../nodes/leaf/agent.js";
 export type { TaskStepSpec } from "../nodes/leaf/task.js";
 export type { SignalStepSpec } from "../nodes/leaf/signal.js";
 export type { StepInput, GraphInput, RuntimeInput } from "../nodes/leaf/shared.js";
-export type { ScopeContext, OutputHelper, OutputToken, OutputValue, OutputValues, TypedOutputHelper } from "./scope.js";
+export type { ScopeContext, OutputValue, OutputValues } from "./scope.js";
 
 export type AgentMap = Record<string, AgentDefinitionSpec>;
 type AgentRegistry<Agents extends AgentMap | undefined = AgentMap | undefined> = Agents extends AgentMap
@@ -65,10 +66,9 @@ export type BuildContext<InputSchema extends Schema<any> | undefined, Agents ext
   agents: AgentRegistry<Agents>;
   meta: OutputAccessor<WorkflowMeta>;
   step: StepFactory;
-  output: OutputHelper;
 };
 
-export type BuildFn<InputSchema extends Schema<any> | undefined, Agents extends AgentMap | undefined = undefined> = (ctx: BuildContext<InputSchema, Agents>) => OutputToken<any, any>;
+export type BuildFn<InputSchema extends Schema<any> | undefined, Agents extends AgentMap | undefined = undefined> = (ctx: BuildContext<InputSchema, Agents>) => Record<string, AnyWorkflowValue>;
 
 export function defineWorkflow<InputSchema extends Schema<any> | undefined = undefined, Agents extends AgentMap | undefined = undefined>(config: WorkflowConfig<InputSchema, Agents>) {
   return {
@@ -260,11 +260,11 @@ class GraphBuildState {
   }
 
   private readonly buildImplicitScope = <Extra extends object = {}, Output extends object = Record<string, unknown>>(
-    fn: <Scope extends ScopeIdentity>(ctx: ScopeContext<Output, Scope> & Extra) => ReturnType<ScopeContext<Output, Scope>["output"]>,
+    fn: (ctx: ScopeContext & Extra) => OutputValues<Output>,
     extra?: Extra,
   ): ScopeIR => {
     const child = new GraphBuildState(this.taskBundles, this.diagnostics);
-    return buildScopeIR(this.diagnostics, child, fn, (extra ?? {}) as Extra);
+    return buildScopeIR(this.diagnostics, child, fn as (ctx: ScopeContext & Extra) => Record<string, unknown>, (extra ?? {}) as Extra);
   };
 }
 
@@ -336,9 +336,9 @@ export function compileWorkflowDefinition(definition: WorkflowDefinition<any, an
     agents: createAgentRegistry(definition.config.agents),
     meta: refExpr<WorkflowMeta>(["meta"]),
     step: builder.step,
-    output: makeOutputToken,
   });
-  if (!isOutputToken(result)) diagnostics.push({ code: "W001", severity: "error", message: "Workflow build must return output({...})." });
+  const validOutput = isOutputObject(result);
+  if (!validOutput) diagnostics.push({ code: "W001", severity: "error", message: "Workflow build must return an output object." });
 
   const ir = stripUndefined({
     irVersion: 2,
@@ -346,7 +346,7 @@ export function compileWorkflowDefinition(definition: WorkflowDefinition<any, an
     inputSchema: definition.config.inputSchema ? toSchemaIR(definition.config.inputSchema) : undefined,
     agents: normalizeAgents(definition.config.agents, diagnostics),
     root: { nodes: builder.nodes },
-    outputs: result?.ir ?? {},
+    outputs: validOutput ? bindingsToIR(result) : {},
     assets: { taskBundles },
     lock: {
       acpusCoreVersion: "0.3.0-core-alpha",

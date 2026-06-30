@@ -578,4 +578,112 @@ describe("WorkflowIR diagnostics contract", () => {
       path: "root.nodes.run_task.run.digest",
     }));
   });
+
+  it("rejects scope output fields outside the declared outputSchema across composites", () => {
+    const objectSchema = (fields: string[]) => ({
+      kind: "object" as const,
+      fields: Object.fromEntries(fields.map(name => [name, { kind: "string" as const }])),
+      required: [],
+      additionalProperties: false,
+    });
+    const ok = { kind: "literal" as const, value: "ok" };
+    const ir: WorkflowIR = {
+      irVersion: 2,
+      name: "excess_outputs",
+      agents: {},
+      root: {
+        nodes: [
+          {
+            id: "gate",
+            kind: "if",
+            condition: { kind: "literal", value: true },
+            outputSchema: objectSchema(["status"]),
+            then: { nodes: [], outputs: { status: ok, extra_then: ok } },
+            else: { nodes: [], outputs: { status: ok, extra_else: ok } },
+          },
+          {
+            id: "route",
+            kind: "switch",
+            outputSchema: objectSchema(["code"]),
+            cases: [{ when: { kind: "literal", value: true }, then: { nodes: [], outputs: { code: ok, extra_case: ok } } }],
+            default: { nodes: [], outputs: { code: ok, extra_default: ok } },
+          },
+          {
+            id: "checks",
+            kind: "parallel",
+            strategy: "all",
+            branches: {
+              left: { outputSchema: objectSchema(["ready"]), scope: { nodes: [], outputs: { ready: ok, extra_branch: ok } } },
+            },
+          },
+          {
+            id: "items",
+            kind: "fanout",
+            strategy: "all",
+            over: { kind: "array", items: [] },
+            itemOutputSchema: objectSchema(["label"]),
+            do: { nodes: [], outputs: { label: ok, extra_item: ok } },
+          },
+          {
+            id: "retry",
+            kind: "loop",
+            maxIterations: 1,
+            outputSchema: objectSchema(["done"]),
+            do: { nodes: [], outputs: { done: ok, extra_loop: ok } },
+            stopWhen: { kind: "literal", value: true },
+          },
+        ],
+      },
+      outputs: {},
+      assets: { taskBundles: {} },
+      lock: { acpusCoreVersion: "test", taskBundleDigests: {}, generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
+      diagnostics: [],
+    } as any;
+
+    const diagnostics = validateWorkflowIR(ir);
+
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "O001", path: "root.nodes.gate.then.outputs.extra_then" }),
+      expect.objectContaining({ code: "O001", path: "root.nodes.gate.else.outputs.extra_else" }),
+      expect.objectContaining({ code: "O001", path: "root.nodes.route.cases.0.then.outputs.extra_case" }),
+      expect.objectContaining({ code: "O001", path: "root.nodes.route.default.outputs.extra_default" }),
+      expect.objectContaining({ code: "O001", path: "root.nodes.checks.branches.left.scope.outputs.extra_branch" }),
+      expect.objectContaining({ code: "O001", path: "root.nodes.items.do.outputs.extra_item" }),
+      expect.objectContaining({ code: "O001", path: "root.nodes.retry.do.outputs.extra_loop" }),
+    ]));
+    // Declared fields must not be flagged.
+    expect(diagnostics.filter(d => d.code === "O001")).toHaveLength(7);
+  });
+
+  it("allows scope output fields outside the schema when no schema or additionalProperties is open", () => {
+    const ir: WorkflowIR = {
+      irVersion: 2,
+      name: "excess_allowed",
+      agents: {},
+      root: {
+        nodes: [
+          {
+            id: "schemaless_if",
+            kind: "if",
+            condition: { kind: "literal", value: true },
+            then: { nodes: [], outputs: { anything: { kind: "literal", value: "ok" } } },
+          },
+          {
+            id: "open_loop",
+            kind: "loop",
+            maxIterations: 1,
+            outputSchema: { kind: "object", fields: {}, required: [], additionalProperties: true },
+            do: { nodes: [], outputs: { open_extra: { kind: "literal", value: "ok" } } },
+            stopWhen: { kind: "literal", value: true },
+          },
+        ],
+      },
+      outputs: {},
+      assets: { taskBundles: {} },
+      lock: { acpusCoreVersion: "test", taskBundleDigests: {}, generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
+      diagnostics: [],
+    } as any;
+
+    expect(validateWorkflowIR(ir).filter(d => d.code === "O001")).toHaveLength(0);
+  });
 });

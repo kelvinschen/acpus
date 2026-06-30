@@ -1,24 +1,8 @@
-import { OUTPUT_TOKEN } from "../internal/symbols.js";
-import { valueToExprIR, type Expr } from "../expressions/expr.js";
+import { isExpr, type Expr } from "../expressions/expr.js";
+import { bindingsToIR } from "./lowering.js";
 import type { Primitive } from "./refs.js";
-import type { DiagnosticIR, ExprIR, NodeIR, ScopeIR } from "../ir/types.js";
+import type { DiagnosticIR, NodeIR, ScopeIR } from "../ir/types.js";
 import type { StepFactory } from "./builder.js";
-
-declare const ROOT_OUTPUT_SCOPE: unique symbol;
-declare const OUTPUT_SCOPE: unique symbol;
-declare const SCOPE: unique symbol;
-
-export type RootOutputScope = typeof ROOT_OUTPUT_SCOPE;
-export type ScopeIdentity = { readonly [SCOPE]: unknown };
-
-export type OutputToken<T, Scope = RootOutputScope> = {
-  readonly [OUTPUT_TOKEN]: true;
-  readonly [OUTPUT_SCOPE]: Scope;
-  readonly values: T;
-  readonly ir: Record<string, ExprIR>;
-};
-
-export type OutputHelper = <T extends Record<string, unknown>>(values: T) => OutputToken<T, RootOutputScope>;
 
 export type OutputValue<T> =
   | Expr<T>
@@ -34,11 +18,8 @@ export type OutputValues<T extends object> = {
   [K in keyof T]: OutputValue<T[K]>;
 };
 
-export type TypedOutputHelper<Output extends object, Scope = ScopeIdentity> = (values: OutputValues<Output>) => OutputToken<OutputValues<Output>, Scope>;
-
-export type ScopeContext<Output extends object = Record<string, unknown>, Scope = ScopeIdentity> = {
+export type ScopeContext = {
   step: StepFactory;
-  output: TypedOutputHelper<Output, Scope>;
 };
 
 type ScopeBuildState = {
@@ -46,26 +27,22 @@ type ScopeBuildState = {
   readonly step: StepFactory;
 };
 
-export function makeOutputToken<T extends Record<string, unknown>, Scope = RootOutputScope>(values: T): OutputToken<T, Scope> {
-  const ir: Record<string, ExprIR> = {};
-  for (const [key, value] of Object.entries(values)) ir[key] = valueToExprIR(value);
-  return { [OUTPUT_TOKEN]: true as const, values, ir } as OutputToken<T, Scope>;
-}
-
-export function isOutputToken(value: unknown): value is OutputToken<any, any> {
-  return Boolean(value && typeof value === "object" && (value as any)[OUTPUT_TOKEN]);
+export function isOutputObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || isExpr(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 export function buildImplicitScope<Extra extends object>(
   diagnostics: DiagnosticIR[],
   child: ScopeBuildState,
-  fn: (ctx: ScopeContext<any> & Extra) => OutputToken<any, any>,
+  fn: (ctx: ScopeContext & Extra) => Record<string, unknown>,
   extra: Extra,
 ): ScopeIR {
-  const result = fn({ step: child.step, output: makeOutputToken, ...extra });
-  if (!isOutputToken(result)) {
-    diagnostics.push({ code: "B001", severity: "error", message: "Composite scope must return output({...})." });
+  const result = fn({ step: child.step, ...extra });
+  if (!isOutputObject(result)) {
+    diagnostics.push({ code: "B001", severity: "error", message: "Composite scope must return an output object." });
     return { nodes: child.nodes };
   }
-  return { nodes: child.nodes, outputs: result.ir };
+  return { nodes: child.nodes, outputs: bindingsToIR(result) };
 }

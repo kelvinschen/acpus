@@ -58,19 +58,19 @@ export default defineWorkflow({
     worker: { use: "codex" },
     reviewer: { use: "codex", policy: "read" },
   },
-}).build(({ input, agents, meta, step, output }) => {
+}).build(({ input, agents, meta, step }) => {
   const lanes = step("lanes").fanout({
     maxConcurrency: 3,
     over: input.lanes,
     key: ({ item }) => template`lane-${item.id}`,
     itemOutputSchema: LaneResult,
-    do: ({ item, step, output }) => {
+    do: ({ item, step }) => {
       const laneParallel = step("lane_parallel").parallel({
         maxConcurrency: 3,
         branches: {
           review: {
             outputSchema: LaneReview,
-            do: ({ step, output }) => {
+            do: ({ step }) => {
               const review = step("review_lane").agent({
                 outputSchema: LaneReview,
                 run: {
@@ -78,16 +78,16 @@ export default defineWorkflow({
                   prompt: template`Review lane ${item.id} in ${item.mode} mode.`,
                 },
               });
-              return output(pick(review.output, ["branch", "lane", "ok"]));
+              return pick(review.output, ["branch", "lane", "ok"]);
             },
           },
           repair: {
             outputSchema: LaneRepair,
-            do: ({ step, output }) => {
+            do: ({ step }) => {
               const repairLoop = step("repair_loop").loop({
                 maxIterations: 2,
                 outputSchema: LaneRepair,
-                do: ({ iter, previous, step, output }) => {
+                do: ({ iter, previous, step }) => {
                   const repair = step("repair_round").agent({
                     outputSchema: LaneRepair,
                     run: {
@@ -99,31 +99,31 @@ export default defineWorkflow({
                       `,
                     },
                   });
-                  return output({
+                  return {
                     ...pick(repair.output, ["branch", "continue", "summary"]),
                     round: iter,
-                  });
+                  };
                 },
                 stopWhen: ({ result }) => not(result.continue),
                 onExhausted: "returnLast",
               });
-              return output(pick(repairLoop.output, [
+              return pick(repairLoop.output, [
                 "branch",
                 "round",
                 "continue",
                 "summary",
-              ]));
+              ]);
             },
           },
           route: {
             outputSchema: LaneRoute,
-            do: ({ step, output }) => {
+            do: ({ step }) => {
               const route = step("route_lane").switch({
                 outputSchema: LaneRoute,
                 cases: [
                   {
                     when: eq(item.mode, "auto"),
-                    then: ({ step, output }) => {
+                    then: ({ step }) => {
                       const auto = step("auto_route").agent({
                         outputSchema: LaneRoute,
                         run: {
@@ -131,11 +131,11 @@ export default defineWorkflow({
                           prompt: template`Choose automatic route for ${item.id}.`,
                         },
                       });
-                      return output(pick(auto.output, ["branch", "lane", "route"]));
+                      return pick(auto.output, ["branch", "lane", "route"]);
                     },
                   },
                 ],
-                default: ({ step, output }) => {
+                default: ({ step }) => {
                   const manual = step("manual_route").agent({
                     outputSchema: LaneRoute,
                     run: {
@@ -143,36 +143,36 @@ export default defineWorkflow({
                       prompt: template`Choose manual route for ${item.id}.`,
                     },
                   });
-                  return output(pick(manual.output, ["branch", "lane", "route"]));
+                  return pick(manual.output, ["branch", "lane", "route"]);
                 },
               });
-              return output(pick(route.output, ["branch", "lane", "route"]));
+              return pick(route.output, ["branch", "lane", "route"]);
             },
           },
         },
       });
 
-      return output({
+      return {
         lane: fallback(item.id, ""),
         review_ok: laneParallel.output.review.ok,
         route: laneParallel.output.route.route,
         repair_summary: laneParallel.output.repair.summary,
-      });
+      };
     },
   });
   const approval = step("approval").if({
     condition: input.requireHuman,
     outputSchema: Approval,
-    then: ({ step, output }) => {
+    then: ({ step }) => {
       const human = step("human_approval").signal({
         outputSchema: Approval,
         run: {
           prompt: template`Approve orchestration result: ${lanes.output}`,
         },
       });
-      return output(pick(human.output, ["approved", "notes"]));
+      return pick(human.output, ["approved", "notes"]);
     },
-    else: ({ step, output }) => {
+    else: ({ step }) => {
       const automatic = step("automatic_approval").task({
         outputSchema: Approval,
         run: {
@@ -183,7 +183,7 @@ export default defineWorkflow({
           }),
         },
       });
-      return output(pick(automatic.output, ["approved", "notes"]));
+      return pick(automatic.output, ["approved", "notes"]);
     },
   });
 
@@ -192,12 +192,12 @@ export default defineWorkflow({
     message: template`Approval failed: ${approval.output.notes}`,
   });
 
-  return output({
+  return {
     approved: approval.output.approved,
     notes: approval.output.notes,
     first_lane: fallback(head(lanes.output).lane, ""),
     first_route: fallback(head(lanes.output).route, ""),
     first_review_ok: where(head(lanes.output), { review_ok: true }),
     run_id: meta.runId,
-  });
+  };
 });

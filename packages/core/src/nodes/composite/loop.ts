@@ -3,13 +3,13 @@ import { refExpr } from "../../graph/refs.js";
 import { assertStableId, stripUndefined } from "../../graph/lowering.js";
 import { toSchemaIR, type InferSchema } from "../../schema/index.js";
 import type { WorkflowValue } from "../../expressions/expr.js";
-import type { ScopeIdentity } from "../../graph/scope.js";
+import type { OutputValues } from "../../graph/scope.js";
 import type { DiagnosticIR, LoopNodeIR } from "../../ir/types.js";
 import type { BuildScope, LoopScopeContext, LoopStopContext, ObjectSchema, ScopeOutput } from "./shared.js";
 
 export type LoopStepSpec<OutSchema extends ObjectSchema> = {
   maxIterations: number;
-  do: <Scope extends ScopeIdentity>(ctx: LoopScopeContext<ScopeOutput<InferSchema<OutSchema>>, Scope>) => ReturnType<LoopScopeContext<ScopeOutput<InferSchema<OutSchema>>, Scope>["output"]>;
+  do: (ctx: LoopScopeContext<ScopeOutput<InferSchema<OutSchema>>>) => OutputValues<ScopeOutput<InferSchema<OutSchema>>>;
   stopWhen: (ctx: LoopStopContext<ScopeOutput<InferSchema<OutSchema>>>) => WorkflowValue<boolean>;
   outputSchema: OutSchema;
   onExhausted?: "fail" | "returnLast";

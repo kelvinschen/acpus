@@ -2,6 +2,8 @@ import { assertType, expectTypeOf, test } from "vitest";
 import {
   defineWorkflow,
   z,
+  type InferSchema,
+  type OutputValues,
 } from "../src/index.js";
 import { fallback, head, nth, type Expr } from "../src/expression.js";
 
@@ -25,117 +27,145 @@ const ParallelOut = z.object({
 });
 
 test("loop previous output is optional and required outputs need fallback", () => {
-  defineWorkflow({ name: "typed-loop-output" }).build(({ step, output }) => {
+  defineWorkflow({ name: "typed-loop-output" }).build(({ step }) => {
     const loop = step("loop").loop({
       maxIterations: 2,
       outputSchema: LoopOut,
-      do: ({ previous, output }) => {
+      do: ({ previous }) => {
         expectTypeOf(previous.summary).toEqualTypeOf<Expr<string | undefined>>();
         expectTypeOf(fallback(previous.summary, "(none)")).toEqualTypeOf<Expr<string>>();
-
-        // @ts-expect-error nullable previous output cannot satisfy required string output.
-        output({ done: false, summary: previous.summary });
-
-        // @ts-expect-error required output fields must be present.
-        output({ done: false });
-
-        // @ts-expect-error output object literals cannot include fields outside the schema.
-        output({ done: false, summary: "ok", extra: "nope" });
-
-        return output({
+        return {
           done: false,
           summary: fallback(previous.summary, "(none)"),
-        });
+        };
       },
       stopWhen: ({ result }) => result.done,
     });
 
-    return output({ done: loop.output.done });
+    // Excess output fields are rejected at IR build time (diagnostic O001), not
+    // by the type system: TypeScript does not apply excess-property checks to a
+    // callback's return value. See validator.contract.test.ts for that contract.
+
+    step("missing_required").loop({
+      maxIterations: 2,
+      outputSchema: LoopOut,
+      // @ts-expect-error required output fields must be present in the returned object.
+      do: () => ({ done: false }),
+      stopWhen: ({ result }) => result.done,
+    });
+
+    step("nullable_required").loop({
+      maxIterations: 2,
+      outputSchema: LoopOut,
+      // @ts-expect-error nullable previous output cannot satisfy a required string output.
+      do: ({ previous }) => ({ done: false, summary: previous.summary }),
+      stopWhen: ({ result }) => result.done,
+    });
+
+    return { done: loop.output.done };
   });
 });
 
 test("optional output fields may be omitted or receive optional refs", () => {
-  defineWorkflow({ name: "typed-optional-output" }).build(({ step, output }) => {
+  defineWorkflow({ name: "typed-optional-output" }).build(({ step }) => {
     const loop = step("loop").loop({
       maxIterations: 2,
       outputSchema: OptionalOut,
-      do: ({ previous, output }) => {
-        assertType(output({}));
-        return output({ summary: previous.summary });
+      do: ({ previous }) => {
+        assertType<OutputValues<InferSchema<typeof OptionalOut>>>({});
+        return { summary: previous.summary };
       },
       stopWhen: () => false,
     });
 
     expectTypeOf(loop.output.summary).toEqualTypeOf<Expr<string | undefined>>();
-    return output({ summary: loop.output.summary });
+    return { summary: loop.output.summary };
   });
 });
 
 test("nested objects and arrays are checked against output schema", () => {
-  defineWorkflow({ name: "typed-nested-output" }).build(({ step, output }) => {
+  defineWorkflow({ name: "typed-nested-output" }).build(({ step }) => {
     const fanout = step("items").fanout({
       over: ["a"],
       itemOutputSchema: NestedOut,
-      do: ({ output }) => {
-        // @ts-expect-error nested field type must match schema.
-        output({ nested: { title: 1 }, items: [] });
-
-        // @ts-expect-error array item field type must match schema.
-        output({ nested: { title: "ok" }, items: [{ title: 1 }] });
-
-        return output({
-          nested: { title: "ok" },
-          items: [{ title: "ok" }],
-        });
-      },
+      do: () => ({
+        nested: { title: "ok" },
+        items: [{ title: "ok" }],
+      }),
     });
 
-    return output({ count: fanout.output });
+    step("bad_nested_field").fanout({
+      over: ["a"],
+      itemOutputSchema: NestedOut,
+      // @ts-expect-error nested field type must match schema.
+      do: () => ({ nested: { title: 1 }, items: [] }),
+    });
+
+    step("bad_array_item_field").fanout({
+      over: ["a"],
+      itemOutputSchema: NestedOut,
+      // @ts-expect-error array item field type must match schema.
+      do: () => ({ nested: { title: "ok" }, items: [{ title: 1 }] }),
+    });
+
+    return { count: fanout.output };
   });
 });
 
 test("parallel branch outputs are checked by branch key", () => {
-  defineWorkflow({ name: "typed-parallel-output" }).build(({ step, output }) => {
+  defineWorkflow({ name: "typed-parallel-output" }).build(({ step }) => {
     const parallel = step("parallel").parallel({
       branches: {
         left: {
           outputSchema: ParallelOut.shape.left,
-          do: ({ output }) => {
-            // @ts-expect-error left branch must return the left branch schema.
-            output({ count: 1 });
-            return output({ summary: "ok" });
-          },
+          do: () => ({ summary: "ok" }),
         },
         right: {
           outputSchema: ParallelOut.shape.right,
-          do: ({ output }) => {
-            // @ts-expect-error right branch must return the right branch schema.
-            output({ summary: "wrong" });
-            return output({ count: 1 });
-          },
+          do: () => ({ count: 1 }),
         },
       },
     });
 
-    return output({
+    step("bad_left_branch").parallel({
+      branches: {
+        left: {
+          outputSchema: ParallelOut.shape.left,
+          // @ts-expect-error left branch must return the left branch schema.
+          do: () => ({ count: 1 }),
+        },
+      },
+    });
+
+    step("bad_right_branch").parallel({
+      branches: {
+        right: {
+          outputSchema: ParallelOut.shape.right,
+          // @ts-expect-error right branch must return the right branch schema.
+          do: () => ({ summary: "wrong" }),
+        },
+      },
+    });
+
+    return {
       summary: parallel.output.left.summary,
       count: parallel.output.right.count,
-    });
+    };
   });
 });
 
 test("parallel race exposes a winner envelope", () => {
-  defineWorkflow({ name: "typed-parallel-race-output" }).build(({ step, output }) => {
+  defineWorkflow({ name: "typed-parallel-race-output" }).build(({ step }) => {
     const race = step("parallel_race").parallel({
       strategy: "race",
       branches: {
         fast: {
           outputSchema: z.object({ summary: z.string() }),
-          do: ({ output }) => output({ summary: "fast" }),
+          do: () => ({ summary: "fast" }),
         },
         slow: {
           outputSchema: z.object({ count: z.number() }),
-          do: ({ output }) => output({ count: 1 }),
+          do: () => ({ count: 1 }),
         },
       },
     });
@@ -143,64 +173,40 @@ test("parallel race exposes a winner envelope", () => {
     expectTypeOf(race.output.winner).toEqualTypeOf<Expr<"fast" | "slow">>();
     assertType<Expr<{ summary: string } | { count: number }>>(race.output.result);
 
-    return output({
+    return {
       winner: race.output.winner,
       result: race.output.result,
-    });
+    };
   });
 });
 
-test("composite output schemas require current scope output on every path", () => {
+test("if and switch nodes with output schema require else and default", () => {
   const Status = z.object({ status: z.string() });
 
-  defineWorkflow({ name: "typed-composite-output-paths" }).build(({ step, output }) => {
+  defineWorkflow({ name: "typed-composite-output-paths" }).build(({ step }) => {
     step("control_only_if").if({
       condition: true,
-      then: ({ output }) => output({}),
+      then: () => ({}),
     });
 
     step("control_only_switch").switch({
-      cases: [{ when: true, then: ({ output }) => output({}) }],
+      cases: [{ when: true, then: () => ({}) }],
     });
 
     // @ts-expect-error if nodes with output schema must define else output.
     step("missing_if_else").if({
       condition: true,
       outputSchema: Status,
-      then: ({ output }) => output({ status: "then" }),
+      then: () => ({ status: "then" }),
     });
 
     // @ts-expect-error switch nodes with output schema must define default output.
     step("missing_switch_default").switch({
       outputSchema: Status,
-      cases: [{ when: true, then: ({ output }) => output({ status: "case" }) }],
+      cases: [{ when: true, then: () => ({ status: "case" }) }],
     });
 
-    step("captures_outer_output").if({
-      condition: true,
-      outputSchema: Status,
-      // @ts-expect-error composite callback must return the current scope output token.
-      then: () => output({ status: "outer" }),
-      else: ({ output }) => output({ status: "inner" }),
-    });
-
-    step("captures_outer_composite_output").if({
-      condition: true,
-      outputSchema: Status,
-      then: ({ output: outerOutput, step }) => {
-        step("inner_same_schema").if({
-          condition: true,
-          outputSchema: Status,
-          // @ts-expect-error nested composite callback must return its own scope output token.
-          then: () => outerOutput({ status: "outer-composite" }),
-          else: ({ output }) => output({ status: "inner-else" }),
-        });
-        return outerOutput({ status: "outer-then" });
-      },
-      else: ({ output }) => output({ status: "outer-else" }),
-    });
-
-    return output({});
+    return {};
   });
 });
 
@@ -212,13 +218,13 @@ test("fanout over must be a typed array and strategy controls final output", () 
       title: z.string(),
       payload: z.unknown(),
     }),
-  }).build(({ input, step, output }) => {
+  }).build(({ input, step }) => {
     const allItems = step("all_items").fanout({
       over: input.items,
       itemOutputSchema: z.object({ id: z.string() }),
-      do: ({ item, output }) => {
+      do: ({ item }) => {
         expectTypeOf(item.id).toEqualTypeOf<Expr<string>>();
-        return output({ id: item.id });
+        return { id: item.id };
       },
     });
 
@@ -229,9 +235,9 @@ test("fanout over must be a typed array and strategy controls final output", () 
     const literalItems = step("literal_items").fanout({
       over: [{ id: input.items[0]!.id }],
       itemOutputSchema: z.object({ id: z.string() }),
-      do: ({ item, output }) => {
+      do: ({ item }) => {
         expectTypeOf(item.id).toEqualTypeOf<Expr<string>>();
-        return output({ id: item.id });
+        return { id: item.id };
       },
     });
 
@@ -242,7 +248,7 @@ test("fanout over must be a typed array and strategy controls final output", () 
       count: 2,
       over: input.items,
       itemOutputSchema: z.object({ id: z.string() }),
-      do: ({ item, output }) => output({ id: item.id }),
+      do: ({ item }) => ({ id: item.id }),
     });
 
     expectTypeOf(head(quorum.output.accepted).id).toEqualTypeOf<Expr<string | undefined>>();
@@ -252,31 +258,31 @@ test("fanout over must be a typed array and strategy controls final output", () 
       // @ts-expect-error fanout over must be an array, not a string.
       over: input.title,
       itemOutputSchema: z.object({ id: z.string() }),
-      do: ({ output }) => output({ id: "bad" }),
+      do: () => ({ id: "bad" }),
     });
 
     step("bad_unknown_over").fanout({
       // @ts-expect-error fanout over must be explicitly typed as an array.
       over: input.payload,
       itemOutputSchema: z.object({ id: z.string() }),
-      do: ({ output }) => output({ id: "bad" }),
+      do: () => ({ id: "bad" }),
     });
 
-    return output({
+    return {
       first: fallback(head(allItems.output).id, ""),
       accepted: quorum.output.accepted,
-    });
+    };
   });
 });
 
 test("composite scope output schemas must be objects", () => {
-  defineWorkflow({ name: "typed-object-composite-output" }).build(({ step, output }) => {
+  defineWorkflow({ name: "typed-object-composite-output" }).build(({ step }) => {
     step("bad_parallel_primitive").parallel({
       branches: {
         value: {
           // @ts-expect-error composite branch output schema must be an object.
           outputSchema: z.string(),
-          do: ({ output }) => output({ value: "bad" }),
+          do: () => ({ value: "bad" }),
         },
       },
     });
@@ -285,32 +291,32 @@ test("composite scope output schemas must be objects", () => {
       over: ["a"],
       // @ts-expect-error fanout per-item output schema must be an object.
       itemOutputSchema: z.string(),
-      do: ({ output }) => output({ value: "bad" }),
+      do: () => ({ value: "bad" }),
     });
 
     step("bad_if_primitive").if({
       condition: true,
       // @ts-expect-error if output schema must be an object.
       outputSchema: z.string(),
-      then: ({ output }) => output({ value: "bad" }),
-      else: ({ output }) => output({ value: "bad" }),
+      then: () => ({ value: "bad" }),
+      else: () => ({ value: "bad" }),
     });
 
     step("bad_switch_primitive").switch({
       // @ts-expect-error switch output schema must be an object.
       outputSchema: z.string(),
-      cases: [{ when: true, then: ({ output }) => output({ value: "bad" }) }],
-      default: ({ output }) => output({ value: "bad" }),
+      cases: [{ when: true, then: () => ({ value: "bad" }) }],
+      default: () => ({ value: "bad" }),
     });
 
     step("bad_loop_primitive").loop({
       maxIterations: 1,
       // @ts-expect-error loop output schema must be an object.
       outputSchema: z.string(),
-      do: ({ output }) => output({ value: "bad" }),
+      do: () => ({ value: "bad" }),
       stopWhen: () => true,
     });
 
-    return output({});
+    return {};
   });
 });
