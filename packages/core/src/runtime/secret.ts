@@ -1,4 +1,4 @@
-import { valueToExprIR } from "../expressions/expr.js";
+import { valueToExprIR } from "@acpus/expression/ir";
 import { SECRET } from "../internal/symbols.js";
 import type { ExprIR, SecretRefIR } from "../ir/types.js";
 

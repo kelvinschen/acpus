@@ -1,0 +1,51 @@
+{
+  "name": "@acpus/expression",
+  "version": "0.1.0-alpha",
+  "private": true,
+  "type": "module",
+  "description": "Acpus typed JSON-value expression language.",
+  "keywords": [
+    "acpus",
+    "expression",
+    "workflow",
+    "ir"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./ir": {
+      "development": "./src/ir.ts",
+      "types": "./dist/ir.d.ts",
+      "default": "./dist/ir.js"
+    },
+    "./validator": {
+      "development": "./src/validator.ts",
+      "types": "./dist/validator.d.ts",
+      "default": "./dist/validator.js"
+    },
+    "./evaluator": {
+      "development": "./src/evaluator.ts",
+      "types": "./dist/evaluator.d.ts",
+      "default": "./dist/evaluator.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsgo -p tsconfig.json",
+    "typecheck": "tsgo -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist"
+  }
+}

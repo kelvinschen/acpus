@@ -2,8 +2,6 @@ export { defineWorkflow } from "./graph/builder.js";
 export type { AgentMap, BuildContext, OutputValue, OutputValues, WorkflowDefinition, StepDeclaration, StepFactory, StepInput, GraphInput, RuntimeInput, ScopeContext, AgentStepSpec, TaskStepSpec, SignalStepSpec } from "./graph/builder.js";
 export { z, s } from "./schema/index.js";
 export type { ArtifactRef, InferSchema, Schema, SecretRef } from "./schema/index.js";
-export { template } from "./template/template.js";
-export type { Template } from "./template/template.js";
 export { task } from "./nodes/leaf/task.js";
 export type { TaskToken } from "./nodes/leaf/task.js";
 export type { TaskContext, TaskFunction } from "./runtime/task-context.js";

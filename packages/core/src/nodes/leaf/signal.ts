@@ -1,10 +1,10 @@
 import { assertStableId, stripUndefined } from "../../graph/lowering.js";
-import { templateToIR, type Template } from "../../template/template.js";
+import { templateToIR, type TemplateInput } from "../../template/template.js";
 import { toSchemaIR, type Schema } from "../../schema/index.js";
 import type { DiagnosticIR, SignalNodeIR, SignalRunIR } from "../../ir/types.js";
 
 export type SignalRunSpec = {
-  prompt: Template | string;
+  prompt: TemplateInput;
 };
 
 export type SignalStepSpec<OutSchema extends Schema<any>> = {

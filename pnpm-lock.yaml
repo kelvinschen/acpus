@@ -14,6 +14,9 @@ importers:
       '@acpus/core':
         specifier: workspace:*
         version: link:packages/core
+      '@acpus/expression':
+        specifier: workspace:*
+        version: link:packages/expression
       '@acpus/runtime':
         specifier: workspace:*
         version: link:packages/runtime
@@ -50,6 +53,9 @@ importers:
       '@acpus/core':
         specifier: workspace:*
         version: link:../core
+      '@acpus/expression':
+        specifier: workspace:*
+        version: link:../expression
       '@acpus/runtime':
         specifier: workspace:*
         version: link:../runtime
@@ -69,6 +75,9 @@ importers:
 
   packages/core:
     dependencies:
+      '@acpus/expression':
+        specifier: workspace:*
+        version: link:../expression
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -80,6 +89,8 @@ importers:
         specifier: ^22.15.30
         version: 22.19.19
 
+  packages/expression: {}
+
   packages/runtime:
     dependencies:
       '@acpus/agent-executor':
@@ -88,6 +99,9 @@ importers:
       '@acpus/core':
         specifier: workspace:*
         version: link:../core
+      '@acpus/expression':
+        specifier: workspace:*
+        version: link:../expression
     devDependencies:
       '@types/node':
         specifier: ^22.15.30
@@ -98,6 +112,9 @@ importers:
       '@acpus/core':
         specifier: workspace:*
         version: link:../core
+      '@acpus/expression':
+        specifier: workspace:*
+        version: link:../expression
       '@typescript/native-preview':
         specifier: 7.0.0-dev.20260421.2
         version: 7.0.0-dev.20260421.2

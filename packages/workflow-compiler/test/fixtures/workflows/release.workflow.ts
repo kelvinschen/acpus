@@ -1,13 +1,13 @@
 import {
   defineWorkflow,
   z,
-  template,
 } from "@acpus/core";
 import {
   where,
   all,
   max,
-} from "@acpus/core/expression";
+  template,
+} from "@acpus/expression";
 import localDependencyTask from "./tasks/local-dependency.task.js";
 import nodeModuleDependencyTask from "./tasks/node-module-dependency.task.js";
 
@@ -201,12 +201,12 @@ export default defineWorkflow({
   );
 
   step("require_all_reviews_ready").assert({
-    condition: all(reviews, (review) =>
+    condition: all(reviews.map((review) =>
       where(review.output, {
         ready: true,
         riskCount: { lte: 3 },
       }),
-    ),
+    )),
     message: template`
       One or more reviews failed.
 
@@ -240,8 +240,8 @@ export default defineWorkflow({
   });
 
   return {
-    ready: all(reviews, (review) => review.output.ready),
-    maxRiskCount: max(reviews, (review) => review.output.riskCount),
+    ready: all(reviews.map((review) => review.output.ready)),
+    maxRiskCount: max(reviews.map((review) => review.output.riskCount)),
     summary: summary.output.summary,
     changelogDraft: prepare.output.changelogDraft,
   };

@@ -10,3 +10,6 @@ This directory tracks Acpus future plans, backlog, and capability gaps. Current 
 ## Roadmap
 
 - [Core Roadmap](core-roadmap.md) — the path from the current authoring/compile core to a full runtime (Task bundling, executors, persistence, lint plugin, runner profiles).
+- [Durable Scheduler Design Record](durable-scheduler-design.md) — planned durable composite scheduler design for dynamic instances, event-backed projections, race/quorum/all semantics, and concurrency limits.
+- [Expression Language Design Notes](expression-language-design.md) — planned direction for introducing `@acpus/expression` as a typed JSON-value expression language.
+- [Expression Language Implementation Goal](expression-language-implementation-goal.md) — executable checklist for landing `@acpus/expression` as one clean goal.

@@ -1,4 +1,4 @@
-import { valueToExprIR } from "../expressions/expr.js";
+import { valueToExprIR } from "@acpus/expression/ir";
 import { secretOrExprToIR } from "../runtime/secret.js";
 import type { DiagnosticIR, ExprIR, SecretRefIR } from "../ir/types.js";
 import type { EnvInput } from "../nodes/leaf/shared.js";

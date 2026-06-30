@@ -4,7 +4,8 @@ import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ArtifactRef } from "@acpus/core/schema";
 import { createDollar, type CommandBuilder, type Dollar, type TaskContext, type TaskFunction } from "@acpus/core/runtime";
-import type { JsonObject, TaskNodeIR } from "@acpus/core/ir";
+import type { TaskNodeIR } from "@acpus/core/ir";
+import type { JsonObject } from "@acpus/expression/ir";
 import { evaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
 import type { RuntimeStore } from "../store/store.js";
 

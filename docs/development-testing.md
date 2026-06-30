@@ -7,7 +7,7 @@ This guide describes how to change the TypeScript workflow core safely while the
 1. Start from the current spec. If the change modifies current behavior, update the relevant file under `specs/` in the same PR. If it only changes implementation, tests, or docs, say why no spec update is needed.
 2. Keep changes at the lowest useful layer. Prefer changing a pure lowering function before adding another wrapper, option, factory, or compatibility shim.
 3. Treat `legacy/` as read-only history. Do not copy compatibility rules, YAML workflow behavior, or old terminology into the TypeScript core unless explicitly requested.
-4. Preserve the public API through `packages/core/src/index.ts`. New authoring primitives should be exported there and covered by tests at the right layer.
+4. Preserve the owning package's public API. Core workflow authoring belongs in `packages/core/src/index.ts`; expression authoring belongs in `packages/expression/src/index.ts`; advanced expression construction/evaluation/validation belongs on focused expression subpaths.
 5. Keep IR serializable and deterministic except for explicitly dynamic lock fields such as `generatedAt`. Do not put live Zod objects, functions, process handles, or runtime-only values into IR.
 
 ## Test taxonomy
@@ -48,7 +48,7 @@ When a spec says a behavior MUST exist, add or update a test in the same change.
 The initial core test foundation should cover these chains:
 
 - Schema: supported Zod boundary subset lowers to `SchemaIR`; unsupported boundary features fail with the offending path; parse issues use Acpus-style paths.
-- Expressions: `where(...)` field shorthand, primitive filters, Mongo aliases, logical composition, and collection helpers lower to canonical `ExprIR` calls.
+- Expressions: `where(...)` field shorthand, primitive filters, logical composition, lambdas, collection helpers, and template expressions lower to canonical `ExprIR` calls in `@acpus/expression`.
 - IR validator: invalid workflow names, schemas, duplicate node ids, empty refs, missing agents, and task-bundle mismatches produce stable diagnostic codes and paths.
 - Workflow compiler: representative workflow-compiler package fixtures compile leaf nodes, assertions, templates, secrets, task bundles, agent definitions, and outputs into validated `WorkflowIR`.
 - Composite nodes: the workflow-compiler orchestration fixture covers `step.if`, `step.switch`, `step.parallel`, `step.fanout`, `step.loop`, and `step.signal` child scopes and projected outputs without invoking any runtime.

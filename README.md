@@ -19,7 +19,7 @@ serializable IR which a runtime consumes.
 
 - TypeScript workflow authoring via `defineWorkflow(...).build(...)`.
 - A **Zod 4** schema bridge with Acpus boundary extensions (`z.path`, `z.artifact`, `z.secretRef`), canonicalized to a durable `SchemaIR`.
-- An Acpus-owned expression IR (`ExprIR`) with Prisma/Mongo-style `where(...)` filters and named operators — no CEL/JSON Logic as the canonical layer.
+- Integration with `@acpus/expression`, the Acpus-owned expression language package for `ExprIR`, `TemplateIR`, typed `where(...)` filters, lambdas, and named operators.
 - Agent / Task / Signal executable nodes with explicit `run` boundaries and schema contract fields (`inputSchema`, `outputSchema`, `itemOutputSchema`), plus composite nodes (`if`, `switch`, `parallel`, `fanout`, `loop`) and boolean `assert` nodes.
 - Trusted local **Task** nodes (replacing program nodes) with an Acpus-owned `$` command wrapper backed by `zx/core`. Security isolation is delegated to the runner/container/profile layer, not per-node syntax.
 - Compilation to a frozen `WorkflowIR` (`irVersion: 2`) with structural validation
@@ -60,8 +60,8 @@ live in `packages/cli`.
 Current design truth lives in `specs/`; future plans and known gaps live in `docs/roadmap/`.
 
 - [Specs Index](specs/INDEX.md)
-- [Core Workflow Spec](specs/core-workflow-spec.md)
-- [Core Expression Spec](specs/core-expression-spec.md)
+- [Core Spec](specs/core-spec.md)
+- [Expression Spec](specs/expression-spec.md)
 - [CLI Spec](specs/cli-spec.md)
 - [Roadmap Index](docs/roadmap/INDEX.md) · [Core Roadmap](docs/roadmap/core-roadmap.md)
 

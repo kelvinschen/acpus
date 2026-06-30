@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { defineWorkflow, template, z } from "@acpus/core";
-import { eq, fallback, head, literal, matches, or, where } from "@acpus/core/expression";
+import { defineWorkflow, z } from "@acpus/core";
+import { eq, fallback, head, matches, or, template, where } from "@acpus/expression";
 import { compileWorkflowDefinition } from "@acpus/core/workflow";
 import { executeWorkflow } from "../src/execution/scheduler.js";
 
@@ -282,7 +282,7 @@ describe("runtime non-agent scheduler skeleton", () => {
     const badAssert = compileWorkflowDefinition(defineWorkflow({
       name: "bad_assert_condition",
     }).build(({ step }) => {
-      step("bad").assert({ condition: literal("yes") as any });
+      step("bad").assert({ condition: "yes" as any });
       return {};
     }));
     await expect(executeWorkflow(badAssert, {})).rejects.toThrow("Node 'bad' condition must evaluate to boolean.");

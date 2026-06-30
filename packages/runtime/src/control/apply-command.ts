@@ -1,4 +1,4 @@
-import type { JsonValue } from "@acpus/core/ir";
+import type { JsonValue } from "@acpus/expression/ir";
 import { advanceRun, type AdvanceResult } from "../execution/advance.js";
 import { findSignalNode } from "../execution/ir.js";
 import { normalizeValue } from "../evaluation/schema.js";

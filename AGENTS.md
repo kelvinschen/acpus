@@ -6,7 +6,6 @@ Maintenance rules for agents and humans working on this codebase.
 
 ## Specification Maintenance
 
-- If a code change does not require a SPEC update, the final response MUST state why.
 - Current product/design truth MUST live in `specs/`, not `docs/`.
 - The codebase is under active iteration; treat feature changes as greenfield current behavior. Do not add migration warnings, legacy-field diagnostics, compatibility shims, or backward-compatibility behavior unless explicitly requested.
 - After a breaking change, specs and tests MUST describe and validate only the new current behavior. Do not add assertions or wording whose only purpose is to document or reject removed behavior.

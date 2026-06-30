@@ -1,11 +1,12 @@
-import { valueToExprIR, type WorkflowValue } from "../../expressions/expr.js";
+import { type WorkflowValue } from "@acpus/expression";
+import { valueToExprIR } from "@acpus/expression/ir";
 import { assertStableId, stripUndefined } from "../../graph/lowering.js";
-import { templateToIR, type Template } from "../../template/template.js";
+import { templateToIR, type TemplateInput } from "../../template/template.js";
 import type { AssertNodeIR, DiagnosticIR } from "../../ir/types.js";
 
 export type AssertSpec = {
   condition: WorkflowValue<boolean>;
-  message?: Template | string;
+  message?: TemplateInput;
 };
 
 export function buildAssertNode(id: string, spec: AssertSpec, diagnostics: DiagnosticIR[]): AssertNodeIR {

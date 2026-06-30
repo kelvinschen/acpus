@@ -1,7 +1,7 @@
-import { valueToExprIR } from "../../expressions/expr.js";
+import { valueToExprIR } from "@acpus/expression/ir";
 import { assertStableId, stripUndefined } from "../../graph/lowering.js";
 import { toSchemaIR } from "../../schema/index.js";
-import type { WorkflowValue } from "../../expressions/expr.js";
+import type { WorkflowValue } from "@acpus/expression";
 import type { DiagnosticIR, IfNodeIR } from "../../ir/types.js";
 import type { ScopeCallback, BuildScope, ObjectSchema, SchemaScopeOutput } from "./shared.js";
 

@@ -1,4 +1,4 @@
-import type { Expr, WorkflowValue } from "../../expressions/expr.js";
+import type { Expr, WorkflowValue } from "@acpus/expression";
 import type { OutputAccessor } from "../../graph/refs.js";
 import type { OutputValues, ScopeContext } from "../../graph/scope.js";
 import type { ScopeIR } from "../../ir/types.js";

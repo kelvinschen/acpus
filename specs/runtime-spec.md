@@ -27,11 +27,12 @@
 
 ### Expression And Template Evaluation
 
-- The runtime MUST evaluate `ExprIR` literal, ref, array, object, template, and call nodes.
+- The runtime MUST evaluate `ExprIR` by adapting `@acpus/expression/evaluator` to durable execution scope.
 - Runtime refs MUST resolve `input`, `workflow.input`, `nodes`, `meta`, `fanout`, and `loop` paths from durable execution scope.
+- Runtime ref resolution MUST read only own object properties and canonical non-negative array indexes. Array prototype properties and non-canonical indexes such as `length`, `map`, or `01` MUST resolve as missing.
 - Runtime `meta` refs MUST expose run id, relative workflow path, workflow name, and absolute workspace directory.
-- Runtime expression calls MUST support the current lowered operator set: `not`, `and`, `or`, `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `len`, `includes`, `startsWith`, `endsWith`, `matches`, `coalesce`, `all`, `any`, `max`, and `min`.
-- Runtime template rendering MUST render strings directly, scalar non-strings with `String(value)`, `undefined` as an empty string, and objects or arrays as stable pretty JSON.
+- Runtime expression calls MUST support the current `@acpus/expression` evaluator operator set.
+- Runtime template rendering MUST use `@acpus/expression` template semantics: strings render directly, scalar non-strings render with `String(value)`, arrays and objects render with `JSON.stringify`, and missing or non-JSON-compatible values fail.
 - Runtime expression evaluation MUST fail loudly for unsupported calls or invalid operand types.
 - Runtime boolean expression operators MUST require boolean operands and MUST NOT coerce values through JavaScript truthiness.
 

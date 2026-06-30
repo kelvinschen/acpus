@@ -1,6 +1,5 @@
 import {
   defineWorkflow,
-  template,
   z,
 } from "@acpus/core";
 import {
@@ -9,8 +8,9 @@ import {
   head,
   not,
   pick,
+  template,
   where,
-} from "@acpus/core/expression";
+} from "@acpus/expression";
 
 const Lane = z.object({
   id: z.string(),

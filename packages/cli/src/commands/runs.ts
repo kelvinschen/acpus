@@ -2,7 +2,7 @@ import type { Writable } from "node:stream";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
-import type { JsonValue } from "@acpus/core/ir";
+import type { JsonValue } from "@acpus/expression/ir";
 import { getRun, listRuns, mutateRun as mutateRuntimeRun, normalizeForkInput, queueSupervisorShutdown, replayRun as replayRuntimeRun, signalRun as signalRuntimeRun } from "@acpus/runtime";
 import type { PreparedWorkflow } from "@acpus/workflow-compiler";
 import { usageError, validationError, notFoundError } from "../errors.js";

@@ -29,7 +29,8 @@
   },
   "dependencies": {
     "@acpus/agent-executor": "workspace:*",
-    "@acpus/core": "workspace:*"
+    "@acpus/core": "workspace:*",
+    "@acpus/expression": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.15.30"

@@ -29,6 +29,7 @@
   },
   "dependencies": {
     "@acpus/core": "workspace:*",
+    "@acpus/expression": "workspace:*",
     "@typescript/native-preview": "7.0.0-dev.20260421.2",
     "esbuild": "^0.28.0",
     "tsx": "^4.20.3",

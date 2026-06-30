@@ -1,8 +1,8 @@
-import { valueToExprIR } from "../../expressions/expr.js";
+import { valueToExprIR } from "@acpus/expression/ir";
 import { refExpr } from "../../graph/refs.js";
 import { assertStableId, stripUndefined } from "../../graph/lowering.js";
 import type { Simplify } from "../../internal/type-utils.js";
-import { templateToIR, type Template } from "../../template/template.js";
+import { templateToIR, type TemplateInput } from "../../template/template.js";
 import { toSchemaIR, type InferSchema, type Schema } from "../../schema/index.js";
 import type { DiagnosticIR, FanoutNodeIR } from "../../ir/types.js";
 import type { OutputValues } from "../../graph/scope.js";
@@ -10,7 +10,7 @@ import type { ArrayItem, BuildScope, FanoutScopeContext, FanoutStrategy, ObjectS
 
 type BaseFanoutStepSpec<Over extends WorkflowArrayValue<any>, OutSchema extends ObjectSchema> = {
   over: Over;
-  key?: Template | string | ((ctx: Pick<FanoutScopeContext<ArrayItem<Over>>, "item" | "itemIndex">) => Template | string);
+  key?: TemplateInput | ((ctx: Pick<FanoutScopeContext<ArrayItem<Over>>, "item" | "itemIndex">) => TemplateInput);
   maxConcurrency?: number;
   do: (ctx: FanoutScopeContext<ArrayItem<Over>>) => OutputValues<SchemaScopeOutput<OutSchema>>;
   itemOutputSchema: OutSchema;

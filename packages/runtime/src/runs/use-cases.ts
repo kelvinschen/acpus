@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { JsonValue } from "@acpus/core/ir";
+import type { JsonValue } from "@acpus/expression/ir";
 import { normalizeSignalPayload, normalizeWorkflowInput } from "../admission/input.js";
 import { advanceRun, type AdvanceResult } from "../execution/advance.js";
 import { applyControlCommand } from "../control/apply-command.js";

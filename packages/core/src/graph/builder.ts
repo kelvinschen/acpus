@@ -1,6 +1,6 @@
 import { WORKFLOW } from "../internal/symbols.js";
 import { makeNodeRef, refExpr, type NodeRef, type OutputAccessor } from "./refs.js";
-import type { AnyWorkflowValue } from "../expressions/expr.js";
+import type { WorkflowValue } from "@acpus/expression";
 import { toSchemaIR, type InferSchema, type Schema } from "../schema/index.js";
 import { agentDefinitionToIR, agentToken, buildAgentNode, type AgentDefinitionSpec, type AgentStepSpec, type AgentToken } from "../nodes/leaf/agent.js";
 import { buildTaskNode, type InlineTaskStepSpec, type ReusableTaskStepSpec, type TaskStepSpec } from "../nodes/leaf/task.js";
@@ -68,7 +68,7 @@ export type BuildContext<InputSchema extends Schema<any> | undefined, Agents ext
   step: StepFactory;
 };
 
-export type BuildFn<InputSchema extends Schema<any> | undefined, Agents extends AgentMap | undefined = undefined> = (ctx: BuildContext<InputSchema, Agents>) => Record<string, AnyWorkflowValue>;
+export type BuildFn<InputSchema extends Schema<any> | undefined, Agents extends AgentMap | undefined = undefined> = (ctx: BuildContext<InputSchema, Agents>) => Record<string, WorkflowValue>;
 
 export function defineWorkflow<InputSchema extends Schema<any> | undefined = undefined, Agents extends AgentMap | undefined = undefined>(config: WorkflowConfig<InputSchema, Agents>) {
   return {

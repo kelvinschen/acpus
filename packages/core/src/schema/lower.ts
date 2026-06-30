@@ -1,5 +1,5 @@
 import * as zod from "zod";
-import type { JsonPrimitive, JsonValue, SchemaIR, TypeIR } from "../ir/types.js";
+import type { JsonPrimitive, JsonValue, SchemaIR } from "../ir/types.js";
 import type { Schema } from "./zod.js";
 
 export function toJSONSchema(schema: Schema<any>): JsonValue {
@@ -24,12 +24,12 @@ export function toSchemaIR(schema: Schema<any>, path = "$schema"): SchemaIR {
   if (acpus?.kind === "path") return { kind: "path" };
   if (acpus?.kind === "artifact") return acpus.mediaType === undefined ? { kind: "artifact" } : { kind: "artifact", mediaType: acpus.mediaType };
   if (acpus?.kind === "secret_ref") return { kind: "secret_ref" };
-  if (acpus?.kind === "integer") return { kind: "integer" };
+  if (acpus?.kind === "integer") return { kind: "number" };
 
   const def = defOf(schema);
   switch (typeOf(schema)) {
     case "string": return { kind: "string" };
-    case "number": return isIntegerNumberSchema(schema) ? { kind: "integer" } : { kind: "number" };
+    case "number": return { kind: "number" };
     case "boolean": return { kind: "boolean" };
     case "null": return { kind: "null" };
     case "unknown":
@@ -46,7 +46,7 @@ export function toSchemaIR(schema: Schema<any>, path = "$schema"): SchemaIR {
     case "enum": return { kind: "enum", values: Object.values(def.entries ?? {}).map((v: unknown) => normalizeLiteral(v, path)) };
     case "array": return { kind: "array", item: toSchemaIR(def.element, `${path}[]`) };
     case "object": return objectToSchemaIR(schema, path);
-    case "record": return { kind: "record", key: toSchemaIR(def.keyType, `${path}.<key>`), value: toSchemaIR(def.valueType, `${path}.<value>`) };
+    case "record": return { kind: "record", value: toSchemaIR(def.valueType, `${path}.<value>`) };
     case "union": return { kind: "union", variants: (def.options ?? []).map((option: Schema<any>, index: number) => toSchemaIR(option, `${path}.union[${index}]`)) };
     case "optional": return { ...toSchemaIR(def.innerType, path), optional: true };
     case "nullable": return { ...toSchemaIR(def.innerType, path), nullable: true };
@@ -79,7 +79,7 @@ export function toSchemaIR(schema: Schema<any>, path = "$schema"): SchemaIR {
 function objectToSchemaIR(schema: Schema<any>, path: string): SchemaIR {
   const def = defOf(schema);
   const shape = typeof def.shape === "function" ? def.shape() : def.shape;
-  const fields: Record<string, TypeIR> = {};
+  const fields: Record<string, SchemaIR> = {};
   const required: string[] = [];
   for (const [key, child] of Object.entries(shape ?? {})) {
     const childIR = toSchemaIR(child as Schema<any>, `${path}.${key}`);
@@ -89,13 +89,6 @@ function objectToSchemaIR(schema: Schema<any>, path: string): SchemaIR {
   const catchall = def.catchall;
   const catchallType = catchall ? typeOf(catchall as Schema<any>) : undefined;
   return { kind: "object", fields, required, additionalProperties: Boolean(catchall && catchallType !== "never") };
-}
-
-function isIntegerNumberSchema(schema: Schema<any>): boolean {
-  const meta = zod.globalRegistry.get(schema as zod.ZodTypeAny) as any;
-  if (meta?.acpus?.kind === "integer") return true;
-  const def = defOf(schema);
-  return Array.isArray(def.checks) && def.checks.some((check: any) => check?.isInt === true || check?.format === "safeint" || check?.def?.format === "safeint" || check?._zod?.def?.format === "safeint");
 }
 
 function normalizeLiteral(value: unknown, path: string): JsonPrimitive {
@@ -113,7 +106,6 @@ export function schemaToJsonSchema(schema: SchemaIR): JsonValue {
     case "unknown": return {};
     case "string":
     case "path": return { type: "string" };
-    case "integer": return { type: "integer" };
     case "number": return { type: "number" };
     case "boolean": return { type: "boolean" };
     case "null": return { type: "null" };

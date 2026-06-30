@@ -11,8 +11,8 @@
 - Roadmap: `docs/roadmap/durable-runtime-workflow.md`
 - Runtime spec: `specs/runtime-spec.md`
 - CLI spec: `specs/cli-spec.md`
-- Core workflow spec: `specs/core-workflow-spec.md`（新增）
-- Core expression spec: `specs/core-expression-spec.md`（新增）
+- Core spec: `specs/core-spec.md`
+- Expression spec: `specs/expression-spec.md`
 - CLI commands: `packages/cli/src/commands/run.ts`, `packages/cli/src/commands/runs.ts`
 - Runtime store: `packages/runtime/src/store/store.ts`
 - Runtime execution: `packages/runtime/src/execution/` (scheduler, advance, task-executor, agent-node, ir)
@@ -227,15 +227,15 @@
 
 #### Operators
 
-当前实现：支持当前 lowered operator 集合：`not`、`and`、`or`、`eq`、`ne`、`lt`、`lte`、`gt`、`gte`、`len`、`includes`、`startsWith`、`endsWith`、`matches`、`coalesce`、`all`、`any`、`max`、`min`。
+当前实现：runtime 通过 `@acpus/expression/evaluator` 执行 expression package 拥有的当前 operator 集合，包括 `ifElse`、`get`、`map`、`filter`、lambda 版 `all`/`any`，以及基础逻辑、比较、字符串、长度、`coalesce`、`max`、`min` 等 helper lowered calls。
 
-证据：`packages/runtime/src/evaluation/evaluator.ts`
+证据：`packages/runtime/src/evaluation/evaluator.ts`, `packages/expression/src/evaluator.ts`
 
 审计备注：Boolean operator 不走 JavaScript truthiness。
 
 **审计补充：**
 - 严格类型检查覆盖所有 operand（不仅 boolean）：`booleanArg`/`numberArg`/`stringArg`/`arrayArg` 对类型不匹配直接 throw。
-- Equality 使用 `Object.is`（区分 +0/-0，NaN 等于 NaN）。
+- Equality 使用 expression evaluator 的 JSON-compatible structural equality 和 SameValueZero primitive 语义。
 - `coalesce` 仅在 `!== null && !== undefined` 时 short-circuit。
 
 标注：
@@ -243,16 +243,14 @@
 
 #### Template rendering
 
-当前实现：object/array template value 渲染为稳定 pretty JSON（递归 key sort + 2-space indent）。
+当前实现：template rendering 委托 `@acpus/expression/evaluator`。string 直接渲染，number/boolean/null 使用 `String(value)`，array/object 使用 `JSON.stringify` 语义；missing、`undefined`、非 JSON-compatible value 直接失败。
 
-证据：`packages/runtime/src/evaluation/evaluator.ts`
+证据：`packages/runtime/src/evaluation/evaluator.ts`, `packages/expression/src/evaluator.ts`
 
-审计备注：比 legacy 直接 `String(object)` 更安全。
+审计备注：此段已按 `@acpus/expression` 拆包后的 evaluator 语义更新，具体 operator 和 formatting contract 以 `specs/expression-spec.md` 为准。
 
 **审计补充：**
-- `undefined` → 空字符串 `""`。
-- string 不做引号包裹，直接 inline。
-- number/boolean/null 使用 `String(value)`。
+- runtime 不再拥有 expression formatting 细节，只拥有 workflow ref scope adapter。
 
 标注：
 - 决策：确认。
@@ -636,6 +634,17 @@ legacy / 期望能力：legacy 支持 follow、poll、JSONL observations、Ctrl-
 标注：
 - 决策：需要实现（P1）。
 
+#### Closed IR validation hardening
+
+当前状态：已由 expression language remediation 完成。`validateWorkflowIR` 会检查 `WorkflowIR`、node、scope、template、expression wrapper、agent、task bundle、`SchemaIR` 变体和 `ExprIR.type` 内嵌 `TypeIR` 的 closed shape，并为 schema/type nested paths 返回稳定 diagnostics。
+
+当前 spec / 风险：`specs/core-spec.md` 要求 `WorkflowIR`、schema IR、expression IR 等序列化对象使用 closed shape，并要求 `validateWorkflowIR(...)` 诊断 unknown fields。该 closed-shape gap 已关闭；后续 durable work 只需关注新的 runtime 行为缺口。
+
+建议处理：无剩余 remediation work。
+
+标注：
+- 决策：已完成。
+
 #### Agent overrides
 
 当前状态：当前 CLI 无 `--agents`，run/fork 不支持 submit-time agent override。`admitWorkflowRun` 签名仅接受 `cwd/prepared/input`。注意：legacy/ 目录仍有 `--agents` 支持，但非活跃代码。
@@ -715,7 +724,7 @@ legacy / 期望能力：legacy 有更细的 retry 分类和 recovery。
 
 #### Signal timeout/onTimeout/default
 
-当前状态：core IR 可表达 signal `timeout`/`onTimeout: { action: "fail", message? }`，但 runtime scheduler 仅检查 `signalPayloads`，不读取 `node.timeout`/`node.onTimeout`。Supervisor tick 无 signal-timeout scanner。
+当前状态：core IR 可表达 signal `timeout`/`onTimeout: { action: "fail", message? }`，但 runtime scheduler 仅检查 `signalPayloads`，不读取 `node.timeout`/`node.onTimeout`。Supervisor tick 无 signal-timeout scanner。审计探针确认：带 `timeout: "1ms"` 和 `onTimeout: { action: "fail" }` 的 signal 仍直接进入 awaiting，而不是触发 timeout fail。
 
 legacy / 期望能力：legacy 支持 timeout default/fail、外部 signal 和 timeout 竞争。
 
@@ -737,7 +746,7 @@ legacy / 期望能力：legacy 会在 `runs show`/TUI 展示 signal prompt 和 e
 
 #### `maxConcurrency`
 
-当前状态：TS-first public/IR 字段存在（`ParallelNodeIR.maxConcurrency`、`FanoutNodeIR.maxConcurrency`），authoring DSL 和 validator 均接受，但 runtime scheduler 在 `parallel all`/`fanout` 使用裸 `Promise.all`，完全不读 `node.maxConcurrency`。Grep `packages/runtime/src` for `maxConcurrency` 返回零 hit。
+当前状态：TS-first public/IR 字段存在（`ParallelNodeIR.maxConcurrency`、`FanoutNodeIR.maxConcurrency`），authoring DSL 和 validator 均接受，但 runtime scheduler 在 `parallel all`/`fanout` 使用裸 `Promise.all`，完全不读 `node.maxConcurrency`。Grep `packages/runtime/src` for `maxConcurrency` 返回零 hit。审计探针确认：`fanout.maxConcurrency: 1` 时 3 个 item 仍可同时运行（`maxActive: 3`）。
 
 legacy / 期望能力：legacy 用 `pLimit(maxConcurrency)`，有并发测试。
 
@@ -748,14 +757,14 @@ legacy / 期望能力：legacy 用 `pLimit(maxConcurrency)`，有并发测试。
 
 #### `fanout.key` / lane identity
 
-当前状态：core 接收/lower `fanout.key`（template/string/function），但 runtime scheduler 不读 `node.key`，不计算 stable lane id，fanout scope 仅含 `{ item, itemIndex }`。**重要：concurrent fanout items 共享 body 中 static node ids，当前会在 `outputs/<nodeId>/`、`work/<nodeId>/`、artifact path 上产生目录冲突（latent correctness bug）。**
+当前状态：core 接收/lower `fanout.key`（template/string/function），但 runtime scheduler 不读 `node.key`，不计算 stable lane id，fanout scope 仅含 `{ item, itemIndex }`。**重要：concurrent fanout items 共享 body 中 static node ids，当前会在 `outputs/<nodeId>/`、`work/<nodeId>/`、artifact path 上产生目录冲突（latent correctness bug）。** 这也会影响 node projection、resume、fork/replay 和 artifact registry 的 per-item 语义。
 
 legacy / 期望能力：legacy 有 dynamic node key/lane identity。
 
 建议处理：与 dynamic `NodeInstanceKey` 目标相关。目录冲突需在 lane identity 方案中解决。
 
 标注：
-- 决策：需要实现（P2）。目录冲突是 correctness bug，应高于 P2 优先级评估。
+- 决策：目录冲突 hotfix 需要实现（P1）；完整 dynamic `NodeInstanceKey`/lane identity 可作为 P2 结构性完善。
 
 #### `runtime.*` refs
 
@@ -1147,6 +1156,28 @@ legacy / 期望能力：legacy 有 bounded node storage key 和 `node-index.json
 标注：
 - 决策：P1。
 
+#### P1：fanout lane storage hotfix
+
+为什么做：当前 concurrent fanout items 共享 body static node ids，会在 `work/<nodeId>`、`outputs/<nodeId>`、artifact path 上产生目录冲突，影响 resume/fork/replay 和 per-item inspection。
+
+主要交付件：最小 per-lane work/output/artifact path 隔离；node projection 和 artifact refs 能区分 fanout item；补并发 fanout artifact/output 不互相覆盖的 regression tests。
+
+依赖/风险：完整 dynamic `NodeInstanceKey` 可留给 P2，但 hotfix 需要避免之后迁移成本过高。
+
+标注：
+- 决策：P1。
+
+#### Done：Closed IR validation hardening
+
+为什么做：`specs/core-spec.md` 要求 schema/expression/type 等序列化 IR 使用 closed shape。该 gap 已由 expression language remediation 关闭，保留在此作为 durable-runtime audit 的历史记录。
+
+主要交付件：`SchemaIR`/`TypeIR` 递归 unknown-field validator；稳定 diagnostic path；contract tests 覆盖 schema unknown field、nested type unknown field、valid schema 不误报。
+
+依赖/风险：无剩余实现依赖。
+
+标注：
+- 决策：P2。
+
 #### P2：Agent overrides
 
 为什么做：submit-time provider/model/policy 覆盖仍缺。
@@ -1171,14 +1202,14 @@ legacy / 期望能力：legacy 有 bounded node storage key 和 `node-index.json
 
 #### P2：`fanout.key` 和 dynamic lane identity
 
-为什么做：当前 core 接收 key 但 runtime 不消费；concurrent fanout items 存在目录冲突（correctness bug）。
+为什么做：当前 core 接收 key 但 runtime 不消费；需要稳定 lane identity 支撑 replay、fork、inspection 和 bounded dynamic storage。
 
-主要交付件：fanout lane identity、per-lane work/output/artifact 目录（解决冲突）、dynamic node key 或 internal stable key、fork/replay/inspection 语义。
+主要交付件：fanout lane identity、dynamic node key 或 internal stable key、fork/replay/inspection 语义、bounded lane-key-to-index mapping。
 
 依赖/风险：与 full `NodeInstanceKey` 目标耦合；bounded dynamic storage key 需一并解决。
 
 标注：
-- 决策：P2（目录冲突部分建议提升评估优先级）。
+- 决策：P2（目录冲突 hotfix 已单独提升为 P1）。
 
 #### P2：`runs clean`
 
@@ -1258,13 +1289,14 @@ legacy / 期望能力：legacy 有 bounded node storage key 和 `node-index.json
    - `runs cancel` + in-flight abort（贯穿 scheduler→executor AbortSignal 传播，含 composite cancellation）
    - Artifact read/list/atomic write
    - Public node/artifact inspection APIs
+   - fanout lane storage hotfix（先解决并发目录/产物冲突）
    - Agent observability artifacts（per-attempt prompt/response/stderr/telemetry，含 `$` stdout/stderr capture、onSpan wiring）
    - Agent JSON recovery + schema prompting（含 error taxonomy）
    - Foreground follow / background run UX（含 streaming/append）
    - Hooks 产品决策
 3. **P2（结构性完善）：**
    - `runtime.*` scope contract
-   - `fanout.key`/dynamic lane identity（解决目录冲突 bug）
+   - `fanout.key`/dynamic lane identity（完整 lane key、replay/fork/inspection 语义）
    - Agent overrides（`--agents`）
    - `runs clean`
    - Fork dry-run plan / `--from`
@@ -1297,8 +1329,18 @@ pnpm test:e2e
 
 **审计注（2026-06-29）：** 当前测试已按 package 和类型拆分（约 34 个测试文件），涵盖 core（7）、agent-executor（4）、workflow-compiler（5）、runtime（7-8）、cli（8-9）。本次审计未运行测试。若后续根据本文档修改实现或 specs，应按变更范围运行对应测试。
 
+**审计补充（2026-06-30）：** 本轮 specs / roadmap gap review 已运行 `pnpm typecheck`、`pnpm test:unit`、`pnpm test:contract`、`pnpm test:integration`、`pnpm test:e2e`、`pnpm test:type`，均通过。当前文档补充仅更新 roadmap，验证为 `git diff --check -- docs/roadmap/durable-runtime-roadmap.md`。
+
+当前测试计数：
+
+- `pnpm test:unit`: 5 files / 29 tests
+- `pnpm test:contract`: 8 files / 25 tests
+- `pnpm test:integration`: 9 files / 47 tests
+- `pnpm test:e2e`: 6 files / 7 tests
+- `pnpm test:type`: 6 files / 24 tests
+
 标注：
-- 备注：需更新测试计数。
+- 备注：测试计数已按 2026-06-30 审计补充更新；后续实现变更需按范围重跑对应测试。
 
 ## 当前状态
 
@@ -1307,7 +1349,7 @@ durable runtime 主干实现已经完成，并经过上一轮报告的验证。�
 本次审计确认：
 - 所有"已实现能力"描述经代码核实基本准确，主要变更为文件路径和新增细节。
 - 所有"已发现 gap"均未关闭，仍然有效。
-- 新增发现：fanout 并发 item 目录冲突（latent correctness bug）、`blocked` 软状态、fanout quorum strategy、部分 runtime 类型超前于实现（powershell/pwsh/custom runner、retry.on/backoff、agent policy/session/options）、`runtime.*` expression scope 与 JS TaskContext 不一致。
+- 新增发现：`SchemaIR`/`TypeIR` closed-shape validation 缺口、fanout 并发 item 目录冲突（latent correctness bug）、`blocked` 软状态、fanout quorum strategy、部分 runtime 类型超前于实现（powershell/pwsh/custom runner、retry.on/backoff、agent policy/session/options）、`runtime.*` expression scope 与 JS TaskContext 不一致。
 - 下一步应先由人工在本文档中标注确认：哪些 gap 属于必须补齐的当前 runtime 能力，哪些属于明确暂不做的 legacy 面，哪些需要先更新 `specs/` 后再实现。
 
 标注：

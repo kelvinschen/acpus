@@ -1,6 +1,6 @@
 import type { Writable } from "node:stream";
 import { Command } from "commander";
-import type { JsonValue } from "@acpus/core/ir";
+import type { JsonValue } from "@acpus/expression/ir";
 import { admitWorkflowRun, normalizeWorkflowInput } from "@acpus/runtime";
 import { writePreflightArtifact } from "@acpus/workflow-compiler";
 import { usageError, validationError } from "../errors.js";

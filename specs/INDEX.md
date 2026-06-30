@@ -29,7 +29,7 @@ One short paragraph describing the current feature boundary.
 | Spec | Owner | Verification |
 | --- | --- | --- |
 | [Core Spec](core-spec.md) | `@acpus/core` | `pnpm --filter @acpus/core typecheck`, `pnpm test:unit -- packages/core`, `pnpm test:contract -- packages/core`, `pnpm test:type -- packages/core` |
-| [Core Expression Spec](core-expression-spec.md) | `@acpus/core/expression` | `pnpm test:unit -- packages/core/test/expressions.unit.test.ts`, `pnpm test:type -- packages/core` |
+| [Expression Spec](expression-spec.md) | `@acpus/expression` | `pnpm --filter @acpus/expression typecheck`, `pnpm test:unit -- packages/expression`, `pnpm test:contract -- packages/expression`, `pnpm test:type -- packages/expression` |
 | [Workflow Compiler Spec](workflow-compiler-spec.md) | `@acpus/workflow-compiler` | `pnpm --filter @acpus/workflow-compiler typecheck`, `pnpm test:contract -- packages/workflow-compiler`, `pnpm test:integration -- packages/workflow-compiler` |
 | [Runtime Spec](runtime-spec.md) | `@acpus/runtime` | `pnpm --filter @acpus/runtime typecheck`, `pnpm test:unit -- packages/runtime`, `pnpm test:integration -- packages/runtime`, `pnpm test:contract -- packages/runtime` |
 | [Agent Executor Spec](agent-executor-spec.md) | `@acpus/agent-executor` | `pnpm --filter @acpus/agent-executor typecheck`, `pnpm test:integration -- packages/agent-executor`, `pnpm test:contract -- packages/agent-executor` |

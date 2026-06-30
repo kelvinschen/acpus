@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@acpus/core": "workspace:*",
+    "@acpus/expression": "workspace:*",
     "@acpus/runtime": "workspace:*",
     "@acpus/workflow-compiler": "workspace:*",
     "commander": "^15.0.0",

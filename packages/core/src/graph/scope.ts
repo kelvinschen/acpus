@@ -1,8 +1,9 @@
-import { isExpr, type Expr } from "../expressions/expr.js";
+import { isExpr, type Expr } from "@acpus/expression";
 import { bindingsToIR } from "./lowering.js";
-import type { Primitive } from "./refs.js";
 import type { DiagnosticIR, NodeIR, ScopeIR } from "../ir/types.js";
 import type { StepFactory } from "./builder.js";
+
+type Primitive = string | number | boolean | null | undefined;
 
 export type OutputValue<T> =
   | Expr<T>

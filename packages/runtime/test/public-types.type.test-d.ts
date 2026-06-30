@@ -15,7 +15,8 @@ import type {
   SupervisorLoopOptions,
 } from "@acpus/runtime";
 import { admitWorkflowRun, getRun, listRuns, mutateRun, normalizeForkInput, normalizeSignalPayload, normalizeWorkflowInput, queueSupervisorShutdown, replayRun, signalRun, startSupervisorLoop } from "@acpus/runtime";
-import type { JsonValue, WorkflowIR } from "@acpus/core/ir";
+import type { WorkflowIR } from "@acpus/core/ir";
+import type { JsonValue } from "@acpus/expression/ir";
 
 test("@acpus/runtime public types describe use-case level runtime APIs", () => {
   expectTypeOf(admitWorkflowRun).parameters.toEqualTypeOf<[cwd: string, prepared: PreparedRunWorkflow, input: JsonValue]>();

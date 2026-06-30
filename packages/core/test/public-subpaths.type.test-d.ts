@@ -1,7 +1,8 @@
 import { assertType, expectTypeOf, test } from "vitest";
-import { defineWorkflow, task, template, z, type TaskContext } from "@acpus/core";
-import { fallback, refExpr, where, type Expr, type WorkflowValue } from "@acpus/core/expression";
-import { validateWorkflowIR, type ExprIR, type WorkflowIR } from "@acpus/core/ir";
+import { defineWorkflow, task, z, type TaskContext } from "@acpus/core";
+import { fallback, template, where, type Expr, type WorkflowValue } from "@acpus/expression";
+import { refExpr, type ExprIR } from "@acpus/expression/ir";
+import { validateWorkflowIR, type WorkflowIR } from "@acpus/core/ir";
 import { createDollar, type Dollar } from "@acpus/core/runtime";
 import { isSchema, validateValue, type InferSchema } from "@acpus/core/schema";
 import { compileWorkflowDefinition, type WorkflowDefinition } from "@acpus/core/workflow";

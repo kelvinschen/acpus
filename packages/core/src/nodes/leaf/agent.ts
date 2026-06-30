@@ -1,9 +1,9 @@
 import { envToIR, assertStableId, stripUndefined } from "../../graph/lowering.js";
-import { templateToIR, type Template } from "../../template/template.js";
-import { valueToExprIR } from "../../expressions/expr.js";
+import { templateToIR, type TemplateInput } from "../../template/template.js";
+import { valueToExprIR } from "@acpus/expression/ir";
 import { AGENT_TOKEN } from "../../internal/symbols.js";
 import { toSchemaIR, type Schema } from "../../schema/index.js";
-import type { WorkflowValue } from "../../expressions/expr.js";
+import type { WorkflowValue } from "@acpus/expression";
 import type { AgentDefinitionIR, AgentNodeIR, AgentRunIR, DiagnosticIR, JsonObject, RetryIR } from "../../ir/types.js";
 import type { EnvInput } from "./shared.js";
 
@@ -42,9 +42,9 @@ export function agentToken<Key extends string>(key: Key): AgentToken<Key> {
 
 export type AgentRunSpec = {
   agent: AgentToken;
-  prompt: Template | string;
+  prompt: TemplateInput;
   policy?: "read" | "full";
-  session?: { key?: Template | string };
+  session?: { key?: TemplateInput };
   cwd?: WorkflowValue<string>;
   env?: EnvInput;
 };

@@ -1,47 +1,28 @@
-export type JsonPrimitive = string | number | boolean | null;
-export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
-export type JsonObject = { [key: string]: JsonValue };
+import type { ExprIR, JsonObject, JsonPrimitive, JsonValue, TemplateIR, TypeIR } from "@acpus/expression/ir";
+export type { ExprIR, JsonArray, JsonObject, JsonPrimitive, JsonValue, TemplateIR, TemplatePartIR, TypeIR } from "@acpus/expression/ir";
 
-export type TypeIR =
+export type SchemaTypeIR =
   | { kind: "unknown" }
   | { kind: "string" }
-  | { kind: "integer" }
   | { kind: "number" }
   | { kind: "boolean" }
   | { kind: "null" }
+  | { kind: "array"; item: SchemaIR }
+  | { kind: "object"; fields: Record<string, SchemaIR>; required: string[]; additionalProperties: boolean }
+  | { kind: "record"; value: SchemaIR }
+  | { kind: "union"; variants: SchemaIR[] }
   | { kind: "path" }
   | { kind: "artifact"; mediaType?: string }
   | { kind: "secret_ref" }
   | { kind: "literal"; value: JsonPrimitive }
-  | { kind: "enum"; values: JsonPrimitive[] }
-  | { kind: "array"; item: TypeIR }
-  | { kind: "object"; fields: Record<string, TypeIR>; required: string[]; additionalProperties: boolean }
-  | { kind: "record"; key: TypeIR; value: TypeIR }
-  | { kind: "union"; variants: TypeIR[] };
+  | { kind: "enum"; values: JsonPrimitive[] };
 
-export type SchemaIR = TypeIR & {
+export type SchemaIR = SchemaTypeIR & {
   description?: string;
   default?: JsonValue;
   optional?: boolean;
   nullable?: boolean;
 };
-
-export type ExprIR =
-  | { kind: "literal"; value: unknown; type?: TypeIR }
-  | { kind: "ref"; path: string[]; type?: TypeIR }
-  | { kind: "call"; fn: string; args: ExprIR[]; type?: TypeIR }
-  | { kind: "array"; items: ExprIR[]; type?: TypeIR }
-  | { kind: "object"; fields: Record<string, ExprIR>; type?: TypeIR }
-  | { kind: "template"; template: TemplateIR; type?: TypeIR };
-
-export type TemplateIR = {
-  kind: "template";
-  parts: TemplatePartIR[];
-};
-
-export type TemplatePartIR =
-  | { kind: "text"; value: string }
-  | { kind: "expr"; expr: ExprIR };
 
 export type DurationIR = string;
 

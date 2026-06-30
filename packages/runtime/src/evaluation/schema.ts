@@ -1,6 +1,7 @@
-import type { JsonValue, SchemaIR, TypeIR } from "@acpus/core/ir";
+import type { JsonValue } from "@acpus/expression/ir";
+import type { SchemaIR } from "@acpus/core/ir";
 
-type RuntimeSchema = TypeIR & { optional?: boolean; nullable?: boolean; default?: JsonValue };
+type RuntimeSchema = SchemaIR;
 
 export function normalizeValue(schema: SchemaIR | undefined, value: JsonValue, label: string): JsonValue {
   if (!schema) return value;
@@ -22,8 +23,6 @@ function firstSchemaIssue(schema: RuntimeSchema, value: JsonValue, path: string)
       return validObject(value, { kind: "secret", name: "string" }, [], path);
     case "artifact":
       return validArtifact(value, schema, path);
-    case "integer":
-      return Number.isInteger(value) ? undefined : `${path} expected integer, got ${jsonType(value)}`;
     case "number":
       return typeof value === "number" ? undefined : `${path} expected number, got ${jsonType(value)}`;
     case "boolean":
@@ -60,8 +59,6 @@ function firstSchemaIssue(schema: RuntimeSchema, value: JsonValue, path: string)
     case "record":
       if (!isJsonObject(value)) return `${path} expected object, got ${jsonType(value)}`;
       for (const [key, item] of Object.entries(value)) {
-        const keyIssue = firstSchemaIssue(schema.key as RuntimeSchema, key, `${path}.{key}`);
-        if (keyIssue) return keyIssue;
         const valueIssue = firstSchemaIssue(schema.value as RuntimeSchema, item, `${path}.${key}`);
         if (valueIssue) return valueIssue;
       }

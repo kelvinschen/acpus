@@ -21,11 +21,6 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./expression": {
-      "development": "./src/expression.ts",
-      "types": "./dist/expression.d.ts",
-      "default": "./dist/expression.js"
-    },
     "./schema": {
       "development": "./src/schema.ts",
       "types": "./dist/schema.d.ts",
@@ -60,6 +55,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@acpus/expression": "workspace:*",
     "zod": "^4.4.3",
     "zx": "^8.8.5"
   },

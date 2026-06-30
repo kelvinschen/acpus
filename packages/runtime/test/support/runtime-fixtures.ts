@@ -4,9 +4,10 @@ import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { defineWorkflow, z } from "@acpus/core";
-import { where } from "@acpus/core/expression";
+import { where } from "@acpus/expression";
 import { type WorkflowDefinition, compileWorkflowDefinition } from "@acpus/core/workflow";
-import type { JsonValue, NodeIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
+import type { NodeIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
+import type { JsonValue } from "@acpus/expression/ir";
 import { admitWorkflowRun, normalizeWorkflowInput, type PreparedRunWorkflow, type RunWorkflowLockArtifact } from "@acpus/runtime";
 import { prepareWorkflow } from "@acpus/workflow-compiler";
 

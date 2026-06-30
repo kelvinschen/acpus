@@ -5,7 +5,7 @@ import {
   type InferSchema,
   type OutputValues,
 } from "../src/index.js";
-import { fallback, head, nth, type Expr } from "../src/expression.js";
+import { fallback, get, head, type Expr } from "@acpus/expression";
 
 const LoopOut = z.object({
   done: z.boolean(),
@@ -230,7 +230,7 @@ test("fanout over must be a typed array and strategy controls final output", () 
 
     assertType<Expr<Array<{ id: string }>>>(allItems.output);
     expectTypeOf(head(allItems.output).id).toEqualTypeOf<Expr<string | undefined>>();
-    expectTypeOf(nth(allItems.output, 1).id).toEqualTypeOf<Expr<string | undefined>>();
+    expectTypeOf(get(allItems.output, 1).id).toEqualTypeOf<Expr<string | undefined>>();
 
     const literalItems = step("literal_items").fanout({
       over: [{ id: input.items[0]!.id }],

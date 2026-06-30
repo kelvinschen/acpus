@@ -3,11 +3,10 @@ import {
   defineWorkflow,
   secret,
   task,
-  template,
   z,
 } from "../src/index.js";
 import { compileWorkflowDefinition } from "../src/workflow.js";
-import { eq, fallback, head, matches, or, pick, where } from "../src/expression.js";
+import { eq, fallback, head, matches, or, pick, template, where } from "@acpus/expression";
 import { toSchemaIR } from "../src/schema.js";
 
 const NormalizeInput = z.object({ packageName: z.string() });
@@ -185,6 +184,7 @@ describe("workflow compilation", () => {
                 path: ["nodes", "run_tests", "output", "summary"],
               },
             },
+            { kind: "text", value: "" },
           ],
         },
         session: {
@@ -198,6 +198,7 @@ describe("workflow compilation", () => {
                   path: ["nodes", "run_tests", "output", "summary"],
                 },
               },
+              { kind: "text", value: "" },
             ],
           },
         },
@@ -230,6 +231,7 @@ describe("workflow compilation", () => {
               kind: "expr",
               expr: { kind: "ref", path: ["input", "packageName"] },
             },
+            { kind: "text", value: "" },
           ],
         },
       },
@@ -377,6 +379,7 @@ describe("workflow compilation", () => {
             kind: "expr",
             expr: { kind: "ref", path: ["fanout", "per_item", "itemIndex"] },
           },
+          { kind: "text", value: "" },
         ],
       },
       do: {
@@ -402,7 +405,21 @@ describe("workflow compilation", () => {
         kind: "call",
         fn: "coalesce",
         args: [
-          { kind: "ref", path: ["nodes", "per_item", "output", "0", "ok"] },
+          {
+            kind: "call",
+            fn: "get",
+            args: [
+              {
+                kind: "call",
+                fn: "get",
+                args: [
+                  { kind: "ref", path: ["nodes", "per_item", "output"] },
+                  { kind: "literal", value: 0 },
+                ],
+              },
+              { kind: "literal", value: "ok" },
+            ],
+          },
           { kind: "literal", value: false },
         ],
       },

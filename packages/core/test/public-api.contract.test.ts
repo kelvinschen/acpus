@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import * as core from "@acpus/core";
-import * as expression from "@acpus/core/expression";
 import * as ir from "@acpus/core/ir";
 import * as runtime from "@acpus/core/runtime";
 import * as schema from "@acpus/core/schema";
@@ -13,44 +12,7 @@ describe("@acpus/core public API", () => {
       "s",
       "secret",
       "task",
-      "template",
       "z",
-    ]);
-  });
-
-  it("exports expression helpers from the expression entrypoint", () => {
-    expect(Object.keys(expression).sort()).toEqual([
-      "all",
-      "and",
-      "any",
-      "coalesce",
-      "endsWith",
-      "eq",
-      "expr",
-      "exprOps",
-      "fallback",
-      "gt",
-      "gte",
-      "head",
-      "includes",
-      "isEmpty",
-      "isExpr",
-      "len",
-      "literal",
-      "lt",
-      "lte",
-      "matches",
-      "max",
-      "min",
-      "ne",
-      "not",
-      "nth",
-      "or",
-      "pick",
-      "refExpr",
-      "startsWith",
-      "valueToExprIR",
-      "where",
     ]);
   });
 

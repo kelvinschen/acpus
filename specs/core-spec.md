@@ -2,13 +2,13 @@
 
 ## Purpose
 
-`@acpus/core` is the TypeScript-first authoring and IR construction package for Acpus. It provides the workflow DSL, schema bridge, expression and template authoring primitives, node authoring shapes, serializable `WorkflowIR` types, and structural IR validation. It compiles in-memory workflow definitions with `compileWorkflowDefinition`; TypeScript module loading, workflow typechecking, task provenance analysis, and task bundling belong to `@acpus/workflow-compiler`.
+`@acpus/core` is the TypeScript-first workflow authoring and IR construction package for Acpus. It provides the workflow DSL, schema bridge, node authoring shapes, serializable `WorkflowIR` types, and structural IR validation. Expression and template authoring belongs to `@acpus/expression`. Core compiles in-memory workflow definitions with `compileWorkflowDefinition`; TypeScript module loading, workflow typechecking, task provenance analysis, and task bundling belong to `@acpus/workflow-compiler`.
 
 ## Requirements
 
 ### Public API
 
-- The root `@acpus/core` entrypoint MUST expose the minimal workflow authoring surface: `defineWorkflow`, `z`, `s`, `task`, `template`, and `secret`.
+- The root `@acpus/core` entrypoint MUST expose the minimal workflow authoring surface: `defineWorkflow`, `z`, `s`, `task`, and `secret`.
 - `@acpus/core/workflow` MUST expose `defineWorkflow`, `compileWorkflowDefinition`, and `isWorkflowDefinition`.
 - `@acpus/core/schema` MUST expose schema authoring, parsing, validation, and lowering helpers, including `z`, `s`, `isSchema`, `parseSchema`, `safeParseSchema`, `validateValue`, `toSchemaIR`, `toJSONSchema`, `schemaToJsonSchema`, and `assertBoundarySchema`.
 - `@acpus/core/runtime` MUST expose the task command wrapper factory `createDollar`, secret tokens, and related task runtime types.
@@ -34,15 +34,16 @@
 - The core MUST re-export Zod 4 as `z` and MUST add Acpus extensions `z.path()`, `z.artifact(mediaType?)`, `z.secretRef()`, and `z.integer()`.
 - Graph-boundary schemas MUST be canonicalized to serializable `SchemaIR` via `toSchemaIR(schema)`.
 - The graph-boundary schema subset MUST include string, number, integer, boolean, null, unknown, literal, enum, array, object, record, union, optional, nullable, default, path, artifact, and secretRef schemas.
+- Integer schema extensions MUST lower to expression-compatible `SchemaIR` with `kind: "number"`.
 - Graph-boundary schema lowering MUST reject runtime-only or non-serializable schema constructs such as transform, custom, function, promise, map, set, date, bigint, symbol, undefined, void, and never.
+- `SchemaIR` MUST be a core-owned recursive schema union. It MUST NOT reuse expression `TypeIR` for core-only variants such as `path`, `artifact`, `secretRef`, `literal`, `enum`, or schema metadata.
+- `validateWorkflowIR(ir)` MUST validate `SchemaIR` as a closed recursive union, reject unknown schema kinds and fields, and reject hand-authored `kind: "integer"` in favor of `kind: "number"`.
 
-### Templates And Helpers
+### Expression, Templates, And Helpers
 
-- The core MUST provide a tagged `template` helper that produces `TemplateIR` with text and expression parts.
+- Core authoring APIs MUST accept workflow values and expression/template tokens produced by `@acpus/expression`.
 - Plain string prompts/messages MUST lower to `TemplateIR` with one text part.
 - Template interpolation MUST preserve expressions in `TemplateIR`; rendering policy belongs to runtime consumers.
-- `pick(source, keys)` MUST project top-level fields from an object-like output accessor without creating nodes or a distinct IR shape.
-- `fallback(value, defaultValue)` MUST lower to the same expression semantics as `coalesce(value, defaultValue)` and MUST NOT create nodes or output tokens.
 
 ### Nodes
 
@@ -66,8 +67,7 @@
 - Parent scopes MUST access a composite node only through that node's projected `output`.
 - Composite callbacks for nodes that declare an `outputSchema` MUST type-check the returned output object's field types and required fields against that schema; output fields outside the schema MUST be rejected at IR build time (see IR And Validation), because callback return values do not receive compile-time excess-property checks.
 - Composite callbacks MUST declare their scope output by returning a plain object whose fields satisfy the scope's `outputSchema`.
-- Array output accessors MUST support numeric index refs.
-- `head(array)` and `nth(array, index)` MUST return accessors typed as possibly `undefined` and lower to index ref paths.
+- Array output accessors MUST support numeric index access through `@acpus/expression` accessors and helpers.
 - If nodes MUST use `step("id").if({ condition, outputSchema?, then, else? })`.
 - Switch nodes MUST use `default` for fallback authoring.
 - Parallel nodes MUST express static named branch concurrency and support `strategy?: "all" | "race"`, defaulting to `"all"`.

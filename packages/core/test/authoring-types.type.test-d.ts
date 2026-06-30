@@ -3,7 +3,6 @@ import {
   defineWorkflow,
   secret,
   task,
-  template,
   z,
   type ScopeContext,
   type StepDeclaration,
@@ -14,7 +13,7 @@ import {
   type AgentToken,
   type TaskStepSpec,
 } from "../src/index.js";
-import { includes, isEmpty, pick, where, type Expr, type WorkflowValue } from "../src/expression.js";
+import { includes, isEmpty, not, pick, template, where, type Expr, type WorkflowValue } from "@acpus/expression";
 
 test("step declaration object exposes kind methods", () => {
   defineWorkflow({ name: "typed-step-declaration" }).build(({ input, step }) => {
@@ -556,14 +555,10 @@ test("boolean node conditions require boolean workflow values", () => {
       ok: input.shouldRun,
       branch: input.branch,
       score: { gte: input.minScore },
-      tag: { in: input.allowedTags, notIn: [input.branch] },
-      tags: { contains: input.branch, isEmpty: false },
     }));
 
-    // @ts-expect-error where isEmpty is a literal filter selector, not a workflow boolean branch.
-    where(review.output, { tags: { isEmpty: input.shouldRun } });
-
     assertType<Expr<boolean>>(includes(review.output.tags, input.branch));
+    assertType<Expr<boolean>>(not(includes([input.branch], review.output.tag)));
     assertType<Expr<boolean>>(includes(input.packageName, "pkg"));
     assertType<Expr<boolean>>(isEmpty(review.output.tags));
     assertType<Expr<boolean>>(isEmpty(input.packageName));

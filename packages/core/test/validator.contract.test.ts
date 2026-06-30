@@ -1,7 +1,57 @@
 import { describe, expect, it } from "vitest";
 import { validateWorkflowIR, type WorkflowIR } from "../src/ir.js";
 
+function minimalWorkflow(overrides: Partial<WorkflowIR> = {}): WorkflowIR {
+  return {
+    irVersion: 2,
+    name: "minimal",
+    agents: {},
+    root: { nodes: [] },
+    outputs: {},
+    assets: { taskBundles: {} },
+    lock: { acpusCoreVersion: "test", taskBundleDigests: {}, generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
+    diagnostics: [],
+    ...overrides,
+  };
+}
+
 describe("WorkflowIR diagnostics contract", () => {
+  it("accepts expression lambda IR through the workflow validator", () => {
+    const ir: WorkflowIR = {
+      irVersion: 2,
+      name: "lambda_expression",
+      agents: {},
+      root: {
+        nodes: [],
+        outputs: {
+          scores: {
+            kind: "call",
+            fn: "map",
+            args: [
+              { kind: "ref", path: ["input", "items"] },
+              {
+                kind: "lambda",
+                params: [{ id: "v0" }, { id: "v1" }],
+                body: { kind: "var", id: "v0", path: ["score"] },
+              },
+            ],
+          },
+        },
+      },
+      outputs: {},
+      assets: { taskBundles: {} },
+      lock: {
+        acpusCoreVersion: "test",
+        taskBundleDigests: {},
+        generatedAt: "2026-01-01T00:00:00.000Z",
+        notes: [],
+      },
+      diagnostics: [],
+    };
+
+    expect(validateWorkflowIR(ir)).toEqual([]);
+  });
+
   it("returns stable diagnostic codes and paths for invalid IR", () => {
     const ir: WorkflowIR = {
       irVersion: 2,
@@ -72,7 +122,7 @@ describe("WorkflowIR diagnostics contract", () => {
     }));
     expect(diagnostics).toContainEqual(expect.objectContaining({
       code: "SC001",
-      path: "inputSchema",
+      path: "inputSchema.required.0",
     }));
     expect(diagnostics).toContainEqual(expect.objectContaining({
       code: "T005",
@@ -685,5 +735,183 @@ describe("WorkflowIR diagnostics contract", () => {
     } as any;
 
     expect(validateWorkflowIR(ir).filter(d => d.code === "O001")).toHaveLength(0);
+  });
+
+  it("validates SchemaIR as a closed recursive union", () => {
+    const ir: WorkflowIR = {
+      irVersion: 2,
+      name: "bad_schema",
+      inputSchema: {
+        kind: "object",
+        fields: {
+          age: { kind: "integer" },
+          bad: { kind: "mystery" },
+          tags: { kind: "array" },
+          names: { kind: "array", item: { kind: "string", extra: true } },
+          open: { kind: "object", fields: {}, required: [], additionalProperties: "yes" },
+        },
+        required: ["missing"],
+        additionalProperties: false,
+        extra: true,
+      } as any,
+      agents: {},
+      root: { nodes: [] },
+      outputs: {},
+      assets: { taskBundles: {} },
+      lock: { acpusCoreVersion: "test", taskBundleDigests: {}, generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
+      diagnostics: [],
+    };
+
+    expect(validateWorkflowIR(ir)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "IR001", path: "inputSchema.extra" }),
+      expect.objectContaining({ code: "SC001", path: "inputSchema.required.0" }),
+      expect.objectContaining({ code: "SC002", path: "inputSchema.fields.age.kind" }),
+      expect.objectContaining({ code: "SC002", path: "inputSchema.fields.bad.kind" }),
+      expect.objectContaining({ code: "SC002", path: "inputSchema.fields.tags.item" }),
+      expect.objectContaining({ code: "IR001", path: "inputSchema.fields.names.item.extra" }),
+      expect.objectContaining({ code: "SC002", path: "inputSchema.fields.open.additionalProperties" }),
+    ]));
+  });
+
+  it("validates literal, enum, artifact, and secret schema variants", () => {
+    const ir: WorkflowIR = {
+      irVersion: 2,
+      name: "bad_schema_variants",
+      inputSchema: {
+        kind: "union",
+        variants: [
+          { kind: "literal", value: {} },
+          { kind: "enum", values: ["ok", {}] },
+          { kind: "artifact", mediaType: 1 },
+          { kind: "secret_ref", extra: true },
+        ],
+      } as any,
+      agents: {},
+      root: { nodes: [] },
+      outputs: {},
+      assets: { taskBundles: {} },
+      lock: { acpusCoreVersion: "test", taskBundleDigests: {}, generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
+      diagnostics: [],
+    };
+
+    expect(validateWorkflowIR(ir)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "SC002", path: "inputSchema.variants.0.value" }),
+      expect.objectContaining({ code: "SC002", path: "inputSchema.variants.1.values.1" }),
+      expect.objectContaining({ code: "SC002", path: "inputSchema.variants.2.mediaType" }),
+      expect.objectContaining({ code: "IR001", path: "inputSchema.variants.3.extra" }),
+    ]));
+  });
+
+  it("accepts valid recursive core-only SchemaIR", () => {
+    const ir: WorkflowIR = {
+      irVersion: 2,
+      name: "valid_recursive_schema",
+      inputSchema: {
+        kind: "object",
+        fields: {
+          file: { kind: "artifact", mediaType: "text/plain" },
+          home: { kind: "path" },
+          secret: { kind: "secret_ref" },
+          tags: { kind: "array", item: { kind: "string" } },
+          config: { kind: "record", value: { kind: "union", variants: [{ kind: "string" }, { kind: "number" }, { kind: "null" }] } },
+        },
+        required: ["file", "home"],
+        additionalProperties: false,
+      },
+      agents: {},
+      root: { nodes: [] },
+      outputs: {},
+      assets: { taskBundles: {} },
+      lock: { acpusCoreVersion: "test", taskBundleDigests: {}, generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
+      diagnostics: [],
+    };
+
+    expect(validateWorkflowIR(ir)).toEqual([]);
+  });
+
+  it("validates top-level workflow outputs", () => {
+    const diagnostics = validateWorkflowIR(minimalWorkflow({
+      outputs: {
+        bad: { kind: "ref", path: [] },
+      },
+    }));
+
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: "E001",
+      path: "outputs.bad.path",
+    }));
+  });
+
+  it("returns diagnostics instead of throwing for malformed top-level containers", () => {
+    const malformed = {
+      irVersion: 1,
+      name: "malformed",
+      agents: [],
+      root: "bad",
+      outputs: [],
+      assets: {},
+      lock: { notes: "bad" },
+      diagnostics: {},
+    };
+
+    expect(() => validateWorkflowIR(malformed as any)).not.toThrow();
+    expect(validateWorkflowIR(malformed as any)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "IR002", path: "irVersion" }),
+      expect.objectContaining({ code: "IR002", path: "agents" }),
+      expect.objectContaining({ code: "E004", path: "outputs" }),
+      expect.objectContaining({ code: "IR002", path: "assets.taskBundles" }),
+      expect.objectContaining({ code: "IR002", path: "lock.acpusCoreVersion" }),
+      expect.objectContaining({ code: "IR002", path: "lock.taskBundleDigests" }),
+      expect.objectContaining({ code: "IR002", path: "lock.generatedAt" }),
+      expect.objectContaining({ code: "IR002", path: "lock.notes" }),
+      expect.objectContaining({ code: "IR002", path: "diagnostics" }),
+      expect.objectContaining({ code: "IR002", path: "root" }),
+    ]));
+  });
+
+  it("detects sparse arrays in core-owned IR arrays", () => {
+    const nodes = new Array(1);
+    expect(validateWorkflowIR(minimalWorkflow({ root: { nodes } as any }))).toContainEqual(expect.objectContaining({
+      code: "IR002",
+      path: "root.nodes.0",
+    }));
+
+    const cases = new Array(1);
+    expect(validateWorkflowIR(minimalWorkflow({
+      root: {
+        nodes: [{
+          id: "route",
+          kind: "switch",
+          cases,
+        }],
+      },
+    } as any))).toContainEqual(expect.objectContaining({
+      code: "IR002",
+      path: "root.nodes.route.cases.0",
+    }));
+
+    const parts = new Array(1);
+    expect(validateWorkflowIR(minimalWorkflow({
+      agents: {
+        reviewer: {
+          kind: "agent_definition",
+          use: "codex",
+        },
+      },
+      root: {
+        nodes: [{
+          id: "review",
+          kind: "agent",
+          run: {
+            kind: "agent_run",
+            agent: "reviewer",
+            prompt: { kind: "template", parts },
+          },
+        }],
+      },
+    } as any))).toContainEqual(expect.objectContaining({
+      code: "TM002",
+      path: "root.nodes.review.run.prompt.parts.0",
+    }));
   });
 });
