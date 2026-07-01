@@ -8,17 +8,15 @@ Maintenance rules for agents and humans working on this codebase.
 
 - Current product/design truth MUST live in `specs/`, not `docs/`.
 - The codebase is under active iteration; treat feature changes as greenfield current behavior. Do not add migration warnings, legacy-field diagnostics, compatibility shims, or backward-compatibility behavior unless explicitly requested.
-- After a breaking change, specs and tests MUST describe and validate only the new current behavior. Do not add assertions or wording whose only purpose is to document or reject removed behavior.
 - Future plans, backlog, and capability gaps MUST live in `docs/roadmap/`, not `specs/`.
-- Historical plans, validation records, roadmap, and handoff notes MUST live under `legacy/` and MUST NOT be treated as current implementation truth.
 - SPEC files MUST use the template and RFC 2119 language defined in `specs/INDEX.md`.
+- After a breaking change, specs and tests MUST describe and validate only the new current behavior. Do not add assertions or wording whose only purpose is to document or reject removed behavior.
 
 ## Development Practice
 
 - Read the relevant spec before changing implementation. If code and spec disagree, fix one of them in the same change.
 - Use the smallest layer that solves the task. Prefer a pure lowering/helper change over adding a new wrapper or abstraction.
-- Preserve the public surface through `packages/core/src/index.ts`; new authoring primitives need public exports and tests.
-- Keep IR serializable. Do not put live Zod objects, functions, processes, or runtime-only handles into `WorkflowIR`.
+- Model recoverable boundary failures with typed Result/ResultAsync and tagged errors. Keep local absence as `undefined`, invariant/system failures as throws, and never serialize Result objects into IR, events, SQLite rows, or CLI JSON.
 - Treat `legacy/` as archival. Do not edit or import from it unless the task explicitly asks for legacy maintenance.
 
 ## The Way of Clean Code
@@ -54,17 +52,7 @@ Detailed guidance lives in `docs/development-testing.md`.
 - **Cost proportional to risk** — reserve expensive E2E tests for high-value cross-layer paths.
 - **No whole-IR snapshots** — assert stable slices and use partial matchers for dynamic fields such as `generatedAt`, task source text, digest values, and temp paths.
 
-### Test placement
-
-- `*.unit.test.ts`: pure functions such as schema lowering, expression lowering, template lowering, secret/env lowering.
-- `*.contract.test.ts`: public API and stable serialized contracts such as diagnostic codes/paths and IR shape.
-- `*.integration.test.ts`: cross-layer authoring/compiler flows such as `defineWorkflow` -> graph -> compiler -> validator.
-- `*.e2e.test.ts`: user-facing command/package paths for packages that provide commands.
-- `*.regression.test.ts`: one minimal reproduction for a fixed bug that is likely to return.
-
 ## Build Maintenance
-
 - After fully completing any feature implementation, MUST run the relevant build/test command so checked-in generated artifacts stay current.
 - Prefer the narrow command while developing (`pnpm test:unit`, `pnpm test:contract`, `pnpm test:integration`, `pnpm test:e2e`) and broader checks before handoff (`pnpm test`, `pnpm typecheck`).
 - If a command could not be run, the final response MUST state that clearly.
-- The package name of acpus is `acpus` instead of `@acpus/cli`.

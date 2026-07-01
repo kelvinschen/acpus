@@ -9,7 +9,7 @@ import { valueToExprIR } from "@acpus/expression/ir";
 import { evaluateExpr } from "../evaluation/evaluator.js";
 import { applySchedulerEvents, createSchedulerProjection } from "../scheduler/transitions.js";
 import type { SchedulerEvent } from "../scheduler/events.js";
-import type { RunOwnerClaim, SchedulerCommit, SchedulerSnapshot, SchedulerStorePort, AttemptStartInput, AttemptCommitInput, SignalConsumeInput, SchedulerPauseInput, SchedulerResumeInput, SchedulerRetryInput, SchedulerRunRetryInput } from "../scheduler/store-port.js";
+import { SchedulerStoreException, schedulerStoreResult, type RunOwnerClaim, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStorePort, type AttemptStartInput, type AttemptCommitInput, type SignalConsumeInput, type SchedulerPauseInput, type SchedulerResumeInput, type SchedulerRetryInput, type SchedulerRunRetryInput, type SchedulerStoreError, type SchedulerStoreResult } from "../scheduler/store-port.js";
 import type { SchedulerProjection } from "../scheduler/types.js";
 
 export type RunStatus = "pending" | "running" | "paused" | "awaiting" | "failed" | "completed" | "canceled";
@@ -277,30 +277,57 @@ export type ReplayResult = {
   };
 };
 
-export type ControlCommand = {
+export type ControlCommandType = "pause" | "resume" | "retry" | "fork" | "signal" | "shutdown";
+export type ControlCommandStatus = "pending" | "running" | "applied" | "failed";
+type RunControlCommandType = Exclude<ControlCommandType, "shutdown">;
+export type PauseCommandPayload = { reason?: string };
+export type EmptyCommandPayload = Record<string, never>;
+export type RetryCommandPayload = { node?: string };
+export type ForkCommandPayload = { prepared?: JsonValue; input?: JsonValue; agentOverrides?: JsonValue };
+export type SignalCommandPayload = { node: string; payload?: JsonValue };
+export type AppliedCommandPayload = { status: string; forkRunId?: string; nodeKey?: string };
+export type FailedCommandPayload = { type: string; message: string };
+
+type CommandPayload<T extends ControlCommandType> =
+  T extends "pause" ? PauseCommandPayload
+    : T extends "resume" ? EmptyCommandPayload
+      : T extends "retry" ? RetryCommandPayload
+        : T extends "fork" ? ForkCommandPayload
+          : T extends "signal" ? SignalCommandPayload
+            : EmptyCommandPayload;
+
+type ControlCommandBase<T extends ControlCommandType> = {
   id: string;
-  runId?: string;
-  type: string;
-  status: "pending" | "running" | "applied" | "failed";
+  type: T;
   idempotencyKey: string;
 };
 
-export type PendingControlCommand = ControlCommand & {
-  payload: JsonValue;
-};
+export type ControlCommand =
+  | { [T in RunControlCommandType]: ControlCommandBase<T> & { runId: string; status: ControlCommandStatus } }[RunControlCommandType]
+  | (ControlCommandBase<"shutdown"> & { runId?: undefined; status: ControlCommandStatus });
 
-export type SubmitCommandInput = {
-  runId?: string;
-  type: string;
-  payload?: JsonValue;
+type CommandStatePayload<T extends ControlCommandType> =
+  | { status: "pending" | "running"; payload: CommandPayload<T> }
+  | { status: "applied"; payload: AppliedCommandPayload }
+  | { status: "failed"; payload: FailedCommandPayload };
+
+export type PendingControlCommand =
+  | { [T in RunControlCommandType]: ControlCommandBase<T> & { runId: string } & CommandStatePayload<T> }[RunControlCommandType]
+  | (ControlCommandBase<"shutdown"> & { runId?: undefined } & CommandStatePayload<"shutdown">);
+
+type SubmitCommandBase<T extends ControlCommandType> = {
+  type: T;
+  payload?: CommandPayload<T>;
   idempotencyKey: string;
 };
 
-export type FinishCommandInput = {
-  id: string;
-  status: "applied" | "failed";
-  payload?: JsonValue;
-};
+export type SubmitCommandInput =
+  | { [T in RunControlCommandType]: SubmitCommandBase<T> & { runId: string } }[RunControlCommandType]
+  | (SubmitCommandBase<"shutdown"> & { runId?: undefined });
+
+export type FinishCommandInput =
+  | { id: string; status: "applied"; payload?: AppliedCommandPayload }
+  | { id: string; status: "failed"; payload: FailedCommandPayload };
 
 export type ControlOptions = {
   commandId?: string;
@@ -835,14 +862,7 @@ class SqliteRuntimeStore implements RuntimeStore {
       WHERE idempotency_key = ?
     `).get(input.idempotencyKey) as Record<string, unknown> | undefined;
     if (!row) throw new Error(`Command '${input.idempotencyKey}' was not persisted.`);
-    return {
-      id: String(row.id),
-      ...(row.run_id === null ? {} : { runId: String(row.run_id) }),
-      type: String(row.type),
-      status: String(row.status) as ControlCommand["status"],
-      idempotencyKey: String(row.idempotency_key),
-      payload: JSON.parse(String(row.payload_json)) as JsonValue,
-    };
+    return toPendingCommand(row);
   }
 
   getCommand(commandId: string): PendingControlCommand | undefined {
@@ -1569,15 +1589,23 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     return result.changes === 1;
   }
 
+  tryLoadRunSnapshot(runId: string): SchedulerStoreResult<SchedulerSnapshot> {
+    return schedulerStoreResult(() => this.loadRunSnapshot(runId));
+  }
+
   loadRunSnapshot(runId: string): SchedulerSnapshot {
     const row = this.db.prepare("SELECT id FROM runs WHERE id = ?").get(runId);
-    if (!row) throw new Error(`Run '${runId}' was not found.`);
+    if (!row) throwSchedulerStoreError({ type: "run-not-found", runId, message: `Run '${runId}' was not found.` });
     const events = this.schedulerEvents(runId);
     return {
       runId,
       version: this.currentVersion(runId),
       projection: applySchedulerEvents(createSchedulerProjection(runId), events),
     };
+  }
+
+  tryAppendSchedulerEvents(commit: SchedulerCommit): SchedulerStoreResult<SchedulerSnapshot> {
+    return schedulerStoreResult(() => this.appendSchedulerEvents(commit));
   }
 
   appendSchedulerEvents(commit: SchedulerCommit): SchedulerSnapshot {
@@ -1589,7 +1617,15 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const currentVersion = this.currentVersion(commit.runId);
-      if (currentVersion !== commit.expectedVersion) throw new Error(`Run '${commit.runId}' scheduler version mismatch.`);
+      if (currentVersion !== commit.expectedVersion) {
+        throwSchedulerStoreError({
+          type: "version-mismatch",
+          runId: commit.runId,
+          expectedVersion: commit.expectedVersion,
+          actualVersion: currentVersion,
+          message: `Run '${commit.runId}' scheduler version mismatch.`,
+        });
+      }
       this.requireOwnerEpoch(commit.runId, commit.ownerEpoch);
       applySchedulerEvents(createSchedulerProjection(commit.runId), [...this.schedulerEvents(commit.runId), ...commit.events]);
       this.db.prepare(`
@@ -1614,23 +1650,27 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     }
   }
 
+  tryStartAttempt(input: AttemptStartInput): SchedulerStoreResult<{ attemptId: string; attemptNo: number }> {
+    return schedulerStoreResult(() => this.startAttempt(input));
+  }
+
   startAttempt(input: AttemptStartInput): { attemptId: string; attemptNo: number } {
     const existing = this.eventByIdempotencyKey(input.idempotencyKey);
     if (existing && existing.type === "attempt.started") {
       const payload = existing.payload as { attemptId?: unknown; attemptNo?: unknown };
-      if (existing.run_id !== input.runId) throw new Error(`Attempt start idempotency key '${input.idempotencyKey}' conflicts with another run.`);
-      if (!matchesAttemptStartInput(input, payload)) throw new Error(`Attempt start idempotency key '${input.idempotencyKey}' conflicts with different input.`);
+      if (existing.run_id !== input.runId) throwSchedulerStoreError({ type: "idempotency-conflict", idempotencyKey: input.idempotencyKey, runId: input.runId, message: `Attempt start idempotency key '${input.idempotencyKey}' conflicts with another run.` });
+      if (!matchesAttemptStartInput(input, payload)) throwSchedulerStoreError({ type: "idempotency-conflict", idempotencyKey: input.idempotencyKey, runId: input.runId, message: `Attempt start idempotency key '${input.idempotencyKey}' conflicts with different input.` });
       if (typeof payload.attemptId === "string" && typeof payload.attemptNo === "number") return { attemptId: payload.attemptId, attemptNo: payload.attemptNo };
       throw new Error(`Attempt start idempotency key '${input.idempotencyKey}' has invalid payload.`);
     }
-    if (existing) throw new Error(`Attempt start idempotency key '${input.idempotencyKey}' conflicts with ${existing.type}.`);
+    if (existing) throwSchedulerStoreError({ type: "idempotency-conflict", idempotencyKey: input.idempotencyKey, runId: input.runId, message: `Attempt start idempotency key '${input.idempotencyKey}' conflicts with ${existing.type}.` });
     const now = new Date().toISOString();
     const attemptId = `attempt_${randomUUID()}`;
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.requireOwnerEpoch(input.runId, input.ownerEpoch);
       const currentProjection = applySchedulerEvents(createSchedulerProjection(input.runId), this.schedulerEvents(input.runId));
-      if (currentProjection.run.status === "paused") throw new Error(`Run '${input.runId}' is paused.`);
+      if (currentProjection.run.status === "paused") throwSchedulerStoreError({ type: "run-paused", runId: input.runId, message: `Run '${input.runId}' is paused.` });
       const row = this.db.prepare("SELECT COALESCE(MAX(attempt_no), 0) + 1 AS count FROM node_attempts WHERE run_id = ? AND node_key = ?").get(input.runId, input.nodeKey) as CountRow | undefined;
       const attemptNo = row?.count ?? 1;
       const sequence = this.nextSequence(input.runId);
@@ -1675,15 +1715,19 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     }
   }
 
+  tryCommitAttemptResult(input: AttemptCommitInput): SchedulerStoreResult<SchedulerSnapshot> {
+    return schedulerStoreResult(() => this.commitAttemptResult(input));
+  }
+
   commitAttemptResult(input: AttemptCommitInput): SchedulerSnapshot {
     const existing = this.eventByIdempotencyKey(input.idempotencyKey);
     if (existing) {
-      if (existing.run_id !== input.runId) throw new Error(`Attempt commit idempotency key '${input.idempotencyKey}' conflicts with another run.`);
+      if (existing.run_id !== input.runId) throwSchedulerStoreError({ type: "idempotency-conflict", idempotencyKey: input.idempotencyKey, runId: input.runId, message: `Attempt commit idempotency key '${input.idempotencyKey}' conflicts with another run.` });
       const attempt = this.db.prepare("SELECT node_key FROM node_attempts WHERE run_id = ? AND attempt_id = ?").get(input.runId, input.attemptId) as { node_key: string } | undefined;
-      if (!attempt) throw new Error(`Attempt '${input.attemptId}' was not found.`);
+      if (!attempt) throwSchedulerStoreError({ type: "attempt-not-found", attemptId: input.attemptId, message: `Attempt '${input.attemptId}' was not found.` });
       const event = attemptResultEvent(input, attempt.node_key);
       if (existing.type !== event.type || stableJson(existing.payload) !== stableJson(event.payload)) {
-        throw new Error(`Attempt commit idempotency key '${input.idempotencyKey}' conflicts with different input.`);
+        throwSchedulerStoreError({ type: "idempotency-conflict", idempotencyKey: input.idempotencyKey, runId: input.runId, message: `Attempt commit idempotency key '${input.idempotencyKey}' conflicts with different input.` });
       }
       return this.loadRunSnapshot(input.runId);
     }
@@ -1691,10 +1735,10 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const attempt = this.db.prepare("SELECT run_id, node_key, owner_epoch, status FROM node_attempts WHERE attempt_id = ?").get(input.attemptId) as { run_id: string; node_key: string; owner_epoch: number; status: string } | undefined;
-      if (!attempt || attempt.run_id !== input.runId) throw new Error(`Attempt '${input.attemptId}' was not found.`);
-      if (attempt.owner_epoch !== input.ownerEpoch) throw new Error(`Attempt '${input.attemptId}' owner epoch is stale.`);
+      if (!attempt || attempt.run_id !== input.runId) throwSchedulerStoreError({ type: "attempt-not-found", attemptId: input.attemptId, message: `Attempt '${input.attemptId}' was not found.` });
+      if (attempt.owner_epoch !== input.ownerEpoch) throwSchedulerStoreError({ type: "owner-epoch-stale", runId: input.runId, attemptId: input.attemptId, ownerEpoch: input.ownerEpoch, message: `Attempt '${input.attemptId}' owner epoch is stale.` });
       this.requireOwnerEpoch(input.runId, input.ownerEpoch);
-      if (attempt.status !== "started") throw new Error(`Attempt '${input.attemptId}' is already ${attempt.status}.`);
+      if (attempt.status !== "started") throwSchedulerStoreError({ type: "terminal-attempt", attemptId: input.attemptId, status: attempt.status, message: `Attempt '${input.attemptId}' is already ${attempt.status}.` });
       const event = attemptResultEvent(input, String(attempt.node_key));
       const instanceEvent = instanceResultEvent(input, String(attempt.node_key), event);
       const memberEvent = this.groupMemberResultEventForNode(input.runId, String(attempt.node_key), input.result);
@@ -1728,14 +1772,27 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     }
   }
 
+  tryConsumeSignal(input: SignalConsumeInput): SchedulerStoreResult<SchedulerSnapshot> {
+    return schedulerStoreResult(() => this.consumeSignal(input));
+  }
+
   consumeSignal(input: SignalConsumeInput): SchedulerSnapshot {
     const snapshot = this.loadRunSnapshot(input.runId);
     const wait = snapshot.projection.signalWaits[input.nodeKey];
-    if (!wait) throw new Error(`Signal wait '${input.nodeKey}' was not found.`);
+    if (!wait) throwSchedulerStoreError({ type: "signal-wait-not-found", runId: input.runId, nodeKey: input.nodeKey, message: `Signal wait '${input.nodeKey}' was not found.` });
     if (wait.status === "consumed" && wait.commandIdempotencyKey === input.commandIdempotencyKey && stableJson(wait.payload) === stableJson(input.payload)) {
       return snapshot;
     }
-    if (snapshot.projection.run.status === "paused") throw new Error(`Run '${input.runId}' is paused.`);
+    if (wait.status === "consumed" && wait.commandIdempotencyKey === input.commandIdempotencyKey) {
+      throwSchedulerStoreError({ type: "signal-wait-terminal", runId: input.runId, nodeKey: input.nodeKey, status: wait.status, message: `Signal consume idempotency key '${input.idempotencyKey}' conflicts with different payload.` });
+    }
+    if (wait.status === "consumed") {
+      throwSchedulerStoreError({ type: "signal-wait-terminal", runId: input.runId, nodeKey: input.nodeKey, status: wait.status, message: `Signal wait '${input.nodeKey}' has already consumed a different payload.` });
+    }
+    if (wait.status !== "awaiting") {
+      throwSchedulerStoreError({ type: "signal-wait-terminal", runId: input.runId, nodeKey: input.nodeKey, status: wait.status, message: `Signal wait '${input.nodeKey}' is already ${wait.status}.` });
+    }
+    if (snapshot.projection.run.status === "paused") throwSchedulerStoreError({ type: "run-paused", runId: input.runId, message: `Run '${input.runId}' is paused.` });
     const payloadDigest = createHash("sha256").update(stableJson(input.payload)).digest("hex");
     const events: SchedulerEvent[] = [
       {
@@ -1773,6 +1830,10 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       idempotencyKey: input.idempotencyKey,
       events,
     });
+  }
+
+  tryPauseRun(input: SchedulerPauseInput): SchedulerStoreResult<SchedulerSnapshot> {
+    return schedulerStoreResult(() => this.pauseRun(input));
   }
 
   pauseRun(input: SchedulerPauseInput): SchedulerSnapshot {
@@ -1817,8 +1878,17 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     });
   }
 
+  tryResumeRun(input: SchedulerResumeInput): SchedulerStoreResult<SchedulerSnapshot> {
+    return schedulerStoreResult(() => this.resumeRun(input));
+  }
+
   resumeRun(input: SchedulerResumeInput): SchedulerSnapshot {
+    const replay = this.replayIntentIdempotency(input.runId, input.idempotencyKey);
+    if (replay) return replay;
     const snapshot = this.loadRunSnapshot(input.runId);
+    if (snapshot.projection.run.status !== "paused") {
+      throwSchedulerStoreError({ type: "invalid-control-state", runId: input.runId, command: "resume", status: snapshot.projection.run.status, message: `Cannot resume run from ${snapshot.projection.run.status}.` });
+    }
     return this.appendSchedulerEvents({
       runId: input.runId,
       expectedVersion: snapshot.version,
@@ -1828,10 +1898,17 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     });
   }
 
+  tryRetryRun(input: SchedulerRunRetryInput): SchedulerStoreResult<SchedulerSnapshot> {
+    return schedulerStoreResult(() => this.retryRun(input));
+  }
+
   retryRun(input: SchedulerRunRetryInput): SchedulerSnapshot {
     const replay = this.replayIntentIdempotency(input.runId, input.idempotencyKey);
     if (replay) return replay;
     const snapshot = this.loadRunSnapshot(input.runId);
+    if (snapshot.projection.run.status !== "failed") {
+      throwSchedulerStoreError({ type: "invalid-retry-target", runId: input.runId, status: snapshot.projection.run.status, message: `Cannot retry run from ${snapshot.projection.run.status}.` });
+    }
     return this.appendSchedulerEvents({
       runId: input.runId,
       expectedVersion: snapshot.version,
@@ -1841,13 +1918,20 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     });
   }
 
+  tryRetry(input: SchedulerRetryInput): SchedulerStoreResult<SchedulerSnapshot> {
+    return schedulerStoreResult(() => this.retry(input));
+  }
+
   retry(input: SchedulerRetryInput): SchedulerSnapshot {
     const idempotencyKey = retryIdempotencyKey(input.idempotencyKey, input.nodeKey);
     const replay = this.replayIntentIdempotency(input.runId, idempotencyKey);
     if (replay) return replay;
     const snapshot = this.loadRunSnapshot(input.runId);
     const instance = snapshot.projection.instances[input.nodeKey];
-    if (!instance) throw new Error(`Node instance '${input.nodeKey}' was not found.`);
+    if (!instance) throwSchedulerStoreError({ type: "missing-retry-target", runId: input.runId, nodeKey: input.nodeKey, message: `Node instance '${input.nodeKey}' was not found.` });
+    if (instance.status !== "failed") {
+      throwSchedulerStoreError({ type: "invalid-retry-target", runId: input.runId, nodeKey: input.nodeKey, status: instance.status, message: `Node instance '${input.nodeKey}' cannot be retried from ${instance.status}.` });
+    }
     const events: SchedulerEvent[] = [
       {
         type: "instance.retry_requested",
@@ -1861,7 +1945,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     const member = snapshot.projection.groupMembers[input.nodeKey]
       ?? (instance.parentFrameKey === undefined ? undefined : snapshot.projection.groupMembers[instance.parentFrameKey]);
     if (member && member.status !== "failed") {
-      throw new Error(`Group member '${member.memberKey}' cannot be retried from ${member.status}.`);
+      throwSchedulerStoreError({ type: "invalid-retry-target", runId: input.runId, nodeKey: input.nodeKey, status: member.status, message: `Group member '${member.memberKey}' cannot be retried from ${member.status}.` });
     }
     if (member) {
       events.push({
@@ -1880,6 +1964,10 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       idempotencyKey,
       events,
     });
+  }
+
+  tryMarkExpiredOwnerAttemptsSuperseded(runId: string, ownerEpoch: number): SchedulerStoreResult<SchedulerSnapshot> {
+    return schedulerStoreResult(() => this.markExpiredOwnerAttemptsSuperseded(runId, ownerEpoch));
   }
 
   markExpiredOwnerAttemptsSuperseded(runId: string, ownerEpoch: number): SchedulerSnapshot {
@@ -1937,7 +2025,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     const row = this.db.prepare("SELECT owner_epoch, lease_expires_at, released_at FROM run_leases WHERE run_id = ?").get(runId) as { owner_epoch: number; lease_expires_at: string; released_at: string | null } | undefined;
     const now = new Date().toISOString();
     if (!row || row.owner_epoch !== ownerEpoch || row.released_at !== null || row.lease_expires_at <= now) {
-      throw new Error(`Run '${runId}' scheduler owner epoch is not active.`);
+      throwSchedulerStoreError({ type: "owner-epoch-inactive", runId, ownerEpoch, message: `Run '${runId}' scheduler owner epoch is not active.` });
     }
   }
 
@@ -1945,7 +2033,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     const row = this.db.prepare("SELECT owner_epoch, lease_expires_at, released_at FROM run_leases WHERE run_id = ?").get(runId) as { owner_epoch: number; lease_expires_at: string; released_at: string | null } | undefined;
     const now = new Date().toISOString();
     if (row && row.owner_epoch === ownerEpoch && row.released_at === null && row.lease_expires_at > now) {
-      throw new Error(`Run '${runId}' scheduler owner epoch ${ownerEpoch} is still active.`);
+      throwSchedulerStoreError({ type: "owner-epoch-still-active", runId, ownerEpoch, message: `Run '${runId}' scheduler owner epoch ${ownerEpoch} is still active.` });
     }
   }
 
@@ -1954,7 +2042,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     if (!row) return undefined;
     const payload = decodeSchedulerPayload(row.payload_json);
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-      throw new Error(`Scheduler idempotency key '${idempotencyKey}' conflicts with non-scheduler event.`);
+      throwSchedulerStoreError({ type: "idempotency-conflict", idempotencyKey, runId: row.run_id, message: `Scheduler idempotency key '${idempotencyKey}' conflicts with non-scheduler event.` });
     }
     return { run_id: row.run_id, type: row.type, payload };
   }
@@ -1987,7 +2075,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     `).get(commit.runId, commit.idempotencyKey) as { event_count: number; event_digest: string } | undefined;
     if (!row) return undefined;
     if (row.event_count !== commit.events.length || row.event_digest !== schedulerCommitDigest(commit.events)) {
-      throw new Error(`Scheduler commit idempotency key '${commit.idempotencyKey}' conflicts with different events.`);
+      throwSchedulerStoreError({ type: "idempotency-conflict", idempotencyKey: commit.idempotencyKey, runId: commit.runId, message: `Scheduler commit idempotency key '${commit.idempotencyKey}' conflicts with different events.` });
     }
     return this.loadRunSnapshot(commit.runId);
   }
@@ -1999,7 +2087,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       WHERE idempotency_key = ?
     `).get(idempotencyKey) as { run_id: string } | undefined;
     if (!row) return undefined;
-    if (row.run_id !== runId) throw new Error(`Scheduler intent idempotency key '${idempotencyKey}' conflicts with another run.`);
+    if (row.run_id !== runId) throwSchedulerStoreError({ type: "idempotency-conflict", idempotencyKey, runId, message: `Scheduler intent idempotency key '${idempotencyKey}' conflicts with another run.` });
     return this.loadRunSnapshot(runId);
   }
 
@@ -3140,14 +3228,101 @@ function toRunRecord(row: Record<string, unknown>): RunRecord {
 }
 
 function toPendingCommand(row: Record<string, unknown>): PendingControlCommand {
-  return {
+  const type = parseControlCommandType(row.type);
+  const status = parseControlCommandStatus(row.status);
+  const payload = parseCommandPayload(type, status, JSON.parse(String(row.payload_json)) as JsonValue);
+  const command = {
     id: String(row.id),
     ...(row.run_id === null ? {} : { runId: String(row.run_id) }),
-    type: String(row.type),
-    status: String(row.status) as ControlCommand["status"],
+    type,
+    status,
     idempotencyKey: String(row.idempotency_key),
-    payload: JSON.parse(String(row.payload_json)) as JsonValue,
+    payload,
   };
+  if (type !== "shutdown" && typeof command.runId !== "string") throw new Error(`Command '${command.id}' has no run id.`);
+  if (type === "shutdown" && command.runId !== undefined) throw new Error(`Shutdown command '${command.id}' must not have a run id.`);
+  return command as PendingControlCommand;
+}
+
+function parseControlCommandType(value: unknown): ControlCommandType {
+  if (value === "pause" || value === "resume" || value === "retry" || value === "fork" || value === "signal" || value === "shutdown") return value;
+  throw new Error(`Unsupported command type '${String(value)}'.`);
+}
+
+function parseControlCommandStatus(value: unknown): ControlCommandStatus {
+  if (value === "pending" || value === "running" || value === "applied" || value === "failed") return value;
+  throw new Error(`Unsupported command status '${String(value)}'.`);
+}
+
+function parseCommandPayload(type: ControlCommandType, status: ControlCommandStatus, value: JsonValue): CommandPayload<ControlCommandType> | AppliedCommandPayload | FailedCommandPayload {
+  if (!isJsonRecord(value)) throw new Error(`Command '${type}' payload must be a JSON object.`);
+  if (status === "applied") return appliedCommandPayload(value);
+  if (status === "failed") return failedCommandPayload(value);
+  switch (type) {
+    case "pause": return pauseCommandPayload(value);
+    case "resume": return emptyCommandPayload(type, value);
+    case "retry": return retryCommandPayload(value);
+    case "fork": return forkCommandPayload(value);
+    case "signal": return signalCommandPayload(value);
+    case "shutdown": return emptyCommandPayload(type, value);
+  }
+}
+
+function pauseCommandPayload(value: Record<string, JsonValue>): PauseCommandPayload {
+  rejectUnknownCommandPayloadKeys("pause", value, ["reason"]);
+  if (value.reason !== undefined && typeof value.reason !== "string") throw new Error("Pause command payload.reason must be a string.");
+  return value.reason === undefined ? {} : { reason: value.reason };
+}
+
+function retryCommandPayload(value: Record<string, JsonValue>): RetryCommandPayload {
+  rejectUnknownCommandPayloadKeys("retry", value, ["node"]);
+  if (value.node !== undefined && typeof value.node !== "string") throw new Error("Retry command payload.node must be a string.");
+  return value.node === undefined ? {} : { node: value.node };
+}
+
+function forkCommandPayload(value: Record<string, JsonValue>): ForkCommandPayload {
+  rejectUnknownCommandPayloadKeys("fork", value, ["prepared", "input", "agentOverrides"]);
+  return {
+    ...(value.prepared === undefined ? {} : { prepared: value.prepared }),
+    ...(value.input === undefined ? {} : { input: value.input }),
+    ...(value.agentOverrides === undefined ? {} : { agentOverrides: value.agentOverrides }),
+  };
+}
+
+function signalCommandPayload(value: Record<string, JsonValue>): SignalCommandPayload {
+  rejectUnknownCommandPayloadKeys("signal", value, ["node", "payload"]);
+  if (typeof value.node !== "string" || value.node.length === 0) throw new Error("Signal command payload.node must be a non-empty string.");
+  return { node: value.node, ...(value.payload === undefined ? {} : { payload: value.payload }) };
+}
+
+function emptyCommandPayload(type: ControlCommandType, value: Record<string, JsonValue>): EmptyCommandPayload {
+  rejectUnknownCommandPayloadKeys(type, value, []);
+  return {};
+}
+
+function appliedCommandPayload(value: Record<string, JsonValue>): AppliedCommandPayload {
+  rejectUnknownCommandPayloadKeys("applied command", value, ["status", "forkRunId", "nodeKey"]);
+  if (typeof value.status !== "string") throw new Error("Applied command payload.status must be a string.");
+  if (value.forkRunId !== undefined && typeof value.forkRunId !== "string") throw new Error("Applied command payload.forkRunId must be a string.");
+  if (value.nodeKey !== undefined && typeof value.nodeKey !== "string") throw new Error("Applied command payload.nodeKey must be a string.");
+  return {
+    status: value.status,
+    ...(value.forkRunId === undefined ? {} : { forkRunId: value.forkRunId }),
+    ...(value.nodeKey === undefined ? {} : { nodeKey: value.nodeKey }),
+  };
+}
+
+function failedCommandPayload(value: Record<string, JsonValue>): FailedCommandPayload {
+  rejectUnknownCommandPayloadKeys("failed command", value, ["type", "message"]);
+  if (typeof value.type !== "string") throw new Error("Failed command payload.type must be a string.");
+  if (typeof value.message !== "string") throw new Error("Failed command payload.message must be a string.");
+  return { type: value.type, message: value.message };
+}
+
+function rejectUnknownCommandPayloadKeys(label: string, value: Record<string, JsonValue>, allowed: string[]): void {
+  const allowedSet = new Set(allowed);
+  const unknownKey = Object.keys(value).find(key => !allowedSet.has(key));
+  if (unknownKey) throw new Error(`Command ${label} payload must not include '${unknownKey}'.`);
 }
 
 function collectNodeIds(scope: ScopeIR): string[] {
@@ -3529,6 +3704,10 @@ function countNodes(scope: ScopeIR): number {
     }
   }
   return total;
+}
+
+function throwSchedulerStoreError(error: SchedulerStoreError): never {
+  throw new SchedulerStoreException(error);
 }
 
 function digest(bytes: Uint8Array): string {

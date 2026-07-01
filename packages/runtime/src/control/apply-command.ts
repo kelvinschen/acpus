@@ -28,7 +28,7 @@ export async function applyControlCommand(cwd: string, store: RuntimeStore, comm
     store.finishCommand({
       id: command.id,
       status: "failed",
-      payload: { message: error instanceof Error ? error.message : String(error) },
+      payload: { type: "unhandled-error", message: error instanceof Error ? error.message : String(error) },
     });
     throw error;
   }
@@ -36,7 +36,7 @@ export async function applyControlCommand(cwd: string, store: RuntimeStore, comm
 
 function appliedCommandResult(store: RuntimeStore, command: PendingControlCommand): AppliedControlCommand {
   const runId = requireRunId(command);
-  const forkRunId = command.type === "fork" && isRecord(command.payload) && typeof command.payload.forkRunId === "string"
+  const forkRunId = command.type === "fork" && command.status === "applied" && typeof command.payload.forkRunId === "string"
     ? command.payload.forkRunId
     : undefined;
   const targetRunId = forkRunId ?? runId;
@@ -118,13 +118,13 @@ function requireRun(store: RuntimeStore, runId: string): NonNullable<ReturnType<
 }
 
 function commandNode(command: PendingControlCommand): string | undefined {
-  const payload = command.payload;
+  const payload = commandInputPayload(command);
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
   return typeof payload.node === "string" && payload.node.length > 0 ? payload.node : undefined;
 }
 
 function signalCommandPayload(command: PendingControlCommand): { node: string; payload: JsonValue } {
-  const payload = command.payload;
+  const payload = commandInputPayload(command);
   if (!isRecord(payload)) throw new Error(`Signal command '${command.id}' payload must be an object.`);
   const node = payload.node;
   if (typeof node !== "string" || node.length === 0) throw new Error(`Signal command '${command.id}' payload.node must be a non-empty string.`);
@@ -132,7 +132,7 @@ function signalCommandPayload(command: PendingControlCommand): { node: string; p
 }
 
 function forkCommandPayload(command: PendingControlCommand): { prepared?: ForkPreparedWorkflow; input?: JsonValue; agentOverrides?: AgentOverrideMap } {
-  const payload = command.payload;
+  const payload = commandInputPayload(command);
   if (!isRecord(payload)) return {};
   const prepared = parseForkPreparedWorkflow(payload.prepared);
   if (payload.prepared !== undefined && !prepared) throw new Error(`Fork command '${command.id}' has invalid prepared workflow payload.`);
@@ -173,4 +173,8 @@ function parseForkPreparedWorkflow(value: unknown): ForkPreparedWorkflow | undef
 
 function isRecord(value: unknown): value is Record<string, JsonValue> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function commandInputPayload(command: PendingControlCommand): JsonValue | undefined {
+  return command.status === "pending" || command.status === "running" ? command.payload : undefined;
 }

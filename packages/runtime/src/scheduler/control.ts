@@ -1,7 +1,7 @@
 import type { JsonValue } from "@acpus/expression/ir";
 import { normalizeSignalPayload } from "../admission/input.js";
 import type { PendingControlCommand, RuntimeStore } from "../store/store.js";
-import type { SchedulerSnapshot } from "./store-port.js";
+import { schedulerStoreError, throwSchedulerStoreResult, type SchedulerSnapshot, type SchedulerStoreResult } from "./store-port.js";
 import { advanceFrozenRun } from "./runtime-runner.js";
 import type { AdvanceRunSummary } from "./advance.js";
 
@@ -35,10 +35,14 @@ export async function applySchedulerControlCommand(
   try {
     return await applySchedulerControlCommandUnchecked(cwd, store, command, options);
   } catch (error) {
+    const storeError = schedulerStoreError(error);
     store.finishCommand({
       id: command.id,
       status: "failed",
-      payload: { message: error instanceof Error ? error.message : String(error) },
+      payload: {
+        type: storeError?.type ?? "unhandled-error",
+        message: error instanceof Error ? error.message : String(error),
+      },
     });
     throw error;
   }
@@ -46,7 +50,7 @@ export async function applySchedulerControlCommand(
 
 function appliedCommandResult(store: RuntimeStore, command: PendingControlCommand): AppliedSchedulerControlCommand {
   const runId = requireRunId(command);
-  return { command, runId, snapshot: store.scheduler.loadRunSnapshot(runId) };
+  return { command, runId, snapshot: unwrapStoreResult(store.scheduler.tryLoadRunSnapshot(runId)) };
 }
 
 async function applySchedulerControlCommandUnchecked(
@@ -64,7 +68,7 @@ async function applySchedulerControlCommandUnchecked(
     return {
       command,
       runId,
-      snapshot: store.scheduler.loadRunSnapshot(runId),
+      snapshot: unwrapStoreResult(store.scheduler.tryLoadRunSnapshot(runId)),
       advanced: { status: "lease_lost", runId, started: 0, completed: 0, failed: 0, cancelled: 0, active: 0 },
     };
   }
@@ -79,45 +83,45 @@ async function applySchedulerControlCommandUnchecked(
 
   if (command.type !== "pause" && options.advance !== false) {
     const advanced = await advanceFrozenRun({ cwd, store, runId, ownerId, leaseMs });
-    return { command, runId, snapshot: store.scheduler.loadRunSnapshot(runId), advanced };
+    return { command, runId, snapshot: unwrapStoreResult(store.scheduler.tryLoadRunSnapshot(runId)), advanced };
   }
   return { command, runId, snapshot };
 }
 
 function applySchedulerControlIntent(store: RuntimeStore, command: PendingControlCommand, runId: string, ownerEpoch: number): SchedulerSnapshot {
   const idempotencyKey = `scheduler:control:${command.id}`;
-  const snapshot = store.scheduler.loadRunSnapshot(runId);
+  const snapshot = unwrapStoreResult(store.scheduler.tryLoadRunSnapshot(runId));
   if (command.type === "pause") {
     const reason = commandReason(command);
-    return store.scheduler.pauseRun({
+    return unwrapStoreResult(store.scheduler.tryPauseRun({
       runId,
       ownerEpoch,
       idempotencyKey,
       ...(reason === undefined ? {} : { reason }),
-    });
+    }));
   }
   if (command.type === "resume") {
-    return store.scheduler.resumeRun({ runId, ownerEpoch, idempotencyKey });
+    return unwrapStoreResult(store.scheduler.tryResumeRun({ runId, ownerEpoch, idempotencyKey }));
   }
   if (command.type === "retry") {
     const node = commandNode(command);
     return node === undefined
-      ? store.scheduler.retryRun({ runId, ownerEpoch, idempotencyKey })
-      : store.scheduler.retry({ runId, ownerEpoch, idempotencyKey, nodeKey: retryNodeKey(node, command.id, snapshot) });
+      ? unwrapStoreResult(store.scheduler.tryRetryRun({ runId, ownerEpoch, idempotencyKey }))
+      : unwrapStoreResult(store.scheduler.tryRetry({ runId, ownerEpoch, idempotencyKey, nodeKey: retryNodeKey(node, command.id, snapshot) }));
   }
   if (command.type === "signal") {
     const signal = signalPayload(command, snapshot);
     const frozen = store.getFrozenRun(runId);
     if (!frozen) throw new Error(`Run '${runId}' was not found.`);
     const normalized = normalizeSignalPayload(frozen.ir, signal.nodeId, signal.payload);
-    return store.scheduler.consumeSignal({
+    return unwrapStoreResult(store.scheduler.tryConsumeSignal({
       runId,
       ownerEpoch,
       nodeKey: signal.nodeKey,
       payload: normalized,
       commandIdempotencyKey: command.idempotencyKey,
       idempotencyKey,
-    });
+    }));
   }
   throw new Error(`Unsupported scheduler command type '${command.type}'.`);
 }
@@ -128,7 +132,7 @@ function requireRunId(command: PendingControlCommand): string {
 }
 
 function commandReason(command: PendingControlCommand): string | undefined {
-  const payload = command.payload;
+  const payload = commandInputPayload(command);
   if (!isRecord(payload)) return undefined;
   return typeof payload.reason === "string" && payload.reason.length > 0 ? payload.reason : undefined;
 }
@@ -145,7 +149,7 @@ function retryNodeKey(target: string, commandId: string, snapshot: SchedulerSnap
 }
 
 function signalPayload(command: PendingControlCommand, snapshot: SchedulerSnapshot): { nodeKey: string; nodeId: string; payload: JsonValue } {
-  const payload = command.payload;
+  const payload = commandInputPayload(command);
   if (!isRecord(payload) || typeof payload.node !== "string" || payload.node.length === 0) {
     throw new Error(`Scheduler signal command '${command.id}' requires payload.node.`);
   }
@@ -165,11 +169,19 @@ function isOpenSignalWait(snapshot: SchedulerSnapshot, nodeKey: string): boolean
 }
 
 function commandNode(command: PendingControlCommand): string | undefined {
-  const payload = command.payload;
+  const payload = commandInputPayload(command);
   if (!isRecord(payload)) return undefined;
   return typeof payload.node === "string" && payload.node.length > 0 ? payload.node : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, JsonValue> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function unwrapStoreResult<T>(result: SchedulerStoreResult<T>): T {
+  return throwSchedulerStoreResult(result);
+}
+
+function commandInputPayload(command: PendingControlCommand): JsonValue | undefined {
+  return command.status === "pending" || command.status === "running" ? command.payload : undefined;
 }

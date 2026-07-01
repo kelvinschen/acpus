@@ -340,7 +340,7 @@ function applyMutable(projection: SchedulerProjection, event: SchedulerEvent): v
     });
     return;
   }
-  if (event.type.startsWith("instance.")) {
+  if (isInstanceEvent(event)) {
     applyInstanceEvent(projection, event);
     return;
   }
@@ -358,7 +358,7 @@ function applyMutable(projection: SchedulerProjection, event: SchedulerEvent): v
     });
     return;
   }
-  if (event.type.startsWith("attempt.")) {
+  if (isAttemptEvent(event)) {
     applyAttemptEvent(projection, event);
     return;
   }
@@ -381,7 +381,7 @@ function applyMutable(projection: SchedulerProjection, event: SchedulerEvent): v
     });
     return;
   }
-  if (event.type.startsWith("group.")) {
+  if (isGroupEvent(event)) {
     applyGroupEvent(projection, event);
     return;
   }
@@ -392,7 +392,75 @@ function applyMutable(projection: SchedulerProjection, event: SchedulerEvent): v
     projection.branchDecisions[event.payload.frameKey] = event.payload.branchId;
     return;
   }
-  if (event.type === "signal.awaiting" || event.type === "signal.consumed" || event.type === "signal.timed_out") applySignalEvent(projection, event);
+  if (isSignalEvent(event)) {
+    applySignalEvent(projection, event);
+    return;
+  }
+  assertNever(event);
+}
+
+function isInstanceEvent(event: SchedulerEvent): event is Extract<SchedulerEvent, { type: "instance.ready" | "instance.started" | "instance.awaiting" | "instance.requeued" | "instance.retry_requested" | "instance.completed" | "instance.failed" | "instance.cancelled" }> {
+  switch (event.type) {
+    case "instance.ready":
+    case "instance.started":
+    case "instance.awaiting":
+    case "instance.requeued":
+    case "instance.retry_requested":
+    case "instance.completed":
+    case "instance.failed":
+    case "instance.cancelled":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function isAttemptEvent(event: SchedulerEvent): event is Extract<SchedulerEvent, { type: "attempt.started" | "attempt.completed" | "attempt.failed" | "attempt.timed_out" | "attempt.cancelled" | "attempt.superseded" }> {
+  switch (event.type) {
+    case "attempt.started":
+    case "attempt.completed":
+    case "attempt.failed":
+    case "attempt.timed_out":
+    case "attempt.cancelled":
+    case "attempt.superseded":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function isGroupEvent(event: SchedulerEvent): event is Extract<SchedulerEvent, { type: "group.started" | "group.member_ready" | "group.member_started" | "group.member_requeued" | "group.member_retry_requested" | "group.member_completed" | "group.member_failed" | "group.member_cancelled" | "group.completed" | "group.failed" | "group.cancelled" }> {
+  switch (event.type) {
+    case "group.started":
+    case "group.member_ready":
+    case "group.member_started":
+    case "group.member_requeued":
+    case "group.member_retry_requested":
+    case "group.member_completed":
+    case "group.member_failed":
+    case "group.member_cancelled":
+    case "group.completed":
+    case "group.failed":
+    case "group.cancelled":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function isSignalEvent(event: SchedulerEvent): event is Extract<SchedulerEvent, { type: "signal.awaiting" | "signal.consumed" | "signal.timed_out" }> {
+  switch (event.type) {
+    case "signal.awaiting":
+    case "signal.consumed":
+    case "signal.timed_out":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled scheduler event: ${String(value)}`);
 }
 
 function applyInstanceEvent(projection: SchedulerProjection, event: SchedulerEvent): void {

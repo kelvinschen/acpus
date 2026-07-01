@@ -33,7 +33,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@acpus/core": "workspace:*"
+    "@acpus/core": "workspace:*",
+    "neverthrow": "^8.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.30"

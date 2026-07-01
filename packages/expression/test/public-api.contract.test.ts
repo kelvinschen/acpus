@@ -40,7 +40,7 @@ describe("@acpus/expression public API", () => {
   });
 
   it("exports focused low-level subpaths", () => {
-    expect(Object.keys(ir).sort()).toEqual(["expr", "refExpr", "valueToExprIR"]);
+    expect(Object.keys(ir).sort()).toEqual(["expr", "refExpr", "tryValueToExprIR", "valueToExprIR"]);
     expect(Object.keys(validator).sort()).toEqual(["validateExprIR"]);
     expect(Object.keys(evaluator).sort()).toEqual([
       "ExpressionEvaluationError",

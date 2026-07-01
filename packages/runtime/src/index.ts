@@ -17,11 +17,20 @@ export {
   queueSupervisorShutdown,
   replayRun,
   signalRun,
+  tryAdmitWorkflowRun,
+  tryMutateRun,
+  trySignalRun,
   type RuntimeCommandRecord,
   type RuntimeMutationAction,
   type RuntimeMutationInput,
   type RuntimeMutationResult,
+  type RuntimeUseCaseError,
 } from "./runs/use-cases.js";
+export {
+  tryAdvanceRuntimeRun,
+  type RuntimeAdvanceError,
+  type RuntimeAdvanceResult,
+} from "./runs/advance-runtime.js";
 export {
   createWorkflowVisualizationOverlay,
   type WorkflowVisualizationGroup,
@@ -29,10 +38,19 @@ export {
   type WorkflowVisualizationOverlay,
 } from "./visualization/overlay.js";
 export {
+  type ControlCommand,
+  type ControlCommandStatus,
+  type ControlCommandType,
+  type EmptyCommandPayload,
   type ForkPreparedWorkflow,
+  type ForkCommandPayload,
+  type FinishCommandInput,
   type AgentOverrideMap,
   type AgentOverrideSpec,
+  type PauseCommandPayload,
+  type PendingControlCommand,
   type PreparedRunWorkflow,
+  type RetryCommandPayload,
   type RunDynamicAttempt,
   type RunDynamicDetails,
   type RunExecutionMetadata,
@@ -44,5 +62,19 @@ export {
   type RunDetails,
   type RunRecord,
   type RunStatus,
+  type RuntimeStore,
   type RunWorkflowLockArtifact,
+  type SignalCommandPayload,
+  type SubmitCommandInput,
 } from "./store/store.js";
+export {
+  tryAdvanceRun,
+  type AdvanceRunError,
+  type AdvanceRunInput,
+  type AdvanceRunSummary,
+} from "./scheduler/advance.js";
+export {
+  type SchedulerStoreError,
+  type SchedulerStorePort,
+  type SchedulerStoreResult,
+} from "./scheduler/store-port.js";

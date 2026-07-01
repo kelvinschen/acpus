@@ -7,7 +7,7 @@ import type { EvaluationScope } from "../evaluation/evaluator.js";
 import { normalizeValue } from "../evaluation/schema.js";
 import type { RuntimeStore } from "../store/store.js";
 import type { NodeAttemptContext, NodeExecutor } from "./advance.js";
-import type { AttemptCommitInput } from "./store-port.js";
+import { throwSchedulerStoreResult, type AttemptCommitInput, type SchedulerStoreResult } from "./store-port.js";
 import type { SchedulerProjection } from "./types.js";
 
 export type RuntimeNodeExecutorInput = {
@@ -25,7 +25,7 @@ export function createRuntimeNodeExecutor(input: RuntimeNodeExecutorInput): Node
     async execute(context: NodeAttemptContext): Promise<AttemptCommitInput["result"]> {
       const node = nodes.get(context.nodeId);
       if (!node) return { status: "failed", reason: `Node '${context.nodeId}' was not found in frozen IR.` };
-      const scope = scopeForAttempt(input.scope, input.store.scheduler.loadRunSnapshot(context.runId).projection, context.nodeKey);
+      const scope = scopeForAttempt(input.scope, unwrapStoreResult(input.store.scheduler.tryLoadRunSnapshot(context.runId)).projection, context.nodeKey);
       if (node.kind === "task") return completedResult(normalizeValue(node.outputSchema, await executeTask(node, scope, context, input) as JsonValue, `Node '${node.id}' output`));
       if (node.kind === "agent") {
         try {
@@ -39,6 +39,10 @@ export function createRuntimeNodeExecutor(input: RuntimeNodeExecutorInput): Node
       return { status: "failed", reason: `Node '${context.nodeId}' (${node.kind}) is not a scheduler leaf executor target.` };
     },
   };
+}
+
+function unwrapStoreResult<T>(result: SchedulerStoreResult<T>): T {
+  return throwSchedulerStoreResult(result);
 }
 
 async function executeTask(node: TaskNodeIR, scope: EvaluationScope, context: NodeAttemptContext, input: RuntimeNodeExecutorInput): Promise<unknown> {

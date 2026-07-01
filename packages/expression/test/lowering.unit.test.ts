@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { get, map, pick } from "@acpus/expression";
-import { refExpr, valueToExprIR } from "@acpus/expression/ir";
+import { refExpr, tryValueToExprIR, valueToExprIR } from "@acpus/expression/ir";
+import { err } from "neverthrow";
 
 describe("expression lowering", () => {
   it("lowers advanced refs and literals through the package seam", () => {
@@ -16,6 +17,37 @@ describe("expression lowering", () => {
     expect(() => valueToExprIR([, true])).toThrow("Unsupported expression value: sparse array hole.");
     expect(() => valueToExprIR({ value: undefined })).toThrow("Unsupported expression value at key 'value': undefined.");
     expect(() => valueToExprIR(new Date())).toThrow("Unsupported expression value: non-plain object.");
+  });
+
+  it("returns tagged errors for unsupported authoring values", () => {
+    expect(tryValueToExprIR(undefined)).toEqual(err({
+      type: "unsupported-expression-value",
+      path: "$",
+      valueType: "undefined",
+      message: "Unsupported expression value: undefined.",
+    }));
+    expect(tryValueToExprIR([, true])).toEqual(err({
+      type: "sparse-array-hole",
+      path: "$[0]",
+      message: "Unsupported expression value: sparse array hole.",
+    }));
+    expect(tryValueToExprIR({ value: undefined })).toEqual(err({
+      type: "unsupported-expression-value",
+      path: "$.value",
+      valueType: "undefined",
+      message: "Unsupported expression value at key 'value': undefined.",
+    }));
+    expect(tryValueToExprIR(new Date())).toEqual(err({
+      type: "non-plain-object",
+      path: "$",
+      message: "Unsupported expression value: non-plain object.",
+    }));
+    expect(tryValueToExprIR(Number.NaN)).toEqual(err({
+      type: "unsupported-expression-value",
+      path: "$",
+      valueType: "non-finite number",
+      message: "Unsupported expression value: non-finite number.",
+    }));
   });
 
   it("flattens static access over refs", () => {

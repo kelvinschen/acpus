@@ -35,6 +35,7 @@
   "dependencies": {
     "@acpus/core": "workspace:*",
     "@acpus/expression": "workspace:*",
+    "neverthrow": "^8.2.0",
     "tsx": "^4.20.3",
     "typescript": "^5.9.0"
   },

@@ -7,6 +7,8 @@ describe("@acpus/workflow-compiler public API", () => {
       "WorkflowPreparationError",
       "compileWorkflowModule",
       "prepareWorkflow",
+      "tryCompileWorkflowModule",
+      "tryPrepareWorkflow",
       "writePreflightArtifact",
     ]);
   });

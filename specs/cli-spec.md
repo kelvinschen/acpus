@@ -35,6 +35,7 @@ The `acpus` package provides the user-facing command-line interface. It parses c
 - Invalid `--agents` JSON, or a non-object `--agents` value, MUST fail as a
   usage error before delegating to runtime.
 - Workflow preparation failures MUST be mapped to `check`, `compile`, or `validate` result phases.
+- CLI workflow preparation adapters MUST consume `@acpus/workflow-compiler` typed preparation results at the package boundary and map tagged failures to CLI errors.
 - Runtime admission and run-control behavior MUST be delegated to `@acpus/runtime`.
 - Run inspection commands MUST delegate to runtime read APIs.
 - Supervisor commands MUST delegate to runtime supervisor or command queue APIs.

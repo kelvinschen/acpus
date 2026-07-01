@@ -1,7 +1,8 @@
 import type { JsonValue } from "@acpus/expression/ir";
+import { ResultAsync } from "neverthrow";
 import { createConcurrencyLimiter, type ConcurrencyLimiter } from "./limiter.js";
 import type { SchedulerEvent } from "./events.js";
-import type { AttemptCommitInput, RunOwnerClaim, SchedulerSnapshot, SchedulerStorePort } from "./store-port.js";
+import { schedulerStoreError, throwSchedulerStoreResult, type AttemptCommitInput, type RunOwnerClaim, type SchedulerSnapshot, type SchedulerStoreError, type SchedulerStorePort, type SchedulerStoreResult } from "./store-port.js";
 import type { GroupMember, NodeInstance, SchedulerProjection } from "./types.js";
 import { attemptTimeoutEvents, groupCompletionEvents, signalTimeoutEvents } from "./transitions.js";
 
@@ -48,8 +49,21 @@ export type AdvanceRunSummary = {
   active: number;
 };
 
+export type AdvanceRunError = SchedulerStoreError;
+
 const DEFAULT_LEASE_MS = 30_000;
 const DEFAULT_MAX_LEAF_CONCURRENCY = 32;
+
+export function tryAdvanceRun(input: AdvanceRunInput): ResultAsync<AdvanceRunSummary, AdvanceRunError> {
+  return ResultAsync.fromPromise(
+    advanceRun(input),
+    error => {
+      const storeError = schedulerStoreError(error);
+      if (storeError) return storeError;
+      throw error;
+    },
+  );
+}
 
 export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSummary> {
   const leaseMs = input.leaseMs ?? DEFAULT_LEASE_MS;
@@ -57,16 +71,16 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
   if (!claim) return summary(input.runId, "lease_lost");
   try {
     const now = input.now ?? (() => new Date());
-    const preflight = terminalSummary(input.store.loadRunSnapshot(input.runId).projection, claim);
+    const preflight = terminalSummary(unwrapStoreResult(input.store.tryLoadRunSnapshot(input.runId)).projection, claim);
     if (preflight) return preflight;
 
     appendBootstrapEvents(input, claim);
     const deadlineRecovered = drainDerivedTransitions(input.store, input.runId, claim, now, input.materialize, input.maxAttemptsFor);
-    const recovered = input.store.loadRunSnapshot(deadlineRecovered.runId);
+    const recovered = unwrapStoreResult(input.store.tryLoadRunSnapshot(deadlineRecovered.runId));
     const expiredOwnerEpochs = [...new Set(Object.values(recovered.projection.attempts)
       .filter(attempt => attempt.status === "started" && attempt.ownerEpoch !== claim.ownerEpoch)
       .map(attempt => attempt.ownerEpoch))];
-    for (const ownerEpoch of expiredOwnerEpochs) input.store.markExpiredOwnerAttemptsSuperseded(input.runId, ownerEpoch);
+    for (const ownerEpoch of expiredOwnerEpochs) unwrapStoreResult(input.store.tryMarkExpiredOwnerAttemptsSuperseded(input.runId, ownerEpoch));
 
     const initial = drainDerivedTransitions(input.store, input.runId, claim, now, input.materialize, input.maxAttemptsFor);
     const terminal = terminalSummary(initial.projection, claim);
@@ -114,23 +128,22 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
 
 function appendBootstrapEvents(input: AdvanceRunInput, claim: RunOwnerClaim): void {
   if (!input.bootstrap) return;
-  let snapshot = input.store.loadRunSnapshot(input.runId);
+  let snapshot = unwrapStoreResult(input.store.tryLoadRunSnapshot(input.runId));
   for (let attempts = 0; attempts < 2; attempts += 1) {
     const events = input.bootstrap(snapshot);
     if (events.length === 0) return;
-    try {
-      input.store.appendSchedulerEvents({
-        runId: input.runId,
-        expectedVersion: snapshot.version,
-        ownerEpoch: claim.ownerEpoch,
-        idempotencyKey: `scheduler:bootstrap:${input.runId}:${snapshot.version}`,
-        events,
-      });
+    const appended = input.store.tryAppendSchedulerEvents({
+      runId: input.runId,
+      expectedVersion: snapshot.version,
+      ownerEpoch: claim.ownerEpoch,
+      idempotencyKey: `scheduler:bootstrap:${input.runId}:${snapshot.version}`,
+      events,
+    });
+    if (appended.isOk()) {
       return;
-    } catch (error) {
-      if (!isVersionMismatchError(error) || attempts === 1) throw error;
-      snapshot = input.store.loadRunSnapshot(input.runId);
     }
+    if (!isVersionMismatchError(appended.error) || attempts === 1) unwrapStoreResult(appended);
+    snapshot = unwrapStoreResult(input.store.tryLoadRunSnapshot(input.runId));
   }
 }
 
@@ -180,7 +193,7 @@ function drainDerivedTransitions(
   materialize?: (snapshot: SchedulerSnapshot) => SchedulerEvent[],
   maxAttemptsFor?: AdvanceRunInput["maxAttemptsFor"],
 ): SchedulerSnapshot {
-  let snapshot = store.loadRunSnapshot(runId);
+  let snapshot = unwrapStoreResult(store.tryLoadRunSnapshot(runId));
   for (;;) {
     const events =
       retryFailedInstanceEvents(snapshot.projection, maxAttemptsFor);
@@ -189,13 +202,13 @@ function drainDerivedTransitions(
     if (events.length === 0) events.push(...attemptTimeoutEvents(snapshot.projection, now()));
     if (events.length === 0) events.push(...signalTimeoutEvents(snapshot.projection, now()));
     if (events.length === 0) return snapshot;
-    snapshot = store.appendSchedulerEvents({
+    snapshot = unwrapStoreResult(store.tryAppendSchedulerEvents({
       runId,
       expectedVersion: snapshot.version,
       ownerEpoch: claim.ownerEpoch,
       idempotencyKey: `scheduler:derived:${runId}:${snapshot.version}`,
       events,
-    });
+    }));
   }
 }
 
@@ -253,23 +266,24 @@ async function runInstance(
     return;
   }
   let attempt: { attemptId: string; attemptNo: number };
-  const snapshot = input.store.loadRunSnapshot(input.runId);
+  const snapshot = unwrapStoreResult(input.store.tryLoadRunSnapshot(input.runId));
   const deadlineAt = input.deadlineAtFor?.(instance, snapshot.projection, now())?.toISOString();
-  try {
-    attempt = input.store.startAttempt({
-      runId: input.runId,
-      nodeKey: instance.nodeKey,
-      nodeId: instance.nodeId,
-      ownerEpoch: claim.ownerEpoch,
-      ...(deadlineAt === undefined ? {} : { deadlineAt }),
-      idempotencyKey: `scheduler:start:${input.runId}:${instance.nodeKey}:${claim.ownerEpoch}`,
-    });
-  } catch (error) {
-    if (isPausedError(error)) {
+  const started = input.store.tryStartAttempt({
+    runId: input.runId,
+    nodeKey: instance.nodeKey,
+    nodeId: instance.nodeId,
+    ownerEpoch: claim.ownerEpoch,
+    ...(deadlineAt === undefined ? {} : { deadlineAt }),
+    idempotencyKey: `scheduler:start:${input.runId}:${instance.nodeKey}:${claim.ownerEpoch}`,
+  });
+  if (started.isOk()) {
+    attempt = started.value;
+  } else {
+    if (isPausedError(started.error)) {
       counters.cancelled += 1;
       return;
     }
-    throw error;
+    attempt = unwrapStoreResult(started);
   }
   counters.started += 1;
 
@@ -297,27 +311,26 @@ async function runInstance(
     active.delete(instance.nodeKey);
   }
 
-  try {
-    input.store.commitAttemptResult({
-      runId: input.runId,
-      attemptId: attempt.attemptId,
-      ownerEpoch: claim.ownerEpoch,
-      result,
-      idempotencyKey: `scheduler:commit:${input.runId}:${attempt.attemptId}`,
-    });
-  } catch (error) {
-    if (isLeaseLostError(error)) {
+  const committed = input.store.tryCommitAttemptResult({
+    runId: input.runId,
+    attemptId: attempt.attemptId,
+    ownerEpoch: claim.ownerEpoch,
+    result,
+    idempotencyKey: `scheduler:commit:${input.runId}:${attempt.attemptId}`,
+  });
+  if (committed.isErr()) {
+    if (isLeaseLostError(committed.error)) {
       counters.leaseLost = true;
       controller.abort();
       return;
     }
-    const staleTerminal = staleTerminalStatus(error);
+    const staleTerminal = staleTerminalStatus(committed.error);
     if (staleTerminal) {
       if (staleTerminal === "failed") counters.failed += 1;
       else counters.cancelled += 1;
       return;
     }
-    throw error;
+    unwrapStoreResult(committed);
   }
 
   if (result.status === "completed") counters.completed += 1;
@@ -332,7 +345,7 @@ function attemptStartReason(instance: NodeInstance): NodeAttemptContext["attempt
 }
 
 function abortInterruptedActiveAttempts(store: SchedulerStorePort, runId: string, active: Map<string, AbortController>): void {
-  const projection = store.loadRunSnapshot(runId).projection;
+  const projection = unwrapStoreResult(store.tryLoadRunSnapshot(runId)).projection;
   for (const [nodeKey, controller] of active) {
     const instance = projection.instances[nodeKey];
     if (projection.run.status === "paused" || instance?.status === "failed" || instance?.status === "cancelled" || (instance?.status === "ready" && instance.statusReason === "paused")) {
@@ -388,22 +401,26 @@ function byReadiness(left: NodeInstance, right: NodeInstance): number {
     || left.nodeKey.localeCompare(right.nodeKey);
 }
 
-function isLeaseLostError(error: unknown): boolean {
-  return error instanceof Error && (error.message.includes("owner epoch") || error.message.includes("not active"));
+function unwrapStoreResult<T>(result: SchedulerStoreResult<T>): T {
+  return throwSchedulerStoreResult(result);
 }
 
-function isPausedError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes("is paused");
+function isLeaseLostError(error: SchedulerStoreError): boolean {
+  return error.type === "owner-epoch-inactive" || error.type === "owner-epoch-stale";
 }
 
-function isVersionMismatchError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes("version mismatch");
+function isPausedError(error: SchedulerStoreError): boolean {
+  return error.type === "run-paused";
 }
 
-function staleTerminalStatus(error: unknown): "cancelled" | "failed" | undefined {
-  if (!(error instanceof Error)) return undefined;
-  if (error.message.includes("already cancelled") || error.message.includes("already superseded")) return "cancelled";
-  if (error.message.includes("already timed_out") || error.message.includes("already failed")) return "failed";
+function isVersionMismatchError(error: SchedulerStoreError): boolean {
+  return error.type === "version-mismatch";
+}
+
+function staleTerminalStatus(error: SchedulerStoreError): "cancelled" | "failed" | undefined {
+  if (error.type !== "terminal-attempt") return undefined;
+  if (error.status === "cancelled" || error.status === "superseded") return "cancelled";
+  if (error.status === "timed_out" || error.status === "failed") return "failed";
   return undefined;
 }
 

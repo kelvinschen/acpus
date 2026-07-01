@@ -10,7 +10,7 @@
 
 - The root `@acpus/core` entrypoint MUST expose the minimal workflow authoring surface: `defineWorkflow`, `z`, `s`, `task`, and `secret`.
 - `@acpus/core/workflow` MUST expose `defineWorkflow`, `compileWorkflowDefinition`, and `isWorkflowDefinition`.
-- `@acpus/core/schema` MUST expose schema authoring, parsing, validation, and lowering helpers, including `z`, `s`, `isSchema`, `parseSchema`, `safeParseSchema`, `validateValue`, `toSchemaIR`, `toJSONSchema`, `schemaToJsonSchema`, and `assertBoundarySchema`.
+- `@acpus/core/schema` MUST expose schema authoring, parsing, validation, and lowering helpers, including `z`, `s`, `isSchema`, `parseSchema`, `safeParseSchema`, `validateValue`, `toSchemaIR`, `tryToSchemaIR`, `toJSONSchema`, `schemaToJsonSchema`, and `assertBoundarySchema`.
 - `@acpus/core/runtime` MUST expose the task command wrapper factory `createDollar`, secret tokens, and related task runtime types.
 - `@acpus/core/ir` MUST expose `validateWorkflowIR` and public IR types.
 - The core package MUST NOT expose a binary; command behavior belongs to the `acpus` CLI package.
@@ -34,6 +34,9 @@
 
 - The core MUST re-export Zod 4 as `z` and MUST add Acpus extensions `z.path()`, `z.artifact(mediaType?)`, `z.secretRef()`, and `z.integer()`.
 - Graph-boundary schemas MUST be canonicalized to serializable `SchemaIR` via `toSchemaIR(schema)`.
+- `tryToSchemaIR(schema)` MUST return a neverthrow `Result<SchemaIR, SchemaLoweringError>` for recoverable schema lowering failures.
+- `SchemaLoweringError` MUST be a serializable tagged union that includes unsupported schema, invalid literal, and invalid default failures with stable path fields.
+- `toSchemaIR(schema)` MAY remain a throwing compatibility adapter over `tryToSchemaIR(schema)` for authoring APIs that still expect exceptions.
 - The graph-boundary schema subset MUST include string, number, integer, boolean, null, unknown, literal, enum, array, object, record, union, optional, nullable, default, path, artifact, and secretRef schemas.
 - Integer schema extensions MUST lower to expression-compatible `SchemaIR` with `kind: "number"`.
 - Graph-boundary schema lowering MUST reject runtime-only or non-serializable schema constructs such as transform, custom, function, promise, map, set, date, bigint, symbol, undefined, void, and never.

@@ -3,7 +3,7 @@ import { access, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { getRun, getRunVisualizationOverlay, listRuns, mutateRun, normalizeForkInput, replayRun, signalRun } from "@acpus/runtime";
+import { getRun, getRunVisualizationOverlay, listRuns, mutateRun, normalizeForkInput, replayRun, signalRun, tryMutateRun, trySignalRun } from "@acpus/runtime";
 import { runSupervisorTick } from "../src/supervisor/tick.js";
 import { openExistingWritableRuntimeStore } from "../src/store/store.js";
 import {
@@ -248,6 +248,22 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       ]);
 
       await expect(signalRun(workspace, runId, "approve", { ok: "yes" })).rejects.toThrow("Signal payload does not match schema");
+      const typedInvalidSignal = await trySignalRun(workspace, runId, "approve", { ok: "yes" });
+      expect(typedInvalidSignal.isErr()).toBe(true);
+      if (typedInvalidSignal.isOk()) throw new Error("expected typed invalid signal failure");
+      expect(typedInvalidSignal.error).toMatchObject({ type: "invalid-signal-payload", nodeId: "approve" });
+
+      const typedInvalidResume = await tryMutateRun(workspace, runId, "resume");
+      expect(typedInvalidResume.isErr()).toBe(true);
+      if (typedInvalidResume.isOk()) throw new Error("expected typed invalid resume failure");
+      expect(typedInvalidResume.error).toMatchObject({
+        type: "scheduler-store-failed",
+        cause: { type: "invalid-control-state", command: "resume" },
+      });
+      const failedResume = runtimeRows(workspace, "SELECT status, payload_json FROM commands WHERE run_id = ? AND type = 'resume'", runId).at(-1);
+      expect(failedResume).toMatchObject({ status: "failed" });
+      expect(JSON.parse(String(failedResume?.payload_json))).toMatchObject({ type: "invalid-control-state" });
+
       await expect(signalRun(workspace, runId, "missing", { ok: true })).rejects.toThrow("Signal node 'missing' was not found.");
       expect(runtimeRows(workspace, "SELECT type FROM run_events WHERE run_id = ? ORDER BY sequence", runId).map(row => row.type)).toEqual([
         "run.admitted",

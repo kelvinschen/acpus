@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { safeParseSchema, toSchemaIR, z } from "../src/schema.js";
+import { safeParseSchema, toSchemaIR, tryToSchemaIR, z } from "../src/schema.js";
+import { err } from "neverthrow";
 
 describe("schema boundary lowering", () => {
   it("lowers the supported Zod boundary subset to durable SchemaIR", () => {
@@ -36,6 +37,33 @@ describe("schema boundary lowering", () => {
     expect(() => toSchemaIR(z.object({ createdAt: z.date() }))).toThrow(
       "$schema.createdAt: Zod 'date' is not supported as an Acpus graph-boundary schema",
     );
+  });
+
+  it("returns tagged lowering errors for unsupported schemas", () => {
+    expect(tryToSchemaIR(z.object({ createdAt: z.date() }))).toEqual(err({
+      type: "unsupported-schema",
+      path: "$schema.createdAt",
+      schemaKind: "date",
+      message: "$schema.createdAt: Zod 'date' is not supported as an Acpus graph-boundary schema",
+    }));
+  });
+
+  it("returns tagged lowering errors for non-JSON literal values", () => {
+    expect(tryToSchemaIR(z.literal(Number.NaN))).toEqual(err({
+      type: "invalid-literal",
+      path: "$schema",
+      valueType: "number",
+      message: "$schema: literal/enum value NaN is not JSON-serializable",
+    }));
+  });
+
+  it("returns tagged lowering errors for non-JSON default values", () => {
+    expect(tryToSchemaIR(z.any().default(Number.NaN))).toEqual(err({
+      type: "invalid-default",
+      path: "$schema",
+      valueType: "number",
+      message: "$schema: default value is not JSON-serializable",
+    }));
   });
 
   it("normalizes validation issues to Acpus paths", () => {

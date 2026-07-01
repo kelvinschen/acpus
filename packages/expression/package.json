@@ -47,5 +47,8 @@
     "build": "rm -rf dist && tsgo -p tsconfig.json",
     "typecheck": "tsgo -p tsconfig.json --noEmit",
     "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "neverthrow": "^8.2.0"
   }
 }

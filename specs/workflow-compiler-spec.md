@@ -9,7 +9,9 @@
 ### Public API
 
 - The package MUST expose `compileWorkflowModule(entry, options?)`.
+- The package MUST expose `tryCompileWorkflowModule(entry, options?)`.
 - The package MUST expose `prepareWorkflow(options)`.
+- The package MUST expose `tryPrepareWorkflow(options)`.
 - The package MUST expose `writePreflightArtifact(prepared, cwd)`.
 - The package MUST expose `WorkflowPreparationError` and public preparation, lock, artifact, and failure types.
 - The package MUST NOT expose a binary.
@@ -18,6 +20,9 @@
 
 - `compileWorkflowModule(entry, options?)` MUST read the workflow source file.
 - `compileWorkflowModule(...)` MUST import the module and require the default export to be an Acpus workflow definition.
+- `tryCompileWorkflowModule(...)` MUST return a neverthrow `ResultAsync<WorkflowIR, CompileWorkflowModuleError>` for recoverable module compile failures.
+- `CompileWorkflowModuleError` MUST be a serializable tagged union covering source read failure, module import failure, invalid default export, workflow build/lowering failure, task analysis failure, and workflow path outside workspace.
+- `compileWorkflowModule(...)` MAY remain a throwing compatibility adapter over `tryCompileWorkflowModule(...)`.
 - `compileWorkflowModule(...)` MUST lower the workflow definition through `compileWorkflowDefinition(..., { validate: false })`.
 - `compileWorkflowModule(...)` MUST attach a `sha256:` `workflowSourceDigest` computed from the workflow source text.
 - `compileWorkflowModule(...)` MUST analyze task call sites, attach reusable task module reference metadata to lowered task runs, append `validateWorkflowIR(...)` diagnostics, and return `WorkflowIR`.
@@ -38,6 +43,10 @@
 - Check failures MUST be reported as `WorkflowPreparationError` with phase `"check"` and `DiagnosticIR[]`.
 - Module import or compile failures MUST be reported as phase `"compile"`.
 - IR diagnostics containing any `severity: "error"` MUST be reported as phase `"validate"`.
+- `tryPrepareWorkflow(options)` MUST return a neverthrow `ResultAsync<PreparedWorkflow, WorkflowPreparationFailure>` instead of throwing for check, compile, and validate failures.
+- `WorkflowPreparationFailure` MUST include a stable `type` tag while preserving the existing `phase` field.
+- Compile worker failure payloads MUST be plain JSON objects with `ok: false`, a stable `type`, and a display `message`.
+- `prepareWorkflow(options)` MAY remain a throwing compatibility adapter over `tryPrepareWorkflow(options)`.
 
 ### Internal Fixture ESLint
 

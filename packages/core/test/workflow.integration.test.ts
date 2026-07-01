@@ -515,7 +515,10 @@ describe("workflow compilation", () => {
     expect(ir.root.nodes[0]).toMatchObject({
       id: "bad_task",
       kind: "task",
-      run: { input: {} },
+      run: {
+        input: {},
+        target: { kind: "inline", runtime: "node", source: "" },
+      },
     });
   });
 

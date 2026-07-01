@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { task, z } from "@acpus/core";
 import type { TaskToken } from "@acpus/core";
 import type { Dollar } from "@acpus/core/runtime";
+import { err, ok, ResultAsync, type Result } from "neverthrow";
 
 export type CreateWorktreeInput = {
   repo: string;
@@ -22,6 +23,13 @@ export type CreateWorktreeOutput = {
   created: boolean;
   dirtyStatus: string;
 };
+
+export type CreateWorktreeError =
+  | { type: "non-detached-worktree"; message: string }
+  | { type: "dirty-repository"; repoPath: string; dirtyStatus: string; message: string }
+  | { type: "source-repository-worktree-path"; repoPath: string; worktreePath: string; message: string }
+  | { type: "unregistered-worktree-removal"; repoPath: string; worktreePath: string; message: string }
+  | { type: "git-command-failed"; message: string };
 
 type ReusableTask<Input, Output> = Extract<TaskToken<Input, Output>, { kind: "external" }>;
 
@@ -44,44 +52,70 @@ export const createWorktree: ReusableTask<CreateWorktreeInput, CreateWorktreeOut
     dirtyStatus: z.string(),
   }),
   exec: async ({ input, $ }) => {
-    const repoPath = resolve(input.repo);
-    const worktreePath = resolve(input.path);
-    const ref = input.ref ?? "HEAD";
-    const detached = input.detach ?? true;
-    if (!detached) throw new Error("createWorktree only supports detached worktrees in this version.");
-
-    const topLevel = (await $`git -C ${repoPath} rev-parse --show-toplevel`.text()).trim();
-    const baseSha = (await $`git -C ${repoPath} rev-parse --verify ${`${ref}^{commit}`}`.text()).trim();
-    const dirtyStatus = (await $`git -C ${repoPath} status --porcelain`.text()).trim();
-    if (dirtyStatus) throw new Error(`Refusing to create worktree from dirty repository '${topLevel}'.`);
-    if (worktreePath === resolve(topLevel)) throw new Error("Refusing to use the source repository as the worktree path.");
-
-    if (input.forceRemove) await removeExistingWorktree($, topLevel, worktreePath);
-
-    await $`git -C ${topLevel} worktree add --detach ${worktreePath} ${baseSha}`;
-
-    return {
-      ok: true,
-      repoPath: topLevel,
-      worktreePath,
-      ref,
-      baseSha,
-      detached,
-      created: true,
-      dirtyStatus,
-    };
+    const result = await tryCreateWorktree(input, $);
+    return result.match(
+      output => output,
+      error => {
+        throw new Error(error.message);
+      },
+    );
   },
 });
 
-async function removeExistingWorktree($: Dollar, repo: string, worktreePath: string): Promise<void> {
+export function tryCreateWorktree(input: CreateWorktreeInput, $: Dollar): ResultAsync<CreateWorktreeOutput, CreateWorktreeError> {
+  return ResultAsync.fromPromise(
+    createWorktreeResult(input, $),
+    cause => ({ type: "git-command-failed", message: causeMessage(cause) } satisfies CreateWorktreeError),
+  ).andThen(result => result);
+}
+
+async function createWorktreeResult(input: CreateWorktreeInput, $: Dollar): Promise<Result<CreateWorktreeOutput, CreateWorktreeError>> {
+  const repoPath = resolve(input.repo);
+  const worktreePath = resolve(input.path);
+  const ref = input.ref ?? "HEAD";
+  const detached = input.detach ?? true;
+  if (!detached) return err({ type: "non-detached-worktree", message: "createWorktree only supports detached worktrees in this version." });
+
+  const topLevel = (await $`git -C ${repoPath} rev-parse --show-toplevel`.text()).trim();
+  const baseSha = (await $`git -C ${repoPath} rev-parse --verify ${`${ref}^{commit}`}`.text()).trim();
+  const dirtyStatus = (await $`git -C ${repoPath} status --porcelain`.text()).trim();
+  if (dirtyStatus) return err({ type: "dirty-repository", repoPath: topLevel, dirtyStatus, message: `Refusing to create worktree from dirty repository '${topLevel}'.` });
+  if (worktreePath === resolve(topLevel)) return err({ type: "source-repository-worktree-path", repoPath: topLevel, worktreePath, message: "Refusing to use the source repository as the worktree path." });
+
+  if (input.forceRemove) {
+    const removed = await removeExistingWorktree($, topLevel, worktreePath);
+    if (removed.isErr()) return err(removed.error);
+  }
+
+  await $`git -C ${topLevel} worktree add --detach ${worktreePath} ${baseSha}`;
+
+  return ok({
+    ok: true,
+    repoPath: topLevel,
+    worktreePath,
+    ref,
+    baseSha,
+    detached,
+    created: true,
+    dirtyStatus,
+  });
+}
+
+async function removeExistingWorktree($: Dollar, repo: string, worktreePath: string): Promise<Result<void, CreateWorktreeError>> {
   const registered = await registeredWorktrees($, repo);
   if (registered.has(worktreePath)) {
     await $`git -C ${repo} worktree remove --force ${worktreePath}`;
-    return;
+    return ok(undefined);
   }
   if (await pathExists(worktreePath)) {
-    throw new Error(`Refusing to remove '${worktreePath}' because it is not a registered worktree for '${repo}'.`);
+    return err({
+      type: "unregistered-worktree-removal",
+      repoPath: repo,
+      worktreePath,
+      message: `Refusing to remove '${worktreePath}' because it is not a registered worktree for '${repo}'.`,
+    });
   }
+  return ok(undefined);
 }
 
 async function registeredWorktrees($: Dollar, repo: string): Promise<Set<string>> {
@@ -98,4 +132,8 @@ async function pathExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function causeMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
 }

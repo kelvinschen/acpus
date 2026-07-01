@@ -43,6 +43,25 @@
 
 - The runtime MUST advance admitted frozen `WorkflowIR` through an internal durable scheduler.
 - The scheduler MUST persist scheduler events in the public event stream using a scheduler envelope and MUST rebuild scheduler projection state from those events.
+- Scheduler store control-flow failures MUST use stable tagged `SchedulerStoreError` values at the store-port boundary.
+- Scheduler store-port `try*` operations for snapshots, event appends,
+  attempts, signal consumption, pause, resume, retry, and expired-owner
+  recovery MUST return neverthrow `Result<..., SchedulerStoreError>` for
+  recoverable store control-flow failures.
+- `tryAdvanceRun(input)` MUST return a neverthrow
+  `ResultAsync<AdvanceRunSummary, AdvanceRunError>` for typed scheduler advance
+  composition. `advanceRun(input)` MAY remain as the throwing compatibility
+  adapter.
+- `tryAdvanceRuntimeRun(...)`, `tryAdmitWorkflowRun(...)`,
+  `trySignalRun(...)`, and `tryMutateRun(...)` MUST return neverthrow
+  `ResultAsync` values with tagged runtime use-case errors for recoverable
+  runtime boundary failures. The existing non-`try` use-case functions MAY
+  remain compatibility adapters that preserve current CLI-facing behavior.
+- Scheduler advance logic MUST branch on scheduler store error tags and MUST NOT parse exception messages for lease, pause, version, or stale terminal control flow.
+- Scheduler store error tags MUST preserve user-facing messages separately from machine-readable fields such as `runId`, `attemptId`, `expectedVersion`, `actualVersion`, and `ownerEpoch`.
+- Scheduler store error tags MUST include recoverable idempotency conflicts,
+  missing retry targets, and invalid retry targets without requiring callers to
+  parse display messages.
 - The scheduler MUST maintain projection tables for frames, dynamic node instances, attempts, group members, and signal waits.
 - Static `nodeId` MUST remain the frozen IR node id. Dynamic execution identity MUST use a derived `nodeKey` from the instance path.
 - Scheduler events and projection rows for dynamic work MUST preserve structured instance path data when the dynamic instance is known.
@@ -177,6 +196,12 @@
 ### Controls, Fork, Signal, And Replay
 
 - Pause MUST record a durable pause gate and MUST prevent new scheduler-visible attempts from starting while paused.
+- Runtime durable command inputs MUST use the known discriminated command types
+  `pause`, `resume`, `retry`, `fork`, `signal`, and `shutdown`, not an open
+  command type string.
+- Runtime durable command variants MUST expose typed JSON payload shapes for
+  known payload fields such as pause reason, retry node, fork options, and
+  signal node/payload.
 - Pause MUST best-effort cancel started scheduler-visible attempts and requeue eligible dynamic work for a later resume.
 - Pausing an active scheduler-backed agent turn MUST abort the executor signal
   and MUST preserve available prompt, response, stderr, telemetry artifacts,

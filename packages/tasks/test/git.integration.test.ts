@@ -5,14 +5,15 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { createDollar } from "@acpus/core/runtime";
-import { createWorktree } from "../src/git.js";
-import { createWorktree as publicCreateWorktree } from "@acpus/tasks/git";
+import { createWorktree, tryCreateWorktree } from "../src/git.js";
+import { createWorktree as publicCreateWorktree, tryCreateWorktree as publicTryCreateWorktree } from "@acpus/tasks/git";
 
 const exec = promisify(execFile);
 
 describe("createWorktree", () => {
   it("is exported through the public git subpath", () => {
     expect(publicCreateWorktree.kind).toBe("external");
+    expect(publicTryCreateWorktree).toBe(tryCreateWorktree);
   });
 
   it("creates a detached worktree from a tiny local repository", async () => {
@@ -64,6 +65,29 @@ describe("createWorktree", () => {
         env: {},
         abortSignal: new AbortController().signal,
       })).rejects.toThrow("dirty repository");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("returns typed errors for dirty source repositories", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acpus-create-worktree-dirty-result-"));
+    try {
+      const { repo, worktree } = await tinyRepo(root);
+      await writeFile(join(repo, "dirty.txt"), "dirty\n");
+
+      const result = await tryCreateWorktree(
+        { repo, path: worktree },
+        createDollar({ cwd: root, env: testGitEnv() }),
+      );
+
+      expect(result.isErr()).toBe(true);
+      if (result.isOk()) throw new Error("expected dirty repository failure");
+      expect(result.error).toMatchObject({
+        type: "dirty-repository",
+        repoPath: repo,
+        dirtyStatus: expect.stringContaining("dirty.txt"),
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

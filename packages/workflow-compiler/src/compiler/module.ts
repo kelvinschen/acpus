@@ -5,28 +5,87 @@ import { pathToFileURL } from "node:url";
 import { compileWorkflowDefinition, isWorkflowDefinition } from "@acpus/core/workflow";
 import { validateWorkflowIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
 import { analyzeWorkflowTasks, resolveTaskReferenceMetadata, type TaskReferenceMetadata } from "../task-analysis/index.js";
+import { err, ok, Result, ResultAsync, type Result as NeverthrowResult } from "neverthrow";
 
 export type CompileOptions = {
   sourcePath?: string;
   cwd?: string;
 };
 
+export type CompileWorkflowModuleError =
+  | { type: "workflow-source-read-failed"; entry: string; message: string }
+  | { type: "module-import-failed"; entry: string; message: string }
+  | { type: "invalid-default-export"; entry: string; message: string }
+  | { type: "workflow-build-failed"; entry: string; message: string }
+  | { type: "task-analysis-failed"; entry: string; message: string }
+  | { type: "workflow-outside-workspace"; workflowFile: string; cwd: string; message: string };
+
 export async function compileWorkflowModule(entry: string, options: CompileOptions = {}): Promise<WorkflowIR> {
-  const absolute = resolve(entry);
-  const source = await readFile(absolute, "utf8");
-  const mod = await import(pathToFileURL(absolute).href);
-  const def = mod.default;
-  if (!isWorkflowDefinition(def)) throw new Error(`Default export of ${entry} is not an Acpus workflow definition.`);
-  const ir = compileWorkflowDefinition(def, { source: options.sourcePath ?? entry, validate: false });
-  ir.lock.workflowSourceDigest = `sha256:${createHash("sha256").update(source).digest("hex")}`;
-  const analysis = await analyzeWorkflowTasks(absolute, source);
-  applyTaskReferenceMetadata(ir, resolveTaskReferenceMetadata(analysis), options.cwd ?? process.cwd(), absolute);
-  ir.diagnostics.push(...validateWorkflowIR(ir));
-  return ir;
+  const result = await tryCompileWorkflowModule(entry, options);
+  return result.match(
+    ir => ir,
+    error => {
+      throw new Error(error.message);
+    },
+  );
 }
 
-function applyTaskReferenceMetadata(ir: WorkflowIR, metadata: Map<string, TaskReferenceMetadata>, cwd: string, workflowFile: string): void {
-  const referrerPath = toContainedWorkspacePath(cwd, workflowFile);
+export function tryCompileWorkflowModule(entry: string, options: CompileOptions = {}): ResultAsync<WorkflowIR, CompileWorkflowModuleError> {
+  const absolute = resolve(entry);
+  return ResultAsync.fromPromise(
+    readFile(absolute, "utf8"),
+    cause => ({
+      type: "workflow-source-read-failed",
+      entry,
+      message: `Workflow source '${entry}' could not be read: ${causeMessage(cause)}`,
+    } satisfies CompileWorkflowModuleError),
+  ).andThen(source =>
+    ResultAsync.fromPromise(
+      import(pathToFileURL(absolute).href) as Promise<Record<string, unknown>>,
+      cause => ({
+        type: "module-import-failed",
+        entry,
+        message: `Workflow module '${entry}' could not be imported: ${causeMessage(cause)}`,
+      } satisfies CompileWorkflowModuleError),
+    ).andThen(mod => {
+      const def = mod.default;
+      if (!isWorkflowDefinition(def)) {
+        return err({
+          type: "invalid-default-export",
+          entry,
+          message: `Default export of ${entry} is not an Acpus workflow definition.`,
+        } satisfies CompileWorkflowModuleError);
+      }
+      const built = Result.fromThrowable(() => {
+        const ir = compileWorkflowDefinition(def, { source: options.sourcePath ?? entry, validate: false });
+        ir.lock.workflowSourceDigest = `sha256:${createHash("sha256").update(source).digest("hex")}`;
+        return ir;
+      }, cause => ({
+        type: "workflow-build-failed",
+        entry,
+        message: `Workflow '${entry}' could not be lowered: ${causeMessage(cause)}`,
+      } satisfies CompileWorkflowModuleError))();
+      if (built.isErr()) return err(built.error);
+      const ir = built.value;
+      return ResultAsync.fromPromise(
+        analyzeWorkflowTasks(absolute, source),
+        cause => ({
+          type: "task-analysis-failed",
+          entry,
+          message: `Workflow task analysis failed for '${entry}': ${causeMessage(cause)}`,
+        } satisfies CompileWorkflowModuleError),
+      ).andThen(analysis => {
+        const referrerPath = toContainedWorkspacePath(options.cwd ?? process.cwd(), absolute);
+        if (referrerPath.isErr()) return err(referrerPath.error);
+        applyTaskReferenceMetadata(ir, resolveTaskReferenceMetadata(analysis), referrerPath.value);
+        ir.diagnostics.push(...validateWorkflowIR(ir));
+        return ok(ir);
+      });
+    }),
+  );
+}
+
+function applyTaskReferenceMetadata(ir: WorkflowIR, metadata: Map<string, TaskReferenceMetadata>, referrerPath: string): void {
   for (const node of taskNodes(ir.root)) {
     if (node.run.target.kind !== "module") continue;
     const task = metadata.get(node.id);
@@ -58,14 +117,23 @@ function* taskNodes(scope: ScopeIR): Generator<Extract<ScopeIR["nodes"][number],
   }
 }
 
-function toContainedWorkspacePath(cwd: string, workflowFile: string): string {
+function toContainedWorkspacePath(cwd: string, workflowFile: string): NeverthrowResult<string, CompileWorkflowModuleError> {
   const path = relative(cwd, workflowFile);
   if (path.startsWith("..") || path === "" || path.split(/[\\/]/).includes("..")) {
-    throw new Error(`Workflow file '${workflowFile}' must be inside workspace '${cwd}'.`);
+    return err({
+      type: "workflow-outside-workspace",
+      workflowFile,
+      cwd,
+      message: `Workflow file '${workflowFile}' must be inside workspace '${cwd}'.`,
+    });
   }
-  return toWorkspacePath(path);
+  return ok(toWorkspacePath(path));
 }
 
 function toWorkspacePath(path: string): string {
   return path.split(/[\\/]/).join("/");
+}
+
+function causeMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
 }

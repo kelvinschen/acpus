@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { WorkflowIR } from "@acpus/core/ir";
 import type { WorkflowPreparationFailure } from "@acpus/workflow-compiler";
-import { WorkflowPreparationError, prepareWorkflow, writePreflightArtifact } from "@acpus/workflow-compiler";
+import { WorkflowPreparationError, prepareWorkflow, tryPrepareWorkflow, writePreflightArtifact } from "@acpus/workflow-compiler";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const fixturesRoot = join(repoRoot, "packages", "workflow-compiler", "test", "fixtures");
@@ -89,6 +89,20 @@ export default defineWorkflow({
         source: expect.objectContaining({ file: expect.stringContaining("inline-capture.workflow.ts") }),
         hint: expect.stringContaining("run.input"),
       }));
+    });
+  });
+
+  it("returns typed check failures without throwing", async () => {
+    await withCompilerWorkspace("compiler-task-check-result", async cwd => {
+      const inlineCapture = await copyFixture(cwd, "workflows/inline-capture.workflow.ts");
+      const result = await tryPrepareWorkflow({ workflow: inlineCapture, cwd });
+
+      expect(result.isErr()).toBe(true);
+      if (result.isOk()) throw new Error("expected check failure");
+      if (result.error.type !== "check-failed") throw new Error("expected typed check failure");
+      expect(result.error.type).toBe("check-failed");
+      expect(result.error.phase).toBe("check");
+      expect(result.error.diagnostics).toContainEqual(expect.objectContaining({ code: "TB007" }));
     });
   });
 

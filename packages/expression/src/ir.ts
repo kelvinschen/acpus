@@ -38,5 +38,5 @@ export type TemplatePartIR =
   | { kind: "text"; value: string }
   | { kind: "expr"; expr: ExprIR };
 
-export { expr, refExpr, valueToExprIR } from "./internal/expr.js";
-export type { Expr, OutputAccessor, WorkflowValue } from "./internal/expr.js";
+export { expr, refExpr, valueToExprIR, tryValueToExprIR } from "./internal/expr.js";
+export type { Expr, ExprLoweringError, OutputAccessor, WorkflowValue } from "./internal/expr.js";

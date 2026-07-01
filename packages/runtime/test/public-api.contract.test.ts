@@ -17,6 +17,11 @@ describe("@acpus/runtime public API", () => {
       "replayRun",
       "signalRun",
       "startSupervisorLoop",
+      "tryAdmitWorkflowRun",
+      "tryAdvanceRun",
+      "tryAdvanceRuntimeRun",
+      "tryMutateRun",
+      "trySignalRun",
     ]);
   });
 });

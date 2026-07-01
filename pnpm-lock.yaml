@@ -94,6 +94,9 @@ importers:
       '@acpus/expression':
         specifier: workspace:*
         version: link:../expression
+      neverthrow:
+        specifier: ^8.2.0
+        version: 8.2.0
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -105,7 +108,11 @@ importers:
         specifier: ^22.15.30
         version: 22.19.19
 
-  packages/expression: {}
+  packages/expression:
+    dependencies:
+      neverthrow:
+        specifier: ^8.2.0
+        version: 8.2.0
 
   packages/runtime:
     dependencies:
@@ -121,6 +128,9 @@ importers:
       jsonrepair:
         specifier: ^3.14.1
         version: 3.14.1
+      neverthrow:
+        specifier: ^8.2.0
+        version: 8.2.0
       p-queue:
         specifier: ^9.3.0
         version: 9.3.0
@@ -137,6 +147,9 @@ importers:
       '@acpus/core':
         specifier: workspace:*
         version: link:../core
+      neverthrow:
+        specifier: ^8.2.0
+        version: 8.2.0
     devDependencies:
       '@types/node':
         specifier: ^22.15.30
@@ -150,6 +163,9 @@ importers:
       '@acpus/expression':
         specifier: workspace:*
         version: link:../expression
+      neverthrow:
+        specifier: ^8.2.0
+        version: 8.2.0
       tsx:
         specifier: ^4.20.3
         version: 4.22.4
@@ -583,6 +599,11 @@ packages:
 
   '@rolldown/pluginutils@1.0.1':
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
+
+  '@rollup/rollup-linux-x64-gnu@4.62.2':
+    resolution: {integrity: sha512-5BqxR/pshjey51iliyzTD5Xi3EN0aLmQ2lZ3lvefVV9c82BvrLo2/6OT55iifpWBufs6kdwWbuOKS841DrmK9A==}
+    cpu: [x64]
+    os: [linux]
 
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
@@ -1218,6 +1239,10 @@ packages:
 
   natural-compare@1.4.0:
     resolution: {integrity: sha512-OWND8ei3VtNC9h7V60qff3SVobHr996CTwgxubgyQYEpg290h9J0buyECNNJexkFm5sOajh5G116RYA1c8ZMSw==}
+
+  neverthrow@8.2.0:
+    resolution: {integrity: sha512-kOCT/1MCPAxY5iUV3wytNFUMUolzuwd/VF/1KCx7kf6CutrOsTie+84zTGTpgQycjvfLdBBdvBvFLqFD2c0wkQ==}
+    engines: {node: '>=18'}
 
   obug@2.1.2:
     resolution: {integrity: sha512-AWGB9WFcRXOQs48Z/udjI5ZcZMHXwX8XPByNpOydgcGsDLIzjGizhoMWJyKAWze7AVW/2W1i+/gPX4YtKe5cyg==}
@@ -1984,6 +2009,9 @@ snapshots:
 
   '@rolldown/pluginutils@1.0.1': {}
 
+  '@rollup/rollup-linux-x64-gnu@4.62.2':
+    optional: true
+
   '@standard-schema/spec@1.1.0': {}
 
   '@tybys/wasm-util@0.10.2':
@@ -2600,6 +2628,10 @@ snapshots:
   nanoid@3.3.12: {}
 
   natural-compare@1.4.0: {}
+
+  neverthrow@8.2.0:
+    optionalDependencies:
+      '@rollup/rollup-linux-x64-gnu': 4.62.2
 
   obug@2.1.2: {}
 

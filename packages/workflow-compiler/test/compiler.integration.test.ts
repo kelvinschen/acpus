@@ -1,9 +1,15 @@
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   compileWorkflowModule,
+  tryCompileWorkflowModule,
 } from "../src/index.js";
 import type { NodeIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
+
+const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
 
 describe.concurrent("workflow module compiler", () => {
   it("compiles a TypeScript workflow module with reusable module references and inline task source", async () => {
@@ -63,6 +69,70 @@ describe.concurrent("workflow module compiler", () => {
     const second = await compileWorkflowModule(entry, { sourcePath: "x" });
 
     expect(taskTarget(first.root, "normalize_path")).toEqual(taskTarget(second.root, "normalize_path"));
+  });
+
+  it("returns tagged errors for invalid workflow module exports", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "compiler-invalid-export-"));
+    try {
+      const workflow = join(cwd, "invalid.workflow.ts");
+      await writeFile(workflow, "export default {};\n");
+
+      const result = await tryCompileWorkflowModule(workflow);
+
+      expect(result.isErr()).toBe(true);
+      if (result.isOk()) throw new Error("expected invalid default export");
+      expect(result.error).toEqual({
+        type: "invalid-default-export",
+        entry: workflow,
+        message: `Default export of ${workflow} is not an Acpus workflow definition.`,
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("returns tagged errors for workflows outside the workspace", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "compiler-outside-workspace-"));
+    try {
+      const workflow = fixture("release.workflow.ts");
+      const result = await tryCompileWorkflowModule(workflow, { cwd });
+
+      expect(result.isErr()).toBe(true);
+      if (result.isOk()) throw new Error("expected outside workspace failure");
+      expect(result.error).toMatchObject({
+        type: "workflow-outside-workspace",
+        workflowFile: workflow,
+        cwd,
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("returns tagged errors when workflow lowering throws", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "compiler-build-failure-"));
+    try {
+      await symlink(join(repoRoot, "node_modules"), join(cwd, "node_modules"), "dir");
+      const workflow = join(cwd, "throws.workflow.ts");
+      await writeFile(workflow, `import { defineWorkflow } from "@acpus/core";
+
+export default defineWorkflow({ name: "throws" }).build(() => {
+  throw new Error("boom");
+});
+`);
+
+      const result = await tryCompileWorkflowModule(workflow);
+
+      expect(result.isErr()).toBe(true);
+      if (result.isOk()) throw new Error("expected workflow build failure");
+      expect(result.error).toMatchObject({
+        type: "workflow-build-failed",
+        entry: workflow,
+        message: expect.stringContaining("boom"),
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it("compiles a representative orchestration fixture with composite scopes", async () => {

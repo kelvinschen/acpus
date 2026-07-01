@@ -1,7 +1,13 @@
 import { expectTypeOf, test } from "vitest";
 import type {
   AgentOverrideMap,
+  AdvanceRunError,
+  AdvanceRunInput,
+  AdvanceRunSummary,
+  ControlCommandType,
+  EmptyCommandPayload,
   ForkPreparedWorkflow,
+  PauseCommandPayload,
   PreparedRunWorkflow,
   ReplayResult,
   RunDynamicAttempt,
@@ -14,19 +20,29 @@ import type {
   RunRecord,
   RunStatus,
   RunWorkflowLockArtifact,
+  RuntimeAdvanceError,
+  RuntimeAdvanceResult,
   RuntimeCommandRecord,
   RuntimeMutationAction,
   RuntimeMutationInput,
   RuntimeMutationResult,
+  RuntimeStore,
+  RuntimeUseCaseError,
+  RetryCommandPayload,
+  SchedulerStoreError,
+  SchedulerStoreResult,
+  SignalCommandPayload,
+  SubmitCommandInput,
   SupervisorLoopHandle,
   SupervisorLoopOptions,
   WorkflowVisualizationGroup,
   WorkflowVisualizationNode,
   WorkflowVisualizationOverlay,
 } from "@acpus/runtime";
-import { admitWorkflowRun, createWorkflowVisualizationOverlay, getRun, getRunVisualizationOverlay, listRuns, mutateRun, normalizeForkInput, normalizeSignalPayload, normalizeWorkflowInput, queueSupervisorShutdown, replayRun, signalRun, startSupervisorLoop } from "@acpus/runtime";
+import { admitWorkflowRun, createWorkflowVisualizationOverlay, getRun, getRunVisualizationOverlay, listRuns, mutateRun, normalizeForkInput, normalizeSignalPayload, normalizeWorkflowInput, queueSupervisorShutdown, replayRun, signalRun, startSupervisorLoop, tryAdvanceRun, tryAdvanceRuntimeRun, tryAdmitWorkflowRun, tryMutateRun, trySignalRun } from "@acpus/runtime";
 import type { WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
+import type { Result, ResultAsync } from "neverthrow";
 
 test("@acpus/runtime public types describe use-case level runtime APIs", () => {
   expectTypeOf(admitWorkflowRun).toMatchTypeOf<(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue, agentOverrides?: AgentOverrideMap) => Promise<unknown>>();
@@ -38,6 +54,9 @@ test("@acpus/runtime public types describe use-case level runtime APIs", () => {
   expectTypeOf(normalizeForkInput).toEqualTypeOf<(cwd: string, runId: string, input: JsonValue | undefined, prepared?: PreparedRunWorkflow) => Promise<JsonValue | undefined>>();
   expectTypeOf(signalRun).toEqualTypeOf<(cwd: string, runId: string, nodeId: string, payload: JsonValue) => Promise<RuntimeMutationResult | undefined>>();
   expectTypeOf(mutateRun).toEqualTypeOf<(cwd: string, runId: string, action: RuntimeMutationAction, input?: RuntimeMutationInput) => Promise<RuntimeMutationResult | undefined>>();
+  expectTypeOf(tryAdmitWorkflowRun).toEqualTypeOf<(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue, agentOverrides?: AgentOverrideMap) => ResultAsync<RuntimeAdvanceResult, RuntimeUseCaseError>>();
+  expectTypeOf(trySignalRun).toEqualTypeOf<(cwd: string, runId: string, nodeId: string, payload: JsonValue) => ResultAsync<RuntimeMutationResult, RuntimeUseCaseError>>();
+  expectTypeOf(tryMutateRun).toEqualTypeOf<(cwd: string, runId: string, action: RuntimeMutationAction, input?: RuntimeMutationInput) => ResultAsync<RuntimeMutationResult, RuntimeUseCaseError>>();
   expectTypeOf(normalizeWorkflowInput).toEqualTypeOf<(ir: WorkflowIR, input: JsonValue, label?: string) => JsonValue>();
   expectTypeOf(normalizeSignalPayload).toEqualTypeOf<(ir: WorkflowIR, nodeId: string, payload: JsonValue) => JsonValue>();
   expectTypeOf(startSupervisorLoop).toEqualTypeOf<(cwd: string, options: SupervisorLoopOptions) => Promise<SupervisorLoopHandle>>();
@@ -55,4 +74,12 @@ test("@acpus/runtime public types describe use-case level runtime APIs", () => {
   expectTypeOf<WorkflowVisualizationOverlay["nodes"][number]>().toEqualTypeOf<WorkflowVisualizationNode>();
   expectTypeOf<WorkflowVisualizationOverlay["groups"][number]>().toEqualTypeOf<WorkflowVisualizationGroup>();
   expectTypeOf<RunStatus>().toEqualTypeOf<"pending" | "running" | "paused" | "awaiting" | "failed" | "completed" | "canceled">();
+  expectTypeOf<ControlCommandType>().toEqualTypeOf<"pause" | "resume" | "retry" | "fork" | "signal" | "shutdown">();
+  expectTypeOf<Extract<SubmitCommandInput, { type: "pause" }>["payload"]>().toEqualTypeOf<PauseCommandPayload | undefined>();
+  expectTypeOf<Extract<SubmitCommandInput, { type: "shutdown" }>["payload"]>().toEqualTypeOf<EmptyCommandPayload | undefined>();
+  expectTypeOf<Extract<SubmitCommandInput, { type: "signal" }>["payload"]>().toEqualTypeOf<SignalCommandPayload | undefined>();
+  expectTypeOf<Extract<SubmitCommandInput, { type: "retry" }>["payload"]>().toEqualTypeOf<RetryCommandPayload | undefined>();
+  expectTypeOf<SchedulerStoreResult<unknown>>().toEqualTypeOf<Result<unknown, SchedulerStoreError>>();
+  expectTypeOf(tryAdvanceRun).toEqualTypeOf<(input: AdvanceRunInput) => ResultAsync<AdvanceRunSummary, AdvanceRunError>>();
+  expectTypeOf(tryAdvanceRuntimeRun).toEqualTypeOf<(cwd: string, store: RuntimeStore, runId: string, ownerId?: string) => ResultAsync<RuntimeAdvanceResult, RuntimeAdvanceError>>();
 });

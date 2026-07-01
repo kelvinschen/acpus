@@ -5,6 +5,7 @@ import type { WorkflowIR } from "@acpus/core/ir";
 import { checkWorkflow } from "../check/runner.js";
 import { compileWorkflow } from "../compiler/worker.js";
 import { createScratchDir } from "./temp.js";
+import { err, ok, ResultAsync, type Result } from "neverthrow";
 
 export type PreflightOptions = {
   workflow: string;
@@ -42,9 +43,9 @@ export type PreflightArtifact = {
 };
 
 export type WorkflowPreparationFailure =
-  | { phase: "check"; message: string; diagnostics: WorkflowIR["diagnostics"] }
-  | { phase: "compile"; message: string }
-  | { phase: "validate"; message: string; diagnostics: WorkflowIR["diagnostics"]; ir: WorkflowIR };
+  | { type: "check-failed"; phase: "check"; message: string; diagnostics: WorkflowIR["diagnostics"] }
+  | { type: "compile-failed"; phase: "compile"; message: string }
+  | { type: "validate-failed"; phase: "validate"; message: string; diagnostics: WorkflowIR["diagnostics"]; ir: WorkflowIR };
 
 export class WorkflowPreparationError extends Error {
   constructor(readonly failure: WorkflowPreparationFailure) {
@@ -53,12 +54,34 @@ export class WorkflowPreparationError extends Error {
 }
 
 export async function prepareWorkflow(options: PreflightOptions): Promise<PreparedWorkflow> {
+  const result = await tryPrepareWorkflow(options);
+  return result.match(
+    prepared => prepared,
+    failure => {
+      throw new WorkflowPreparationError(failure);
+    },
+  );
+}
+
+export function tryPrepareWorkflow(options: PreflightOptions): ResultAsync<PreparedWorkflow, WorkflowPreparationFailure> {
   const workflowPath = resolve(options.cwd, options.workflow);
+  return ResultAsync.fromPromise(
+    prepareWorkflowResult(options, workflowPath),
+    cause => ({
+      type: "compile-failed",
+      phase: "compile",
+      message: `Workflow preparation failed: ${causeMessage(cause)}`,
+    } satisfies WorkflowPreparationFailure),
+  ).andThen(result => result);
+}
+
+async function prepareWorkflowResult(options: PreflightOptions, workflowPath: string): Promise<Result<PreparedWorkflow, WorkflowPreparationFailure>> {
   const scratchDir = await createScratchDir();
   try {
     const check = await checkWorkflow(workflowPath, options.cwd, scratchDir);
     if (check.diagnostics.some(diagnostic => diagnostic.severity === "error")) {
-      throw new WorkflowPreparationError({
+      return err({
+        type: "check-failed",
         phase: "check",
         message: "Workflow check failed.",
         diagnostics: check.diagnostics,
@@ -67,14 +90,16 @@ export async function prepareWorkflow(options: PreflightOptions): Promise<Prepar
 
     const compiled = await compileWorkflow(workflowPath, options.cwd, scratchDir);
     if (!compiled.ok) {
-      throw new WorkflowPreparationError({
+      return err({
+        type: "compile-failed",
         phase: "compile",
         message: compiled.message,
       });
     }
 
     if (compiled.ir.diagnostics.some(diagnostic => diagnostic.severity === "error")) {
-      throw new WorkflowPreparationError({
+      return err({
+        type: "validate-failed",
         phase: "validate",
         message: "Workflow validation failed.",
         diagnostics: compiled.ir.diagnostics,
@@ -90,7 +115,7 @@ export async function prepareWorkflow(options: PreflightOptions): Promise<Prepar
       packageLock ?? "",
     ].join("\n"));
 
-    return {
+    return ok({
       workflowPath,
       ir: compiled.ir,
       irJson,
@@ -98,7 +123,7 @@ export async function prepareWorkflow(options: PreflightOptions): Promise<Prepar
       sourceGraphDigest,
       ...(packageLock ? { packageLockDigest: packageLock } : {}),
       lock: buildLock(compiled.ir, workflowPath, options.cwd, irDigest, sourceGraphDigest, packageLock),
-    };
+    });
   } finally {
     await rm(scratchDir, { recursive: true, force: true });
   }
@@ -144,6 +169,10 @@ async function packageLockDigest(cwd: string): Promise<string | undefined> {
 
 function digest(value: string): string {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function causeMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
 }
 
 function timestampId(): string {

@@ -10,7 +10,7 @@
 
 - The root `@acpus/expression` entrypoint MUST expose the authoring surface: `isExpr`, `not`, `and`, `or`, `ifElse`, `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `coalesce`, `len`, `includes`, `isEmpty`, `startsWith`, `endsWith`, `matches`, `get`, `head`, `every`, `some`, `filter`, `map`, `max`, `min`, `where`, `pick`, `template`, and the public `Expr`, `OutputAccessor`, and `WorkflowValue` types.
 - The root `@acpus/expression` entrypoint MUST NOT export raw construction helpers such as `expr`, `refExpr`, or `valueToExprIR`.
-- `@acpus/expression/ir` MUST expose serializable IR and JSON types plus advanced construction helpers needed by package internals and tests.
+- `@acpus/expression/ir` MUST expose serializable IR and JSON types plus advanced construction helpers needed by package internals and tests, including `tryValueToExprIR`.
 - `@acpus/expression/evaluator` MUST expose generic expression and template evaluators.
 - `@acpus/expression/validator` MUST expose `validateExprIR`.
 
@@ -28,6 +28,10 @@
 
 - `WorkflowValue<T>` MUST accept expression tokens, JSON-compatible literals, arrays, and plain objects, and MUST reject `undefined` at the type boundary when TypeScript can prove it.
 - Runtime lowering MUST reject unsupported raw values such as `undefined`, sparse arrays, non-plain objects, functions, symbols, and bigint.
+- `tryValueToExprIR(value)` MUST return a neverthrow `Result<ExprIR, ExprLoweringError>` for recoverable expression lowering failures.
+- `ExprLoweringError` MUST be a serializable tagged union with stable path fields.
+- Expression lowering MUST reject non-finite numbers because `ExprIR` literals MUST be JSON-serializable.
+- `valueToExprIR(value)` MAY remain a throwing compatibility adapter over `tryValueToExprIR(value)` for existing authoring helpers.
 - Accessors MUST keep `__ir` and `__type` reserved for expression internals and MUST lower property access to `ref`, `var`, or `get` IR according to the source node.
 - User object fields named `ir` MUST remain reachable as normal output accessors.
 - `get(array, index)` MUST support numeric array access and return an accessor typed as possibly `undefined`.
@@ -47,7 +51,7 @@
 - Nullish fallback MUST be represented by `coalesce`; `coalesce` MUST accept at least one operand.
 - `every` and `some` MUST support both boolean arrays and runtime array lambda predicates.
 - `filter` and `map` MUST require runtime array lambda callbacks.
-- `max` and `min` MUST accept one numeric array expression and MUST follow `Math.max(...values)` and `Math.min(...values)` semantics, including empty arrays and non-finite JavaScript numbers.
+- `max` and `min` MUST accept one numeric array expression and MUST follow `Math.max(...values)` and `Math.min(...values)` semantics for JSON-serializable numeric inputs, including empty arrays.
 
 ### Where Filters
 

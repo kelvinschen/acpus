@@ -26,6 +26,7 @@ describe("@acpus/core public API", () => {
       "schemaToJsonSchema",
       "toJSONSchema",
       "toSchemaIR",
+      "tryToSchemaIR",
       "validateValue",
       "z",
     ]);

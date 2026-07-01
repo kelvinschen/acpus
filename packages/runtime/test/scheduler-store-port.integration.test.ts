@@ -77,6 +77,125 @@ describe("scheduler store port", () => {
     });
   });
 
+  it("returns typed results for recoverable store-port failures", async () => {
+    await withRuntimeWorkspace("scheduler-store-port-typed-errors", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const missing = store.scheduler.tryLoadRunSnapshot("run_missing");
+        expect(missing.isErr()).toBe(true);
+        if (missing.isOk()) throw new Error("expected run-not-found");
+        expect(missing.error).toMatchObject({ type: "run-not-found", runId: "run_missing" });
+
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        const mismatch = store.scheduler.tryAppendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: 99,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "scheduler:mismatch",
+          events: [{ type: "control.paused", payload: { reason: "test" } }],
+        });
+
+        expect(mismatch.isErr()).toBe(true);
+        if (mismatch.isOk()) throw new Error("expected version mismatch");
+        expect(mismatch.error).toMatchObject({
+          type: "version-mismatch",
+          runId: run.id,
+          expectedVersion: 99,
+          actualVersion: 1,
+        });
+
+        const invalidResume = store.scheduler.tryResumeRun({ runId: run.id, ownerEpoch: claim.ownerEpoch, idempotencyKey: "typed:resume" });
+        expect(invalidResume.isErr()).toBe(true);
+        if (invalidResume.isOk()) throw new Error("expected invalid resume state");
+        expect(invalidResume.error).toMatchObject({ type: "invalid-control-state", runId: run.id, command: "resume", status: "pending" });
+
+        const invalidRunRetry = store.scheduler.tryRetryRun({ runId: run.id, ownerEpoch: claim.ownerEpoch, idempotencyKey: "typed:run-retry" });
+        expect(invalidRunRetry.isErr()).toBe(true);
+        if (invalidRunRetry.isOk()) throw new Error("expected invalid run retry target");
+        expect(invalidRunRetry.error).toMatchObject({ type: "invalid-retry-target", runId: run.id, status: "pending" });
+
+        readyNode(store, run.id, claim, "typed:ready");
+        const appendConflict = store.scheduler.tryAppendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "typed:ready",
+          events: [{ type: "control.paused", payload: { reason: "conflict" } }],
+        });
+        expect(appendConflict.isErr()).toBe(true);
+        if (appendConflict.isOk()) throw new Error("expected append idempotency conflict");
+        expect(appendConflict.error).toMatchObject({ type: "idempotency-conflict", idempotencyKey: "typed:ready", runId: run.id });
+
+        const invalidNodeRetry = store.scheduler.tryRetry({ runId: run.id, nodeKey: "require_ready~1", ownerEpoch: claim.ownerEpoch, idempotencyKey: "typed:node-retry" });
+        expect(invalidNodeRetry.isErr()).toBe(true);
+        if (invalidNodeRetry.isOk()) throw new Error("expected invalid node retry target");
+        expect(invalidNodeRetry.error).toMatchObject({ type: "invalid-retry-target", runId: run.id, nodeKey: "require_ready~1", status: "ready" });
+
+        const missingRetry = store.scheduler.tryRetry({ runId: run.id, nodeKey: "missing~1", ownerEpoch: claim.ownerEpoch, idempotencyKey: "typed:missing-retry" });
+        expect(missingRetry.isErr()).toBe(true);
+        if (missingRetry.isOk()) throw new Error("expected missing retry target");
+        expect(missingRetry.error).toMatchObject({ type: "missing-retry-target", runId: run.id, nodeKey: "missing~1" });
+
+        const signalMissing = store.scheduler.tryConsumeSignal({
+          runId: run.id,
+          nodeKey: "approve~1",
+          ownerEpoch: claim.ownerEpoch,
+          payload: { ok: true },
+          commandIdempotencyKey: "typed:signal-command",
+          idempotencyKey: "typed:signal",
+        });
+        expect(signalMissing.isErr()).toBe(true);
+        if (signalMissing.isOk()) throw new Error("expected missing signal wait");
+        expect(signalMissing.error).toMatchObject({ type: "signal-wait-not-found", runId: run.id, nodeKey: "approve~1" });
+
+        const attempt = store.scheduler.startAttempt({
+          runId: run.id,
+          nodeKey: "require_ready~1",
+          nodeId: "require_ready",
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "typed:attempt:start",
+        });
+        const startConflict = store.scheduler.tryStartAttempt({
+          runId: run.id,
+          nodeKey: "other~1",
+          nodeId: "other",
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "typed:attempt:start",
+        });
+        expect(startConflict.isErr()).toBe(true);
+        if (startConflict.isOk()) throw new Error("expected attempt start idempotency conflict");
+        expect(startConflict.error).toMatchObject({ type: "idempotency-conflict", idempotencyKey: "typed:attempt:start", runId: run.id });
+
+        store.scheduler.pauseRun({ runId: run.id, ownerEpoch: claim.ownerEpoch, idempotencyKey: "typed:pause" });
+        const pausedStart = store.scheduler.tryStartAttempt({
+          runId: run.id,
+          nodeKey: "require_ready~1",
+          nodeId: "require_ready",
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "typed:attempt:paused",
+        });
+        expect(pausedStart.isErr()).toBe(true);
+        if (pausedStart.isOk()) throw new Error("expected paused start failure");
+        expect(pausedStart.error).toMatchObject({ type: "run-paused", runId: run.id });
+
+        const terminal = store.scheduler.tryCommitAttemptResult({
+          runId: run.id,
+          attemptId: attempt.attemptId,
+          ownerEpoch: claim.ownerEpoch,
+          result: { status: "completed", output: { ok: true } },
+          idempotencyKey: "typed:attempt:late-commit",
+        });
+        expect(terminal.isErr()).toBe(true);
+        if (terminal.isOk()) throw new Error("expected terminal attempt failure");
+        expect(terminal.error).toMatchObject({ type: "terminal-attempt", attemptId: attempt.attemptId, status: "cancelled" });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   it("does not release a run lease for the wrong owner or stale owner epoch", async () => {
     await withRuntimeWorkspace("scheduler-store-release-safety", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());

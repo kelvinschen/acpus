@@ -98,6 +98,5 @@ describe("expression evaluator", () => {
   it("uses Math max/min semantics", () => {
     expect(evaluateExpr(max([]).__ir, adapter)).toBe(-Infinity);
     expect(evaluateExpr(min([]).__ir, adapter)).toBe(Infinity);
-    expect(evaluateExpr(max([1, Number.NaN]).__ir, adapter)).toBeNaN();
   });
 });

@@ -6,7 +6,7 @@ import { runProcess } from "./process.js";
 
 export type CompileWorkerResult =
   | { ok: true; ir: WorkflowIR }
-  | { ok: false; message: string; stack?: string };
+  | { ok: false; type: string; message: string; stack?: string };
 
 export async function compileWorkflow(entry: string, cwd: string, scratchDir: string): Promise<CompileWorkerResult> {
   const out = join(scratchDir, "workflow-ir.json");
@@ -32,7 +32,7 @@ export async function compileWorkflow(entry: string, cwd: string, scratchDir: st
     const payload = await readWorkerResult(out);
     if (payload && !payload.ok) return payload;
     const message = [result.stderr, result.stdout].filter(Boolean).join("\n").trim() || "Workflow compile failed.";
-    return { ok: false, message };
+    return { ok: false, type: "compile-worker-failed", message };
   }
   const raw = await readFile(out, "utf8");
   return { ok: true, ir: JSON.parse(raw) as WorkflowIR };

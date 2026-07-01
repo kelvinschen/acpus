@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { JsonValue } from "@acpus/expression/ir";
-import { advanceRun, completed, selectReadyInstances, type NodeAttemptContext, type NodeExecutor } from "../src/scheduler/advance.js";
+import { err } from "neverthrow";
+import { advanceRun, completed, selectReadyInstances, tryAdvanceRun, type NodeAttemptContext, type NodeExecutor } from "../src/scheduler/advance.js";
 import type { SchedulerEvent } from "../src/scheduler/events.js";
-import type { AttemptCommitInput, AttemptStartInput, RunOwnerClaim, SchedulerCommit, SchedulerSnapshot, SchedulerStorePort } from "../src/scheduler/store-port.js";
+import { SchedulerStoreException, schedulerStoreResult, type AttemptCommitInput, type AttemptStartInput, type RunOwnerClaim, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStoreError, type SchedulerStorePort, type SchedulerStoreResult } from "../src/scheduler/store-port.js";
 import { applySchedulerEvents, createSchedulerProjection } from "../src/scheduler/transitions.js";
 import type { InstancePath, NodeInstance, SchedulerProjection } from "../src/scheduler/types.js";
 
@@ -110,6 +111,22 @@ describe("scheduler advance loop", () => {
     await expect(advanceRun({ runId: "awaiting", ownerId: "owner-a", store: awaiting, executor: nodeExecutor })).resolves.toMatchObject({ status: "awaiting", started: 0 });
     await expect(advanceRun({ runId: "lost", ownerId: "owner-a", store: leaseLost, executor: nodeExecutor })).resolves.toMatchObject({ status: "lease_lost", started: 0 });
     expect(calls).toEqual([]);
+  });
+
+  it("returns tagged Err values from tryAdvanceRun for recoverable store failures", async () => {
+    const store = new MemorySchedulerStore("run_1", []);
+    store.tryLoadRunSnapshot = runId => err({ type: "run-not-found", runId, message: "arbitrary store text" });
+
+    const result = await tryAdvanceRun({
+      runId: "run_1",
+      ownerId: "owner-a",
+      store,
+      executor: executor(() => completed()),
+    });
+
+    expect(result.isErr()).toBe(true);
+    if (result.isOk()) throw new Error("expected run-not-found");
+    expect(result.error).toEqual({ type: "run-not-found", runId: "run_1", message: "arbitrary store text" });
   });
 
   it("does not start selected work after a pause commits before attempt start", async () => {
@@ -578,6 +595,10 @@ class MemorySchedulerStore implements SchedulerStorePort {
     return true;
   }
 
+  tryLoadRunSnapshot(runId: string): SchedulerStoreResult<SchedulerSnapshot> {
+    return schedulerStoreResult(() => this.loadRunSnapshot(runId));
+  }
+
   loadRunSnapshot(runId: string): SchedulerSnapshot {
     this.loadCount += 1;
     return {
@@ -587,14 +608,22 @@ class MemorySchedulerStore implements SchedulerStorePort {
     };
   }
 
+  tryAppendSchedulerEvents(commit: SchedulerCommit): SchedulerStoreResult<SchedulerSnapshot> {
+    return schedulerStoreResult(() => this.appendSchedulerEvents(commit));
+  }
+
   appendSchedulerEvents(commit: SchedulerCommit): SchedulerSnapshot {
-    if (commit.expectedVersion !== this.events.length) throw new Error("version mismatch");
+    if (commit.expectedVersion !== this.events.length) throwStoreError({ type: "version-mismatch", runId: commit.runId, expectedVersion: commit.expectedVersion, actualVersion: this.events.length, message: "version mismatch" });
     this.events.push(...commit.events);
     return this.loadRunSnapshot(commit.runId);
   }
 
+  tryStartAttempt(input: AttemptStartInput): SchedulerStoreResult<{ attemptId: string; attemptNo: number }> {
+    return schedulerStoreResult(() => this.startAttempt(input));
+  }
+
   startAttempt(input: AttemptStartInput): { attemptId: string; attemptNo: number } {
-    if (this.loadRunSnapshot(input.runId).projection.run.status === "paused") throw new Error(`Run '${input.runId}' is paused.`);
+    if (this.loadRunSnapshot(input.runId).projection.run.status === "paused") throwStoreError({ type: "run-paused", runId: input.runId, message: `Run '${input.runId}' is paused.` });
     this.attemptNo += 1;
     const attemptId = `attempt_${this.attemptNo}`;
     const member = this.loadRunSnapshot(input.runId).projection.groupMembers[input.nodeKey];
@@ -606,20 +635,32 @@ class MemorySchedulerStore implements SchedulerStorePort {
     return { attemptId, attemptNo: this.attemptNo };
   }
 
+  tryCommitAttemptResult(input: AttemptCommitInput): SchedulerStoreResult<SchedulerSnapshot> {
+    return schedulerStoreResult(() => this.commitAttemptResult(input));
+  }
+
   commitAttemptResult(input: AttemptCommitInput): SchedulerSnapshot {
-    if (this.failCommits) throw new Error("Run 'run_1' scheduler owner epoch is not active.");
-    if (this.throwTimedOutCommits) throw new Error(`Attempt '${input.attemptId}' is already timed_out.`);
+    if (this.failCommits) throwStoreError({ type: "owner-epoch-inactive", runId: "run_1", ownerEpoch: input.ownerEpoch, message: "Run 'run_1' scheduler owner epoch is not active." });
+    if (this.throwTimedOutCommits) throwStoreError({ type: "terminal-attempt", attemptId: input.attemptId, status: "timed_out", message: `Attempt '${input.attemptId}' is already timed_out.` });
     const projection = this.loadRunSnapshot(input.runId).projection;
     const attempt = projection.attempts[input.attemptId];
-    if (!attempt) throw new Error(`Attempt '${input.attemptId}' was not found.`);
-    if (attempt.status !== "started") throw new Error(`Attempt '${input.attemptId}' is already ${attempt.status}.`);
+    if (!attempt) throwStoreError({ type: "attempt-not-found", attemptId: input.attemptId, message: `Attempt '${input.attemptId}' was not found.` });
+    if (attempt.status !== "started") throwStoreError({ type: "terminal-attempt", attemptId: input.attemptId, status: attempt.status, message: `Attempt '${input.attemptId}' is already ${attempt.status}.` });
     const member = projection.groupMembers[attempt.nodeKey];
     this.events.push(...attemptResultEvents(input, attempt.nodeKey, member?.status === "running" ? member.memberKey : undefined));
     return this.loadRunSnapshot(input.runId);
   }
 
+  tryConsumeSignal(): SchedulerStoreResult<SchedulerSnapshot> {
+    return schedulerStoreResult(() => this.consumeSignal());
+  }
+
   consumeSignal(): SchedulerSnapshot {
     throw new Error("not implemented");
+  }
+
+  tryPauseRun(input: { runId: string; ownerEpoch: number; reason?: string; idempotencyKey: string }): SchedulerStoreResult<SchedulerSnapshot> {
+    return schedulerStoreResult(() => this.pauseRun(input));
   }
 
   pauseRun(input: { runId: string; ownerEpoch: number; reason?: string; idempotencyKey: string }): SchedulerSnapshot {
@@ -643,17 +684,33 @@ class MemorySchedulerStore implements SchedulerStorePort {
     return this.loadRunSnapshot(input.runId);
   }
 
+  tryResumeRun(input: { runId: string }): SchedulerStoreResult<SchedulerSnapshot> {
+    return schedulerStoreResult(() => this.resumeRun(input));
+  }
+
   resumeRun(input: { runId: string }): SchedulerSnapshot {
     this.events.push({ type: "control.resumed", payload: {} });
     return this.loadRunSnapshot(input.runId);
+  }
+
+  tryRetryRun(): SchedulerStoreResult<SchedulerSnapshot> {
+    return schedulerStoreResult(() => this.retryRun());
   }
 
   retryRun(): SchedulerSnapshot {
     throw new Error("not implemented");
   }
 
+  tryRetry(): SchedulerStoreResult<SchedulerSnapshot> {
+    return schedulerStoreResult(() => this.retry());
+  }
+
   retry(): SchedulerSnapshot {
     throw new Error("not implemented");
+  }
+
+  tryMarkExpiredOwnerAttemptsSuperseded(runId: string): SchedulerStoreResult<SchedulerSnapshot> {
+    return schedulerStoreResult(() => this.markExpiredOwnerAttemptsSuperseded(runId));
   }
 
   markExpiredOwnerAttemptsSuperseded(runId: string): SchedulerSnapshot {
@@ -663,6 +720,10 @@ class MemorySchedulerStore implements SchedulerStorePort {
     }
     return this.loadRunSnapshot(runId);
   }
+}
+
+function throwStoreError(error: SchedulerStoreError): never {
+  throw new SchedulerStoreException(error);
 }
 
 function executor(run: (context: NodeAttemptContext) => AttemptCommitInput["result"] | Promise<AttemptCommitInput["result"]>): NodeExecutor {
