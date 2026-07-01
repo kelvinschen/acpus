@@ -1,7 +1,0 @@
-version: 1
-name: invalid-reference
-workflow:
-  steps:
-    - id: echo
-      run: program
-      cmd: ["echo", "${{ steps.missing.output }}"]
