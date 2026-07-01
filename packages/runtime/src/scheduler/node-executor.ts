@@ -1,7 +1,7 @@
-import { getProviderCommandFromEnv } from "@acpus/agent-executor";
 import type { AgentNodeIR, NodeIR, TaskNodeIR, WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
-import { executeAgentNode } from "../execution/agent-node.js";
+import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
+import { AgentNodeCancelledError, AgentNodeTimeoutError, executeAgentNode } from "../execution/agent-node.js";
 import { executeTaskNode } from "../execution/task-executor.js";
 import type { EvaluationScope } from "../evaluation/evaluator.js";
 import { normalizeValue } from "../evaluation/schema.js";
@@ -15,6 +15,8 @@ export type RuntimeNodeExecutorInput = {
   ir: WorkflowIR;
   scope: EvaluationScope;
   store: RuntimeStore;
+  executeAgentTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult>;
+  agentRepairDelayMs?: number;
 };
 
 export function createRuntimeNodeExecutor(input: RuntimeNodeExecutorInput): NodeExecutor {
@@ -25,7 +27,15 @@ export function createRuntimeNodeExecutor(input: RuntimeNodeExecutorInput): Node
       if (!node) return { status: "failed", reason: `Node '${context.nodeId}' was not found in frozen IR.` };
       const scope = scopeForAttempt(input.scope, input.store.scheduler.loadRunSnapshot(context.runId).projection, context.nodeKey);
       if (node.kind === "task") return completedResult(normalizeValue(node.outputSchema, await executeTask(node, scope, context, input) as JsonValue, `Node '${node.id}' output`));
-      if (node.kind === "agent") return completedResult(await executeAgent(node, scope, context, input));
+      if (node.kind === "agent") {
+        try {
+          return completedResult(await executeAgent(node, scope, context, input));
+        } catch (error) {
+          if (error instanceof AgentNodeCancelledError) return { status: "cancelled", reason: "paused" };
+          if (error instanceof AgentNodeTimeoutError) return { status: "timed_out", reason: error.message };
+          throw error;
+        }
+      }
       return { status: "failed", reason: `Node '${context.nodeId}' (${node.kind}) is not a scheduler leaf executor target.` };
     },
   };
@@ -47,11 +57,14 @@ async function executeAgent(node: AgentNodeIR, scope: EvaluationScope, context: 
     cwd: input.cwd,
     runId: context.runId,
     agents: input.ir.agents,
-    getProviderCommand: getProviderCommandFromEnv,
     nodeKey: context.nodeKey,
+    attemptId: context.attemptId,
     attemptNo: context.attemptNo,
+    store: input.store,
+    initialPromptKind: context.attemptStartReason === "control_retry" || context.attemptStartReason === "pause_resume" ? "plain_continuation" : "task",
     signal: context.signal,
-    maxAttempts: 1,
+    ...(input.executeAgentTurn ? { executeTurn: input.executeAgentTurn } : {}),
+    ...(input.agentRepairDelayMs === undefined ? {} : { repairDelayMs: input.agentRepairDelayMs }),
   });
 }
 

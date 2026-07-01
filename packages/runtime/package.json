@@ -31,6 +31,7 @@
     "@acpus/agent-executor": "workspace:*",
     "@acpus/core": "workspace:*",
     "@acpus/expression": "workspace:*",
+    "jsonrepair": "^3.14.1",
     "p-queue": "^9.3.0"
   },
   "devDependencies": {

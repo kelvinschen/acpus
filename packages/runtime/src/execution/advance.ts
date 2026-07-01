@@ -1,5 +1,4 @@
 import type { JsonValue } from "@acpus/expression/ir";
-import { getProviderCommandFromEnv } from "@acpus/agent-executor";
 import { executeAgentNode } from "./agent-node.js";
 import { ExecutorRequiredError, RuntimeNodeError, SignalAwaitingError, executeWorkflow } from "./scheduler.js";
 import type { RuntimeStore } from "../store/store.js";
@@ -20,7 +19,7 @@ export async function advanceRun(cwd: string, store: RuntimeStore, runId: string
       signalPayloads: store.getSignalPayloads(runId),
       completedNodes: store.getCompletedNodeOutputs(runId),
       taskExecutor: (node, scope) => executeTaskNode(node, scope, { cwd, runId, store }),
-      agentExecutor: (node, scope) => executeAgentNode(node, scope, { cwd, agents: frozen.ir.agents, getProviderCommand: getProviderCommandFromEnv }),
+      agentExecutor: (node, scope) => executeAgentNode(node, scope, { cwd, runId, nodeKey: node.id, agents: frozen.ir.agents }),
     });
     return {
       status: "completed",

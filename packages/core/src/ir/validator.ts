@@ -85,20 +85,24 @@ function validateAgents(agents: WorkflowIR["agents"], diagnostics: DiagnosticIR[
       continue;
     }
     if (agent.kind === "agent_definition") {
-      validateKnownFields(agent, ["kind", "use", "model", "policy", "cwd", "env", "options"], diagnostics, path);
+      validateKnownFields(agent, ["kind", "use", "model", "permissionMode", "agentMode", "cwd", "env"], diagnostics, path);
       if (typeof (agent as { use?: unknown }).use !== "string" || agent.use.length === 0) {
         diagnostics.push({ code: "A002", severity: "error", message: `Agent '${name}' use must be a non-empty string.`, path: `${path}.use` });
       }
+      validatePermissionMode(agent.permissionMode, diagnostics, `${path}.permissionMode`);
+      validateAgentMode(agent.agentMode, diagnostics, `${path}.agentMode`);
       if (agent.cwd) validateExpr(agent.cwd, diagnostics, `${path}.cwd`);
       validateEnv(agent.env, diagnostics, `${path}.env`);
       continue;
     }
 
     if (agent.kind === "agent_command") {
-      validateKnownFields(agent, ["kind", "command", "policy", "cwd", "env", "options"], diagnostics, path);
+      validateKnownFields(agent, ["kind", "command", "model", "permissionMode", "agentMode", "cwd", "env"], diagnostics, path);
       if (typeof (agent as { command?: unknown }).command !== "string" || agent.command.length === 0) {
         diagnostics.push({ code: "A002", severity: "error", message: `Command-backed agent '${name}' command must be a non-empty string.`, path: `${path}.command` });
       }
+      validatePermissionMode(agent.permissionMode, diagnostics, `${path}.permissionMode`);
+      validateAgentMode(agent.agentMode, diagnostics, `${path}.agentMode`);
       if (agent.cwd) validateExpr(agent.cwd, diagnostics, `${path}.cwd`);
       validateEnv(agent.env, diagnostics, `${path}.env`);
       continue;
@@ -168,6 +172,7 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
     case "agent": {
       validateKnownFields(node, ["id", "source", "kind", "outputSchema", "run", "timeout", "retry"], diagnostics, path);
       validateAgentRun(node.run, diagnostics, `${path}.run`);
+      validateRetry(node.retry, diagnostics, `${path}.retry`, node.outputSchema !== undefined);
       const agentKey = isRecord(node.run) && typeof node.run.agent === "string" ? node.run.agent : undefined;
       if (agentKey && !ctx.agents.has(agentKey)) {
         diagnostics.push({
@@ -182,7 +187,7 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
       break;
     }
     case "task": {
-      validateKnownFields(node, ["id", "source", "kind", "outputSchema", "run", "timeout", "retry"], diagnostics, path);
+      validateKnownFields(node, ["id", "source", "kind", "outputSchema", "run", "timeout"], diagnostics, path);
       validateTaskRun(node.run, diagnostics, `${path}.run`);
       const bundleId = isRecord(node.run) && typeof node.run.bundleId === "string" ? node.run.bundleId : undefined;
       if (bundleId && !ctx.taskBundles.has(bundleId)) diagnostics.push({ code: "T001", severity: "error", message: `Task node '${node.id}' references missing task bundle '${bundleId}'.`, path: `${path}.run.bundleId` });
@@ -302,10 +307,11 @@ function validateAgentRun(run: unknown, diagnostics: DiagnosticIR[], path: strin
     diagnostics.push({ code: "A003", severity: "error", message: "Agent run must be an object.", path });
     return;
   }
-  validateKnownFields(run, ["kind", "agent", "prompt", "policy", "session", "cwd", "env"], diagnostics, path);
+  validateKnownFields(run, ["kind", "agent", "prompt", "permissionMode", "session", "cwd", "env"], diagnostics, path);
   if (run.kind !== "agent_run") diagnostics.push({ code: "A003", severity: "error", message: "Agent run kind must be agent_run.", path: `${path}.kind` });
   if (typeof run.agent !== "string" || run.agent.length === 0) diagnostics.push({ code: "A003", severity: "error", message: "Agent run agent must be a non-empty string.", path: `${path}.agent` });
   validateTemplate(run.prompt, diagnostics, `${path}.prompt`);
+  validatePermissionMode(run.permissionMode, diagnostics, `${path}.permissionMode`);
   if (run.session !== undefined) {
     if (!isRecord(run.session)) {
       diagnostics.push({ code: "A003", severity: "error", message: "Agent run session must be an object.", path: `${path}.session` });
@@ -316,6 +322,37 @@ function validateAgentRun(run: unknown, diagnostics: DiagnosticIR[], path: strin
   }
   if (run.cwd) validateExpr(run.cwd, diagnostics, `${path}.cwd`);
   validateEnv(run.env, diagnostics, `${path}.env`);
+}
+
+function validatePermissionMode(value: unknown, diagnostics: DiagnosticIR[], path: string): void {
+  if (value === undefined) return;
+  if (value !== "approve-reads" && value !== "approve-all" && value !== "deny-all") {
+    diagnostics.push({ code: "A002", severity: "error", message: "Agent permissionMode must be approve-reads, approve-all, or deny-all.", path });
+  }
+}
+
+function validateAgentMode(value: unknown, diagnostics: DiagnosticIR[], path: string): void {
+  if (value === undefined) return;
+  if (typeof value !== "string" || value.length === 0) {
+    diagnostics.push({ code: "A002", severity: "error", message: "Agent agentMode must be a non-empty string.", path });
+  }
+}
+
+function validateRetry(value: unknown, diagnostics: DiagnosticIR[], path: string, allowed: boolean): void {
+  if (value === undefined) return;
+  if (!allowed) {
+    diagnostics.push({ code: "IR001", severity: "error", message: "Agent retry is only valid when outputSchema is declared.", path });
+    return;
+  }
+  if (!isRecord(value)) {
+    diagnostics.push({ code: "IR001", severity: "error", message: "Retry must be an object.", path });
+    return;
+  }
+  validateKnownFields(value, ["max"], diagnostics, path);
+  const max = (value as { max?: unknown }).max;
+  if (max !== undefined && (typeof max !== "number" || !Number.isInteger(max) || max < 0)) {
+    diagnostics.push({ code: "IR001", severity: "error", message: "Retry max must be a non-negative integer.", path: `${path}.max` });
+  }
 }
 
 function validateTaskRun(run: unknown, diagnostics: DiagnosticIR[], path: string): void {

@@ -410,6 +410,7 @@ function applyInstanceEvent(projection: SchedulerProjection, event: SchedulerEve
   }
   if (event.type === "instance.retry_requested") {
     assertInstanceRetryable(instance);
+    if (event.payload.source === "control") reopenForControlNodeRetry(projection, instance);
     projection.instances[event.payload.nodeKey] = compactInstance({
       runId: instance.runId,
       nodeKey: instance.nodeKey,
@@ -418,7 +419,7 @@ function applyInstanceEvent(projection: SchedulerProjection, event: SchedulerEve
       instancePath: instance.instancePath,
       ...(instance.parentFrameKey === undefined ? {} : { parentFrameKey: instance.parentFrameKey }),
       readinessSequence: event.payload.readinessSequence ?? instance.readinessSequence,
-      statusReason: "retry",
+      statusReason: event.payload.source === "scheduler" ? "scheduler_retry" : "retry",
     });
     return;
   }
@@ -473,6 +474,7 @@ function applyGroupEvent(projection: SchedulerProjection, event: SchedulerEvent)
     }
     if (event.type === "group.member_retry_requested") {
       assertGroupMemberRetryable(member);
+      if (event.payload.source === "control") reopenGroupForControlRetry(projection, member.groupKey);
       projection.groupMembers[event.payload.memberKey] = compactMember({
         runId: member.runId,
         groupKey: member.groupKey,
@@ -501,6 +503,41 @@ function applyGroupEvent(projection: SchedulerProjection, event: SchedulerEvent)
     if (event.type === "group.failed") projection.groups[event.payload.groupKey] = compactGroup({ ...group, status: "failed", error: event.payload.error });
     if (event.type === "group.cancelled") projection.groups[event.payload.groupKey] = compactGroup({ ...group, status: "cancelled", error: { reason: event.payload.cancelReason } });
   }
+}
+
+function reopenForControlNodeRetry(projection: SchedulerProjection, instance: NodeInstance): void {
+  if (projection.run.status === "failed") projection.run = { ...projection.run, status: "pending", paused: false };
+  reopenFrameForControlRetry(projection, "root");
+  for (let frameKey = instance.parentFrameKey; frameKey !== undefined;) {
+    const frame = projection.frames[frameKey];
+    if (!frame) break;
+    reopenFrameForControlRetry(projection, frameKey);
+    frameKey = frame.parentFrameKey;
+  }
+}
+
+function reopenFrameForControlRetry(projection: SchedulerProjection, frameKey: string): void {
+  const frame = projection.frames[frameKey];
+  if (!frame || frame.status !== "failed") return;
+  projection.frames[frameKey] = compactFrame({
+    ...frame,
+    status: "running",
+    result: undefined,
+    error: undefined,
+    terminalReason: undefined,
+  });
+}
+
+function reopenGroupForControlRetry(projection: SchedulerProjection, groupKey: string): void {
+  const group = projection.groups[groupKey];
+  if (!group || group.status !== "failed") return;
+  projection.groups[groupKey] = compactGroup({
+    ...group,
+    status: "running",
+    result: undefined,
+    error: undefined,
+  });
+  reopenFrameForControlRetry(projection, group.nodeKey);
 }
 
 function applySignalEvent(projection: SchedulerProjection, event: Extract<SchedulerEvent, { type: "signal.awaiting" | "signal.consumed" | "signal.timed_out" }>): void {

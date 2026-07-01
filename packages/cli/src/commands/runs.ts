@@ -2,6 +2,7 @@ import type { Writable } from "node:stream";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
+import type { AgentOverrideMap } from "@acpus/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
 import { getRun, listRuns, mutateRun as mutateRuntimeRun, normalizeForkInput, queueSupervisorShutdown, replayRun as replayRuntimeRun, signalRun as signalRuntimeRun } from "@acpus/runtime";
 import type { PreparedWorkflow } from "@acpus/workflow-compiler";
@@ -23,6 +24,7 @@ type RunsCommandOptions = {
   payload?: string;
   input?: string;
   workflow?: string;
+  agents?: string;
   background?: boolean;
   prepared?: PreparedWorkflow;
 };
@@ -86,6 +88,7 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
     .argument("<run-id>", "run id")
     .option("--workflow <workflow-module>", "fork with a new workflow module")
     .option("--input <json>", "override workflow input for the fork")
+    .option("--agents <json>", "override inherited agents for the fork")
     .option("--json", "print a structured JSON result")
     .action(async (runId: string, options: RunsCommandOptions) => {
       await mutateRun(ctx, runId, options, "fork");
@@ -211,6 +214,13 @@ function parseJsonOption(raw: string, name: string): JsonValue {
   return value;
 }
 
+function parseAgents(raw: string | undefined): AgentOverrideMap | undefined {
+  if (raw === undefined) return undefined;
+  const value = parseJsonOption(raw, "--agents");
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw usageError("--agents must be a JSON object.");
+  return value as AgentOverrideMap;
+}
+
 function isJsonValue(value: unknown): value is JsonValue {
   if (value === null) return true;
   if (typeof value === "number") return Number.isFinite(value);
@@ -235,6 +245,7 @@ async function showRun(ctx: RunsCommandContext, runId: string, options: RunsComm
 async function mutateRun(ctx: RunsCommandContext, runId: string, options: RunsCommandOptions, action: "pause" | "resume" | "retry" | "fork"): Promise<void> {
   const format: OutputFormat = options.json ? "json" : "text";
   const prepared = action === "fork" && options.workflow ? await prepareWorkflowForCli(options.workflow, ctx.cwd) : options.prepared;
+  const agentOverrides = action === "fork" ? parseAgents(options.agents) : undefined;
   let forkInput: JsonValue | undefined;
   if (action === "fork" && options.input !== undefined) {
     const rawInput = parseJsonOption(options.input, "--input");
@@ -257,6 +268,7 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, options: RunsCo
       ...(options.node ? { node: options.node } : {}),
       ...(prepared ? { prepared } : {}),
       ...(forkInput !== undefined ? { input: forkInput } : {}),
+      ...(agentOverrides !== undefined ? { agentOverrides } : {}),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

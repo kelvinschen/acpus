@@ -30,7 +30,7 @@ export type SchedulerEvent =
   | BaseEvent<"instance.started", { nodeKey: string }>
   | BaseEvent<"instance.awaiting", { nodeKey: string; statusReason?: string }>
   | BaseEvent<"instance.requeued", { nodeKey: string; reason: "paused" | "superseded"; readinessSequence?: number }>
-  | BaseEvent<"instance.retry_requested", { nodeKey: string; readinessSequence?: number }>
+  | BaseEvent<"instance.retry_requested", { nodeKey: string; readinessSequence?: number; source?: "control" | "scheduler" }>
   | BaseEvent<"instance.completed", { nodeKey: string; output?: JsonValue; acceptedAttemptId?: string }>
   | BaseEvent<"instance.failed", { nodeKey: string; error: JsonObject; statusReason?: string }>
   | BaseEvent<"instance.cancelled", { nodeKey: string; cancelReason: CancellationReason }>
@@ -48,7 +48,7 @@ export type SchedulerEvent =
   | BaseEvent<"group.member_ready", { runId: string; groupKey: string; memberKey: string; memberKind: "branch" | "fanout_item"; readinessSequence: number; branchId?: string; itemKey?: string | number; itemIndex?: number; item?: JsonValue }>
   | BaseEvent<"group.member_started", { memberKey: string }>
   | BaseEvent<"group.member_requeued", { memberKey: string; reason: "paused" | "superseded"; readinessSequence?: number }>
-  | BaseEvent<"group.member_retry_requested", { memberKey: string; readinessSequence?: number }>
+  | BaseEvent<"group.member_retry_requested", { memberKey: string; readinessSequence?: number; source?: "control" | "scheduler" }>
   | BaseEvent<"group.member_completed", { memberKey: string; completionSequence: number; output?: JsonValue; acceptedRank?: number }>
   | BaseEvent<"group.member_failed", { memberKey: string; error: JsonObject; terminalReason?: string }>
   | BaseEvent<"group.member_cancelled", { memberKey: string; cancelReason: CancellationReason }>

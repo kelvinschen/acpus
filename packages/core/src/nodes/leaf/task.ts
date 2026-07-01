@@ -5,7 +5,7 @@ import { envToIR, bindingsToIR, assertStableId, stripUndefined } from "../../gra
 import { valueToExprIR } from "@acpus/expression/ir";
 import { toSchemaIR, z, type InferSchema, type Schema } from "../../schema/index.js";
 import type { WorkflowValue } from "@acpus/expression";
-import type { DiagnosticIR, RetryIR, TaskBundleIR, TaskNodeIR } from "../../ir/types.js";
+import type { DiagnosticIR, TaskBundleIR, TaskNodeIR } from "../../ir/types.js";
 import type { TaskFunction } from "../../runtime/task-context.js";
 import type { EnvInput, RuntimeInput, StepInput } from "./shared.js";
 
@@ -46,7 +46,7 @@ type TaskStepOptions = {
 
 type TaskNodeOptions = {
   timeout?: string;
-  retry?: RetryIR;
+  retry?: never;
 };
 
 export type InlineTaskStepSpec<Input extends StepInput, OutSchema extends Schema<any>> = Simplify<TaskNodeOptions & {
@@ -143,6 +143,9 @@ export function buildTaskNode<const Input extends StepInput>(
   diagnostics: DiagnosticIR[],
 ): TaskNodeIR {
   assertStableId(id, diagnostics);
+  if ((spec as { retry?: unknown }).retry !== undefined) {
+    diagnostics.push({ code: "IR001", severity: "error", message: `Task node '${id}' does not support workflow-level automatic retry.`, path: `root.nodes.${id}.retry` });
+  }
   let run: TaskToken<RuntimeInput<Input>, any>;
   let outputSchema: Schema<any>;
   let inputBindings: StepInput;
@@ -195,6 +198,5 @@ export function buildTaskNode<const Input extends StepInput>(
       inline: true,
     },
     timeout: spec.timeout,
-    retry: spec.retry,
   }) as TaskNodeIR;
 }

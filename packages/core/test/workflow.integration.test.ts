@@ -36,7 +36,8 @@ describe("workflow compilation", () => {
       agents: {
         reviewer: {
           use: "codex",
-          policy: "read",
+          permissionMode: "approve-reads",
+          agentMode: "agent",
           env: { REVIEW_TOKEN: secret("REVIEW_TOKEN") },
         },
       },
@@ -123,7 +124,8 @@ describe("workflow compilation", () => {
       reviewer: {
         kind: "agent_definition",
         use: "codex",
-        policy: "read",
+        permissionMode: "approve-reads",
+        agentMode: "agent",
         env: {
           REVIEW_TOKEN: { kind: "secret", name: "REVIEW_TOKEN" },
         },
@@ -553,19 +555,20 @@ describe("workflow compilation", () => {
     expect(ir.root.nodes[1]).not.toHaveProperty("onExhausted");
   });
 
-  it("lowers command-backed agent definitions and skips malformed agent definitions", () => {
+  it("lowers custom acpx command agent definitions and skips malformed agent definitions", () => {
     const valid = defineWorkflow({
       name: "command_agent_definition",
       agents: {
         worker: {
           command: "acpx worker",
-          policy: "full",
+          model: "gpt-5.4",
+          permissionMode: "approve-all",
+          agentMode: "bypassPermissions",
           cwd: "/tmp/work",
           env: {
             STATIC: "1",
             TOKEN: secret("WORKER_TOKEN"),
           },
-          options: { mode: "batch" },
         },
       },
     }).build(({ agents, step }) => {
@@ -585,13 +588,14 @@ describe("workflow compilation", () => {
       worker: {
         kind: "agent_command",
         command: "acpx worker",
-        policy: "full",
+        model: "gpt-5.4",
+        permissionMode: "approve-all",
+        agentMode: "bypassPermissions",
         cwd: { kind: "literal", value: "/tmp/work" },
         env: {
           STATIC: { kind: "literal", value: "1" },
           TOKEN: { kind: "secret", name: "WORKER_TOKEN" },
         },
-        options: { mode: "batch" },
       },
     });
     expect(validIr.root.nodes[0]).toMatchObject({
@@ -624,6 +628,50 @@ describe("workflow compilation", () => {
         code: "A002",
         path: "agents.ir_shaped.kind",
       }),
+    ]);
+  });
+
+  it("diagnoses removed authoring fields before they can be silently dropped", () => {
+    const definition = defineWorkflow({
+      name: "removed_agent_fields",
+      agents: {
+        old_agent_policy: { use: "codex", policy: "read" },
+        old_agent_options: { command: "acpx worker", options: { mode: "batch" } },
+        bad_permission: { use: "codex", permissionMode: "full" },
+        bad_mode: { command: "acpx worker", agentMode: "" },
+        reviewer: { use: "codex" },
+      } as any,
+    }).build(({ agents, step }) => {
+      step("old_run_policy").agent({
+        outputSchema: z.object({ ok: z.boolean() }),
+        run: {
+          agent: (agents as any).reviewer,
+          prompt: "review",
+          policy: "read",
+        } as any,
+      });
+      step("task_retry").task({
+        outputSchema: z.object({ ok: z.boolean() }),
+        retry: { max: 1 },
+        run: {
+          input: {},
+          exec: async () => ({ ok: true }),
+        },
+      } as any);
+      return {};
+    });
+
+    const diagnostics = compileWorkflowDefinition(definition).diagnostics
+      .map(diagnostic => ({ code: diagnostic.code, path: diagnostic.path ?? "" }))
+      .sort((a, b) => a.path.localeCompare(b.path) || a.code.localeCompare(b.code));
+
+    expect(diagnostics).toEqual([
+      { code: "A002", path: "agents.bad_mode.agentMode" },
+      { code: "A002", path: "agents.bad_permission.permissionMode" },
+      { code: "A002", path: "agents.old_agent_options.options" },
+      { code: "A002", path: "agents.old_agent_policy.policy" },
+      { code: "A003", path: "root.nodes.old_run_policy.run.policy" },
+      { code: "IR001", path: "root.nodes.task_retry.retry" },
     ]);
   });
 

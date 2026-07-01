@@ -5,6 +5,6 @@ export type { ArtifactRef, InferSchema, Schema, SecretRef } from "./schema/index
 export { task } from "./nodes/leaf/task.js";
 export type { TaskToken } from "./nodes/leaf/task.js";
 export type { TaskContext, TaskFunction } from "./runtime/task-context.js";
-export type { AgentCommandSpec, AgentDefinitionSpec, AgentRunSpec, AgentToken, AgentUseSpec } from "./nodes/leaf/agent.js";
+export type { AgentCommandSpec, AgentDefinitionSpec, AgentPermissionMode, AgentRunSpec, AgentToken, AgentUseSpec } from "./nodes/leaf/agent.js";
 export type { SignalRunSpec } from "./nodes/leaf/signal.js";
 export { secret } from "./runtime/secret.js";

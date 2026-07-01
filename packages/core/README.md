@@ -56,7 +56,7 @@ export default defineWorkflow({
   }),
 
   agents: {
-    reviewer: { use: "codex", policy: "read" },
+    reviewer: { use: "codex", permissionMode: "approve-reads" },
   },
 }).build(({ input, agents, step }) => {
   const diff = step("diff").task({

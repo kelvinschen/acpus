@@ -1,5 +1,6 @@
 import type { Writable } from "node:stream";
 import { Command } from "commander";
+import type { AgentOverrideMap } from "@acpus/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
 import { admitWorkflowRun, normalizeWorkflowInput } from "@acpus/runtime";
 import { writePreflightArtifact } from "@acpus/workflow-compiler";
@@ -19,6 +20,7 @@ type RunCommandOptions = {
   dryRun?: boolean;
   json?: boolean;
   input?: string;
+  agents?: string;
 };
 
 export function createRunCommand(ctx: RunCommandContext): Command {
@@ -35,10 +37,12 @@ export function createRunCommand(ctx: RunCommandContext): Command {
     .argument("<workflow-module>", "workflow module path")
     .option("--dry-run", "run the pre-run gate without executing the workflow")
     .option("--input <json>", "freeze this JSON value as the workflow input")
+    .option("--agents <json>", "override declared agents for this run")
     .option("--json", "print a structured JSON result")
     .action(async (workflow: string, options: RunCommandOptions) => {
       const format: OutputFormat = options.json ? "json" : "text";
       const input = parseInput(options.input);
+      const agentOverrides = parseAgents(options.agents);
       if (options.dryRun) {
         const prepared = await prepareWorkflowForCli(workflow, ctx.cwd);
         const artifact = await writePreflightArtifact(prepared, ctx.cwd);
@@ -64,7 +68,7 @@ export function createRunCommand(ctx: RunCommandContext): Command {
       } catch (error) {
         throw validationError(error instanceof Error ? error.message : String(error));
       }
-      const advanced = await admitWorkflowRun(ctx.cwd, prepared, admittedInput);
+      const advanced = await admitWorkflowRun(ctx.cwd, prepared, admittedInput, agentOverrides);
       if (advanced.status === "failed") {
         ctx.setExitCode(writeResult({
           ok: false,
@@ -93,15 +97,26 @@ export function createRunCommand(ctx: RunCommandContext): Command {
     });
 }
 
+function parseAgents(raw: string | undefined): AgentOverrideMap | undefined {
+  if (raw === undefined) return undefined;
+  const value = parseJson(raw, "--agents");
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw usageError("--agents must be a JSON object.");
+  return value as AgentOverrideMap;
+}
+
 function parseInput(raw: string | undefined): JsonValue {
   if (!raw) return {};
+  return parseJson(raw, "--input");
+}
+
+function parseJson(raw: string, name: string): JsonValue {
   let value: unknown;
   try {
     value = JSON.parse(raw) as unknown;
   } catch (error) {
-    throw usageError(`--input must be valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+    throw usageError(`${name} must be valid JSON: ${error instanceof Error ? error.message : String(error)}`);
   }
-  if (!isJsonValue(value)) throw usageError("--input must be a JSON object, array, string, number, boolean, or null.");
+  if (!isJsonValue(value)) throw usageError(`${name} must be a JSON object, array, string, number, boolean, or null.`);
   return value;
 }
 

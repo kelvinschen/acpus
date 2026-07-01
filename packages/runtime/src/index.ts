@@ -30,9 +30,12 @@ export {
 } from "./visualization/overlay.js";
 export {
   type ForkPreparedWorkflow,
+  type AgentOverrideMap,
+  type AgentOverrideSpec,
   type PreparedRunWorkflow,
   type RunDynamicAttempt,
   type RunDynamicDetails,
+  type RunExecutionMetadata,
   type RunDynamicFrame,
   type RunDynamicGroupMember,
   type RunDynamicNodeInstance,

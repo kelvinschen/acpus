@@ -1,10 +1,12 @@
-# Durable Runtime 交接与审计标注文档 - 2026-06-29（审计更新）
+# Durable Runtime 交接与审计标注文档 - 2026-07-01（审计更新）
 
 ## 文档定位
 
 本文档用于 durable runtime 实现阶段之后的人工审阅、能力盘点和后续目标选择。当前产品和设计真相仍以 `specs/` 为准；本文档是 roadmap/handoff 材料，不是规范文件。
 
 > **审计注（2026-06-29）**：代码已从 monolithic `packages/acpus/` 拆分为五个独立 package（`cli`、`runtime`、`core`、`agent-executor`、`workflow-compiler`）。本文档证据路径已更新为当前代码结构。审计发现的新增能力和差异已在各条目中标注。
+
+> **审计注（2026-07-01）**：代码已引入 event-sourced 持久化 scheduler（`packages/runtime/src/scheduler/`），与旧 scheduler（`packages/runtime/src/execution/scheduler.ts`）并存。新 scheduler 已关闭多个旧 scheduler 的 gap（`maxConcurrency`、signal timeout、fanout lane 隔离、agent JSON recovery）。本文档已更新以反映双 scheduler 架构，并修正了 15 处与代码不一致的 claim（详见各条目和"当前状态"节）。
 
 主要参考：
 
@@ -16,6 +18,7 @@
 - CLI commands: `packages/cli/src/commands/run.ts`, `packages/cli/src/commands/runs.ts`
 - Runtime store: `packages/runtime/src/store/store.ts`
 - Runtime execution: `packages/runtime/src/execution/` (scheduler, advance, task-executor, agent-node, ir)
+- Runtime event-sourced scheduler: `packages/runtime/src/scheduler/` (advance, materialize, transitions, identity, types, limiter, runtime-runner, node-executor, control, events, store-port)
 - Runtime evaluation: `packages/runtime/src/evaluation/` (evaluator, schema)
 - Runtime control: `packages/runtime/src/control/apply-command.ts`
 - Runtime supervisor: `packages/runtime/src/supervisor/` (loop, tick)
@@ -126,15 +129,17 @@
 审计备注：SQLite 是当前 run inspection 和 control 的事实源。WAL 模式、FK constraint 启用。
 
 **审计新增：**
-- `schema_migrations` 表 + `addColumnIfMissing` ALTER 助手（当前用于添加 `commands.owner_generation` fencing 列）。
+- `schema_migrations` 表 + `addColumnIfMissing` ALTER 助手（当前用于添加 `commands.owner_generation` fencing 列和 `group_members.item_json` 列）。
 - `node_states` 新增 `node_id`（与 `node_key` 分离，为 future dynamic NodeInstanceKey 预留）和 `attempt`（默认 0，retry 暂不 bump）。
 - `commands` 新增 `owner_generation`（generation fence，防 stale supervisor 命令冲突）。
 - `commands` 和 `run_events` 有 `idempotency_key` UNIQUE 约束。
 - `supervisor_lease` 存储更丰富元数据：`endpoint`、`auth_token_hash`、`protocol_version`、`package_version`、`node_version`、`exec_path`（为未来 remote supervisor 预留）。
-- Store 目前仍为单文件 ~1713 行，P2 modularization 未做。
+- **新 scheduler 投影表**（未在原 roadmap 中描述）：`scheduler_commits`（idempotent scheduler event commits）、`run_leases`（owner epoch fencing）、`scheduler_frames`（scheduler frame 物化）、`node_instances`（node 实例投影）、`node_attempts`（per-attempt tracking）、`group_members`（fanout group member 状态）、`signal_waits`（signal wait 状态）、`execution_metadata`（任意 execution metadata）。
+- Store 当前为单文件 ~3344 行，P2 modularization 未做。
 
 标注：
 - 决策：确认。
+- 备注：SQLite 表从原 roadmap 描述的 8 个增加到 16 个（含新 scheduler 投影表）。行数从 ~1713 增加到 ~3344。
 
 #### Initial projections
 
@@ -154,6 +159,21 @@
 标注：
 - 决策：确认。
 - 备注：`verifyReplayProjection` 是新增的 replay 校验能力，可在 spec 中明确。
+
+#### 双 Scheduler 架构
+
+**审计关键发现（2026-07-01）**：代码中存在两套 scheduler：
+
+1. **旧 scheduler**：`packages/runtime/src/execution/scheduler.ts` — 内存中执行，composite/control node + leaf dispatch。`advance.ts` 驱动。
+2. **新 event-sourced scheduler**：`packages/runtime/src/scheduler/` — 事件溯源持久化执行，基于 SQLite 投影表。`runtime-runner.ts` 驱动。
+
+新 scheduler 已关闭旧 scheduler 的多个 gap（`maxConcurrency`、signal timeout、fanout.lane 隔离、agent JSON recovery），但旧 scheduler 仍被 `runs/use-cases.ts` 的 `advanceRuntimeRun` 路径使用。新 scheduler 的投影表（`scheduler_commits`、`run_leases`、`scheduler_frames`、`node_instances`、`node_attempts`、`group_members`、`signal_waits`、`execution_metadata`）是 SQLite store 的新增部分，未在原 roadmap 中描述。
+
+证据：`packages/runtime/src/scheduler/`（advance, materialize, transitions, identity, types, limiter, runtime-runner, node-executor, control, events, store-port）, `packages/runtime/src/execution/scheduler.ts`, `packages/runtime/src/execution/advance.ts`, `packages/runtime/src/runs/advance-runtime.ts`
+
+标注：
+- 决策：确认双 scheduler 并存。新旧 scheduler 的能力覆盖差异见各 gap 条目。
+- 备注：以下"已实现能力"条目中，"Scheduler"和"Composite scope"等节的描述主要基于旧 scheduler。新 scheduler 的额外能力在对应 gap 条目中标注。
 
 #### Scheduler
 
@@ -306,7 +326,7 @@
 
 #### Task runtime options
 
-当前实现：支持 `cwd`、非 secret `env`、`retry.max`、node `timeout`、`execution.defaultCommandTimeout`、`$({ ... })` 保留默认 timeout、显式 per-command timeout。
+当前实现：支持 `cwd`、非 secret `env`、node `timeout`、`execution.defaultCommandTimeout`、`$({ ... })` 保留默认 timeout、显式 per-command timeout。task 节点**不支持** `retry`（`TaskStepSpec.retry` 类型为 `never`，IR 编译器拒绝 task 的 retry 配置）。agent 节点支持 `retry.max`（用于 output schema repair loop），但新 scheduler 的 `maxAttemptsFor` 回调硬编码为 `() => undefined`，自动 retry 未 wiring。
 
 证据：`packages/runtime/src/execution/task-executor.ts`, `packages/core/src/runtime/dollar.ts`
 
@@ -316,7 +336,8 @@
 - `$` 新增 `.nothrow()`、`.allowExitCode(codes)`、`.text()/.json()/.lines()` readers。
 - `DollarConfig` 使用 configurator pattern（`$({ cwd, env, timeout, nothrow, allowExitCode })`cmd``），无 chainable `.cwd()/.env()`。
 - `CommandSpan`/`onSpan` hook 已定义但未 wiring（spans 不记录）。
-- `retry.on`/`retry.backoff` 类型存在但未消费（retry 所有错误，无 delay）。
+- `RetryIR` 类型仅包含 `max?: number`；`retry.on` 和 `retry.backoff` 字段**不存在于当前 IR 中**（此前 roadmap 声称它们存在但未消费，实际已被移除）。
+- 新 scheduler 的 `maxAttemptsFor` 回调硬编码为 `() => undefined`，自动 retry 未 wiring（仅支持手动 control command retry）。
 - Per-attempt `AbortController`：timeout 触发 abort，abort 后 late artifact write 被拒绝；dollar command 传播 abort 为 SIGTERM。
 
 标注：
@@ -328,7 +349,7 @@
 
 证据：`packages/runtime/src/execution/task-executor.ts` (`createArtifactApi`), `packages/runtime/src/store/store.ts` (`registerArtifact`)
 
-审计备注：registry 记录 run/node/attempt/media type/digest/size/relative path。路径为 `artifacts/<nodeKey>/<artifactUUID>-<safeName>`。
+审计备注：registry 记录 run/node/attempt/media type/digest/size/relative path。路径为 `artifacts/<nodeKey>/attempt-<attempt>/<artifactUUID>-<safeName>`（包含 attempt 子目录）。
 
 标注：
 - 决策：确认。
@@ -352,21 +373,22 @@
 
 #### Command-backed agents
 
-当前实现：local command agent 支持 rendered prompt env、attempt env、cwd/env 表达式、retry、timeout、stdout/stderr cap、process-group SIGTERM/SIGKILL。
+当前实现（已过期）：本段记录的是 acpx-backed agent executor 之前的 local command agent 设计。当前 agent 设计已由 `docs/roadmap/agent-executor-acpx-implementation-goal.md` 和 `specs/agent-executor-spec.md` 取代：`agent.use` 是 acpx named agent token，`agent.command` 是 acpx `--agent <command>` custom ACP server，不是 raw shell worker。
 
 证据：`packages/runtime/src/execution/agent-node.ts`, `packages/agent-executor/src/index.ts`
 
-审计备注：当前是 command protocol，不是 acpx session protocol。Agent executor 已拆分为独立 package `@acpus/agent-executor`。
+审计备注：已被 acpx-backed session protocol superseded。此段仅保留为历史审计记录。
 
 **审计新增：**
-- cwd/env 三层合并：process env → definition env → node.run env → extraEnv（`ACPUS_AGENT_PROVIDER`/`ACPUS_AGENT_MODEL`）。
+- cwd/env 三层合并：process env → definition env → node.run env → `applyRuntimeAgentEnv`（`ACPUS_RUNTIME_NODE_ID`/`ACPUS_RUNTIME_RUN_ID`/`ACPUS_RUNTIME_NODE_KEY`/`ACPUS_RUNTIME_ATTEMPT`）。
+- **修正**（2026-07-01）：此前 roadmap 声称 `ACPUS_AGENT_PROVIDER` 和 `ACPUS_AGENT_MODEL` 作为 extraEnv 传入，但这两个 env var **在代码中不存在**。`model` 字段通过 `--model` CLI flag（acpx 路径）或 `AgentTurnRequest.model` 字段传递，非 env var。
 - stdout/stderr 合并 cap 为 1,000,000 bytes。
-- Timeout 升级：SIGTERM → 100ms → SIGKILL process group。
+- Timeout 升级：SIGTERM → 100ms → SIGKILL process group（旧 command 路径）。acpx 路径使用 5000ms grace 和 `killProcess`（非 process group）。
 - Duration 解析支持 `ms|s|m|h`。
-- `model` 字段通过 `ACPUS_AGENT_MODEL` env 传递（session/policy/options 未消费）。
+- `model`、`permissionMode`、`agentMode` 字段已消费；`session.key` 已消费（通过 `renderSessionKey` 渲染模板 + `sessionName()` 生成确定性 session name）。
 
 标注：
-- 决策：确认。
+- 决策：已 superseded，不再作为当前实现 truth。
 
 #### Built-in mock provider
 
@@ -381,14 +403,14 @@
 
 #### Provider command mapping
 
-当前实现：provider-backed agent 可通过 `ACPUS_AGENT_PROVIDER_COMMANDS` 本地命令映射执行。未映射 provider 进入 blocked 状态（ExecutorRequiredError → blockRun）。
+当前实现（已过期）：provider-backed agent 可通过 `ACPUS_AGENT_PROVIDER_COMMANDS` 本地命令映射执行。该 provider-command mapping 已被 acpx-backed executor 替代，当前 runtime 不再咨询该 env mapping。
 
-证据：`packages/agent-executor/src/index.ts` (`getProviderCommandFromEnv`), `packages/runtime/src/execution/agent-node.ts`, `packages/runtime/src/execution/advance.ts`
+历史证据：旧 `packages/agent-executor/src/index.ts` (`getProviderCommandFromEnv`), `packages/runtime/src/execution/agent-node.ts`, `packages/runtime/src/execution/advance.ts`
 
 审计备注：这是 escape hatch，不是 first-class provider adapter。
 
 标注：
-- 决策：确认。blocked 语义需在 CLI output 中更明确展示。
+- 决策：已 superseded，不再作为当前实现 truth。
 
 #### Signal execution
 
@@ -396,7 +418,7 @@
 
 证据：`packages/runtime/src/store/store.ts` (`awaitSignal`, `signalRun`), `packages/runtime/src/control/apply-command.ts`, `packages/runtime/src/runs/use-cases.ts` (`signalRun`), `packages/cli/src/commands/runs.ts`
 
-审计备注：duplicate signal 用 command idempotency key（`signal:${runId}:${nodeId}:${payload}`）+ SQLite UNIQUE 约束处理。
+审计备注：duplicate signal 用 command idempotency key + SQLite UNIQUE 约束处理。**修正**（2026-07-01）：此前 roadmap 声称 idempotency key 格式为 `signal:${runId}:${nodeId}:${payload}`，实际 command 层使用 `randomUUID()`（`signal:${runId}:${nodeId}:${randomUUID()}`），每个调用生成新 key，command 级 UNIQUE 不阻止重复信号。event 级 deduplication 使用 sequence number 独立处理。
 
 **审计新增：**
 - Payload 在 use-case 层和 apply-command 层双重 normalize（无害冗余）。
@@ -554,11 +576,11 @@ legacy 对比：legacy template 对 object 直接 `String()`，容易得到 `[ob
 
 #### Provider command mapping
 
-当前实现：`ACPUS_AGENT_PROVIDER_COMMANDS` 提供 provider-backed agent escape hatch。Agent executor 在独立 package `@acpus/agent-executor`。
+当前实现（已过期）：`ACPUS_AGENT_PROVIDER_COMMANDS` 提供 provider-backed agent escape hatch。当前已由 acpx named agent token、acpx config、以及 acpx `--agent <command>` 替代。
 
 legacy 对比：legacy 更偏 direct acpx session executor。
 
-备注：不是 first-class adapter。
+备注：已 superseded，不再作为当前实现 truth。
 
 标注：
 - 决策：确认。
@@ -646,14 +668,14 @@ legacy / 期望能力：legacy 支持 follow、poll、JSONL observations、Ctrl-
 
 #### Agent overrides
 
-当前状态：当前 CLI 无 `--agents`，run/fork 不支持 submit-time agent override。`admitWorkflowRun` 签名仅接受 `cwd/prepared/input`。注意：legacy/ 目录仍有 `--agents` 支持，但非活跃代码。
+当前状态：已由 agent-executor acpx implementation 关闭。CLI `run --agents` 与 `runs fork --agents` 已接入 runtime validation；admission/fork 会持久化 typed agent overrides，并在冻结 IR 中应用 `use`/`command`/`model`/`permissionMode`/`agentMode`/`cwd`/`env`。`policy` 字段已删除，不再作为 override 目标。
 
 legacy / 期望能力：legacy 支持 `--agents`，并持久化 warnings/overrides。
 
-建议处理：需要 TypeScript-first 版本的 override model。
+建议处理：无剩余 remediation work；后续只在新增 agent override 字段时更新 current specs/tests。
 
 标注：
-- 决策：需要实现（P2）。
+- 决策：已完成。
 
 #### Hooks
 
@@ -668,102 +690,129 @@ legacy / 期望能力：legacy hooks 是 runtime platform layer，不完全依�
 
 #### acpx session-backed agent
 
-当前状态：当前是 command/provider-command protocol，无 acpx `sessions ensure`、continuation、cancel、policy mapping。"acpx" 仅作为测试中 example command string 出现。
+当前状态（已过期）：本段记录的是 acpx-backed migration 之前的 gap。当前 agent executor 已实现 acpx `sessions ensure`、prompt、cancel、permissionMode、agentMode 和 runtime-owned repair/observability；当前 truth 见 `specs/agent-executor-spec.md`、`specs/runtime-spec.md` 和 `docs/roadmap/agent-executor-acpx-implementation-goal.md`。
 
 legacy / 期望能力：legacy agent executor 管 acpx session、prompt、cancel、权限 flag。
 
-建议处理：当前 spec 已把 first-class provider adapters 延后；是否补 acpx 需决策。
+测试边界判断：当前不需要像 legacy 一样实现完整 ACP mock-agent 来支撑 e2e。当前 runtime 真正拥有的是 agent node execution 的窄边界：prompt 渲染、输出 schema 校验、command/mock executor 调用、scheduler-visible attempt/retry/timeout/cancel 语义。legacy mock-agent 覆盖的是 ACP stdio/session 协议面（initialize、session/new/load/prompt/update/cancel、stream/hang/crash/trace），当前 runtime/spec 并不拥有这层协议。若未来实现 acpx-backed agent，应优先使用 hermetic fake acpx scripts/processes 覆盖参数构造、session ensure/prompt/cancel 顺序、输出解析和 failure classification；只有当 Acpus 直接实现或校验 ACP wire 行为时，才需要完整 ACP mock-agent。
+
+建议处理：当前 spec 已把 first-class provider adapters 延后；是否补 acpx 需决策。测试策略上，不引入 legacy-style full ACP mock-agent；按当前层次补 runtime integration 与 agent-executor integration 缺口。
 
 标注：
 - 决策：暂不做（P3，first-class provider adapters 时一并考虑）。
 
 #### Agent `session` / `policy` consumption
 
-当前状态：core authoring 字段存在（`policy`、`session.key`、`options`），但 runtime 仅消费 `model`（通过 `ACPUS_AGENT_MODEL` env）。`policy`/`session`/`options` 未读取、未传递给 executor。
+当前状态：`policy` 字段**不存在于当前 IR 中**（此前 roadmap 声称存在但未消费，实际已被移除）。`session.key` **已消费**：`agent-node.ts` 通过 `renderSessionKey` 渲染模板 + `sessionName()` 生成确定性 session name，传递给 executor。`options` 字段**不存在于当前 IR 中**。`model`、`permissionMode`、`agentMode` 均已消费。`model` 通过 `--model` CLI flag（acpx 路径）或 `AgentTurnRequest.model` 字段传递，**非** `ACPUS_AGENT_MODEL` env var。
 
 legacy / 期望能力：legacy runtime 使用 session/policy 影响 acpx execution。
 
-建议处理：要么实现，要么在 spec 标注当前不支持。
+建议处理：`session.key` 已实现。`policy` 字段已从 IR 中移除，若要恢复需先定义 spec。
 
 标注：
-- 决策：需规格化——在 spec 中标注当前不支持 policy/session/options，仅 model 生效。
+- 决策：`session.key` 已关闭。`policy` 字段已移除（需规格化若恢复）。`options` 字段不存在。
 
 #### Agent schema prompting / JSON recovery
 
-当前状态：当前 `parseAgentOutput` 仅做 `stdout.trim()` + `JSON.parse()`，失败 wrap 为 `{ text }`。无 schema prompt injection、无 code-fence/prose extraction、无 JSON repair。Executor 不接收 outputSchema（仅 post-parse normalize）。
+当前状态：**已关闭**（2026-07-01 审计确认）。`agent-node.ts` 已实现完整 pipeline：
+- `buildAgentPrompt()` 注入 output schema 到 prompt（`# OUTPUT SCHEMA` markdown 段）。
+- `recoverJson()` 实现完整 JSON recovery：直接 `JSON.parse` → balanced bracket candidate extraction → `jsonrepair` 库修复。
+- `balancedJsonCandidates()` 从 prose 中提取嵌套 `{...}`/`[...]` candidates。
+- `balancedCandidateEnd()` 实现 bracket-stack parser with string escape handling。
+- Repair loop 最多重试 `retry.max` 次，带 continuation prompt 和 delay。
+- `conformAgentOutput()` 校验 output schema 并 normalize。
 
 legacy / 期望能力：legacy 会把 output schema 注入 prompt，并从 prose/code fence 抽取/repair JSON。
 
-建议处理：可改善 agent UX 和 output reliability。
+建议处理：已实现。可在 spec 中正式记录 JSON recovery 行为。
 
 标注：
-- 决策：需要实现（P1）。
+- 决策：已关闭（P1 gap 已实现）。
 
 #### Agent telemetry/artifacts
 
-当前状态：当前 agent executor 为纯函数（`{command, prompt, cwd, env, maxAttempts, timeout, acceptOutput}`），无 runId/nodeKey/store 通道，不写 prompt/response/stderr/telemetry artifacts。Task 有 artifact plumbing，agent 完全未接入。stdout/stderr 仅 in-memory，parse 后丢弃。
+当前状态：已由 agent-executor acpx implementation 关闭。scheduler-backed agent turns 会写 prompt、response、stderr（存在时）、telemetry、raw recovered output 和可选 raw ACP debug artifacts，并在 `agent_attempt` metadata 中暴露 turn-level artifact refs。Scheduler reducers 不依赖这些 metadata/artifact 内容。
 
 legacy / 期望能力：legacy 持久化 prompt、response、stderr、telemetry、tool calls、token/context usage、acpxRecordId。
 
-建议处理：与 follow/show 目标强相关。
+建议处理：无剩余 remediation work。tool calls、token/context usage、acpxRecordId 取决于 acpx/adapter telemetry 能否提供，未来作为 telemetry enrichment 处理，不再作为当前 artifact plumbing gap。
 
 标注：
-- 决策：需要实现（P1）。
+- 决策：需要实现（P1）。run/node/attempt context 已 wiring，缺 artifact 写入。
 
 #### Agent retry details
 
-当前状态：当前 task 和 agent 均支持 `retry.max`；`retry.on`、`retry.backoff` 在 IR 类型中声明但均未消费。Executor 对 timeout/overflow/nonzero-exit/parse-failure 统一 retry，无分类、无 delay。缺少 error taxonomy（AgentTimeoutError 等）来映射 `retry.on`。
+当前状态：`RetryIR` 类型仅包含 `{ max?: number }`。`retry.on` 和 `retry.backoff` 字段**不存在于当前 IR 中**（此前 roadmap 声称它们存在但未消费，实际已被移除）。Task 节点**不支持** retry（`TaskStepSpec.retry` 类型为 `never`）。Agent 节点支持 `retry.max`（用于 output schema repair loop），但新 scheduler 的 `maxAttemptsFor` 回调硬编码为 `() => undefined`，自动 retry 未 wiring（仅支持手动 control command retry）。缺少 error taxonomy（AgentTimeoutError 等）。
 
 legacy / 期望能力：legacy 有更细的 retry 分类和 recovery。
 
-建议处理：与 current core retry type 对齐后补规格。
+建议处理：需先定义 error taxonomy，再决定是否恢复 `retry.on`/`retry.backoff` 字段。
 
 标注：
-- 决策：需要实现（P1/P2，需先定义 error taxonomy）。
+- 决策：`retry.on`/`retry.backoff` 已从 IR 中移除（非 gap）。自动 retry wiring 需实现（P1/P2，需先定义 error taxonomy）。
 
 #### Signal timeout/onTimeout/default
 
-当前状态：core IR 可表达 signal `timeout`/`onTimeout: { action: "fail", message? }`，但 runtime scheduler 仅检查 `signalPayloads`，不读取 `node.timeout`/`node.onTimeout`。Supervisor tick 无 signal-timeout scanner。审计探针确认：带 `timeout: "1ms"` 和 `onTimeout: { action: "fail" }` 的 signal 仍直接进入 awaiting，而不是触发 timeout fail。
+当前状态：**部分关闭**（2026-07-01 审计确认）。新 scheduler 已实现 signal timeout 机制：
+- `transitions.ts` 的 `signalTimeoutEvents()` 扫描 `projection.signalWaits` 中 `deadlineAt` 过期的条目，emit `signal.timed_out` + `instance.failed` 事件。
+- `advance.ts` 的 drain loop 调用 `signalTimeoutEvents`。
+- `onTimeout: { action: "fail" }` 语义通过 `signal.timed_out` → `instance.failed` 链隐式实现。
+- `onTimeout.message` 字段**未被任何代码读取**。
+- **关键 gap**：`materialize.ts` 在创建 `signal.awaiting` event 时**不设置 `deadlineAt`**（注释："Deadline calculation needs an admission clock; bootstrap only records the open wait."）。`runtime-runner.ts` 的 `deadlineAtFor` 回调仅处理 task/agent nodes，**不处理 signal nodes**。因此 signal timeout 机制存在但**从未触发**。
+- 旧 scheduler（`execution/scheduler.ts`）仍完全无 signal timeout 支持。
 
 legacy / 期望能力：legacy 支持 timeout default/fail、外部 signal 和 timeout 竞争。
 
-建议处理：当前 runtime-spec 未完整覆盖，需要规格化。
+建议处理：需要 wiring `deadlineAt` 计算到 signal wait 创建流程中，并消费 `onTimeout.message`。
 
 标注：
-- 决策：需要实现（P0，含 prompt persistence）。
+- 决策：超时机制已实现但未 wiring（P0 优先 wiring）。`onTimeout.message` 消费需规格化。
 
 #### Signal prompt visibility
 
-当前状态：`awaitSignal` 不接收/持久化 rendered prompt/schema；`signal.awaiting` event payload 为 `{}`；`RunDetails` 不含 awaiting metadata；CLI output 不展示 signal prompt/schema。Rendered template + outputSchema 需从 frozen IR 重新求值（非已存储）。
+当前状态：`signal.awaiting` event payload 已不再是 `{}`（新 scheduler 的 event 包含 `runId`、`nodeKey`、`nodeId`、`deadlineAt?`），但**仍无** `prompt` 或 `schema` 字段。`SignalWait` 类型（新 scheduler）无 `prompt`/`schema` 字段。Rendered template + outputSchema 需从 frozen IR 重新求值（非已存储）。CLI output 不展示 signal prompt/schema。
 
 legacy / 期望能力：legacy 会在 `runs show`/TUI 展示 signal prompt 和 expected schema。
 
 建议处理：建议纳入富 inspection（P0）。
 
 标注：
-- 决策：需要实现（P0，与富 inspection 合并）。
+- 决策：需要实现（P0，与富 inspection 合并）。event payload 已改进但 prompt/schema 仍未持久化。
 
 #### `maxConcurrency`
 
-当前状态：TS-first public/IR 字段存在（`ParallelNodeIR.maxConcurrency`、`FanoutNodeIR.maxConcurrency`），authoring DSL 和 validator 均接受，但 runtime scheduler 在 `parallel all`/`fanout` 使用裸 `Promise.all`，完全不读 `node.maxConcurrency`。Grep `packages/runtime/src` for `maxConcurrency` 返回零 hit。审计探针确认：`fanout.maxConcurrency: 1` 时 3 个 item 仍可同时运行（`maxActive: 3`）。
+当前状态：**已关闭**（2026-07-01 审计确认）。新 scheduler 已完整实现 `maxConcurrency`：
+- `runtime-runner.ts` 的 `localConcurrencyLimitForRoot` 读取 parallel/fanout 节点的 `maxConcurrency`。
+- `advance.ts` 的 `selectReadyInstances()` 通过 `localConcurrencyLimitFor` 执行 per-group 并发限制。
+- `limiter.ts` 存在 `p-queue` 方案（但 scheduler 实际使用 `selectReadyInstances` 方案）。
+- 有 integration test（`scheduler-node-executor.integration.test.ts`："honors root parallel maxConcurrency across repeated frozen-run advances"）。
+- 旧 scheduler（`execution/scheduler.ts`）仍使用裸 `Promise.all`，不读 `maxConcurrency`。
 
 legacy / 期望能力：legacy 用 `pLimit(maxConcurrency)`，有并发测试。
 
-建议处理：这是当前 API 和 runtime 行为不一致，P0 优先修正或明确不支持。
+建议处理：新 scheduler 已实现。旧 scheduler 的 gap 可在旧 scheduler 退役时一并关闭。
 
 标注：
-- 决策：需要实现（P0）。需定义 failure 和 cancellation 语义。
+- 决策：已关闭（P0 gap 在新 scheduler 中已实现）。
 
 #### `fanout.key` / lane identity
 
-当前状态：core 接收/lower `fanout.key`（template/string/function），但 runtime scheduler 不读 `node.key`，不计算 stable lane id，fanout scope 仅含 `{ item, itemIndex }`。**重要：concurrent fanout items 共享 body 中 static node ids，当前会在 `outputs/<nodeId>/`、`work/<nodeId>/`、artifact path 上产生目录冲突（latent correctness bug）。** 这也会影响 node projection、resume、fork/replay 和 artifact registry 的 per-item 语义。
+当前状态：**部分关闭**（2026-07-01 审计确认）。新 scheduler 已解决 fanout lane 隔离和目录冲突：
+- `materialize.ts` 的 `fanoutItemKey()` 渲染 `node.key` 模板（若存在），fallback 到 `itemIndex`。
+- `identity.ts` 的 `appendFanoutItem()` 在 instance path 中包含 `itemKey`。
+- `deriveInstanceKey()` 从完整 path（含 fanout item key）生成稳定 instance key。
+- 每个 fanout item 获得唯一 `nodeKey`，`task-executor.ts` 的 `outputs/<nodeKey>/` 和 `work/<nodeKey>/` 路径不再冲突。
+- `GroupMember` 类型有 `memberKind: "fanout_item"` 和 `itemKey`。
+- 旧 scheduler（`execution/scheduler.ts`）仍共享 static node ids，存在目录冲突。
+
+core 的 `fanout.key` 字段在新 scheduler 中已通过 `fanoutItemKey()` 消费（渲染模板）。旧 scheduler 不消费。
 
 legacy / 期望能力：legacy 有 dynamic node key/lane identity。
 
-建议处理：与 dynamic `NodeInstanceKey` 目标相关。目录冲突需在 lane identity 方案中解决。
+建议处理：新 scheduler 已解决目录冲突和 lane 隔离。完整 dynamic `NodeInstanceKey` 可作为 P2 结构性完善。
 
 标注：
-- 决策：目录冲突 hotfix 需要实现（P1）；完整 dynamic `NodeInstanceKey`/lane identity 可作为 P2 结构性完善。
+- 决策：目录冲突和 lane 隔离已关闭（P1 gap 在新 scheduler 中已实现）。完整 dynamic `NodeInstanceKey` 仍为 P2。
 
 #### `runtime.*` refs
 
@@ -914,9 +963,9 @@ legacy / 期望能力：legacy 有 bounded node storage key 和 `node-index.json
 
 原表述问题："Provider-backed agents via `ACPUS_AGENT_PROVIDER_COMMANDS`"。
 
-为什么需要澄清：容易被读成 first-class provider adapters 已完成。未映射 provider 进入 blocked 状态。
+为什么需要澄清：该表述记录的是 acpx-backed executor 之前的实现，容易被读成 first-class provider adapters 或 provider-command env mapping 仍是当前产品路径。
 
-建议改法：表述为"local provider command mapping escape hatch；first-class adapters 未实现；未映射 provider 导致 run blocked"。
+建议改法：表述为历史实现已 superseded；当前 agent 路径使用 acpx named agent token、acpx config、以及 acpx `--agent <command>` custom ACP server。
 
 标注：
 - 决策：确认，已在 Provider command mapping 节反映。
@@ -1058,25 +1107,19 @@ legacy / 期望能力：legacy 有 bounded node storage key 和 `node-index.json
 
 #### P0：修正 `maxConcurrency` 行为
 
-为什么做：当前 public/IR 字段存在但 runtime 未使用，是 API/行为不一致。
-
-主要交付件：scheduler 对 `parallel all`/`fanout` 使用 concurrency limiter（p-limit 或等价 semaphore）；补 unit/integration tests。
-
-依赖/风险：需要定义失败和 cancellation 传播行为（依赖 composite cancellation）。
+**已关闭**（2026-07-01 审计确认）。新 scheduler 已完整实现：`runtime-runner.ts` 的 `localConcurrencyLimitForRoot` 读取 parallel/fanout 的 `maxConcurrency`；`advance.ts` 的 `selectReadyInstances()` 执行 per-group 并发限制。有 integration test。旧 scheduler 仍使用裸 `Promise.all`（gap 在旧 scheduler 退役时一并关闭）。
 
 标注：
-- 决策：P0。
+- 决策：已关闭（DONE）。
 
 #### P0：Signal timeout/default/prompt persistence
 
-为什么做：core 可表达 timeout/onTimeout，但 runtime 未实现；awaiting UX 也缺 prompt。
+**部分关闭**（2026-07-01 审计确认）。新 scheduler 已实现 signal timeout 机制（`signalTimeoutEvents` 在 drain loop 中运行），但 `deadlineAt` 从未被计算或设置到 `SignalWait` 上（`materialize.ts` 创建 event 时不设置 `deadlineAt`；`runtime-runner.ts` 的 `deadlineAtFor` 不处理 signal nodes）。因此 timeout 机制存在但**从未触发**。`onTimeout.message` 未被消费。Rendered prompt/schema 仍未持久化到 `signal.awaiting` event/state。
 
-主要交付件：signal timeout/default/fail 执行语义（supervisor tick scanner）；rendered prompt/schema 持久化（在 awaitSignal 时写入 event/state）；`runs show` 展示。
-
-依赖/风险：需要 spec 更新。
+剩余交付件：wiring `deadlineAt` 计算到 signal wait 创建流程；消费 `onTimeout.message`；rendered prompt/schema 持久化；`runs show` 展示。
 
 标注：
-- 决策：P0。
+- 决策：P0（signal timeout deadline wiring + prompt persistence）。
 
 #### P1：`runs cancel` 与 in-flight abort
 
@@ -1087,7 +1130,7 @@ legacy / 期望能力：legacy 有 bounded node storage key 和 `node-index.json
 依赖/风险：与 scheduler cancellation、task/agent lifecycle 强耦合；需引入 error taxonomy（AgentTimeoutError 等）。
 
 标注：
-- 决策：P1。
+- 决策：已完成。
 
 #### P1：Foreground follow / background run UX
 
@@ -1102,9 +1145,9 @@ legacy / 期望能力：legacy 有 bounded node storage key 和 `node-index.json
 
 #### P1：Agent observability artifacts
 
-为什么做：当前 agent 缺 per-attempt 可审计材料；task 有 artifact plumbing 但 agent 未接入。
+状态：已完成。agent per-turn prompt/response/stderr/telemetry/raw recovered output/raw ACP debug artifacts 与 CLI inspection rendering 已由 agent-executor acpx implementation 落地。
 
-主要交付件：Agent executor 接收 runId/nodeKey/artifact channel；prompt/response/stderr/telemetry artifacts per attempt；output cap 行为；artifact refs 持久化；`CommandSpan`/`onSpan` wiring；task per-attempt 生命周期文件；`$` stdout/stderr artifact capture。
+剩余相关 future work：artifact read/list APIs、富 run inspection、`runs follow`/`--background` 可继续独立推进；它们不再依赖 agent artifact 写入缺口。
 
 依赖/风险：与 artifact append/read、show output 相关。
 
@@ -1113,14 +1156,10 @@ legacy / 期望能力：legacy 有 bounded node storage key 和 `node-index.json
 
 #### P1：Agent JSON recovery 和 schema prompting
 
-为什么做：command/provider agent 输出对模型 prose 不够健壮。
-
-主要交付件：output schema prompt injection、JSON fence/prose extraction、schema retry 分类。
-
-依赖/风险：需避免把 prompt policy 写死到 executor 内部；error taxonomy 需支持 schema-retry 分类。
+**已关闭**（2026-07-01 审计确认）。`agent-node.ts` 已实现完整 recovery pipeline：output schema prompt injection（`buildAgentPrompt`）、JSON fence/prose extraction（`balancedJsonCandidates`）、`jsonrepair` 修复、retry loop with continuation prompt。`conformAgentOutput()` 校验 output schema 并 normalize。
 
 标注：
-- 决策：P1。
+- 决策：已关闭（DONE）。
 
 #### P1：Hooks 产品决策和最小实现
 
@@ -1157,14 +1196,10 @@ legacy / 期望能力：legacy 有 bounded node storage key 和 `node-index.json
 
 #### P1：fanout lane storage hotfix
 
-为什么做：当前 concurrent fanout items 共享 body static node ids，会在 `work/<nodeId>`、`outputs/<nodeId>`、artifact path 上产生目录冲突，影响 resume/fork/replay 和 per-item inspection。
-
-主要交付件：最小 per-lane work/output/artifact path 隔离；node projection 和 artifact refs 能区分 fanout item；补并发 fanout artifact/output 不互相覆盖的 regression tests。
-
-依赖/风险：完整 dynamic `NodeInstanceKey` 可留给 P2，但 hotfix 需要避免之后迁移成本过高。
+**已关闭**（2026-07-01 审计确认）。新 scheduler 已解决：`materialize.ts` 的 `fanoutItemKey()` 渲染 `node.key` 模板；`identity.ts` 的 `deriveInstanceKey()` 为每个 fanout item 生成唯一 nodeKey；`task-executor.ts` 的 `outputs/<nodeKey>/` 和 `work/<nodeKey>/` 路径不再冲突。旧 scheduler 仍共享 static node ids（gap 在旧 scheduler 退役时一并关闭）。
 
 标注：
-- 决策：P1。
+- 决策：已关闭（DONE）。完整 dynamic `NodeInstanceKey` 仍为 P2。
 
 #### Done：Closed IR validation hardening
 
@@ -1175,13 +1210,13 @@ legacy / 期望能力：legacy 有 bounded node storage key 和 `node-index.json
 依赖/风险：无剩余实现依赖。
 
 标注：
-- 决策：P2。
+- 决策：已完成。
 
 #### P2：Agent overrides
 
-为什么做：submit-time provider/model/policy 覆盖仍缺。
+状态：已完成。submit/fork-time typed agent overrides 已支持 `use`/`command`/`model`/`permissionMode`/`agentMode`/`cwd`/`env`，并删除旧 `policy` 语义。
 
-主要交付件：`--agents` parser、validation、frozen metadata、fork override 行为。
+剩余相关 future work：如果后续需要新 acpx capability，必须作为显式 typed field 进入 specs/tests，不能恢复 broad `options`。
 
 依赖/风险：需对齐 TypeScript-first agent definitions。
 
@@ -1201,14 +1236,10 @@ legacy / 期望能力：legacy 有 bounded node storage key 和 `node-index.json
 
 #### P2：`fanout.key` 和 dynamic lane identity
 
-为什么做：当前 core 接收 key 但 runtime 不消费；需要稳定 lane identity 支撑 replay、fork、inspection 和 bounded dynamic storage。
-
-主要交付件：fanout lane identity、dynamic node key 或 internal stable key、fork/replay/inspection 语义、bounded lane-key-to-index mapping。
-
-依赖/风险：与 full `NodeInstanceKey` 目标耦合；bounded dynamic storage key 需一并解决。
+**部分关闭**（2026-07-01 审计确认）。新 scheduler 已消费 `fanout.key`（`fanoutItemKey()` 渲染模板），lane 隔离已实现（`deriveInstanceKey()` 生成 per-item 唯一 nodeKey）。完整 dynamic `NodeInstanceKey` 框架（bounded lane-key-to-index mapping、public dynamic key API）仍为 P2。
 
 标注：
-- 决策：P2（目录冲突 hotfix 已单独提升为 P1）。
+- 决策：P2（lane 隔离和 `fanout.key` 消费已关闭；完整 dynamic `NodeInstanceKey` 仍为 P2）。
 
 #### P2：`runs clean`
 
@@ -1234,7 +1265,7 @@ legacy / 期望能力：legacy 有 bounded node storage key 和 `node-index.json
 
 #### P2：Store modularization
 
-为什么做：`store.ts` ~1713 行，职责多。
+为什么做：`store.ts` ~3344 行，职责多。
 
 主要交付件：拆 admission、controls、fork、replay、artifacts、lease、migrations internal modules。
 
@@ -1249,7 +1280,7 @@ legacy / 期望能力：legacy 有 bounded node storage key 和 `node-index.json
 
 主要交付件：按 runtime area 拆 e2e/integration；保留高价值 cross-layer tests。
 
-**审计新增：** 测试已按 package 拆分为 `unit`/`contract`/`integration`/`e2e`/`type-contract` vitest projects。Runtime 测试按 admission/controls/evaluator/scheduler/supervisor/lease 分文件；CLI E2E 拆分为 run-admit、run-check-failure、run-validate-failure、runs-inspect、runs-signal、supervisor 等 focused 文件。总计约 34 个测试文件。剩余工作：确保覆盖不降低，持续保持分层。
+**审计新增：** 测试已按 package 拆分为 `unit`/`contract`/`integration`/`e2e`/`type-contract` vitest projects。Runtime 测试按 admission/controls/evaluator/scheduler/supervisor/lease 分文件；CLI E2E 拆分为 run-admit、run-check-failure、run-validate-failure、runs-inspect、runs-signal、supervisor 等 focused 文件。总计约 47 个测试文件（core=5, agent-executor=3, workflow-compiler=7, runtime=16, cli=9, expression=7）。剩余工作：确保覆盖不降低，持续保持分层。
 
 依赖/风险：拆测试不应降低覆盖。
 
@@ -1280,33 +1311,34 @@ legacy / 期望能力：legacy 有 bounded node storage key 和 `node-index.json
 
 ### 推荐实施顺序
 
+> **已关闭（2026-07-01 审计）**：`maxConcurrency`、agent JSON recovery + schema prompting、fanout lane storage hotfix 已在新 scheduler 中实现。以下为剩余未关闭 gap 的推荐顺序。
+
 1. **P0（当前 API 行为缺口 + 可观测性基础）：**
-   - 富 `runs show/status`（含 signal prompt/schema 展示）
-   - 修正 `maxConcurrency` 行为
-   - Signal timeout/default + rendered prompt 持久化
+   - 富 `runs show/status`（含 signal prompt/schema 展示、artifact 展示、duration、拆分 show/status）
+   - Signal timeout deadline wiring（机制已存在，需 wiring `deadlineAt` 计算和 `onTimeout.message` 消费）
+   - Signal rendered prompt/schema 持久化
 2. **P1（控制面 + 可审计性）：**
    - `runs cancel` + in-flight abort（贯穿 scheduler→executor AbortSignal 传播，含 composite cancellation）
    - Artifact read/list/atomic write
-   - Public node/artifact inspection APIs
-   - fanout lane storage hotfix（先解决并发目录/产物冲突）
-   - Agent observability artifacts（per-attempt prompt/response/stderr/telemetry，含 `$` stdout/stderr capture、onSpan wiring）
-   - Agent JSON recovery + schema prompting（含 error taxonomy）
+   - Public node/artifact inspection APIs（`runs nodes`, `runs artifacts`, `runs ir`, `runs events`）
+   - Agent observability artifacts（per-attempt prompt/response/stderr/telemetry，run/node/attempt context 已 wiring，缺 artifact 写入）
    - Foreground follow / background run UX（含 streaming/append）
    - Hooks 产品决策
 3. **P2（结构性完善）：**
    - `runtime.*` scope contract
-   - `fanout.key`/dynamic lane identity（完整 lane key、replay/fork/inspection 语义）
+   - 完整 dynamic `NodeInstanceKey`（lane 隔离已实现，缺 public key API 和 bounded mapping）
    - Agent overrides（`--agents`）
    - `runs clean`
    - Fork dry-run plan / `--from`
-   - Store modularization
+   - Store modularization（~3344 行单文件）
+   - error taxonomy（AgentTimeoutError 等）→ 自动 retry wiring
    - Test architecture 持续维护
 4. **P3（扩展能力）：**
    - first-class provider adapters（含 acpx session 决策）
    - runner profiles
 
 标注：
-- 决策：调整推荐顺序，将 artifact read/list/atomic write 和 inspection APIs 提前到 P1（为 agent telemetry 和 follow 提供基础）。
+- 决策：已关闭的 gap（`maxConcurrency`、agent JSON recovery、fanout lane storage）从推荐顺序中移除。Signal timeout 从"完全未实现"降级为"机制存在但需 wiring"。
 
 ## 验证记录
 
@@ -1338,18 +1370,35 @@ pnpm test:e2e
 - `pnpm test:e2e`: 6 files / 7 tests
 - `pnpm test:type`: 6 files / 24 tests
 
+**审计补充（2026-07-01）：** 本轮全仓库 review 未运行测试，仅验证代码与 roadmap 一致性。测试文件总数已更新为 ~47 个（core=5, agent-executor=3, workflow-compiler=7, runtime=16, cli=9, expression=7）。后续实现变更需按范围重跑对应测试。
+
 标注：
-- 备注：测试计数已按 2026-06-30 审计补充更新；后续实现变更需按范围重跑对应测试。
+- 备注：测试计数已按 2026-07-01 审计补充更新；后续实现变更需按范围重跑对应测试。
 
 ## 当前状态
 
 durable runtime 主干实现已经完成，并经过上一轮报告的验证。代码已拆分为五个独立 package（cli、runtime、core、agent-executor、workflow-compiler），测试架构已分层拆分。
 
-本次审计确认：
+**2026-06-29 审计确认：**
 - 所有"已实现能力"描述经代码核实基本准确，主要变更为文件路径和新增细节。
 - 所有"已发现 gap"均未关闭，仍然有效。
-- 新增发现：`SchemaIR`/`TypeIR` closed-shape validation 缺口、fanout 并发 item 目录冲突（latent correctness bug）、`blocked` 软状态、fanout quorum strategy、部分 runtime 类型超前于实现（powershell/pwsh/custom runner、retry.on/backoff、agent policy/session/options）、`runtime.*` expression scope 尚未定义。
-- 下一步应先由人工在本文档中标注确认：哪些 gap 属于必须补齐的当前 runtime 能力，哪些属于明确暂不做的 legacy 面，哪些需要先更新 `specs/` 后再实现。
+- 新增发现：`SchemaIR`/`TypeIR` closed-shape validation 缺口、fanout 并发 item 目录冲突（latent correctness bug）、`blocked` 软状态、fanout quorum strategy、部分 runtime 类型超前于实现。
+
+**2026-07-01 审计更新（全仓库 10-agent 并行 review）：**
+- 发现代码中存在**两套 scheduler**：旧 scheduler（`execution/scheduler.ts`）和新 event-sourced scheduler（`scheduler/`）。新 scheduler 已关闭多个 gap，但 roadmap 此前未记录这一架构变化。
+- **已关闭的 gap**（在新 scheduler 中实现）：`maxConcurrency`、agent JSON recovery + schema prompting、fanout lane storage hotfix（目录冲突）、`fanout.key` 消费。
+- **部分关闭的 gap**：signal timeout（机制存在但 `deadlineAt` 未 wiring）、agent telemetry（run/node context 已 wiring 但缺 artifact 写入）、agent `session.key` 消费。
+- **修正的 15 处与代码不一致的 claim**：
+  - SQLite 表从 8 个增加到 16 个（含新 scheduler 投影表）；`store.ts` 从 ~1713 行增长到 ~3344 行。
+  - task 节点不支持 `retry`（`retry?: never`）。
+  - `retry.on`/`retry.backoff` 字段不存在于当前 IR 中（已被移除）。
+  - `ACPUS_AGENT_PROVIDER`/`ACPUS_AGENT_MODEL` env var 不存在；`model` 通过 `--model` CLI flag 传递。
+  - `policy` 字段不存在于当前 IR 中（已被移除）；`session.key` 已消费。
+  - artifact 路径格式为 `artifacts/<nodeKey>/attempt-<attempt>/<uuid>-<safeName>`（含 attempt 子目录）。
+  - signal command idempotency key 使用 `randomUUID()`，非 payload 字符串。
+  - test 文件数从 ~34 更新为 47。
+- **仍存在的 gap**：富 run inspection（含 signal prompt 展示）、signal timeout deadline wiring、`runs cancel`、artifact read/list/atomic write、public inspection APIs、`runs follow`/`--background`、hooks、`runtime.*` scope、`runs clean`、fork `--from`、store modularization、error taxonomy、provider adapters、runner profiles。
+- 下一步应先由人工在本文档中标注确认：P0/P1 优先级和 hooks 产品决策。
 
 标注：
 - 决策：需人工审阅确认 P0/P1 优先级和 hooks 产品决策。

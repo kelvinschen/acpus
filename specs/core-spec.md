@@ -21,10 +21,11 @@
 - During graph construction, `input.*` fields MUST be exposed as `Expr<T>` tokens.
 - During graph construction, `meta.runId`, `meta.workflowPath`, `meta.workflowName`, and `meta.workspaceDir` MUST be exposed as run-level `Expr<string>` tokens.
 - Agent definitions MUST be declared at workflow top level under `agents` as plain object definitions.
-- `{ use, model?, ... }` MUST define a provider-backed agent and `{ command, ... }` MUST define a command-backed agent.
+- `{ use, model?, ... }` MUST define a named acpx agent token and
+  `{ command, ... }` MUST define a custom acpx `--agent <command>` ACP server.
 - Agent definition `use` and `command` MUST be mutually exclusive.
 - Top-level agent definitions MUST be authoring specs without an IR `kind` field.
-- Command-backed agent definitions MUST NOT declare `model`; model selection belongs to provider-backed `{ use, model?, ... }` definitions.
+- Named and custom command agent definitions MAY declare `model`.
 - The `build` context `agents` member MUST expose one typed token for each key declared in workflow top-level `agents`.
 - Agent node `run.agent` MUST use an agent token from the `build` context `agents` member.
 - When authors extract an `agents` object before passing it to `defineWorkflow(...)`, they SHOULD preserve literal keys, for example with `satisfies AgentMap`.
@@ -51,12 +52,14 @@
 - Runtime bindings and accessors MUST continue to use `input` and `output`; scopes MUST declare their `output` by returning a plain object, not by calling an output helper.
 - Executable nodes MUST use `run` as the execution boundary and top-level `outputSchema` as the downstream contract boundary.
 - Node ids MUST be bound through `step("id")`; node kind methods MUST receive only the kind-specific spec.
-- Agent nodes MUST use `step("id").agent({ outputSchema?, run: { agent: agents.<key>, prompt, policy?, session?, cwd?, env? }, timeout?, retry? })`.
+- Agent nodes MUST use `step("id").agent({ outputSchema?, run: { agent: agents.<key>, prompt, permissionMode?, session?, cwd?, env? }, timeout?, retry? })`.
+- Agent definitions MAY declare `permissionMode?: "approve-reads" | "approve-all" | "deny-all"` and `agentMode?: string`.
+- Agent definitions MUST NOT accept broad `options` fields.
 - Signal nodes MUST use `step("id").signal({ outputSchema, run: { prompt }, timeout?, onTimeout? })`.
 - Signal `onTimeout`, when present, MUST use `{ action: "fail", message? }`.
 - Task nodes MUST use `run.input` as the explicit expression-to-runtime-value boundary.
-- Inline Task nodes MUST use `step("id").task({ outputSchema, run: { input, exec, cwd?, env?, execution? }, timeout?, retry? })`.
-- Reusable Task nodes MUST use `step("id").task({ run: { task, input, cwd?, env?, execution? }, timeout?, retry? })` and MUST take their output schema from the reusable Task token.
+- Inline Task nodes MUST use `step("id").task({ outputSchema, run: { input, exec, cwd?, env?, execution? }, timeout? })`.
+- Reusable Task nodes MUST use `step("id").task({ run: { task, input, cwd?, env?, execution? }, timeout? })` and MUST take their output schema from the reusable Task token.
 - Agent and Signal node graph dependencies MUST be expressed by refs inside `run.prompt`, `run.cwd`, `run.env`, and `run.session`.
 - Agent and Task `cwd` MUST be a string workflow value.
 - Agent and Task `env` values MUST be string workflow values or `secret(...)` tokens.
@@ -82,7 +85,10 @@
 - A reusable Task MUST be authored via `task.define({ inputSchema, outputSchema, exec })`.
 - A reusable Task node MUST use the Task's declared `outputSchema` and MUST NOT repeat `outputSchema` at the call site.
 - A reusable Task definition's `inputSchema` MUST be the runtime input schema for its `exec` function; a reusable Task node call site's `run.input` MUST be the graph expression binding for that schema.
-- Task node lifecycle options MAY support top-level `timeout` and `retry`.
+- Task node lifecycle options MAY support top-level `timeout`.
+- Task node lifecycle options MUST NOT support workflow-level automatic `retry`.
+- Agent node `retry`, when present, MUST contain only `max?: number` and MUST
+  require `outputSchema`.
 - Task invocation options MAY support `run.cwd`, `run.env`, and `run.execution`.
 - Task code MUST receive a context containing only `input`, `$`, `artifact`, `env`, and `abortSignal`.
 - Task code MUST receive an Acpus-owned `$` wrapper backed by `zx/core`.

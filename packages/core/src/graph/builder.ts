@@ -19,7 +19,6 @@ import type {
   AgentDefinitionIR,
   DiagnosticIR,
   NodeIR,
-  RetryIR,
   ScopeIR,
   TaskBundleIR,
   WorkflowIR,
@@ -51,7 +50,6 @@ export type WorkflowConfig<InputSchema extends Schema<any> | undefined, Agents e
   agents?: Agents;
   defaults?: {
     timeout?: string;
-    retry?: RetryIR;
   };
 };
 
@@ -298,6 +296,20 @@ function normalizeAgentDefinition(name: string, value: unknown, diagnostics: Dia
     invalidAgentDefinition(diagnostics, path, `Agent '${name}' definition must set exactly one of use or command.`);
     return undefined;
   }
+  let invalid = false;
+  const reject = (fieldPath: string, message: string) => {
+    invalid = true;
+    invalidAgentDefinition(diagnostics, fieldPath, message);
+  };
+  if (value.policy !== undefined) reject(`${path}.policy`, `Agent '${name}' definition must use permissionMode, not policy.`);
+  if (value.options !== undefined) reject(`${path}.options`, `Agent '${name}' definition must not set options.`);
+  if (value.agentMode !== undefined && (typeof value.agentMode !== "string" || value.agentMode.length === 0)) {
+    reject(`${path}.agentMode`, `Agent '${name}' agentMode must be a non-empty string.`);
+  }
+  if (value.permissionMode !== undefined && value.permissionMode !== "approve-reads" && value.permissionMode !== "approve-all" && value.permissionMode !== "deny-all") {
+    reject(`${path}.permissionMode`, `Agent '${name}' permissionMode must be approve-reads, approve-all, or deny-all.`);
+  }
+  if (invalid) return undefined;
 
   if (hasUse) {
     if (typeof value.use !== "string" || value.use.length === 0) {
@@ -309,10 +321,6 @@ function normalizeAgentDefinition(name: string, value: unknown, diagnostics: Dia
 
   if (typeof value.command !== "string" || value.command.length === 0) {
     invalidAgentDefinition(diagnostics, `${path}.command`, `Agent '${name}' command must be a non-empty string.`);
-    return undefined;
-  }
-  if (value.model !== undefined) {
-    invalidAgentDefinition(diagnostics, `${path}.model`, `Command-backed agent '${name}' must not set model.`);
     return undefined;
   }
   return agentDefinitionToIR(value as AgentDefinitionSpec);

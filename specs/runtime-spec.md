@@ -12,6 +12,9 @@
 - The runtime store MUST use SQLite for run admission data, public run events, scheduler events, scheduler projection tables, public run and node projections, command rows, supervisor lease rows, and artifact registry rows.
 - Run admission MUST accept a prepared workflow containing frozen IR JSON, lock metadata, source graph digest, and task bundle metadata.
 - Run admission MUST accept input that has already been normalized against the workflow input schema.
+- Run admission MAY accept agent overrides keyed by declared top-level agent
+  name. Agent overrides MUST be persisted separately from frozen `WorkflowIR`
+  and MUST be applied when reading the effective frozen run for execution.
 - Run admission MUST persist the `WorkflowIR`, workflow input, lock metadata, workflow entry, IR digest, source graph digest, task bundle count, and run directory path.
 - Run admission MUST write a `run.admitted` event and the run projection in the same SQLite transaction.
 - Run admission MUST create public `pending` node projection rows for static node summaries and MUST advance executable work from the frozen admitted IR, not from live workflow source.
@@ -59,7 +62,10 @@
 - The runtime MUST pass task execution options to the task `$` command wrapper, including default command timeout.
 - The runtime MUST pass a per-attempt `abortSignal` into task code for cooperative cancellation.
 - Supported task execution values MUST be `commandRunner: "acpus-zx-core"` and `shell: "bash"`.
-- Task and agent node retry options MUST be represented as scheduler-visible retryable attempts for scheduler-backed runs.
+- Task nodes MUST NOT support workflow-level automatic retry.
+- Agent node `retry.max` MUST be runtime-owned schema-backed response repair
+  budget inside one scheduler-visible attempt, not scheduler-visible automatic
+  retry.
 - Task and agent timeout options MUST be persisted as scheduler attempt deadlines for scheduler-backed runs.
 - In-flight task and agent timeout enforcement MAY occur inside the executor attempt, while stale or recovered attempts MUST be derivable from scheduler deadlines.
 - Task artifact APIs MUST write run-local artifact files and register metadata in SQLite.
@@ -70,27 +76,116 @@
 
 ### Agents
 
-- The runtime MUST render agent prompts and validate agent outputs against node output schemas.
-- The runtime MUST execute command-backed agent definitions through `@acpus/agent-executor`.
-- Command-backed agents MUST receive rendered prompt and agent executor attempt metadata through the execution request.
-- The runtime MUST execute built-in mock provider requests deterministically from the rendered prompt.
-- The runtime MUST resolve provider-backed agent command mappings from `ACPUS_AGENT_PROVIDER_COMMANDS`.
-- Provider command mappings MUST receive prompt, provider id, optional model, and attempt metadata through the execution request environment.
-- Command-backed scheduler agent attempts MUST receive runtime-owned `ACPUS_RUNTIME_RUN_ID`, `ACPUS_RUNTIME_NODE_ID`, `ACPUS_RUNTIME_NODE_KEY`, and `ACPUS_RUNTIME_ATTEMPT` environment variables when the corresponding scheduler context exists.
-- Runtime-owned `ACPUS_RUNTIME_*` environment variables MUST be overwritten or deleted by the runtime wrapper before invoking a command-backed agent so stale host or node environment values cannot create mixed scheduler identity.
-- Scheduler-backed command agent attempts MUST run one agent-executor sub-attempt per scheduler-visible attempt.
-- Scheduler-backed command agent attempts MUST NOT spend node-level retry inside the agent executor; node-level retry MUST remain scheduler-visible.
+- The runtime MUST render agent prompts, cwd, env, permission mode, session
+  identity, model, and agent mode from frozen IR and durable execution scope.
+- The runtime MUST execute real agent definitions through the acpx-backed
+  `executeAgentTurn(...)` API from `@acpus/agent-executor`.
+- Named agent definitions MUST map to acpx positional agent tokens.
+- Command agent definitions MUST map to acpx `--agent <command>`, not a raw
+  shell worker protocol.
+- Real runtime agent execution MUST NOT consult `ACPUS_AGENT_PROVIDER_COMMANDS`
+  or provider-command env mappings.
+- Scheduler-backed agent attempts MUST receive runtime-owned
+  `ACPUS_RUNTIME_RUN_ID`, `ACPUS_RUNTIME_NODE_ID`, `ACPUS_RUNTIME_NODE_KEY`, and
+  `ACPUS_RUNTIME_ATTEMPT` environment variables when the corresponding
+  scheduler context exists.
+- Runtime-owned `ACPUS_RUNTIME_*` environment variables MUST be overwritten or
+  deleted before invoking acpx so stale host or node environment values cannot
+  create mixed scheduler identity.
+- Absent effective `permissionMode` MUST default to `approve-all`.
+- Agent overrides MUST support only `use`, `command`, `model`,
+  `permissionMode`, `agentMode`, `cwd`, and `env`. Overrides MUST reject unknown
+  agent names, simultaneous `use` and `command`, fields outside this allowlist,
+  legacy `policy`, broad `options`, and raw IR `kind`.
+- Agent overrides MUST lower `cwd` and `env` string values to literal
+  expressions before execution.
+- When an agent override changes identity through `use` or `command`,
+  identity-tied fields `model` and `agentMode` MUST be cleared unless the same
+  override supplies replacements. `permissionMode` MUST remain inherited across
+  identity changes.
+- Explicit agent session keys MUST render to non-empty strings and determine the
+  acpx session identity for the run. When no explicit key is declared, runtime
+  MUST derive a deterministic session identity from run id and dynamic node key.
+- For schema-backed agent nodes, runtime MUST append the schema prompt section
+  to the initial turn and to response repair turns.
+- The schema prompt section MUST ask for exactly one JSON value that conforms to
+  the schema, with no Markdown or prose. It MUST mention extra-key acceptance
+  only for object schemas.
+- For schema-backed agent nodes, runtime MUST recover JSON from whole-response
+  JSON, prose/Markdown-wrapped balanced JSON candidates, and conservative JSON
+  repair before classifying output as non-conforming.
+- Schema-backed agent output MUST accept extra object keys for conformance but
+  MUST project workflow-visible output to the declared schema shape before
+  storing node output or exposing expression scope. Dynamic keys remain
+  workflow-visible only where the schema itself admits them, such as record,
+  unknown, or explicit additional-properties schemas.
+- Successful acpx turns with empty response text on schema-backed nodes MUST be
+  classified as `empty_response` and repaired with the same response repair
+  budget. Empty response text MUST NOT enter JSON parsing.
+- Backend failures from `@acpus/agent-executor` MUST fail directly and MUST NOT
+  enter agent response repair.
+- Schema-backed agent nodes MUST default to one initial turn plus two response
+  repair turns. Explicit `retry.max` overrides the number of repair turns, and
+  `retry.max = 0` disables response repair.
+- Response repair turns MUST reuse the same acpx session, use the fixed
+  continuation prompt plus the schema section, and MUST NOT reapply agent mode.
+- Agent response repair failures MUST remain inside one scheduler-visible leaf
+  attempt. The scheduler MUST NOT create another attempt solely because
+  `retry.max` was declared.
+- Manual control-plane retry of a failed agent node MUST reuse the same acpx
+  session identity for the dynamic node key and MUST send the fixed continuation
+  prompt without appending the schema section for the retried attempt's initial
+  turn.
+- Pause/resume of a requeued agent node MUST reuse the same acpx session
+  identity for the dynamic node key and MUST send the fixed continuation prompt
+  without appending the schema section for the restarted attempt's initial turn.
+- Each scheduler-backed acpx turn MUST write independent prompt, response,
+  stderr when present, and telemetry artifacts under the scheduler attempt's
+  run-local artifact path and register those files in SQLite.
+- Agent telemetry artifacts MUST persist the full normalized telemetry returned
+  by `@acpus/agent-executor`, augmented with prompt and response artifact
+  references when those IO previews are present.
+- Runtime MUST NOT parse raw ACP JSON to derive telemetry. ACP wire-shape
+  interpretation belongs to `@acpus/agent-executor`.
+- When host environment variable `ACPUS_AGENT_RAW_ACP_DEBUG` is exactly `1`,
+  scheduler-backed agent turns MUST request raw debug capture from the executor
+  and write returned raw acpx prompt stdout as an opaque `raw-acp` artifact with
+  a turn metadata reference. Other values MUST leave raw ACP debug artifact
+  capture disabled. Raw ACP debug artifacts MUST NOT affect scheduling,
+  response repair, conformance, or replay decisions.
+- Each scheduler-backed schema-backed acpx turn that recovers JSON from the
+  agent response MUST write the raw recovered value as a diagnostic artifact
+  and expose that artifact reference in turn metadata. Raw recovered output
+  MUST NOT replace the schema-projected workflow-visible node output.
+- Each scheduler-backed agent attempt MUST write structured execution metadata
+  that records the turn list, artifact references, status, encoded acpx session
+  name, and rendered explicit session key when one was declared. Scheduler
+  reducers MUST NOT depend on those artifact contents or metadata rows for
+  attempt state transitions.
+- Turn metadata MUST include a compact telemetry summary containing event
+  count, stop reason when present, context window when present, token usage
+  when present, tool call count, cwd when present, and acpx record id when
+  present. Turn metadata MUST NOT need to embed full prompt/response IO or full
+  tool parameter previews because those live in the telemetry artifact.
 
 ### Controls, Fork, Signal, And Replay
 
 - Pause MUST record a durable pause gate and MUST prevent new scheduler-visible attempts from starting while paused.
 - Pause MUST best-effort cancel started scheduler-visible attempts and requeue eligible dynamic work for a later resume.
+- Pausing an active scheduler-backed agent turn MUST abort the executor signal
+  and MUST preserve available prompt, response, stderr, telemetry artifacts,
+  and cancelled turn metadata.
 - Resume MUST clear the durable pause gate and re-drive eligible scheduler work.
 - Retry MUST target either a failed scheduler run or a failed dynamic node instance.
 - Run-level retry MUST reset scheduler projection to a clean pending materialization point while preserving historical event facts.
 - Node retry MUST target a dynamic `nodeKey` directly or a static node alias only when that alias resolves to exactly one failed dynamic instance.
+- Node retry from a failed run MUST reopen only the failed node's scheduler
+  execution chain instead of resetting the whole run projection.
 - Fork MUST create a new run from frozen source run data without reading live workflow source.
 - Fork MAY freeze a replacement prepared workflow and/or input override for the new run.
+- Fork MUST inherit source run agent overrides that still reference declared
+  agents in the forked workflow. Fork-time agent overrides MUST merge over the
+  inherited overrides using the same identity replacement rules as admission.
 - Fork MUST inherit compatible completed accepted outputs and artifacts reachable from inherited outputs.
 - Fork MUST NOT inherit active scheduler frames, attempts, signal waits, or artifacts from failed, cancelled, or superseded attempts.
 - Fork MUST verify copied artifacts and frozen run files before writing fork rows.
@@ -105,6 +200,8 @@
 
 - `listRuns`, `getRun`, replay APIs, and visualization overlay APIs MUST read SQLite projections rather than live workflow source.
 - `getRun` MUST expose dynamic scheduler details when scheduler projection rows exist, including version, frames, dynamic node instances, attempts, group members, and signal waits.
+- `getRun` MUST expose runtime execution metadata rows, including agent attempt
+  turn metadata, when such rows exist for a run.
 - The runtime MUST provide a visualization overlay helper that combines static `WorkflowIR` structure with dynamic scheduler projection state without adding layout-specific state.
 - Read-only inspection MUST NOT create runtime state when no runtime store exists.
 - The runtime store MUST support SQLite-backed supervisor leases with generation fencing, heartbeat updates, stale takeover, and release by current generation only.
@@ -119,11 +216,27 @@
 ## Verification
 
 - Tests MUST cover prepared workflow admission, persisted frozen input, IR digest, source graph digest, event count, node count, task bundle count, and scheduler-backed public projection bridging.
+- Tests MUST cover submit-time agent overrides, fork-time override inheritance
+  and replacement, and invalid override rejection.
 - Tests MUST cover workflow input and signal payload normalization.
 - Tests MUST cover read-only list/show/status APIs without live source reads or state creation for missing stores.
 - Tests MUST cover scheduler execution of supported assert, if, switch, parallel, fanout, loop, dynamic identity, durable branch decisions, group completion, cancellation, retry, and timeout transitions.
 - Tests MUST cover expression evaluation, template rendering, operator errors, and boolean operand failures.
-- Tests MUST cover task execution, task bundle loading, task invocation options, scheduler-visible retry, timeout deadlines, task abort signal propagation, artifact writes, attempt-local artifact paths, and timeout artifact rejection.
-- Tests MUST cover command-backed agent integration, built-in mock provider integration, missing provider mapping, durable agent output validation, scheduler runtime identity environment, one agent-executor sub-attempt per scheduler-visible attempt, and separation between scheduler-visible attempts and agent executor sub-attempt metadata.
+- Tests MUST cover task execution, task bundle loading, task invocation options, absence of workflow-level automatic task retry, timeout deadlines, task abort signal propagation, artifact writes, attempt-local artifact paths, and timeout artifact rejection.
+- Tests MUST cover acpx-backed agent turn integration, named and command agent
+  mapping, absence of provider-command env mapping consultation, durable agent
+  output conformance, empty-response repair, scheduler runtime identity
+  environment, explicit session identity, schema-backed response repair inside
+  one scheduler-visible attempt, manual control-plane retry continuation,
+  pause/resume continuation, and separation between scheduler-visible attempts
+  and agent response repair turns.
+- Tests MUST cover scheduler-backed agent turn prompt, response, stderr, and
+  telemetry artifacts, including normalized context, token, tool, and IO
+  telemetry, plus `getRun` execution metadata that exposes turn history,
+  session context, and compact telemetry summaries.
+- Tests MUST cover the `ACPUS_AGENT_RAW_ACP_DEBUG=1` diagnostic switch and the
+  default absence of raw ACP debug artifacts.
+- Tests MUST cover raw recovered schema-backed agent output artifacts and prove
+  they remain diagnostic rather than workflow-visible output.
 - Tests MUST cover pause, resume, run retry, dynamic node retry, signal targeting and idempotency, fork, replay, durable command rows, and fork artifact reachability.
 - Tests MUST cover supervisor lease acquisition, active lease rejection, stale takeover, heartbeat fencing, release fencing, durable command consumption, and shutdown.

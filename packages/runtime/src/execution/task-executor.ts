@@ -30,53 +30,47 @@ export async function executeTaskNode(node: TaskNodeIR, scope: EvaluationScope, 
   const nodeKey = options.nodeKey ?? node.id;
   const cwd = node.run.cwd ? stringValue(evaluateExpr(node.run.cwd, scope), `Task node '${node.id}' cwd`) : options.cwd;
   const env = evaluateEnv(node.run.env, scope);
-  const maxAttempts = options.attemptNo === undefined ? Math.max(1, (node.retry?.max ?? 0) + 1) : 1;
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const visibleAttempt = options.attemptNo ?? attempt;
-    const attemptDir = `attempt-${visibleAttempt}`;
-    const outputDir = join(absoluteRunDir, "outputs", nodeKey, attemptDir);
-    const workDir = join(absoluteRunDir, "work", nodeKey, attemptDir);
-    await mkdir(outputDir, { recursive: true });
-    await mkdir(workDir, { recursive: true });
-    const controller = new AbortController();
-    const abortFromScheduler = () => controller.abort();
-    options.signal?.addEventListener("abort", abortFromScheduler, { once: true });
-    if (options.signal?.aborted) controller.abort();
-    let timeout: NodeJS.Timeout | undefined;
-    try {
-      const task = fn({
-        input,
-        $: createTaskDollar({ cwd, env }, node, controller.signal),
-        artifact: createArtifactApi({
-          runId: options.runId,
-          nodeKey,
-          runDir: absoluteRunDir,
-          store: options.store,
-          attempt: visibleAttempt,
-          signal: controller.signal,
-        }),
-        env,
-        abortSignal: controller.signal,
-      } satisfies TaskContext<typeof input>);
-      if (node.timeout === undefined) return await task;
-      const timeoutMs = parseDurationMs(node.timeout);
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        timeout = setTimeout(() => {
-          controller.abort();
-          reject(new Error(`Task node '${node.id}' timed out after ${node.timeout}.`));
-        }, timeoutMs);
-      });
-      return await Promise.race([task, timeoutPromise]);
-    } catch (error) {
-      lastError = controller.signal.aborted && !options.signal?.aborted ? new Error(`Task node '${node.id}' timed out after ${node.timeout}.`) : error;
-      if (attempt >= maxAttempts) throw lastError;
-    } finally {
-      if (timeout) clearTimeout(timeout);
-      options.signal?.removeEventListener("abort", abortFromScheduler);
-    }
+  const visibleAttempt = options.attemptNo ?? 1;
+  const attemptDir = `attempt-${visibleAttempt}`;
+  const outputDir = join(absoluteRunDir, "outputs", nodeKey, attemptDir);
+  const workDir = join(absoluteRunDir, "work", nodeKey, attemptDir);
+  await mkdir(outputDir, { recursive: true });
+  await mkdir(workDir, { recursive: true });
+  const controller = new AbortController();
+  const abortFromScheduler = () => controller.abort();
+  options.signal?.addEventListener("abort", abortFromScheduler, { once: true });
+  if (options.signal?.aborted) controller.abort();
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    const task = fn({
+      input,
+      $: createTaskDollar({ cwd, env }, node, controller.signal),
+      artifact: createArtifactApi({
+        runId: options.runId,
+        nodeKey,
+        runDir: absoluteRunDir,
+        store: options.store,
+        attempt: visibleAttempt,
+        signal: controller.signal,
+      }),
+      env,
+      abortSignal: controller.signal,
+    } satisfies TaskContext<typeof input>);
+    if (node.timeout === undefined) return await task;
+    const timeoutMs = parseDurationMs(node.timeout);
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => {
+        controller.abort();
+        reject(new Error(`Task node '${node.id}' timed out after ${node.timeout}.`));
+      }, timeoutMs);
+    });
+    return await Promise.race([task, timeoutPromise]);
+  } catch (error) {
+    throw controller.signal.aborted && !options.signal?.aborted ? new Error(`Task node '${node.id}' timed out after ${node.timeout}.`) : error;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    options.signal?.removeEventListener("abort", abortFromScheduler);
   }
-  throw lastError;
 }
 
 function evaluateEnv(env: TaskNodeIR["run"]["env"], scope: EvaluationScope): Record<string, string> {

@@ -1,7 +1,6 @@
 import type { NodeIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
 import type {
   RunDynamicAttempt,
-  RunDynamicDetails,
   RunDynamicFrame,
   RunDynamicGroupMember,
   RunDynamicNodeInstance,
@@ -40,9 +39,18 @@ export type WorkflowVisualizationGroup = {
   members: RunDynamicGroupMember[];
 };
 
+type WorkflowVisualizationDynamicInput = {
+  version: number;
+  frames: RunDynamicFrame[];
+  nodeInstances: RunDynamicNodeInstance[];
+  attempts: RunDynamicAttempt[];
+  groupMembers: RunDynamicGroupMember[];
+  signalWaits: RunDynamicSignalWait[];
+};
+
 export function createWorkflowVisualizationOverlay(
   ir: WorkflowIR,
-  dynamic?: RunDynamicDetails,
+  dynamic?: WorkflowVisualizationDynamicInput,
   options: { runId?: string; status?: string } = {},
 ): WorkflowVisualizationOverlay {
   const staticNodes = flattenScope(ir.root);
@@ -91,7 +99,7 @@ function childScopes(node: NodeIR): Array<{ label: string; scope: ScopeIR }> {
   return [];
 }
 
-function nodeOverlay(node: StaticNode, dynamic: RunDynamicDetails | undefined): WorkflowVisualizationNode {
+function nodeOverlay(node: StaticNode, dynamic: WorkflowVisualizationDynamicInput | undefined): WorkflowVisualizationNode {
   const instances = dynamic?.nodeInstances.filter(instance => instance.nodeId === node.node.id) ?? [];
   const frames = dynamic?.frames.filter(frame => frame.nodeId === node.node.id) ?? [];
   const attempts = dynamic?.attempts.filter(attempt => attempt.nodeId === node.node.id) ?? [];
@@ -112,7 +120,7 @@ function nodeOverlay(node: StaticNode, dynamic: RunDynamicDetails | undefined): 
   };
 }
 
-function groupOverlays(dynamic: RunDynamicDetails | undefined, staticNodeById: ReadonlyMap<string, NodeIR>): WorkflowVisualizationGroup[] {
+function groupOverlays(dynamic: WorkflowVisualizationDynamicInput | undefined, staticNodeById: ReadonlyMap<string, NodeIR>): WorkflowVisualizationGroup[] {
   if (!dynamic) return [];
   return dynamic.frames
     .filter(frame => {

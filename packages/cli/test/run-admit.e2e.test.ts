@@ -37,4 +37,21 @@ describe.concurrent("acpus run admission smoke", () => {
       await expect(access(join(workspace, ".acpus", "state", "runtime.db"))).rejects.toThrow();
     });
   });
+
+  it("rejects invalid agent override JSON before creating runtime state", async () => {
+    await withTestWorkspace("run-invalid-agents-json", async workspace => {
+      const workflow = await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts");
+
+      for (const agents of ["{", "[]"]) {
+        const result = await runSourceCli(workspace, ["run", workflow, "--agents", agents, "--json"]);
+
+        expect(result.exitCode).toBe(2);
+        expect(JSON.parse(result.stdout)).toMatchObject({
+          ok: false,
+          phase: "usage",
+        });
+      }
+      await expect(access(join(workspace, ".acpus", "state", "runtime.db"))).rejects.toThrow();
+    });
+  });
 });

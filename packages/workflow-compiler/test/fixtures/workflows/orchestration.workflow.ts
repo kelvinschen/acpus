@@ -56,7 +56,7 @@ export default defineWorkflow({
   }),
   agents: {
     worker: { use: "codex" },
-    reviewer: { use: "codex", policy: "read" },
+    reviewer: { use: "codex", permissionMode: "approve-reads" },
   },
 }).build(({ input, agents, meta, step }) => {
   const lanes = step("lanes").fanout({

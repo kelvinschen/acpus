@@ -64,11 +64,13 @@ test("agent run specs require agent tokens", () => {
 
 test("agent tokens are typed from top-level agent keys", () => {
   const extractedAgents = {
-    reviewer: { use: "codex", policy: "read" },
+    reviewer: { use: "codex", permissionMode: "approve-reads" },
   } satisfies AgentMap;
 
+  assertType<AgentDefinitionSpec>({ use: "codex", permissionMode: "approve-reads", agentMode: "agent" });
+  assertType<AgentDefinitionSpec>({ command: "acpx worker", model: "gpt-5.4", permissionMode: "approve-all", agentMode: "bypassPermissions" });
+  // @ts-expect-error agent definitions use permissionMode, not policy.
   assertType<AgentDefinitionSpec>({ use: "codex", policy: "read" });
-  assertType<AgentDefinitionSpec>({ command: "acpx worker", policy: "full" });
   // @ts-expect-error agent definitions must use either use or command, not both.
   assertType<AgentDefinitionSpec>({
     use: "codex",
@@ -76,9 +78,9 @@ test("agent tokens are typed from top-level agent keys", () => {
   });
   // @ts-expect-error model requires an agent use definition.
   assertType<AgentDefinitionSpec>({ model: "gpt-5.4" });
-  const commandWithModel = { command: "acpx worker", model: "gpt-5.4" };
-  // @ts-expect-error command-backed agents cannot declare model, including non-fresh values.
-  assertType<AgentDefinitionSpec>(commandWithModel);
+  const commandWithOptions = { command: "acpx worker", options: { mode: "batch" } };
+  // @ts-expect-error agent definitions do not accept broad options, including non-fresh values.
+  assertType<AgentDefinitionSpec>(commandWithOptions);
   const irShapedAgent = { kind: "agent_definition", use: "codex" };
   // @ts-expect-error agent definitions must be plain authoring specs, not IR-shaped values.
   assertType<AgentDefinitionSpec>(irShapedAgent);
@@ -104,9 +106,9 @@ test("agent tokens are typed from top-level agent keys", () => {
   defineWorkflow({
     name: "typed-agent-keys",
     agents: {
-      reviewer: { use: "codex", policy: "read" },
-      worker: { command: "acpx worker", policy: "full" },
-      summarizer: { use: "codex", policy: "read" },
+      reviewer: { use: "codex", permissionMode: "approve-reads" },
+      worker: { command: "acpx worker", permissionMode: "approve-all", model: "gpt-5.4" },
+      summarizer: { use: "codex", permissionMode: "approve-reads" },
     },
   }).build(({ agents, step }) => {
     assertType<StepDeclaration>(step("typed_agent_key_declaration"));
@@ -119,6 +121,14 @@ test("agent tokens are typed from top-level agent keys", () => {
         agent: agents.reviewer,
         prompt: "ok",
       },
+    });
+    // @ts-expect-error agent retry requires an outputSchema.
+    step("typed_agent_retry_without_schema").agent({
+      run: {
+        agent: agents.reviewer,
+        prompt: "bad",
+      },
+      retry: { max: 1 },
     });
 
     step("typed_agent_command_key_ok").agent({
@@ -225,6 +235,18 @@ test("agent tokens are typed from top-level agent keys", () => {
   });
 });
 
+test("task nodes do not accept workflow-level retry", () => {
+  assertType<TaskStepSpec<{}>>({
+    outputSchema: z.object({ ok: z.boolean() }),
+    run: {
+      input: {},
+      exec: async () => ({ ok: true }),
+    },
+    // @ts-expect-error task nodes do not support workflow-level automatic retry.
+    retry: { max: 1 },
+  });
+});
+
 test("agent nodes require declared agents", () => {
   defineWorkflow({ name: "typed-agent-requires-registry" }).build(({ agents, step }) => {
     // @ts-expect-error workflows without top-level agents have no agent tokens.
@@ -312,7 +334,7 @@ test("task run input and reusable task output are strongly typed", () => {
       version: z.string(),
     }),
     agents: {
-      reviewer: { use: "codex", policy: "read" },
+      reviewer: { use: "codex", permissionMode: "approve-reads" },
     },
   }).build(({ input, agents, step }) => {
     const nestedScope = ({ step }: ScopeContext) => {
@@ -478,7 +500,7 @@ test("agent run options accept only string cwd and string or secret env values",
       repoPath: z.path(),
     }),
     agents: {
-      reviewer: { use: "codex", policy: "read" },
+      reviewer: { use: "codex", permissionMode: "approve-reads" },
     },
   }).build(({ input, agents, step }) => {
     const review = step("typed_agent_options").agent({

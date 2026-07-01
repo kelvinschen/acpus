@@ -1,4 +1,5 @@
 import type { NodeIR, WorkflowIR } from "@acpus/core/ir";
+import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
 import type { EvaluationScope } from "../evaluation/evaluator.js";
 import type { FrozenRun, RuntimeStore } from "../store/store.js";
 import { advanceRun, type AdvanceRunSummary } from "./advance.js";
@@ -15,6 +16,8 @@ export type AdvanceFrozenRunInput = {
   leaseMs?: number;
   maxLeafConcurrency?: number;
   now?: () => Date;
+  executeAgentTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult>;
+  agentRepairDelayMs?: number;
 };
 
 export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<AdvanceRunSummary> {
@@ -30,10 +33,7 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
     ...(input.maxLeafConcurrency === undefined ? {} : { maxLeafConcurrency: input.maxLeafConcurrency }),
     ...(input.now === undefined ? {} : { now: input.now }),
     localConcurrencyLimitFor: localConcurrencyLimitForRoot(frozen.ir),
-    maxAttemptsFor: instance => {
-      const node = nodes.get(instance.nodeId);
-      return node && isSchedulerRetryLeaf(node) && node.retry ? (node.retry.max ?? 0) + 1 : undefined;
-    },
+    maxAttemptsFor: () => undefined,
     deadlineAtFor: (_instance, _projection, now) => {
       const node = nodes.get(_instance.nodeId);
       if (!node || !isSchedulerRetryLeaf(node) || node.timeout === undefined) return undefined;
@@ -46,6 +46,8 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
       ir: frozen.ir,
       scope,
       store: input.store,
+      ...(input.executeAgentTurn ? { executeAgentTurn: input.executeAgentTurn } : {}),
+      ...(input.agentRepairDelayMs === undefined ? {} : { agentRepairDelayMs: input.agentRepairDelayMs }),
     }),
   });
 }

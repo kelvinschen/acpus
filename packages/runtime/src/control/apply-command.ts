@@ -4,7 +4,7 @@ import { findSignalNode } from "../execution/ir.js";
 import { normalizeValue } from "../evaluation/schema.js";
 import { applySchedulerControlCommand } from "../scheduler/control.js";
 import { advanceRuntimeRun, hasSchedulerState, type RuntimeAdvanceResult } from "../runs/advance-runtime.js";
-import type { ForkPreparedWorkflow, PendingControlCommand, RuntimeStore } from "../store/store.js";
+import type { AgentOverrideMap, ForkPreparedWorkflow, PendingControlCommand, RuntimeStore } from "../store/store.js";
 
 export type AppliedControlCommand = {
   command: PendingControlCommand;
@@ -82,6 +82,7 @@ async function applyControlCommandUnchecked(cwd: string, store: RuntimeStore, co
       commandId: command.id,
       ...(payload.prepared ? { prepared: payload.prepared } : {}),
       ...(payload.input !== undefined ? { input: payload.input } : {}),
+      ...(payload.agentOverrides !== undefined ? { agentOverrides: payload.agentOverrides } : {}),
     });
     return { command, sourceRunId: runId, run: requireRun(store, fork.id), forkRunId: fork.id };
   }
@@ -130,7 +131,7 @@ function signalCommandPayload(command: PendingControlCommand): { node: string; p
   return { node, payload: payload.payload as JsonValue };
 }
 
-function forkCommandPayload(command: PendingControlCommand): { prepared?: ForkPreparedWorkflow; input?: JsonValue } {
+function forkCommandPayload(command: PendingControlCommand): { prepared?: ForkPreparedWorkflow; input?: JsonValue; agentOverrides?: AgentOverrideMap } {
   const payload = command.payload;
   if (!isRecord(payload)) return {};
   const prepared = parseForkPreparedWorkflow(payload.prepared);
@@ -138,6 +139,7 @@ function forkCommandPayload(command: PendingControlCommand): { prepared?: ForkPr
   return {
     ...(prepared ? { prepared } : {}),
     ...(payload.input !== undefined ? { input: payload.input } : {}),
+    ...(payload.agentOverrides !== undefined ? { agentOverrides: payload.agentOverrides as AgentOverrideMap } : {}),
   };
 }
 

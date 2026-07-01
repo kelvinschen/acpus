@@ -60,6 +60,7 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
       stream.write(`Nodes: ${result.run.nodeCount}\n`);
       stream.write(`Task bundles: ${result.run.taskBundleCount}\n`);
       if (result.run.output !== undefined) stream.write(`Output: ${JSON.stringify(result.run.output)}\n`);
+      writeAgentExecutionMetadata(stream, result.run);
     }
   }
   if (result.runs) {
@@ -94,6 +95,182 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
     }
   }
   return exitCode;
+}
+
+function writeAgentExecutionMetadata(stream: Writable, run: RunDetails): void {
+  const attempts = run.dynamic?.executionMetadata.filter(entry => entry.kind === "agent_attempt") ?? [];
+  if (attempts.length === 0) return;
+  stream.write("Agent attempts:\n");
+  for (const attempt of attempts) {
+    const metadata = agentAttemptMetadata(attempt.metadata);
+    stream.write(`  ${metadata.nodeKey ?? metadata.nodeId ?? "(agent)"} attempt ${metadata.attemptNo ?? "?"}: ${metadata.status ?? "unknown"}\n`);
+    if (metadata.message) stream.write(`    message: ${metadata.message}\n`);
+    if (metadata.sessionName) stream.write(`    session: ${metadata.sessionName}\n`);
+    if (metadata.sessionKey) stream.write(`    session key: ${metadata.sessionKey}\n`);
+    for (const turn of metadata.turns ?? []) {
+      stream.write(`    turn ${turn.turn ?? "?"}: ${turn.status ?? "unknown"}${turn.failureKind ? ` ${turn.failureKind}` : ""}\n`);
+      if (turn.message) stream.write(`      message: ${turn.message}\n`);
+      for (const line of agentTurnTelemetryLines(turn.telemetry)) stream.write(`      ${line}\n`);
+      for (const [label, ref] of agentTurnArtifactRefs(turn)) {
+        stream.write(`      ${label}: ${ref.relativePath}\n`);
+      }
+    }
+  }
+}
+
+type AgentAttemptOutputMetadata = {
+  nodeId?: string;
+  nodeKey?: string;
+  attemptNo?: number;
+  status?: string;
+  message?: string;
+  sessionName?: string;
+  sessionKey?: string;
+  turns?: AgentTurnOutputMetadata[];
+};
+
+type AgentTurnOutputMetadata = {
+  turn?: number;
+  status?: string;
+  failureKind?: string;
+  message?: string;
+  telemetry?: AgentTurnTelemetryOutputMetadata;
+  promptArtifact?: AgentArtifactOutputRef;
+  responseArtifact?: AgentArtifactOutputRef;
+  stderrArtifact?: AgentArtifactOutputRef;
+  telemetryArtifact?: AgentArtifactOutputRef;
+  rawRecoveredOutputArtifact?: AgentArtifactOutputRef;
+  rawAcpDebugArtifact?: AgentArtifactOutputRef;
+};
+
+type AgentTurnTelemetryOutputMetadata = {
+  context?: { used?: number; size?: number };
+  tokenUsage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedReadTokens?: number;
+    cachedWriteTokens?: number;
+    thoughtTokens?: number;
+    totalTokens?: number;
+  };
+  tools?: { totalToolCallCount?: number };
+};
+
+type AgentArtifactOutputRef = {
+  relativePath: string;
+};
+
+function agentAttemptMetadata(value: unknown): AgentAttemptOutputMetadata {
+  if (!isObject(value)) return {};
+  return withoutUndefined({
+    nodeId: stringField(value, "nodeId"),
+    nodeKey: stringField(value, "nodeKey"),
+    attemptNo: numberField(value, "attemptNo"),
+    status: stringField(value, "status"),
+    message: stringField(value, "message"),
+    sessionName: stringField(value, "sessionName"),
+    sessionKey: stringField(value, "sessionKey"),
+    turns: Array.isArray(value.turns) ? value.turns.map(agentTurnMetadata) : undefined,
+  }) as AgentAttemptOutputMetadata;
+}
+
+function agentTurnMetadata(value: unknown): AgentTurnOutputMetadata {
+  if (!isObject(value)) return {};
+  return withoutUndefined({
+    turn: numberField(value, "turn"),
+    status: stringField(value, "status"),
+    failureKind: stringField(value, "failureKind"),
+    message: stringField(value, "message"),
+    telemetry: agentTelemetry(value.telemetry),
+    promptArtifact: artifactRef(value.promptArtifact),
+    responseArtifact: artifactRef(value.responseArtifact),
+    stderrArtifact: artifactRef(value.stderrArtifact),
+    telemetryArtifact: artifactRef(value.telemetryArtifact),
+    rawRecoveredOutputArtifact: artifactRef(value.rawRecoveredOutputArtifact),
+    rawAcpDebugArtifact: artifactRef(value.rawAcpDebugArtifact),
+  }) as AgentTurnOutputMetadata;
+}
+
+function agentTelemetry(value: unknown): AgentTurnTelemetryOutputMetadata | undefined {
+  if (!isObject(value)) return undefined;
+  const context = isObject(value.context) ? withoutUndefined({
+    used: numberField(value.context, "used"),
+    size: numberField(value.context, "size"),
+  }) : undefined;
+  const tokenUsage = isObject(value.tokenUsage) ? withoutUndefined({
+    inputTokens: numberField(value.tokenUsage, "inputTokens"),
+    outputTokens: numberField(value.tokenUsage, "outputTokens"),
+    cachedReadTokens: numberField(value.tokenUsage, "cachedReadTokens"),
+    cachedWriteTokens: numberField(value.tokenUsage, "cachedWriteTokens"),
+    thoughtTokens: numberField(value.tokenUsage, "thoughtTokens"),
+    totalTokens: numberField(value.tokenUsage, "totalTokens"),
+  }) : undefined;
+  const tools = isObject(value.tools) ? withoutUndefined({
+    totalToolCallCount: numberField(value.tools, "totalToolCallCount"),
+  }) : undefined;
+  const metadata = withoutUndefined({
+    context: context && Object.keys(context).length > 0 ? context : undefined,
+    tokenUsage: tokenUsage && Object.keys(tokenUsage).length > 0 ? tokenUsage : undefined,
+    tools: tools && Object.keys(tools).length > 0 ? tools : undefined,
+  });
+  return Object.keys(metadata).length > 0 ? metadata as AgentTurnTelemetryOutputMetadata : undefined;
+}
+
+function agentTurnTelemetryLines(telemetry: AgentTurnTelemetryOutputMetadata | undefined): string[] {
+  if (!telemetry) return [];
+  return [
+    telemetry.context?.used !== undefined || telemetry.context?.size !== undefined
+      ? `context: ${telemetry.context.used ?? "?"}/${telemetry.context.size ?? "?"}`
+      : undefined,
+    tokenUsageLine(telemetry.tokenUsage),
+    telemetry.tools?.totalToolCallCount !== undefined ? `tools: ${telemetry.tools.totalToolCallCount}` : undefined,
+  ].filter((line): line is string => line !== undefined);
+}
+
+function tokenUsageLine(usage: AgentTurnTelemetryOutputMetadata["tokenUsage"]): string | undefined {
+  if (!usage) return undefined;
+  const parts = [
+    ["input", usage.inputTokens],
+    ["output", usage.outputTokens],
+    ["cache_read", usage.cachedReadTokens],
+    ["cache_write", usage.cachedWriteTokens],
+    ["thought", usage.thoughtTokens],
+    ["total", usage.totalTokens],
+  ].filter((entry): entry is [string, number] => entry[1] !== undefined)
+    .map(([label, value]) => `${label}=${value}`);
+  return parts.length ? `tokens: ${parts.join(" ")}` : undefined;
+}
+
+function agentTurnArtifactRefs(turn: AgentTurnOutputMetadata): Array<[string, AgentArtifactOutputRef]> {
+  return [
+    ["prompt", turn.promptArtifact],
+    ["response", turn.responseArtifact],
+    ["stderr", turn.stderrArtifact],
+    ["telemetry", turn.telemetryArtifact],
+    ["raw output", turn.rawRecoveredOutputArtifact],
+    ["raw acp", turn.rawAcpDebugArtifact],
+  ].filter((entry): entry is [string, AgentArtifactOutputRef] => entry[1] !== undefined);
+}
+
+function artifactRef(value: unknown): AgentArtifactOutputRef | undefined {
+  if (!isObject(value) || typeof value.relativePath !== "string") return undefined;
+  return { relativePath: value.relativePath };
+}
+
+function stringField(value: Record<string, unknown>, key: string): string | undefined {
+  return typeof value[key] === "string" ? value[key] : undefined;
+}
+
+function numberField(value: Record<string, unknown>, key: string): number | undefined {
+  return typeof value[key] === "number" ? value[key] : undefined;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function withoutUndefined<T extends Record<string, unknown>>(value: T): Partial<T> {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)) as Partial<T>;
 }
 
 export function summarizeWorkflow(ir: WorkflowIR): WorkflowSummary {

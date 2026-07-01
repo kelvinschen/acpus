@@ -28,8 +28,6 @@ export type DurationIR = string;
 
 export type RetryIR = {
   max?: number;
-  on?: string[];
-  backoff?: "none" | "linear" | "exponential";
 };
 
 export type SecretRefIR = {
@@ -42,18 +40,19 @@ export type AgentDefinitionIR =
       kind: "agent_definition";
       use: string;
       model?: string;
-      policy?: "read" | "full";
+      permissionMode?: "approve-reads" | "approve-all" | "deny-all";
+      agentMode?: string;
       cwd?: ExprIR;
       env?: Record<string, ExprIR | SecretRefIR>;
-      options?: JsonObject;
     }
   | {
       kind: "agent_command";
       command: string;
-      policy?: "read" | "full";
+      model?: string;
+      permissionMode?: "approve-reads" | "approve-all" | "deny-all";
+      agentMode?: string;
       cwd?: ExprIR;
       env?: Record<string, ExprIR | SecretRefIR>;
-      options?: JsonObject;
     };
 
 export type NodeIR =
@@ -84,7 +83,7 @@ export type AgentRunIR = {
   kind: "agent_run";
   agent: string;
   prompt: TemplateIR;
-  policy?: "read" | "full";
+  permissionMode?: "approve-reads" | "approve-all" | "deny-all";
   session?: { key?: TemplateIR };
   cwd?: ExprIR;
   env?: Record<string, ExprIR | SecretRefIR>;
@@ -95,7 +94,6 @@ export type TaskNodeIR = BaseNodeIR & {
   outputSchema: SchemaIR;
   run: TaskRunIR;
   timeout?: DurationIR;
-  retry?: RetryIR;
 };
 
 export type TaskRunIR = {

@@ -158,6 +158,30 @@ describe("scheduler advance loop", () => {
     expect(result).toMatchObject({ status: "paused", started: 1, cancelled: 1 });
   });
 
+  it("marks paused requeued work as pause_resume when it restarts", async () => {
+    const store = new MemorySchedulerStore("run_1", [ready("work", 1)]);
+    const reasons: Array<NodeAttemptContext["attemptStartReason"]> = [];
+    let shouldPause = true;
+
+    const nodeExecutor = executor(context => {
+      reasons.push(context.attemptStartReason);
+      if (!shouldPause) return completed({ ok: true });
+      shouldPause = false;
+      return new Promise(resolve => {
+        setTimeout(() => {
+          store.pauseRun({ runId: "run_1", ownerEpoch: 1, idempotencyKey: "pause-active" });
+        }, 0);
+        context.signal.addEventListener("abort", () => resolve({ status: "cancelled", reason: "paused" }), { once: true });
+      });
+    });
+
+    await expect(advanceRun({ runId: "run_1", ownerId: "owner-a", store, executor: nodeExecutor })).resolves.toMatchObject({ status: "paused", started: 1, cancelled: 1 });
+    store.resumeRun({ runId: "run_1" });
+    await expect(advanceRun({ runId: "run_1", ownerId: "owner-b", store, executor: nodeExecutor })).resolves.toMatchObject({ status: "idle", started: 1, completed: 1 });
+
+    expect(reasons).toEqual([undefined, "pause_resume"]);
+  });
+
   it("uses a fresh store snapshot on each advance call", async () => {
     const store = new MemorySchedulerStore("run_1", [ready("one", 1)]);
     const calls: string[] = [];
@@ -381,7 +405,7 @@ describe("scheduler advance loop", () => {
 
     await expect(advanceRun(input)).resolves.toMatchObject({ status: "idle", started: 1, failed: 1 });
     let projection = store.loadRunSnapshot("run_1").projection;
-    expect(projection.instances.work).toMatchObject({ status: "ready", statusReason: "retry" });
+    expect(projection.instances.work).toMatchObject({ status: "ready", statusReason: "scheduler_retry" });
     expect(projection.groupMembers.work).toMatchObject({ status: "ready" });
     expect(projection.groups.all).toMatchObject({ status: "running" });
 

@@ -1,5 +1,6 @@
 import { expectTypeOf, test } from "vitest";
 import type {
+  AgentOverrideMap,
   ForkPreparedWorkflow,
   PreparedRunWorkflow,
   ReplayResult,
@@ -28,7 +29,7 @@ import type { WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 
 test("@acpus/runtime public types describe use-case level runtime APIs", () => {
-  expectTypeOf(admitWorkflowRun).parameters.toEqualTypeOf<[cwd: string, prepared: PreparedRunWorkflow, input: JsonValue]>();
+  expectTypeOf(admitWorkflowRun).toMatchTypeOf<(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue, agentOverrides?: AgentOverrideMap) => Promise<unknown>>();
   expectTypeOf(listRuns).toEqualTypeOf<(cwd: string) => Promise<RunRecord[]>>();
   expectTypeOf(getRun).toEqualTypeOf<(cwd: string, runId: string) => Promise<RunDetails | undefined>>();
   expectTypeOf(getRunVisualizationOverlay).toEqualTypeOf<(cwd: string, runId: string) => Promise<WorkflowVisualizationOverlay | undefined>>();

@@ -211,6 +211,26 @@ describe("WorkflowIR diagnostics contract", () => {
           command: "acpx worker",
           model: "gpt-5.4",
         },
+        old_policy: {
+          kind: "agent_definition",
+          use: "codex",
+          policy: "read",
+        },
+        old_options: {
+          kind: "agent_command",
+          command: "acpx worker",
+          options: { mode: "batch" },
+        },
+        bad_permission: {
+          kind: "agent_definition",
+          use: "codex",
+          permissionMode: "full",
+        },
+        bad_mode: {
+          kind: "agent_command",
+          command: "acpx worker",
+          agentMode: "",
+        },
         bad_kind: {
           kind: "agent_builtin",
           use: "codex",
@@ -233,6 +253,9 @@ describe("WorkflowIR diagnostics contract", () => {
     expect(diagnostics.map(diagnostic => diagnostic.code)).toEqual([
       "A002",
       "IR001",
+      "IR001",
+      "A002",
+      "A002",
       "A002",
     ]);
     expect(diagnostics).toContainEqual(expect.objectContaining({
@@ -241,12 +264,92 @@ describe("WorkflowIR diagnostics contract", () => {
     }));
     expect(diagnostics).toContainEqual(expect.objectContaining({
       code: "IR001",
-      path: "agents.command_with_model.model",
+      path: "agents.old_policy.policy",
+    }));
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: "IR001",
+      path: "agents.old_options.options",
+    }));
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: "A002",
+      path: "agents.bad_permission.permissionMode",
+    }));
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: "A002",
+      path: "agents.bad_mode.agentMode",
     }));
     expect(diagnostics).toContainEqual(expect.objectContaining({
       code: "A002",
       path: "agents.bad_kind",
     }));
+  });
+
+  it("validates current retry IR contract", () => {
+    const digest = `sha256:${"a".repeat(64)}`;
+    const diagnostics = validateWorkflowIR(minimalWorkflow({
+      agents: {
+        reviewer: {
+          kind: "agent_definition",
+          use: "codex",
+        },
+      },
+      root: {
+        nodes: [
+          {
+            id: "agent_without_schema_retry",
+            kind: "agent",
+            run: {
+              kind: "agent_run",
+              agent: "reviewer",
+              prompt: { kind: "template", parts: [] },
+            },
+            retry: { max: 1 },
+          },
+          {
+            id: "agent_bad_retry_shape",
+            kind: "agent",
+            outputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
+            run: {
+              kind: "agent_run",
+              agent: "reviewer",
+              prompt: { kind: "template", parts: [] },
+            },
+            retry: { max: 1, on: ["output_conformance"], backoff: "linear" },
+          },
+          {
+            id: "task_with_retry",
+            kind: "task",
+            outputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
+            run: {
+              kind: "task_run",
+              input: {},
+              bundleId: "task_ok",
+              exportName: "default",
+              digest,
+              runtime: "node",
+            },
+            retry: { max: 1 },
+          },
+        ],
+      },
+      assets: {
+        taskBundles: {
+          task_ok: {
+            id: "task_ok",
+            digest,
+            runtime: "node",
+            source: "export default async function task() { return {}; }",
+          },
+        },
+      },
+    } as any));
+
+    expect(diagnostics.map(diagnostic => [diagnostic.code, diagnostic.path])).toEqual([
+      ["IR001", "root.nodes.agent_without_schema_retry.retry"],
+      ["IR001", "root.nodes.agent_bad_retry_shape.retry.on"],
+      ["IR001", "root.nodes.agent_bad_retry_shape.retry.backoff"],
+      ["IR001", "root.nodes.task_with_retry.retry"],
+    ]);
   });
 
   it("validates signal timeout and loop exhaustion strategy invariants", () => {

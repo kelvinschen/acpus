@@ -16,6 +16,24 @@ describe("acpus runs inspect smoke", () => {
       await expectReplay(workspace, runId);
     });
   }, 15_000);
+
+  it("passes fork agent overrides to runtime validation", async () => {
+    await withTestWorkspace("runs-fork-agents-validation", async workspace => {
+      const workflow = await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts");
+      const admitted = await runSourceCli(workspace, ["run", workflow, "--input", "{\"ready\":true}", "--json"]);
+      expect(admitted.exitCode).toBe(0);
+      const runId = JSON.parse(admitted.stdout).run.id;
+
+      const forked = await runSourceCli(workspace, ["runs", "fork", runId, "--agents", "{\"reviewer\":{\"use\":\"codex\"}}", "--json"]);
+
+      expect(forked.exitCode).toBe(1);
+      expect(JSON.parse(forked.stdout)).toMatchObject({
+        ok: false,
+        phase: "validate",
+        message: "Agent override 'reviewer' does not reference a declared agent.",
+      });
+    });
+  }, 15_000);
 });
 
 async function expectShowRun(workspace: string, runId: string): Promise<void> {

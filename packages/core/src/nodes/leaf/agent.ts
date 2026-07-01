@@ -4,29 +4,35 @@ import { valueToExprIR } from "@acpus/expression/ir";
 import { AGENT_TOKEN } from "../../internal/symbols.js";
 import { toSchemaIR, type Schema } from "../../schema/index.js";
 import type { WorkflowValue } from "@acpus/expression";
-import type { AgentDefinitionIR, AgentNodeIR, AgentRunIR, DiagnosticIR, JsonObject, RetryIR } from "../../ir/types.js";
+import type { AgentDefinitionIR, AgentNodeIR, AgentRunIR, DiagnosticIR, RetryIR } from "../../ir/types.js";
 import type { EnvInput } from "./shared.js";
+
+export type AgentPermissionMode = "approve-reads" | "approve-all" | "deny-all";
 
 export type AgentUseSpec = {
   use: string;
   kind?: never;
   command?: never;
   model?: string;
-  policy?: "read" | "full";
+  permissionMode?: AgentPermissionMode;
+  agentMode?: string;
+  policy?: never;
+  options?: never;
   cwd?: WorkflowValue<string>;
   env?: EnvInput;
-  options?: JsonObject;
 };
 
 export type AgentCommandSpec = {
   command: string;
   kind?: never;
   use?: never;
-  model?: never;
-  policy?: "read" | "full";
+  model?: string;
+  permissionMode?: AgentPermissionMode;
+  agentMode?: string;
+  policy?: never;
+  options?: never;
   cwd?: WorkflowValue<string>;
   env?: EnvInput;
-  options?: JsonObject;
 };
 
 export type AgentDefinitionSpec = AgentUseSpec | AgentCommandSpec;
@@ -43,7 +49,8 @@ export function agentToken<Key extends string>(key: Key): AgentToken<Key> {
 export type AgentRunSpec = {
   agent: AgentToken;
   prompt: TemplateInput;
-  policy?: "read" | "full";
+  permissionMode?: AgentPermissionMode;
+  policy?: never;
   session?: { key?: TemplateInput };
   cwd?: WorkflowValue<string>;
   env?: EnvInput;
@@ -51,32 +58,38 @@ export type AgentRunSpec = {
 
 export type AgentStepSpec<
   OutSchema extends Schema<any> | undefined = Schema<any> | undefined,
-> = {
-  outputSchema?: OutSchema;
+> = (OutSchema extends Schema<any> ? {
+  outputSchema: OutSchema;
   run: AgentRunSpec;
   timeout?: string;
   retry?: RetryIR;
-};
+} : {
+  outputSchema?: undefined;
+  run: AgentRunSpec;
+  timeout?: string;
+  retry?: never;
+});
 
 export function agentDefinitionToIR(spec: AgentDefinitionSpec): AgentDefinitionIR {
   if (spec.command !== undefined) {
     return stripUndefined({
       kind: "agent_command",
       command: spec.command,
-      policy: spec.policy,
+      model: spec.model,
+      permissionMode: spec.permissionMode,
+      agentMode: spec.agentMode,
       cwd: spec.cwd === undefined ? undefined : valueToExprIR(spec.cwd),
       env: spec.env === undefined ? undefined : envToIR(spec.env),
-      options: spec.options,
     }) as AgentDefinitionIR;
   }
   return stripUndefined({
     kind: "agent_definition",
     use: spec.use,
     model: spec.model,
-    policy: spec.policy,
+    permissionMode: spec.permissionMode,
+    agentMode: spec.agentMode,
     cwd: spec.cwd === undefined ? undefined : valueToExprIR(spec.cwd),
     env: spec.env === undefined ? undefined : envToIR(spec.env),
-    options: spec.options,
   }) as AgentDefinitionIR;
 }
 
@@ -85,7 +98,7 @@ function agentRunToIR(spec: AgentRunSpec): AgentRunIR {
     kind: "agent_run",
     agent: spec.agent.key,
     prompt: templateToIR(spec.prompt),
-    policy: spec.policy,
+    permissionMode: spec.permissionMode,
     session: spec.session?.key === undefined ? undefined : { key: templateToIR(spec.session.key) },
     cwd: spec.cwd === undefined ? undefined : valueToExprIR(spec.cwd),
     env: spec.env === undefined ? undefined : envToIR(spec.env),
@@ -98,6 +111,9 @@ export function buildAgentNode<OutSchema extends Schema<any> | undefined>(
   diagnostics: DiagnosticIR[],
 ): AgentNodeIR {
   assertStableId(id, diagnostics);
+  if ((spec.run as { policy?: unknown }).policy !== undefined) {
+    diagnostics.push({ code: "A003", severity: "error", message: `Agent node '${id}' run must use permissionMode, not policy.`, path: `root.nodes.${id}.run.policy` });
+  }
   return stripUndefined({
     id,
     kind: "agent",

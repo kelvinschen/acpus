@@ -44,11 +44,11 @@ export default defineWorkflow({
   agents: {
     reviewer: {
       use: "codex",
-      policy: "read",
+      permissionMode: "approve-reads",
     },
     summarizer: {
       use: "codex",
-      policy: "read",
+      permissionMode: "approve-reads",
     },
   },
 }).build(({ input, agents, step, meta }) => {

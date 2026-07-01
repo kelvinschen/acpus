@@ -1,6 +1,5 @@
 import type { AgentNodeIR, NodeIR, ScopeIR, SignalNodeIR, TaskNodeIR, WorkflowIR } from "@acpus/core/ir";
 import type { ExprIR, JsonValue } from "@acpus/expression/ir";
-import { AgentProviderRequiredError } from "@acpus/agent-executor";
 import { evaluateExpr, renderTemplate, type EvaluationScope } from "../evaluation/evaluator.js";
 import { normalizeValue } from "../evaluation/schema.js";
 
@@ -108,7 +107,6 @@ async function executeNodeAsync(node: NodeIR, scope: SchedulerScope, options: Ru
       completeNode(scope, node.id, validateNodeOutput(node, await options.agentExecutor(node, scope)));
     } catch (error) {
       if (error instanceof ExecutorRequiredError) throw error;
-      if (error instanceof AgentProviderRequiredError) throw new ExecutorRequiredError(node.id, node.kind, scope.executedNodes, error.message);
       throw new RuntimeNodeError(node.id, error instanceof Error ? error.message : String(error), scope.executedNodes);
     }
     return;

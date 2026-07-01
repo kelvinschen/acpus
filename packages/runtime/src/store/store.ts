@@ -3,8 +3,9 @@ import { access, cp, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { ScopeIR, WorkflowIR } from "@acpus/core/ir";
+import type { AgentDefinitionIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
 import type { ExprIR, JsonValue } from "@acpus/expression/ir";
+import { valueToExprIR } from "@acpus/expression/ir";
 import { evaluateExpr } from "../evaluation/evaluator.js";
 import { applySchedulerEvents, createSchedulerProjection } from "../scheduler/transitions.js";
 import type { SchedulerEvent } from "../scheduler/events.js";
@@ -46,6 +47,7 @@ export type RuntimeStore = {
   cleanupRunDirectories(options?: CleanupRunDirectoriesOptions): Promise<CleanupRunDirectoriesResult>;
   getRunDir(runId: string): string | undefined;
   registerArtifact(input: RegisterArtifactInput): void;
+  writeExecutionMetadata(input: WriteExecutionMetadataInput): void;
   getRun(runId: string): RunDetails | undefined;
   listRuns(): RunRecord[];
 };
@@ -54,6 +56,19 @@ export type AdmitRunInput = {
   prepared: PreparedRunWorkflow;
   input: JsonValue;
   cwd: string;
+  agentOverrides?: AgentOverrideMap;
+};
+
+export type AgentOverrideMap = Record<string, AgentOverrideSpec>;
+
+export type AgentOverrideSpec = {
+  use?: string;
+  command?: string;
+  model?: string;
+  permissionMode?: "approve-reads" | "approve-all" | "deny-all";
+  agentMode?: string;
+  cwd?: string;
+  env?: Record<string, string>;
 };
 
 export type RunWorkflowLockArtifact = {
@@ -97,6 +112,7 @@ export type RunRecord = {
 export type RunDetails = RunRecord & {
   input: JsonValue;
   output?: JsonValue;
+  agentOverrides?: AgentOverrideMap;
   eventCount: number;
   nodeCount: number;
   taskBundleCount: number;
@@ -110,6 +126,15 @@ export type RunDynamicDetails = {
   attempts: RunDynamicAttempt[];
   groupMembers: RunDynamicGroupMember[];
   signalWaits: RunDynamicSignalWait[];
+  executionMetadata: RunExecutionMetadata[];
+};
+
+export type RunExecutionMetadata = {
+  id: number;
+  attemptId?: string;
+  kind: string;
+  metadata: unknown;
+  createdAt: string;
 };
 
 export type RunDynamicFrame = {
@@ -210,6 +235,7 @@ export type SignalRunInput = {
 export type FrozenRun = {
   ir: WorkflowIR;
   input: JsonValue;
+  agentOverrides: AgentOverrideMap;
   meta: Record<string, string>;
 };
 
@@ -282,6 +308,7 @@ export type ControlOptions = {
   commandId?: string;
   prepared?: ForkPreparedWorkflow;
   input?: JsonValue;
+  agentOverrides?: AgentOverrideMap;
 };
 
 export type ForkPreparedWorkflow = {
@@ -323,6 +350,13 @@ export type RegisterArtifactInput = {
   relativePath: string;
 };
 
+export type WriteExecutionMetadataInput = {
+  runId: string;
+  attemptId?: string;
+  kind: string;
+  metadata: JsonValue;
+};
+
 type RunRow = {
   id: string;
   name: string;
@@ -337,6 +371,7 @@ type RunRow = {
 type RunInputRow = {
   workflow_ir_json?: string;
   input_json: string;
+  agent_overrides_json?: string | null;
   lock_json?: string;
   output_json: string | null;
   task_bundle_count: number;
@@ -416,11 +451,13 @@ class SqliteRuntimeStore implements RuntimeStore {
       for (const bundle of Object.values(input.prepared.ir.assets.taskBundles)) {
         await writeFile(join(bundleDir, `${bundle.id}.mjs`), bundle.source ?? "");
       }
+      const agentOverrides = normalizeAgentOverrides(input.prepared.ir, input.agentOverrides);
 
       const eventPayload = {
         workflow: summarizeWorkflowForEvent(input.prepared.ir),
         input: input.input,
         lock: input.prepared.lock,
+        ...(Object.keys(agentOverrides).length > 0 ? { agentOverrides } : {}),
       };
       this.db.exec("BEGIN IMMEDIATE");
       try {
@@ -430,13 +467,14 @@ class SqliteRuntimeStore implements RuntimeStore {
         `).run(runId, input.prepared.ir.name, workflowEntry, input.prepared.irDigest, input.prepared.sourceGraphDigest, now, now);
         this.db.prepare(`
           INSERT INTO run_inputs (
-            run_id, workflow_ir_json, input_json, lock_json, task_bundle_count, package_lock_digest, run_dir, created_at
+            run_id, workflow_ir_json, input_json, agent_overrides_json, lock_json, task_bundle_count, package_lock_digest, run_dir, created_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           runId,
           input.prepared.irJson,
           stableJson(input.input),
+          stableJson(agentOverrides),
           stableJson(input.prepared.lock),
           Object.keys(input.prepared.ir.assets.taskBundles).length,
           input.prepared.packageLockDigest ?? null,
@@ -688,15 +726,18 @@ class SqliteRuntimeStore implements RuntimeStore {
 
   getFrozenRun(runId: string): FrozenRun | undefined {
     const row = this.db.prepare(`
-      SELECT runs.id, runs.name, runs.workflow_entry, run_inputs.workflow_ir_json, run_inputs.input_json
+      SELECT runs.id, runs.name, runs.workflow_entry, run_inputs.workflow_ir_json, run_inputs.input_json, run_inputs.agent_overrides_json
       FROM run_inputs
       JOIN runs ON runs.id = run_inputs.run_id
       WHERE run_inputs.run_id = ?
     `).get(runId) as (RunInputRow & { id: string; name: string; workflow_entry: string }) | undefined;
     if (!row?.workflow_ir_json) return undefined;
+    const originalIr = JSON.parse(row.workflow_ir_json) as WorkflowIR;
+    const agentOverrides = parseAgentOverrides(row.agent_overrides_json);
     return {
-      ir: JSON.parse(row.workflow_ir_json) as WorkflowIR,
+      ir: withAgentOverrides(originalIr, agentOverrides),
       input: JSON.parse(row.input_json) as JsonValue,
+      agentOverrides,
       meta: {
         runId: String(row.id),
         workflowPath: String(row.workflow_entry),
@@ -964,7 +1005,7 @@ class SqliteRuntimeStore implements RuntimeStore {
     const source = this.getRunRecord(runId);
     if (!source) throw new Error(`Run '${runId}' was not found.`);
     const input = this.db.prepare(`
-      SELECT workflow_ir_json, input_json, lock_json, output_json, task_bundle_count, package_lock_digest, run_dir
+      SELECT workflow_ir_json, input_json, agent_overrides_json, lock_json, output_json, task_bundle_count, package_lock_digest, run_dir
       FROM run_inputs
       WHERE run_id = ?
     `).get(runId) as RunInputRow | undefined;
@@ -972,6 +1013,8 @@ class SqliteRuntimeStore implements RuntimeStore {
     const forkIrJson = options.prepared?.irJson ?? input.workflow_ir_json;
     if (options.prepared && digest(Buffer.from(forkIrJson)) !== options.prepared.irDigest) throw new Error("Fork prepared workflow IR digest does not match payload.");
     const forkIr = JSON.parse(forkIrJson) as WorkflowIR;
+    const sourceAgentOverrides = parseAgentOverrides(input.agent_overrides_json);
+    const forkAgentOverrides = normalizeAgentOverrides(forkIr, options.agentOverrides, sourceAgentOverrides);
     const forkInputJson = options.input === undefined ? input.input_json : stableJson(options.input);
     const forkLockJson = options.prepared ? stableJson(options.prepared.lock) : input.lock_json;
     const forkTaskBundleCount = options.prepared ? Object.keys(forkIr.assets.taskBundles).length : input.task_bundle_count;
@@ -982,7 +1025,7 @@ class SqliteRuntimeStore implements RuntimeStore {
     const forkSourceGraphDigest = options.prepared?.sourceGraphDigest ?? source.sourceGraphDigest;
     const forkId = newRunId();
     const now = new Date().toISOString();
-    const replacement = Boolean(options.prepared || options.input !== undefined);
+    const replacement = Boolean(options.prepared || options.input !== undefined || stableJson(forkAgentOverrides) !== stableJson(sourceAgentOverrides));
     const forkStatus = source.status === "completed" && !replacement ? "completed" : "pending";
     const sourceRunDir = input.run_dir ? containedRunDir(this.cwd, input.run_dir) : undefined;
     const forkRunDir = join(".acpus", "runs", forkId);
@@ -1063,13 +1106,14 @@ class SqliteRuntimeStore implements RuntimeStore {
       `).run(forkId, forkName, forkStatus, forkWorkflowEntry, forkIrDigest, forkSourceGraphDigest, now, now);
       this.db.prepare(`
         INSERT INTO run_inputs (
-          run_id, workflow_ir_json, input_json, output_json, lock_json, task_bundle_count, package_lock_digest, run_dir, created_at
+          run_id, workflow_ir_json, input_json, agent_overrides_json, output_json, lock_json, task_bundle_count, package_lock_digest, run_dir, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         forkId,
         forkIrJson,
         forkInputJson,
+        stableJson(forkAgentOverrides),
         forkOutputJson,
         forkLockJson,
         forkTaskBundleCount,
@@ -1080,7 +1124,7 @@ class SqliteRuntimeStore implements RuntimeStore {
       this.db.prepare(`
         INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
         VALUES (?, 1, 'run.forked', NULL, ?, ?, ?)
-      `).run(forkId, stableJson({ sourceRunId: runId }), now, `fork:${forkId}:${runId}`);
+      `).run(forkId, stableJson({ sourceRunId: runId, ...(Object.keys(forkAgentOverrides).length > 0 ? { agentOverrides: forkAgentOverrides } : {}) }), now, `fork:${forkId}:${runId}`);
       if (forkStatus === "completed" && forkOutputJson) {
         this.db.prepare(`
           INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
@@ -1193,15 +1237,29 @@ class SqliteRuntimeStore implements RuntimeStore {
     );
   }
 
+  writeExecutionMetadata(input: WriteExecutionMetadataInput): void {
+    this.db.prepare(`
+      INSERT INTO execution_metadata (run_id, attempt_id, kind, metadata_json, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(
+      input.runId,
+      input.attemptId ?? null,
+      input.kind,
+      stableJson(input.metadata),
+      new Date().toISOString(),
+    );
+  }
+
   getRun(runId: string): RunDetails | undefined {
     const run = this.getRunRecord(runId);
     if (!run) return undefined;
     const input = this.db.prepare(`
-      SELECT input_json, output_json, task_bundle_count
+      SELECT input_json, agent_overrides_json, output_json, task_bundle_count
       FROM run_inputs
       WHERE run_id = ?
     `).get(runId) as RunInputRow | undefined;
     if (!input) return undefined;
+    const agentOverrides = parseAgentOverrides(input.agent_overrides_json);
     const eventCount = this.count("run_events", runId);
     const nodeCount = this.count("node_states", runId);
     const dynamic = this.tryGetRunDynamicDetails(runId);
@@ -1209,6 +1267,7 @@ class SqliteRuntimeStore implements RuntimeStore {
       ...run,
       input: JSON.parse(input.input_json) as JsonValue,
       ...(input.output_json ? { output: JSON.parse(input.output_json) as JsonValue } : {}),
+      ...(Object.keys(agentOverrides).length > 0 ? { agentOverrides } : {}),
       eventCount,
       nodeCount,
       taskBundleCount: input.task_bundle_count,
@@ -1223,7 +1282,8 @@ class SqliteRuntimeStore implements RuntimeStore {
       const attempts = readRunDynamicAttempts(this.db, runId);
       const groupMembers = readRunDynamicGroupMembers(this.db, runId);
       const signalWaits = readRunDynamicSignalWaits(this.db, runId);
-      if (frames.length + nodeInstances.length + attempts.length + groupMembers.length + signalWaits.length === 0) return undefined;
+      const executionMetadata = readRunExecutionMetadata(this.db, runId);
+      if (frames.length + nodeInstances.length + attempts.length + groupMembers.length + signalWaits.length + executionMetadata.length === 0) return undefined;
       return {
         version: this.nextSequence(runId) - 1,
         frames,
@@ -1231,6 +1291,7 @@ class SqliteRuntimeStore implements RuntimeStore {
         attempts,
         groupMembers,
         signalWaits,
+        executionMetadata,
       };
     } catch {
       return undefined;
@@ -1294,9 +1355,12 @@ class SqliteRuntimeStore implements RuntimeStore {
     `).all(runId) as Array<{ type: string; payload_json: string }>;
     const completed = terminalEvents.filter(event => event.type === "run.completed");
     const failed = terminalEvents.filter(event => event.type === "run.failed");
-    const hasRunRetry = schedulerEvents(this.db, runId).some(event => event.type === "control.run_retry_requested");
+    const schedulerEventRows = schedulerEvents(this.db, runId);
+    const hasRunRetry = schedulerEventRows.some(event => event.type === "control.run_retry_requested");
+    const hasNodeRetry = schedulerEventRows.some(event => event.type === "instance.retry_requested");
+    const hasRetry = hasRunRetry || hasNodeRetry;
     const rebuilt = rebuildTerminalProjection(terminalEvents);
-    if (rebuilt.status && rebuilt.status !== run.status) {
+    if (rebuilt.status && rebuilt.status !== run.status && !(hasNodeRetry && (run.status === "pending" || run.status === "awaiting" || run.status === "paused"))) {
       issues.push(`Run '${runId}' status does not match terminal event stream.`);
     }
     if (rebuilt.output !== undefined) {
@@ -1306,9 +1370,9 @@ class SqliteRuntimeStore implements RuntimeStore {
         issues.push(`Run '${runId}' output projection does not match terminal event stream.`);
       }
     }
-    if (!hasRunRetry && completed.length > 0 && failed.length > 0) issues.push(`Run '${runId}' has conflicting terminal events.`);
+    if (!hasRetry && completed.length > 0 && failed.length > 0) issues.push(`Run '${runId}' has conflicting terminal events.`);
     if (run.status === "completed") {
-      if (hasRunRetry) {
+      if (hasRetry) {
         if (completed.length < 1) issues.push(`Completed run '${runId}' must have a run.completed event.`);
       } else {
         if (completed.length !== 1) issues.push(`Completed run '${runId}' must have exactly one run.completed event.`);
@@ -1328,7 +1392,7 @@ class SqliteRuntimeStore implements RuntimeStore {
       }
     }
     if (run.status === "failed") {
-      if (hasRunRetry) {
+      if (hasRetry) {
         if (failed.length < 1) issues.push(`Failed run '${runId}' must have a run.failed event.`);
       } else {
         if (failed.length !== 1) issues.push(`Failed run '${runId}' must have exactly one run.failed event.`);
@@ -1354,7 +1418,7 @@ class SqliteRuntimeStore implements RuntimeStore {
         }
       }
     }
-    if ((run.status === "pending" || run.status === "awaiting" || run.status === "paused") && terminalEvents.length > 0 && !hasRunRetry) {
+    if ((run.status === "pending" || run.status === "awaiting" || run.status === "paused") && terminalEvents.length > 0 && !hasRetry) {
       issues.push(`Non-terminal run '${runId}' has terminal events.`);
     }
     issues.push(...this.verifySchedulerReplayProjection(runId, run));
@@ -1801,10 +1865,12 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         payload: {
           nodeKey: input.nodeKey,
           ...(instance.readinessSequence === undefined ? {} : { readinessSequence: instance.readinessSequence }),
+          source: "control",
         },
       },
     ];
-    const member = snapshot.projection.groupMembers[input.nodeKey];
+    const member = snapshot.projection.groupMembers[input.nodeKey]
+      ?? (instance.parentFrameKey === undefined ? undefined : snapshot.projection.groupMembers[instance.parentFrameKey]);
     if (member && member.status !== "failed") {
       throw new Error(`Group member '${member.memberKey}' cannot be retried from ${member.status}.`);
     }
@@ -1814,6 +1880,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         payload: {
           memberKey: member.memberKey,
           readinessSequence: member.readinessSequence,
+          source: "control",
         },
       });
     }
@@ -2088,15 +2155,17 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
   }
 
   private syncPublicRunProjection(runId: string, now: string): void {
-    const projection = applySchedulerEvents(createSchedulerProjection(runId), this.schedulerEvents(runId));
+    const schedulerEvents = this.schedulerEvents(runId);
+    const projection = applySchedulerEvents(createSchedulerProjection(runId), schedulerEvents);
     const current = this.db.prepare("SELECT status FROM runs WHERE id = ?").get(runId) as { status: RunStatus } | undefined;
+    const hasNodeRetry = schedulerEvents.some(event => event.type === "instance.retry_requested");
     if (current?.status === "failed" && projection.run.status === "pending" && Object.keys(projection.frames).length === 0) {
       this.db.prepare("UPDATE runs SET status = 'pending', updated_at = ? WHERE id = ?").run(now, runId);
       this.db.prepare("UPDATE run_inputs SET output_json = NULL WHERE run_id = ?").run(runId);
       this.db.prepare("DELETE FROM node_states WHERE run_id = ?").run(runId);
       return;
     }
-    if (!current || current.status === "completed" || current.status === "failed" || current.status === "canceled") return;
+    if (!current || current.status === "completed" || current.status === "canceled" || (current.status === "failed" && !hasNodeRetry)) return;
     this.syncPublicNodeStates(projection, now);
     const root = projection.frames.root;
     if (projection.run.status === "completed") {
@@ -2120,6 +2189,11 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     const hasAwaiting = Object.values(projection.instances).some(instance => instance.status === "awaiting")
       || Object.values(projection.signalWaits).some(wait => wait.status === "awaiting");
     const status = hasAwaiting ? "awaiting" : "pending";
+    if (current.status === "failed") {
+      this.db.prepare("UPDATE runs SET status = ?, updated_at = ? WHERE id = ?").run(status, now, runId);
+      this.db.prepare("UPDATE run_inputs SET output_json = NULL WHERE run_id = ?").run(runId);
+      return;
+    }
     this.db.prepare("UPDATE runs SET status = ?, updated_at = ? WHERE id = ? AND status NOT IN ('completed', 'failed', 'canceled')").run(status, now, runId);
   }
 
@@ -2519,6 +2593,22 @@ function readRunDynamicSignalWaits(db: DatabaseSync, runId: string): RunDynamicS
   }) as RunDynamicSignalWait);
 }
 
+function readRunExecutionMetadata(db: DatabaseSync, runId: string): RunExecutionMetadata[] {
+  const rows = db.prepare(`
+    SELECT id, attempt_id, kind, metadata_json, created_at
+    FROM execution_metadata
+    WHERE run_id = ?
+    ORDER BY id
+  `).all(runId) as Array<Record<string, string | number | null>>;
+  return rows.map(row => withoutUndefined({
+    id: Number(row.id),
+    attemptId: nullableString(row.attempt_id),
+    kind: String(row.kind),
+    metadata: JSON.parse(String(row.metadata_json)) as unknown,
+    createdAt: String(row.created_at),
+  }) as RunExecutionMetadata);
+}
+
 function sameStableJson(left: unknown, right: unknown): boolean {
   return stableJson(left) === stableJson(right);
 }
@@ -2730,6 +2820,7 @@ function migrate(db: DatabaseSync): void {
       run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
       workflow_ir_json TEXT NOT NULL,
       input_json TEXT NOT NULL,
+      agent_overrides_json TEXT NOT NULL DEFAULT '{}',
       output_json TEXT,
       lock_json TEXT NOT NULL,
       task_bundle_count INTEGER NOT NULL,
@@ -2911,11 +3002,140 @@ function migrate(db: DatabaseSync): void {
   `);
   addColumnIfMissing(db, "commands", "owner_generation", "INTEGER");
   addColumnIfMissing(db, "group_members", "item_json", "TEXT");
+  addColumnIfMissing(db, "run_inputs", "agent_overrides_json", "TEXT NOT NULL DEFAULT '{}'");
 }
 
 function addColumnIfMissing(db: DatabaseSync, table: string, column: string, definition: string): void {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
   if (!rows.some(row => row.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
+}
+
+function parseAgentOverrides(json: string | null | undefined): AgentOverrideMap {
+  if (!json) return {};
+  const value = JSON.parse(json) as JsonValue;
+  return normalizeAgentOverrideShape(value, undefined);
+}
+
+function normalizeAgentOverrides(ir: WorkflowIR, input: AgentOverrideMap | undefined, inherited: AgentOverrideMap = {}): AgentOverrideMap {
+  const base = Object.fromEntries(Object.entries(inherited).filter(([name]) => ir.agents[name])) as AgentOverrideMap;
+  if (input === undefined) return base;
+  const incoming = normalizeAgentOverrideShape(input as JsonValue, ir);
+  const merged = Object.fromEntries(Object.entries(incoming).map(([name, override]) => {
+    const previous = base[name] ?? {};
+    const declared = ir.agents[name]!;
+    return [name, mergeAgentOverride(declared, previous, override)];
+  }));
+  return { ...base, ...merged };
+}
+
+function normalizeAgentOverrideShape(input: JsonValue, ir: WorkflowIR | undefined): AgentOverrideMap {
+  if (!isJsonRecord(input)) throw new Error("Agent overrides must be a JSON object keyed by declared agent name.");
+  return Object.fromEntries(Object.entries(input).map(([name, value]) => {
+    if (ir && !ir.agents[name]) throw new Error(`Agent override '${name}' does not reference a declared agent.`);
+    if (!isJsonRecord(value)) throw new Error(`Agent override '${name}' must be a JSON object.`);
+    if ("options" in value) throw new Error(`Agent override '${name}' must not use options.`);
+    if ("policy" in value) throw new Error(`Agent override '${name}' must use permissionMode, not policy.`);
+    if ("kind" in value) throw new Error(`Agent override '${name}' must not include kind.`);
+    const allowedKeys = new Set(["use", "command", "model", "permissionMode", "agentMode", "cwd", "env"]);
+    const unknownKey = Object.keys(value).find(key => !allowedKeys.has(key));
+    if (unknownKey) throw new Error(`Agent override '${name}' must not include '${unknownKey}'.`);
+    const hasUse = value.use !== undefined;
+    const hasCommand = value.command !== undefined;
+    if (hasUse && hasCommand) throw new Error(`Agent override '${name}' must not specify both use and command.`);
+    const override = stripUndefined({
+      use: optionalNonEmptyString(value.use, `Agent override '${name}' use`),
+      command: optionalNonEmptyString(value.command, `Agent override '${name}' command`),
+      model: optionalString(value.model, `Agent override '${name}' model`),
+      permissionMode: optionalPermissionMode(value.permissionMode, `Agent override '${name}' permissionMode`),
+      agentMode: optionalNonEmptyString(value.agentMode, `Agent override '${name}' agentMode`),
+      cwd: optionalString(value.cwd, `Agent override '${name}' cwd`),
+      env: optionalStringRecord(value.env, `Agent override '${name}' env`),
+    }) as AgentOverrideSpec;
+    return [name, override];
+  }));
+}
+
+function mergeAgentOverride(declared: AgentDefinitionIR, previous: AgentOverrideSpec, incoming: AgentOverrideSpec): AgentOverrideSpec {
+  const before = agentIdentity(declared, previous);
+  const after = agentIdentity(declared, { ...previous, ...incoming });
+  const changedIdentity = incoming.use !== undefined || incoming.command !== undefined
+    ? before.kind !== after.kind || before.value !== after.value
+    : false;
+  const merged = changedIdentity
+    ? { ...previous, model: undefined, agentMode: undefined, ...incoming }
+    : { ...previous, ...incoming };
+  if (incoming.use !== undefined) delete merged.command;
+  if (incoming.command !== undefined) delete merged.use;
+  return stripUndefined(merged) as AgentOverrideSpec;
+}
+
+function withAgentOverrides(ir: WorkflowIR, overrides: AgentOverrideMap): WorkflowIR {
+  if (Object.keys(overrides).length === 0) return ir;
+  return {
+    ...ir,
+    agents: Object.fromEntries(Object.entries(ir.agents).map(([name, definition]) => [
+      name,
+      applyAgentOverride(definition, overrides[name]),
+    ])),
+  };
+}
+
+function applyAgentOverride(definition: AgentDefinitionIR, override: AgentOverrideSpec | undefined): AgentDefinitionIR {
+  if (!override) return definition;
+  const identityChanged = override.use !== undefined || override.command !== undefined
+    ? agentIdentity(definition, {}).kind !== agentIdentity(definition, override).kind
+      || agentIdentity(definition, {}).value !== agentIdentity(definition, override).value
+    : false;
+  const shared = {
+    model: override.model ?? (identityChanged ? undefined : definition.model),
+    permissionMode: override.permissionMode ?? definition.permissionMode,
+    agentMode: override.agentMode ?? (identityChanged ? undefined : definition.agentMode),
+    cwd: override.cwd === undefined ? definition.cwd : valueToExprIR(override.cwd),
+    env: override.env === undefined ? definition.env : Object.fromEntries(Object.entries(override.env).map(([key, value]) => [key, valueToExprIR(value)])),
+  };
+  if (override.command !== undefined) return stripUndefined({ kind: "agent_command", command: override.command, ...shared }) as AgentDefinitionIR;
+  if (override.use !== undefined) return stripUndefined({ kind: "agent_definition", use: override.use, ...shared }) as AgentDefinitionIR;
+  return stripUndefined({ ...definition, ...shared }) as AgentDefinitionIR;
+}
+
+function agentIdentity(definition: AgentDefinitionIR, override: AgentOverrideSpec): { kind: "use" | "command"; value: string } {
+  if (override.command !== undefined) return { kind: "command", value: override.command };
+  if (override.use !== undefined) return { kind: "use", value: override.use };
+  return definition.kind === "agent_command"
+    ? { kind: "command", value: definition.command }
+    : { kind: "use", value: definition.use };
+}
+
+function optionalString(value: JsonValue | undefined, label: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "string") return value;
+  throw new Error(`${label} must be a string.`);
+}
+
+function optionalNonEmptyString(value: JsonValue | undefined, label: string): string | undefined {
+  const out = optionalString(value, label);
+  if (out !== undefined && out.length === 0) throw new Error(`${label} must be a non-empty string.`);
+  return out;
+}
+
+function optionalPermissionMode(value: JsonValue | undefined, label: string): AgentOverrideSpec["permissionMode"] | undefined {
+  if (value === undefined) return undefined;
+  if (value === "approve-reads" || value === "approve-all" || value === "deny-all") return value;
+  throw new Error(`${label} must be approve-reads, approve-all, or deny-all.`);
+}
+
+function optionalStringRecord(value: JsonValue | undefined, label: string): Record<string, string> | undefined {
+  if (value === undefined) return undefined;
+  if (!isJsonRecord(value)) throw new Error(`${label} must be a JSON object with string values.`);
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, optionalString(item, `${label}.${key}`)!]));
+}
+
+function isJsonRecord(value: JsonValue): value is Record<string, JsonValue> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function stripUndefined<T extends Record<string, unknown>>(value: T): Partial<T> {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)) as Partial<T>;
 }
 
 function toRunRecord(row: Record<string, unknown>): RunRecord {

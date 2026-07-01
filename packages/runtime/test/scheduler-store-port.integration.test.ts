@@ -251,6 +251,98 @@ describe("scheduler store port", () => {
     });
   });
 
+  it("bridges scheduler node retry out of a failed public run", async () => {
+    await withRuntimeWorkspace("scheduler-store-node-retry-failed-run", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+
+        store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: 1,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "public:fail-before-node-retry",
+          events: [
+            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root", scope: { require_ready: "require_ready~1" } } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "require_ready~1", nodeId: "require_ready", instancePath: [{ kind: "node", nodeId: "require_ready" }], parentFrameKey: "root", readinessSequence: 1 } },
+            { type: "instance.failed", payload: { nodeKey: "require_ready~1", error: { reason: "bad" } } },
+            { type: "frame.failed", payload: { frameKey: "root", error: { reason: "bad" }, terminalReason: "root_failed" } },
+          ],
+        });
+
+        expect(store.getRun(run.id)).toMatchObject({ status: "failed" });
+
+        const retried = store.scheduler.retry({
+          runId: run.id,
+          nodeKey: "require_ready~1",
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "public:node-retry",
+        });
+
+        expect(retried.projection.run).toMatchObject({ status: "pending", paused: false });
+        expect(retried.projection.frames.root).toMatchObject({ status: "running" });
+        expect(retried.projection.instances["require_ready~1"]).toMatchObject({ status: "ready", statusReason: "retry" });
+        expect(store.getRun(run.id)).toMatchObject({ status: "pending" });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("reopens parent group member when retrying a failed leaf inside a multi-node branch", async () => {
+    await withRuntimeWorkspace("scheduler-store-node-retry-parent-member", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+
+        store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: 1,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "public:fail-branch-leaf-before-retry",
+          events: [
+            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root", scope: { leaf: "leaf~1" } } },
+            { type: "frame.started", payload: { runId: run.id, frameKey: "parallel~1", frameKind: "node", parentFrameKey: "root", nodeKey: "parallel~1", nodeId: "parallel", strategy: "all" } },
+            { type: "group.started", payload: { runId: run.id, groupKey: "parallel~1", nodeKey: "parallel~1", nodeId: "parallel", kind: "parallel", strategy: "all" } },
+            { type: "group.member_ready", payload: { runId: run.id, groupKey: "parallel~1", memberKey: "branch~left", memberKind: "branch", branchId: "left", readinessSequence: 1 } },
+            { type: "frame.started", payload: { runId: run.id, frameKey: "branch~left", frameKind: "branch", parentFrameKey: "parallel~1", nodeId: "parallel", strategy: "all", scope: { leaf: "leaf~1" } } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "leaf~1", nodeId: "leaf", instancePath: [{ kind: "branch", nodeId: "parallel", branchId: "left" }, { kind: "node", nodeId: "leaf" }], parentFrameKey: "branch~left", readinessSequence: 1 } },
+            { type: "instance.failed", payload: { nodeKey: "leaf~1", error: { reason: "bad" } } },
+            { type: "frame.failed", payload: { frameKey: "branch~left", error: { reason: "bad" }, terminalReason: "node_failed" } },
+            { type: "group.member_failed", payload: { memberKey: "branch~left", error: { reason: "bad" } } },
+            { type: "group.failed", payload: { groupKey: "parallel~1", error: { reason: "bad" } } },
+            { type: "frame.failed", payload: { frameKey: "parallel~1", error: { reason: "bad" }, terminalReason: "group_failed" } },
+            { type: "frame.failed", payload: { frameKey: "root", error: { reason: "bad" }, terminalReason: "group_failed" } },
+          ],
+        });
+
+        expect(store.getRun(run.id)).toMatchObject({ status: "failed" });
+
+        const retried = store.scheduler.retry({
+          runId: run.id,
+          nodeKey: "leaf~1",
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "public:branch-leaf-retry",
+        });
+
+        expect(retried.projection.run).toMatchObject({ status: "pending", paused: false });
+        expect(retried.projection.frames.root).toMatchObject({ status: "running" });
+        expect(retried.projection.frames["parallel~1"]).toMatchObject({ status: "running" });
+        expect(retried.projection.frames["branch~left"]).toMatchObject({ status: "running" });
+        expect(retried.projection.groups["parallel~1"]).toMatchObject({ status: "running" });
+        expect(retried.projection.groupMembers["branch~left"]).toMatchObject({ status: "ready" });
+        expect(retried.projection.instances["leaf~1"]).toMatchObject({ status: "ready", statusReason: "retry" });
+        expect(store.getRun(run.id)).toMatchObject({ status: "pending" });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   it("does not overwrite an already public-terminal run from scheduler bridge", async () => {
     await withRuntimeWorkspace("scheduler-store-public-terminal-monotonic", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());

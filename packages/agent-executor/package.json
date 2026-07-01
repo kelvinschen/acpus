@@ -3,7 +3,7 @@
   "version": "0.1.0-alpha",
   "private": true,
   "type": "module",
-  "description": "Acpus command-backed agent execution.",
+  "description": "Acpus acpx-backed ACP agent turn execution.",
   "license": "MIT",
   "engines": {
     "node": ">=22"
@@ -29,5 +29,8 @@
   },
   "devDependencies": {
     "@types/node": "^22.15.30"
+  },
+  "dependencies": {
+    "acpx": "0.11.0"
   }
 }

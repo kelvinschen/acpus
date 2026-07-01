@@ -9,6 +9,7 @@ import {
   openExistingRuntimeStore,
   openExistingWritableRuntimeStore,
   openRuntimeStore,
+  type AgentOverrideMap,
   type ForkPreparedWorkflow,
   type PendingControlCommand,
   type PreparedRunWorkflow,
@@ -25,6 +26,7 @@ export type RuntimeMutationInput = {
   node?: string;
   prepared?: PreparedRunWorkflow;
   input?: JsonValue;
+  agentOverrides?: AgentOverrideMap;
 };
 
 export type RuntimeMutationResult = {
@@ -33,10 +35,10 @@ export type RuntimeMutationResult = {
   command?: RuntimeCommandRecord;
 };
 
-export async function admitWorkflowRun(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue): Promise<RuntimeAdvanceResult> {
+export async function admitWorkflowRun(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue, agentOverrides?: AgentOverrideMap): Promise<RuntimeAdvanceResult> {
   const store = await openRuntimeStore(cwd);
   try {
-    const run = await store.admitRun({ prepared, cwd, input });
+    const run = await store.admitRun({ prepared, cwd, input, ...(agentOverrides === undefined ? {} : { agentOverrides }) });
     return await advanceRuntimeRun(cwd, store, run.id);
   } finally {
     store.close();
@@ -144,6 +146,7 @@ export async function mutateRun(cwd: string, runId: string, action: RuntimeMutat
         ? {
             ...(input.prepared ? { prepared: toForkPrepared(input.prepared) as unknown as JsonValue } : {}),
             ...(input.input !== undefined ? { input: input.input } : {}),
+            ...(input.agentOverrides !== undefined ? { agentOverrides: input.agentOverrides as unknown as JsonValue } : {}),
           }
         : {};
     const command = store.submitCommand({

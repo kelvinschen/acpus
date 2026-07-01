@@ -12,6 +12,7 @@ export type NodeAttemptContext = {
   attemptId: string;
   attemptNo: number;
   ownerEpoch: number;
+  attemptStartReason?: "control_retry" | "pause_resume";
   signal: AbortSignal;
 };
 
@@ -218,6 +219,7 @@ function retryFailedInstanceEvents(projection: SchedulerProjection, maxAttemptsF
         payload: {
           nodeKey: instance.nodeKey,
           ...(instance.readinessSequence === undefined ? {} : { readinessSequence: instance.readinessSequence }),
+          source: "scheduler",
         },
       },
     ];
@@ -228,6 +230,7 @@ function retryFailedInstanceEvents(projection: SchedulerProjection, maxAttemptsF
         payload: {
           memberKey: directMember.memberKey,
           readinessSequence: directMember.readinessSequence,
+          source: "scheduler",
         },
       });
     }
@@ -275,6 +278,7 @@ async function runInstance(
   const monitor = setInterval(() => abortInterruptedActiveAttempts(input.store, input.runId, active), 10);
   monitor.unref?.();
   let result: AttemptCommitInput["result"];
+  const startReason = attemptStartReason(instance);
   try {
     result = await input.executor.execute({
       runId: input.runId,
@@ -283,6 +287,7 @@ async function runInstance(
       attemptId: attempt.attemptId,
       attemptNo: attempt.attemptNo,
       ownerEpoch: claim.ownerEpoch,
+      ...(startReason === undefined ? {} : { attemptStartReason: startReason }),
       signal: controller.signal,
     });
   } catch (error) {
@@ -318,6 +323,12 @@ async function runInstance(
   if (result.status === "completed") counters.completed += 1;
   else if (result.status === "cancelled") counters.cancelled += 1;
   else counters.failed += 1;
+}
+
+function attemptStartReason(instance: NodeInstance): NodeAttemptContext["attemptStartReason"] | undefined {
+  if (instance.statusReason === "retry") return "control_retry";
+  if (instance.statusReason === "paused") return "pause_resume";
+  return undefined;
 }
 
 function abortInterruptedActiveAttempts(store: SchedulerStorePort, runId: string, active: Map<string, AbortController>): void {
