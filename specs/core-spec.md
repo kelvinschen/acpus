@@ -100,6 +100,7 @@
 - `compileWorkflowDefinition(definition)` MUST lower an in-memory workflow definition to serializable `WorkflowIR` with `irVersion: 2`.
 - `WorkflowIR`, node IR, scope IR, schema IR, template IR, expression IR, agent definitions, task runs, and task execution targets MUST use closed serialized object shapes.
 - `validateWorkflowIR(ir)` MUST diagnose unknown fields, malformed agent definitions, malformed node runs, invalid expressions/templates/schemas, missing composite outputs, scope output fields outside a node's declared `outputSchema`, and malformed task execution targets.
+- `DurationIR` fields MUST be duration strings matching `^\d+(ms|s|m|h)?$`; omitted units MUST mean milliseconds.
 - Task runs MUST contain a closed `target` descriptor that is either an inline source target or a reusable module target.
 - Inline task targets MUST contain `{ kind: "inline", runtime: "node", source }`, where `source` is the self-contained `exec` function source.
 - Reusable task targets MUST contain `{ kind: "module", runtime: "node", specifier, exportName, referrer }`, where `specifier` is the source-level module specifier, `exportName` selects the exported task token, and `referrer` identifies the workflow source file used as the resolution parent.

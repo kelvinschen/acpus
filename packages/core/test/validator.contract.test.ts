@@ -310,6 +310,139 @@ describe("WorkflowIR diagnostics contract", () => {
     ]);
   });
 
+  it("validates node timeout duration strings", () => {
+    const outputSchema = { kind: "object" as const, fields: {}, required: [], additionalProperties: false };
+    const target = { kind: "inline" as const, runtime: "node" as const, source: "async function task() { return {}; }" };
+
+    const diagnostics = validateWorkflowIR(minimalWorkflow({
+      agents: {
+        reviewer: {
+          kind: "agent_definition",
+          use: "codex",
+        },
+      },
+      root: {
+        nodes: [
+          {
+            id: "agent_non_string",
+            kind: "agent",
+            run: { kind: "agent_run", agent: "reviewer", prompt: { kind: "template", parts: [] } },
+            timeout: 1000,
+          },
+          {
+            id: "task_decimal",
+            kind: "task",
+            outputSchema,
+            run: { kind: "task_run", input: {}, target },
+            timeout: "1.5s",
+          },
+          {
+            id: "signal_negative",
+            kind: "signal",
+            outputSchema,
+            run: { kind: "signal_run", prompt: { kind: "template", parts: [] } },
+            timeout: "-1s",
+          },
+          {
+            id: "agent_spaced",
+            kind: "agent",
+            run: { kind: "agent_run", agent: "reviewer", prompt: { kind: "template", parts: [] } },
+            timeout: "5 m",
+          },
+          {
+            id: "task_compound",
+            kind: "task",
+            outputSchema,
+            run: { kind: "task_run", input: {}, target },
+            timeout: "1m30s",
+          },
+        ],
+      },
+    } as any));
+
+    expect(diagnostics.map(diagnostic => [diagnostic.code, diagnostic.path])).toEqual([
+      ["IR002", "root.nodes.agent_non_string.timeout"],
+      ["IR002", "root.nodes.task_decimal.timeout"],
+      ["IR002", "root.nodes.signal_negative.timeout"],
+      ["IR002", "root.nodes.agent_spaced.timeout"],
+      ["IR002", "root.nodes.task_compound.timeout"],
+    ]);
+  });
+
+  it("accepts supported timeout duration strings", () => {
+    const outputSchema = { kind: "object" as const, fields: {}, required: [], additionalProperties: false };
+    const target = { kind: "inline" as const, runtime: "node" as const, source: "async function task() { return {}; }" };
+
+    const diagnostics = validateWorkflowIR(minimalWorkflow({
+      agents: {
+        reviewer: {
+          kind: "agent_definition",
+          use: "codex",
+        },
+      },
+      root: {
+        nodes: [
+          {
+            id: "agent_milliseconds",
+            kind: "agent",
+            run: { kind: "agent_run", agent: "reviewer", prompt: { kind: "template", parts: [] } },
+            timeout: "500ms",
+          },
+          {
+            id: "task_seconds",
+            kind: "task",
+            outputSchema,
+            run: { kind: "task_run", input: {}, target },
+            timeout: "30s",
+          },
+          {
+            id: "signal_minutes",
+            kind: "signal",
+            outputSchema,
+            run: { kind: "signal_run", prompt: { kind: "template", parts: [] } },
+            timeout: "5m",
+          },
+          {
+            id: "task_default_milliseconds",
+            kind: "task",
+            outputSchema,
+            run: { kind: "task_run", input: {}, target, execution: { defaultCommandTimeout: "1000" } },
+          },
+          {
+            id: "agent_hours",
+            kind: "agent",
+            run: { kind: "agent_run", agent: "reviewer", prompt: { kind: "template", parts: [] } },
+            timeout: "1h",
+          },
+        ],
+      },
+    }));
+
+    expect(diagnostics).toEqual([]);
+  });
+
+  it("validates task default command timeout duration strings", () => {
+    const diagnostics = validateWorkflowIR(minimalWorkflow({
+      root: {
+        nodes: [{
+          id: "bad_command_timeout",
+          kind: "task",
+          outputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
+          run: {
+            kind: "task_run",
+            input: {},
+            target: { kind: "inline", runtime: "node", source: "async function task() { return {}; }" },
+            execution: { defaultCommandTimeout: "1m30s" },
+          },
+        }],
+      },
+    }));
+
+    expect(diagnostics).toEqual([
+      expect.objectContaining({ code: "T006", path: "root.nodes.bad_command_timeout.run.execution.defaultCommandTimeout" }),
+    ]);
+  });
+
   it("validates signal timeout and loop exhaustion strategy invariants", () => {
     const ir: WorkflowIR = {
       irVersion: 2,

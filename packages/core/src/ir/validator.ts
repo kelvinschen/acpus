@@ -155,6 +155,7 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
   switch (node.kind) {
     case "agent": {
       validateKnownFields(node, ["id", "source", "kind", "outputSchema", "run", "timeout", "retry"], diagnostics, path);
+      validateDuration(node.timeout, diagnostics, `${path}.timeout`, `Agent node '${node.id}' timeout`, "IR002");
       validateAgentRun(node.run, diagnostics, `${path}.run`);
       validateRetry(node.retry, diagnostics, `${path}.retry`, node.outputSchema !== undefined);
       const agentKey = isRecord(node.run) && typeof node.run.agent === "string" ? node.run.agent : undefined;
@@ -172,12 +173,14 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
     }
     case "task": {
       validateKnownFields(node, ["id", "source", "kind", "outputSchema", "run", "timeout"], diagnostics, path);
+      validateDuration(node.timeout, diagnostics, `${path}.timeout`, `Task node '${node.id}' timeout`, "IR002");
       validateTaskRun(node.run, diagnostics, `${path}.run`);
       validateRequiredSchema(node.outputSchema, diagnostics, `${path}.outputSchema`);
       break;
     }
     case "signal": {
       validateKnownFields(node, ["id", "source", "kind", "outputSchema", "run", "timeout", "onTimeout"], diagnostics, path);
+      validateDuration(node.timeout, diagnostics, `${path}.timeout`, `Signal node '${node.id}' timeout`, "IR002");
       validateSignalRun(node.run, diagnostics, `${path}.run`);
       validateSignalTimeout(node.onTimeout, diagnostics, `${path}.onTimeout`, node.id);
       validateRequiredSchema(node.outputSchema, diagnostics, `${path}.outputSchema`);
@@ -333,6 +336,13 @@ function validateRetry(value: unknown, diagnostics: DiagnosticIR[], path: string
   const max = (value as { max?: unknown }).max;
   if (max !== undefined && (typeof max !== "number" || !Number.isInteger(max) || max < 0)) {
     diagnostics.push({ code: "IR001", severity: "error", message: "Retry max must be a non-negative integer.", path: `${path}.max` });
+  }
+}
+
+function validateDuration(value: unknown, diagnostics: DiagnosticIR[], path: string, label: string, code: string): void {
+  if (value === undefined) return;
+  if (typeof value !== "string" || !/^\d+(ms|s|m|h)?$/.test(value)) {
+    diagnostics.push({ code, severity: "error", message: `${label} must be a duration string like 500ms, 30s, 5m, 1h, or 1000.`, path });
   }
 }
 
@@ -492,9 +502,7 @@ function validateTaskExecution(execution: unknown, diagnostics: DiagnosticIR[], 
   if (execution.shell !== undefined && execution.shell !== "bash" && execution.shell !== "powershell" && execution.shell !== "pwsh") {
     diagnostics.push({ code: "T006", severity: "error", message: "Task execution shell must be bash, powershell, or pwsh.", path: `${path}.shell` });
   }
-  if (execution.defaultCommandTimeout !== undefined && typeof execution.defaultCommandTimeout !== "string") {
-    diagnostics.push({ code: "T006", severity: "error", message: "Task defaultCommandTimeout must be a duration string.", path: `${path}.defaultCommandTimeout` });
-  }
+  validateDuration(execution.defaultCommandTimeout, diagnostics, `${path}.defaultCommandTimeout`, "Task defaultCommandTimeout", "T006");
   if (execution.commandRunner !== undefined && execution.commandRunner !== "acpus-zx-core" && execution.commandRunner !== "custom") {
     diagnostics.push({ code: "T006", severity: "error", message: "Task commandRunner must be acpus-zx-core or custom.", path: `${path}.commandRunner` });
   }
