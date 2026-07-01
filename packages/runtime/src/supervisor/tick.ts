@@ -1,5 +1,5 @@
-import { advanceRun } from "../execution/advance.js";
 import { applyControlCommand } from "../control/apply-command.js";
+import { advanceRuntimeRun } from "../runs/advance-runtime.js";
 import type { RuntimeStore } from "../store/store.js";
 
 export type SupervisorTickResult = {
@@ -30,8 +30,8 @@ export async function runSupervisorTick(cwd: string, store: RuntimeStore, option
 
   let runs = 0;
   for (const run of store.listRunnableRuns()) {
-    const advanced = await advanceRun(cwd, store, run.id);
-    if (advanced.status !== "blocked") runs += 1;
+    const advanced = await advanceRuntimeRun(cwd, store, run.id);
+    if (advanced.status !== "idle") runs += 1;
   }
   return { commands, runs, shutdown };
 }

@@ -6,10 +6,15 @@ import { DatabaseSync } from "node:sqlite";
 import type { ScopeIR, WorkflowIR } from "@acpus/core/ir";
 import type { ExprIR, JsonValue } from "@acpus/expression/ir";
 import { evaluateExpr } from "../evaluation/evaluator.js";
+import { applySchedulerEvents, createSchedulerProjection } from "../scheduler/transitions.js";
+import type { SchedulerEvent } from "../scheduler/events.js";
+import type { RunOwnerClaim, SchedulerCommit, SchedulerSnapshot, SchedulerStorePort, AttemptStartInput, AttemptCommitInput, SignalConsumeInput, SchedulerPauseInput, SchedulerResumeInput, SchedulerRetryInput, SchedulerRunRetryInput } from "../scheduler/store-port.js";
+import type { SchedulerProjection } from "../scheduler/types.js";
 
 export type RunStatus = "pending" | "running" | "paused" | "awaiting" | "failed" | "completed" | "canceled";
 
 export type RuntimeStore = {
+  scheduler: SchedulerStorePort;
   close(): void;
   admitRun(input: AdmitRunInput): Promise<RunRecord>;
   completeRun(input: CompleteRunInput): RunRecord;
@@ -28,6 +33,7 @@ export type RuntimeStore = {
   submitCommand(input: SubmitCommandInput): PendingControlCommand;
   getCommand(commandId: string): PendingControlCommand | undefined;
   claimCommand(commandId: string, options?: ClaimCommandOptions): boolean;
+  deferCommand(commandId: string): void;
   recoverStaleCommands(options?: RecoverStaleCommandsOptions): number;
   listPendingCommands(): PendingControlCommand[];
   listRunnableRuns(): RunRecord[];
@@ -94,6 +100,76 @@ export type RunDetails = RunRecord & {
   eventCount: number;
   nodeCount: number;
   taskBundleCount: number;
+  dynamic?: RunDynamicDetails;
+};
+
+export type RunDynamicDetails = {
+  version: number;
+  frames: RunDynamicFrame[];
+  nodeInstances: RunDynamicNodeInstance[];
+  attempts: RunDynamicAttempt[];
+  groupMembers: RunDynamicGroupMember[];
+  signalWaits: RunDynamicSignalWait[];
+};
+
+export type RunDynamicFrame = {
+  frameKey: string;
+  parentFrameKey?: string;
+  nodeKey?: string;
+  nodeId?: string;
+  frameKind: string;
+  status: string;
+  strategy?: string;
+  terminalReason?: string;
+  result?: unknown;
+  error?: unknown;
+};
+
+export type RunDynamicNodeInstance = {
+  nodeKey: string;
+  nodeId: string;
+  parentFrameKey?: string;
+  status: string;
+  statusReason?: string;
+  output?: unknown;
+  error?: unknown;
+  acceptedAttemptId?: string;
+};
+
+export type RunDynamicAttempt = {
+  attemptId: string;
+  nodeKey: string;
+  nodeId: string;
+  attemptNo: number;
+  status: string;
+  deadlineAt?: string;
+  result?: unknown;
+  error?: unknown;
+  terminalReason?: string;
+  cancelReason?: string;
+};
+
+export type RunDynamicGroupMember = {
+  groupKey: string;
+  memberKey: string;
+  memberKind: string;
+  branchId?: string;
+  itemKey?: string;
+  itemIndex?: number;
+  item?: unknown;
+  status: string;
+  acceptedRank?: number;
+  terminalReason?: string;
+  output?: unknown;
+  error?: unknown;
+};
+
+export type RunDynamicSignalWait = {
+  nodeKey: string;
+  nodeId: string;
+  status: string;
+  deadlineAt?: string;
+  terminalReason?: string;
 };
 
 export type CompleteRunInput = {
@@ -314,7 +390,14 @@ async function openExistingStore(cwd: string, readOnly: boolean): Promise<Runtim
 }
 
 class SqliteRuntimeStore implements RuntimeStore {
+  private schedulerPort?: SchedulerStorePort;
+
   constructor(private readonly db: DatabaseSync, private readonly cwd: string) {}
+
+  get scheduler(): SchedulerStorePort {
+    this.schedulerPort ??= new SqliteSchedulerStorePort(this.db);
+    return this.schedulerPort;
+  }
 
   close(): void {
     this.db.close();
@@ -579,20 +662,28 @@ class SqliteRuntimeStore implements RuntimeStore {
 
   getSignalPayloads(runId: string): Record<string, unknown> {
     const rows = this.db.prepare(`
-      SELECT node_key, output_json
+      SELECT node_key, node_id, output_json
       FROM node_states
       WHERE run_id = ? AND status = 'completed' AND output_json IS NOT NULL
-    `).all(runId);
-    return Object.fromEntries(rows.map(row => [String(row.node_key), JSON.parse(String(row.output_json)) as unknown]));
+    `).all(runId) as Array<{ node_key: unknown; node_id: unknown; output_json: unknown }>;
+    return completedOutputMap(rows.map(row => ({
+      nodeKey: String(row.node_key),
+      nodeId: String(row.node_id),
+      output: JSON.parse(String(row.output_json)) as unknown,
+    })));
   }
 
   getCompletedNodeOutputs(runId: string): Record<string, unknown> {
     const rows = this.db.prepare(`
-      SELECT node_key, output_json
+      SELECT node_key, node_id, output_json
       FROM node_states
       WHERE run_id = ? AND status = 'completed' AND output_json IS NOT NULL
-    `).all(runId);
-    return Object.fromEntries(rows.map(row => [String(row.node_key), JSON.parse(String(row.output_json)) as unknown]));
+    `).all(runId) as Array<{ node_key: unknown; node_id: unknown; output_json: unknown }>;
+    return completedOutputMap(rows.map(row => ({
+      nodeKey: String(row.node_key),
+      nodeId: String(row.node_id),
+      output: JSON.parse(String(row.output_json)) as unknown,
+    })));
   }
 
   getFrozenRun(runId: string): FrozenRun | undefined {
@@ -764,6 +855,14 @@ class SqliteRuntimeStore implements RuntimeStore {
     return result.changes === 1;
   }
 
+  deferCommand(commandId: string): void {
+    this.db.prepare(`
+      UPDATE commands
+      SET status = 'pending', owner_generation = NULL, updated_at = ?
+      WHERE id = ? AND status = 'running'
+    `).run(new Date().toISOString(), commandId);
+  }
+
   recoverStaleCommands(options: RecoverStaleCommandsOptions = {}): number {
     const olderThanMs = options.olderThanMs ?? 30_000;
     if (options.ownerGeneration === undefined) return 0;
@@ -898,16 +997,25 @@ class SqliteRuntimeStore implements RuntimeStore {
     const sourceNodeSignatures = nodeSignatures(sourceIr.root);
     const forkNodeSignatures = nodeSignatures(forkIr.root);
     const irNodeKeys = new Set(forkNodeSignatures.keys());
-    const knownCompletedNodeKeys = new Set([...completedNodeKeys].filter(nodeKey => forkNodeSignatures.get(nodeKey) === sourceNodeSignatures.get(nodeKey)));
+    const knownCompletedNodeKeys = new Set([...completedNodeKeys].filter(nodeKey => {
+      if (forkNodeSignatures.has(nodeKey)) return forkNodeSignatures.get(nodeKey) === sourceNodeSignatures.get(nodeKey);
+      return !replacement;
+    }));
     const inheritableNodeKeys = options.input !== undefined ? new Set<string>() : source.status === "completed"
       ? knownCompletedNodeKeys
       : inheritableCompletedNodeKeys(forkIr, knownCompletedNodeKeys);
+    const nodeRows = this.db.prepare("SELECT node_key, node_id, status, output_json, error_json, attempt FROM node_states WHERE run_id = ?").all(runId) as Array<Record<string, unknown>>;
+    const reachableArtifactIds = reachableInheritedArtifactIds({
+      runId,
+      outputJson: input.output_json,
+      nodeRows,
+      inheritableNodeKeys,
+    });
     const artifacts = this.db.prepare(`
       SELECT id, node_key, attempt, media_type, digest, size, relative_path
       FROM artifacts
       WHERE run_id = ?
-    `).all(runId).filter(artifact => inheritableNodeKeys.has(String(artifact.node_key))) as ArtifactRow[];
-    const nodeRows = this.db.prepare("SELECT node_key, node_id, status, output_json, error_json, attempt FROM node_states WHERE run_id = ?").all(runId);
+    `).all(runId).filter(artifact => reachableArtifactIds.has(String(artifact.id)) && inheritableNodeKeys.has(String(artifact.node_key))) as ArtifactRow[];
     const artifactIdMap = Object.fromEntries(artifacts.map(artifact => [
       String(artifact.id),
       `artifact_${randomUUID()}`,
@@ -933,7 +1041,7 @@ class SqliteRuntimeStore implements RuntimeStore {
       try {
         await mkdir(dirname(stagedForkRunPath), { recursive: true });
         await cp(sourceRunDir, stagedForkRunPath, { recursive: true });
-        await pruneNonInheritedArtifacts(stagedForkRunPath, inheritableNodeKeys);
+        await pruneNonInheritedArtifacts(stagedForkRunPath, artifacts);
         if (options.prepared) await writePreparedRunFiles(stagedForkRunPath, options.prepared);
         await verifyFrozenRunFiles(stagedForkRunPath, forkIrDigest, forkLockJson, forkIrJson);
         await verifyCopiedArtifacts(stagedForkRunPath, artifacts);
@@ -981,17 +1089,18 @@ class SqliteRuntimeStore implements RuntimeStore {
       }
       const insertedNodeKeys = new Set<string>();
       for (const row of nodeRows) {
-        if (!irNodeKeys.has(String(row.node_key))) continue;
-        insertedNodeKeys.add(String(row.node_key));
+        const nodeKey = String(row.node_key);
+        if (!irNodeKeys.has(nodeKey) && !inheritableNodeKeys.has(nodeKey)) continue;
+        insertedNodeKeys.add(nodeKey);
         this.db.prepare(`
           INSERT INTO node_states (run_id, node_key, node_id, status, output_json, error_json, attempt, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           forkId,
-          String(row.node_key),
+          nodeKey,
           String(row.node_id),
-          inheritableNodeKeys.has(String(row.node_key)) ? "completed" : "pending",
-          inheritableNodeKeys.has(String(row.node_key)) && row.output_json ? rewriteArtifactRefs(String(row.output_json), runId, forkId, artifactIdMap) : null,
+          inheritableNodeKeys.has(nodeKey) ? "completed" : "pending",
+          inheritableNodeKeys.has(nodeKey) && row.output_json ? rewriteArtifactRefs(String(row.output_json), runId, forkId, artifactIdMap) : null,
           null,
           Number(row.attempt ?? 0),
           now,
@@ -1095,6 +1204,7 @@ class SqliteRuntimeStore implements RuntimeStore {
     if (!input) return undefined;
     const eventCount = this.count("run_events", runId);
     const nodeCount = this.count("node_states", runId);
+    const dynamic = this.tryGetRunDynamicDetails(runId);
     return {
       ...run,
       input: JSON.parse(input.input_json) as JsonValue,
@@ -1102,7 +1212,29 @@ class SqliteRuntimeStore implements RuntimeStore {
       eventCount,
       nodeCount,
       taskBundleCount: input.task_bundle_count,
+      ...(dynamic ? { dynamic } : {}),
     };
+  }
+
+  private tryGetRunDynamicDetails(runId: string): RunDynamicDetails | undefined {
+    try {
+      const frames = readRunDynamicFrames(this.db, runId);
+      const nodeInstances = readRunDynamicNodeInstances(this.db, runId);
+      const attempts = readRunDynamicAttempts(this.db, runId);
+      const groupMembers = readRunDynamicGroupMembers(this.db, runId);
+      const signalWaits = readRunDynamicSignalWaits(this.db, runId);
+      if (frames.length + nodeInstances.length + attempts.length + groupMembers.length + signalWaits.length === 0) return undefined;
+      return {
+        version: this.nextSequence(runId) - 1,
+        frames,
+        nodeInstances,
+        attempts,
+        groupMembers,
+        signalWaits,
+      };
+    } catch {
+      return undefined;
+    }
   }
 
   private verifyArtifactRegistry(runId: string): NonNullable<ReplayResult["artifacts"]> {
@@ -1162,6 +1294,7 @@ class SqliteRuntimeStore implements RuntimeStore {
     `).all(runId) as Array<{ type: string; payload_json: string }>;
     const completed = terminalEvents.filter(event => event.type === "run.completed");
     const failed = terminalEvents.filter(event => event.type === "run.failed");
+    const hasRunRetry = schedulerEvents(this.db, runId).some(event => event.type === "control.run_retry_requested");
     const rebuilt = rebuildTerminalProjection(terminalEvents);
     if (rebuilt.status && rebuilt.status !== run.status) {
       issues.push(`Run '${runId}' status does not match terminal event stream.`);
@@ -1173,13 +1306,17 @@ class SqliteRuntimeStore implements RuntimeStore {
         issues.push(`Run '${runId}' output projection does not match terminal event stream.`);
       }
     }
-    if (completed.length > 0 && failed.length > 0) issues.push(`Run '${runId}' has conflicting terminal events.`);
+    if (!hasRunRetry && completed.length > 0 && failed.length > 0) issues.push(`Run '${runId}' has conflicting terminal events.`);
     if (run.status === "completed") {
-      if (completed.length !== 1) issues.push(`Completed run '${runId}' must have exactly one run.completed event.`);
-      if (failed.length > 0) issues.push(`Completed run '${runId}' must not have run.failed events.`);
+      if (hasRunRetry) {
+        if (completed.length < 1) issues.push(`Completed run '${runId}' must have a run.completed event.`);
+      } else {
+        if (completed.length !== 1) issues.push(`Completed run '${runId}' must have exactly one run.completed event.`);
+        if (failed.length > 0) issues.push(`Completed run '${runId}' must not have run.failed events.`);
+      }
       const row = this.db.prepare("SELECT output_json FROM run_inputs WHERE run_id = ?").get(runId) as { output_json: string | null } | undefined;
       if (!row?.output_json) issues.push(`Completed run '${runId}' has no persisted output.`);
-      const completedEvent = completed[0];
+      const completedEvent = completed.at(-1);
       if (completedEvent && row?.output_json) {
         const eventPayload = safeParseJson(completedEvent.payload_json);
         const persistedOutput = safeParseJson(row.output_json);
@@ -1191,9 +1328,13 @@ class SqliteRuntimeStore implements RuntimeStore {
       }
     }
     if (run.status === "failed") {
-      if (failed.length !== 1) issues.push(`Failed run '${runId}' must have exactly one run.failed event.`);
-      if (completed.length > 0) issues.push(`Failed run '${runId}' must not have run.completed events.`);
-      const failedEvent = failed[0];
+      if (hasRunRetry) {
+        if (failed.length < 1) issues.push(`Failed run '${runId}' must have a run.failed event.`);
+      } else {
+        if (failed.length !== 1) issues.push(`Failed run '${runId}' must have exactly one run.failed event.`);
+        if (completed.length > 0) issues.push(`Failed run '${runId}' must not have run.completed events.`);
+      }
+      const failedEvent = failed.at(-1);
       if (failedEvent) {
         const eventPayload = safeParseJson(failedEvent.payload_json);
         if (!eventPayload.ok) issues.push(`Failed run '${runId}' has invalid run.failed payload JSON.`);
@@ -1213,10 +1354,43 @@ class SqliteRuntimeStore implements RuntimeStore {
         }
       }
     }
-    if ((run.status === "pending" || run.status === "awaiting" || run.status === "paused") && terminalEvents.length > 0) {
+    if ((run.status === "pending" || run.status === "awaiting" || run.status === "paused") && terminalEvents.length > 0 && !hasRunRetry) {
       issues.push(`Non-terminal run '${runId}' has terminal events.`);
     }
+    issues.push(...this.verifySchedulerReplayProjection(runId, run));
     return { issues };
+  }
+
+  private verifySchedulerReplayProjection(runId: string, run: RunRecord): string[] {
+    const replayEvents = schedulerEventsForReplay(this.db, runId);
+    const events = replayEvents.events;
+    if (events.length === 0) {
+      return [
+        ...replayEvents.issues,
+        ...compareSchedulerProjectionTables(this.db, runId, createSchedulerProjection(runId)),
+      ];
+    }
+    let projection: SchedulerProjection;
+    try {
+      projection = applySchedulerEvents(createSchedulerProjection(runId), events);
+    } catch (error) {
+      return [`Scheduler event stream for run '${runId}' is not replayable: ${error instanceof Error ? error.message : String(error)}`];
+    }
+    const issues = [...replayEvents.issues];
+    const expectedPublicStatus = publicStatusFromSchedulerProjection(projection);
+    if (run.status !== expectedPublicStatus) {
+      issues.push(`Run '${runId}' public status does not match scheduler event stream.`);
+    }
+    if (projection.run.status === "completed") {
+      const expectedOutput = projection.frames.root?.result ?? {};
+      const row = this.db.prepare("SELECT output_json FROM run_inputs WHERE run_id = ?").get(runId) as { output_json: string | null } | undefined;
+      const persistedOutput = row?.output_json ? safeParseJson(row.output_json) : undefined;
+      if (!persistedOutput?.ok || !sameStableJson(persistedOutput.value, expectedOutput)) {
+        issues.push(`Run '${runId}' public output does not match scheduler event stream.`);
+      }
+    }
+    issues.push(...compareSchedulerProjectionTables(this.db, runId, projection));
+    return issues;
   }
 
   listRuns(): RunRecord[] {
@@ -1283,6 +1457,1223 @@ class SqliteRuntimeStore implements RuntimeStore {
     const row = this.db.prepare("SELECT COALESCE(MAX(sequence), 0) + 1 AS count FROM run_events WHERE run_id = ?").get(runId) as CountRow | undefined;
     return row?.count ?? 1;
   }
+}
+
+class SqliteSchedulerStorePort implements SchedulerStorePort {
+  constructor(private readonly db: DatabaseSync) {}
+
+  claimRun(runId: string, ownerId: string, leaseMs: number): RunOwnerClaim | undefined {
+    const now = new Date().toISOString();
+    const leaseExpiresAt = new Date(Date.now() + leaseMs).toISOString();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const run = this.db.prepare("SELECT id FROM runs WHERE id = ?").get(runId);
+      if (!run) throw new Error(`Run '${runId}' was not found.`);
+      const current = this.db.prepare("SELECT owner_epoch, lease_expires_at, released_at FROM run_leases WHERE run_id = ?").get(runId) as { owner_epoch: number; lease_expires_at: string; released_at: string | null } | undefined;
+      if (current && current.released_at === null && current.lease_expires_at > now) {
+        this.db.exec("ROLLBACK");
+        return undefined;
+      }
+      const ownerEpoch = (current?.owner_epoch ?? 0) + 1;
+      this.db.prepare(`
+        INSERT INTO run_leases (run_id, owner_id, owner_epoch, lease_expires_at, heartbeat_at, claimed_at, released_at, reason)
+        VALUES (?, ?, ?, ?, ?, ?, NULL, 'advance')
+        ON CONFLICT(run_id) DO UPDATE SET
+          owner_id = excluded.owner_id,
+          owner_epoch = excluded.owner_epoch,
+          lease_expires_at = excluded.lease_expires_at,
+          heartbeat_at = excluded.heartbeat_at,
+          claimed_at = excluded.claimed_at,
+          released_at = NULL,
+          reason = excluded.reason
+      `).run(runId, ownerId, ownerEpoch, leaseExpiresAt, now, now);
+      this.db.exec("COMMIT");
+      return { runId, ownerId, ownerEpoch, leaseExpiresAt };
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  heartbeatRun(claim: RunOwnerClaim, leaseMs: number): boolean {
+    const now = new Date().toISOString();
+    const leaseExpiresAt = new Date(Date.now() + leaseMs).toISOString();
+    const result = this.db.prepare(`
+      UPDATE run_leases
+      SET lease_expires_at = ?, heartbeat_at = ?
+      WHERE run_id = ? AND owner_id = ? AND owner_epoch = ? AND released_at IS NULL AND lease_expires_at > ?
+    `).run(leaseExpiresAt, now, claim.runId, claim.ownerId, claim.ownerEpoch, now);
+    return result.changes === 1;
+  }
+
+  releaseRun(claim: RunOwnerClaim): boolean {
+    const now = new Date().toISOString();
+    const result = this.db.prepare(`
+      UPDATE run_leases
+      SET released_at = ?, heartbeat_at = ?
+      WHERE run_id = ? AND owner_id = ? AND owner_epoch = ? AND released_at IS NULL
+    `).run(now, now, claim.runId, claim.ownerId, claim.ownerEpoch);
+    return result.changes === 1;
+  }
+
+  loadRunSnapshot(runId: string): SchedulerSnapshot {
+    const row = this.db.prepare("SELECT id FROM runs WHERE id = ?").get(runId);
+    if (!row) throw new Error(`Run '${runId}' was not found.`);
+    const events = this.schedulerEvents(runId);
+    return {
+      runId,
+      version: this.currentVersion(runId),
+      projection: applySchedulerEvents(createSchedulerProjection(runId), events),
+    };
+  }
+
+  appendSchedulerEvents(commit: SchedulerCommit): SchedulerSnapshot {
+    if (commit.events.length === 0) return this.loadRunSnapshot(commit.runId);
+    const replay = this.replayAppendIdempotency(commit);
+    if (replay) return replay;
+    const now = new Date().toISOString();
+    const commitDigest = schedulerCommitDigest(commit.events);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const currentVersion = this.currentVersion(commit.runId);
+      if (currentVersion !== commit.expectedVersion) throw new Error(`Run '${commit.runId}' scheduler version mismatch.`);
+      this.requireOwnerEpoch(commit.runId, commit.ownerEpoch);
+      applySchedulerEvents(createSchedulerProjection(commit.runId), [...this.schedulerEvents(commit.runId), ...commit.events]);
+      this.db.prepare(`
+        INSERT INTO scheduler_commits (run_id, idempotency_key, event_count, event_digest, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(commit.runId, commit.idempotencyKey, commit.events.length, commitDigest, now);
+      let sequence = currentVersion + 1;
+      for (const [index, event] of commit.events.entries()) {
+        this.db.prepare(`
+          INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(commit.runId, sequence, event.type, eventNodeKey(event), encodeSchedulerPayload(event.payload), now, schedulerEventIdempotencyKey(commit.runId, commit.idempotencyKey, index));
+        sequence += 1;
+      }
+      this.syncSchedulerProjectionTables(commit.runId, now);
+      this.syncPublicRunProjection(commit.runId, now);
+      this.db.exec("COMMIT");
+      return this.loadRunSnapshot(commit.runId);
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  startAttempt(input: AttemptStartInput): { attemptId: string; attemptNo: number } {
+    const existing = this.eventByIdempotencyKey(input.idempotencyKey);
+    if (existing && existing.type === "attempt.started") {
+      const payload = existing.payload as { attemptId?: unknown; attemptNo?: unknown };
+      if (existing.run_id !== input.runId) throw new Error(`Attempt start idempotency key '${input.idempotencyKey}' conflicts with another run.`);
+      if (!matchesAttemptStartInput(input, payload)) throw new Error(`Attempt start idempotency key '${input.idempotencyKey}' conflicts with different input.`);
+      if (typeof payload.attemptId === "string" && typeof payload.attemptNo === "number") return { attemptId: payload.attemptId, attemptNo: payload.attemptNo };
+      throw new Error(`Attempt start idempotency key '${input.idempotencyKey}' has invalid payload.`);
+    }
+    if (existing) throw new Error(`Attempt start idempotency key '${input.idempotencyKey}' conflicts with ${existing.type}.`);
+    const now = new Date().toISOString();
+    const attemptId = `attempt_${randomUUID()}`;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.requireOwnerEpoch(input.runId, input.ownerEpoch);
+      const currentProjection = applySchedulerEvents(createSchedulerProjection(input.runId), this.schedulerEvents(input.runId));
+      if (currentProjection.run.status === "paused") throw new Error(`Run '${input.runId}' is paused.`);
+      const row = this.db.prepare("SELECT COALESCE(MAX(attempt_no), 0) + 1 AS count FROM node_attempts WHERE run_id = ? AND node_key = ?").get(input.runId, input.nodeKey) as CountRow | undefined;
+      const attemptNo = row?.count ?? 1;
+      const sequence = this.nextSequence(input.runId);
+      const payload = {
+        runId: input.runId,
+        attemptId,
+        nodeKey: input.nodeKey,
+        nodeId: input.nodeId,
+        attemptNo,
+        ownerEpoch: input.ownerEpoch,
+        ...(input.deadlineAt === undefined ? {} : { deadlineAt: input.deadlineAt }),
+      };
+      const instanceStartedEvent: SchedulerEvent = { type: "instance.started", payload: { nodeKey: input.nodeKey } };
+      const attemptStartedEvent: SchedulerEvent = { type: "attempt.started", payload };
+      const memberStartedEvent = this.groupMemberEventForNode(input.runId, input.nodeKey);
+      const events = [instanceStartedEvent, ...(memberStartedEvent ? [memberStartedEvent] : []), attemptStartedEvent];
+      applySchedulerEvents(createSchedulerProjection(input.runId), [...this.schedulerEvents(input.runId), ...events]);
+      let sequenceOffset = 0;
+      this.db.prepare(`
+        INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
+        VALUES (?, ?, 'instance.started', ?, ?, ?, ?)
+      `).run(input.runId, sequence + sequenceOffset, input.nodeKey, encodeSchedulerPayload(instanceStartedEvent.payload), now, derivedIdempotencyKey(input.idempotencyKey, "instance"));
+      sequenceOffset += 1;
+      if (memberStartedEvent) {
+        this.db.prepare(`
+          INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
+          VALUES (?, ?, 'group.member_started', ?, ?, ?, ?)
+        `).run(input.runId, sequence + sequenceOffset, input.nodeKey, encodeSchedulerPayload(memberStartedEvent.payload), now, derivedIdempotencyKey(input.idempotencyKey, "member"));
+        sequenceOffset += 1;
+      }
+      this.db.prepare(`
+        INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
+        VALUES (?, ?, 'attempt.started', ?, ?, ?, ?)
+      `).run(input.runId, sequence + sequenceOffset, input.nodeKey, encodeSchedulerPayload(payload), now, input.idempotencyKey);
+      this.syncSchedulerProjectionTables(input.runId, now);
+      this.syncPublicRunProjection(input.runId, now);
+      this.db.exec("COMMIT");
+      return { attemptId, attemptNo };
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  commitAttemptResult(input: AttemptCommitInput): SchedulerSnapshot {
+    const existing = this.eventByIdempotencyKey(input.idempotencyKey);
+    if (existing) {
+      if (existing.run_id !== input.runId) throw new Error(`Attempt commit idempotency key '${input.idempotencyKey}' conflicts with another run.`);
+      const attempt = this.db.prepare("SELECT node_key FROM node_attempts WHERE run_id = ? AND attempt_id = ?").get(input.runId, input.attemptId) as { node_key: string } | undefined;
+      if (!attempt) throw new Error(`Attempt '${input.attemptId}' was not found.`);
+      const event = attemptResultEvent(input, attempt.node_key);
+      if (existing.type !== event.type || stableJson(existing.payload) !== stableJson(event.payload)) {
+        throw new Error(`Attempt commit idempotency key '${input.idempotencyKey}' conflicts with different input.`);
+      }
+      return this.loadRunSnapshot(input.runId);
+    }
+    const now = new Date().toISOString();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const attempt = this.db.prepare("SELECT run_id, node_key, owner_epoch, status FROM node_attempts WHERE attempt_id = ?").get(input.attemptId) as { run_id: string; node_key: string; owner_epoch: number; status: string } | undefined;
+      if (!attempt || attempt.run_id !== input.runId) throw new Error(`Attempt '${input.attemptId}' was not found.`);
+      if (attempt.owner_epoch !== input.ownerEpoch) throw new Error(`Attempt '${input.attemptId}' owner epoch is stale.`);
+      this.requireOwnerEpoch(input.runId, input.ownerEpoch);
+      if (attempt.status !== "started") throw new Error(`Attempt '${input.attemptId}' is already ${attempt.status}.`);
+      const event = attemptResultEvent(input, String(attempt.node_key));
+      const instanceEvent = instanceResultEvent(input, String(attempt.node_key), event);
+      const memberEvent = this.groupMemberResultEventForNode(input.runId, String(attempt.node_key), input.result);
+      const events = [event, instanceEvent, ...(memberEvent ? [memberEvent] : [])];
+      applySchedulerEvents(createSchedulerProjection(input.runId), [...this.schedulerEvents(input.runId), ...events]);
+      const sequence = this.nextSequence(input.runId);
+      let sequenceOffset = 0;
+      this.db.prepare(`
+        INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(input.runId, sequence + sequenceOffset, event.type, String(attempt.node_key), encodeSchedulerPayload(event.payload), now, input.idempotencyKey);
+      sequenceOffset += 1;
+      this.db.prepare(`
+        INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(input.runId, sequence + sequenceOffset, instanceEvent.type, String(attempt.node_key), encodeSchedulerPayload(instanceEvent.payload), now, derivedIdempotencyKey(input.idempotencyKey, "instance"));
+      sequenceOffset += 1;
+      if (memberEvent) {
+        this.db.prepare(`
+          INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(input.runId, sequence + sequenceOffset, memberEvent.type, String(attempt.node_key), encodeSchedulerPayload(memberEvent.payload), now, derivedIdempotencyKey(input.idempotencyKey, "member"));
+      }
+      this.syncSchedulerProjectionTables(input.runId, now);
+      this.syncPublicRunProjection(input.runId, now);
+      this.db.exec("COMMIT");
+      return this.loadRunSnapshot(input.runId);
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  consumeSignal(input: SignalConsumeInput): SchedulerSnapshot {
+    const snapshot = this.loadRunSnapshot(input.runId);
+    const wait = snapshot.projection.signalWaits[input.nodeKey];
+    if (!wait) throw new Error(`Signal wait '${input.nodeKey}' was not found.`);
+    if (wait.status === "consumed" && wait.commandIdempotencyKey === input.commandIdempotencyKey && stableJson(wait.payload) === stableJson(input.payload)) {
+      return snapshot;
+    }
+    if (snapshot.projection.run.status === "paused") throw new Error(`Run '${input.runId}' is paused.`);
+    const payloadDigest = createHash("sha256").update(stableJson(input.payload)).digest("hex");
+    const events: SchedulerEvent[] = [
+      {
+        type: "signal.consumed",
+        payload: {
+          nodeKey: input.nodeKey,
+          payload: input.payload,
+          payloadDigest,
+          commandIdempotencyKey: input.commandIdempotencyKey,
+        },
+      },
+      {
+        type: "instance.completed",
+        payload: {
+          nodeKey: input.nodeKey,
+          output: input.payload,
+        },
+      },
+    ];
+    const member = snapshot.projection.groupMembers[input.nodeKey];
+    if (member?.status === "ready" || member?.status === "running") {
+      events.push({
+        type: "group.member_completed",
+        payload: {
+          memberKey: member.memberKey,
+          completionSequence: snapshot.version + events.length + 1,
+          output: input.payload,
+        },
+      });
+    }
+    return this.appendSchedulerEvents({
+      runId: input.runId,
+      expectedVersion: snapshot.version,
+      ownerEpoch: input.ownerEpoch,
+      idempotencyKey: input.idempotencyKey,
+      events,
+    });
+  }
+
+  pauseRun(input: SchedulerPauseInput): SchedulerSnapshot {
+    const replay = this.replayIntentIdempotency(input.runId, input.idempotencyKey);
+    if (replay) return replay;
+    const snapshot = this.loadRunSnapshot(input.runId);
+    if (snapshot.projection.run.status === "paused") return snapshot;
+    const events: SchedulerEvent[] = [
+      { type: "control.paused", payload: input.reason === undefined ? {} : { reason: input.reason } },
+    ];
+    for (const attempt of Object.values(snapshot.projection.attempts).filter(attempt => attempt.status === "started")) {
+      const instance = snapshot.projection.instances[attempt.nodeKey];
+      const member = snapshot.projection.groupMembers[attempt.nodeKey];
+      events.push({ type: "attempt.cancelled", payload: { attemptId: attempt.attemptId, cancelReason: "paused" } });
+      if (instance?.status === "running" || instance?.status === "awaiting") {
+        events.push({
+          type: "instance.requeued",
+          payload: {
+            nodeKey: instance.nodeKey,
+            reason: "paused",
+            ...(instance.readinessSequence === undefined ? {} : { readinessSequence: instance.readinessSequence }),
+          },
+        });
+      }
+      if (member?.status === "running") {
+        events.push({
+          type: "group.member_requeued",
+          payload: {
+            memberKey: member.memberKey,
+            reason: "paused",
+            readinessSequence: member.readinessSequence,
+          },
+        });
+      }
+    }
+    return this.appendSchedulerEvents({
+      runId: input.runId,
+      expectedVersion: snapshot.version,
+      ownerEpoch: input.ownerEpoch,
+      idempotencyKey: input.idempotencyKey,
+      events,
+    });
+  }
+
+  resumeRun(input: SchedulerResumeInput): SchedulerSnapshot {
+    const snapshot = this.loadRunSnapshot(input.runId);
+    return this.appendSchedulerEvents({
+      runId: input.runId,
+      expectedVersion: snapshot.version,
+      ownerEpoch: input.ownerEpoch,
+      idempotencyKey: input.idempotencyKey,
+      events: [{ type: "control.resumed", payload: {} }],
+    });
+  }
+
+  retryRun(input: SchedulerRunRetryInput): SchedulerSnapshot {
+    const replay = this.replayIntentIdempotency(input.runId, input.idempotencyKey);
+    if (replay) return replay;
+    const snapshot = this.loadRunSnapshot(input.runId);
+    return this.appendSchedulerEvents({
+      runId: input.runId,
+      expectedVersion: snapshot.version,
+      ownerEpoch: input.ownerEpoch,
+      idempotencyKey: input.idempotencyKey,
+      events: [{ type: "control.run_retry_requested", payload: {} }],
+    });
+  }
+
+  retry(input: SchedulerRetryInput): SchedulerSnapshot {
+    const idempotencyKey = retryIdempotencyKey(input.idempotencyKey, input.nodeKey);
+    const replay = this.replayIntentIdempotency(input.runId, idempotencyKey);
+    if (replay) return replay;
+    const snapshot = this.loadRunSnapshot(input.runId);
+    const instance = snapshot.projection.instances[input.nodeKey];
+    if (!instance) throw new Error(`Node instance '${input.nodeKey}' was not found.`);
+    const events: SchedulerEvent[] = [
+      {
+        type: "instance.retry_requested",
+        payload: {
+          nodeKey: input.nodeKey,
+          ...(instance.readinessSequence === undefined ? {} : { readinessSequence: instance.readinessSequence }),
+        },
+      },
+    ];
+    const member = snapshot.projection.groupMembers[input.nodeKey];
+    if (member && member.status !== "failed") {
+      throw new Error(`Group member '${member.memberKey}' cannot be retried from ${member.status}.`);
+    }
+    if (member) {
+      events.push({
+        type: "group.member_retry_requested",
+        payload: {
+          memberKey: member.memberKey,
+          readinessSequence: member.readinessSequence,
+        },
+      });
+    }
+    return this.appendSchedulerEvents({
+      runId: input.runId,
+      expectedVersion: snapshot.version,
+      ownerEpoch: input.ownerEpoch,
+      idempotencyKey,
+      events,
+    });
+  }
+
+  markExpiredOwnerAttemptsSuperseded(runId: string, ownerEpoch: number): SchedulerSnapshot {
+    const now = new Date().toISOString();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.assertOwnerEpochExpired(runId, ownerEpoch);
+      const attempts = this.db.prepare("SELECT attempt_id, node_key FROM node_attempts WHERE run_id = ? AND owner_epoch = ? AND status = 'started'").all(runId, ownerEpoch) as Array<{ attempt_id: string; node_key: string }>;
+      for (const attempt of attempts) {
+        const projection = applySchedulerEvents(createSchedulerProjection(runId), this.schedulerEvents(runId));
+        const instance = projection.instances[attempt.node_key];
+        const member = projection.groupMembers[attempt.node_key];
+        const events: SchedulerEvent[] = [
+          { type: "attempt.superseded", payload: { attemptId: attempt.attempt_id, cancelReason: "superseded" } },
+          ...(instance && (instance.status === "running" || instance.status === "awaiting")
+            ? [{ type: "instance.requeued", payload: { nodeKey: instance.nodeKey, reason: "superseded", ...(instance.readinessSequence === undefined ? {} : { readinessSequence: instance.readinessSequence }) } } satisfies SchedulerEvent]
+            : []),
+          ...(member?.status === "running"
+            ? [{ type: "group.member_requeued", payload: { memberKey: member.memberKey, reason: "superseded", readinessSequence: member.readinessSequence } } satisfies SchedulerEvent]
+            : []),
+        ];
+        applySchedulerEvents(createSchedulerProjection(runId), [...this.schedulerEvents(runId), ...events]);
+        const sequence = this.nextSequence(runId);
+        for (const [index, event] of events.entries()) {
+          this.db.prepare(`
+            INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+          `).run(runId, sequence + index, event.type, eventNodeKey(event) ?? attempt.node_key, encodeSchedulerPayload(event.payload), now, `supersede:${runId}:${attempt.attempt_id}:${index}`);
+        }
+      }
+      this.syncSchedulerProjectionTables(runId, now);
+      this.syncPublicRunProjection(runId, now);
+      this.db.exec("COMMIT");
+      return this.loadRunSnapshot(runId);
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  private schedulerEvents(runId: string): SchedulerEvent[] {
+    return schedulerEvents(this.db, runId);
+  }
+
+  private currentVersion(runId: string): number {
+    return this.nextSequence(runId) - 1;
+  }
+
+  private nextSequence(runId: string): number {
+    const row = this.db.prepare("SELECT COALESCE(MAX(sequence), 0) + 1 AS count FROM run_events WHERE run_id = ?").get(runId) as CountRow | undefined;
+    return row?.count ?? 1;
+  }
+
+  private requireOwnerEpoch(runId: string, ownerEpoch: number): void {
+    const row = this.db.prepare("SELECT owner_epoch, lease_expires_at, released_at FROM run_leases WHERE run_id = ?").get(runId) as { owner_epoch: number; lease_expires_at: string; released_at: string | null } | undefined;
+    const now = new Date().toISOString();
+    if (!row || row.owner_epoch !== ownerEpoch || row.released_at !== null || row.lease_expires_at <= now) {
+      throw new Error(`Run '${runId}' scheduler owner epoch is not active.`);
+    }
+  }
+
+  private assertOwnerEpochExpired(runId: string, ownerEpoch: number): void {
+    const row = this.db.prepare("SELECT owner_epoch, lease_expires_at, released_at FROM run_leases WHERE run_id = ?").get(runId) as { owner_epoch: number; lease_expires_at: string; released_at: string | null } | undefined;
+    const now = new Date().toISOString();
+    if (row && row.owner_epoch === ownerEpoch && row.released_at === null && row.lease_expires_at > now) {
+      throw new Error(`Run '${runId}' scheduler owner epoch ${ownerEpoch} is still active.`);
+    }
+  }
+
+  private eventByIdempotencyKey(idempotencyKey: string): { run_id: string; type: string; payload: Record<string, unknown> } | undefined {
+    const row = this.db.prepare("SELECT run_id, type, payload_json FROM run_events WHERE idempotency_key = ?").get(idempotencyKey) as { run_id: string; type: string; payload_json: string } | undefined;
+    if (!row) return undefined;
+    const payload = decodeSchedulerPayload(row.payload_json);
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      throw new Error(`Scheduler idempotency key '${idempotencyKey}' conflicts with non-scheduler event.`);
+    }
+    return { run_id: row.run_id, type: row.type, payload };
+  }
+
+  private groupMemberEventForNode(runId: string, nodeKey: string): Extract<SchedulerEvent, { type: "group.member_started" }> | undefined {
+    const projection = applySchedulerEvents(createSchedulerProjection(runId), this.schedulerEvents(runId));
+    const instance = projection.instances[nodeKey];
+    const member = projection.groupMembers[nodeKey]
+      ?? (instance?.parentFrameKey === undefined ? undefined : projection.groupMembers[instance.parentFrameKey]);
+    if (!member || member.status !== "ready") return undefined;
+    return { type: "group.member_started", payload: { memberKey: member.memberKey } };
+  }
+
+  private groupMemberResultEventForNode(runId: string, nodeKey: string, result: AttemptCommitInput["result"]): Extract<SchedulerEvent, { type: "group.member_completed" | "group.member_failed" | "group.member_cancelled" }> | undefined {
+    const projection = applySchedulerEvents(createSchedulerProjection(runId), this.schedulerEvents(runId));
+    const member = projection.groupMembers[nodeKey];
+    if (!member || member.status !== "running") return undefined;
+    if (result.status === "completed") {
+      return { type: "group.member_completed", payload: { memberKey: member.memberKey, completionSequence: this.nextSequence(runId), ...(result.output === undefined ? {} : { output: result.output }) } };
+    }
+    if (result.status === "cancelled") return { type: "group.member_cancelled", payload: { memberKey: member.memberKey, cancelReason: result.reason } };
+    return { type: "group.member_failed", payload: { memberKey: member.memberKey, error: { reason: result.reason }, terminalReason: result.status === "timed_out" ? "timed_out" : result.reason } };
+  }
+
+  private replayAppendIdempotency(commit: SchedulerCommit): SchedulerSnapshot | undefined {
+    const row = this.db.prepare(`
+      SELECT event_count, event_digest
+      FROM scheduler_commits
+      WHERE run_id = ? AND idempotency_key = ?
+    `).get(commit.runId, commit.idempotencyKey) as { event_count: number; event_digest: string } | undefined;
+    if (!row) return undefined;
+    if (row.event_count !== commit.events.length || row.event_digest !== schedulerCommitDigest(commit.events)) {
+      throw new Error(`Scheduler commit idempotency key '${commit.idempotencyKey}' conflicts with different events.`);
+    }
+    return this.loadRunSnapshot(commit.runId);
+  }
+
+  private replayIntentIdempotency(runId: string, idempotencyKey: string): SchedulerSnapshot | undefined {
+    const row = this.db.prepare(`
+      SELECT run_id
+      FROM scheduler_commits
+      WHERE idempotency_key = ?
+    `).get(idempotencyKey) as { run_id: string } | undefined;
+    if (!row) return undefined;
+    if (row.run_id !== runId) throw new Error(`Scheduler intent idempotency key '${idempotencyKey}' conflicts with another run.`);
+    return this.loadRunSnapshot(runId);
+  }
+
+  private syncSchedulerProjectionTables(runId: string, now: string): void {
+    const projection = applySchedulerEvents(createSchedulerProjection(runId), this.schedulerEvents(runId));
+    const existingAttempts = new Map((this.db.prepare("SELECT attempt_id, started_at, finished_at FROM node_attempts WHERE run_id = ?").all(runId) as Array<{ attempt_id: string; started_at: string; finished_at: string | null }>)
+      .map(row => [row.attempt_id, row]));
+    const existingSignalWaits = new Map((this.db.prepare("SELECT node_key, consumed_at, timed_out_at FROM signal_waits WHERE run_id = ?").all(runId) as Array<{ node_key: string; consumed_at: string | null; timed_out_at: string | null }>)
+      .map(row => [row.node_key, row]));
+    this.db.prepare("DELETE FROM scheduler_frames WHERE run_id = ?").run(runId);
+    this.db.prepare("DELETE FROM node_instances WHERE run_id = ?").run(runId);
+    this.db.prepare("DELETE FROM node_attempts WHERE run_id = ?").run(runId);
+    this.db.prepare("DELETE FROM group_members WHERE run_id = ?").run(runId);
+    this.db.prepare("DELETE FROM signal_waits WHERE run_id = ?").run(runId);
+
+    for (const frame of Object.values(projection.frames)) {
+      this.db.prepare(`
+        INSERT INTO scheduler_frames (
+          run_id, frame_key, parent_frame_key, node_key, node_id, frame_kind, status, strategy,
+          terminal_reason, instance_path_json, scope_json, result_json, error_json, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        frame.runId,
+        frame.frameKey,
+        frame.parentFrameKey ?? null,
+        frame.nodeKey ?? null,
+        frame.nodeId ?? null,
+        frame.frameKind,
+        frame.status,
+        frame.strategy ?? null,
+        frame.terminalReason ?? null,
+        frame.instancePath === undefined ? null : stableJson(frame.instancePath as unknown as JsonValue),
+        stableJson(frame.scope),
+        frame.result === undefined ? frame.loop === undefined ? null : stableJson(frame.loop) : stableJson(frame.result),
+        frame.error === undefined ? null : stableJson(frame.error),
+        now,
+        now,
+      );
+    }
+
+    for (const instance of Object.values(projection.instances)) {
+      this.db.prepare(`
+        INSERT INTO node_instances (
+          run_id, node_key, node_id, parent_frame_key, instance_path_json, status, status_reason,
+          readiness_sequence, output_json, error_json, accepted_attempt_id, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        instance.runId,
+        instance.nodeKey,
+        instance.nodeId,
+        instance.parentFrameKey ?? null,
+        stableJson(instance.instancePath as unknown as JsonValue),
+        instance.status,
+        instance.statusReason ?? null,
+        instance.readinessSequence ?? null,
+        instance.output === undefined ? null : stableJson(instance.output),
+        instance.error === undefined ? null : stableJson(instance.error),
+        instance.acceptedAttemptId ?? null,
+        now,
+        now,
+      );
+    }
+
+    for (const attempt of Object.values(projection.attempts)) {
+      const existing = existingAttempts.get(attempt.attemptId);
+      this.db.prepare(`
+        INSERT INTO node_attempts (
+          run_id, attempt_id, node_key, node_id, attempt_no, owner_epoch, status, deadline_at,
+          started_at, finished_at, result_json, error_json, terminal_reason, cancel_reason
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        attempt.runId,
+        attempt.attemptId,
+        attempt.nodeKey,
+        attempt.nodeId,
+        attempt.attemptNo,
+        attempt.ownerEpoch,
+        attempt.status,
+        attempt.deadlineAt ?? null,
+        existing?.started_at ?? now,
+        attempt.status === "started" ? null : existing?.finished_at ?? now,
+        attempt.result === undefined ? null : stableJson(attempt.result),
+        attempt.error === undefined ? null : stableJson(attempt.error),
+        attempt.terminalReason ?? null,
+        attempt.cancelReason ?? null,
+      );
+    }
+
+    for (const member of Object.values(projection.groupMembers)) {
+      this.db.prepare(`
+        INSERT INTO group_members (
+          run_id, group_key, member_key, member_kind, branch_id, item_key, item_index, item_json, child_frame_key,
+          status, readiness_sequence, accepted_rank, terminal_reason, output_json, error_json, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        member.runId,
+        member.groupKey,
+        member.memberKey,
+        member.memberKind,
+        member.branchId ?? null,
+        member.itemKey === undefined ? null : String(member.itemKey),
+        member.itemIndex ?? null,
+        member.item === undefined ? null : stableJson(member.item),
+        null,
+        member.status,
+        member.readinessSequence,
+        member.acceptedRank ?? null,
+        member.terminalReason ?? null,
+        member.output === undefined ? null : stableJson(member.output),
+        member.error === undefined ? null : stableJson(member.error),
+        now,
+        now,
+      );
+    }
+
+    for (const wait of Object.values(projection.signalWaits)) {
+      const existing = existingSignalWaits.get(wait.nodeKey);
+      this.db.prepare(`
+        INSERT INTO signal_waits (
+          run_id, node_key, node_id, status, payload_json, payload_digest, command_idempotency_key,
+          deadline_at, consumed_at, timed_out_at, terminal_reason
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        wait.runId,
+        wait.nodeKey,
+        wait.nodeId,
+        wait.status,
+        wait.payload === undefined ? null : stableJson(wait.payload),
+        wait.payloadDigest ?? null,
+        wait.commandIdempotencyKey ?? null,
+        wait.deadlineAt ?? null,
+        wait.status === "consumed" ? existing?.consumed_at ?? now : null,
+        wait.status === "timed_out" ? existing?.timed_out_at ?? now : null,
+        wait.terminalReason ?? null,
+      );
+    }
+  }
+
+  private syncPublicRunProjection(runId: string, now: string): void {
+    const projection = applySchedulerEvents(createSchedulerProjection(runId), this.schedulerEvents(runId));
+    const current = this.db.prepare("SELECT status FROM runs WHERE id = ?").get(runId) as { status: RunStatus } | undefined;
+    if (current?.status === "failed" && projection.run.status === "pending" && Object.keys(projection.frames).length === 0) {
+      this.db.prepare("UPDATE runs SET status = 'pending', updated_at = ? WHERE id = ?").run(now, runId);
+      this.db.prepare("UPDATE run_inputs SET output_json = NULL WHERE run_id = ?").run(runId);
+      this.db.prepare("DELETE FROM node_states WHERE run_id = ?").run(runId);
+      return;
+    }
+    if (!current || current.status === "completed" || current.status === "failed" || current.status === "canceled") return;
+    this.syncPublicNodeStates(projection, now);
+    const root = projection.frames.root;
+    if (projection.run.status === "completed") {
+      const output = root?.result ?? {};
+      this.db.prepare("UPDATE runs SET status = 'completed', updated_at = ? WHERE id = ?").run(now, runId);
+      this.db.prepare("UPDATE run_inputs SET output_json = ? WHERE run_id = ?").run(stableJson(output), runId);
+      this.insertPublicRunEvent(runId, "run.completed", { output }, now, `scheduler-public:completed:${runId}:${rootTerminalEventCount(this.schedulerEvents(runId), "frame.completed")}`);
+      return;
+    }
+    if (projection.run.status === "failed") {
+      const error = root?.error ?? { reason: root?.terminalReason ?? "scheduler_failed" };
+      this.db.prepare("UPDATE runs SET status = 'failed', updated_at = ? WHERE id = ?").run(now, runId);
+      this.db.prepare("UPDATE run_inputs SET output_json = NULL WHERE run_id = ?").run(runId);
+      this.insertPublicRunEvent(runId, "run.failed", error, now, `scheduler-public:failed:${runId}:${rootTerminalEventCount(this.schedulerEvents(runId), "frame.failed")}`);
+      return;
+    }
+    if (projection.run.status === "paused") {
+      this.db.prepare("UPDATE runs SET status = 'paused', updated_at = ? WHERE id = ? AND status NOT IN ('completed', 'failed', 'canceled')").run(now, runId);
+      return;
+    }
+    const hasAwaiting = Object.values(projection.instances).some(instance => instance.status === "awaiting")
+      || Object.values(projection.signalWaits).some(wait => wait.status === "awaiting");
+    const status = hasAwaiting ? "awaiting" : "pending";
+    this.db.prepare("UPDATE runs SET status = ?, updated_at = ? WHERE id = ? AND status NOT IN ('completed', 'failed', 'canceled')").run(status, now, runId);
+  }
+
+  private syncPublicNodeStates(projection: ReturnType<typeof createSchedulerProjection>, now: string): void {
+    for (const instance of Object.values(projection.instances)) {
+      this.db.prepare(`
+        INSERT INTO node_states (run_id, node_key, node_id, status, output_json, error_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(run_id, node_key) DO UPDATE SET
+          node_id = excluded.node_id,
+          status = excluded.status,
+          output_json = excluded.output_json,
+          error_json = excluded.error_json,
+          updated_at = excluded.updated_at
+      `).run(
+        instance.runId,
+        instance.nodeKey,
+        instance.nodeId,
+        instance.status,
+        instance.output === undefined ? null : stableJson(instance.output),
+        instance.error === undefined ? null : stableJson(instance.error),
+        now,
+        now,
+      );
+    }
+  }
+
+  private insertPublicRunEvent(runId: string, type: "run.completed" | "run.failed", payload: JsonValue, now: string, idempotencyKey: string): void {
+    const existing = this.db.prepare("SELECT id FROM run_events WHERE idempotency_key = ?").get(idempotencyKey);
+    if (existing) return;
+    this.db.prepare(`
+      INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
+      VALUES (?, ?, ?, NULL, ?, ?, ?)
+    `).run(runId, this.nextSequence(runId), type, stableJson(payload), now, idempotencyKey);
+  }
+}
+
+function schedulerEvents(db: DatabaseSync, runId: string): SchedulerEvent[] {
+  const rows = db.prepare("SELECT type, payload_json FROM run_events WHERE run_id = ? ORDER BY sequence").all(runId) as Array<{ type: string; payload_json: string }>;
+  return rows.flatMap(row => {
+    const payload = decodeSchedulerPayload(row.payload_json);
+    return payload && isSchedulerEventType(row.type) ? [{ type: row.type, payload } as SchedulerEvent] : [];
+  });
+}
+
+function schedulerEventsForReplay(db: DatabaseSync, runId: string): { events: SchedulerEvent[]; issues: string[] } {
+  const rows = db.prepare("SELECT sequence, type, payload_json FROM run_events WHERE run_id = ? ORDER BY sequence").all(runId) as Array<{ sequence: number; type: string; payload_json: string }>;
+  const events: SchedulerEvent[] = [];
+  const issues: string[] = [];
+  for (const row of rows) {
+    if (!isSchedulerEventType(row.type)) continue;
+    const decoded = decodeSchedulerPayloadForReplay(row.payload_json);
+    if (decoded.status === "legacy") continue;
+    if (decoded.status === "invalid") {
+      issues.push(`Scheduler event '${row.type}' at sequence ${row.sequence} has an invalid scheduler envelope.`);
+      continue;
+    }
+    if (decoded.status !== "event") continue;
+    events.push({ type: row.type, payload: decoded.payload } as SchedulerEvent);
+  }
+  return { events, issues };
+}
+
+function decodeSchedulerPayloadForReplay(payloadJson: string): { status: "event"; payload: Record<string, unknown> } | { status: "legacy" | "invalid" } {
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(payloadJson) as unknown;
+  } catch {
+    return { status: "invalid" };
+  }
+  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) return { status: "legacy" };
+  if (!("schedulerEventVersion" in envelope)) return { status: "legacy" };
+  const payload = (envelope as { payload?: unknown }).payload;
+  if ((envelope as { schedulerEventVersion?: unknown }).schedulerEventVersion !== 1 || !payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { status: "invalid" };
+  }
+  return { status: "event", payload: payload as Record<string, unknown> };
+}
+
+function publicStatusFromSchedulerProjection(projection: SchedulerProjection): RunStatus {
+  if (projection.run.status === "completed" || projection.run.status === "failed" || projection.run.status === "paused") return projection.run.status;
+  const awaiting = Object.values(projection.instances).some(instance => instance.status === "awaiting")
+    || Object.values(projection.signalWaits).some(wait => wait.status === "awaiting");
+  return awaiting ? "awaiting" : "pending";
+}
+
+function rootTerminalEventCount(events: readonly SchedulerEvent[], type: "frame.completed" | "frame.failed"): number {
+  return events.filter(event => event.type === type && event.payload.frameKey === "root").length;
+}
+
+function compareSchedulerProjectionTables(db: DatabaseSync, runId: string, projection: SchedulerProjection): string[] {
+  return [
+    compareSchedulerProjectionTable("scheduler_frames", () => readSchedulerFrames(db, runId), schedulerFramesProjection(projection)),
+    compareSchedulerProjectionTable("node_instances", () => readNodeInstances(db, runId), nodeInstancesProjection(projection)),
+    compareSchedulerProjectionTable("node_attempts", () => readNodeAttempts(db, runId), nodeAttemptsProjection(projection)),
+    compareSchedulerProjectionTable("group_members", () => readGroupMembers(db, runId), groupMembersProjection(projection)),
+    compareSchedulerProjectionTable("signal_waits", () => readSignalWaits(db, runId), signalWaitsProjection(projection)),
+  ].filter(issue => issue !== undefined);
+}
+
+function compareSchedulerProjectionTable(table: string, readActual: () => Record<string, unknown>, expected: Record<string, unknown>): string | undefined {
+  try {
+    return sameStableJson(readActual(), expected)
+      ? undefined
+      : `Scheduler projection table '${table}' does not match scheduler event stream.`;
+  } catch (error) {
+    return `Scheduler projection table '${table}' could not be read: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+function schedulerFramesProjection(projection: SchedulerProjection): Record<string, unknown> {
+  return Object.fromEntries(Object.values(projection.frames).map(frame => [frame.frameKey, withoutUndefined({
+    parentFrameKey: frame.parentFrameKey,
+    nodeKey: frame.nodeKey,
+    nodeId: frame.nodeId,
+    frameKind: frame.frameKind,
+    status: frame.status,
+    strategy: frame.strategy,
+    terminalReason: frame.terminalReason,
+    instancePath: frame.instancePath,
+    scope: frame.scope,
+    result: frame.result === undefined ? frame.loop : frame.result,
+    error: frame.error,
+  })]));
+}
+
+function readSchedulerFrames(db: DatabaseSync, runId: string): Record<string, unknown> {
+  const rows = db.prepare(`
+    SELECT frame_key, parent_frame_key, node_key, node_id, frame_kind, status, strategy,
+      terminal_reason, instance_path_json, scope_json, result_json, error_json
+    FROM scheduler_frames
+    WHERE run_id = ?
+    ORDER BY frame_key
+  `).all(runId) as Array<Record<string, string | null>>;
+  return Object.fromEntries(rows.map(row => [String(row.frame_key), withoutUndefined({
+    parentFrameKey: nullableString(row.parent_frame_key),
+    nodeKey: nullableString(row.node_key),
+    nodeId: nullableString(row.node_id),
+    frameKind: String(row.frame_kind),
+    status: String(row.status),
+    strategy: nullableString(row.strategy),
+    terminalReason: nullableString(row.terminal_reason),
+    instancePath: parseOptionalJson(row.instance_path_json),
+    scope: parseRequiredJson(row.scope_json, "scheduler_frames.scope_json"),
+    result: parseOptionalJson(row.result_json),
+    error: parseOptionalJson(row.error_json),
+  })]));
+}
+
+function nodeInstancesProjection(projection: SchedulerProjection): Record<string, unknown> {
+  return Object.fromEntries(Object.values(projection.instances).map(instance => [instance.nodeKey, withoutUndefined({
+    nodeId: instance.nodeId,
+    parentFrameKey: instance.parentFrameKey,
+    instancePath: instance.instancePath,
+    status: instance.status,
+    statusReason: instance.statusReason,
+    readinessSequence: instance.readinessSequence,
+    output: instance.output,
+    error: instance.error,
+    acceptedAttemptId: instance.acceptedAttemptId,
+  })]));
+}
+
+function readNodeInstances(db: DatabaseSync, runId: string): Record<string, unknown> {
+  const rows = db.prepare(`
+    SELECT node_key, node_id, parent_frame_key, instance_path_json, status, status_reason,
+      readiness_sequence, output_json, error_json, accepted_attempt_id
+    FROM node_instances
+    WHERE run_id = ?
+    ORDER BY node_key
+  `).all(runId) as Array<Record<string, string | number | null>>;
+  return Object.fromEntries(rows.map(row => [String(row.node_key), withoutUndefined({
+    nodeId: String(row.node_id),
+    parentFrameKey: nullableString(row.parent_frame_key),
+    instancePath: parseRequiredJson(row.instance_path_json, "node_instances.instance_path_json"),
+    status: String(row.status),
+    statusReason: nullableString(row.status_reason),
+    readinessSequence: nullableNumber(row.readiness_sequence),
+    output: parseOptionalJson(row.output_json),
+    error: parseOptionalJson(row.error_json),
+    acceptedAttemptId: nullableString(row.accepted_attempt_id),
+  })]));
+}
+
+function nodeAttemptsProjection(projection: SchedulerProjection): Record<string, unknown> {
+  return Object.fromEntries(Object.values(projection.attempts).map(attempt => [attempt.attemptId, withoutUndefined({
+    nodeKey: attempt.nodeKey,
+    nodeId: attempt.nodeId,
+    attemptNo: attempt.attemptNo,
+    ownerEpoch: attempt.ownerEpoch,
+    status: attempt.status,
+    deadlineAt: attempt.deadlineAt,
+    result: attempt.result,
+    error: attempt.error,
+    terminalReason: attempt.terminalReason,
+    cancelReason: attempt.cancelReason,
+  })]));
+}
+
+function readNodeAttempts(db: DatabaseSync, runId: string): Record<string, unknown> {
+  const rows = db.prepare(`
+    SELECT attempt_id, node_key, node_id, attempt_no, owner_epoch, status, deadline_at,
+      result_json, error_json, terminal_reason, cancel_reason
+    FROM node_attempts
+    WHERE run_id = ?
+    ORDER BY attempt_id
+  `).all(runId) as Array<Record<string, string | number | null>>;
+  return Object.fromEntries(rows.map(row => [String(row.attempt_id), withoutUndefined({
+    nodeKey: String(row.node_key),
+    nodeId: String(row.node_id),
+    attemptNo: Number(row.attempt_no),
+    ownerEpoch: Number(row.owner_epoch),
+    status: String(row.status),
+    deadlineAt: nullableString(row.deadline_at),
+    result: parseOptionalJson(row.result_json),
+    error: parseOptionalJson(row.error_json),
+    terminalReason: nullableString(row.terminal_reason),
+    cancelReason: nullableString(row.cancel_reason),
+  })]));
+}
+
+function groupMembersProjection(projection: SchedulerProjection): Record<string, unknown> {
+  return Object.fromEntries(Object.values(projection.groupMembers).map(member => [member.memberKey, withoutUndefined({
+    groupKey: member.groupKey,
+    memberKind: member.memberKind,
+    branchId: member.branchId,
+    itemKey: member.itemKey === undefined ? undefined : String(member.itemKey),
+    itemIndex: member.itemIndex,
+    item: member.item,
+    childFrameKey: undefined,
+    status: member.status,
+    readinessSequence: member.readinessSequence,
+    acceptedRank: member.acceptedRank,
+    terminalReason: member.terminalReason,
+    output: member.output,
+    error: member.error,
+  })]));
+}
+
+function readGroupMembers(db: DatabaseSync, runId: string): Record<string, unknown> {
+  const rows = db.prepare(`
+    SELECT group_key, member_key, member_kind, branch_id, item_key, item_index, item_json, child_frame_key,
+      status, readiness_sequence, accepted_rank, terminal_reason, output_json, error_json
+    FROM group_members
+    WHERE run_id = ?
+    ORDER BY member_key
+  `).all(runId) as Array<Record<string, string | number | null>>;
+  return Object.fromEntries(rows.map(row => [String(row.member_key), withoutUndefined({
+    groupKey: String(row.group_key),
+    memberKind: String(row.member_kind),
+    branchId: nullableString(row.branch_id),
+    itemKey: nullableString(row.item_key),
+    itemIndex: nullableNumber(row.item_index),
+    item: parseOptionalJson(row.item_json),
+    childFrameKey: nullableString(row.child_frame_key),
+    status: String(row.status),
+    readinessSequence: Number(row.readiness_sequence),
+    acceptedRank: nullableNumber(row.accepted_rank),
+    terminalReason: nullableString(row.terminal_reason),
+    output: parseOptionalJson(row.output_json),
+    error: parseOptionalJson(row.error_json),
+  })]));
+}
+
+function signalWaitsProjection(projection: SchedulerProjection): Record<string, unknown> {
+  return Object.fromEntries(Object.values(projection.signalWaits).map(wait => [wait.nodeKey, withoutUndefined({
+    nodeId: wait.nodeId,
+    status: wait.status,
+    payload: wait.payload,
+    payloadDigest: wait.payloadDigest,
+    commandIdempotencyKey: wait.commandIdempotencyKey,
+    deadlineAt: wait.deadlineAt,
+    terminalReason: wait.terminalReason,
+  })]));
+}
+
+function readSignalWaits(db: DatabaseSync, runId: string): Record<string, unknown> {
+  const rows = db.prepare(`
+    SELECT node_key, node_id, status, payload_json, payload_digest, command_idempotency_key,
+      deadline_at, terminal_reason
+    FROM signal_waits
+    WHERE run_id = ?
+    ORDER BY node_key
+  `).all(runId) as Array<Record<string, string | null>>;
+  return Object.fromEntries(rows.map(row => [String(row.node_key), withoutUndefined({
+    nodeId: String(row.node_id),
+    status: String(row.status),
+    payload: parseOptionalJson(row.payload_json),
+    payloadDigest: nullableString(row.payload_digest),
+    commandIdempotencyKey: nullableString(row.command_idempotency_key),
+    deadlineAt: nullableString(row.deadline_at),
+    terminalReason: nullableString(row.terminal_reason),
+  })]));
+}
+
+function readRunDynamicFrames(db: DatabaseSync, runId: string): RunDynamicFrame[] {
+  const rows = db.prepare(`
+    SELECT frame_key, parent_frame_key, node_key, node_id, frame_kind, status, strategy,
+      terminal_reason, result_json, error_json
+    FROM scheduler_frames
+    WHERE run_id = ?
+    ORDER BY frame_key
+  `).all(runId) as Array<Record<string, string | null>>;
+  return rows.map(row => withoutUndefined({
+    frameKey: String(row.frame_key),
+    parentFrameKey: nullableString(row.parent_frame_key),
+    nodeKey: nullableString(row.node_key),
+    nodeId: nullableString(row.node_id),
+    frameKind: String(row.frame_kind),
+    status: String(row.status),
+    strategy: nullableString(row.strategy),
+    terminalReason: nullableString(row.terminal_reason),
+    result: parseOptionalJson(row.result_json),
+    error: parseOptionalJson(row.error_json),
+  }) as RunDynamicFrame);
+}
+
+function readRunDynamicNodeInstances(db: DatabaseSync, runId: string): RunDynamicNodeInstance[] {
+  const rows = db.prepare(`
+    SELECT node_key, node_id, parent_frame_key, status, status_reason,
+      output_json, error_json, accepted_attempt_id
+    FROM node_instances
+    WHERE run_id = ?
+    ORDER BY node_key
+  `).all(runId) as Array<Record<string, string | null>>;
+  return rows.map(row => withoutUndefined({
+    nodeKey: String(row.node_key),
+    nodeId: String(row.node_id),
+    parentFrameKey: nullableString(row.parent_frame_key),
+    status: String(row.status),
+    statusReason: nullableString(row.status_reason),
+    output: parseOptionalJson(row.output_json),
+    error: parseOptionalJson(row.error_json),
+    acceptedAttemptId: nullableString(row.accepted_attempt_id),
+  }) as RunDynamicNodeInstance);
+}
+
+function readRunDynamicAttempts(db: DatabaseSync, runId: string): RunDynamicAttempt[] {
+  const rows = db.prepare(`
+    SELECT attempt_id, node_key, node_id, attempt_no, status, deadline_at,
+      result_json, error_json, terminal_reason, cancel_reason
+    FROM node_attempts
+    WHERE run_id = ?
+    ORDER BY attempt_id
+  `).all(runId) as Array<Record<string, string | number | null>>;
+  return rows.map(row => withoutUndefined({
+    attemptId: String(row.attempt_id),
+    nodeKey: String(row.node_key),
+    nodeId: String(row.node_id),
+    attemptNo: Number(row.attempt_no),
+    status: String(row.status),
+    deadlineAt: nullableString(row.deadline_at),
+    result: parseOptionalJson(row.result_json),
+    error: parseOptionalJson(row.error_json),
+    terminalReason: nullableString(row.terminal_reason),
+    cancelReason: nullableString(row.cancel_reason),
+  }) as RunDynamicAttempt);
+}
+
+function readRunDynamicGroupMembers(db: DatabaseSync, runId: string): RunDynamicGroupMember[] {
+  const rows = db.prepare(`
+    SELECT group_key, member_key, member_kind, branch_id, item_key, item_index, item_json,
+      status, accepted_rank, terminal_reason, output_json, error_json
+    FROM group_members
+    WHERE run_id = ?
+    ORDER BY member_key
+  `).all(runId) as Array<Record<string, string | number | null>>;
+  return rows.map(row => withoutUndefined({
+    groupKey: String(row.group_key),
+    memberKey: String(row.member_key),
+    memberKind: String(row.member_kind),
+    branchId: nullableString(row.branch_id),
+    itemKey: nullableString(row.item_key),
+    itemIndex: nullableNumber(row.item_index),
+    item: parseOptionalJson(row.item_json),
+    status: String(row.status),
+    acceptedRank: nullableNumber(row.accepted_rank),
+    terminalReason: nullableString(row.terminal_reason),
+    output: parseOptionalJson(row.output_json),
+    error: parseOptionalJson(row.error_json),
+  }) as RunDynamicGroupMember);
+}
+
+function readRunDynamicSignalWaits(db: DatabaseSync, runId: string): RunDynamicSignalWait[] {
+  const rows = db.prepare(`
+    SELECT node_key, node_id, status, deadline_at, terminal_reason
+    FROM signal_waits
+    WHERE run_id = ?
+    ORDER BY node_key
+  `).all(runId) as Array<Record<string, string | null>>;
+  return rows.map(row => withoutUndefined({
+    nodeKey: String(row.node_key),
+    nodeId: String(row.node_id),
+    status: String(row.status),
+    deadlineAt: nullableString(row.deadline_at),
+    terminalReason: nullableString(row.terminal_reason),
+  }) as RunDynamicSignalWait);
+}
+
+function sameStableJson(left: unknown, right: unknown): boolean {
+  return stableJson(left) === stableJson(right);
+}
+
+function withoutUndefined(input: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
+}
+
+function nullableString(value: unknown): string | undefined {
+  return value === null || value === undefined ? undefined : String(value);
+}
+
+function nullableNumber(value: unknown): number | undefined {
+  return value === null || value === undefined ? undefined : Number(value);
+}
+
+function parseOptionalJson(value: unknown): unknown {
+  return value === null || value === undefined ? undefined : JSON.parse(String(value));
+}
+
+function parseRequiredJson(value: unknown, field: string): unknown {
+  if (value === null || value === undefined) throw new Error(`${field} is missing.`);
+  return JSON.parse(String(value));
+}
+
+function eventNodeKey(event: SchedulerEvent): string | null {
+  const payload = event.payload as Record<string, unknown>;
+  return typeof payload.nodeKey === "string" ? payload.nodeKey : null;
+}
+
+function attemptResultEvent(input: AttemptCommitInput, nodeKey: string): Extract<SchedulerEvent, { type: "attempt.completed" | "attempt.failed" | "attempt.timed_out" | "attempt.cancelled" }> {
+  if (input.result.status === "completed") {
+    return {
+      type: "attempt.completed",
+      payload: {
+        attemptId: input.attemptId,
+        ...(input.result.output === undefined ? {} : { result: input.result.output }),
+      },
+    };
+  }
+  if (input.result.status === "timed_out") {
+    return { type: "attempt.timed_out", payload: { attemptId: input.attemptId, error: { reason: input.result.reason, nodeKey } } };
+  }
+  if (input.result.status === "cancelled") {
+    return { type: "attempt.cancelled", payload: { attemptId: input.attemptId, cancelReason: input.result.reason } };
+  }
+  return { type: "attempt.failed", payload: { attemptId: input.attemptId, error: { reason: input.result.reason, nodeKey }, terminalReason: input.result.reason } };
+}
+
+function instanceResultEvent(
+  input: AttemptCommitInput,
+  nodeKey: string,
+  attemptEvent: Extract<SchedulerEvent, { type: "attempt.completed" | "attempt.failed" | "attempt.timed_out" | "attempt.cancelled" }>,
+): Extract<SchedulerEvent, { type: "instance.completed" | "instance.failed" | "instance.cancelled" }> {
+  if (attemptEvent.type === "attempt.completed") {
+    return {
+      type: "instance.completed",
+      payload: {
+        nodeKey,
+        acceptedAttemptId: input.attemptId,
+        ...(input.result.status === "completed" && input.result.output !== undefined ? { output: input.result.output } : {}),
+      },
+    };
+  }
+  if (attemptEvent.type === "attempt.cancelled") {
+    return { type: "instance.cancelled", payload: { nodeKey, cancelReason: attemptEvent.payload.cancelReason } };
+  }
+  const statusReason = attemptEvent.type === "attempt.timed_out" ? "timed_out" : attemptEvent.payload.terminalReason;
+  return {
+    type: "instance.failed",
+    payload: {
+      nodeKey,
+      error: attemptEvent.payload.error ?? { reason: input.result.status === "failed" || input.result.status === "timed_out" ? input.result.reason : "attempt_failed" },
+      ...(statusReason === undefined ? {} : { statusReason }),
+    },
+  };
+}
+
+function matchesAttemptStartInput(input: AttemptStartInput, payload: Record<string, unknown>): boolean {
+  return payload.runId === input.runId
+    && payload.nodeKey === input.nodeKey
+    && payload.nodeId === input.nodeId
+    && payload.ownerEpoch === input.ownerEpoch
+    && (payload.deadlineAt ?? undefined) === input.deadlineAt;
+}
+
+function encodeSchedulerPayload(payload: object): string {
+  return stableJson({ schedulerEventVersion: 1, payload });
+}
+
+function decodeSchedulerPayload(payloadJson: string): Record<string, unknown> | undefined {
+  const envelope = JSON.parse(payloadJson) as unknown;
+  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) return undefined;
+  const payload = (envelope as { schedulerEventVersion?: unknown; payload?: unknown }).payload;
+  if ((envelope as { schedulerEventVersion?: unknown }).schedulerEventVersion !== 1 || !payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  return payload as Record<string, unknown>;
+}
+
+function schedulerCommitDigest(events: SchedulerEvent[]): string {
+  return createHash("sha256").update(stableJson(events as unknown as JsonValue)).digest("hex");
+}
+
+function schedulerEventIdempotencyKey(runId: string, commitKey: string, index: number): string {
+  const digest = createHash("sha256").update(commitKey).digest("hex");
+  return `scheduler-event:${runId}:${digest}:${index}`;
+}
+
+function derivedIdempotencyKey(idempotencyKey: string, suffix: string): string {
+  return `${idempotencyKey}:${suffix}`;
+}
+
+function retryIdempotencyKey(idempotencyKey: string, nodeKey: string): string {
+  return `${idempotencyKey}:node:${createHash("sha256").update(nodeKey).digest("hex")}`;
+}
+
+function isSchedulerEventType(type: string): type is SchedulerEvent["type"] {
+  return [
+    "control.paused",
+    "control.resumed",
+    "control.run_retry_requested",
+    "frame.started",
+    "frame.completed",
+    "frame.failed",
+    "frame.cancelled",
+    "frame.loop_advanced",
+    "instance.ready",
+    "instance.started",
+    "instance.awaiting",
+    "instance.requeued",
+    "instance.retry_requested",
+    "instance.completed",
+    "instance.failed",
+    "instance.cancelled",
+    "attempt.started",
+    "attempt.completed",
+    "attempt.failed",
+    "attempt.timed_out",
+    "attempt.cancelled",
+    "attempt.superseded",
+    "group.started",
+    "group.member_ready",
+    "group.member_started",
+    "group.member_requeued",
+    "group.member_retry_requested",
+    "group.member_completed",
+    "group.member_failed",
+    "group.member_cancelled",
+    "group.completed",
+    "group.failed",
+    "group.cancelled",
+    "branch.decided",
+    "signal.awaiting",
+    "signal.consumed",
+    "signal.timed_out",
+  ].includes(type);
 }
 
 function openDatabase(path: string, readOnly = false): DatabaseSync {
@@ -1359,6 +2750,15 @@ function migrate(db: DatabaseSync): void {
       UNIQUE(run_id, sequence)
     );
 
+    CREATE TABLE IF NOT EXISTS scheduler_commits (
+      run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      idempotency_key TEXT NOT NULL,
+      event_count INTEGER NOT NULL,
+      event_digest TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (run_id, idempotency_key)
+    );
+
     CREATE TABLE IF NOT EXISTS node_states (
       run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
       node_key TEXT NOT NULL,
@@ -1371,6 +2771,128 @@ function migrate(db: DatabaseSync): void {
       updated_at TEXT NOT NULL,
       PRIMARY KEY (run_id, node_key)
     );
+
+    CREATE TABLE IF NOT EXISTS run_leases (
+      run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+      owner_id TEXT NOT NULL,
+      owner_epoch INTEGER NOT NULL,
+      lease_expires_at TEXT NOT NULL,
+      heartbeat_at TEXT NOT NULL,
+      claimed_at TEXT NOT NULL,
+      released_at TEXT,
+      reason TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS scheduler_frames (
+      run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      frame_key TEXT NOT NULL,
+      parent_frame_key TEXT,
+      node_key TEXT,
+      node_id TEXT,
+      frame_kind TEXT NOT NULL,
+      status TEXT NOT NULL,
+      strategy TEXT,
+      terminal_reason TEXT,
+      instance_path_json TEXT,
+      scope_json TEXT NOT NULL,
+      result_json TEXT,
+      error_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (run_id, frame_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS node_instances (
+      run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      node_key TEXT NOT NULL,
+      node_id TEXT NOT NULL,
+      parent_frame_key TEXT,
+      instance_path_json TEXT NOT NULL,
+      status TEXT NOT NULL,
+      status_reason TEXT,
+      readiness_sequence INTEGER,
+      output_json TEXT,
+      error_json TEXT,
+      accepted_attempt_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (run_id, node_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS node_attempts (
+      run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      attempt_id TEXT PRIMARY KEY,
+      node_key TEXT NOT NULL,
+      node_id TEXT NOT NULL,
+      attempt_no INTEGER NOT NULL,
+      owner_id TEXT,
+      owner_epoch INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      deadline_at TEXT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      result_json TEXT,
+      error_json TEXT,
+      terminal_reason TEXT,
+      cancel_reason TEXT,
+      UNIQUE(run_id, node_key, attempt_no)
+    );
+
+    CREATE TABLE IF NOT EXISTS group_members (
+      run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      group_key TEXT NOT NULL,
+      member_key TEXT NOT NULL,
+      member_kind TEXT NOT NULL,
+      branch_id TEXT,
+      item_key TEXT,
+      item_index INTEGER,
+      item_json TEXT,
+      child_frame_key TEXT,
+      status TEXT NOT NULL,
+      readiness_sequence INTEGER NOT NULL,
+      accepted_rank INTEGER,
+      terminal_reason TEXT,
+      output_json TEXT,
+      error_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (run_id, member_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS signal_waits (
+      run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      node_key TEXT NOT NULL,
+      node_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      payload_json TEXT,
+      payload_digest TEXT,
+      command_idempotency_key TEXT,
+      deadline_at TEXT,
+      consumed_at TEXT,
+      timed_out_at TEXT,
+      terminal_reason TEXT,
+      PRIMARY KEY (run_id, node_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS execution_metadata (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      attempt_id TEXT,
+      kind TEXT NOT NULL,
+      metadata_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_run_leases_expires ON run_leases(lease_expires_at);
+    CREATE INDEX IF NOT EXISTS idx_scheduler_frames_parent_status ON scheduler_frames(run_id, parent_frame_key, status);
+    CREATE INDEX IF NOT EXISTS idx_node_instances_node_status ON node_instances(run_id, node_id, status);
+    CREATE INDEX IF NOT EXISTS idx_node_instances_frame_status ON node_instances(run_id, parent_frame_key, status);
+    CREATE INDEX IF NOT EXISTS idx_node_attempts_owner_status ON node_attempts(run_id, owner_epoch, status);
+    CREATE INDEX IF NOT EXISTS idx_node_attempts_deadline_status ON node_attempts(run_id, deadline_at, status);
+    CREATE INDEX IF NOT EXISTS idx_group_members_ready ON group_members(run_id, group_key, readiness_sequence);
+    CREATE INDEX IF NOT EXISTS idx_group_members_status ON group_members(run_id, group_key, status);
+    CREATE INDEX IF NOT EXISTS idx_signal_waits_status ON signal_waits(run_id, node_key, status);
+    CREATE INDEX IF NOT EXISTS idx_signal_waits_deadline_status ON signal_waits(run_id, deadline_at, status);
 
     CREATE TABLE IF NOT EXISTS artifacts (
       id TEXT PRIMARY KEY,
@@ -1388,6 +2910,7 @@ function migrate(db: DatabaseSync): void {
     VALUES (1, datetime('now'));
   `);
   addColumnIfMissing(db, "commands", "owner_generation", "INTEGER");
+  addColumnIfMissing(db, "group_members", "item_json", "TEXT");
 }
 
 function addColumnIfMissing(db: DatabaseSync, table: string, column: string, definition: string): void {
@@ -1574,14 +3097,26 @@ function forkCompletedOutputJson(args: {
   forkRunId: string;
   artifactIdMap: Record<string, string>;
 }): string {
-  const nodes = Object.fromEntries(args.nodeRows
+  const rows = args.nodeRows
     .filter(row => args.inheritableNodeKeys.has(String(row.node_key)) && row.output_json)
-    .map(row => [
-      String(row.node_key),
-      JSON.parse(rewriteArtifactRefs(String(row.output_json), args.sourceRunId, args.forkRunId, args.artifactIdMap)) as unknown,
-    ]));
+    .map(row => ({
+      nodeKey: String(row.node_key),
+      nodeId: String(row.node_id),
+      output: JSON.parse(rewriteArtifactRefs(String(row.output_json), args.sourceRunId, args.forkRunId, args.artifactIdMap)) as unknown,
+    }));
+  const nodes = completedOutputMap(rows);
   const output = evaluateRecordedOutputs(args.outputs, nodes, JSON.parse(args.inputJson) as JsonValue, args.meta);
   return rewriteArtifactRefs(stableJson(output), args.sourceRunId, args.forkRunId, args.artifactIdMap);
+}
+
+function completedOutputMap(rows: Array<{ nodeKey: string; nodeId: string; output: unknown }>): Record<string, unknown> {
+  const byKey = Object.fromEntries(rows.map(row => [row.nodeKey, row.output]));
+  const byId = new Map<string, Array<{ nodeKey: string; output: unknown }>>();
+  for (const row of rows) byId.set(row.nodeId, [...byId.get(row.nodeId) ?? [], { nodeKey: row.nodeKey, output: row.output }]);
+  for (const [nodeId, matches] of byId) {
+    if (matches.length === 1 && byKey[nodeId] === undefined) byKey[nodeId] = matches[0]!.output;
+  }
+  return byKey;
 }
 
 function rewriteArtifactRefs(json: string, sourceRunId: string, forkRunId: string, artifactIds: Record<string, string>): string {
@@ -1613,6 +3148,33 @@ function requireArtifactId(map: Record<string, string>, sourceId: string): strin
   return id;
 }
 
+function reachableInheritedArtifactIds(args: {
+  runId: string;
+  outputJson: string | null;
+  nodeRows: Array<Record<string, unknown>>;
+  inheritableNodeKeys: Set<string>;
+}): Set<string> {
+  const ids = new Set<string>();
+  if (args.outputJson) collectArtifactIds(JSON.parse(args.outputJson) as JsonValue, args.runId, ids);
+  for (const row of args.nodeRows) {
+    if (!args.inheritableNodeKeys.has(String(row.node_key)) || !row.output_json) continue;
+    collectArtifactIds(JSON.parse(String(row.output_json)) as JsonValue, args.runId, ids);
+  }
+  return ids;
+}
+
+function collectArtifactIds(value: JsonValue, runId: string, out: Set<string>): void {
+  if (Array.isArray(value)) {
+    for (const item of value) collectArtifactIds(item, runId, out);
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  const uri = (value as { uri?: unknown }).uri;
+  const prefix = `artifact://${runId}/`;
+  if (typeof uri === "string" && uri.startsWith(prefix)) out.add(uri.slice(prefix.length));
+  for (const item of Object.values(value)) collectArtifactIds(item as JsonValue, runId, out);
+}
+
 async function verifyCopiedArtifacts(runDir: string, artifacts: ArtifactRow[]): Promise<void> {
   for (const artifact of artifacts) {
     const relativePath = String(artifact.relative_path);
@@ -1632,17 +3194,33 @@ async function verifyCopiedArtifacts(runDir: string, artifacts: ArtifactRow[]): 
   }
 }
 
-async function pruneNonInheritedArtifacts(runDir: string, completedNodeKeys: Set<string>): Promise<void> {
+async function pruneNonInheritedArtifacts(runDir: string, artifacts: ArtifactRow[]): Promise<void> {
   const artifactDir = join(runDir, "artifacts");
-  let nodeDirs: string[];
+  const keep = new Set(artifacts.map(artifact => String(artifact.relative_path)));
+  let entries: string[];
   try {
-    nodeDirs = await readdir(artifactDir);
+    entries = await readdir(artifactDir);
   } catch {
     return;
   }
-  await Promise.all(nodeDirs.map(async nodeKey => {
-    if (!completedNodeKeys.has(nodeKey)) await rm(join(artifactDir, nodeKey), { recursive: true, force: true });
-  }));
+  await Promise.all(entries.map(entry => pruneArtifactEntry(runDir, join("artifacts", entry), keep)));
+}
+
+async function pruneArtifactEntry(runDir: string, relativePath: string, keep: Set<string>): Promise<boolean> {
+  const absolutePath = join(runDir, relativePath);
+  const info = await lstat(absolutePath);
+  if (!info.isDirectory()) {
+    if (keep.has(relativePath)) return false;
+    await rm(absolutePath, { force: true });
+    return true;
+  }
+  const children = await readdir(absolutePath);
+  const removed = await Promise.all(children.map(child => pruneArtifactEntry(runDir, join(relativePath, child), keep)));
+  if (removed.every(Boolean)) {
+    await rm(absolutePath, { recursive: true, force: true });
+    return true;
+  }
+  return false;
 }
 
 async function writePreparedRunFiles(runDir: string, prepared: ForkPreparedWorkflow): Promise<void> {

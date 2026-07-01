@@ -8,11 +8,15 @@ import type { TaskNodeIR } from "@acpus/core/ir";
 import type { JsonObject } from "@acpus/expression/ir";
 import { evaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
 import type { RuntimeStore } from "../store/store.js";
+import { parseDurationMs } from "./duration.js";
 
 export type TaskExecutorOptions = {
   cwd: string;
   runId: string;
   store: RuntimeStore;
+  nodeKey?: string;
+  attemptNo?: number;
+  signal?: AbortSignal;
 };
 
 export async function executeTaskNode(node: TaskNodeIR, scope: EvaluationScope, options: TaskExecutorOptions): Promise<unknown> {
@@ -24,16 +28,22 @@ export async function executeTaskNode(node: TaskNodeIR, scope: EvaluationScope, 
   const fn = mod.default as TaskFunction<unknown, unknown>;
   if (typeof fn !== "function") throw new Error(`Task bundle '${node.run.bundleId}' does not export a default function.`);
   const input = Object.fromEntries(Object.entries(node.run.input).map(([key, expr]) => [key, evaluateExpr(expr, scope)]));
-  const outputDir = join(absoluteRunDir, "outputs", node.id);
-  const workDir = join(absoluteRunDir, "work", node.id);
-  await mkdir(outputDir, { recursive: true });
-  await mkdir(workDir, { recursive: true });
+  const nodeKey = options.nodeKey ?? node.id;
   const cwd = node.run.cwd ? stringValue(evaluateExpr(node.run.cwd, scope), `Task node '${node.id}' cwd`) : options.cwd;
   const env = evaluateEnv(node.run.env, scope);
-  const maxAttempts = Math.max(1, (node.retry?.max ?? 0) + 1);
+  const maxAttempts = options.attemptNo === undefined ? Math.max(1, (node.retry?.max ?? 0) + 1) : 1;
   let lastError: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const visibleAttempt = options.attemptNo ?? attempt;
+    const attemptDir = `attempt-${visibleAttempt}`;
+    const outputDir = join(absoluteRunDir, "outputs", nodeKey, attemptDir);
+    const workDir = join(absoluteRunDir, "work", nodeKey, attemptDir);
+    await mkdir(outputDir, { recursive: true });
+    await mkdir(workDir, { recursive: true });
     const controller = new AbortController();
+    const abortFromScheduler = () => controller.abort();
+    options.signal?.addEventListener("abort", abortFromScheduler, { once: true });
+    if (options.signal?.aborted) controller.abort();
     let timeout: NodeJS.Timeout | undefined;
     try {
       const task = fn({
@@ -42,10 +52,10 @@ export async function executeTaskNode(node: TaskNodeIR, scope: EvaluationScope, 
         $: createTaskDollar({ cwd, env }, node, controller.signal),
         artifact: createArtifactApi({
           runId: options.runId,
-          nodeKey: node.id,
+          nodeKey,
           runDir: absoluteRunDir,
           store: options.store,
-          attempt,
+          attempt: visibleAttempt,
           signal: controller.signal,
         }),
         log: {
@@ -58,8 +68,8 @@ export async function executeTaskNode(node: TaskNodeIR, scope: EvaluationScope, 
         runtime: {
           runId: options.runId,
           nodeId: node.id,
-          nodeKey: node.id,
-          attempt,
+          nodeKey,
+          attempt: visibleAttempt,
           workDir,
           outputDir,
         },
@@ -75,10 +85,11 @@ export async function executeTaskNode(node: TaskNodeIR, scope: EvaluationScope, 
       });
       return await Promise.race([task, timeoutPromise]);
     } catch (error) {
-      lastError = controller.signal.aborted ? new Error(`Task node '${node.id}' timed out after ${node.timeout}.`) : error;
+      lastError = controller.signal.aborted && !options.signal?.aborted ? new Error(`Task node '${node.id}' timed out after ${node.timeout}.`) : error;
       if (attempt >= maxAttempts) throw lastError;
     } finally {
       if (timeout) clearTimeout(timeout);
+      options.signal?.removeEventListener("abort", abortFromScheduler);
     }
   }
   throw lastError;
@@ -134,9 +145,10 @@ function createArtifactApi(args: {
     if (args.signal.aborted) throw new Error(`Task node '${args.nodeKey}' attempt ${args.attempt} is aborted.`);
     const safeName = safeArtifactName(name);
     const id = `artifact_${randomUUID()}`;
-    const relativePath = join("artifacts", args.nodeKey, `${id}-${safeName}`);
+    const attemptDir = `attempt-${args.attempt}`;
+    const relativePath = join("artifacts", args.nodeKey, attemptDir, `${id}-${safeName}`);
     const absolutePath = join(args.runDir, relativePath);
-    await mkdir(join(args.runDir, "artifacts", args.nodeKey), { recursive: true });
+    await mkdir(join(args.runDir, "artifacts", args.nodeKey, attemptDir), { recursive: true });
     await writeFile(absolutePath, bytes);
     if (args.signal.aborted) {
       await rm(absolutePath, { force: true });
@@ -180,15 +192,4 @@ function safeArtifactName(name: string): string {
 
 function digest(bytes: Uint8Array): string {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-}
-
-function parseDurationMs(value: string): number {
-  const match = /^(\d+)(ms|s|m|h)?$/.exec(value);
-  if (!match) throw new Error(`Invalid duration '${value}'.`);
-  const amount = Number(match[1]);
-  const unit = match[2] ?? "ms";
-  if (unit === "ms") return amount;
-  if (unit === "s") return amount * 1000;
-  if (unit === "m") return amount * 60_000;
-  return amount * 3_600_000;
 }

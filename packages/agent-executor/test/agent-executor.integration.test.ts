@@ -35,6 +35,39 @@ describe("agent executor command integration", () => {
     })).rejects.toThrow("Agent node 'review' timed out after 5ms.");
   });
 
+  it("aborts command-backed agent attempts when the outer attempt is cancelled", async () => {
+    const controller = new AbortController();
+    const execution = executeAgentRequest({
+      kind: "command",
+      nodeId: "review",
+      command: "node -e 'setTimeout(() => process.stdout.write(JSON.stringify({ ok: true })), 1000)'",
+      prompt: "review",
+      cwd: process.cwd(),
+      env: process.env,
+      maxAttempts: 1,
+      signal: controller.signal,
+    });
+    controller.abort();
+
+    await expect(execution).rejects.toThrow("Agent node 'review' was aborted.");
+  });
+
+  it("rejects pre-aborted command-backed agent attempts before spawning", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(executeAgentRequest({
+      kind: "command",
+      nodeId: "review",
+      command: "node -e 'process.stdout.write(JSON.stringify({ ok: true }))'",
+      prompt: "review",
+      cwd: process.cwd(),
+      env: process.env,
+      maxAttempts: 1,
+      signal: controller.signal,
+    })).rejects.toThrow("Agent node 'review' was aborted.");
+  });
+
   it("reports non-zero exits at the package boundary", async () => {
     await expect(executeAgentRequest({
       kind: "command",

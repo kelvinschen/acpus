@@ -13,6 +13,7 @@ export type AgentExecutionRequest =
       env: NodeJS.ProcessEnv;
       maxAttempts: number;
       timeout?: string;
+      signal?: AbortSignal;
       acceptOutput?: (output: unknown) => unknown;
     };
 
@@ -23,6 +24,7 @@ export async function executeAgentRequest(request: AgentExecutionRequest): Promi
   const maxAttempts = Math.max(1, request.maxAttempts);
   let lastError: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (request.signal?.aborted) throw new Error(`Agent node '${request.nodeId}' was aborted.`);
     const result = await runShell(request.command, {
       cwd: request.cwd,
       env: {
@@ -31,9 +33,12 @@ export async function executeAgentRequest(request: AgentExecutionRequest): Promi
         ACPUS_AGENT_ATTEMPT: String(attempt),
       },
       ...(request.timeout ? { timeoutMs: parseDurationMs(request.timeout) } : {}),
+      ...(request.signal ? { signal: request.signal } : {}),
     });
     if (result.timedOut) {
       lastError = new Error(`Agent node '${request.nodeId}' timed out after ${request.timeout}.`);
+    } else if (result.aborted) {
+      lastError = new Error(`Agent node '${request.nodeId}' was aborted.`);
     } else if (result.overflowed) {
       lastError = new Error(`Agent command output exceeded ${MAX_AGENT_OUTPUT_BYTES} bytes.`);
     } else if (result.exitCode !== 0) {
@@ -83,16 +88,16 @@ function parseProviderCommands(raw: string | undefined): Record<string, string> 
   }));
 }
 
-function runShell(command: string, options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs?: number }): Promise<{ exitCode: number | null; stdout: string; stderr: string; timedOut: boolean; overflowed: boolean }> {
+function runShell(command: string, options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs?: number; signal?: AbortSignal }): Promise<{ exitCode: number | null; stdout: string; stderr: string; timedOut: boolean; overflowed: boolean; aborted: boolean }> {
   return new Promise(resolve => {
     const child = spawn(command, { cwd: options.cwd, env: options.env, detached: true, shell: true, stdio: ["ignore", "pipe", "pipe"] });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
-    let termination: "timeout" | "overflow" | undefined;
+    let termination: "timeout" | "overflow" | "abort" | undefined;
     let outputBytes = 0;
     let timeout: NodeJS.Timeout | undefined;
     let killTimeout: NodeJS.Timeout | undefined;
-    function terminate(reason: "timeout" | "overflow"): void {
+    function terminate(reason: "timeout" | "overflow" | "abort"): void {
       if (termination) return;
       termination = reason;
       if (timeout) clearTimeout(timeout);
@@ -102,6 +107,8 @@ function runShell(command: string, options: { cwd: string; env: NodeJS.ProcessEn
     timeout = options.timeoutMs === undefined ? undefined : setTimeout(() => {
       terminate("timeout");
     }, options.timeoutMs);
+    options.signal?.addEventListener("abort", () => terminate("abort"), { once: true });
+    if (options.signal?.aborted) terminate("abort");
     function collect(target: Buffer[], chunk: unknown): void {
       if (termination) return;
       const bytes = Buffer.from(chunk as any);
@@ -123,12 +130,13 @@ function runShell(command: string, options: { cwd: string; env: NodeJS.ProcessEn
         stderr: Buffer.concat(stderr).toString("utf8"),
         timedOut: termination === "timeout",
         overflowed: termination === "overflow",
+        aborted: termination === "abort",
       });
     });
     child.on("error", error => {
       if (timeout) clearTimeout(timeout);
       if (killTimeout) clearTimeout(killTimeout);
-      resolve({ exitCode: null, stdout: "", stderr: error.message, timedOut: termination === "timeout", overflowed: termination === "overflow" });
+      resolve({ exitCode: null, stdout: "", stderr: error.message, timedOut: termination === "timeout", overflowed: termination === "overflow", aborted: termination === "abort" });
     });
   });
 }

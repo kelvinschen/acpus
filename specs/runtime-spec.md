@@ -9,14 +9,14 @@
 ### Admission And Store
 
 - The runtime MUST create `.acpus/state/runtime.db` as the durable runtime store for a workspace.
-- The runtime store MUST use SQLite for run admission data, events, run projections, node projections, command rows, supervisor lease rows, and artifact registry rows.
+- The runtime store MUST use SQLite for run admission data, public run events, scheduler events, scheduler projection tables, public run and node projections, command rows, supervisor lease rows, and artifact registry rows.
 - Run admission MUST accept a prepared workflow containing frozen IR JSON, lock metadata, source graph digest, and task bundle metadata.
 - Run admission MUST accept input that has already been normalized against the workflow input schema.
 - Run admission MUST persist the `WorkflowIR`, workflow input, lock metadata, workflow entry, IR digest, source graph digest, task bundle count, and run directory path.
 - Run admission MUST write a `run.admitted` event and the run projection in the same SQLite transaction.
-- Run admission MUST create initial `pending` node projection rows for every static node in the frozen IR graph.
+- Run admission MUST create public `pending` node projection rows for static node summaries and MUST advance executable work from the frozen admitted IR, not from live workflow source.
 - Run admission MUST copy bundled task source into `.acpus/runs/<run-id>/task-bundles/`.
-- Completed runs MUST persist root output, completed node outputs, skipped untaken nodes, and a `run.completed` event.
+- Completed scheduler-backed runs MUST persist root output, bridge completed dynamic node instances into public node projections where unambiguous, and write a `run.completed` event.
 - Runtime failures after admission MUST persist failed run state and a `run.failed` event.
 
 ### Input And Payload Normalization
@@ -36,55 +36,75 @@
 - Runtime expression evaluation MUST fail loudly for unsupported calls or invalid operand types.
 - Runtime boolean expression operators MUST require boolean operands and MUST NOT coerce values through JavaScript truthiness.
 
-### Scheduler And Execution
+### Durable Scheduler And Execution
 
-- The runtime MUST provide a non-agent scheduler path that executes supported frozen `WorkflowIR`.
-- The scheduler MUST execute `assert`, `if`, `switch`, `parallel`, `fanout`, and `loop` nodes.
+- The runtime MUST advance admitted frozen `WorkflowIR` through an internal durable scheduler.
+- The scheduler MUST persist scheduler events in the public event stream using a scheduler envelope and MUST rebuild scheduler projection state from those events.
+- The scheduler MUST maintain projection tables for frames, dynamic node instances, attempts, group members, and signal waits.
+- Static `nodeId` MUST remain the frozen IR node id. Dynamic execution identity MUST use a derived `nodeKey` from the instance path.
+- Scheduler events and projection rows for dynamic work MUST preserve structured instance path data when the dynamic instance is known.
+- Dynamic node outputs MUST resolve through lexical execution scope; child scope outputs MUST expose only declared composite outputs to the parent scope.
+- The scheduler MUST materialize supported root `assert`, `if`, `switch`, `parallel`, `fanout`, and `loop` nodes from frozen IR.
+- The scheduler MUST materialize selected conditional branches, parallel branches, fanout bodies, and loop iteration bodies only for the current supported child-scope shape: scheduler-visible leaf nodes sequenced by durable scope state.
+- Unsupported nested composite or pure-before-leaf child-scope shapes MUST remain unmaterialized rather than creating partial scheduler state.
 - Assert nodes MUST continue when their condition evaluates true and fail when it evaluates false.
-- The scheduler MUST execute child scopes in isolated scope state and expose only declared composite outputs to the parent scope.
-- Parallel `all` strategy MUST aggregate branch outputs by branch key.
-- Parallel `race` strategy MUST return the first successful branch in declaration order with `{ winner, result }`.
-- Executable `parallel` race branches MUST stop after a winner, failure, await, or block according to current scheduler behavior.
-- Fanout `all` strategy MUST aggregate outputs as an array.
-- Fanout `quorum` strategy MUST aggregate outputs as `{ accepted, completed }` and fail when completed item count is below the required quorum.
-- Loop execution MUST support `iter`, `previous`, `result`, stop conditions, and `returnLast` exhaustion.
+- Conditional nodes MUST persist branch decisions and MUST resume from durable branch decisions instead of re-evaluating already-decided conditions.
+- For supported branch bodies, parallel `all` strategy MUST aggregate branch outputs by branch key and MUST fail fast by cancelling remaining running members when one member fails.
+- For supported branch bodies, parallel `race` strategy MUST return the first successful branch with `{ winner, result }` and MUST cancel remaining running members after the winner is accepted.
+- For supported item bodies, fanout `all` strategy MUST materialize item identity rows and aggregate item outputs as an array.
+- For supported item bodies, fanout `quorum` strategy MUST accept outputs in completion order, return `{ accepted, completed }` after quorum success, and cancel remaining running members after quorum is reached.
+- For supported iteration bodies, loop execution MUST support iteration index, previous iteration output, result refs, stop conditions, `maxIterations`, and the current exhaustion policy.
 - The runtime MUST execute task nodes through frozen run-local task bundles.
 - Task execution MUST evaluate task `run.input`, `run.cwd`, and non-secret `run.env` expressions before invoking the task.
 - The runtime MUST pass task execution options to the task `$` command wrapper, including default command timeout.
 - Supported task execution values MUST be `commandRunner: "acpus-zx-core"` and `shell: "bash"`.
-- Task retry and timeout options MUST be honored.
+- Task and agent node retry options MUST be represented as scheduler-visible retryable attempts for scheduler-backed runs.
+- Task and agent timeout options MUST be persisted as scheduler attempt deadlines for scheduler-backed runs.
+- In-flight task and agent timeout enforcement MAY occur inside the executor attempt, while stale or recovered attempts MUST be derivable from scheduler deadlines.
 - Task artifact APIs MUST write run-local artifact files and register metadata in SQLite.
+- Attempt-local output directories, work directories, and task artifacts MUST use dynamic `nodeKey` and attempt-specific subpaths for scheduler-backed task execution.
 - Task artifact writes after task timeout MUST be rejected and MUST NOT create artifact registry rows.
-- Agent and signal execution that cannot complete immediately MUST leave the durable run in a resumable state.
-- Provider-backed agent nodes without a provider command mapping MUST produce a blocked advance result while the durable run remains pending and is not repeatedly advanced by the supervisor.
+- Signal execution that cannot complete immediately MUST leave the durable run in a resumable awaiting state.
+- Missing executors, providers, or runner prerequisites MUST fail the scheduler-backed run rather than creating a durable blocked state.
 
 ### Agents
 
 - The runtime MUST render agent prompts and validate agent outputs against node output schemas.
 - The runtime MUST execute command-backed agent definitions through `@acpus/agent-executor`.
-- Command-backed agents MUST receive rendered prompt and attempt metadata through the execution request.
+- Command-backed agents MUST receive rendered prompt and agent executor attempt metadata through the execution request.
 - The runtime MUST execute built-in mock provider requests deterministically from the rendered prompt.
 - The runtime MUST resolve provider-backed agent command mappings from `ACPUS_AGENT_PROVIDER_COMMANDS`.
 - Provider command mappings MUST receive prompt, provider id, optional model, and attempt metadata through the execution request environment.
+- Command-backed scheduler agent attempts MUST receive runtime-owned `ACPUS_RUNTIME_RUN_ID`, `ACPUS_RUNTIME_NODE_ID`, `ACPUS_RUNTIME_NODE_KEY`, and `ACPUS_RUNTIME_ATTEMPT` environment variables when the corresponding scheduler context exists.
+- Runtime-owned `ACPUS_RUNTIME_*` environment variables MUST be overwritten or deleted by the runtime wrapper before invoking a command-backed agent so stale host or node environment values cannot create mixed scheduler identity.
+- Scheduler-backed command agent attempts MUST run one agent-executor sub-attempt per scheduler-visible attempt.
+- Scheduler-backed command agent attempts MUST NOT spend node-level retry inside the agent executor; node-level retry MUST remain scheduler-visible.
 
 ### Controls, Fork, Signal, And Replay
 
-- Pause MUST transition pending or running runs to `paused` and append a durable control event.
-- Resume MUST transition paused runs to `pending` and append a durable control event.
-- Retry MUST transition failed runs to `pending`, clear run output and node error/output projections, and append a durable control event.
-- Node retry MUST clear only the selected failed node projection while preserving unrelated completed node outputs.
+- Pause MUST record a durable pause gate and MUST prevent new scheduler-visible attempts from starting while paused.
+- Pause MUST best-effort cancel started scheduler-visible attempts and requeue eligible dynamic work for a later resume.
+- Resume MUST clear the durable pause gate and re-drive eligible scheduler work.
+- Retry MUST target either a failed scheduler run or a failed dynamic node instance.
+- Run-level retry MUST reset scheduler projection to a clean pending materialization point while preserving historical event facts.
+- Node retry MUST target a dynamic `nodeKey` directly or a static node alias only when that alias resolves to exactly one failed dynamic instance.
 - Fork MUST create a new run from frozen source run data without reading live workflow source.
 - Fork MAY freeze a replacement prepared workflow and/or input override for the new run.
-- Fork MUST copy completed source node projections and artifacts only when the forked frozen IR contains a matching node id with the same frozen node definition.
+- Fork MUST inherit compatible completed accepted outputs and artifacts reachable from inherited outputs.
+- Fork MUST NOT inherit active scheduler frames, attempts, signal waits, or artifacts from failed, cancelled, or superseded attempts.
 - Fork MUST verify copied artifacts and frozen run files before writing fork rows.
-- Signal commands MUST store normalized signal node output and continue execution from frozen SQLite state.
+- Signal commands MUST store normalized signal payloads, consume open signal waits idempotently, and continue execution from frozen SQLite state.
+- Signal targeting MUST accept a dynamic `nodeKey` directly or a static signal alias only when that alias resolves to exactly one open signal wait.
 - Replay MUST re-evaluate frozen root outputs from recorded completed node outputs without side effects.
+- Replay MUST rebuild scheduler projections from scheduler events and compare them with scheduler projection tables.
 - Replay MUST verify artifact registry rows against run-local artifact file digest and size.
-- Replay MUST report missing/mismatched artifacts or projection mismatches without mutating runtime state.
+- Replay MUST report malformed scheduler event envelopes, unreplayable scheduler event streams, missing or mismatched artifacts, and projection mismatches without mutating runtime state.
 
 ### Read APIs And Supervisor
 
-- `listRuns`, `getRun`, and replay APIs MUST read SQLite projections rather than live workflow source.
+- `listRuns`, `getRun`, replay APIs, and visualization overlay APIs MUST read SQLite projections rather than live workflow source.
+- `getRun` MUST expose dynamic scheduler details when scheduler projection rows exist, including version, frames, dynamic node instances, attempts, group members, and signal waits.
+- The runtime MUST provide a visualization overlay helper that combines static `WorkflowIR` structure with dynamic scheduler projection state without adding layout-specific state.
 - Read-only inspection MUST NOT create runtime state when no runtime store exists.
 - The runtime store MUST support SQLite-backed supervisor leases with generation fencing, heartbeat updates, stale takeover, and release by current generation only.
 - The detached supervisor MUST heartbeat under its current lease generation.
@@ -93,16 +113,16 @@
 - The detached supervisor MUST NOT process later commands or advance runnable runs in the same tick after applying shutdown.
 - The detached supervisor MUST recover stale running command rows for its current lease generation before consuming commands.
 - The detached supervisor MUST NOT recover foreground CLI-owned commands or commands owned by a different supervisor generation.
-- The detached supervisor MUST advance runnable pending runs from frozen SQLite state without reading live workflow source.
+- The detached supervisor MUST advance runnable pending scheduler-backed runs from frozen SQLite state without reading live workflow source.
 
 ## Verification
 
-- Tests MUST cover prepared workflow admission, persisted frozen input, IR digest, source graph digest, event count, node count, and task bundle count.
+- Tests MUST cover prepared workflow admission, persisted frozen input, IR digest, source graph digest, event count, node count, task bundle count, and scheduler-backed public projection bridging.
 - Tests MUST cover workflow input and signal payload normalization.
 - Tests MUST cover read-only list/show/status APIs without live source reads or state creation for missing stores.
-- Tests MUST cover scheduler execution of assert, if, switch, parallel, fanout, and loop nodes.
+- Tests MUST cover scheduler execution of supported assert, if, switch, parallel, fanout, loop, dynamic identity, durable branch decisions, group completion, cancellation, retry, and timeout transitions.
 - Tests MUST cover expression evaluation, template rendering, operator errors, and boolean operand failures.
-- Tests MUST cover task execution, task bundle loading, task invocation options, retry, timeout, artifact writes, and timeout artifact rejection.
-- Tests MUST cover command-backed agent integration, built-in mock provider integration, missing provider mapping, and durable agent output validation.
-- Tests MUST cover pause, resume, retry, node retry, fork, signal, replay, durable command rows, and fork artifact verification.
+- Tests MUST cover task execution, task bundle loading, task invocation options, scheduler-visible retry, timeout deadlines, dynamic runtime context, artifact writes, attempt-local artifact paths, and timeout artifact rejection.
+- Tests MUST cover command-backed agent integration, built-in mock provider integration, missing provider mapping, durable agent output validation, scheduler runtime identity environment, one agent-executor sub-attempt per scheduler-visible attempt, and separation between scheduler-visible attempts and agent executor sub-attempt metadata.
+- Tests MUST cover pause, resume, run retry, dynamic node retry, signal targeting and idempotency, fork, replay, durable command rows, and fork artifact reachability.
 - Tests MUST cover supervisor lease acquisition, active lease rejection, stale takeover, heartbeat fencing, release fencing, durable command consumption, and shutdown.

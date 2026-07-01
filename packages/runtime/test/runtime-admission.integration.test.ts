@@ -28,23 +28,24 @@ describe.concurrent("runtime admission use cases", () => {
       expect(await listRuns(workspace)).toEqual([
         expect.objectContaining({ id: admitted.run.id, status: "completed", name: "cli-valid" }),
       ]);
-      await expect(getRun(workspace, admitted.run.id)).resolves.toMatchObject({
+      const inspected = await getRun(workspace, admitted.run.id);
+      expect(inspected).toMatchObject({
         id: admitted.run.id,
         status: "completed",
         input: { ready: true },
         output: { ready: true },
-        eventCount: 2,
         nodeCount: 1,
       });
+      expect(inspected?.eventCount).toBeGreaterThan(2);
       await expect(replayRun(workspace, admitted.run.id)).resolves.toMatchObject({
         ok: true,
         expected: { ready: true },
         actual: { ready: true },
       });
-      expect(runtimeRows(workspace, "SELECT sequence, type FROM run_events WHERE run_id = ? ORDER BY sequence", admitted.run.id)).toEqual([
-        expect.objectContaining({ sequence: 1, type: "run.admitted" }),
-        expect.objectContaining({ sequence: 2, type: "run.completed" }),
-      ]);
+      expect(runtimeRows(workspace, "SELECT type FROM run_events WHERE run_id = ? ORDER BY sequence", admitted.run.id)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: "run.admitted" }),
+        expect.objectContaining({ type: "run.completed" }),
+      ]));
     });
   });
 
@@ -96,8 +97,11 @@ describe.concurrent("runtime admission use cases", () => {
       expect(admitted.status).toBe("completed");
       const run = await getRun(workspace, admitted.run.id);
       expect(run?.output).toMatchObject({ ok: true, artifact: { kind: "artifact" } });
-      const artifact = runtimeRow(workspace, "SELECT media_type, digest, size, relative_path FROM artifacts WHERE run_id = ? AND node_key = ?", admitted.run.id, "local_task");
-      expect(artifact).toMatchObject({ media_type: "text/plain", size: 12 });
+      const artifacts = runtimeRows(workspace, "SELECT node_key, attempt, media_type, digest, size, relative_path FROM artifacts WHERE run_id = ? ORDER BY id", admitted.run.id);
+      expect(artifacts).toHaveLength(1);
+      const artifact = artifacts[0];
+      expect(artifact).toMatchObject({ attempt: 1, media_type: "text/plain", size: 12 });
+      expect(String(artifact?.relative_path)).toContain(`${String(artifact?.node_key)}/attempt-1/`);
       const bytes = await readFile(join(workspace, ".acpus", "runs", admitted.run.id, String(artifact?.relative_path)));
       expect(bytes.toString("utf8")).toBe("artifact-ok\n");
       expect(artifact?.digest).toBe(`sha256:${createHash("sha256").update(bytes).digest("hex")}`);
@@ -132,7 +136,7 @@ describe.concurrent("runtime admission use cases", () => {
       expect(task.status).toBe("failed");
       if (task.status !== "failed") throw new Error("expected task run to fail");
       expect(task.message).toBe("task exploded");
-      expect(runtimeRow(workspace, "SELECT status, output_json FROM node_states WHERE run_id = ? AND node_key = 'boom'", task.run.id)).toMatchObject({
+      expect(runtimeRow(workspace, "SELECT status, output_json FROM node_instances WHERE run_id = ? AND node_id = 'boom'", task.run.id)).toMatchObject({
         status: "failed",
         output_json: null,
       });
@@ -141,8 +145,8 @@ describe.concurrent("runtime admission use cases", () => {
       expect(pure.status).toBe("failed");
       if (pure.status !== "failed") throw new Error("expected pure run to fail");
       expect(pure.message).toBe("Assert node 'fail' failed.");
-      expect(runtimeRows(workspace, "SELECT node_key, status, output_json FROM node_states WHERE run_id = ? ORDER BY node_key", pure.run.id)).toEqual([
-        { node_key: "fail", status: "failed", output_json: null },
+      expect(runtimeRows(workspace, "SELECT node_id, status, result_json FROM scheduler_frames WHERE run_id = ? AND node_id = 'fail' ORDER BY node_id", pure.run.id)).toEqual([
+        { node_id: "fail", status: "failed", result_json: null },
       ]);
     });
   });

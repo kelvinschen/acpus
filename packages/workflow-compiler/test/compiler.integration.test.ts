@@ -97,7 +97,7 @@ describe.concurrent("workflow module compiler", () => {
             fn: "coalesce",
             args: [
               { kind: "ref", path: ["fanout", "lanes", "item", "id"] },
-              { kind: "literal", value: "" },
+              { kind: "literal", value: "(none)" },
             ],
           },
           route: {

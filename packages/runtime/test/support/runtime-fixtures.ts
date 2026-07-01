@@ -192,6 +192,26 @@ export function failingTaskWorkflow() {
   });
 }
 
+export function failOnceTaskWorkflow() {
+  return defineWorkflow({
+    name: "cli-fail-once-task",
+    inputSchema: z.object({ workDir: z.path() }),
+  }).build(({ input, step }) => {
+    const result = step("eventual").task({
+      outputSchema: z.object({ ok: z.boolean() }),
+      run: {
+        input: {},
+        cwd: input.workDir,
+        exec: async ({ $ }) => {
+          await $`sh -c "if [ -f .retry-marker ]; then exit 0; fi; touch .retry-marker; exit 1"`;
+          return { ok: true };
+        },
+      },
+    });
+    return { ok: result.output.ok };
+  });
+}
+
 export function failingPureWorkflow() {
   return defineWorkflow({
     name: "cli-failing-pure",
@@ -232,6 +252,92 @@ export function signalWorkflow() {
     });
     step("after").assert({ condition: approval.output.ok });
     return { ok: approval.output.ok };
+  });
+}
+
+export function fanoutSignalWorkflow() {
+  return defineWorkflow({
+    name: "cli-fanout-signal",
+    inputSchema: z.object({ items: z.array(z.string()) }),
+  }).build(({ input, step }) => {
+    const approvals = step("approvals").fanout({
+      over: input.items,
+      itemOutputSchema: z.object({ ok: z.boolean() }),
+      do: ({ step }) => {
+        const approval = step("approve").signal({
+          outputSchema: z.object({ ok: z.boolean() }),
+          run: { prompt: "approve" },
+        });
+        return { ok: approval.output.ok };
+      },
+    });
+    return { approvals: approvals.output };
+  });
+}
+
+export function parallelSignalAllWorkflow() {
+  return defineWorkflow({
+    name: "cli-parallel-signal-all",
+  }).build(({ step }) => {
+    const approvals = step("approvals").parallel({
+      strategy: "all",
+      branches: {
+        left: {
+          outputSchema: z.object({ ok: z.boolean() }),
+          do: ({ step }) => {
+            const approval = step("left_approve").signal({
+              outputSchema: z.object({ ok: z.boolean() }),
+              run: { prompt: "left" },
+            });
+            return { ok: approval.output.ok };
+          },
+        },
+        right: {
+          outputSchema: z.object({ ok: z.boolean() }),
+          do: ({ step }) => {
+            const approval = step("right_approve").signal({
+              outputSchema: z.object({ ok: z.boolean() }),
+              run: { prompt: "right" },
+            });
+            return { ok: approval.output.ok };
+          },
+        },
+      },
+    });
+    return { approvals: approvals.output };
+  });
+}
+
+export function parallelSignalRaceWorkflow() {
+  return defineWorkflow({
+    name: "cli-parallel-signal-race",
+  }).build(({ step }) => {
+    const approval = step("approval").parallel({
+      strategy: "race",
+      branches: {
+        left: {
+          outputSchema: z.object({ ok: z.boolean() }),
+          do: ({ step }) => {
+            const approval = step("left_approve").signal({
+              outputSchema: z.object({ ok: z.boolean() }),
+              run: { prompt: "left" },
+            });
+            return { ok: approval.output.ok };
+          },
+        },
+        right: {
+          outputSchema: z.object({ ok: z.boolean() }),
+          do: ({ step }) => {
+            const approval = step("right_approve").signal({
+              outputSchema: z.object({ ok: z.boolean() }),
+              run: { prompt: "right" },
+            });
+            return { ok: approval.output.ok };
+          },
+        },
+      },
+    });
+    return { approval: approval.output };
   });
 }
 

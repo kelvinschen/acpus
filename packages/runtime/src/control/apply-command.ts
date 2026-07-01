@@ -2,13 +2,15 @@ import type { JsonValue } from "@acpus/expression/ir";
 import { advanceRun, type AdvanceResult } from "../execution/advance.js";
 import { findSignalNode } from "../execution/ir.js";
 import { normalizeValue } from "../evaluation/schema.js";
+import { applySchedulerControlCommand } from "../scheduler/control.js";
+import { advanceRuntimeRun, hasSchedulerState, type RuntimeAdvanceResult } from "../runs/advance-runtime.js";
 import type { ForkPreparedWorkflow, PendingControlCommand, RuntimeStore } from "../store/store.js";
 
 export type AppliedControlCommand = {
   command: PendingControlCommand;
   sourceRunId: string;
   run: NonNullable<ReturnType<RuntimeStore["getRun"]>>;
-  advanced?: AdvanceResult;
+  advanced?: AdvanceResult | RuntimeAdvanceResult;
   forkRunId?: string;
 };
 
@@ -48,6 +50,16 @@ function appliedCommandResult(store: RuntimeStore, command: PendingControlComman
 
 async function applyControlCommandUnchecked(cwd: string, store: RuntimeStore, command: PendingControlCommand): Promise<AppliedControlCommand> {
   const runId = requireRunId(command);
+  if (usesSchedulerControl(store, runId, command)) {
+    await applySchedulerControlCommand(cwd, store, command, { claimCommand: false, advance: false });
+    const advanced = command.type === "pause" ? undefined : await advanceRuntimeRun(cwd, store, runId);
+    return {
+      command,
+      sourceRunId: runId,
+      run: requireRun(store, runId),
+      ...(advanced ? { advanced } : {}),
+    };
+  }
   if (command.type === "pause") {
     store.pauseRun(runId, { commandId: command.id });
     return { command, sourceRunId: runId, run: requireRun(store, runId) };
@@ -86,6 +98,11 @@ async function applyControlCommandUnchecked(cwd: string, store: RuntimeStore, co
     return { command, sourceRunId: runId, run: requireRun(store, runId), advanced };
   }
   throw new Error(`Unsupported command type '${command.type}'.`);
+}
+
+function usesSchedulerControl(store: RuntimeStore, runId: string, command: PendingControlCommand): boolean {
+  if (!hasSchedulerState(store, runId)) return false;
+  return command.type === "pause" || command.type === "resume" || command.type === "signal" || command.type === "retry";
 }
 
 function requireRunId(command: PendingControlCommand): string {

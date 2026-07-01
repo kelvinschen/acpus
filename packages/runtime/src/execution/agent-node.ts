@@ -5,8 +5,13 @@ import { normalizeValue } from "../evaluation/schema.js";
 
 export type AgentExecutorOptions = {
   cwd: string;
+  runId?: string;
   agents: WorkflowIR["agents"];
   getProviderCommand(use: string): string | undefined;
+  nodeKey?: string;
+  attemptNo?: number;
+  signal?: AbortSignal;
+  maxAttempts?: number;
 };
 
 export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope, options: AgentExecutorOptions): Promise<unknown> {
@@ -64,6 +69,7 @@ async function executeCommandBackedAgent(
   for (const key of commandInput.scrubEnv ?? []) {
     if (!(key in (commandInput.extraEnv ?? {}))) delete env[key];
   }
+  applyRuntimeAgentEnv(env, node.id, options);
   const output = await executeAgentRequest({
     kind: "command",
     nodeId: node.id,
@@ -71,11 +77,24 @@ async function executeCommandBackedAgent(
     prompt: commandInput.prompt,
     cwd,
     env,
-    maxAttempts: Math.max(1, (node.retry?.max ?? 0) + 1),
+    maxAttempts: options.maxAttempts ?? Math.max(1, (node.retry?.max ?? 0) + 1),
     ...(node.timeout ? { timeout: node.timeout } : {}),
+    ...(options.signal ? { signal: options.signal } : {}),
     acceptOutput: commandInput.acceptOutput,
   });
   return output;
+}
+
+function applyRuntimeAgentEnv(env: NodeJS.ProcessEnv, nodeId: string, options: AgentExecutorOptions): void {
+  env.ACPUS_RUNTIME_NODE_ID = nodeId;
+  setOptionalEnv(env, "ACPUS_RUNTIME_RUN_ID", options.runId);
+  setOptionalEnv(env, "ACPUS_RUNTIME_NODE_KEY", options.nodeKey);
+  setOptionalEnv(env, "ACPUS_RUNTIME_ATTEMPT", options.attemptNo === undefined ? undefined : String(options.attemptNo));
+}
+
+function setOptionalEnv(env: NodeJS.ProcessEnv, key: string, value: string | undefined): void {
+  if (value === undefined) delete env[key];
+  else env[key] = value;
 }
 
 function evaluateEnv(env: Record<string, any> | undefined, scope: EvaluationScope): Record<string, string> {

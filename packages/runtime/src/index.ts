@@ -10,6 +10,7 @@ export {
 export {
   admitWorkflowRun,
   getRun,
+  getRunVisualizationOverlay,
   listRuns,
   mutateRun,
   normalizeForkInput,
@@ -22,8 +23,20 @@ export {
   type RuntimeMutationResult,
 } from "./runs/use-cases.js";
 export {
+  createWorkflowVisualizationOverlay,
+  type WorkflowVisualizationGroup,
+  type WorkflowVisualizationNode,
+  type WorkflowVisualizationOverlay,
+} from "./visualization/overlay.js";
+export {
   type ForkPreparedWorkflow,
   type PreparedRunWorkflow,
+  type RunDynamicAttempt,
+  type RunDynamicDetails,
+  type RunDynamicFrame,
+  type RunDynamicGroupMember,
+  type RunDynamicNodeInstance,
+  type RunDynamicSignalWait,
   type ReplayResult,
   type RunDetails,
   type RunRecord,

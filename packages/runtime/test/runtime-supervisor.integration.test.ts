@@ -28,6 +28,37 @@ describe.concurrent("runtime supervisor ticks", () => {
     });
   }, 15_000);
 
+  it("rejects invalid pending signal commands without consuming scheduler waits", async () => {
+    await withRuntimeWorkspace("runtime-supervisor-invalid-signal-command", async workspace => {
+      const awaiting = await admitSyntheticWorkflow(workspace, signalWorkflow());
+      const store = await openExistingWritableRuntimeStore(workspace);
+      expect(store).toBeDefined();
+      try {
+        const invalid = store!.submitCommand({
+          runId: awaiting.run.id,
+          type: "signal",
+          payload: { node: "approve", payload: { ok: "yes" } },
+          idempotencyKey: `test-signal-invalid:${awaiting.run.id}`,
+        });
+        await expect(runSupervisorTick(workspace, store!)).resolves.toMatchObject({ commands: 1 });
+        expect(store!.getCommand(invalid.id)).toMatchObject({ status: "failed" });
+        expect(runtimeRows(workspace, "SELECT status FROM signal_waits WHERE run_id = ?", awaiting.run.id)).toEqual([{ status: "awaiting" }]);
+        expect(runtimeRows(workspace, "SELECT status FROM node_instances WHERE run_id = ? AND node_id = 'approve'", awaiting.run.id)).toEqual([{ status: "awaiting" }]);
+
+        store!.submitCommand({
+          runId: awaiting.run.id,
+          type: "signal",
+          payload: { node: "approve", payload: { ok: true } },
+          idempotencyKey: `test-signal-valid:${awaiting.run.id}`,
+        });
+        await expect(runSupervisorTick(workspace, store!)).resolves.toMatchObject({ commands: 1 });
+      } finally {
+        store?.close();
+      }
+      await expect(getRun(workspace, awaiting.run.id)).resolves.toMatchObject({ status: "completed", output: { ok: true } });
+    });
+  }, 15_000);
+
   it("applies pending fork commands", async () => {
     await withRuntimeWorkspace("runtime-supervisor-fork-command", async workspace => {
       const completed = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());

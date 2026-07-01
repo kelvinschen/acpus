@@ -51,7 +51,7 @@ export default defineWorkflow({
       policy: "read",
     },
   },
-}).build(({ input, agents, step }) => {
+}).build(({ input, agents, step, meta }) => {
   const packageInfo = step("normalize_package").task({
     run: {
       task: localDependencyTask,
@@ -240,6 +240,7 @@ export default defineWorkflow({
   });
 
   return {
+    runId: meta.runId,
     ready: every(reviews.map((review) => review.output.ready)),
     maxRiskCount: max(reviews.map((review) => review.output.riskCount)),
     summary: summary.output.summary,

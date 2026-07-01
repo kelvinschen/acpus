@@ -1,0 +1,300 @@
+import { DatabaseSync } from "node:sqlite";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import { advanceRun, completed, type NodeExecutor } from "../src/scheduler/advance.js";
+import { openRuntimeStore } from "../src/store/store.js";
+import { prepareSyntheticWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+
+describe("durable scheduler advance with store", () => {
+  it("resumes an interrupted race by committing winner and loser cancellation from projection", async () => {
+    await withRuntimeWorkspace("scheduler-advance-store-race", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      const calls: string[] = [];
+      const executor: NodeExecutor = {
+        execute: context => {
+          calls.push(context.nodeKey);
+          return Promise.resolve(completed());
+        },
+      };
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const setupOwner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          ownerEpoch: setupOwner.ownerEpoch,
+          idempotencyKey: "setup-race",
+          events: [
+            { type: "group.started", payload: { runId: run.id, groupKey: "race", nodeKey: "race", nodeId: "race", kind: "parallel", strategy: "race" } },
+            { type: "group.member_ready", payload: { runId: run.id, groupKey: "race", memberKey: "winner", memberKind: "branch", branchId: "winner", readinessSequence: 1 } },
+            { type: "group.member_started", payload: { memberKey: "winner" } },
+            { type: "group.member_completed", payload: { memberKey: "winner", completionSequence: 1, output: { ok: true } } },
+            { type: "group.member_ready", payload: { runId: run.id, groupKey: "race", memberKey: "loser", memberKind: "branch", branchId: "loser", readinessSequence: 2 } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "loser", nodeId: "loser", instancePath: [{ kind: "branch", nodeId: "race", branchId: "loser" }, { kind: "node", nodeId: "loser" }], readinessSequence: 2 } },
+          ],
+        });
+        expireLease(workspace, run.id);
+
+        await expect(advanceRun({
+          runId: run.id,
+          ownerId: "owner-b",
+          store: store.scheduler,
+          executor,
+          memberForInstance: (instance, projection) => projection.groupMembers[instance.nodeKey],
+        })).resolves.toMatchObject({ started: 0 });
+
+        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        expect(calls).toEqual([]);
+        expect(projection.groups.race).toMatchObject({ status: "completed" });
+        expect(projection.groupMembers.loser).toMatchObject({ status: "cancelled", terminalReason: "race_lost" });
+        expect(projection.instances.loser).toMatchObject({ status: "cancelled", statusReason: "race_lost" });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("resumes an interrupted quorum fanout by accepting durable completion order", async () => {
+    await withRuntimeWorkspace("scheduler-advance-store-quorum", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const setupOwner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          ownerEpoch: setupOwner.ownerEpoch,
+          idempotencyKey: "setup-quorum",
+          events: [
+            { type: "group.started", payload: { runId: run.id, groupKey: "items", nodeKey: "items", nodeId: "items", kind: "fanout", strategy: "quorum", quorumCount: 2 } },
+            { type: "group.member_ready", payload: { runId: run.id, groupKey: "items", memberKey: "items[0]", memberKind: "fanout_item", itemIndex: 0, readinessSequence: 1 } },
+            { type: "group.member_started", payload: { memberKey: "items[0]" } },
+            { type: "group.member_completed", payload: { memberKey: "items[0]", completionSequence: 20, output: { item: 0 } } },
+            { type: "group.member_ready", payload: { runId: run.id, groupKey: "items", memberKey: "items[1]", memberKind: "fanout_item", itemIndex: 1, readinessSequence: 2 } },
+            { type: "group.member_started", payload: { memberKey: "items[1]" } },
+            { type: "group.member_completed", payload: { memberKey: "items[1]", completionSequence: 10, output: { item: 1 } } },
+            { type: "group.member_ready", payload: { runId: run.id, groupKey: "items", memberKey: "items[2]", memberKind: "fanout_item", itemIndex: 2, readinessSequence: 3 } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "items[2]", nodeId: "item", instancePath: [{ kind: "fanout", nodeId: "items", itemKey: 2, itemIndex: 2 }, { kind: "node", nodeId: "item" }], readinessSequence: 3 } },
+          ],
+        });
+        expireLease(workspace, run.id);
+
+        await advanceRun({
+          runId: run.id,
+          ownerId: "owner-b",
+          store: store.scheduler,
+          executor: { execute: () => Promise.resolve(completed()) },
+          memberForInstance: (instance, projection) => projection.groupMembers[instance.nodeKey],
+        });
+
+        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        expect(projection.groups.items).toMatchObject({
+          status: "completed",
+          result: { acceptedMemberKeys: ["items[1]", "items[0]"] },
+        });
+        expect(projection.groupMembers["items[2]"]).toMatchObject({ status: "cancelled", terminalReason: "quorum_reached" });
+        expect(projection.instances["items[2]"]).toMatchObject({ status: "cancelled", statusReason: "quorum_reached" });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("updates direct group member lifecycle from real leaf completion", async () => {
+    await withRuntimeWorkspace("scheduler-advance-store-member-lifecycle", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      const calls: string[] = [];
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const setupOwner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          ownerEpoch: setupOwner.ownerEpoch,
+          idempotencyKey: "setup-member-lifecycle",
+          events: [
+            { type: "group.started", payload: { runId: run.id, groupKey: "all", nodeKey: "all", nodeId: "all", kind: "parallel", strategy: "all" } },
+            { type: "group.member_ready", payload: { runId: run.id, groupKey: "all", memberKey: "leaf", memberKind: "branch", branchId: "leaf", readinessSequence: 1 } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "leaf", nodeId: "leaf", instancePath: [{ kind: "branch", nodeId: "all", branchId: "leaf" }, { kind: "node", nodeId: "leaf" }], readinessSequence: 1 } },
+          ],
+        });
+        expireLease(workspace, run.id);
+
+        await advanceRun({
+          runId: run.id,
+          ownerId: "owner-b",
+          store: store.scheduler,
+          executor: {
+            execute: context => {
+              calls.push(context.nodeKey);
+              return Promise.resolve(completed({ ok: true }));
+            },
+          },
+        });
+
+        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        expect(calls).toEqual(["leaf"]);
+        expect(projection.groupMembers.leaf).toMatchObject({ status: "completed", output: { ok: true } });
+        expect(projection.groups.all).toMatchObject({ status: "completed", result: { acceptedMemberKeys: ["leaf"] } });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("supersedes expired-owner attempts before a recovered owner advances", async () => {
+    await withRuntimeWorkspace("scheduler-advance-store-recovery", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      const calls: string[] = [];
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const oldOwner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          ownerEpoch: oldOwner.ownerEpoch,
+          idempotencyKey: "setup-recovery-ready",
+          events: [
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "old", nodeId: "old", instancePath: [{ kind: "node", nodeId: "old" }], readinessSequence: 1 } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "new", nodeId: "new", instancePath: [{ kind: "node", nodeId: "new" }], readinessSequence: 2 } },
+          ],
+        });
+        const oldAttempt = store.scheduler.startAttempt({
+          runId: run.id,
+          nodeKey: "old",
+          nodeId: "old",
+          ownerEpoch: oldOwner.ownerEpoch,
+          idempotencyKey: "old-attempt-start",
+        });
+        expireLease(workspace, run.id);
+
+        await advanceRun({
+          runId: run.id,
+          ownerId: "owner-b",
+          store: store.scheduler,
+          executor: {
+            execute: context => {
+              calls.push(context.nodeKey);
+              return Promise.resolve(completed());
+            },
+          },
+        });
+
+        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        expect(projection.attempts[oldAttempt.attemptId]).toMatchObject({ status: "superseded" });
+        expect(calls).toEqual(["old", "new"]);
+        expect(Object.values(projection.attempts).filter(attempt => attempt.nodeKey === "old").map(attempt => attempt.attemptNo).sort()).toEqual([1, 2]);
+        expect(() => store.scheduler.commitAttemptResult({
+          runId: run.id,
+          attemptId: oldAttempt.attemptId,
+          ownerEpoch: oldOwner.ownerEpoch,
+          result: { status: "completed", output: { late: true } },
+          idempotencyKey: "old-attempt-late",
+        })).toThrow("owner epoch is not active");
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("times out expired old-owner attempts before superseding recovery", async () => {
+    await withRuntimeWorkspace("scheduler-advance-store-recovery-timeout", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      const calls: string[] = [];
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const oldOwner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          ownerEpoch: oldOwner.ownerEpoch,
+          idempotencyKey: "setup-recovery-timeout-ready",
+          events: [
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "old", nodeId: "old", instancePath: [{ kind: "node", nodeId: "old" }], readinessSequence: 1 } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "new", nodeId: "new", instancePath: [{ kind: "node", nodeId: "new" }], readinessSequence: 2 } },
+          ],
+        });
+        const oldAttempt = store.scheduler.startAttempt({
+          runId: run.id,
+          nodeKey: "old",
+          nodeId: "old",
+          ownerEpoch: oldOwner.ownerEpoch,
+          deadlineAt: "2026-06-30T00:00:00.000Z",
+          idempotencyKey: "old-timeout-attempt-start",
+        });
+        expireLease(workspace, run.id);
+
+        await advanceRun({
+          runId: run.id,
+          ownerId: "owner-b",
+          store: store.scheduler,
+          executor: {
+            execute: context => {
+              calls.push(context.nodeKey);
+              return Promise.resolve(completed());
+            },
+          },
+          now: () => new Date("2026-06-30T00:00:01.000Z"),
+        });
+
+        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        expect(projection.attempts[oldAttempt.attemptId]).toMatchObject({ status: "timed_out" });
+        expect(projection.instances.old).toMatchObject({ status: "failed", statusReason: "timed_out" });
+        expect(calls).toEqual(["new"]);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("times out expired durable signal waits before returning awaiting", async () => {
+    await withRuntimeWorkspace("scheduler-advance-store-signal-timeout", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const owner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          ownerEpoch: owner.ownerEpoch,
+          idempotencyKey: "setup-signal-timeout",
+          events: [
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "approve", nodeId: "approve", instancePath: [{ kind: "node", nodeId: "approve" }], readinessSequence: 1 } },
+            { type: "instance.awaiting", payload: { nodeKey: "approve", statusReason: "signal" } },
+            { type: "signal.awaiting", payload: { runId: run.id, nodeKey: "approve", nodeId: "approve", deadlineAt: "2026-06-30T00:00:00.000Z" } },
+          ],
+        });
+        expireLease(workspace, run.id);
+
+        await advanceRun({
+          runId: run.id,
+          ownerId: "owner-b",
+          store: store.scheduler,
+          executor: { execute: () => Promise.resolve(completed()) },
+          now: () => new Date("2026-06-30T00:00:01.000Z"),
+        });
+
+        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        expect(projection.signalWaits.approve).toMatchObject({ status: "timed_out", terminalReason: "signal_timeout" });
+        expect(projection.instances.approve).toMatchObject({ status: "failed", statusReason: "signal_timeout" });
+      } finally {
+        store.close();
+      }
+    });
+  });
+});
+
+function expireLease(workspace: string, runId: string): void {
+  const db = new DatabaseSync(join(workspace, ".acpus", "state", "runtime.db"));
+  try {
+    db.prepare("UPDATE run_leases SET lease_expires_at = ? WHERE run_id = ?").run(new Date(Date.now() - 1_000).toISOString(), runId);
+  } finally {
+    db.close();
+  }
+}

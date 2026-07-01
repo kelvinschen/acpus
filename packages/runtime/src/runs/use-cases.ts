@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { JsonValue } from "@acpus/expression/ir";
 import { normalizeSignalPayload, normalizeWorkflowInput } from "../admission/input.js";
-import { advanceRun, type AdvanceResult } from "../execution/advance.js";
+import type { AdvanceResult } from "../execution/advance.js";
 import { applyControlCommand } from "../control/apply-command.js";
+import { advanceRuntimeRun, type RuntimeAdvanceResult } from "./advance-runtime.js";
+import { createWorkflowVisualizationOverlay, type WorkflowVisualizationOverlay } from "../visualization/overlay.js";
 import {
   openExistingRuntimeStore,
   openExistingWritableRuntimeStore,
@@ -27,15 +29,15 @@ export type RuntimeMutationInput = {
 
 export type RuntimeMutationResult = {
   run: RunDetails;
-  advanced?: AdvanceResult;
+  advanced?: RuntimeAdvanceResult | AdvanceResult;
   command?: RuntimeCommandRecord;
 };
 
-export async function admitWorkflowRun(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue): Promise<AdvanceResult> {
+export async function admitWorkflowRun(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue): Promise<RuntimeAdvanceResult> {
   const store = await openRuntimeStore(cwd);
   try {
     const run = await store.admitRun({ prepared, cwd, input });
-    return await advanceRun(cwd, store, run.id);
+    return await advanceRuntimeRun(cwd, store, run.id);
   } finally {
     store.close();
   }
@@ -56,6 +58,19 @@ export async function getRun(cwd: string, runId: string): Promise<RunDetails | u
   if (!store) return undefined;
   try {
     return store.getRun(runId);
+  } finally {
+    store.close();
+  }
+}
+
+export async function getRunVisualizationOverlay(cwd: string, runId: string): Promise<WorkflowVisualizationOverlay | undefined> {
+  const store = await openExistingRuntimeStore(cwd);
+  if (!store) return undefined;
+  try {
+    const frozen = store.getFrozenRun(runId);
+    const run = store.getRun(runId);
+    if (!frozen || !run) return undefined;
+    return createWorkflowVisualizationOverlay(frozen.ir, run.dynamic, { runId, status: run.status });
   } finally {
     store.close();
   }
@@ -103,15 +118,17 @@ export async function signalRun(cwd: string, runId: string, nodeId: string, payl
   try {
     const frozen = store.getFrozenRun(runId);
     if (!frozen) return undefined;
-    const normalized = normalizeSignalPayload(frozen.ir, nodeId, payload);
+    const signalNodeId = store.scheduler.loadRunSnapshot(runId).projection.signalWaits[nodeId]?.nodeId ?? nodeId;
+    const normalized = normalizeSignalPayload(frozen.ir, signalNodeId, payload);
     const command = store.submitCommand({
       runId,
       type: "signal",
       payload: { node: nodeId, payload: normalized },
-      idempotencyKey: `signal:${runId}:${nodeId}:${JSON.stringify(normalized)}`,
+      idempotencyKey: `signal:${runId}:${nodeId}:${randomUUID()}`,
     });
     const result = await applyControlCommand(cwd, store, command);
-    return { run: result.run, ...(result.advanced ? { advanced: result.advanced } : {}), command };
+    const appliedCommand = store.getCommand(command.id) ?? command;
+    return { run: result.run, ...(result.advanced ? { advanced: result.advanced } : {}), command: appliedCommand };
   } finally {
     store.close();
   }
@@ -135,15 +152,16 @@ export async function mutateRun(cwd: string, runId: string, action: RuntimeMutat
       payload,
       idempotencyKey: action === "retry" ? `${action}:${runId}:${input.node ?? "run"}:${randomUUID()}`
         : action === "fork" ? `${action}:${runId}:${randomUUID()}`
-          : `${action}:${runId}`,
+          : `${action}:${runId}:${randomUUID()}`,
     });
     if (command.status === "applied") {
       const run = store.getRun(runId);
       if (!run) return undefined;
-      return { run, command };
+      return { run, command: store.getCommand(command.id) ?? command };
     }
     const result = await applyControlCommand(cwd, store, command);
-    return { run: result.run, ...(result.advanced ? { advanced: result.advanced } : {}), command };
+    const appliedCommand = store.getCommand(command.id) ?? command;
+    return { run: result.run, ...(result.advanced ? { advanced: result.advanced } : {}), command: appliedCommand };
   } finally {
     store.close();
   }
