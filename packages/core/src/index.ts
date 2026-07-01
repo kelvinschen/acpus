@@ -3,7 +3,7 @@ export type { AgentMap, BuildContext, OutputValue, OutputValues, WorkflowDefinit
 export { z, s } from "./schema/index.js";
 export type { ArtifactRef, InferSchema, Schema, SecretRef } from "./schema/index.js";
 export { task } from "./nodes/leaf/task.js";
-export type { TaskToken } from "./nodes/leaf/task.js";
+export type { ReusableTaskToken, TaskToken } from "./nodes/leaf/task.js";
 export type { TaskContext, TaskFunction } from "./runtime/task-context.js";
 export type { AgentCommandSpec, AgentDefinitionSpec, AgentPermissionMode, AgentRunSpec, AgentToken, AgentUseSpec } from "./nodes/leaf/agent.js";
 export type { SignalRunSpec } from "./nodes/leaf/signal.js";

@@ -2,20 +2,19 @@ import ts from "typescript";
 import { execFunction, isTaskDefineCall, objectProperty, parseSourceFile, taskFactoryLocalName } from "./ast.js";
 import { findTaskCallsites } from "./callsites.js";
 import { collectFreeIdentifiers } from "./inline-capture.js";
-import { resolveImportFile, resolveImportFileSync, verifyTaskModuleExport, verifyTaskModuleExportSync } from "./module-exports.js";
-import type { ImportBinding, TaskAuthoringIssue, TaskBundleMetadata, TaskCallsite, WorkflowTaskExport } from "./types.js";
+import type { ImportBinding, TaskAuthoringIssue, TaskReferenceMetadata, TaskCallsite, WorkflowTaskExport } from "./types.js";
 import { collectImportBindings, collectLocalValueNames, collectWorkflowTaskExports, hasInnerBinding } from "./workflow-symbols.js";
 
-// Static task analysis parses workflow modules and task modules with the
-// TypeScript parser only. It produces facts and bundle metadata, not
+// Static task analysis parses workflow modules with the TypeScript parser only.
+// It produces facts and reusable reference metadata, not
 // diagnostics. Authoring rules own rule codes, messages, and hints; compile
-// and bundling consume only metadata.
+// consumes only metadata.
 
 export type {
   AnalyzedTask,
   TaskAnalysisFact,
   TaskAuthoringIssue,
-  TaskBundleMetadata,
+  TaskReferenceMetadata,
   TaskMetadataFact,
   WorkflowTaskAnalysis,
 } from "./types.js";
@@ -62,8 +61,8 @@ export function analyzeTaskAuthoring(analysis: WorkflowTaskAnalysis): TaskAnalys
   }));
 }
 
-export function resolveTaskBundleMetadata(analysis: WorkflowTaskAnalysis): Map<string, TaskBundleMetadata> {
-  const metadata = new Map<string, TaskBundleMetadata>();
+export function resolveTaskReferenceMetadata(analysis: WorkflowTaskAnalysis): Map<string, TaskReferenceMetadata> {
+  const metadata = new Map<string, TaskReferenceMetadata>();
   for (const [stepId, analyzed] of analysis) {
     if (analyzed.metadata) metadata.set(stepId, analyzed.metadata);
   }
@@ -99,16 +98,7 @@ async function analyzeReusable(taskValue: ts.Expression, ctx: AnalyzeContext): P
   if (!binding) {
     return reusableIssue({ kind: "invalid-reusable-task-reference", name });
   }
-  if (!binding.specifier.startsWith(".")) {
-    return reusableIssue({ kind: "unsupported-task-import", name, specifier: binding.specifier, reason: "third-party" });
-  }
-  const targetFile = await resolveImportFile(binding.specifier, ctx.workflowFile);
-  if (!targetFile) {
-    return reusableIssue({ kind: "unsupported-task-import", name, specifier: binding.specifier, reason: "unresolved" });
-  }
-  const verdict = await verifyTaskModuleExport(targetFile, binding.importedName);
-  if (!verdict.ok) return reusableIssue(verdict.issue);
-  return reusableMetadata(targetFile, binding.importedName, "task-module");
+  return reusableMetadata(binding.specifier, binding.importedName);
 }
 
 function analyzeReusableSync(taskValue: ts.Expression, ctx: AnalyzeContext): AnalyzedTask {
@@ -122,16 +112,7 @@ function analyzeReusableSync(taskValue: ts.Expression, ctx: AnalyzeContext): Ana
   if (!binding) {
     return reusableIssue({ kind: "invalid-reusable-task-reference", name });
   }
-  if (!binding.specifier.startsWith(".")) {
-    return reusableIssue({ kind: "unsupported-task-import", name, specifier: binding.specifier, reason: "third-party" });
-  }
-  const targetFile = resolveImportFileSync(binding.specifier, ctx.workflowFile);
-  if (!targetFile) {
-    return reusableIssue({ kind: "unsupported-task-import", name, specifier: binding.specifier, reason: "unresolved" });
-  }
-  const verdict = verifyTaskModuleExportSync(targetFile, binding.importedName);
-  if (!verdict.ok) return reusableIssue(verdict.issue);
-  return reusableMetadata(targetFile, binding.importedName, "task-module");
+  return reusableMetadata(binding.specifier, binding.importedName);
 }
 
 function analyzeLocalReusable(taskValue: ts.Identifier, ctx: AnalyzeContext): AnalyzedTask | undefined {
@@ -148,10 +129,8 @@ function analyzeLocalReusable(taskValue: ts.Identifier, ctx: AnalyzeContext): An
     return {
       inline: false,
       metadata: {
-        inline: false,
-        sourceFile: ctx.workflowFile,
+        specifier: `./${ctx.workflowFile.split(/[\\/]/).pop() ?? ""}`,
         exportName: localExport.exportName,
-        sourceKind: "workflow-module",
       },
     };
   }
@@ -161,14 +140,12 @@ function analyzeLocalReusable(taskValue: ts.Identifier, ctx: AnalyzeContext): An
   return undefined;
 }
 
-function reusableMetadata(sourceFile: string, exportName: string, sourceKind: "task-module" | "workflow-module"): AnalyzedTask {
+function reusableMetadata(specifier: string, exportName: string): AnalyzedTask {
   return {
     inline: false,
     metadata: {
-      inline: false,
-      sourceFile,
+      specifier,
       exportName,
-      sourceKind,
     },
   };
 }
@@ -181,7 +158,7 @@ function analyzeInline(exec: ts.FunctionLikeDeclarationBase): AnalyzedTask {
       issue: { kind: "inline-task-capture", names: free },
     };
   }
-  return { inline: true, metadata: { inline: true } };
+  return { inline: true };
 }
 
 function reusableIssue(issue: TaskAuthoringIssue): AnalyzedTask {

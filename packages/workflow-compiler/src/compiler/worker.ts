@@ -21,7 +21,6 @@ export async function compileWorkflow(entry: string, cwd: string, scratchDir: st
     entry,
     out,
     cwd,
-    JSON.stringify(conditions),
   ];
   if (conditions.length > 0) {
     // Workspace development should compile workflows against live core source.

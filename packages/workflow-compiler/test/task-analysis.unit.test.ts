@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { analyzeWorkflowTasks } from "../src/task-analysis/index.js";
 
-// Static task analysis produces facts for lint and metadata for bundling. Rule
+// Static task analysis produces facts for lint and reusable task references. Rule
 // codes and messages belong to the check layer, not to this analyzer.
 
 let dir: string;
@@ -41,7 +41,7 @@ describe("task analysis", () => {
       { "normalize.task.ts": taskModule },
     );
 
-    expectReusableAccepted(analysis, "normalize.task.ts");
+    expectReusableAccepted(analysis, "./normalize.task.js", "default");
   });
 
   it("accepts a reusable task imported by name", async () => {
@@ -52,7 +52,7 @@ describe("task analysis", () => {
       { "tasks.ts": `import { task, z } from "@acpus/core";\nexport const normalize = task.define({ inputSchema: z.object({}), outputSchema: z.object({ ok: z.boolean() }), exec: async () => ({ ok: true }) });\n` },
     );
 
-    expectReusableAccepted(analysis, "tasks.ts");
+    expectReusableAccepted(analysis, "./tasks.js", "normalize");
   });
 
   it("accepts an exported top-level reusable task declared in the workflow module", async () => {
@@ -156,7 +156,7 @@ describe("task analysis", () => {
     expect(analysis.get("run")?.metadata).toBeUndefined();
   });
 
-  it("rejects a reusable task whose module export is not task.define(...) (TB005)", async () => {
+  it("accepts imported reusable task references without parser-time module export validation", async () => {
     const analysis = await analyze(
       `import t from "./not-a-task.js";
        declare const step: any;
@@ -164,20 +164,20 @@ describe("task analysis", () => {
       { "not-a-task.ts": `export default { fn: async () => ({}) };\n` },
     );
 
-    expectTaskIssue(analysis, { kind: "invalid-reusable-task-export" });
+    expectReusableAccepted(analysis, "./not-a-task.js", "default");
   });
 
-  it("rejects a reusable task imported from a third-party package (TB006)", async () => {
+  it("accepts a reusable task imported from a bare package specifier", async () => {
     const analysis = await analyze(
       `import t from "some-pkg";
        declare const step: any;
        step("run").task({ run: { task: t, input: {} } });`,
     );
 
-    expectTaskIssue(analysis, { kind: "unsupported-task-import" });
+    expectReusableAccepted(analysis, "some-pkg", "default");
   });
 
-  it("rejects a reusable task re-exported through a barrel (TB006)", async () => {
+  it("accepts a reusable task re-exported through a barrel", async () => {
     const analysis = await analyze(
       `import t from "./index.js";
        declare const step: any;
@@ -188,7 +188,7 @@ describe("task analysis", () => {
       },
     );
 
-    expectTaskIssue(analysis, { kind: "unsupported-task-import" });
+    expectReusableAccepted(analysis, "./index.js", "default");
   });
 
   it("accepts a self-contained inline task", async () => {
@@ -299,12 +299,12 @@ describe("task analysis", () => {
   });
 });
 
-function expectReusableAccepted(analysis: TaskAnalysis, sourceFileSuffix: string): void {
+function expectReusableAccepted(analysis: TaskAnalysis, specifier: string, exportName: string): void {
   const verdict = analysis.get("run");
   expect(verdict?.issue).toBeUndefined();
   expect(verdict?.inline).toBe(false);
-  expect(verdict?.metadata?.sourceFile?.endsWith(sourceFileSuffix)).toBe(true);
-  expect(verdict?.metadata?.sourceKind).toBe("task-module");
+  expect(verdict?.metadata?.specifier).toBe(specifier);
+  expect(verdict?.metadata?.exportName).toBe(exportName);
 }
 
 function expectWorkflowLocalReusableAccepted(analysis: TaskAnalysis, exportName: string): void {
@@ -312,10 +312,9 @@ function expectWorkflowLocalReusableAccepted(analysis: TaskAnalysis, exportName:
   expect(verdict?.issue).toBeUndefined();
   expect(verdict?.inline).toBe(false);
   expect(verdict?.metadata).toMatchObject({
+    specifier: "./workflow.ts",
     exportName,
-    sourceKind: "workflow-module",
   });
-  expect(verdict?.metadata?.sourceFile?.endsWith("workflow.ts")).toBe(true);
 }
 
 function expectInlineAccepted(analysis: TaskAnalysis): void {

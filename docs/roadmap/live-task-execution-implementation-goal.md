@@ -6,6 +6,48 @@ product truth. Current implemented behavior lives in `specs/`.
 
 **Implements with Clean Code and Good Test @AGENTS.md**
 
+## Implementation Status
+
+- [x] Phase 1: update current specs to describe live reusable task references
+  and embedded inline source instead of task bundles.
+- [x] Phase 1 adversarial review: completed; review findings were applied to
+  specs and `docs/development-testing.md`.
+- [x] Phase 2: implement IR/core/compiler/preflight/admission/runtime changes.
+- [x] Phase 2 adversarial review: completed; review findings were applied to
+  runtime package loading, referrer containment validation, compiler package
+  fixture coverage, and core validation wording/tests.
+- [x] Phase 3: add `@acpus/tasks` with `createWorktree` and package-task
+  runtime coverage.
+- [x] Phase 3 adversarial review: completed; review findings were applied to
+  `createWorktree` dirty-repo handling, `forceRemove` safety, detach semantics,
+  public export coverage, and type shape cleanup.
+- [x] Final cleanup: remove stale bundle-era logic, tests, fixtures, package
+  dependencies, and output contracts.
+- [x] Final verification: run relevant build/test/search gates.
+
+## Implementation Gaps And Diffs
+
+- Runtime-admissible reusable module targets are completed by
+  `@acpus/workflow-compiler`. Core-only `compileWorkflowDefinition(...)`
+  lowering can produce an incomplete internal reusable descriptor when compiler
+  source metadata is unavailable; `validateWorkflowIR(...)` rejects that shape.
+- `@acpus/runtime` owns a direct `tsx` dependency and uses scoped in-process
+  `tsx` imports. It includes a development-export fallback for workspace package
+  exports so package task source can load even when the process was not started
+  with ambient `development` conditions.
+- `@acpus/tasks/createWorktree` supports detached worktree creation only in the
+  first version. Passing `detach: false` fails clearly instead of implicitly
+  creating or naming a branch.
+- `createWorktree` rejects dirty source repositories and `forceRemove` only
+  removes paths registered as git worktrees for the source repository. It refuses
+  arbitrary existing directories.
+- Repository cleanup search found no stale bundle-era implementation, spec,
+  test, or roadmap wording outside this goal record after replacing the old
+  references with live task reference wording.
+- The only remaining `esbuild` search hits outside this goal are transitive
+  Vite/Vitest lockfile entries in `pnpm-lock.yaml`, not workflow-compiler task
+  loading code or package dependencies.
+
 ## Background
 
 The current TypeScript-first compiler lowers every task into

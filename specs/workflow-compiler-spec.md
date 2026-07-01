@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`@acpus/workflow-compiler` prepares TypeScript workflow modules for runtime admission. It runs a static `check` phase, imports workflow modules with a TypeScript-aware loader, compiles exported workflow definitions through `@acpus/core`, performs parser-only task analysis, bundles task assets, validates the resulting IR, and writes preflight artifacts. It does not execute workflows or persist runtime state.
+`@acpus/workflow-compiler` prepares TypeScript workflow modules for runtime admission. It runs a static `check` phase, imports workflow modules with a TypeScript-aware loader, compiles exported workflow definitions through `@acpus/core`, performs parser-only task callsite analysis, prepares reusable task module references, validates the resulting IR, and writes preflight artifacts. It does not execute workflows or persist runtime state.
 
 ## Requirements
 
@@ -20,7 +20,7 @@
 - `compileWorkflowModule(...)` MUST import the module and require the default export to be an Acpus workflow definition.
 - `compileWorkflowModule(...)` MUST lower the workflow definition through `compileWorkflowDefinition(..., { validate: false })`.
 - `compileWorkflowModule(...)` MUST attach a `sha256:` `workflowSourceDigest` computed from the workflow source text.
-- `compileWorkflowModule(...)` MUST analyze task call sites, consume task bundle metadata, bundle task assets, synchronize task run digests with bundled task digests, append `validateWorkflowIR(...)` diagnostics, and return `WorkflowIR`.
+- `compileWorkflowModule(...)` MUST analyze task call sites, attach reusable task module reference metadata to lowered task runs, append `validateWorkflowIR(...)` diagnostics, and return `WorkflowIR`.
 - `compileWorkflowModule(...)` MUST NOT run the preflight check phase itself.
 
 ### Static Check And Worker Import
@@ -47,49 +47,45 @@
 - The repository ESLint flat config MUST scope this rule to workflow-compiler fixtures only, MUST NOT add a default lint script or CI gate, and MAY no-op when the built internal plugin subpath is unavailable.
 - Task-authoring diagnostics reported through the internal ESLint rule MUST use task-analysis callsite source locations when available.
 
-### Task Analysis And Bundling
+### Task Analysis And Reusable References
 
-- Task analysis MUST use parser-only static source analysis of the workflow source and directly imported task modules when export validation is required.
-- Task analysis MUST produce diagnostic-free facts and bundle metadata only.
+- Task analysis MUST use parser-only static source analysis of the workflow source where source-level task callsite metadata is required.
+- Task analysis MUST produce diagnostic-free facts and reusable module reference metadata only.
 - Acpus authoring rules MUST own task authoring diagnostic codes, messages, and hints.
-- Compile and bundling MUST consume task metadata and MUST NOT duplicate lint rule text.
+- Compile MUST consume task metadata and MUST NOT duplicate lint rule text.
 - The analyzer MUST match direct `step("id").task(...)` call sites.
-- Reusable tasks MUST resolve from either relative direct imports of task modules or exported top-level reusable tasks declared in the workflow module.
-- Imported reusable tasks MUST use relative direct imports of task modules.
-- Exported top-level reusable tasks declared in the workflow module MUST be valid when passed to `run.task`.
-- Same-file reusable task metadata MUST identify the workflow source file and exported task name.
-- A resolved reusable task module export MUST be a `task.define(...)` declaration.
-- Reusable tasks routed through re-export/barrel modules, nested or non-exported workflow-local task values, and non-task exports MUST produce check diagnostics rather than admissible task bundles in preflight.
-- Inline task source MUST be bundled as a self-contained function.
+- Reusable tasks MUST support direct default imports, named imports with aliases, barrel re-exports, same-file exported reusable tasks, and bare package specifiers that resolve to ESM modules at runtime.
+- Reusable module metadata MUST identify the source-level specifier, export name, and workflow source referrer needed for runtime import.
+- Reusable module metadata MUST record `exportName: "default"` for default imports, the original exported binding name for named imports even when locally aliased, and the exported workflow-module binding name for same-file task exports.
+- Same-file reusable task metadata MUST identify the workflow source module and exported task name.
+- Imported reusable task metadata MUST keep the workflow import specifier rather than a resolved absolute filesystem path.
+- Reusable task modules MUST remain live module references; the compiler MUST NOT generate executable task artifacts from their source or dependencies.
+- Package imports and barrel re-exports MUST NOT be rejected solely because they cross package or module boundaries.
+- Unsupported source forms such as namespace/property access MUST produce check diagnostics when statically recognizable.
+- Task callsites that cannot be joined to lowered task nodes by step id MUST produce check diagnostics rather than module descriptors.
+- Inline task source MUST be preserved as a self-contained function source in the serialized IR.
 - Inline tasks that capture workflow-module scope MUST produce check diagnostics in preflight.
-- Task bundling MUST emit ESM source for Node runtime execution.
-- Reusable task bundling MUST include local modules and JavaScript npm dependencies reachable from the task module or same-file workflow-module task export.
-- Same-file reusable task bundling MUST import the exported task token from the workflow module and re-export `token.fn`; it MUST NOT attempt dependency-closure extraction.
-- Importing a same-file task bundle MAY evaluate workflow module top-level code; importing the workflow module MUST NOT execute the workflow build callback.
-- Node built-ins MUST remain runtime externals.
-- Task bundles MUST include `source`, `digest`, runtime metadata, and source-file metadata when statically resolved.
-- Task run digests MUST match the corresponding bundle digest after bundling.
-- Bundling failures MUST produce task-bundle diagnostics with stable `TB...` diagnostic codes.
-- Direct `compileWorkflowModule(...)` MUST NOT run Acpus authoring rules, but it MUST emit a task-bundle safety diagnostic if task metadata is unavailable or inconsistent for a lowered task bundle.
+- Direct `compileWorkflowModule(...)` MUST NOT run Acpus authoring rules, but it MUST append validation diagnostics if compiled task runs lack valid inline or reusable execution targets.
+- The task authoring diagnostic set MUST keep inline self-containment failures as `TB007` and SHOULD assign current task callsite diagnostics around the live reusable task model.
 
 ### Prepared Workflow And Preflight Artifacts
 
 - `prepareWorkflow(options)` MUST return a prepared workflow containing workflow path, `WorkflowIR`, serialized IR JSON, IR digest, source graph digest, optional package lock digest, and lock artifact.
 - The IR digest MUST be a `sha256:` digest of stable pretty JSON written as `workflow.ir.json`.
-- The source graph digest MUST include workflow source digest, package lock digest when present, and sorted task bundle digests.
+- The source graph digest MUST be derived from workflow source digest and package lock digest when present.
 - Package lock digest MAY be computed from `pnpm-lock.yaml`, `package-lock.json`, or `yarn.lock`.
 - `writePreflightArtifact(...)` MUST write `.acpus/preflight/<id>/workflow.ir.json`.
 - `writePreflightArtifact(...)` MUST write `.acpus/preflight/<id>/lock.json`.
-- `writePreflightArtifact(...)` MUST write each bundled task source under `.acpus/preflight/<id>/task-bundles/<bundle-id>.mjs`.
-- The lock artifact MUST reference workflow entry, IR digest, source graph digest, optional package lock digest, and task bundle paths/digests.
+- `writePreflightArtifact(...)` MUST NOT write task code artifacts.
+- The lock artifact MUST reference workflow entry, IR digest, source graph digest, and optional package lock digest.
 
 ## Verification
 
 - Public API contract and type tests MUST cover exported compiler/preflight functions, error class, and public types.
-- Integration tests MUST cover compiling TypeScript workflow modules with reusable, inline, and third-party task bundles.
+- Integration tests MUST cover compiling TypeScript workflow modules with reusable module references, inline embedded source, and package-imported reusable tasks.
 - Tests MUST cover check failure before compile, including TypeScript diagnostics converted to `DiagnosticIR` and Acpus authoring-rule diagnostics.
 - Tests MUST cover validation failure after compile.
-- Tests MUST cover task analysis facts and metadata for imported reusable tasks, exported same-file reusable tasks, unexported/nested workflow-local reusable tasks, re-exported reusable tasks, non-task module exports, and inline tasks that capture workflow-module scope.
-- Tests MUST cover stable reusable task metadata across compiles.
-- Tests MUST cover same-file reusable task bundling and runtime execution through the prepared workflow path.
-- Tests MUST cover preflight artifact writing, lock shape, IR digest, source graph digest, and task bundle artifact files.
+- Tests MUST cover task analysis facts and metadata for imported reusable tasks, exported same-file reusable tasks, package imports, re-exported reusable tasks, unsupported task callsite forms, and inline tasks that capture workflow-module scope.
+- Tests MUST cover stable reusable task reference metadata across compiles.
+- Tests MUST cover same-file reusable task references without rerunning workflow build callbacks at task execution time.
+- Tests MUST cover preflight artifact writing, lock shape, IR digest, and source graph digest without task code artifact files.

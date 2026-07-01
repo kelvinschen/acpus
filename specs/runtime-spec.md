@@ -10,15 +10,15 @@
 
 - The runtime MUST create `.acpus/state/runtime.db` as the durable runtime store for a workspace.
 - The runtime store MUST use SQLite for run admission data, public run events, scheduler events, scheduler projection tables, public run and node projections, command rows, supervisor lease rows, and artifact registry rows.
-- Run admission MUST accept a prepared workflow containing frozen IR JSON, lock metadata, source graph digest, and task bundle metadata.
+- Run admission MUST accept a prepared workflow containing frozen IR JSON, lock metadata, and source graph digest.
 - Run admission MUST accept input that has already been normalized against the workflow input schema.
 - Run admission MAY accept agent overrides keyed by declared top-level agent
   name. Agent overrides MUST be persisted separately from frozen `WorkflowIR`
   and MUST be applied when reading the effective frozen run for execution.
-- Run admission MUST persist the `WorkflowIR`, workflow input, lock metadata, workflow entry, IR digest, source graph digest, task bundle count, and run directory path.
+- Run admission MUST persist the `WorkflowIR`, workflow input, lock metadata, workflow entry, IR digest, source graph digest, and run directory path.
 - Run admission MUST write a `run.admitted` event and the run projection in the same SQLite transaction.
 - Run admission MUST create public `pending` node projection rows for static node summaries and MUST advance executable work from the frozen admitted IR, not from live workflow source.
-- Run admission MUST copy bundled task source into `.acpus/runs/<run-id>/task-bundles/`.
+- Run admission MUST copy only current frozen workflow artifacts such as `workflow.ir.json` and `lock.json` into the run directory. It MUST NOT copy reusable task source or dependency artifacts.
 - Completed scheduler-backed runs MUST persist root output, bridge completed dynamic node instances into public node projections where unambiguous, and write a `run.completed` event.
 - Runtime failures after admission MUST persist failed run state and a `run.failed` event.
 
@@ -57,7 +57,13 @@
 - For supported item bodies, fanout `all` strategy MUST materialize item identity rows and aggregate item outputs as an array.
 - For supported item bodies, fanout `quorum` strategy MUST accept outputs in completion order, return `{ accepted, completed }` after quorum success, and cancel remaining running members after quorum is reached.
 - For supported iteration bodies, loop execution MUST support iteration index, previous iteration output, result refs, stop conditions, `maxIterations`, and the current exhaustion policy.
-- The runtime MUST execute task nodes through frozen run-local task bundles.
+- The runtime MUST execute task nodes through the task run target stored in frozen IR.
+- For inline task targets, the runtime MUST construct a callable function from the embedded self-contained source without writing a run-local task source file.
+- For reusable module task targets, the runtime MUST resolve the recorded source-level module specifier from the workflow referrer in the current workspace/package environment, import the module with TypeScript support, verify the selected export is an Acpus task token, and invoke the token's `fn`.
+- Reusable task module loading MUST support ESM JavaScript and TypeScript modules through the same live loader path.
+- TypeScript reusable task loading MUST be provided by an explicit runtime or supervisor loader boundary and MUST NOT rely on workspace root development dependencies being ambiently available.
+- Reusable task module loading MUST NOT add Acpus-owned cache-busting or dependency graph copying; normal Node/tsx module caching defines reuse within a runtime process.
+- Task `run.cwd` MUST affect task execution context and the `$` command wrapper only. It MUST NOT change the module resolution base for reusable task imports.
 - Task execution MUST evaluate task `run.input`, `run.cwd`, and non-secret `run.env` expressions before invoking the task.
 - The runtime MUST pass task execution options to the task `$` command wrapper, including default command timeout.
 - The runtime MUST pass a per-attempt `abortSignal` into task code for cooperative cancellation.
@@ -188,7 +194,7 @@
   inherited overrides using the same identity replacement rules as admission.
 - Fork MUST inherit compatible completed accepted outputs and artifacts reachable from inherited outputs.
 - Fork MUST NOT inherit active scheduler frames, attempts, signal waits, or artifacts from failed, cancelled, or superseded attempts.
-- Fork MUST verify copied artifacts and frozen run files before writing fork rows.
+- Fork MUST verify copied artifacts and current frozen run files before writing fork rows.
 - Signal commands MUST store normalized signal payloads, consume open signal waits idempotently, and continue execution from frozen SQLite state.
 - Signal targeting MUST accept a dynamic `nodeKey` directly or a static signal alias only when that alias resolves to exactly one open signal wait.
 - Replay MUST re-evaluate frozen root outputs from recorded completed node outputs without side effects.
@@ -215,14 +221,14 @@
 
 ## Verification
 
-- Tests MUST cover prepared workflow admission, persisted frozen input, IR digest, source graph digest, event count, node count, task bundle count, and scheduler-backed public projection bridging.
+- Tests MUST cover prepared workflow admission, persisted frozen input, IR digest, source graph digest, event count, node count, and scheduler-backed public projection bridging.
 - Tests MUST cover submit-time agent overrides, fork-time override inheritance
   and replacement, and invalid override rejection.
 - Tests MUST cover workflow input and signal payload normalization.
 - Tests MUST cover read-only list/show/status APIs without live source reads or state creation for missing stores.
 - Tests MUST cover scheduler execution of supported assert, if, switch, parallel, fanout, loop, dynamic identity, durable branch decisions, group completion, cancellation, retry, and timeout transitions.
 - Tests MUST cover expression evaluation, template rendering, operator errors, and boolean operand failures.
-- Tests MUST cover task execution, task bundle loading, task invocation options, absence of workflow-level automatic task retry, timeout deadlines, task abort signal propagation, artifact writes, attempt-local artifact paths, and timeout artifact rejection.
+- Tests MUST cover task execution, inline embedded-source loading, live reusable module loading, package reusable task loading, explicit TypeScript loader ownership, task invocation options, absence of workflow-level automatic task retry, timeout deadlines, task abort signal propagation, artifact writes, attempt-local artifact paths, and timeout artifact rejection.
 - Tests MUST cover acpx-backed agent turn integration, named and command agent
   mapping, absence of provider-command env mapping consultation, durable agent
   output conformance, empty-response repair, scheduler runtime identity

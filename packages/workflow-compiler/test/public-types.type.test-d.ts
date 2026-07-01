@@ -18,7 +18,6 @@ test("@acpus/workflow-compiler public types describe the package boundary", () =
   expectTypeOf<CompileOptions>().toEqualTypeOf<{
     sourcePath?: string;
     cwd?: string;
-    conditions?: string[];
   }>();
   expectTypeOf<WorkflowPreparationFailure["phase"]>().toEqualTypeOf<"check" | "compile" | "validate">();
   expectTypeOf<PreparedWorkflow["lock"]>().toEqualTypeOf<WorkflowLockArtifact>();

@@ -11,7 +11,7 @@ This audit records gaps found while aligning specs to package ownership. Specs d
 
 - `@acpus/workflow-compiler` has indirect coverage for `sourceGraphDigest`, but lacks an explicit contract test for the digest formula.
 - Package-lock digest inclusion is covered through preflight shape checks, but not with a focused digest-change contract.
-- Task bundling relies on esbuild's Node built-ins external behavior; add a package-owned contract if that policy must remain stable.
+- Live reusable task loading relies on the runtime loader boundary; add package-owned contracts if that policy expands.
 - Workspace `development` condition behavior is implemented for check/compile, but deserves an explicit package-boundary test before being treated as a public guarantee.
 
 ## Roadmap hygiene

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`@acpus/core` is the TypeScript-first workflow authoring and IR construction package for Acpus. It provides the workflow DSL, schema bridge, node authoring shapes, serializable `WorkflowIR` types, and structural IR validation. Expression and template authoring belongs to `@acpus/expression`. Core compiles in-memory workflow definitions with `compileWorkflowDefinition`; TypeScript module loading, workflow static checks, task analysis, and task bundling belong to `@acpus/workflow-compiler`.
+`@acpus/core` is the TypeScript-first workflow authoring and IR construction package for Acpus. It provides the workflow DSL, schema bridge, node authoring shapes, serializable `WorkflowIR` types, and structural IR validation. Expression and template authoring belongs to `@acpus/expression`. Core compiles in-memory workflow definitions with `compileWorkflowDefinition`; TypeScript module loading, workflow static checks, task callsite analysis, and reusable task reference preparation belong to `@acpus/workflow-compiler`.
 
 ## Requirements
 
@@ -98,9 +98,15 @@
 ### IR And Validation
 
 - `compileWorkflowDefinition(definition)` MUST lower an in-memory workflow definition to serializable `WorkflowIR` with `irVersion: 2`.
-- `WorkflowIR`, node IR, scope IR, schema IR, template IR, expression IR, agent definitions, task runs, and task bundles MUST use closed serialized object shapes.
-- `validateWorkflowIR(ir)` MUST diagnose unknown fields, malformed agent definitions, malformed node runs, invalid expressions/templates/schemas, missing composite outputs, scope output fields outside a node's declared `outputSchema`, missing task bundles, and task run digest mismatches.
-- `WorkflowIR.assets.taskBundles` MUST contain task bundle metadata emitted by core authoring; production bundling belongs to `@acpus/workflow-compiler`.
+- `WorkflowIR`, node IR, scope IR, schema IR, template IR, expression IR, agent definitions, task runs, and task execution targets MUST use closed serialized object shapes.
+- `validateWorkflowIR(ir)` MUST diagnose unknown fields, malformed agent definitions, malformed node runs, invalid expressions/templates/schemas, missing composite outputs, scope output fields outside a node's declared `outputSchema`, and malformed task execution targets.
+- Task runs MUST contain a closed `target` descriptor that is either an inline source target or a reusable module target.
+- Inline task targets MUST contain `{ kind: "inline", runtime: "node", source }`, where `source` is the self-contained `exec` function source.
+- Reusable task targets MUST contain `{ kind: "module", runtime: "node", specifier, exportName, referrer }`, where `specifier` is the source-level module specifier, `exportName` selects the exported task token, and `referrer` identifies the workflow source file used as the resolution parent.
+- Runtime-admissible reusable task targets MUST be completed by `@acpus/workflow-compiler`; incomplete in-memory core reusable descriptors MUST fail `validateWorkflowIR(...)`.
+- Reusable task `exportName` MUST be `"default"` for default imports, the original exported binding name for named imports even when locally aliased, and the exported workflow-module binding name for same-file task exports.
+- Reusable task target referrers MUST use the closed shape `{ kind: "workflow", path: string }`.
+- Reusable task target referrer paths MUST be workspace-relative workflow paths, not absolute filesystem paths or paths that escape the workspace.
 - Task invocation fields such as `input`, `cwd`, `env`, and `execution` MUST belong to `TaskRunIR`, not the task node top level.
 
 ## Verification
@@ -109,4 +115,4 @@
 - Tests MUST cover schema lowering acceptance and rejection for graph-boundary schemas.
 - Tests MUST cover authoring type contracts for workflow input, agents, outputs, composites, fanout, loop, and boolean conditions.
 - Tests MUST cover `compileWorkflowDefinition(...)` lowering authoring graphs to valid `WorkflowIR`.
-- Tests MUST cover `validateWorkflowIR(...)` diagnostics for closed IR shapes, malformed agents, malformed nodes, missing task bundles, digest mismatches, and composite output requirements.
+- Tests MUST cover `validateWorkflowIR(...)` diagnostics for closed IR shapes, malformed agents, malformed nodes, malformed task execution targets, and composite output requirements.

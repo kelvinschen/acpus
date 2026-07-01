@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { defineWorkflow, z } from "@acpus/core";
 import { where } from "@acpus/expression";
 import { type WorkflowDefinition, compileWorkflowDefinition } from "@acpus/core/workflow";
-import type { NodeIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
+import type { WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import { admitWorkflowRun, normalizeWorkflowInput, type PreparedRunWorkflow, type RunWorkflowLockArtifact } from "@acpus/runtime";
 import { prepareWorkflow } from "@acpus/workflow-compiler";
@@ -50,7 +50,7 @@ export async function admitFixture(workspace: string, relativePath: string, inpu
 export async function prepareSyntheticWorkflow(workspace: string, definition: WorkflowDefinition<any, any>, filename = `${definition.config.name}.workflow.ts`): Promise<PreparedRunWorkflow> {
   const workflowPath = join(workspace, filename);
   await writeFile(workflowPath, "");
-  const ir = runtimeExecutableTaskBundles(compileWorkflowDefinition(definition, { source: filename }));
+  const ir = compileWorkflowDefinition(definition, { source: filename });
   return preparedWorkflow(ir, workflowPath, workspace);
 }
 
@@ -356,10 +356,6 @@ export function preparedWorkflow(ir: WorkflowIR, workflowPath: string, cwd: stri
       digest: irDigest,
     },
     sourceGraphDigest,
-    taskBundles: Object.fromEntries(Object.values(ir.assets.taskBundles).map(bundle => [
-      bundle.id,
-      { digest: bundle.digest, path: `task-bundles/${bundle.id}.mjs` },
-    ])),
     generatedAt: "2026-06-29T00:00:00.000Z",
   };
   return {
@@ -370,45 +366,6 @@ export function preparedWorkflow(ir: WorkflowIR, workflowPath: string, cwd: stri
     sourceGraphDigest,
     lock,
   };
-}
-
-function runtimeExecutableTaskBundles(ir: WorkflowIR): WorkflowIR {
-  const digestByBundleId = new Map<string, string>();
-  for (const bundle of Object.values(ir.assets.taskBundles)) {
-    const source = moduleSource(bundle.source ?? "");
-    bundle.source = source;
-    bundle.digest = digest(source);
-    digestByBundleId.set(bundle.id, bundle.digest);
-  }
-  updateTaskRunDigests(ir.root, digestByBundleId);
-  ir.lock.taskBundleDigests = Object.fromEntries([...digestByBundleId]);
-  return ir;
-}
-
-function moduleSource(source: string): string {
-  return source.startsWith("export default") ? source : `export default ${source};\n`;
-}
-
-function updateTaskRunDigests(scope: ScopeIR, digestByBundleId: Map<string, string>): void {
-  for (const node of scope.nodes) updateNodeTaskRunDigest(node, digestByBundleId);
-}
-
-function updateNodeTaskRunDigest(node: NodeIR, digestByBundleId: Map<string, string>): void {
-  if (node.kind === "task") {
-    node.run.digest = digestByBundleId.get(node.run.bundleId) ?? node.run.digest;
-  } else if (node.kind === "if") {
-    updateTaskRunDigests(node.then, digestByBundleId);
-    if (node.else) updateTaskRunDigests(node.else, digestByBundleId);
-  } else if (node.kind === "switch") {
-    for (const branch of node.cases) updateTaskRunDigests(branch.then, digestByBundleId);
-    if (node.default) updateTaskRunDigests(node.default, digestByBundleId);
-  } else if (node.kind === "parallel") {
-    for (const branch of Object.values(node.branches)) updateTaskRunDigests(branch.scope, digestByBundleId);
-  } else if (node.kind === "fanout") {
-    updateTaskRunDigests(node.do, digestByBundleId);
-  } else if (node.kind === "loop") {
-    updateTaskRunDigests(node.do, digestByBundleId);
-  }
 }
 
 function digest(value: string | Uint8Array): string {

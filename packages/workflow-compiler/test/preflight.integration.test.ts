@@ -1,4 +1,4 @@
-import { access, copyFile, mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -27,9 +27,8 @@ describe("workflow preflight preparation", () => {
         version: 1,
         ir: { path: "workflow.ir.json", digest: prepared.irDigest },
       });
-      const bundleId = Object.keys(ir.assets.taskBundles)[0];
-      expect(bundleId).toBeDefined();
-      await access(join(artifact.dir, "task-bundles", `${bundleId}.mjs`));
+      await expect(readdir(artifact.dir)).resolves.toEqual(expect.arrayContaining(["workflow.ir.json", "lock.json"]));
+      await expect(readdir(artifact.dir)).resolves.toHaveLength(2);
     });
   });
 
@@ -37,17 +36,45 @@ describe("workflow preflight preparation", () => {
     await withCompilerWorkspace("compiler-same-file-task", async cwd => {
       const workflow = await copyFixture(cwd, "workflows/same-file-reusable.workflow.ts");
       const prepared = await prepareWorkflow({ workflow, cwd });
-      const bundle = Object.values(prepared.ir.assets.taskBundles).find(item => item.sourceFile?.endsWith("same-file-reusable.workflow.ts"));
 
-      expect(bundle).toMatchObject({
-        inline: false,
-        sourceFile: expect.stringContaining("same-file-reusable.workflow.ts"),
+      expect(taskTarget(prepared.ir, "normalize_path")).toMatchObject({
+        kind: "module",
+        specifier: "./same-file-reusable.workflow.ts",
+        exportName: "normalizePath",
+        referrer: { kind: "workflow", path: expect.stringContaining("same-file-reusable.workflow.ts") },
       });
-      expect(bundle?.source?.length).toBeGreaterThan(0);
-      expect(bundle?.source).not.toMatch(/from\s+["']slash["']/);
-      expect(bundle?.digest).toMatch(/^sha256:[a-f0-9]{64}$/);
       expectSha256Digest(prepared.sourceGraphDigest);
       expect(prepared.ir.outputs.normalized).toEqual({ kind: "ref", path: ["nodes", "normalize_path", "output", "normalized"] });
+    });
+  });
+
+  it("prepares reusable tasks imported from a real package export", async () => {
+    await withCompilerWorkspace("compiler-package-task", async cwd => {
+      await writePackageTask(cwd);
+      const workflow = join(cwd, "package-task.workflow.ts");
+      await writeFile(workflow, `import { defineWorkflow, z } from "@acpus/core";
+import { packageTask } from "fixture-task-package/tasks";
+
+export default defineWorkflow({
+  name: "package-task",
+  inputSchema: z.object({ value: z.string() }),
+}).build(({ input, step }) => {
+  const result = step("package_task").task({
+    run: { task: packageTask, input: { value: input.value } },
+  });
+  return { value: result.output.value };
+});
+`);
+
+      const prepared = await prepareWorkflow({ workflow, cwd });
+
+      expect(prepared.ir.diagnostics).toEqual([]);
+      expect(taskTarget(prepared.ir, "package_task")).toMatchObject({
+        kind: "module",
+        specifier: "fixture-task-package/tasks",
+        exportName: "packageTask",
+        referrer: { kind: "workflow", path: "package-task.workflow.ts" },
+      });
     });
   });
 
@@ -94,10 +121,36 @@ function fixture(relativePath: string): string {
   return join(fixturesRoot, relativePath);
 }
 
+function taskTarget(ir: WorkflowIR, id: string): Extract<WorkflowIR["root"]["nodes"][number], { kind: "task" }>["run"]["target"] {
+  const node = ir.root.nodes.find(item => item.id === id);
+  if (!node || node.kind !== "task") throw new Error(`expected task node ${id}`);
+  return node.run.target;
+}
+
 async function copyFixture(cwd: string, relativePath: string): Promise<string> {
   const target = join(cwd, basename(relativePath).replace(/\.fixture$/, ".ts"));
   await copyFile(fixture(relativePath), target);
   return target;
+}
+
+async function writePackageTask(cwd: string): Promise<void> {
+  const root = join(cwd, "node_modules", "fixture-task-package");
+  await mkdir(root, { recursive: true });
+  await writeFile(join(root, "package.json"), JSON.stringify({
+    name: "fixture-task-package",
+    type: "module",
+    exports: {
+      "./tasks": "./tasks.ts",
+    },
+  }, null, 2));
+  await writeFile(join(root, "tasks.ts"), `import { task, z } from "@acpus/core";
+
+export const packageTask = task.define({
+  inputSchema: z.object({ value: z.string() }),
+  outputSchema: z.object({ value: z.string() }),
+  exec: async ({ input }) => ({ value: input.value }),
+});
+`);
 }
 
 async function withCompilerWorkspace<T>(name: string, fn: (cwd: string) => Promise<T>): Promise<T> {

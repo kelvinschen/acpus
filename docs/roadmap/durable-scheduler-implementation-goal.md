@@ -112,7 +112,7 @@ runtime concepts and query paths delivered by the V1 implementation.
   awaiting, failed, completed, and updated timestamps as the public read model
   requires.
 - `run_inputs`: keep as the frozen run truth for `workflow_ir_json`,
-  `input_json`, lock data, task bundle count, and run directory.
+  `input_json`, lock data, and run directory.
 - `run_events`: keep as the mixed public event stream and typed scheduler event
   stream. Scheduler events use an internal payload envelope so public events
   with overlapping names are not replayed by scheduler reducers.

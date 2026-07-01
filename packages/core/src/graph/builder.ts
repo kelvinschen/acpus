@@ -20,7 +20,6 @@ import type {
   DiagnosticIR,
   NodeIR,
   ScopeIR,
-  TaskBundleIR,
   WorkflowIR,
 } from "../ir/types.js";
 import { validateWorkflowIR } from "../ir/validator.js";
@@ -134,7 +133,7 @@ class GraphBuildState {
   readonly nodes: NodeIR[] = [];
   readonly step: StepFactory = (id: string) => this.declare(id);
 
-  constructor(private readonly taskBundles: Record<string, TaskBundleIR>, private readonly diagnostics: DiagnosticIR[]) {}
+  constructor(private readonly diagnostics: DiagnosticIR[]) {}
 
   private declare(id: string): StepDeclaration {
     const agent: StepDeclaration["agent"] = spec => this.agent(id, spec);
@@ -181,7 +180,7 @@ class GraphBuildState {
     id: string,
     spec: TaskStepSpec<Input>,
   ): NodeRef<any> {
-    this.nodes.push(buildTaskNode(id, spec, this.taskBundles, this.diagnostics));
+    this.nodes.push(buildTaskNode(id, spec, this.diagnostics));
     return makeNodeRef(id);
   }
 
@@ -261,7 +260,7 @@ class GraphBuildState {
     fn: (ctx: ScopeContext & Extra) => OutputValues<Output>,
     extra?: Extra,
   ): ScopeIR => {
-    const child = new GraphBuildState(this.taskBundles, this.diagnostics);
+    const child = new GraphBuildState(this.diagnostics);
     return buildScopeIR(this.diagnostics, child, fn as (ctx: ScopeContext & Extra) => Record<string, unknown>, (extra ?? {}) as Extra);
   };
 }
@@ -336,8 +335,7 @@ function invalidAgentDefinition(diagnostics: DiagnosticIR[], path: string, messa
 
 export function compileWorkflowDefinition(definition: WorkflowDefinition<any, any>, options?: { source?: string; validate?: boolean }): WorkflowIR {
   const diagnostics: DiagnosticIR[] = [];
-  const taskBundles: Record<string, TaskBundleIR> = {};
-  const builder = new GraphBuildState(taskBundles, diagnostics);
+  const builder = new GraphBuildState(diagnostics);
   const input = definition.config.inputSchema ? refExpr<any>(["input"]) : {};
   const result = definition.buildFn({
     input: input as any,
@@ -362,15 +360,13 @@ export function compileWorkflowDefinition(definition: WorkflowDefinition<any, an
     agents: normalizeAgents(definition.config.agents, diagnostics),
     root: { nodes: builder.nodes },
     outputs: validOutput ? bindingsToIR(result) : {},
-    assets: { taskBundles },
     lock: {
       acpusCoreVersion: "0.3.0-core-alpha",
       workflowSource: options?.source,
-      taskBundleDigests: Object.fromEntries(Object.entries(taskBundles).map(([id, bundle]) => [id, bundle.digest])),
       generatedAt: new Date().toISOString(),
       notes: [
         "Workflow definition was lowered into Acpus IR.",
-        "Production module compilation bundles task assets before preflight admission.",
+        "Production module compilation attaches reusable task module references before preflight admission.",
       ],
     },
     diagnostics,

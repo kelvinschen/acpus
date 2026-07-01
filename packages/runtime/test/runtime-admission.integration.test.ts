@@ -1,8 +1,11 @@
-import { access, mkdir, readFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-import { getRun, listRuns, normalizeWorkflowInput, replayRun } from "@acpus/runtime";
+import { admitWorkflowRun, getRun, listRuns, normalizeWorkflowInput, replayRun } from "@acpus/runtime";
+import type { TaskExecutionTargetIR, WorkflowIR } from "@acpus/core/ir";
 import {
   admitFixture,
   admitSyntheticWorkflow,
@@ -10,7 +13,9 @@ import {
   failingPureWorkflow,
   failingTaskWorkflow,
   metaWorkflow,
+  prepareFixture,
   prepareSyntheticWorkflow,
+  preparedWorkflow,
   runtimeRow,
   runtimeRows,
   taskArtifactWorkflow,
@@ -18,6 +23,8 @@ import {
   validWorkflow,
   withRuntimeWorkspace,
 } from "./support/runtime-fixtures.js";
+
+const exec = promisify(execFile);
 
 describe.concurrent("runtime admission use cases", () => {
   it("admits a pure run and exposes read-only inspection and replay", async () => {
@@ -91,7 +98,7 @@ describe.concurrent("runtime admission use cases", () => {
     });
   });
 
-  it("copies task bundles and registers artifacts for admitted task runs", async () => {
+  it("admits inline task source and registers artifacts for admitted task runs", async () => {
     await withRuntimeWorkspace("runtime-task-artifact", async workspace => {
       const admitted = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
       expect(admitted.status).toBe("completed");
@@ -167,9 +174,14 @@ describe.concurrent("runtime admission use cases", () => {
     });
   });
 
-  it("executes same-file reusable task bundles prepared from workflow module exports", async () => {
+  it("executes same-file reusable task references prepared from workflow module exports", async () => {
     await withRuntimeWorkspace("runtime-same-file-reusable", async workspace => {
-      const admitted = await admitFixture(workspace, "workflows/same-file-reusable.workflow.ts", { path: "src\\workflow.ts" });
+      const prepared = await prepareFixture(workspace, "workflows/same-file-reusable.workflow.ts");
+      const otherCwd = join(workspace, "not-the-workflow-dir");
+      await mkdir(otherCwd);
+      setSingleTaskCwd(prepared.ir, otherCwd);
+      const frozen = preparedWorkflow(prepared.ir, prepared.workflowPath, workspace);
+      const admitted = await admitWorkflowRun(workspace, frozen, normalizeWorkflowInput(frozen.ir, { path: "src\\workflow.ts" }));
 
       expect(admitted).toMatchObject({
         status: "completed",
@@ -182,4 +194,181 @@ describe.concurrent("runtime admission use cases", () => {
       });
     });
   });
+
+  it("fails task attempts for live reusable module drift", async () => {
+    await withRuntimeWorkspace("runtime-live-module-drift", async workspace => {
+      const cases = [
+        { name: "missing_module", specifier: "./missing-task.ts", exportName: "run", moduleSource: undefined, message: "Cannot find module" },
+        { name: "missing_export", specifier: "./missing-export-task.ts", exportName: "run", moduleSource: "export const other = {};\n", message: "is not an Acpus task" },
+        { name: "non_task_export", specifier: "./non-task-export-task.ts", exportName: "run", moduleSource: "export const run = {};\n", message: "is not an Acpus task" },
+      ];
+
+      for (const item of cases) {
+        const prepared = await prepareSyntheticWorkflow(workspace, taskArtifactWorkflow(), `${item.name}.workflow.ts`);
+        if (item.moduleSource !== undefined) await writeFile(join(workspace, item.specifier.slice(2)), item.moduleSource);
+        setSingleTaskTarget(prepared.ir, {
+          kind: "module",
+          runtime: "node",
+          specifier: item.specifier,
+          exportName: item.exportName,
+          referrer: { kind: "workflow", path: `${item.name}.workflow.ts` },
+        });
+        const frozen = preparedWorkflow(prepared.ir, prepared.workflowPath, workspace);
+        const admitted = await admitWorkflowRun(workspace, frozen, normalizeWorkflowInput(frozen.ir, {}));
+
+        expect(admitted.status).toBe("failed");
+        if (admitted.status !== "failed") throw new Error("expected failed reusable drift run");
+        expect(admitted.message).toContain(item.message);
+      }
+    });
+  });
+
+  it("executes reusable package tasks from @acpus/tasks", async () => {
+    await withRuntimeWorkspace("runtime-acpus-tasks", async workspace => {
+      const repo = join(workspace, "repo");
+      const worktree = join(workspace, "worktree");
+      await git(workspace, "init", "repo");
+      await writeFile(join(repo, "README.md"), "ok\n");
+      await git(repo, "add", "README.md");
+      await git(repo, "-c", "user.name=Acpus Test", "-c", "user.email=test@example.com", "commit", "-m", "init");
+      const head = (await git(repo, "rev-parse", "HEAD")).stdout.trim();
+
+      const admitted = await admitFixture(workspace, "workflows/create-worktree.workflow.ts", { repo, path: worktree });
+
+      expect(admitted.status).toBe("completed");
+      await expect(getRun(workspace, admitted.run.id)).resolves.toMatchObject({
+        output: {
+          ok: true,
+          worktreePath: worktree,
+          baseSha: head,
+        },
+      });
+      await expect(git(worktree, "rev-parse", "HEAD")).resolves.toMatchObject({ stdout: head + "\n" });
+    });
+  });
+
+  it("loads package task source without ambient development conditions", async () => {
+    const tsxImport = await import.meta.resolve("tsx");
+    const coreSourceURL = new URL("../../core/src/index.ts", import.meta.url).href;
+    const script = `
+      import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+      import { tmpdir } from "node:os";
+      import { join } from "node:path";
+      import { executeTaskNode } from ${JSON.stringify(new URL("../src/execution/task-executor.ts", import.meta.url).href)};
+
+      const workspace = await mkdtemp(join(tmpdir(), "acpus-package-loader-"));
+      try {
+        const nodeModules = join(workspace, "node_modules");
+        const packageDir = join(nodeModules, "fallback-task-package");
+        await mkdir(packageDir, { recursive: true });
+        await writeFile(join(packageDir, "package.json"), JSON.stringify({
+          name: "fallback-task-package",
+          type: "module",
+          exports: {
+            "./task": {
+              development: "./task.ts",
+              default: "./dist/missing.js",
+            },
+            "./throwing": {
+              development: "./task.ts",
+              default: "./throwing.js",
+            },
+          },
+        }));
+        await writeFile(join(packageDir, "task.ts"), [
+          ${JSON.stringify(`import { task, z } from ${JSON.stringify(coreSourceURL)};`)},
+          "export const fallbackTask = task.define({",
+          "  inputSchema: z.object({ value: z.string() }),",
+          "  outputSchema: z.object({ ok: z.boolean(), value: z.string() }),",
+          "  exec: async ({ input }) => ({ ok: true, value: 'dev:' + input.value }),",
+          "});",
+        ].join("\\n"));
+        await writeFile(join(packageDir, "throwing.js"), "throw new Error('default exploded');\\n");
+        await writeFile(join(workspace, "workflow.ts"), "");
+        const output = await executeTaskNode({
+          id: "fallback",
+          kind: "task",
+          outputSchema: { kind: "object", fields: {}, required: [], additionalProperties: true },
+          run: {
+            kind: "task_run",
+            input: {
+              value: { kind: "literal", value: "loaded" },
+            },
+            target: {
+              kind: "module",
+              runtime: "node",
+              specifier: "fallback-task-package/task",
+              exportName: "fallbackTask",
+              referrer: { kind: "workflow", path: "workflow.ts" },
+            },
+          },
+        }, {}, {
+          cwd: workspace,
+          runId: "run_1",
+          store: { getRunDir: () => ".acpus/runs/run_1", registerArtifact: () => {} },
+        });
+        if (output.value !== "dev:loaded") throw new Error("development export fallback was not used");
+        let masked = false;
+        try {
+          await executeTaskNode({
+            id: "throwing",
+            kind: "task",
+            outputSchema: { kind: "object", fields: {}, required: [], additionalProperties: true },
+            run: {
+              kind: "task_run",
+              input: {
+                value: { kind: "literal", value: "loaded" },
+              },
+              target: {
+                kind: "module",
+                runtime: "node",
+                specifier: "fallback-task-package/throwing",
+                exportName: "fallbackTask",
+                referrer: { kind: "workflow", path: "workflow.ts" },
+              },
+            },
+          }, {}, {
+            cwd: workspace,
+            runId: "run_2",
+            store: { getRunDir: () => ".acpus/runs/run_2", registerArtifact: () => {} },
+          });
+          masked = true;
+        } catch (error) {
+          if (!String(error instanceof Error ? error.message : error).includes("default exploded")) throw error;
+        }
+        if (masked) throw new Error("development fallback masked a module evaluation error");
+      } finally {
+        await rm(workspace, { recursive: true, force: true });
+      }
+    `;
+
+    const env = { ...process.env };
+    delete env.NODE_OPTIONS;
+    await expect(exec(process.execPath, ["--import", tsxImport, "--eval", script], { cwd: process.cwd(), env })).resolves.toBeDefined();
+  });
 });
+
+function setSingleTaskTarget(ir: WorkflowIR, target: TaskExecutionTargetIR): void {
+  const node = ir.root.nodes.find(item => item.kind === "task");
+  if (!node || node.kind !== "task") throw new Error("expected task node");
+  node.run.target = target;
+}
+
+function setSingleTaskCwd(ir: WorkflowIR, cwd: string): void {
+  const node = ir.root.nodes.find(item => item.kind === "task");
+  if (!node || node.kind !== "task") throw new Error("expected task node");
+  node.run.cwd = { kind: "literal", value: cwd };
+}
+
+function git(cwd: string, ...args: string[]): Promise<{ stdout: string; stderr: string }> {
+  return exec("git", args, { cwd, env: { ...process.env, ...testGitEnv() } });
+}
+
+function testGitEnv(): Record<string, string> {
+  return {
+    GIT_AUTHOR_NAME: "Acpus Test",
+    GIT_AUTHOR_EMAIL: "test@example.com",
+    GIT_COMMITTER_NAME: "Acpus Test",
+    GIT_COMMITTER_EMAIL: "test@example.com",
+  };
+}

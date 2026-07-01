@@ -13,7 +13,7 @@ export default defineWorkflow({
   name: "same-file-build-callback",
 }).build(({ step }) => {
   if (process.env.ACPUS_FAIL_IF_BUILD_CALLBACK_EXECUTED === "1") {
-    throw new Error("workflow build callback executed during task bundle import");
+    throw new Error("workflow build callback executed during task import");
   }
 
   const result = step("stable_task").task({

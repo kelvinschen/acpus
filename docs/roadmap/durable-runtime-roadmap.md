@@ -25,7 +25,7 @@
 - Runtime admission: `packages/runtime/src/admission/input.ts`
 - Runtime use-cases facade: `packages/runtime/src/runs/use-cases.ts`
 - Agent executor: `packages/agent-executor/src/index.ts`
-- Workflow compiler: `packages/workflow-compiler/src/` (compile, preflight, task-bundler)
+- Workflow compiler: `packages/workflow-compiler/src/` (compile, preflight, authoring-rule adapter)
 - Core types/runtime: `packages/core/src/` (ir, nodes, runtime/task-context, runtime/dollar)
 - Legacy runtime: `legacy/packages/runtime/`
 - Legacy CLI: `legacy/packages/cli/`
@@ -60,7 +60,7 @@
 
 ### 总体判断
 
-当前实现是一条 TypeScript-first durable runtime 主线，不是 legacy YAML runtime 的兼容迁移。它已经覆盖 durable admission、SQLite runtime store、冻结 IR/input/task bundle、scheduler、task/agent/signal 执行、durable controls、fork/replay 和 detached supervisor。
+当前实现是一条 TypeScript-first durable runtime 主线，不是 legacy YAML runtime 的兼容迁移。它已经覆盖 durable admission、SQLite runtime store、冻结 IR/input/lock、scheduler、task/agent/signal 执行、durable controls、fork/replay 和 detached supervisor。
 
 明确不按 legacy 回填的面：
 
@@ -105,7 +105,7 @@
 
 #### Frozen run data
 
-当前实现：运行时冻结 `WorkflowIR`、input JSON、lock metadata、workflow entry、IR digest、source graph digest、task bundle count、run directory path。
+当前实现：运行时冻结 `WorkflowIR`、input JSON、lock metadata、workflow entry、IR digest、source graph digest、run directory path。
 
 证据：`packages/runtime/src/store/store.ts` (`admitRun`, `RunWorkflowLockArtifact`), `specs/runtime-spec.md`
 
@@ -295,16 +295,15 @@
 
 #### Task execution
 
-当前实现：task 从 `.acpus/runs/<run-id>/task-bundles` 的 frozen run-local bundle 加载执行。default export task function 是执行单元。
+当前实现：task 通过 frozen IR 中的 inline source 或 live reusable module reference 执行。
 
-证据：`packages/runtime/src/execution/task-executor.ts`, `packages/runtime/src/store/store.ts` (`admitRun` bundle writes), `packages/workflow-compiler/src/compiler/task-bundler.ts`
+证据：`packages/runtime/src/execution/task-executor.ts`, `packages/runtime/src/store/store.ts` (`admitRun` frozen IR/lock writes), `packages/workflow-compiler/src/compiler/module.ts`
 
 审计备注：
 
 **审计新增：**
-- 两种 task 形态：inline task（`toString()` 后 esbuild bundle）和 reusable/external task（`task.define()` token，路径导入后 esbuild bundle）。
-- esbuild target node22 ESM，bundle ID 为 `task_<sha256 prefix 16 chars>`。
-- Bundle 在 fork 时通过 `verifyFrozenRunFiles` 做 byte-level digest 校验。
+- 两种 task 形态：inline task（`toString()` 后嵌入 IR）和 reusable/external task（`task.define()` token，按 module reference live import）。
+- Frozen run files 在 fork 时通过 `verifyFrozenRunFiles` 做 byte-level digest 校验。
 
 标注：
 - 决策：确认。
@@ -554,7 +553,7 @@ legacy 对比：legacy artifact store 主要是文件 URI/path。
 
 #### Hardened fork/replay
 
-当前实现：fork/replay 校验 artifact bytes、digest、size、path containment（realpath+symlink 检查）、frozen run files、task bundles。Fork 使用 staging+atomic rename。Replay 额外做 projection consistency 校验。
+当前实现：fork/replay 校验 artifact bytes、digest、size、path containment（realpath+symlink 检查）和 frozen run files。Fork 使用 staging+atomic rename。Replay 额外做 projection consistency 校验。
 
 legacy 对比：legacy fork 主要依赖 checkpoint/hash 和文件复制。
 
@@ -624,7 +623,7 @@ legacy / 期望能力：legacy 有 terminal run clean/dry-run。
 
 #### 富 run inspection
 
-当前状态：`RunDetails` 仅暴露 `id/name/status/workflowEntry/irDigest/sourceGraphDigest/createdAt/updatedAt/input/output/eventCount/nodeCount/taskBundleCount`。`runs show/status` 输出完全相同，不暴露 nodes、attempt、duration、artifact refs、agent activity、awaiting signal prompt/schema、events。`runs list` 仅四列 tab-delimited（id/status/name/workflowEntry）。
+当前状态：`RunDetails` 仅暴露 `id/name/status/workflowEntry/irDigest/sourceGraphDigest/createdAt/updatedAt/input/output/eventCount/nodeCount/nodeCount`。`runs show/status` 输出完全相同，不暴露 nodes、attempt、duration、artifact refs、agent activity、awaiting signal prompt/schema、events。`runs list` 仅四列 tab-delimited（id/status/name/workflowEntry）。
 
 legacy / 期望能力：legacy `runs-show` 有紧凑但信息丰富的展示。
 
@@ -657,7 +656,7 @@ legacy / 期望能力：legacy 支持 follow、poll、JSONL observations、Ctrl-
 
 #### Closed IR validation hardening
 
-当前状态：已由 expression language remediation 完成。`validateWorkflowIR` 会检查 `WorkflowIR`、node、scope、template、expression wrapper、agent、task bundle、`SchemaIR` 变体和 `ExprIR.type` 内嵌 `TypeIR` 的 closed shape，并为 schema/type nested paths 返回稳定 diagnostics。
+当前状态：已由 expression language remediation 完成。`validateWorkflowIR` 会检查 `WorkflowIR`、node、scope、template、expression wrapper、agent、task execution target、`SchemaIR` 变体和 `ExprIR.type` 内嵌 `TypeIR` 的 closed shape，并为 schema/type nested paths 返回稳定 diagnostics。
 
 当前 spec / 风险：`specs/core-spec.md` 要求 `WorkflowIR`、schema IR、expression IR 等序列化对象使用 closed shape，并要求 `validateWorkflowIR(...)` 诊断 unknown fields。该 closed-shape gap 已关闭；后续 durable work 只需关注新的 runtime 行为缺口。
 

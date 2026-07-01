@@ -69,18 +69,16 @@ describe("workflow authoring rules", () => {
       taskAnalysis: new Map([
         ["local", analyzedIssue({ kind: "workflow-local-reusable-task", name: "localTask" })],
         ["invalid_export", analyzedIssue({ kind: "invalid-reusable-task-export", importedName: "default", reason: "not-task-define" })],
-        ["third_party", analyzedIssue({ kind: "unsupported-task-import", name: "externalTask", specifier: "external-task", reason: "third-party" })],
         ["inline_capture", analyzedIssue({ kind: "inline-task-capture", names: ["PREFIX"] })],
         ["duplicate", analyzedIssue({ kind: "ambiguous-task-callsite" })],
       ]),
     });
 
     expect(diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "TB004", path: "tasks.local.sourceFile", hint: expect.any(String) }),
-      expect.objectContaining({ code: "TB005", path: "tasks.invalid_export.sourceFile", hint: expect.any(String) }),
-      expect.objectContaining({ code: "TB006", path: "tasks.third_party.sourceFile", hint: expect.any(String) }),
+      expect.objectContaining({ code: "TB004", path: "tasks.local.reference", hint: expect.any(String) }),
+      expect.objectContaining({ code: "TB005", path: "tasks.invalid_export.reference", hint: expect.any(String) }),
       expect.objectContaining({ code: "TB007", path: "tasks.inline_capture.source", hint: expect.any(String) }),
-      expect.objectContaining({ code: "TB008", path: "tasks.duplicate.sourceFile", hint: expect.stringContaining("unique task step ids") }),
+      expect.objectContaining({ code: "TB008", path: "tasks.duplicate.reference", hint: expect.stringContaining("unique task step ids") }),
     ]));
   });
 });

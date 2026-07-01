@@ -22,7 +22,6 @@ describe("CLI result output contracts", () => {
           warnings: 0,
         },
       },
-      taskBundleCount: 0,
     });
     expect(stderr.text).toBe("");
   });
@@ -47,7 +46,6 @@ describe("CLI result output contracts", () => {
         output: { ready: true },
         eventCount: 2,
         nodeCount: 1,
-        taskBundleCount: 0,
       },
     }, "text", { stdout, stderr }, 0);
 
@@ -79,7 +77,6 @@ describe("CLI result output contracts", () => {
         output: { ok: true },
         eventCount: 4,
         nodeCount: 1,
-        taskBundleCount: 0,
         dynamic: {
           version: 1,
           frames: [],
@@ -186,7 +183,6 @@ describe("CLI result output contracts", () => {
         input: {},
         eventCount: 1,
         nodeCount: 1,
-        taskBundleCount: 0,
         dynamic: {
           version: 1,
           frames: [],
@@ -237,7 +233,6 @@ describe("CLI result output contracts", () => {
         input: {},
         eventCount: 1,
         nodeCount: 1,
-        taskBundleCount: 0,
         dynamic: {
           version: 1,
           frames: [],
@@ -354,7 +349,6 @@ function dryRunResult(): CliResult {
     diagnostics: [],
     preflightDir: "/tmp/preflight",
     irDigest: "sha256:abc",
-    taskBundleCount: 0,
     sourceGraphDigest: "sha256:def",
   };
 }

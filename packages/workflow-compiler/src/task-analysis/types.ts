@@ -2,22 +2,19 @@ import type ts from "typescript";
 
 export type AnalyzedTask = {
   inline: boolean;
-  metadata?: TaskBundleMetadata;
+  metadata?: TaskReferenceMetadata;
   issue?: TaskAuthoringIssue;
   source?: TaskSourceLocation;
 };
 
-export type TaskBundleMetadata = {
-  inline: boolean;
-  sourceFile?: string;
+export type TaskReferenceMetadata = {
+  specifier?: string;
   exportName?: string;
-  sourceKind?: "task-module" | "workflow-module";
 };
 
 export type TaskAuthoringIssue =
   | { kind: "invalid-reusable-task-reference"; name?: string }
   | { kind: "workflow-local-reusable-task"; name: string }
-  | { kind: "unsupported-task-import"; name: string; specifier?: string; reason: "third-party" | "unresolved" | "barrel" | "read-failed" }
   | { kind: "invalid-reusable-task-export"; importedName: string; file?: string; reason: "missing-default" | "missing-named" | "not-task-define" }
   | { kind: "inline-task-capture"; names: string[] }
   | { kind: "ambiguous-task-callsite" };
@@ -31,7 +28,7 @@ export type TaskAnalysisFact = {
 
 export type TaskMetadataFact = {
   stepId: string;
-  metadata: TaskBundleMetadata;
+  metadata: TaskReferenceMetadata;
 };
 
 export type WorkflowTaskAnalysis = Map<string, AnalyzedTask>;

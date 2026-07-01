@@ -8,8 +8,7 @@ function minimalWorkflow(overrides: Partial<WorkflowIR> = {}): WorkflowIR {
     agents: {},
     root: { nodes: [] },
     outputs: {},
-    assets: { taskBundles: {} },
-    lock: { acpusCoreVersion: "test", taskBundleDigests: {}, generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
+    lock: { acpusCoreVersion: "test", generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
     diagnostics: [],
     ...overrides,
   };
@@ -39,10 +38,8 @@ describe("WorkflowIR diagnostics contract", () => {
         },
       },
       outputs: {},
-      assets: { taskBundles: {} },
       lock: {
         acpusCoreVersion: "test",
-        taskBundleDigests: {},
         generatedAt: "2026-01-01T00:00:00.000Z",
         notes: [],
       },
@@ -85,18 +82,8 @@ describe("WorkflowIR diagnostics contract", () => {
         },
       },
       outputs: {},
-      assets: {
-        taskBundles: {
-          wrong_key: {
-            id: "actual_id",
-            digest: "not-sha",
-            runtime: "node",
-          },
-        },
-      },
       lock: {
         acpusCoreVersion: "test",
-        taskBundleDigests: {},
         generatedAt: "2026-01-01T00:00:00.000Z",
         notes: [],
       },
@@ -112,9 +99,6 @@ describe("WorkflowIR diagnostics contract", () => {
       "ID002",
       "E001",
       "E001",
-      "T004",
-      "T005",
-      "T006",
     ]);
     expect(diagnostics).toContainEqual(expect.objectContaining({
       code: "A001",
@@ -123,14 +107,6 @@ describe("WorkflowIR diagnostics contract", () => {
     expect(diagnostics).toContainEqual(expect.objectContaining({
       code: "SC001",
       path: "inputSchema.required.0",
-    }));
-    expect(diagnostics).toContainEqual(expect.objectContaining({
-      code: "T005",
-      path: "assets.taskBundles.wrong_key.digest",
-    }));
-    expect(diagnostics).toContainEqual(expect.objectContaining({
-      code: "T006",
-      path: "assets.taskBundles.wrong_key.source",
     }));
   });
 
@@ -177,10 +153,8 @@ describe("WorkflowIR diagnostics contract", () => {
         ],
       },
       outputs: {},
-      assets: { taskBundles: {} },
       lock: {
         acpusCoreVersion: "test",
-        taskBundleDigests: {},
         generatedAt: "2026-01-01T00:00:00.000Z",
         notes: [],
       },
@@ -238,10 +212,8 @@ describe("WorkflowIR diagnostics contract", () => {
       } as any,
       root: { nodes: [] },
       outputs: {},
-      assets: { taskBundles: {} },
       lock: {
         acpusCoreVersion: "test",
-        taskBundleDigests: {},
         generatedAt: "2026-01-01T00:00:00.000Z",
         notes: [],
       },
@@ -285,7 +257,6 @@ describe("WorkflowIR diagnostics contract", () => {
   });
 
   it("validates current retry IR contract", () => {
-    const digest = `sha256:${"a".repeat(64)}`;
     const diagnostics = validateWorkflowIR(minimalWorkflow({
       agents: {
         reviewer: {
@@ -323,24 +294,11 @@ describe("WorkflowIR diagnostics contract", () => {
             run: {
               kind: "task_run",
               input: {},
-              bundleId: "task_ok",
-              exportName: "default",
-              digest,
-              runtime: "node",
+              target: { kind: "inline", runtime: "node", source: "async function task() { return {}; }" },
             },
             retry: { max: 1 },
           },
         ],
-      },
-      assets: {
-        taskBundles: {
-          task_ok: {
-            id: "task_ok",
-            digest,
-            runtime: "node",
-            source: "export default async function task() { return {}; }",
-          },
-        },
       },
     } as any));
 
@@ -388,10 +346,8 @@ describe("WorkflowIR diagnostics contract", () => {
         ],
       },
       outputs: {},
-      assets: { taskBundles: {} },
       lock: {
         acpusCoreVersion: "test",
-        taskBundleDigests: {},
         generatedAt: "2026-01-01T00:00:00.000Z",
         notes: [],
       },
@@ -449,10 +405,8 @@ describe("WorkflowIR diagnostics contract", () => {
         ],
       },
       outputs: {},
-      assets: { taskBundles: {} },
       lock: {
         acpusCoreVersion: "test",
-        taskBundleDigests: {},
         generatedAt: "2026-01-01T00:00:00.000Z",
         notes: [],
       },
@@ -538,10 +492,8 @@ describe("WorkflowIR diagnostics contract", () => {
         ],
       },
       outputs: {},
-      assets: { taskBundles: {} },
       lock: {
         acpusCoreVersion: "test",
-        taskBundleDigests: {},
         generatedAt: "2026-01-01T00:00:00.000Z",
         notes: [],
       },
@@ -609,10 +561,8 @@ describe("WorkflowIR diagnostics contract", () => {
         ],
       },
       outputs: {},
-      assets: { taskBundles: {} },
       lock: {
         acpusCoreVersion: "test",
-        taskBundleDigests: {},
         generatedAt: "2026-01-01T00:00:00.000Z",
         notes: [],
       },
@@ -643,7 +593,7 @@ describe("WorkflowIR diagnostics contract", () => {
           {
             id: "task_without_schema",
             kind: "task",
-            run: { kind: "task_run", input: {}, bundleId: "missing", exportName: "default", digest: "sha256:x", runtime: "node" },
+            run: { kind: "task_run", input: {}, target: { kind: "inline", runtime: "node", source: "async function task() {}" } },
           },
           {
             id: "signal_without_schema",
@@ -666,10 +616,8 @@ describe("WorkflowIR diagnostics contract", () => {
         ],
       },
       outputs: {},
-      assets: { taskBundles: {} },
       lock: {
         acpusCoreVersion: "test",
-        taskBundleDigests: {},
         generatedAt: "2026-01-01T00:00:00.000Z",
         notes: [],
       },
@@ -696,23 +644,10 @@ describe("WorkflowIR diagnostics contract", () => {
           run: {
             kind: "task_run",
             input: {},
-            bundleId: "task_a",
-            exportName: "default",
-            digest: "sha256:task",
-            runtime: "node",
+            target: { kind: "inline", runtime: "node", source: "async function task() {}" },
             unexpected: { mode: "strict" },
           } as any,
         }],
-      },
-      assets: {
-        taskBundles: {
-          task_a: {
-            id: "task_a",
-            digest: "sha256:task",
-            runtime: "node",
-            source: "export default async function task() {}\n",
-          },
-        },
       },
     });
 
@@ -721,11 +656,8 @@ describe("WorkflowIR diagnostics contract", () => {
     ]));
   });
 
-  it("requires task run digest to match the bundled task digest", () => {
-    const ir: WorkflowIR = {
-      irVersion: 2,
-      name: "task_digest_mismatch",
-      agents: {},
+  it("validates task module target descriptors", () => {
+    const ir = minimalWorkflow({
       root: {
         nodes: [{
           id: "run_task",
@@ -734,37 +666,23 @@ describe("WorkflowIR diagnostics contract", () => {
           run: {
             kind: "task_run",
             input: {},
-            bundleId: "task_a",
-            exportName: "default",
-            digest: "sha256:wrong",
-            runtime: "node",
+            target: {
+              kind: "module",
+              runtime: "node",
+              specifier: "",
+              exportName: "",
+              referrer: { kind: "workflow", path: "../workflow.ts" },
+            },
           },
         }],
       },
-      outputs: {},
-      assets: {
-        taskBundles: {
-          task_a: {
-            id: "task_a",
-            digest: "sha256:correct",
-            runtime: "node",
-            source: "export default async function task() {}\n",
-          },
-        },
-      },
-      lock: {
-        acpusCoreVersion: "test",
-        taskBundleDigests: { task_a: "sha256:correct" },
-        generatedAt: "2026-01-01T00:00:00.000Z",
-        notes: [],
-      },
-      diagnostics: [],
-    };
+    } as any);
 
-    expect(validateWorkflowIR(ir)).toContainEqual(expect.objectContaining({
-      code: "T008",
-      path: "root.nodes.run_task.run.digest",
-    }));
+    expect(validateWorkflowIR(ir)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "T007", path: "root.nodes.run_task.run.target.specifier" }),
+      expect.objectContaining({ code: "T007", path: "root.nodes.run_task.run.target.exportName" }),
+      expect.objectContaining({ code: "T007", path: "root.nodes.run_task.run.target.referrer.path" }),
+    ]));
   });
 
   it("rejects scope output fields outside the declared outputSchema across composites", () => {
@@ -823,8 +741,7 @@ describe("WorkflowIR diagnostics contract", () => {
         ],
       },
       outputs: {},
-      assets: { taskBundles: {} },
-      lock: { acpusCoreVersion: "test", taskBundleDigests: {}, generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
+      lock: { acpusCoreVersion: "test", generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
       diagnostics: [],
     } as any;
 
@@ -867,8 +784,7 @@ describe("WorkflowIR diagnostics contract", () => {
         ],
       },
       outputs: {},
-      assets: { taskBundles: {} },
-      lock: { acpusCoreVersion: "test", taskBundleDigests: {}, generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
+      lock: { acpusCoreVersion: "test", generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
       diagnostics: [],
     } as any;
 
@@ -895,8 +811,7 @@ describe("WorkflowIR diagnostics contract", () => {
       agents: {},
       root: { nodes: [] },
       outputs: {},
-      assets: { taskBundles: {} },
-      lock: { acpusCoreVersion: "test", taskBundleDigests: {}, generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
+      lock: { acpusCoreVersion: "test", generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
       diagnostics: [],
     };
 
@@ -927,8 +842,7 @@ describe("WorkflowIR diagnostics contract", () => {
       agents: {},
       root: { nodes: [] },
       outputs: {},
-      assets: { taskBundles: {} },
-      lock: { acpusCoreVersion: "test", taskBundleDigests: {}, generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
+      lock: { acpusCoreVersion: "test", generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
       diagnostics: [],
     };
 
@@ -959,8 +873,7 @@ describe("WorkflowIR diagnostics contract", () => {
       agents: {},
       root: { nodes: [] },
       outputs: {},
-      assets: { taskBundles: {} },
-      lock: { acpusCoreVersion: "test", taskBundleDigests: {}, generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
+      lock: { acpusCoreVersion: "test", generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
       diagnostics: [],
     };
 
@@ -987,7 +900,6 @@ describe("WorkflowIR diagnostics contract", () => {
       agents: [],
       root: "bad",
       outputs: [],
-      assets: {},
       lock: { notes: "bad" },
       diagnostics: {},
     };
@@ -997,9 +909,7 @@ describe("WorkflowIR diagnostics contract", () => {
       expect.objectContaining({ code: "IR002", path: "irVersion" }),
       expect.objectContaining({ code: "IR002", path: "agents" }),
       expect.objectContaining({ code: "E004", path: "outputs" }),
-      expect.objectContaining({ code: "IR002", path: "assets.taskBundles" }),
       expect.objectContaining({ code: "IR002", path: "lock.acpusCoreVersion" }),
-      expect.objectContaining({ code: "IR002", path: "lock.taskBundleDigests" }),
       expect.objectContaining({ code: "IR002", path: "lock.generatedAt" }),
       expect.objectContaining({ code: "IR002", path: "lock.notes" }),
       expect.objectContaining({ code: "IR002", path: "diagnostics" }),

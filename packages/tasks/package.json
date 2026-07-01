@@ -1,9 +1,9 @@
 {
-  "name": "@acpus/workflow-compiler",
+  "name": "@acpus/tasks",
   "version": "0.1.0-alpha",
   "private": true,
   "type": "module",
-  "description": "Acpus workflow module compiler and frozen workflow preparation.",
+  "description": "Reusable Acpus task package.",
   "license": "MIT",
   "engines": {
     "node": ">=22"
@@ -14,10 +14,10 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./internal/eslint-plugin": {
-      "development": "./src/internal/eslint-plugin/index.ts",
-      "types": "./dist/internal/eslint-plugin/index.d.ts",
-      "default": "./dist/internal/eslint-plugin/index.js"
+    "./git": {
+      "development": "./src/git.ts",
+      "types": "./dist/git.d.ts",
+      "default": "./dist/git.js"
     }
   },
   "main": "./dist/index.js",
@@ -33,13 +33,9 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@acpus/core": "workspace:*",
-    "@acpus/expression": "workspace:*",
-    "tsx": "^4.20.3",
-    "typescript": "^5.9.0"
+    "@acpus/core": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^22.15.30",
-    "slash": "^3.0.0"
+    "@types/node": "^22.15.30"
   }
 }

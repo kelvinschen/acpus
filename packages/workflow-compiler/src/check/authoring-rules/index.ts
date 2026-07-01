@@ -124,7 +124,7 @@ function taskDiagnostic(stepId: string, issue: TaskAuthoringIssue, source: Diagn
       return {
         ...base,
         code: "TB004",
-        message: `Reusable task '${issue.name}' is not imported from an admissible task module.`,
+        message: `Reusable task '${issue.name}' is not exported from a loadable task module.`,
         hint: "Export the top-level task.define(...) value from the workflow module, move it to an exported task module, or use an inline self-contained task.",
       };
     case "invalid-reusable-task-reference":
@@ -134,7 +134,7 @@ function taskDiagnostic(stepId: string, issue: TaskAuthoringIssue, source: Diagn
         message: issue.name
           ? `Reusable task '${issue.name}' must reference a task.define(...) export.`
           : "Reusable task must reference a task.define(...) export.",
-        hint: "Pass a directly imported task.define(...) token as run.task.",
+        hint: "Pass an imported or same-file exported task.define(...) token as run.task.",
       };
     case "invalid-reusable-task-export":
       return {
@@ -142,13 +142,6 @@ function taskDiagnostic(stepId: string, issue: TaskAuthoringIssue, source: Diagn
         code: "TB005",
         message: `Reusable task export '${issue.importedName}' must be initialized with task.define(...).`,
         hint: "Export a task.define(...) token from the task module.",
-      };
-    case "unsupported-task-import":
-      return {
-        ...base,
-        code: "TB006",
-        message: `Reusable task import${issue.specifier ? ` '${issue.specifier}'` : ""} is not supported for task bundling.`,
-        hint: "Import reusable tasks directly from a relative task module.",
       };
     case "inline-task-capture":
       return {
@@ -168,7 +161,7 @@ function taskDiagnostic(stepId: string, issue: TaskAuthoringIssue, source: Diagn
 }
 
 function taskIssuePath(stepId: string, issue: TaskAuthoringIssue): string {
-  const suffix = issue.kind === "inline-task-capture" ? ".source" : ".sourceFile";
+  const suffix = issue.kind === "inline-task-capture" ? ".source" : ".reference";
   return `tasks.${stepId}${suffix}`;
 }
 

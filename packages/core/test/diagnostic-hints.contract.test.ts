@@ -10,8 +10,7 @@ function minimalWorkflow(overrides: Partial<WorkflowIR> = {}): WorkflowIR {
     agents: {},
     root: { nodes: [] },
     outputs: {},
-    assets: { taskBundles: {} },
-    lock: { acpusCoreVersion: "test", taskBundleDigests: {}, generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
+    lock: { acpusCoreVersion: "test", generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
     diagnostics: [],
     ...overrides,
   };

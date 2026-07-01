@@ -82,7 +82,6 @@ function workflow(): WorkflowIR {
     name: "overlay-test",
     inputSchema: { kind: "schema", type: "object" },
     agents: {},
-    assets: { taskBundles: {} },
     root: {
       nodes: [
         task("prepare"),
@@ -98,7 +97,7 @@ function workflow(): WorkflowIR {
       ],
       outputs: {},
     },
-    lock: { acpusCoreVersion: "test", taskBundleDigests: {}, generatedAt: "2026-06-30T00:00:00.000Z", notes: [] },
+    lock: { acpusCoreVersion: "test", generatedAt: "2026-06-30T00:00:00.000Z", notes: [] },
     diagnostics: [],
   } as unknown as WorkflowIR;
 }
@@ -108,7 +107,7 @@ function task(id: string): WorkflowIR["root"]["nodes"][number] {
     id,
     kind: "task",
     outputSchema: { kind: "schema", type: "object" },
-    run: { kind: "task_run", input: {}, bundleId: "bundle", exportName: "run", digest: "sha256:test", runtime: "node" },
+    run: { kind: "task_run", input: {}, target: { kind: "inline", runtime: "node", source: "async function task() {}" } },
   } as unknown as WorkflowIR["root"]["nodes"][number];
 }
 

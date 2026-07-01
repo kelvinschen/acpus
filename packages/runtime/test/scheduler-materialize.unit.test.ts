@@ -10,7 +10,7 @@ describe("scheduler materialization", () => {
       id: "task",
       kind: "task",
       outputSchema: objectSchema(),
-      run: { kind: "task_run", input: {}, bundleId: "task", exportName: "default", digest: "sha256:task", runtime: "node" },
+      run: { kind: "task_run", input: {}, target: inlineTaskTarget() },
     }));
     const nodeKey = deriveInstanceKey(appendNode([], "task"));
 
@@ -551,8 +551,12 @@ function taskNode(id: string): NodeIR {
     id,
     kind: "task",
     outputSchema: objectSchema(),
-    run: { kind: "task_run", input: {}, bundleId: id, exportName: "default", digest: `sha256:${id}`, runtime: "node" },
+    run: { kind: "task_run", input: {}, target: inlineTaskTarget() },
   };
+}
+
+function inlineTaskTarget(): Extract<Extract<NodeIR, { kind: "task" }>["run"]["target"], { kind: "inline" }> {
+  return { kind: "inline", runtime: "node", source: "async function task() {}" };
 }
 
 function fanoutNode(options: {
@@ -602,8 +606,7 @@ function workflowWithRootNodes(nodes: NodeIR[]): WorkflowIR {
     root: { nodes, outputs: {} },
     outputs: {},
     agents: {},
-    assets: { taskBundles: {} },
-    lock: { acpusCoreVersion: "0.0.0", taskBundleDigests: {}, generatedAt: "2026-06-30T00:00:00.000Z", notes: [] },
+    lock: { acpusCoreVersion: "0.0.0", generatedAt: "2026-06-30T00:00:00.000Z", notes: [] },
     diagnostics: [],
   };
 }

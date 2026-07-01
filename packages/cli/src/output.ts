@@ -25,7 +25,6 @@ export type CliResult = {
   diagnostics?: DiagnosticIR[];
   preflightDir?: string;
   irDigest?: string;
-  taskBundleCount?: number;
   sourceGraphDigest?: string;
   run?: RunRecord | RunDetails;
   runs?: RunRecord[];
@@ -58,7 +57,6 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
     if ("eventCount" in result.run) {
       stream.write(`Events: ${result.run.eventCount}\n`);
       stream.write(`Nodes: ${result.run.nodeCount}\n`);
-      stream.write(`Task bundles: ${result.run.taskBundleCount}\n`);
       if (result.run.output !== undefined) stream.write(`Output: ${JSON.stringify(result.run.output)}\n`);
       writeAgentExecutionMetadata(stream, result.run);
     }
@@ -86,7 +84,6 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
   }
   if (result.command) stream.write(`Command: ${result.command.id}\t${result.command.type}\t${result.command.status}\n`);
   if (result.irDigest) stream.write(`IR digest: ${result.irDigest}\n`);
-  if (result.taskBundleCount !== undefined) stream.write(`Task bundles: ${result.taskBundleCount}\n`);
   if (result.diagnostics?.length) {
     for (const diagnostic of result.diagnostics) {
       stream.write(`[${diagnostic.severity}] ${diagnostic.code}${diagnostic.path ? ` ${diagnostic.path}` : ""}: ${diagnostic.message}\n`);

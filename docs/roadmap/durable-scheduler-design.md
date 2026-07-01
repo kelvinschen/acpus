@@ -137,7 +137,7 @@ Lexical execution scope is a dynamic overlay on top of globally unique static no
 - The main scheduler entrypoint is shaped around `advanceRun(runId, reason?)`. It reads durable projections, starts eligible work, consumes completions from work owned by the current owner, drains available transitions, and returns at terminal, awaiting, paused, idle/no-active-work, or lease-lost state with a concise advancement summary.
 - The first implementation loads a complete scheduler snapshot when advancing a claimed run and keeps only short-lived in-memory state inside that `advanceRun` call. Long-lived scheduler caches and incremental snapshot loading are deferred until there is a measured need.
 - The store adapter owns SQLite and transaction mechanics.
-- The leaf executor adapter owns single-attempt task bundle loading, agent execution, signal payload handling, schema normalization, and artifact APIs.
+- The leaf executor adapter owns single-attempt task target loading, agent execution, signal payload handling, schema normalization, and artifact APIs.
 - Leaf executors return scheduler-ready attempt results. Task, agent, and signal output parsing, acceptance, and schema normalization happen before scheduler receives the result.
 - Agent executor internals can record provider calls, parse failures, and conformance retries in attempt logs or metadata without creating extra scheduler attempt events. If conformance retry is exhausted, scheduler sees one failed attempt with an invalid-output style reason.
 - Transition reducers, frame reducers, and identity helpers are internal scheduler seams used by scheduler tests, not public runtime interfaces.

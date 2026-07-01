@@ -28,6 +28,7 @@
     "@acpus/core": "workspace:*",
     "@acpus/expression": "workspace:*",
     "@acpus/runtime": "workspace:*",
+    "@acpus/tasks": "workspace:*",
     "@acpus/workflow-compiler": "workspace:*",
     "@changesets/cli": "^2.31.0",
     "@types/node": "^22.15.30",

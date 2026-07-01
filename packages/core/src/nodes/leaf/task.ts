@@ -1,11 +1,10 @@
-import { createHash } from "node:crypto";
 import { TASK } from "../../internal/symbols.js";
 import type { Simplify } from "../../internal/type-utils.js";
 import { envToIR, bindingsToIR, assertStableId, stripUndefined } from "../../graph/lowering.js";
 import { valueToExprIR } from "@acpus/expression/ir";
 import { toSchemaIR, z, type InferSchema, type Schema } from "../../schema/index.js";
 import type { WorkflowValue } from "@acpus/expression";
-import type { DiagnosticIR, TaskBundleIR, TaskNodeIR } from "../../ir/types.js";
+import type { DiagnosticIR, TaskExecutionTargetIR, TaskNodeIR } from "../../ir/types.js";
 import type { TaskFunction } from "../../runtime/task-context.js";
 import type { EnvInput, RuntimeInput, StepInput } from "./shared.js";
 
@@ -13,9 +12,6 @@ type BaseTaskToken<Input, Output> = {
   readonly [TASK]: true;
   readonly fn: TaskFunction<Input, Output>;
   readonly source: string;
-  readonly bundleId: string;
-  readonly digest: string;
-  toBundleIR(): TaskBundleIR;
 };
 
 export type InlineTaskToken<Input = any, Output = any> = BaseTaskToken<Input, Output> & {
@@ -69,10 +65,6 @@ export type TaskStepSpec<Input extends StepInput, OutSchema extends Schema<any> 
   | InlineTaskStepSpec<Input, OutSchema>
   | ReusableTaskStepSpec<Input, any, any>;
 
-function digest(source: string): string {
-  return `sha256:${createHash("sha256").update(source).digest("hex")}`;
-}
-
 function makeTaskToken<Input, Output>(args: {
   kind: "inline" | "external";
   inputSchema?: Schema<Input>;
@@ -80,8 +72,6 @@ function makeTaskToken<Input, Output>(args: {
   fn: TaskFunction<Input, Output>;
 }): TaskToken<Input, Output> {
   const source = args.fn.toString();
-  const hash = digest(source);
-  const bundleId = `task_${hash.slice("sha256:".length, "sha256:".length + 16)}`;
   return {
     [TASK]: true as const,
     kind: args.kind,
@@ -89,17 +79,6 @@ function makeTaskToken<Input, Output>(args: {
     outputSchema: args.outputSchema,
     fn: args.fn,
     source,
-    digest: hash,
-    bundleId,
-    toBundleIR() {
-      return {
-        id: bundleId,
-        digest: hash,
-        runtime: "node",
-        source,
-        inline: args.kind === "inline",
-      };
-    },
   } as TaskToken<Input, Output>;
 }
 
@@ -139,7 +118,6 @@ export const task: TaskFactory = {
 export function buildTaskNode<const Input extends StepInput>(
   id: string,
   spec: TaskStepSpec<Input>,
-  taskBundles: Record<string, TaskBundleIR>,
   diagnostics: DiagnosticIR[],
 ): TaskNodeIR {
   assertStableId(id, diagnostics);
@@ -168,8 +146,7 @@ export function buildTaskNode<const Input extends StepInput>(
     outputSchema = ("outputSchema" in spec && spec.outputSchema ? spec.outputSchema : z.unknown()) as Schema<any>;
     inputBindings = {};
   }
-  const bundle = validTask ? run.toBundleIR() : undefined;
-  if (bundle) taskBundles[bundle.id] = bundle;
+  const target = validTask ? taskTarget(run) : undefined;
   const runOptions = maybeRun && typeof maybeRun === "object"
     ? maybeRun as TaskStepOptions
     : {};
@@ -177,26 +154,29 @@ export function buildTaskNode<const Input extends StepInput>(
     id,
     kind: "task",
     outputSchema: toSchemaIR(outputSchema),
-    run: bundle ? {
+    run: target ? {
       kind: "task_run",
       input: bindingsToIR(inputBindings),
-      bundleId: bundle.id,
-      exportName: "default",
-      digest: bundle.digest,
-      runtime: "node",
-      inline: run.kind === "inline",
+      target,
       cwd: runOptions.cwd === undefined ? undefined : valueToExprIR(runOptions.cwd),
       env: envToIR(runOptions.env),
       execution: runOptions.execution,
     } : {
       kind: "task_run",
       input: {},
-      bundleId: `invalid_task_${id}`,
-      exportName: "default",
-      digest: "invalid",
-      runtime: "node",
-      inline: true,
+      target: { kind: "inline", runtime: "node", source: "" },
     },
     timeout: spec.timeout,
   }) as TaskNodeIR;
+}
+
+function taskTarget(run: TaskToken<any, any>): TaskExecutionTargetIR {
+  if (run.kind === "inline") return { kind: "inline", runtime: "node", source: run.source };
+  return {
+    kind: "module",
+    runtime: "node",
+    specifier: "",
+    exportName: "",
+    referrer: { kind: "workflow", path: "" },
+  };
 }

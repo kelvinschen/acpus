@@ -26,7 +26,7 @@ const normalizePackage = task.define({
 });
 
 describe("workflow compilation", () => {
-  it("compiles leaf nodes, asserts, secrets, task bundles, and outputs into validated WorkflowIR", () => {
+  it("compiles leaf nodes, asserts, secrets, task descriptors, and outputs into WorkflowIR", () => {
     const definition = defineWorkflow({
       name: "release_review",
       inputSchema: z.object({
@@ -103,6 +103,7 @@ describe("workflow compilation", () => {
 
     const ir = compileWorkflowDefinition(definition, {
       source: "packages/core/test/workflow.integration.test.ts",
+      validate: false,
     });
 
     expect(ir.diagnostics).toEqual([]);
@@ -135,7 +136,7 @@ describe("workflow compilation", () => {
       kind: "task",
       outputSchema: toSchemaIR(NormalizeOutput),
       run: {
-        inline: false,
+        target: { kind: "module" },
         input: {
           packageName: { kind: "ref", path: ["input", "packageName"] },
         },
@@ -144,7 +145,7 @@ describe("workflow compilation", () => {
     expect(ir.root.nodes[1]).toMatchObject({
       kind: "task",
       run: {
-        inline: true,
+        target: { kind: "inline", source: expect.any(String) },
         input: {
           slug: {
             kind: "ref",
@@ -250,20 +251,18 @@ describe("workflow compilation", () => {
       },
       runId: { kind: "ref", path: ["meta", "runId"] },
     });
-    expect(Object.values(ir.assets.taskBundles)).toHaveLength(2);
-    expect(
-      Object.values(ir.assets.taskBundles).every((bundle) =>
-        bundle.digest.startsWith("sha256:"),
-      ),
-    ).toBe(true);
-    expect(ir.lock.taskBundleDigests).toEqual(
-      Object.fromEntries(
-        Object.entries(ir.assets.taskBundles).map(([id, bundle]) => [
-          id,
-          bundle.digest,
-        ]),
-      ),
-    );
+    expect(ir.root.nodes[0]).toMatchObject({
+      kind: "task",
+      run: {
+        target: { kind: "module" },
+      },
+    });
+    expect(ir.root.nodes[1]).toMatchObject({
+      kind: "task",
+      run: {
+        target: { kind: "inline", runtime: "node", source: expect.any(String) },
+      },
+    });
   });
 
   it("compiles current composite node shapes without invoking a runtime", () => {
@@ -510,10 +509,9 @@ describe("workflow compilation", () => {
       severity: "error",
     }));
     expect(ir.diagnostics).toContainEqual(expect.objectContaining({
-      code: "T001",
-      path: "root.nodes.bad_task.run.bundleId",
+      code: "T007",
+      path: "root.nodes.bad_task.run.target.source",
     }));
-    expect(Object.keys(ir.assets.taskBundles)).toHaveLength(0);
     expect(ir.root.nodes[0]).toMatchObject({
       id: "bad_task",
       kind: "task",

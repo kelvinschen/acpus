@@ -84,7 +84,6 @@ export type RunWorkflowLockArtifact = {
   };
   packageLockDigest?: string;
   sourceGraphDigest: string;
-  taskBundles: Record<string, { digest: string; path: string }>;
   generatedAt: string;
 };
 
@@ -115,7 +114,6 @@ export type RunDetails = RunRecord & {
   agentOverrides?: AgentOverrideMap;
   eventCount: number;
   nodeCount: number;
-  taskBundleCount: number;
   dynamic?: RunDynamicDetails;
 };
 
@@ -374,7 +372,6 @@ type RunInputRow = {
   agent_overrides_json?: string | null;
   lock_json?: string;
   output_json: string | null;
-  task_bundle_count: number;
   package_lock_digest?: string | null;
   run_dir?: string;
 };
@@ -443,14 +440,10 @@ class SqliteRuntimeStore implements RuntimeStore {
     const now = new Date().toISOString();
     const workflowEntry = relative(input.cwd, input.prepared.workflowPath);
     const runDir = join(input.cwd, ".acpus", "runs", runId);
-    const bundleDir = join(runDir, "task-bundles");
     try {
-      await mkdir(bundleDir, { recursive: true });
+      await mkdir(runDir, { recursive: true });
       await writeFile(join(runDir, "workflow.ir.json"), input.prepared.irJson);
       await writeFile(join(runDir, "lock.json"), `${JSON.stringify(input.prepared.lock, null, 2)}\n`);
-      for (const bundle of Object.values(input.prepared.ir.assets.taskBundles)) {
-        await writeFile(join(bundleDir, `${bundle.id}.mjs`), bundle.source ?? "");
-      }
       const agentOverrides = normalizeAgentOverrides(input.prepared.ir, input.agentOverrides);
 
       const eventPayload = {
@@ -467,16 +460,15 @@ class SqliteRuntimeStore implements RuntimeStore {
         `).run(runId, input.prepared.ir.name, workflowEntry, input.prepared.irDigest, input.prepared.sourceGraphDigest, now, now);
         this.db.prepare(`
           INSERT INTO run_inputs (
-            run_id, workflow_ir_json, input_json, agent_overrides_json, lock_json, task_bundle_count, package_lock_digest, run_dir, created_at
+            run_id, workflow_ir_json, input_json, agent_overrides_json, lock_json, package_lock_digest, run_dir, created_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           runId,
           input.prepared.irJson,
           stableJson(input.input),
           stableJson(agentOverrides),
           stableJson(input.prepared.lock),
-          Object.keys(input.prepared.ir.assets.taskBundles).length,
           input.prepared.packageLockDigest ?? null,
           relative(input.cwd, runDir),
           now,
@@ -1005,7 +997,7 @@ class SqliteRuntimeStore implements RuntimeStore {
     const source = this.getRunRecord(runId);
     if (!source) throw new Error(`Run '${runId}' was not found.`);
     const input = this.db.prepare(`
-      SELECT workflow_ir_json, input_json, agent_overrides_json, lock_json, output_json, task_bundle_count, package_lock_digest, run_dir
+      SELECT workflow_ir_json, input_json, agent_overrides_json, lock_json, output_json, package_lock_digest, run_dir
       FROM run_inputs
       WHERE run_id = ?
     `).get(runId) as RunInputRow | undefined;
@@ -1017,7 +1009,6 @@ class SqliteRuntimeStore implements RuntimeStore {
     const forkAgentOverrides = normalizeAgentOverrides(forkIr, options.agentOverrides, sourceAgentOverrides);
     const forkInputJson = options.input === undefined ? input.input_json : stableJson(options.input);
     const forkLockJson = options.prepared ? stableJson(options.prepared.lock) : input.lock_json;
-    const forkTaskBundleCount = options.prepared ? Object.keys(forkIr.assets.taskBundles).length : input.task_bundle_count;
     const forkPackageLockDigest = options.prepared?.packageLockDigest ?? input.package_lock_digest ?? null;
     const forkName = options.prepared ? forkIr.name : source.name;
     const forkWorkflowEntry = options.prepared ? relative(this.cwd, options.prepared.workflowPath) : source.workflowEntry;
@@ -1104,11 +1095,11 @@ class SqliteRuntimeStore implements RuntimeStore {
         INSERT INTO runs (id, name, status, workflow_entry, ir_digest, source_graph_digest, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `).run(forkId, forkName, forkStatus, forkWorkflowEntry, forkIrDigest, forkSourceGraphDigest, now, now);
-      this.db.prepare(`
-        INSERT INTO run_inputs (
-          run_id, workflow_ir_json, input_json, agent_overrides_json, output_json, lock_json, task_bundle_count, package_lock_digest, run_dir, created_at
+        this.db.prepare(`
+          INSERT INTO run_inputs (
+          run_id, workflow_ir_json, input_json, agent_overrides_json, output_json, lock_json, package_lock_digest, run_dir, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         forkId,
         forkIrJson,
@@ -1116,7 +1107,6 @@ class SqliteRuntimeStore implements RuntimeStore {
         stableJson(forkAgentOverrides),
         forkOutputJson,
         forkLockJson,
-        forkTaskBundleCount,
         forkPackageLockDigest,
         forkRunDir,
         now,
@@ -1254,7 +1244,7 @@ class SqliteRuntimeStore implements RuntimeStore {
     const run = this.getRunRecord(runId);
     if (!run) return undefined;
     const input = this.db.prepare(`
-      SELECT input_json, agent_overrides_json, output_json, task_bundle_count
+      SELECT input_json, agent_overrides_json, output_json
       FROM run_inputs
       WHERE run_id = ?
     `).get(runId) as RunInputRow | undefined;
@@ -1270,7 +1260,6 @@ class SqliteRuntimeStore implements RuntimeStore {
       ...(Object.keys(agentOverrides).length > 0 ? { agentOverrides } : {}),
       eventCount,
       nodeCount,
-      taskBundleCount: input.task_bundle_count,
       ...(dynamic ? { dynamic } : {}),
     };
   }
@@ -2823,7 +2812,6 @@ function migrate(db: DatabaseSync): void {
       agent_overrides_json TEXT NOT NULL DEFAULT '{}',
       output_json TEXT,
       lock_json TEXT NOT NULL,
-      task_bundle_count INTEGER NOT NULL,
       package_lock_digest TEXT,
       run_dir TEXT NOT NULL,
       created_at TEXT NOT NULL
@@ -3446,12 +3434,6 @@ async function pruneArtifactEntry(runDir: string, relativePath: string, keep: Se
 async function writePreparedRunFiles(runDir: string, prepared: ForkPreparedWorkflow): Promise<void> {
   await writeFile(join(runDir, "workflow.ir.json"), prepared.irJson);
   await writeFile(join(runDir, "lock.json"), `${JSON.stringify(prepared.lock, null, 2)}\n`);
-  const bundleDir = join(runDir, "task-bundles");
-  await rm(bundleDir, { recursive: true, force: true });
-  await mkdir(bundleDir, { recursive: true });
-  for (const bundle of Object.values((JSON.parse(prepared.irJson) as WorkflowIR).assets.taskBundles)) {
-    await writeFile(join(bundleDir, `${bundle.id}.mjs`), bundle.source ?? "");
-  }
 }
 
 async function verifyFrozenRunFiles(runDir: string, irDigest: string, lockJson: string, workflowIrJson: string): Promise<void> {
@@ -3460,11 +3442,6 @@ async function verifyFrozenRunFiles(runDir: string, irDigest: string, lockJson: 
   if (stableJson(JSON.parse(irBytes.toString("utf8"))) !== stableJson(JSON.parse(workflowIrJson))) throw new Error("Fork workflow.ir.json does not match frozen runtime state.");
   const lockBytes = await readContainedFile(runDir, "lock.json");
   if (stableJson(JSON.parse(lockBytes.toString("utf8"))) !== stableJson(JSON.parse(lockJson))) throw new Error("Fork lock.json failed copy verification.");
-  const ir = JSON.parse(irBytes.toString("utf8")) as WorkflowIR;
-  for (const bundle of Object.values(ir.assets.taskBundles)) {
-    const bytes = await readContainedFile(runDir, join("task-bundles", `${bundle.id}.mjs`));
-    if (digest(bytes) !== bundle.digest) throw new Error(`Fork task bundle '${bundle.id}' failed copy verification.`);
-  }
 }
 
 async function readContainedFile(root: string, relativePath: string): Promise<Buffer> {

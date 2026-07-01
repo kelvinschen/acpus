@@ -41,7 +41,7 @@ The `acpus` package provides the user-facing command-line interface. It parses c
 
 ### Output And Exit Codes
 
-- JSON output MUST include stable keys for `ok`, `phase`, workflow summary, diagnostics, preflight directory when available, IR digest, source graph digest, task bundle count, and admitted run details when available.
+- JSON output MUST include stable keys for `ok`, `phase`, workflow summary, diagnostics, preflight directory when available, IR digest, source graph digest, and admitted run details when available.
 - JSON diagnostic output MUST preserve `hint` and `source` fields when present.
 - Text output MUST summarize successful dry-run, admission, inspection, and error results in human-readable form.
 - Text run inspection output MUST include scheduler-backed agent attempt and

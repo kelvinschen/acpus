@@ -5,7 +5,7 @@ This roadmap tracks remaining core authoring, compiler, and developer-experience
 ## Known gaps in the current core
 
 - Workflow modules are user-owned TypeScript scripts and are executed during compile to build the graph. Acpus does not attempt to sandbox user-authored workflow code.
-- Task analysis is gated by a TypeScript parser-only static analyzer. It resolves reusable tasks through direct relative imports and exported same-file workflow tasks; barrel/re-export indirection is rejected rather than followed.
+- Task analysis is gated by a TypeScript parser-only static analyzer. It records reusable task references for direct imports, barrel re-exports, exported same-file workflow tasks, and package specifiers.
 - `validateWorkflowIR(...)` is structural only; typed semantic validation remains a follow-up.
 
 ## Phase 1: harden the Zod bridge
@@ -14,9 +14,8 @@ This roadmap tracks remaining core authoring, compiler, and developer-experience
 - Improve errors for unsupported boundary schemas, with source-path context in `toSchemaIR` errors.
 - Decide whether `.refine()` is accepted as runtime-only validation or rejected at boundaries.
 
-## Phase 2: Task bundling follow-ups
+## Phase 2: task execution follow-ups
 
-- Add source maps for bundled Task assets.
 - Extend inline self-containment warnings beyond the current hard free-identifier gate: warn when a Task imports raw `zx`, imports `child_process` directly, or reads `process.env` instead of task-level `env`.
 
 ## Phase 3: Runtime follow-ups

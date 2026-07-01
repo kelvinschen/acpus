@@ -24,7 +24,6 @@ export type WorkflowLockArtifact = {
   };
   packageLockDigest?: string;
   sourceGraphDigest: string;
-  taskBundles: Record<string, { digest: string; path: string }>;
   generatedAt: string;
 };
 
@@ -89,7 +88,6 @@ export async function prepareWorkflow(options: PreflightOptions): Promise<Prepar
     const sourceGraphDigest = digest([
       compiled.ir.lock.workflowSourceDigest ?? "",
       packageLock ?? "",
-      ...Object.values(compiled.ir.assets.taskBundles).map(bundle => bundle.digest).sort(),
     ].join("\n"));
 
     return {
@@ -109,11 +107,7 @@ export async function prepareWorkflow(options: PreflightOptions): Promise<Prepar
 export async function writePreflightArtifact(prepared: PreparedWorkflow, cwd: string): Promise<PreflightArtifact> {
   const id = `${timestampId()}-${prepared.irDigest.slice("sha256:".length, "sha256:".length + 12)}`;
   const dir = join(cwd, ".acpus", "preflight", id);
-  const bundleDir = join(dir, "task-bundles");
-  await mkdir(bundleDir, { recursive: true });
-  for (const bundle of Object.values(prepared.ir.assets.taskBundles)) {
-    await writeFile(join(bundleDir, `${bundle.id}.mjs`), bundle.source ?? "");
-  }
+  await mkdir(dir, { recursive: true });
   await writeFile(join(dir, "workflow.ir.json"), prepared.irJson);
   await writeFile(join(dir, "lock.json"), `${JSON.stringify(prepared.lock, null, 2)}\n`);
   return { dir };
@@ -133,10 +127,6 @@ function buildLock(ir: WorkflowIR, workflowPath: string, cwd: string, irDigest: 
     },
     ...(packageLock ? { packageLockDigest: packageLock } : {}),
     sourceGraphDigest,
-    taskBundles: Object.fromEntries(Object.values(ir.assets.taskBundles).map(bundle => [
-      bundle.id,
-      { digest: bundle.digest, path: `task-bundles/${bundle.id}.mjs` },
-    ])),
     generatedAt: new Date().toISOString(),
   };
 }

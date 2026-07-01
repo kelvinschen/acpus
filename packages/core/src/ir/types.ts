@@ -99,11 +99,7 @@ export type TaskNodeIR = BaseNodeIR & {
 export type TaskRunIR = {
   kind: "task_run";
   input: Record<string, ExprIR>;
-  bundleId: string;
-  exportName: string;
-  digest: string;
-  runtime: "node";
-  inline?: boolean;
+  target: TaskExecutionTargetIR;
   cwd?: ExprIR;
   env?: Record<string, ExprIR | SecretRefIR>;
   execution?: {
@@ -112,6 +108,23 @@ export type TaskRunIR = {
     commandRunner?: "acpus-zx-core" | "custom";
   };
 };
+
+export type TaskExecutionTargetIR =
+  | {
+      kind: "inline";
+      runtime: "node";
+      source: string;
+    }
+  | {
+      kind: "module";
+      runtime: "node";
+      specifier: string;
+      exportName: string;
+      referrer: {
+        kind: "workflow";
+        path: string;
+      };
+    };
 
 export type SignalNodeIR = BaseNodeIR & {
   kind: "signal";
@@ -186,15 +199,6 @@ export type LoopNodeIR = BaseNodeIR & {
   outputSchema: SchemaIR;
 };
 
-export type TaskBundleIR = {
-  id: string;
-  digest: string;
-  runtime: "node";
-  source?: string;
-  sourceFile?: string;
-  inline?: boolean;
-};
-
 export type SourceLocationIR = {
   file?: string;
   line?: number;
@@ -205,7 +209,6 @@ export type WorkflowLockIR = {
   acpusCoreVersion: string;
   workflowSource?: string;
   workflowSourceDigest?: string;
-  taskBundleDigests: Record<string, string>;
   generatedAt: string;
   notes: string[];
 };
@@ -217,9 +220,6 @@ export type WorkflowIR = {
   agents: Record<string, AgentDefinitionIR>;
   root: ScopeIR;
   outputs: Record<string, ExprIR>;
-  assets: {
-    taskBundles: Record<string, TaskBundleIR>;
-  };
   lock: WorkflowLockIR;
   diagnostics: DiagnosticIR[];
 };

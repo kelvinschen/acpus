@@ -23,7 +23,7 @@ describe("internal Acpus ESLint plugin", () => {
   it("reports task-authoring diagnostics at task callsites", async () => {
     const messages = await lintFixture("eslint-task-authoring.workflow.ts");
 
-    expect(codes(messages)).toEqual(expect.arrayContaining(["TB004", "TB005", "TB006", "TB007"]));
+    expect(codes(messages)).toEqual(expect.arrayContaining(["TB004", "TB007"]));
     expect(messages.find(message => message.message.startsWith("TB004:"))).toMatchObject({
       line: await lineOf("eslint-task-authoring.workflow.ts", 'step("local").task'),
     });

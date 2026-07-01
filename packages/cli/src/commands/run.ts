@@ -54,7 +54,6 @@ export function createRunCommand(ctx: RunCommandContext): Command {
           diagnostics: prepared.ir.diagnostics,
           preflightDir: artifact.dir,
           irDigest: prepared.irDigest,
-          taskBundleCount: Object.keys(prepared.ir.assets.taskBundles).length,
           sourceGraphDigest: prepared.sourceGraphDigest,
         };
         ctx.setExitCode(writeResult(result, format, ctx, 0));
@@ -77,7 +76,6 @@ export function createRunCommand(ctx: RunCommandContext): Command {
           workflow: summarizeWorkflow(prepared.ir),
           diagnostics: prepared.ir.diagnostics,
           irDigest: prepared.irDigest,
-          taskBundleCount: Object.keys(prepared.ir.assets.taskBundles).length,
           sourceGraphDigest: prepared.sourceGraphDigest,
           run: advanced.run,
         }, format, ctx, 1));
@@ -90,7 +88,6 @@ export function createRunCommand(ctx: RunCommandContext): Command {
         workflow: summarizeWorkflow(prepared.ir),
         diagnostics: prepared.ir.diagnostics,
         irDigest: prepared.irDigest,
-        taskBundleCount: Object.keys(prepared.ir.assets.taskBundles).length,
         sourceGraphDigest: prepared.sourceGraphDigest,
         run: advanced.run,
       }, format, ctx, 0));

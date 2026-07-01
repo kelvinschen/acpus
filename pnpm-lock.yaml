@@ -20,6 +20,9 @@ importers:
       '@acpus/runtime':
         specifier: workspace:*
         version: link:packages/runtime
+      '@acpus/tasks':
+        specifier: workspace:*
+        version: link:packages/tasks
       '@acpus/workflow-compiler':
         specifier: workspace:*
         version: link:packages/workflow-compiler
@@ -121,6 +124,19 @@ importers:
       p-queue:
         specifier: ^9.3.0
         version: 9.3.0
+      tsx:
+        specifier: ^4.22.4
+        version: 4.22.4
+    devDependencies:
+      '@types/node':
+        specifier: ^22.15.30
+        version: 22.19.19
+
+  packages/tasks:
+    dependencies:
+      '@acpus/core':
+        specifier: workspace:*
+        version: link:../core
     devDependencies:
       '@types/node':
         specifier: ^22.15.30
@@ -134,9 +150,6 @@ importers:
       '@acpus/expression':
         specifier: workspace:*
         version: link:../expression
-      esbuild:
-        specifier: ^0.28.0
-        version: 0.28.0
       tsx:
         specifier: ^4.20.3
         version: 4.22.4

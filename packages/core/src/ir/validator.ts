@@ -7,7 +7,7 @@ export function validateWorkflowIR(ir: WorkflowIR): DiagnosticIR[] {
     diagnostics.push({ code: "IR002", severity: "error", message: "WorkflowIR must be an object.", path: "" });
     return diagnostics;
   }
-  validateKnownFields(ir, ["irVersion", "name", "inputSchema", "agents", "root", "outputs", "assets", "lock", "diagnostics"], diagnostics, "");
+  validateKnownFields(ir, ["irVersion", "name", "inputSchema", "agents", "root", "outputs", "lock", "diagnostics"], diagnostics, "");
   if (ir.irVersion !== 2) diagnostics.push({ code: "IR002", severity: "error", message: "WorkflowIR irVersion must be 2.", path: "irVersion" });
   if (!ir.name || !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(ir.name)) {
     diagnostics.push({ code: "W002", severity: "warning", message: `Workflow name '${ir.name}' is not identifier-like. This is allowed but discouraged.` });
@@ -16,9 +16,6 @@ export function validateWorkflowIR(ir: WorkflowIR): DiagnosticIR[] {
   const agents = isRecord(ir.agents) ? ir.agents : undefined;
   if (!agents) diagnostics.push({ code: "IR002", severity: "error", message: "WorkflowIR agents must be an object.", path: "agents" });
   else validateAgents(agents, diagnostics);
-  const taskBundles = isRecord(ir.assets) && isRecord(ir.assets.taskBundles) ? ir.assets.taskBundles : undefined;
-  if (!isRecord(ir.assets)) diagnostics.push({ code: "IR002", severity: "error", message: "WorkflowIR assets must be an object.", path: "assets" });
-  else if (!taskBundles) diagnostics.push({ code: "IR002", severity: "error", message: "WorkflowIR assets.taskBundles must be an object.", path: "assets.taskBundles" });
   validateLock(ir.lock, diagnostics, "lock");
   validateDiagnostics(ir.diagnostics, diagnostics, "diagnostics");
   validateExprObject(ir.outputs, diagnostics, "outputs");
@@ -27,18 +24,7 @@ export function validateWorkflowIR(ir: WorkflowIR): DiagnosticIR[] {
     path: "root",
     ids,
     agents: new Set(agents ? Object.keys(agents) : []),
-    taskBundles: new Map(taskBundles ? Object.entries(taskBundles) as Array<[string, WorkflowIR["assets"]["taskBundles"][string]]> : []),
   });
-  for (const [id, bundle] of Object.entries(taskBundles ?? {})) {
-    if (!isRecord(bundle)) {
-      diagnostics.push({ code: "T004", severity: "error", message: `Task bundle '${id}' must be an object.`, path: `assets.taskBundles.${id}` });
-      continue;
-    }
-    validateKnownFields(bundle, ["id", "digest", "runtime", "source", "sourceFile", "inline"], diagnostics, `assets.taskBundles.${id}`);
-    if (id !== bundle.id) diagnostics.push({ code: "T004", severity: "error", message: `Task bundle key '${id}' does not match bundle id '${String(bundle.id)}'.`, path: `assets.taskBundles.${id}` });
-    if (typeof bundle.digest !== "string" || !bundle.digest.startsWith("sha256:")) diagnostics.push({ code: "T005", severity: "error", message: `Task bundle '${id}' digest must be sha256:...`, path: `assets.taskBundles.${id}.digest` });
-    if (typeof bundle.source !== "string" || bundle.source.length === 0) diagnostics.push({ code: "T006", severity: "error", message: `Task bundle '${id}' must include bundled source.`, path: `assets.taskBundles.${id}.source` });
-  }
   return diagnostics;
 }
 
@@ -47,9 +33,8 @@ function validateLock(lock: unknown, diagnostics: DiagnosticIR[], path: string):
     diagnostics.push({ code: "IR002", severity: "error", message: "WorkflowIR lock must be an object.", path });
     return;
   }
-  validateKnownFields(lock, ["acpusCoreVersion", "workflowSource", "workflowSourceDigest", "taskBundleDigests", "generatedAt", "notes"], diagnostics, path);
+  validateKnownFields(lock, ["acpusCoreVersion", "workflowSource", "workflowSourceDigest", "generatedAt", "notes"], diagnostics, path);
   if (typeof lock.acpusCoreVersion !== "string" || lock.acpusCoreVersion.length === 0) diagnostics.push({ code: "IR002", severity: "error", message: "WorkflowIR lock acpusCoreVersion must be a non-empty string.", path: `${path}.acpusCoreVersion` });
-  if (!isRecord(lock.taskBundleDigests)) diagnostics.push({ code: "IR002", severity: "error", message: "WorkflowIR lock taskBundleDigests must be an object.", path: `${path}.taskBundleDigests` });
   if (typeof lock.generatedAt !== "string" || lock.generatedAt.length === 0) diagnostics.push({ code: "IR002", severity: "error", message: "WorkflowIR lock generatedAt must be a non-empty string.", path: `${path}.generatedAt` });
   if (!Array.isArray(lock.notes)) {
     diagnostics.push({ code: "IR002", severity: "error", message: "WorkflowIR lock notes must be an array.", path: `${path}.notes` });
@@ -116,7 +101,6 @@ type ScopeContext = {
   path: string;
   ids: Set<string>;
   agents: Set<string>;
-  taskBundles: Map<string, WorkflowIR["assets"]["taskBundles"][string]>;
 };
 
 function validateScope(scope: unknown, diagnostics: DiagnosticIR[], ctx: ScopeContext, expectedOutput?: unknown): void {
@@ -189,9 +173,6 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
     case "task": {
       validateKnownFields(node, ["id", "source", "kind", "outputSchema", "run", "timeout"], diagnostics, path);
       validateTaskRun(node.run, diagnostics, `${path}.run`);
-      const bundleId = isRecord(node.run) && typeof node.run.bundleId === "string" ? node.run.bundleId : undefined;
-      if (bundleId && !ctx.taskBundles.has(bundleId)) diagnostics.push({ code: "T001", severity: "error", message: `Task node '${node.id}' references missing task bundle '${bundleId}'.`, path: `${path}.run.bundleId` });
-      if (bundleId && ctx.taskBundles.has(bundleId)) validateTaskRunDigest(node.run, ctx.taskBundles.get(bundleId), diagnostics, `${path}.run`);
       validateRequiredSchema(node.outputSchema, diagnostics, `${path}.outputSchema`);
       break;
     }
@@ -360,24 +341,50 @@ function validateTaskRun(run: unknown, diagnostics: DiagnosticIR[], path: string
     diagnostics.push({ code: "T007", severity: "error", message: "Task run must be an object.", path });
     return;
   }
-  validateKnownFields(run, ["kind", "input", "bundleId", "exportName", "digest", "runtime", "inline", "cwd", "env", "execution"], diagnostics, path);
+  validateKnownFields(run, ["kind", "input", "target", "cwd", "env", "execution"], diagnostics, path);
   if (run.kind !== "task_run") diagnostics.push({ code: "T007", severity: "error", message: "Task run kind must be task_run.", path: `${path}.kind` });
   validateExprObject(run.input, diagnostics, `${path}.input`);
-  if (typeof run.bundleId !== "string" || run.bundleId.length === 0) diagnostics.push({ code: "T007", severity: "error", message: "Task run bundleId must be a non-empty string.", path: `${path}.bundleId` });
+  validateTaskTarget(run.target, diagnostics, `${path}.target`);
   if (run.cwd) validateExpr(run.cwd, diagnostics, `${path}.cwd`);
   validateEnv(run.env, diagnostics, `${path}.env`);
   validateTaskExecution(run.execution, diagnostics, `${path}.execution`);
 }
 
-function validateTaskRunDigest(run: unknown, bundle: WorkflowIR["assets"]["taskBundles"][string] | undefined, diagnostics: DiagnosticIR[], path: string): void {
-  if (!isRecord(run) || !bundle) return;
-  if (run.digest !== bundle.digest) {
-    diagnostics.push({
-      code: "T008",
-      severity: "error",
-      message: `Task run digest '${String(run.digest)}' does not match bundle digest '${bundle.digest}'.`,
-      path: `${path}.digest`,
-    });
+function validateTaskTarget(target: unknown, diagnostics: DiagnosticIR[], path: string): void {
+  if (!isRecord(target)) {
+    diagnostics.push({ code: "T007", severity: "error", message: "Task run target must be an object.", path });
+    return;
+  }
+  if (target.kind === "inline") {
+    validateKnownFields(target, ["kind", "runtime", "source"], diagnostics, path);
+    if (target.runtime !== "node") diagnostics.push({ code: "T007", severity: "error", message: "Inline task target runtime must be node.", path: `${path}.runtime` });
+    if (typeof target.source !== "string" || target.source.length === 0) diagnostics.push({ code: "T007", severity: "error", message: "Inline task target source must be a non-empty string.", path: `${path}.source` });
+    return;
+  }
+  if (target.kind === "module") {
+    validateKnownFields(target, ["kind", "runtime", "specifier", "exportName", "referrer"], diagnostics, path);
+    if (target.runtime !== "node") diagnostics.push({ code: "T007", severity: "error", message: "Module task target runtime must be node.", path: `${path}.runtime` });
+    if (typeof target.specifier !== "string" || target.specifier.length === 0) diagnostics.push({ code: "T007", severity: "error", message: "Module task target specifier must be a non-empty string.", path: `${path}.specifier` });
+    if (typeof target.exportName !== "string" || target.exportName.length === 0) diagnostics.push({ code: "T007", severity: "error", message: "Module task target exportName must be a non-empty string.", path: `${path}.exportName` });
+    validateTaskReferrer(target.referrer, diagnostics, `${path}.referrer`);
+    return;
+  }
+  diagnostics.push({ code: "T007", severity: "error", message: "Task run target kind must be inline or module.", path: `${path}.kind` });
+}
+
+function validateTaskReferrer(referrer: unknown, diagnostics: DiagnosticIR[], path: string): void {
+  if (!isRecord(referrer)) {
+    diagnostics.push({ code: "T007", severity: "error", message: "Module task target referrer must be an object.", path });
+    return;
+  }
+  validateKnownFields(referrer, ["kind", "path"], diagnostics, path);
+  if (referrer.kind !== "workflow") diagnostics.push({ code: "T007", severity: "error", message: "Module task target referrer kind must be workflow.", path: `${path}.kind` });
+  if (typeof referrer.path !== "string" || referrer.path.length === 0) {
+    diagnostics.push({ code: "T007", severity: "error", message: "Module task target referrer path must be a non-empty string.", path: `${path}.path` });
+  } else if (referrer.path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(referrer.path)) {
+    diagnostics.push({ code: "T007", severity: "error", message: "Module task target referrer path must be workspace-relative.", path: `${path}.path` });
+  } else if (referrer.path.split(/[\\/]/).includes("..")) {
+    diagnostics.push({ code: "T007", severity: "error", message: "Module task target referrer path must stay inside the workspace.", path: `${path}.path` });
   }
 }
 
