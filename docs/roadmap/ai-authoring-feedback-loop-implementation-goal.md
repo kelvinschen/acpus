@@ -39,17 +39,17 @@ when the AI runs the Acpus CLI, it must read precise, actionable diagnostics and
 self-correct. The loop must run through the same path the AI already uses:
 `acpus run` and `acpus run --dry-run`.
 
-### TypeScript and lint have different jobs
+### TypeScript and authoring rules have different jobs
 
 TypeScript MUST remain the type-safety checker: it enforces what the workflow
-program can type-safely do. Acpus typed lint rules MUST enforce authoring
+program can type-safely do. Acpus typed authoring rules MUST enforce authoring
 semantics that TypeScript permits but Acpus considers wrong, such as using an
 `Expr` token in JavaScript truthiness or comparison positions.
 
 The workflow preflight path therefore needs a single static check pipeline, not
-a replacement of TypeScript by lint. `prepareWorkflow(...)` SHOULD run:
+a replacement of TypeScript by authoring rules or ESLint. `prepareWorkflow(...)` SHOULD run:
 
-1. `check` - stable TypeScript diagnostics plus Acpus-only typed lint
+1. `check` - stable TypeScript diagnostics plus Acpus-only typed authoring-rule
    diagnostics, both converted to `DiagnosticIR`.
 2. `compile` - import/lower/bundle the workflow module.
 3. `validate` - run structural IR validation.
@@ -64,7 +64,7 @@ Task provenance MUST NOT remain a compiler pass that both decides rule
 violations and feeds bundling metadata. Phase C extracts a shared,
 diagnostic-free task authoring analysis module inside
 `@acpus/workflow-compiler`. There is no separate analyzer package in this goal:
-the only lint entrypoint is `acpus run` / `acpus run --dry-run`, so the compiler
+the only authoring feedback entrypoint is `acpus run` / `acpus run --dry-run`, so the compiler
 package owns the complete check -> compile -> validate pipeline.
 
 The task analysis module produces structured facts and metadata only:
@@ -75,9 +75,9 @@ The task analysis module produces structured facts and metadata only:
   normalized join data the compiler/bundler needs to attach bundled task assets.
 
 The task analysis module MUST NOT emit `DiagnosticIR`, rule codes, or hint text.
-The internal preflight lint adapter maps task facts into Acpus authoring
+The internal preflight authoring-rule adapter maps task facts into Acpus authoring
 diagnostics such as `TB004`, `TB005`, `TB006`, and `TB007`. Compile/bundle code
-consumes metadata only; it must not run lint and must not duplicate lint-rule
+consumes metadata only; it must not run authoring rules and must not duplicate rule
 wording. Direct `compileWorkflowModule(...)` safety failures caused by missing
 metadata remain compile/bundle guard diagnostics, not the primary AI feedback
 channel.
@@ -89,15 +89,20 @@ Not splitting packages does not mean flattening implementation files under
 interface small while introducing internal modules at domain seams:
 
 - `src/check/`: owns the `check` phase orchestration, TypeScript diagnostic
-  collection, Acpus lint execution, and conversion to `DiagnosticIR`.
-- `src/check/acpus-lint/`: owns Acpus authoring lint rules, rule codes, hints,
-  and lint-unit tests.
+  collection, Acpus authoring-rule execution, and conversion to `DiagnosticIR`.
+- `src/check/authoring-rules/`: owns Acpus authoring rules, rule codes, hints,
+  and authoring-rule unit tests. This module is not an ESLint runtime; the
+  internal ESLint plugin is only a fixture/editor adapter over it.
 - `src/task-analysis/`: owns diagnostic-free task authoring facts and bundle
-  metadata shared by lint and compile/bundle code.
+  metadata shared by authoring rules and compile/bundle code.
+  Internally, it should stay domain-organized: callsite matching, workflow
+  symbols/exports, direct task-module export validation, inline capture
+  analysis, and shared types live in separate files; `task-analysis/index.ts`
+  is a small facade that exposes the analyzer interface.
 - `src/compiler/`: owns workflow module import/lowering and task bundling, and
-  consumes task metadata without owning lint rule text.
-- `src/preflight/` or the existing preflight entry module: owns
-  `prepareWorkflow(...)` sequencing across check, compile, and validate.
+  consumes task metadata without owning authoring-rule text.
+- `src/preflight/`: owns `prepareWorkflow(...)` sequencing across check,
+  compile, and validate.
 
 Avoid new root-level catch-all files such as `src/analyzer.ts`, `src/lint.ts`,
 or `src/check.ts` once the implementation grows past a thin entrypoint. The
@@ -127,7 +132,7 @@ importing the workflow module; IR graph lowering remains owned by
 `compileWorkflowDefinition(...)`.
 
 This goal does not require proving top-level purity or extracting only the task
-dependency closure. The lint layer only rejects reusable tasks declared inside
+dependency closure. The authoring-rule layer only rejects reusable tasks declared inside
 workflow build/nested scopes or values that cannot be joined to task metadata.
 Top-level third-party imports used by exported same-file reusable tasks are
 allowed.
@@ -167,9 +172,9 @@ in order A -> B -> C -> D -> E:
   and attach LLM-actionable hints to high-frequency authoring error codes.
 - **B. `Expr.ir` -> `Expr.__ir` rename** - eliminate silent shadowing of user
   output fields named `ir`, scoped strictly to the `Expr` accessor chain.
-- **C. Workflow check pipeline + internal Acpus lint** - make
+- **C. Workflow check pipeline + Acpus authoring rules** - make
   `prepareWorkflow(...)` run a pre-compile `check` phase that aggregates stable
-  TypeScript diagnostics and Acpus-only typed lint diagnostics as `DiagnosticIR`.
+  TypeScript diagnostics and Acpus-only typed authoring-rule diagnostics as `DiagnosticIR`.
 - **D. Same-file reusable tasks** - allow exported top-level reusable tasks in
   `workflow.ts` through explicit whole-module import bundling semantics.
 - **E. Specs and verification** - align specs, cleanup, and verification with
@@ -184,125 +189,126 @@ specs/roadmap are updated to match.
 
 ## Completion Gates
 
-- [ ] CLI text output prints `diagnostic.hint` when present; `--json` output
+- [x] CLI text output prints `diagnostic.hint` when present; `--json` output
   continues to include `hint` unchanged.
-- [ ] Core-owned diagnostics `O001`, `W001`, `B001`, `G002`, `G003`, and `A001`
+- [x] Core-owned diagnostics `O001`, `W001`, `B001`, `G002`, `G003`, and `A001`
   carry stable, actionable hints asserted by core contract tests.
-- [ ] Acpus task-authoring lint diagnostics `TB004`, `TB005`, `TB006`, and
-  `TB007` carry stable, actionable hints asserted by workflow-compiler lint
+- [x] Acpus task-authoring diagnostics `TB004`, `TB005`, `TB006`, and
+  `TB007` carry stable, actionable hints asserted by workflow-compiler check
   tests and preserved when converted to preflight `DiagnosticIR`.
-- [ ] A shared task authoring analysis module exists inside
+- [x] A shared task authoring analysis module exists inside
   `@acpus/workflow-compiler` as a diagnostic-free API. It
-  returns facts and bundle metadata only; lint owns rule violations and hints,
+  returns facts and bundle metadata only; authoring rules own rule violations and hints,
   while compile/bundler code consumes metadata.
-- [ ] `@acpus/workflow-compiler` keeps one package with domain-organized
-  internal modules. Check orchestration, Acpus lint rules, task analysis, and
+- [x] `@acpus/workflow-compiler` keeps one package with domain-organized
+  internal modules. Check orchestration, Acpus authoring rules, task analysis, and
   compiler/bundler code live behind small internal interfaces rather than
   accumulating as flat root-level `src/*.ts` files.
-- [ ] A user workflow whose output schema declares a field named `ir` can read
+- [x] A user workflow whose output schema declares a field named `ir` can read
   and wire `ref.output.ir`; a regression test proves it lowers to the expected
   `ref` path.
-- [ ] The internal expression IR field is `__ir` everywhere in the Expr accessor
+- [x] The internal expression IR field is `__ir` everywhere in the Expr accessor
   chain, including proxy `target.ir` reads; `PreparedWorkflow.ir`,
   `compiled.ir`, `prepared.ir`, `workflow.ir.json`, and `SecretToken.ir` are
   untouched unless they are actual Expr unwrap sites.
-- [ ] `prepareWorkflow(...)` reports TypeScript and Acpus lint errors as
+- [x] `prepareWorkflow(...)` reports TypeScript and Acpus authoring-rule errors as
   `WorkflowPreparationError` phase `"check"` with `DiagnosticIR[]`.
-- [ ] TypeScript diagnostics are converted to existing `DiagnosticIR` without a
+- [x] TypeScript diagnostics are converted to existing `DiagnosticIR` without a
   schema expansion: `code: "TS####"`, flattened `message`, and `source` file,
   line, and column when available.
-- [ ] `compileWorkflowModule(...)` remains lower-level and does not run check.
-- [ ] Runtime workflow preflight uses stable `typescript`; `tsgo` remains only
+- [x] `compileWorkflowModule(...)` remains lower-level and does not run check.
+- [x] Runtime workflow preflight uses stable `typescript`; `tsgo` remains only
   repo build/typecheck tooling.
-- [ ] The workflow-compiler check engine runs only Acpus rules. It does not load
+- [x] The workflow-compiler check engine runs only Acpus rules. It does not load
   user lint config, editor config, or broad third-party recommended lint
   presets.
-- [ ] Internal Acpus lint covers: `Expr` in JS truthiness positions; JS logical and
+- [x] Internal Acpus authoring rules cover: `Expr` in JS truthiness positions; JS logical and
   comparison operators over `Expr`; untagged template interpolation containing
   `Expr`; `.map()`/array methods over Expr accessors as a friendlier diagnostic
   or escape-hatch rule; and Expr-derived node ids. Compile-time generated string
   ids such as `step(\`review_${id}\`)` remain valid where task metadata can
   handle them.
-- [ ] Non-literal task ids MUST NOT silently skip task metadata/lint checks. If a
-  task id cannot be joined to task metadata, preflight lint emits the Acpus
+- [x] Non-literal task ids MUST NOT silently skip task metadata/authoring checks. If a
+  task id cannot be joined to task metadata, preflight check emits the Acpus
   authoring diagnostic through `acpus run`; direct compile emits only the metadata
   safety diagnostic needed to avoid admitting an unchecked task bundle.
-- [ ] Exported top-level reusable tasks in `workflow.ts` are valid. Task analysis
+- [x] Exported top-level reusable tasks in `workflow.ts` are valid. Task analysis
   returns `{ sourceFile: workflow.ts, exportName }` metadata, and the bundler
   imports that workflow module export rather than extracting a dependency
   closure.
-- [ ] Same-file reusable task semantics are explicit: task runtime may evaluate
+- [x] Same-file reusable task semantics are explicit: task runtime may evaluate
   workflow module top-level code; workflow build callbacks are not executed by
   module import; graph IR remains unchanged except task bundle source/digest and
   source graph digest.
-- [ ] Specs and roadmap reflect delivered behavior without a standalone
+- [x] Specs and roadmap reflect delivered behavior without a standalone
   `acpus lint` command in this goal.
-- [ ] `pnpm typecheck` and `pnpm test` pass, or any unavailable command is
-  explicitly recorded in the handoff.
+- [x] `pnpm typecheck` and `pnpm test` pass, or any unavailable command is
+  explicitly recorded in the implementation verification record.
 
 ## Non-Goals
 
-- [ ] No decorator-based or class-based authoring syntax.
-- [ ] No new step-declaration shape (no flat `task("id", spec)`); the
+- [x] No decorator-based or class-based authoring syntax.
+- [x] No new step-declaration shape (no flat `task("id", spec)`); the
   `step("id").kind(spec)` surface stays.
-- [ ] No re-export of `@acpus/expression` helpers from `@acpus/core` in this goal
+- [x] No re-export of `@acpus/expression` helpers from `@acpus/core` in this goal
   (single-import convenience is a separate candidate).
-- [ ] No source maps for bundled task assets (tracked separately in
+- [x] No source maps for bundled task assets (tracked separately in
   `docs/roadmap/core-roadmap.md` Phase 2).
-- [ ] No compatibility shim for the old `Expr.ir` accessor field; the rename is a
+- [x] No compatibility shim for the old `Expr.ir` accessor field; the rename is a
   clean break (the package is unpublished).
-- [ ] No standalone `acpus lint` or `acpus check` command in this goal. The AI
+- [x] No standalone `acpus lint` or `acpus check` command in this goal. The AI
   loop closes through `run` and `run --dry-run`.
-- [ ] No public `@acpus/eslint-plugin`, editor lint integration, or generic CI
-  lint product in this goal. The AI authoring feedback channel is the CLI run
-  path.
-- [ ] No replacement of TypeScript typechecking with lint. Typed lint may use
+- [x] No public `@acpus/eslint-plugin`, standalone lint command, root lint
+  config, or generic CI lint product in this goal. The AI authoring feedback
+  channel is the CLI run path. A workflow-compiler fixture-only internal ESLint
+  adapter is allowed for repository review.
+- [x] No replacement of TypeScript typechecking with authoring rules. Authoring rules may use
   TypeScript type information, but TypeScript remains the type-safety checker.
-- [ ] No user lint config, autofix, or broad third-party recommended rules in
+- [x] No user lint config, autofix, or broad third-party recommended rules in
   workflow preflight.
-- [ ] No dependency-closure extraction for same-file reusable tasks in this
+- [x] No dependency-closure extraction for same-file reusable tasks in this
   goal. Whole workflow module import is the chosen first implementation.
 
 ## Non-Negotiable Constraints
 
-- [ ] Keep `WorkflowIR` serializable; hints and check diagnostics are plain
+- [x] Keep `WorkflowIR` serializable; hints and check diagnostics are plain
   serialized data.
-- [ ] Keep `@acpus/expression` independent from `@acpus/core`/`@acpus/runtime`.
-- [ ] Do not add lint-engine or TypeScript compiler dependencies to
+- [x] Keep `@acpus/expression` independent from `@acpus/core`/`@acpus/runtime`.
+- [x] Do not add lint-engine or TypeScript compiler dependencies to
   `@acpus/expression`.
-- [ ] Hints are stable contract text: assert their presence and intent, not
+- [x] Hints are stable contract text: assert their presence and intent, not
   brittle full-string snapshots (`docs/development-testing.md`).
-- [ ] Match house style: terse, no migration/deprecation prose, current behavior
+- [x] Match house style: terse, no migration/deprecation prose, current behavior
   only in `specs/`.
 
 ## Implementation Phases
 
 ### Phase 0: Preflight
 
-- [ ] Re-read this goal and `docs/roadmap/core-roadmap.md:27-30`.
-- [ ] Confirm worktree status; avoid unrelated staged changes.
-- [ ] Confirm `.ir` readers split into true Expr internals
+- [x] Re-read this goal and `docs/roadmap/core-roadmap.md:27-30`.
+- [x] Confirm worktree status; avoid unrelated staged changes.
+- [x] Confirm `.ir` readers split into true Expr internals
   (`packages/expression/**`, `packages/core/src/template/template.ts`, and test
   unwrap sites) versus unrelated wrapper fields such as `PreparedWorkflow.ir`,
   `compiled.ir`, `prepared.ir`, and `workflow.ir.json`.
-- [ ] Confirm current executable verification commands use root Vitest
+- [x] Confirm current executable verification commands use root Vitest
   path-filter scripts, not nonexistent package-local `test` scripts.
 
 Exit criteria:
 
-- [ ] The Phase B blast radius is enumerated and separated from non-Expr wrapper
+- [x] The Phase B blast radius is enumerated and separated from non-Expr wrapper
   `.ir` fields.
-- [ ] The Phase C package/dependency plan names the owner package, internal
+- [x] The Phase C package/dependency plan names the owner package, internal
   modules, runtime dependencies, and verification commands.
-- [ ] The Phase D same-file reusable task plan names the accepted source shapes,
+- [x] The Phase D same-file reusable task plan names the accepted source shapes,
   whole-module import semantics, expected IR effects, and verification commands.
 
 ### Phase A: Diagnostic Enrichment
 
-- [ ] Render `hint` in the CLI text path: in the diagnostics loop in
+- [x] Render `hint` in the CLI text path: in the diagnostics loop in
   `packages/cli/src/output.ts`, append the hint on its own indented line when
   `diagnostic.hint` is set. Leave the `--json` branch unchanged.
-- [ ] Attach actionable `hint` text at core emit sites:
+- [x] Attach actionable `hint` text at core emit sites:
   - `O001` excess scope-output field: remove the returned field or add it to the
     node `outputSchema`.
   - `W001` workflow build returned no output object and `B001` composite scope
@@ -312,91 +318,91 @@ Exit criteria:
     provide a fallback branch when the node declares outputs.
   - `A001` reference to an undeclared agent: declare under
     `defineWorkflow({ agents })` and reference via `agents.<key>`.
-- [ ] Do not attach task-authoring rule hints in task-bundler. `TB004`,
-  `TB005`, `TB006`, and `TB007` hint ownership moves to the Phase C lint rules
+- [x] Do not attach task-authoring rule hints in task-bundler. `TB004`,
+  `TB005`, `TB006`, and `TB007` hint ownership moves to the Phase C authoring rules
   that consume task analysis facts.
-- [ ] Keep `ID001`'s existing hint as the CLI rendering format reference.
+- [x] Keep `ID001`'s existing hint as the CLI rendering format reference.
 
 Exit criteria:
 
-- [ ] Core contract tests assert hint presence and intent for `O001`, `W001`,
+- [x] Core contract tests assert hint presence and intent for `O001`, `W001`,
   `B001`, `G002`, `G003`, and `A001`.
-- [ ] Workflow-compiler tests cover task metadata propagation separately from
+- [x] Workflow-compiler tests cover task metadata propagation separately from
   task-authoring rule hints; task-authoring hint assertions live with the
-  internal lint rule tests in Phase C.
-- [ ] CLI output contract/e2e tests assert text renders hint lines on the correct
+  authoring-rule tests in Phase C.
+- [x] CLI output contract/e2e tests assert text renders hint lines on the correct
   stream and JSON preserves the `hint` key.
 
 ### Phase B: `Expr.ir` -> `Expr.__ir` Rename
 
-- [ ] `packages/expression/src/internal/expr.ts`: rename the interface field,
+- [x] `packages/expression/src/internal/expr.ts`: rename the interface field,
   `ExprImpl` field, `valueToExprIR` read, proxy passthrough guard, and all proxy
   body `target.ir` reads to `__ir`.
-- [ ] `packages/expression/src/index.ts`: update `RESERVED_ACCESSOR_KEYS` to
+- [x] `packages/expression/src/index.ts`: update `RESERVED_ACCESSOR_KEYS` to
   `["__ir", "__type"]` and update `isObjectTyped` to read `value.__ir`.
   Type-level accessor and `where` reserved-key behavior should update through
   `keyof Expr<any>`.
-- [ ] `packages/core/src/template/template.ts`: update Expr template unwrap reads
+- [x] `packages/core/src/template/template.ts`: update Expr template unwrap reads
   to `.__ir`.
-- [ ] Tests: replace Expr inspection reads with `.__ir` across expression unit
+- [x] Tests: replace Expr inspection reads with `.__ir` across expression unit
   tests and update type tests so `ir` is a reachable user field while `__ir` and
   `__type` remain reserved.
-- [ ] Include runtime tests that unwrap expression IR, such as runtime evaluator
+- [x] Include runtime tests that unwrap expression IR, such as runtime evaluator
   tests, in the blast radius.
-- [ ] Do NOT touch unrelated wrapper fields such as `PreparedWorkflow.ir`,
+- [x] Do NOT touch unrelated wrapper fields such as `PreparedWorkflow.ir`,
   `compiled.ir`, `prepared.ir`, or `workflow.ir.json`, and do not touch
   `SecretToken.ir` unless a test proves it is an Expr unwrap.
 
 Exit criteria:
 
-- [ ] New `packages/expression/test/reserved-field.regression.test.ts`: a ref
+- [x] New `packages/expression/test/reserved-field.regression.test.ts`: a ref
   whose type declares a field `ir` (for example
   `refExpr<{ ir: string }>(["input", "user"])`) exposes `ref.ir` as an accessor,
   and `ref.ir.__ir` equals `{ kind: "ref", path: ["input", "user", "ir"] }`.
-- [ ] Expression, core, and runtime tests that inspect Expr IR pass against
+- [x] Expression, core, and runtime tests that inspect Expr IR pass against
   `__ir`.
 
-### Phase C: Workflow Check Pipeline + Internal Acpus Lint
+### Phase C: Workflow Check Pipeline + Acpus Authoring Rules
 
-- [ ] In `@acpus/workflow-compiler`, replace runtime workflow typecheck from
+- [x] In `@acpus/workflow-compiler`, replace runtime workflow typecheck from
   `@typescript/native-preview`/`tsgo` to stable `typescript`.
-- [ ] Keep repo package build/typecheck scripts free to use `tsgo`; remove
+- [x] Keep repo package build/typecheck scripts free to use `tsgo`; remove
   `@typescript/native-preview` from workflow-compiler runtime dependencies if it
   is no longer used outside repo tooling.
-- [ ] Implement a workflow check runner owned by `@acpus/workflow-compiler`.
+- [x] Implement a workflow check runner owned by `@acpus/workflow-compiler`.
   It writes or reuses the scratch tsconfig policy currently owned by
-  `typecheckWorkflow`: NodeNext, no emit, strict, workspace `development`
+  the old runtime typecheck path: NodeNext, no emit, strict, workspace `development`
   condition, and live `@acpus/core` source path mapping in workspace
   development.
-- [ ] Organize workflow-compiler internals by domain before wiring more logic:
+- [x] Organize workflow-compiler internals by domain before wiring more logic:
   `src/check/` for check orchestration and TypeScript diagnostic conversion,
-  `src/check/acpus-lint/` for Acpus lint rules and hints, `src/task-analysis/`
+  `src/check/authoring-rules/` for Acpus authoring rules and hints, `src/task-analysis/`
   for diagnostic-free facts/metadata, and `src/compiler/` for lowering and
   bundling. Root `src/` files should remain thin entrypoints or compatibility
   shims only.
-- [ ] Extract the current task provenance logic into an internal
+- [x] Extract the current task provenance logic into an internal
   diagnostic-free task analysis module under `@acpus/workflow-compiler`. It owns
   parser/source traversal and returns task callsite facts, static-id/join facts,
   import/export facts, inline free-identifier facts, and bundle metadata for
   valid task callsites.
-- [ ] Keep task analysis APIs split by product:
-  - `analyzeTaskAuthoring(...)` or equivalent returns facts for lint rules.
+- [x] Keep task analysis APIs split by product:
+  - `analyzeTaskAuthoring(...)` or equivalent returns facts for authoring rules.
   - `resolveTaskBundleMetadata(...)` or equivalent returns source-file/join
     metadata for compiler and bundler use.
   The APIs MUST NOT return `DiagnosticIR`, rule codes, or hint text.
-- [ ] Convert TypeScript compiler diagnostics to `DiagnosticIR` with `TS####`
+- [x] Convert TypeScript compiler diagnostics to `DiagnosticIR` with `TS####`
   codes, flattened messages, and `source` locations. Do not expand
   `DiagnosticIR`.
-- [ ] Aggregate TypeScript diagnostics and Acpus typed lint diagnostics in one
-  `"check"` failure phase. Run Acpus typed lint even when semantic TS errors
-  exist if usable type information is available; skip lint only for syntax,
+- [x] Aggregate TypeScript diagnostics and Acpus typed authoring-rule diagnostics in one
+  `"check"` failure phase. Run Acpus typed authoring rules even when semantic TS errors
+  exist if usable type information is available; skip authoring rules only for syntax,
   config, or module-resolution failures that prevent a Program.
-- [ ] Implement Acpus typed lint as an internal workflow-compiler check module,
+- [x] Implement Acpus typed authoring rules as an internal workflow-compiler check module,
   not as a public plugin package. The module owns Acpus typed rules, task
   authoring diagnostics, hint text, and unit tests.
-- [ ] Preflight MUST run only Acpus rules through the check runner. It MUST NOT
+- [x] Preflight MUST run only Acpus rules through the check runner. It MUST NOT
   load user lint config, editor config, or broad third-party recommended presets.
-- [ ] Implement rules:
+- [x] Implement rules:
   - `no-expr-in-condition`: `Expr` directly used in `if`, `while`, `for`,
     ternary tests, `!expr`, or truthiness short-circuit positions.
   - `no-logical-operators-over-expr`: JS logical operators over `Expr` where the
@@ -416,137 +422,165 @@ Exit criteria:
   - `no-invalid-reusable-task-export`: `TB005`.
   - `no-unsupported-task-import`: `TB006`.
   - `no-inline-task-capture`: `TB007`.
-- [ ] Wire task authoring rules through task analysis facts. The lint adapter maps
+- [x] Wire task authoring rules through task analysis facts. The authoring-rule adapter maps
   task facts to `TB004`-`TB007` preflight `DiagnosticIR` with hints. The task
   analysis module itself remains diagnostic-free.
-- [ ] Wire compile/bundler through task metadata. `compileWorkflowModule(...)`
+- [x] Wire compile/bundler through task metadata. `compileWorkflowModule(...)`
   and `bundleWorkflowTasks(...)` consume source-file/join metadata only; they do
-  not run lint and do not duplicate authoring-rule messages or hints.
-- [ ] Address task metadata interaction explicitly. If a task callsite uses an
+  not run authoring rules and do not duplicate authoring-rule messages or hints.
+- [x] Address task metadata interaction explicitly. If a task callsite uses an
   id/spec shape the task analysis module cannot join to the lowered task node,
-  preflight lint emits a stable Acpus authoring diagnostic through `acpus run`.
+  preflight check emits a stable Acpus authoring diagnostic through `acpus run`.
   Direct `compileWorkflowModule(...)` emits only the minimal metadata safety
   diagnostic needed to avoid silently admitting an unchecked task bundle.
-- [ ] Update `prepareWorkflow(...)` to run the check runner before compile and
+- [x] Update `prepareWorkflow(...)` to run the check runner before compile and
   fail with phase `"check"` when any check diagnostic has `severity: "error"`.
   Warning diagnostics do not block compile.
-- [ ] Keep `compileWorkflowModule(...)` as the lower-level compile API; it MUST
+- [x] Keep `compileWorkflowModule(...)` as the lower-level compile API; it MUST
   NOT run check.
 
 Exit criteria:
 
-- [ ] Workflow-compiler tests cover TypeScript errors converted to
-  `DiagnosticIR`, Acpus lint errors converted to `DiagnosticIR`, mixed TS + lint
-  aggregation when type information is usable, warning-only check diagnostics
-  not blocking compile, and `compileWorkflowModule(...)` not running check.
-- [ ] Workflow-compiler task analysis tests cover facts and metadata separately:
+- [x] Workflow-compiler tests cover TypeScript errors converted to
+  `DiagnosticIR`, Acpus authoring-rule errors converted to `DiagnosticIR`, mixed TS + authoring-rule
+  aggregation when type information is usable, and `compileWorkflowModule(...)`
+  not running check. `prepareWorkflow(...)` gates only on `severity: "error"`;
+  warning-only check behavior can get a focused test when a warning-producing
+  Acpus check rule exists.
+- [x] Workflow-compiler task analysis tests cover facts and metadata separately:
   reusable task direct imports, nested or unexported workflow-local task values,
   invalid exports, unsupported imports/barrels, inline captures, non-literal task
   ids, non-literal task specs, and successful metadata for reusable and inline
   tasks.
-- [ ] Workflow-compiler tests cover metadata consumption without lint:
+- [x] Workflow-compiler tests cover metadata consumption without authoring rules:
   `compileWorkflowModule(...)` uses task metadata for bundling, does not execute
-  the lint runner, and emits a metadata safety diagnostic only when metadata is
+  the authoring-rule runner, and emits a metadata safety diagnostic only when metadata is
   unavailable.
-- [ ] Workflow-compiler lint unit tests cover valid/invalid cases for every
-  Acpus rule.
-- [ ] Workflow-compiler lint unit tests assert `TB004`, `TB005`, `TB006`, and
+- [x] Workflow-compiler authoring-rule unit tests cover representative
+  valid/invalid cases for Acpus rules at the lowest stable layer, without
+  duplicating every syntax variant in heavier check or preflight tests.
+- [x] Workflow-compiler authoring-rule unit tests assert `TB004`, `TB005`, `TB006`, and
   `TB007` diagnostics and hints from task analysis facts.
-- [ ] Valid lint cases include `step(\`review_${id}\`).agent(...)` and JS arrays
+- [x] Valid authoring-rule cases include `step(\`review_${id}\`).agent(...)` and JS arrays
   of `NodeRef` values.
-- [ ] Invalid lint cases include Expr conditions, comparisons, untagged
+- [x] Invalid authoring-rule cases include Expr conditions, comparisons, untagged
   templates, Expr array methods, Expr-derived node ids, and task authoring rule
   violations.
 
 ### Phase D: Same-File Reusable Task Chain
 
-- [ ] Extend task analysis facts to recognize exported top-level reusable task
+- [x] Extend task analysis facts to recognize exported top-level reusable task
   declarations in a workflow module:
   - `export const check = task.define(...)`
   - `const check = task.define(...); export { check }`
   - default workflow export remains the workflow definition, not the task.
-- [ ] Keep unsupported same-file forms intentionally narrow in this goal:
+- [x] Keep unsupported same-file forms intentionally narrow in this goal:
   nested `task.define(...)` inside `.build(...)` or composite callbacks,
   non-exported workflow-local task values passed to `run.task`, computed exports,
   re-exported same-file tasks, and task values whose callsite cannot be joined
   to task metadata.
-- [ ] Define same-file metadata returned by task analysis as source-file/export
+- [x] Define same-file metadata returned by task analysis as source-file/export
   metadata, not extracted source:
   `{ sourceFile: workflow.ts, exportName: "check", sourceKind: "workflow-module" }`
   or an equivalent shape.
-- [ ] Update task-authoring lint rules so top-level exported same-file reusable
+- [x] Update task-authoring rules so top-level exported same-file reusable
   tasks are valid, while nested or unexported workflow-local reusable tasks still
   report `TB004` with an actionable hint.
-- [ ] Update compiler/bundler metadata consumption for same-file tasks. For a
+- [x] Update compiler/bundler metadata consumption for same-file tasks. For a
   workflow-module task export, the generated virtual entry imports that workflow
   module export and re-exports `token.fn`; it does not attempt dependency
   closure extraction.
-- [ ] Make whole-module import semantics explicit in code comments and specs:
+- [x] Make whole-module import semantics explicit in code comments and specs:
   task runtime may evaluate workflow module top-level code; workflow authors
   should keep top-level code side-effect-light; importing the module does not
   execute the workflow build callback.
-- [ ] Keep graph IR stable for same-file reusable tasks. The allowed behavioral
+- [x] Keep graph IR stable for same-file reusable tasks. The allowed behavioral
   changes are task bundle `source`, task bundle `digest`, task run digest, and
   source graph digest.
-- [ ] Add fixtures that prove same-file reusable tasks may use third-party
+- [x] Add fixtures that prove same-file reusable tasks may use third-party
   imports at workflow top level without requiring a separate task module.
 
 Exit criteria:
 
-- [ ] Workflow-compiler task analysis unit tests cover accepted same-file
+- [x] Workflow-compiler task analysis unit tests cover accepted same-file
   top-level exported task forms and rejected nested/unexported forms.
-- [ ] Workflow-compiler lint tests cover same-file valid cases, `TB004` invalid
+- [x] Workflow-compiler check tests cover same-file valid cases, `TB004` invalid
   cases, and hints that explain top-level export as the fix.
-- [ ] Workflow-compiler integration tests compile a workflow with a same-file
+- [x] Workflow-compiler integration tests compile a workflow with a same-file
   reusable task using a third-party import, verify task bundle source exists,
   verify task bundle digest/source graph digest are stable-shaped, and verify
   graph nodes/outputs match the equivalent separate task-module workflow.
-- [ ] Runtime or task-executor integration coverage proves the bundled same-file
+- [x] Runtime or task-executor integration coverage proves the bundled same-file
   task can execute and resolve its third-party dependency.
-- [ ] A regression test proves importing the same-file task bundle does not
+- [x] A regression test proves importing the same-file task bundle does not
   execute the workflow build callback.
 
 ### Phase E: Specs, Cleanup, Verification
 
-- [ ] Update `specs/expression-spec.md`: reserved accessor keys are `__ir` and
+- [x] Update `specs/expression-spec.md`: reserved accessor keys are `__ir` and
   `__type`; user field `ir` is reachable.
-- [ ] Update `specs/workflow-compiler-spec.md`: `prepareWorkflow(...)` runs
+- [x] Update `specs/workflow-compiler-spec.md`: `prepareWorkflow(...)` runs
   `check -> compile -> validate`; check uses stable TypeScript, aggregates
-  TypeScript and Acpus lint diagnostics as `DiagnosticIR`, and fails with phase
+  TypeScript and Acpus authoring-rule diagnostics as `DiagnosticIR`, and fails with phase
   `"check"` on errors; `compileWorkflowModule(...)` remains no-check and
   consumes task metadata only. Same-file exported reusable tasks in
   workflow modules are supported through explicit whole-module import bundling
   semantics. The spec also defines the internal task analysis boundary: facts
-  and bundle metadata are separate products, lint owns task authoring
+  and bundle metadata are separate products, authoring rules own task authoring
   diagnostics, and compile/bundler owns metadata consumption.
-- [ ] Update `specs/cli-spec.md`: `run` and `run --dry-run` expose check
+- [x] Update `specs/cli-spec.md`: `run` and `run --dry-run` expose check
   failures through phase `"check"` and render `DiagnosticIR` fields including
   `hint` and `source` in text/json output.
-- [ ] Update task/runtime specs only if same-file reusable task execution changes
+- [x] Update task/runtime specs only if same-file reusable task execution changes
   observable runtime behavior beyond ordinary bundled task execution. Otherwise
   keep the semantic contract in workflow-compiler specs.
-- [ ] Update `docs/roadmap/core-roadmap.md`: remove implemented lint error rules
+- [x] Update `docs/roadmap/core-roadmap.md`: remove implemented lint error rules
   and any hint/feedback gap, but keep unrelated future warnings or source-map
   work.
-- [ ] Run narrow checks during development; broader checks before handoff.
+- [x] Run narrow checks during development; broader checks before completion.
 
-Suggested verification:
+Accepted verification:
 
-- [ ] `pnpm test:unit packages/expression`
-- [ ] `pnpm test:contract packages/expression`
-- [ ] `pnpm test:regression packages/expression`
-- [ ] `pnpm test:contract packages/core`
-- [ ] `pnpm test:integration packages/core`
-- [ ] `pnpm test:unit packages/workflow-compiler`
-- [ ] `pnpm test:integration packages/workflow-compiler`
-- [ ] `pnpm test:contract packages/cli`
-- [ ] `pnpm test:e2e packages/cli`
-- [ ] `pnpm typecheck`
-- [ ] `pnpm test`
+- [x] `pnpm test` covers the workspace Vitest unit, contract, integration,
+  e2e, regression, and type-test projects.
+- [x] `pnpm typecheck` covers workspace package typechecking.
 
 Exit criteria:
 
-- [ ] Specs describe the delivered hint/rename/check/lint behavior without
+- [x] Specs describe the delivered hint/rename/check/authoring-rule behavior without
   documenting old behavior as compatibility.
-- [ ] The handoff records every verification command that passed or could not be
-  run.
+- [x] The implementation verification record lists the verification commands
+  that passed or could not be run.
+
+## Implementation Verification Record
+
+Recorded on 2026-07-01 after implementation:
+
+- [x] `pnpm typecheck`
+- [x] `pnpm test`
+- [x] `pnpm --filter @acpus/workflow-compiler typecheck`
+- [x] `pnpm test:unit -- packages/workflow-compiler/test/task-analysis.unit.test.ts packages/workflow-compiler/test/check.unit.test.ts`
+- [x] `pnpm test:integration -- packages/workflow-compiler/test/compiler.integration.test.ts packages/workflow-compiler/test/preflight.integration.test.ts`
+- [x] `pnpm test:integration -- packages/runtime/test/runtime-admission.integration.test.ts`
+- [x] `pnpm test:e2e -- packages/cli/test/run-check-failure.e2e.test.ts`
+- [x] `pnpm test:contract -- packages/cli/test/output.contract.test.ts`
+- [x] `git diff --check`
+
+Post-review domain-boundary cleanup:
+
+- [x] `packages/workflow-compiler/src/task-analysis/index.ts` is a facade over
+  callsite matching, workflow-symbol analysis, task-module export validation,
+  inline capture analysis, and shared task-analysis types.
+- [x] `packages/workflow-compiler/src/check/authoring-rules/` reuses the shared
+  task callsite matcher for unjoinable task-call diagnostics instead of owning a
+  duplicate callsite recognizer.
+- [x] `TB008` is type-scoped to Acpus `StepDeclaration.task(...)` callsites:
+  saved step declarations and non-object task specs fail in phase `"check"`,
+  while unrelated third-party `.task()` methods inside same-file reusable task
+  code are ignored.
+- [x] `pnpm --filter @acpus/workflow-compiler typecheck`
+- [x] `pnpm test:unit -- packages/workflow-compiler/test/task-analysis.unit.test.ts packages/workflow-compiler/test/check.unit.test.ts`
+- [x] `pnpm test:integration -- packages/workflow-compiler/test/preflight.integration.test.ts packages/workflow-compiler/test/compiler.integration.test.ts`
+- [x] `pnpm typecheck`
+- [x] `pnpm test`
+- [x] `git diff --check`

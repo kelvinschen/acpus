@@ -77,8 +77,13 @@ test("authoring helpers reject unknown values where static typing can prove it",
   get(refExpr<{ name: string }>(["input", "user"]), "name");
   // @ts-expect-error pick is accessor projection sugar, not object literal projection.
   pick({ name: "Ada" }, ["name"]);
-  // @ts-expect-error pick cannot project reserved expression token properties.
-  pick(refExpr<{ ir: string }>(["input", "user"]), ["ir"]);
-  // @ts-expect-error accessor token property .ir is reserved for expression IR inspection.
-  assertType<Expr<string>>(refExpr<{ ir: string }>(["input", "user"]).ir);
+  assertType<OutputAccessor<string>>(pick(refExpr<{ ir: string }>(["input", "user"]), ["ir"]).ir);
+  assertType<OutputAccessor<string>>(refExpr<{ ir: string }>(["input", "user"]).ir);
+  assertType<Expr<boolean>>(where(refExpr<{ ir: string }>(["input", "user"]), { ir: "ok" }));
+  // @ts-expect-error pick cannot project reserved expression token internals.
+  pick(refExpr<{ __ir: string }>(["input", "user"]), ["__ir"]);
+  // @ts-expect-error where cannot filter reserved expression token internals.
+  where(refExpr<{ __ir: string }>(["input", "user"]), { __ir: "ok" });
+  // @ts-expect-error accessor token property .__ir is reserved for expression IR inspection.
+  assertType<Expr<string>>(refExpr<{ __ir: string }>(["input", "user"]).__ir);
 });

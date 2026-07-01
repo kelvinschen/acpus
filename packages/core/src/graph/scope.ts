@@ -42,7 +42,12 @@ export function buildImplicitScope<Extra extends object>(
 ): ScopeIR {
   const result = fn({ step: child.step, ...extra });
   if (!isOutputObject(result)) {
-    diagnostics.push({ code: "B001", severity: "error", message: "Composite scope must return an output object." });
+    diagnostics.push({
+      code: "B001",
+      severity: "error",
+      message: "Composite scope must return an output object.",
+      hint: "Return a plain object from the composite callback, for example return { result: value }.",
+    });
     return { nodes: child.nodes };
   }
   return { nodes: child.nodes, outputs: bindingsToIR(result) };

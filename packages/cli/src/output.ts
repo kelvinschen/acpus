@@ -2,7 +2,7 @@ import type { Writable } from "node:stream";
 import type { DiagnosticIR, WorkflowIR } from "@acpus/core/ir";
 import type { ReplayResult, RunDetails, RunRecord, RuntimeCommandRecord } from "@acpus/runtime";
 
-export type ResultPhase = "usage" | "typecheck" | "compile" | "validate" | "dry-run" | "admit" | "inspect";
+export type ResultPhase = "usage" | "check" | "compile" | "validate" | "dry-run" | "admit" | "inspect";
 
 export type WorkflowSummary = {
   name: string;
@@ -23,7 +23,6 @@ export type CliResult = {
   message?: string;
   workflow?: WorkflowSummary;
   diagnostics?: DiagnosticIR[];
-  typecheck?: { exitCode: number | null; stdout: string; stderr: string };
   preflightDir?: string;
   irDigest?: string;
   taskBundleCount?: number;
@@ -87,13 +86,11 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
   if (result.command) stream.write(`Command: ${result.command.id}\t${result.command.type}\t${result.command.status}\n`);
   if (result.irDigest) stream.write(`IR digest: ${result.irDigest}\n`);
   if (result.taskBundleCount !== undefined) stream.write(`Task bundles: ${result.taskBundleCount}\n`);
-  if (result.typecheck) {
-    if (result.typecheck.stdout) stream.write(`\n${result.typecheck.stdout}`);
-    if (result.typecheck.stderr) stream.write(`\n${result.typecheck.stderr}`);
-  }
   if (result.diagnostics?.length) {
     for (const diagnostic of result.diagnostics) {
       stream.write(`[${diagnostic.severity}] ${diagnostic.code}${diagnostic.path ? ` ${diagnostic.path}` : ""}: ${diagnostic.message}\n`);
+      if (diagnostic.source) stream.write(`  source: ${diagnostic.source.file}:${diagnostic.source.line}:${diagnostic.source.column}\n`);
+      if (diagnostic.hint) stream.write(`  hint: ${diagnostic.hint}\n`);
     }
   }
   return exitCode;

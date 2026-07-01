@@ -65,11 +65,11 @@ describe("runtime expression evaluator", () => {
       summary: { matches: "ready" },
     });
 
-    expect(evaluateExpr(expr.ir, {
+    expect(evaluateExpr(expr.__ir, {
       input: {},
       nodes: { review: { output: { issues: [], tag: "ready", summary: "ready to ship" } } },
     })).toBe(true);
-    expect(evaluateExpr(expr.ir, {
+    expect(evaluateExpr(expr.__ir, {
       input: {},
       nodes: { review: { output: { issues: ["blocked"], tag: "ready", summary: "ready to ship" } } },
     })).toBe(false);

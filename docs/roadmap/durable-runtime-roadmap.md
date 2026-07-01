@@ -84,7 +84,7 @@
 
 #### Runtime admission
 
-当前实现：`acpus run <workflow-module>` 已从 dry-run-only 变为可 durable admission。admission 会 typecheck、compile、validate、normalize input，写 `.acpus/state/runtime.db` 和 `.acpus/runs/<run-id>/`。`--dry-run` 为显式 opt-in，仅产出 preflight artifact 不开 store。
+当前实现：`acpus run <workflow-module>` 已从 dry-run-only 变为可 durable admission。admission 会 check、compile、validate、normalize input，写 `.acpus/state/runtime.db` 和 `.acpus/runs/<run-id>/`。`--dry-run` 为显式 opt-in，仅产出 preflight artifact 不开 store。
 
 证据：`packages/cli/src/commands/run.ts`, `packages/cli/src/workflow-preparation.ts`, `packages/runtime/src/store/store.ts` (`admitRun`), `packages/runtime/src/admission/input.ts`, `packages/runtime/src/runs/use-cases.ts` (`admitWorkflowRun`), `packages/workflow-compiler/src/preflight.ts`（dry-run 专用）
 
@@ -1250,7 +1250,7 @@ legacy / 期望能力：legacy 有 bounded node storage key 和 `node-index.json
 
 主要交付件：按 runtime area 拆 e2e/integration；保留高价值 cross-layer tests。
 
-**审计新增：** 测试已按 package 拆分为 `unit`/`contract`/`integration`/`e2e`/`type-contract` vitest projects。Runtime 测试按 admission/controls/evaluator/scheduler/supervisor/lease 分文件；CLI E2E 拆分为 run-admit、run-typecheck-failure、run-validate-failure、runs-inspect、runs-signal、supervisor 等 focused 文件。总计约 34 个测试文件。剩余工作：确保覆盖不降低，持续保持分层。
+**审计新增：** 测试已按 package 拆分为 `unit`/`contract`/`integration`/`e2e`/`type-contract` vitest projects。Runtime 测试按 admission/controls/evaluator/scheduler/supervisor/lease 分文件；CLI E2E 拆分为 run-admit、run-check-failure、run-validate-failure、runs-inspect、runs-signal、supervisor 等 focused 文件。总计约 34 个测试文件。剩余工作：确保覆盖不降低，持续保持分层。
 
 依赖/风险：拆测试不应降低覆盖。
 

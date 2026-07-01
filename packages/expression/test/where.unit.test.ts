@@ -5,7 +5,7 @@ import { refExpr } from "@acpus/expression/ir";
 describe("where v2", () => {
   it("lowers field-wise object filters", () => {
     const item = refExpr<{ status: string; score: number }>(["input", "item"]);
-    expect(where(item, { status: "done", score: { gte: 80 } }).ir).toEqual({
+    expect(where(item, { status: "done", score: { gte: 80 } }).__ir).toEqual({
       kind: "call",
       fn: "and",
       args: [
@@ -25,9 +25,23 @@ describe("where v2", () => {
     expect(() => (where as any)(item, { eq: "x" })).toThrow("where(target, filter) cannot use reserved filter key 'eq'.");
   });
 
+  it("allows field filters named ir and keeps __ir reserved", () => {
+    const item = refExpr<{ ir: string; __ir: string }>(["input", "item"]);
+
+    expect(where(item, { ir: "ok" }).__ir).toEqual({
+      kind: "call",
+      fn: "eq",
+      args: [
+        { kind: "ref", path: ["input", "item", "ir"] },
+        { kind: "literal", value: "ok" },
+      ],
+    });
+    expect(() => (where as any)(item, { __ir: "internal" })).toThrow("where(target, filter) cannot use reserved filter key '__ir'.");
+  });
+
   it("lowers primitive eq filters", () => {
     const status = refExpr<string>(["input", "status"]);
-    expect(where(status, { eq: "done" }).ir).toEqual({
+    expect(where(status, { eq: "done" }).__ir).toEqual({
       kind: "call",
       fn: "eq",
       args: [
@@ -39,7 +53,7 @@ describe("where v2", () => {
 
   it("lowers nullable equality filters", () => {
     const user = refExpr<{ deletedAt: string | null }>(["input", "user"]);
-    expect(where(user, { deletedAt: null }).ir).toEqual({
+    expect(where(user, { deletedAt: null }).__ir).toEqual({
       kind: "call",
       fn: "eq",
       args: [
@@ -47,7 +61,7 @@ describe("where v2", () => {
         { kind: "literal", value: null },
       ],
     });
-    expect(where(refExpr<string | null>(["input", "name"]), null).ir).toEqual({
+    expect(where(refExpr<string | null>(["input", "name"]), null).__ir).toEqual({
       kind: "call",
       fn: "eq",
       args: [
@@ -59,24 +73,24 @@ describe("where v2", () => {
 
   it("lowers primitive and length filters", () => {
     const tags = refExpr<readonly string[]>(["input", "tags"]);
-    expect(where(tags, { length: { gt: 0 }, contains: "ready" }).ir).toEqual({
+    expect(where(tags, { length: { gt: 0 }, contains: "ready" }).__ir).toEqual({
       kind: "call",
       fn: "and",
       args: [
-        { kind: "call", fn: "gt", args: [{ kind: "call", fn: "len", args: [tags.ir] }, { kind: "literal", value: 0 }] },
-        { kind: "call", fn: "includes", args: [tags.ir, { kind: "literal", value: "ready" }] },
+        { kind: "call", fn: "gt", args: [{ kind: "call", fn: "len", args: [tags.__ir] }, { kind: "literal", value: 0 }] },
+        { kind: "call", fn: "includes", args: [tags.__ir, { kind: "literal", value: "ready" }] },
       ],
     });
   });
 
   it("lowers array equality operator filters", () => {
     const tags = refExpr<readonly string[]>(["input", "tags"]);
-    expect(where(tags, { eq: ["ready"], ne: ["blocked"] }).ir).toEqual({
+    expect(where(tags, { eq: ["ready"], ne: ["blocked"] }).__ir).toEqual({
       kind: "call",
       fn: "and",
       args: [
-        { kind: "call", fn: "eq", args: [tags.ir, { kind: "array", items: [{ kind: "literal", value: "ready" }] }] },
-        { kind: "call", fn: "ne", args: [tags.ir, { kind: "array", items: [{ kind: "literal", value: "blocked" }] }] },
+        { kind: "call", fn: "eq", args: [tags.__ir, { kind: "array", items: [{ kind: "literal", value: "ready" }] }] },
+        { kind: "call", fn: "ne", args: [tags.__ir, { kind: "array", items: [{ kind: "literal", value: "blocked" }] }] },
       ],
     });
   });
@@ -88,14 +102,14 @@ describe("where v2", () => {
 
   it("lowers computed and lambda primitive filters", () => {
     const tags = refExpr<readonly string[]>(["input", "tags"]);
-    expect(where(len(tags), { gt: 0 }).ir).toEqual({
+    expect(where(len(tags), { gt: 0 }).__ir).toEqual({
       kind: "call",
       fn: "gt",
-      args: [{ kind: "call", fn: "len", args: [tags.ir] }, { kind: "literal", value: 0 }],
+      args: [{ kind: "call", fn: "len", args: [tags.__ir] }, { kind: "literal", value: 0 }],
     });
 
     const items = refExpr<readonly { name: string }[]>(["input", "items"]);
-    expect(map(items, item => where(item.name, { contains: "x" })).ir).toMatchObject({
+    expect(map(items, item => where(item.name, { contains: "x" })).__ir).toMatchObject({
       kind: "call",
       fn: "map",
       args: [

@@ -1,5 +1,5 @@
 import { writeFile } from "node:fs/promises";
-import { compileWorkflowModule } from "./compiler/module.js";
+import { compileWorkflowModule } from "./module.js";
 
 const [entry, sourcePath, out, cwd, conditionsJson] = process.argv.slice(2);
 

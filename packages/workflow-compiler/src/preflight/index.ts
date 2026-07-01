@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import type { WorkflowIR } from "@acpus/core/ir";
-import { compileWorkflow } from "./compile.js";
-import { createScratchDir, type TypecheckResult, typecheckWorkflow } from "./typecheck.js";
+import { checkWorkflow } from "../check/runner.js";
+import { compileWorkflow } from "../compiler/worker.js";
+import { createScratchDir } from "./temp.js";
 
 export type PreflightOptions = {
   workflow: string;
@@ -41,10 +42,8 @@ export type PreflightArtifact = {
   dir: string;
 };
 
-type TypecheckFailure = Extract<TypecheckResult, { ok: false }>;
-
 export type WorkflowPreparationFailure =
-  | { phase: "typecheck"; message: string; typecheck: TypecheckFailure }
+  | { phase: "check"; message: string; diagnostics: WorkflowIR["diagnostics"] }
   | { phase: "compile"; message: string }
   | { phase: "validate"; message: string; diagnostics: WorkflowIR["diagnostics"]; ir: WorkflowIR };
 
@@ -58,12 +57,12 @@ export async function prepareWorkflow(options: PreflightOptions): Promise<Prepar
   const workflowPath = resolve(options.cwd, options.workflow);
   const scratchDir = await createScratchDir();
   try {
-    const typecheck = await typecheckWorkflow(workflowPath, options.cwd, scratchDir);
-    if (!typecheck.ok) {
+    const check = await checkWorkflow(workflowPath, options.cwd, scratchDir);
+    if (check.diagnostics.some(diagnostic => diagnostic.severity === "error")) {
       throw new WorkflowPreparationError({
-        phase: "typecheck",
-        message: "Workflow typecheck failed.",
-        typecheck,
+        phase: "check",
+        message: "Workflow check failed.",
+        diagnostics: check.diagnostics,
       });
     }
 

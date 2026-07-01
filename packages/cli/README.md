@@ -8,7 +8,7 @@ Primary workflow entry point:
 acpus run workflow.ts --input '{"ready":true}'
 ```
 
-`acpus run workflow.ts --dry-run` typechecks and prepares the workflow through
+`acpus run workflow.ts --dry-run` statically checks and prepares the workflow through
 `@acpus/workflow-compiler`, validates the resulting `WorkflowIR`, and writes
 `.acpus/preflight/<id>/` with the IR, bundled task assets, and lock file.
 

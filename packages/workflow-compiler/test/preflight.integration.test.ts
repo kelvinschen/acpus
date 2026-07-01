@@ -10,7 +10,7 @@ import { WorkflowPreparationError, prepareWorkflow, writePreflightArtifact } fro
 const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const fixturesRoot = join(repoRoot, "packages", "workflow-compiler", "test", "fixtures");
 
-describe.concurrent("workflow preflight preparation", () => {
+describe("workflow preflight preparation", () => {
   it("writes frozen preflight artifacts for valid workflows", async () => {
     await withCompilerWorkspace("compiler-preflight", async cwd => {
       const workflow = await copyFixture(cwd, "workflows/tasks/task-artifact.workflow.ts");
@@ -33,16 +33,35 @@ describe.concurrent("workflow preflight preparation", () => {
     });
   });
 
-  it("fails before compile when workflow TypeScript typecheck fails", async () => {
-    await withCompilerWorkspace("compiler-typecheck", async cwd => {
-      const workflow = await copyFixture(cwd, "workflows/invalid/type-error.workflow.fixture");
-      await expect(prepareWorkflow({ workflow, cwd }))
-        .rejects.toMatchObject({
-          failure: {
-            phase: "typecheck",
-            message: "Workflow typecheck failed.",
-          },
-        });
+  it("prepares exported same-file reusable tasks with workflow-module import semantics", async () => {
+    await withCompilerWorkspace("compiler-same-file-task", async cwd => {
+      const workflow = await copyFixture(cwd, "workflows/same-file-reusable.workflow.ts");
+      const prepared = await prepareWorkflow({ workflow, cwd });
+      const bundle = Object.values(prepared.ir.assets.taskBundles).find(item => item.sourceFile?.endsWith("same-file-reusable.workflow.ts"));
+
+      expect(bundle).toMatchObject({
+        inline: false,
+        sourceFile: expect.stringContaining("same-file-reusable.workflow.ts"),
+      });
+      expect(bundle?.source?.length).toBeGreaterThan(0);
+      expect(bundle?.source).not.toMatch(/from\s+["']slash["']/);
+      expect(bundle?.digest).toMatch(/^sha256:[a-f0-9]{64}$/);
+      expectSha256Digest(prepared.sourceGraphDigest);
+      expect(prepared.ir.outputs.normalized).toEqual({ kind: "ref", path: ["nodes", "normalize_path", "output", "normalized"] });
+    });
+  });
+
+  it("fails before compile and preserves check diagnostics", async () => {
+    await withCompilerWorkspace("compiler-task-check", async cwd => {
+      const inlineCapture = await copyFixture(cwd, "workflows/inline-capture.workflow.ts");
+      const inlineFailure = await expectPreparationFailure(inlineCapture, cwd);
+      expect(inlineFailure.phase).toBe("check");
+      if (inlineFailure.phase !== "check") throw new Error("expected inline capture check failure");
+      expect(inlineFailure.diagnostics).toContainEqual(expect.objectContaining({
+        code: "TB007",
+        source: expect.objectContaining({ file: expect.stringContaining("inline-capture.workflow.ts") }),
+        hint: expect.stringContaining("run.input"),
+      }));
     });
   });
 

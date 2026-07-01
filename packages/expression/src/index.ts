@@ -200,9 +200,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 const WHERE_OPERATOR_KEYS = new Set(["eq", "ne", "lt", "lte", "gt", "gte", "contains", "startsWith", "endsWith", "matches", "length"]);
-const RESERVED_ACCESSOR_KEYS = new Set(["ir", "__type"]);
+const RESERVED_ACCESSOR_KEYS = new Set(["__ir", "__type"]);
 
 function isObjectTyped(value: unknown): boolean {
   if (!isExpr(value)) return false;
-  return "type" in value.ir && (value.ir.type?.kind === "object" || value.ir.type?.kind === "record");
+  return "type" in value.__ir && (value.__ir.type?.kind === "object" || value.__ir.type?.kind === "record");
 }

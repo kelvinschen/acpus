@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`@acpus/runtime` persists and advances prepared workflow runs in a workspace-local durable store. It accepts a prepared workflow and normalized input, writes SQLite state and run-local files, executes supported frozen IR, exposes read APIs and durable controls, handles signal continuation, supports replay checks, and runs a detached supervisor. Workflow typecheck, module compile, and preflight preparation belong to `@acpus/workflow-compiler`.
+`@acpus/runtime` persists and advances prepared workflow runs in a workspace-local durable store. It accepts a prepared workflow and normalized input, writes SQLite state and run-local files, executes supported frozen IR, exposes read APIs and durable controls, handles signal continuation, supports replay checks, and runs a detached supervisor. Workflow static checks, module compile, and preflight preparation belong to `@acpus/workflow-compiler`.
 
 ## Requirements
 

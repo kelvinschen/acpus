@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import { compileWorkflowDefinition, isWorkflowDefinition } from "@acpus/core/workflow";
 import { validateWorkflowIR, type WorkflowIR } from "@acpus/core/ir";
 import { bundleWorkflowTasks } from "./task-bundler.js";
-import { analyzeWorkflowTasks } from "./task-provenance.js";
+import { analyzeWorkflowTasks, resolveTaskBundleMetadata } from "../task-analysis/index.js";
 
 export type CompileOptions = {
   sourcePath?: string;
@@ -24,7 +24,7 @@ export async function compileWorkflowModule(entry: string, options: CompileOptio
   const analysis = await analyzeWorkflowTasks(absolute, source);
   await bundleWorkflowTasks(ir, {
     cwd: options.cwd ?? dirname(absolute),
-    analysis,
+    metadata: resolveTaskBundleMetadata(analysis),
     ...(options.conditions ? { conditions: options.conditions } : {}),
   });
   ir.diagnostics.push(...validateWorkflowIR(ir));

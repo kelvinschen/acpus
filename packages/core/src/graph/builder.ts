@@ -338,7 +338,14 @@ export function compileWorkflowDefinition(definition: WorkflowDefinition<any, an
     step: builder.step,
   });
   const validOutput = isOutputObject(result);
-  if (!validOutput) diagnostics.push({ code: "W001", severity: "error", message: "Workflow build must return an output object." });
+  if (!validOutput) {
+    diagnostics.push({
+      code: "W001",
+      severity: "error",
+      message: "Workflow build must return an output object.",
+      hint: "Return a plain object from the workflow build callback, for example return { result: value }.",
+    });
+  }
 
   const ir = stripUndefined({
     irVersion: 2,

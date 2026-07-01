@@ -4,7 +4,7 @@ import { refExpr, valueToExprIR } from "@acpus/expression/ir";
 
 describe("expression lowering", () => {
   it("lowers advanced refs and literals through the package seam", () => {
-    expect(refExpr<boolean>(["input", "ready"]).ir).toEqual({ kind: "ref", path: ["input", "ready"] });
+    expect(refExpr<boolean>(["input", "ready"]).__ir).toEqual({ kind: "ref", path: ["input", "ready"] });
     expect(valueToExprIR({ ready: true })).toEqual({
       kind: "object",
       fields: { ready: { kind: "literal", value: true } },
@@ -20,15 +20,15 @@ describe("expression lowering", () => {
 
   it("flattens static access over refs", () => {
     const user = refExpr<{ profile: { name: string }; tags: readonly string[]; constructor: string }>(["input", "user"]);
-    expect(user.profile.name.ir).toEqual({ kind: "ref", path: ["input", "user", "profile", "name"] });
-    expect(user.tags[0]!.ir).toEqual({ kind: "ref", path: ["input", "user", "tags", "0"] });
-    expect(user.constructor.ir).toEqual({ kind: "ref", path: ["input", "user", "constructor"] });
+    expect(user.profile.name.__ir).toEqual({ kind: "ref", path: ["input", "user", "profile", "name"] });
+    expect(user.tags[0]!.__ir).toEqual({ kind: "ref", path: ["input", "user", "tags", "0"] });
+    expect(user.constructor.__ir).toEqual({ kind: "ref", path: ["input", "user", "constructor"] });
   });
 
   it("lowers dynamic and computed access to get", () => {
     const users = refExpr<readonly { name: string }[]>(["input", "users"]);
     const firstUser = get(users, 0);
-    expect(firstUser.ir).toEqual({
+    expect(firstUser.__ir).toEqual({
       kind: "call",
       fn: "get",
       args: [
@@ -36,11 +36,11 @@ describe("expression lowering", () => {
         { kind: "literal", value: 0 },
       ],
     });
-    expect(firstUser.name.ir).toEqual({
+    expect(firstUser.name.__ir).toEqual({
       kind: "call",
       fn: "get",
       args: [
-        firstUser.ir,
+        firstUser.__ir,
         { kind: "literal", value: "name" },
       ],
     });
@@ -58,13 +58,13 @@ describe("expression lowering", () => {
   });
 
   it("rejects reserved pick keys at runtime", () => {
-    const user = refExpr<{ ir: string }>(["input", "user"]) as any;
-    expect(() => (pick as any)(user, ["ir"])).toThrow("pick(source, keys) cannot project reserved accessor key 'ir'.");
+    const user = refExpr<{ __ir: string }>(["input", "user"]) as any;
+    expect(() => (pick as any)(user, ["__ir"])).toThrow("pick(source, keys) cannot project reserved accessor key '__ir'.");
   });
 
   it("allocates deterministic lambda binding ids", () => {
     const items = refExpr<readonly { done: boolean }[]>(["input", "items"]);
-    expect(map(items, item => item.done).ir).toEqual({
+    expect(map(items, item => item.done).__ir).toEqual({
       kind: "call",
       fn: "map",
       args: [
@@ -80,7 +80,7 @@ describe("expression lowering", () => {
 
   it("allocates unique nested lambda binding ids", () => {
     const groups = refExpr<readonly { items: readonly { done: boolean }[] }[]>(["input", "groups"]);
-    expect(map(groups, group => map(group.items, item => item.done)).ir).toEqual({
+    expect(map(groups, group => map(group.items, item => item.done)).__ir).toEqual({
       kind: "call",
       fn: "map",
       args: [

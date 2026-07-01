@@ -20,4 +20,17 @@ describe("acpus run validation failure smoke", () => {
       });
     });
   });
+
+  it("renders validation diagnostic hints in text output", async () => {
+    await withTestWorkspace("run-validate-text", async workspace => {
+      const workflow = await copyWorkflowFixture(workspace, "workflows/basic/malformed.workflow.ts");
+
+      const result = await runSourceCli(workspace, ["run", workflow, "--dry-run"]);
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("[error] ID001");
+      expect(result.stderr).toContain("hint: Node ids must be compile-time stable strings.");
+    });
+  });
 });

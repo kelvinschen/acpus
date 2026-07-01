@@ -142,7 +142,13 @@ function validateScopeOutputFields(outputs: unknown, expectedOutput: unknown, di
   const declared = isRecord(expectedOutput.fields) ? expectedOutput.fields : {};
   for (const key of Object.keys(outputs)) {
     if (!(key in declared)) {
-      diagnostics.push({ code: "O001", severity: "error", message: `Output field '${key}' is not declared in the node outputSchema.`, path: `${path}.${key}` });
+      diagnostics.push({
+        code: "O001",
+        severity: "error",
+        message: `Output field '${key}' is not declared in the node outputSchema.`,
+        path: `${path}.${key}`,
+        hint: "Remove the returned field or add it to the node outputSchema.",
+      });
     }
   }
 }
@@ -163,7 +169,15 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
       validateKnownFields(node, ["id", "source", "kind", "outputSchema", "run", "timeout", "retry"], diagnostics, path);
       validateAgentRun(node.run, diagnostics, `${path}.run`);
       const agentKey = isRecord(node.run) && typeof node.run.agent === "string" ? node.run.agent : undefined;
-      if (agentKey && !ctx.agents.has(agentKey)) diagnostics.push({ code: "A001", severity: "error", message: `Agent node '${node.id}' references undeclared agent '${agentKey}'.`, path: `${path}.run.agent` });
+      if (agentKey && !ctx.agents.has(agentKey)) {
+        diagnostics.push({
+          code: "A001",
+          severity: "error",
+          message: `Agent node '${node.id}' references undeclared agent '${agentKey}'.`,
+          path: `${path}.run.agent`,
+          hint: "Declare the agent under defineWorkflow({ agents }) and reference it with agents.<key>.",
+        });
+      }
       validateSchema(node.outputSchema, diagnostics, `${path}.outputSchema`);
       break;
     }
@@ -194,7 +208,15 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
       validateExpr(node.condition, diagnostics, `${path}.condition`);
       validateScope(node.then, diagnostics, { ...ctx, path: `${path}.then` }, node.outputSchema);
       if (node.else) validateScope(node.else, diagnostics, { ...ctx, path: `${path}.else` }, node.outputSchema);
-      if (node.outputSchema && !node.else) diagnostics.push({ code: "G002", severity: "error", message: `If node '${node.id}' with outputSchema must declare else.`, path: `${path}.else` });
+      if (node.outputSchema && !node.else) {
+        diagnostics.push({
+          code: "G002",
+          severity: "error",
+          message: `If node '${node.id}' with outputSchema must declare else.`,
+          path: `${path}.else`,
+          hint: "Add an else branch that returns every outputSchema field, or remove outputSchema.",
+        });
+      }
       validateSchema(node.outputSchema, diagnostics, `${path}.outputSchema`);
       break;
     }
@@ -215,7 +237,15 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
         }, { code: "IR002" });
       }
       if (node.default) validateScope(node.default, diagnostics, { ...ctx, path: `${path}.default` }, node.outputSchema);
-      if (node.outputSchema && !node.default) diagnostics.push({ code: "G003", severity: "error", message: `Switch node '${node.id}' with outputSchema must declare default.`, path: `${path}.default` });
+      if (node.outputSchema && !node.default) {
+        diagnostics.push({
+          code: "G003",
+          severity: "error",
+          message: `Switch node '${node.id}' with outputSchema must declare default.`,
+          path: `${path}.default`,
+          hint: "Add a default branch that returns every outputSchema field, or remove outputSchema.",
+        });
+      }
       validateSchema(node.outputSchema, diagnostics, `${path}.outputSchema`);
       break;
     }

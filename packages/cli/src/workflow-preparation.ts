@@ -8,12 +8,12 @@ export async function prepareWorkflowForCli(workflow: string, cwd: string): Retu
   } catch (error) {
     if (!(error instanceof WorkflowPreparationError)) throw error;
     const failure = error.failure;
-    if (failure.phase === "typecheck") {
+    if (failure.phase === "check") {
       throw new CliError(1, {
         ok: false,
-        phase: "typecheck",
+        phase: "check",
         message: failure.message,
-        typecheck: failure.typecheck,
+        diagnostics: failure.diagnostics,
       });
     }
     if (failure.phase === "compile") {

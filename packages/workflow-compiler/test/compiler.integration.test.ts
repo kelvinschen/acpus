@@ -1,4 +1,7 @@
-import { fileURLToPath } from "node:url";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   compileWorkflowModule,
@@ -26,14 +29,55 @@ describe.concurrent("workflow module compiler", () => {
     expect(thirdPartyBundle?.source).toContain("replace");
   });
 
-  it("rejects inline tasks that capture workflow-module scope", async () => {
+  it("keeps compileWorkflowModule as the lower-level no-check API", async () => {
     const ir = await compileFixture("inline-capture.workflow.ts");
 
-    expect(ir.diagnostics).toContainEqual(expect.objectContaining({
-      code: "TB007",
-      severity: "error",
-      path: expect.stringMatching(/^assets\.taskBundles\..+\.source$/),
-    }));
+    expect(ir.diagnostics).not.toContainEqual(expect.objectContaining({ code: "TB007" }));
+    expect(ir.diagnostics).toContainEqual(expect.objectContaining({ code: "TB001", severity: "error" }));
+  });
+
+  it("bundles exported same-file reusable tasks through workflow module imports", async () => {
+    const ir = await compileFixture("same-file-reusable.workflow.ts");
+
+    expect(ir.diagnostics).toEqual([]);
+    const bundle = findTaskBundle(ir, "same-file-reusable.workflow.ts");
+    expect(bundle).toMatchObject({
+      inline: false,
+      sourceFile: expect.stringContaining("same-file-reusable.workflow.ts"),
+    });
+    expect(bundle?.source?.length).toBeGreaterThan(0);
+    expect(bundle?.source).not.toMatch(/from\s+["']slash["']/);
+    expect(bundle?.digest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(getNode(ir.root, "normalize_path")).toMatchObject({
+      kind: "task",
+      run: {
+        inline: false,
+      },
+    });
+    expect(ir.outputs.normalized).toEqual({ kind: "ref", path: ["nodes", "normalize_path", "output", "normalized"] });
+  });
+
+  it("does not execute the workflow build callback when importing same-file task bundles", async () => {
+    const ir = await compileFixture("same-file-build-callback.workflow.ts");
+    const bundle = findTaskBundle(ir, "same-file-build-callback.workflow.ts");
+    if (!bundle?.source) throw new Error("expected same-file task bundle source");
+
+    const dir = await mkdtemp(join(tmpdir(), "acpus-same-file-task-"));
+    const previous = process.env.ACPUS_FAIL_IF_BUILD_CALLBACK_EXECUTED;
+    try {
+      const bundlePath = join(dir, "bundle.mjs");
+      await writeFile(bundlePath, bundle.source);
+      process.env.ACPUS_FAIL_IF_BUILD_CALLBACK_EXECUTED = "1";
+      const mod = await import(`${pathToFileURL(bundlePath).href}?v=${Date.now()}`);
+      await expect(mod.default({ input: {}, params: {} })).resolves.toEqual({ ok: true });
+    } finally {
+      if (previous === undefined) {
+        delete process.env.ACPUS_FAIL_IF_BUILD_CALLBACK_EXECUTED;
+      } else {
+        process.env.ACPUS_FAIL_IF_BUILD_CALLBACK_EXECUTED = previous;
+      }
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("derives reusable task provenance from source, stable across compiles", async () => {
@@ -53,11 +97,24 @@ describe.concurrent("workflow module compiler", () => {
   it("fails closed when a valid and an invalid task share one bundle id", async () => {
     const ir = await compileFixture("shared-bundle.workflow.ts");
 
-    // Both task nodes collapse to one bundle id; the workflow-local callsite
-    // must still be rejected even though the valid callsite is declared first.
+    // Both task nodes collapse to one bundle id. Direct compile does not run the
+    // task-authoring rules, but the bundler still fails closed when any
+    // reusable callsite lacks source metadata.
     expect(Object.keys(ir.assets.taskBundles)).toHaveLength(1);
     expect(getTaskBundleId(ir.root, "good_call")).toBe(getTaskBundleId(ir.root, "bad_call"));
-    expect(ir.diagnostics).toContainEqual(expect.objectContaining({ code: "TB004", severity: "error" }));
+    expect(ir.diagnostics).toContainEqual(expect.objectContaining({ code: "TB001", severity: "error" }));
+  });
+
+  it("fails closed when one bundle id has conflicting reusable metadata", async () => {
+    const ir = await compileFixture("conflicting-bundle-metadata.workflow.ts");
+
+    expect(Object.keys(ir.assets.taskBundles)).toHaveLength(1);
+    expect(getTaskBundleId(ir.root, "first")).toBe(getTaskBundleId(ir.root, "second"));
+    expect(ir.diagnostics).toContainEqual(expect.objectContaining({
+      code: "TB001",
+      severity: "error",
+      message: expect.stringContaining("conflicting"),
+    }));
   });
 
   it("compiles a representative orchestration fixture with composite scopes", async () => {

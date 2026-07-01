@@ -1,23 +1,58 @@
-import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { access, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { runProcess } from "./process.js";
+import type { DiagnosticIR } from "@acpus/core/ir";
+import ts from "typescript";
 
-export type TypecheckResult =
-  | { ok: true }
-  | { ok: false; exitCode: number | null; stdout: string; stderr: string };
+export type TypeScriptCheck = {
+  diagnostics: DiagnosticIR[];
+  program?: ts.Program;
+  sourceFile?: ts.SourceFile;
+};
 
-export async function createScratchDir(): Promise<string> {
-  return mkdtemp(join(tmpdir(), "acpus-run-"));
+export async function checkTypeScript(entry: string, cwd: string, scratchDir: string): Promise<TypeScriptCheck> {
+  const tsconfig = await writeTypecheckConfig(entry, cwd, scratchDir);
+  const config = ts.readConfigFile(tsconfig, ts.sys.readFile);
+  if (config.error) return { diagnostics: [toDiagnosticIR(config.error)] };
+
+  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, dirname(tsconfig), undefined, tsconfig);
+  const programOptions: ts.CreateProgramOptions = {
+    rootNames: parsed.fileNames,
+    options: parsed.options,
+  };
+  if (parsed.projectReferences) programOptions.projectReferences = parsed.projectReferences;
+  const program = ts.createProgram(programOptions);
+  const diagnostics = [
+    ...parsed.errors,
+    ...program.getConfigFileParsingDiagnostics(),
+    ...program.getOptionsDiagnostics(),
+    ...program.getGlobalDiagnostics(),
+    ...program.getSyntacticDiagnostics(),
+    ...program.getSemanticDiagnostics(),
+  ].map(toDiagnosticIR);
+
+  const result: TypeScriptCheck = { diagnostics, program };
+  const sourceFile = program.getSourceFile(entry);
+  if (sourceFile) result.sourceFile = sourceFile;
+  return result;
 }
 
-export async function typecheckWorkflow(entry: string, cwd: string, scratchDir: string): Promise<TypecheckResult> {
-  const tsconfig = await writeTypecheckConfig(entry, cwd, scratchDir);
-  const tsgo = await resolveTsgoBin();
-  const result = await runProcess(process.execPath, [tsgo, "-p", tsconfig], { cwd });
-  if (result.exitCode === 0) return { ok: true };
-  return { ok: false, exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr };
+function toDiagnosticIR(diagnostic: ts.Diagnostic): DiagnosticIR {
+  const result: DiagnosticIR = {
+    code: `TS${diagnostic.code}`,
+    severity: diagnostic.category === ts.DiagnosticCategory.Warning ? "warning" : "error",
+    message: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+  };
+  if (diagnostic.file && diagnostic.start !== undefined) result.source = sourceLocation(diagnostic.file, diagnostic.start);
+  return result;
+}
+
+function sourceLocation(file: ts.SourceFile, start: number): NonNullable<DiagnosticIR["source"]> {
+  const position = file.getLineAndCharacterOfPosition(start);
+  return {
+    file: file.fileName,
+    line: position.line + 1,
+    column: position.character + 1,
+  };
 }
 
 async function writeTypecheckConfig(entry: string, cwd: string, scratchDir: string): Promise<string> {
@@ -43,8 +78,6 @@ async function writeTypecheckConfig(entry: string, cwd: string, scratchDir: stri
   const coreSourceDir = join(cwd, "packages/core/src");
   const coreSource = join(coreSourceDir, "index.ts");
   if (await exists(coreSource)) {
-    // Workspace development should typecheck workflows against live core source.
-    // Published installs must omit this condition and resolve normal package dist.
     compilerOptions.customConditions = ["development"];
     compilerOptions.paths = {
       "@acpus/core": [configRelative(scratchDir, coreSource)],
@@ -56,11 +89,6 @@ async function writeTypecheckConfig(entry: string, cwd: string, scratchDir: stri
   if (baseConfig) config.extends = configRelative(scratchDir, baseConfig);
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
   return configPath;
-}
-
-async function resolveTsgoBin(): Promise<string> {
-  const packageJson = await import.meta.resolve("@typescript/native-preview/package.json");
-  return fileURLToPath(new URL("./bin/tsgo.js", packageJson));
 }
 
 async function findUp(name: string, start: string): Promise<string | undefined> {

@@ -14,4 +14,4 @@ This directory tracks Acpus plans, goal records, backlog, and capability gaps. C
 - [Durable Scheduler Implementation Record](durable-scheduler-implementation-goal.md) — completed V1 goal checklist and high-level field model for landing the durable scheduler.
 - [Expression Language Design Notes](expression-language-design.md) — planned direction for introducing `@acpus/expression` as a typed JSON-value expression language.
 - [Expression Language Implementation Goal](expression-language-implementation-goal.md) — executable checklist for landing `@acpus/expression` as one clean goal.
-- [AI Authoring Feedback Loop Implementation Goal](ai-authoring-feedback-loop-implementation-goal.md) — executable goal for the AI-authoring correction loop: CLI diagnostic hints, the `Expr.ir` → `__ir` rename, and a type-aware lint plugin surfaced through `acpus lint`.
+- [AI Authoring Feedback Loop Implementation Goal](ai-authoring-feedback-loop-implementation-goal.md) — executable goal for the AI-authoring correction loop: CLI diagnostic hints, the `Expr.ir` → `__ir` rename, and the internal `acpus run` check pipeline.

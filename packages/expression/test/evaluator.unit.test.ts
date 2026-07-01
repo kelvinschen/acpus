@@ -31,12 +31,12 @@ describe("expression evaluator", () => {
   it("evaluates short-circuiting and conditionals", () => {
     expect(evaluateExpr({ kind: "call", fn: "and", args: [{ kind: "literal", value: false }, { kind: "ref", path: ["missing"] }] }, adapter)).toBe(false);
     expect(evaluateExpr({ kind: "call", fn: "or", args: [{ kind: "literal", value: true }, { kind: "ref", path: ["missing"] }] }, adapter)).toBe(true);
-    expect(evaluateExpr(ifElse(false, { bad: refExpr(["missing"]) }, "ok").ir, adapter)).toBe("ok");
+    expect(evaluateExpr(ifElse(false, { bad: refExpr(["missing"]) }, "ok").__ir, adapter)).toBe("ok");
   });
 
   it("evaluates missing-safe get and nullish coalesce", () => {
-    expect(evaluateExpr(get(refExpr<readonly string[]>(["input", "missing"]), 0).ir, adapter)).toBeUndefined();
-    expect(evaluateExpr(coalesce(refExpr<string | null>(["input", "missing"]), null, "fallback").ir, adapter)).toBe("fallback");
+    expect(evaluateExpr(get(refExpr<readonly string[]>(["input", "missing"]), 0).__ir, adapter)).toBeUndefined();
+    expect(evaluateExpr(coalesce(refExpr<string | null>(["input", "missing"]), null, "fallback").__ir, adapter)).toBe("fallback");
     expect(() => evaluateExpr({ kind: "call", fn: "len", args: [{ kind: "ref", path: ["input", "missing"] }] }, adapter)).toThrow("len(...) received missing value.");
   });
 
@@ -61,12 +61,12 @@ describe("expression evaluator", () => {
 
   it("evaluates scoped collection lambdas", () => {
     const items = refExpr<readonly { done: boolean; score: number }[]>(["input", "items"]);
-    expect(evaluateExpr(map(items, item => item.score).ir, adapter)).toEqual([2, 5]);
-    expect(evaluateExpr(filter(items, item => item.done).ir, adapter)).toEqual([{ done: true, score: 2 }]);
-    expect(evaluateExpr(every(items, item => item.done).ir, adapter)).toBe(false);
-    expect(evaluateExpr(some(items, item => item.done).ir, adapter)).toBe(true);
-    expect(evaluateExpr(every([]).ir, adapter)).toBe(true);
-    expect(evaluateExpr(some([]).ir, adapter)).toBe(false);
+    expect(evaluateExpr(map(items, item => item.score).__ir, adapter)).toEqual([2, 5]);
+    expect(evaluateExpr(filter(items, item => item.done).__ir, adapter)).toEqual([{ done: true, score: 2 }]);
+    expect(evaluateExpr(every(items, item => item.done).__ir, adapter)).toBe(false);
+    expect(evaluateExpr(some(items, item => item.done).__ir, adapter)).toBe(true);
+    expect(evaluateExpr(every([]).__ir, adapter)).toBe(true);
+    expect(evaluateExpr(some([]).__ir, adapter)).toBe(false);
     expect(() => evaluateExpr({
       kind: "call",
       fn: "filter",
@@ -82,7 +82,7 @@ describe("expression evaluator", () => {
     const rowAdapter = {
       resolveRef: () => [{ name: "A", tags: ["ready"] }],
     };
-    expect(evaluateExpr(map(rows, row => template`${row.name}:${get(row.tags, 0)}`).ir, rowAdapter)).toEqual(["A:ready"]);
+    expect(evaluateExpr(map(rows, row => template`${row.name}:${get(row.tags, 0)}`).__ir, rowAdapter)).toEqual(["A:ready"]);
   });
 
   it("fails loudly for unsupported inspected runtime values", () => {
@@ -96,8 +96,8 @@ describe("expression evaluator", () => {
   });
 
   it("uses Math max/min semantics", () => {
-    expect(evaluateExpr(max([]).ir, adapter)).toBe(-Infinity);
-    expect(evaluateExpr(min([]).ir, adapter)).toBe(Infinity);
-    expect(evaluateExpr(max([1, Number.NaN]).ir, adapter)).toBeNaN();
+    expect(evaluateExpr(max([]).__ir, adapter)).toBe(-Infinity);
+    expect(evaluateExpr(min([]).__ir, adapter)).toBe(Infinity);
+    expect(evaluateExpr(max([1, Number.NaN]).__ir, adapter)).toBeNaN();
   });
 });

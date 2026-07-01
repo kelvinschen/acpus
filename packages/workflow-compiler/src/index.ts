@@ -11,4 +11,4 @@ export {
   type WorkflowLockArtifact,
   WorkflowPreparationError,
   type WorkflowPreparationFailure,
-} from "./preflight.js";
+} from "./preflight/index.js";

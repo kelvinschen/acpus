@@ -76,6 +76,51 @@ describe("CLI result output contracts", () => {
     expect(failedStdout.text).toBe("");
     expect(failedStderr.text).toBe("Bad input.\n");
   });
+
+  it("renders diagnostic hints in text output and preserves them in JSON", () => {
+    const result: CliResult = {
+      ok: false,
+      phase: "validate",
+      message: "Workflow validation failed.",
+      diagnostics: [{
+        code: "ID001",
+        severity: "error",
+        message: "Invalid node id.",
+        path: "root.nodes.bad id",
+        source: {
+          file: "/tmp/workflow.ts",
+          line: 7,
+          column: 11,
+        },
+        hint: "Use a compile-time stable node id.",
+      }],
+    };
+    const textStdout = new CaptureStream();
+    const textStderr = new CaptureStream();
+
+    expect(writeResult(result, "text", { stdout: textStdout, stderr: textStderr }, 1)).toBe(1);
+
+    expect(textStdout.text).toBe("");
+    expect(textStderr.text).toContain("[error] ID001 root.nodes.bad id: Invalid node id.");
+    expect(textStderr.text).toContain("source: /tmp/workflow.ts:7:11");
+    expect(textStderr.text).toContain("hint: Use a compile-time stable node id.");
+
+    const jsonStdout = new CaptureStream();
+    const jsonStderr = new CaptureStream();
+
+    expect(writeResult(result, "json", { stdout: jsonStdout, stderr: jsonStderr }, 1)).toBe(1);
+    expect(JSON.parse(jsonStdout.text)).toMatchObject({
+      diagnostics: [expect.objectContaining({
+        hint: "Use a compile-time stable node id.",
+        source: {
+          file: "/tmp/workflow.ts",
+          line: 7,
+          column: 11,
+        },
+      })],
+    });
+    expect(jsonStderr.text).toBe("");
+  });
 });
 
 function dryRunResult(): CliResult {

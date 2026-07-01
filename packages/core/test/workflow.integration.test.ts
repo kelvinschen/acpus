@@ -473,6 +473,26 @@ describe("workflow compilation", () => {
     expect(ir.root.nodes[3]).not.toHaveProperty("until");
   });
 
+  it("allows node output fields named ir to be wired as normal user fields", () => {
+    const OutputWithIr = z.object({ ir: z.string() });
+    const definition = defineWorkflow({ name: "output_ir_field" }).build(({ step }) => {
+      const inspect = step("inspect").task({
+        outputSchema: OutputWithIr,
+        run: {
+          input: {},
+          exec: async () => ({ ir: "ok" }),
+        },
+      });
+
+      return { ir: inspect.output.ir };
+    });
+
+    const ir = compileWorkflowDefinition(definition);
+
+    expect(ir.diagnostics).toEqual([]);
+    expect(ir.outputs.ir).toEqual({ kind: "ref", path: ["nodes", "inspect", "output", "ir"] });
+  });
+
   it("diagnoses malformed task specs without crashing compilation", () => {
     const definition = defineWorkflow({ name: "malformed_task" }).build(({ step }) => {
       step("bad_task").task({

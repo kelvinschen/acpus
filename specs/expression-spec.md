@@ -28,7 +28,8 @@
 
 - `WorkflowValue<T>` MUST accept expression tokens, JSON-compatible literals, arrays, and plain objects, and MUST reject `undefined` at the type boundary when TypeScript can prove it.
 - Runtime lowering MUST reject unsupported raw values such as `undefined`, sparse arrays, non-plain objects, functions, symbols, and bigint.
-- Accessors MUST keep `ir` reserved for expression inspection and MUST lower property access to `ref`, `var`, or `get` IR according to the source node.
+- Accessors MUST keep `__ir` and `__type` reserved for expression internals and MUST lower property access to `ref`, `var`, or `get` IR according to the source node.
+- User object fields named `ir` MUST remain reachable as normal output accessors.
 - `get(array, index)` MUST support numeric array access and return an accessor typed as possibly `undefined`.
 - `head(array)` MUST lower to `get(array, 0)`.
 - `pick(source, keys)` MUST project object accessor fields and MUST NOT create a distinct IR shape.
@@ -56,7 +57,7 @@
 - Primitive/string/number/array operator objects MUST use named operators such as `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `contains`, `startsWith`, `endsWith`, `matches`, and `length`.
 - Nullable target and field equality MUST support `null` equality filters when the TypeScript value type includes `null`.
 - Array operator objects MUST support `eq` and `ne` equality in addition to collection operators such as `contains` and `length`.
-- Object field-wise `where` sugar MUST reserve expression token keys and operator keys; authors MUST use direct helpers such as `eq(object.eq, value)` for fields whose names collide with those reserved keys.
+- Object field-wise `where` sugar MUST reserve expression token keys `__ir` and `__type` plus operator keys; authors MUST use direct helpers such as `eq(object.eq, value)` for fields whose names collide with operator keys.
 - Empty `where` filters MUST throw at authoring time.
 
 ### Evaluation And Validation

@@ -166,4 +166,20 @@ describe.concurrent("runtime admission use cases", () => {
       });
     });
   });
+
+  it("executes same-file reusable task bundles prepared from workflow module exports", async () => {
+    await withRuntimeWorkspace("runtime-same-file-reusable", async workspace => {
+      const admitted = await admitFixture(workspace, "workflows/same-file-reusable.workflow.ts", { path: "src\\workflow.ts" });
+
+      expect(admitted).toMatchObject({
+        status: "completed",
+        run: {
+          name: "runtime-same-file-reusable",
+        },
+      });
+      await expect(getRun(workspace, admitted.run.id)).resolves.toMatchObject({
+        output: { normalized: "src/workflow.ts" },
+      });
+    });
+  });
 });

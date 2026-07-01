@@ -4,7 +4,7 @@ import type { ExprIR, TypeIR } from "../ir.js";
 export interface Expr<T> {
   readonly [EXPR]: true;
   readonly __type: T;
-  readonly ir: ExprIR;
+  readonly __ir: ExprIR;
 }
 
 export type WorkflowPrimitive = string | number | boolean | null;
@@ -45,7 +45,7 @@ export type OutputAccessor<T> = [NonNullable<T>] extends [Primitive]
 class ExprImpl<T> implements Expr<T> {
   readonly [EXPR] = true as const;
   declare readonly __type: T;
-  constructor(readonly ir: ExprIR) {}
+  constructor(readonly __ir: ExprIR) {}
 }
 
 export function isExpr(value: unknown): value is Expr<any> {
@@ -57,7 +57,7 @@ export function expr<T>(ir: ExprIR): Expr<T> {
 }
 
 export function valueToExprIR(value: unknown): ExprIR {
-  if (isExpr(value)) return value.ir;
+  if (isExpr(value)) return value.__ir;
   if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
     return { kind: "literal", value };
   }
@@ -89,11 +89,11 @@ export function accessor<T>(ir: ExprIR): OutputAccessor<T> {
   const base = expr<T>(ir);
   return new Proxy(base as any, {
     get(target, prop, receiver) {
-      if (prop === "ir" || prop === "__type" || prop === EXPR || typeof prop === "symbol") return Reflect.get(target, prop, receiver);
+      if (prop === "__ir" || prop === "__type" || prop === EXPR || typeof prop === "symbol") return Reflect.get(target, prop, receiver);
       const key = String(prop);
-      if (target.ir.kind === "ref") return accessor({ kind: "ref", path: [...target.ir.path, key] });
-      if (target.ir.kind === "var") return accessor({ kind: "var", id: target.ir.id, path: [...target.ir.path, key] });
-      return accessor({ kind: "call", fn: "get", args: [target.ir, { kind: "literal", value: key }] });
+      if (target.__ir.kind === "ref") return accessor({ kind: "ref", path: [...target.__ir.path, key] });
+      if (target.__ir.kind === "var") return accessor({ kind: "var", id: target.__ir.id, path: [...target.__ir.path, key] });
+      return accessor({ kind: "call", fn: "get", args: [target.__ir, { kind: "literal", value: key }] });
     },
   }) as OutputAccessor<T>;
 }

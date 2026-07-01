@@ -5,7 +5,7 @@ This roadmap tracks remaining core authoring, compiler, and developer-experience
 ## Known gaps in the current core
 
 - Workflow modules are user-owned TypeScript scripts and are executed during compile to build the graph. Acpus does not attempt to sandbox user-authored workflow code.
-- Task provenance is gated by a TypeScript parser-only static analyzer. It resolves reusable tasks through direct relative imports only; barrel/re-export indirection is rejected rather than followed.
+- Task analysis is gated by a TypeScript parser-only static analyzer. It resolves reusable tasks through direct relative imports and exported same-file workflow tasks; barrel/re-export indirection is rejected rather than followed.
 - `validateWorkflowIR(...)` is structural only; typed semantic validation remains a follow-up.
 
 ## Phase 1: harden the Zod bridge
@@ -16,7 +16,6 @@ This roadmap tracks remaining core authoring, compiler, and developer-experience
 
 ## Phase 2: Task bundling follow-ups
 
-- Attach source-location (`line`/`column`) context to provenance diagnostics (TB004–TB007).
 - Add source maps for bundled Task assets.
 - Extend inline self-containment warnings beyond the current hard free-identifier gate: warn when a Task imports raw `zx`, imports `child_process` directly, or reads `process.env` instead of task-level `env`.
 
@@ -24,10 +23,9 @@ This roadmap tracks remaining core authoring, compiler, and developer-experience
 
 Runtime-owned behavior now lives in `specs/runtime-spec.md`. Open runtime gaps discovered during spec/package alignment are tracked in `docs/roadmap/spec-gap-audit.md` and durable-runtime planning stays in `docs/roadmap/durable-runtime-roadmap.md`.
 
-## Phase 4: lint plugin
+## Phase 4: authoring warnings
 
-- Error rules: no `Expr` in JS `if`/`while`/ternary; no JS logical/comparison operators over `Expr`; no runtime array `.map()`; no dynamic node id from `Expr`; no untagged template containing `Expr`. These are editor-time mirrors; Task closure capture is already a compile-time gate (TB007).
-- Warnings: prefer `ctx.$` over raw `zx`; prefer task-level `env` and `secret(...)` for redaction; prefer returning `ArtifactRef` over long-lived absolute paths.
+- Additional warnings: prefer `ctx.$` over raw `zx`; prefer task-level `env` and `secret(...)` for redaction; prefer returning `ArtifactRef` over long-lived absolute paths.
 
 ## Phase 5: runner profiles
 
