@@ -237,16 +237,16 @@ describe("task analysis", () => {
     expect(verdict?.issue && "names" in verdict.issue ? verdict.issue.names : []).toContain("DEFAULT_RETRIES");
   });
 
-  it("does not flag globals, destructured params, or nested locals in inline tasks", async () => {
+  it("does not flag globals, destructured context fields, or nested locals in inline tasks", async () => {
     const analysis = await analyze(
       `declare const step: any;
-       step("run").task({ outputSchema: {} as any, run: { input: {}, exec: async ({ input, log }: any) => {
+       step("run").task({ outputSchema: {} as any, run: { input: {}, exec: async ({ input, abortSignal }: any) => {
          const out: Record<string, number> = {};
          for (const key of Object.keys(input)) {
            const value = JSON.parse(String(input[key]));
            out[key] = Math.max(0, value);
          }
-         log.info("done", { count: Object.keys(out).length });
+         if (abortSignal.aborted) return {};
          return out;
        } } });`,
     );

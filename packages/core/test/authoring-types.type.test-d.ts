@@ -293,8 +293,9 @@ test("task run input and reusable task output are strongly typed", () => {
   const reusablePackageTask = task.define({
     inputSchema: PackageOut,
     outputSchema: PackageOut,
-    exec: async ({ input }) => {
+    exec: async ({ input, abortSignal }) => {
       assertType<string>(input.version);
+      assertType<AbortSignal>(abortSignal);
       // @ts-expect-error reusable task definition input is unwrapped as string.
       assertType<number>(input.version);
       return {
@@ -376,8 +377,9 @@ test("task run input and reusable task output are strongly typed", () => {
           packageName: input.packageName,
           version: input.version,
         },
-        exec: async ({ input }) => {
+        exec: async ({ input, abortSignal }) => {
           assertType<string>(input.version);
+          assertType<AbortSignal>(abortSignal);
           // @ts-expect-error runtime input is unwrapped as string, not number.
           assertType<number>(input.version);
           return {
@@ -420,6 +422,18 @@ test("task run input and reusable task output are strongly typed", () => {
       },
       // @ts-expect-error reusable tasks take output schema from task.define.
       outputSchema: PackageOut,
+    });
+
+    step("typed_task_rejects_extra_run_field").task({
+      run: {
+        task: reusablePackageTask,
+        input: {
+          packageName: input.packageName,
+          version: input.version,
+        },
+        // @ts-expect-error task run config is a closed shape.
+        extra: { mode: "strict" },
+      },
     });
 
     const nested = step("typed_nested_scope").if({

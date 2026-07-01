@@ -36,7 +36,9 @@ test("public package subpaths expose the intended type surface", () => {
 
   assertType<Dollar>(createDollar());
   const ctx = null as unknown as TaskContext<{}>;
+  expectTypeOf<keyof TaskContext<{}>>().toEqualTypeOf<"input" | "$" | "artifact" | "env" | "abortSignal">();
   assertType<Dollar>(ctx.$);
+  assertType<AbortSignal>(ctx.abortSignal);
   assertType(task);
   assertType(template);
   assertType<boolean>(isSchema(Input));

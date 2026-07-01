@@ -209,11 +209,11 @@
 
 #### Runtime evaluator
 
-当前实现：支持 `literal`、`ref`、`array`、`object`、`template`、`call`。refs 包含 `input`、`workflow.input`（归一化为 `input`）、`nodes`、`runtime`、`fanout`、`loop`。
+当前实现：支持 `literal`、`ref`、`array`、`object`、`template`、`call`。refs 包含 `input`、`workflow.input`（归一化为 `input`）、`nodes`、`meta`、`fanout`、`loop`。
 
 证据：`packages/runtime/src/evaluation/evaluator.ts`, `packages/runtime/test/runtime-evaluator.unit.test.ts`
 
-审计备注：`runtime` root 可解析，但 scheduler 注入 `runtime: {}`，表达式中 `runtime.*` 为 undefined；仅 JS TaskContext 有 runtime 字段注入，见 gap。
+审计备注：当前运行元数据通过 `meta.*` 暴露；`runtime` 不是支持的 expression ref root，JS TaskContext 也不暴露 runtime 字段。
 
 **审计新增：**
 - 数组索引访问（`input.tags.0`）。
@@ -291,15 +291,14 @@
 
 #### Task context
 
-当前实现：TaskContext 提供 `input`、`params`、`$`、`artifact`、`log`、`env`、`runtime`、`signal`。
+当前实现：TaskContext 提供 `input`、`$`、`artifact`、`env`、`abortSignal`。
 
 证据：`packages/core/src/runtime/task-context.ts`, `packages/runtime/src/execution/task-executor.ts`
 
-审计备注：`log` 当前不持久化（no-op stub），需避免把它理解为 legacy telemetry/log artifact 等价物。
+审计备注：TaskContext 是当前 public task API；静态配置和运行元数据需通过 task input 或未来显式契约传递。
 
 **审计新增：**
-- `runtime` 对象在 JS task 中为 `{ runId, nodeId, nodeKey, attempt, workDir, outputDir }`（`workDir`/`outputDir` 为 `work/<nodeId>` 和 `outputs/<nodeId>`，框架预创建但不自动清理）。
-- 注意：workflow expression 中 `runtime.*` 仍为空对象（见 gap）；仅 JS task function 可访问 runtime 字段。
+- workflow expression 中运行元数据通过 `meta.*` 暴露；`runtime.*` 当前不是支持的 ref root。
 - `env` 表达式求值时拒绝 secret ref（执行时校验）。
 
 标注：
@@ -599,7 +598,7 @@ legacy / 期望能力：legacy 有 terminal run clean/dry-run。
 建议处理：可作为 store maintenance/CLI 目标。
 
 标注：
-- 决策：需要实现（P2）。
+- 决策：需规格化决策（P2）。
 
 #### 富 run inspection
 
@@ -768,11 +767,11 @@ legacy / 期望能力：legacy 有 dynamic node key/lane identity。
 
 #### `runtime.*` refs
 
-当前状态：evaluator 支持 `runtime` root，但 scheduler `createRootScope` 注入 `runtime: {}`，workflow 表达式中 `$(runtime.runId)` 等返回 undefined。core 声明了 `runtime.runId/nodeId/workspaceDir/outputDir/now` tokens。仅 JS TaskContext 有 `{ runId, nodeId, nodeKey, attempt, workDir, outputDir }`（缺少 `workspaceDir`/`now`），但不注入 expression scope。
+当前状态：evaluator 支持 `meta` root，durable scheduler 从 frozen run metadata 注入 `meta.runId/workflowPath/workflowName/workspaceDir`。`runtime` 不是支持的 expression ref root，JS TaskContext 当前也不暴露 runtime 字段。
 
 legacy / 期望能力：用户可能期望 runId/workspace/outputDir/now 等字段。
 
-建议处理：需定义 public runtime scope contract，并在 scheduler 中注入。
+建议处理：如需新增 `runtime.*`，需先定义 public runtime scope contract，再在 scheduler 中注入；否则继续以 `meta.*` 作为当前契约。
 
 标注：
 - 决策：需要实现（P2）。
@@ -845,7 +844,7 @@ legacy / 期望能力：legacy 用于 acp debug/jsonl 等执行中追加。
 
 #### Per-attempt artifacts
 
-当前状态：`attempt` 计数器已在 `artifacts` 表和 `ctx.runtime.attempt` 中存在，但框架不自动写 attempt-level lifecycle 文件（prompt/response/stderr/telemetry）。`log` API 是 no-op，`onSpan` hook 未 wiring。
+当前状态：`attempt` 计数器已在 `artifacts` 表中存在，但 TaskContext 不暴露 `ctx.runtime` 或 `log` API，框架不自动写 attempt-level lifecycle 文件（prompt/response/stderr/telemetry）。`onSpan` hook 未 wiring。
 
 legacy / 期望能力：legacy 有 AttemptArtifactRecorder（`attempt-NNN.prompt.md`、`response.md`、`stderr.log`、`telemetry.json`、`acp-debug.jsonl`）。
 
@@ -893,20 +892,20 @@ legacy / 期望能力：legacy 有 bounded node storage key 和 `node-index.json
 
 原表述问题："Task context supports `log`"。
 
-为什么需要澄清：`log` 当前是 no-op / 非持久化，不等价 legacy runtime logs 或 attempt artifacts。
+为什么需要澄清：TaskContext 当前不暴露 `log` API；legacy runtime logs 或 attempt artifacts 需要单独的持久化设计。
 
-建议改法：标注为"提供 API 占位，当前不产生 durable log"。
+建议改法：标注为"当前不提供 task log API；如需日志能力，先定义 durable artifact/telemetry 契约"。
 
 标注：
 - 决策：确认，已在 Task context 节反映。
 
 #### `runtime` ref
 
-原表述问题："Runtime refs include `runtime`"。
+原表述问题：混淆了运行元数据 ref root。
 
-为什么需要澄清：evaluator 能解析 root，但 scheduler 注入 `runtime: {}`，workflow 表达式中字段为 undefined。仅 JS TaskContext 有部分 runtime 字段。
+为什么需要澄清：evaluator 当前不支持 `runtime` root；运行元数据通过 `meta.*` 暴露，JS TaskContext 当前也不暴露 runtime 字段。
 
-建议改法：定义 runtime scope contract，或在当前 spec 明确字段未在 expression scope 提供。
+建议改法：若要新增 `runtime.*`，先定义 runtime scope contract；否则在当前 spec/roadmap 中保持 `meta.*` 作为唯一运行元数据 ref。
 
 标注：
 - 决策：需规格化（P2）。
@@ -1191,9 +1190,9 @@ legacy / 期望能力：legacy 有 bounded node storage key 和 `node-index.json
 
 #### P2：`runtime.*` scope contract
 
-为什么做：evaluator 支持 `runtime`，但 expression scope 为空；core 已声明 token 但不注入。
+为什么做：当前契约使用 `meta.*` 暴露运行元数据；`runtime.*` 不存在。若产品仍需要 `runtime.*`，需要先定义它与 `meta.*` 的关系。
 
-主要交付件：spec 定义 `runtime.runId`、`runtime.nodeId`、`runtime.workspaceDir`、`runtime.outputDir`、`runtime.attempt`、`runtime.now` 等；scheduler/advance 注入到 EvaluationScope；TaskContext 对齐补全 `workspaceDir`/`now`。
+主要交付件：决定继续只支持 `meta.*`，或在 spec 中新增 `runtime.runId`、`runtime.nodeId`、`runtime.workspaceDir`、`runtime.outputDir`、`runtime.attempt`、`runtime.now` 等；若新增，则 scheduler/advance 注入到 EvaluationScope，并明确 TaskContext 是否对齐。
 
 依赖/风险：需要避免泄漏不可序列化 runtime handles。
 
@@ -1349,7 +1348,7 @@ durable runtime 主干实现已经完成，并经过上一轮报告的验证。�
 本次审计确认：
 - 所有"已实现能力"描述经代码核实基本准确，主要变更为文件路径和新增细节。
 - 所有"已发现 gap"均未关闭，仍然有效。
-- 新增发现：`SchemaIR`/`TypeIR` closed-shape validation 缺口、fanout 并发 item 目录冲突（latent correctness bug）、`blocked` 软状态、fanout quorum strategy、部分 runtime 类型超前于实现（powershell/pwsh/custom runner、retry.on/backoff、agent policy/session/options）、`runtime.*` expression scope 与 JS TaskContext 不一致。
+- 新增发现：`SchemaIR`/`TypeIR` closed-shape validation 缺口、fanout 并发 item 目录冲突（latent correctness bug）、`blocked` 软状态、fanout quorum strategy、部分 runtime 类型超前于实现（powershell/pwsh/custom runner、retry.on/backoff、agent policy/session/options）、`runtime.*` expression scope 尚未定义。
 - 下一步应先由人工在本文档中标注确认：哪些 gap 属于必须补齐的当前 runtime 能力，哪些属于明确暂不做的 legacy 面，哪些需要先更新 `specs/` 后再实现。
 
 标注：

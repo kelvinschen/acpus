@@ -35,9 +35,6 @@ describe("runtime scheduler node executor", () => {
           status: "completed",
           nodeId: "context_task",
           output: {
-            nodeId: "context_task",
-            nodeKey,
-            attempt: 1,
             artifact: { kind: "artifact" },
           },
         });
@@ -585,7 +582,7 @@ describe("runtime scheduler node executor", () => {
     });
   });
 
-  it("passes dynamic node key and scheduler attempt to task runtime context and artifacts", async () => {
+  it("uses dynamic node key and scheduler attempt for task artifacts", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-task", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, taskRuntimeContextWorkflow());
       const store = await openRuntimeStore(workspace);
@@ -611,9 +608,6 @@ describe("runtime scheduler node executor", () => {
         expect(result).toMatchObject({
           status: "completed",
           output: {
-            nodeId: "context_task",
-            nodeKey: "context_task.dynamic",
-            attempt: 7,
             artifact: { kind: "artifact" },
           },
         });
@@ -842,17 +836,11 @@ function taskRuntimeContextWorkflow() {
   }).build(({ step }) => {
     step("context_task").task({
       outputSchema: z.object({
-        nodeId: z.string(),
-        nodeKey: z.string(),
-        attempt: z.number(),
         artifact: z.artifact("text/plain"),
       }),
       run: {
         input: {},
-        exec: async ({ runtime, artifact }) => ({
-          nodeId: runtime.nodeId,
-          nodeKey: runtime.nodeKey,
-          attempt: runtime.attempt,
+        exec: async ({ artifact }) => ({
           artifact: await artifact.writeText("result.txt", "dynamic artifact\n"),
         }),
       },
@@ -1144,13 +1132,12 @@ function rootFanoutTaskWorkflow(options: { strategy?: "all" | "quorum"; count?: 
           const task = step("item_task").task({
             outputSchema: z.object({ item: z.string(), index: z.number() }),
             run: {
-              input: { item, itemIndex },
-              params: { abortItem: options.abortItem ?? null },
-              exec: async ({ input, params, signal }) => {
-                if (input.item !== params.abortItem) return { item: input.item, index: input.itemIndex };
+              input: { item, itemIndex, abortItem: options.abortItem ?? null },
+              exec: async ({ input, abortSignal }) => {
+                if (input.item !== input.abortItem) return { item: input.item, index: input.itemIndex };
                 return await new Promise(resolve => {
                   const timer = setTimeout(() => resolve({ item: "not-aborted", index: input.itemIndex }), 1_000);
-                  signal.addEventListener("abort", () => {
+                  abortSignal.addEventListener("abort", () => {
                     clearTimeout(timer);
                     resolve({ item: input.item, index: input.itemIndex });
                   }, { once: true });
@@ -1170,13 +1157,12 @@ function rootFanoutTaskWorkflow(options: { strategy?: "all" | "quorum"; count?: 
           const task = step("item_task").task({
             outputSchema: z.object({ item: z.string(), index: z.number() }),
             run: {
-              input: { item, itemIndex },
-              params: { abortItem: options.abortItem ?? null },
-              exec: async ({ input, params, signal }) => {
-                if (input.item !== params.abortItem) return { item: input.item, index: input.itemIndex };
+              input: { item, itemIndex, abortItem: options.abortItem ?? null },
+              exec: async ({ input, abortSignal }) => {
+                if (input.item !== input.abortItem) return { item: input.item, index: input.itemIndex };
                 return await new Promise(resolve => {
                   const timer = setTimeout(() => resolve({ item: "not-aborted", index: input.itemIndex }), 1_000);
-                  signal.addEventListener("abort", () => {
+                  abortSignal.addEventListener("abort", () => {
                     clearTimeout(timer);
                     resolve({ item: input.item, index: input.itemIndex });
                   }, { once: true });
@@ -1253,7 +1239,7 @@ function abortStatusTaskWorkflow() {
       outputSchema: z.object({ aborted: z.boolean() }),
       run: {
         input: {},
-        exec: async ({ signal }) => ({ aborted: signal.aborted }),
+        exec: async ({ abortSignal }) => ({ aborted: abortSignal.aborted }),
       },
     });
     return {};

@@ -45,7 +45,6 @@ describe("workflow compilation", () => {
         run: {
           task: normalizePackage,
           input: { packageName: input.packageName },
-          params: { strict: true },
         },
       });
 
@@ -135,7 +134,6 @@ describe("workflow compilation", () => {
       outputSchema: toSchemaIR(NormalizeOutput),
       run: {
         inline: false,
-        params: { strict: true },
         input: {
           packageName: { kind: "ref", path: ["input", "packageName"] },
         },

@@ -323,7 +323,7 @@ function validateTaskRun(run: unknown, diagnostics: DiagnosticIR[], path: string
     diagnostics.push({ code: "T007", severity: "error", message: "Task run must be an object.", path });
     return;
   }
-  validateKnownFields(run, ["kind", "input", "bundleId", "exportName", "digest", "runtime", "inline", "params", "cwd", "env", "execution"], diagnostics, path);
+  validateKnownFields(run, ["kind", "input", "bundleId", "exportName", "digest", "runtime", "inline", "cwd", "env", "execution"], diagnostics, path);
   if (run.kind !== "task_run") diagnostics.push({ code: "T007", severity: "error", message: "Task run kind must be task_run.", path: `${path}.kind` });
   validateExprObject(run.input, diagnostics, `${path}.input`);
   if (typeof run.bundleId !== "string" || run.bundleId.length === 0) diagnostics.push({ code: "T007", severity: "error", message: "Task run bundleId must be a non-empty string.", path: `${path}.bundleId` });

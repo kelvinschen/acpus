@@ -583,6 +583,41 @@ describe("WorkflowIR diagnostics contract", () => {
     ]));
   });
 
+  it("rejects unknown task run fields in serialized IR", () => {
+    const ir = minimalWorkflow({
+      root: {
+        nodes: [{
+          id: "run_task",
+          kind: "task",
+          outputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
+          run: {
+            kind: "task_run",
+            input: {},
+            bundleId: "task_a",
+            exportName: "default",
+            digest: "sha256:task",
+            runtime: "node",
+            unexpected: { mode: "strict" },
+          } as any,
+        }],
+      },
+      assets: {
+        taskBundles: {
+          task_a: {
+            id: "task_a",
+            digest: "sha256:task",
+            runtime: "node",
+            source: "export default async function task() {}\n",
+          },
+        },
+      },
+    });
+
+    expect(validateWorkflowIR(ir)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "IR001", path: "root.nodes.run_task.run.unexpected" }),
+    ]));
+  });
+
   it("requires task run digest to match the bundled task digest", () => {
     const ir: WorkflowIR = {
       irVersion: 2,

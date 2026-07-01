@@ -110,7 +110,7 @@ describe.concurrent("runtime admission use cases", () => {
     });
   });
 
-  it("passes task run invocation input, cwd, env, params, and execution options to runtime tasks", async () => {
+  it("passes task run invocation input, cwd, env, and execution options to runtime tasks", async () => {
     await withRuntimeWorkspace("runtime-task-run-options", async workspace => {
       const workDir = join(workspace, "task-workdir");
       await mkdir(workDir);
@@ -124,7 +124,7 @@ describe.concurrent("runtime admission use cases", () => {
           inputName: "runtime",
           cwd: workDir,
           envValue: "from-run-env",
-          paramsMode: "strict",
+          inputMode: "strict",
         },
       });
     });

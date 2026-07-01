@@ -55,8 +55,8 @@
 - Signal nodes MUST use `step("id").signal({ outputSchema, run: { prompt }, timeout?, onTimeout? })`.
 - Signal `onTimeout`, when present, MUST use `{ action: "fail", message? }`.
 - Task nodes MUST use `run.input` as the explicit expression-to-runtime-value boundary.
-- Inline Task nodes MUST use `step("id").task({ outputSchema, run: { input, exec, params?, cwd?, env?, execution? }, timeout?, retry? })`.
-- Reusable Task nodes MUST use `step("id").task({ run: { task, input, params?, cwd?, env?, execution? }, timeout?, retry? })` and MUST take their output schema from the reusable Task token.
+- Inline Task nodes MUST use `step("id").task({ outputSchema, run: { input, exec, cwd?, env?, execution? }, timeout?, retry? })`.
+- Reusable Task nodes MUST use `step("id").task({ run: { task, input, cwd?, env?, execution? }, timeout?, retry? })` and MUST take their output schema from the reusable Task token.
 - Agent and Signal node graph dependencies MUST be expressed by refs inside `run.prompt`, `run.cwd`, `run.env`, and `run.session`.
 - Agent and Task `cwd` MUST be a string workflow value.
 - Agent and Task `env` values MUST be string workflow values or `secret(...)` tokens.
@@ -83,7 +83,8 @@
 - A reusable Task node MUST use the Task's declared `outputSchema` and MUST NOT repeat `outputSchema` at the call site.
 - A reusable Task definition's `inputSchema` MUST be the runtime input schema for its `exec` function; a reusable Task node call site's `run.input` MUST be the graph expression binding for that schema.
 - Task node lifecycle options MAY support top-level `timeout` and `retry`.
-- Task invocation options MAY support `run.params`, `run.cwd`, `run.env`, and `run.execution`.
+- Task invocation options MAY support `run.cwd`, `run.env`, and `run.execution`.
+- Task code MUST receive a context containing only `input`, `$`, `artifact`, `env`, and `abortSignal`.
 - Task code MUST receive an Acpus-owned `$` wrapper backed by `zx/core`.
 - The wrapper MUST support `` $`cmd` ``, `$({ cwd, env, timeout, nothrow, allowExitCode })`, `.allowExitCode([...])`, `.nothrow()`, `.timeout("10m")`, `.json<T>()`, `.text()`, and `.lines()`.
 - Programmatic arguments MUST use zx array interpolation.
@@ -94,7 +95,7 @@
 - `WorkflowIR`, node IR, scope IR, schema IR, template IR, expression IR, agent definitions, task runs, and task bundles MUST use closed serialized object shapes.
 - `validateWorkflowIR(ir)` MUST diagnose unknown fields, malformed agent definitions, malformed node runs, invalid expressions/templates/schemas, missing composite outputs, scope output fields outside a node's declared `outputSchema`, missing task bundles, and task run digest mismatches.
 - `WorkflowIR.assets.taskBundles` MUST contain task bundle metadata emitted by core authoring; production bundling belongs to `@acpus/workflow-compiler`.
-- Task invocation fields such as `input`, `params`, `cwd`, `env`, and `execution` MUST belong to `TaskRunIR`, not the task node top level.
+- Task invocation fields such as `input`, `cwd`, `env`, and `execution` MUST belong to `TaskRunIR`, not the task node top level.
 
 ## Verification
 

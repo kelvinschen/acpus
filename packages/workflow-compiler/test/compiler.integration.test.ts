@@ -69,7 +69,7 @@ describe.concurrent("workflow module compiler", () => {
       await writeFile(bundlePath, bundle.source);
       process.env.ACPUS_FAIL_IF_BUILD_CALLBACK_EXECUTED = "1";
       const mod = await import(`${pathToFileURL(bundlePath).href}?v=${Date.now()}`);
-      await expect(mod.default({ input: {}, params: {} })).resolves.toEqual({ ok: true });
+      await expect(mod.default({ input: {}, abortSignal: new AbortController().signal })).resolves.toEqual({ ok: true });
     } finally {
       if (previous === undefined) {
         delete process.env.ACPUS_FAIL_IF_BUILD_CALLBACK_EXECUTED;

@@ -122,21 +122,20 @@ export function taskInvocationOptionsWorkflow() {
         inputName: z.string(),
         cwd: z.string(),
         envValue: z.string(),
-        paramsMode: z.string(),
+        inputMode: z.string(),
       }),
       run: {
-        input: { name: "runtime" },
-        params: { mode: "strict" },
+        input: { name: "runtime", mode: "strict" },
         cwd: input.workDir,
         env: { RUNTIME_TASK_ENV: "from-run-env" },
         execution: { defaultCommandTimeout: "5s" },
-        exec: async ({ input, params, $, env }) => {
+        exec: async ({ input, $, env }) => {
           const command = await $`pwd`;
           return {
             inputName: input.name,
             cwd: command.stdout.trim(),
             envValue: env.RUNTIME_TASK_ENV ?? "",
-            paramsMode: String(params.mode),
+            inputMode: input.mode,
           };
         },
       },
@@ -145,7 +144,7 @@ export function taskInvocationOptionsWorkflow() {
       inputName: result.output.inputName,
       cwd: result.output.cwd,
       envValue: result.output.envValue,
-      paramsMode: result.output.paramsMode,
+      inputMode: result.output.inputMode,
     };
   });
 }

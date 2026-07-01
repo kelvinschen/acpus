@@ -82,9 +82,7 @@ export default defineWorkflow({
         normalizedRepoPath: normalizedRepo.output.normalized,
       },
       cwd: input.repoPath,
-      exec: async ({ input, $, artifact, log }) => {
-        log.info(`Preparing release ${input.version}`);
-
+      exec: async ({ input, $, artifact }) => {
         const changed = await $`
         git diff --name-only ${input.baseRef} ${input.headRef}
       `;

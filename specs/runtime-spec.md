@@ -57,6 +57,7 @@
 - The runtime MUST execute task nodes through frozen run-local task bundles.
 - Task execution MUST evaluate task `run.input`, `run.cwd`, and non-secret `run.env` expressions before invoking the task.
 - The runtime MUST pass task execution options to the task `$` command wrapper, including default command timeout.
+- The runtime MUST pass a per-attempt `abortSignal` into task code for cooperative cancellation.
 - Supported task execution values MUST be `commandRunner: "acpus-zx-core"` and `shell: "bash"`.
 - Task and agent node retry options MUST be represented as scheduler-visible retryable attempts for scheduler-backed runs.
 - Task and agent timeout options MUST be persisted as scheduler attempt deadlines for scheduler-backed runs.
@@ -122,7 +123,7 @@
 - Tests MUST cover read-only list/show/status APIs without live source reads or state creation for missing stores.
 - Tests MUST cover scheduler execution of supported assert, if, switch, parallel, fanout, loop, dynamic identity, durable branch decisions, group completion, cancellation, retry, and timeout transitions.
 - Tests MUST cover expression evaluation, template rendering, operator errors, and boolean operand failures.
-- Tests MUST cover task execution, task bundle loading, task invocation options, scheduler-visible retry, timeout deadlines, dynamic runtime context, artifact writes, attempt-local artifact paths, and timeout artifact rejection.
+- Tests MUST cover task execution, task bundle loading, task invocation options, scheduler-visible retry, timeout deadlines, task abort signal propagation, artifact writes, attempt-local artifact paths, and timeout artifact rejection.
 - Tests MUST cover command-backed agent integration, built-in mock provider integration, missing provider mapping, durable agent output validation, scheduler runtime identity environment, one agent-executor sub-attempt per scheduler-visible attempt, and separation between scheduler-visible attempts and agent executor sub-attempt metadata.
 - Tests MUST cover pause, resume, run retry, dynamic node retry, signal targeting and idempotency, fork, replay, durable command rows, and fork artifact reachability.
 - Tests MUST cover supervisor lease acquisition, active lease rejection, stale takeover, heartbeat fencing, release fencing, durable command consumption, and shutdown.

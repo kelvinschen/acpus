@@ -15,11 +15,9 @@ type ReusableTask<Input, Output> = Extract<TaskToken<Input, Output>, { kind: "ex
 const localDependencyTask: ReusableTask<InferSchema<typeof NormalizePackageInput>, InferSchema<typeof NormalizePackageOutput>> = task.define({
   inputSchema: NormalizePackageInput,
   outputSchema: NormalizePackageOutput,
-  exec: async ({ input, log }) => {
+  exec: async ({ input }) => {
     const normalized = input.packageName.trim();
     const slug = slugifyPackageName(normalized);
-
-    log.info("Normalized package", { normalized, slug });
 
     return { normalized, slug };
   },

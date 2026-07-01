@@ -106,7 +106,6 @@ export type TaskRunIR = {
   digest: string;
   runtime: "node";
   inline?: boolean;
-  params?: JsonObject;
   cwd?: ExprIR;
   env?: Record<string, ExprIR | SecretRefIR>;
   execution?: {

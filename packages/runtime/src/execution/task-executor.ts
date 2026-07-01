@@ -5,7 +5,6 @@ import { pathToFileURL } from "node:url";
 import type { ArtifactRef } from "@acpus/core/schema";
 import { createDollar, type CommandBuilder, type Dollar, type TaskContext, type TaskFunction } from "@acpus/core/runtime";
 import type { TaskNodeIR } from "@acpus/core/ir";
-import type { JsonObject } from "@acpus/expression/ir";
 import { evaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
 import type { RuntimeStore } from "../store/store.js";
 import { parseDurationMs } from "./duration.js";
@@ -48,7 +47,6 @@ export async function executeTaskNode(node: TaskNodeIR, scope: EvaluationScope, 
     try {
       const task = fn({
         input,
-        params: node.run.params ?? {},
         $: createTaskDollar({ cwd, env }, node, controller.signal),
         artifact: createArtifactApi({
           runId: options.runId,
@@ -58,23 +56,9 @@ export async function executeTaskNode(node: TaskNodeIR, scope: EvaluationScope, 
           attempt: visibleAttempt,
           signal: controller.signal,
         }),
-        log: {
-          debug() {},
-          info() {},
-          warn() {},
-          error() {},
-        },
         env,
-        runtime: {
-          runId: options.runId,
-          nodeId: node.id,
-          nodeKey,
-          attempt: visibleAttempt,
-          workDir,
-          outputDir,
-        },
-        signal: controller.signal,
-      } satisfies TaskContext<typeof input, JsonObject>);
+        abortSignal: controller.signal,
+      } satisfies TaskContext<typeof input>);
       if (node.timeout === undefined) return await task;
       const timeoutMs = parseDurationMs(node.timeout);
       const timeoutPromise = new Promise<never>((_, reject) => {
