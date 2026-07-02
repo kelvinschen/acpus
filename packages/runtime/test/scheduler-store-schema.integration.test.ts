@@ -50,6 +50,7 @@ describe("scheduler store schema", () => {
         "frame_kind",
         "instance_path_json",
         "scope_json",
+        "loop_json",
       ]));
       expect(columns(db, "node_attempts")).toEqual(expect.arrayContaining([
         "attempt_id",
@@ -64,6 +65,7 @@ describe("scheduler store schema", () => {
         "item_key",
         "item_index",
         "item_json",
+        "child_frame_key",
       ]));
       expect(sqliteNames(db, "index")).toEqual(expect.arrayContaining([
         "idx_run_leases_expires",

@@ -7,6 +7,7 @@ import type { RunDetails, RuntimeStore } from "../store/store.js";
 export type RuntimeAdvanceResult =
   | { status: "completed"; run: RunDetails; summary: AdvanceRunSummary }
   | { status: "failed"; run: RunDetails; message: string; summary: AdvanceRunSummary }
+  | { status: "canceled"; run: RunDetails; summary: AdvanceRunSummary }
   | { status: "awaiting"; run: RunDetails; nodeKey: string; summary: AdvanceRunSummary }
   | { status: "paused" | "idle" | "lease_lost"; run: RunDetails; summary: AdvanceRunSummary };
 
@@ -46,24 +47,12 @@ export async function advanceRuntimeRun(cwd: string, store: RuntimeStore, runId:
   throw new RuntimeAdvanceException({ type: "runtime-not-quiescent", runId, drives: 1_000, message: `Run '${runId}' did not quiesce after 1000 scheduler drives.` });
 }
 
-export function hasSchedulerState(store: RuntimeStore, runId: string): boolean {
-  const projection = unwrapStoreResult(store.scheduler.tryLoadRunSnapshot(runId)).projection;
-  return projection.run.paused
-    || projection.run.status !== "pending"
-    || Object.keys(projection.frames).length > 0
-    || Object.keys(projection.instances).length > 0
-    || Object.keys(projection.attempts).length > 0
-    || Object.keys(projection.groups).length > 0
-    || Object.keys(projection.groupMembers).length > 0
-    || Object.keys(projection.signalWaits).length > 0
-    || Object.keys(projection.branchDecisions).length > 0;
-}
-
 export function runtimeAdvanceResult(store: RuntimeStore, runId: string, summary: AdvanceRunSummary): RuntimeAdvanceResult {
   const run = store.getRun(runId);
   if (!run) throw new RuntimeAdvanceException({ type: "run-not-found", runId, message: `Run '${runId}' was not found.` });
   if (summary.status === "completed") return { status: "completed", run, summary };
   if (summary.status === "failed") return { status: "failed", run, message: rootFailureMessage(store, runId), summary };
+  if (summary.status === "canceled") return { status: "canceled", run, summary };
   if (summary.status === "awaiting") return { status: "awaiting", run, nodeKey: firstAwaitingNodeKey(store, runId), summary };
   return { status: summary.status, run, summary };
 }

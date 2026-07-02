@@ -2,8 +2,7 @@ import type { NodeIR, WorkflowIR } from "@acpus/core/ir";
 import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
 import type { EvaluationScope } from "../evaluation/evaluator.js";
 import type { FrozenRun, RuntimeStore } from "../store/store.js";
-import { advanceRun, type AdvanceRunSummary } from "./advance.js";
-import { appendNode, deriveInstanceKey } from "./identity.js";
+import { advanceRun, type AdvanceRunInput, type AdvanceRunSummary } from "./advance.js";
 import { bootstrapRootEvents, continueRootEvents } from "./materialize.js";
 import { createRuntimeNodeExecutor } from "./node-executor.js";
 import { parseDurationMs } from "../execution/duration.js";
@@ -34,6 +33,15 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
     ...(input.now === undefined ? {} : { now: input.now }),
     localConcurrencyLimitFor: localConcurrencyLimitForRoot(frozen.ir),
     maxAttemptsFor: () => undefined,
+    awaitableEventsFor: instance => {
+      const node = nodes.get(instance.nodeId);
+      return node?.kind === "signal"
+        ? [
+          { type: "instance.awaiting", payload: { nodeKey: instance.nodeKey, statusReason: "signal" } },
+          { type: "signal.awaiting", payload: { runId: input.runId, nodeKey: instance.nodeKey, nodeId: instance.nodeId } },
+        ]
+        : [];
+    },
     deadlineAtFor: (_instance, _projection, now) => {
       const node = nodes.get(_instance.nodeId);
       if (!node || !isSchedulerRetryLeaf(node) || node.timeout === undefined) return undefined;
@@ -74,14 +82,17 @@ function indexNodes(scope: WorkflowIR["root"], nodes = new Map<string, NodeIR>()
   return nodes;
 }
 
-function localConcurrencyLimitForRoot(ir: WorkflowIR): (groupKey: string) => number | undefined {
+function localConcurrencyLimitForRoot(ir: WorkflowIR): NonNullable<AdvanceRunInput["localConcurrencyLimitFor"]> {
   const limits = new Map<string, number>();
-  for (const node of ir.root.nodes) {
+  for (const node of indexNodes(ir.root).values()) {
     if ((node.kind === "parallel" || node.kind === "fanout") && node.maxConcurrency !== undefined) {
-      limits.set(deriveInstanceKey(appendNode([], node.id)), node.maxConcurrency);
+      limits.set(node.id, node.maxConcurrency);
     }
   }
-  return groupKey => limits.get(groupKey);
+  return (groupKey, projection) => {
+    const group = projection.groups[groupKey];
+    return group ? limits.get(group.nodeId) : undefined;
+  };
 }
 
 function rootScope(frozen: FrozenRun): EvaluationScope {

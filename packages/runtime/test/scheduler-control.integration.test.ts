@@ -1,6 +1,6 @@
 import { defineWorkflow, z } from "@acpus/core";
 import { describe, expect, it } from "vitest";
-import { appendFanoutItem, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
+import { appendBranch, appendFanoutItem, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { applySchedulerControlCommand } from "../src/scheduler/control.js";
 import { advanceFrozenRun } from "../src/scheduler/runtime-runner.js";
 import { openRuntimeStore } from "../src/store/store.js";
@@ -289,6 +289,49 @@ describe("scheduler control command adapter", () => {
     });
   });
 
+  it("replays a recovered signal command after the wait was already consumed", async () => {
+    await withRuntimeWorkspace("scheduler-control-signal-recovered-replay", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, signalWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const nodeKey = deriveInstanceKey(appendNode([], "approve"));
+        const claim = store.scheduler.claimRun(run.id, "bootstrap", 60_000)!;
+        store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "signal-recovered-bootstrap",
+          events: [
+            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root", scope: { approve: nodeKey } } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey, nodeId: "approve", instancePath: appendNode([], "approve"), parentFrameKey: "root", readinessSequence: 1 } },
+            { type: "instance.awaiting", payload: { nodeKey, statusReason: "signal" } },
+            { type: "signal.awaiting", payload: { runId: run.id, nodeKey, nodeId: "approve" } },
+          ],
+        });
+        store.scheduler.releaseRun(claim);
+
+        const command = store.submitCommand({ runId: run.id, type: "signal", payload: { node: "approve", payload: { ok: true } }, idempotencyKey: `signal:${run.id}:approve:recovered` });
+        const signalClaim = store.scheduler.claimRun(run.id, "crash-window", 60_000)!;
+        store.scheduler.consumeSignal({
+          runId: run.id,
+          nodeKey,
+          ownerEpoch: signalClaim.ownerEpoch,
+          payload: { ok: true },
+          commandIdempotencyKey: command.idempotencyKey,
+          idempotencyKey: `scheduler:control:${command.id}`,
+        });
+        store.scheduler.releaseRun(signalClaim);
+
+        const recovered = await applySchedulerControlCommand(workspace, store, command, { ownerId: "owner-a", advance: false });
+        expect(recovered.snapshot.projection.signalWaits[nodeKey]).toMatchObject({ status: "consumed", payload: { ok: true } });
+        expect(store.getCommand(command.id)).toMatchObject({ status: "applied" });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   it("ignores non-awaiting signal waits when resolving a static alias", async () => {
     await withRuntimeWorkspace("scheduler-control-signal-static-alias-status-filter", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, signalWorkflow());
@@ -350,7 +393,7 @@ describe("scheduler control command adapter", () => {
         });
         store.scheduler.releaseRun(claim);
 
-        const command = store.submitCommand({ runId: run.id, type: "retry", payload: { node: nodeKey }, idempotencyKey: `retry:${run.id}:${nodeKey}` });
+        const command = store.submitCommand({ runId: run.id, type: "retry", payload: { target: nodeKey }, idempotencyKey: `retry:${run.id}:${nodeKey}` });
         const applied = await applySchedulerControlCommand(workspace, store, command, { ownerId: "owner-a", advance: false });
 
         expect(applied.snapshot.projection.instances[nodeKey]).toMatchObject({ status: "ready", statusReason: "retry" });
@@ -382,10 +425,88 @@ describe("scheduler control command adapter", () => {
         });
         store.scheduler.releaseRun(claim);
 
-        const command = store.submitCommand({ runId: run.id, type: "retry", payload: { node: "root_task" }, idempotencyKey: `retry:${run.id}:root_task` });
+        const command = store.submitCommand({ runId: run.id, type: "retry", payload: { target: "root_task" }, idempotencyKey: `retry:${run.id}:root_task` });
         const applied = await applySchedulerControlCommand(workspace, store, command, { ownerId: "owner-a", advance: false });
 
         expect(applied.snapshot.projection.instances[nodeKey]).toMatchObject({ status: "ready", statusReason: "retry" });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("resolves a unique static retry alias to a failed composite frame key", async () => {
+    await withRuntimeWorkspace("scheduler-control-retry-frame-static-alias", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, rootTaskWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const frameKey = deriveInstanceKey(appendNode([], "choose"));
+        const branchKey = deriveInstanceKey(appendBranch([], "choose", "then"));
+        const claim = store.scheduler.claimRun(run.id, "bootstrap", 60_000)!;
+        store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "failed-frame-static-bootstrap",
+          events: [
+            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } },
+            { type: "frame.started", payload: { runId: run.id, frameKey, frameKind: "node", nodeKey: frameKey, nodeId: "choose", parentFrameKey: "root", instancePath: appendNode([], "choose") } },
+            { type: "branch.decided", payload: { frameKey, branchId: "then" } },
+            { type: "frame.started", payload: { runId: run.id, frameKey: branchKey, frameKind: "branch", nodeId: "choose", parentFrameKey: frameKey, instancePath: appendBranch([], "choose", "then") } },
+            { type: "frame.failed", payload: { frameKey: branchKey, error: { reason: "boom" } } },
+            { type: "frame.failed", payload: { frameKey, error: { reason: "boom" } } },
+            { type: "frame.failed", payload: { frameKey: "root", error: { reason: "boom" } } },
+          ],
+        });
+        store.scheduler.releaseRun(claim);
+
+        const command = store.submitCommand({ runId: run.id, type: "retry", payload: { target: "choose" }, idempotencyKey: `retry:${run.id}:choose` });
+        const applied = await applySchedulerControlCommand(workspace, store, command, { ownerId: "owner-a", advance: false });
+
+        expect(applied.snapshot.projection.frames[frameKey]).toBeUndefined();
+        expect(applied.snapshot.projection.frames[branchKey]).toBeUndefined();
+        expect(applied.snapshot.projection.branchDecisions[frameKey]).toBeUndefined();
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("replays a recovered static retry command after its frame subtree was cleared", async () => {
+    await withRuntimeWorkspace("scheduler-control-retry-recovered-replay", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, rootTaskWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const frameKey = deriveInstanceKey(appendNode([], "choose"));
+        const branchKey = deriveInstanceKey(appendBranch([], "choose", "then"));
+        const claim = store.scheduler.claimRun(run.id, "bootstrap", 60_000)!;
+        store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "failed-frame-recovered-bootstrap",
+          events: [
+            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } },
+            { type: "frame.started", payload: { runId: run.id, frameKey, frameKind: "node", nodeKey: frameKey, nodeId: "choose", parentFrameKey: "root", instancePath: appendNode([], "choose") } },
+            { type: "branch.decided", payload: { frameKey, branchId: "then" } },
+            { type: "frame.started", payload: { runId: run.id, frameKey: branchKey, frameKind: "branch", nodeId: "choose", parentFrameKey: frameKey, instancePath: appendBranch([], "choose", "then") } },
+            { type: "frame.failed", payload: { frameKey: branchKey, error: { reason: "boom" } } },
+            { type: "frame.failed", payload: { frameKey, error: { reason: "boom" } } },
+            { type: "frame.failed", payload: { frameKey: "root", error: { reason: "boom" } } },
+          ],
+        });
+        store.scheduler.releaseRun(claim);
+
+        const command = store.submitCommand({ runId: run.id, type: "retry", payload: { target: "choose" }, idempotencyKey: `retry:${run.id}:choose:recovered` });
+        const retryClaim = store.scheduler.claimRun(run.id, "crash-window", 60_000)!;
+        store.scheduler.retry({ runId: run.id, ownerEpoch: retryClaim.ownerEpoch, idempotencyKey: `scheduler:control:${command.id}`, targetKey: frameKey });
+        store.scheduler.releaseRun(retryClaim);
+
+        const recovered = await applySchedulerControlCommand(workspace, store, command, { ownerId: "owner-a", advance: false });
+        expect(recovered.snapshot.projection.frames[frameKey]).toBeUndefined();
+        expect(store.getCommand(command.id)).toMatchObject({ status: "applied" });
       } finally {
         store.close();
       }
@@ -416,9 +537,9 @@ describe("scheduler control command adapter", () => {
         });
         store.scheduler.releaseRun(claim);
 
-        const command = store.submitCommand({ runId: run.id, type: "retry", payload: { node: "item_task" }, idempotencyKey: `retry:${run.id}:item_task` });
+        const command = store.submitCommand({ runId: run.id, type: "retry", payload: { target: "item_task" }, idempotencyKey: `retry:${run.id}:item_task` });
         await expect(applySchedulerControlCommand(workspace, store, command, { ownerId: "owner-a", advance: false }))
-          .rejects.toThrow(`Candidate nodeKeys: ${[firstKey, secondKey].sort().join(", ")}`);
+          .rejects.toThrow(`Candidate target keys: ${[firstKey, secondKey].sort().join(", ")}`);
         expect(store.getCommand(command.id)).toMatchObject({ status: "failed" });
       } finally {
         store.close();
@@ -432,10 +553,10 @@ describe("scheduler control command adapter", () => {
       const store = await openRuntimeStore(workspace);
       try {
         const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
-        const command = store.submitCommand({ runId: run.id, type: "retry", payload: { node: "missing" }, idempotencyKey: `retry:${run.id}:missing` });
+        const command = store.submitCommand({ runId: run.id, type: "retry", payload: { target: "missing" }, idempotencyKey: `retry:${run.id}:missing` });
 
         await expect(applySchedulerControlCommand(workspace, store, command, { ownerId: "owner-a", advance: false }))
-          .rejects.toThrow(`Scheduler retry command '${command.id}' target 'missing' was not found.`);
+          .rejects.toThrow("Retry target 'missing' was not found.");
         expect(store.getCommand(command.id)).toMatchObject({ status: "failed" });
         expect(store.scheduler.loadRunSnapshot(run.id).projection.instances).toEqual({});
       } finally {
@@ -468,11 +589,79 @@ describe("scheduler control command adapter", () => {
         });
         store.scheduler.releaseRun(claim);
 
-        const command = store.submitCommand({ runId: run.id, type: "retry", payload: { node: "item_task" }, idempotencyKey: `retry:${run.id}:item_task:status-filter` });
+        const command = store.submitCommand({ runId: run.id, type: "retry", payload: { target: "item_task" }, idempotencyKey: `retry:${run.id}:item_task:status-filter` });
         const applied = await applySchedulerControlCommand(workspace, store, command, { ownerId: "owner-a", advance: false });
 
         expect(applied.snapshot.projection.instances[completedKey]).toMatchObject({ status: "completed" });
         expect(applied.snapshot.projection.instances[failedKey]).toMatchObject({ status: "ready", statusReason: "retry" });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("applies a durable run cancel command", async () => {
+    await withRuntimeWorkspace("scheduler-control-cancel-run", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, rootTaskWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const nodeKey = deriveInstanceKey(appendNode([], "root_task"));
+        const claim = store.scheduler.claimRun(run.id, "bootstrap", 60_000)!;
+        store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "cancel-run-bootstrap",
+          events: [
+            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root", scope: { root_task: nodeKey } } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey, nodeId: "root_task", instancePath: appendNode([], "root_task"), parentFrameKey: "root", readinessSequence: 1 } },
+          ],
+        });
+        store.scheduler.releaseRun(claim);
+
+        const command = store.submitCommand({ runId: run.id, type: "cancel", idempotencyKey: `cancel:${run.id}` });
+        const applied = await applySchedulerControlCommand(workspace, store, command, { ownerId: "owner-a", advance: false });
+
+        expect(applied.snapshot.projection.run.status).toBe("canceled");
+        expect(applied.snapshot.projection.instances[nodeKey]).toMatchObject({ status: "cancelled", statusReason: "operator_cancelled" });
+        expect(store.getCommand(command.id)).toMatchObject({ status: "applied" });
+        expect(store.getRun(run.id)).toMatchObject({ status: "canceled" });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("resolves a unique static cancel alias to a non-terminal dynamic target", async () => {
+    await withRuntimeWorkspace("scheduler-control-cancel-static-alias", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, rootTaskWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const liveKey = deriveInstanceKey(appendNode(appendFanoutItem([], "items", "live", 0), "item_task"));
+        const doneKey = deriveInstanceKey(appendNode(appendFanoutItem([], "items", "done", 1), "item_task"));
+        const claim = store.scheduler.claimRun(run.id, "bootstrap", 60_000)!;
+        store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "cancel-static-bootstrap",
+          events: [
+            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: liveKey, nodeId: "item_task", instancePath: appendNode(appendFanoutItem([], "items", "live", 0), "item_task"), parentFrameKey: "root", readinessSequence: 1 } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: doneKey, nodeId: "item_task", instancePath: appendNode(appendFanoutItem([], "items", "done", 1), "item_task"), parentFrameKey: "root", readinessSequence: 2 } },
+            { type: "instance.completed", payload: { nodeKey: doneKey, output: { ok: true } } },
+          ],
+        });
+        store.scheduler.releaseRun(claim);
+
+        const command = store.submitCommand({ runId: run.id, type: "cancel", payload: { target: "item_task" }, idempotencyKey: `cancel:${run.id}:item_task` });
+        const applied = await applySchedulerControlCommand(workspace, store, command, { ownerId: "owner-a", advance: false });
+
+        expect(applied.snapshot.projection.instances[liveKey]).toMatchObject({ status: "cancelled", statusReason: "operator_cancelled" });
+        expect(applied.snapshot.projection.instances[doneKey]).toMatchObject({ status: "completed" });
+        expect(applied.snapshot.projection.run.status).toBe("pending");
       } finally {
         store.close();
       }

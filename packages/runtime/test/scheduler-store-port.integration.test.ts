@@ -128,15 +128,15 @@ describe("scheduler store port", () => {
         if (appendConflict.isOk()) throw new Error("expected append idempotency conflict");
         expect(appendConflict.error).toMatchObject({ type: "idempotency-conflict", idempotencyKey: "typed:ready", runId: run.id });
 
-        const invalidNodeRetry = store.scheduler.tryRetry({ runId: run.id, nodeKey: "require_ready~1", ownerEpoch: claim.ownerEpoch, idempotencyKey: "typed:node-retry" });
+        const invalidNodeRetry = store.scheduler.tryRetry({ runId: run.id, targetKey: "require_ready~1", ownerEpoch: claim.ownerEpoch, idempotencyKey: "typed:node-retry" });
         expect(invalidNodeRetry.isErr()).toBe(true);
         if (invalidNodeRetry.isOk()) throw new Error("expected invalid node retry target");
-        expect(invalidNodeRetry.error).toMatchObject({ type: "invalid-retry-target", runId: run.id, nodeKey: "require_ready~1", status: "ready" });
+        expect(invalidNodeRetry.error).toMatchObject({ type: "invalid-retry-target", runId: run.id, targetKey: "require_ready~1", status: "ready" });
 
-        const missingRetry = store.scheduler.tryRetry({ runId: run.id, nodeKey: "missing~1", ownerEpoch: claim.ownerEpoch, idempotencyKey: "typed:missing-retry" });
+        const missingRetry = store.scheduler.tryRetry({ runId: run.id, targetKey: "missing~1", ownerEpoch: claim.ownerEpoch, idempotencyKey: "typed:missing-retry" });
         expect(missingRetry.isErr()).toBe(true);
         if (missingRetry.isOk()) throw new Error("expected missing retry target");
-        expect(missingRetry.error).toMatchObject({ type: "missing-retry-target", runId: run.id, nodeKey: "missing~1" });
+        expect(missingRetry.error).toMatchObject({ type: "missing-retry-target", runId: run.id, targetKey: "missing~1" });
 
         const signalMissing = store.scheduler.tryConsumeSignal({
           runId: run.id,
@@ -286,6 +286,29 @@ describe("scheduler store port", () => {
     });
   });
 
+  it("cancels a run before root materialization", async () => {
+    await withRuntimeWorkspace("scheduler-store-cancel-before-root", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+
+        const canceled = store.scheduler.cancel({
+          runId: run.id,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "cancel:before-root",
+        });
+
+        expect(canceled.projection.run).toMatchObject({ status: "canceled", paused: false });
+        expect(canceled.projection.frames.root).toMatchObject({ status: "cancelled", terminalReason: "operator_cancelled" });
+        expect(store.getRun(run.id)).toMatchObject({ status: "canceled" });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   it("bridges scheduler terminal events to public events once with mixed event sequencing", async () => {
     await withRuntimeWorkspace("scheduler-store-public-terminal-sequence", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
@@ -325,6 +348,35 @@ describe("scheduler store port", () => {
           ],
         }).version).toBe(4);
         expect(dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ? AND type = 'run.completed'", run.id)).toBe(1);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("replaces static public node placeholders with dynamic scheduler rows", async () => {
+    await withRuntimeWorkspace("scheduler-store-public-dynamic-node-bridge", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        expect(dbScalar(workspace, "SELECT COUNT(*) FROM node_states WHERE run_id = ? AND node_key = 'require_ready'", run.id)).toBe(1);
+
+        store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "public:dynamic-node-bridge",
+          events: [
+            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root", scope: { require_ready: "require_ready~1" } } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "require_ready~1", nodeId: "require_ready", instancePath: [{ kind: "node", nodeId: "require_ready" }], parentFrameKey: "root", readinessSequence: 1 } },
+          ],
+        });
+
+        expect(dbRows(workspace, "SELECT node_key, node_id, status FROM node_states WHERE run_id = ? AND node_id = 'require_ready' ORDER BY node_key", run.id)).toEqual([
+          { node_key: "require_ready~1", node_id: "require_ready", status: "ready" },
+        ]);
       } finally {
         store.close();
       }
@@ -395,7 +447,7 @@ describe("scheduler store port", () => {
 
         const retried = store.scheduler.retry({
           runId: run.id,
-          nodeKey: "require_ready~1",
+          targetKey: "require_ready~1",
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "public:node-retry",
         });
@@ -443,7 +495,7 @@ describe("scheduler store port", () => {
 
         const retried = store.scheduler.retry({
           runId: run.id,
-          nodeKey: "leaf~1",
+          targetKey: "leaf~1",
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "public:branch-leaf-retry",
         });
@@ -679,7 +731,7 @@ describe("scheduler store port", () => {
 
         const retried = store.scheduler.retry({
           runId: run.id,
-          nodeKey: "require_ready~1",
+          targetKey: "require_ready~1",
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "retry:node",
         });
@@ -691,22 +743,223 @@ describe("scheduler store port", () => {
         expect(retried.projection.groupMembers["require_ready~1"]).toMatchObject({ status: "ready" });
         expect(store.scheduler.retry({
           runId: run.id,
-          nodeKey: "require_ready~1",
+          targetKey: "require_ready~1",
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "retry:node",
         }).version).toBe(retried.version);
         expect(() => store.scheduler.retry({
           runId: run.id,
-          nodeKey: "require_ready~1",
+          targetKey: "require_ready~1",
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "retry:node-again",
         })).toThrow("cannot be retried from ready");
-        expect(() => store.scheduler.retry({
+        expect(store.scheduler.retry({
           runId: run.id,
-          nodeKey: "other~1",
+          targetKey: "other~1",
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "retry:node",
+        }).version).toBe(retried.version);
+        expect(() => store.scheduler.retry({
+          runId: run.id,
+          targetKey: "other~1",
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "retry:other",
         })).toThrow("Group member 'other~1' cannot be retried from ready");
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("retries failed composite frames through scheduler events", async () => {
+    await withRuntimeWorkspace("scheduler-store-frame-retry", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        const snapshot = store.scheduler.loadRunSnapshot(run.id);
+        store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: snapshot.version,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "retry:frame-state",
+          events: [
+            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } },
+            { type: "frame.started", payload: { runId: run.id, frameKey: "choose~1", frameKind: "node", nodeKey: "choose~1", nodeId: "choose", parentFrameKey: "root", instancePath: [{ kind: "node", nodeId: "choose" }] } },
+            { type: "branch.decided", payload: { frameKey: "choose~1", branchId: "then" } },
+            { type: "frame.started", payload: { runId: run.id, frameKey: "choose.then~1", frameKind: "branch", nodeId: "choose", parentFrameKey: "choose~1", instancePath: [{ kind: "branch", nodeId: "choose", branchId: "then" }] } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "leaf~1", nodeId: "leaf", parentFrameKey: "choose.then~1", instancePath: [{ kind: "branch", nodeId: "choose", branchId: "then" }, { kind: "node", nodeId: "leaf" }] } },
+            { type: "attempt.started", payload: { runId: run.id, attemptId: "attempt_leaf", nodeKey: "leaf~1", nodeId: "leaf", attemptNo: 1, ownerEpoch: claim.ownerEpoch } },
+            { type: "attempt.failed", payload: { attemptId: "attempt_leaf", error: { reason: "boom" } } },
+            { type: "instance.failed", payload: { nodeKey: "leaf~1", error: { reason: "boom" } } },
+            { type: "frame.failed", payload: { frameKey: "choose.then~1", error: { reason: "boom" } } },
+            { type: "frame.failed", payload: { frameKey: "choose~1", error: { reason: "boom" } } },
+            { type: "frame.failed", payload: { frameKey: "root", error: { reason: "boom" } } },
+          ],
+        });
+
+        const retried = store.scheduler.retry({
+          runId: run.id,
+          targetKey: "choose~1",
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "retry:frame",
+        });
+        expect(retried.projection.run).toMatchObject({ status: "pending" });
+        expect(retried.projection.frames.root).toMatchObject({ status: "running" });
+        expect(retried.projection.frames["choose~1"]).toBeUndefined();
+        expect(retried.projection.frames["choose.then~1"]).toBeUndefined();
+        expect(retried.projection.instances["leaf~1"]).toBeUndefined();
+        expect(retried.projection.branchDecisions["choose~1"]).toBeUndefined();
+        expect(store.getRun(run.id)).toMatchObject({ status: "pending" });
+        expect(dbScalar(workspace, "SELECT COUNT(*) FROM scheduler_frames WHERE run_id = ? AND frame_key = ?", run.id, "choose.then~1")).toBe(0);
+        expect(dbScalar(workspace, "SELECT COUNT(*) FROM node_instances WHERE run_id = ? AND node_key = ?", run.id, "leaf~1")).toBe(0);
+        expect(dbScalar(workspace, "SELECT COUNT(*) FROM node_attempts WHERE run_id = ? AND attempt_id = ?", run.id, "attempt_leaf")).toBe(0);
+        expect(dbScalar(workspace, "SELECT COUNT(*) FROM node_states WHERE run_id = ? AND node_key = ?", run.id, "leaf~1")).toBe(0);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("cancels a run through scheduler events and bridges the public run status", async () => {
+    await withRuntimeWorkspace("scheduler-store-cancel-run", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "cancel:run-state",
+          events: [
+            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "require_ready~1", nodeId: "require_ready", instancePath: [{ kind: "node", nodeId: "require_ready" }], parentFrameKey: "root", readinessSequence: 1 } },
+          ],
+        });
+
+        const canceled = store.scheduler.cancel({
+          runId: run.id,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "cancel:run",
+        });
+
+        expect(canceled.projection.run).toMatchObject({ status: "canceled", paused: false });
+        expect(canceled.projection.frames.root).toMatchObject({ status: "cancelled", terminalReason: "operator_cancelled" });
+        expect(canceled.projection.instances["require_ready~1"]).toMatchObject({ status: "cancelled", statusReason: "operator_cancelled" });
+        expect(store.getRun(run.id)).toMatchObject({ status: "canceled" });
+        expect(dbScalar(workspace, "SELECT type FROM run_events WHERE run_id = ? AND type = 'run.canceled'", run.id)).toBe("run.canceled");
+        expect(store.scheduler.cancel({
+          runId: run.id,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "cancel:run",
+        }).version).toBe(canceled.version);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("cancels a dynamic target without resetting unrelated work", async () => {
+    await withRuntimeWorkspace("scheduler-store-cancel-target", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "cancel:target-state",
+          events: [
+            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "left~1", nodeId: "left", instancePath: [{ kind: "node", nodeId: "left" }], parentFrameKey: "root", readinessSequence: 1 } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "right~1", nodeId: "right", instancePath: [{ kind: "node", nodeId: "right" }], parentFrameKey: "root", readinessSequence: 2 } },
+          ],
+        });
+
+        const canceled = store.scheduler.cancel({
+          runId: run.id,
+          targetKey: "left~1",
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "cancel:left",
+        });
+
+        expect(canceled.projection.run.status).toBe("pending");
+        expect(canceled.projection.instances["left~1"]).toMatchObject({ status: "cancelled", statusReason: "operator_cancelled" });
+        expect(canceled.projection.instances["right~1"]).toMatchObject({ status: "ready" });
+        expect(store.getRun(run.id)).toMatchObject({ status: "pending" });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("cancels the owning group member subtree for a grouped leaf target", async () => {
+    await withRuntimeWorkspace("scheduler-store-cancel-grouped-leaf", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "cancel:grouped-leaf-state",
+          events: [
+            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } },
+            { type: "frame.started", payload: { runId: run.id, frameKey: "parallel~1", frameKind: "node", parentFrameKey: "root", nodeKey: "parallel~1", nodeId: "parallel", strategy: "all" } },
+            { type: "group.started", payload: { runId: run.id, groupKey: "parallel~1", nodeKey: "parallel~1", nodeId: "parallel", kind: "parallel", strategy: "all" } },
+            { type: "group.member_ready", payload: { runId: run.id, groupKey: "parallel~1", memberKey: "branch~left", memberKind: "branch", branchId: "left", childFrameKey: "branch~left", readinessSequence: 1 } },
+            { type: "frame.started", payload: { runId: run.id, frameKey: "branch~left", frameKind: "branch", parentFrameKey: "parallel~1", nodeId: "parallel", strategy: "all" } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "leaf~1", nodeId: "leaf", instancePath: [{ kind: "branch", nodeId: "parallel", branchId: "left" }, { kind: "node", nodeId: "leaf" }], parentFrameKey: "branch~left", readinessSequence: 1 } },
+          ],
+        });
+
+        const canceled = store.scheduler.cancel({
+          runId: run.id,
+          targetKey: "leaf~1",
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "cancel:grouped-leaf",
+        });
+
+        expect(canceled.projection.instances["leaf~1"]).toMatchObject({ status: "cancelled", statusReason: "operator_cancelled" });
+        expect(canceled.projection.groupMembers["branch~left"]).toMatchObject({ status: "cancelled", terminalReason: "operator_cancelled" });
+        expect(canceled.projection.frames["branch~left"]).toMatchObject({ status: "cancelled", terminalReason: "operator_cancelled" });
+        expect(canceled.projection.groups["parallel~1"]).toMatchObject({ status: "running" });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("exposes group member completion sequence through public run details", async () => {
+    await withRuntimeWorkspace("scheduler-store-group-member-order-read", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "public:group-member-order",
+          events: [
+            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } },
+            { type: "group.started", payload: { runId: run.id, groupKey: "parallel~1", nodeKey: "parallel~1", nodeId: "parallel", kind: "parallel", strategy: "race" } },
+            { type: "group.member_ready", payload: { runId: run.id, groupKey: "parallel~1", memberKey: "left", memberKind: "branch", branchId: "left", readinessSequence: 1 } },
+            { type: "group.member_completed", payload: { memberKey: "left", completionSequence: 7, output: { ok: true } } },
+          ],
+        });
+
+        expect(store.getRun(run.id)?.dynamic?.groupMembers).toEqual([
+          expect.objectContaining({ memberKey: "left", completionSequence: 7, status: "completed" }),
+        ]);
       } finally {
         store.close();
       }
@@ -969,6 +1222,41 @@ describe("scheduler store port", () => {
           idempotencyKey: "signal:consume:late",
         })).toThrow("already timed_out");
         expect(dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", run.id)).toBe(eventCount);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("drops a terminal signal wait when retrying the failed signal node", async () => {
+    await withRuntimeWorkspace("scheduler-store-signal-timeout-retry", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        awaitingSignal(store, run.id, claim, "signal-retry-awaiting");
+        store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "signal-retry:timeout",
+          events: [
+            { type: "signal.timed_out", payload: { nodeKey: "approve~1", terminalReason: "signal_timeout" } },
+            { type: "instance.failed", payload: { nodeKey: "approve~1", error: { reason: "signal_timeout" }, statusReason: "signal_timeout" } },
+          ],
+        });
+
+        const retried = store.scheduler.retry({
+          runId: run.id,
+          targetKey: "approve~1",
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "signal-retry:node",
+        });
+
+        expect(retried.projection.instances["approve~1"]).toMatchObject({ status: "ready", statusReason: "retry" });
+        expect(retried.projection.signalWaits["approve~1"]).toBeUndefined();
+        expect(dbScalar(workspace, "SELECT COUNT(*) FROM signal_waits WHERE run_id = ? AND node_key = ?", run.id, "approve~1")).toBe(0);
       } finally {
         store.close();
       }

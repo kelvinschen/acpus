@@ -24,6 +24,7 @@ export type SchedulerEvent =
   | BaseEvent<"frame.completed", { frameKey: string; result?: JsonValue; terminalReason?: string }>
   | BaseEvent<"frame.failed", { frameKey: string; error: JsonObject; terminalReason?: string }>
   | BaseEvent<"frame.cancelled", { frameKey: string; cancelReason: CancellationReason }>
+  | BaseEvent<"frame.retry_requested", { frameKey: string; source?: "control" }>
   | BaseEvent<"frame.loop_advanced", { frameKey: string; iter: number; previous?: JsonValue; result?: JsonValue }>
   // Makes a dynamic node instance known to the scheduler.
   | BaseEvent<"instance.ready", { runId: string; nodeKey: string; nodeId: string; instancePath: InstancePath; parentFrameKey?: string; readinessSequence?: number }>
@@ -45,7 +46,7 @@ export type SchedulerEvent =
   | BaseEvent<"group.started", { runId: string; groupKey: string; nodeKey: string; nodeId: string; kind: "parallel"; strategy: "all" | "race"; quorumCount?: never }>
   | BaseEvent<"group.started", { runId: string; groupKey: string; nodeKey: string; nodeId: string; kind: "fanout"; strategy: "all"; quorumCount?: never }>
   | BaseEvent<"group.started", { runId: string; groupKey: string; nodeKey: string; nodeId: string; kind: "fanout"; strategy: "quorum"; quorumCount: number }>
-  | BaseEvent<"group.member_ready", { runId: string; groupKey: string; memberKey: string; memberKind: "branch" | "fanout_item"; readinessSequence: number; branchId?: string; itemKey?: string | number; itemIndex?: number; item?: JsonValue }>
+  | BaseEvent<"group.member_ready", { runId: string; groupKey: string; memberKey: string; memberKind: "branch" | "fanout_item"; readinessSequence: number; branchId?: string; itemKey?: string | number; itemIndex?: number; item?: JsonValue; childFrameKey?: string }>
   | BaseEvent<"group.member_started", { memberKey: string }>
   | BaseEvent<"group.member_requeued", { memberKey: string; reason: "paused" | "superseded"; readinessSequence?: number }>
   | BaseEvent<"group.member_retry_requested", { memberKey: string; readinessSequence?: number; source?: "control" | "scheduler" }>
@@ -60,7 +61,8 @@ export type SchedulerEvent =
   // Stores normalized signal wait/consume transitions.
   | BaseEvent<"signal.awaiting", { runId: string; nodeKey: string; nodeId: string; deadlineAt?: string }>
   | BaseEvent<"signal.consumed", { nodeKey: string; payload: JsonValue; commandIdempotencyKey: string; payloadDigest?: string }>
-  | BaseEvent<"signal.timed_out", { nodeKey: string; terminalReason?: string }>;
+  | BaseEvent<"signal.timed_out", { nodeKey: string; terminalReason?: string }>
+  | BaseEvent<"signal.cancelled", { nodeKey: string; cancelReason: CancellationReason }>;
 
 export function isTerminalFrameStatus(status: FrameStatus): boolean {
   return status === "completed" || status === "failed" || status === "cancelled";

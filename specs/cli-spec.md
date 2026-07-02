@@ -17,8 +17,9 @@ The `acpus` package provides the user-facing command-line interface. It parses c
   submit-time agent overrides to runtime admission.
 - The CLI MUST support `--json` for machine-readable results.
 - The CLI MUST support `acpus runs list`, `acpus runs show <run-id>`, and `acpus runs status <run-id>`.
-- The CLI MUST support `acpus runs pause <run-id>`, `resume <run-id>`, `retry <run-id>`, and `fork <run-id>`.
-- The CLI MUST support `acpus runs retry <run-id> --node <node-id>`.
+- The CLI MUST support `acpus runs pause <run-id>`, `resume <run-id>`, `retry <run-id>`, `cancel <run-id>`, and `fork <run-id>`.
+- The CLI MUST support `acpus runs retry <run-id> --target <target-key-or-alias>`.
+- The CLI MUST support `acpus runs cancel <run-id> --target <target-key-or-alias>`.
 - The CLI MUST support `acpus runs fork <run-id> --workflow <workflow-module>` and `--input <json>`.
 - The CLI MUST support `acpus runs fork <run-id> --agents <json>` to pass
   fork-time agent overrides to runtime control.
@@ -64,5 +65,6 @@ The `acpus` package provides the user-facing command-line interface. It parses c
 - Tests MUST cover text rendering for agent attempt repair history, telemetry
   summaries, and artifact references exposed by runtime read APIs.
 - Tests MUST cover signal command wiring and continuation result output.
+- Tests MUST cover cancel command wiring and terminal canceled output.
 - Tests MUST cover supervisor background/shutdown command wiring.
 - Tests MUST cover package boundary and program output contracts.

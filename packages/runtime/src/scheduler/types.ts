@@ -20,7 +20,8 @@ export type CancellationReason =
   | "race_lost"
   | "quorum_reached"
   | "paused"
-  | "superseded";
+  | "superseded"
+  | "operator_cancelled";
 
 export type FailureClass = "retryable" | "terminal";
 
@@ -101,6 +102,7 @@ export type GroupMember = {
   itemKey?: string | number;
   itemIndex?: number;
   item?: JsonValue;
+  childFrameKey?: string;
   acceptedRank?: number;
   terminalReason?: string;
   output?: JsonValue;
@@ -121,7 +123,7 @@ export type SignalWait = {
 
 export type SchedulerRunProjection = {
   runId: string;
-  status: "pending" | "running" | "awaiting" | "paused" | "completed" | "failed";
+  status: "pending" | "running" | "awaiting" | "paused" | "completed" | "failed" | "canceled";
   paused: boolean;
 };
 

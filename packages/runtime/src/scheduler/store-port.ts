@@ -28,8 +28,10 @@ export type SchedulerStoreError =
   | { type: "signal-wait-not-found"; runId: string; nodeKey: string; message: string }
   | { type: "signal-wait-terminal"; runId: string; nodeKey: string; status: string; message: string }
   | { type: "idempotency-conflict"; idempotencyKey: string; runId?: string; message: string }
-  | { type: "missing-retry-target"; runId: string; nodeKey: string; message: string }
-  | { type: "invalid-retry-target"; runId: string; nodeKey?: string; status: string; message: string }
+  | { type: "missing-retry-target"; runId: string; targetKey: string; message: string }
+  | { type: "invalid-retry-target"; runId: string; targetKey?: string; status: string; message: string }
+  | { type: "missing-cancel-target"; runId: string; targetKey: string; message: string }
+  | { type: "invalid-cancel-target"; runId: string; targetKey?: string; status: string; message: string }
   | { type: "invalid-control-state"; runId: string; command: "resume"; status: string; message: string };
 
 export type SchedulerStoreResult<T> = Result<T, SchedulerStoreError>;
@@ -114,13 +116,20 @@ export type SchedulerRetryInput = {
   runId: string;
   ownerEpoch: number;
   idempotencyKey: string;
-  nodeKey: string;
+  targetKey: string;
 };
 
 export type SchedulerRunRetryInput = {
   runId: string;
   ownerEpoch: number;
   idempotencyKey: string;
+};
+
+export type SchedulerCancelInput = {
+  runId: string;
+  ownerEpoch: number;
+  idempotencyKey: string;
+  targetKey?: string;
 };
 
 export type SchedulerStorePort = {
@@ -145,6 +154,8 @@ export type SchedulerStorePort = {
   retryRun(input: SchedulerRunRetryInput): SchedulerSnapshot;
   tryRetry(input: SchedulerRetryInput): SchedulerStoreResult<SchedulerSnapshot>;
   retry(input: SchedulerRetryInput): SchedulerSnapshot;
+  tryCancel(input: SchedulerCancelInput): SchedulerStoreResult<SchedulerSnapshot>;
+  cancel(input: SchedulerCancelInput): SchedulerSnapshot;
   tryMarkExpiredOwnerAttemptsSuperseded(runId: string, ownerEpoch: number): SchedulerStoreResult<SchedulerSnapshot>;
   markExpiredOwnerAttemptsSuperseded(runId: string, ownerEpoch: number): SchedulerSnapshot;
 };

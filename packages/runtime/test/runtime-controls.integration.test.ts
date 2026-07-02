@@ -313,8 +313,8 @@ describe.concurrent("runtime controls and recovery use cases", () => {
           status: "running",
           strategy: "all",
           members: expect.arrayContaining([
-            expect.objectContaining({ memberKind: "fanout_item", status: "ready" }),
-            expect.objectContaining({ memberKind: "fanout_item", status: "ready" }),
+            expect.objectContaining({ memberKind: "fanout_item", status: "running" }),
+            expect.objectContaining({ memberKind: "fanout_item", status: "running" }),
           ]),
         }),
       ]);
@@ -346,6 +346,23 @@ describe.concurrent("runtime controls and recovery use cases", () => {
         },
         command: { status: "applied" },
       });
+      await expect(replayRun(workspace, all.run.id)).resolves.toMatchObject({
+        ok: true,
+        actual: { approvals: { left: { ok: true }, right: { ok: true } } },
+        projection: { issues: [] },
+      });
+      const fork = await mutateRun(workspace, all.run.id, "fork");
+      expect(fork).toMatchObject({
+        run: {
+          status: "completed",
+          output: { approvals: { left: { ok: true }, right: { ok: true } } },
+        },
+      });
+      await expect(replayRun(workspace, fork!.run.id)).resolves.toMatchObject({
+        ok: true,
+        actual: { approvals: { left: { ok: true }, right: { ok: true } } },
+        projection: { issues: [] },
+      });
 
       const race = await admitSyntheticWorkflow(workspace, parallelSignalRaceWorkflow());
       expect(race.status).toBe("awaiting");
@@ -358,6 +375,10 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       });
       await expect(signalRun(workspace, race.run.id, "right_approve", { ok: true })).rejects.toThrow("target 'right_approve' was not found");
       const loser = runtimeRow(workspace, "SELECT node_key FROM signal_waits WHERE run_id = ? AND node_id = 'right_approve'", race.run.id);
+      expect(runtimeRows(workspace, "SELECT node_id, status FROM signal_waits WHERE run_id = ? ORDER BY node_id", race.run.id)).toEqual([
+        { node_id: "left_approve", status: "consumed" },
+        { node_id: "right_approve", status: "cancelled" },
+      ]);
       await expect(signalRun(workspace, race.run.id, String(loser!.node_key), { ok: true })).rejects.toThrow(`target '${String(loser!.node_key)}' was not found`);
     });
   });
@@ -452,6 +473,35 @@ describe.concurrent("runtime controls and recovery use cases", () => {
           ]),
         },
       });
+    });
+  });
+
+  it("reports valid scheduler envelopes with unknown event types", async () => {
+    await withRuntimeWorkspace("runtime-replay-scheduler-unknown-event", async workspace => {
+      const admitted = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
+      const db = new DatabaseSync(join(workspace, ".acpus", "state", "runtime.db"));
+      try {
+        const nextSequence = db.prepare("SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM run_events WHERE run_id = ?")
+          .get(admitted.run.id) as { sequence: number };
+        db.prepare(`
+          INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
+          VALUES (?, ?, 'frame.exploded', NULL, ?, datetime('now'), ?)
+        `).run(
+          admitted.run.id,
+          nextSequence.sequence,
+          JSON.stringify({ schedulerEventVersion: 1, payload: { frameKey: "root" } }),
+          `test:unknown-scheduler-event:${admitted.run.id}`,
+        );
+      } finally {
+        db.close();
+      }
+
+      const replay = await replayRun(workspace, admitted.run.id);
+      if (!replay?.projection) throw new Error("expected replay projection");
+      expect(replay).toMatchObject({ ok: false });
+      expect(replay.projection.issues).toEqual([
+        expect.stringContaining("has an unknown scheduler event type"),
+      ]);
     });
   });
 

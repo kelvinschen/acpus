@@ -2,6 +2,7 @@ import type { JsonValue } from "@acpus/expression/ir";
 import { ResultAsync } from "neverthrow";
 import { createConcurrencyLimiter, type ConcurrencyLimiter } from "./limiter.js";
 import type { SchedulerEvent } from "./events.js";
+import { ancestorGroupMembersForNode } from "./membership.js";
 import { schedulerStoreError, throwSchedulerStoreResult, type AttemptCommitInput, type RunOwnerClaim, type SchedulerSnapshot, type SchedulerStoreError, type SchedulerStorePort, type SchedulerStoreResult } from "./store-port.js";
 import type { GroupMember, NodeInstance, SchedulerProjection } from "./types.js";
 import { attemptTimeoutEvents, groupCompletionEvents, signalTimeoutEvents } from "./transitions.js";
@@ -33,13 +34,14 @@ export type AdvanceRunInput = {
   localConcurrencyLimitFor?: (groupKey: string, projection: SchedulerProjection) => number | undefined;
   maxAttemptsFor?: (instance: NodeInstance, projection: SchedulerProjection) => number | undefined;
   deadlineAtFor?: (instance: NodeInstance, projection: SchedulerProjection, now: Date) => Date | undefined;
+  awaitableEventsFor?: (instance: NodeInstance, projection: SchedulerProjection) => SchedulerEvent[];
   bootstrap?: (snapshot: SchedulerSnapshot) => SchedulerEvent[];
   materialize?: (snapshot: SchedulerSnapshot) => SchedulerEvent[];
   now?: () => Date;
 };
 
 export type AdvanceRunSummary = {
-  status: "completed" | "failed" | "paused" | "awaiting" | "idle" | "lease_lost";
+  status: "completed" | "failed" | "canceled" | "paused" | "awaiting" | "idle" | "lease_lost";
   runId: string;
   ownerEpoch?: number;
   started: number;
@@ -90,10 +92,33 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
     const ready = selectReadyInstances(initial.projection, maxLeafConcurrency, input.memberForInstance, input.localConcurrencyLimitFor);
     if (ready.length === 0) return idleSummary(initial.projection, claim);
 
+    const waitEvents = ready.flatMap(instance => input.awaitableEventsFor?.(instance, initial.projection) ?? []);
+    if (waitEvents.length > 0) {
+      unwrapStoreResult(input.store.tryAppendSchedulerEvents({
+        runId: input.runId,
+        expectedVersion: initial.version,
+        ownerEpoch: claim.ownerEpoch,
+        idempotencyKey: `scheduler:await:${input.runId}:${initial.version}`,
+        events: waitEvents,
+      }));
+    }
+    const executable = waitEvents.length === 0
+      ? ready
+      : selectReadyInstances(
+        drainDerivedTransitions(input.store, input.runId, claim, now, input.materialize, input.maxAttemptsFor).projection,
+        maxLeafConcurrency,
+        input.memberForInstance,
+        input.localConcurrencyLimitFor,
+      );
+    if (executable.length === 0) {
+      const latest = drainDerivedTransitions(input.store, input.runId, claim, now, input.materialize, input.maxAttemptsFor);
+      return terminalSummary(latest.projection, claim) ?? idleSummary(latest.projection, claim);
+    }
+
     const limiter = input.limiter ?? createConcurrencyLimiter(maxLeafConcurrency);
     const counters = { started: 0, completed: 0, failed: 0, cancelled: 0, leaseLost: false };
     const active = new Map<string, AbortController>();
-    await Promise.all(ready.map(instance => limiter.add(async () => {
+    await Promise.all(executable.map(instance => limiter.add(async () => {
       await runInstance(input, claim, leaseMs, now, instance, counters, active);
       drainDerivedTransitions(input.store, input.runId, claim, now, input.materialize, input.maxAttemptsFor);
       abortInterruptedActiveAttempts(input.store, input.runId, active);
@@ -167,22 +192,31 @@ export function selectReadyInstances(
   const selected: NodeInstance[] = [];
   for (const instance of Object.values(projection.instances).filter(instance => instance.status === "ready").sort(byReadiness)) {
     if (selected.length >= available) break;
-    const member = memberForReadyInstance(instance, projection, memberForInstance);
-    if (member) {
-      const continuingRunningMember = member.status === "running" && member.memberKey === instance.parentFrameKey;
-      if (member.status !== "ready" && !continuingRunningMember) continue;
-      if (continuingRunningMember) {
-        selected.push(instance);
-        continue;
-      }
-      const limit = localConcurrencyLimitFor?.(member.groupKey, projection);
-      const used = localActive.get(member.groupKey) ?? 0;
-      if (limit !== undefined && used >= limit) continue;
-      localActive.set(member.groupKey, used + 1);
-    }
+    const members = membersForReadyInstance(instance, projection, memberForInstance);
+    if (members.some(member => member.status !== "ready" && member.status !== "running")) continue;
+    if (!reserveGroupCapacity(members, projection, localActive, localConcurrencyLimitFor)) continue;
     selected.push(instance);
   }
   return selected;
+}
+
+function reserveGroupCapacity(
+  members: readonly GroupMember[],
+  projection: SchedulerProjection,
+  localActive: Map<string, number>,
+  localConcurrencyLimitFor: AdvanceRunInput["localConcurrencyLimitFor"],
+): boolean {
+  const reservations: string[] = [];
+  for (const member of members) {
+    if (member.status === "running") continue;
+    const limit = localConcurrencyLimitFor?.(member.groupKey, projection);
+    const used = localActive.get(member.groupKey) ?? 0;
+    const pending = reservations.filter(groupKey => groupKey === member.groupKey).length;
+    if (limit !== undefined && used + pending >= limit) return false;
+    reservations.push(member.groupKey);
+  }
+  for (const groupKey of reservations) localActive.set(groupKey, (localActive.get(groupKey) ?? 0) + 1);
+  return true;
 }
 
 function drainDerivedTransitions(
@@ -212,10 +246,9 @@ function drainDerivedTransitions(
   }
 }
 
-function memberForReadyInstance(instance: NodeInstance, projection: SchedulerProjection, override: AdvanceRunInput["memberForInstance"]): GroupMember | undefined {
-  return override?.(instance, projection)
-    ?? projection.groupMembers[instance.nodeKey]
-    ?? (instance.parentFrameKey === undefined ? undefined : projection.groupMembers[instance.parentFrameKey]);
+function membersForReadyInstance(instance: NodeInstance, projection: SchedulerProjection, override: AdvanceRunInput["memberForInstance"]): GroupMember[] {
+  const overridden = override?.(instance, projection);
+  return overridden ? [overridden] : ancestorGroupMembersForNode(projection, instance.nodeKey);
 }
 
 function retryFailedInstanceEvents(projection: SchedulerProjection, maxAttemptsFor: AdvanceRunInput["maxAttemptsFor"]): SchedulerEvent[] {
@@ -236,13 +269,12 @@ function retryFailedInstanceEvents(projection: SchedulerProjection, maxAttemptsF
         },
       },
     ];
-    const directMember = projection.groupMembers[instance.nodeKey];
-    if (directMember?.status === "failed") {
+    for (const member of ancestorGroupMembersForNode(projection, instance.nodeKey).filter(member => member.status === "failed")) {
       events.push({
         type: "group.member_retry_requested",
         payload: {
-          memberKey: directMember.memberKey,
-          readinessSequence: directMember.readinessSequence,
+          memberKey: member.memberKey,
+          readinessSequence: member.readinessSequence,
           source: "scheduler",
         },
       });
@@ -355,7 +387,7 @@ function abortInterruptedActiveAttempts(store: SchedulerStorePort, runId: string
 }
 
 function terminalSummary(projection: SchedulerProjection, claim: RunOwnerClaim): AdvanceRunSummary | undefined {
-  if (projection.run.status === "completed" || projection.run.status === "failed" || projection.run.status === "paused") {
+  if (projection.run.status === "completed" || projection.run.status === "failed" || projection.run.status === "canceled" || projection.run.status === "paused") {
     return {
       status: projection.run.status,
       runId: projection.run.runId,

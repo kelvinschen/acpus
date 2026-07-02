@@ -19,7 +19,7 @@ describe("scheduler materialization", () => {
     expect(taskEvents[1]).toMatchObject({ type: "instance.ready", payload: { nodeId: "task", nodeKey, parentFrameKey: "root", readinessSequence: 1 } });
   });
 
-  it("creates indefinite root signal waits without synthesizing deadlines", () => {
+  it("materializes root signal leaves as ready scheduler work", () => {
     const events = bootstrapRootEvents("run_1", workflowWithRootNode({
       id: "approve",
       kind: "signal",
@@ -28,9 +28,8 @@ describe("scheduler materialization", () => {
       timeout: "1m",
     }));
 
-    expect(events.map(event => event.type)).toEqual(["frame.started", "instance.ready", "instance.awaiting", "signal.awaiting"]);
-    expect(events[3]).toMatchObject({ type: "signal.awaiting", payload: { nodeId: "approve" } });
-    expect((events[3] as Extract<typeof events[number], { type: "signal.awaiting" }>).payload.deadlineAt).toBeUndefined();
+    expect(events.map(event => event.type)).toEqual(["frame.started", "instance.ready"]);
+    expect(events[1]).toMatchObject({ type: "instance.ready", payload: { nodeId: "approve" } });
   });
 
   it("materializes failed root asserts as failed frames", () => {
@@ -50,6 +49,20 @@ describe("scheduler materialization", () => {
     });
     expect(continueRootEvents(workflow, projection, {})).toEqual([
       { type: "frame.failed", payload: { frameKey: "root", error: { message: "Assert node 'check' failed." }, terminalReason: "assert_failed" } },
+    ]);
+  });
+
+  it("materializes invalid control expressions as failed frames", () => {
+    const checkKey = deriveInstanceKey(appendNode([], "check"));
+
+    expect(bootstrapRootEvents("run_1", workflowWithRootNode({
+      id: "check",
+      kind: "assert",
+      condition: { kind: "literal", value: "not-boolean" },
+    }))).toEqual([
+      { type: "frame.started", payload: { runId: "run_1", frameKey: "root", frameKind: "root", scope: { check: checkKey } } },
+      expect.objectContaining({ type: "frame.started", payload: expect.objectContaining({ frameKey: checkKey, frameKind: "node" }) }),
+      { type: "frame.failed", payload: { frameKey: checkKey, error: { reason: "expression_failed", message: "Assert node 'check' condition must evaluate to boolean." }, terminalReason: "expression_failed" } },
     ]);
   });
 
@@ -116,18 +129,30 @@ describe("scheduler materialization", () => {
     const failed = applySchedulerEvents(projection, [
       { type: "instance.failed", payload: { nodeKey: thenKey, error: { reason: "boom" }, statusReason: "node_failed" } },
     ]);
-    expect(continueRootEvents(workflow, failed, {})).toEqual([
+    const failBranch = continueRootEvents(workflow, failed, {});
+    expect(failBranch).toEqual([
       { type: "frame.failed", payload: { frameKey: branchKey, error: { reason: "boom" }, terminalReason: "node_failed" } },
+    ]);
+    const failIf = continueRootEvents(workflow, applySchedulerEvents(failed, failBranch), {});
+    expect(failIf).toEqual([
       { type: "frame.failed", payload: { frameKey: ifKey, error: { reason: "boom" }, terminalReason: "node_failed" } },
+    ]);
+    expect(continueRootEvents(workflow, applySchedulerEvents(failed, [...failBranch, ...failIf]), {})).toEqual([
       { type: "frame.failed", payload: { frameKey: "root", error: { reason: "boom" }, terminalReason: "node_failed" } },
     ]);
 
     const cancelled = applySchedulerEvents(projection, [
       { type: "instance.cancelled", payload: { nodeKey: thenKey, cancelReason: "parent_failed" } },
     ]);
-    expect(continueRootEvents(workflow, cancelled, {})).toEqual([
+    const cancelBranch = continueRootEvents(workflow, cancelled, {});
+    expect(cancelBranch).toEqual([
       { type: "frame.cancelled", payload: { frameKey: branchKey, cancelReason: "parent_failed" } },
+    ]);
+    const cancelIf = continueRootEvents(workflow, applySchedulerEvents(cancelled, cancelBranch), {});
+    expect(cancelIf).toEqual([
       { type: "frame.cancelled", payload: { frameKey: ifKey, cancelReason: "parent_failed" } },
+    ]);
+    expect(continueRootEvents(workflow, applySchedulerEvents(cancelled, [...cancelBranch, ...cancelIf]), {})).toEqual([
       { type: "frame.cancelled", payload: { frameKey: "root", cancelReason: "parent_failed" } },
     ]);
   });
@@ -180,6 +205,8 @@ describe("scheduler materialization", () => {
 
   it("bootstraps root parallel branch leaf members without completing branch outputs", () => {
     const parallelKey = deriveInstanceKey(appendNode([], "race"));
+    const leftBranchKey = deriveInstanceKey(appendBranch([], "race", "left"));
+    const rightBranchKey = deriveInstanceKey(appendBranch([], "race", "right"));
     const leftKey = deriveInstanceKey(appendNode(appendBranch([], "race", "left"), "left_task"));
     const rightKey = deriveInstanceKey(appendNode(appendBranch([], "race", "right"), "right_task"));
 
@@ -212,13 +239,13 @@ describe("scheduler materialization", () => {
     ]);
     expect(events[0]).toEqual({ type: "frame.started", payload: { runId: "run_1", frameKey: "root", frameKind: "root", scope: { race: parallelKey } } });
     expect(events[2]).toEqual({ type: "group.started", payload: { runId: "run_1", groupKey: parallelKey, nodeKey: parallelKey, nodeId: "race", kind: "parallel", strategy: "race" } });
-    expect(events[4]).toMatchObject({ type: "group.member_ready", payload: { groupKey: parallelKey, memberKey: leftKey, branchId: "left", readinessSequence: 1 } });
+    expect(events[4]).toMatchObject({ type: "group.member_ready", payload: { groupKey: parallelKey, memberKey: leftBranchKey, childFrameKey: leftBranchKey, branchId: "left", readinessSequence: 1 } });
     expect(events[5]).toMatchObject({ type: "instance.ready", payload: { nodeKey: leftKey, nodeId: "left_task", readinessSequence: 1 } });
-    expect(events[7]).toMatchObject({ type: "group.member_ready", payload: { groupKey: parallelKey, memberKey: rightKey, branchId: "right", readinessSequence: 2 } });
+    expect(events[7]).toMatchObject({ type: "group.member_ready", payload: { groupKey: parallelKey, memberKey: rightBranchKey, childFrameKey: rightBranchKey, branchId: "right", readinessSequence: 2 } });
     expect(events[8]).toMatchObject({ type: "instance.ready", payload: { nodeKey: rightKey, nodeId: "right_task", readinessSequence: 2 } });
   });
 
-  it("does not materialize unsupported root parallel shapes as partial groups", () => {
+  it("materializes pure-before-leaf root parallel branches recursively", () => {
     const withPureFirst = bootstrapRootEvents("run_1", workflowWithRootNode({
       id: "parallel",
       kind: "parallel",
@@ -235,7 +262,21 @@ describe("scheduler materialization", () => {
       },
     }));
 
-    expect(withPureFirst).toEqual([{ type: "frame.started", payload: { runId: "run_1", frameKey: "root", frameKind: "root", scope: {} } }]);
+    const parallelKey = deriveInstanceKey(appendNode([], "parallel"));
+    const pureBranchKey = deriveInstanceKey(appendBranch([], "parallel", "pure"));
+    const checkKey = deriveInstanceKey(appendNode(appendBranch([], "parallel", "pure"), "check"));
+    const leafBranchKey = deriveInstanceKey(appendBranch([], "parallel", "leaf"));
+    const leafKey = deriveInstanceKey(appendNode(appendBranch([], "parallel", "leaf"), "leaf_task"));
+
+    expect(withPureFirst).toContainEqual({ type: "group.started", payload: { runId: "run_1", groupKey: parallelKey, nodeKey: parallelKey, nodeId: "parallel", kind: "parallel", strategy: "all" } });
+    expect(withPureFirst).toContainEqual(expect.objectContaining({ type: "group.member_ready", payload: expect.objectContaining({ memberKey: pureBranchKey, childFrameKey: pureBranchKey, branchId: "pure" }) }));
+    expect(withPureFirst).toContainEqual({ type: "frame.completed", payload: { frameKey: checkKey, result: {}, terminalReason: "assert_passed" } });
+    expect(withPureFirst).toContainEqual(expect.objectContaining({ type: "group.member_ready", payload: expect.objectContaining({ memberKey: leafBranchKey, childFrameKey: leafBranchKey, branchId: "leaf" }) }));
+    expect(withPureFirst).toContainEqual(expect.objectContaining({ type: "instance.ready", payload: expect.objectContaining({ nodeKey: leafKey, parentFrameKey: leafBranchKey }) }));
+    const projection = applySchedulerEvents(createSchedulerProjection("run_1"), withPureFirst);
+    expect(projection.groupMembers[pureBranchKey]).toMatchObject({ status: "ready", childFrameKey: pureBranchKey });
+    expect(projection.frames[checkKey]).toMatchObject({ status: "completed", terminalReason: "assert_passed" });
+    expect(projection.instances[leafKey]).toMatchObject({ status: "ready", parentFrameKey: leafBranchKey });
   });
 
   it("continues multi-node root parallel branches sequentially", () => {
@@ -282,6 +323,29 @@ describe("scheduler materialization", () => {
     const completedBranch = applySchedulerEvents(afterSecond, continueRootEvents(workflow, afterSecond, {}));
     expect(groupCompletionEvents(completedBranch, deriveInstanceKey(appendNode([], "parallel")))).toEqual([
       { type: "group.completed", payload: { groupKey: deriveInstanceKey(appendNode([], "parallel")), result: { acceptedMemberKeys: [branchKey] } } },
+    ]);
+  });
+
+  it("completes empty parallel branch members immediately", () => {
+    const parallelKey = deriveInstanceKey(appendNode([], "parallel"));
+    const branchKey = deriveInstanceKey(appendBranch([], "parallel", "empty"));
+    const workflow = workflowWithRootNode({
+      id: "parallel",
+      kind: "parallel",
+      strategy: "all",
+      branches: {
+        empty: {
+          outputSchema: objectSchema(),
+          scope: { nodes: [], outputs: { value: { kind: "literal", value: "done" } } },
+        },
+      },
+    });
+    const projection = applySchedulerEvents(createSchedulerProjection("run_1"), bootstrapRootEvents("run_1", workflow));
+
+    expect(projection.frames[branchKey]).toMatchObject({ status: "completed", result: { value: "done" } });
+    expect(projection.groupMembers[branchKey]).toMatchObject({ status: "completed", output: { value: "done" } });
+    expect(groupCompletionEvents(projection, parallelKey)).toEqual([
+      { type: "group.completed", payload: { groupKey: parallelKey, result: { acceptedMemberKeys: [branchKey] } } },
     ]);
   });
 
@@ -396,12 +460,40 @@ describe("scheduler materialization", () => {
     ]);
   });
 
-  it("does not materialize unsupported root fanout shapes as partial groups", () => {
+  it("fails non-array fanout input durably and materializes pure fanout bodies recursively", () => {
     const nonArray = fanoutNode({ over: { kind: "literal", value: "nope" } });
     const nonLeafDo = fanoutNode({ doNodes: [{ id: "check", kind: "assert", condition: { kind: "literal", value: true } }] });
+    const fanoutKey = deriveInstanceKey(appendNode([], "items"));
+    const itemKey = deriveInstanceKey(appendFanoutItem([], "items", 0, 0));
+    const checkKey = deriveInstanceKey(appendNode(appendFanoutItem([], "items", 0, 0), "check"));
 
-    expect(bootstrapRootEvents("run_1", workflowWithRootNode(nonArray), {})).toEqual([{ type: "frame.started", payload: { runId: "run_1", frameKey: "root", frameKind: "root", scope: {} } }]);
-    expect(bootstrapRootEvents("run_1", workflowWithRootNode(nonLeafDo), {})).toEqual([{ type: "frame.started", payload: { runId: "run_1", frameKey: "root", frameKind: "root", scope: {} } }]);
+    expect(bootstrapRootEvents("run_1", workflowWithRootNode(nonArray), {})).toEqual([
+      { type: "frame.started", payload: { runId: "run_1", frameKey: "root", frameKind: "root", scope: { items: fanoutKey } } },
+      expect.objectContaining({ type: "frame.started", payload: expect.objectContaining({ frameKey: fanoutKey }) }),
+      { type: "frame.failed", payload: { frameKey: fanoutKey, error: { reason: "fanout_over_not_array" }, terminalReason: "fanout_over_not_array" } },
+    ]);
+    const pureBodyEvents = bootstrapRootEvents("run_1", workflowWithRootNode(nonLeafDo), {});
+    expect(pureBodyEvents).toContainEqual(expect.objectContaining({ type: "group.member_ready", payload: expect.objectContaining({ memberKey: itemKey, childFrameKey: itemKey }) }));
+    expect(pureBodyEvents).toContainEqual({ type: "frame.completed", payload: { frameKey: checkKey, result: {}, terminalReason: "assert_passed" } });
+    const projection = applySchedulerEvents(createSchedulerProjection("run_1"), pureBodyEvents);
+    expect(projection.groupMembers[itemKey]).toMatchObject({ status: "ready", childFrameKey: itemKey });
+    expect(projection.frames[checkKey]).toMatchObject({ status: "completed", terminalReason: "assert_passed" });
+  });
+
+  it("completes empty fanout item members immediately", () => {
+    const fanoutKey = deriveInstanceKey(appendNode([], "items"));
+    const itemKey = deriveInstanceKey(appendFanoutItem([], "items", 0, 0));
+    const projection = applySchedulerEvents(createSchedulerProjection("run_1"), bootstrapRootEvents("run_1", workflowWithRootNode(fanoutNode({
+      over: { kind: "literal", value: ["a"] },
+      doNodes: [],
+      doOutputs: { item: { kind: "ref", path: ["fanout", "items", "item"] } },
+    })), {}));
+
+    expect(projection.frames[itemKey]).toMatchObject({ status: "completed", result: { item: "a" } });
+    expect(projection.groupMembers[itemKey]).toMatchObject({ status: "completed", output: { item: "a" } });
+    expect(groupCompletionEvents(projection, fanoutKey)).toEqual([
+      { type: "group.completed", payload: { groupKey: fanoutKey, result: { acceptedMemberKeys: [itemKey] } } },
+    ]);
   });
 
   it("continues multi-node root fanout item bodies sequentially", () => {
@@ -435,39 +527,60 @@ describe("scheduler materialization", () => {
     ]);
   });
 
-  it("rejects duplicate root fanout item keys", () => {
-    expect(() => bootstrapRootEvents("run_1", workflowWithRootNode(fanoutNode({
+  it("fails duplicate root fanout item keys durably", () => {
+    const fanoutKey = deriveInstanceKey(appendNode([], "items"));
+    expect(bootstrapRootEvents("run_1", workflowWithRootNode(fanoutNode({
       key: { kind: "template", parts: [{ kind: "text", value: "same" }] },
-    })), {})).toThrow("duplicate item key 'same'");
+    })), {})).toEqual([
+      { type: "frame.started", payload: { runId: "run_1", frameKey: "root", frameKind: "root", scope: { items: fanoutKey } } },
+      expect.objectContaining({ type: "frame.started", payload: expect.objectContaining({ frameKey: fanoutKey }) }),
+      { type: "frame.failed", payload: { frameKey: fanoutKey, error: { reason: "duplicate_fanout_key", itemKey: "same" }, terminalReason: "duplicate_fanout_key" } },
+    ]);
   });
 
   it("bootstraps and continues a root loop single-leaf iteration", () => {
     const workflow = workflowWithRootNode(loopNode());
     const loopKey = deriveInstanceKey(appendNode([], "retry"));
+    const firstIterationKey = deriveInstanceKey(appendLoopIteration([], "retry", 0));
     const firstNodeKey = deriveInstanceKey(appendNode(appendLoopIteration([], "retry", 0), "loop_task"));
     const secondNodeKey = deriveInstanceKey(appendNode(appendLoopIteration([], "retry", 1), "loop_task"));
     const bootstrapped = bootstrapRootEvents("run_1", workflow, {});
 
-    expect(bootstrapped.map(event => event.type)).toEqual(["frame.started", "frame.started", "instance.ready"]);
+    expect(bootstrapped.map(event => event.type)).toEqual(["frame.started", "frame.started", "frame.started", "instance.ready"]);
     expect(bootstrapped[1]).toMatchObject({ type: "frame.started", payload: { frameKey: loopKey, frameKind: "loop", nodeId: "retry" } });
-    expect(bootstrapped[2]).toMatchObject({ type: "instance.ready", payload: { nodeKey: firstNodeKey, readinessSequence: 1 } });
+    expect(bootstrapped[2]).toMatchObject({ type: "frame.started", payload: { frameKey: firstIterationKey, frameKind: "loop_iteration", nodeId: "retry" } });
+    expect(bootstrapped[3]).toMatchObject({ type: "instance.ready", payload: { nodeKey: firstNodeKey, readinessSequence: 1 } });
 
     const projection = applySchedulerEvents(createSchedulerProjection("run_1"), [
       ...bootstrapped,
       { type: "instance.completed", payload: { nodeKey: firstNodeKey, output: { done: false } } },
     ]);
 
-    expect(continueRootEvents(workflow, projection, {})).toEqual([
+    const completeIteration = continueRootEvents(workflow, projection, {});
+    expect(completeIteration).toEqual([
+      { type: "frame.completed", payload: { frameKey: firstIterationKey, result: { done: false }, terminalReason: "frame_completed" } },
+    ]);
+    expect(continueRootEvents(workflow, applySchedulerEvents(projection, completeIteration), {})).toEqual([
       { type: "frame.loop_advanced", payload: { frameKey: loopKey, iter: 0, result: { done: false } } },
       { type: "frame.loop_advanced", payload: { frameKey: loopKey, iter: 1, previous: { done: false } } },
-      expect.objectContaining({ type: "instance.ready", payload: expect.objectContaining({ nodeKey: secondNodeKey, readinessSequence: 2 }) }),
+      expect.objectContaining({ type: "frame.started", payload: expect.objectContaining({ frameKey: deriveInstanceKey(appendLoopIteration([], "retry", 1)), frameKind: "loop_iteration" }) }),
+      expect.objectContaining({ type: "instance.ready", payload: expect.objectContaining({ nodeKey: secondNodeKey, parentFrameKey: deriveInstanceKey(appendLoopIteration([], "retry", 1)), readinessSequence: 2 }) }),
     ]);
   });
 
-  it("does not materialize unsupported root loop bodies as partial iterations", () => {
+  it("materializes pure root loop bodies recursively", () => {
     const nonLeaf = loopNode({ doNodes: [{ id: "check", kind: "assert", condition: { kind: "literal", value: true } }] });
+    const loopKey = deriveInstanceKey(appendNode([], "retry"));
+    const iterationKey = deriveInstanceKey(appendLoopIteration([], "retry", 0));
+    const checkKey = deriveInstanceKey(appendNode(appendLoopIteration([], "retry", 0), "check"));
 
-    expect(bootstrapRootEvents("run_1", workflowWithRootNode(nonLeaf), {})).toEqual([{ type: "frame.started", payload: { runId: "run_1", frameKey: "root", frameKind: "root", scope: {} } }]);
+    expect(bootstrapRootEvents("run_1", workflowWithRootNode(nonLeaf), {})).toEqual([
+      { type: "frame.started", payload: { runId: "run_1", frameKey: "root", frameKind: "root", scope: { retry: loopKey } } },
+      expect.objectContaining({ type: "frame.started", payload: expect.objectContaining({ frameKey: loopKey, frameKind: "loop" }) }),
+      expect.objectContaining({ type: "frame.started", payload: expect.objectContaining({ frameKey: iterationKey, frameKind: "loop_iteration" }) }),
+      expect.objectContaining({ type: "frame.started", payload: expect.objectContaining({ frameKey: checkKey, frameKind: "node" }) }),
+      { type: "frame.completed", payload: { frameKey: checkKey, result: {}, terminalReason: "assert_passed" } },
+    ]);
   });
 
   it("bootstraps and continues multi-node root loop iteration frames", () => {

@@ -21,6 +21,7 @@ export type RunsCommandContext = {
 type RunsCommandOptions = {
   json?: boolean;
   node?: string;
+  target?: string;
   payload?: string;
   input?: string;
   workflow?: string;
@@ -71,7 +72,7 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
       await showRun(ctx, runId, options);
     }));
 
-  for (const name of ["pause", "resume", "retry"] as const) {
+  for (const name of ["pause", "resume", "retry", "cancel"] as const) {
     const control = new Command(name)
       .exitOverride()
       .argument("<run-id>", "run id")
@@ -79,7 +80,8 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
       .action(async (runId: string, options: RunsCommandOptions) => {
         await mutateRun(ctx, runId, options, name);
       });
-    if (name === "retry") control.option("--node <node-id>", "retry only a failed node");
+    if (name === "retry") control.option("--target <target-key-or-alias>", "retry only a failed run target");
+    if (name === "cancel") control.option("--target <target-key-or-alias>", "cancel only a non-terminal run target");
     command.addCommand(control);
   }
 
@@ -242,7 +244,7 @@ async function showRun(ctx: RunsCommandContext, runId: string, options: RunsComm
   }, format, ctx, 0));
 }
 
-async function mutateRun(ctx: RunsCommandContext, runId: string, options: RunsCommandOptions, action: "pause" | "resume" | "retry" | "fork"): Promise<void> {
+async function mutateRun(ctx: RunsCommandContext, runId: string, options: RunsCommandOptions, action: "pause" | "resume" | "retry" | "fork" | "cancel"): Promise<void> {
   const format: OutputFormat = options.json ? "json" : "text";
   const prepared = action === "fork" && options.workflow ? await prepareWorkflowForCli(options.workflow, ctx.cwd) : options.prepared;
   const agentOverrides = action === "fork" ? parseAgents(options.agents) : undefined;
@@ -265,7 +267,7 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, options: RunsCo
   let result: Awaited<ReturnType<typeof mutateRuntimeRun>>;
   try {
     result = await mutateRuntimeRun(ctx.cwd, runId, action, {
-      ...(options.node ? { node: options.node } : {}),
+      ...(options.target ? { target: options.target } : {}),
       ...(prepared ? { prepared } : {}),
       ...(forkInput !== undefined ? { input: forkInput } : {}),
       ...(agentOverrides !== undefined ? { agentOverrides } : {}),
@@ -289,7 +291,7 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, options: RunsCo
   ctx.setExitCode(writeResult({
     ok: true,
     phase: "inspect",
-    message: action === "fork" ? "Run forked." : `Run ${action}d.`,
+    message: action === "fork" ? "Run forked." : action === "cancel" ? "Run canceled." : `Run ${action}d.`,
     run: result.run,
   }, format, ctx, 0));
 }

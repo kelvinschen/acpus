@@ -17,3 +17,4 @@ This directory tracks Acpus plans, goal records, backlog, and capability gaps. C
 - [AI Authoring Feedback Loop Implementation Goal](ai-authoring-feedback-loop-implementation-goal.md) — executable goal for the AI-authoring correction loop: CLI diagnostic hints, the `Expr.ir` → `__ir` rename, and the internal `acpus run` check pipeline.
 - [Live Task Execution Implementation Goal](live-task-execution-implementation-goal.md) — executable goal for live reusable task loading and embedded inline source.
 - [Neverthrow Error Boundary Refactor Goal](neverthrow-error-boundary-refactor-goal.md) — executable goal for migrating recoverable Core, runtime, scheduler, store, and CLI failures to typed result boundaries.
+- [Recursive Workflow Runtime Implementation Goal](recursive-workflow-runtime-implementation-goal.md) — executable goal for evolving the durable scheduler into a recursive state machine that can execute nested composite workflow IR.

@@ -7,6 +7,7 @@ import type { EvaluationScope } from "../evaluation/evaluator.js";
 import { normalizeValue } from "../evaluation/schema.js";
 import type { RuntimeStore } from "../store/store.js";
 import type { NodeAttemptContext, NodeExecutor } from "./advance.js";
+import { scopeForNodeAttempt } from "./scope.js";
 import { throwSchedulerStoreResult, type AttemptCommitInput, type SchedulerStoreResult } from "./store-port.js";
 import type { SchedulerProjection } from "./types.js";
 
@@ -73,65 +74,7 @@ async function executeAgent(node: AgentNodeIR, scope: EvaluationScope, context: 
 }
 
 function scopeForAttempt(base: EvaluationScope, projection: SchedulerProjection, nodeKey: string): EvaluationScope {
-  const instance = projection.instances[nodeKey];
-  const rootScope = completedRootNodeScope(base, projection);
-  const scoped = instance?.parentFrameKey && instance.parentFrameKey !== "root"
-    ? completedFrameNodeScope(rootScope, projection, instance.parentFrameKey)
-    : rootScope;
-  const loopSegment = instance?.instancePath.find(segment => segment.kind === "loop");
-  if (loopSegment) {
-    const loopFrame = Object.values(projection.frames).find(frame => frame.nodeId === loopSegment.nodeId && frame.frameKind === "loop");
-    return {
-      ...scoped,
-      loop: {
-        ...scoped.loop,
-        [loopSegment.nodeId]: {
-          iter: loopSegment.iter,
-          ...(loopFrame?.loop?.previous === undefined ? {} : { previous: loopFrame.loop.previous }),
-        },
-      },
-    };
-  }
-  const member = projection.groupMembers[nodeKey]
-    ?? (instance?.parentFrameKey === undefined ? undefined : projection.groupMembers[instance.parentFrameKey]);
-  if (!member || member.memberKind !== "fanout_item") return scoped;
-  const group = projection.groups[member.groupKey];
-  if (!group || group.kind !== "fanout") return scoped;
-  return {
-    ...scoped,
-    fanout: {
-      ...scoped.fanout,
-      [group.nodeId]: {
-        item: member.item,
-        itemIndex: member.itemIndex,
-      },
-    },
-  };
-}
-
-function completedFrameNodeScope(base: EvaluationScope, projection: SchedulerProjection, parentFrameKey: string): EvaluationScope {
-  const nodes: NonNullable<EvaluationScope["nodes"]> = { ...base.nodes };
-  for (const instance of Object.values(projection.instances)) {
-    if (instance.parentFrameKey === parentFrameKey && instance.status === "completed") {
-      nodes[instance.nodeId] = { status: "completed", output: instance.output };
-    }
-  }
-  return { ...base, nodes };
-}
-
-function completedRootNodeScope(base: EvaluationScope, projection: SchedulerProjection): EvaluationScope {
-  const nodes: NonNullable<EvaluationScope["nodes"]> = { ...base.nodes };
-  for (const instance of Object.values(projection.instances)) {
-    if (instance.parentFrameKey === "root" && instance.status === "completed") {
-      nodes[instance.nodeId] = { status: "completed", output: instance.output };
-    }
-  }
-  for (const frame of Object.values(projection.frames)) {
-    if (frame.parentFrameKey === "root" && frame.nodeId && frame.status === "completed") {
-      nodes[frame.nodeId] = { status: "completed", output: frame.result };
-    }
-  }
-  return { ...base, nodes };
+  return scopeForNodeAttempt(base, projection, nodeKey);
 }
 
 function completedResult(output: unknown): AttemptCommitInput["result"] {

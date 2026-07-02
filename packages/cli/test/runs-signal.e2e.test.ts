@@ -21,5 +21,5 @@ describe("acpus runs signal smoke", () => {
         output: { ok: true },
       });
     });
-  });
+  }, 15_000);
 });

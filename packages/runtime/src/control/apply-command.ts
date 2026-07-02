@@ -1,24 +1,21 @@
 import type { JsonValue } from "@acpus/expression/ir";
-import { advanceRun, type AdvanceResult } from "../execution/advance.js";
-import { findSignalNode } from "../execution/ir.js";
-import { normalizeValue } from "../evaluation/schema.js";
 import { applySchedulerControlCommand } from "../scheduler/control.js";
-import { advanceRuntimeRun, hasSchedulerState, type RuntimeAdvanceResult } from "../runs/advance-runtime.js";
-import type { AgentOverrideMap, ForkPreparedWorkflow, PendingControlCommand, RuntimeStore } from "../store/store.js";
+import { advanceRuntimeRun, type RuntimeAdvanceResult } from "../runs/advance-runtime.js";
+import type { AgentOverrideMap, ForkPreparedWorkflow, PendingRunControlCommand, RuntimeStore } from "../store/store.js";
 
 export type AppliedControlCommand = {
-  command: PendingControlCommand;
+  command: PendingRunControlCommand;
   sourceRunId: string;
   run: NonNullable<ReturnType<RuntimeStore["getRun"]>>;
-  advanced?: AdvanceResult | RuntimeAdvanceResult;
+  advanced?: RuntimeAdvanceResult;
   forkRunId?: string;
 };
 
-export async function applyControlCommand(cwd: string, store: RuntimeStore, command: PendingControlCommand, options: { ownerGeneration?: number } = {}): Promise<AppliedControlCommand> {
+export async function applyControlCommand(cwd: string, store: RuntimeStore, command: PendingRunControlCommand, options: { ownerGeneration?: number } = {}): Promise<AppliedControlCommand> {
   if (command.status === "applied") return appliedCommandResult(store, command);
   if (!store.claimCommand(command.id, options.ownerGeneration === undefined ? {} : { ownerGeneration: options.ownerGeneration })) {
     const current = store.getCommand(command.id);
-    if (current?.status === "applied") return appliedCommandResult(store, current);
+    if (current?.status === "applied" && current.type !== "shutdown") return appliedCommandResult(store, current);
     throw new Error(`Command '${command.id}' is already ${current?.status ?? "missing"}.`);
   }
   try {
@@ -34,8 +31,8 @@ export async function applyControlCommand(cwd: string, store: RuntimeStore, comm
   }
 }
 
-function appliedCommandResult(store: RuntimeStore, command: PendingControlCommand): AppliedControlCommand {
-  const runId = requireRunId(command);
+function appliedCommandResult(store: RuntimeStore, command: PendingRunControlCommand): AppliedControlCommand {
+  const runId = command.runId;
   const forkRunId = command.type === "fork" && command.status === "applied" && typeof command.payload.forkRunId === "string"
     ? command.payload.forkRunId
     : undefined;
@@ -48,9 +45,9 @@ function appliedCommandResult(store: RuntimeStore, command: PendingControlComman
   };
 }
 
-async function applyControlCommandUnchecked(cwd: string, store: RuntimeStore, command: PendingControlCommand): Promise<AppliedControlCommand> {
-  const runId = requireRunId(command);
-  if (usesSchedulerControl(store, runId, command)) {
+async function applyControlCommandUnchecked(cwd: string, store: RuntimeStore, command: PendingRunControlCommand): Promise<AppliedControlCommand> {
+  const runId = command.runId;
+  if (command.type !== "fork") {
     await applySchedulerControlCommand(cwd, store, command, { claimCommand: false, advance: false });
     const advanced = command.type === "pause" ? undefined : await advanceRuntimeRun(cwd, store, runId);
     return {
@@ -60,55 +57,14 @@ async function applyControlCommandUnchecked(cwd: string, store: RuntimeStore, co
       ...(advanced ? { advanced } : {}),
     };
   }
-  if (command.type === "pause") {
-    store.pauseRun(runId, { commandId: command.id });
-    return { command, sourceRunId: runId, run: requireRun(store, runId) };
-  }
-  if (command.type === "resume") {
-    store.resumeRun(runId, { commandId: command.id });
-    const advanced = await advanceRun(cwd, store, runId);
-    return { command, sourceRunId: runId, run: requireRun(store, runId), advanced };
-  }
-  if (command.type === "retry") {
-    const node = commandNode(command);
-    if (node) store.retryNode(runId, node, { commandId: command.id });
-    else store.retryRun(runId, { commandId: command.id });
-    const advanced = await advanceRun(cwd, store, runId);
-    return { command, sourceRunId: runId, run: requireRun(store, runId), advanced };
-  }
-  if (command.type === "fork") {
-    const payload = forkCommandPayload(command);
-    const fork = await store.forkRun(runId, {
-      commandId: command.id,
-      ...(payload.prepared ? { prepared: payload.prepared } : {}),
-      ...(payload.input !== undefined ? { input: payload.input } : {}),
-      ...(payload.agentOverrides !== undefined ? { agentOverrides: payload.agentOverrides } : {}),
-    });
-    return { command, sourceRunId: runId, run: requireRun(store, fork.id), forkRunId: fork.id };
-  }
-  if (command.type === "signal") {
-    const payload = signalCommandPayload(command);
-    const frozen = store.getFrozenRun(runId);
-    if (!frozen) throw new Error(`Run '${runId}' was not found.`);
-    const signal = findSignalNode(frozen.ir.root, payload.node);
-    if (!signal) throw new Error(`Signal node '${payload.node}' was not found.`);
-    const normalized = normalizeValue(signal.outputSchema, payload.payload, "Signal payload");
-    store.signalRun({ runId, nodeKey: payload.node, payload: normalized });
-    const advanced = await advanceRun(cwd, store, runId);
-    store.finishCommand({ id: command.id, status: "applied", payload: { status: advanced.status } });
-    return { command, sourceRunId: runId, run: requireRun(store, runId), advanced };
-  }
-  throw new Error(`Unsupported command type '${command.type}'.`);
-}
-
-function usesSchedulerControl(store: RuntimeStore, runId: string, command: PendingControlCommand): boolean {
-  if (!hasSchedulerState(store, runId)) return false;
-  return command.type === "pause" || command.type === "resume" || command.type === "signal" || command.type === "retry";
-}
-
-function requireRunId(command: PendingControlCommand): string {
-  if (!command.runId) throw new Error(`Command '${command.id}' has no run id.`);
-  return command.runId;
+  const payload = forkCommandPayload(command);
+  const fork = await store.forkRun(runId, {
+    commandId: command.id,
+    ...(payload.prepared ? { prepared: payload.prepared } : {}),
+    ...(payload.input !== undefined ? { input: payload.input } : {}),
+    ...(payload.agentOverrides !== undefined ? { agentOverrides: payload.agentOverrides } : {}),
+  });
+  return { command, sourceRunId: runId, run: requireRun(store, fork.id), forkRunId: fork.id };
 }
 
 function requireRun(store: RuntimeStore, runId: string): NonNullable<ReturnType<RuntimeStore["getRun"]>> {
@@ -117,21 +73,7 @@ function requireRun(store: RuntimeStore, runId: string): NonNullable<ReturnType<
   return run;
 }
 
-function commandNode(command: PendingControlCommand): string | undefined {
-  const payload = commandInputPayload(command);
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
-  return typeof payload.node === "string" && payload.node.length > 0 ? payload.node : undefined;
-}
-
-function signalCommandPayload(command: PendingControlCommand): { node: string; payload: JsonValue } {
-  const payload = commandInputPayload(command);
-  if (!isRecord(payload)) throw new Error(`Signal command '${command.id}' payload must be an object.`);
-  const node = payload.node;
-  if (typeof node !== "string" || node.length === 0) throw new Error(`Signal command '${command.id}' payload.node must be a non-empty string.`);
-  return { node, payload: payload.payload as JsonValue };
-}
-
-function forkCommandPayload(command: PendingControlCommand): { prepared?: ForkPreparedWorkflow; input?: JsonValue; agentOverrides?: AgentOverrideMap } {
+function forkCommandPayload(command: PendingRunControlCommand): { prepared?: ForkPreparedWorkflow; input?: JsonValue; agentOverrides?: AgentOverrideMap } {
   const payload = commandInputPayload(command);
   if (!isRecord(payload)) return {};
   const prepared = parseForkPreparedWorkflow(payload.prepared);
@@ -175,6 +117,6 @@ function isRecord(value: unknown): value is Record<string, JsonValue> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-function commandInputPayload(command: PendingControlCommand): JsonValue | undefined {
+function commandInputPayload(command: PendingRunControlCommand): JsonValue | undefined {
   return command.status === "pending" || command.status === "running" ? command.payload : undefined;
 }

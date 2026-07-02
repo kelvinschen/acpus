@@ -3,7 +3,7 @@ import type { JsonValue } from "@acpus/expression/ir";
 import { err } from "neverthrow";
 import { advanceRun, completed, selectReadyInstances, tryAdvanceRun, type NodeAttemptContext, type NodeExecutor } from "../src/scheduler/advance.js";
 import type { SchedulerEvent } from "../src/scheduler/events.js";
-import { SchedulerStoreException, schedulerStoreResult, type AttemptCommitInput, type AttemptStartInput, type RunOwnerClaim, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStoreError, type SchedulerStorePort, type SchedulerStoreResult } from "../src/scheduler/store-port.js";
+import { SchedulerStoreException, schedulerStoreResult, type AttemptCommitInput, type AttemptStartInput, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStoreError, type SchedulerStorePort, type SchedulerStoreResult } from "../src/scheduler/store-port.js";
 import { applySchedulerEvents, createSchedulerProjection } from "../src/scheduler/transitions.js";
 import type { InstancePath, NodeInstance, SchedulerProjection } from "../src/scheduler/types.js";
 
@@ -94,6 +94,31 @@ describe("scheduler advance loop", () => {
       instance => projection.groupMembers[instance.nodeKey],
       () => 2,
     ).map(instance => instance.nodeKey)).toEqual(["item-1"]);
+  });
+
+  it("does not leak local capacity reservations from rejected ancestor members", () => {
+    const projection = applySchedulerEvents(createSchedulerProjection("run_1"), [
+      { type: "group.started", payload: { runId: "run_1", groupKey: "child", nodeKey: "child", nodeId: "child", kind: "parallel", strategy: "all" } },
+      { type: "group.started", payload: { runId: "run_1", groupKey: "parent", nodeKey: "parent", nodeId: "parent", kind: "parallel", strategy: "all" } },
+      { type: "frame.started", payload: { runId: "run_1", frameKey: "parent-running", frameKind: "branch" } },
+      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "parent", memberKey: "parent-running", memberKind: "branch", childFrameKey: "parent-running", branchId: "busy", readinessSequence: 1 } },
+      { type: "group.member_started", payload: { memberKey: "parent-running" } },
+      { type: "frame.started", payload: { runId: "run_1", frameKey: "parent-blocked", frameKind: "branch" } },
+      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "parent", memberKey: "parent-blocked", memberKind: "branch", childFrameKey: "parent-blocked", branchId: "blocked", readinessSequence: 2 } },
+      { type: "frame.started", payload: { runId: "run_1", frameKey: "child-blocked", frameKind: "branch", parentFrameKey: "parent-blocked" } },
+      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "child", memberKey: "child-blocked", memberKind: "branch", childFrameKey: "child-blocked", branchId: "blocked", readinessSequence: 2 } },
+      { type: "instance.ready", payload: { runId: "run_1", nodeKey: "blocked", nodeId: "blocked", parentFrameKey: "child-blocked", instancePath: [{ kind: "node", nodeId: "blocked" }], readinessSequence: 1 } },
+      { type: "frame.started", payload: { runId: "run_1", frameKey: "child-open", frameKind: "branch" } },
+      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "child", memberKey: "child-open", memberKind: "branch", childFrameKey: "child-open", branchId: "open", readinessSequence: 3 } },
+      { type: "instance.ready", payload: { runId: "run_1", nodeKey: "open", nodeId: "open", parentFrameKey: "child-open", instancePath: [{ kind: "node", nodeId: "open" }], readinessSequence: 2 } },
+    ]);
+
+    expect(selectReadyInstances(
+      projection,
+      2,
+      undefined,
+      groupKey => groupKey === "child" || groupKey === "parent" ? 1 : undefined,
+    ).map(instance => instance.nodeKey)).toEqual(["open"]);
   });
 
   it("returns paused, awaiting, and lease-lost summaries without starting work", async () => {
@@ -432,6 +457,35 @@ describe("scheduler advance loop", () => {
     expect(projection.groupMembers.work).toMatchObject({ status: "completed" });
   });
 
+  it("requeues ancestor group members for failed retryable child instances", async () => {
+    const store = new MemorySchedulerStore("run_1", [
+      { type: "group.started", payload: { runId: "run_1", groupKey: "all", nodeKey: "all", nodeId: "all", kind: "parallel", strategy: "all" } },
+      { type: "frame.started", payload: { runId: "run_1", frameKey: "branch", frameKind: "branch", parentFrameKey: "all", instancePath: [{ kind: "branch", nodeId: "all", branchId: "left" }] } },
+      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "all", memberKey: "branch", memberKind: "branch", branchId: "left", childFrameKey: "branch", readinessSequence: 1 } },
+      { type: "instance.ready", payload: { runId: "run_1", nodeKey: "branch/work", nodeId: "work", parentFrameKey: "branch", instancePath: [{ kind: "branch", nodeId: "all", branchId: "left" }, { kind: "node", nodeId: "work" }], readinessSequence: 1 } },
+      { type: "attempt.started", payload: { runId: "run_1", attemptId: "attempt_1", nodeKey: "branch/work", nodeId: "work", attemptNo: 1, ownerEpoch: 1 } },
+      { type: "attempt.failed", payload: { attemptId: "attempt_1", error: { reason: "transient" } } },
+      { type: "instance.failed", payload: { nodeKey: "branch/work", error: { reason: "transient" }, statusReason: "retryable" } },
+      { type: "frame.failed", payload: { frameKey: "branch", error: { reason: "transient" }, terminalReason: "retryable" } },
+      { type: "group.member_failed", payload: { memberKey: "branch", error: { reason: "transient" }, terminalReason: "retryable" } },
+    ]);
+
+    await expect(advanceRun({
+      runId: "run_1",
+      ownerId: "owner-a",
+      store,
+      maxLeafConcurrency: 0,
+      maxAttemptsFor: () => 2,
+      executor: executor(() => completed({ ok: true })),
+    })).resolves.toMatchObject({ status: "idle", started: 0 });
+
+    const projection = store.loadRunSnapshot("run_1").projection;
+    expect(projection.instances["branch/work"]).toMatchObject({ status: "ready", statusReason: "scheduler_retry", readinessSequence: 1 });
+    const branch = projection.groupMembers.branch;
+    expect(branch).toMatchObject({ status: "ready", readinessSequence: 1 });
+    expect(branch?.error).toBeUndefined();
+  });
+
   it("does not requeue exhausted retryable instances", async () => {
     const store = new MemorySchedulerStore("run_1", [
       { type: "group.started", payload: { runId: "run_1", groupKey: "all", nodeKey: "all", nodeId: "all", kind: "parallel", strategy: "all" } },
@@ -706,6 +760,14 @@ class MemorySchedulerStore implements SchedulerStorePort {
   }
 
   retry(): SchedulerSnapshot {
+    throw new Error("not implemented");
+  }
+
+  tryCancel(input: SchedulerCancelInput): SchedulerStoreResult<SchedulerSnapshot> {
+    return schedulerStoreResult(() => this.cancel(input));
+  }
+
+  cancel(_input: SchedulerCancelInput): SchedulerSnapshot {
     throw new Error("not implemented");
   }
 

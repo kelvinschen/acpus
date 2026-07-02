@@ -4,7 +4,7 @@ import { defineWorkflow, z } from "@acpus/core";
 import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
 import { eq } from "@acpus/expression";
 import { describe, expect, it } from "vitest";
-import { appendBranch, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
+import { appendBranch, appendFanoutItem, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { createRuntimeNodeExecutor } from "../src/scheduler/node-executor.js";
 import { advanceFrozenRun } from "../src/scheduler/runtime-runner.js";
 import { applySchedulerControlCommand } from "../src/scheduler/control.js";
@@ -172,6 +172,56 @@ describe("runtime scheduler node executor", () => {
     });
   });
 
+  it("recreates and advances a retried composite frame subtree", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-frame-retry-advance", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, rootIfTaskWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { shouldRun: true }, cwd: workspace });
+        const assertKey = deriveInstanceKey(appendNode([], "require_run"));
+        const ifKey = deriveInstanceKey(appendNode([], "gate"));
+        const branchKey = deriveInstanceKey(appendBranch([], "gate", "then"));
+        const branchTaskKey = deriveInstanceKey(appendNode(appendBranch([], "gate", "then"), "then_task"));
+        const finalKey = deriveInstanceKey(appendNode([], "final_task"));
+        const claim = store.scheduler.claimRun(run.id, "bootstrap", 60_000)!;
+        store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "frame-retry-bootstrap",
+          events: [
+            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root", scope: { require_run: assertKey, gate: ifKey, final_task: finalKey } } },
+            { type: "frame.started", payload: { runId: run.id, frameKey: assertKey, frameKind: "node", nodeKey: assertKey, nodeId: "require_run", parentFrameKey: "root", instancePath: appendNode([], "require_run") } },
+            { type: "frame.completed", payload: { frameKey: assertKey, result: {}, terminalReason: "assert_passed" } },
+            { type: "frame.started", payload: { runId: run.id, frameKey: ifKey, frameKind: "node", nodeKey: ifKey, nodeId: "gate", parentFrameKey: "root", instancePath: appendNode([], "gate") } },
+            { type: "branch.decided", payload: { frameKey: ifKey, branchId: "then" } },
+            { type: "frame.started", payload: { runId: run.id, frameKey: branchKey, frameKind: "branch", nodeId: "gate", parentFrameKey: ifKey, instancePath: appendBranch([], "gate", "then") } },
+            { type: "frame.failed", payload: { frameKey: branchKey, error: { reason: "boom" } } },
+            { type: "frame.failed", payload: { frameKey: ifKey, error: { reason: "boom" } } },
+            { type: "frame.failed", payload: { frameKey: "root", error: { reason: "boom" } } },
+          ],
+        });
+        store.scheduler.releaseRun(claim);
+
+        const command = store.submitCommand({ runId: run.id, type: "retry", payload: { target: "gate" }, idempotencyKey: `retry:${run.id}:gate` });
+        const applied = await applySchedulerControlCommand(workspace, store, command, { ownerId: "owner-a" });
+
+        expect(applied.advanced).toMatchObject({ status: "idle", started: 1, completed: 1 });
+        const afterRetryAdvance = store.scheduler.loadRunSnapshot(run.id).projection;
+        expect(afterRetryAdvance.branchDecisions[ifKey]).toBe("then");
+        expect(afterRetryAdvance.frames[ifKey]).toMatchObject({ status: "completed", result: { value: "then" } });
+        expect(afterRetryAdvance.instances[branchTaskKey]).toMatchObject({ status: "completed", output: { value: "then" } });
+        expect(afterRetryAdvance.instances[finalKey]).toMatchObject({ status: "ready" });
+        expect(store.getRun(run.id)).toMatchObject({ status: "pending" });
+
+        await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-b", store })).resolves.toMatchObject({ status: "completed" });
+        expect(store.getRun(run.id)).toMatchObject({ status: "completed", output: { final: "then-final" } });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   it("advances sequential leaf nodes inside a selected root if branch", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-root-if-sequence", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, rootIfSequentialTaskWorkflow());
@@ -218,13 +268,13 @@ describe("runtime scheduler node executor", () => {
       try {
         const run = await store.admitRun({ prepared, input: { mode: "case" }, cwd: workspace });
         const switchKey = deriveInstanceKey(appendNode([], "route"));
-        const branchKey = deriveInstanceKey(appendBranch([], "route", "case_0"));
-        const firstKey = deriveInstanceKey(appendNode(appendBranch([], "route", "case_0"), "case_first"));
-        const secondKey = deriveInstanceKey(appendNode(appendBranch([], "route", "case_0"), "case_second"));
+        const branchKey = deriveInstanceKey(appendBranch([], "route", "case:0"));
+        const firstKey = deriveInstanceKey(appendNode(appendBranch([], "route", "case:0"), "case_first"));
+        const secondKey = deriveInstanceKey(appendNode(appendBranch([], "route", "case:0"), "case_second"));
 
         await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store });
         const afterFirst = store.scheduler.loadRunSnapshot(run.id).projection;
-        expect(afterFirst.branchDecisions[switchKey]).toBe("case_0");
+        expect(afterFirst.branchDecisions[switchKey]).toBe("case:0");
         expect(afterFirst.instances[firstKey]).toMatchObject({ status: "completed", output: { value: "case" } });
         expect(afterFirst.instances[secondKey]).toMatchObject({ status: "ready" });
         expect(afterFirst.frames[branchKey]).toMatchObject({ status: "running" });
@@ -524,6 +574,92 @@ describe("runtime scheduler node executor", () => {
     });
   });
 
+  it("executes nested fanout items with ancestor scope and local concurrency", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-nested-fanout-scope", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, nestedFanoutInParallelWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { items: ["a", "b"] }, cwd: workspace });
+        const firstItemKey = deriveInstanceKey(appendNode(appendFanoutItem(appendBranch([], "combine", "items"), "inner_items", 0, 0), "inner_task"));
+        const secondItemKey = deriveInstanceKey(appendNode(appendFanoutItem(appendBranch([], "combine", "items"), "inner_items", 1, 1), "inner_task"));
+
+        await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "idle", started: 1, completed: 1 });
+        expect(store.scheduler.loadRunSnapshot(run.id).projection.instances[firstItemKey]).toMatchObject({ status: "ready" });
+        expect(store.scheduler.loadRunSnapshot(run.id).projection.instances[secondItemKey]).toMatchObject({ status: "ready" });
+
+        await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-b", store })).resolves.toMatchObject({ status: "idle", started: 1, completed: 1 });
+        const afterFirstItem = store.scheduler.loadRunSnapshot(run.id).projection;
+        expect(Object.values(afterFirstItem.instances).filter(instance => instance.nodeId === "inner_task" && instance.status === "completed")).toHaveLength(1);
+        expect(Object.values(afterFirstItem.instances).filter(instance => instance.nodeId === "inner_task" && instance.status === "ready")).toHaveLength(1);
+        expect(afterFirstItem.instances[deriveInstanceKey(appendNode(appendBranch([], "combine", "sibling"), "sibling_task"))]).toMatchObject({ status: "ready" });
+
+        await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-c", store })).resolves.toMatchObject({ status: "idle", started: 1, completed: 1 });
+        await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-d", store })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
+        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        expect(projection.frames.root).toMatchObject({
+          status: "completed",
+          result: {
+            values: [{ value: "root-a-0" }, { value: "root-b-1" }],
+            sibling: "root-sibling",
+          },
+        });
+        const details = store.getRun(run.id);
+        expect(details?.dynamic?.frames.find(frame => frame.frameKey === deriveInstanceKey(appendBranch([], "combine", "items")))).toMatchObject({
+          frameKind: "branch",
+          instancePath: appendBranch([], "combine", "items"),
+        });
+        expect(details?.dynamic?.nodeInstances.find(instance => instance.nodeKey === firstItemKey)).toMatchObject({
+          nodeId: "inner_task",
+          instancePath: appendNode(appendFanoutItem(appendBranch([], "combine", "items"), "inner_items", 0, 0), "inner_task"),
+        });
+        expect(details?.dynamic?.groupMembers.find(member => member.memberKey === deriveInstanceKey(appendFanoutItem(appendBranch([], "combine", "items"), "inner_items", 0, 0)))).toMatchObject({
+          childFrameKey: deriveInstanceKey(appendFanoutItem(appendBranch([], "combine", "items"), "inner_items", 0, 0)),
+        });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("counts awaiting signal members against nested local concurrency", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-signal-local-concurrency", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, parallelSignalConcurrencyWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const gateKey = deriveInstanceKey(appendNode([], "gate"));
+        const leftBranchKey = deriveInstanceKey(appendBranch([], "gate", "left"));
+        const rightBranchKey = deriveInstanceKey(appendBranch([], "gate", "right"));
+        const leftSignalKey = deriveInstanceKey(appendNode(appendBranch([], "gate", "left"), "left_signal"));
+        const rightSignalKey = deriveInstanceKey(appendNode(appendBranch([], "gate", "right"), "right_signal"));
+
+        await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "awaiting", started: 0 });
+        const awaiting = store.scheduler.loadRunSnapshot(run.id).projection;
+        expect(awaiting.instances[leftSignalKey]).toMatchObject({ status: "awaiting" });
+        expect(awaiting.instances[rightSignalKey]).toMatchObject({ status: "ready" });
+        expect(awaiting.groupMembers[leftBranchKey]).toMatchObject({ status: "running" });
+        expect(awaiting.groupMembers[rightBranchKey]).toMatchObject({ status: "ready" });
+        expect(awaiting.signalWaits[rightSignalKey]).toBeUndefined();
+
+        const command = store.submitCommand({ runId: run.id, type: "signal", payload: { node: "left_signal", payload: { ok: true } }, idempotencyKey: `signal:${run.id}:left` });
+        await expect(applySchedulerControlCommand(workspace, store, command, { ownerId: "owner-b" })).resolves.toMatchObject({
+          advanced: { status: "awaiting", started: 0 },
+        });
+        const rightAwaiting = store.scheduler.loadRunSnapshot(run.id).projection;
+        expect(rightAwaiting.instances[rightSignalKey]).toMatchObject({ status: "awaiting" });
+        expect(rightAwaiting.groupMembers[rightBranchKey]).toMatchObject({ status: "running" });
+
+        const right = store.submitCommand({ runId: run.id, type: "signal", payload: { node: "right_signal", payload: { ok: true } }, idempotencyKey: `signal:${run.id}:right` });
+        await expect(applySchedulerControlCommand(workspace, store, right, { ownerId: "owner-c" })).resolves.toMatchObject({
+          advanced: { status: "completed", started: 0 },
+        });
+        expect(store.scheduler.loadRunSnapshot(run.id).projection.frames[gateKey]).toMatchObject({ status: "completed" });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   it("advances a root loop single-leaf task across repeated frozen-run drives", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-root-loop", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, rootLoopTaskWorkflow());
@@ -535,6 +671,9 @@ describe("runtime scheduler node executor", () => {
         const first = await advanceFrozenRun({ cwd: workspace, runId, ownerId: "owner-a", store });
         expect(first).toMatchObject({ status: "idle", started: 1, completed: 1 });
         expect(Object.values(store.scheduler.loadRunSnapshot(runId).projection.instances).filter(instance => instance.status === "ready")).toHaveLength(1);
+        const replay = store.replayRun(runId);
+        if (!replay.projection) throw new Error("expected replay projection");
+        expect(replay.projection.issues).toEqual([]);
       } finally {
         store.close();
       }
@@ -1728,7 +1867,7 @@ describe("runtime scheduler node executor", () => {
         if (!claim) throw new Error("expected retry claim");
         store.scheduler.retry({
           runId: run.id,
-          nodeKey,
+          targetKey: nodeKey,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "manual-agent-retry",
         });
@@ -2146,6 +2285,91 @@ function multiNodeRootFanoutWorkflow() {
       },
     });
     return {};
+  });
+}
+
+function nestedFanoutInParallelWorkflow() {
+  return defineWorkflow({
+    name: "scheduler-node-executor-nested-fanout",
+    inputSchema: z.object({ items: z.array(z.string()) }),
+  }).build(({ input, step }) => {
+    const prepare = step("prepare").task({
+      outputSchema: z.object({ prefix: z.string() }),
+      run: { input: {}, exec: async () => ({ prefix: "root" }) },
+    });
+    const combined = step("combine").parallel({
+      maxConcurrency: 1,
+      branches: {
+        items: {
+          outputSchema: z.object({ values: z.array(z.object({ value: z.string() })) }),
+          do: ({ step }) => {
+            const inner = step("inner_items").fanout({
+              over: input.items,
+              maxConcurrency: 1,
+              itemOutputSchema: z.object({ value: z.string() }),
+              do: ({ item, itemIndex, step }) => {
+                const task = step("inner_task").task({
+                  outputSchema: z.object({ value: z.string() }),
+                  run: {
+                    input: { prefix: prepare.output.prefix, item, itemIndex },
+                    exec: async ({ input }) => ({ value: `${input.prefix}-${input.item}-${input.itemIndex}` }),
+                  },
+                });
+                return { value: task.output.value };
+              },
+            });
+            return { values: inner.output };
+          },
+        },
+        sibling: {
+          outputSchema: z.object({ value: z.string() }),
+          do: ({ step }) => {
+            const task = step("sibling_task").task({
+              outputSchema: z.object({ value: z.string() }),
+              run: {
+                input: { prefix: prepare.output.prefix },
+                exec: async ({ input }) => ({ value: `${input.prefix}-sibling` }),
+              },
+            });
+            return { value: task.output.value };
+          },
+        },
+      },
+    });
+    return { values: combined.output.items.values, sibling: combined.output.sibling.value };
+  });
+}
+
+function parallelSignalConcurrencyWorkflow() {
+  return defineWorkflow({
+    name: "scheduler-node-executor-signal-local-concurrency",
+  }).build(({ step }) => {
+    const gate = step("gate").parallel({
+      maxConcurrency: 1,
+      branches: {
+        left: {
+          outputSchema: z.object({ ok: z.boolean() }),
+          do: ({ step }) => {
+            const approval = step("left_signal").signal({
+              outputSchema: z.object({ ok: z.boolean() }),
+              run: { prompt: "left" },
+            });
+            return { ok: approval.output.ok };
+          },
+        },
+        right: {
+          outputSchema: z.object({ ok: z.boolean() }),
+          do: ({ step }) => {
+            const approval = step("right_signal").signal({
+              outputSchema: z.object({ ok: z.boolean() }),
+              run: { prompt: "right" },
+            });
+            return { ok: approval.output.ok };
+          },
+        },
+      },
+    });
+    return { gate: gate.output };
   });
 }
 

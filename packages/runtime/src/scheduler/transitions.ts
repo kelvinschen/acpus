@@ -1,5 +1,6 @@
 import type { JsonObject, JsonValue } from "@acpus/expression/ir";
 import { isTerminalAttemptStatus, isTerminalFrameStatus, isTerminalGroupMemberStatus, isTerminalInstanceStatus, type SchedulerEvent } from "./events.js";
+import { ancestorGroupMembersForNode, descendantFramesForFrame, descendantFramesForMember, descendantGroupKeysForFrame, descendantGroupKeysForMember, descendantGroupMembersForFrame, descendantGroupMembersForMember, descendantInstancesForFrame, descendantInstancesForMember } from "./membership.js";
 import type {
   FailureClass,
   GroupMember,
@@ -45,16 +46,14 @@ export function attemptTimeoutEvents(projection: SchedulerProjection, now: Date)
   return Object.values(projection.attempts).flatMap(attempt => {
     if (attempt.status !== "started" || attempt.deadlineAt === undefined || attempt.deadlineAt > now.toISOString()) return [];
     const instance = projection.instances[attempt.nodeKey];
-    const member = projection.groupMembers[attempt.nodeKey];
+    const members = ancestorGroupMembersForNode(projection, attempt.nodeKey).filter(member => member.status === "running");
     const error = { reason: "attempt_timeout" };
     return [
       { type: "attempt.timed_out", payload: { attemptId: attempt.attemptId, error } },
       ...(instance && (instance.status === "running" || instance.status === "awaiting")
         ? [{ type: "instance.failed", payload: { nodeKey: instance.nodeKey, error, statusReason: "timed_out" } } satisfies SchedulerEvent]
         : []),
-      ...(member?.status === "running"
-        ? [{ type: "group.member_failed", payload: { memberKey: member.memberKey, error, terminalReason: "timed_out" } } satisfies SchedulerEvent]
-        : []),
+      ...members.map(member => ({ type: "group.member_failed", payload: { memberKey: member.memberKey, error, terminalReason: "timed_out" } }) satisfies SchedulerEvent),
     ];
   });
 }
@@ -141,24 +140,99 @@ export function groupCompletionEvents(projection: SchedulerProjection, groupKey:
   ];
 }
 
-function cancellationEventsForMember(projection: SchedulerProjection, member: GroupMember, cancelReason: "parent_failed" | "race_lost" | "quorum_reached"): SchedulerEvent[] {
-  const instances = memberInstances(projection, member);
-  const attempts = instances.flatMap(instance =>
-    Object.values(projection.attempts).filter(attempt => attempt.nodeKey === instance.nodeKey && attempt.status === "started"),
-  );
+export function cancellationEventsForFrame(projection: SchedulerProjection, frameKey: string, cancelReason: "operator_cancelled"): SchedulerEvent[] {
+  if (!projection.frames[frameKey]) return [];
+  const frames = descendantFramesForFrame(projection, frameKey);
+  const frameKeys = new Set(frames.map(frame => frame.frameKey));
+  const instances = Object.values(projection.instances)
+    .filter(instance => instance.parentFrameKey !== undefined && frameKeys.has(instance.parentFrameKey));
+  return cancellationEventsForSubtree(projection, frames, instances, cancelReason);
+}
+
+export function cancellationEventsForNode(projection: SchedulerProjection, nodeKey: string, cancelReason: "operator_cancelled"): SchedulerEvent[] {
+  const instance = projection.instances[nodeKey];
+  if (!instance) return [];
+  const member = ancestorGroupMembersForNode(projection, nodeKey)[0];
+  return member ? cancellationEventsForMember(projection, member, cancelReason) : cancellationEventsForSubtree(projection, [], [instance], cancelReason);
+}
+
+function cancellationEventsForSubtree(
+  projection: SchedulerProjection,
+  frames: readonly SchedulerFrame[],
+  instances: readonly NodeInstance[],
+  cancelReason: "operator_cancelled",
+): SchedulerEvent[] {
+  const frameKeys = new Set(frames.map(frame => frame.frameKey));
+  const nodeKeys = new Set(instances.map(instance => instance.nodeKey));
+  const groupMembers = Object.values(projection.groupMembers)
+    .filter(member => (member.childFrameKey !== undefined && frameKeys.has(member.childFrameKey)) || frameKeys.has(member.memberKey));
+  const groupKeys = new Set(Object.values(projection.groups)
+    .filter(group => frameKeys.has(group.nodeKey))
+    .map(group => group.groupKey));
+  const attempts = Object.values(projection.attempts)
+    .filter(attempt => attempt.status === "started" && nodeKeys.has(attempt.nodeKey));
+  const signalWaits = Object.values(projection.signalWaits)
+    .filter(wait => wait.status === "awaiting" && nodeKeys.has(wait.nodeKey));
   return [
-    { type: "group.member_cancelled", payload: { memberKey: member.memberKey, cancelReason } },
     ...attempts.map(attempt => ({ type: "attempt.cancelled", payload: { attemptId: attempt.attemptId, cancelReason } }) satisfies SchedulerEvent),
+    ...signalWaits.map(wait => ({ type: "signal.cancelled", payload: { nodeKey: wait.nodeKey, cancelReason } }) satisfies SchedulerEvent),
     ...instances
       .filter(instance => instance.status === "ready" || instance.status === "running" || instance.status === "awaiting")
       .map(instance => ({ type: "instance.cancelled", payload: { nodeKey: instance.nodeKey, cancelReason } }) satisfies SchedulerEvent),
+    ...groupMembers
+      .filter(member => member.status === "ready" || member.status === "running")
+      .map(member => ({ type: "group.member_cancelled", payload: { memberKey: member.memberKey, cancelReason } }) satisfies SchedulerEvent),
+    ...Object.values(projection.groups)
+      .filter(group => groupKeys.has(group.groupKey) && group.status === "running")
+      .map(group => ({ type: "group.cancelled", payload: { groupKey: group.groupKey, cancelReason } }) satisfies SchedulerEvent),
+    ...frames
+      .filter(frame => frame.status === "ready" || frame.status === "running" || frame.status === "awaiting")
+      .map(frame => ({ type: "frame.cancelled", payload: { frameKey: frame.frameKey, cancelReason } }) satisfies SchedulerEvent),
+  ];
+}
+
+function cancellationEventsForMember(projection: SchedulerProjection, member: GroupMember, cancelReason: "parent_failed" | "race_lost" | "quorum_reached" | "operator_cancelled"): SchedulerEvent[] {
+  const instances = memberInstances(projection, member);
+  const frames = memberFrames(projection, member);
+  const childMembers = descendantGroupMembersForMember(projection, member);
+  const childGroupKeys = descendantGroupKeysForMember(projection, member);
+  const attempts = instances.flatMap(instance =>
+    Object.values(projection.attempts).filter(attempt => attempt.nodeKey === instance.nodeKey && attempt.status === "started"),
+  );
+  const signalWaits = instances.flatMap(instance => {
+    const wait = projection.signalWaits[instance.nodeKey];
+    return wait?.status === "awaiting" ? [wait] : [];
+  });
+  return [
+    { type: "group.member_cancelled", payload: { memberKey: member.memberKey, cancelReason } },
+    ...childMembers
+      .filter(child => child.status === "ready" || child.status === "running")
+      .map(child => ({ type: "group.member_cancelled", payload: { memberKey: child.memberKey, cancelReason } }) satisfies SchedulerEvent),
+    ...childGroupKeys
+      .filter(groupKey => projection.groups[groupKey]?.status === "running")
+      .map(groupKey => ({ type: "group.cancelled", payload: { groupKey, cancelReason } }) satisfies SchedulerEvent),
+    ...attempts.map(attempt => ({ type: "attempt.cancelled", payload: { attemptId: attempt.attemptId, cancelReason } }) satisfies SchedulerEvent),
+    ...signalWaits.map(wait => ({ type: "signal.cancelled", payload: { nodeKey: wait.nodeKey, cancelReason } }) satisfies SchedulerEvent),
+    ...instances
+      .filter(instance => instance.status === "ready" || instance.status === "running" || instance.status === "awaiting")
+      .map(instance => ({ type: "instance.cancelled", payload: { nodeKey: instance.nodeKey, cancelReason } }) satisfies SchedulerEvent),
+    ...frames
+      .filter(frame => !isTerminalFrameStatus(frame.status))
+      .sort((left, right) => frameDepth(right) - frameDepth(left))
+      .map(frame => ({ type: "frame.cancelled", payload: { frameKey: frame.frameKey, cancelReason } }) satisfies SchedulerEvent),
   ];
 }
 
 function memberInstances(projection: SchedulerProjection, member: GroupMember): NodeInstance[] {
-  const direct = projection.instances[member.memberKey];
-  if (direct) return [direct];
-  return Object.values(projection.instances).filter(instance => instance.parentFrameKey === member.memberKey);
+  return descendantInstancesForMember(projection, member);
+}
+
+function memberFrames(projection: SchedulerProjection, member: GroupMember): SchedulerFrame[] {
+  return descendantFramesForMember(projection, member);
+}
+
+function frameDepth(frame: SchedulerFrame): number {
+  return frame.instancePath?.length ?? 0;
 }
 
 export function materializeFanoutItems(input: FanoutItemInput): Extract<SchedulerEvent, { type: "group.member_ready" }>[] {
@@ -279,6 +353,10 @@ function applyMutable(projection: SchedulerProjection, event: SchedulerEvent): v
     });
     return;
   }
+  if (event.type === "frame.retry_requested") {
+    applyFrameRetryEvent(projection, event.payload.frameKey);
+    return;
+  }
   if (event.type === "frame.completed" || event.type === "frame.failed" || event.type === "frame.cancelled") {
     const frame = requireKey(projection.frames, event.payload.frameKey, "frame");
     assertFrameOpen(frame);
@@ -292,7 +370,13 @@ function applyMutable(projection: SchedulerProjection, event: SchedulerEvent): v
     }
     if (event.type === "frame.cancelled") {
       projection.frames[event.payload.frameKey] = compactFrame({ ...frame, status: "cancelled", terminalReason: event.payload.cancelReason });
-      if (event.payload.frameKey === "root") projection.run = { ...projection.run, status: "failed" };
+      if (event.payload.frameKey === "root") {
+        projection.run = {
+          ...projection.run,
+          status: event.payload.cancelReason === "operator_cancelled" ? "canceled" : "failed",
+          paused: false,
+        };
+      }
     }
     return;
   }
@@ -448,11 +532,12 @@ function isGroupEvent(event: SchedulerEvent): event is Extract<SchedulerEvent, {
   }
 }
 
-function isSignalEvent(event: SchedulerEvent): event is Extract<SchedulerEvent, { type: "signal.awaiting" | "signal.consumed" | "signal.timed_out" }> {
+function isSignalEvent(event: SchedulerEvent): event is Extract<SchedulerEvent, { type: "signal.awaiting" | "signal.consumed" | "signal.timed_out" | "signal.cancelled" }> {
   switch (event.type) {
     case "signal.awaiting":
     case "signal.consumed":
     case "signal.timed_out":
+    case "signal.cancelled":
       return true;
     default:
       return false;
@@ -479,6 +564,7 @@ function applyInstanceEvent(projection: SchedulerProjection, event: SchedulerEve
   if (event.type === "instance.retry_requested") {
     assertInstanceRetryable(instance);
     if (event.payload.source === "control") reopenForControlNodeRetry(projection, instance);
+    delete projection.signalWaits[event.payload.nodeKey];
     projection.instances[event.payload.nodeKey] = compactInstance({
       runId: instance.runId,
       nodeKey: instance.nodeKey,
@@ -493,10 +579,19 @@ function applyInstanceEvent(projection: SchedulerProjection, event: SchedulerEve
   }
   assertInstanceOpen(instance);
   if (event.type === "instance.started") projection.instances[event.payload.nodeKey] = compactInstance({ ...instance, status: "running" });
-  if (event.type === "instance.awaiting") projection.instances[event.payload.nodeKey] = compactInstance({ ...instance, status: "awaiting", ...(event.payload.statusReason === undefined ? {} : { statusReason: event.payload.statusReason }) });
+  if (event.type === "instance.awaiting") {
+    projection.instances[event.payload.nodeKey] = compactInstance({ ...instance, status: "awaiting", ...(event.payload.statusReason === undefined ? {} : { statusReason: event.payload.statusReason }) });
+    startReadyAncestorMembers(projection, event.payload.nodeKey);
+  }
   if (event.type === "instance.completed") projection.instances[event.payload.nodeKey] = compactInstance({ ...instance, status: "completed", ...(event.payload.output === undefined ? {} : { output: event.payload.output }), ...(event.payload.acceptedAttemptId === undefined ? {} : { acceptedAttemptId: event.payload.acceptedAttemptId }) });
   if (event.type === "instance.failed") projection.instances[event.payload.nodeKey] = compactInstance({ ...instance, status: "failed", error: event.payload.error, ...(event.payload.statusReason === undefined ? {} : { statusReason: event.payload.statusReason }) });
   if (event.type === "instance.cancelled") projection.instances[event.payload.nodeKey] = compactInstance({ ...instance, status: "cancelled", statusReason: event.payload.cancelReason });
+}
+
+function startReadyAncestorMembers(projection: SchedulerProjection, nodeKey: string): void {
+  for (const member of ancestorGroupMembersForNode(projection, nodeKey)) {
+    if (member.status === "ready") projection.groupMembers[member.memberKey] = compactMember({ ...member, status: "running" });
+  }
 }
 
 function applyAttemptEvent(projection: SchedulerProjection, event: SchedulerEvent): void {
@@ -526,6 +621,7 @@ function applyGroupEvent(projection: SchedulerProjection, event: SchedulerEvent)
       ...(event.payload.itemKey === undefined ? {} : { itemKey: event.payload.itemKey }),
       ...(event.payload.itemIndex === undefined ? {} : { itemIndex: event.payload.itemIndex }),
       ...(event.payload.item === undefined ? {} : { item: event.payload.item }),
+      ...(event.payload.childFrameKey === undefined ? {} : { childFrameKey: event.payload.childFrameKey }),
     };
     return;
   }
@@ -554,6 +650,7 @@ function applyGroupEvent(projection: SchedulerProjection, event: SchedulerEvent)
         ...(member.itemKey === undefined ? {} : { itemKey: member.itemKey }),
         ...(member.itemIndex === undefined ? {} : { itemIndex: member.itemIndex }),
         ...(member.item === undefined ? {} : { item: member.item }),
+        ...(member.childFrameKey === undefined ? {} : { childFrameKey: member.childFrameKey }),
       });
       return;
     }
@@ -584,6 +681,38 @@ function reopenForControlNodeRetry(projection: SchedulerProjection, instance: No
   }
 }
 
+function applyFrameRetryEvent(projection: SchedulerProjection, frameKey: string): void {
+  const frame = requireKey(projection.frames, frameKey, "frame");
+  assertFrameRetryable(frame);
+  const instances = descendantInstancesForFrame(projection, frameKey);
+  const instanceKeys = new Set(instances.map(instance => instance.nodeKey));
+  const members = descendantGroupMembersForFrame(projection, frameKey);
+  const groupKeys = descendantGroupKeysForFrame(projection, frameKey);
+  const frames = descendantFramesForFrame(projection, frameKey);
+  if (projection.run.status === "failed") projection.run = { ...projection.run, status: "pending", paused: false };
+  reopenFrameForControlRetry(projection, "root");
+  for (let parentKey = frame.parentFrameKey; parentKey !== undefined;) {
+    const parent = projection.frames[parentKey];
+    if (!parent) break;
+    reopenFrameForControlRetry(projection, parentKey);
+    parentKey = parent.parentFrameKey;
+  }
+
+  for (const attempt of Object.values(projection.attempts)) {
+    if (instanceKeys.has(attempt.nodeKey)) delete projection.attempts[attempt.attemptId];
+  }
+  for (const wait of Object.values(projection.signalWaits)) {
+    if (instanceKeys.has(wait.nodeKey)) delete projection.signalWaits[wait.nodeKey];
+  }
+  for (const instance of instances) delete projection.instances[instance.nodeKey];
+  for (const member of members) delete projection.groupMembers[member.memberKey];
+  for (const groupKey of groupKeys) delete projection.groups[groupKey];
+  for (const child of frames) {
+    delete projection.branchDecisions[child.frameKey];
+    delete projection.frames[child.frameKey];
+  }
+}
+
 function reopenFrameForControlRetry(projection: SchedulerProjection, frameKey: string): void {
   const frame = projection.frames[frameKey];
   if (!frame || frame.status !== "failed") return;
@@ -608,7 +737,7 @@ function reopenGroupForControlRetry(projection: SchedulerProjection, groupKey: s
   reopenFrameForControlRetry(projection, group.nodeKey);
 }
 
-function applySignalEvent(projection: SchedulerProjection, event: Extract<SchedulerEvent, { type: "signal.awaiting" | "signal.consumed" | "signal.timed_out" }>): void {
+function applySignalEvent(projection: SchedulerProjection, event: Extract<SchedulerEvent, { type: "signal.awaiting" | "signal.consumed" | "signal.timed_out" | "signal.cancelled" }>): void {
   if (event.type === "signal.awaiting") {
     if (projection.signalWaits[event.payload.nodeKey]) throw new Error(`Signal wait '${event.payload.nodeKey}' already exists.`);
     projection.signalWaits[event.payload.nodeKey] = compactSignalWait({
@@ -638,6 +767,10 @@ function applySignalEvent(projection: SchedulerProjection, event: Extract<Schedu
   if (event.type === "signal.timed_out") {
     assertSignalOpen(wait.status, event.payload.nodeKey);
     projection.signalWaits[event.payload.nodeKey] = compactSignalWait({ ...wait, status: "timed_out", ...(event.payload.terminalReason === undefined ? {} : { terminalReason: event.payload.terminalReason }) });
+  }
+  if (event.type === "signal.cancelled") {
+    assertSignalOpen(wait.status, event.payload.nodeKey);
+    projection.signalWaits[event.payload.nodeKey] = compactSignalWait({ ...wait, status: "cancelled", terminalReason: event.payload.cancelReason });
   }
 }
 
@@ -677,6 +810,11 @@ function requirePositiveQuorum(group: GroupProjection): number {
 
 function assertFrameOpen(frame: SchedulerFrame): void {
   if (isTerminalFrameStatus(frame.status)) throw new Error(`Frame '${frame.frameKey}' is already ${frame.status}.`);
+}
+
+function assertFrameRetryable(frame: SchedulerFrame): void {
+  if (frame.status !== "failed") throw new Error(`Frame '${frame.frameKey}' cannot be retried from ${frame.status}.`);
+  if (frame.frameKind !== "node" && frame.frameKind !== "loop") throw new Error(`Frame '${frame.frameKey}' is not a retryable public node frame.`);
 }
 
 function assertInstanceOpen(instance: NodeInstance): void {
@@ -727,7 +865,7 @@ function assertSignalOpen(status: SchedulerProjection["signalWaits"][string]["st
 }
 
 function assertRunControllable(status: SchedulerProjection["run"]["status"], action: string): void {
-  if (status === "completed" || status === "failed") throw new Error(`Cannot ${action} ${status} run.`);
+  if (status === "completed" || status === "failed" || status === "canceled") throw new Error(`Cannot ${action} ${status} run.`);
 }
 
 function assertGroupKindStrategy(kind: GroupProjection["kind"], strategy: GroupProjection["strategy"], groupKey: string): void {

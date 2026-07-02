@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import type { JsonValue } from "@acpus/expression/ir";
 import { ResultAsync } from "neverthrow";
 import { normalizeSignalPayload, normalizeWorkflowInput } from "../admission/input.js";
-import type { AdvanceResult } from "../execution/advance.js";
 import { applyControlCommand } from "../control/apply-command.js";
 import { tryAdvanceRuntimeRun, type RuntimeAdvanceError, type RuntimeAdvanceResult } from "./advance-runtime.js";
 import { schedulerStoreError, type SchedulerStoreError } from "../scheduler/store-port.js";
@@ -14,19 +13,20 @@ import {
   type AgentOverrideMap,
   type ForkPreparedWorkflow,
   type PendingControlCommand,
+  type PendingRunControlCommand,
   type PreparedRunWorkflow,
   type ReplayResult,
   type RunDetails,
   type RunRecord,
-  type SubmitCommandInput,
+  type SubmitRunControlCommandInput,
 } from "../store/store.js";
 
-export type RuntimeMutationAction = "pause" | "resume" | "retry" | "fork";
+export type RuntimeMutationAction = "pause" | "resume" | "retry" | "fork" | "cancel";
 
 export type RuntimeCommandRecord = Pick<PendingControlCommand, "id" | "type" | "status" | "runId" | "payload">;
 
 export type RuntimeMutationInput = {
-  node?: string;
+  target?: string;
   prepared?: PreparedRunWorkflow;
   input?: JsonValue;
   agentOverrides?: AgentOverrideMap;
@@ -34,7 +34,7 @@ export type RuntimeMutationInput = {
 
 export type RuntimeMutationResult = {
   run: RunDetails;
-  advanced?: RuntimeAdvanceResult | AdvanceResult;
+  advanced?: RuntimeAdvanceResult;
   command?: RuntimeCommandRecord;
 };
 
@@ -222,7 +222,7 @@ async function mutateRunResult(cwd: string, runId: string, action: RuntimeMutati
   }
 }
 
-function mutationCommandInput(runId: string, action: RuntimeMutationAction, input: RuntimeMutationInput): SubmitCommandInput {
+function mutationCommandInput(runId: string, action: RuntimeMutationAction, input: RuntimeMutationInput): SubmitRunControlCommandInput {
   switch (action) {
     case "pause":
       return { runId, type: "pause", idempotencyKey: `pause:${runId}:${randomUUID()}` };
@@ -232,8 +232,15 @@ function mutationCommandInput(runId: string, action: RuntimeMutationAction, inpu
       return {
         runId,
         type: "retry",
-        ...(input.node ? { payload: { node: input.node } } : {}),
-        idempotencyKey: `retry:${runId}:${input.node ?? "run"}:${randomUUID()}`,
+        ...(input.target ? { payload: { target: input.target } } : {}),
+        idempotencyKey: `retry:${runId}:${input.target ?? "run"}:${randomUUID()}`,
+      };
+    case "cancel":
+      return {
+        runId,
+        type: "cancel",
+        ...(input.target ? { payload: { target: input.target } } : {}),
+        idempotencyKey: `cancel:${runId}:${input.target ?? "run"}:${randomUUID()}`,
       };
     case "fork":
       return {
@@ -255,7 +262,7 @@ class RuntimeUseCaseException extends Error {
   }
 }
 
-async function applyCommandResult(cwd: string, store: NonNullable<Awaited<ReturnType<typeof openExistingWritableRuntimeStore>>>, command: PendingControlCommand): Promise<Awaited<ReturnType<typeof applyControlCommand>>> {
+async function applyCommandResult(cwd: string, store: NonNullable<Awaited<ReturnType<typeof openExistingWritableRuntimeStore>>>, command: PendingRunControlCommand): Promise<Awaited<ReturnType<typeof applyControlCommand>>> {
   try {
     return await applyControlCommand(cwd, store, command);
   } catch (error) {

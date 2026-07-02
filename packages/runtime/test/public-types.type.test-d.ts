@@ -4,6 +4,7 @@ import type {
   AdvanceRunError,
   AdvanceRunInput,
   AdvanceRunSummary,
+  CancelCommandPayload,
   ControlCommandType,
   EmptyCommandPayload,
   ForkPreparedWorkflow,
@@ -18,6 +19,7 @@ import type {
   RunDynamicSignalWait,
   RunDetails,
   RunRecord,
+  RunControlCommandType,
   RunStatus,
   RunWorkflowLockArtifact,
   RuntimeAdvanceError,
@@ -33,6 +35,7 @@ import type {
   SchedulerStoreResult,
   SignalCommandPayload,
   SubmitCommandInput,
+  SupervisorCommandType,
   SupervisorLoopHandle,
   SupervisorLoopOptions,
   WorkflowVisualizationGroup,
@@ -71,14 +74,26 @@ test("@acpus/runtime public types describe use-case level runtime APIs", () => {
   expectTypeOf<RunDynamicDetails["attempts"][number]>().toEqualTypeOf<RunDynamicAttempt>();
   expectTypeOf<RunDynamicDetails["groupMembers"][number]>().toEqualTypeOf<RunDynamicGroupMember>();
   expectTypeOf<RunDynamicDetails["signalWaits"][number]>().toEqualTypeOf<RunDynamicSignalWait>();
+  expectTypeOf<NonNullable<RunDynamicFrame["instancePath"]>[number]>().toMatchTypeOf<{ kind: string }>();
+  expectTypeOf<NonNullable<RunDynamicNodeInstance["instancePath"]>[number]>().toMatchTypeOf<{ kind: string }>();
+  expectTypeOf<undefined>().toMatchTypeOf<RunDynamicFrame["instancePath"]>();
+  expectTypeOf<undefined>().toMatchTypeOf<RunDynamicNodeInstance["instancePath"]>();
+  expectTypeOf<RunDynamicGroupMember["completionSequence"]>().toEqualTypeOf<number | undefined>();
   expectTypeOf<WorkflowVisualizationOverlay["nodes"][number]>().toEqualTypeOf<WorkflowVisualizationNode>();
   expectTypeOf<WorkflowVisualizationOverlay["groups"][number]>().toEqualTypeOf<WorkflowVisualizationGroup>();
   expectTypeOf<RunStatus>().toEqualTypeOf<"pending" | "running" | "paused" | "awaiting" | "failed" | "completed" | "canceled">();
-  expectTypeOf<ControlCommandType>().toEqualTypeOf<"pause" | "resume" | "retry" | "fork" | "signal" | "shutdown">();
+  expectTypeOf<RuntimeMutationAction>().toEqualTypeOf<"pause" | "resume" | "retry" | "fork" | "cancel">();
+  expectTypeOf<RuntimeMutationInput>().toMatchTypeOf<{ target?: string }>();
+  expectTypeOf<RunControlCommandType>().toEqualTypeOf<"pause" | "resume" | "retry" | "fork" | "signal" | "cancel">();
+  expectTypeOf<SupervisorCommandType>().toEqualTypeOf<"shutdown">();
+  expectTypeOf<ControlCommandType>().toEqualTypeOf<RunControlCommandType | SupervisorCommandType>();
   expectTypeOf<Extract<SubmitCommandInput, { type: "pause" }>["payload"]>().toEqualTypeOf<PauseCommandPayload | undefined>();
   expectTypeOf<Extract<SubmitCommandInput, { type: "shutdown" }>["payload"]>().toEqualTypeOf<EmptyCommandPayload | undefined>();
   expectTypeOf<Extract<SubmitCommandInput, { type: "signal" }>["payload"]>().toEqualTypeOf<SignalCommandPayload | undefined>();
   expectTypeOf<Extract<SubmitCommandInput, { type: "retry" }>["payload"]>().toEqualTypeOf<RetryCommandPayload | undefined>();
+  expectTypeOf<Extract<SubmitCommandInput, { type: "cancel" }>["payload"]>().toEqualTypeOf<CancelCommandPayload | undefined>();
+  expectTypeOf<RetryCommandPayload>().toEqualTypeOf<{ target?: string }>();
+  expectTypeOf<CancelCommandPayload>().toEqualTypeOf<{ target?: string }>();
   expectTypeOf<SchedulerStoreResult<unknown>>().toEqualTypeOf<Result<unknown, SchedulerStoreError>>();
   expectTypeOf(tryAdvanceRun).toEqualTypeOf<(input: AdvanceRunInput) => ResultAsync<AdvanceRunSummary, AdvanceRunError>>();
   expectTypeOf(tryAdvanceRuntimeRun).toEqualTypeOf<(cwd: string, store: RuntimeStore, runId: string, ownerId?: string) => ResultAsync<RuntimeAdvanceResult, RuntimeAdvanceError>>();

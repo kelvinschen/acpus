@@ -63,19 +63,28 @@
   missing retry targets, and invalid retry targets without requiring callers to
   parse display messages.
 - The scheduler MUST maintain projection tables for frames, dynamic node instances, attempts, group members, and signal waits.
+- Root execution, composite/control nodes, conditional branches, parallel
+  branches, fanout items, and loop iterations MUST use one recursive durable
+  frame model.
 - Static `nodeId` MUST remain the frozen IR node id. Dynamic execution identity MUST use a derived `nodeKey` from the instance path.
 - Scheduler events and projection rows for dynamic work MUST preserve structured instance path data when the dynamic instance is known.
 - Dynamic node outputs MUST resolve through lexical execution scope; child scope outputs MUST expose only declared composite outputs to the parent scope.
-- The scheduler MUST materialize supported root `assert`, `if`, `switch`, `parallel`, `fanout`, and `loop` nodes from frozen IR.
-- The scheduler MUST materialize selected conditional branches, parallel branches, fanout bodies, and loop iteration bodies only for the current supported child-scope shape: scheduler-visible leaf nodes sequenced by durable scope state.
-- Unsupported nested composite or pure-before-leaf child-scope shapes MUST remain unmaterialized rather than creating partial scheduler state.
+- The scheduler MUST materialize valid frozen IR compositions recursively,
+  including nested `assert`, `if`, `switch`, `parallel`, `fanout`, and `loop`
+  nodes at any supported scope depth.
+- Leaf `task`, `agent`, and `signal` nodes MUST create dynamic node instances
+  directly under the current frame and MUST NOT create wrapper frames.
 - Assert nodes MUST continue when their condition evaluates true and fail when it evaluates false.
 - Conditional nodes MUST persist branch decisions and MUST resume from durable branch decisions instead of re-evaluating already-decided conditions.
-- For supported branch bodies, parallel `all` strategy MUST aggregate branch outputs by branch key and MUST fail fast by cancelling remaining running members when one member fails.
-- For supported branch bodies, parallel `race` strategy MUST return the first successful branch with `{ winner, result }` and MUST cancel remaining running members after the winner is accepted.
-- For supported item bodies, fanout `all` strategy MUST materialize item identity rows and aggregate item outputs as an array.
-- For supported item bodies, fanout `quorum` strategy MUST accept outputs in completion order, return `{ accepted, completed }` after quorum success, and cancel remaining running members after quorum is reached.
-- For supported iteration bodies, loop execution MUST support iteration index, previous iteration output, result refs, stop conditions, `maxIterations`, and the current exhaustion policy.
+- Switch branch identity MUST use `case:<index>` for case branches and
+  `default` for fallback branches.
+- Parallel `all` strategy MUST aggregate branch outputs by branch key and MUST fail fast by cancelling remaining running member subtrees when one member fails.
+- Parallel `race` strategy MUST return the first successful branch with `{ winner, result }` and MUST cancel remaining running member subtrees after the winner is accepted.
+- Fanout `all` strategy MUST materialize item identity rows and aggregate item outputs as an array.
+- Fanout `quorum` strategy MUST accept outputs in completion order, return `{ accepted, completed }` after quorum success, and cancel remaining running member subtrees after quorum is reached.
+- Loop execution MUST support iteration index, previous iteration output, result refs, stop conditions, `maxIterations`, and the current exhaustion policy.
+- Group member rows MUST point at the child branch or fanout-item frame that
+  owns the cancellable member subtree.
 - The runtime MUST execute task nodes through the task run target stored in frozen IR.
 - For inline task targets, the runtime MUST construct a callable function from the embedded self-contained source without writing a run-local task source file.
 - For reusable module task targets, the runtime MUST resolve the recorded source-level module specifier from the workflow referrer in the current workspace/package environment, import the module with TypeScript support, verify the selected export is an Acpus task token, and invoke the token's `fn`.
@@ -196,22 +205,33 @@
 ### Controls, Fork, Signal, And Replay
 
 - Pause MUST record a durable pause gate and MUST prevent new scheduler-visible attempts from starting while paused.
-- Runtime durable command inputs MUST use the known discriminated command types
-  `pause`, `resume`, `retry`, `fork`, `signal`, and `shutdown`, not an open
-  command type string.
+- Runtime durable run-command inputs MUST use the known discriminated command
+  types `pause`, `resume`, `retry`, `fork`, `signal`, and `cancel`, not an open command
+  type string.
+- Runtime durable supervisor-command inputs MUST use the known discriminated
+  command type `shutdown`.
 - Runtime durable command variants MUST expose typed JSON payload shapes for
-  known payload fields such as pause reason, retry node, fork options, and
-  signal node/payload.
+  known payload fields such as pause reason, retry target, cancel target, fork
+  options, and signal node/payload.
 - Pause MUST best-effort cancel started scheduler-visible attempts and requeue eligible dynamic work for a later resume.
 - Pausing an active scheduler-backed agent turn MUST abort the executor signal
   and MUST preserve available prompt, response, stderr, telemetry artifacts,
   and cancelled turn metadata.
 - Resume MUST clear the durable pause gate and re-drive eligible scheduler work.
-- Retry MUST target either a failed scheduler run or a failed dynamic node instance.
+- Retry MUST target a failed scheduler run, failed dynamic leaf `nodeKey`, or
+  failed dynamic composite/control `frameKey`.
 - Run-level retry MUST reset scheduler projection to a clean pending materialization point while preserving historical event facts.
-- Node retry MUST target a dynamic `nodeKey` directly or a static node alias only when that alias resolves to exactly one failed dynamic instance.
+- Targeted retry MUST accept a dynamic leaf `nodeKey`, a dynamic
+  composite/control `frameKey`, or a static node alias only when that alias
+  resolves to exactly one failed dynamic retry target.
 - Node retry from a failed run MUST reopen only the failed node's scheduler
   execution chain instead of resetting the whole run projection.
+- Cancel MUST target a scheduler run, a non-terminal dynamic leaf `nodeKey`, a
+  non-terminal dynamic composite/control `frameKey`, or a static node alias only
+  when that alias resolves to exactly one non-terminal dynamic cancel target.
+- Run-level cancel MUST terminalize the run as `canceled`.
+- Targeted cancel MUST terminalize the selected scheduler subtree with reason
+  `operator_cancelled` and MUST NOT reset unrelated runnable work.
 - Fork MUST create a new run from frozen source run data without reading live workflow source.
 - Fork MAY freeze a replacement prepared workflow and/or input override for the new run.
 - Fork MUST inherit source run agent overrides that still reference declared
@@ -231,13 +251,18 @@
 
 - `listRuns`, `getRun`, replay APIs, and visualization overlay APIs MUST read SQLite projections rather than live workflow source.
 - `getRun` MUST expose dynamic scheduler details when scheduler projection rows exist, including version, frames, dynamic node instances, attempts, group members, and signal waits.
+- Dynamic frame and node-instance read rows MUST include structured
+  `instancePath` data when present.
+- Dynamic group-member read rows MUST include `childFrameKey` when the member
+  owns a child branch or fanout-item frame.
 - `getRun` MUST expose runtime execution metadata rows, including agent attempt
   turn metadata, when such rows exist for a run.
 - The runtime MUST provide a visualization overlay helper that combines static `WorkflowIR` structure with dynamic scheduler projection state without adding layout-specific state.
 - Read-only inspection MUST NOT create runtime state when no runtime store exists.
 - The runtime store MUST support SQLite-backed supervisor leases with generation fencing, heartbeat updates, stale takeover, and release by current generation only.
 - The detached supervisor MUST heartbeat under its current lease generation.
-- The detached supervisor MUST consume pending durable command rows for pause, resume, retry, fork, signal, and shutdown.
+- The detached supervisor MUST consume pending durable run-command rows for pause, resume, retry, fork, signal, and cancel.
+- The detached supervisor MUST consume pending durable supervisor-command rows for shutdown.
 - The detached supervisor MUST release its lease and exit after applying a durable shutdown command.
 - The detached supervisor MUST NOT process later commands or advance runnable runs in the same tick after applying shutdown.
 - The detached supervisor MUST recover stale running command rows for its current lease generation before consuming commands.
@@ -269,5 +294,5 @@
   default absence of raw ACP debug artifacts.
 - Tests MUST cover raw recovered schema-backed agent output artifacts and prove
   they remain diagnostic rather than workflow-visible output.
-- Tests MUST cover pause, resume, run retry, dynamic node retry, signal targeting and idempotency, fork, replay, durable command rows, and fork artifact reachability.
+- Tests MUST cover pause, resume, run retry, dynamic node retry, cancel, signal targeting and idempotency, fork, replay, durable command rows, and fork artifact reachability.
 - Tests MUST cover supervisor lease acquisition, active lease rejection, stale takeover, heartbeat fencing, release fencing, durable command consumption, and shutdown.

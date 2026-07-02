@@ -41,6 +41,7 @@ export {
   type ControlCommand,
   type ControlCommandStatus,
   type ControlCommandType,
+  type CancelCommandPayload,
   type EmptyCommandPayload,
   type ForkPreparedWorkflow,
   type ForkCommandPayload,
@@ -62,10 +63,12 @@ export {
   type RunDetails,
   type RunRecord,
   type RunStatus,
+  type RunControlCommandType,
   type RuntimeStore,
   type RunWorkflowLockArtifact,
   type SignalCommandPayload,
   type SubmitCommandInput,
+  type SupervisorCommandType,
 } from "./store/store.js";
 export {
   tryAdvanceRun,

@@ -7,10 +7,11 @@ import type { AgentDefinitionIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
 import type { ExprIR, JsonValue } from "@acpus/expression/ir";
 import { valueToExprIR } from "@acpus/expression/ir";
 import { evaluateExpr } from "../evaluation/evaluator.js";
-import { applySchedulerEvents, createSchedulerProjection } from "../scheduler/transitions.js";
+import { applySchedulerEvents, cancellationEventsForFrame, cancellationEventsForNode, createSchedulerProjection } from "../scheduler/transitions.js";
+import { ancestorGroupMembersForFrame, ancestorGroupMembersForNode } from "../scheduler/membership.js";
 import type { SchedulerEvent } from "../scheduler/events.js";
-import { SchedulerStoreException, schedulerStoreResult, type RunOwnerClaim, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStorePort, type AttemptStartInput, type AttemptCommitInput, type SignalConsumeInput, type SchedulerPauseInput, type SchedulerResumeInput, type SchedulerRetryInput, type SchedulerRunRetryInput, type SchedulerStoreError, type SchedulerStoreResult } from "../scheduler/store-port.js";
-import type { SchedulerProjection } from "../scheduler/types.js";
+import { SchedulerStoreException, schedulerStoreResult, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStorePort, type AttemptStartInput, type AttemptCommitInput, type SignalConsumeInput, type SchedulerPauseInput, type SchedulerResumeInput, type SchedulerRetryInput, type SchedulerRunRetryInput, type SchedulerStoreError, type SchedulerStoreResult } from "../scheduler/store-port.js";
+import type { InstancePath, SchedulerProjection } from "../scheduler/types.js";
 
 export type RunStatus = "pending" | "running" | "paused" | "awaiting" | "failed" | "completed" | "canceled";
 
@@ -31,6 +32,8 @@ export type RuntimeStore = {
   claimSupervisor(input: ClaimSupervisorInput): SupervisorLease;
   heartbeatSupervisor(input: HeartbeatSupervisorInput): boolean;
   releaseSupervisor(input: HeartbeatSupervisorInput): boolean;
+  submitCommand(input: SubmitRunControlCommandInput): PendingRunControlCommand;
+  submitCommand(input: SubmitSupervisorCommandInput): PendingSupervisorCommand;
   submitCommand(input: SubmitCommandInput): PendingControlCommand;
   getCommand(commandId: string): PendingControlCommand | undefined;
   claimCommand(commandId: string, options?: ClaimCommandOptions): boolean;
@@ -42,7 +45,6 @@ export type RuntimeStore = {
   pauseRun(runId: string, options?: ControlOptions): RunRecord;
   resumeRun(runId: string, options?: ControlOptions): RunRecord;
   retryRun(runId: string, options?: ControlOptions): RunRecord;
-  retryNode(runId: string, nodeKey: string, options?: ControlOptions): RunRecord;
   forkRun(runId: string, options?: ControlOptions): Promise<RunRecord>;
   cleanupRunDirectories(options?: CleanupRunDirectoriesOptions): Promise<CleanupRunDirectoriesResult>;
   getRunDir(runId: string): string | undefined;
@@ -140,6 +142,7 @@ export type RunDynamicFrame = {
   parentFrameKey?: string;
   nodeKey?: string;
   nodeId?: string;
+  instancePath?: InstancePath;
   frameKind: string;
   status: string;
   strategy?: string;
@@ -152,6 +155,7 @@ export type RunDynamicNodeInstance = {
   nodeKey: string;
   nodeId: string;
   parentFrameKey?: string;
+  instancePath?: InstancePath;
   status: string;
   statusReason?: string;
   output?: unknown;
@@ -180,7 +184,9 @@ export type RunDynamicGroupMember = {
   itemKey?: string;
   itemIndex?: number;
   item?: unknown;
+  childFrameKey?: string;
   status: string;
+  completionSequence?: number;
   acceptedRank?: number;
   terminalReason?: string;
   output?: unknown;
@@ -277,24 +283,27 @@ export type ReplayResult = {
   };
 };
 
-export type ControlCommandType = "pause" | "resume" | "retry" | "fork" | "signal" | "shutdown";
+export type RunControlCommandType = "pause" | "resume" | "retry" | "fork" | "signal" | "cancel";
+export type SupervisorCommandType = "shutdown";
+export type ControlCommandType = RunControlCommandType | SupervisorCommandType;
 export type ControlCommandStatus = "pending" | "running" | "applied" | "failed";
-type RunControlCommandType = Exclude<ControlCommandType, "shutdown">;
 export type PauseCommandPayload = { reason?: string };
 export type EmptyCommandPayload = Record<string, never>;
-export type RetryCommandPayload = { node?: string };
+export type RetryCommandPayload = { target?: string };
+export type CancelCommandPayload = { target?: string };
 export type ForkCommandPayload = { prepared?: JsonValue; input?: JsonValue; agentOverrides?: JsonValue };
 export type SignalCommandPayload = { node: string; payload?: JsonValue };
-export type AppliedCommandPayload = { status: string; forkRunId?: string; nodeKey?: string };
+export type AppliedCommandPayload = { status: string; forkRunId?: string; targetKey?: string };
 export type FailedCommandPayload = { type: string; message: string };
 
 type CommandPayload<T extends ControlCommandType> =
   T extends "pause" ? PauseCommandPayload
     : T extends "resume" ? EmptyCommandPayload
       : T extends "retry" ? RetryCommandPayload
-        : T extends "fork" ? ForkCommandPayload
-          : T extends "signal" ? SignalCommandPayload
-            : EmptyCommandPayload;
+        : T extends "cancel" ? CancelCommandPayload
+          : T extends "fork" ? ForkCommandPayload
+            : T extends "signal" ? SignalCommandPayload
+              : EmptyCommandPayload;
 
 type ControlCommandBase<T extends ControlCommandType> = {
   id: string;
@@ -312,8 +321,14 @@ type CommandStatePayload<T extends ControlCommandType> =
   | { status: "failed"; payload: FailedCommandPayload };
 
 export type PendingControlCommand =
-  | { [T in RunControlCommandType]: ControlCommandBase<T> & { runId: string } & CommandStatePayload<T> }[RunControlCommandType]
-  | (ControlCommandBase<"shutdown"> & { runId?: undefined } & CommandStatePayload<"shutdown">);
+  | PendingRunControlCommand
+  | PendingSupervisorCommand;
+
+export type PendingRunControlCommand = {
+  [T in RunControlCommandType]: ControlCommandBase<T> & { runId: string } & CommandStatePayload<T>
+}[RunControlCommandType];
+
+export type PendingSupervisorCommand = ControlCommandBase<"shutdown"> & { runId?: undefined } & CommandStatePayload<"shutdown">;
 
 type SubmitCommandBase<T extends ControlCommandType> = {
   type: T;
@@ -321,9 +336,15 @@ type SubmitCommandBase<T extends ControlCommandType> = {
   idempotencyKey: string;
 };
 
+export type SubmitRunControlCommandInput = {
+  [T in RunControlCommandType]: SubmitCommandBase<T> & { runId: string }
+}[RunControlCommandType];
+
+export type SubmitSupervisorCommandInput = SubmitCommandBase<"shutdown"> & { runId?: undefined };
+
 export type SubmitCommandInput =
-  | { [T in RunControlCommandType]: SubmitCommandBase<T> & { runId: string } }[RunControlCommandType]
-  | (SubmitCommandBase<"shutdown"> & { runId?: undefined });
+  | SubmitRunControlCommandInput
+  | SubmitSupervisorCommandInput;
 
 export type FinishCommandInput =
   | { id: string; status: "applied"; payload?: AppliedCommandPayload }
@@ -445,7 +466,10 @@ async function openExistingStore(cwd: string, readOnly: boolean): Promise<Runtim
   } catch {
     return undefined;
   }
-  return new SqliteRuntimeStore(openDatabase(path, readOnly), cwd);
+  if (readOnly) return new SqliteRuntimeStore(openDatabase(path, true), cwd);
+  const db = openDatabase(path);
+  migrate(db);
+  return new SqliteRuntimeStore(db, cwd);
 }
 
 class SqliteRuntimeStore implements RuntimeStore {
@@ -731,16 +755,7 @@ class SqliteRuntimeStore implements RuntimeStore {
   }
 
   getCompletedNodeOutputs(runId: string): Record<string, unknown> {
-    const rows = this.db.prepare(`
-      SELECT node_key, node_id, output_json
-      FROM node_states
-      WHERE run_id = ? AND status = 'completed' AND output_json IS NOT NULL
-    `).all(runId) as Array<{ node_key: unknown; node_id: unknown; output_json: unknown }>;
-    return completedOutputMap(rows.map(row => ({
-      nodeKey: String(row.node_key),
-      nodeId: String(row.node_id),
-      output: JSON.parse(String(row.output_json)) as unknown,
-    })));
+    return completedOutputMap(completedSchedulerOutputRows(this.db, runId));
   }
 
   getFrozenRun(runId: string): FrozenRun | undefined {
@@ -774,7 +789,9 @@ class SqliteRuntimeStore implements RuntimeStore {
     const row = this.db.prepare("SELECT output_json FROM run_inputs WHERE run_id = ?").get(runId) as { output_json: string | null } | undefined;
     if (!row?.output_json) return { ok: false, runId, artifacts, projection };
     const expected = JSON.parse(row.output_json) as JsonValue;
-    const actual = evaluateRecordedOutputs(frozen.ir.outputs, this.getCompletedNodeOutputs(runId), frozen.input, frozen.meta);
+    const actual = schedulerEvents(this.db, runId).length === 0
+      ? expected
+      : evaluateRecordedOutputs(frozen.ir.outputs, this.getCompletedNodeOutputs(runId), frozen.input, frozen.meta);
     const outputOk = JSON.stringify(sortJson(actual)) === JSON.stringify(sortJson(expected));
     const artifactsOk = artifacts.missing.length === 0 && artifacts.invalid.length === 0 && artifacts.mismatched.length === 0;
     return {
@@ -849,6 +866,9 @@ class SqliteRuntimeStore implements RuntimeStore {
     return result.changes === 1;
   }
 
+  submitCommand(input: SubmitRunControlCommandInput): PendingRunControlCommand;
+  submitCommand(input: SubmitSupervisorCommandInput): PendingSupervisorCommand;
+  submitCommand(input: SubmitCommandInput): PendingControlCommand;
   submitCommand(input: SubmitCommandInput): PendingControlCommand {
     const now = new Date().toISOString();
     const id = `cmd_${randomUUID()}`;
@@ -978,41 +998,6 @@ class SqliteRuntimeStore implements RuntimeStore {
     return this.requireRun(runId);
   }
 
-  retryNode(runId: string, nodeKey: string, options: ControlOptions = {}): RunRecord {
-    const now = new Date().toISOString();
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const nextSequence = this.nextSequence(runId);
-      const transition = this.db.prepare(`
-        UPDATE runs
-        SET status = 'pending', updated_at = ?
-        WHERE id = ? AND status = 'failed'
-      `).run(now, runId);
-      if (transition.changes !== 1) throw new Error(`Run '${runId}' cannot transition to pending.`);
-      this.db.prepare(`
-        UPDATE run_inputs
-        SET output_json = NULL
-        WHERE run_id = ?
-      `).run(runId);
-      const node = this.db.prepare(`
-        UPDATE node_states
-        SET status = 'pending', output_json = NULL, error_json = NULL, updated_at = ?
-        WHERE run_id = ? AND node_key = ? AND status = 'failed'
-      `).run(now, runId, nodeKey);
-      if (node.changes !== 1) throw new Error(`Node '${nodeKey}' is not failed for run '${runId}'.`);
-      this.db.prepare(`
-        INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
-        VALUES (?, ?, 'node.retried', ?, ?, ?, ?)
-      `).run(runId, nextSequence, nodeKey, stableJson({ nodeKey }), now, `retry:${runId}:${nodeKey}:${nextSequence}`);
-      if (options.commandId) this.finishCommandInTransaction(options.commandId, "applied", { status: "pending", nodeKey }, now);
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
-    return this.requireRun(runId);
-  }
-
   async forkRun(runId: string, options: ControlOptions = {}): Promise<RunRecord> {
     const source = this.getRunRecord(runId);
     if (!source) throw new Error(`Run '${runId}' was not found.`);
@@ -1042,18 +1027,22 @@ class SqliteRuntimeStore implements RuntimeStore {
     const forkRunDir = join(".acpus", "runs", forkId);
     const forkRunPath = join(this.cwd, forkRunDir);
     const stagedForkRunPath = join(this.cwd, ".acpus", "runs", `.staging-${forkId}`);
-    const completedNodeKeys = new Set(this.db.prepare(`
+    const completedOutputRows = completedSchedulerOutputRows(this.db, runId);
+    const completedNodeKeys = new Set([
+      ...this.db.prepare(`
       SELECT node_key
       FROM node_states
       WHERE run_id = ? AND status = 'completed'
-    `).all(runId).map(row => String(row.node_key)));
+    `).all(runId).map(row => String(row.node_key)),
+      ...completedOutputRows.map(row => row.nodeKey),
+    ]);
     const sourceIr = JSON.parse(input.workflow_ir_json) as WorkflowIR;
     const sourceNodeSignatures = nodeSignatures(sourceIr.root);
     const forkNodeSignatures = nodeSignatures(forkIr.root);
     const irNodeKeys = new Set(forkNodeSignatures.keys());
     const knownCompletedNodeKeys = new Set([...completedNodeKeys].filter(nodeKey => {
       if (forkNodeSignatures.has(nodeKey)) return forkNodeSignatures.get(nodeKey) === sourceNodeSignatures.get(nodeKey);
-      return !replacement;
+      return !replacement && source.status === "completed";
     }));
     const inheritableNodeKeys = options.input !== undefined ? new Set<string>() : source.status === "completed"
       ? knownCompletedNodeKeys
@@ -1077,7 +1066,7 @@ class SqliteRuntimeStore implements RuntimeStore {
     const forkOutputJson = source.status === "completed" && !replacement && input.output_json
       ? forkCompletedOutputJson({
           outputs: forkIr.outputs,
-          nodeRows,
+          completedOutputRows,
           inheritableNodeKeys,
           inputJson: forkInputJson,
           meta: {
@@ -1366,10 +1355,10 @@ class SqliteRuntimeStore implements RuntimeStore {
     const failed = terminalEvents.filter(event => event.type === "run.failed");
     const schedulerEventRows = schedulerEvents(this.db, runId);
     const hasRunRetry = schedulerEventRows.some(event => event.type === "control.run_retry_requested");
-    const hasNodeRetry = schedulerEventRows.some(event => event.type === "instance.retry_requested");
-    const hasRetry = hasRunRetry || hasNodeRetry;
+    const hasTargetedRetry = schedulerEventRows.some(event => event.type === "instance.retry_requested" || event.type === "frame.retry_requested");
+    const hasRetry = hasRunRetry || hasTargetedRetry;
     const rebuilt = rebuildTerminalProjection(terminalEvents);
-    if (rebuilt.status && rebuilt.status !== run.status && !(hasNodeRetry && (run.status === "pending" || run.status === "awaiting" || run.status === "paused"))) {
+    if (rebuilt.status && rebuilt.status !== run.status && !(hasTargetedRetry && (run.status === "pending" || run.status === "awaiting" || run.status === "paused"))) {
       issues.push(`Run '${runId}' status does not match terminal event stream.`);
     }
     if (rebuilt.output !== undefined) {
@@ -1685,8 +1674,8 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       };
       const instanceStartedEvent: SchedulerEvent = { type: "instance.started", payload: { nodeKey: input.nodeKey } };
       const attemptStartedEvent: SchedulerEvent = { type: "attempt.started", payload };
-      const memberStartedEvent = this.groupMemberEventForNode(input.runId, input.nodeKey);
-      const events = [instanceStartedEvent, ...(memberStartedEvent ? [memberStartedEvent] : []), attemptStartedEvent];
+      const memberStartedEvents = this.groupMemberStartedEventsForNode(input.runId, input.nodeKey);
+      const events = [instanceStartedEvent, ...memberStartedEvents, attemptStartedEvent];
       applySchedulerEvents(createSchedulerProjection(input.runId), [...this.schedulerEvents(input.runId), ...events]);
       let sequenceOffset = 0;
       this.db.prepare(`
@@ -1694,11 +1683,11 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         VALUES (?, ?, 'instance.started', ?, ?, ?, ?)
       `).run(input.runId, sequence + sequenceOffset, input.nodeKey, encodeSchedulerPayload(instanceStartedEvent.payload), now, derivedIdempotencyKey(input.idempotencyKey, "instance"));
       sequenceOffset += 1;
-      if (memberStartedEvent) {
+      for (const [index, memberStartedEvent] of memberStartedEvents.entries()) {
         this.db.prepare(`
           INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
           VALUES (?, ?, 'group.member_started', ?, ?, ?, ?)
-        `).run(input.runId, sequence + sequenceOffset, input.nodeKey, encodeSchedulerPayload(memberStartedEvent.payload), now, derivedIdempotencyKey(input.idempotencyKey, "member"));
+        `).run(input.runId, sequence + sequenceOffset, input.nodeKey, encodeSchedulerPayload(memberStartedEvent.payload), now, derivedIdempotencyKey(input.idempotencyKey, index === 0 ? "member" : `member:${index}`));
         sequenceOffset += 1;
       }
       this.db.prepare(`
@@ -1844,9 +1833,9 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     const events: SchedulerEvent[] = [
       { type: "control.paused", payload: input.reason === undefined ? {} : { reason: input.reason } },
     ];
+    const requeuedMemberKeys = new Set<string>();
     for (const attempt of Object.values(snapshot.projection.attempts).filter(attempt => attempt.status === "started")) {
       const instance = snapshot.projection.instances[attempt.nodeKey];
-      const member = snapshot.projection.groupMembers[attempt.nodeKey];
       events.push({ type: "attempt.cancelled", payload: { attemptId: attempt.attemptId, cancelReason: "paused" } });
       if (instance?.status === "running" || instance?.status === "awaiting") {
         events.push({
@@ -1858,7 +1847,9 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
           },
         });
       }
-      if (member?.status === "running") {
+      for (const member of ancestorGroupMembersForNode(snapshot.projection, attempt.nodeKey)) {
+        if (member.status !== "running" || requeuedMemberKeys.has(member.memberKey)) continue;
+        requeuedMemberKeys.add(member.memberKey);
         events.push({
           type: "group.member_requeued",
           payload: {
@@ -1923,31 +1914,61 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
   }
 
   retry(input: SchedulerRetryInput): SchedulerSnapshot {
-    const idempotencyKey = retryIdempotencyKey(input.idempotencyKey, input.nodeKey);
+    const idempotencyKey = input.idempotencyKey;
     const replay = this.replayIntentIdempotency(input.runId, idempotencyKey);
     if (replay) return replay;
     const snapshot = this.loadRunSnapshot(input.runId);
-    const instance = snapshot.projection.instances[input.nodeKey];
-    if (!instance) throwSchedulerStoreError({ type: "missing-retry-target", runId: input.runId, nodeKey: input.nodeKey, message: `Node instance '${input.nodeKey}' was not found.` });
+    const instance = snapshot.projection.instances[input.targetKey];
+    const frame = snapshot.projection.frames[input.targetKey];
+    if (!instance && !frame) throwSchedulerStoreError({ type: "missing-retry-target", runId: input.runId, targetKey: input.targetKey, message: `Retry target '${input.targetKey}' was not found.` });
+    if (frame && !instance) {
+      if (frame.status !== "failed") {
+        throwSchedulerStoreError({ type: "invalid-retry-target", runId: input.runId, targetKey: input.targetKey, status: frame.status, message: `Frame '${input.targetKey}' cannot be retried from ${frame.status}.` });
+      }
+      if (frame.frameKind !== "node" && frame.frameKind !== "loop") {
+        throwSchedulerStoreError({ type: "invalid-retry-target", runId: input.runId, targetKey: input.targetKey, status: frame.status, message: `Frame '${input.targetKey}' is not a retryable public node frame.` });
+      }
+      const events: SchedulerEvent[] = [{ type: "frame.retry_requested", payload: { frameKey: input.targetKey, source: "control" } }];
+      for (const member of ancestorGroupMembersForFrame(snapshot.projection, frame.parentFrameKey)) {
+        if (member.status !== "failed") {
+          throwSchedulerStoreError({ type: "invalid-retry-target", runId: input.runId, targetKey: input.targetKey, status: member.status, message: `Group member '${member.memberKey}' cannot be retried from ${member.status}.` });
+        }
+        events.push({
+          type: "group.member_retry_requested",
+          payload: {
+            memberKey: member.memberKey,
+            readinessSequence: member.readinessSequence,
+            source: "control",
+          },
+        });
+      }
+      return this.appendSchedulerEvents({
+        runId: input.runId,
+        expectedVersion: snapshot.version,
+        ownerEpoch: input.ownerEpoch,
+        idempotencyKey,
+        events,
+      });
+    }
+    if (!instance) throwSchedulerStoreError({ type: "missing-retry-target", runId: input.runId, targetKey: input.targetKey, message: `Retry target '${input.targetKey}' was not found.` });
     if (instance.status !== "failed") {
-      throwSchedulerStoreError({ type: "invalid-retry-target", runId: input.runId, nodeKey: input.nodeKey, status: instance.status, message: `Node instance '${input.nodeKey}' cannot be retried from ${instance.status}.` });
+      throwSchedulerStoreError({ type: "invalid-retry-target", runId: input.runId, targetKey: input.targetKey, status: instance.status, message: `Node instance '${input.targetKey}' cannot be retried from ${instance.status}.` });
     }
     const events: SchedulerEvent[] = [
       {
         type: "instance.retry_requested",
         payload: {
-          nodeKey: input.nodeKey,
+          nodeKey: input.targetKey,
           ...(instance.readinessSequence === undefined ? {} : { readinessSequence: instance.readinessSequence }),
           source: "control",
         },
       },
     ];
-    const member = snapshot.projection.groupMembers[input.nodeKey]
-      ?? (instance.parentFrameKey === undefined ? undefined : snapshot.projection.groupMembers[instance.parentFrameKey]);
-    if (member && member.status !== "failed") {
-      throwSchedulerStoreError({ type: "invalid-retry-target", runId: input.runId, nodeKey: input.nodeKey, status: member.status, message: `Group member '${member.memberKey}' cannot be retried from ${member.status}.` });
-    }
-    if (member) {
+    const members = ancestorGroupMembersForNode(snapshot.projection, input.targetKey);
+    for (const member of members) {
+      if (member.status !== "failed") {
+        throwSchedulerStoreError({ type: "invalid-retry-target", runId: input.runId, targetKey: input.targetKey, status: member.status, message: `Group member '${member.memberKey}' cannot be retried from ${member.status}.` });
+      }
       events.push({
         type: "group.member_retry_requested",
         payload: {
@@ -1966,6 +1987,39 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     });
   }
 
+  tryCancel(input: SchedulerCancelInput): SchedulerStoreResult<SchedulerSnapshot> {
+    return schedulerStoreResult(() => this.cancel(input));
+  }
+
+  cancel(input: SchedulerCancelInput): SchedulerSnapshot {
+    const replay = this.replayIntentIdempotency(input.runId, input.idempotencyKey);
+    if (replay) return replay;
+    const snapshot = this.loadRunSnapshot(input.runId);
+    const targetKey = input.targetKey ?? "root";
+    const events = targetKey === "root" && !snapshot.projection.frames.root && snapshot.projection.run.status === "pending"
+      ? [
+        { type: "frame.started", payload: { runId: input.runId, frameKey: "root", frameKind: "root" } },
+        { type: "frame.cancelled", payload: { frameKey: "root", cancelReason: "operator_cancelled" } },
+      ] satisfies SchedulerEvent[]
+      : targetKey === "root"
+        ? cancellationEventsForFrame(snapshot.projection, "root", "operator_cancelled")
+      : snapshot.projection.frames[targetKey]
+        ? cancellationEventsForFrame(snapshot.projection, targetKey, "operator_cancelled")
+        : cancellationEventsForNode(snapshot.projection, targetKey, "operator_cancelled");
+    if (events.length === 0) {
+      const status = snapshot.projection.frames[targetKey]?.status ?? snapshot.projection.instances[targetKey]?.status;
+      if (status) throwSchedulerStoreError({ type: "invalid-cancel-target", runId: input.runId, targetKey, status, message: `Cancel target '${targetKey}' is already ${status}.` });
+      throwSchedulerStoreError({ type: "missing-cancel-target", runId: input.runId, targetKey, message: `Cancel target '${targetKey}' was not found.` });
+    }
+    return this.appendSchedulerEvents({
+      runId: input.runId,
+      expectedVersion: snapshot.version,
+      ownerEpoch: input.ownerEpoch,
+      idempotencyKey: input.idempotencyKey,
+      events,
+    });
+  }
+
   tryMarkExpiredOwnerAttemptsSuperseded(runId: string, ownerEpoch: number): SchedulerStoreResult<SchedulerSnapshot> {
     return schedulerStoreResult(() => this.markExpiredOwnerAttemptsSuperseded(runId, ownerEpoch));
   }
@@ -1979,15 +2033,13 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       for (const attempt of attempts) {
         const projection = applySchedulerEvents(createSchedulerProjection(runId), this.schedulerEvents(runId));
         const instance = projection.instances[attempt.node_key];
-        const member = projection.groupMembers[attempt.node_key];
+        const members = ancestorGroupMembersForNode(projection, attempt.node_key).filter(member => member.status === "running");
         const events: SchedulerEvent[] = [
           { type: "attempt.superseded", payload: { attemptId: attempt.attempt_id, cancelReason: "superseded" } },
           ...(instance && (instance.status === "running" || instance.status === "awaiting")
             ? [{ type: "instance.requeued", payload: { nodeKey: instance.nodeKey, reason: "superseded", ...(instance.readinessSequence === undefined ? {} : { readinessSequence: instance.readinessSequence }) } } satisfies SchedulerEvent]
             : []),
-          ...(member?.status === "running"
-            ? [{ type: "group.member_requeued", payload: { memberKey: member.memberKey, reason: "superseded", readinessSequence: member.readinessSequence } } satisfies SchedulerEvent]
-            : []),
+          ...members.map(member => ({ type: "group.member_requeued", payload: { memberKey: member.memberKey, reason: "superseded", readinessSequence: member.readinessSequence } }) satisfies SchedulerEvent),
         ];
         applySchedulerEvents(createSchedulerProjection(runId), [...this.schedulerEvents(runId), ...events]);
         const sequence = this.nextSequence(runId);
@@ -2047,13 +2099,11 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     return { run_id: row.run_id, type: row.type, payload };
   }
 
-  private groupMemberEventForNode(runId: string, nodeKey: string): Extract<SchedulerEvent, { type: "group.member_started" }> | undefined {
+  private groupMemberStartedEventsForNode(runId: string, nodeKey: string): Array<Extract<SchedulerEvent, { type: "group.member_started" }>> {
     const projection = applySchedulerEvents(createSchedulerProjection(runId), this.schedulerEvents(runId));
-    const instance = projection.instances[nodeKey];
-    const member = projection.groupMembers[nodeKey]
-      ?? (instance?.parentFrameKey === undefined ? undefined : projection.groupMembers[instance.parentFrameKey]);
-    if (!member || member.status !== "ready") return undefined;
-    return { type: "group.member_started", payload: { memberKey: member.memberKey } };
+    return ancestorGroupMembersForNode(projection, nodeKey)
+      .filter(member => member.status === "ready")
+      .map(member => ({ type: "group.member_started", payload: { memberKey: member.memberKey } }));
   }
 
   private groupMemberResultEventForNode(runId: string, nodeKey: string, result: AttemptCommitInput["result"]): Extract<SchedulerEvent, { type: "group.member_completed" | "group.member_failed" | "group.member_cancelled" }> | undefined {
@@ -2107,9 +2157,9 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       this.db.prepare(`
         INSERT INTO scheduler_frames (
           run_id, frame_key, parent_frame_key, node_key, node_id, frame_kind, status, strategy,
-          terminal_reason, instance_path_json, scope_json, result_json, error_json, created_at, updated_at
+          terminal_reason, instance_path_json, scope_json, loop_json, result_json, error_json, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         frame.runId,
         frame.frameKey,
@@ -2122,7 +2172,8 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         frame.terminalReason ?? null,
         frame.instancePath === undefined ? null : stableJson(frame.instancePath as unknown as JsonValue),
         stableJson(frame.scope),
-        frame.result === undefined ? frame.loop === undefined ? null : stableJson(frame.loop) : stableJson(frame.result),
+        frame.loop === undefined ? null : stableJson(frame.loop),
+        frame.result === undefined ? null : stableJson(frame.result),
         frame.error === undefined ? null : stableJson(frame.error),
         now,
         now,
@@ -2183,9 +2234,9 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       this.db.prepare(`
         INSERT INTO group_members (
           run_id, group_key, member_key, member_kind, branch_id, item_key, item_index, item_json, child_frame_key,
-          status, readiness_sequence, accepted_rank, terminal_reason, output_json, error_json, created_at, updated_at
+          status, readiness_sequence, completion_sequence, accepted_rank, terminal_reason, output_json, error_json, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         member.runId,
         member.groupKey,
@@ -2195,9 +2246,10 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         member.itemKey === undefined ? null : String(member.itemKey),
         member.itemIndex ?? null,
         member.item === undefined ? null : stableJson(member.item),
-        null,
+        member.childFrameKey ?? null,
         member.status,
         member.readinessSequence,
+        member.completionSequence ?? null,
         member.acceptedRank ?? null,
         member.terminalReason ?? null,
         member.output === undefined ? null : stableJson(member.output),
@@ -2235,14 +2287,14 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     const schedulerEvents = this.schedulerEvents(runId);
     const projection = applySchedulerEvents(createSchedulerProjection(runId), schedulerEvents);
     const current = this.db.prepare("SELECT status FROM runs WHERE id = ?").get(runId) as { status: RunStatus } | undefined;
-    const hasNodeRetry = schedulerEvents.some(event => event.type === "instance.retry_requested");
+    const hasTargetedRetry = schedulerEvents.some(event => event.type === "instance.retry_requested" || event.type === "frame.retry_requested");
     if (current?.status === "failed" && projection.run.status === "pending" && Object.keys(projection.frames).length === 0) {
       this.db.prepare("UPDATE runs SET status = 'pending', updated_at = ? WHERE id = ?").run(now, runId);
       this.db.prepare("UPDATE run_inputs SET output_json = NULL WHERE run_id = ?").run(runId);
       this.db.prepare("DELETE FROM node_states WHERE run_id = ?").run(runId);
       return;
     }
-    if (!current || current.status === "completed" || current.status === "canceled" || (current.status === "failed" && !hasNodeRetry)) return;
+    if (!current || current.status === "completed" || current.status === "canceled" || (current.status === "failed" && !hasTargetedRetry)) return;
     this.syncPublicNodeStates(projection, now);
     const root = projection.frames.root;
     if (projection.run.status === "completed") {
@@ -2257,6 +2309,12 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       this.db.prepare("UPDATE runs SET status = 'failed', updated_at = ? WHERE id = ?").run(now, runId);
       this.db.prepare("UPDATE run_inputs SET output_json = NULL WHERE run_id = ?").run(runId);
       this.insertPublicRunEvent(runId, "run.failed", error, now, `scheduler-public:failed:${runId}:${rootTerminalEventCount(this.schedulerEvents(runId), "frame.failed")}`);
+      return;
+    }
+    if (projection.run.status === "canceled") {
+      this.db.prepare("UPDATE runs SET status = 'canceled', updated_at = ? WHERE id = ?").run(now, runId);
+      this.db.prepare("UPDATE run_inputs SET output_json = NULL WHERE run_id = ?").run(runId);
+      this.insertPublicRunEvent(runId, "run.canceled", { reason: root?.terminalReason ?? "operator_cancelled" }, now, `scheduler-public:canceled:${runId}:${rootTerminalEventCount(this.schedulerEvents(runId), "frame.cancelled")}`);
       return;
     }
     if (projection.run.status === "paused") {
@@ -2275,6 +2333,22 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
   }
 
   private syncPublicNodeStates(projection: ReturnType<typeof createSchedulerProjection>, now: string): void {
+    const nodeKeys = Object.keys(projection.instances);
+    const dynamicNodeIds = [...new Set(Object.values(projection.instances)
+      .filter(instance => instance.nodeKey !== instance.nodeId)
+      .map(instance => instance.nodeId))];
+    if (dynamicNodeIds.length > 0) {
+      const placeholders = dynamicNodeIds.map(() => "?").join(", ");
+      this.db.prepare(`DELETE FROM node_states WHERE run_id = ? AND node_key = node_id AND node_id IN (${placeholders})`).run(projection.run.runId, ...dynamicNodeIds);
+    }
+    const historicalNodeKeys = schedulerEvents(this.db, projection.run.runId)
+      .filter(event => event.type === "instance.ready")
+      .map(event => event.payload.nodeKey)
+      .filter(nodeKey => !nodeKeys.includes(nodeKey));
+    if (historicalNodeKeys.length > 0) {
+      const placeholders = historicalNodeKeys.map(() => "?").join(", ");
+      this.db.prepare(`DELETE FROM node_states WHERE run_id = ? AND node_key IN (${placeholders})`).run(projection.run.runId, ...historicalNodeKeys);
+    }
     for (const instance of Object.values(projection.instances)) {
       this.db.prepare(`
         INSERT INTO node_states (run_id, node_key, node_id, status, output_json, error_json, created_at, updated_at)
@@ -2298,7 +2372,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     }
   }
 
-  private insertPublicRunEvent(runId: string, type: "run.completed" | "run.failed", payload: JsonValue, now: string, idempotencyKey: string): void {
+  private insertPublicRunEvent(runId: string, type: "run.completed" | "run.failed" | "run.canceled", payload: JsonValue, now: string, idempotencyKey: string): void {
     const existing = this.db.prepare("SELECT id FROM run_events WHERE idempotency_key = ?").get(idempotencyKey);
     if (existing) return;
     this.db.prepare(`
@@ -2321,11 +2395,14 @@ function schedulerEventsForReplay(db: DatabaseSync, runId: string): { events: Sc
   const events: SchedulerEvent[] = [];
   const issues: string[] = [];
   for (const row of rows) {
-    if (!isSchedulerEventType(row.type)) continue;
     const decoded = decodeSchedulerPayloadForReplay(row.payload_json);
     if (decoded.status === "legacy") continue;
     if (decoded.status === "invalid") {
       issues.push(`Scheduler event '${row.type}' at sequence ${row.sequence} has an invalid scheduler envelope.`);
+      continue;
+    }
+    if (!isSchedulerEventType(row.type)) {
+      issues.push(`Scheduler event '${row.type}' at sequence ${row.sequence} has an unknown scheduler event type.`);
       continue;
     }
     if (decoded.status !== "event") continue;
@@ -2351,13 +2428,13 @@ function decodeSchedulerPayloadForReplay(payloadJson: string): { status: "event"
 }
 
 function publicStatusFromSchedulerProjection(projection: SchedulerProjection): RunStatus {
-  if (projection.run.status === "completed" || projection.run.status === "failed" || projection.run.status === "paused") return projection.run.status;
+  if (projection.run.status === "completed" || projection.run.status === "failed" || projection.run.status === "paused" || projection.run.status === "canceled") return projection.run.status;
   const awaiting = Object.values(projection.instances).some(instance => instance.status === "awaiting")
     || Object.values(projection.signalWaits).some(wait => wait.status === "awaiting");
   return awaiting ? "awaiting" : "pending";
 }
 
-function rootTerminalEventCount(events: readonly SchedulerEvent[], type: "frame.completed" | "frame.failed"): number {
+function rootTerminalEventCount(events: readonly SchedulerEvent[], type: "frame.completed" | "frame.failed" | "frame.cancelled"): number {
   return events.filter(event => event.type === type && event.payload.frameKey === "root").length;
 }
 
@@ -2392,7 +2469,8 @@ function schedulerFramesProjection(projection: SchedulerProjection): Record<stri
     terminalReason: frame.terminalReason,
     instancePath: frame.instancePath,
     scope: frame.scope,
-    result: frame.result === undefined ? frame.loop : frame.result,
+    loop: frame.loop,
+    result: frame.result,
     error: frame.error,
   })]));
 }
@@ -2400,7 +2478,7 @@ function schedulerFramesProjection(projection: SchedulerProjection): Record<stri
 function readSchedulerFrames(db: DatabaseSync, runId: string): Record<string, unknown> {
   const rows = db.prepare(`
     SELECT frame_key, parent_frame_key, node_key, node_id, frame_kind, status, strategy,
-      terminal_reason, instance_path_json, scope_json, result_json, error_json
+      terminal_reason, instance_path_json, scope_json, loop_json, result_json, error_json
     FROM scheduler_frames
     WHERE run_id = ?
     ORDER BY frame_key
@@ -2415,6 +2493,7 @@ function readSchedulerFrames(db: DatabaseSync, runId: string): Record<string, un
     terminalReason: nullableString(row.terminal_reason),
     instancePath: parseOptionalJson(row.instance_path_json),
     scope: parseRequiredJson(row.scope_json, "scheduler_frames.scope_json"),
+    loop: parseOptionalJson(row.loop_json),
     result: parseOptionalJson(row.result_json),
     error: parseOptionalJson(row.error_json),
   })]));
@@ -2500,9 +2579,10 @@ function groupMembersProjection(projection: SchedulerProjection): Record<string,
     itemKey: member.itemKey === undefined ? undefined : String(member.itemKey),
     itemIndex: member.itemIndex,
     item: member.item,
-    childFrameKey: undefined,
+    childFrameKey: member.childFrameKey,
     status: member.status,
     readinessSequence: member.readinessSequence,
+    completionSequence: member.completionSequence,
     acceptedRank: member.acceptedRank,
     terminalReason: member.terminalReason,
     output: member.output,
@@ -2513,7 +2593,7 @@ function groupMembersProjection(projection: SchedulerProjection): Record<string,
 function readGroupMembers(db: DatabaseSync, runId: string): Record<string, unknown> {
   const rows = db.prepare(`
     SELECT group_key, member_key, member_kind, branch_id, item_key, item_index, item_json, child_frame_key,
-      status, readiness_sequence, accepted_rank, terminal_reason, output_json, error_json
+      status, readiness_sequence, completion_sequence, accepted_rank, terminal_reason, output_json, error_json
     FROM group_members
     WHERE run_id = ?
     ORDER BY member_key
@@ -2528,6 +2608,7 @@ function readGroupMembers(db: DatabaseSync, runId: string): Record<string, unkno
     childFrameKey: nullableString(row.child_frame_key),
     status: String(row.status),
     readinessSequence: Number(row.readiness_sequence),
+    completionSequence: nullableNumber(row.completion_sequence),
     acceptedRank: nullableNumber(row.accepted_rank),
     terminalReason: nullableString(row.terminal_reason),
     output: parseOptionalJson(row.output_json),
@@ -2569,7 +2650,7 @@ function readSignalWaits(db: DatabaseSync, runId: string): Record<string, unknow
 function readRunDynamicFrames(db: DatabaseSync, runId: string): RunDynamicFrame[] {
   const rows = db.prepare(`
     SELECT frame_key, parent_frame_key, node_key, node_id, frame_kind, status, strategy,
-      terminal_reason, result_json, error_json
+      terminal_reason, instance_path_json, result_json, error_json
     FROM scheduler_frames
     WHERE run_id = ?
     ORDER BY frame_key
@@ -2579,6 +2660,7 @@ function readRunDynamicFrames(db: DatabaseSync, runId: string): RunDynamicFrame[
     parentFrameKey: nullableString(row.parent_frame_key),
     nodeKey: nullableString(row.node_key),
     nodeId: nullableString(row.node_id),
+    instancePath: parseOptionalJson(row.instance_path_json),
     frameKind: String(row.frame_kind),
     status: String(row.status),
     strategy: nullableString(row.strategy),
@@ -2590,7 +2672,7 @@ function readRunDynamicFrames(db: DatabaseSync, runId: string): RunDynamicFrame[
 
 function readRunDynamicNodeInstances(db: DatabaseSync, runId: string): RunDynamicNodeInstance[] {
   const rows = db.prepare(`
-    SELECT node_key, node_id, parent_frame_key, status, status_reason,
+    SELECT node_key, node_id, parent_frame_key, instance_path_json, status, status_reason,
       output_json, error_json, accepted_attempt_id
     FROM node_instances
     WHERE run_id = ?
@@ -2600,6 +2682,7 @@ function readRunDynamicNodeInstances(db: DatabaseSync, runId: string): RunDynami
     nodeKey: String(row.node_key),
     nodeId: String(row.node_id),
     parentFrameKey: nullableString(row.parent_frame_key),
+    instancePath: parseOptionalJson(row.instance_path_json),
     status: String(row.status),
     statusReason: nullableString(row.status_reason),
     output: parseOptionalJson(row.output_json),
@@ -2632,8 +2715,8 @@ function readRunDynamicAttempts(db: DatabaseSync, runId: string): RunDynamicAtte
 
 function readRunDynamicGroupMembers(db: DatabaseSync, runId: string): RunDynamicGroupMember[] {
   const rows = db.prepare(`
-    SELECT group_key, member_key, member_kind, branch_id, item_key, item_index, item_json,
-      status, accepted_rank, terminal_reason, output_json, error_json
+    SELECT group_key, member_key, member_kind, branch_id, item_key, item_index, item_json, child_frame_key,
+      status, completion_sequence, accepted_rank, terminal_reason, output_json, error_json
     FROM group_members
     WHERE run_id = ?
     ORDER BY member_key
@@ -2646,7 +2729,9 @@ function readRunDynamicGroupMembers(db: DatabaseSync, runId: string): RunDynamic
     itemKey: nullableString(row.item_key),
     itemIndex: nullableNumber(row.item_index),
     item: parseOptionalJson(row.item_json),
+    childFrameKey: nullableString(row.child_frame_key),
     status: String(row.status),
+    completionSequence: nullableNumber(row.completion_sequence),
     acceptedRank: nullableNumber(row.accepted_rank),
     terminalReason: nullableString(row.terminal_reason),
     output: parseOptionalJson(row.output_json),
@@ -2797,10 +2882,6 @@ function derivedIdempotencyKey(idempotencyKey: string, suffix: string): string {
   return `${idempotencyKey}:${suffix}`;
 }
 
-function retryIdempotencyKey(idempotencyKey: string, nodeKey: string): string {
-  return `${idempotencyKey}:node:${createHash("sha256").update(nodeKey).digest("hex")}`;
-}
-
 function isSchedulerEventType(type: string): type is SchedulerEvent["type"] {
   return [
     "control.paused",
@@ -2810,6 +2891,7 @@ function isSchedulerEventType(type: string): type is SchedulerEvent["type"] {
     "frame.completed",
     "frame.failed",
     "frame.cancelled",
+    "frame.retry_requested",
     "frame.loop_advanced",
     "instance.ready",
     "instance.started",
@@ -2840,6 +2922,7 @@ function isSchedulerEventType(type: string): type is SchedulerEvent["type"] {
     "signal.awaiting",
     "signal.consumed",
     "signal.timed_out",
+    "signal.cancelled",
   ].includes(type);
 }
 
@@ -2962,6 +3045,7 @@ function migrate(db: DatabaseSync): void {
       terminal_reason TEXT,
       instance_path_json TEXT,
       scope_json TEXT NOT NULL,
+      loop_json TEXT,
       result_json TEXT,
       error_json TEXT,
       created_at TEXT NOT NULL,
@@ -3017,6 +3101,7 @@ function migrate(db: DatabaseSync): void {
       child_frame_key TEXT,
       status TEXT NOT NULL,
       readiness_sequence INTEGER NOT NULL,
+      completion_sequence INTEGER,
       accepted_rank INTEGER,
       terminal_reason TEXT,
       output_json TEXT,
@@ -3077,7 +3162,12 @@ function migrate(db: DatabaseSync): void {
     VALUES (1, datetime('now'));
   `);
   addColumnIfMissing(db, "commands", "owner_generation", "INTEGER");
+  addColumnIfMissing(db, "scheduler_frames", "instance_path_json", "TEXT");
+  addColumnIfMissing(db, "scheduler_frames", "loop_json", "TEXT");
+  addColumnIfMissing(db, "node_instances", "instance_path_json", "TEXT NOT NULL DEFAULT '[]'");
   addColumnIfMissing(db, "group_members", "item_json", "TEXT");
+  addColumnIfMissing(db, "group_members", "child_frame_key", "TEXT");
+  addColumnIfMissing(db, "group_members", "completion_sequence", "INTEGER");
   addColumnIfMissing(db, "run_inputs", "agent_overrides_json", "TEXT NOT NULL DEFAULT '{}'");
 }
 
@@ -3245,7 +3335,7 @@ function toPendingCommand(row: Record<string, unknown>): PendingControlCommand {
 }
 
 function parseControlCommandType(value: unknown): ControlCommandType {
-  if (value === "pause" || value === "resume" || value === "retry" || value === "fork" || value === "signal" || value === "shutdown") return value;
+  if (value === "pause" || value === "resume" || value === "retry" || value === "fork" || value === "signal" || value === "cancel" || value === "shutdown") return value;
   throw new Error(`Unsupported command type '${String(value)}'.`);
 }
 
@@ -3262,6 +3352,7 @@ function parseCommandPayload(type: ControlCommandType, status: ControlCommandSta
     case "pause": return pauseCommandPayload(value);
     case "resume": return emptyCommandPayload(type, value);
     case "retry": return retryCommandPayload(value);
+    case "cancel": return cancelCommandPayload(value);
     case "fork": return forkCommandPayload(value);
     case "signal": return signalCommandPayload(value);
     case "shutdown": return emptyCommandPayload(type, value);
@@ -3275,9 +3366,15 @@ function pauseCommandPayload(value: Record<string, JsonValue>): PauseCommandPayl
 }
 
 function retryCommandPayload(value: Record<string, JsonValue>): RetryCommandPayload {
-  rejectUnknownCommandPayloadKeys("retry", value, ["node"]);
-  if (value.node !== undefined && typeof value.node !== "string") throw new Error("Retry command payload.node must be a string.");
-  return value.node === undefined ? {} : { node: value.node };
+  rejectUnknownCommandPayloadKeys("retry", value, ["target"]);
+  if (value.target !== undefined && typeof value.target !== "string") throw new Error("Retry command payload.target must be a string.");
+  return value.target === undefined ? {} : { target: value.target };
+}
+
+function cancelCommandPayload(value: Record<string, JsonValue>): CancelCommandPayload {
+  rejectUnknownCommandPayloadKeys("cancel", value, ["target"]);
+  if (value.target !== undefined && typeof value.target !== "string") throw new Error("Cancel command payload.target must be a string.");
+  return value.target === undefined ? {} : { target: value.target };
 }
 
 function forkCommandPayload(value: Record<string, JsonValue>): ForkCommandPayload {
@@ -3301,14 +3398,14 @@ function emptyCommandPayload(type: ControlCommandType, value: Record<string, Jso
 }
 
 function appliedCommandPayload(value: Record<string, JsonValue>): AppliedCommandPayload {
-  rejectUnknownCommandPayloadKeys("applied command", value, ["status", "forkRunId", "nodeKey"]);
+  rejectUnknownCommandPayloadKeys("applied command", value, ["status", "forkRunId", "targetKey"]);
   if (typeof value.status !== "string") throw new Error("Applied command payload.status must be a string.");
   if (value.forkRunId !== undefined && typeof value.forkRunId !== "string") throw new Error("Applied command payload.forkRunId must be a string.");
-  if (value.nodeKey !== undefined && typeof value.nodeKey !== "string") throw new Error("Applied command payload.nodeKey must be a string.");
+  if (value.targetKey !== undefined && typeof value.targetKey !== "string") throw new Error("Applied command payload.targetKey must be a string.");
   return {
     status: value.status,
     ...(value.forkRunId === undefined ? {} : { forkRunId: value.forkRunId }),
-    ...(value.nodeKey === undefined ? {} : { nodeKey: value.nodeKey }),
+    ...(value.targetKey === undefined ? {} : { targetKey: value.targetKey }),
   };
 }
 
@@ -3472,7 +3569,7 @@ function evaluateRecordedOutputs(outputs: Record<string, ExprIR>, nodes: Record<
 
 function forkCompletedOutputJson(args: {
   outputs: Record<string, ExprIR>;
-  nodeRows: Array<Record<string, unknown>>;
+  completedOutputRows: Array<{ nodeKey: string; nodeId: string; output: unknown }>;
   inheritableNodeKeys: Set<string>;
   inputJson: string;
   meta: Record<string, string>;
@@ -3480,16 +3577,43 @@ function forkCompletedOutputJson(args: {
   forkRunId: string;
   artifactIdMap: Record<string, string>;
 }): string {
-  const rows = args.nodeRows
-    .filter(row => args.inheritableNodeKeys.has(String(row.node_key)) && row.output_json)
+  const nodes = completedOutputMap(args.completedOutputRows
+    .filter(row => args.inheritableNodeKeys.has(row.nodeKey))
     .map(row => ({
-      nodeKey: String(row.node_key),
-      nodeId: String(row.node_id),
-      output: JSON.parse(rewriteArtifactRefs(String(row.output_json), args.sourceRunId, args.forkRunId, args.artifactIdMap)) as unknown,
-    }));
-  const nodes = completedOutputMap(rows);
+      ...row,
+      output: rewriteArtifactValue(assertJsonValue(row.output, `fork node '${row.nodeKey}' output`), args.sourceRunId, args.forkRunId, args.artifactIdMap),
+    })));
   const output = evaluateRecordedOutputs(args.outputs, nodes, JSON.parse(args.inputJson) as JsonValue, args.meta);
   return rewriteArtifactRefs(stableJson(output), args.sourceRunId, args.forkRunId, args.artifactIdMap);
+}
+
+function completedSchedulerOutputRows(db: DatabaseSync, runId: string): Array<{ nodeKey: string; nodeId: string; output: unknown }> {
+  const nodeRows = db.prepare(`
+    SELECT node_key, node_id, output_json
+    FROM node_states
+    WHERE run_id = ? AND status = 'completed' AND output_json IS NOT NULL
+  `).all(runId) as Array<{ node_key: unknown; node_id: unknown; output_json: unknown }>;
+  const frameRows = db.prepare(`
+    SELECT frame_key, node_id, result_json
+    FROM scheduler_frames
+    WHERE run_id = ?
+      AND status = 'completed'
+      AND frame_kind IN ('node', 'loop')
+      AND node_id IS NOT NULL
+      AND result_json IS NOT NULL
+  `).all(runId) as Array<{ frame_key: unknown; node_id: unknown; result_json: unknown }>;
+  return [
+    ...nodeRows.map(row => ({
+      nodeKey: String(row.node_key),
+      nodeId: String(row.node_id),
+      output: JSON.parse(String(row.output_json)) as unknown,
+    })),
+    ...frameRows.map(row => ({
+      nodeKey: String(row.frame_key),
+      nodeId: String(row.node_id),
+      output: JSON.parse(String(row.result_json)) as unknown,
+    })),
+  ];
 }
 
 function completedOutputMap(rows: Array<{ nodeKey: string; nodeId: string; output: unknown }>): Record<string, unknown> {

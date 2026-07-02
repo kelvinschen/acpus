@@ -28,6 +28,25 @@ describe.concurrent("runtime supervisor ticks", () => {
     });
   }, 15_000);
 
+  it("applies pending cancel commands", async () => {
+    await withRuntimeWorkspace("runtime-supervisor-cancel-command", async workspace => {
+      const awaiting = await admitSyntheticWorkflow(workspace, signalWorkflow());
+      const store = await openExistingWritableRuntimeStore(workspace);
+      expect(store).toBeDefined();
+      try {
+        store!.submitCommand({
+          runId: awaiting.run.id,
+          type: "cancel",
+          idempotencyKey: `test-cancel:${awaiting.run.id}`,
+        });
+        await expect(runSupervisorTick(workspace, store!)).resolves.toMatchObject({ commands: 1 });
+      } finally {
+        store?.close();
+      }
+      await expect(getRun(workspace, awaiting.run.id)).resolves.toMatchObject({ status: "canceled" });
+    });
+  }, 15_000);
+
   it("rejects invalid pending signal commands without consuming scheduler waits", async () => {
     await withRuntimeWorkspace("runtime-supervisor-invalid-signal-command", async workspace => {
       const awaiting = await admitSyntheticWorkflow(workspace, signalWorkflow());

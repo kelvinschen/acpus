@@ -90,6 +90,35 @@ describe("scheduler identity and reducers", () => {
     ])).toThrow("Cannot retry run from pending.");
   });
 
+  it("resets a failed composite frame subtree for targeted retry", () => {
+    const frameKey = deriveInstanceKey(appendNode([], "choose"));
+    const branchKey = deriveInstanceKey(appendBranch([], "choose", "then"));
+    const leafKey = deriveInstanceKey(appendNode(appendBranch([], "choose", "then"), "leaf"));
+
+    const retried = applySchedulerEvents(createSchedulerProjection("run_1"), [
+      { type: "frame.started", payload: { runId: "run_1", frameKey: "root", frameKind: "root" } },
+      { type: "frame.started", payload: { runId: "run_1", frameKey, frameKind: "node", nodeKey: frameKey, nodeId: "choose", parentFrameKey: "root", instancePath: appendNode([], "choose") } },
+      { type: "branch.decided", payload: { frameKey, branchId: "then" } },
+      { type: "frame.started", payload: { runId: "run_1", frameKey: branchKey, frameKind: "branch", nodeId: "choose", parentFrameKey: frameKey, instancePath: appendBranch([], "choose", "then") } },
+      { type: "instance.ready", payload: { runId: "run_1", nodeKey: leafKey, nodeId: "leaf", parentFrameKey: branchKey, instancePath: appendNode(appendBranch([], "choose", "then"), "leaf") } },
+      { type: "attempt.started", payload: { runId: "run_1", attemptId: "attempt_leaf", nodeKey: leafKey, nodeId: "leaf", attemptNo: 1, ownerEpoch: 1 } },
+      { type: "attempt.failed", payload: { attemptId: "attempt_leaf", error: { reason: "boom" } } },
+      { type: "instance.failed", payload: { nodeKey: leafKey, error: { reason: "boom" } } },
+      { type: "frame.failed", payload: { frameKey: branchKey, error: { reason: "boom" } } },
+      { type: "frame.failed", payload: { frameKey, error: { reason: "boom" } } },
+      { type: "frame.failed", payload: { frameKey: "root", error: { reason: "boom" } } },
+      { type: "frame.retry_requested", payload: { frameKey, source: "control" } },
+    ]);
+
+    expect(retried.run).toMatchObject({ status: "pending" });
+    expect(retried.frames.root).toMatchObject({ status: "running" });
+    expect(retried.frames[frameKey]).toBeUndefined();
+    expect(retried.frames[branchKey]).toBeUndefined();
+    expect(retried.instances[leafKey]).toBeUndefined();
+    expect(retried.attempts.attempt_leaf).toBeUndefined();
+    expect(retried.branchDecisions[frameKey]).toBeUndefined();
+  });
+
   it("rejects terminal-state regressions and non-idempotent signal replacement", () => {
     const completed = applySchedulerEvents(createSchedulerProjection("run_1"), [
       { type: "instance.ready", payload: { runId: "run_1", nodeKey: "node~1", nodeId: "node", instancePath: appendNode([], "node") } },
@@ -204,6 +233,52 @@ describe("scheduler identity and reducers", () => {
     expect(projection.groupMembers["race.left"]).toMatchObject({ status: "cancelled", terminalReason: "race_lost" });
     expect(projection.groups["race~1"]).toMatchObject({ status: "cancelled", error: { reason: "paused" } });
     expect(projection.signalWaits["approve~1"]).toMatchObject({ status: "timed_out", terminalReason: "timeout_fail" });
+  });
+
+  it("cancels descendant frames and leaf instances for nested losing group members", () => {
+    const groupKey = deriveInstanceKey(appendNode([], "race"));
+    const winnerKey = deriveInstanceKey(appendBranch([], "race", "winner"));
+    const loserKey = deriveInstanceKey(appendBranch([], "race", "loser"));
+    const nestedKey = deriveInstanceKey(appendNode(appendBranch([], "race", "loser"), "inner"));
+    const itemKey = deriveInstanceKey(appendFanoutItem(appendBranch([], "race", "loser"), "inner", 0, 0));
+    const leafKey = deriveInstanceKey(appendNode(appendFanoutItem(appendBranch([], "race", "loser"), "inner", 0, 0), "leaf"));
+    const projection = applySchedulerEvents(createSchedulerProjection("run_1"), [
+      { type: "frame.started", payload: { runId: "run_1", frameKey: groupKey, frameKind: "node", nodeKey: groupKey, nodeId: "race", instancePath: appendNode([], "race") } },
+      { type: "group.started", payload: { runId: "run_1", groupKey, nodeKey: groupKey, nodeId: "race", kind: "parallel", strategy: "race" } },
+      { type: "frame.started", payload: { runId: "run_1", frameKey: winnerKey, frameKind: "branch", parentFrameKey: groupKey, instancePath: appendBranch([], "race", "winner") } },
+      { type: "group.member_ready", payload: { runId: "run_1", groupKey, memberKey: winnerKey, childFrameKey: winnerKey, memberKind: "branch", branchId: "winner", readinessSequence: 1 } },
+      { type: "group.member_completed", payload: { memberKey: winnerKey, completionSequence: 2, output: { value: "winner" } } },
+      { type: "frame.started", payload: { runId: "run_1", frameKey: loserKey, frameKind: "branch", parentFrameKey: groupKey, instancePath: appendBranch([], "race", "loser") } },
+      { type: "group.member_ready", payload: { runId: "run_1", groupKey, memberKey: loserKey, childFrameKey: loserKey, memberKind: "branch", branchId: "loser", readinessSequence: 3 } },
+      { type: "group.member_started", payload: { memberKey: loserKey } },
+      { type: "frame.started", payload: { runId: "run_1", frameKey: nestedKey, frameKind: "node", parentFrameKey: loserKey, nodeKey: nestedKey, nodeId: "inner", instancePath: appendNode(appendBranch([], "race", "loser"), "inner") } },
+      { type: "group.started", payload: { runId: "run_1", groupKey: nestedKey, nodeKey: nestedKey, nodeId: "inner", kind: "fanout", strategy: "all" } },
+      { type: "frame.started", payload: { runId: "run_1", frameKey: itemKey, frameKind: "fanout_item", parentFrameKey: nestedKey, instancePath: appendFanoutItem(appendBranch([], "race", "loser"), "inner", 0, 0) } },
+      { type: "group.member_ready", payload: { runId: "run_1", groupKey: nestedKey, memberKey: itemKey, childFrameKey: itemKey, memberKind: "fanout_item", itemKey: 0, itemIndex: 0, readinessSequence: 4 } },
+      { type: "group.member_started", payload: { memberKey: itemKey } },
+      { type: "instance.ready", payload: { runId: "run_1", nodeKey: leafKey, nodeId: "leaf", parentFrameKey: itemKey, instancePath: appendNode(appendFanoutItem(appendBranch([], "race", "loser"), "inner", 0, 0), "leaf"), readinessSequence: 4 } },
+      { type: "instance.started", payload: { nodeKey: leafKey } },
+      { type: "attempt.started", payload: { runId: "run_1", attemptId: "attempt_loser", nodeKey: leafKey, nodeId: "leaf", attemptNo: 1, ownerEpoch: 1 } },
+    ]);
+
+    const events = groupCompletionEvents(projection, groupKey);
+    expect(events).toEqual([
+      { type: "group.member_cancelled", payload: { memberKey: loserKey, cancelReason: "race_lost" } },
+      { type: "group.member_cancelled", payload: { memberKey: itemKey, cancelReason: "race_lost" } },
+      { type: "group.cancelled", payload: { groupKey: nestedKey, cancelReason: "race_lost" } },
+      { type: "attempt.cancelled", payload: { attemptId: "attempt_loser", cancelReason: "race_lost" } },
+      { type: "instance.cancelled", payload: { nodeKey: leafKey, cancelReason: "race_lost" } },
+      { type: "frame.cancelled", payload: { frameKey: nestedKey, cancelReason: "race_lost" } },
+      { type: "frame.cancelled", payload: { frameKey: itemKey, cancelReason: "race_lost" } },
+      { type: "frame.cancelled", payload: { frameKey: loserKey, cancelReason: "race_lost" } },
+      { type: "group.completed", payload: { groupKey, result: { acceptedMemberKeys: [winnerKey] } } },
+    ]);
+    const cancelled = applySchedulerEvents(projection, events);
+    expect(cancelled.groupMembers[loserKey]).toMatchObject({ status: "cancelled", terminalReason: "race_lost" });
+    expect(cancelled.groupMembers[itemKey]).toMatchObject({ status: "cancelled", terminalReason: "race_lost" });
+    expect(cancelled.groups[nestedKey]).toMatchObject({ status: "cancelled" });
+    expect(cancelled.instances[leafKey]).toMatchObject({ status: "cancelled", statusReason: "race_lost" });
+    expect(cancelled.frames[nestedKey]).toMatchObject({ status: "cancelled", terminalReason: "race_lost" });
   });
 
   it("requeues active instances and group members for pause without reopening terminals", () => {
