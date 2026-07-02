@@ -1,8 +1,8 @@
 import type { Writable } from "node:stream";
 import type { DiagnosticIR, WorkflowIR } from "@acpus/core/ir";
-import type { ReplayResult, RunDetails, RunRecord, RuntimeCommandRecord } from "@acpus/runtime";
+import type { RunDetails, RunRecord, RuntimeCommandRecord, RuntimeHealthCheck } from "@acpus/runtime";
 
-export type ResultPhase = "usage" | "check" | "compile" | "validate" | "dry-run" | "admit" | "inspect";
+export type ResultPhase = "usage" | "check" | "compile" | "validate" | "run" | "inspect" | "control" | "doctor";
 
 export type WorkflowSummary = {
   name: string;
@@ -28,8 +28,10 @@ export type CliResult = {
   sourceGraphDigest?: string;
   run?: RunRecord | RunDetails;
   runs?: RunRecord[];
-  replay?: ReplayResult;
+  list?: { total: number; limit?: number; truncated: boolean; order: "updatedAt DESC" };
   command?: RuntimeCommandRecord;
+  forkRunId?: string;
+  checks?: RuntimeHealthCheck[];
 };
 
 export type OutputFormat = "text" | "json";
@@ -57,8 +59,8 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
     if ("eventCount" in result.run) {
       stream.write(`Events: ${result.run.eventCount}\n`);
       stream.write(`Nodes: ${result.run.nodeCount}\n`);
-      if (result.run.output !== undefined) stream.write(`Output: ${JSON.stringify(result.run.output)}\n`);
-      writeAgentExecutionMetadata(stream, result.run);
+      if (result.run.output !== undefined) stream.write(`Output: ${previewJson(result.run.output)}\n`);
+      if (result.run.dynamic) writeCompactDynamicSummary(stream, result.run);
     }
   }
   if (result.runs) {
@@ -66,23 +68,16 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
       stream.write("No runs.\n");
     } else {
       for (const run of result.runs) {
-        stream.write(`${run.id}\t${run.status}\t${run.name}\t${run.workflowEntry}\n`);
+        stream.write(`${run.id}\t${run.status}\t${run.updatedAt}\t${run.name}\t${run.workflowEntry}\n`);
       }
-    }
-  }
-  if (result.replay) {
-    stream.write(`Replay: ${result.replay.ok ? "matched" : "did not match"}\n`);
-    if (result.replay.artifacts) {
-      stream.write(`Artifacts checked: ${result.replay.artifacts.checked}\n`);
-      for (const artifact of result.replay.artifacts.missing) stream.write(`Missing artifact: ${artifact.id} ${artifact.relativePath}\n`);
-      for (const artifact of result.replay.artifacts.invalid) stream.write(`Invalid artifact: ${artifact.id} ${artifact.relativePath} ${artifact.message}\n`);
-      for (const artifact of result.replay.artifacts.mismatched) stream.write(`Mismatched artifact: ${artifact.id} ${artifact.relativePath}\n`);
-    }
-    if (result.replay.projection) {
-      for (const issue of result.replay.projection.issues) stream.write(`Projection issue: ${issue}\n`);
+      if (result.list?.truncated) stream.write(`showing ${result.runs.length} of ${result.list.total}\n`);
     }
   }
   if (result.command) stream.write(`Command: ${result.command.id}\t${result.command.type}\t${result.command.status}\n`);
+  if (result.forkRunId) stream.write(`Fork run: ${result.forkRunId}\n`);
+  if (result.checks) {
+    for (const check of result.checks) stream.write(`${check.status}\t${check.area}\t${check.message}\n`);
+  }
   if (result.irDigest) stream.write(`IR digest: ${result.irDigest}\n`);
   if (result.diagnostics?.length) {
     for (const diagnostic of result.diagnostics) {
@@ -94,180 +89,27 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
   return exitCode;
 }
 
-function writeAgentExecutionMetadata(stream: Writable, run: RunDetails): void {
-  const attempts = run.dynamic?.executionMetadata.filter(entry => entry.kind === "agent_attempt") ?? [];
-  if (attempts.length === 0) return;
-  stream.write("Agent attempts:\n");
-  for (const attempt of attempts) {
-    const metadata = agentAttemptMetadata(attempt.metadata);
-    stream.write(`  ${metadata.nodeKey ?? metadata.nodeId ?? "(agent)"} attempt ${metadata.attemptNo ?? "?"}: ${metadata.status ?? "unknown"}\n`);
-    if (metadata.message) stream.write(`    message: ${metadata.message}\n`);
-    if (metadata.sessionName) stream.write(`    session: ${metadata.sessionName}\n`);
-    if (metadata.sessionKey) stream.write(`    session key: ${metadata.sessionKey}\n`);
-    for (const turn of metadata.turns ?? []) {
-      stream.write(`    turn ${turn.turn ?? "?"}: ${turn.status ?? "unknown"}${turn.failureKind ? ` ${turn.failureKind}` : ""}\n`);
-      if (turn.message) stream.write(`      message: ${turn.message}\n`);
-      for (const line of agentTurnTelemetryLines(turn.telemetry)) stream.write(`      ${line}\n`);
-      for (const [label, ref] of agentTurnArtifactRefs(turn)) {
-        stream.write(`      ${label}: ${ref.relativePath}\n`);
-      }
-    }
-  }
+export function writeJsonLine(stream: Writable, value: unknown): void {
+  stream.write(`${JSON.stringify(value)}\n`);
 }
 
-type AgentAttemptOutputMetadata = {
-  nodeId?: string;
-  nodeKey?: string;
-  attemptNo?: number;
-  status?: string;
-  message?: string;
-  sessionName?: string;
-  sessionKey?: string;
-  turns?: AgentTurnOutputMetadata[];
-};
-
-type AgentTurnOutputMetadata = {
-  turn?: number;
-  status?: string;
-  failureKind?: string;
-  message?: string;
-  telemetry?: AgentTurnTelemetryOutputMetadata;
-  promptArtifact?: AgentArtifactOutputRef;
-  responseArtifact?: AgentArtifactOutputRef;
-  stderrArtifact?: AgentArtifactOutputRef;
-  telemetryArtifact?: AgentArtifactOutputRef;
-  rawRecoveredOutputArtifact?: AgentArtifactOutputRef;
-  rawAcpDebugArtifact?: AgentArtifactOutputRef;
-};
-
-type AgentTurnTelemetryOutputMetadata = {
-  context?: { used?: number; size?: number };
-  tokenUsage?: {
-    inputTokens?: number;
-    outputTokens?: number;
-    cachedReadTokens?: number;
-    cachedWriteTokens?: number;
-    thoughtTokens?: number;
-    totalTokens?: number;
-  };
-  tools?: { totalToolCallCount?: number };
-};
-
-type AgentArtifactOutputRef = {
-  relativePath: string;
-};
-
-function agentAttemptMetadata(value: unknown): AgentAttemptOutputMetadata {
-  if (!isObject(value)) return {};
-  return withoutUndefined({
-    nodeId: stringField(value, "nodeId"),
-    nodeKey: stringField(value, "nodeKey"),
-    attemptNo: numberField(value, "attemptNo"),
-    status: stringField(value, "status"),
-    message: stringField(value, "message"),
-    sessionName: stringField(value, "sessionName"),
-    sessionKey: stringField(value, "sessionKey"),
-    turns: Array.isArray(value.turns) ? value.turns.map(agentTurnMetadata) : undefined,
-  }) as AgentAttemptOutputMetadata;
+function previewJson(value: unknown): string {
+  const raw = JSON.stringify(value);
+  if (raw.length <= 500) return raw;
+  return `${raw.slice(0, 500)}... (${raw.length - 500} bytes omitted)`;
 }
 
-function agentTurnMetadata(value: unknown): AgentTurnOutputMetadata {
-  if (!isObject(value)) return {};
-  return withoutUndefined({
-    turn: numberField(value, "turn"),
-    status: stringField(value, "status"),
-    failureKind: stringField(value, "failureKind"),
-    message: stringField(value, "message"),
-    telemetry: agentTelemetry(value.telemetry),
-    promptArtifact: artifactRef(value.promptArtifact),
-    responseArtifact: artifactRef(value.responseArtifact),
-    stderrArtifact: artifactRef(value.stderrArtifact),
-    telemetryArtifact: artifactRef(value.telemetryArtifact),
-    rawRecoveredOutputArtifact: artifactRef(value.rawRecoveredOutputArtifact),
-    rawAcpDebugArtifact: artifactRef(value.rawAcpDebugArtifact),
-  }) as AgentTurnOutputMetadata;
-}
-
-function agentTelemetry(value: unknown): AgentTurnTelemetryOutputMetadata | undefined {
-  if (!isObject(value)) return undefined;
-  const context = isObject(value.context) ? withoutUndefined({
-    used: numberField(value.context, "used"),
-    size: numberField(value.context, "size"),
-  }) : undefined;
-  const tokenUsage = isObject(value.tokenUsage) ? withoutUndefined({
-    inputTokens: numberField(value.tokenUsage, "inputTokens"),
-    outputTokens: numberField(value.tokenUsage, "outputTokens"),
-    cachedReadTokens: numberField(value.tokenUsage, "cachedReadTokens"),
-    cachedWriteTokens: numberField(value.tokenUsage, "cachedWriteTokens"),
-    thoughtTokens: numberField(value.tokenUsage, "thoughtTokens"),
-    totalTokens: numberField(value.tokenUsage, "totalTokens"),
-  }) : undefined;
-  const tools = isObject(value.tools) ? withoutUndefined({
-    totalToolCallCount: numberField(value.tools, "totalToolCallCount"),
-  }) : undefined;
-  const metadata = withoutUndefined({
-    context: context && Object.keys(context).length > 0 ? context : undefined,
-    tokenUsage: tokenUsage && Object.keys(tokenUsage).length > 0 ? tokenUsage : undefined,
-    tools: tools && Object.keys(tools).length > 0 ? tools : undefined,
-  });
-  return Object.keys(metadata).length > 0 ? metadata as AgentTurnTelemetryOutputMetadata : undefined;
-}
-
-function agentTurnTelemetryLines(telemetry: AgentTurnTelemetryOutputMetadata | undefined): string[] {
-  if (!telemetry) return [];
-  return [
-    telemetry.context?.used !== undefined || telemetry.context?.size !== undefined
-      ? `context: ${telemetry.context.used ?? "?"}/${telemetry.context.size ?? "?"}`
-      : undefined,
-    tokenUsageLine(telemetry.tokenUsage),
-    telemetry.tools?.totalToolCallCount !== undefined ? `tools: ${telemetry.tools.totalToolCallCount}` : undefined,
-  ].filter((line): line is string => line !== undefined);
-}
-
-function tokenUsageLine(usage: AgentTurnTelemetryOutputMetadata["tokenUsage"]): string | undefined {
-  if (!usage) return undefined;
-  const parts = [
-    ["input", usage.inputTokens],
-    ["output", usage.outputTokens],
-    ["cache_read", usage.cachedReadTokens],
-    ["cache_write", usage.cachedWriteTokens],
-    ["thought", usage.thoughtTokens],
-    ["total", usage.totalTokens],
-  ].filter((entry): entry is [string, number] => entry[1] !== undefined)
-    .map(([label, value]) => `${label}=${value}`);
-  return parts.length ? `tokens: ${parts.join(" ")}` : undefined;
-}
-
-function agentTurnArtifactRefs(turn: AgentTurnOutputMetadata): Array<[string, AgentArtifactOutputRef]> {
-  return [
-    ["prompt", turn.promptArtifact],
-    ["response", turn.responseArtifact],
-    ["stderr", turn.stderrArtifact],
-    ["telemetry", turn.telemetryArtifact],
-    ["raw output", turn.rawRecoveredOutputArtifact],
-    ["raw acp", turn.rawAcpDebugArtifact],
-  ].filter((entry): entry is [string, AgentArtifactOutputRef] => entry[1] !== undefined);
-}
-
-function artifactRef(value: unknown): AgentArtifactOutputRef | undefined {
-  if (!isObject(value) || typeof value.relativePath !== "string") return undefined;
-  return { relativePath: value.relativePath };
-}
-
-function stringField(value: Record<string, unknown>, key: string): string | undefined {
-  return typeof value[key] === "string" ? value[key] : undefined;
-}
-
-function numberField(value: Record<string, unknown>, key: string): number | undefined {
-  return typeof value[key] === "number" ? value[key] : undefined;
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
-function withoutUndefined<T extends Record<string, unknown>>(value: T): Partial<T> {
-  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)) as Partial<T>;
+function writeCompactDynamicSummary(stream: Writable, run: RunDetails): void {
+  const dynamic = run.dynamic;
+  if (!dynamic) return;
+  const actionable = dynamic.nodeInstances.filter(node => node.status !== "completed")
+    .map(node => `${node.nodeKey} ${node.status}`)
+    .slice(0, 20);
+  if (actionable.length > 0) stream.write(`Actionable nodes: ${actionable.join(", ")}\n`);
+  const omitted = dynamic.nodeInstances.length - actionable.length;
+  if (omitted > 0) stream.write(`Node details omitted: ${omitted}\n`);
+  const agentAttempts = dynamic.executionMetadata.filter(entry => entry.kind === "agent_attempt").length;
+  if (agentAttempts > 0) stream.write(`Agent attempt details omitted: ${agentAttempts}. Use --json for full metadata.\n`);
 }
 
 export function summarizeWorkflow(ir: WorkflowIR): WorkflowSummary {

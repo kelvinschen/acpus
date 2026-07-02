@@ -32,6 +32,7 @@ export type RuntimeStore = {
   claimSupervisor(input: ClaimSupervisorInput): SupervisorLease;
   heartbeatSupervisor(input: HeartbeatSupervisorInput): boolean;
   releaseSupervisor(input: HeartbeatSupervisorInput): boolean;
+  releaseRunOwner(runId: string, ownerId: string): boolean;
   submitCommand(input: SubmitRunControlCommandInput): PendingRunControlCommand;
   submitCommand(input: SubmitSupervisorCommandInput): PendingSupervisorCommand;
   submitCommand(input: SubmitCommandInput): PendingControlCommand;
@@ -52,6 +53,7 @@ export type RuntimeStore = {
   writeExecutionMetadata(input: WriteExecutionMetadataInput): void;
   getRun(runId: string): RunDetails | undefined;
   listRuns(): RunRecord[];
+  getRuntimeDiagnostics(): RuntimeDiagnostics;
 };
 
 export type AdmitRunInput = {
@@ -117,6 +119,43 @@ export type RunDetails = RunRecord & {
   eventCount: number;
   nodeCount: number;
   dynamic?: RunDynamicDetails;
+};
+
+export type RuntimeDiagnostics = {
+  supervisor?: SupervisorDiagnostics;
+  commands: {
+    pending: number;
+    running: number;
+    failed: number;
+    oldestPendingAt?: string;
+  };
+  runs: {
+    total: number;
+    pending: number;
+    running: number;
+    awaiting: number;
+    paused: number;
+    failed: number;
+    completed: number;
+    canceled: number;
+    runnable: number;
+  };
+  leases: {
+    activeForeground: number;
+    stale: number;
+  };
+};
+
+export type SupervisorDiagnostics = {
+  workspaceRealpath: string;
+  generation: number;
+  pid?: number;
+  heartbeatAt?: string;
+  protocolVersion: number;
+  packageVersion: string;
+  nodeVersion: string;
+  execPath: string;
+  updatedAt: string;
 };
 
 export type RunDynamicDetails = {
@@ -866,6 +905,16 @@ class SqliteRuntimeStore implements RuntimeStore {
     return result.changes === 1;
   }
 
+  releaseRunOwner(runId: string, ownerId: string): boolean {
+    const now = new Date().toISOString();
+    const result = this.db.prepare(`
+      UPDATE run_leases
+      SET released_at = ?, heartbeat_at = ?
+      WHERE run_id = ? AND owner_id = ? AND released_at IS NULL
+    `).run(now, now, runId, ownerId);
+    return result.changes === 1;
+  }
+
   submitCommand(input: SubmitRunControlCommandInput): PendingRunControlCommand;
   submitCommand(input: SubmitSupervisorCommandInput): PendingSupervisorCommand;
   submitCommand(input: SubmitCommandInput): PendingControlCommand;
@@ -1459,8 +1508,94 @@ class SqliteRuntimeStore implements RuntimeStore {
     return this.db.prepare(`
       SELECT id, name, status, workflow_entry, ir_digest, source_graph_digest, created_at, updated_at
       FROM runs
-      ORDER BY created_at DESC
+      ORDER BY updated_at DESC, created_at DESC
     `).all().map(toRunRecord);
+  }
+
+  getRuntimeDiagnostics(): RuntimeDiagnostics {
+    const now = new Date().toISOString();
+    const supervisor = this.db.prepare(`
+      SELECT workspace_realpath, generation, pid, heartbeat_at, protocol_version, package_version, node_version, exec_path, updated_at
+      FROM supervisor_lease
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `).get() as {
+      workspace_realpath: string;
+      generation: number;
+      pid: number | null;
+      heartbeat_at: string | null;
+      protocol_version: number;
+      package_version: string;
+      node_version: string;
+      exec_path: string;
+      updated_at: string;
+    } | undefined;
+    const commands = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
+        SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+        MIN(CASE WHEN status = 'pending' THEN created_at ELSE NULL END) AS oldest_pending_at
+      FROM commands
+    `).get() as { pending: number | null; running: number | null; failed: number | null; oldest_pending_at: string | null };
+    const runs = this.db.prepare(`
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
+        SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
+        SUM(CASE WHEN status = 'awaiting' THEN 1 ELSE 0 END) AS awaiting,
+        SUM(CASE WHEN status = 'paused' THEN 1 ELSE 0 END) AS paused,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
+        SUM(CASE WHEN status = 'canceled' THEN 1 ELSE 0 END) AS canceled
+      FROM runs
+    `).get() as Record<string, number | null>;
+    const activeForeground = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM run_leases
+      WHERE released_at IS NULL AND lease_expires_at > ? AND owner_id LIKE 'foreground:%'
+    `).get(now) as CountRow;
+    const stale = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM run_leases
+      WHERE released_at IS NULL AND lease_expires_at <= ?
+    `).get(now) as CountRow;
+    return {
+      ...(supervisor ? {
+        supervisor: {
+          workspaceRealpath: supervisor.workspace_realpath,
+          generation: supervisor.generation,
+          ...(supervisor.pid === null ? {} : { pid: supervisor.pid }),
+          ...(supervisor.heartbeat_at === null ? {} : { heartbeatAt: supervisor.heartbeat_at }),
+          protocolVersion: supervisor.protocol_version,
+          packageVersion: supervisor.package_version,
+          nodeVersion: supervisor.node_version,
+          execPath: supervisor.exec_path,
+          updatedAt: supervisor.updated_at,
+        },
+      } : {}),
+      commands: {
+        pending: Number(commands.pending ?? 0),
+        running: Number(commands.running ?? 0),
+        failed: Number(commands.failed ?? 0),
+        ...(commands.oldest_pending_at ? { oldestPendingAt: commands.oldest_pending_at } : {}),
+      },
+      runs: {
+        total: Number(runs.total ?? 0),
+        pending: Number(runs.pending ?? 0),
+        running: Number(runs.running ?? 0),
+        awaiting: Number(runs.awaiting ?? 0),
+        paused: Number(runs.paused ?? 0),
+        failed: Number(runs.failed ?? 0),
+        completed: Number(runs.completed ?? 0),
+        canceled: Number(runs.canceled ?? 0),
+        runnable: this.listRunnableRuns().length,
+      },
+      leases: {
+        activeForeground: Number(activeForeground.count),
+        stale: Number(stale.count),
+      },
+    };
   }
 
   private getRunRecord(runId: string): RunRecord | undefined {
@@ -3180,6 +3315,10 @@ function parseAgentOverrides(json: string | null | undefined): AgentOverrideMap 
   if (!json) return {};
   const value = JSON.parse(json) as JsonValue;
   return normalizeAgentOverrideShape(value, undefined);
+}
+
+export function validateAgentOverrides(ir: WorkflowIR, input: AgentOverrideMap | undefined): AgentOverrideMap {
+  return normalizeAgentOverrides(ir, input);
 }
 
 function normalizeAgentOverrides(ir: WorkflowIR, input: AgentOverrideMap | undefined, inherited: AgentOverrideMap = {}): AgentOverrideMap {

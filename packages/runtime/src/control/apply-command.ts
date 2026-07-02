@@ -11,7 +11,7 @@ export type AppliedControlCommand = {
   forkRunId?: string;
 };
 
-export async function applyControlCommand(cwd: string, store: RuntimeStore, command: PendingRunControlCommand, options: { ownerGeneration?: number } = {}): Promise<AppliedControlCommand> {
+export async function applyControlCommand(cwd: string, store: RuntimeStore, command: PendingRunControlCommand, options: { ownerGeneration?: number; advance?: boolean } = {}): Promise<AppliedControlCommand> {
   if (command.status === "applied") return appliedCommandResult(store, command);
   if (!store.claimCommand(command.id, options.ownerGeneration === undefined ? {} : { ownerGeneration: options.ownerGeneration })) {
     const current = store.getCommand(command.id);
@@ -19,7 +19,7 @@ export async function applyControlCommand(cwd: string, store: RuntimeStore, comm
     throw new Error(`Command '${command.id}' is already ${current?.status ?? "missing"}.`);
   }
   try {
-    const result = await applyControlCommandUnchecked(cwd, store, command);
+    const result = await applyControlCommandUnchecked(cwd, store, command, options);
     return result;
   } catch (error) {
     store.finishCommand({
@@ -45,11 +45,11 @@ function appliedCommandResult(store: RuntimeStore, command: PendingRunControlCom
   };
 }
 
-async function applyControlCommandUnchecked(cwd: string, store: RuntimeStore, command: PendingRunControlCommand): Promise<AppliedControlCommand> {
+async function applyControlCommandUnchecked(cwd: string, store: RuntimeStore, command: PendingRunControlCommand, options: { advance?: boolean }): Promise<AppliedControlCommand> {
   const runId = command.runId;
   if (command.type !== "fork") {
     await applySchedulerControlCommand(cwd, store, command, { claimCommand: false, advance: false });
-    const advanced = command.type === "pause" ? undefined : await advanceRuntimeRun(cwd, store, runId);
+    const advanced = command.type === "pause" || options.advance === false ? undefined : await advanceRuntimeRun(cwd, store, runId);
     return {
       command,
       sourceRunId: runId,

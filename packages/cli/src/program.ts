@@ -1,7 +1,8 @@
 import type { Writable } from "node:stream";
 import { Command, CommanderError } from "commander";
-import { createRunCommand } from "./commands/run.js";
+import { createDoctorCommand } from "./commands/doctor.js";
 import { createRunsCommand } from "./commands/runs.js";
+import { createWorkflowsCommand } from "./commands/workflows.js";
 import { CliError, usageError } from "./errors.js";
 import { writeResult } from "./output.js";
 
@@ -14,12 +15,13 @@ export type CliIo = {
 export async function runCli(argv: string[], io: CliIo): Promise<number> {
   let exitCode = 0;
   const wantsJson = argv.includes("--json");
+  const normalizedArgv = argv.filter(arg => arg !== "--json");
   const program = createProgram(io, code => {
     exitCode = code;
   }, wantsJson);
 
   try {
-    await program.parseAsync(argv, { from: "user" });
+    await program.parseAsync(normalizedArgv, { from: "user" });
     return exitCode;
   } catch (error) {
     if (error instanceof CliError) {
@@ -52,12 +54,17 @@ function createProgram(io: CliIo, setExitCode: (code: number) => void, wantsJson
       outputError: (text, write) => write(text),
     });
 
-  program.addCommand(createRunCommand({
+  program.addCommand(createWorkflowsCommand({
     ...io,
     wantsJson,
     setExitCode,
   }));
   program.addCommand(createRunsCommand({
+    ...io,
+    wantsJson,
+    setExitCode,
+  }));
+  program.addCommand(createDoctorCommand({
     ...io,
     wantsJson,
     setExitCode,

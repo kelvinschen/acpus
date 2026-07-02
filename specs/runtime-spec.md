@@ -252,6 +252,8 @@
 ### Read APIs And Supervisor
 
 - `listRuns`, `getRun`, replay APIs, and visualization overlay APIs MUST read SQLite projections rather than live workflow source.
+- `listRuns` MUST order runs by `updatedAt DESC` with `createdAt DESC` as a
+  deterministic tie-breaker.
 - `getRun` MUST expose dynamic scheduler details when scheduler projection rows exist, including version, frames, dynamic node instances, attempts, group members, and signal waits.
 - Dynamic frame and node-instance read rows MUST include structured
   `instancePath` data when present.
@@ -261,12 +263,26 @@
   turn metadata, when such rows exist for a run.
 - The runtime MUST provide a visualization overlay helper that combines static `WorkflowIR` structure with dynamic scheduler projection state without adding layout-specific state.
 - Read-only inspection MUST NOT create runtime state when no runtime store exists.
+- Read-only health checks MUST NOT create runtime state when no runtime store
+  exists.
+- A missing runtime store MUST be reported as a healthy not-initialized state by
+  the runtime health API.
+- The runtime health API MUST report workspace/store status, supervisor lease
+  metadata, supervisor pid liveness when the host can check it, command queue
+  counts, run status counts, runnable run count, active foreground run leases,
+  stale run leases, and idle-stop blockers.
 - The runtime store MUST support SQLite-backed supervisor leases with generation fencing, heartbeat updates, stale takeover, and release by current generation only.
 - The detached supervisor MUST heartbeat under its current lease generation.
 - The detached supervisor MUST consume pending durable run-command rows for pause, resume, retry, fork, signal, and cancel.
 - The detached supervisor MUST consume pending durable supervisor-command rows for shutdown.
 - The detached supervisor MUST release its lease and exit after applying a durable shutdown command.
 - The detached supervisor MUST NOT process later commands or advance runnable runs in the same tick after applying shutdown.
+- The detached supervisor MUST release its lease and exit after a continuous
+  idle window with no processed commands, no advanced runnable runs, and no
+  active foreground run leases.
+- The default supervisor idle window MUST be 30,000 milliseconds.
+- Any tick that processes a command, advances a runnable run, or sees active
+  foreground run ownership MUST reset the supervisor idle window.
 - The detached supervisor MUST recover stale running command rows for its current lease generation before consuming commands.
 - The detached supervisor MUST NOT recover foreground CLI-owned commands or commands owned by a different supervisor generation.
 - The detached supervisor MUST advance runnable pending scheduler-backed runs from frozen SQLite state without reading live workflow source.

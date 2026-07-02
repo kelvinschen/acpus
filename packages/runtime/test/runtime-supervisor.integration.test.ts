@@ -2,12 +2,50 @@ import { access, mkdir, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { getRun } from "@acpus/runtime";
+import { getRun, startSupervisorLoop } from "@acpus/runtime";
 import { runSupervisorTick } from "../src/supervisor/tick.js";
-import { openExistingWritableRuntimeStore } from "../src/store/store.js";
+import { openExistingWritableRuntimeStore, openRuntimeStore } from "../src/store/store.js";
 import { admitSyntheticWorkflow, runtimeRow, runtimeRows, signalWorkflow, taskArtifactWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 
 describe.concurrent("runtime supervisor ticks", () => {
+  it("releases its lease after a continuous idle window", async () => {
+    await withRuntimeWorkspace("runtime-supervisor-idle-stop", async workspace => {
+      let resolveShutdown!: () => void;
+      const shutdown = new Promise<void>(resolve => {
+        resolveShutdown = resolve;
+      });
+      const loop = await startSupervisorLoop(workspace, {
+        heartbeatMs: 5,
+        idleStopMs: 10,
+        packageVersion: "test",
+        onShutdown: resolveShutdown,
+      });
+      await shutdown;
+
+      expect(runtimeRows(workspace, "SELECT generation FROM supervisor_lease")).toEqual([]);
+      await loop.shutdown();
+    });
+  });
+
+  it("clears foreground lease blockers when a run owner is released", async () => {
+    await withRuntimeWorkspace("runtime-release-foreground-owner", async workspace => {
+      const admitted = await admitSyntheticWorkflow(workspace, signalWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const ownerId = "foreground:test";
+        const claim = store.scheduler.claimRun(admitted.run.id, ownerId, 30_000);
+        expect(claim).toBeDefined();
+        expect(store.getRuntimeDiagnostics().leases.activeForeground).toBe(1);
+
+        expect(store.releaseRunOwner(admitted.run.id, ownerId)).toBe(true);
+
+        expect(store.getRuntimeDiagnostics().leases.activeForeground).toBe(0);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   it("applies pending signal commands", async () => {
     await withRuntimeWorkspace("runtime-supervisor-signal-command", async workspace => {
       const awaiting = await admitSyntheticWorkflow(workspace, signalWorkflow());

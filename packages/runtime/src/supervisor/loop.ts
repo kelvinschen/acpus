@@ -12,6 +12,7 @@ export type SupervisorLoopOptions = {
   nodeVersion?: string;
   execPath?: string;
   staleAfterMs?: number;
+  idleStopMs?: number;
   onShutdown?: () => void;
 };
 
@@ -21,6 +22,7 @@ export type SupervisorLoopHandle = {
 
 export async function startSupervisorLoop(cwd: string, options: SupervisorLoopOptions): Promise<SupervisorLoopHandle> {
   const heartbeatMs = options.heartbeatMs ?? 1_000;
+  const idleStopMs = options.idleStopMs ?? 30_000;
   const workspaceRealpath = options.workspaceRealpath ?? cwd;
   const store = await openRuntimeStore(cwd);
   const lease = store.claimSupervisor({
@@ -37,6 +39,7 @@ export async function startSupervisorLoop(cwd: string, options: SupervisorLoopOp
 
   let ticking = false;
   let stopped = false;
+  let idleSince: number | undefined;
   const timer = setInterval(() => {
     void tick();
   }, heartbeatMs);
@@ -63,6 +66,17 @@ export async function startSupervisorLoop(cwd: string, options: SupervisorLoopOp
       }
       const result = await runSupervisorTick(cwd, store, { ownerGeneration: lease.generation });
       if (result.shutdown) {
+        await shutdown();
+        options.onShutdown?.();
+        return;
+      }
+      const activeForeground = store.getRuntimeDiagnostics().leases.activeForeground;
+      if (result.commands > 0 || result.runs > 0 || activeForeground > 0) {
+        idleSince = undefined;
+        return;
+      }
+      idleSince ??= Date.now();
+      if (Date.now() - idleSince >= idleStopMs) {
         await shutdown();
         options.onShutdown?.();
       }

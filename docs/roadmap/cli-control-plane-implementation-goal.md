@@ -6,7 +6,7 @@ implemented behavior continues to live in `specs/`.
 
 **Implements with Clean Code and Good Test @AGENTS.md**
 
-## Status
+## Decision Status
 
 - [x] Problem accepted: `acpus run` and `acpus runs` are too visually similar
   for two different concepts.
@@ -93,9 +93,9 @@ implemented behavior continues to live in `specs/`.
   placeholders fail as unsupported inspect operations, not usage errors.
 - [x] Doctor no-store status accepted: a workspace with no runtime DB is a
   healthy stopped/not-initialized state and does not make `doctor` fail.
-- [ ] Update `specs/cli-spec.md` in the same change that changes command
+- [x] Update `specs/cli-spec.md` in the same change that changes command
   behavior.
-- [ ] Implement and verify the accepted command surface.
+- [x] Implement and verify the accepted command surface.
 
 ## Background
 
@@ -119,7 +119,7 @@ Legacy Acpus had useful command taxonomy (`workflows`, `runs`, `hooks`) but also
 covered archived YAML Workflow-Spec behavior. This goal may borrow naming
 lessons from legacy, but does not add YAML compatibility or legacy shims.
 
-## Goal
+# Goal
 
 Create a CLI control plane that gives each user-facing object one obvious home:
 
@@ -740,8 +740,9 @@ Expected files:
 
 - `specs/cli-spec.md`;
 - `packages/cli/src/program.ts`;
-- `packages/cli/src/commands/run.ts`;
+- `packages/cli/src/commands/workflows.ts`;
 - `packages/cli/src/commands/runs.ts`;
+- `packages/cli/src/commands/doctor.ts`;
 - CLI contract and e2e tests under `packages/cli/test/`.
 
 ### Phase 2: Decide Runtime Lifecycle UX
@@ -841,6 +842,71 @@ decisions and sequencing only.
   doctor visibility into idle age, foreground run leases, and blockers.
 - Hook and catalog tests land with the follow-up goals that introduce those
   features.
+
+## Implementation Completion Notes
+
+Completed in this implementation:
+
+- `acpus run` was removed and replaced by `acpus workflows check` and
+  `acpus workflows run`.
+- `runs show`, `runs status`, `runs replay`, `runs supervise`, and
+  `runs shutdown` were removed from the visible CLI command tree.
+- `workflows list` and `workflows show` are visible catalog placeholders that
+  fail as `phase: "inspect"` with exit code 1.
+- `--json` is handled globally before Commander validates the command tree and
+  works before or after subcommands.
+- `workflows check` writes preflight artifacts, validates `--input` only when
+  explicitly supplied, validates `--agents` without creating runtime state, and
+  reports malformed JSON as `phase: "usage"` before workflow preparation.
+- `workflows run` foreground admits a run, advances with a foreground owner id,
+  emits JSONL admitted/projection/terminal records in JSON mode, exits at
+  terminal or action-required quiescence, and handles Ctrl-C as detach by
+  releasing foreground ownership and starting the supervisor.
+- `workflows run --background` admits without local scheduler advancement and
+  starts the detached supervisor for non-terminal work.
+- `runs inspect` is the single-run detail command; JSON preserves full run
+  details and default text is compact with explicit omission markers for agent
+  metadata.
+- `runs list` is bounded by default, ordered by `updatedAt DESC`, supports
+  `--limit` / `--all`, and returns truncation metadata.
+- `runs retry`, `runs cancel`, and `runs signal` use `--target`; `signal --node`
+  is not exposed.
+- `runs` control commands apply durable control intent without local scheduler
+  advancement and return command plus bounded run summaries.
+- `acpus doctor` is read-only, treats a missing runtime DB as healthy
+  not-initialized state, and reports store, supervisor, queue, run, lease, and
+  idle-stop blocker checks.
+- The detached supervisor lazy-start path and 30s continuous idle-stop behavior
+  are implemented.
+
+Implementation gaps and intentional diffs from the roadmap wording:
+
+- Foreground JSON observations are emitted after each scheduler drive from
+  projection snapshots. They are not raw scheduler events and do not stream
+  inside a single long-running task or agent executor attempt until that attempt
+  yields back to the scheduler.
+- Ctrl-C detach is implemented with a CLI SIGINT handler that releases the
+  current foreground owner id and starts the supervisor. It does not wait for or
+  verify supervisor completion.
+- `doctor` reports active foreground lease blockers and stale run leases from
+  current runtime diagnostics, but it remains read-only and does not expose a
+  cleanup or fix operation.
+- Catalog and hooks implementation remain follow-up goals. The current command
+  tree exposes only catalog placeholders and no hooks placeholders.
+
+Review and verification performed:
+
+- Clean Code / Good Test and correctness reviews were run with clean subagents
+  after the main refactor slice. Findings were fixed or recorded in this
+  completion note.
+- Verification commands run during implementation:
+  `pnpm --filter acpus typecheck`;
+  `pnpm --filter @acpus/runtime typecheck`;
+  `pnpm test:contract -- packages/cli packages/runtime`;
+  `pnpm test:type -- packages/runtime`;
+  `pnpm test:e2e -- packages/cli`;
+  `pnpm test:unit -- packages/cli packages/runtime`;
+  `pnpm test:integration -- packages/runtime`.
 
 ## Review Questions
 

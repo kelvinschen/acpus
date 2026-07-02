@@ -20,3 +20,7 @@ export function notFoundError(message: string): CliError {
 export function validationError(message: string): CliError {
   return new CliError(1, { ok: false, phase: "validate", message });
 }
+
+export function controlError(message: string): CliError {
+  return new CliError(1, { ok: false, phase: "control", message });
+}

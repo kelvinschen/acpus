@@ -1,14 +1,12 @@
 import type { Writable } from "node:stream";
-import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { Command } from "commander";
-import type { AgentOverrideMap } from "@acpus/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
-import { getRun, listRuns, mutateRun as mutateRuntimeRun, normalizeForkInput, queueSupervisorShutdown, replayRun as replayRuntimeRun, signalRun as signalRuntimeRun } from "@acpus/runtime";
-import type { PreparedWorkflow } from "@acpus/workflow-compiler";
-import { usageError, validationError, notFoundError } from "../errors.js";
+import { getRun, listRuns, mutateRunControlOnly, normalizeForkInput, signalRunControlOnly, type PreparedRunWorkflow, type RunDetails, type RunRecord } from "@acpus/runtime";
+import { controlError, notFoundError, usageError, validationError } from "../errors.js";
 import { writeResult, type OutputFormat } from "../output.js";
 import { prepareWorkflowForCli } from "../workflow-preparation.js";
+import { parseAgents, parseJsonOption, parseRequiredPayload } from "./json.js";
+import { ensureSupervisorRunning } from "./supervisor.js";
 
 export type RunsCommandContext = {
   cwd: string;
@@ -19,16 +17,17 @@ export type RunsCommandContext = {
 };
 
 type RunsCommandOptions = {
-  json?: boolean;
-  node?: string;
   target?: string;
   payload?: string;
   input?: string;
   workflow?: string;
   agents?: string;
-  background?: boolean;
-  prepared?: PreparedWorkflow;
+  limit?: string;
+  all?: boolean;
+  prepared?: PreparedRunWorkflow;
 };
+
+type ControlAction = "pause" | "resume" | "retry" | "fork" | "cancel";
 
 export function createRunsCommand(ctx: RunsCommandContext): Command {
   const command = new Command("runs")
@@ -40,58 +39,41 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
       },
       outputError: (text, write) => write(text),
     })
-    .description("Inspect durable runtime runs.");
+    .description("Inspect and control durable runs.");
 
   command.addCommand(new Command("list")
     .exitOverride()
-    .option("--json", "print a structured JSON result")
+    .option("--limit <n>", "maximum number of recent runs to list")
+    .option("--all", "list all runs")
     .action(async (options: RunsCommandOptions) => {
-      const format: OutputFormat = options.json ? "json" : "text";
-      ctx.setExitCode(writeResult({
-        ok: true,
-        phase: "inspect",
-        message: "Runs listed.",
-        runs: await listRuns(ctx.cwd),
-      }, format, ctx, 0));
+      await listRecentRuns(ctx, options);
     }));
 
-  const show = new Command("show")
+  command.addCommand(new Command("inspect")
     .exitOverride()
     .argument("<run-id>", "run id")
-    .option("--json", "print a structured JSON result")
-    .action(async (runId: string, options: RunsCommandOptions) => {
-      await showRun(ctx, runId, options);
-    });
-  command.addCommand(show);
-
-  command.addCommand(new Command("status")
-    .exitOverride()
-    .argument("<run-id>", "run id")
-    .option("--json", "print a structured JSON result")
-    .action(async (runId: string, options: RunsCommandOptions) => {
-      await showRun(ctx, runId, options);
+    .action(async (runId: string) => {
+      await inspectRun(ctx, runId);
     }));
 
   for (const name of ["pause", "resume", "retry", "cancel"] as const) {
     const control = new Command(name)
       .exitOverride()
       .argument("<run-id>", "run id")
-      .option("--json", "print a structured JSON result")
       .action(async (runId: string, options: RunsCommandOptions) => {
         await mutateRun(ctx, runId, options, name);
       });
-    if (name === "retry") control.option("--target <target-key-or-alias>", "retry only a failed run target");
-    if (name === "cancel") control.option("--target <target-key-or-alias>", "cancel only a non-terminal run target");
+    if (name === "retry") control.option("--target <run-target>", "retry only a failed run target");
+    if (name === "cancel") control.option("--target <run-target>", "cancel only a non-terminal run target");
     command.addCommand(control);
   }
 
   command.addCommand(new Command("fork")
     .exitOverride()
     .argument("<run-id>", "run id")
-    .option("--workflow <workflow-module>", "fork with a new workflow module")
+    .option("--workflow <workflow-module>", "use a replacement workflow module for the fork")
     .option("--input <json>", "override workflow input for the fork")
     .option("--agents <json>", "override inherited agents for the fork")
-    .option("--json", "print a structured JSON result")
     .action(async (runId: string, options: RunsCommandOptions) => {
       await mutateRun(ctx, runId, options, "fork");
     }));
@@ -99,141 +81,35 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
   command.addCommand(new Command("signal")
     .exitOverride()
     .argument("<run-id>", "run id")
-    .requiredOption("--node <node-id>", "signal node id")
+    .requiredOption("--target <run-target>", "signal wait target")
     .requiredOption("--payload <json>", "signal payload JSON")
-    .option("--json", "print a structured JSON result")
     .action(async (runId: string, options: RunsCommandOptions) => {
       await signalRun(ctx, runId, options);
-    }));
-
-  command.addCommand(new Command("replay")
-    .exitOverride()
-    .argument("<run-id>", "run id")
-    .option("--json", "print a structured JSON result")
-    .action(async (runId: string, options: RunsCommandOptions) => {
-      await replayRun(ctx, runId, options);
-    }));
-
-  command.addCommand(new Command("supervise")
-    .exitOverride()
-    .option("--background", "start the workspace supervisor in the background")
-    .option("--json", "print a structured JSON result")
-    .action(async (options: RunsCommandOptions) => {
-      await supervise(ctx, options);
-    }));
-
-  command.addCommand(new Command("shutdown")
-    .exitOverride()
-    .option("--json", "print a structured JSON result")
-    .action(async (options: RunsCommandOptions) => {
-      await shutdownSupervisor(ctx, options);
     }));
 
   return command;
 }
 
-async function supervise(ctx: RunsCommandContext, options: RunsCommandOptions): Promise<void> {
-  const format: OutputFormat = options.json ? "json" : "text";
-  const child = spawn(process.execPath, supervisorEntryArgs(ctx.cwd), {
-    cwd: ctx.cwd,
-    detached: Boolean(options.background),
-    stdio: options.background ? "ignore" : "inherit",
-  });
-  if (options.background) child.unref();
+async function listRecentRuns(ctx: RunsCommandContext, options: RunsCommandOptions): Promise<void> {
+  if (options.all && options.limit !== undefined) throw usageError("--limit and --all are mutually exclusive.");
+  const limit = options.all ? undefined : options.limit === undefined ? 20 : parseLimit(options.limit);
+  const allRuns = await listRuns(ctx.cwd);
+  const runs = limit === undefined ? allRuns : allRuns.slice(0, limit);
   ctx.setExitCode(writeResult({
     ok: true,
     phase: "inspect",
-    message: "Supervisor started.",
-  }, format, ctx, 0));
+    message: "Runs listed.",
+    runs,
+    list: {
+      total: allRuns.length,
+      ...(limit === undefined ? {} : { limit }),
+      truncated: limit !== undefined && allRuns.length > limit,
+      order: "updatedAt DESC",
+    },
+  }, outputFormat(ctx), ctx, 0));
 }
 
-function supervisorEntryArgs(cwd: string): string[] {
-  const isSourceMode = fileURLToPath(import.meta.url).endsWith(".ts");
-  const entry = fileURLToPath(new URL(`../supervisor-entry.${isSourceMode ? "ts" : "js"}`, import.meta.url));
-  return isSourceMode
-    ? ["--conditions=development", "--import", "tsx", entry, cwd]
-    : [entry, cwd];
-}
-
-async function replayRun(ctx: RunsCommandContext, runId: string, options: RunsCommandOptions): Promise<void> {
-  const format: OutputFormat = options.json ? "json" : "text";
-  const replay = await replayRuntimeRun(ctx.cwd, runId);
-  if (!replay) throw notFoundError(`Run '${runId}' was not found.`);
-  ctx.setExitCode(writeResult({
-    ok: replay.ok,
-    phase: "inspect",
-    message: replay.ok ? "Replay matched." : "Replay did not match.",
-    replay,
-  }, format, ctx, replay.ok ? 0 : 1));
-}
-
-async function shutdownSupervisor(ctx: RunsCommandContext, options: RunsCommandOptions): Promise<void> {
-  const format: OutputFormat = options.json ? "json" : "text";
-  const command = await queueSupervisorShutdown(ctx.cwd);
-  if (!command) throw notFoundError("No runtime supervisor was found.");
-  ctx.setExitCode(writeResult({
-    ok: true,
-    phase: "inspect",
-    message: "Supervisor shutdown command queued.",
-    command,
-  }, format, ctx, 0));
-}
-
-async function signalRun(ctx: RunsCommandContext, runId: string, options: RunsCommandOptions): Promise<void> {
-  const format: OutputFormat = options.json ? "json" : "text";
-  const payload = parsePayload(options.payload);
-  let result: Awaited<ReturnType<typeof signalRuntimeRun>>;
-  try {
-    result = await signalRuntimeRun(ctx.cwd, runId, options.node!, payload);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message === `Signal node '${options.node}' was not found.`) throw notFoundError(message);
-    throw validationError(message);
-  }
-  if (!result) throw notFoundError(`Run '${runId}' was not found.`);
-  const advanced = result.advanced;
-  ctx.setExitCode(writeResult({
-    ok: advanced?.status !== "failed",
-    phase: "inspect",
-    message: advanced?.status === "failed" ? advanced.message : "Signal accepted.",
-    run: result.run,
-  }, format, ctx, advanced?.status === "failed" ? 1 : 0));
-}
-
-function parsePayload(raw: string | undefined): JsonValue {
-  if (!raw) throw usageError("--payload is required.");
-  return parseJsonOption(raw, "--payload");
-}
-
-function parseJsonOption(raw: string, name: string): JsonValue {
-  let value: unknown;
-  try {
-    value = JSON.parse(raw);
-  } catch (error) {
-    throw usageError(`${name} must be valid JSON: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  if (!isJsonValue(value)) throw usageError(`${name} must be JSON-serializable.`);
-  return value;
-}
-
-function parseAgents(raw: string | undefined): AgentOverrideMap | undefined {
-  if (raw === undefined) return undefined;
-  const value = parseJsonOption(raw, "--agents");
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw usageError("--agents must be a JSON object.");
-  return value as AgentOverrideMap;
-}
-
-function isJsonValue(value: unknown): value is JsonValue {
-  if (value === null) return true;
-  if (typeof value === "number") return Number.isFinite(value);
-  if (typeof value === "string" || typeof value === "boolean") return true;
-  if (Array.isArray(value)) return value.every(isJsonValue);
-  if (!value || typeof value !== "object") return false;
-  return Object.values(value).every(isJsonValue);
-}
-
-async function showRun(ctx: RunsCommandContext, runId: string, options: RunsCommandOptions): Promise<void> {
-  const format: OutputFormat = options.json ? "json" : "text";
+async function inspectRun(ctx: RunsCommandContext, runId: string): Promise<void> {
   const run = await getRun(ctx.cwd, runId);
   if (!run) throw notFoundError(`Run '${runId}' was not found.`);
   ctx.setExitCode(writeResult({
@@ -241,57 +117,95 @@ async function showRun(ctx: RunsCommandContext, runId: string, options: RunsComm
     phase: "inspect",
     message: "Run inspected.",
     run,
-  }, format, ctx, 0));
+  }, outputFormat(ctx), ctx, 0));
 }
 
-async function mutateRun(ctx: RunsCommandContext, runId: string, options: RunsCommandOptions, action: "pause" | "resume" | "retry" | "fork" | "cancel"): Promise<void> {
-  const format: OutputFormat = options.json ? "json" : "text";
+async function signalRun(ctx: RunsCommandContext, runId: string, options: RunsCommandOptions): Promise<void> {
+  const payload = parseRequiredPayload(options.payload);
+  let result: Awaited<ReturnType<typeof signalRunControlOnly>>;
+  try {
+    result = await signalRunControlOnly(ctx.cwd, runId, options.target!, payload);
+  } catch (error) {
+    throw controlError(error instanceof Error ? error.message : String(error));
+  }
+  if (!result) throw controlError(`Run '${runId}' was not found.`);
+  if (shouldWakeSupervisor(result.run)) ensureSupervisorRunning(ctx.cwd);
+  ctx.setExitCode(writeResult({
+    ok: true,
+    phase: "control",
+    message: "Signal accepted.",
+    ...(result.command ? { command: result.command } : {}),
+    run: runSummary(result.run),
+  }, outputFormat(ctx), ctx, 0));
+}
+
+async function mutateRun(ctx: RunsCommandContext, runId: string, options: RunsCommandOptions, action: ControlAction): Promise<void> {
   const prepared = action === "fork" && options.workflow ? await prepareWorkflowForCli(options.workflow, ctx.cwd) : options.prepared;
   const agentOverrides = action === "fork" ? parseAgents(options.agents) : undefined;
-  let forkInput: JsonValue | undefined;
-  if (action === "fork" && options.input !== undefined) {
-    const rawInput = parseJsonOption(options.input, "--input");
-    try {
-      forkInput = await normalizeForkInput(ctx.cwd, runId, rawInput, prepared);
-    } catch (error) {
-      throw validationError(error instanceof Error ? error.message : String(error));
-    }
-  } else if (action === "fork" && prepared) {
-    try {
-      forkInput = await normalizeForkInput(ctx.cwd, runId, undefined, prepared);
-    } catch (error) {
-      throw validationError(error instanceof Error ? error.message : String(error));
-    }
-  }
-  if (action === "fork" && (options.input !== undefined || prepared) && forkInput === undefined) throw notFoundError(`Run '${runId}' was not found.`);
-  let result: Awaited<ReturnType<typeof mutateRuntimeRun>>;
+  const forkInput = await maybeNormalizeForkInput(ctx, runId, action, options, prepared);
+  let result: Awaited<ReturnType<typeof mutateRunControlOnly>>;
   try {
-    result = await mutateRuntimeRun(ctx.cwd, runId, action, {
+    result = await mutateRunControlOnly(ctx.cwd, runId, action, {
       ...(options.target ? { target: options.target } : {}),
       ...(prepared ? { prepared } : {}),
       ...(forkInput !== undefined ? { input: forkInput } : {}),
       ...(agentOverrides !== undefined ? { agentOverrides } : {}),
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message === `Run '${runId}' was not found.`) throw notFoundError(message);
-    throw validationError(message);
+    throw controlError(error instanceof Error ? error.message : String(error));
   }
-  if (!result) throw notFoundError(`Run '${runId}' was not found.`);
-  const advanced = result.advanced;
-  if (advanced?.status === "failed") {
-    ctx.setExitCode(writeResult({
-      ok: false,
-      phase: "inspect",
-      message: advanced.message,
-      run: result.run,
-    }, format, ctx, 1));
-    return;
-  }
+  if (!result) throw controlError(`Run '${runId}' was not found.`);
+  if (shouldWakeSupervisor(result.run)) ensureSupervisorRunning(ctx.cwd);
   ctx.setExitCode(writeResult({
     ok: true,
-    phase: "inspect",
+    phase: "control",
     message: action === "fork" ? "Run forked." : action === "cancel" ? "Run canceled." : `Run ${action}d.`,
-    run: result.run,
-  }, format, ctx, 0));
+    ...(result.command ? { command: result.command } : {}),
+    run: runSummary(result.run),
+    ...(result.forkRunId ? { forkRunId: result.forkRunId } : {}),
+  }, outputFormat(ctx), ctx, 0));
+}
+
+async function maybeNormalizeForkInput(
+  ctx: RunsCommandContext,
+  runId: string,
+  action: ControlAction,
+  options: RunsCommandOptions,
+  prepared: PreparedRunWorkflow | undefined,
+): Promise<JsonValue | undefined> {
+  if (action !== "fork") return undefined;
+  if (options.input === undefined && !prepared) return undefined;
+  const rawInput = options.input === undefined ? undefined : parseJsonOption(options.input, "--input");
+  try {
+    return await normalizeForkInput(ctx.cwd, runId, rawInput, prepared);
+  } catch (error) {
+    throw validationError(error instanceof Error ? error.message : String(error));
+  }
+}
+
+function parseLimit(raw: string): number {
+  const limit = Number(raw);
+  if (!Number.isInteger(limit) || limit <= 0) throw usageError("--limit must be a positive integer.");
+  return limit;
+}
+
+function outputFormat(ctx: RunsCommandContext): OutputFormat {
+  return ctx.wantsJson ? "json" : "text";
+}
+
+function runSummary(run: RunDetails): RunRecord {
+  return {
+    id: run.id,
+    name: run.name,
+    status: run.status,
+    workflowEntry: run.workflowEntry,
+    irDigest: run.irDigest,
+    sourceGraphDigest: run.sourceGraphDigest,
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+  };
+}
+
+function shouldWakeSupervisor(run: RunDetails): boolean {
+  return run.status === "pending" || run.status === "running";
 }

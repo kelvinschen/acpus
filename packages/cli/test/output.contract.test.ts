@@ -6,12 +6,12 @@ describe("CLI result output contracts", () => {
   it("writes stable JSON results to stdout", () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
-    const exitCode = writeResult(dryRunResult(), "json", { stdout, stderr }, 0);
+    const exitCode = writeResult(checkResult(), "json", { stdout, stderr }, 0);
 
     expect(exitCode).toBe(0);
     expect(JSON.parse(stdout.text)).toMatchObject({
       ok: true,
-      phase: "dry-run",
+      phase: "check",
       workflow: {
         name: "cli-valid",
         irVersion: 2,
@@ -57,7 +57,7 @@ describe("CLI result output contracts", () => {
     expect(stderr.text).toBe("");
   });
 
-  it("renders agent repair history and artifact refs in run inspection text", () => {
+  it("renders compact agent metadata omission in run inspection text", () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
     const exitCode = writeResult({
@@ -90,44 +90,8 @@ describe("CLI result output contracts", () => {
             kind: "agent_attempt",
             createdAt: "2026-06-29T00:00:01.000Z",
             metadata: {
-              nodeId: "review",
               nodeKey: "review.dynamic",
-              attemptNo: 1,
-              status: "completed",
-              sessionName: "acpus-session",
-              turns: [
-                {
-                  turn: 1,
-                  status: "completed",
-                  failureKind: "output_conformance",
-                  message: "invalid shape",
-                  telemetry: {
-                    eventCount: 5,
-                    context: { used: 120, size: 240, updatedAt: "2026-07-01T00:00:00.000Z" },
-                    tokenUsage: {
-                      source: "prompt_response",
-                      inputTokens: 10,
-                      outputTokens: 2,
-                      cachedReadTokens: 3,
-                      cachedWriteTokens: 4,
-                      thoughtTokens: 5,
-                      totalTokens: 24,
-                    },
-                    tools: { totalToolCallCount: 1 },
-                  },
-                  promptArtifact: { relativePath: "artifacts/review.dynamic/attempt-1/agent/turn-001.prompt.md" },
-                  responseArtifact: { relativePath: "artifacts/review.dynamic/attempt-1/agent/turn-001.response.md" },
-                  stderrArtifact: { relativePath: "artifacts/review.dynamic/attempt-1/agent/turn-001.stderr.log" },
-                  rawRecoveredOutputArtifact: { relativePath: "artifacts/review.dynamic/attempt-1/agent/turn-001.raw-output.json" },
-                  rawAcpDebugArtifact: { relativePath: "artifacts/review.dynamic/attempt-1/agent/turn-001.raw-acp.jsonl" },
-                  telemetryArtifact: { relativePath: "artifacts/review.dynamic/attempt-1/agent/turn-001.telemetry.json" },
-                },
-                {
-                  turn: 2,
-                  status: "completed",
-                  responseArtifact: { relativePath: "artifacts/review.dynamic/attempt-1/agent/turn-002.response.md" },
-                },
-              ],
+              promptArtifact: { relativePath: "artifacts/review.dynamic/attempt-1/agent/turn-001.prompt.md" },
             },
           }],
         },
@@ -135,21 +99,8 @@ describe("CLI result output contracts", () => {
     }, "text", { stdout, stderr }, 0);
 
     expect(exitCode).toBe(0);
-    expect(stdout.text).toContain("Agent attempts:");
-    expect(stdout.text).toContain("review.dynamic attempt 1: completed");
-    expect(stdout.text).toContain("session: acpus-session");
-    expect(stdout.text).toContain("turn 1: completed output_conformance");
-    expect(stdout.text).toContain("message: invalid shape");
-    expect(stdout.text).toContain("context: 120/240");
-    expect(stdout.text).toContain("tokens: input=10 output=2 cache_read=3 cache_write=4 thought=5 total=24");
-    expect(stdout.text).toContain("tools: 1");
-    expect(stdout.text).toContain("prompt: artifacts/review.dynamic/attempt-1/agent/turn-001.prompt.md");
-    expect(stdout.text).toContain("response: artifacts/review.dynamic/attempt-1/agent/turn-001.response.md");
-    expect(stdout.text).toContain("stderr: artifacts/review.dynamic/attempt-1/agent/turn-001.stderr.log");
-    expect(stdout.text).toContain("raw output: artifacts/review.dynamic/attempt-1/agent/turn-001.raw-output.json");
-    expect(stdout.text).toContain("raw acp: artifacts/review.dynamic/attempt-1/agent/turn-001.raw-acp.jsonl");
-    expect(stdout.text).toContain("telemetry: artifacts/review.dynamic/attempt-1/agent/turn-001.telemetry.json");
-    expect(stdout.text).toContain("turn 2: completed");
+    expect(stdout.text).toContain("Agent attempt details omitted: 1. Use --json for full metadata.");
+    expect(stdout.text).not.toContain("artifacts/review.dynamic/attempt-1/agent/turn-001.prompt.md");
     expect(stderr.text).toBe("");
   });
 
@@ -214,67 +165,16 @@ describe("CLI result output contracts", () => {
     expect(stderr.text).toBe("");
   });
 
-  it("renders malformed agent metadata conservatively", () => {
-    const stdout = new CaptureStream();
-    const stderr = new CaptureStream();
-    const exitCode = writeResult({
-      ok: true,
-      phase: "inspect",
-      message: "Run inspected.",
-      run: {
-        id: "run_1",
-        name: "agent-run",
-        status: "failed",
-        workflowEntry: "/tmp/workflow.ts",
-        irDigest: "sha256:ir",
-        sourceGraphDigest: "sha256:graph",
-        createdAt: "2026-06-29T00:00:00.000Z",
-        updatedAt: "2026-06-29T00:00:01.000Z",
-        input: {},
-        eventCount: 1,
-        nodeCount: 1,
-        dynamic: {
-          version: 1,
-          frames: [],
-          nodeInstances: [],
-          attempts: [],
-          groupMembers: [],
-          signalWaits: [],
-          executionMetadata: [{
-            id: 1,
-            kind: "agent_attempt",
-            createdAt: "2026-06-29T00:00:01.000Z",
-            metadata: {
-              turns: [
-                {
-                  promptArtifact: { artifactId: "missing-relative-path" },
-                  unexpected: "ignored",
-                },
-              ],
-            },
-          }],
-        },
-      },
-    }, "text", { stdout, stderr }, 0);
+  it("writes text check summaries and failed results to the correct streams", () => {
+    const checkStdout = new CaptureStream();
+    const checkStderr = new CaptureStream();
 
-    expect(exitCode).toBe(0);
-    expect(stdout.text).toContain("(agent) attempt ?: unknown");
-    expect(stdout.text).toContain("turn ?: unknown");
-    expect(stdout.text).not.toContain("unexpected");
-    expect(stdout.text).not.toContain("missing-relative-path");
-    expect(stderr.text).toBe("");
-  });
-
-  it("writes text dry-run summaries and failed results to the correct streams", () => {
-    const dryRunStdout = new CaptureStream();
-    const dryRunStderr = new CaptureStream();
-
-    expect(writeResult(dryRunResult(), "text", { stdout: dryRunStdout, stderr: dryRunStderr }, 0)).toBe(0);
-    expect(dryRunStdout.text).toContain("Workflow dry-run passed.");
-    expect(dryRunStdout.text).toContain("Workflow: cli-valid");
-    expect(dryRunStdout.text).toContain("Preflight:");
-    expect(dryRunStdout.text).toContain("IR digest: sha256:");
-    expect(dryRunStderr.text).toBe("");
+    expect(writeResult(checkResult(), "text", { stdout: checkStdout, stderr: checkStderr }, 0)).toBe(0);
+    expect(checkStdout.text).toContain("Workflow check passed.");
+    expect(checkStdout.text).toContain("Workflow: cli-valid");
+    expect(checkStdout.text).toContain("Preflight:");
+    expect(checkStdout.text).toContain("IR digest: sha256:");
+    expect(checkStderr.text).toBe("");
 
     const failedStdout = new CaptureStream();
     const failedStderr = new CaptureStream();
@@ -329,11 +229,11 @@ describe("CLI result output contracts", () => {
   });
 });
 
-function dryRunResult(): CliResult {
+function checkResult(): CliResult {
   return {
     ok: true,
-    phase: "dry-run",
-    message: "Workflow dry-run passed.",
+    phase: "check",
+    message: "Workflow check passed.",
     workflow: {
       name: "cli-valid",
       irVersion: 2,

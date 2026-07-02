@@ -16,15 +16,17 @@ export type RuntimeAdvanceError =
   | { type: "run-not-found"; runId: string; message: string }
   | { type: "runtime-not-quiescent"; runId: string; drives: number; message: string };
 
+export type RuntimeAdvanceObserver = (run: RunDetails, summary: AdvanceRunSummary) => void;
+
 class RuntimeAdvanceException extends Error {
   constructor(readonly failure: RuntimeAdvanceError) {
     super(failure.message);
   }
 }
 
-export function tryAdvanceRuntimeRun(cwd: string, store: RuntimeStore, runId: string, ownerId = "runtime-public"): ResultAsync<RuntimeAdvanceResult, RuntimeAdvanceError> {
+export function tryAdvanceRuntimeRun(cwd: string, store: RuntimeStore, runId: string, ownerId = "runtime-public", observe?: RuntimeAdvanceObserver): ResultAsync<RuntimeAdvanceResult, RuntimeAdvanceError> {
   return ResultAsync.fromPromise(
-    advanceRuntimeRun(cwd, store, runId, ownerId),
+    advanceRuntimeRun(cwd, store, runId, ownerId, observe),
     error => {
       const storeError = schedulerStoreError(error);
       if (storeError) return storeError;
@@ -34,13 +36,15 @@ export function tryAdvanceRuntimeRun(cwd: string, store: RuntimeStore, runId: st
   );
 }
 
-export async function advanceRuntimeRun(cwd: string, store: RuntimeStore, runId: string, ownerId = "runtime-public"): Promise<RuntimeAdvanceResult> {
+export async function advanceRuntimeRun(cwd: string, store: RuntimeStore, runId: string, ownerId = "runtime-public", observe?: RuntimeAdvanceObserver): Promise<RuntimeAdvanceResult> {
   if (!store.getFrozenRun(runId)) {
     throw new RuntimeAdvanceException({ type: "run-not-found", runId, message: `Run '${runId}' was not found.` });
   }
   let last: AdvanceRunSummary | undefined;
   for (let drives = 0; drives < 1_000; drives += 1) {
     last = await advanceFrozenRun({ cwd, store, runId, ownerId });
+    const run = store.getRun(runId);
+    if (run) observe?.(run, last);
     if (last.status === "idle" && madeProgress(last)) continue;
     if (last.status !== "idle" || !madeProgress(last)) return runtimeAdvanceResult(store, runId, last);
   }

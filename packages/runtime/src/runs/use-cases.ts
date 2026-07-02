@@ -3,7 +3,7 @@ import type { JsonValue } from "@acpus/expression/ir";
 import { ResultAsync } from "neverthrow";
 import { normalizeSignalPayload, normalizeWorkflowInput } from "../admission/input.js";
 import { applyControlCommand } from "../control/apply-command.js";
-import { tryAdvanceRuntimeRun, type RuntimeAdvanceError, type RuntimeAdvanceResult } from "./advance-runtime.js";
+import { tryAdvanceRuntimeRun, type RuntimeAdvanceError, type RuntimeAdvanceObserver, type RuntimeAdvanceResult } from "./advance-runtime.js";
 import { schedulerStoreError, type SchedulerStoreError } from "../scheduler/store-port.js";
 import { createWorkflowVisualizationOverlay, type WorkflowVisualizationOverlay } from "../visualization/overlay.js";
 import {
@@ -16,6 +16,7 @@ import {
   type PendingRunControlCommand,
   type PreparedRunWorkflow,
   type ReplayResult,
+  type SupervisorDiagnostics,
   type RunDetails,
   type RunRecord,
   type SubmitRunControlCommandInput,
@@ -36,6 +37,23 @@ export type RuntimeMutationResult = {
   run: RunDetails;
   advanced?: RuntimeAdvanceResult;
   command?: RuntimeCommandRecord;
+  forkRunId?: string;
+};
+
+export type RuntimeHealthStatus = "ok" | "warn" | "fail";
+
+export type RuntimeHealthCheck = {
+  area: "workspace" | "store" | "supervisor" | "queues" | "runs" | "idle-stop";
+  status: RuntimeHealthStatus;
+  message: string;
+  details?: Record<string, JsonValue>;
+};
+
+export type RuntimeHealthReport = {
+  ok: boolean;
+  phase: "doctor";
+  state: "not-initialized" | "ready" | "unreadable";
+  checks: RuntimeHealthCheck[];
 };
 
 export type RuntimeUseCaseError =
@@ -54,6 +72,44 @@ export async function admitWorkflowRun(cwd: string, prepared: PreparedRunWorkflo
       throw new Error(error.message);
     },
   );
+}
+
+export async function admitWorkflowRunOnly(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue, agentOverrides?: AgentOverrideMap): Promise<RunDetails> {
+  const store = await openRuntimeStore(cwd);
+  try {
+    const run = await store.admitRun({ prepared, cwd, input, ...(agentOverrides === undefined ? {} : { agentOverrides }) });
+    const details = store.getRun(run.id);
+    if (!details) throw new Error(`Admitted run ${run.id} was not persisted.`);
+    return details;
+  } finally {
+    store.close();
+  }
+}
+
+export async function advanceWorkflowRun(cwd: string, runId: string, ownerId = "runtime-public", observe?: RuntimeAdvanceObserver): Promise<RuntimeAdvanceResult> {
+  const store = await openExistingWritableRuntimeStore(cwd);
+  if (!store) throw new Error("Runtime store was not found.");
+  try {
+    const advanced = await tryAdvanceRuntimeRun(cwd, store, runId, ownerId, observe);
+    return advanced.match(
+      value => value,
+      error => {
+        throw new Error(error.message);
+      },
+    );
+  } finally {
+    store.close();
+  }
+}
+
+export async function releaseWorkflowRunOwner(cwd: string, runId: string, ownerId: string): Promise<boolean> {
+  const store = await openExistingWritableRuntimeStore(cwd);
+  if (!store) return false;
+  try {
+    return store.releaseRunOwner(runId, ownerId);
+  } finally {
+    store.close();
+  }
 }
 
 export function tryAdmitWorkflowRun(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue, agentOverrides?: AgentOverrideMap): ResultAsync<RuntimeAdvanceResult, RuntimeUseCaseError> {
@@ -161,6 +217,21 @@ export function trySignalRun(cwd: string, runId: string, nodeId: string, payload
 }
 
 async function signalRunResult(cwd: string, runId: string, nodeId: string, payload: JsonValue): Promise<RuntimeMutationResult> {
+  return signalRunResultWithOptions(cwd, runId, nodeId, payload);
+}
+
+export async function signalRunControlOnly(cwd: string, runId: string, nodeId: string, payload: JsonValue): Promise<RuntimeMutationResult | undefined> {
+  const result = await ResultAsync.fromPromise(signalRunResultWithOptions(cwd, runId, nodeId, payload, { advance: false }), runtimeUseCaseThrownError);
+  return result.match(
+    value => value,
+    error => {
+      if (error.type === "runtime-store-not-found" || error.type === "run-not-found") return undefined;
+      throw new Error(error.message);
+    },
+  );
+}
+
+async function signalRunResultWithOptions(cwd: string, runId: string, nodeId: string, payload: JsonValue, options: { advance?: boolean } = {}): Promise<RuntimeMutationResult> {
   const store = await openExistingWritableRuntimeStore(cwd);
   if (!store) throw new RuntimeUseCaseException({ type: "runtime-store-not-found", message: "Runtime store was not found." });
   try {
@@ -181,7 +252,7 @@ async function signalRunResult(cwd: string, runId: string, nodeId: string, paylo
       payload: { node: nodeId, payload: normalized },
       idempotencyKey: `signal:${runId}:${nodeId}:${randomUUID()}`,
     });
-    const result = await applyCommandResult(cwd, store, command);
+    const result = await applyCommandResult(cwd, store, command, options);
     const appliedCommand = store.getCommand(command.id) ?? command;
     return { run: result.run, ...(result.advanced ? { advanced: result.advanced } : {}), command: appliedCommand };
   } finally {
@@ -205,6 +276,21 @@ export function tryMutateRun(cwd: string, runId: string, action: RuntimeMutation
 }
 
 async function mutateRunResult(cwd: string, runId: string, action: RuntimeMutationAction, input: RuntimeMutationInput = {}): Promise<RuntimeMutationResult> {
+  return mutateRunResultWithOptions(cwd, runId, action, input);
+}
+
+export async function mutateRunControlOnly(cwd: string, runId: string, action: RuntimeMutationAction, input: RuntimeMutationInput = {}): Promise<RuntimeMutationResult | undefined> {
+  const result = await ResultAsync.fromPromise(mutateRunResultWithOptions(cwd, runId, action, input, { advance: false }), runtimeUseCaseThrownError);
+  return result.match(
+    value => value,
+    error => {
+      if (error.type === "runtime-store-not-found" || error.type === "run-not-found") return undefined;
+      throw new Error(error.message);
+    },
+  );
+}
+
+async function mutateRunResultWithOptions(cwd: string, runId: string, action: RuntimeMutationAction, input: RuntimeMutationInput = {}, options: { advance?: boolean } = {}): Promise<RuntimeMutationResult> {
   const store = await openExistingWritableRuntimeStore(cwd);
   if (!store) throw new RuntimeUseCaseException({ type: "runtime-store-not-found", message: "Runtime store was not found." });
   try {
@@ -212,11 +298,94 @@ async function mutateRunResult(cwd: string, runId: string, action: RuntimeMutati
     if (command.status === "applied") {
       const run = store.getRun(runId);
       if (!run) throw new RuntimeUseCaseException({ type: "run-not-found", runId, message: `Run '${runId}' was not found.` });
-      return { run, command: store.getCommand(command.id) ?? command };
+      const applied = store.getCommand(command.id) ?? command;
+      const forkRunId = applied.type === "fork" && applied.status === "applied" && typeof applied.payload.forkRunId === "string"
+        ? applied.payload.forkRunId
+        : undefined;
+      return { run, command: applied, ...(forkRunId ? { forkRunId } : {}) };
     }
-    const result = await applyCommandResult(cwd, store, command);
+    const result = await applyCommandResult(cwd, store, command, options);
     const appliedCommand = store.getCommand(command.id) ?? command;
-    return { run: result.run, ...(result.advanced ? { advanced: result.advanced } : {}), command: appliedCommand };
+    return { run: result.run, ...(result.advanced ? { advanced: result.advanced } : {}), command: appliedCommand, ...(result.forkRunId ? { forkRunId: result.forkRunId } : {}) };
+  } finally {
+    store.close();
+  }
+}
+
+export async function getRuntimeHealth(cwd: string): Promise<RuntimeHealthReport> {
+  let store: Awaited<ReturnType<typeof openExistingRuntimeStore>>;
+  try {
+    store = await openExistingRuntimeStore(cwd);
+  } catch (error) {
+    return {
+      ok: false,
+      phase: "doctor",
+      state: "unreadable",
+      checks: [{
+        area: "store",
+        status: "fail",
+        message: error instanceof Error ? error.message : String(error),
+      }],
+    };
+  }
+  if (!store) {
+    return {
+      ok: true,
+      phase: "doctor",
+      state: "not-initialized",
+      checks: [{
+        area: "workspace",
+        status: "ok",
+        message: "Runtime store is not initialized.",
+        details: { cwd },
+      }],
+    };
+  }
+  try {
+    const diagnostics = store.getRuntimeDiagnostics();
+    const checks: RuntimeHealthCheck[] = [
+      { area: "workspace", status: "ok", message: "Workspace resolved.", details: { cwd } },
+      { area: "store", status: "ok", message: "Runtime store opened read-only." },
+      supervisorCheck(diagnostics.supervisor),
+      {
+        area: "queues",
+        status: diagnostics.commands.failed > 0 ? "warn" : "ok",
+        message: `${diagnostics.commands.pending} pending, ${diagnostics.commands.running} running, ${diagnostics.commands.failed} failed commands.`,
+        details: {
+          pending: diagnostics.commands.pending,
+          running: diagnostics.commands.running,
+          failed: diagnostics.commands.failed,
+          ...(diagnostics.commands.oldestPendingAt ? { oldestPendingAt: diagnostics.commands.oldestPendingAt } : {}),
+        },
+      },
+      {
+        area: "runs",
+        status: "ok",
+        message: `${diagnostics.runs.total} runs, ${diagnostics.runs.runnable} runnable.`,
+        details: diagnostics.runs as unknown as Record<string, JsonValue>,
+      },
+      idleStopCheck(diagnostics.commands.pending, diagnostics.runs.runnable, diagnostics.leases.activeForeground),
+    ];
+    if (diagnostics.leases.stale > 0) {
+      checks.push({
+        area: "runs",
+        status: "warn",
+        message: `${diagnostics.leases.stale} stale run leases found.`,
+        details: { staleRunLeases: diagnostics.leases.stale },
+      });
+    }
+    return { ok: checks.every(check => check.status !== "fail"), phase: "doctor", state: "ready", checks };
+  } catch (error) {
+    return {
+      ok: false,
+      phase: "doctor",
+      state: "unreadable",
+      checks: [{
+        area: "store",
+        status: "fail",
+        message: error instanceof Error ? error.message : String(error),
+      }],
+    };
   } finally {
     store.close();
   }
@@ -262,14 +431,62 @@ class RuntimeUseCaseException extends Error {
   }
 }
 
-async function applyCommandResult(cwd: string, store: NonNullable<Awaited<ReturnType<typeof openExistingWritableRuntimeStore>>>, command: PendingRunControlCommand): Promise<Awaited<ReturnType<typeof applyControlCommand>>> {
+async function applyCommandResult(cwd: string, store: NonNullable<Awaited<ReturnType<typeof openExistingWritableRuntimeStore>>>, command: PendingRunControlCommand, options: { advance?: boolean } = {}): Promise<Awaited<ReturnType<typeof applyControlCommand>>> {
   try {
-    return await applyControlCommand(cwd, store, command);
+    return await applyControlCommand(cwd, store, command, options);
   } catch (error) {
     const storeError = schedulerStoreError(error);
     if (storeError) throw new RuntimeUseCaseException({ type: "scheduler-store-failed", cause: storeError, message: storeError.message });
     throw new RuntimeUseCaseException({ type: "control-command-failed", commandType: command.type, message: error instanceof Error ? error.message : String(error) });
   }
+}
+
+function supervisorCheck(supervisor: SupervisorDiagnostics | undefined): RuntimeHealthCheck {
+  if (!supervisor) return { area: "supervisor", status: "ok", message: "No supervisor lease is present." };
+  const heartbeatAgeMs = supervisor.heartbeatAt ? Date.now() - Date.parse(supervisor.heartbeatAt) : undefined;
+  const processAlive = supervisor.pid === undefined ? undefined : isProcessAlive(supervisor.pid);
+  const stale = heartbeatAgeMs !== undefined && heartbeatAgeMs > 30_000;
+  return {
+    area: "supervisor",
+    status: stale || processAlive === false ? "warn" : "ok",
+    message: stale ? "Supervisor heartbeat is stale." : processAlive === false ? "Supervisor pid is not alive." : "Supervisor lease is fresh.",
+    details: {
+      generation: supervisor.generation,
+      ...(supervisor.pid === undefined ? {} : { pid: supervisor.pid }),
+      ...(heartbeatAgeMs === undefined ? {} : { heartbeatAgeMs }),
+      ...(processAlive === undefined ? {} : { processAlive }),
+      packageVersion: supervisor.packageVersion,
+      nodeVersion: supervisor.nodeVersion,
+      execPath: supervisor.execPath,
+    },
+  };
+}
+
+function idleStopCheck(pendingCommands: number, runnableRuns: number, activeForeground: number): RuntimeHealthCheck {
+  const blockers = [
+    pendingCommands > 0 ? "pending commands" : undefined,
+    runnableRuns > 0 ? "runnable runs" : undefined,
+    activeForeground > 0 ? "active foreground ownership" : undefined,
+  ].filter((blocker): blocker is string => blocker !== undefined);
+  return {
+    area: "idle-stop",
+    status: "ok",
+    message: blockers.length === 0 ? "No idle-stop blockers." : `Idle-stop blocked by ${blockers.join(", ")}.`,
+    details: { pendingCommands, runnableRuns, activeForeground },
+  };
+}
+
+function isProcessAlive(pid: number): boolean | undefined {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return isNodeError(error) && error.code === "ESRCH" ? false : undefined;
+  }
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return Boolean(error && typeof error === "object" && "code" in error);
 }
 
 function runtimeUseCaseThrownError(error: unknown): RuntimeUseCaseError {

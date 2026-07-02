@@ -3,12 +3,12 @@ import { runSourceCli } from "./support/cli-runner.js";
 import { copyWorkflowFixture } from "./support/fixtures.js";
 import { withTestWorkspace } from "./support/workspace.js";
 
-describe("acpus run validation failure smoke", () => {
+describe("acpus workflows check validation failure smoke", () => {
   it("reports compiled IR diagnostics through the CLI phase mapping", async () => {
     await withTestWorkspace("run-validate", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/basic/malformed.workflow.ts");
 
-      const result = await runSourceCli(workspace, ["run", workflow, "--dry-run", "--json"]);
+      const result = await runSourceCli(workspace, ["workflows", "check", workflow, "--json"]);
 
       expect(result.exitCode).toBe(1);
       expect(JSON.parse(result.stdout)).toMatchObject({
@@ -25,7 +25,7 @@ describe("acpus run validation failure smoke", () => {
     await withTestWorkspace("run-validate-text", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/basic/malformed.workflow.ts");
 
-      const result = await runSourceCli(workspace, ["run", workflow, "--dry-run"]);
+      const result = await runSourceCli(workspace, ["workflows", "check", workflow]);
 
       expect(result.exitCode).toBe(1);
       expect(result.stdout).toBe("");

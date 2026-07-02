@@ -8,18 +8,27 @@ export {
   type SupervisorLoopOptions,
 } from "./supervisor/loop.js";
 export {
+  advanceWorkflowRun,
+  admitWorkflowRunOnly,
   admitWorkflowRun,
+  getRuntimeHealth,
   getRun,
   getRunVisualizationOverlay,
   listRuns,
+  mutateRunControlOnly,
   mutateRun,
   normalizeForkInput,
   queueSupervisorShutdown,
   replayRun,
+  releaseWorkflowRunOwner,
+  signalRunControlOnly,
   signalRun,
   tryAdmitWorkflowRun,
   tryMutateRun,
   trySignalRun,
+  type RuntimeHealthCheck,
+  type RuntimeHealthReport,
+  type RuntimeHealthStatus,
   type RuntimeCommandRecord,
   type RuntimeMutationAction,
   type RuntimeMutationInput,
@@ -29,6 +38,7 @@ export {
 export {
   tryAdvanceRuntimeRun,
   type RuntimeAdvanceError,
+  type RuntimeAdvanceObserver,
   type RuntimeAdvanceResult,
 } from "./runs/advance-runtime.js";
 export {
@@ -38,6 +48,7 @@ export {
   type WorkflowVisualizationOverlay,
 } from "./visualization/overlay.js";
 export {
+  validateAgentOverrides,
   type ControlCommand,
   type ControlCommandStatus,
   type ControlCommandType,
@@ -65,7 +76,9 @@ export {
   type RunStatus,
   type RunControlCommandType,
   type RuntimeStore,
+  type RuntimeDiagnostics,
   type RunWorkflowLockArtifact,
+  type SupervisorDiagnostics,
   type SignalCommandPayload,
   type SubmitCommandInput,
   type SupervisorCommandType,
