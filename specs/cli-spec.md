@@ -19,8 +19,10 @@ stable CLI phases and exit codes.
 - The CLI MUST support `acpus workflows run <workflow-module> --background`.
 - The CLI MUST support `--input <json>` and `--agents <json>` on workflow
   check and run commands.
-- The CLI MUST expose `acpus workflows list` and
-  `acpus workflows show <name-or-ref>` as valid catalog placeholders.
+- The CLI MUST support `acpus workflows list [--project | --global]`.
+- The CLI MUST support `acpus workflows show <name> [--project | --global]`.
+- The CLI MUST support `--project` and `--global` on workflow check and run
+  commands as explicit catalog scope selectors.
 - The CLI MUST support `acpus runs list [--limit <n> | --all]`.
 - The CLI MUST support `acpus runs inspect <run-id>`.
 - The CLI MUST support `acpus runs pause <run-id>`,
@@ -46,6 +48,29 @@ stable CLI phases and exit codes.
   admitting a run.
 - `workflows check --agents` MUST validate agent overrides against declared
   workflow agents without admitting a run.
+- Workflow catalog discovery MUST inspect only first-level directories under
+  `<workspace>/.acpus/workflows` and `$HOME/.acpus/workflows`.
+- A workflow catalog entry MUST be a directory whose name matches
+  `[a-z0-9][a-z0-9-]*` and that contains `index.workflow.ts`.
+- Workflow catalog discovery MUST ignore non-package directories, invalid
+  package names, direct `.workflow.ts` files under the catalog root, and nested
+  package-looking directories inside a catalog package.
+- `workflows list` and `workflows show` MUST NOT compile, import, or validate
+  workflow modules.
+- Unscoped catalog lookup MUST succeed only when the catalog name is unique
+  across project and global scopes.
+- Scoped catalog lookup MUST search only the selected project or global scope.
+- `workflows check` and `workflows run` MUST resolve non-path-like workflow
+  arguments as catalog names and then use the resolved `index.workflow.ts` with
+  the existing workflow preparation flow.
+- `workflows check` and `workflows run` MUST keep path-like workflow arguments
+  on the existing direct path preparation flow unless `--project` or `--global`
+  is passed.
+- Global catalog entries MUST be materialized into a content-addressed
+  `.acpus/catalog-cache/global/<name>/<digest>/` package snapshot before
+  workflow preparation.
+- Global catalog materialization MUST follow symlinks and copy target content.
+- Runtime run records MUST NOT persist catalog metadata.
 - `workflows run` MUST call workflow preparation, normalize submitted input,
   validate agent overrides, admit a durable run, and foreground-advance it until
   runtime quiescence.
@@ -75,7 +100,8 @@ stable CLI phases and exit codes.
 - JSON output MUST include stable keys for `ok`, `phase`, workflow summary,
   diagnostics, preflight directory when available, IR digest, source graph
   digest, run summaries or details when available, command records when
-  available, and doctor checks when available.
+  available, workflow catalog entries or invocation source when available, and
+  doctor checks when available.
 - JSON diagnostic output MUST preserve `hint` and `source` fields when present.
 - Supported JSON `phase` values MUST be `usage`, `check`, `compile`,
   `validate`, `run`, `inspect`, `control`, and `doctor`.
@@ -94,14 +120,19 @@ stable CLI phases and exit codes.
 - Text diagnostic output MUST render `source` and `hint` when present.
 - `runs list` MUST order by `updatedAt DESC`, default to 20 rows, include
   truncation metadata, and accept mutually exclusive `--limit` and `--all`.
-- Catalog placeholder commands MUST exit with code `1`, use phase `inspect`,
-  and report that workflow catalog discovery is not implemented in this
-  version.
+- Workflow catalog JSON output MUST expose `scope`, `name`, `packagePath`,
+  `entryPath`, `status`, and `requiresScope` for catalog entries.
+- Workflow catalog path fields MUST be absolute paths.
+- `workflows list` MUST sort catalog entries by `name ASC`, with project
+  entries before global entries for equal names.
+- Project and global entries with the same name MUST keep
+  `status: "available"` and set `requiresScope: true`.
 - Usage errors MUST exit with code `2`.
 - Successful check, run, inspection, control, and doctor commands MUST exit with
   code `0`.
 - Check, compile, validation, runtime admission, run lookup, runtime control,
-  catalog placeholder, and failed doctor commands MUST exit with code `1`.
+  catalog lookup or materialization, and failed doctor commands MUST exit with
+  code `1`.
 
 ## Verification
 
@@ -121,5 +152,6 @@ stable CLI phases and exit codes.
   preservation.
 - Tests MUST cover signal command wiring through `--target`.
 - Tests MUST cover cancel command wiring and bounded control output.
-- Tests MUST cover catalog placeholder output, doctor no-store output, package
-  boundary, and program output contracts.
+- Tests MUST cover workflow catalog discovery, scope filtering, stable ordering,
+  ambiguity handling, catalog-backed check and run, global materialization,
+  doctor no-store output, package boundary, and program output contracts.

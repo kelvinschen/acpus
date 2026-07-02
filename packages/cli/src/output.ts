@@ -1,6 +1,7 @@
 import type { Writable } from "node:stream";
 import type { DiagnosticIR, WorkflowIR } from "@acpus/core/ir";
 import type { RunDetails, RunRecord, RuntimeCommandRecord, RuntimeHealthCheck } from "@acpus/runtime";
+import type { WorkflowCatalogEntry } from "./catalog.js";
 
 export type ResultPhase = "usage" | "check" | "compile" | "validate" | "run" | "inspect" | "control" | "doctor";
 
@@ -29,6 +30,8 @@ export type CliResult = {
   run?: RunRecord | RunDetails;
   runs?: RunRecord[];
   list?: { total: number; limit?: number; truncated: boolean; order: "updatedAt DESC" };
+  catalog?: WorkflowCatalogEntry;
+  catalogEntries?: WorkflowCatalogEntry[];
   command?: RuntimeCommandRecord;
   forkRunId?: string;
   checks?: RuntimeHealthCheck[];
@@ -52,6 +55,16 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
     stream.write(`Diagnostics: ${result.workflow.diagnostics.errors} errors, ${result.workflow.diagnostics.warnings} warnings, ${result.workflow.diagnostics.infos} infos\n`);
   }
   if (result.preflightDir) stream.write(`Preflight: ${result.preflightDir}\n`);
+  if (result.catalog) writeCatalogEntry(stream, result.catalog);
+  if (result.catalogEntries) {
+    if (result.catalogEntries.length === 0) {
+      stream.write("No cataloged workflows.\n");
+    } else {
+      for (const entry of result.catalogEntries) {
+        stream.write(`${entry.scope}\t${entry.status}\t${entry.requiresScope ? "requires-scope" : "ready"}\t${entry.name}\t${entry.entryPath}\n`);
+      }
+    }
+  }
   if (result.run) {
     stream.write(`Run: ${result.run.id}\n`);
     stream.write(`Status: ${result.run.status}\n`);
@@ -87,6 +100,13 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
     }
   }
   return exitCode;
+}
+
+function writeCatalogEntry(stream: Writable, entry: WorkflowCatalogEntry): void {
+  stream.write(`Catalog: ${entry.scope}/${entry.name}\n`);
+  stream.write(`Catalog status: ${entry.status}${entry.requiresScope ? " (requires --project or --global when unscoped)" : ""}\n`);
+  stream.write(`Catalog package: ${entry.packagePath}\n`);
+  stream.write(`Catalog entry: ${entry.entryPath}\n`);
 }
 
 export function writeJsonLine(stream: Writable, value: unknown): void {

@@ -4,7 +4,8 @@ import { advanceWorkflowRun, admitPreparedWorkflowRun, normalizeWorkflowInput, r
 import type { JsonValue } from "@acpus/expression/ir";
 import { writePreflightArtifact } from "@acpus/workflow-compiler";
 import { validationError } from "../errors.js";
-import { summarizeWorkflow, writeJsonLine, writeResult } from "../output.js";
+import { discoverWorkflowCatalog, resolveWorkflowReference, showWorkflowCatalogEntry, type WorkflowCatalogScopeOptions } from "../catalog.js";
+import { summarizeWorkflow, writeJsonLine, writeResult, type OutputFormat } from "../output.js";
 import { prepareWorkflowForCli } from "../workflow-preparation.js";
 import { parseAgents, parseInput } from "./json.js";
 import { ensureSupervisorRunning } from "./supervisor.js";
@@ -21,7 +22,7 @@ type WorkflowOptions = {
   input?: string;
   agents?: string;
   background?: boolean;
-};
+} & WorkflowCatalogScopeOptions;
 
 export function createWorkflowsCommand(ctx: WorkflowsCommandContext): Command {
   const command = new Command("workflows")
@@ -38,20 +39,30 @@ export function createWorkflowsCommand(ctx: WorkflowsCommandContext): Command {
   command.addCommand(new Command("list")
     .exitOverride()
     .description("List cataloged workflows.")
-    .action(() => catalogPlaceholder(ctx)));
+    .option("--project", "list project workflow catalog entries")
+    .option("--global", "list global workflow catalog entries")
+    .action(async (options: WorkflowOptions) => {
+      await listCatalog(ctx, options);
+    }));
 
   command.addCommand(new Command("show")
     .exitOverride()
     .description("Show a cataloged workflow.")
-    .argument("<name-or-ref>", "workflow catalog name or reference")
-    .action(() => catalogPlaceholder(ctx)));
+    .argument("<name>", "workflow catalog name")
+    .option("--project", "show a project workflow catalog entry")
+    .option("--global", "show a global workflow catalog entry")
+    .action(async (name: string, options: WorkflowOptions) => {
+      await showCatalog(ctx, name, options);
+    }));
 
   command.addCommand(new Command("check")
     .exitOverride()
     .description("Typecheck, compile, validate, and write a preflight artifact.")
-    .argument("<workflow-module>", "workflow module path")
+    .argument("<workflow-module>", "workflow module path or catalog name")
     .option("--input <json>", "validate this JSON value as the workflow input")
     .option("--agents <json>", "validate submit-time agent overrides")
+    .option("--project", "resolve workflow name from the project catalog")
+    .option("--global", "resolve workflow name from the global catalog")
     .action(async (workflow: string, options: WorkflowOptions) => {
       await checkWorkflow(ctx, workflow, options);
     }));
@@ -59,10 +70,12 @@ export function createWorkflowsCommand(ctx: WorkflowsCommandContext): Command {
   command.addCommand(new Command("run")
     .exitOverride()
     .description("Prepare and run a TypeScript workflow module.")
-    .argument("<workflow-module>", "workflow module path")
+    .argument("<workflow-module>", "workflow module path or catalog name")
     .option("--input <json>", "freeze this JSON value as the workflow input")
     .option("--agents <json>", "override declared agents for this run")
     .option("--background", "admit the run and execute it in the background")
+    .option("--project", "resolve workflow name from the project catalog")
+    .option("--global", "resolve workflow name from the global catalog")
     .action(async (workflow: string, options: WorkflowOptions) => {
       await runWorkflow(ctx, workflow, options);
     }));
@@ -70,18 +83,31 @@ export function createWorkflowsCommand(ctx: WorkflowsCommandContext): Command {
   return command;
 }
 
-function catalogPlaceholder(ctx: WorkflowsCommandContext): void {
+async function listCatalog(ctx: WorkflowsCommandContext, options: WorkflowOptions): Promise<void> {
+  const catalogEntries = await discoverWorkflowCatalog(ctx.cwd, options);
   ctx.setExitCode(writeResult({
-    ok: false,
+    ok: true,
     phase: "inspect",
-    message: "Workflow catalog discovery is not implemented in this version.",
-  }, ctx.wantsJson ? "json" : "text", ctx, 1));
+    message: "Workflow catalog listed.",
+    catalogEntries,
+  }, outputFormat(ctx), ctx, 0));
+}
+
+async function showCatalog(ctx: WorkflowsCommandContext, name: string, options: WorkflowOptions): Promise<void> {
+  const catalog = await showWorkflowCatalogEntry(ctx.cwd, name, options);
+  ctx.setExitCode(writeResult({
+    ok: true,
+    phase: "inspect",
+    message: "Workflow catalog entry shown.",
+    catalog,
+  }, outputFormat(ctx), ctx, 0));
 }
 
 async function checkWorkflow(ctx: WorkflowsCommandContext, workflow: string, options: WorkflowOptions): Promise<void> {
   const input = options.input === undefined ? undefined : parseInput(options.input);
   const agentOverrides = parseAgents(options.agents);
-  const prepared = await prepareWorkflowForCli(workflow, ctx.cwd);
+  const resolved = await resolveWorkflowReference(ctx.cwd, workflow, options);
+  const prepared = await prepareWorkflowForCli(resolved.workflow, ctx.cwd);
   try {
     if (input !== undefined) normalizeWorkflowInput(prepared.ir, input);
     validateAgentOverrides(prepared.ir, agentOverrides);
@@ -98,13 +124,15 @@ async function checkWorkflow(ctx: WorkflowsCommandContext, workflow: string, opt
     preflightDir: artifact.dir,
     irDigest: prepared.irDigest,
     sourceGraphDigest: prepared.sourceGraphDigest,
-  }, ctx.wantsJson ? "json" : "text", ctx, 0));
+    ...(resolved.catalog ? { catalog: resolved.catalog } : {}),
+  }, outputFormat(ctx), ctx, 0));
 }
 
 async function runWorkflow(ctx: WorkflowsCommandContext, workflow: string, options: WorkflowOptions): Promise<void> {
   const input = parseInput(options.input);
   const agentOverrides = parseAgents(options.agents);
-  const prepared = await prepareWorkflowForCli(workflow, ctx.cwd);
+  const resolved = await resolveWorkflowReference(ctx.cwd, workflow, options);
+  const prepared = await prepareWorkflowForCli(resolved.workflow, ctx.cwd);
   let admittedInput: JsonValue;
   try {
     admittedInput = normalizeWorkflowInput(prepared.ir, input);
@@ -125,12 +153,13 @@ async function runWorkflow(ctx: WorkflowsCommandContext, workflow: string, optio
       irDigest: prepared.irDigest,
       sourceGraphDigest: prepared.sourceGraphDigest,
       run,
-    }, ctx.wantsJson ? "json" : "text", ctx, 0));
+      ...(resolved.catalog ? { catalog: resolved.catalog } : {}),
+    }, outputFormat(ctx), ctx, 0));
     return;
   }
 
   const admitted = await admitPreparedWorkflowRun(ctx.cwd, prepared, admittedInput, agentOverrides);
-  if (ctx.wantsJson) writeJsonLine(ctx.stdout, { ok: true, phase: "run", kind: "admitted", run: admitted });
+  if (ctx.wantsJson) writeJsonLine(ctx.stdout, { ok: true, phase: "run", kind: "admitted", run: admitted, ...(resolved.catalog ? { catalog: resolved.catalog } : {}) });
   const ownerId = `foreground:${process.pid}`;
   const detach = installDetachHandler(ctx, admitted.id, ownerId);
   const seen = new Set([
@@ -151,6 +180,7 @@ async function runWorkflow(ctx: WorkflowsCommandContext, workflow: string, optio
       phase: "run",
       kind: terminalKind(advanced.status),
       run: advanced.run,
+      ...(resolved.catalog ? { catalog: resolved.catalog } : {}),
     });
     ctx.setExitCode(advanced.status === "failed" ? 1 : 0);
     return;
@@ -164,7 +194,12 @@ async function runWorkflow(ctx: WorkflowsCommandContext, workflow: string, optio
     irDigest: prepared.irDigest,
     sourceGraphDigest: prepared.sourceGraphDigest,
     run: advanced.run,
+    ...(resolved.catalog ? { catalog: resolved.catalog } : {}),
   }, "text", ctx, advanced.status === "failed" ? 1 : 0));
+}
+
+function outputFormat(ctx: WorkflowsCommandContext): OutputFormat {
+  return ctx.wantsJson ? "json" : "text";
 }
 
 function installDetachHandler(ctx: WorkflowsCommandContext, runId: string, ownerId: string): () => void {
