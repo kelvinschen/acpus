@@ -17,6 +17,8 @@ pre-TypeScript history remains under `legacy/`.
 - [Core Roadmap](core-roadmap.md) — the path from the current authoring/compile core to a full runtime (task execution, executors, persistence, lint plugin, runner profiles).
 - [Durable Runtime Roadmap](durable-runtime-roadmap.md) — active durable runtime audit, remaining gaps, and implementation target ordering.
 - [Spec Gap Audit](spec-gap-audit.md) — follow-up gaps found while aligning specs to package ownership.
+- [CLI Control Plane Implementation Goal](cli-control-plane-implementation-goal.md) — working goal for regrouping workflow, run, hooks, and runtime CLI commands around clearer product nouns.
+- [Replay Verifier Audit Roadmap](replay-verifier-audit-roadmap.md) — follow-up audit for the current read-only replay verifier capability and its possible product surface.
 
 ## Archive
 
