@@ -1,4 +1,4 @@
-import { defineWorkflow, z } from "@acpus/core";
+import { defineWorkflow, z } from "acpus/core";
 
 const value: string = 1;
 

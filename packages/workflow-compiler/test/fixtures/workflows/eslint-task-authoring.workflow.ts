@@ -1,4 +1,4 @@
-import { defineWorkflow, task, z } from "@acpus/core";
+import { defineWorkflow, task, z } from "acpus/core";
 import notTask from "./tasks/not-a-task.task.js";
 import externalTask from "external-task";
 

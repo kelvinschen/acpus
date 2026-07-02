@@ -31,6 +31,7 @@
     "@acpus/agent-executor": "workspace:*",
     "@acpus/core": "workspace:*",
     "@acpus/expression": "workspace:*",
+    "@acpus/tasks": "workspace:*",
     "jsonrepair": "^3.14.1",
     "neverthrow": "^8.2.0",
     "p-queue": "^9.3.0",

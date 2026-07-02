@@ -75,6 +75,9 @@ importers:
       '@acpus/runtime':
         specifier: workspace:*
         version: link:../runtime
+      '@acpus/tasks':
+        specifier: workspace:*
+        version: link:../tasks
       '@acpus/workflow-compiler':
         specifier: workspace:*
         version: link:../workflow-compiler
@@ -125,6 +128,9 @@ importers:
       '@acpus/expression':
         specifier: workspace:*
         version: link:../expression
+      '@acpus/tasks':
+        specifier: workspace:*
+        version: link:../tasks
       jsonrepair:
         specifier: ^3.14.1
         version: 3.14.1
@@ -163,6 +169,12 @@ importers:
       '@acpus/expression':
         specifier: workspace:*
         version: link:../expression
+      '@acpus/tasks':
+        specifier: workspace:*
+        version: link:../tasks
+      '@types/node':
+        specifier: ^22.15.30
+        version: 22.19.19
       neverthrow:
         specifier: ^8.2.0
         version: 8.2.0
@@ -173,9 +185,6 @@ importers:
         specifier: ^5.9.0
         version: 5.9.3
     devDependencies:
-      '@types/node':
-        specifier: ^22.15.30
-        version: 22.19.19
       slash:
         specifier: ^3.0.0
         version: 3.0.0

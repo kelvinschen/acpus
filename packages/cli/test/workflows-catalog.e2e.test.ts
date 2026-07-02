@@ -127,7 +127,7 @@ async function globalTaskWorkflowPackage(root: string, name: string): Promise<vo
   const dir = join(root, name);
   await mkdir(join(dir, "tasks"), { recursive: true });
   await writeFile(join(dir, "index.workflow.ts"), [
-    'import { defineWorkflow, z } from "@acpus/core";',
+    'import { defineWorkflow, z } from "acpus/core";',
     'import normalizeTask from "./tasks/normalize.task.js";',
     "",
     "export default defineWorkflow({",
@@ -145,7 +145,7 @@ async function globalTaskWorkflowPackage(root: string, name: string): Promise<vo
     "",
   ].join("\n"));
   await writeFile(join(dir, "tasks", "normalize.real.task.ts"), [
-    'import { task, z } from "@acpus/core";',
+    'import { task, z } from "acpus/core";',
     "",
     "export default task.define({",
     "  inputSchema: z.object({ value: z.string() }),",
@@ -158,7 +158,7 @@ async function globalTaskWorkflowPackage(root: string, name: string): Promise<vo
 
 function projectWorkflow(name: string): string {
   return [
-    'import { defineWorkflow } from "@acpus/core";',
+    'import { defineWorkflow } from "acpus/core";',
     "",
     `export default defineWorkflow({ name: ${JSON.stringify(name)} }).build(() => ({ ok: true }));`,
     "",

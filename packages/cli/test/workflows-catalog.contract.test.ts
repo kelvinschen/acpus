@@ -108,7 +108,7 @@ async function workflowPackage(root: string, name: string, source?: string): Pro
   const dir = join(root, name);
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, "index.workflow.ts"), source ?? [
-    'import { defineWorkflow } from "@acpus/core";',
+    'import { defineWorkflow } from "acpus/core";',
     "",
     `export default defineWorkflow({ name: ${JSON.stringify(name)} }).build(() => ({ ok: true }));`,
     "",

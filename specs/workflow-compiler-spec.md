@@ -35,8 +35,14 @@
 - TypeScript diagnostics MUST use existing `DiagnosticIR` fields with `code: "TS####"`, flattened `message`, and `source` file, line, and column when available.
 - The TypeScript check MUST use stable `typescript`, not `@typescript/native-preview`.
 - The TypeScript check MUST use a scratch tsconfig with NodeNext module resolution and no emit.
-- In workspace development, the TypeScript check MUST use the `development` condition and map `@acpus/core` and `@acpus/core/*` to live core source.
-- Published installs MUST rely on normal package resolution.
+- The TypeScript check MUST resolve supported official authoring facade
+  specifiers `acpus/core`, `acpus/expression`, and `acpus/tasks/git` from
+  Acpus-owned packages, without requiring the workflow workspace to install
+  Acpus dependencies.
+- In workspace development, official `acpus/*` facade specifiers SHOULD resolve
+  to live package source through the `development` condition.
+- Published installs MUST rely on normal package resolution for non-Acpus
+  dependencies.
 - Acpus authoring rules MUST run only Acpus-owned checks and MUST NOT load user ESLint config, editor config, or broad third-party presets.
 - Acpus authoring rules MUST reject `Expr` values in JavaScript truthiness positions, logical/comparison operators over `Expr`, untagged template interpolation containing `Expr`, JavaScript array methods over Expr accessors, Expr-derived node ids, invalid task authoring shapes, and task callsites that cannot be joined to task metadata.
 - Acpus authoring rules MUST statically inspect graph-binding output producers for workflow root returns, composite callbacks, and loop `initial`, and MUST inspect inline task and reusable `task.define(...).exec` return types for non-workflow runtime data.
@@ -47,7 +53,9 @@
 - Branch-like producers for `if`, `switch`, and `parallel` `race` MUST produce `OA003` diagnostics when branch output key sets differ or matching field types do not converge to a common assignable type that TypeScript has not already rejected.
 - Workflow root return branches MUST converge to a stable object shape when multiple root return statements are present.
 - Loop `initial` MUST be a statically known object output, loop `initial` and body output types MUST converge, and negative literal `maxIterations` MUST produce `OA004`.
-- Full preparation MUST compile through a worker/import path that can load TypeScript workflow modules.
+- Full preparation MUST compile through a worker/import path that can load
+  TypeScript workflow modules and resolve supported official `acpus/*`
+  authoring facade specifiers from Acpus-owned packages.
 - Check failures MUST be reported as `WorkflowPreparationError` with phase `"check"` and `DiagnosticIR[]`.
 - Module import or compile failures MUST be reported as phase `"compile"`.
 - IR diagnostics containing any `severity: "error"` MUST be reported as phase `"validate"`.
@@ -72,6 +80,8 @@
 - Compile MUST consume task metadata and MUST NOT duplicate lint rule text.
 - The analyzer MUST match direct `step("id").task(...)` call sites.
 - Reusable tasks MUST support direct default imports, named imports with aliases, barrel re-exports, same-file exported reusable tasks, and bare package specifiers that resolve to ESM modules at runtime.
+- Reusable tasks MAY be imported from the supported official `acpus/tasks/git`
+  facade subpath without a workflow-local Acpus installation.
 - Reusable task metadata MUST be derived from `task.define({ inputSchema, exec })`; reusable tasks MUST NOT require or preserve an `outputSchema` field.
 - Reusable module metadata MUST identify the source-level specifier, export name, and workflow source referrer needed for runtime import.
 - Reusable module metadata MUST record `exportName: "default"` for default imports, the original exported binding name for named imports even when locally aliased, and the exported workflow-module binding name for same-file task exports.

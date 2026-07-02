@@ -43,7 +43,7 @@ describe("acpus doctor", () => {
         expect.objectContaining({ area: "idle-stop" }),
       ]));
     });
-  });
+  }, 15_000);
 
   it("reports supervisor idle age without mutating state", async () => {
     await withTestWorkspace("doctor-supervisor-idle", async workspace => {

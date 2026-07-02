@@ -12,7 +12,7 @@ export async function compileWorkflow(entry: string, cwd: string, scratchDir: st
   const out = join(scratchDir, "workflow-ir.json");
   const worker = fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "./compile-worker.ts" : "./compile-worker.js", import.meta.url));
   const tsxImport = await import.meta.resolve("tsx");
-  const conditions = await hasWorkspaceCoreSource(cwd) ? ["development"] : [];
+  const conditions = import.meta.url.endsWith(".ts") || await hasWorkspaceCoreSource(cwd) ? ["development"] : [];
   const args = [
     "--import",
     tsxImport,

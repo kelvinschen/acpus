@@ -1,4 +1,4 @@
-import { task, z } from "@acpus/core";
+import { task, z } from "acpus/core";
 import slash from "slash";
 
 // Reusable task that keeps a third-party dependency as a live runtime module

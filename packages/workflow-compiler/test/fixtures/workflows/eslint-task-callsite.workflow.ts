@@ -1,4 +1,4 @@
-import { defineWorkflow } from "@acpus/core";
+import { defineWorkflow } from "acpus/core";
 
 export default defineWorkflow({
   name: "eslint_task_callsite_fixture",

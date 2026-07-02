@@ -1,4 +1,4 @@
-import { defineWorkflow, task, z } from "@acpus/core";
+import { defineWorkflow, task, z } from "acpus/core";
 
 const sdk = {
   job: (_name: string) => ({ task: () => "ok" }),

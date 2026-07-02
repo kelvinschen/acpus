@@ -11,6 +11,23 @@
   "bin": {
     "acpus": "./dist/cli.js"
   },
+  "exports": {
+    "./core": {
+      "development": "./src/authoring/core.ts",
+      "types": "./dist/authoring/core.d.ts",
+      "default": "./dist/authoring/core.js"
+    },
+    "./expression": {
+      "development": "./src/authoring/expression.ts",
+      "types": "./dist/authoring/expression.d.ts",
+      "default": "./dist/authoring/expression.js"
+    },
+    "./tasks/git": {
+      "development": "./src/authoring/tasks/git.ts",
+      "types": "./dist/authoring/tasks/git.d.ts",
+      "default": "./dist/authoring/tasks/git.js"
+    }
+  },
   "files": [
     "dist",
     "README.md",
@@ -25,6 +42,7 @@
     "@acpus/core": "workspace:*",
     "@acpus/expression": "workspace:*",
     "@acpus/runtime": "workspace:*",
+    "@acpus/tasks": "workspace:*",
     "@acpus/workflow-compiler": "workspace:*",
     "commander": "^15.0.0",
     "tsx": "^4.20.3"

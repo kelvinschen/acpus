@@ -1,13 +1,13 @@
 import {
   defineWorkflow,
   z,
-} from "@acpus/core";
+} from "acpus/core";
 import {
   where,
   every,
   max,
   template,
-} from "@acpus/expression";
+} from "acpus/expression";
 import localDependencyTask from "./tasks/local-dependency.task.js";
 import nodeModuleDependencyTask from "./tasks/node-module-dependency.task.js";
 

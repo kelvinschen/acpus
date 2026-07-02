@@ -7,6 +7,7 @@ import { createDollar, type ArtifactRef, type CommandBuilder, type Dollar, type 
 import type { TaskExecutionTargetIR, TaskNodeIR } from "@acpus/core/ir";
 import { tsImport } from "tsx/esm/api";
 import { evaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
+import { officialAuthoringImportURL, registerOfficialAuthoringImports } from "../official-imports.js";
 import type { RuntimeStore } from "../store/store.js";
 import { parseDurationMs } from "./duration.js";
 
@@ -89,6 +90,9 @@ async function loadTaskFunction(target: TaskExecutionTargetIR, workspaceDir: str
 }
 
 async function importReusableModule(specifier: string, parentURL: string): Promise<Record<string, unknown>> {
+  registerOfficialAuthoringImports();
+  const officialURL = officialAuthoringImportURL(specifier);
+  if (officialURL) return await tsImport(officialURL, { parentURL }) as Record<string, unknown>;
   try {
     return await tsImport(specifier, { parentURL }) as Record<string, unknown>;
   } catch (error) {

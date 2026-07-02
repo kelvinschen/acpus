@@ -23,7 +23,7 @@ export function execFunction(options: ts.ObjectLiteralExpression): ts.FunctionLi
 export function taskFactoryLocalName(sourceFile: ts.SourceFile): string | undefined {
   for (const statement of sourceFile.statements) {
     if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
-    if (statement.moduleSpecifier.text !== "@acpus/core") continue;
+    if (!isCoreAuthoringSpecifier(statement.moduleSpecifier.text)) continue;
     const named = statement.importClause?.namedBindings;
     if (named && ts.isNamedImports(named)) {
       for (const element of named.elements) {
@@ -54,4 +54,8 @@ export function isConstVariableStatement(node: ts.VariableStatement): boolean {
 function propertyName(name: ts.PropertyName): string | undefined {
   if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text;
   return undefined;
+}
+
+function isCoreAuthoringSpecifier(specifier: string): boolean {
+  return specifier === "acpus/core" || specifier === "@acpus/core";
 }

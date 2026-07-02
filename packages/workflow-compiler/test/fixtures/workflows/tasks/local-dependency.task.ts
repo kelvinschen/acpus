@@ -1,4 +1,4 @@
-import { task, z } from "@acpus/core";
+import { task, z } from "acpus/core";
 import { slugifyPackageName } from "./slug.js";
 
 export const NormalizePackageInput = z.object({

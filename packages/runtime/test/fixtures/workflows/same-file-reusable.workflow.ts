@@ -1,4 +1,4 @@
-import { defineWorkflow, task, z } from "@acpus/core";
+import { defineWorkflow, task, z } from "acpus/core";
 import slash from "slash";
 
 export const normalizePath = task.define({

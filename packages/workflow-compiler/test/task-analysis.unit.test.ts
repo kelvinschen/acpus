@@ -27,7 +27,7 @@ async function analyze(workflowSource: string, files: Record<string, string> = {
   return analyzeWorkflowTasks(workflowFile, workflowSource);
 }
 
-const taskModule = `import { task, z } from "@acpus/core";
+const taskModule = `import { task, z } from "acpus/core";
 export default task.define({ inputSchema: z.object({}), exec: async () => ({ ok: true }) });
 `;
 
@@ -49,7 +49,7 @@ describe("task analysis", () => {
       `import { normalize } from "./tasks.js";
        declare const step: any;
        step("run").task({ run: { task: normalize, input: {} } });`,
-      { "tasks.ts": `import { task, z } from "@acpus/core";\nexport const normalize = task.define({ inputSchema: z.object({}), exec: async () => ({ ok: true }) });\n` },
+      { "tasks.ts": `import { task, z } from "acpus/core";\nexport const normalize = task.define({ inputSchema: z.object({}), exec: async () => ({ ok: true }) });\n` },
     );
 
     expectReusableAccepted(analysis, "./tasks.js", "normalize");
@@ -57,7 +57,7 @@ describe("task analysis", () => {
 
   it("accepts an exported top-level reusable task declared in the workflow module", async () => {
     const analysis = await analyze(
-      `import { task, z } from "@acpus/core";
+      `import { task, z } from "acpus/core";
        export const local = task.define({ inputSchema: z.object({}), exec: async () => ({ ok: true }) });
        declare const step: any;
        step("run").task({ run: { task: local, input: {} } });`,
@@ -68,7 +68,7 @@ describe("task analysis", () => {
 
   it("accepts a top-level reusable task exported through a named export list", async () => {
     const analysis = await analyze(
-      `import { task, z } from "@acpus/core";
+      `import { task, z } from "acpus/core";
        const local = task.define({ inputSchema: z.object({}), exec: async () => ({ ok: true }) });
        export { local };
        declare const step: any;
@@ -80,7 +80,7 @@ describe("task analysis", () => {
 
   it("rejects a non-exported reusable task defined as a workflow-local value (TB004)", async () => {
     const analysis = await analyze(
-      `import { task, z } from "@acpus/core";
+      `import { task, z } from "acpus/core";
        const local = task.define({ inputSchema: z.object({}), exec: async () => ({ ok: true }) });
        declare const step: any;
        step("run").task({ run: { task: local, input: {} } });`,
@@ -91,7 +91,7 @@ describe("task analysis", () => {
 
   it("rejects a nested reusable task defined inside workflow scope (TB004)", async () => {
     const analysis = await analyze(
-      `import { defineWorkflow, task, z } from "@acpus/core";
+      `import { defineWorkflow, task, z } from "acpus/core";
        export default defineWorkflow({ name: "nested_task" }).build(({ step }) => {
          const nested = task.define({ inputSchema: z.object({}), exec: async () => ({ ok: true }) });
          step("run").task({ run: { task: nested, input: {} } });
@@ -104,7 +104,7 @@ describe("task analysis", () => {
 
   it("rejects a nested task that shadows an exported top-level task", async () => {
     const analysis = await analyze(
-      `import { defineWorkflow, task, z } from "@acpus/core";
+      `import { defineWorkflow, task, z } from "acpus/core";
        export const normalize = task.define({ inputSchema: z.object({}), exec: async () => ({ ok: true }) });
        export default defineWorkflow({ name: "shadow_task" }).build(({ step }) => {
          const normalize = task.define({ inputSchema: z.object({}), exec: async () => ({ ok: false }) });
@@ -120,7 +120,7 @@ describe("task analysis", () => {
   it("rejects a nested task that shadows an imported task", async () => {
     const analysis = await analyze(
       `import imported from "./normalize.task.js";
-       import { defineWorkflow, task, z } from "@acpus/core";
+       import { defineWorkflow, task, z } from "acpus/core";
        export default defineWorkflow({ name: "shadow_import_task" }).build(({ step }) => {
          const imported = task.define({ inputSchema: z.object({}), exec: async () => ({ ok: false }) });
          step("run").task({ run: { task: imported, input: {} } });
@@ -146,7 +146,7 @@ describe("task analysis", () => {
 
   it("rejects mutable same-file task exports", async () => {
     const analysis = await analyze(
-      `import { task, z } from "@acpus/core";
+      `import { task, z } from "acpus/core";
        export let local = task.define({ inputSchema: z.object({}), exec: async () => ({ ok: true }) });
        declare const step: any;
        step("run").task({ run: { task: local, input: {} } });`,

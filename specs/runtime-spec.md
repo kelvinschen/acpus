@@ -88,6 +88,9 @@
 - The runtime MUST execute task nodes through the task run target stored in frozen IR.
 - For inline task targets, the runtime MUST construct a callable function from the embedded self-contained source without writing a run-local task source file.
 - For reusable module task targets, the runtime MUST resolve the recorded source-level module specifier from the workflow referrer in the current workspace/package environment, import the module with TypeScript support, verify the selected export is an Acpus task token, and invoke the token's `fn`.
+- For supported official authoring facade specifiers such as
+  `acpus/tasks/git`, reusable task loading MUST resolve from Acpus-owned
+  packages and MUST NOT require a workflow-local Acpus installation.
 - Reusable task module loading MUST support ESM JavaScript and TypeScript modules through the same live loader path.
 - TypeScript reusable task loading MUST be provided by an explicit runtime or supervisor loader boundary and MUST NOT rely on workspace root development dependencies being ambiently available.
 - Reusable task module loading MUST NOT add Acpus-owned cache-busting or dependency graph copying; normal Node/tsx module caching defines reuse within a runtime process.

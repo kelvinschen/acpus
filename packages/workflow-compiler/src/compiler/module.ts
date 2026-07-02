@@ -6,6 +6,7 @@ import { compileWorkflowDefinition, isWorkflowDefinition } from "@acpus/core/wor
 import { validateWorkflowIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
 import { analyzeWorkflowTasks, resolveTaskReferenceMetadata, type TaskReferenceMetadata } from "../task-analysis/index.js";
 import { err, ok, Result, ResultAsync, type Result as NeverthrowResult } from "neverthrow";
+import { registerOfficialAuthoringImports } from "../official-imports.js";
 
 export type CompileOptions = {
   sourcePath?: string;
@@ -41,7 +42,7 @@ export function tryCompileWorkflowModule(entry: string, options: CompileOptions 
     } satisfies CompileWorkflowModuleError),
   ).andThen(source =>
     ResultAsync.fromPromise(
-      import(pathToFileURL(absolute).href) as Promise<Record<string, unknown>>,
+      importWorkflowModule(absolute),
       cause => ({
         type: "module-import-failed",
         entry,
@@ -83,6 +84,11 @@ export function tryCompileWorkflowModule(entry: string, options: CompileOptions 
       });
     }),
   );
+}
+
+function importWorkflowModule(absolute: string): Promise<Record<string, unknown>> {
+  registerOfficialAuthoringImports();
+  return import(pathToFileURL(absolute).href) as Promise<Record<string, unknown>>;
 }
 
 function applyTaskReferenceMetadata(ir: WorkflowIR, metadata: Map<string, TaskReferenceMetadata>, referrerPath: string): void {

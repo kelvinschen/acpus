@@ -1,7 +1,7 @@
 import {
   defineWorkflow,
   z,
-} from "@acpus/core";
+} from "acpus/core";
 import {
   eq,
   coalesce,
@@ -9,7 +9,7 @@ import {
   not,
   template,
   where,
-} from "@acpus/expression";
+} from "acpus/expression";
 
 const Lane = z.object({
   id: z.string(),

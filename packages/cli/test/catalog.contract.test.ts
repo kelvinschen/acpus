@@ -61,7 +61,7 @@ async function workflowPackage(root: string, name: string): Promise<void> {
 
 function workflowSource(name: string): string {
   return [
-    'import { defineWorkflow } from "@acpus/core";',
+    'import { defineWorkflow } from "acpus/core";',
     "",
     "export default defineWorkflow({",
     `  name: ${JSON.stringify(name)},`,

@@ -15,6 +15,17 @@ export async function withTestWorkspace<T>(name: string, fn: (workspace: string)
   }
 }
 
+export async function withIsolatedTestWorkspace<T>(name: string, fn: (workspace: string) => Promise<T>): Promise<T> {
+  const root = join(repoRoot, ".tmp-tests");
+  await mkdir(root, { recursive: true });
+  const workspace = await mkdtemp(join(root, `${name}-`));
+  try {
+    return await fn(workspace);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+}
+
 async function linkWorkspaceCore(workspace: string): Promise<void> {
   await mkdir(join(workspace, "packages"), { recursive: true });
   await symlink(join(repoRoot, "packages", "core"), join(workspace, "packages", "core"), "dir");

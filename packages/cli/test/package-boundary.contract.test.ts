@@ -22,8 +22,19 @@ describe("acpus package boundaries", () => {
   });
 
   it("does not depend on agent executor directly", async () => {
-    const pkg = JSON.parse(await readFile(packageJsonPath, "utf8")) as { dependencies?: Record<string, string> };
+    const pkg = JSON.parse(await readFile(packageJsonPath, "utf8")) as { dependencies?: Record<string, string>; exports?: Record<string, unknown> };
     expect(pkg.dependencies).not.toHaveProperty("@acpus/agent-executor");
+  });
+
+  it("does not expose a mixed root authoring entrypoint", async () => {
+    const pkg = JSON.parse(await readFile(packageJsonPath, "utf8")) as { exports?: Record<string, unknown> };
+    expect(pkg.exports).toBeDefined();
+    expect(Object.prototype.hasOwnProperty.call(pkg.exports, ".")).toBe(false);
+    expect(Object.keys(pkg.exports ?? {}).sort()).toEqual([
+      "./core",
+      "./expression",
+      "./tasks/git",
+    ]);
   });
 });
 

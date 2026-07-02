@@ -13,6 +13,10 @@ stable CLI phases and exit codes.
 ### Package And Command Surface
 
 - The CLI package MUST be named `acpus` and MUST expose a binary named `acpus`.
+- The `acpus` package MUST expose authoring facade subpaths for `acpus/core`,
+  `acpus/expression`, and `acpus/tasks/git`.
+- The `acpus` package MUST NOT expose a root authoring entrypoint that mixes
+  workflow DSL, expression helpers, and task libraries.
 - The CLI command surface MUST be implemented with Commander.
 - The CLI MUST support `acpus workflows check <workflow-module>`.
 - The CLI MUST support `acpus workflows run <workflow-module>`.
@@ -85,6 +89,9 @@ stable CLI phases and exit codes.
 - CLI workflow preparation adapters MUST consume `@acpus/workflow-compiler`
   typed preparation results at the package boundary and map tagged failures to
   CLI errors.
+- The CLI package MUST carry official Acpus authoring dependencies so workflow
+  modules can import supported `acpus/*` facade subpaths without installing
+  Acpus packages in the workflow workspace.
 - Runtime admission and run-control behavior MUST be delegated to
   `@acpus/runtime`.
 - Run inspection commands MUST delegate to runtime read APIs.

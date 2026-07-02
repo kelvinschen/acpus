@@ -52,7 +52,7 @@ describe("workflow preflight preparation", () => {
     await withCompilerWorkspace("compiler-package-task", async cwd => {
       await writePackageTask(cwd);
       const workflow = join(cwd, "package-task.workflow.ts");
-      await writeFile(workflow, `import { defineWorkflow, z } from "@acpus/core";
+      await writeFile(workflow, `import { defineWorkflow, z } from "acpus/core";
 import { packageTask } from "fixture-task-package/tasks";
 
 export default defineWorkflow({
@@ -157,7 +157,7 @@ async function writePackageTask(cwd: string): Promise<void> {
       "./tasks": "./tasks.ts",
     },
   }, null, 2));
-  await writeFile(join(root, "tasks.ts"), `import { task, z } from "@acpus/core";
+  await writeFile(join(root, "tasks.ts"), `import { task, z } from "acpus/core";
 
 export const packageTask = task.define({
   inputSchema: z.object({ value: z.string() }),

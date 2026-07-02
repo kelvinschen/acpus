@@ -1,4 +1,4 @@
-import { defineWorkflow, z } from "@acpus/core";
+import { defineWorkflow, z } from "acpus/core";
 
 export default defineWorkflow({
   name: "cli-malformed",

@@ -14,6 +14,6 @@ function supervisorEntryArgs(cwd: string): string[] {
   const isSourceMode = fileURLToPath(import.meta.url).endsWith(".ts");
   const entry = fileURLToPath(new URL(`../supervisor-entry.${isSourceMode ? "ts" : "js"}`, import.meta.url));
   return isSourceMode
-    ? ["--conditions=development", "--import", "tsx", entry, cwd]
+    ? ["--conditions=development", "--import", import.meta.resolve("tsx"), entry, cwd]
     : [entry, cwd];
 }

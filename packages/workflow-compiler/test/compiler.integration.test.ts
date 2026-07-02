@@ -114,7 +114,7 @@ describe.concurrent("workflow module compiler", () => {
     try {
       await symlink(join(repoRoot, "node_modules"), join(cwd, "node_modules"), "dir");
       const workflow = join(cwd, "throws.workflow.ts");
-      await writeFile(workflow, `import { defineWorkflow } from "@acpus/core";
+      await writeFile(workflow, `import { defineWorkflow } from "acpus/core";
 
 export default defineWorkflow({ name: "throws" }).build(() => {
   throw new Error("boom");

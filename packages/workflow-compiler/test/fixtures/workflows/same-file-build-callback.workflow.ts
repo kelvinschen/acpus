@@ -1,4 +1,4 @@
-import { defineWorkflow, task, z } from "@acpus/core";
+import { defineWorkflow, task, z } from "acpus/core";
 
 export const stableTask = task.define({
   inputSchema: z.object({}),

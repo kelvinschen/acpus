@@ -38,8 +38,8 @@ Representative workflow compiler fixtures live under `test/fixtures/workflows/`;
 import {
   defineWorkflow,
   z,
-} from "@acpus/core";
-import { template, where } from "@acpus/expression";
+} from "acpus/core";
+import { template, where } from "acpus/expression";
 
 const ReviewOut = z.object({
   ready: z.boolean(),

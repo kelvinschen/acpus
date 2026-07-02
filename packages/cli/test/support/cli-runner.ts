@@ -10,12 +10,13 @@ export type ProcessResult = {
 
 export const repoRoot = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const sourceCli = fileURLToPath(new URL("../../src/cli.ts", import.meta.url));
+const tsxImport = import.meta.resolve("tsx");
 
 export function runSourceCli(cwd: string, args: string[], options: { env?: NodeJS.ProcessEnv } = {}): Promise<ProcessResult> {
   return runProcess(process.execPath, [
     "--conditions=development",
     "--import",
-    "tsx",
+    tsxImport,
     sourceCli,
     ...args,
   ], { cwd, ...(options.env ? { env: options.env } : {}) });

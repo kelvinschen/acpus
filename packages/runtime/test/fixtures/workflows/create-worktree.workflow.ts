@@ -1,5 +1,5 @@
-import { defineWorkflow, z } from "@acpus/core";
-import { createWorktree } from "@acpus/tasks/git";
+import { defineWorkflow, z } from "acpus/core";
+import { createWorktree } from "acpus/tasks/git";
 
 export default defineWorkflow({
   name: "runtime-create-worktree",

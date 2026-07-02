@@ -12,7 +12,7 @@ describe("workflow check pipeline", () => {
   it("converts TypeScript compiler diagnostics to DiagnosticIR", async () => {
     await withCheckWorkspace("workflow-ts-check", async cwd => {
       const result = await runCheck(cwd, `
-        import { defineWorkflow } from "@acpus/core";
+        import { defineWorkflow } from "acpus/core";
 
         const wrong: string = 1;
 
@@ -36,7 +36,7 @@ describe("workflow check pipeline", () => {
   it("reports implicit any from TypeScript semantic diagnostics", async () => {
     await withCheckWorkspace("workflow-implicit-any-check", async cwd => {
       const result = await runCheck(cwd, `
-        import { defineWorkflow } from "@acpus/core";
+        import { defineWorkflow } from "acpus/core";
 
         function id(value) {
           return value;
@@ -74,7 +74,7 @@ describe("workflow check pipeline", () => {
   it("aggregates TypeScript and Acpus authoring diagnostics", async () => {
     await withCheckWorkspace("workflow-mixed-check", async cwd => {
       const result = await runCheck(cwd, `
-        import { defineWorkflow, z } from "@acpus/core";
+        import { defineWorkflow, z } from "acpus/core";
 
         export default defineWorkflow({
           name: "mixed_check",
@@ -101,7 +101,7 @@ describe("workflow check pipeline", () => {
   it("does not flag compile-time ids or JavaScript arrays of node refs", async () => {
     await withCheckWorkspace("workflow-valid-lint-patterns", async cwd => {
       const result = await runCheck(cwd, `
-        import { defineWorkflow, z } from "@acpus/core";
+        import { defineWorkflow, z } from "acpus/core";
 
         const ReviewOut = z.object({ ok: z.boolean() });
         const focuses = ["security", "docs"] as const;
@@ -128,7 +128,7 @@ describe("workflow check pipeline", () => {
   it("ignores unrelated property calls that share step method names", async () => {
     await withCheckWorkspace("workflow-unrelated-methods-check", async cwd => {
       const result = await runCheck(cwd, `
-        import { defineWorkflow } from "@acpus/core";
+        import { defineWorkflow } from "acpus/core";
 
         export default defineWorkflow({ name: "unrelated_methods" }).build(() => {
           const client = {
@@ -152,7 +152,7 @@ describe("workflow check pipeline", () => {
   it("reports non-admissible inferred workflow output types before runtime", async () => {
     await withCheckWorkspace("workflow-output-admissibility-check", async cwd => {
       const result = await runCheck(cwd, `
-        import { defineWorkflow, task, z } from "@acpus/core";
+        import { defineWorkflow, task, z } from "acpus/core";
 
         const reusableEscape = task.define({
           inputSchema: z.object({}),
@@ -197,7 +197,7 @@ describe("workflow check pipeline", () => {
   it("checks imported reusable task output at the callsite", async () => {
     await withCheckWorkspace("workflow-imported-task-output-check", async cwd => {
       const result = await runCheck(cwd, `
-        import { defineWorkflow } from "@acpus/core";
+        import { defineWorkflow } from "acpus/core";
         import { badTask } from "./tasks";
 
         export default defineWorkflow({ name: "imported_task_output" }).build(({ step }) => {
@@ -206,7 +206,7 @@ describe("workflow check pipeline", () => {
         });
       `, {
         "tasks.ts": `
-          import { task, z } from "@acpus/core";
+          import { task, z } from "acpus/core";
           export const badTask = task.define({
             inputSchema: z.object({}),
             exec: async () => ({ when: new Date() }),
@@ -223,7 +223,7 @@ describe("workflow check pipeline", () => {
   it("allows typed hidden output producers inside task exec functions", async () => {
     await withCheckWorkspace("workflow-task-hidden-output-check", async cwd => {
       const result = await runCheck(cwd, `
-        import { defineWorkflow, task, z } from "@acpus/core";
+        import { defineWorkflow, task, z } from "acpus/core";
         import { hiddenTask } from "./tasks";
 
         type Output = { ok: boolean };
@@ -249,7 +249,7 @@ describe("workflow check pipeline", () => {
         });
       `, {
         "tasks.ts": `
-          import { task, z } from "@acpus/core";
+          import { task, z } from "acpus/core";
           type Output = { ok: boolean };
           function helper(): Output {
             return { ok: true };
@@ -268,7 +268,7 @@ describe("workflow check pipeline", () => {
   it("allows explicit opaque JsonValue and JsonObject output types", async () => {
     await withCheckWorkspace("workflow-json-output-check", async cwd => {
       const result = await runCheck(cwd, `
-        import { defineWorkflow, type JsonObject, type JsonValue } from "@acpus/core";
+        import { defineWorkflow, type JsonObject, type JsonValue } from "acpus/core";
 
         export default defineWorkflow({ name: "json_outputs" }).build(() => {
           const value = JSON.parse("{}") as JsonValue;
@@ -284,7 +284,7 @@ describe("workflow check pipeline", () => {
   it("requires statically visible output producer shapes", async () => {
     await withCheckWorkspace("workflow-hidden-output-check", async cwd => {
       const result = await runCheck(cwd, `
-        import { defineWorkflow } from "@acpus/core";
+        import { defineWorkflow } from "acpus/core";
 
         export default defineWorkflow({ name: "hidden_outputs" }).build(({ step }) => {
           const fanoutSpec = { over: ["a"], do: () => ({ ok: true }) };
@@ -329,7 +329,7 @@ describe("workflow check pipeline", () => {
   it("reports root output convergence, branch convergence, and loop consistency gaps", async () => {
     await withCheckWorkspace("workflow-output-convergence-check", async cwd => {
       const result = await runCheck(cwd, `
-        import { defineWorkflow, type JsonValue } from "@acpus/core";
+        import { defineWorkflow, type JsonValue } from "acpus/core";
 
         export default defineWorkflow({ name: "convergence" }).build(({ input, step }) => {
           step("branch_keys").if({

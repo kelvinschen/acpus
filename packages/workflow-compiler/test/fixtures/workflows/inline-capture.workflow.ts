@@ -1,4 +1,4 @@
-import { defineWorkflow } from "@acpus/core";
+import { defineWorkflow } from "acpus/core";
 
 const PREFIX = "outer-";
 
