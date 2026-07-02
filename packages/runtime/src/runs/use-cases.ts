@@ -15,7 +15,6 @@ import {
   type PendingControlCommand,
   type PendingRunControlCommand,
   type PreparedRunWorkflow,
-  type ReplayResult,
   type RuntimeDiagnostics,
   type SupervisorDiagnostics,
   type RunDetails,
@@ -161,16 +160,6 @@ export async function getRunVisualizationOverlay(cwd: string, runId: string): Pr
     const run = store.getRun(runId);
     if (!frozen || !run) return undefined;
     return createWorkflowVisualizationOverlay(frozen.ir, run.dynamic, { runId, status: run.status });
-  } finally {
-    store.close();
-  }
-}
-
-export async function replayRun(cwd: string, runId: string): Promise<ReplayResult | undefined> {
-  const store = await openExistingRuntimeStore(cwd);
-  if (!store) return undefined;
-  try {
-    return store.replayRun(runId);
   } finally {
     store.close();
   }

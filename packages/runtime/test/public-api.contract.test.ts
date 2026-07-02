@@ -20,7 +20,6 @@ describe("@acpus/runtime public API", () => {
       "normalizeWorkflowInput",
       "queueSupervisorShutdown",
       "releaseWorkflowRunOwner",
-      "replayRun",
       "signalRun",
       "startSupervisorLoop",
       "tryAdmitWorkflowRun",

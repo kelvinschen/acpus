@@ -10,7 +10,6 @@ import type {
   ForkPreparedWorkflow,
   PauseCommandPayload,
   PreparedRunWorkflow,
-  ReplayResult,
   RunDynamicAttempt,
   RunDynamicDetails,
   RunDynamicFrame,
@@ -45,7 +44,7 @@ import type {
   WorkflowVisualizationNode,
   WorkflowVisualizationOverlay,
 } from "@acpus/runtime";
-import { admitPreparedWorkflowRun, admitWorkflowRun, advanceWorkflowRun, applyRunControl, applySignalRunControl, createWorkflowVisualizationOverlay, getRun, getRuntimeHealth, getRunVisualizationOverlay, listRuns, mutateRun, normalizeForkInput, normalizeSignalPayload, normalizeWorkflowInput, queueSupervisorShutdown, releaseWorkflowRunOwner, replayRun, signalRun, startSupervisorLoop, tryAdvanceRun, tryAdvanceRuntimeRun, tryAdmitWorkflowRun, tryMutateRun, trySignalRun, validateAgentOverrides } from "@acpus/runtime";
+import { admitPreparedWorkflowRun, admitWorkflowRun, advanceWorkflowRun, applyRunControl, applySignalRunControl, createWorkflowVisualizationOverlay, getRun, getRuntimeHealth, getRunVisualizationOverlay, listRuns, mutateRun, normalizeForkInput, normalizeSignalPayload, normalizeWorkflowInput, queueSupervisorShutdown, releaseWorkflowRunOwner, signalRun, startSupervisorLoop, tryAdvanceRun, tryAdvanceRuntimeRun, tryAdmitWorkflowRun, tryMutateRun, trySignalRun, validateAgentOverrides } from "@acpus/runtime";
 import type { WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import type { Result, ResultAsync } from "neverthrow";
@@ -58,7 +57,6 @@ test("@acpus/runtime public types describe use-case level runtime APIs", () => {
   expectTypeOf(getRun).toEqualTypeOf<(cwd: string, runId: string) => Promise<RunDetails | undefined>>();
   expectTypeOf(getRuntimeHealth).toEqualTypeOf<(cwd: string) => Promise<RuntimeHealthReport>>();
   expectTypeOf(getRunVisualizationOverlay).toEqualTypeOf<(cwd: string, runId: string) => Promise<WorkflowVisualizationOverlay | undefined>>();
-  expectTypeOf(replayRun).toEqualTypeOf<(cwd: string, runId: string) => Promise<ReplayResult | undefined>>();
   expectTypeOf(releaseWorkflowRunOwner).toEqualTypeOf<(cwd: string, runId: string, ownerId: string) => Promise<boolean>>();
   expectTypeOf(queueSupervisorShutdown).toEqualTypeOf<(cwd: string) => Promise<RuntimeCommandRecord | undefined>>();
   expectTypeOf(normalizeForkInput).toEqualTypeOf<(cwd: string, runId: string, input: JsonValue | undefined, prepared?: PreparedRunWorkflow) => Promise<JsonValue | undefined>>();

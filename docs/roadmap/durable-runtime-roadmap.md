@@ -60,7 +60,7 @@
 
 ### 总体判断
 
-当前实现是一条 TypeScript-first durable runtime 主线，不是 legacy YAML runtime 的兼容迁移。它已经覆盖 durable admission、SQLite runtime store、冻结 IR/input/lock、scheduler、task/agent/signal 执行、durable controls、fork/replay 和 detached supervisor。
+当前实现是一条 TypeScript-first durable runtime 主线，不是 legacy YAML runtime 的兼容迁移。它已经覆盖 durable admission、SQLite runtime store、冻结 IR/input/lock、scheduler、task/agent/signal 执行、durable controls、fork 和 detached supervisor。
 
 明确不按 legacy 回填的面：
 
@@ -154,11 +154,11 @@
 - `failRun` 不强制 skip 剩余 pending nodes，支持 retry 恢复。
 - `retryRun` 重置所有 nodes 为 pending；`retryNode` 仅重置指定 failed node。
 - `persistCompletedNodes` 在 await/block/error 边界前 checkpoint 已完成 nodes。
-- Replay projection 完整性校验：`verifyReplayProjection` 交叉验证 terminal events 与 run/node 状态。
+- Scheduler reducer/store 测试覆盖 event/projection 正确性；不保留独立的 per-run verifier surface。
 
 标注：
 - 决策：确认。
-- 备注：`verifyReplayProjection` 是新增的 replay 校验能力，可在 spec 中明确。
+- 备注：per-run verifier 已由 cleanup goal 删除。
 
 #### 双 Scheduler 架构
 
@@ -355,9 +355,9 @@
 
 #### Artifact hardening
 
-当前实现：task timeout 后拒绝 late artifact write；fork/replay 校验 artifact bytes、digest、size、path containment、symlink escape。
+当前实现：task timeout 后拒绝 late artifact write；fork 校验 artifact bytes、digest、size、path containment、symlink escape。
 
-证据：`packages/runtime/src/execution/task-executor.ts`, `packages/runtime/src/store/store.ts` (`verifyArtifactRegistry`, `readContainedFile`, `forkRun`, `verifyCopiedArtifacts`)
+证据：`packages/runtime/src/execution/task-executor.ts`, `packages/runtime/src/store/store.ts` (`readContainedFile`, `forkRun`, `verifyCopiedArtifacts`)
 
 审计备注：这是当前比 legacy 更强的持久化完整性能力。
 
@@ -365,7 +365,7 @@
 - Fork 使用 staging dir (`.staging-<forkId>`) + atomic rename，失败回滚。
 - Fork 时 `artifact://` URI rewriting（inherited outputs 中 URI 指向新 fork run id）。
 - `readContainedFile` 强制 path containment（realpath 检查、symlink 拒绝、`..` escape 拒绝）。
-- Replay projection verification（`verifyReplayProjection`）额外校验 terminal event 与 node/run 状态一致性。
+- Scheduler event/projection consistency 由正常 reducer/store 写路径和对应测试覆盖。
 
 标注：
 - 决策：确认。
@@ -429,7 +429,7 @@
 
 #### Durable controls
 
-当前实现：已实现 `runs list/show/status/pause/resume/retry/retry --node/fork/signal/replay/supervise --background/shutdown`。
+当前实现：已实现 `runs list/show/status/pause/resume/retry/retry --node/fork/signal/supervise --background/shutdown`。
 
 证据：`packages/cli/src/commands/runs.ts`, `packages/runtime/src/control/apply-command.ts`, `packages/runtime/src/runs/use-cases.ts`, `packages/runtime/src/store/store.ts`
 
@@ -457,21 +457,6 @@
 - Completed source run 的 plain fork 直接创建为 completed 状态（含 rewritten outputs）。
 - Staging dir + atomic rename + verifyCopiedArtifacts + verifyFrozenRunFiles。
 - Artifact URI rewriting 在 node outputs 和 root output 中递归应用。
-
-标注：
-- 决策：确认。
-
-#### Replay
-
-当前实现：read-only replay 会重算 frozen root output、校验 artifact registry rows、校验 terminal event/projection consistency。
-
-证据：`packages/runtime/src/store/store.ts` (`replayRun`, `verifyArtifactRegistry`, `verifyReplayProjection`), `packages/cli/src/output.ts`
-
-审计备注：比 legacy topology replay 更偏 durable storage integrity。
-
-**审计新增：**
-- 结构化返回：`expected`/`actual` root output，`artifacts: { checked, missing, invalid, mismatched }`（mismatch 含 expected/actual digest+size），`projection.issues`。
-- 未完成 run 的 replay 返回 `ok: false`，仅做 artifact/projection 校验。
 
 标注：
 - 决策：确认。
@@ -546,14 +531,14 @@ legacy 对比：legacy signal 依赖 in-flight resolver，否则会失败/冲突
 
 legacy 对比：legacy artifact store 主要是文件 URI/path。
 
-备注：支撑 replay/fork integrity（含 URI rewriting）。
+备注：支撑 fork artifact reachability（含 URI rewriting）。
 
 标注：
 - 决策：确认。
 
-#### Hardened fork/replay
+#### Hardened fork
 
-当前实现：fork/replay 校验 artifact bytes、digest、size、path containment（realpath+symlink 检查）和 frozen run files。Fork 使用 staging+atomic rename。Replay 额外做 projection consistency 校验。
+当前实现：fork 校验 artifact bytes、digest、size、path containment（realpath+symlink 检查）和 frozen run files，并使用 staging+atomic rename。
 
 legacy 对比：legacy fork 主要依赖 checkpoint/hash 和文件复制。
 
@@ -874,7 +859,7 @@ legacy / 期望能力：legacy ArtifactStore 支持 read/list/parse/resolve。
 
 legacy / 期望能力：legacy `ArtifactStore.write` 使用 `.tmp` 后 rename。
 
-建议处理：replay 能检测部分问题，但 hard crash 仍可能留下半写文件。
+建议处理：hard crash 仍可能留下半写文件，单 artifact 级别需要 temp+rename。
 
 标注：
 - 决策：需要实现（P1，与 read/list 同批）。
@@ -1266,7 +1251,7 @@ legacy / 期望能力：legacy 有 bounded node storage key 和 `node-index.json
 
 为什么做：`store.ts` ~3344 行，职责多。
 
-主要交付件：拆 admission、controls、fork、replay、artifacts、lease、migrations internal modules。
+主要交付件：拆 admission、controls、fork、artifacts、lease、migrations internal modules。
 
 依赖/风险：仅在行为稳定后做，避免重构掩盖 bug。
 

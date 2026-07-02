@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
 import { access, cp, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { AgentDefinitionIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
@@ -11,7 +10,7 @@ import { applySchedulerEvents, cancellationEventsForFrame, cancellationEventsFor
 import { ancestorGroupMembersForFrame, ancestorGroupMembersForNode } from "../scheduler/membership.js";
 import type { SchedulerEvent } from "../scheduler/events.js";
 import { SchedulerStoreException, schedulerStoreResult, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStorePort, type AttemptStartInput, type AttemptCommitInput, type SignalConsumeInput, type SchedulerPauseInput, type SchedulerResumeInput, type SchedulerRetryInput, type SchedulerRunRetryInput, type SchedulerStoreError, type SchedulerStoreResult } from "../scheduler/store-port.js";
-import type { InstancePath, SchedulerProjection } from "../scheduler/types.js";
+import type { InstancePath } from "../scheduler/types.js";
 
 export type RunStatus = "pending" | "running" | "paused" | "awaiting" | "failed" | "completed" | "canceled";
 
@@ -39,7 +38,6 @@ export type RuntimeStore = {
   getSignalPayloads(runId: string): Record<string, unknown>;
   getCompletedNodeOutputs(runId: string): Record<string, unknown>;
   getFrozenRun(runId: string): FrozenRun | undefined;
-  replayRun(runId: string): ReplayResult;
   claimSupervisor(input: ClaimSupervisorInput): SupervisorLease;
   heartbeatSupervisor(input: HeartbeatSupervisorInput): boolean;
   setSupervisorIdleState(input: SupervisorIdleStateInput): boolean;
@@ -324,22 +322,6 @@ export type SupervisorLease = {
   generation: number;
   pid: number;
   heartbeatAt: string;
-};
-
-export type ReplayResult = {
-  ok: boolean;
-  runId: string;
-  expected?: JsonValue;
-  actual?: JsonValue;
-  artifacts?: {
-    checked: number;
-    missing: Array<{ id: string; relativePath: string }>;
-    invalid: Array<{ id: string; relativePath: string; message: string }>;
-    mismatched: Array<{ id: string; relativePath: string; expectedDigest: string; actualDigest?: string; expectedSize: number; actualSize?: number }>;
-  };
-  projection?: {
-    issues: string[];
-  };
 };
 
 export type RunControlCommandType = "pause" | "resume" | "retry" | "fork" | "signal" | "cancel";
@@ -837,29 +819,6 @@ class SqliteRuntimeStore implements RuntimeStore {
         workflowName: String(row.name),
         workspaceDir: resolve(this.cwd),
       },
-    };
-  }
-
-  replayRun(runId: string): ReplayResult {
-    const frozen = this.getFrozenRun(runId);
-    if (!frozen) throw new Error(`Run '${runId}' was not found.`);
-    const artifacts = this.verifyArtifactRegistry(runId);
-    const projection = this.verifyReplayProjection(runId);
-    const row = this.db.prepare("SELECT output_json FROM run_inputs WHERE run_id = ?").get(runId) as { output_json: string | null } | undefined;
-    if (!row?.output_json) return { ok: false, runId, artifacts, projection };
-    const expected = JSON.parse(row.output_json) as JsonValue;
-    const actual = schedulerEvents(this.db, runId).length === 0
-      ? expected
-      : evaluateRecordedOutputs(frozen.ir.outputs, this.getCompletedNodeOutputs(runId), frozen.input, frozen.meta);
-    const outputOk = JSON.stringify(sortJson(actual)) === JSON.stringify(sortJson(expected));
-    const artifactsOk = artifacts.missing.length === 0 && artifacts.invalid.length === 0 && artifacts.mismatched.length === 0;
-    return {
-      ok: outputOk && artifactsOk && projection.issues.length === 0,
-      runId,
-      expected,
-      actual,
-      artifacts,
-      projection,
     };
   }
 
@@ -1380,165 +1339,6 @@ class SqliteRuntimeStore implements RuntimeStore {
     }
   }
 
-  private verifyArtifactRegistry(runId: string): NonNullable<ReplayResult["artifacts"]> {
-    const runDir = this.getRunDir(runId);
-    const rows = this.db.prepare(`
-      SELECT id, digest, size, relative_path
-      FROM artifacts
-      WHERE run_id = ?
-      ORDER BY id
-    `).all(runId) as Array<{ id: unknown; digest: unknown; size: unknown; relative_path: unknown }>;
-    const missing: NonNullable<ReplayResult["artifacts"]>["missing"] = [];
-    const invalid: NonNullable<ReplayResult["artifacts"]>["invalid"] = [];
-    const mismatched: NonNullable<ReplayResult["artifacts"]>["mismatched"] = [];
-    if (!runDir) {
-      for (const row of rows) missing.push({ id: String(row.id), relativePath: String(row.relative_path) });
-      return { checked: rows.length, missing, invalid, mismatched };
-    }
-    const absoluteRunDir = join(this.cwd, runDir);
-    for (const row of rows) {
-      const id = String(row.id);
-      const relativePath = String(row.relative_path);
-      const expectedDigest = String(row.digest);
-      const expectedSize = Number(row.size);
-      try {
-        const bytes = readFileSyncContained(absoluteRunDir, relativePath);
-        const actualDigest = digest(bytes);
-        if (bytes.byteLength !== expectedSize || actualDigest !== expectedDigest) {
-          mismatched.push({
-            id,
-            relativePath,
-            expectedDigest,
-            actualDigest,
-            expectedSize,
-            actualSize: bytes.byteLength,
-          });
-        }
-      } catch (error) {
-        if (error instanceof PathEscapeError) {
-          invalid.push({ id, relativePath, message: error.message });
-        } else {
-          missing.push({ id, relativePath });
-        }
-      }
-    }
-    return { checked: rows.length, missing, invalid, mismatched };
-  }
-
-  private verifyReplayProjection(runId: string): NonNullable<ReplayResult["projection"]> {
-    const issues: string[] = [];
-    const run = this.getRunRecord(runId);
-    if (!run) return { issues: [`Run '${runId}' was not found.`] };
-    const terminalEvents = this.db.prepare(`
-      SELECT type, payload_json
-      FROM run_events
-      WHERE run_id = ? AND type IN ('run.completed', 'run.failed')
-      ORDER BY sequence
-    `).all(runId) as Array<{ type: string; payload_json: string }>;
-    const completed = terminalEvents.filter(event => event.type === "run.completed");
-    const failed = terminalEvents.filter(event => event.type === "run.failed");
-    const schedulerEventRows = schedulerEvents(this.db, runId);
-    const hasRunRetry = schedulerEventRows.some(event => event.type === "control.run_retry_requested");
-    const hasTargetedRetry = schedulerEventRows.some(event => event.type === "instance.retry_requested" || event.type === "frame.retry_requested");
-    const hasRetry = hasRunRetry || hasTargetedRetry;
-    const rebuilt = rebuildTerminalProjection(terminalEvents);
-    if (rebuilt.status && rebuilt.status !== run.status && !(hasTargetedRetry && (run.status === "pending" || run.status === "awaiting" || run.status === "paused"))) {
-      issues.push(`Run '${runId}' status does not match terminal event stream.`);
-    }
-    if (rebuilt.output !== undefined) {
-      const row = this.db.prepare("SELECT output_json FROM run_inputs WHERE run_id = ?").get(runId) as { output_json: string | null } | undefined;
-      const persistedOutput = row?.output_json ? safeParseJson(row.output_json) : undefined;
-      if (!persistedOutput?.ok || JSON.stringify(sortJson(persistedOutput.value)) !== JSON.stringify(sortJson(rebuilt.output))) {
-        issues.push(`Run '${runId}' output projection does not match terminal event stream.`);
-      }
-    }
-    if (!hasRetry && completed.length > 0 && failed.length > 0) issues.push(`Run '${runId}' has conflicting terminal events.`);
-    if (run.status === "completed") {
-      if (hasRetry) {
-        if (completed.length < 1) issues.push(`Completed run '${runId}' must have a run.completed event.`);
-      } else {
-        if (completed.length !== 1) issues.push(`Completed run '${runId}' must have exactly one run.completed event.`);
-        if (failed.length > 0) issues.push(`Completed run '${runId}' must not have run.failed events.`);
-      }
-      const row = this.db.prepare("SELECT output_json FROM run_inputs WHERE run_id = ?").get(runId) as { output_json: string | null } | undefined;
-      if (!row?.output_json) issues.push(`Completed run '${runId}' has no persisted output.`);
-      const completedEvent = completed.at(-1);
-      if (completedEvent && row?.output_json) {
-        const eventPayload = safeParseJson(completedEvent.payload_json);
-        const persistedOutput = safeParseJson(row.output_json);
-        if (!eventPayload.ok) issues.push(`Completed run '${runId}' has invalid run.completed payload JSON.`);
-        if (!persistedOutput.ok) issues.push(`Completed run '${runId}' has invalid persisted output JSON.`);
-        if (eventPayload.ok && persistedOutput.ok && JSON.stringify(sortJson((eventPayload.value as { output?: JsonValue }).output)) !== JSON.stringify(sortJson(persistedOutput.value))) {
-          issues.push(`Completed run '${runId}' output does not match run.completed event.`);
-        }
-      }
-    }
-    if (run.status === "failed") {
-      if (hasRetry) {
-        if (failed.length < 1) issues.push(`Failed run '${runId}' must have a run.failed event.`);
-      } else {
-        if (failed.length !== 1) issues.push(`Failed run '${runId}' must have exactly one run.failed event.`);
-        if (completed.length > 0) issues.push(`Failed run '${runId}' must not have run.completed events.`);
-      }
-      const failedEvent = failed.at(-1);
-      if (failedEvent) {
-        const eventPayload = safeParseJson(failedEvent.payload_json);
-        if (!eventPayload.ok) issues.push(`Failed run '${runId}' has invalid run.failed payload JSON.`);
-        if (eventPayload.ok) {
-          const nodeKey = (eventPayload.value as { nodeKey?: unknown }).nodeKey;
-          if (typeof nodeKey === "string") {
-            const node = this.db.prepare("SELECT status, error_json FROM node_states WHERE run_id = ? AND node_key = ?").get(runId, nodeKey) as { status: string; error_json: string | null } | undefined;
-            if (!node || node.status !== "failed") issues.push(`Failed run '${runId}' event node '${nodeKey}' does not match failed node projection.`);
-            if (node?.error_json) {
-              const nodeError = safeParseJson(node.error_json);
-              if (!nodeError.ok) issues.push(`Failed run '${runId}' has invalid node error JSON.`);
-              if (nodeError.ok && JSON.stringify(sortJson(nodeError.value)) !== JSON.stringify(sortJson(eventPayload.value))) {
-                issues.push(`Failed run '${runId}' error projection does not match run.failed event.`);
-              }
-            }
-          }
-        }
-      }
-    }
-    if ((run.status === "pending" || run.status === "awaiting" || run.status === "paused") && terminalEvents.length > 0 && !hasRetry) {
-      issues.push(`Non-terminal run '${runId}' has terminal events.`);
-    }
-    issues.push(...this.verifySchedulerReplayProjection(runId, run));
-    return { issues };
-  }
-
-  private verifySchedulerReplayProjection(runId: string, run: RunRecord): string[] {
-    const replayEvents = schedulerEventsForReplay(this.db, runId);
-    const events = replayEvents.events;
-    if (events.length === 0) {
-      return [
-        ...replayEvents.issues,
-        ...compareSchedulerProjectionTables(this.db, runId, createSchedulerProjection(runId)),
-      ];
-    }
-    let projection: SchedulerProjection;
-    try {
-      projection = applySchedulerEvents(createSchedulerProjection(runId), events);
-    } catch (error) {
-      return [`Scheduler event stream for run '${runId}' is not replayable: ${error instanceof Error ? error.message : String(error)}`];
-    }
-    const issues = [...replayEvents.issues];
-    const expectedPublicStatus = publicStatusFromSchedulerProjection(projection);
-    if (run.status !== expectedPublicStatus) {
-      issues.push(`Run '${runId}' public status does not match scheduler event stream.`);
-    }
-    if (projection.run.status === "completed") {
-      const expectedOutput = projection.frames.root?.result ?? {};
-      const row = this.db.prepare("SELECT output_json FROM run_inputs WHERE run_id = ?").get(runId) as { output_json: string | null } | undefined;
-      const persistedOutput = row?.output_json ? safeParseJson(row.output_json) : undefined;
-      if (!persistedOutput?.ok || !sameStableJson(persistedOutput.value, expectedOutput)) {
-        issues.push(`Run '${runId}' public output does not match scheduler event stream.`);
-      }
-    }
-    issues.push(...compareSchedulerProjectionTables(this.db, runId, projection));
-    return issues;
-  }
-
   listRuns(): RunRecord[] {
     return this.db.prepare(`
       SELECT id, name, status, workflow_entry, ir_digest, source_graph_digest, created_at, updated_at
@@ -1773,8 +1573,8 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
 
   appendSchedulerEvents(commit: SchedulerCommit): SchedulerSnapshot {
     if (commit.events.length === 0) return this.loadRunSnapshot(commit.runId);
-    const replay = this.replayAppendIdempotency(commit);
-    if (replay) return replay;
+    const duplicate = this.duplicateAppendIdempotency(commit);
+    if (duplicate) return duplicate;
     const now = new Date().toISOString();
     const commitDigest = schedulerCommitDigest(commit.events);
     this.db.exec("BEGIN IMMEDIATE");
@@ -2000,8 +1800,8 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
   }
 
   pauseRun(input: SchedulerPauseInput): SchedulerSnapshot {
-    const replay = this.replayIntentIdempotency(input.runId, input.idempotencyKey);
-    if (replay) return replay;
+    const duplicate = this.duplicateIntentIdempotency(input.runId, input.idempotencyKey);
+    if (duplicate) return duplicate;
     const snapshot = this.loadRunSnapshot(input.runId);
     if (snapshot.projection.run.status === "paused") return snapshot;
     const events: SchedulerEvent[] = [
@@ -2048,8 +1848,8 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
   }
 
   resumeRun(input: SchedulerResumeInput): SchedulerSnapshot {
-    const replay = this.replayIntentIdempotency(input.runId, input.idempotencyKey);
-    if (replay) return replay;
+    const duplicate = this.duplicateIntentIdempotency(input.runId, input.idempotencyKey);
+    if (duplicate) return duplicate;
     const snapshot = this.loadRunSnapshot(input.runId);
     if (snapshot.projection.run.status !== "paused") {
       throwSchedulerStoreError({ type: "invalid-control-state", runId: input.runId, command: "resume", status: snapshot.projection.run.status, message: `Cannot resume run from ${snapshot.projection.run.status}.` });
@@ -2068,8 +1868,8 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
   }
 
   retryRun(input: SchedulerRunRetryInput): SchedulerSnapshot {
-    const replay = this.replayIntentIdempotency(input.runId, input.idempotencyKey);
-    if (replay) return replay;
+    const duplicate = this.duplicateIntentIdempotency(input.runId, input.idempotencyKey);
+    if (duplicate) return duplicate;
     const snapshot = this.loadRunSnapshot(input.runId);
     if (snapshot.projection.run.status !== "failed") {
       throwSchedulerStoreError({ type: "invalid-retry-target", runId: input.runId, status: snapshot.projection.run.status, message: `Cannot retry run from ${snapshot.projection.run.status}.` });
@@ -2089,8 +1889,8 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
 
   retry(input: SchedulerRetryInput): SchedulerSnapshot {
     const idempotencyKey = input.idempotencyKey;
-    const replay = this.replayIntentIdempotency(input.runId, idempotencyKey);
-    if (replay) return replay;
+    const duplicate = this.duplicateIntentIdempotency(input.runId, idempotencyKey);
+    if (duplicate) return duplicate;
     const snapshot = this.loadRunSnapshot(input.runId);
     const instance = snapshot.projection.instances[input.targetKey];
     const frame = snapshot.projection.frames[input.targetKey];
@@ -2166,8 +1966,8 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
   }
 
   cancel(input: SchedulerCancelInput): SchedulerSnapshot {
-    const replay = this.replayIntentIdempotency(input.runId, input.idempotencyKey);
-    if (replay) return replay;
+    const duplicate = this.duplicateIntentIdempotency(input.runId, input.idempotencyKey);
+    if (duplicate) return duplicate;
     const snapshot = this.loadRunSnapshot(input.runId);
     const targetKey = input.targetKey ?? "root";
     const events = targetKey === "root" && !snapshot.projection.frames.root && snapshot.projection.run.status === "pending"
@@ -2266,11 +2066,10 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
   private eventByIdempotencyKey(idempotencyKey: string): { run_id: string; type: string; payload: Record<string, unknown> } | undefined {
     const row = this.db.prepare("SELECT run_id, type, payload_json FROM run_events WHERE idempotency_key = ?").get(idempotencyKey) as { run_id: string; type: string; payload_json: string } | undefined;
     if (!row) return undefined;
-    const payload = decodeSchedulerPayload(row.payload_json);
-    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    if (!isSchedulerEventType(row.type)) {
       throwSchedulerStoreError({ type: "idempotency-conflict", idempotencyKey, runId: row.run_id, message: `Scheduler idempotency key '${idempotencyKey}' conflicts with non-scheduler event.` });
     }
-    return { run_id: row.run_id, type: row.type, payload };
+    return { run_id: row.run_id, type: row.type, payload: decodeSchedulerPayload(row.payload_json, row.type) };
   }
 
   private groupMemberStartedEventsForNode(runId: string, nodeKey: string): Array<Extract<SchedulerEvent, { type: "group.member_started" }>> {
@@ -2291,7 +2090,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     return { type: "group.member_failed", payload: { memberKey: member.memberKey, error: { reason: result.reason }, terminalReason: result.status === "timed_out" ? "timed_out" : result.reason } };
   }
 
-  private replayAppendIdempotency(commit: SchedulerCommit): SchedulerSnapshot | undefined {
+  private duplicateAppendIdempotency(commit: SchedulerCommit): SchedulerSnapshot | undefined {
     const row = this.db.prepare(`
       SELECT event_count, event_digest
       FROM scheduler_commits
@@ -2304,7 +2103,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     return this.loadRunSnapshot(commit.runId);
   }
 
-  private replayIntentIdempotency(runId: string, idempotencyKey: string): SchedulerSnapshot | undefined {
+  private duplicateIntentIdempotency(runId: string, idempotencyKey: string): SchedulerSnapshot | undefined {
     const row = this.db.prepare(`
       SELECT run_id
       FROM scheduler_commits
@@ -2559,266 +2358,13 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
 function schedulerEvents(db: DatabaseSync, runId: string): SchedulerEvent[] {
   const rows = db.prepare("SELECT type, payload_json FROM run_events WHERE run_id = ? ORDER BY sequence").all(runId) as Array<{ type: string; payload_json: string }>;
   return rows.flatMap(row => {
-    const payload = decodeSchedulerPayload(row.payload_json);
-    return payload && isSchedulerEventType(row.type) ? [{ type: row.type, payload } as SchedulerEvent] : [];
+    if (!isSchedulerEventType(row.type)) return [];
+    return [{ type: row.type, payload: decodeSchedulerPayload(row.payload_json, row.type) } as SchedulerEvent];
   });
-}
-
-function schedulerEventsForReplay(db: DatabaseSync, runId: string): { events: SchedulerEvent[]; issues: string[] } {
-  const rows = db.prepare("SELECT sequence, type, payload_json FROM run_events WHERE run_id = ? ORDER BY sequence").all(runId) as Array<{ sequence: number; type: string; payload_json: string }>;
-  const events: SchedulerEvent[] = [];
-  const issues: string[] = [];
-  for (const row of rows) {
-    const decoded = decodeSchedulerPayloadForReplay(row.payload_json);
-    if (decoded.status === "legacy") continue;
-    if (decoded.status === "invalid") {
-      issues.push(`Scheduler event '${row.type}' at sequence ${row.sequence} has an invalid scheduler envelope.`);
-      continue;
-    }
-    if (!isSchedulerEventType(row.type)) {
-      issues.push(`Scheduler event '${row.type}' at sequence ${row.sequence} has an unknown scheduler event type.`);
-      continue;
-    }
-    if (decoded.status !== "event") continue;
-    events.push({ type: row.type, payload: decoded.payload } as SchedulerEvent);
-  }
-  return { events, issues };
-}
-
-function decodeSchedulerPayloadForReplay(payloadJson: string): { status: "event"; payload: Record<string, unknown> } | { status: "legacy" | "invalid" } {
-  let envelope: unknown;
-  try {
-    envelope = JSON.parse(payloadJson) as unknown;
-  } catch {
-    return { status: "invalid" };
-  }
-  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) return { status: "legacy" };
-  if (!("schedulerEventVersion" in envelope)) return { status: "legacy" };
-  const payload = (envelope as { payload?: unknown }).payload;
-  if ((envelope as { schedulerEventVersion?: unknown }).schedulerEventVersion !== 1 || !payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return { status: "invalid" };
-  }
-  return { status: "event", payload: payload as Record<string, unknown> };
-}
-
-function publicStatusFromSchedulerProjection(projection: SchedulerProjection): RunStatus {
-  if (projection.run.status === "completed" || projection.run.status === "failed" || projection.run.status === "paused" || projection.run.status === "canceled") return projection.run.status;
-  const awaiting = Object.values(projection.instances).some(instance => instance.status === "awaiting")
-    || Object.values(projection.signalWaits).some(wait => wait.status === "awaiting");
-  return awaiting ? "awaiting" : "pending";
 }
 
 function rootTerminalEventCount(events: readonly SchedulerEvent[], type: "frame.completed" | "frame.failed" | "frame.cancelled"): number {
   return events.filter(event => event.type === type && event.payload.frameKey === "root").length;
-}
-
-function compareSchedulerProjectionTables(db: DatabaseSync, runId: string, projection: SchedulerProjection): string[] {
-  return [
-    compareSchedulerProjectionTable("scheduler_frames", () => readSchedulerFrames(db, runId), schedulerFramesProjection(projection)),
-    compareSchedulerProjectionTable("node_instances", () => readNodeInstances(db, runId), nodeInstancesProjection(projection)),
-    compareSchedulerProjectionTable("node_attempts", () => readNodeAttempts(db, runId), nodeAttemptsProjection(projection)),
-    compareSchedulerProjectionTable("group_members", () => readGroupMembers(db, runId), groupMembersProjection(projection)),
-    compareSchedulerProjectionTable("signal_waits", () => readSignalWaits(db, runId), signalWaitsProjection(projection)),
-  ].filter(issue => issue !== undefined);
-}
-
-function compareSchedulerProjectionTable(table: string, readActual: () => Record<string, unknown>, expected: Record<string, unknown>): string | undefined {
-  try {
-    return sameStableJson(readActual(), expected)
-      ? undefined
-      : `Scheduler projection table '${table}' does not match scheduler event stream.`;
-  } catch (error) {
-    return `Scheduler projection table '${table}' could not be read: ${error instanceof Error ? error.message : String(error)}`;
-  }
-}
-
-function schedulerFramesProjection(projection: SchedulerProjection): Record<string, unknown> {
-  return Object.fromEntries(Object.values(projection.frames).map(frame => [frame.frameKey, withoutUndefined({
-    parentFrameKey: frame.parentFrameKey,
-    nodeKey: frame.nodeKey,
-    nodeId: frame.nodeId,
-    frameKind: frame.frameKind,
-    status: frame.status,
-    strategy: frame.strategy,
-    terminalReason: frame.terminalReason,
-    instancePath: frame.instancePath,
-    scope: frame.scope,
-    loop: frame.loop,
-    result: frame.result,
-    error: frame.error,
-  })]));
-}
-
-function readSchedulerFrames(db: DatabaseSync, runId: string): Record<string, unknown> {
-  const rows = db.prepare(`
-    SELECT frame_key, parent_frame_key, node_key, node_id, frame_kind, status, strategy,
-      terminal_reason, instance_path_json, scope_json, loop_json, result_json, error_json
-    FROM scheduler_frames
-    WHERE run_id = ?
-    ORDER BY frame_key
-  `).all(runId) as Array<Record<string, string | null>>;
-  return Object.fromEntries(rows.map(row => [String(row.frame_key), withoutUndefined({
-    parentFrameKey: nullableString(row.parent_frame_key),
-    nodeKey: nullableString(row.node_key),
-    nodeId: nullableString(row.node_id),
-    frameKind: String(row.frame_kind),
-    status: String(row.status),
-    strategy: nullableString(row.strategy),
-    terminalReason: nullableString(row.terminal_reason),
-    instancePath: parseOptionalJson(row.instance_path_json),
-    scope: parseRequiredJson(row.scope_json, "scheduler_frames.scope_json"),
-    loop: parseOptionalJson(row.loop_json),
-    result: parseOptionalJson(row.result_json),
-    error: parseOptionalJson(row.error_json),
-  })]));
-}
-
-function nodeInstancesProjection(projection: SchedulerProjection): Record<string, unknown> {
-  return Object.fromEntries(Object.values(projection.instances).map(instance => [instance.nodeKey, withoutUndefined({
-    nodeId: instance.nodeId,
-    parentFrameKey: instance.parentFrameKey,
-    instancePath: instance.instancePath,
-    status: instance.status,
-    statusReason: instance.statusReason,
-    readinessSequence: instance.readinessSequence,
-    output: instance.output,
-    error: instance.error,
-    acceptedAttemptId: instance.acceptedAttemptId,
-  })]));
-}
-
-function readNodeInstances(db: DatabaseSync, runId: string): Record<string, unknown> {
-  const rows = db.prepare(`
-    SELECT node_key, node_id, parent_frame_key, instance_path_json, status, status_reason,
-      readiness_sequence, output_json, error_json, accepted_attempt_id
-    FROM node_instances
-    WHERE run_id = ?
-    ORDER BY node_key
-  `).all(runId) as Array<Record<string, string | number | null>>;
-  return Object.fromEntries(rows.map(row => [String(row.node_key), withoutUndefined({
-    nodeId: String(row.node_id),
-    parentFrameKey: nullableString(row.parent_frame_key),
-    instancePath: parseRequiredJson(row.instance_path_json, "node_instances.instance_path_json"),
-    status: String(row.status),
-    statusReason: nullableString(row.status_reason),
-    readinessSequence: nullableNumber(row.readiness_sequence),
-    output: parseOptionalJson(row.output_json),
-    error: parseOptionalJson(row.error_json),
-    acceptedAttemptId: nullableString(row.accepted_attempt_id),
-  })]));
-}
-
-function nodeAttemptsProjection(projection: SchedulerProjection): Record<string, unknown> {
-  return Object.fromEntries(Object.values(projection.attempts).map(attempt => [attempt.attemptId, withoutUndefined({
-    nodeKey: attempt.nodeKey,
-    nodeId: attempt.nodeId,
-    attemptNo: attempt.attemptNo,
-    ownerEpoch: attempt.ownerEpoch,
-    status: attempt.status,
-    deadlineAt: attempt.deadlineAt,
-    result: attempt.result,
-    error: attempt.error,
-    terminalReason: attempt.terminalReason,
-    cancelReason: attempt.cancelReason,
-  })]));
-}
-
-function readNodeAttempts(db: DatabaseSync, runId: string): Record<string, unknown> {
-  const rows = db.prepare(`
-    SELECT attempt_id, node_key, node_id, attempt_no, owner_epoch, status, deadline_at,
-      result_json, error_json, terminal_reason, cancel_reason
-    FROM node_attempts
-    WHERE run_id = ?
-    ORDER BY attempt_id
-  `).all(runId) as Array<Record<string, string | number | null>>;
-  return Object.fromEntries(rows.map(row => [String(row.attempt_id), withoutUndefined({
-    nodeKey: String(row.node_key),
-    nodeId: String(row.node_id),
-    attemptNo: Number(row.attempt_no),
-    ownerEpoch: Number(row.owner_epoch),
-    status: String(row.status),
-    deadlineAt: nullableString(row.deadline_at),
-    result: parseOptionalJson(row.result_json),
-    error: parseOptionalJson(row.error_json),
-    terminalReason: nullableString(row.terminal_reason),
-    cancelReason: nullableString(row.cancel_reason),
-  })]));
-}
-
-function groupMembersProjection(projection: SchedulerProjection): Record<string, unknown> {
-  return Object.fromEntries(Object.values(projection.groupMembers).map(member => [member.memberKey, withoutUndefined({
-    groupKey: member.groupKey,
-    memberKind: member.memberKind,
-    branchId: member.branchId,
-    itemKey: member.itemKey === undefined ? undefined : String(member.itemKey),
-    itemIndex: member.itemIndex,
-    item: member.item,
-    childFrameKey: member.childFrameKey,
-    status: member.status,
-    readinessSequence: member.readinessSequence,
-    completionSequence: member.completionSequence,
-    acceptedRank: member.acceptedRank,
-    terminalReason: member.terminalReason,
-    output: member.output,
-    error: member.error,
-  })]));
-}
-
-function readGroupMembers(db: DatabaseSync, runId: string): Record<string, unknown> {
-  const rows = db.prepare(`
-    SELECT group_key, member_key, member_kind, branch_id, item_key, item_index, item_json, child_frame_key,
-      status, readiness_sequence, completion_sequence, accepted_rank, terminal_reason, output_json, error_json
-    FROM group_members
-    WHERE run_id = ?
-    ORDER BY member_key
-  `).all(runId) as Array<Record<string, string | number | null>>;
-  return Object.fromEntries(rows.map(row => [String(row.member_key), withoutUndefined({
-    groupKey: String(row.group_key),
-    memberKind: String(row.member_kind),
-    branchId: nullableString(row.branch_id),
-    itemKey: nullableString(row.item_key),
-    itemIndex: nullableNumber(row.item_index),
-    item: parseOptionalJson(row.item_json),
-    childFrameKey: nullableString(row.child_frame_key),
-    status: String(row.status),
-    readinessSequence: Number(row.readiness_sequence),
-    completionSequence: nullableNumber(row.completion_sequence),
-    acceptedRank: nullableNumber(row.accepted_rank),
-    terminalReason: nullableString(row.terminal_reason),
-    output: parseOptionalJson(row.output_json),
-    error: parseOptionalJson(row.error_json),
-  })]));
-}
-
-function signalWaitsProjection(projection: SchedulerProjection): Record<string, unknown> {
-  return Object.fromEntries(Object.values(projection.signalWaits).map(wait => [wait.nodeKey, withoutUndefined({
-    nodeId: wait.nodeId,
-    status: wait.status,
-    payload: wait.payload,
-    payloadDigest: wait.payloadDigest,
-    commandIdempotencyKey: wait.commandIdempotencyKey,
-    deadlineAt: wait.deadlineAt,
-    terminalReason: wait.terminalReason,
-  })]));
-}
-
-function readSignalWaits(db: DatabaseSync, runId: string): Record<string, unknown> {
-  const rows = db.prepare(`
-    SELECT node_key, node_id, status, payload_json, payload_digest, command_idempotency_key,
-      deadline_at, terminal_reason
-    FROM signal_waits
-    WHERE run_id = ?
-    ORDER BY node_key
-  `).all(runId) as Array<Record<string, string | null>>;
-  return Object.fromEntries(rows.map(row => [String(row.node_key), withoutUndefined({
-    nodeId: String(row.node_id),
-    status: String(row.status),
-    payload: parseOptionalJson(row.payload_json),
-    payloadDigest: nullableString(row.payload_digest),
-    commandIdempotencyKey: nullableString(row.command_idempotency_key),
-    deadlineAt: nullableString(row.deadline_at),
-    terminalReason: nullableString(row.terminal_reason),
-  })]));
 }
 
 function readRunDynamicFrames(db: DatabaseSync, runId: string): RunDynamicFrame[] {
@@ -2945,10 +2491,6 @@ function readRunExecutionMetadata(db: DatabaseSync, runId: string): RunExecution
   }) as RunExecutionMetadata);
 }
 
-function sameStableJson(left: unknown, right: unknown): boolean {
-  return stableJson(left) === stableJson(right);
-}
-
 function withoutUndefined(input: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
 }
@@ -2963,11 +2505,6 @@ function nullableNumber(value: unknown): number | undefined {
 
 function parseOptionalJson(value: unknown): unknown {
   return value === null || value === undefined ? undefined : JSON.parse(String(value));
-}
-
-function parseRequiredJson(value: unknown, field: string): unknown {
-  if (value === null || value === undefined) throw new Error(`${field} is missing.`);
-  return JSON.parse(String(value));
 }
 
 function eventNodeKey(event: SchedulerEvent): string | null {
@@ -3035,11 +2572,13 @@ function encodeSchedulerPayload(payload: object): string {
   return stableJson({ schedulerEventVersion: 1, payload });
 }
 
-function decodeSchedulerPayload(payloadJson: string): Record<string, unknown> | undefined {
+function decodeSchedulerPayload(payloadJson: string, eventType: string): Record<string, unknown> {
   const envelope = JSON.parse(payloadJson) as unknown;
-  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) return undefined;
+  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) throw new Error(`Scheduler event '${eventType}' has an invalid scheduler envelope.`);
   const payload = (envelope as { schedulerEventVersion?: unknown; payload?: unknown }).payload;
-  if ((envelope as { schedulerEventVersion?: unknown }).schedulerEventVersion !== 1 || !payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  if ((envelope as { schedulerEventVersion?: unknown }).schedulerEventVersion !== 1 || !payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error(`Scheduler event '${eventType}' has an invalid scheduler envelope.`);
+  }
   return payload as Record<string, unknown>;
 }
 
@@ -3719,25 +3258,6 @@ function sortJson(value: unknown): unknown {
   return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, sortJson(item)]));
 }
 
-function safeParseJson(value: string): { ok: true; value: unknown } | { ok: false } {
-  try {
-    return { ok: true, value: JSON.parse(value) as unknown };
-  } catch {
-    return { ok: false };
-  }
-}
-
-function rebuildTerminalProjection(events: Array<{ type: string; payload_json: string }>): { status?: RunStatus; output?: JsonValue } {
-  const last = events.at(-1);
-  if (!last) return {};
-  if (last.type === "run.completed") {
-    const payload = safeParseJson(last.payload_json);
-    return { status: "completed", ...(payload.ok ? { output: (payload.value as { output?: JsonValue }).output } : {}) };
-  }
-  if (last.type === "run.failed") return { status: "failed" };
-  return {};
-}
-
 function evaluateRecordedOutputs(outputs: Record<string, ExprIR>, nodes: Record<string, unknown>, input: JsonValue, meta: Record<string, string>): JsonValue {
   return assertJsonValue(Object.fromEntries(Object.entries(outputs).map(([key, expr]) => [
     key,
@@ -3746,7 +3266,7 @@ function evaluateRecordedOutputs(outputs: Record<string, ExprIR>, nodes: Record<
       meta,
       nodes: Object.fromEntries(Object.entries(nodes).map(([nodeKey, output]) => [nodeKey, { status: "completed", output }])),
     }),
-  ])), "replay output");
+  ])), "fork output");
 }
 
 function forkCompletedOutputJson(args: {
@@ -3936,18 +3456,6 @@ async function readContainedFile(root: string, relativePath: string): Promise<Bu
   const realRoot = await realpath(rootPath);
   if (!real.startsWith(`${realRoot}/`)) throw new PathEscapeError(`Path '${relativePath}' escapes run directory.`);
   return readFile(absolutePath);
-}
-
-function readFileSyncContained(root: string, relativePath: string): Buffer {
-  const rootPath = resolve(root);
-  const absolutePath = resolve(rootPath, relativePath);
-  if (absolutePath !== rootPath && !absolutePath.startsWith(`${rootPath}/`)) throw new PathEscapeError(`Path '${relativePath}' escapes run directory.`);
-  const info = lstatSync(absolutePath);
-  if (info.isSymbolicLink() || !info.isFile()) throw new PathEscapeError(`Path '${relativePath}' is not a regular file.`);
-  const real = realpathSync(absolutePath);
-  const realRoot = realpathSync(rootPath);
-  if (!real.startsWith(`${realRoot}/`)) throw new PathEscapeError(`Path '${relativePath}' escapes run directory.`);
-  return readFileSync(absolutePath);
 }
 
 class PathEscapeError extends Error {}

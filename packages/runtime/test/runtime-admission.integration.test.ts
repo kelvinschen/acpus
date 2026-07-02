@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-import { admitWorkflowRun, getRun, listRuns, normalizeSignalPayload, normalizeWorkflowInput, replayRun } from "@acpus/runtime";
+import { admitWorkflowRun, getRun, listRuns, normalizeSignalPayload, normalizeWorkflowInput } from "@acpus/runtime";
 import type { TaskExecutionTargetIR, WorkflowIR } from "@acpus/core/ir";
 import {
   admitFixture,
@@ -27,7 +27,7 @@ import {
 const exec = promisify(execFile);
 
 describe.concurrent("runtime admission use cases", () => {
-  it("admits a pure run and exposes read-only inspection and replay", async () => {
+  it("admits a pure run and exposes read-only inspection", async () => {
     await withRuntimeWorkspace("runtime-admit-pure", async workspace => {
       const admitted = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
 
@@ -44,11 +44,6 @@ describe.concurrent("runtime admission use cases", () => {
         nodeCount: 1,
       });
       expect(inspected?.eventCount).toBeGreaterThan(2);
-      await expect(replayRun(workspace, admitted.run.id)).resolves.toMatchObject({
-        ok: true,
-        expected: { ready: true },
-        actual: { ready: true },
-      });
       expect(runtimeRows(workspace, "SELECT type FROM run_events WHERE run_id = ? ORDER BY sequence", admitted.run.id)).toEqual(expect.arrayContaining([
         expect.objectContaining({ type: "run.admitted" }),
         expect.objectContaining({ type: "run.completed" }),
@@ -56,21 +51,12 @@ describe.concurrent("runtime admission use cases", () => {
     });
   });
 
-  it("injects run-level workflow meta into expressions and replay", async () => {
+  it("injects run-level workflow meta into expressions", async () => {
     await withRuntimeWorkspace("runtime-meta", async workspace => {
       const admitted = await admitSyntheticWorkflow(workspace, metaWorkflow());
       expect(admitted.status).toBe("completed");
       await expect(getRun(workspace, admitted.run.id)).resolves.toMatchObject({
         output: {
-          runId: admitted.run.id,
-          workflowPath: "cli-meta.workflow.ts",
-          workflowName: "cli-meta",
-          workspaceDir: workspace,
-        },
-      });
-      await expect(replayRun(workspace, admitted.run.id)).resolves.toMatchObject({
-        ok: true,
-        actual: {
           runId: admitted.run.id,
           workflowPath: "cli-meta.workflow.ts",
           workflowName: "cli-meta",
@@ -232,8 +218,8 @@ describe.concurrent("runtime admission use cases", () => {
     });
   });
 
-  it("fails task attempts for live reusable module drift", async () => {
-    await withRuntimeWorkspace("runtime-live-module-drift", async workspace => {
+  it("fails task attempts for live reusable module load failures", async () => {
+    await withRuntimeWorkspace("runtime-live-module-load-failure", async workspace => {
       const cases = [
         { name: "missing_module", specifier: "./missing-task.ts", exportName: "run", moduleSource: undefined, message: "Cannot find module" },
         { name: "missing_export", specifier: "./missing-export-task.ts", exportName: "run", moduleSource: "export const other = {};\n", message: "is not an Acpus task" },
@@ -254,7 +240,7 @@ describe.concurrent("runtime admission use cases", () => {
         const admitted = await admitWorkflowRun(workspace, frozen, normalizeWorkflowInput(frozen.ir, {}));
 
         expect(admitted.status).toBe("failed");
-        if (admitted.status !== "failed") throw new Error("expected failed reusable drift run");
+        if (admitted.status !== "failed") throw new Error("expected failed reusable module load run");
         expect(admitted.message).toContain(item.message);
       }
     });

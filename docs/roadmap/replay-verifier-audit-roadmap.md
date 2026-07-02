@@ -13,9 +13,24 @@ implemented behavior continues to live in `specs/`.
 - [x] CLI control-plane decision deferred: the current CLI regrouping goal does
   not decide whether this capability remains user-facing, is renamed, moves
   under diagnostics, or becomes internal-only.
-- [ ] Audit the actual capability, cost, and support value.
-- [ ] Decide the product surface, if any.
-- [ ] Update specs and tests in the change that implements the decision.
+- [x] Superseded by
+  [Replay Semantics Cleanup Goal](replay-semantics-cleanup-goal.md): replay is
+  being removed as a product concept and runtime verifier surface; normal
+  scheduler reducer and store tests keep owning event/projection correctness.
+- [x] Product surface resolved: no user-facing replay command, no runtime replay
+  verifier surface, and no replacement diagnostic placeholder.
+- [x] Cleanup implementation targets moved to
+  [Replay Semantics Cleanup Goal](replay-semantics-cleanup-goal.md).
+
+## Superseded Outcome
+
+The audit path is closed by the cleanup goal. The accepted direction is not to
+rename replay to verify, doctor, or integrity. Replay is deleted as a
+product/runtime maintenance surface, while scheduler reducer and store tests own
+normal event/projection correctness.
+
+The remaining sections are retained as pre-decision context only; they are not
+active roadmap items.
 
 ## Background
 

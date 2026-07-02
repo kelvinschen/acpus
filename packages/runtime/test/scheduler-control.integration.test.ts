@@ -289,8 +289,8 @@ describe("scheduler control command adapter", () => {
     });
   });
 
-  it("replays a recovered signal command after the wait was already consumed", async () => {
-    await withRuntimeWorkspace("scheduler-control-signal-recovered-replay", async workspace => {
+  it("applies a recovered signal command after the wait was already consumed", async () => {
+    await withRuntimeWorkspace("scheduler-control-signal-recovered-duplicate", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, signalWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
@@ -473,8 +473,8 @@ describe("scheduler control command adapter", () => {
     });
   });
 
-  it("replays a recovered static retry command after its frame subtree was cleared", async () => {
-    await withRuntimeWorkspace("scheduler-control-retry-recovered-replay", async workspace => {
+  it("applies a recovered static retry command after its frame subtree was cleared", async () => {
+    await withRuntimeWorkspace("scheduler-control-retry-recovered-duplicate", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, rootTaskWorkflow());
       const store = await openRuntimeStore(workspace);
       try {

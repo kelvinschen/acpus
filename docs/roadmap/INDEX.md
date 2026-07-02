@@ -18,8 +18,9 @@ pre-TypeScript history remains under `legacy/`.
 - [Durable Runtime Roadmap](durable-runtime-roadmap.md) — active durable runtime audit, remaining gaps, and implementation target ordering.
 - [Spec Gap Audit](spec-gap-audit.md) — follow-up gaps found while aligning specs to package ownership.
 - [CLI Control Plane Implementation Goal](cli-control-plane-implementation-goal.md) — working goal for regrouping workflow, run, hooks, and runtime CLI commands around clearer product nouns.
-- [Replay Verifier Audit Roadmap](replay-verifier-audit-roadmap.md) — follow-up audit for the current read-only replay verifier capability and its possible product surface.
 
 ## Archive
 
+- [Replay Semantics Cleanup Goal](replay-semantics-cleanup-goal.md) — completed cleanup record for deleting replay as a product/runtime surface.
+- [Replay Verifier Audit Roadmap](replay-verifier-audit-roadmap.md) — superseded planning record retained as historical context.
 - [Archived Roadmap Records](archive/INDEX.md) — completed implementation goals and historical design records.

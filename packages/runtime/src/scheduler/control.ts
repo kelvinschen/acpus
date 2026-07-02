@@ -192,9 +192,9 @@ function signalPayload(command: PendingRunControlCommand, snapshot: SchedulerSna
     .sort((left, right) => left.nodeKey.localeCompare(right.nodeKey));
   if (matches.length === 1) return { nodeKey: matches[0]!.nodeKey, nodeId: matches[0]!.nodeId, payload: payload.payload as JsonValue };
   if (matches.length > 1) throw new Error(`Scheduler signal command '${command.id}' target '${target}' is ambiguous. Candidate nodeKeys: ${matches.map(wait => wait.nodeKey).join(", ")}.`);
-  const replay = Object.values(snapshot.projection.signalWaits)
+  const duplicate = Object.values(snapshot.projection.signalWaits)
     .find(wait => wait.commandIdempotencyKey === command.idempotencyKey);
-  if (replay) return { nodeKey: replay.nodeKey, nodeId: replay.nodeId, payload: payload.payload as JsonValue };
+  if (duplicate) return { nodeKey: duplicate.nodeKey, nodeId: duplicate.nodeId, payload: payload.payload as JsonValue };
   throw new Error(`Scheduler signal command '${command.id}' target '${target}' was not found.`);
 }
 

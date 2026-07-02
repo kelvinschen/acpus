@@ -692,9 +692,6 @@ describe("runtime scheduler node executor", () => {
         const first = await advanceFrozenRun({ cwd: workspace, runId, ownerId: "owner-a", store });
         expect(first).toMatchObject({ status: "idle", started: 1, completed: 1 });
         expect(Object.values(store.scheduler.loadRunSnapshot(runId).projection.instances).filter(instance => instance.status === "ready")).toHaveLength(1);
-        const replay = store.replayRun(runId);
-        if (!replay.projection) throw new Error("expected replay projection");
-        expect(replay.projection.issues).toEqual([]);
       } finally {
         store.close();
       }

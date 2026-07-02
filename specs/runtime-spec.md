@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`@acpus/runtime` persists and advances prepared workflow runs in a workspace-local durable store. It accepts a prepared workflow and normalized input, writes SQLite state and run-local files, executes supported frozen IR, exposes read APIs and durable controls, handles signal continuation, supports replay checks, and runs a detached supervisor. Workflow static checks, module compile, and preflight preparation belong to `@acpus/workflow-compiler`.
+`@acpus/runtime` persists and advances prepared workflow runs in a workspace-local durable store. It accepts a prepared workflow and normalized input, writes SQLite state and run-local files, executes supported frozen IR, exposes read APIs and durable controls, handles signal continuation, and runs a detached supervisor. Workflow static checks, module compile, and preflight preparation belong to `@acpus/workflow-compiler`.
 
 ## Requirements
 
@@ -191,7 +191,7 @@
   and write returned raw acpx prompt stdout as an opaque `raw-acp` artifact with
   a turn metadata reference. Other values MUST leave raw ACP debug artifact
   capture disabled. Raw ACP debug artifacts MUST NOT affect scheduling,
-  response repair, conformance, or replay decisions.
+  response repair or conformance decisions.
 - Each scheduler-backed schema-backed acpx turn that recovers JSON from the
   agent response MUST write the raw recovered value as a diagnostic artifact
   and expose that artifact reference in turn metadata. Raw recovered output
@@ -207,7 +207,7 @@
   present. Turn metadata MUST NOT need to embed full prompt/response IO or full
   tool parameter previews because those live in the telemetry artifact.
 
-### Controls, Fork, Signal, And Replay
+### Controls, Fork, And Signal
 
 - Pause MUST record a durable pause gate and MUST prevent new scheduler-visible attempts from starting while paused.
 - Runtime durable run-command inputs MUST use the known discriminated command
@@ -247,14 +247,10 @@
 - Fork MUST verify copied artifacts and current frozen run files before writing fork rows.
 - Signal commands MUST store normalized signal payloads, consume open signal waits idempotently, and continue execution from frozen SQLite state.
 - Signal targeting MUST accept a dynamic `nodeKey` directly or a static signal alias only when that alias resolves to exactly one open signal wait.
-- Replay MUST re-evaluate frozen root outputs from recorded completed node outputs without side effects.
-- Replay MUST rebuild scheduler projections from scheduler events and compare them with scheduler projection tables.
-- Replay MUST verify artifact registry rows against run-local artifact file digest and size.
-- Replay MUST report malformed scheduler event envelopes, unreplayable scheduler event streams, missing or mismatched artifacts, and projection mismatches without mutating runtime state.
 
 ### Read APIs And Supervisor
 
-- `listRuns`, `getRun`, replay APIs, and visualization overlay APIs MUST read SQLite projections rather than live workflow source.
+- `listRuns`, `getRun`, and visualization overlay APIs MUST read SQLite projections rather than live workflow source.
 - `listRuns` MUST order runs by `updatedAt DESC` with `createdAt DESC` as a
   deterministic tie-breaker.
 - `getRun` MUST expose dynamic scheduler details when scheduler projection rows exist, including version, frames, dynamic node instances, attempts, group members, and signal waits.
@@ -318,5 +314,5 @@
   default absence of raw ACP debug artifacts.
 - Tests MUST cover raw recovered schema-backed agent output artifacts and prove
   they remain diagnostic rather than workflow-visible output.
-- Tests MUST cover pause, resume, run retry, dynamic node retry, cancel, signal targeting and idempotency, fork, replay, durable command rows, and fork artifact reachability.
+- Tests MUST cover pause, resume, run retry, dynamic node retry, cancel, signal targeting and idempotency, fork, durable command rows, and fork artifact reachability.
 - Tests MUST cover supervisor lease acquisition, active lease rejection, stale takeover, heartbeat fencing, release fencing, durable command consumption, and shutdown.

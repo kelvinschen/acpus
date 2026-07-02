@@ -32,7 +32,7 @@ describe("scheduler store port", () => {
         expect(snapshot.projection.instances["require_ready~1"]).toMatchObject({ status: "ready", nodeId: "require_ready" });
         expect(dbScalar(workspace, "SELECT status FROM node_instances WHERE run_id = ? AND node_key = ?", run.id, "require_ready~1")).toBe("ready");
 
-        const replay = store.scheduler.appendSchedulerEvents({
+        const duplicate = store.scheduler.appendSchedulerEvents({
           runId: run.id,
           expectedVersion: 1,
           ownerEpoch: claim!.ownerEpoch,
@@ -42,7 +42,7 @@ describe("scheduler store port", () => {
             { type: "instance.ready", payload: { runId: run.id, nodeKey: "require_ready~1", nodeId: "require_ready", instancePath: [{ kind: "node", nodeId: "require_ready" }], parentFrameKey: "root", readinessSequence: 1 } },
           ],
         });
-        expect(replay.version).toBe(snapshot.version);
+        expect(duplicate.version).toBe(snapshot.version);
         expect(() => store.scheduler.appendSchedulerEvents({
           runId: run.id,
           expectedVersion: 1,
@@ -220,16 +220,15 @@ describe("scheduler store port", () => {
     });
   });
 
-  it("ignores old runtime events whose type names overlap scheduler events", async () => {
-    await withRuntimeWorkspace("scheduler-store-legacy-event-overlap", async workspace => {
+  it("rejects malformed scheduler event envelopes on the normal load path", async () => {
+    await withRuntimeWorkspace("scheduler-store-malformed-event-envelope", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
-        writeLegacyEvent(workspace, run.id, "signal.awaiting", "require_ready~1", {});
+        writeMalformedSchedulerEvent(workspace, run.id, "signal.awaiting", "require_ready~1");
 
-        const snapshot = store.scheduler.loadRunSnapshot(run.id);
-        expect(snapshot.projection.signalWaits).toEqual({});
+        expect(() => store.scheduler.loadRunSnapshot(run.id)).toThrow("invalid scheduler envelope");
       } finally {
         store.close();
       }
@@ -992,14 +991,14 @@ describe("scheduler store port", () => {
         expect(snapshot.projection.attempts[attempt.attemptId]).toMatchObject({ status: "cancelled", cancelReason: "race_lost" });
         expect(dbScalar(workspace, "SELECT cancel_reason FROM node_attempts WHERE attempt_id = ?", attempt.attemptId)).toBe("race_lost");
 
-        const replay = store.scheduler.commitAttemptResult({
+        const duplicate = store.scheduler.commitAttemptResult({
           runId: run.id,
           attemptId: attempt.attemptId,
           ownerEpoch: claim.ownerEpoch,
           result: { status: "cancelled", reason: "race_lost" },
           idempotencyKey: "attempt:cancel:commit",
         });
-        expect(replay.version).toBe(snapshot.version);
+        expect(duplicate.version).toBe(snapshot.version);
         expect(dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE idempotency_key = ?", "attempt:cancel:commit")).toBe(1);
         const firstTimestamps = dbRow(workspace, "SELECT started_at, finished_at FROM node_attempts WHERE attempt_id = ?", attempt.attemptId);
         const advanced = store.scheduler.appendSchedulerEvents({
@@ -1100,7 +1099,7 @@ describe("scheduler store port", () => {
         });
         expect(JSON.parse(String(signalRow?.payload_json))).toEqual({ ok: true });
 
-        const replay = store.scheduler.consumeSignal({
+        const duplicate = store.scheduler.consumeSignal({
           runId: run.id,
           nodeKey: "approve~1",
           ownerEpoch: claim.ownerEpoch,
@@ -1108,7 +1107,7 @@ describe("scheduler store port", () => {
           commandIdempotencyKey: "signal-command",
           idempotencyKey: "signal:consume",
         });
-        expect(replay.version).toBe(consumed.version);
+        expect(duplicate.version).toBe(consumed.version);
 
         expect(() => store.scheduler.consumeSignal({
           runId: run.id,
@@ -1128,7 +1127,7 @@ describe("scheduler store port", () => {
         })).toThrow("already consumed a different payload");
         store.scheduler.appendSchedulerEvents({
           runId: run.id,
-          expectedVersion: replay.version,
+          expectedVersion: duplicate.version,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "signal:pause-after-consume",
           events: [{ type: "control.paused", payload: { reason: "user" } }],
@@ -1139,7 +1138,7 @@ describe("scheduler store port", () => {
           ownerEpoch: claim.ownerEpoch,
           payload: { ok: true },
           commandIdempotencyKey: "signal-command",
-          idempotencyKey: "signal:consume:paused-replay",
+          idempotencyKey: "signal:consume:paused-duplicate",
         }).projection.run.status).toBe("paused");
       } finally {
         store.close();
@@ -1147,7 +1146,7 @@ describe("scheduler store port", () => {
     });
   });
 
-  it("replays signal consumption for running group members", async () => {
+  it("applies duplicate signal consumption for running group members", async () => {
     await withRuntimeWorkspace("scheduler-store-signal-group-member-consume", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
@@ -1381,14 +1380,14 @@ function dbRows(workspace: string, sql: string, ...params: SQLInputValue[]): Arr
   }
 }
 
-function writeLegacyEvent(workspace: string, runId: string, type: string, nodeKey: string, payload: object): void {
+function writeMalformedSchedulerEvent(workspace: string, runId: string, type: string, nodeKey: string): void {
   const db = new DatabaseSync(join(workspace, ".acpus", "state", "runtime.db"));
   try {
     const sequence = db.prepare("SELECT COALESCE(MAX(sequence), 0) + 1 AS count FROM run_events WHERE run_id = ?").get(runId) as { count: number };
     db.prepare(`
       INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(runId, sequence.count, type, nodeKey, JSON.stringify(payload), new Date().toISOString(), `legacy:${runId}:${type}`);
+    `).run(runId, sequence.count, type, nodeKey, JSON.stringify({ payload: null }), new Date().toISOString(), `malformed:${runId}:${type}`);
   } finally {
     db.close();
   }

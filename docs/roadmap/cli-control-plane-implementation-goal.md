@@ -53,8 +53,8 @@ implemented behavior continues to live in `specs/`.
 - [x] Run inspection output accepted: default text output is a compact,
   loss-aware view optimized for low context overhead; full structured detail is
   available through JSON output.
-- [x] Replay verifier audit separated: replay/integrity verification is deferred
-  to `replay-verifier-audit-roadmap.md` and is not decided by this goal.
+- [x] Per-run verification surface resolved by the later cleanup goal: it is not
+  part of the CLI control plane.
 - [x] Run target option accepted: `retry`, `cancel`, and `signal` use the same
   `--target <run-target>` flag for locating run-internal scheduler targets.
 - [x] Run list output accepted: `runs list` defaults to a bounded
@@ -167,10 +167,9 @@ acpus runs fork <run-id> [--workflow <workflow-module>] [--input <json>] [--agen
 acpus runs signal <run-id> --target <run-target> --payload <json>
 ```
 
-Run replay or integrity verification is intentionally not included in this
-accepted surface. The current replay verifier capability needs a separate audit
-before deciding whether it stays user-facing, is renamed, moves under
-diagnostics, or becomes internal-only.
+Per-run storage verification is intentionally not included in this accepted
+surface. The later cleanup goal resolved that no user-facing command or
+replacement diagnostic placeholder is kept.
 
 Reserved future hooks commands:
 
@@ -248,8 +247,8 @@ mode.
 - `runs fork` keeps `--workflow <workflow-module>` for replacement workflow
   forks. Help text describes it as a replacement workflow module for the fork,
   not as the source run's workflow identity or a catalog selector.
-- Replay/integrity verification is not decided in this control-plane goal. It
-  is tracked separately in `replay-verifier-audit-roadmap.md`.
+- Per-run storage verification is not part of this control-plane goal and was
+  later removed as a product surface.
 - Generic `catalog` is not introduced while the only cataloged object is a
   workflow script.
 - Workflow catalog commands support both project and global scopes. Users select
@@ -525,8 +524,8 @@ Accepted direction:
 - `runs pause`, `runs resume`, `runs retry`, `runs cancel`, `runs fork`, and
   `runs signal` use `control`;
 - `doctor` uses `doctor`;
-- removed concepts do not remain as phases: no `dry-run`, no `admit`, no
-  replay-specific phase in this goal.
+- removed concepts do not remain as phases: no `dry-run`, no `admit`, and no
+  per-run verification phase in this goal.
 
 ### Help Surface
 
@@ -835,8 +834,8 @@ decisions and sequencing only.
   for runnable-producing controls, bounded control-command output, bounded
   `list` defaults, `list --limit`, `list --all`, list truncation metadata, fork
   defaults, fork `--workflow` help wording, and run lookup failures.
-- Replay verifier tests and product-surface decisions are handled by the
-  separate replay verifier audit roadmap.
+- Per-run verification product-surface decisions are handled by the cleanup
+  roadmap.
 - Runtime lifecycle tests cover lazy-start, continuous 30s idle-stop, idle timer
   reset on command or runnable run activity, lease release on idle exit, and
   doctor visibility into idle age, foreground run leases, and blockers.
@@ -849,7 +848,7 @@ Completed in this implementation:
 
 - `acpus run` was removed and replaced by `acpus workflows check` and
   `acpus workflows run`.
-- `runs show`, `runs status`, `runs replay`, `runs supervise`, and
+- `runs show`, `runs status`, `runs supervise`, and
   `runs shutdown` were removed from the visible CLI command tree.
 - `workflows list` and `workflows show` are visible catalog placeholders that
   fail as `phase: "inspect"` with exit code 1.

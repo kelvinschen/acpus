@@ -3,7 +3,7 @@ import { access, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { getRun, getRunVisualizationOverlay, listRuns, mutateRun, normalizeForkInput, replayRun, signalRun, tryMutateRun, trySignalRun } from "@acpus/runtime";
+import { getRun, getRunVisualizationOverlay, listRuns, mutateRun, normalizeForkInput, signalRun, tryMutateRun, trySignalRun } from "@acpus/runtime";
 import { runSupervisorTick } from "../src/supervisor/tick.js";
 import { openExistingWritableRuntimeStore } from "../src/store/store.js";
 import {
@@ -64,7 +64,6 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       });
       expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'control.run_retry_requested'", failedId)).toMatchObject({ count: 1 });
       expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'run.failed'", failedId)).toMatchObject({ count: 2 });
-      await expect(replayRun(workspace, failedId)).resolves.toMatchObject({ projection: { issues: [] } });
 
       const failOnce = await admitSyntheticWorkflow(workspace, failOnceTaskWorkflow(), { workDir: workspace });
       expect(failOnce.status).toBe("failed");
@@ -76,7 +75,6 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'control.run_retry_requested'", failOnce.run.id)).toMatchObject({ count: 1 });
       expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'run.failed'", failOnce.run.id)).toMatchObject({ count: 1 });
       expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'run.completed'", failOnce.run.id)).toMatchObject({ count: 1 });
-      await expect(replayRun(workspace, failOnce.run.id)).resolves.toMatchObject({ ok: true, actual: { ok: true }, projection: { issues: [] } });
 
       const rerun = await admitSyntheticWorkflow(workspace, failingPureWorkflow());
       expect(rerun.status).toBe("failed");
@@ -103,7 +101,6 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       expect(forkArtifacts.map(row => row.id)).not.toEqual(sourceArtifacts.map(row => row.id));
       expect(forkArtifacts.map(({ id: _id, ...row }) => row)).toEqual(sourceArtifacts.map(({ id: _id, ...row }) => row));
       await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({ output: { ok: true } });
-      await expect(replayRun(workspace, fork!.run.id)).resolves.toMatchObject({ ok: true, actual: { ok: true } });
     });
   }, 15_000);
 
@@ -170,7 +167,6 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       expect(forkArtifacts.map(row => row.relative_path)).not.toContain(supersededRelativePath);
       await expect(access(join(workspace, ".acpus", "runs", fork!.run.id, failedRelativePath))).rejects.toThrow();
       await expect(access(join(workspace, ".acpus", "runs", fork!.run.id, supersededRelativePath))).rejects.toThrow();
-      await expect(replayRun(workspace, fork!.run.id)).resolves.toMatchObject({ ok: true, actual: { ok: true } });
     });
   }, 15_000);
 
@@ -185,15 +181,6 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       expect(fork?.run.id).not.toBe(source.run.id);
       await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({
         output: {
-          runId: fork!.run.id,
-          workflowPath: "cli-meta.workflow.ts",
-          workflowName: "cli-meta",
-          workspaceDir: workspace,
-        },
-      });
-      await expect(replayRun(workspace, fork!.run.id)).resolves.toMatchObject({
-        ok: true,
-        actual: {
           runId: fork!.run.id,
           workflowPath: "cli-meta.workflow.ts",
           workflowName: "cli-meta",
@@ -346,22 +333,12 @@ describe.concurrent("runtime controls and recovery use cases", () => {
         },
         command: { status: "applied" },
       });
-      await expect(replayRun(workspace, all.run.id)).resolves.toMatchObject({
-        ok: true,
-        actual: { approvals: { left: { ok: true }, right: { ok: true } } },
-        projection: { issues: [] },
-      });
       const fork = await mutateRun(workspace, all.run.id, "fork");
       expect(fork).toMatchObject({
         run: {
           status: "completed",
           output: { approvals: { left: { ok: true }, right: { ok: true } } },
         },
-      });
-      await expect(replayRun(workspace, fork!.run.id)).resolves.toMatchObject({
-        ok: true,
-        actual: { approvals: { left: { ok: true }, right: { ok: true } } },
-        projection: { issues: [] },
       });
 
       const race = await admitSyntheticWorkflow(workspace, parallelSignalRaceWorkflow());
@@ -383,178 +360,4 @@ describe.concurrent("runtime controls and recovery use cases", () => {
     });
   });
 
-  it("detects replay artifact and projection drift without mutating state", async () => {
-    await withRuntimeWorkspace("runtime-replay-drift", async workspace => {
-      const admitted = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
-      const artifact = runtimeRow(workspace, "SELECT id, relative_path FROM artifacts WHERE run_id = ?", admitted.run.id);
-      await writeFile(join(workspace, ".acpus", "runs", admitted.run.id, String(artifact?.relative_path)), "corrupted\n");
-      await expect(replayRun(workspace, admitted.run.id)).resolves.toMatchObject({
-        ok: false,
-        artifacts: {
-          mismatched: [expect.objectContaining({ id: artifact?.id })],
-        },
-      });
-    });
-  });
-
-  it("detects scheduler projection drift from the scheduler event stream", async () => {
-    await withRuntimeWorkspace("runtime-replay-scheduler-drift", async workspace => {
-      const admitted = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
-      expect(runtimeRows(workspace, "SELECT node_key FROM node_instances WHERE run_id = ?", admitted.run.id)).not.toHaveLength(0);
-
-      const db = new DatabaseSync(join(workspace, ".acpus", "state", "runtime.db"));
-      try {
-        db.prepare("UPDATE node_instances SET status = 'failed' WHERE run_id = ?").run(admitted.run.id);
-      } finally {
-        db.close();
-      }
-
-      await expect(replayRun(workspace, admitted.run.id)).resolves.toMatchObject({
-        ok: false,
-        projection: {
-          issues: expect.arrayContaining([
-            "Scheduler projection table 'node_instances' does not match scheduler event stream.",
-          ]),
-        },
-      });
-      await expect(getRun(workspace, admitted.run.id)).resolves.toMatchObject({ status: "completed" });
-    });
-  });
-
-  it("reports malformed scheduler projection JSON as a replay issue", async () => {
-    await withRuntimeWorkspace("runtime-replay-scheduler-json-drift", async workspace => {
-      const admitted = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
-      const db = new DatabaseSync(join(workspace, ".acpus", "state", "runtime.db"));
-      try {
-        db.prepare("UPDATE node_instances SET output_json = ? WHERE run_id = ?").run("{bad-json", admitted.run.id);
-      } finally {
-        db.close();
-      }
-
-      await expect(replayRun(workspace, admitted.run.id)).resolves.toMatchObject({
-        ok: false,
-        projection: {
-          issues: expect.arrayContaining([
-            expect.stringContaining("Scheduler projection table 'node_instances' could not be read"),
-          ]),
-        },
-      });
-      const run = await getRun(workspace, admitted.run.id);
-      expect(run).toMatchObject({ status: "completed" });
-      expect(run?.dynamic).toBeUndefined();
-    });
-  });
-
-  it("reports malformed scheduler event envelopes without dropping them silently", async () => {
-    await withRuntimeWorkspace("runtime-replay-scheduler-invalid-envelope", async workspace => {
-      const admitted = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
-      const db = new DatabaseSync(join(workspace, ".acpus", "state", "runtime.db"));
-      try {
-        const nextSequence = db.prepare("SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM run_events WHERE run_id = ?")
-          .get(admitted.run.id) as { sequence: number };
-        db.prepare(`
-          INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
-          VALUES (?, ?, 'instance.ready', NULL, ?, datetime('now'), ?)
-        `).run(
-          admitted.run.id,
-          nextSequence.sequence,
-          JSON.stringify({ schedulerEventVersion: 1, payload: null }),
-          `test:bad-envelope:${admitted.run.id}`,
-        );
-      } finally {
-        db.close();
-      }
-
-      await expect(replayRun(workspace, admitted.run.id)).resolves.toMatchObject({
-        ok: false,
-        projection: {
-          issues: expect.arrayContaining([
-            expect.stringContaining("has an invalid scheduler envelope"),
-          ]),
-        },
-      });
-    });
-  });
-
-  it("reports valid scheduler envelopes with unknown event types", async () => {
-    await withRuntimeWorkspace("runtime-replay-scheduler-unknown-event", async workspace => {
-      const admitted = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
-      const db = new DatabaseSync(join(workspace, ".acpus", "state", "runtime.db"));
-      try {
-        const nextSequence = db.prepare("SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM run_events WHERE run_id = ?")
-          .get(admitted.run.id) as { sequence: number };
-        db.prepare(`
-          INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
-          VALUES (?, ?, 'frame.exploded', NULL, ?, datetime('now'), ?)
-        `).run(
-          admitted.run.id,
-          nextSequence.sequence,
-          JSON.stringify({ schedulerEventVersion: 1, payload: { frameKey: "root" } }),
-          `test:unknown-scheduler-event:${admitted.run.id}`,
-        );
-      } finally {
-        db.close();
-      }
-
-      const replay = await replayRun(workspace, admitted.run.id);
-      if (!replay?.projection) throw new Error("expected replay projection");
-      expect(replay).toMatchObject({ ok: false });
-      expect(replay.projection.issues).toEqual([
-        expect.stringContaining("has an unknown scheduler event type"),
-      ]);
-    });
-  });
-
-  it("detects orphaned scheduler projection tables when scheduler events are missing", async () => {
-    await withRuntimeWorkspace("runtime-replay-scheduler-orphaned-projection", async workspace => {
-      const admitted = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
-      const db = new DatabaseSync(join(workspace, ".acpus", "state", "runtime.db"));
-      try {
-        db.prepare("DELETE FROM run_events WHERE run_id = ? AND payload_json LIKE '%schedulerEventVersion%'").run(admitted.run.id);
-      } finally {
-        db.close();
-      }
-
-      await expect(replayRun(workspace, admitted.run.id)).resolves.toMatchObject({
-        ok: false,
-        projection: {
-          issues: expect.arrayContaining([
-            "Scheduler projection table 'scheduler_frames' does not match scheduler event stream.",
-            "Scheduler projection table 'node_instances' does not match scheduler event stream.",
-          ]),
-        },
-      });
-    });
-  });
-
-  it("reports unreplayable scheduler terminal event streams", async () => {
-    await withRuntimeWorkspace("runtime-replay-scheduler-terminal-conflict", async workspace => {
-      const admitted = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
-      const db = new DatabaseSync(join(workspace, ".acpus", "state", "runtime.db"));
-      try {
-        const nextSequence = db.prepare("SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM run_events WHERE run_id = ?")
-          .get(admitted.run.id) as { sequence: number };
-        db.prepare(`
-          INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
-          VALUES (?, ?, 'frame.failed', NULL, ?, datetime('now'), ?)
-        `).run(
-          admitted.run.id,
-          nextSequence.sequence,
-          JSON.stringify({ schedulerEventVersion: 1, payload: { frameKey: "root", error: { reason: "late" }, terminalReason: "late" } }),
-          `test:late-frame:${admitted.run.id}`,
-        );
-      } finally {
-        db.close();
-      }
-
-      await expect(replayRun(workspace, admitted.run.id)).resolves.toMatchObject({
-        ok: false,
-        projection: {
-          issues: expect.arrayContaining([
-            expect.stringContaining(`Scheduler event stream for run '${admitted.run.id}' is not replayable`),
-          ]),
-        },
-      });
-    });
-  });
 });
