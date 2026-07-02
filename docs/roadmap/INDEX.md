@@ -1,21 +1,23 @@
 # Acpus Roadmap Index
 
-This directory tracks Acpus plans, goal records, backlog, and capability gaps. Current implemented behavior lives in `specs/` and is not repeated here. Completed roadmap records can remain as implementation context; historical records live under `legacy/`.
+This directory tracks Acpus plans, goal records, backlog, and capability gaps.
+Current implemented behavior lives in `specs/` and is not repeated here.
+Completed roadmap records live under `archive/` as implementation context;
+pre-TypeScript history remains under `legacy/`.
 
 ## Writing Conventions
 
-- Write future plans, goal records, and capability gaps. Implemented behavior belongs in `specs/`; completed roadmap records are background context, not current behavior truth.
+- Write future plans, goal records, and capability gaps. Implemented behavior
+  belongs in `specs/`; completed roadmap records are background context, not
+  current behavior truth.
 - Do not use RFC 2119 normative verbs as constraints; those are reserved for specs. Use descriptive wording such as "plan", "goal", "gap", "candidate", and "TBD" here.
 
 ## Roadmap
 
 - [Core Roadmap](core-roadmap.md) — the path from the current authoring/compile core to a full runtime (task execution, executors, persistence, lint plugin, runner profiles).
-- [Durable Scheduler Design Record](durable-scheduler-design.md) — design record for the durable composite scheduler: dynamic instances, event-backed projections, race/quorum/all semantics, and concurrency limits.
-- [Durable Scheduler Implementation Record](durable-scheduler-implementation-goal.md) — completed V1 goal checklist and high-level field model for landing the durable scheduler.
-- [Expression Language Design Notes](expression-language-design.md) — planned direction for introducing `@acpus/expression` as a typed JSON-value expression language.
-- [Expression Language Implementation Goal](expression-language-implementation-goal.md) — executable checklist for landing `@acpus/expression` as one clean goal.
-- [AI Authoring Feedback Loop Implementation Goal](ai-authoring-feedback-loop-implementation-goal.md) — executable goal for the AI-authoring correction loop: CLI diagnostic hints, the `Expr.ir` → `__ir` rename, and the internal `acpus run` check pipeline.
-- [Live Task Execution Implementation Goal](live-task-execution-implementation-goal.md) — executable goal for live reusable task loading and embedded inline source.
-- [Neverthrow Error Boundary Refactor Goal](neverthrow-error-boundary-refactor-goal.md) — executable goal for migrating recoverable Core, runtime, scheduler, store, and CLI failures to typed result boundaries.
-- [Recursive Workflow Runtime Implementation Goal](recursive-workflow-runtime-implementation-goal.md) — executable goal for evolving the durable scheduler into a recursive state machine that can execute nested composite workflow IR.
-- [Output Schema Authoring Refactor Goal](output-schema-authoring-refactor-goal.md) — working goal for reducing handwritten output schema authoring in TypeScript-owned workflow outputs.
+- [Durable Runtime Roadmap](durable-runtime-roadmap.md) — active durable runtime audit, remaining gaps, and implementation target ordering.
+- [Spec Gap Audit](spec-gap-audit.md) — follow-up gaps found while aligning specs to package ownership.
+
+## Archive
+
+- [Archived Roadmap Records](archive/INDEX.md) — completed implementation goals and historical design records.

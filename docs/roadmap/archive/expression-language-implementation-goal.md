@@ -59,7 +59,7 @@ expression/core/runtime checks.
 
 ## Phase 0: Preflight
 
-- [x] Read `docs/roadmap/expression-language-design.md`.
+- [x] Read `docs/roadmap/archive/expression-language-design.md`.
 - [x] Check current worktree status and avoid touching unrelated user changes.
 - [x] Inventory current expression imports:
   `@acpus/core/expression`, expression types from `@acpus/core/ir`, and core root

@@ -372,7 +372,7 @@
 
 #### Command-backed agents
 
-当前实现（已过期）：本段记录的是 acpx-backed agent executor 之前的 local command agent 设计。当前 agent 设计已由 `docs/roadmap/agent-executor-acpx-implementation-goal.md` 和 `specs/agent-executor-spec.md` 取代：`agent.use` 是 acpx named agent token，`agent.command` 是 acpx `--agent <command>` custom ACP server，不是 raw shell worker。
+当前实现（已过期）：本段记录的是 acpx-backed agent executor 之前的 local command agent 设计。当前 agent 设计已由 `docs/roadmap/archive/agent-executor-acpx-implementation-goal.md` 和 `specs/agent-executor-spec.md` 取代：`agent.use` 是 acpx named agent token，`agent.command` 是 acpx `--agent <command>` custom ACP server，不是 raw shell worker。
 
 证据：`packages/runtime/src/execution/agent-node.ts`, `packages/agent-executor/src/index.ts`
 
@@ -689,7 +689,7 @@ legacy / 期望能力：legacy hooks 是 runtime platform layer，不完全依�
 
 #### acpx session-backed agent
 
-当前状态（已过期）：本段记录的是 acpx-backed migration 之前的 gap。当前 agent executor 已实现 acpx `sessions ensure`、prompt、cancel、permissionMode、agentMode 和 runtime-owned repair/observability；当前 truth 见 `specs/agent-executor-spec.md`、`specs/runtime-spec.md` 和 `docs/roadmap/agent-executor-acpx-implementation-goal.md`。
+当前状态（已过期）：本段记录的是 acpx-backed migration 之前的 gap。当前 agent executor 已实现 acpx `sessions ensure`、prompt、cancel、permissionMode、agentMode 和 runtime-owned repair/observability；当前 truth 见 `specs/agent-executor-spec.md`、`specs/runtime-spec.md` 和 `docs/roadmap/archive/agent-executor-acpx-implementation-goal.md`。
 
 legacy / 期望能力：legacy agent executor 管 acpx session、prompt、cancel、权限 flag。
 
