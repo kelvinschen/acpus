@@ -1,28 +1,25 @@
 import { valueToExprIR } from "@acpus/expression/ir";
 import { assertStableId, stripUndefined } from "../../graph/lowering.js";
-import { toSchemaIR } from "../../schema/index.js";
 import type { WorkflowValue } from "@acpus/expression";
 import type { DiagnosticIR, SwitchNodeIR } from "../../ir/types.js";
-import type { ScopeCallback, BuildScope, ObjectSchema, SchemaScopeOutput } from "./shared.js";
+import type { ScopeCallback, BuildScope, RuntimeValueOf } from "./shared.js";
 
-type SwitchStepSpecBase<OutSchema extends ObjectSchema | undefined> = {
-  cases: Array<{ when: WorkflowValue<boolean>; then: ScopeCallback<SchemaScopeOutput<OutSchema>> }>;
+export type SwitchStepSpec = {
+  outputSchema?: never;
+  cases: ReadonlyArray<{ when: WorkflowValue<boolean>; then: ScopeCallback }>;
+  default: ScopeCallback;
 };
 
-export type SwitchStepSpec<OutSchema extends ObjectSchema | undefined = ObjectSchema | undefined> =
-  OutSchema extends ObjectSchema
-    ? SwitchStepSpecBase<OutSchema> & {
-        outputSchema: OutSchema;
-        default: ScopeCallback<SchemaScopeOutput<OutSchema>>;
-      }
-    : SwitchStepSpecBase<undefined> & {
-        outputSchema?: undefined;
-        default?: ScopeCallback<SchemaScopeOutput<undefined>>;
-      };
+type SwitchCaseOutput<Case> = Case extends { then: (ctx: never) => infer Output } ? Output : never;
 
-export function buildSwitchNode<OutSchema extends ObjectSchema | undefined>(
+export type SwitchNodeRefOutput<Spec extends SwitchStepSpec> =
+  Spec extends { cases: ReadonlyArray<infer Case>; default: (ctx: never) => infer DefaultOutput }
+    ? RuntimeValueOf<SwitchCaseOutput<Case> | DefaultOutput>
+    : never;
+
+export function buildSwitchNode(
   id: string,
-  spec: SwitchStepSpec<OutSchema>,
+  spec: SwitchStepSpec,
   diagnostics: DiagnosticIR[],
   buildScope: BuildScope,
 ): SwitchNodeIR {
@@ -30,8 +27,7 @@ export function buildSwitchNode<OutSchema extends ObjectSchema | undefined>(
   return stripUndefined({
     id,
     kind: "switch",
-    outputSchema: spec.outputSchema ? toSchemaIR(spec.outputSchema) : undefined,
-    cases: spec.cases.map(c => ({ when: valueToExprIR(c.when), then: buildScope<{}, SchemaScopeOutput<OutSchema>>(c.then as any) })),
-    default: spec.default ? buildScope<{}, SchemaScopeOutput<OutSchema>>(spec.default as any) : undefined,
+    cases: spec.cases.map(c => ({ when: valueToExprIR(c.when), then: buildScope(c.then) })),
+    default: buildScope(spec.default),
   }) as SwitchNodeIR;
 }

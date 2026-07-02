@@ -1,5 +1,10 @@
-import type { ArtifactRef } from "../schema/index.js";
 import type { Dollar } from "./dollar.js";
+
+export type ArtifactRef = {
+  readonly kind: "artifact";
+  readonly uri: string;
+  readonly mediaType?: string;
+};
 
 export type ArtifactApi = {
   writeText(name: string, content: string, options?: { mediaType?: string }): Promise<ArtifactRef>;

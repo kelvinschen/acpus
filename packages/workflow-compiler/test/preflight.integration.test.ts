@@ -161,7 +161,6 @@ async function writePackageTask(cwd: string): Promise<void> {
 
 export const packageTask = task.define({
   inputSchema: z.object({ value: z.string() }),
-  outputSchema: z.object({ value: z.string() }),
   exec: async ({ input }) => ({ value: input.value }),
 });
 `);

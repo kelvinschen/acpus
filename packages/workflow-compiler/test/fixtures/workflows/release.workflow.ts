@@ -11,18 +11,6 @@ import {
 import localDependencyTask from "./tasks/local-dependency.task.js";
 import nodeModuleDependencyTask from "./tasks/node-module-dependency.task.js";
 
-const PrepareReleaseOut = z.object({
-  changedFiles: z.array(z.path()),
-  diff: z.artifact("text/x-patch"),
-  changelogDraft: z.artifact("text/markdown"),
-});
-
-const TestOut = z.object({
-  passed: z.boolean(),
-  summary: z.string(),
-  log: z.artifact("text/plain"),
-});
-
 const ReviewOut = z.object({
   ready: z.boolean(),
   riskCount: z.number().int(),
@@ -71,7 +59,6 @@ export default defineWorkflow({
   });
 
   const prepare = step("prepare_release").task({
-    outputSchema: PrepareReleaseOut,
     run: {
       input: {
         repoPath: input.repoPath,
@@ -122,7 +109,6 @@ export default defineWorkflow({
   });
 
   const tests = step("run_tests").task({
-    outputSchema: TestOut,
     run: {
       input: {
         repoPath: input.repoPath,

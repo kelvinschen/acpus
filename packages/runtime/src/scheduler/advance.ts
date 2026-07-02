@@ -6,6 +6,7 @@ import { ancestorGroupMembersForNode } from "./membership.js";
 import { schedulerStoreError, throwSchedulerStoreResult, type AttemptCommitInput, type RunOwnerClaim, type SchedulerSnapshot, type SchedulerStoreError, type SchedulerStorePort, type SchedulerStoreResult } from "./store-port.js";
 import type { GroupMember, NodeInstance, SchedulerProjection } from "./types.js";
 import { attemptTimeoutEvents, groupCompletionEvents, signalTimeoutEvents } from "./transitions.js";
+import { assertWorkflowData } from "../evaluation/admissible.js";
 
 export type NodeAttemptContext = {
   runId: string;
@@ -341,6 +342,13 @@ async function runInstance(
   } finally {
     clearInterval(monitor);
     active.delete(instance.nodeKey);
+  }
+  if (result.status === "completed") {
+    try {
+      assertWorkflowData(result.output, `Node '${instance.nodeId}' output`);
+    } catch (error) {
+      result = { status: "failed", reason: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   const committed = input.store.tryCommitAttemptResult({

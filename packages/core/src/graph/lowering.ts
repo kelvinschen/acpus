@@ -1,11 +1,14 @@
 import { valueToExprIR } from "@acpus/expression/ir";
+import { isExpr } from "@acpus/expression";
 import { secretOrExprToIR } from "../runtime/secret.js";
 import type { DiagnosticIR, ExprIR, SecretRefIR } from "../ir/types.js";
 import type { EnvInput } from "../nodes/leaf/shared.js";
 
 export function bindingsToIR(bindings?: Record<string, unknown>): Record<string, ExprIR> {
   const result: Record<string, ExprIR> = {};
-  for (const [key, value] of Object.entries(bindings ?? {})) result[key] = valueToExprIR(value);
+  for (const [key, value] of Object.entries(bindings ?? {})) {
+    if (value !== undefined) result[key] = valueToExprIR(stripUndefined(value));
+  }
   return result;
 }
 
@@ -19,6 +22,7 @@ export function envToIR(env?: EnvInput): Record<string, ExprIR | SecretRefIR> | 
 }
 
 export function stripUndefined<T>(value: T): T {
+  if (isExpr(value)) return value;
   if (Array.isArray(value)) return value.map(stripUndefined) as T;
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};

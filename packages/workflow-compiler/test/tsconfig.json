@@ -11,5 +11,6 @@
   },
   "include": [
     "fixtures/workflows/**/*.ts",
+    "fixtures/workflows/**/*.d.ts"
   ]
 }

@@ -7,18 +7,13 @@ import {
 } from "../src/index.js";
 import { compileWorkflowDefinition } from "../src/workflow.js";
 import { coalesce, eq, head, matches, or, pick, template, where } from "@acpus/expression";
-import { toSchemaIR } from "../src/schema.js";
 
 const NormalizeInput = z.object({ packageName: z.string() });
-const NormalizeOutput = z.object({ normalized: z.string(), slug: z.string() });
-const TestOutput = z.object({ passed: z.boolean(), summary: z.string() });
 const ReviewOutput = z.object({ ready: z.boolean(), summary: z.string() });
 const HumanDecisionOutput = z.object({ approved: z.boolean() });
-const StatusOutput = z.object({ status: z.string() });
 
 const normalizePackage = task.define({
   inputSchema: NormalizeInput,
-  outputSchema: NormalizeOutput,
   exec: async ({ input }) => ({
     normalized: input.packageName.trim(),
     slug: input.packageName.trim().toLowerCase().replaceAll(" ", "-"),
@@ -50,7 +45,6 @@ describe("workflow compilation", () => {
       });
 
       const tests = step("run_tests").task({
-        outputSchema: TestOutput,
         run: {
           input: { slug: normalized.output.slug },
           cwd: input.repoPath,
@@ -134,7 +128,6 @@ describe("workflow compilation", () => {
     });
     expect(ir.root.nodes[0]).toMatchObject({
       kind: "task",
-      outputSchema: toSchemaIR(NormalizeOutput),
       run: {
         target: { kind: "module" },
         input: {
@@ -257,10 +250,35 @@ describe("workflow compilation", () => {
         target: { kind: "module" },
       },
     });
+    expect(ir.root.nodes[0]).not.toHaveProperty("outputSchema");
     expect(ir.root.nodes[1]).toMatchObject({
       kind: "task",
       run: {
         target: { kind: "inline", runtime: "node", source: expect.any(String) },
+      },
+    });
+    expect(ir.root.nodes[1]).not.toHaveProperty("outputSchema");
+  });
+
+  it("strips literal undefined graph binding fields during lowering", () => {
+    const ir = compileWorkflowDefinition(defineWorkflow({
+      name: "strip_undefined_outputs",
+    }).build(() => ({
+      kept: "ok",
+      omitted: undefined,
+      nested: {
+        kept: "nested",
+        omitted: undefined,
+      },
+    })));
+
+    expect(ir.outputs).toEqual({
+      kept: { kind: "literal", value: "ok" },
+      nested: {
+        kind: "object",
+        fields: {
+          kept: { kind: "literal", value: "nested" },
+        },
       },
     });
   });
@@ -275,7 +293,6 @@ describe("workflow compilation", () => {
     }).build(({ input, step }) => {
       const gate = step("gate").if({
         condition: input.shouldRun,
-        outputSchema: StatusOutput,
         then: () => ({ status: "run" }),
         else: () => ({ status: "skip" }),
       });
@@ -283,11 +300,9 @@ describe("workflow compilation", () => {
       const checks = step("checks").parallel({
         branches: {
           fast: {
-            outputSchema: StatusOutput,
             do: () => (pick(gate.output, ["status"])),
           },
           slow: {
-            outputSchema: z.object({ done: z.boolean() }),
             do: () => ({ done: true }),
           },
         },
@@ -297,18 +312,17 @@ describe("workflow compilation", () => {
       const perItem = step("per_item").fanout({
         over: input.items,
         key: ({ item, itemIndex }) => template`item-${item}-${itemIndex}`,
-        itemOutputSchema: z.object({ ok: z.boolean() }),
         do: ({ item }) => ({ ok: matches(item, ".+") }),
         maxConcurrency: 4,
       });
 
       const retry = step("retry_until_done").loop({
+        initial: { done: false as boolean, summary: "first" },
         maxIterations: 3,
-        outputSchema: z.object({ done: z.boolean(), summary: z.string() }),
         do: ({ iter, previous }) =>
           ({
             done: eq(iter, 2),
-            summary: coalesce(previous.summary, "first"),
+            summary: previous.summary,
           }),
         stopWhen: ({ iter, result }) =>
           or(eq(iter, 3), where(result, { done: true })),
@@ -336,8 +350,8 @@ describe("workflow compilation", () => {
       id: "gate",
       kind: "if",
       condition: { kind: "ref", path: ["input", "shouldRun"] },
-      outputSchema: { kind: "object" },
     });
+    expect(ir.root.nodes[0]).not.toHaveProperty("outputSchema");
     expect(ir.root.nodes[0]).not.toHaveProperty("when");
     expect(ir.root.nodes[0]).not.toHaveProperty("otherwise");
     expect(ir.root.nodes[1]).toMatchObject({
@@ -347,7 +361,6 @@ describe("workflow compilation", () => {
       maxConcurrency: 2,
       branches: {
         fast: {
-          outputSchema: { kind: "object" },
           scope: {
             outputs: {
               status: {
@@ -359,12 +372,12 @@ describe("workflow compilation", () => {
         },
       },
     });
+    expect((ir.root.nodes[1] as any).branches.fast).not.toHaveProperty("outputSchema");
     expect(ir.root.nodes[2]).toMatchObject({
       id: "per_item",
       kind: "fanout",
       over: { kind: "ref", path: ["input", "items"] },
       strategy: "all",
-      itemOutputSchema: { kind: "object" },
       key: {
         kind: "template",
         parts: [
@@ -394,6 +407,7 @@ describe("workflow compilation", () => {
         },
       },
     });
+    expect(ir.root.nodes[2]).not.toHaveProperty("itemOutputSchema");
     expect(ir.root.nodes[2]).not.toHaveProperty("outputSchema");
     expect(ir.outputs).toMatchObject({
       fastStatus: {
@@ -426,20 +440,20 @@ describe("workflow compilation", () => {
     expect(ir.root.nodes[3]).toMatchObject({
       id: "retry_until_done",
       kind: "loop",
+      initial: {
+        kind: "object",
+        fields: {
+          done: { kind: "literal", value: false },
+          summary: { kind: "literal", value: "first" },
+        },
+      },
       maxIterations: 3,
       onExhausted: "returnLast",
       do: {
         outputs: {
           summary: {
-            kind: "call",
-            fn: "coalesce",
-            args: [
-              {
-                kind: "ref",
-                path: ["loop", "retry_until_done", "previous", "summary"],
-              },
-              { kind: "literal", value: "first" },
-            ],
+            kind: "ref",
+            path: ["loop", "retry_until_done", "previous", "summary"],
           },
         },
       },
@@ -469,14 +483,13 @@ describe("workflow compilation", () => {
         ],
       },
     });
+    expect(ir.root.nodes[3]).not.toHaveProperty("outputSchema");
     expect(ir.root.nodes[3]).not.toHaveProperty("until");
   });
 
   it("allows node output fields named ir to be wired as normal user fields", () => {
-    const OutputWithIr = z.object({ ir: z.string() });
     const definition = defineWorkflow({ name: "output_ir_field" }).build(({ step }) => {
       const inspect = step("inspect").task({
-        outputSchema: OutputWithIr,
         run: {
           input: {},
           exec: async () => ({ ir: "ok" }),
@@ -490,6 +503,7 @@ describe("workflow compilation", () => {
 
     expect(ir.diagnostics).toEqual([]);
     expect(ir.outputs.ir).toEqual({ kind: "ref", path: ["nodes", "inspect", "output", "ir"] });
+    expect(ir.root.nodes[0]).not.toHaveProperty("outputSchema");
   });
 
   it("diagnoses malformed task specs without crashing compilation", () => {
@@ -531,8 +545,8 @@ describe("workflow compilation", () => {
         run: { prompt: "Approve?" },
       });
       const loop = step("retry").loop({
+        initial: { ok: false as boolean },
         maxIterations: 1,
-        outputSchema: Output,
         do: () => ({ ok: true }),
         stopWhen: ({ result }) => result.ok,
       });
@@ -554,6 +568,7 @@ describe("workflow compilation", () => {
       maxIterations: 1,
     });
     expect(ir.root.nodes[1]).not.toHaveProperty("onExhausted");
+    expect(ir.root.nodes[1]).not.toHaveProperty("outputSchema");
   });
 
   it("lowers custom acpx command agent definitions and skips malformed agent definitions", () => {
@@ -652,7 +667,6 @@ describe("workflow compilation", () => {
         } as any,
       });
       step("task_retry").task({
-        outputSchema: z.object({ ok: z.boolean() }),
         retry: { max: 1 },
         run: {
           input: {},
@@ -678,7 +692,6 @@ describe("workflow compilation", () => {
 
   it("compiles race and quorum strategy contracts", () => {
     const Item = z.object({ id: z.string() });
-    const Result = z.object({ id: z.string(), ok: z.boolean() });
     const definition = defineWorkflow({
       name: "strategy_flow",
       inputSchema: z.object({
@@ -689,11 +702,9 @@ describe("workflow compilation", () => {
         strategy: "race",
         branches: {
           fast: {
-            outputSchema: Result,
             do: () => ({ id: "fast", ok: true }),
           },
           slow: {
-            outputSchema: Result,
             do: () => ({ id: "slow", ok: true }),
           },
         },
@@ -703,14 +714,13 @@ describe("workflow compilation", () => {
         strategy: "quorum",
         count: 2,
         over: input.items,
-        itemOutputSchema: Result,
         do: ({ item }) => ({ id: item.id, ok: true }),
       });
 
       return {
         winner: race.output.winner,
         result: race.output.result,
-        accepted: quorum.output.accepted,
+        accepted: quorum.output,
       };
     });
 
@@ -723,10 +733,11 @@ describe("workflow compilation", () => {
       kind: "parallel",
       strategy: "race",
       branches: {
-        fast: { outputSchema: { kind: "object" }, scope: { outputs: { id: { kind: "literal", value: "fast" } } } },
-        slow: { outputSchema: { kind: "object" }, scope: { outputs: { id: { kind: "literal", value: "slow" } } } },
+        fast: { scope: { outputs: { id: { kind: "literal", value: "fast" } } } },
+        slow: { scope: { outputs: { id: { kind: "literal", value: "slow" } } } },
       },
     });
+    expect((race as any).branches.fast).not.toHaveProperty("outputSchema");
 
     const quorum = ir.root.nodes[1];
     expect(quorum).toMatchObject({
@@ -734,7 +745,7 @@ describe("workflow compilation", () => {
       kind: "fanout",
       strategy: "quorum",
       count: 2,
-      itemOutputSchema: { kind: "object" },
     });
+    expect(quorum).not.toHaveProperty("itemOutputSchema");
   });
 });

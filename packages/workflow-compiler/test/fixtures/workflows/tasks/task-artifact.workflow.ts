@@ -1,10 +1,9 @@
-import { defineWorkflow, z } from "@acpus/core";
+import { defineWorkflow } from "@acpus/core";
 
 export default defineWorkflow({
   name: "cli-task",
 }).build(({ step }) => {
   const result = step("local_task").task({
-    outputSchema: z.object({ ok: z.boolean(), artifact: z.artifact("text/plain") }),
     run: {
       input: {},
       exec: async ({ artifact }) => ({

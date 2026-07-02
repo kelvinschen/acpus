@@ -129,12 +129,6 @@ describe("WorkflowIR diagnostics contract", () => {
             strategy: "all",
             count: 2,
             over: { kind: "literal", value: "abc" },
-            itemOutputSchema: {
-              kind: "object",
-              fields: {},
-              required: [],
-              additionalProperties: false,
-            },
             do: { nodes: [], outputs: {} },
           } as any,
           {
@@ -142,12 +136,6 @@ describe("WorkflowIR diagnostics contract", () => {
             kind: "fanout",
             strategy: "quorum",
             over: { kind: "array", items: [] },
-            itemOutputSchema: {
-              kind: "object",
-              fields: {},
-              required: [],
-              additionalProperties: false,
-            },
             do: { nodes: [], outputs: {} },
           } as any,
         ],
@@ -290,7 +278,6 @@ describe("WorkflowIR diagnostics contract", () => {
           {
             id: "task_with_retry",
             kind: "task",
-            outputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
             run: {
               kind: "task_run",
               input: {},
@@ -311,7 +298,6 @@ describe("WorkflowIR diagnostics contract", () => {
   });
 
   it("validates node timeout duration strings", () => {
-    const outputSchema = { kind: "object" as const, fields: {}, required: [], additionalProperties: false };
     const target = { kind: "inline" as const, runtime: "node" as const, source: "async function task() { return {}; }" };
 
     const diagnostics = validateWorkflowIR(minimalWorkflow({
@@ -332,14 +318,12 @@ describe("WorkflowIR diagnostics contract", () => {
           {
             id: "task_decimal",
             kind: "task",
-            outputSchema,
             run: { kind: "task_run", input: {}, target },
             timeout: "1.5s",
           },
           {
             id: "signal_negative",
             kind: "signal",
-            outputSchema,
             run: { kind: "signal_run", prompt: { kind: "template", parts: [] } },
             timeout: "-1s",
           },
@@ -352,7 +336,6 @@ describe("WorkflowIR diagnostics contract", () => {
           {
             id: "task_compound",
             kind: "task",
-            outputSchema,
             run: { kind: "task_run", input: {}, target },
             timeout: "1m30s",
           },
@@ -370,7 +353,6 @@ describe("WorkflowIR diagnostics contract", () => {
   });
 
   it("accepts supported timeout duration strings", () => {
-    const outputSchema = { kind: "object" as const, fields: {}, required: [], additionalProperties: false };
     const target = { kind: "inline" as const, runtime: "node" as const, source: "async function task() { return {}; }" };
 
     const diagnostics = validateWorkflowIR(minimalWorkflow({
@@ -391,21 +373,18 @@ describe("WorkflowIR diagnostics contract", () => {
           {
             id: "task_seconds",
             kind: "task",
-            outputSchema,
             run: { kind: "task_run", input: {}, target },
             timeout: "30s",
           },
           {
             id: "signal_minutes",
             kind: "signal",
-            outputSchema,
             run: { kind: "signal_run", prompt: { kind: "template", parts: [] } },
             timeout: "5m",
           },
           {
             id: "task_default_milliseconds",
             kind: "task",
-            outputSchema,
             run: { kind: "task_run", input: {}, target, execution: { defaultCommandTimeout: "1000" } },
           },
           {
@@ -427,7 +406,6 @@ describe("WorkflowIR diagnostics contract", () => {
         nodes: [{
           id: "bad_command_timeout",
           kind: "task",
-          outputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
           run: {
             kind: "task_run",
             input: {},
@@ -465,15 +443,10 @@ describe("WorkflowIR diagnostics contract", () => {
           {
             id: "bad_exhausted",
             kind: "loop",
+            initial: { kind: "object", fields: {} },
             maxIterations: 1,
             do: { nodes: [], outputs: {} },
             stopWhen: { kind: "literal", value: false },
-            outputSchema: {
-              kind: "object",
-              fields: {},
-              required: [],
-              additionalProperties: false,
-            },
             onExhausted: "continue",
           } as any,
         ],
@@ -493,12 +466,6 @@ describe("WorkflowIR diagnostics contract", () => {
   });
 
   it("validates required aligned IR fields", () => {
-    const outputSchema = {
-      kind: "object" as const,
-      fields: {},
-      required: [],
-      additionalProperties: false,
-    };
     const ir: WorkflowIR = {
       irVersion: 2,
       name: "bad_required_fields",
@@ -520,16 +487,14 @@ describe("WorkflowIR diagnostics contract", () => {
             kind: "if",
             condition: { kind: "literal", value: true },
             then: { nodes: [], outputs: {} },
-            outputSchema,
           },
           {
             id: "switch_without_default",
             kind: "switch",
             cases: [{ when: { kind: "literal", value: true }, then: { nodes: [], outputs: {} } }],
-            outputSchema,
           },
           {
-            id: "loop_without_output_schema",
+            id: "loop_without_initial",
             kind: "loop",
             maxIterations: 1,
             do: { nodes: [], outputs: {} },
@@ -553,7 +518,7 @@ describe("WorkflowIR diagnostics contract", () => {
       "E003",
       "G002",
       "G003",
-      "SC000",
+      "E000",
     ]);
     expect(diagnostics).toContainEqual(expect.objectContaining({
       code: "G002",
@@ -566,12 +531,6 @@ describe("WorkflowIR diagnostics contract", () => {
   });
 
   it("rejects fields outside the closed IR shape", () => {
-    const outputSchema = {
-      kind: "object" as const,
-      fields: {},
-      required: [],
-      additionalProperties: false,
-    };
     const ir: WorkflowIR = {
       irVersion: 2,
       name: "closed_shape",
@@ -610,17 +569,15 @@ describe("WorkflowIR diagnostics contract", () => {
             strategy: "all",
             over: { kind: "array", items: [] },
             do: { nodes: [], outputs: {} },
-            itemOutputSchema: outputSchema,
-            outputSchema,
           },
           {
             id: "retry",
             kind: "loop",
+            initial: { kind: "object", fields: {} },
             maxIterations: 1,
             do: { nodes: [], outputs: {} },
             stopWhen: { kind: "literal", value: true },
             until: { kind: "literal", value: true },
-            outputSchema,
           },
         ],
       },
@@ -641,7 +598,6 @@ describe("WorkflowIR diagnostics contract", () => {
       expect.objectContaining({ code: "IR001", path: "root.nodes.gate.when" }),
       expect.objectContaining({ code: "IR001", path: "root.nodes.gate.otherwise" }),
       expect.objectContaining({ code: "IR001", path: "root.nodes.route.otherwise" }),
-      expect.objectContaining({ code: "IR001", path: "root.nodes.items.outputSchema" }),
       expect.objectContaining({ code: "IR001", path: "root.nodes.retry.until" }),
     ]));
   });
@@ -684,12 +640,6 @@ describe("WorkflowIR diagnostics contract", () => {
             kind: "fanout",
             strategy: "all",
             do: { nodes: [], outputs: {} },
-            itemOutputSchema: {
-              kind: "object",
-              fields: {},
-              required: [],
-              additionalProperties: false,
-            },
           },
         ],
       },
@@ -716,64 +666,12 @@ describe("WorkflowIR diagnostics contract", () => {
     ]));
   });
 
-  it("requires schemas declared as required by IR types", () => {
-    const ir: WorkflowIR = {
-      irVersion: 2,
-      name: "missing_required_schemas",
-      agents: {},
-      root: {
-        nodes: [
-          {
-            id: "task_without_schema",
-            kind: "task",
-            run: { kind: "task_run", input: {}, target: { kind: "inline", runtime: "node", source: "async function task() {}" } },
-          },
-          {
-            id: "signal_without_schema",
-            kind: "signal",
-            run: { kind: "signal_run", prompt: { kind: "template", parts: [] } },
-          },
-          {
-            id: "parallel_without_branch_schema",
-            kind: "parallel",
-            strategy: "all",
-            branches: { branch: { scope: { nodes: [], outputs: {} } } },
-          },
-          {
-            id: "fanout_without_item_schema",
-            kind: "fanout",
-            strategy: "all",
-            over: { kind: "array", items: [] },
-            do: { nodes: [], outputs: {} },
-          },
-        ],
-      },
-      outputs: {},
-      lock: {
-        acpusCoreVersion: "test",
-        generatedAt: "2026-01-01T00:00:00.000Z",
-        notes: [],
-      },
-      diagnostics: [],
-    } as any;
-
-    const diagnostics = validateWorkflowIR(ir);
-
-    expect(diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "SC000", path: "root.nodes.task_without_schema.outputSchema" }),
-      expect.objectContaining({ code: "SC000", path: "root.nodes.signal_without_schema.outputSchema" }),
-      expect.objectContaining({ code: "SC000", path: "root.nodes.parallel_without_branch_schema.branches.branch.outputSchema" }),
-      expect.objectContaining({ code: "SC000", path: "root.nodes.fanout_without_item_schema.itemOutputSchema" }),
-    ]));
-  });
-
   it("rejects unknown task run fields in serialized IR", () => {
     const ir = minimalWorkflow({
       root: {
         nodes: [{
           id: "run_task",
           kind: "task",
-          outputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
           run: {
             kind: "task_run",
             input: {},
@@ -795,7 +693,6 @@ describe("WorkflowIR diagnostics contract", () => {
         nodes: [{
           id: "run_task",
           kind: "task",
-          outputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
           run: {
             kind: "task_run",
             input: {},
@@ -816,112 +713,6 @@ describe("WorkflowIR diagnostics contract", () => {
       expect.objectContaining({ code: "T007", path: "root.nodes.run_task.run.target.exportName" }),
       expect.objectContaining({ code: "T007", path: "root.nodes.run_task.run.target.referrer.path" }),
     ]));
-  });
-
-  it("rejects scope output fields outside the declared outputSchema across composites", () => {
-    const objectSchema = (fields: string[]) => ({
-      kind: "object" as const,
-      fields: Object.fromEntries(fields.map(name => [name, { kind: "string" as const }])),
-      required: [],
-      additionalProperties: false,
-    });
-    const ok = { kind: "literal" as const, value: "ok" };
-    const ir: WorkflowIR = {
-      irVersion: 2,
-      name: "excess_outputs",
-      agents: {},
-      root: {
-        nodes: [
-          {
-            id: "gate",
-            kind: "if",
-            condition: { kind: "literal", value: true },
-            outputSchema: objectSchema(["status"]),
-            then: { nodes: [], outputs: { status: ok, extra_then: ok } },
-            else: { nodes: [], outputs: { status: ok, extra_else: ok } },
-          },
-          {
-            id: "route",
-            kind: "switch",
-            outputSchema: objectSchema(["code"]),
-            cases: [{ when: { kind: "literal", value: true }, then: { nodes: [], outputs: { code: ok, extra_case: ok } } }],
-            default: { nodes: [], outputs: { code: ok, extra_default: ok } },
-          },
-          {
-            id: "checks",
-            kind: "parallel",
-            strategy: "all",
-            branches: {
-              left: { outputSchema: objectSchema(["ready"]), scope: { nodes: [], outputs: { ready: ok, extra_branch: ok } } },
-            },
-          },
-          {
-            id: "items",
-            kind: "fanout",
-            strategy: "all",
-            over: { kind: "array", items: [] },
-            itemOutputSchema: objectSchema(["label"]),
-            do: { nodes: [], outputs: { label: ok, extra_item: ok } },
-          },
-          {
-            id: "retry",
-            kind: "loop",
-            maxIterations: 1,
-            outputSchema: objectSchema(["done"]),
-            do: { nodes: [], outputs: { done: ok, extra_loop: ok } },
-            stopWhen: { kind: "literal", value: true },
-          },
-        ],
-      },
-      outputs: {},
-      lock: { acpusCoreVersion: "test", generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
-      diagnostics: [],
-    } as any;
-
-    const diagnostics = validateWorkflowIR(ir);
-
-    expect(diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "O001", path: "root.nodes.gate.then.outputs.extra_then" }),
-      expect.objectContaining({ code: "O001", path: "root.nodes.gate.else.outputs.extra_else" }),
-      expect.objectContaining({ code: "O001", path: "root.nodes.route.cases.0.then.outputs.extra_case" }),
-      expect.objectContaining({ code: "O001", path: "root.nodes.route.default.outputs.extra_default" }),
-      expect.objectContaining({ code: "O001", path: "root.nodes.checks.branches.left.scope.outputs.extra_branch" }),
-      expect.objectContaining({ code: "O001", path: "root.nodes.items.do.outputs.extra_item" }),
-      expect.objectContaining({ code: "O001", path: "root.nodes.retry.do.outputs.extra_loop" }),
-    ]));
-    // Declared fields must not be flagged.
-    expect(diagnostics.filter(d => d.code === "O001")).toHaveLength(7);
-  });
-
-  it("allows scope output fields outside the schema when no schema or additionalProperties is open", () => {
-    const ir: WorkflowIR = {
-      irVersion: 2,
-      name: "excess_allowed",
-      agents: {},
-      root: {
-        nodes: [
-          {
-            id: "schemaless_if",
-            kind: "if",
-            condition: { kind: "literal", value: true },
-            then: { nodes: [], outputs: { anything: { kind: "literal", value: "ok" } } },
-          },
-          {
-            id: "open_loop",
-            kind: "loop",
-            maxIterations: 1,
-            outputSchema: { kind: "object", fields: {}, required: [], additionalProperties: true },
-            do: { nodes: [], outputs: { open_extra: { kind: "literal", value: "ok" } } },
-            stopWhen: { kind: "literal", value: true },
-          },
-        ],
-      },
-      outputs: {},
-      lock: { acpusCoreVersion: "test", generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
-      diagnostics: [],
-    } as any;
-
-    expect(validateWorkflowIR(ir).filter(d => d.code === "O001")).toHaveLength(0);
   });
 
   it("validates SchemaIR as a closed recursive union", () => {
@@ -959,7 +750,7 @@ describe("WorkflowIR diagnostics contract", () => {
     ]));
   });
 
-  it("validates literal, enum, artifact, and secret schema variants", () => {
+  it("validates literal, enum, unknown, and closed schema variants", () => {
     const ir: WorkflowIR = {
       irVersion: 2,
       name: "bad_schema_variants",
@@ -968,8 +759,8 @@ describe("WorkflowIR diagnostics contract", () => {
         variants: [
           { kind: "literal", value: {} },
           { kind: "enum", values: ["ok", {}] },
-          { kind: "artifact", mediaType: 1 },
-          { kind: "secret_ref", extra: true },
+          { kind: "mystery" },
+          { kind: "string", extra: true },
         ],
       } as any,
       agents: {},
@@ -982,7 +773,7 @@ describe("WorkflowIR diagnostics contract", () => {
     expect(validateWorkflowIR(ir)).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "SC002", path: "inputSchema.variants.0.value" }),
       expect.objectContaining({ code: "SC002", path: "inputSchema.variants.1.values.1" }),
-      expect.objectContaining({ code: "SC002", path: "inputSchema.variants.2.mediaType" }),
+      expect.objectContaining({ code: "SC002", path: "inputSchema.variants.2.kind" }),
       expect.objectContaining({ code: "IR001", path: "inputSchema.variants.3.extra" }),
     ]));
   });
@@ -994,9 +785,8 @@ describe("WorkflowIR diagnostics contract", () => {
       inputSchema: {
         kind: "object",
         fields: {
-          file: { kind: "artifact", mediaType: "text/plain" },
+          file: { kind: "string" },
           home: { kind: "path" },
-          secret: { kind: "secret_ref" },
           tags: { kind: "array", item: { kind: "string" } },
           config: { kind: "record", value: { kind: "union", variants: [{ kind: "string" }, { kind: "number" }, { kind: "null" }] } },
         },

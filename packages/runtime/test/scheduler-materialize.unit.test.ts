@@ -9,7 +9,6 @@ describe("scheduler materialization", () => {
     const taskEvents = bootstrapRootEvents("run_1", workflowWithRootNode({
       id: "task",
       kind: "task",
-      outputSchema: objectSchema(),
       run: { kind: "task_run", input: {}, target: inlineTaskTarget() },
     }));
     const nodeKey = deriveInstanceKey(appendNode([], "task"));
@@ -23,7 +22,6 @@ describe("scheduler materialization", () => {
     const events = bootstrapRootEvents("run_1", workflowWithRootNode({
       id: "approve",
       kind: "signal",
-      outputSchema: objectSchema(),
       run: { kind: "signal_run", prompt: { kind: "template", parts: [] } },
       timeout: "1m",
     }));
@@ -91,7 +89,6 @@ describe("scheduler materialization", () => {
       condition: { kind: "literal", value: true },
       then: { nodes: [taskNode("then_task")], outputs: { value: { kind: "ref", path: ["nodes", "then_task", "output", "value"] } } },
       else: { nodes: [taskNode("else_task")], outputs: { value: { kind: "literal", value: "else" } } },
-      outputSchema: objectSchema(),
     };
     const workflow = workflowWithRootNode(ifNode);
     const ifKey = deriveInstanceKey(appendNode([], "choose"));
@@ -118,7 +115,7 @@ describe("scheduler materialization", () => {
       kind: "if",
       condition: { kind: "literal", value: true },
       then: { nodes: [taskNode("then_task")], outputs: {} },
-      outputSchema: objectSchema(),
+      else: { nodes: [], outputs: {} },
     };
     const workflow = workflowWithRootNode(ifNode);
     const ifKey = deriveInstanceKey(appendNode([], "choose"));
@@ -163,7 +160,6 @@ describe("scheduler materialization", () => {
       kind: "switch",
       cases: [{ when: { kind: "literal", value: false }, then: { nodes: [taskNode("case_task")], outputs: {} } }],
       default: { nodes: [], outputs: { value: { kind: "literal", value: "fallback" } } },
-      outputSchema: objectSchema(),
     };
     const workflow = workflowWithRootNode(switchNode);
     const switchKey = deriveInstanceKey(appendNode([], "route"));
@@ -216,11 +212,9 @@ describe("scheduler materialization", () => {
       strategy: "race",
       branches: {
         left: {
-          outputSchema: objectSchema(),
           scope: { nodes: [taskNode("left_task")], outputs: {} },
         },
         right: {
-          outputSchema: objectSchema(),
           scope: { nodes: [taskNode("right_task")], outputs: {} },
         },
       },
@@ -252,11 +246,9 @@ describe("scheduler materialization", () => {
       strategy: "all",
       branches: {
         pure: {
-          outputSchema: objectSchema(),
           scope: { nodes: [{ id: "check", kind: "assert", condition: { kind: "literal", value: true } }], outputs: {} },
         },
         leaf: {
-          outputSchema: objectSchema(),
           scope: { nodes: [taskNode("leaf_task")], outputs: {} },
         },
       },
@@ -286,7 +278,6 @@ describe("scheduler materialization", () => {
       strategy: "all",
       branches: {
         branch: {
-          outputSchema: objectSchema(),
           scope: {
             nodes: [taskNode("first_task"), taskNode("second_task")],
             outputs: { value: { kind: "ref", path: ["nodes", "second_task", "output", "value"] } },
@@ -335,7 +326,6 @@ describe("scheduler materialization", () => {
       strategy: "all",
       branches: {
         empty: {
-          outputSchema: objectSchema(),
           scope: { nodes: [], outputs: { value: { kind: "literal", value: "done" } } },
         },
       },
@@ -356,7 +346,6 @@ describe("scheduler materialization", () => {
       strategy: "all",
       branches: {
         branch: {
-          outputSchema: objectSchema(),
           scope: {
             nodes: [taskNode("first_task"), taskNode("second_task")],
             outputs: {
@@ -398,7 +387,6 @@ describe("scheduler materialization", () => {
       strategy: "all",
       branches: {
         branch: {
-          outputSchema: objectSchema(),
           scope: { nodes: [taskNode("first_task"), taskNode("second_task")], outputs: {} },
         },
       },
@@ -437,7 +425,6 @@ describe("scheduler materialization", () => {
       kind: "fanout",
       strategy: "all",
       over: { kind: "literal", value: ["a", "b"] },
-      itemOutputSchema: objectSchema(),
       do: { nodes: [taskNode("item_task")], outputs: {} },
     }), {});
 
@@ -546,10 +533,11 @@ describe("scheduler materialization", () => {
     const secondNodeKey = deriveInstanceKey(appendNode(appendLoopIteration([], "retry", 1), "loop_task"));
     const bootstrapped = bootstrapRootEvents("run_1", workflow, {});
 
-    expect(bootstrapped.map(event => event.type)).toEqual(["frame.started", "frame.started", "frame.started", "instance.ready"]);
+    expect(bootstrapped.map(event => event.type)).toEqual(["frame.started", "frame.started", "frame.loop_advanced", "frame.started", "instance.ready"]);
     expect(bootstrapped[1]).toMatchObject({ type: "frame.started", payload: { frameKey: loopKey, frameKind: "loop", nodeId: "retry" } });
-    expect(bootstrapped[2]).toMatchObject({ type: "frame.started", payload: { frameKey: firstIterationKey, frameKind: "loop_iteration", nodeId: "retry" } });
-    expect(bootstrapped[3]).toMatchObject({ type: "instance.ready", payload: { nodeKey: firstNodeKey, readinessSequence: 1 } });
+    expect(bootstrapped[2]).toEqual({ type: "frame.loop_advanced", payload: { frameKey: loopKey, iter: 0, previous: { done: false } } });
+    expect(bootstrapped[3]).toMatchObject({ type: "frame.started", payload: { frameKey: firstIterationKey, frameKind: "loop_iteration", nodeId: "retry" } });
+    expect(bootstrapped[4]).toMatchObject({ type: "instance.ready", payload: { nodeKey: firstNodeKey, readinessSequence: 1 } });
 
     const projection = applySchedulerEvents(createSchedulerProjection("run_1"), [
       ...bootstrapped,
@@ -561,7 +549,7 @@ describe("scheduler materialization", () => {
       { type: "frame.completed", payload: { frameKey: firstIterationKey, result: { done: false }, terminalReason: "frame_completed" } },
     ]);
     expect(continueRootEvents(workflow, applySchedulerEvents(projection, completeIteration), {})).toEqual([
-      { type: "frame.loop_advanced", payload: { frameKey: loopKey, iter: 0, result: { done: false } } },
+      { type: "frame.loop_advanced", payload: { frameKey: loopKey, iter: 0, previous: { done: false }, result: { done: false } } },
       { type: "frame.loop_advanced", payload: { frameKey: loopKey, iter: 1, previous: { done: false } } },
       expect.objectContaining({ type: "frame.started", payload: expect.objectContaining({ frameKey: deriveInstanceKey(appendLoopIteration([], "retry", 1)), frameKind: "loop_iteration" }) }),
       expect.objectContaining({ type: "instance.ready", payload: expect.objectContaining({ nodeKey: secondNodeKey, parentFrameKey: deriveInstanceKey(appendLoopIteration([], "retry", 1)), readinessSequence: 2 }) }),
@@ -577,6 +565,7 @@ describe("scheduler materialization", () => {
     expect(bootstrapRootEvents("run_1", workflowWithRootNode(nonLeaf), {})).toEqual([
       { type: "frame.started", payload: { runId: "run_1", frameKey: "root", frameKind: "root", scope: { retry: loopKey } } },
       expect.objectContaining({ type: "frame.started", payload: expect.objectContaining({ frameKey: loopKey, frameKind: "loop" }) }),
+      { type: "frame.loop_advanced", payload: { frameKey: loopKey, iter: 0, previous: { done: false } } },
       expect.objectContaining({ type: "frame.started", payload: expect.objectContaining({ frameKey: iterationKey, frameKind: "loop_iteration" }) }),
       expect.objectContaining({ type: "frame.started", payload: expect.objectContaining({ frameKey: checkKey, frameKind: "node" }) }),
       { type: "frame.completed", payload: { frameKey: checkKey, result: {}, terminalReason: "assert_passed" } },
@@ -597,9 +586,9 @@ describe("scheduler materialization", () => {
     const secondKey = deriveInstanceKey(appendNode(appendLoopIteration([], "retry", 0), "second"));
     const bootstrapped = bootstrapRootEvents("run_1", workflow, {});
 
-    expect(bootstrapped.map(event => event.type)).toEqual(["frame.started", "frame.started", "frame.started", "instance.ready"]);
-    expect(bootstrapped[2]).toMatchObject({ type: "frame.started", payload: { frameKey: iterationKey, frameKind: "loop_iteration", scope: { first: firstKey, second: secondKey } } });
-    expect(bootstrapped[3]).toMatchObject({ type: "instance.ready", payload: { nodeKey: firstKey, parentFrameKey: iterationKey } });
+    expect(bootstrapped.map(event => event.type)).toEqual(["frame.started", "frame.started", "frame.loop_advanced", "frame.started", "instance.ready"]);
+    expect(bootstrapped[3]).toMatchObject({ type: "frame.started", payload: { frameKey: iterationKey, frameKind: "loop_iteration", scope: { first: firstKey, second: secondKey } } });
+    expect(bootstrapped[4]).toMatchObject({ type: "instance.ready", payload: { nodeKey: firstKey, parentFrameKey: iterationKey } });
 
     const afterFirst = applySchedulerEvents(createSchedulerProjection("run_1"), [
       ...bootstrapped,
@@ -619,7 +608,7 @@ describe("scheduler materialization", () => {
 
     const afterIteration = applySchedulerEvents(afterSecond, continueRootEvents(workflow, afterSecond, {}));
     expect(continueRootEvents(workflow, afterIteration, {})).toEqual([
-      { type: "frame.loop_advanced", payload: { frameKey: loopKey, iter: 0, result: { done: true, value: "second" } } },
+      { type: "frame.loop_advanced", payload: { frameKey: loopKey, iter: 0, previous: { done: false }, result: { done: true, value: "second" } } },
       { type: "frame.completed", payload: { frameKey: loopKey, result: { done: true, value: "second" }, terminalReason: "stopped" } },
     ]);
   });
@@ -631,7 +620,6 @@ describe("scheduler materialization", () => {
         done: { kind: "ref", path: ["nodes", "second", "output", "done"] },
         rootPrefix: { kind: "ref", path: ["nodes", "prepare", "output", "prefix"] },
       },
-      stopWhen: { kind: "ref", path: ["nodes", "prepare", "output", "stop"] },
     });
     const workflow = workflowWithRootNodes([taskNode("prepare"), loop]);
     const prepareKey = deriveInstanceKey(appendNode([], "prepare"));
@@ -653,7 +641,7 @@ describe("scheduler materialization", () => {
     const afterIteration = applySchedulerEvents(afterSecond, continueRootEvents(workflow, afterSecond, {}));
 
     expect(continueRootEvents(workflow, afterIteration, {})).toEqual([
-      { type: "frame.loop_advanced", payload: { frameKey: loopKey, iter: 0, result: { done: true, rootPrefix: "root" } } },
+      { type: "frame.loop_advanced", payload: { frameKey: loopKey, iter: 0, previous: { done: false }, result: { done: true, rootPrefix: "root" } } },
       { type: "frame.completed", payload: { frameKey: loopKey, result: { done: true, rootPrefix: "root" }, terminalReason: "stopped" } },
     ]);
   });
@@ -663,7 +651,6 @@ function taskNode(id: string): NodeIR {
   return {
     id,
     kind: "task",
-    outputSchema: objectSchema(),
     run: { kind: "task_run", input: {}, target: inlineTaskTarget() },
   };
 }
@@ -684,7 +671,6 @@ function fanoutNode(options: {
     strategy: "all",
     over: options.over ?? { kind: "literal", value: ["a", "b"] },
     ...(options.key === undefined ? {} : { key: options.key }),
-    itemOutputSchema: objectSchema(),
     do: { nodes: options.doNodes ?? [taskNode("item_task")], outputs: options.doOutputs ?? {} },
   };
 }
@@ -693,8 +679,8 @@ function loopNode(options: { doNodes?: NodeIR[]; doOutputs?: WorkflowIR["root"][
   return {
     id: "retry",
     kind: "loop",
+    initial: { kind: "object", fields: { done: { kind: "literal", value: false } } },
     maxIterations: 3,
-    outputSchema: objectSchema(),
     stopWhen: options.stopWhen ?? { kind: "ref", path: ["loop", "retry", "result", "done"] },
     do: {
       nodes: options.doNodes ?? [taskNode("loop_task")],

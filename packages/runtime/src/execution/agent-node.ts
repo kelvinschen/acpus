@@ -119,7 +119,7 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
       }
       if (!node.outputSchema) {
         await writeTerminalMetadata("completed");
-        return { text: result.responseText };
+        return result.responseText;
       }
       const conformed = conformAgentOutput(node.outputSchema, result.responseText, node.id);
       if (conformed.rawRecoveredOutput !== undefined) {

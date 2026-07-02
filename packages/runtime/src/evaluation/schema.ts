@@ -19,10 +19,6 @@ function firstSchemaIssue(schema: RuntimeSchema, value: JsonValue, path: string)
     case "string":
     case "path":
       return typeof value === "string" ? undefined : `${path} expected string, got ${jsonType(value)}`;
-    case "secret_ref":
-      return validObject(value, { kind: "secret", name: "string" }, [], path);
-    case "artifact":
-      return validArtifact(value, schema, path);
     case "number":
       return typeof value === "number" ? undefined : `${path} expected number, got ${jsonType(value)}`;
     case "boolean":
@@ -80,31 +76,6 @@ function applyDefaults(schema: RuntimeSchema, value: JsonValue | undefined): Jso
   }
   if (schema.kind === "array" && Array.isArray(value)) return value.map(item => applyDefaults(schema.item as RuntimeSchema, item) ?? item);
   return value;
-}
-
-function validObject(value: JsonValue, required: Record<string, string>, optional: string[], path: string): string | undefined {
-  if (!isJsonObject(value)) return `${path} expected object, got ${jsonType(value)}`;
-  const allowed = new Set([...Object.keys(required), ...optional]);
-  for (const [key, expected] of Object.entries(required)) {
-    if (!(key in value)) return `${path}.${key} is required`;
-    const item = value[key];
-    if (item === undefined) return `${path}.${key} is required`;
-    if (expected === "string" && typeof item !== "string") return `${path}.${key} expected string, got ${jsonType(item)}`;
-    if (expected !== "string" && item !== expected) return `${path}.${key} expected ${JSON.stringify(expected)}`;
-  }
-  for (const key of Object.keys(value)) {
-    if (!allowed.has(key)) return `${path}.${key} is not allowed`;
-    const item = value[key];
-    if (optional.includes(key) && (item === undefined || typeof item !== "string")) return `${path}.${key} expected string, got ${item === undefined ? "undefined" : jsonType(item)}`;
-  }
-  return undefined;
-}
-
-function validArtifact(value: JsonValue, schema: Extract<RuntimeSchema, { kind: "artifact" }>, path: string): string | undefined {
-  const issue = validObject(value, { kind: "artifact", uri: "string" }, ["mediaType"], path);
-  if (issue) return issue;
-  if (!schema.mediaType || !isJsonObject(value) || value.mediaType === undefined) return undefined;
-  return value.mediaType === schema.mediaType ? undefined : `${path}.mediaType expected ${JSON.stringify(schema.mediaType)}`;
 }
 
 function isJsonObject(value: unknown): value is { [key: string]: JsonValue } {

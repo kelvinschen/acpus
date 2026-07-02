@@ -1,15 +1,11 @@
 import { defineWorkflow, task, z } from "@acpus/core";
-import type { TaskToken } from "@acpus/core";
-
-type ReusableTask<Input, Output> = Extract<TaskToken<Input, Output>, { kind: "external" }>;
 
 const sdk = {
   job: (_name: string) => ({ task: () => "ok" }),
 };
 
-export const externalJob: ReusableTask<{}, { value: string }> = task.define({
+export const externalJob = task.define({
   inputSchema: z.object({}),
-  outputSchema: z.object({ value: z.string() }),
   exec: async () => ({ value: sdk.job("external").task() }),
 });
 

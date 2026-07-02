@@ -7,6 +7,7 @@
 ## Requirements
 
 - The package MUST expose `createWorktree` from `@acpus/tasks/git` as a reusable external task token.
+- Reusable task outputs MUST be inferred from each task's `exec` return type; package tasks MUST NOT declare `outputSchema`.
 - The package MUST expose `tryCreateWorktree(input, dollar)` from `@acpus/tasks/git` for typed worktree domain execution.
 - `tryCreateWorktree(...)` MUST return a neverthrow `ResultAsync<CreateWorktreeOutput, CreateWorktreeError>`.
 - `CreateWorktreeError` MUST be a serializable tagged union covering non-detached worktree requests, dirty source repositories, source repository paths used as worktree paths, unregistered worktree removal, and git command failures.

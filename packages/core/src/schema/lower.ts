@@ -35,11 +35,8 @@ export function toSchemaIR(schema: Schema<any>, path = "$schema"): SchemaIR {
 
 export function tryToSchemaIR(schema: Schema<any>, path = "$schema"): Result<SchemaIR, SchemaLoweringError> {
   const meta = zod.globalRegistry.get(schema as zod.ZodTypeAny) as any;
-  const acpus = meta?.acpus as { kind?: string; mediaType?: string } | undefined;
+  const acpus = meta?.acpus as { kind?: string } | undefined;
   if (acpus?.kind === "path") return ok({ kind: "path" });
-  if (acpus?.kind === "artifact") return ok(acpus.mediaType === undefined ? { kind: "artifact" } : { kind: "artifact", mediaType: acpus.mediaType });
-  if (acpus?.kind === "secret_ref") return ok({ kind: "secret_ref" });
-  if (acpus?.kind === "integer") return ok({ kind: "number" });
 
   const def = defOf(schema);
   const kind = typeOf(schema);
@@ -183,13 +180,11 @@ export function schemaToJsonSchema(schema: SchemaIR): JsonValue {
     case "number": return { type: "number" };
     case "boolean": return { type: "boolean" };
     case "null": return { type: "null" };
-    case "secret_ref": return { type: "object", properties: { kind: { const: "secret" }, name: { type: "string" } }, required: ["kind", "name"], additionalProperties: false };
     case "literal": return { const: schema.value };
     case "enum": return { enum: schema.values };
     case "array": return { type: "array", items: schemaToJsonSchema(schema.item as SchemaIR) };
     case "record": return { type: "object", additionalProperties: schemaToJsonSchema(schema.value as SchemaIR) };
     case "union": return { anyOf: schema.variants.map(v => schemaToJsonSchema(v as SchemaIR)) };
-    case "artifact": return { type: "object", properties: { kind: { const: "artifact" }, uri: { type: "string" }, mediaType: { type: "string" } }, required: ["kind", "uri"], additionalProperties: false };
     case "object": {
       const properties: Record<string, JsonValue> = {};
       for (const [key, value] of Object.entries(schema.fields)) properties[key] = schemaToJsonSchema(value as SchemaIR);

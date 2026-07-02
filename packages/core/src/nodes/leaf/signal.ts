@@ -7,18 +7,26 @@ export type SignalRunSpec = {
   prompt: TemplateInput;
 };
 
-export type SignalStepSpec<OutSchema extends Schema<any>> = {
-  outputSchema: OutSchema;
-  run: SignalRunSpec;
-  timeout?: string;
-  onTimeout?: { action: "fail"; message?: string };
-};
+export type SignalStepSpec<OutSchema extends Schema<any> | undefined = Schema<any> | undefined> =
+  OutSchema extends Schema<any>
+    ? {
+        outputSchema: OutSchema;
+        run: SignalRunSpec;
+        timeout?: string;
+        onTimeout?: { action: "fail"; message?: string };
+      }
+    : {
+        outputSchema?: undefined;
+        run: SignalRunSpec;
+        timeout?: string;
+        onTimeout?: { action: "fail"; message?: string };
+      };
 
 function signalRunToIR(spec: SignalRunSpec): SignalRunIR {
   return { kind: "signal_run", prompt: templateToIR(spec.prompt) };
 }
 
-export function buildSignalNode<OutSchema extends Schema<any>>(
+export function buildSignalNode<OutSchema extends Schema<any> | undefined>(
   id: string,
   spec: SignalStepSpec<OutSchema>,
   diagnostics: DiagnosticIR[],
@@ -27,7 +35,7 @@ export function buildSignalNode<OutSchema extends Schema<any>>(
   return stripUndefined({
     id,
     kind: "signal",
-    outputSchema: toSchemaIR(spec.outputSchema),
+    outputSchema: spec.outputSchema ? toSchemaIR(spec.outputSchema) : undefined,
     run: signalRunToIR(spec.run),
     timeout: spec.timeout,
     onTimeout: spec.onTimeout,

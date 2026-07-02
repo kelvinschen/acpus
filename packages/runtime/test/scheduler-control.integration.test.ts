@@ -674,7 +674,6 @@ function rootTaskWorkflow() {
     name: "scheduler-control-root-task",
   }).build(({ step }) => {
     step("root_task").task({
-      outputSchema: z.object({ ok: z.boolean() }),
       run: {
         input: {},
         exec: async () => ({ ok: true }),
@@ -689,11 +688,9 @@ function sequentialRootTaskWorkflow() {
     name: "scheduler-control-root-sequence",
   }).build(({ step }) => {
     const first = step("first_task").task({
-      outputSchema: z.object({ value: z.string() }),
       run: { input: {}, exec: async () => ({ value: "first" }) },
     });
     const second = step("second_task").task({
-      outputSchema: z.object({ value: z.string() }),
       run: {
         input: { value: first.output.value },
         exec: async ({ input }) => ({ value: `${input.value}-second` }),

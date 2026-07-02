@@ -39,6 +39,14 @@
 - Published installs MUST rely on normal package resolution.
 - Acpus authoring rules MUST run only Acpus-owned checks and MUST NOT load user ESLint config, editor config, or broad third-party presets.
 - Acpus authoring rules MUST reject `Expr` values in JavaScript truthiness positions, logical/comparison operators over `Expr`, untagged template interpolation containing `Expr`, JavaScript array methods over Expr accessors, Expr-derived node ids, invalid task authoring shapes, and task callsites that cannot be joined to task metadata.
+- Acpus authoring rules MUST statically inspect graph-binding output producers for workflow root returns, composite callbacks, and loop `initial`, and MUST inspect inline task and reusable `task.define(...).exec` return types for non-workflow runtime data.
+- Graph-binding output producer source shapes that cannot be statically located MUST produce `OA001` diagnostics. This includes hidden specs, saved step declarations known to be Acpus step declarations, spread-heavy output objects, computed output keys, and non-literal producer callbacks where graph output shape would otherwise be inferred only at runtime. Task `exec` return expressions are ordinary TypeScript function returns and MUST NOT require source-shape visibility when their return type is known.
+- Acpus authoring rules MUST ignore unrelated property calls that merely share names such as `.task(...)` or `.loop(...)` unless the receiver is a direct `step("id")` call or is typed as an Acpus `StepDeclaration`.
+- Inferred output types containing functions, classes, `Date`, `Map`, `Set`, `symbol`, `bigint`, broad `object`, or other non-workflow data MUST produce `OA002` diagnostics before runtime. Acpus authoring rules MUST NOT reject `any` or `unknown` solely as a safety measure; authors who opt out of TypeScript precision own that tradeoff.
+- Explicit opaque `JsonValue` and `JsonObject` output types exported by Acpus packages MUST be accepted as workflow-admissible values.
+- Branch-like producers for `if`, `switch`, and `parallel` `race` MUST produce `OA003` diagnostics when branch output key sets differ or matching field types do not converge to a common assignable type that TypeScript has not already rejected.
+- Workflow root return branches MUST converge to a stable object shape when multiple root return statements are present.
+- Loop `initial` MUST be a statically known object output, loop `initial` and body output types MUST converge, and negative literal `maxIterations` MUST produce `OA004`.
 - Full preparation MUST compile through a worker/import path that can load TypeScript workflow modules.
 - Check failures MUST be reported as `WorkflowPreparationError` with phase `"check"` and `DiagnosticIR[]`.
 - Module import or compile failures MUST be reported as phase `"compile"`.
@@ -64,6 +72,7 @@
 - Compile MUST consume task metadata and MUST NOT duplicate lint rule text.
 - The analyzer MUST match direct `step("id").task(...)` call sites.
 - Reusable tasks MUST support direct default imports, named imports with aliases, barrel re-exports, same-file exported reusable tasks, and bare package specifiers that resolve to ESM modules at runtime.
+- Reusable task metadata MUST be derived from `task.define({ inputSchema, exec })`; reusable tasks MUST NOT require or preserve an `outputSchema` field.
 - Reusable module metadata MUST identify the source-level specifier, export name, and workflow source referrer needed for runtime import.
 - Reusable module metadata MUST record `exportName: "default"` for default imports, the original exported binding name for named imports even when locally aliased, and the exported workflow-module binding name for same-file task exports.
 - Same-file reusable task metadata MUST identify the workflow source module and exported task name.
@@ -73,6 +82,7 @@
 - Unsupported source forms such as namespace/property access MUST produce check diagnostics when statically recognizable.
 - Task callsites that cannot be joined to lowered task nodes by step id MUST produce check diagnostics rather than module descriptors.
 - Inline task source MUST be preserved as a self-contained function source in the serialized IR.
+- Inline task source analysis MUST treat task output as TypeScript-inferred from `exec`, not as schema-declared metadata.
 - Inline tasks that capture workflow-module scope MUST produce check diagnostics in preflight.
 - Direct `compileWorkflowModule(...)` MUST NOT run Acpus authoring rules, but it MUST append validation diagnostics if compiled task runs lack valid inline or reusable execution targets.
 - The task authoring diagnostic set MUST keep inline self-containment failures as `TB007` and SHOULD assign current task callsite diagnostics around the live reusable task model.
@@ -93,6 +103,7 @@
 - Public API contract and type tests MUST cover exported compiler/preflight functions, error class, and public types.
 - Integration tests MUST cover compiling TypeScript workflow modules with reusable module references, inline embedded source, and package-imported reusable tasks.
 - Tests MUST cover check failure before compile, including TypeScript diagnostics converted to `DiagnosticIR` and Acpus authoring-rule diagnostics.
+- Tests MUST cover output-admissibility diagnostics for non-JSON output values, imported reusable task output types, graph-binding hidden producer source shapes, branch/root convergence, loop consistency, unrelated method-call non-matches, explicit `JsonValue`/`JsonObject` acceptance, and task `exec` hidden return expressions accepted through TypeScript return types.
 - Tests MUST cover validation failure after compile.
 - Tests MUST cover task analysis facts and metadata for imported reusable tasks, exported same-file reusable tasks, package imports, re-exported reusable tasks, unsupported task callsite forms, and inline tasks that capture workflow-module scope.
 - Tests MUST cover stable reusable task reference metadata across compiles.

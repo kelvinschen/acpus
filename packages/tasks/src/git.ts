@@ -1,7 +1,6 @@
 import { access } from "node:fs/promises";
 import { resolve } from "node:path";
 import { task, z } from "@acpus/core";
-import type { TaskToken } from "@acpus/core";
 import type { Dollar } from "@acpus/core/runtime";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 
@@ -31,9 +30,7 @@ export type CreateWorktreeError =
   | { type: "unregistered-worktree-removal"; repoPath: string; worktreePath: string; message: string }
   | { type: "git-command-failed"; message: string };
 
-type ReusableTask<Input, Output> = Extract<TaskToken<Input, Output>, { kind: "external" }>;
-
-export const createWorktree: ReusableTask<CreateWorktreeInput, CreateWorktreeOutput> = task.define({
+export const createWorktree = task.define({
   inputSchema: z.object({
     repo: z.path(),
     path: z.path(),
@@ -41,17 +38,7 @@ export const createWorktree: ReusableTask<CreateWorktreeInput, CreateWorktreeOut
     detach: z.boolean().optional(),
     forceRemove: z.boolean().optional(),
   }),
-  outputSchema: z.object({
-    ok: z.boolean(),
-    repoPath: z.string(),
-    worktreePath: z.string(),
-    ref: z.string(),
-    baseSha: z.string(),
-    detached: z.boolean(),
-    created: z.boolean(),
-    dirtyStatus: z.string(),
-  }),
-  exec: async ({ input, $ }) => {
+  exec: async ({ input, $ }): Promise<CreateWorktreeOutput> => {
     const result = await tryCreateWorktree(input, $);
     return result.match(
       output => output,

@@ -1,38 +1,43 @@
 import { valueToExprIR } from "@acpus/expression/ir";
 import { refExpr } from "../../graph/refs.js";
 import { assertStableId, stripUndefined } from "../../graph/lowering.js";
-import { toSchemaIR, type InferSchema } from "../../schema/index.js";
 import type { WorkflowValue } from "@acpus/expression";
 import type { OutputValues } from "../../graph/scope.js";
 import type { DiagnosticIR, LoopNodeIR } from "../../ir/types.js";
-import type { BuildScope, LoopScopeContext, LoopStopContext, ObjectSchema, ScopeOutput } from "./shared.js";
+import type { BuildScope, LoopScopeContext, LoopStopContext, OutputObject, RuntimeValueOf, WidenRuntimeValue } from "./shared.js";
 
-export type LoopStepSpec<OutSchema extends ObjectSchema> = {
+type LoopState<Initial extends OutputObject> =
+  WidenRuntimeValue<RuntimeValueOf<Initial>> extends infer State
+    ? State extends OutputObject ? State : never
+    : never;
+
+export type LoopStepSpec<Initial extends OutputObject = OutputObject> = {
+  initial: WorkflowValue<Initial>;
   maxIterations: number;
-  do: (ctx: LoopScopeContext<ScopeOutput<InferSchema<OutSchema>>>) => OutputValues<ScopeOutput<InferSchema<OutSchema>>>;
-  stopWhen: (ctx: LoopStopContext<ScopeOutput<InferSchema<OutSchema>>>) => WorkflowValue<boolean>;
-  outputSchema: OutSchema;
+  do: (ctx: LoopScopeContext<LoopState<Initial>>) => OutputValues<LoopState<Initial>>;
+  stopWhen: (ctx: LoopStopContext<LoopState<Initial>>) => WorkflowValue<boolean>;
+  outputSchema?: never;
   onExhausted?: "fail" | "returnLast";
 };
 
-export function buildLoopNode<OutSchema extends ObjectSchema>(
+export function buildLoopNode<Initial extends OutputObject>(
   id: string,
-  spec: LoopStepSpec<OutSchema>,
+  spec: LoopStepSpec<Initial>,
   diagnostics: DiagnosticIR[],
   buildScope: BuildScope,
 ): LoopNodeIR {
   assertStableId(id, diagnostics);
   const iter = refExpr<number>(["loop", id, "iter"]);
-  const previous = refExpr<ScopeOutput<InferSchema<OutSchema>> | undefined>(["loop", id, "previous"]);
-  const result = refExpr<ScopeOutput<InferSchema<OutSchema>>>(["loop", id, "result"]);
+  const previous = refExpr<LoopState<Initial>>(["loop", id, "previous"]);
+  const result = refExpr<LoopState<Initial>>(["loop", id, "result"]);
   return stripUndefined({
     id,
     kind: "loop",
-    outputSchema: toSchemaIR(spec.outputSchema),
+    initial: valueToExprIR(spec.initial),
     maxIterations: spec.maxIterations,
     stopWhen: valueToExprIR(spec.stopWhen({ iter, result })),
     onExhausted: spec.onExhausted,
-    do: buildScope<{ iter: typeof iter; previous: typeof previous }, ScopeOutput<InferSchema<OutSchema>>>(spec.do, {
+    do: buildScope<{ iter: typeof iter; previous: typeof previous }, LoopState<Initial>>(spec.do, {
       iter,
       previous,
     }),

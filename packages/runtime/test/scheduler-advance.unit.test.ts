@@ -77,6 +77,23 @@ describe("scheduler advance loop", () => {
     expect(store.loadCount).toBeGreaterThanOrEqual(2);
   });
 
+  it("fails custom executor attempts when output is not workflow-admissible", async () => {
+    const store = new MemorySchedulerStore("run_1", [ready("bad", 1)]);
+
+    const result = await advanceRun({
+      runId: "run_1",
+      ownerId: "owner-a",
+      store,
+      executor: executor(() => completed({ when: new Date() } as unknown as JsonValue)),
+    });
+
+    expect(result).toMatchObject({ status: "idle", started: 1, failed: 1 });
+    expect(store.loadRunSnapshot("run_1").projection.instances.bad).toMatchObject({
+      status: "failed",
+      error: { reason: "Node 'bad' output is not workflow-admissible: $.when is Date." },
+    });
+  });
+
   it("respects direct-member local concurrency caps before enqueueing work", () => {
     const projection = applySchedulerEvents(createSchedulerProjection("run_1"), [
       { type: "group.started", payload: { runId: "run_1", groupKey: "fanout", nodeKey: "fanout", nodeId: "fanout", kind: "fanout", strategy: "all" } },

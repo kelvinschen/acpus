@@ -18,3 +18,4 @@ This directory tracks Acpus plans, goal records, backlog, and capability gaps. C
 - [Live Task Execution Implementation Goal](live-task-execution-implementation-goal.md) — executable goal for live reusable task loading and embedded inline source.
 - [Neverthrow Error Boundary Refactor Goal](neverthrow-error-boundary-refactor-goal.md) — executable goal for migrating recoverable Core, runtime, scheduler, store, and CLI failures to typed result boundaries.
 - [Recursive Workflow Runtime Implementation Goal](recursive-workflow-runtime-implementation-goal.md) — executable goal for evolving the durable scheduler into a recursive state machine that can execute nested composite workflow IR.
+- [Output Schema Authoring Refactor Goal](output-schema-authoring-refactor-goal.md) — working goal for reducing handwritten output schema authoring in TypeScript-owned workflow outputs.

@@ -1,28 +1,28 @@
 import { assertStableId, stripUndefined } from "../../graph/lowering.js";
 import type { Simplify, ValueOf } from "../../internal/type-utils.js";
-import { toSchemaIR, type InferSchema, type Schema } from "../../schema/index.js";
 import type { DiagnosticIR, ParallelBranchIR, ParallelNodeIR } from "../../ir/types.js";
-import type { BuildScope, ObjectSchema, ParallelStrategy, ScopeCallback, ScopeOutput } from "./shared.js";
+import type { BuildScope, OutputObject, ParallelStrategy, RuntimeValueOf, ScopeCallback } from "./shared.js";
 
-export type ParallelBranchSpec<OutSchema extends ObjectSchema> = {
-  outputSchema: OutSchema;
-  do: ScopeCallback<ScopeOutput<InferSchema<OutSchema>>>;
+export type ParallelBranchSpec = {
+  outputSchema?: never;
+  do: ScopeCallback;
 };
 
 export type ParallelStepSpec<
-  Branches extends Record<string, ObjectSchema> = Record<string, ObjectSchema>,
+  Branches extends Record<string, ParallelBranchSpec> = Record<string, ParallelBranchSpec>,
   Strategy extends ParallelStrategy = "all",
 > = Simplify<{
-  branches: { [K in keyof Branches]: ParallelBranchSpec<Branches[K]> };
+  branches: Branches;
   maxConcurrency?: number;
 } & (Strategy extends "race" ? { strategy: "race" } : { strategy?: "all" })>;
 
-type BranchOutputs<Branches extends Record<string, ObjectSchema>> = {
-  readonly [K in keyof Branches]: InferSchema<Branches[K]>;
+type BranchOutput<Branch> = Branch extends { do: (ctx: never) => infer Output } ? RuntimeValueOf<Output> : never;
+type BranchOutputs<Branches extends Record<string, ParallelBranchSpec>> = {
+  readonly [K in keyof Branches]: BranchOutput<Branches[K]>;
 };
 
 export type ParallelNodeRefOutput<
-  Branches extends Record<string, ObjectSchema>,
+  Branches extends Record<string, ParallelBranchSpec>,
   Strategy extends ParallelStrategy,
 > = Strategy extends "race"
   ? {
@@ -32,7 +32,7 @@ export type ParallelNodeRefOutput<
   : BranchOutputs<Branches>;
 
 export function buildParallelNode<
-  Branches extends Record<string, ObjectSchema>,
+  Branches extends Record<string, ParallelBranchSpec>,
   Strategy extends ParallelStrategy,
 >(
   id: string,
@@ -42,10 +42,9 @@ export function buildParallelNode<
 ): ParallelNodeIR {
   assertStableId(id, diagnostics);
   const branches: Record<string, ParallelBranchIR> = {};
-  for (const [key, branch] of Object.entries(spec.branches) as Array<[string, ParallelBranchSpec<ObjectSchema>]>) {
+  for (const [key, branch] of Object.entries(spec.branches) as Array<[string, ParallelBranchSpec]>) {
     branches[key] = {
-      outputSchema: toSchemaIR(branch.outputSchema),
-      scope: buildScope<{}, ScopeOutput<InferSchema<typeof branch.outputSchema>>>(branch.do),
+      scope: buildScope(branch.do),
     };
   }
   return stripUndefined({

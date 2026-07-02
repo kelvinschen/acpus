@@ -5,7 +5,6 @@ import externalTask from "external-task";
 const PREFIX = "outer-";
 const localTask = task.define({
   inputSchema: z.object({}),
-  outputSchema: z.object({ ok: z.boolean() }),
   exec: async () => ({ ok: true }),
 });
 
@@ -17,7 +16,6 @@ export default defineWorkflow({
   step("invalid_export").task({ run: { task: notTask, input: {} } });
   step("third_party").task({ run: { task: externalTask, input: {} } });
   step("inline_capture").task({
-    outputSchema: z.object({ slug: z.string() }),
     run: { input: {}, exec: async () => ({ slug: `${PREFIX}value` }) },
   });
 

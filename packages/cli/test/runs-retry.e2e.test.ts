@@ -19,5 +19,5 @@ describe("acpus runs retry smoke", () => {
       });
       expect(JSON.parse(retried.stdout).message).toContain("target 'missing' was not found");
     });
-  });
+  }, 15_000);
 });

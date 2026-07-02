@@ -3,7 +3,7 @@
 This package is a Core implementation of the Acpus TypeScript Workflow v2 direction:
 
 - TypeScript workflow files generate a typed graph and compile to canonical IR.
-- Schema authoring uses **Zod 4** plus Acpus boundary extensions: `z.path()`, `z.artifact()`, `z.secretRef()`.
+- Schema authoring uses **Zod 4** plus the Acpus boundary extension `z.path()`.
 - Expr authoring lives in `@acpus/expression` and supports `where(...)` plus named operators like `and`, `lte`, `every`, and `max`.
 - Program nodes are replaced by trusted local **Task** nodes.
 - Task command ergonomics use an Acpus-owned `$` wrapper backed by `zx/core`.
@@ -60,7 +60,6 @@ export default defineWorkflow({
   },
 }).build(({ input, agents, step }) => {
   const diff = step("diff").task({
-    outputSchema: z.object({ patch: z.artifact("text/x-patch") }),
     run: {
       input: {},
       cwd: input.repoPath,
@@ -105,7 +104,7 @@ export default defineWorkflow({
 
 Acpus accepts real Zod schemas at workflow boundaries, then canonicalizes them into `SchemaIR` for durable execution. The IR never stores live Zod objects.
 
-Allowed graph-boundary schemas are the serializable Zod subset: primitive scalars, arrays, strict objects, optional/default/nullable fields, records, unions, literals/enums, and Acpus extensions.
+Allowed graph-boundary schemas are the serializable Zod subset: primitive scalars, arrays, strict objects, optional/default/nullable fields, records, unions, literals/enums, and `z.path()`.
 
 Unsupported at graph boundaries: `transform`, `custom`, `function`, `promise`, `map`, `set`, `date`, `bigint`, `symbol`, `undefined`, `void`, `never`. Use those inside Task implementation code instead.
 

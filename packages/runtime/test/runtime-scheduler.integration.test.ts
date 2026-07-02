@@ -18,13 +18,11 @@ describe("runtime non-agent scheduler skeleton", () => {
 
       const gate = step("gate").if({
         condition: input.shouldRun,
-        outputSchema: z.object({ status: z.string() }),
         then: () => ({ status: "run" }),
         else: () => ({ status: "skip" }),
       });
 
       const route = step("route").switch({
-        outputSchema: z.object({ code: z.string() }),
         cases: [
           { when: eq(input.mode, "fast"), then: () => ({ code: "F" }) },
         ],
@@ -34,11 +32,9 @@ describe("runtime non-agent scheduler skeleton", () => {
       const checks = step("checks").parallel({
         branches: {
           fast: {
-            outputSchema: z.object({ status: z.string() }),
             do: () => ({ status: gate.output.status }),
           },
           route: {
-            outputSchema: z.object({ code: z.string() }),
             do: () => ({ code: route.output.code }),
           },
         },
@@ -46,16 +42,15 @@ describe("runtime non-agent scheduler skeleton", () => {
 
       const perItem = step("per_item").fanout({
         over: input.items,
-        itemOutputSchema: z.object({ label: z.string(), index: z.number() }),
         do: ({ item, itemIndex }) => ({ label: item, index: itemIndex }),
       });
 
       const retry = step("retry").loop({
+        initial: { done: false as boolean, summary: "first" },
         maxIterations: 3,
-        outputSchema: z.object({ done: z.boolean(), summary: z.string() }),
         do: ({ iter, previous }) => ({
           done: eq(iter, 2),
-          summary: coalesce(previous.summary, "first"),
+          summary: previous.summary,
         }),
         stopWhen: ({ iter, result }) => or(eq(iter, 3), where(result, { done: true })),
         onExhausted: "returnLast",
@@ -126,7 +121,6 @@ describe("runtime non-agent scheduler skeleton", () => {
       name: "needs_executor",
     }).build(({ step }) => {
       step("work").task({
-        outputSchema: z.object({ ok: z.boolean() }),
         run: { input: {}, exec: async () => ({ ok: true }) },
       });
       return {};
@@ -158,7 +152,6 @@ describe("runtime non-agent scheduler skeleton", () => {
       inputSchema: z.object({ items: z.array(z.object({ id: z.string() })) }),
     }).build(({ input, step }) => {
       const route = step("route").switch({
-        outputSchema: z.object({ code: z.string() }),
         cases: [
           { when: false, then: () => ({ code: "selected" }) },
         ],
@@ -168,13 +161,11 @@ describe("runtime non-agent scheduler skeleton", () => {
         strategy: "quorum",
         count: 2,
         over: input.items,
-        itemOutputSchema: z.object({ id: z.string(), ok: z.boolean() }),
         do: ({ item }) => ({ id: item.id, ok: matches(item.id, ".+") }),
       });
       return {
         code: route.output.code,
-        accepted: quorum.output.accepted,
-        completed: quorum.output.completed,
+        accepted: quorum.output,
       };
     });
     const ir = compileWorkflowDefinition(definition);
@@ -184,7 +175,70 @@ describe("runtime non-agent scheduler skeleton", () => {
     })).output).toEqual({
       code: "default",
       accepted: [{ id: "a", ok: true }, { id: "b", ok: true }],
-      completed: [{ id: "a", ok: true }, { id: "b", ok: true }, { id: "c", ok: true }],
+    });
+  });
+
+  it("orders direct fanout all output by input order when items complete out of order", async () => {
+    const ir = compileWorkflowDefinition(defineWorkflow({
+      name: "direct_fanout_all_input_order",
+      inputSchema: z.object({ items: z.array(z.string()) }),
+    }).build(({ input, step }) => {
+      const all = step("items").fanout({
+        over: input.items,
+        do: ({ item, step }) => {
+          const work = step("work").task({
+            run: { input: { item }, exec: async ({ input }) => ({ item: input.item }) },
+          });
+          return { item: work.output.item };
+        },
+      });
+      return { items: all.output };
+    }));
+
+    const result = await executeWorkflow(ir, { items: ["slow", "fast", "middle"] }, {
+      taskExecutor: async (_node, scope) => {
+        const item = (scope.fanout as Record<string, { item: string }>).items?.item;
+        if (item === "slow") await new Promise(resolve => setTimeout(resolve, 20));
+        if (item === "middle") await new Promise(resolve => setTimeout(resolve, 10));
+        return { item };
+      },
+    });
+
+    expect(result.output).toEqual({
+      items: [{ item: "slow" }, { item: "fast" }, { item: "middle" }],
+    });
+  });
+
+  it("orders direct fanout quorum output by completion order", async () => {
+    const ir = compileWorkflowDefinition(defineWorkflow({
+      name: "direct_quorum_completion_order",
+      inputSchema: z.object({ items: z.array(z.string()) }),
+    }).build(({ input, step }) => {
+      const quorum = step("items").fanout({
+        strategy: "quorum",
+        count: 2,
+        over: input.items,
+        do: ({ item, step }) => {
+          const work = step("work").task({
+            run: { input: { item }, exec: async ({ input }) => ({ item: input.item }) },
+          });
+          return { item: work.output.item };
+        },
+      });
+      return { accepted: quorum.output };
+    }));
+
+    const result = await executeWorkflow(ir, { items: ["slow", "fast", "middle"] }, {
+      taskExecutor: async (_node, scope) => {
+        const item = (scope.fanout as Record<string, { item: string }>).items?.item;
+        if (item === "slow") await new Promise(resolve => setTimeout(resolve, 20));
+        if (item === "middle") await new Promise(resolve => setTimeout(resolve, 10));
+        return { item };
+      },
+    });
+
+    expect(result.output).toEqual({
+      accepted: [{ item: "fast" }, { item: "middle" }],
     });
   });
 
@@ -195,7 +249,6 @@ describe("runtime non-agent scheduler skeleton", () => {
     }).build(({ input, step }) => {
       const gate = step("gate").if({
         condition: input.shouldRun,
-        outputSchema: z.object({ status: z.string() }),
         then: ({ step }) => {
           step("then_internal").assert({ condition: true });
           return { status: "run" };
@@ -223,14 +276,12 @@ describe("runtime non-agent scheduler skeleton", () => {
       const composite = step("composite").parallel({
         branches: {
           left: {
-            outputSchema: z.object({ ok: z.boolean() }),
             do: ({ step }) => {
               step("left_internal").assert({ condition: true });
               return { ok: true };
             },
           },
           right: {
-            outputSchema: z.object({ ok: z.boolean() }),
             do: () => ({ ok: true }),
           },
         },
@@ -250,11 +301,11 @@ describe("runtime non-agent scheduler skeleton", () => {
       name: "loop_return_last",
     }).build(({ step }) => {
       const loop = step("retry").loop({
+        initial: { iter: -1, previousIter: -1 },
         maxIterations: 3,
-        outputSchema: z.object({ iter: z.number(), previousIter: z.number() }),
         do: ({ iter, previous }) => ({
           iter,
-          previousIter: coalesce(previous.iter, -1),
+          previousIter: previous.iter,
         }),
         stopWhen: () => false,
         onExhausted: "returnLast",
@@ -268,8 +319,8 @@ describe("runtime non-agent scheduler skeleton", () => {
       name: "loop_fail",
     }).build(({ step }) => {
       step("retry").loop({
+        initial: { ok: false as boolean },
         maxIterations: 2,
-        outputSchema: z.object({ ok: z.boolean() }),
         do: () => ({ ok: false }),
         stopWhen: () => false,
       });
@@ -291,8 +342,8 @@ describe("runtime non-agent scheduler skeleton", () => {
       name: "bad_loop_condition",
     }).build(({ step }) => {
       step("loop").loop({
+        initial: { ok: false as boolean },
         maxIterations: 1,
-        outputSchema: z.object({ ok: z.boolean() }),
         do: () => ({ ok: true }),
         stopWhen: () => "yes" as any,
       });
@@ -306,8 +357,8 @@ describe("runtime non-agent scheduler skeleton", () => {
       const winner = step("race").parallel({
         strategy: "race",
         branches: {
-          left: { outputSchema: z.object({ value: z.string() }), do: () => ({ value: "left" }) },
-          right: { outputSchema: z.object({ value: z.string() }), do: () => ({ value: "right" }) },
+          left: { do: () => ({ value: "left" }) },
+          right: { do: () => ({ value: "right" }) },
         },
       });
       return { winner: winner.output.winner, value: winner.output.result.value };
@@ -321,13 +372,12 @@ describe("runtime non-agent scheduler skeleton", () => {
         strategy: "race",
         branches: {
           left: {
-            outputSchema: z.object({ value: z.string() }),
             do: ({ step }) => {
               step("fail_left").assert({ condition: false });
               return { value: "left" };
             },
           },
-          right: { outputSchema: z.object({ value: z.string() }), do: () => ({ value: "right" }) },
+          right: { do: () => ({ value: "right" }) },
         },
       });
       return { winner: winner.output.winner, value: winner.output.result.value };
@@ -340,11 +390,11 @@ describe("runtime non-agent scheduler skeleton", () => {
       step("race").parallel({
         strategy: "race",
         branches: {
-          left: { outputSchema: z.object({ value: z.string() }), do: ({ step }) => {
+          left: { do: ({ step }) => {
             step("fail_left").assert({ condition: false });
             return { value: "left" };
           } },
-          right: { outputSchema: z.object({ value: z.string() }), do: ({ step }) => {
+          right: { do: ({ step }) => {
             step("fail_right").assert({ condition: false });
             return { value: "right" };
           } },
@@ -362,10 +412,8 @@ describe("runtime non-agent scheduler skeleton", () => {
         strategy: "race",
         branches: {
           first: {
-            outputSchema: z.object({ ok: z.boolean() }),
             do: ({ step }) => {
               const result = step("first_task").task({
-                outputSchema: z.object({ ok: z.boolean() }),
                 run: { input: {}, exec: async () => {
                   calls.push("first");
                   return { ok: true };
@@ -375,10 +423,8 @@ describe("runtime non-agent scheduler skeleton", () => {
             },
           },
           second: {
-            outputSchema: z.object({ ok: z.boolean() }),
             do: ({ step }) => {
               const result = step("second_task").task({
-                outputSchema: z.object({ ok: z.boolean() }),
                 run: { input: {}, exec: async () => {
                   calls.push("second");
                   return { ok: true };
@@ -419,7 +465,6 @@ describe("runtime non-agent scheduler skeleton", () => {
     }).build(({ input, step }) => {
       const fanout = step("per_item").fanout({
         over: input.items,
-        itemOutputSchema: z.object({ ok: z.boolean() }),
         do: () => ({ ok: true }),
       });
       return { items: fanout.output };
@@ -432,7 +477,6 @@ describe("runtime non-agent scheduler skeleton", () => {
     }).build(({ step }) => {
       step("per_item").fanout({
         over: "not-array" as any,
-        itemOutputSchema: z.object({ ok: z.boolean() }),
         do: () => ({ ok: true }),
       });
       return {};
@@ -447,12 +491,65 @@ describe("runtime non-agent scheduler skeleton", () => {
         strategy: "quorum",
         count: 2,
         over: input.items,
-        itemOutputSchema: z.object({ ok: z.boolean() }),
         do: () => ({ ok: true }),
       });
       return {};
     }));
     await expect(executeWorkflow(impossibleQuorum, { items: ["a"] })).rejects.toThrow("Fanout quorum node 'quorum' accepted 1 items, below required count 2.");
+  });
+
+  it("rejects non-string schema-less signal payloads in direct execution", async () => {
+    const ir = compileWorkflowDefinition(defineWorkflow({
+      name: "raw_signal_payload",
+    }).build(({ step }) => {
+      const approval = step("approve").signal({ run: { prompt: "approve" } });
+      return { approval: approval.output };
+    }));
+
+    await expect(executeWorkflow(ir, {}, {
+      signalPayloads: { approve: { approved: true } },
+    })).rejects.toThrow("Signal node 'approve' payload must be a string.");
+
+    await expect(executeWorkflow(ir, {}, {
+      signalPayloads: { approve: "approved" },
+    })).resolves.toMatchObject({ output: { approval: "approved" } });
+  });
+
+  it("rejects non-admissible task output before it enters direct scheduler scope", async () => {
+    const ir = compileWorkflowDefinition(defineWorkflow({ name: "bad_task_output" }).build(({ step }) => {
+      const task = step("bad").task({
+        run: { input: {}, exec: async () => ({ when: new Date() }) },
+      });
+      return { when: task.output.when };
+    }));
+
+    await expect(executeWorkflow(ir, {}, {
+      taskExecutor: async () => ({ when: new Date() }),
+    })).rejects.toThrow("Node 'bad' output is not workflow-admissible");
+  });
+
+  it("rejects seeded completed node output and non-finite numbers before direct execution scope", async () => {
+    const seeded = compileWorkflowDefinition(defineWorkflow({ name: "seeded_bad_output" }).build(({ step }) => {
+      const task = step("seeded").task({
+        run: { input: {}, exec: async () => ({ value: "ok" }) },
+      });
+      return { value: task.output.value };
+    }));
+
+    await expect(executeWorkflow(seeded, {}, {
+      completedNodes: { seeded: { value: new Date() } },
+    })).rejects.toThrow("Completed node 'seeded' output is not workflow-admissible");
+
+    const nonFinite = compileWorkflowDefinition(defineWorkflow({ name: "non_finite_output" }).build(({ step }) => {
+      const task = step("bad").task({
+        run: { input: {}, exec: async () => ({ value: Number.NaN }) },
+      });
+      return { value: task.output.value };
+    }));
+
+    await expect(executeWorkflow(nonFinite, {}, {
+      taskExecutor: async () => ({ value: Number.POSITIVE_INFINITY }),
+    })).rejects.toThrow("non-finite number");
   });
 });
 

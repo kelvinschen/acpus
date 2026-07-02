@@ -3,13 +3,17 @@ import { safeParseSchema, toSchemaIR, tryToSchemaIR, z } from "../src/schema.js"
 import { err } from "neverthrow";
 
 describe("schema boundary lowering", () => {
+  it("exposes only the current Acpus schema helper surface", () => {
+    expect(typeof z.path).toBe("function");
+    expect("integer" in z).toBe(false);
+    expect("artifact" in z).toBe(false);
+    expect("secretRef" in z).toBe(false);
+  });
+
   it("lowers the supported Zod boundary subset to durable SchemaIR", () => {
     const schema = z.object({
       repoPath: z.path(),
-      patch: z.artifact("text/x-patch"),
-      token: z.secretRef().optional(),
       count: z.number().int(),
-      retries: z.integer(),
       maybeSummary: z.string().nullable().optional(),
       mode: z.enum(["fast", "safe"]),
       tags: z.array(z.string()),
@@ -21,13 +25,11 @@ describe("schema boundary lowering", () => {
     expect(ir).toMatchObject({
       kind: "object",
       additionalProperties: false,
-      required: ["repoPath", "patch", "count", "retries", "mode", "tags", "scores"],
+      required: ["repoPath", "count", "mode", "tags", "scores"],
     });
     if (ir.kind !== "object") throw new Error("expected object schema");
     expect(ir.fields.repoPath).toEqual({ kind: "path" });
-    expect(ir.fields.patch).toEqual({ kind: "artifact", mediaType: "text/x-patch" });
-    expect(ir.fields.token).toEqual({ kind: "secret_ref", optional: true });
-    expect(ir.fields.retries).toEqual({ kind: "number" });
+    expect(ir.fields.count).toEqual({ kind: "number" });
     expect(ir.fields.maybeSummary).toEqual({ kind: "string", nullable: true, optional: true });
     expect(ir.fields.tags).toEqual({ kind: "array", item: { kind: "string" } });
     expect(ir.fields.scores).toEqual({ kind: "record", value: { kind: "number" } });

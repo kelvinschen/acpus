@@ -103,7 +103,7 @@ type ScopeContext = {
   agents: Set<string>;
 };
 
-function validateScope(scope: unknown, diagnostics: DiagnosticIR[], ctx: ScopeContext, expectedOutput?: unknown): void {
+function validateScope(scope: unknown, diagnostics: DiagnosticIR[], ctx: ScopeContext): void {
   if (!isRecord(scope)) {
     diagnostics.push({ code: "IR002", severity: "error", message: "Scope must be an object.", path: ctx.path });
     return;
@@ -116,28 +116,6 @@ function validateScope(scope: unknown, diagnostics: DiagnosticIR[], ctx: ScopeCo
   forEachDense(scope.nodes, diagnostics, `${ctx.path}.nodes`, node => validateNode(node as NodeIR, diagnostics, ctx), { code: "IR002" });
   if (scope.outputs !== undefined) {
     validateExprObject(scope.outputs, diagnostics, `${ctx.path}.outputs`);
-    validateScopeOutputFields(scope.outputs, expectedOutput, diagnostics, `${ctx.path}.outputs`);
-  }
-}
-
-// A scope's lowered outputs MUST NOT declare fields outside the node's declared
-// outputSchema. The authoring layer cannot reject excess keys at compile time
-// because TypeScript does not apply excess-property checks to callback return
-// values, so the closed output contract is enforced here at IR build time.
-function validateScopeOutputFields(outputs: unknown, expectedOutput: unknown, diagnostics: DiagnosticIR[], path: string): void {
-  if (!isRecord(outputs) || !isRecord(expectedOutput) || expectedOutput.kind !== "object") return;
-  if (expectedOutput.additionalProperties === true) return;
-  const declared = isRecord(expectedOutput.fields) ? expectedOutput.fields : {};
-  for (const key of Object.keys(outputs)) {
-    if (!(key in declared)) {
-      diagnostics.push({
-        code: "O001",
-        severity: "error",
-        message: `Output field '${key}' is not declared in the node outputSchema.`,
-        path: `${path}.${key}`,
-        hint: "Remove the returned field or add it to the node outputSchema.",
-      });
-    }
   }
 }
 
@@ -172,10 +150,9 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
       break;
     }
     case "task": {
-      validateKnownFields(node, ["id", "source", "kind", "outputSchema", "run", "timeout"], diagnostics, path);
+      validateKnownFields(node, ["id", "source", "kind", "run", "timeout"], diagnostics, path);
       validateDuration(node.timeout, diagnostics, `${path}.timeout`, `Task node '${node.id}' timeout`, "IR002");
       validateTaskRun(node.run, diagnostics, `${path}.run`);
-      validateRequiredSchema(node.outputSchema, diagnostics, `${path}.outputSchema`);
       break;
     }
     case "signal": {
@@ -183,7 +160,7 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
       validateDuration(node.timeout, diagnostics, `${path}.timeout`, `Signal node '${node.id}' timeout`, "IR002");
       validateSignalRun(node.run, diagnostics, `${path}.run`);
       validateSignalTimeout(node.onTimeout, diagnostics, `${path}.onTimeout`, node.id);
-      validateRequiredSchema(node.outputSchema, diagnostics, `${path}.outputSchema`);
+      validateSchema(node.outputSchema, diagnostics, `${path}.outputSchema`);
       break;
     }
     case "assert": {
@@ -193,24 +170,24 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
       break;
     }
     case "if": {
-      validateKnownFields(node, ["id", "source", "kind", "condition", "then", "else", "outputSchema"], diagnostics, path);
+      validateKnownFields(node, ["id", "source", "kind", "condition", "then", "else"], diagnostics, path);
       validateExpr(node.condition, diagnostics, `${path}.condition`);
-      validateScope(node.then, diagnostics, { ...ctx, path: `${path}.then` }, node.outputSchema);
-      if (node.else) validateScope(node.else, diagnostics, { ...ctx, path: `${path}.else` }, node.outputSchema);
-      if (node.outputSchema && !node.else) {
+      validateScope(node.then, diagnostics, { ...ctx, path: `${path}.then` });
+      if (!node.else) {
         diagnostics.push({
           code: "G002",
           severity: "error",
-          message: `If node '${node.id}' with outputSchema must declare else.`,
+          message: `If node '${node.id}' must declare else.`,
           path: `${path}.else`,
-          hint: "Add an else branch that returns every outputSchema field, or remove outputSchema.",
+          hint: "Add an else branch. Use else: () => ({}) for control-only branching.",
         });
+      } else {
+        validateScope(node.else, diagnostics, { ...ctx, path: `${path}.else` });
       }
-      validateSchema(node.outputSchema, diagnostics, `${path}.outputSchema`);
       break;
     }
     case "switch": {
-      validateKnownFields(node, ["id", "source", "kind", "cases", "default", "outputSchema"], diagnostics, path);
+      validateKnownFields(node, ["id", "source", "kind", "cases", "default"], diagnostics, path);
       if (!Array.isArray(node.cases)) {
         diagnostics.push({ code: "IR002", severity: "error", message: "Switch cases must be an array.", path: `${path}.cases` });
       } else {
@@ -222,20 +199,20 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
           }
           validateKnownFields(c, ["when", "then"], diagnostics, casePath);
           validateExpr(c.when, diagnostics, `${casePath}.when`);
-          validateScope(c.then, diagnostics, { ...ctx, path: `${casePath}.then` }, node.outputSchema);
+          validateScope(c.then, diagnostics, { ...ctx, path: `${casePath}.then` });
         }, { code: "IR002" });
       }
-      if (node.default) validateScope(node.default, diagnostics, { ...ctx, path: `${path}.default` }, node.outputSchema);
-      if (node.outputSchema && !node.default) {
+      if (!node.default) {
         diagnostics.push({
           code: "G003",
           severity: "error",
-          message: `Switch node '${node.id}' with outputSchema must declare default.`,
+          message: `Switch node '${node.id}' must declare default.`,
           path: `${path}.default`,
-          hint: "Add a default branch that returns every outputSchema field, or remove outputSchema.",
+          hint: "Add a default branch. Use default: () => ({}) for control-only routing.",
         });
+      } else {
+        validateScope(node.default, diagnostics, { ...ctx, path: `${path}.default` });
       }
-      validateSchema(node.outputSchema, diagnostics, `${path}.outputSchema`);
       break;
     }
     case "parallel": {
@@ -252,14 +229,13 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
           diagnostics.push({ code: "IR002", severity: "error", message: "Parallel branch must be an object.", path: branchPath });
           continue;
         }
-        validateKnownFields(branch, ["outputSchema", "scope"], diagnostics, branchPath);
-        validateRequiredSchema(branch.outputSchema, diagnostics, `${branchPath}.outputSchema`);
-        validateScope(branch.scope, diagnostics, { ...ctx, path: `${branchPath}.scope` }, branch.outputSchema);
+        validateKnownFields(branch, ["scope"], diagnostics, branchPath);
+        validateScope(branch.scope, diagnostics, { ...ctx, path: `${branchPath}.scope` });
       }
       break;
     }
     case "fanout": {
-      validateKnownFields(node, ["id", "source", "kind", "over", "key", "do", "maxConcurrency", "itemOutputSchema", "strategy", "count"], diagnostics, path);
+      validateKnownFields(node, ["id", "source", "kind", "over", "key", "do", "maxConcurrency", "strategy", "count"], diagnostics, path);
       const strategy = (node as { strategy?: string }).strategy;
       const count = (node as { count?: number }).count;
       if (strategy !== "all" && strategy !== "quorum") diagnostics.push({ code: "F001", severity: "error", message: `Fanout node '${node.id}' strategy must be 'all' or 'quorum'.`, path: `${path}.strategy` });
@@ -268,17 +244,16 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
       const validOver = validateExpr(node.over, diagnostics, `${path}.over`);
       if (validOver) validateFanoutOver(node.over, diagnostics, `${path}.over`);
       if (node.key) validateTemplate(node.key, diagnostics, `${path}.key`);
-      validateRequiredSchema(node.itemOutputSchema, diagnostics, `${path}.itemOutputSchema`);
-      validateScope(node.do, diagnostics, { ...ctx, path: `${path}.do` }, node.itemOutputSchema);
+      validateScope(node.do, diagnostics, { ...ctx, path: `${path}.do` });
       break;
     }
     case "loop": {
-      validateKnownFields(node, ["id", "source", "kind", "maxIterations", "do", "stopWhen", "onExhausted", "outputSchema"], diagnostics, path);
-      if (!Number.isInteger(node.maxIterations) || node.maxIterations <= 0) diagnostics.push({ code: "L001", severity: "error", message: `Loop node '${node.id}' maxIterations must be a positive integer.`, path: `${path}.maxIterations` });
+      validateKnownFields(node, ["id", "source", "kind", "initial", "maxIterations", "do", "stopWhen", "onExhausted"], diagnostics, path);
+      validateExpr(node.initial, diagnostics, `${path}.initial`);
+      if (!Number.isInteger(node.maxIterations) || node.maxIterations < 0) diagnostics.push({ code: "L001", severity: "error", message: `Loop node '${node.id}' maxIterations must be a non-negative integer.`, path: `${path}.maxIterations` });
       if (node.onExhausted !== undefined && node.onExhausted !== "fail" && node.onExhausted !== "returnLast") diagnostics.push({ code: "L002", severity: "error", message: `Loop node '${node.id}' onExhausted must be 'fail' or 'returnLast'.`, path: `${path}.onExhausted` });
       validateExpr(node.stopWhen, diagnostics, `${path}.stopWhen`);
-      validateScope(node.do, diagnostics, { ...ctx, path: `${path}.do` }, node.outputSchema);
-      validateRequiredSchema(node.outputSchema, diagnostics, `${path}.outputSchema`);
+      validateScope(node.do, diagnostics, { ...ctx, path: `${path}.do` });
       break;
     }
     default:
@@ -560,12 +535,7 @@ function validateSchema(schema: unknown, diagnostics: DiagnosticIR[], path: stri
     case "boolean":
     case "null":
     case "path":
-    case "secret_ref":
       validateKnownFields(schema, ["kind", "description", "default", "optional", "nullable"], diagnostics, path);
-      break;
-    case "artifact":
-      validateKnownFields(schema, ["kind", "mediaType", "description", "default", "optional", "nullable"], diagnostics, path);
-      if (schema.mediaType !== undefined && typeof schema.mediaType !== "string") diagnostics.push({ code: "SC002", severity: "error", message: "Artifact schema mediaType must be a string.", path: `${path}.mediaType` });
       break;
     case "literal":
       validateKnownFields(schema, ["kind", "value", "description", "default", "optional", "nullable"], diagnostics, path);
@@ -611,9 +581,6 @@ function validateSchema(schema: unknown, diagnostics: DiagnosticIR[], path: stri
       forEachDense(schema.variants, diagnostics, `${path}.variants`, (variant, index) => validateSchema(variant as SchemaIR, diagnostics, `${path}.variants.${index}`));
       break;
     }
-    case "integer":
-      diagnostics.push({ code: "SC002", severity: "error", message: "SchemaIR must use kind 'number' instead of 'integer'.", path: `${path}.kind` });
-      break;
     default:
       diagnostics.push({ code: "SC002", severity: "error", message: `Unknown schema kind '${schema.kind}'.`, path: `${path}.kind` });
   }

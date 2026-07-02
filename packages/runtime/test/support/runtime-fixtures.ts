@@ -88,8 +88,12 @@ export function defaultRefInputWorkflow() {
     name: "cli-default-ref-input",
     inputSchema: z.object({
       base: z.string().default("main"),
-      patch: z.artifact("text/plain"),
-      token: z.secretRef(),
+      patch: z.object({
+        kind: z.literal("artifact"),
+        uri: z.string(),
+        mediaType: z.literal("text/plain"),
+      }),
+      token: z.string(),
     }),
   }).build(({ input }) => ({ base: input.base, patch: input.patch, token: input.token }));
 }
@@ -99,7 +103,6 @@ export function taskArtifactWorkflow() {
     name: "cli-task",
   }).build(({ step }) => {
     const result = step("local_task").task({
-      outputSchema: z.object({ ok: z.boolean(), artifact: z.artifact("text/plain") }),
       run: {
         input: {},
         exec: async ({ artifact }) => ({
@@ -118,12 +121,6 @@ export function taskInvocationOptionsWorkflow() {
     inputSchema: z.object({ workDir: z.path() }),
   }).build(({ input, step }) => {
     const result = step("inspect_invocation").task({
-      outputSchema: z.object({
-        inputName: z.string(),
-        cwd: z.string(),
-        envValue: z.string(),
-        inputMode: z.string(),
-      }),
       run: {
         input: { name: "runtime", mode: "strict" },
         cwd: input.workDir,
@@ -154,7 +151,6 @@ export function replacementTaskWorkflow() {
     name: "cli-task-replacement",
   }).build(({ step }) => {
     const result = step("local_task").task({
-      outputSchema: z.object({ ok: z.boolean(), artifact: z.artifact("text/plain") }),
       run: {
         input: {},
         exec: async ({ artifact }) => ({
@@ -164,7 +160,6 @@ export function replacementTaskWorkflow() {
       },
     });
     const extra = step("extra").task({
-      outputSchema: z.object({ extra: z.boolean() }),
       run: {
         input: {},
         exec: async () => ({ extra: true }),
@@ -179,7 +174,6 @@ export function failingTaskWorkflow() {
     name: "cli-failing-task",
   }).build(({ step }) => {
     step("boom").task({
-      outputSchema: z.object({ ok: z.boolean() }),
       run: {
         input: {},
         exec: async () => {
@@ -197,7 +191,6 @@ export function failOnceTaskWorkflow() {
     inputSchema: z.object({ workDir: z.path() }),
   }).build(({ input, step }) => {
     const result = step("eventual").task({
-      outputSchema: z.object({ ok: z.boolean() }),
       run: {
         input: {},
         cwd: input.workDir,
@@ -261,7 +254,6 @@ export function fanoutSignalWorkflow() {
   }).build(({ input, step }) => {
     const approvals = step("approvals").fanout({
       over: input.items,
-      itemOutputSchema: z.object({ ok: z.boolean() }),
       do: ({ step }) => {
         const approval = step("approve").signal({
           outputSchema: z.object({ ok: z.boolean() }),
@@ -282,7 +274,6 @@ export function parallelSignalAllWorkflow() {
       strategy: "all",
       branches: {
         left: {
-          outputSchema: z.object({ ok: z.boolean() }),
           do: ({ step }) => {
             const approval = step("left_approve").signal({
               outputSchema: z.object({ ok: z.boolean() }),
@@ -292,7 +283,6 @@ export function parallelSignalAllWorkflow() {
           },
         },
         right: {
-          outputSchema: z.object({ ok: z.boolean() }),
           do: ({ step }) => {
             const approval = step("right_approve").signal({
               outputSchema: z.object({ ok: z.boolean() }),
@@ -315,7 +305,6 @@ export function parallelSignalRaceWorkflow() {
       strategy: "race",
       branches: {
         left: {
-          outputSchema: z.object({ ok: z.boolean() }),
           do: ({ step }) => {
             const approval = step("left_approve").signal({
               outputSchema: z.object({ ok: z.boolean() }),
@@ -325,7 +314,6 @@ export function parallelSignalRaceWorkflow() {
           },
         },
         right: {
-          outputSchema: z.object({ ok: z.boolean() }),
           do: ({ step }) => {
             const approval = step("right_approve").signal({
               outputSchema: z.object({ ok: z.boolean() }),

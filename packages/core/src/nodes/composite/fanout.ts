@@ -3,41 +3,38 @@ import { refExpr } from "../../graph/refs.js";
 import { assertStableId, stripUndefined } from "../../graph/lowering.js";
 import type { Simplify } from "../../internal/type-utils.js";
 import { templateToIR, type TemplateInput } from "../../template/template.js";
-import { toSchemaIR, type InferSchema, type Schema } from "../../schema/index.js";
-import type { DiagnosticIR, FanoutNodeIR } from "../../ir/types.js";
 import type { OutputValues } from "../../graph/scope.js";
-import type { ArrayItem, BuildScope, FanoutScopeContext, FanoutStrategy, ObjectSchema, SchemaScopeOutput, WorkflowArrayValue } from "./shared.js";
+import type { DiagnosticIR, FanoutNodeIR } from "../../ir/types.js";
+import type { ArrayItem, BuildScope, FanoutScopeContext, FanoutStrategy, OutputObject, RuntimeValueOf, WorkflowArrayValue } from "./shared.js";
 
-type BaseFanoutStepSpec<Over extends WorkflowArrayValue<any>, OutSchema extends ObjectSchema> = {
+type BaseFanoutStepSpec<Over extends WorkflowArrayValue<any>, Output extends OutputObject> = {
   over: Over;
   key?: TemplateInput | ((ctx: Pick<FanoutScopeContext<ArrayItem<Over>>, "item" | "itemIndex">) => TemplateInput);
   maxConcurrency?: number;
-  do: (ctx: FanoutScopeContext<ArrayItem<Over>>) => OutputValues<SchemaScopeOutput<OutSchema>>;
-  itemOutputSchema: OutSchema;
+  do: (ctx: FanoutScopeContext<ArrayItem<Over>>) => OutputValues<Output>;
+  itemOutputSchema?: never;
 };
 
 export type FanoutStepSpec<
   Over extends WorkflowArrayValue<any> = WorkflowArrayValue<any>,
-  OutSchema extends ObjectSchema = ObjectSchema,
+  Output extends OutputObject = OutputObject,
   Strategy extends FanoutStrategy = FanoutStrategy,
 > = Strategy extends "quorum"
-  ? Simplify<BaseFanoutStepSpec<Over, OutSchema> & { strategy: "quorum"; count: number }>
-  : Simplify<BaseFanoutStepSpec<Over, OutSchema> & { strategy?: "all"; count?: never }>;
+  ? Simplify<BaseFanoutStepSpec<Over, Output> & { strategy: "quorum"; count: number }>
+  : Simplify<BaseFanoutStepSpec<Over, Output> & { strategy?: "all"; count?: never }>;
 
 export type FanoutNodeRefOutput<
-  OutSchema extends ObjectSchema,
+  Output extends OutputObject,
   Strategy extends FanoutStrategy,
-> = Strategy extends "quorum"
-  ? { accepted: Array<InferSchema<OutSchema>>; completed: Array<InferSchema<OutSchema>> }
-  : Array<InferSchema<OutSchema>>;
+> = Array<RuntimeValueOf<Output>>;
 
 export function buildFanoutNode<
   Over extends WorkflowArrayValue<any>,
-  OutSchema extends ObjectSchema,
+  Output extends OutputObject,
   Strategy extends FanoutStrategy,
 >(
   id: string,
-  spec: FanoutStepSpec<Over, OutSchema, Strategy>,
+  spec: FanoutStepSpec<Over, Output, Strategy>,
   diagnostics: DiagnosticIR[],
   buildScope: BuildScope,
 ): FanoutNodeIR {
@@ -53,8 +50,7 @@ export function buildFanoutNode<
     strategy: spec.strategy ?? "all",
     maxConcurrency: spec.maxConcurrency,
     count: (spec as { count?: number }).count,
-    itemOutputSchema: toSchemaIR(spec.itemOutputSchema),
-    do: buildScope<{ item: typeof item; itemIndex: typeof itemIndex }, SchemaScopeOutput<OutSchema>>(spec.do, {
+    do: buildScope<{ item: typeof item; itemIndex: typeof itemIndex }, Output>(spec.do, {
       item,
       itemIndex,
     }),

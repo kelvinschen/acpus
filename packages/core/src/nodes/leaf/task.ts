@@ -2,7 +2,7 @@ import { TASK } from "../../internal/symbols.js";
 import type { Simplify } from "../../internal/type-utils.js";
 import { envToIR, bindingsToIR, assertStableId, stripUndefined } from "../../graph/lowering.js";
 import { valueToExprIR } from "@acpus/expression/ir";
-import { toSchemaIR, z, type InferSchema, type Schema } from "../../schema/index.js";
+import { type InferSchema, type Schema } from "../../schema/index.js";
 import type { WorkflowValue } from "@acpus/expression";
 import type { DiagnosticIR, TaskExecutionTargetIR, TaskNodeIR } from "../../ir/types.js";
 import type { TaskFunction } from "../../runtime/task-context.js";
@@ -14,19 +14,18 @@ type BaseTaskToken<Input, Output> = {
   readonly source: string;
 };
 
-export type InlineTaskToken<Input = any, Output = any> = BaseTaskToken<Input, Output> & {
+export type InlineTaskToken<Input, Output> = BaseTaskToken<Input, Output> & {
   readonly kind: "inline";
   readonly inputSchema?: undefined;
   readonly outputSchema?: undefined;
 };
 
-export type ReusableTaskToken<Input = any, Output = any> = BaseTaskToken<Input, Output> & {
+export type ReusableTaskToken<Input, Output> = BaseTaskToken<Input, Output> & {
   readonly kind: "external";
   readonly inputSchema: Schema<Input>;
-  readonly outputSchema: Schema<Output>;
 };
 
-export type TaskToken<Input = any, Output = any> =
+export type TaskToken<Input, Output> =
   | InlineTaskToken<Input, Output>
   | ReusableTaskToken<Input, Output>;
 
@@ -45,11 +44,14 @@ type TaskNodeOptions = {
   retry?: never;
 };
 
-export type InlineTaskStepSpec<Input extends StepInput, OutSchema extends Schema<any>> = Simplify<TaskNodeOptions & {
-  outputSchema: OutSchema;
+export type InlineTaskStepSpec<
+  Input extends StepInput,
+  Exec extends TaskFunction<RuntimeInput<Input>, any> = TaskFunction<RuntimeInput<Input>, any>,
+> = Simplify<TaskNodeOptions & {
+  outputSchema?: never;
   run: TaskStepOptions & {
     input: Input;
-    exec: TaskFunction<RuntimeInput<Input>, InferSchema<OutSchema>>;
+    exec: Exec;
   };
 }>;
 
@@ -61,13 +63,12 @@ export type ReusableTaskStepSpec<Input extends StepInput, TaskInput, Output> = S
   };
 }>;
 
-export type TaskStepSpec<Input extends StepInput, OutSchema extends Schema<any> = Schema<any>> =
-  | InlineTaskStepSpec<Input, OutSchema>
+export type TaskStepSpec<Input extends StepInput> =
+  | InlineTaskStepSpec<Input>
   | ReusableTaskStepSpec<Input, any, any>;
 
 type ValidTaskSpec<Input extends StepInput> = {
   run: TaskToken<RuntimeInput<Input>, any>;
-  outputSchema: Schema<any>;
   inputBindings: StepInput;
   runOptions: TaskStepOptions;
 };
@@ -75,7 +76,6 @@ type ValidTaskSpec<Input extends StepInput> = {
 function makeTaskToken<Input, Output>(args: {
   kind: "inline" | "external";
   inputSchema?: Schema<Input>;
-  outputSchema?: Schema<Output>;
   fn: TaskFunction<Input, Output>;
 }): TaskToken<Input, Output> {
   const source = args.fn.toString();
@@ -83,7 +83,6 @@ function makeTaskToken<Input, Output>(args: {
     [TASK]: true as const,
     kind: args.kind,
     inputSchema: args.inputSchema,
-    outputSchema: args.outputSchema,
     fn: args.fn,
     source,
   } as TaskToken<Input, Output>;
@@ -94,26 +93,24 @@ export function createInlineTaskToken<Input, Output>(fn: TaskFunction<Input, Out
 }
 
 export interface TaskFactory {
-  define<InputSchema extends Schema<any>, OutputSchema extends Schema<any>>(config: {
+  define<InputSchema extends Schema<any>, Exec extends TaskFunction<InferSchema<InputSchema>, any>>(config: {
     inputSchema: InputSchema;
-    outputSchema: OutputSchema;
-    exec: TaskFunction<InferSchema<InputSchema>, InferSchema<OutputSchema>>;
-  }): ReusableTaskToken<InferSchema<InputSchema>, InferSchema<OutputSchema>>;
+    outputSchema?: never;
+    exec: Exec;
+  }): ReusableTaskToken<InferSchema<InputSchema>, Awaited<ReturnType<Exec>>>;
   isToken(value: unknown): value is TaskToken<any, any>;
 }
 
 export const task: TaskFactory = {
-  define<InputSchema extends Schema<any>, OutputSchema extends Schema<any>>(config: {
+  define<InputSchema extends Schema<any>, Exec extends TaskFunction<InferSchema<InputSchema>, any>>(config: {
     inputSchema: InputSchema;
-    outputSchema: OutputSchema;
-    exec: TaskFunction<InferSchema<InputSchema>, InferSchema<OutputSchema>>;
+    exec: Exec;
   }) {
     type Input = InferSchema<InputSchema>;
-    type Output = InferSchema<OutputSchema>;
+    type Output = Awaited<ReturnType<Exec>>;
     return makeTaskToken({
       kind: "external",
       inputSchema: config.inputSchema,
-      outputSchema: config.outputSchema,
       fn: config.exec,
     }) as ReusableTaskToken<Input, Output>;
   },
@@ -133,15 +130,11 @@ export function buildTaskNode<const Input extends StepInput>(
   }
   const parsed = taskSpecParts(spec);
   if (!parsed) {
-    diagnostics.push({ code: "T000", severity: "error", message: `Task node '${id}' must use inline { outputSchema, run: { input, exec } } or reusable { run: { input, task } }.` });
+    diagnostics.push({ code: "T000", severity: "error", message: `Task node '${id}' must use inline { run: { input, exec } } or reusable { run: { input, task } }.` });
   }
-  const outputSchema = parsed
-    ? parsed.outputSchema
-    : ("outputSchema" in spec && spec.outputSchema ? spec.outputSchema : z.unknown()) as Schema<any>;
   return stripUndefined({
     id,
     kind: "task",
-    outputSchema: toSchemaIR(outputSchema),
     run: parsed ? {
       kind: "task_run",
       input: bindingsToIR(parsed.inputBindings),
@@ -161,10 +154,9 @@ export function buildTaskNode<const Input extends StepInput>(
 function taskSpecParts<const Input extends StepInput>(spec: TaskStepSpec<Input>): ValidTaskSpec<Input> | undefined {
   const maybeRun = (spec as { run?: unknown }).run;
   if (maybeRun && typeof maybeRun === "object" && "exec" in maybeRun) {
-    const inlineSpec = spec as InlineTaskStepSpec<Input, Schema<any>>;
+    const inlineSpec = spec as InlineTaskStepSpec<Input>;
     return {
       run: createInlineTaskToken(inlineSpec.run.exec),
-      outputSchema: inlineSpec.outputSchema,
       inputBindings: inlineSpec.run.input,
       runOptions: inlineSpec.run,
     };
@@ -172,7 +164,6 @@ function taskSpecParts<const Input extends StepInput>(spec: TaskStepSpec<Input>)
     const reusableSpec = spec as ReusableTaskStepSpec<Input, any, any>;
     return {
       run: reusableSpec.run.task,
-      outputSchema: reusableSpec.run.task.outputSchema,
       inputBindings: reusableSpec.run.input,
       runOptions: reusableSpec.run,
     };

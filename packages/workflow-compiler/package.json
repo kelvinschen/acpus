@@ -29,7 +29,8 @@
   ],
   "scripts": {
     "build": "rm -rf dist && tsgo -p tsconfig.json",
-    "typecheck": "tsgo -p tsconfig.json --noEmit",
+    "typecheck": "tsgo -p tsconfig.json --noEmit && pnpm typecheck:fixtures",
+    "typecheck:fixtures": "tsgo -p test/tsconfig.json --noEmit",
     "clean": "rm -rf dist"
   },
   "dependencies": {

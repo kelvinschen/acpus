@@ -1,5 +1,6 @@
 import type { AgentNodeIR, NodeIR, ScopeIR, SignalNodeIR, TaskNodeIR, WorkflowIR } from "@acpus/core/ir";
 import type { ExprIR, JsonValue } from "@acpus/expression/ir";
+import { assertWorkflowData } from "../evaluation/admissible.js";
 import { evaluateExpr, renderTemplate, type EvaluationScope } from "../evaluation/evaluator.js";
 import { normalizeValue } from "../evaluation/schema.js";
 
@@ -63,6 +64,7 @@ type SchedulerScope = EvaluationScope & {
 export async function executeWorkflow(ir: WorkflowIR, input: JsonValue, options: RuntimeExecutionOptions = {}): Promise<NonAgentExecutionResult> {
   const scope = createRootScope(input, options.meta ?? {});
   for (const [nodeId, output] of Object.entries(options.completedNodes ?? {})) {
+    assertWorkflowData(output, `Completed node '${nodeId}' output`);
     const state = { status: "completed" as const, output };
     scope.nodes[nodeId] = state;
     scope.executedNodes[nodeId] = state;
@@ -98,7 +100,7 @@ async function executeNodeAsync(node: NodeIR, scope: SchedulerScope, options: Ru
   }
   if (node.kind === "signal") {
     if (!options.signalPayloads || !(node.id in options.signalPayloads)) throw new SignalAwaitingError(node.id, node, scope.executedNodes);
-    completeNode(scope, node.id, validateNodeOutput(node, options.signalPayloads[node.id]));
+    completeNode(scope, node.id, validateSignalOutput(node, options.signalPayloads[node.id]));
     return;
   }
   if (node.kind === "agent") {
@@ -120,7 +122,7 @@ async function executeNodeAsync(node: NodeIR, scope: SchedulerScope, options: Ru
   }
   if (node.kind === "if") {
     try {
-      const output = (await executeScopeAsync(evaluateBoolean(node.condition, scope, node.id) ? node.then : node.else ?? emptyScope(), createChildScope(scope), options)).output;
+      const output = (await executeScopeAsync(evaluateBoolean(node.condition, scope, node.id) ? node.then : node.else, createChildScope(scope), options)).output;
       completeNode(scope, node.id, validateNodeOutput(node, output));
     } catch (error) {
       if (error instanceof ExecutorRequiredError || error instanceof SignalAwaitingError || error instanceof RuntimeNodeError) throw error;
@@ -130,7 +132,7 @@ async function executeNodeAsync(node: NodeIR, scope: SchedulerScope, options: Ru
   }
   if (node.kind === "switch") {
     try {
-      const selected = node.cases.find(c => evaluateBoolean(c.when, scope, node.id))?.then ?? node.default ?? emptyScope();
+      const selected = node.cases.find(c => evaluateBoolean(c.when, scope, node.id))?.then ?? node.default;
       completeNode(scope, node.id, validateNodeOutput(node, (await executeScopeAsync(selected, createChildScope(scope), options)).output));
     } catch (error) {
       if (error instanceof ExecutorRequiredError || error instanceof SignalAwaitingError || error instanceof RuntimeNodeError) throw error;
@@ -146,7 +148,7 @@ async function executeNodeAsync(node: NodeIR, scope: SchedulerScope, options: Ru
           const executable = scopeHasExecutableNode(branch.scope);
           try {
             const branchExecuted: Record<string, CompletedNodeState> = {};
-            const result = normalizeValue(branch.outputSchema, (await executeScopeAsync(branch.scope, createChildScope(scope, {}, branchExecuted), options)).output as JsonValue, `Parallel branch '${node.id}.${key}' output`);
+            const result = (await executeScopeAsync(branch.scope, createChildScope(scope, {}, branchExecuted), options)).output;
             Object.assign(scope.executedNodes, branchExecuted);
             completeNode(scope, node.id, { winner: key, result });
             return;
@@ -160,7 +162,7 @@ async function executeNodeAsync(node: NodeIR, scope: SchedulerScope, options: Ru
       }
       const entries = await Promise.all(Object.entries(node.branches).map(async ([key, branch]) => [
         key,
-        normalizeValue(branch.outputSchema, (await executeScopeAsync(branch.scope, createChildScope(scope), options)).output as JsonValue, `Parallel branch '${node.id}.${key}' output`),
+        (await executeScopeAsync(branch.scope, createChildScope(scope), options)).output,
       ] as const));
       completeNode(scope, node.id, Object.fromEntries(entries));
     } catch (error) {
@@ -173,17 +175,16 @@ async function executeNodeAsync(node: NodeIR, scope: SchedulerScope, options: Ru
     try {
       const items = evaluateExpr(node.over, scope);
       if (!Array.isArray(items)) throw new Error(`Fanout node '${node.id}' expected array input.`);
-      const completed = await Promise.all(items.map((item, itemIndex) => executeScopeAsync(node.do, createChildScope(scope, {
-        fanout: {
-          ...scope.fanout,
-          [node.id]: { item, itemIndex },
-        },
-      }), options).then(result => normalizeValue(node.itemOutputSchema, result.output as JsonValue, `Fanout item '${node.id}[${itemIndex}]' output`))));
       if (node.strategy === "quorum") {
+        const completed: unknown[] = [];
+        await Promise.all(items.map((item, itemIndex) => executeScopeAsync(node.do, createFanoutItemScope(scope, node.id, item, itemIndex), options).then(result => {
+          completed.push(result.output);
+        })));
         if (completed.length < node.count) throw new Error(`Fanout quorum node '${node.id}' accepted ${completed.length} items, below required count ${node.count}.`);
-        completeNode(scope, node.id, { accepted: completed.slice(0, node.count), completed });
+        completeNode(scope, node.id, completed.slice(0, node.count));
         return;
       }
+      const completed = await Promise.all(items.map(async (item, itemIndex) => (await executeScopeAsync(node.do, createFanoutItemScope(scope, node.id, item, itemIndex), options)).output));
       completeNode(scope, node.id, completed);
     } catch (error) {
       if (error instanceof ExecutorRequiredError || error instanceof SignalAwaitingError || error instanceof RuntimeNodeError) throw error;
@@ -193,27 +194,35 @@ async function executeNodeAsync(node: NodeIR, scope: SchedulerScope, options: Ru
   }
   if (node.kind === "loop") {
     try {
-      let previous: Record<string, unknown> | undefined;
+      let result = evaluateExpr(node.initial, scope) as Record<string, unknown>;
       for (let iter = 0; iter < node.maxIterations; iter += 1) {
-        const loopScope = createChildScope(scope, {
-          loop: {
-            ...scope.loop,
-            [node.id]: { iter, previous },
-          },
-        });
-        const result = (await executeScopeAsync(node.do, loopScope, options)).output;
         scope.loop = {
           ...scope.loop,
-          [node.id]: { iter, previous, result },
+          [node.id]: { iter, previous: result, result },
         };
         if (evaluateBoolean(node.stopWhen, scope, node.id)) {
           completeNode(scope, node.id, validateNodeOutput(node, result));
           return;
         }
-        previous = result;
+        const loopScope = createChildScope(scope, {
+          loop: {
+            ...scope.loop,
+            [node.id]: { iter, previous: result },
+          },
+        });
+        result = (await executeScopeAsync(node.do, loopScope, options)).output as Record<string, unknown>;
+        scope.loop = {
+          ...scope.loop,
+          [node.id]: { iter, previous: result, result },
+        };
       }
-      if (node.onExhausted === "returnLast" && previous) {
-        completeNode(scope, node.id, validateNodeOutput(node, previous));
+      const iter = node.maxIterations;
+      scope.loop = {
+        ...scope.loop,
+        [node.id]: { iter, previous: result, result },
+      };
+      if (evaluateBoolean(node.stopWhen, scope, node.id) || node.onExhausted === "returnLast") {
+        completeNode(scope, node.id, validateNodeOutput(node, result));
         return;
       }
       throw new Error(`Loop node '${node.id}' exhausted after ${node.maxIterations} iterations.`);
@@ -244,13 +253,16 @@ function completeNode(scope: SchedulerScope, id: string, output: unknown): void 
 }
 
 function validateNodeOutput(node: NodeIR, output: unknown): unknown {
-  if (node.kind === "task" || node.kind === "signal" || node.kind === "loop") {
-    return normalizeValue(node.outputSchema, output as JsonValue, `Node '${node.id}' output`);
-  }
-  if ((node.kind === "agent" || node.kind === "if" || node.kind === "switch") && node.outputSchema) {
-    return normalizeValue(node.outputSchema, output as JsonValue, `Node '${node.id}' output`);
-  }
-  return output;
+  const normalized = (node.kind === "agent" || node.kind === "signal") && node.outputSchema
+    ? normalizeValue(node.outputSchema, output as JsonValue, `Node '${node.id}' output`)
+    : output;
+  assertWorkflowData(normalized, `Node '${node.id}' output`);
+  return normalized;
+}
+
+function validateSignalOutput(node: SignalNodeIR, output: unknown): unknown {
+  if (!node.outputSchema && typeof output !== "string") throw new Error(`Signal node '${node.id}' payload must be a string.`);
+  return validateNodeOutput(node, output);
 }
 
 function createRootScope(input: JsonValue, meta: Record<string, unknown>): SchedulerScope {
@@ -275,8 +287,13 @@ function createChildScope(parent: SchedulerScope, overrides: Partial<EvaluationS
   };
 }
 
-function emptyScope(): ScopeIR {
-  return { nodes: [], outputs: {} };
+function createFanoutItemScope(parent: SchedulerScope, nodeId: string, item: unknown, itemIndex: number): SchedulerScope {
+  return createChildScope(parent, {
+    fanout: {
+      ...parent.fanout,
+      [nodeId]: { item, itemIndex },
+    },
+  });
 }
 
 function scopeHasExecutableNode(scope: ScopeIR): boolean {

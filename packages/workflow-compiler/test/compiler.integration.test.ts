@@ -214,6 +214,15 @@ export default defineWorkflow({ name: "throws" }).build(() => {
     const loop = getNode(repairBranch.scope, "repair_loop");
     expect(loop).toMatchObject({
       kind: "loop",
+      initial: {
+        kind: "object",
+        fields: {
+          branch: { kind: "literal", value: "" },
+          round: { kind: "literal", value: 0 },
+          continue: { kind: "literal", value: true },
+          summary: { kind: "literal", value: "" },
+        },
+      },
       stopWhen: {
         kind: "call",
         fn: "not",
@@ -235,15 +244,8 @@ export default defineWorkflow({ name: "throws" }).build(() => {
             {
               kind: "expr",
               expr: {
-                kind: "call",
-                fn: "coalesce",
-                args: [
-                  {
-                    kind: "ref",
-                    path: ["loop", "repair_loop", "previous", "summary"],
-                  },
-                  { kind: "literal", value: "(none)" },
-                ],
+                kind: "ref",
+                path: ["loop", "repair_loop", "previous", "summary"],
               },
             },
           ]),

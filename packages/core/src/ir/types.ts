@@ -12,8 +12,6 @@ export type SchemaTypeIR =
   | { kind: "record"; value: SchemaIR }
   | { kind: "union"; variants: SchemaIR[] }
   | { kind: "path" }
-  | { kind: "artifact"; mediaType?: string }
-  | { kind: "secret_ref" }
   | { kind: "literal"; value: JsonPrimitive }
   | { kind: "enum"; values: JsonPrimitive[] };
 
@@ -91,7 +89,6 @@ export type AgentRunIR = {
 
 export type TaskNodeIR = BaseNodeIR & {
   kind: "task";
-  outputSchema: SchemaIR;
   run: TaskRunIR;
   timeout?: DurationIR;
 };
@@ -128,7 +125,7 @@ export type TaskExecutionTargetIR =
 
 export type SignalNodeIR = BaseNodeIR & {
   kind: "signal";
-  outputSchema: SchemaIR;
+  outputSchema?: SchemaIR;
   run: SignalRunIR;
   timeout?: DurationIR;
   onTimeout?: { action: "fail"; message?: string };
@@ -154,19 +151,16 @@ export type IfNodeIR = BaseNodeIR & {
   kind: "if";
   condition: ExprIR;
   then: ScopeIR;
-  else?: ScopeIR;
-  outputSchema?: SchemaIR;
+  else: ScopeIR;
 };
 
 export type SwitchNodeIR = BaseNodeIR & {
   kind: "switch";
   cases: Array<{ when: ExprIR; then: ScopeIR }>;
-  default?: ScopeIR;
-  outputSchema?: SchemaIR;
+  default: ScopeIR;
 };
 
 export type ParallelBranchIR = {
-  outputSchema: SchemaIR;
   scope: ScopeIR;
 };
 
@@ -183,7 +177,6 @@ type BaseFanoutNodeIR = BaseNodeIR & {
   key?: TemplateIR;
   do: ScopeIR;
   maxConcurrency?: number;
-  itemOutputSchema: SchemaIR;
 };
 
 export type FanoutNodeIR =
@@ -192,11 +185,11 @@ export type FanoutNodeIR =
 
 export type LoopNodeIR = BaseNodeIR & {
   kind: "loop";
+  initial: ExprIR;
   maxIterations: number;
   do: ScopeIR;
   stopWhen: ExprIR;
   onExhausted?: "fail" | "returnLast";
-  outputSchema: SchemaIR;
 };
 
 export type SourceLocationIR = {

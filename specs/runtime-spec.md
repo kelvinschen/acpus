@@ -25,7 +25,7 @@
 ### Input And Payload Normalization
 
 - `normalizeWorkflowInput(ir, input)` MUST validate workflow input against `WorkflowIR.inputSchema` and return normalized input.
-- `normalizeSignalPayload(ir, nodeId, payload)` MUST validate signal payloads against the target signal node output schema.
+- `normalizeSignalPayload(ir, nodeId, payload)` MUST return schema-less signal payloads as raw strings and MUST validate schema-backed signal payloads against the target signal node output schema.
 - Invalid workflow input or signal payload MUST fail before mutating runtime state for the corresponding operation.
 
 ### Expression And Template Evaluation
@@ -81,8 +81,8 @@
 - Parallel `all` strategy MUST aggregate branch outputs by branch key and MUST fail fast by cancelling remaining running member subtrees when one member fails.
 - Parallel `race` strategy MUST return the first successful branch with `{ winner, result }` and MUST cancel remaining running member subtrees after the winner is accepted.
 - Fanout `all` strategy MUST materialize item identity rows and aggregate item outputs as an array.
-- Fanout `quorum` strategy MUST accept outputs in completion order, return `{ accepted, completed }` after quorum success, and cancel remaining running member subtrees after quorum is reached.
-- Loop execution MUST support iteration index, previous iteration output, result refs, stop conditions, `maxIterations`, and the current exhaustion policy.
+- Fanout `quorum` strategy MUST accept outputs in completion order, return the accepted item outputs as `Array<ItemOutput>` after quorum success, and cancel remaining running member subtrees after quorum is reached.
+- Loop execution MUST use seeded pre-check semantics: `initial` is the first result, `stopWhen` checks before each body execution, `previous` is non-optional, and `maxIterations` counts only body executions.
 - Group member rows MUST point at the child branch or fanout-item frame that
   owns the cancellable member subtree.
 - The runtime MUST execute task nodes through the task run target stored in frozen IR.
@@ -93,6 +93,7 @@
 - Reusable task module loading MUST NOT add Acpus-owned cache-busting or dependency graph copying; normal Node/tsx module caching defines reuse within a runtime process.
 - Task `run.cwd` MUST affect task execution context and the `$` command wrapper only. It MUST NOT change the module resolution base for reusable task imports.
 - Task execution MUST evaluate task `run.input`, `run.cwd`, and non-secret `run.env` expressions before invoking the task.
+- Task and TypeScript-owned composite outputs MUST enter runtime scope without schema normalization. Runtime MUST keep generic workflow-data admissibility guards before values enter scope, events, or durable storage; these guards MUST reject non-plain runtime values such as functions, class instances, `Date`, `Map`, `Set`, `symbol`, `bigint`, non-finite numbers, sparse arrays, and cycles without reintroducing business-shape validation.
 - The runtime MUST pass task execution options to the task `$` command wrapper, including default command timeout.
 - The runtime MUST pass a per-attempt `abortSignal` into task code for cooperative cancellation.
 - Supported task execution values MUST be `commandRunner: "acpus-zx-core"` and `shell: "bash"`.
@@ -142,6 +143,7 @@
   MUST derive a deterministic session identity from run id and dynamic node key.
 - For schema-backed agent nodes, runtime MUST append the schema prompt section
   to the initial turn and to response repair turns.
+- For schema-less agent nodes, runtime MUST return raw response text as the node output and MUST NOT run schema conformance repair.
 - The schema prompt section MUST ask for exactly one JSON value that conforms to
   the schema, with no Markdown or prose. It MUST mention extra-key acceptance
   only for object schemas.

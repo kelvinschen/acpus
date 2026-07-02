@@ -1,4 +1,4 @@
 declare module "external-task" {
-  const externalTask: any;
+  const externalTask: import("@acpus/core").ReusableTaskToken<{}, { ok: boolean }>;
   export default externalTask;
 }

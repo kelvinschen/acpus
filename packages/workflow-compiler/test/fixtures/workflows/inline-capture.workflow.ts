@@ -1,4 +1,4 @@
-import { defineWorkflow, z } from "@acpus/core";
+import { defineWorkflow } from "@acpus/core";
 
 const PREFIX = "outer-";
 
@@ -6,7 +6,6 @@ export default defineWorkflow({
   name: "inline-capture-fixture",
 }).build(({ step }) => {
   const result = step("capture").task({
-    outputSchema: z.object({ slug: z.string() }),
     run: {
       input: {},
       // References `PREFIX` from the workflow module scope, so the inline task

@@ -7,7 +7,6 @@ import {
   coalesce,
   head,
   not,
-  pick,
   template,
   where,
 } from "@acpus/expression";
@@ -36,12 +35,6 @@ const LaneRoute = z.object({
   route: z.string(),
 });
 
-const LaneResult = z.object({
-  lane: z.string(),
-  review_ok: z.boolean(),
-  route: z.string(),
-  repair_summary: z.string(),
-});
 
 const Approval = z.object({
   approved: z.boolean(),
@@ -63,13 +56,11 @@ export default defineWorkflow({
     maxConcurrency: 3,
     over: input.lanes,
     key: ({ item }) => template`lane-${item.id}`,
-    itemOutputSchema: LaneResult,
     do: ({ item, step }) => {
       const laneParallel = step("lane_parallel").parallel({
         maxConcurrency: 3,
         branches: {
           review: {
-            outputSchema: LaneReview,
             do: ({ step }) => {
               const review = step("review_lane").agent({
                 outputSchema: LaneReview,
@@ -78,15 +69,23 @@ export default defineWorkflow({
                   prompt: template`Review lane ${item.id} in ${item.mode} mode.`,
                 },
               });
-              return pick(review.output, ["branch", "lane", "ok"]);
+              return {
+                branch: review.output.branch,
+                lane: review.output.lane,
+                ok: review.output.ok,
+              };
             },
           },
           repair: {
-            outputSchema: LaneRepair,
             do: ({ step }) => {
               const repairLoop = step("repair_loop").loop({
+                initial: {
+                  branch: "",
+                  round: 0,
+                  continue: true,
+                  summary: "",
+                },
                 maxIterations: 2,
-                outputSchema: LaneRepair,
                 do: ({ iter, previous, step }) => {
                   const repair = step("repair_round").agent({
                     outputSchema: LaneRepair,
@@ -95,31 +94,31 @@ export default defineWorkflow({
                       prompt: template`
                         Repair lane ${item.id}.
                         Round: ${iter}
-                        Previous summary: ${coalesce(previous.summary, "(none)")}
+                        Previous summary: ${previous.summary}
                       `,
                     },
                   });
                   return {
-                    ...pick(repair.output, ["branch", "continue", "summary"]),
+                    branch: repair.output.branch,
                     round: iter,
+                    continue: repair.output.continue,
+                    summary: repair.output.summary,
                   };
                 },
                 stopWhen: ({ result }) => not(result.continue),
                 onExhausted: "returnLast",
               });
-              return pick(repairLoop.output, [
-                "branch",
-                "round",
-                "continue",
-                "summary",
-              ]);
+              return {
+                branch: repairLoop.output.branch,
+                round: repairLoop.output.round,
+                continue: repairLoop.output.continue,
+                summary: repairLoop.output.summary,
+              };
             },
           },
           route: {
-            outputSchema: LaneRoute,
             do: ({ step }) => {
               const route = step("route_lane").switch({
-                outputSchema: LaneRoute,
                 cases: [
                   {
                     when: eq(item.mode, "auto"),
@@ -131,7 +130,11 @@ export default defineWorkflow({
                           prompt: template`Choose automatic route for ${item.id}.`,
                         },
                       });
-                      return pick(auto.output, ["branch", "lane", "route"]);
+                      return {
+                        branch: auto.output.branch,
+                        lane: auto.output.lane,
+                        route: auto.output.route,
+                      };
                     },
                   },
                 ],
@@ -143,10 +146,18 @@ export default defineWorkflow({
                       prompt: template`Choose manual route for ${item.id}.`,
                     },
                   });
-                  return pick(manual.output, ["branch", "lane", "route"]);
+                  return {
+                    branch: manual.output.branch,
+                    lane: manual.output.lane,
+                    route: manual.output.route,
+                  };
                 },
               });
-              return pick(route.output, ["branch", "lane", "route"]);
+              return {
+                branch: route.output.branch,
+                lane: route.output.lane,
+                route: route.output.route,
+              };
             },
           },
         },
@@ -160,9 +171,9 @@ export default defineWorkflow({
       };
     },
   });
+
   const approval = step("approval").if({
     condition: input.requireHuman,
-    outputSchema: Approval,
     then: ({ step }) => {
       const human = step("human_approval").signal({
         outputSchema: Approval,
@@ -170,20 +181,19 @@ export default defineWorkflow({
           prompt: template`Approve orchestration result: ${lanes.output}`,
         },
       });
-      return pick(human.output, ["approved", "notes"]);
+      return { approved: human.output.approved, notes: human.output.notes };
     },
     else: ({ step }) => {
       const automatic = step("automatic_approval").task({
-        outputSchema: Approval,
         run: {
           input: {},
-          exec: async ({ $ }) => ({
+          exec: async () => ({
             approved: true,
             notes: "auto-approved",
           }),
         },
       });
-      return pick(automatic.output, ["approved", "notes"]);
+      return { approved: automatic.output.approved, notes: automatic.output.notes };
     },
   });
 

@@ -32,15 +32,15 @@
 
 ### Schema Layer
 
-- The core MUST re-export Zod 4 as `z` and MUST add Acpus extensions `z.path()`, `z.artifact(mediaType?)`, `z.secretRef()`, and `z.integer()`.
+- The core MUST re-export Zod 4 as `z` and MUST add the Acpus boundary extension `z.path()`.
 - Graph-boundary schemas MUST be canonicalized to serializable `SchemaIR` via `toSchemaIR(schema)`.
 - `tryToSchemaIR(schema)` MUST return a neverthrow `Result<SchemaIR, SchemaLoweringError>` for recoverable schema lowering failures.
 - `SchemaLoweringError` MUST be a serializable tagged union that includes unsupported schema, invalid literal, and invalid default failures with stable path fields.
 - `toSchemaIR(schema)` MAY remain a throwing compatibility adapter over `tryToSchemaIR(schema)` for authoring APIs that still expect exceptions.
-- The graph-boundary schema subset MUST include string, number, integer, boolean, null, unknown, literal, enum, array, object, record, union, optional, nullable, default, path, artifact, and secretRef schemas.
-- Integer schema extensions MUST lower to expression-compatible `SchemaIR` with `kind: "number"`.
+- The graph-boundary schema subset MUST include string, number, boolean, null, unknown, literal, enum, array, object, record, union, optional, nullable, default, and path schemas.
+- The core schema authoring surface MUST NOT provide `z.integer()`, `z.artifact()`, or `z.secretRef()`.
 - Graph-boundary schema lowering MUST reject runtime-only or non-serializable schema constructs such as transform, custom, function, promise, map, set, date, bigint, symbol, undefined, void, and never.
-- `SchemaIR` MUST be a core-owned recursive schema union. It MUST NOT reuse expression `TypeIR` for core-only variants such as `path`, `artifact`, `secretRef`, `literal`, `enum`, or schema metadata.
+- `SchemaIR` MUST be a core-owned recursive schema union. It MUST NOT reuse expression `TypeIR` for core-only variants such as `path`, `literal`, `enum`, or schema metadata.
 - `validateWorkflowIR(ir)` MUST validate `SchemaIR` as a closed recursive union, reject unknown schema kinds and fields, and reject hand-authored `kind: "integer"` in favor of `kind: "number"`.
 
 ### Expression, Templates, And Helpers
@@ -51,18 +51,18 @@
 
 ### Nodes
 
-- Schema contract fields MUST use the `Schema` suffix: `inputSchema`, `outputSchema`, and `itemOutputSchema`.
+- Schema contract fields MUST use the `Schema` suffix only at actual schema boundaries: `inputSchema` and schema-backed agent/signal `outputSchema`.
 - Runtime bindings and accessors MUST continue to use `input` and `output`; scopes MUST declare their `output` by returning a plain object, not by calling an output helper.
-- Executable nodes MUST use `run` as the execution boundary and top-level `outputSchema` as the downstream contract boundary.
+- Executable nodes MUST use `run` as the execution boundary. TypeScript-owned task outputs MUST be inferred from `exec`; they MUST NOT declare author-facing `outputSchema`.
 - Node ids MUST be bound through `step("id")`; node kind methods MUST receive only the kind-specific spec.
 - Agent nodes MUST use `step("id").agent({ outputSchema?, run: { agent: agents.<key>, prompt, permissionMode?, session?, cwd?, env? }, timeout?, retry? })`.
 - Agent definitions MAY declare `permissionMode?: "approve-reads" | "approve-all" | "deny-all"` and `agentMode?: string`.
 - Agent definitions MUST NOT accept broad `options` fields.
-- Signal nodes MUST use `step("id").signal({ outputSchema, run: { prompt }, timeout?, onTimeout? })`.
+- Signal nodes MUST use `step("id").signal({ outputSchema?, run: { prompt }, timeout?, onTimeout? })`. Schema-less signals expose raw `Expr<string>` output; schema-backed signals expose parsed structured output.
 - Signal `onTimeout`, when present, MUST use `{ action: "fail", message? }`.
 - Task nodes MUST use `run.input` as the explicit expression-to-runtime-value boundary.
-- Inline Task nodes MUST use `step("id").task({ outputSchema, run: { input, exec, cwd?, env?, execution? }, timeout? })`.
-- Reusable Task nodes MUST use `step("id").task({ run: { task, input, cwd?, env?, execution? }, timeout? })` and MUST take their output schema from the reusable Task token.
+- Inline Task nodes MUST use `step("id").task({ run: { input, exec, cwd?, env?, execution? }, timeout? })`; output is inferred from `Awaited<ReturnType<exec>>`.
+- Reusable Task nodes MUST use `step("id").task({ run: { task, input, cwd?, env?, execution? }, timeout? })`; output is inferred from the reusable Task token's `exec`.
 - Agent and Signal node graph dependencies MUST be expressed by refs inside `run.prompt`, `run.cwd`, `run.env`, and `run.session`.
 - Agent and Task `cwd` MUST be a string workflow value.
 - Agent and Task `env` values MUST be string workflow values or `secret(...)` tokens.
@@ -71,22 +71,21 @@
 - Composite nodes MUST include `step("id").if`, `switch`, `parallel`, `fanout`, and `loop`, each producing child-scope IR.
 - Composite callbacks MUST receive a `ScopeContext` containing `{ step }`.
 - Parent scopes MUST access a composite node only through that node's projected `output`.
-- Composite callbacks for nodes that declare an `outputSchema` MUST type-check the returned output object's field types and required fields against that schema; output fields outside the schema MUST be rejected at IR build time (see IR And Validation), because callback return values do not receive compile-time excess-property checks.
-- Composite callbacks MUST declare their scope output by returning a plain object whose fields satisfy the scope's `outputSchema`.
+- Composite callbacks MUST declare their scope output by returning a plain object. TypeScript-owned composite outputs MUST be inferred from callback returns and MUST NOT declare author-facing `outputSchema`.
 - Array output accessors MUST support numeric index access through `@acpus/expression` accessors and helpers.
-- If nodes MUST use `step("id").if({ condition, outputSchema?, then, else? })`.
-- Switch nodes MUST use `default` for fallback authoring.
+- If nodes MUST use `step("id").if({ condition, then, else })`.
+- Switch nodes MUST use `default` for fallback authoring, and default MUST be declared.
 - Parallel nodes MUST express static named branch concurrency and support `strategy?: "all" | "race"`, defaulting to `"all"`.
 - Fanout nodes MUST express runtime array expansion and support `strategy?: "all" | "quorum"`, defaulting to `"all"`.
-- Fanout `itemOutputSchema` MUST represent the per-item output contract and serialize as `FanoutNodeIR.itemOutputSchema`.
-- Loop bodies MUST receive `iter` and `previous`; `previous` MUST be typed as possibly `undefined`.
+- Fanout item output MUST be inferred from the `do` callback and serialize no `itemOutputSchema`.
+- Loop nodes MUST declare `initial`; loop bodies MUST receive `iter` and non-optional `previous`.
 - Loop `stopWhen({ iter, result })` MUST return a boolean workflow value and lower to `LoopNodeIR.stopWhen`.
 - Required output fields MUST NOT accept nullable or optional refs unless the author explicitly removes the nullish case, for example with `coalesce(...)`.
 
 ### Task Authoring And Runtime Context Types
 
-- A reusable Task MUST be authored via `task.define({ inputSchema, outputSchema, exec })`.
-- A reusable Task node MUST use the Task's declared `outputSchema` and MUST NOT repeat `outputSchema` at the call site.
+- A reusable Task MUST be authored via `task.define({ inputSchema, exec })`.
+- A reusable Task node MUST infer output from the reusable Task's `exec` return type and MUST NOT repeat `outputSchema` at the call site.
 - A reusable Task definition's `inputSchema` MUST be the runtime input schema for its `exec` function; a reusable Task node call site's `run.input` MUST be the graph expression binding for that schema.
 - Task node lifecycle options MAY support top-level `timeout`.
 - Task node lifecycle options MUST NOT support workflow-level automatic `retry`.
@@ -102,7 +101,7 @@
 
 - `compileWorkflowDefinition(definition)` MUST lower an in-memory workflow definition to serializable `WorkflowIR` with `irVersion: 2`.
 - `WorkflowIR`, node IR, scope IR, schema IR, template IR, expression IR, agent definitions, task runs, and task execution targets MUST use closed serialized object shapes.
-- `validateWorkflowIR(ir)` MUST diagnose unknown fields, malformed agent definitions, malformed node runs, invalid expressions/templates/schemas, missing composite outputs, scope output fields outside a node's declared `outputSchema`, and malformed task execution targets.
+- `validateWorkflowIR(ir)` MUST diagnose unknown fields, malformed agent definitions, malformed node runs, invalid expressions/templates/schemas, missing required composite branches/defaults, and malformed task execution targets. It MUST NOT enforce TypeScript-owned task/composite business output shape through generated schemas.
 - `DurationIR` fields MUST be duration strings matching `^\d+(ms|s|m|h)?$`; omitted units MUST mean milliseconds.
 - Task runs MUST contain a closed `target` descriptor that is either an inline source target or a reusable module target.
 - Inline task targets MUST contain `{ kind: "inline", runtime: "node", source }`, where `source` is the self-contained `exec` function source.

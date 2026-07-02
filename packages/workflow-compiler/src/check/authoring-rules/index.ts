@@ -2,6 +2,7 @@ import type { DiagnosticIR } from "@acpus/core/ir";
 import ts from "typescript";
 import { type TaskCallsiteIssueReason, unjoinableTaskCallsiteReason } from "../../task-analysis/callsites.js";
 import { analyzeTaskAuthoring, type TaskAuthoringIssue, type WorkflowTaskAnalysis } from "../../task-analysis/index.js";
+import { checkOutputAdmissibility } from "./output-admissibility.js";
 
 // Acpus authoring rules are the product check rules used by
 // checkWorkflow(...) and prepareWorkflow(...). They intentionally do not invoke
@@ -17,9 +18,23 @@ export type AuthoringRulesInput = {
 
 export function checkWorkflowAuthoring(input: AuthoringRulesInput): DiagnosticIR[] {
   const diagnostics: DiagnosticIR[] = [];
-  checkExprAuthoring(input.sourceFile, input.program.getTypeChecker(), diagnostics);
+  const checker = input.program.getTypeChecker();
+  checkExprAuthoring(input.sourceFile, checker, diagnostics);
+  diagnostics.push(...checkOutputAdmissibility(outputAdmissibilitySources(input.program, input.sourceFile), checker));
   checkTaskAuthoring(input.taskAnalysis, diagnostics);
   return diagnostics;
+}
+
+function outputAdmissibilitySources(program: ts.Program, entry: ts.SourceFile): ts.SourceFile[] {
+  if (typeof program.getSourceFiles !== "function") return [entry];
+  return program.getSourceFiles().filter(sourceFile => {
+    if (sourceFile.isDeclarationFile) return false;
+    if (sourceFile.fileName === entry.fileName) return true;
+    const fileName = sourceFile.fileName.replace(/\\/g, "/");
+    if (fileName.includes("/node_modules/")) return false;
+    if (fileName.includes("/packages/core/src/") || fileName.includes("/packages/expression/src/")) return false;
+    return true;
+  });
 }
 
 const ARRAY_METHODS = new Set(["map", "filter", "forEach", "reduce", "some", "every"]);

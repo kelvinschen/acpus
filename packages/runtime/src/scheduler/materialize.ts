@@ -1,11 +1,12 @@
 import type { FanoutNodeIR, LoopNodeIR, NodeIR, ParallelNodeIR, WorkflowIR } from "@acpus/core/ir";
 import type { JsonObject, JsonValue } from "@acpus/expression/ir";
+import { assertWorkflowData } from "../evaluation/admissible.js";
 import { evaluateExpr, renderTemplate, type EvaluationScope } from "../evaluation/evaluator.js";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "./identity.js";
 import type { SchedulerEvent } from "./events.js";
 import type { FrameKind, GroupMember, InstancePath, InstancePathSegment, SchedulerFrame, SchedulerProjection } from "./types.js";
 import { baseScopeForFrame, completedScopeForFrame } from "./scope.js";
-import { nextLoopStep } from "./transitions.js";
+import { loopExhaustionResult, nextLoopStep } from "./transitions.js";
 
 type ScopeIR = WorkflowIR["root"];
 type ScopeFrame = {
@@ -396,8 +397,41 @@ function materializeFanoutEvents(input: { runId: string; node: FanoutNodeIR; par
 function materializeLoopEvents(input: { runId: string; node: LoopNodeIR; parentFrameKey: string; basePath: InstancePath; scope: EvaluationScope; readinessSequence: number }): SchedulerEvent[] {
   const nodePath = appendNode(input.basePath, input.node.id);
   const nodeKey = deriveInstanceKey(nodePath);
+  const start = nodeFrameStarted(input.runId, input.node, nodePath, input.parentFrameKey, "loop");
+  let initial: JsonValue;
+  let stop: boolean;
+  try {
+    initial = evaluateExpr(input.node.initial, input.scope) as JsonValue;
+    const stopScope = {
+      ...input.scope,
+      loop: {
+        ...input.scope.loop,
+        [input.node.id]: { iter: 0, previous: initial, result: initial },
+      },
+    };
+    const value = evaluateExpr(input.node.stopWhen, stopScope);
+    if (typeof value !== "boolean") throw new Error(`Loop node '${input.node.id}' condition must evaluate to boolean.`);
+    stop = value;
+  } catch (error) {
+    return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: expressionFailure(error), terminalReason: "expression_failed" } }];
+  }
+
+  const seed = { type: "frame.loop_advanced", payload: { frameKey: nodeKey, iter: 0, previous: initial } } satisfies SchedulerEvent;
+  if (stop) return [start, seed, { type: "frame.completed", payload: { frameKey: nodeKey, result: initial, terminalReason: "stopped" } }];
+  if (input.node.maxIterations <= 0) {
+    const exhausted = loopExhaustionResult({
+      maxIterations: input.node.maxIterations,
+      ...(input.node.onExhausted === undefined ? {} : { onExhausted: input.node.onExhausted }),
+      lastResult: initial,
+    });
+    return exhausted.status === "completed"
+      ? [start, seed, { type: "frame.completed", payload: { frameKey: nodeKey, result: exhausted.output, terminalReason: exhausted.terminalReason } }]
+      : [start, seed, { type: "frame.failed", payload: { frameKey: nodeKey, error: exhausted.error, terminalReason: exhausted.terminalReason } }];
+  }
+
   return [
-    nodeFrameStarted(input.runId, input.node, nodePath, input.parentFrameKey, "loop"),
+    start,
+    seed,
     ...materializeLoopIterationEvents({
       runId: input.runId,
       loop: input.node,
@@ -405,7 +439,7 @@ function materializeLoopEvents(input: { runId: string; node: LoopNodeIR; parentF
       basePath: input.basePath,
       iter: 0,
       readinessSequence: input.readinessSequence,
-      scope: loopScopeForIteration(input.scope, input.node.id, 0),
+      scope: loopScopeForIteration(input.scope, input.node.id, 0, initial),
     }),
   ];
 }
@@ -581,7 +615,7 @@ function groupResult(node: ParallelNodeIR | FanoutNodeIR, projection: SchedulerP
       .filter(member => member.memberKind === "fanout_item" && member.status === "completed")
       .sort(byCompletionSequence)
       .map(member => member.output as JsonValue);
-    return { accepted: completed.slice(0, node.count), completed };
+    return completed.slice(0, node.count);
   }
   return undefined;
 }
@@ -700,7 +734,9 @@ function loopScopeForIteration(scope: EvaluationScope, nodeId: string, iter: num
 }
 
 function evaluateOutputs(outputs: NonNullable<ScopeIR["outputs"]>, scope: EvaluationScope): JsonObject {
-  return Object.fromEntries(Object.entries(outputs).map(([key, expr]) => [key, evaluateExpr(expr, scope) as JsonValue]));
+  const result = Object.fromEntries(Object.entries(outputs).map(([key, expr]) => [key, evaluateExpr(expr, scope) as JsonValue]));
+  assertWorkflowData(result, "Scope output");
+  return result;
 }
 
 function renderAssertFailure(node: Extract<NodeIR, { kind: "assert" }>, scope: EvaluationScope): string {

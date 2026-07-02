@@ -11,4 +11,4 @@ export {
   schemaToJsonSchema,
   assertBoundarySchema,
 } from "./schema/index.js";
-export type { ArtifactRef, InferSchema, Schema, SecretRef, SchemaLoweringError, ValidationIssue, ParseResult } from "./schema/index.js";
+export type { InferSchema, Schema, SchemaLoweringError, ValidationIssue, ParseResult } from "./schema/index.js";

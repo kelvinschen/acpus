@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { defineWorkflow, z } from "@acpus/core";
 import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
-import { eq } from "@acpus/expression";
+import { eq, template } from "@acpus/expression";
 import { describe, expect, it } from "vitest";
 import { appendBranch, appendFanoutItem, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { createRuntimeNodeExecutor } from "../src/scheduler/node-executor.js";
@@ -60,6 +60,28 @@ describe("runtime scheduler node executor", () => {
         expect(store.getRun(run.id)).toMatchObject({ status: "failed" });
         expect(store.getRun(run.id)?.output).toBeUndefined();
         expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'run.failed'", run.id)).toMatchObject({ count: 1 });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("fails durable task attempts before non-admissible output reaches the store", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-non-admissible-output", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, nonAdmissibleTaskWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+
+        await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "failed", failed: 1 });
+
+        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const nodeKey = deriveInstanceKey(appendNode([], "bad_output"));
+        expect(projection.instances[nodeKey]).toMatchObject({
+          status: "failed",
+          error: expect.objectContaining({ reason: expect.stringContaining("not workflow-admissible") }),
+        });
+        expect(projection.attempts[Object.keys(projection.attempts)[0]!]?.result).toBeUndefined();
       } finally {
         store.close();
       }
@@ -483,9 +505,8 @@ describe("runtime scheduler node executor", () => {
         expect(summary).toMatchObject({ status: "completed", started: 2, completed: 2 });
         const fanoutFrame = projection.frames[deriveInstanceKey(appendNode([], "items"))];
         expect(fanoutFrame).toMatchObject({ status: "completed" });
-        expect((fanoutFrame?.result as { accepted: unknown[] }).accepted).toHaveLength(2);
-        expect((fanoutFrame?.result as { completed: unknown[] }).completed).toHaveLength(2);
-        expect((fanoutFrame?.result as { accepted: unknown[] }).accepted).toEqual(expect.arrayContaining([
+        expect(fanoutFrame?.result).toHaveLength(2);
+        expect(fanoutFrame?.result).toEqual(expect.arrayContaining([
           { item: "a", index: 0 },
           { item: "b", index: 1 },
         ]));
@@ -1360,6 +1381,26 @@ describe("runtime scheduler node executor", () => {
     });
   });
 
+  it("returns raw response text for schema-less agent nodes", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-agent-raw-string", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, defineWorkflow({
+        name: "raw_agent",
+        agents: { reviewer: { use: "mock" } },
+      }).build(({ agents, step }) => {
+        step("review").agent({ run: { agent: agents.reviewer, prompt: "review" } });
+        return {};
+      }));
+      const node = prepared.ir.root.nodes.find(node => node.id === "review");
+      if (!node || node.kind !== "agent") throw new Error("expected review agent node");
+
+      await expect(executeAgentNode(node, {}, {
+        cwd: workspace,
+        agents: prepared.ir.agents,
+        executeTurn: async () => completedAgentTurn("plain text"),
+      })).resolves.toBe("plain text");
+    });
+  });
+
   it("repairs empty schema-backed agent responses without parsing them", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-agent-empty-repair", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
@@ -2007,9 +2048,6 @@ function taskRuntimeContextWorkflow() {
     name: "scheduler-node-executor-task",
   }).build(({ step }) => {
     step("context_task").task({
-      outputSchema: z.object({
-        artifact: z.artifact("text/plain"),
-      }),
       run: {
         input: {},
         exec: async ({ artifact }) => ({
@@ -2047,11 +2085,9 @@ function sequentialRootTaskWorkflow() {
     name: "scheduler-node-executor-root-sequence",
   }).build(({ step }) => {
     const first = step("first_task").task({
-      outputSchema: z.object({ value: z.string() }),
       run: { input: {}, exec: async () => ({ value: "first" }) },
     });
     const second = step("second_task").task({
-      outputSchema: z.object({ value: z.string() }),
       run: {
         input: { value: first.output.value },
         exec: async ({ input }) => ({ value: `${input.value}-second` }),
@@ -2069,18 +2105,15 @@ function rootIfTaskWorkflow() {
     step("require_run").assert({ condition: input.shouldRun });
     const gate = step("gate").if({
       condition: input.shouldRun,
-      outputSchema: z.object({ value: z.string() }),
       then: ({ step }) => {
         const task = step("then_task").task({
-          outputSchema: z.object({ value: z.string() }),
           run: { input: {}, exec: async () => ({ value: "then" }) },
         });
         return { value: task.output.value };
       },
-      else: () => ({ value: "else" }),
+      else: () => ({ value: template`else` }),
     });
     const final = step("final_task").task({
-      outputSchema: z.object({ final: z.string() }),
       run: {
         input: { value: gate.output.value },
         exec: async ({ input }) => ({ final: `${input.value}-final` }),
@@ -2097,14 +2130,11 @@ function rootIfSequentialTaskWorkflow() {
   }).build(({ input, step }) => {
     const gate = step("gate").if({
       condition: input.shouldRun,
-      outputSchema: z.object({ value: z.string() }),
       then: ({ step }) => {
         const first = step("then_first").task({
-          outputSchema: z.object({ value: z.string() }),
           run: { input: {}, exec: async () => ({ value: "first" }) },
         });
         const second = step("then_second").task({
-          outputSchema: z.object({ value: z.string() }),
           run: {
             input: { value: first.output.value },
             exec: async ({ input }) => ({ value: `${input.value}-second` }),
@@ -2112,10 +2142,9 @@ function rootIfSequentialTaskWorkflow() {
         });
         return { value: second.output.value };
       },
-      else: () => ({ value: "else" }),
+      else: () => ({ value: template`else` }),
     });
     const final = step("final_task").task({
-      outputSchema: z.object({ final: z.string() }),
       run: {
         input: { value: gate.output.value },
         exec: async ({ input }) => ({ final: `${input.value}-final` }),
@@ -2131,17 +2160,14 @@ function rootSwitchSequentialTaskWorkflow() {
     inputSchema: z.object({ mode: z.string() }),
   }).build(({ input, step }) => {
     const route = step("route").switch({
-      outputSchema: z.object({ value: z.string() }),
       cases: [
         {
           when: eq(input.mode, "case"),
           then: ({ step }) => {
             const first = step("case_first").task({
-              outputSchema: z.object({ value: z.string() }),
               run: { input: {}, exec: async () => ({ value: "case" }) },
             });
             const second = step("case_second").task({
-              outputSchema: z.object({ value: z.string() }),
               run: {
                 input: { value: first.output.value },
                 exec: async ({ input }) => ({ value: `${input.value}-second` }),
@@ -2151,7 +2177,7 @@ function rootSwitchSequentialTaskWorkflow() {
           },
         },
       ],
-      default: () => ({ value: "default" }),
+      default: () => ({ value: template`default` }),
     });
     return { value: route.output.value };
   });
@@ -2165,20 +2191,16 @@ function rootParallelTaskWorkflow(options: { maxConcurrency?: number } = {}) {
       ...(options.maxConcurrency === undefined ? {} : { maxConcurrency: options.maxConcurrency }),
       branches: {
         left: {
-          outputSchema: z.object({ value: z.string(), rootPrefix: z.string() }),
           do: ({ step }) => {
             const task = step("left_task").task({
-              outputSchema: z.object({ value: z.string() }),
               run: { input: {}, exec: async () => ({ value: "left" }) },
             });
             return { value: task.output.value, rootPrefix: "root" };
           },
         },
         right: {
-          outputSchema: z.object({ value: z.string() }),
           do: ({ step }) => {
             const task = step("right_task").task({
-              outputSchema: z.object({ value: z.string() }),
               run: { input: {}, exec: async () => ({ value: "right" }) },
             });
             return { value: task.output.value };
@@ -2195,32 +2217,27 @@ function sequentialRootParallelWorkflow() {
     name: "scheduler-node-executor-root-sequence-parallel",
   }).build(({ step }) => {
     const prepare = step("prepare_task").task({
-      outputSchema: z.object({ prefix: z.string() }),
       run: { input: {}, exec: async () => ({ prefix: "root" }) },
     });
     const combined = step("combine").parallel({
       branches: {
         left: {
-          outputSchema: z.object({ value: z.string(), rootPrefix: z.string() }),
           do: ({ step }) => {
             const task = step("left_task").task({
-              outputSchema: z.object({ value: z.string() }),
               run: {
                 input: { prefix: prepare.output.prefix },
-                exec: async ({ input }) => ({ value: `${input.prefix}-left` }),
+                exec: async ({ input }: { input: { prefix: string } }) => ({ value: `${input.prefix}-left` }),
               },
             });
             return { value: task.output.value, rootPrefix: prepare.output.prefix };
           },
         },
         right: {
-          outputSchema: z.object({ value: z.string(), rootPrefix: z.string() }),
           do: ({ step }) => {
             const task = step("right_task").task({
-              outputSchema: z.object({ value: z.string() }),
               run: {
                 input: { prefix: prepare.output.prefix },
-                exec: async ({ input }) => ({ value: `${input.prefix}-right` }),
+                exec: async ({ input }: { input: { prefix: string } }) => ({ value: `${input.prefix}-right` }),
               },
             });
             return { value: task.output.value, rootPrefix: prepare.output.prefix };
@@ -2239,14 +2256,11 @@ function multiNodeRootParallelWorkflow() {
     step("parallel").parallel({
       branches: {
         mixed: {
-          outputSchema: z.object({ value: z.string() }),
           do: ({ step }) => {
             step("first_task").task({
-              outputSchema: z.object({ value: z.string() }),
               run: { input: {}, exec: async () => ({ value: "first" }) },
             });
             const second = step("second_task").task({
-              outputSchema: z.object({ value: z.string() }),
               run: { input: {}, exec: async () => ({ value: "second" }) },
             });
             return { value: second.output.value };
@@ -2265,17 +2279,14 @@ function multiNodeRootFanoutWorkflow() {
   }).build(({ input, step }) => {
     step("items").fanout({
       over: input.items,
-      itemOutputSchema: z.object({ item: z.string(), value: z.string() }),
       do: ({ item, step }) => {
         const first = step("first_task").task({
-          outputSchema: z.object({ value: z.string() }),
           run: {
             input: { item },
             exec: async ({ input }) => ({ value: `${input.item}-first` }),
           },
         });
         const second = step("second_task").task({
-          outputSchema: z.object({ item: z.string(), value: z.string() }),
           run: {
             input: { item, first: first.output.value },
             exec: async ({ input }) => ({ item: input.item, value: input.first.replace("first", "second") }),
@@ -2294,25 +2305,21 @@ function nestedFanoutInParallelWorkflow() {
     inputSchema: z.object({ items: z.array(z.string()) }),
   }).build(({ input, step }) => {
     const prepare = step("prepare").task({
-      outputSchema: z.object({ prefix: z.string() }),
       run: { input: {}, exec: async () => ({ prefix: "root" }) },
     });
     const combined = step("combine").parallel({
       maxConcurrency: 1,
       branches: {
         items: {
-          outputSchema: z.object({ values: z.array(z.object({ value: z.string() })) }),
           do: ({ step }) => {
             const inner = step("inner_items").fanout({
               over: input.items,
               maxConcurrency: 1,
-              itemOutputSchema: z.object({ value: z.string() }),
               do: ({ item, itemIndex, step }) => {
                 const task = step("inner_task").task({
-                  outputSchema: z.object({ value: z.string() }),
                   run: {
                     input: { prefix: prepare.output.prefix, item, itemIndex },
-                    exec: async ({ input }) => ({ value: `${input.prefix}-${input.item}-${input.itemIndex}` }),
+                    exec: async ({ input }: { input: { prefix: string; item: string; itemIndex: number } }) => ({ value: `${input.prefix}-${input.item}-${input.itemIndex}` }),
                   },
                 });
                 return { value: task.output.value };
@@ -2322,13 +2329,11 @@ function nestedFanoutInParallelWorkflow() {
           },
         },
         sibling: {
-          outputSchema: z.object({ value: z.string() }),
           do: ({ step }) => {
             const task = step("sibling_task").task({
-              outputSchema: z.object({ value: z.string() }),
               run: {
                 input: { prefix: prepare.output.prefix },
-                exec: async ({ input }) => ({ value: `${input.prefix}-sibling` }),
+                exec: async ({ input }: { input: { prefix: string } }) => ({ value: `${input.prefix}-sibling` }),
               },
             });
             return { value: task.output.value };
@@ -2348,7 +2353,6 @@ function parallelSignalConcurrencyWorkflow() {
       maxConcurrency: 1,
       branches: {
         left: {
-          outputSchema: z.object({ ok: z.boolean() }),
           do: ({ step }) => {
             const approval = step("left_signal").signal({
               outputSchema: z.object({ ok: z.boolean() }),
@@ -2358,7 +2362,6 @@ function parallelSignalConcurrencyWorkflow() {
           },
         },
         right: {
-          outputSchema: z.object({ ok: z.boolean() }),
           do: ({ step }) => {
             const approval = step("right_signal").signal({
               outputSchema: z.object({ ok: z.boolean() }),
@@ -2381,18 +2384,16 @@ function rootFanoutTaskWorkflow(options: { strategy?: "all" | "quorum"; count?: 
     if (options.strategy === "quorum") {
       step("items").fanout({
         over: input.items,
-        itemOutputSchema: z.object({ item: z.string(), index: z.number() }),
         strategy: "quorum",
         count: options.count ?? 1,
         ...(options.maxConcurrency === undefined ? {} : { maxConcurrency: options.maxConcurrency }),
         do: ({ item, itemIndex, step }) => {
           const task = step("item_task").task({
-            outputSchema: z.object({ item: z.string(), index: z.number() }),
             run: {
               input: { item, itemIndex, abortItem: options.abortItem ?? null },
               exec: async ({ input, abortSignal }) => {
                 if (input.item !== input.abortItem) return { item: input.item, index: input.itemIndex };
-                return await new Promise(resolve => {
+                return await new Promise<{ item: string; index: number }>(resolve => {
                   const timer = setTimeout(() => resolve({ item: "not-aborted", index: input.itemIndex }), 1_000);
                   abortSignal.addEventListener("abort", () => {
                     clearTimeout(timer);
@@ -2408,16 +2409,14 @@ function rootFanoutTaskWorkflow(options: { strategy?: "all" | "quorum"; count?: 
     } else {
       step("items").fanout({
         over: input.items,
-        itemOutputSchema: z.object({ item: z.string(), index: z.number() }),
         ...(options.maxConcurrency === undefined ? {} : { maxConcurrency: options.maxConcurrency }),
         do: ({ item, itemIndex, step }) => {
           const task = step("item_task").task({
-            outputSchema: z.object({ item: z.string(), index: z.number() }),
             run: {
               input: { item, itemIndex, abortItem: options.abortItem ?? null },
               exec: async ({ input, abortSignal }) => {
                 if (input.item !== input.abortItem) return { item: input.item, index: input.itemIndex };
-                return await new Promise(resolve => {
+                return await new Promise<{ item: string; index: number }>(resolve => {
                   const timer = setTimeout(() => resolve({ item: "not-aborted", index: input.itemIndex }), 1_000);
                   abortSignal.addEventListener("abort", () => {
                     clearTimeout(timer);
@@ -2440,11 +2439,10 @@ function rootLoopTaskWorkflow() {
     name: "scheduler-node-executor-root-loop",
   }).build(({ step }) => {
     step("retry").loop({
+      initial: { done: false as boolean, iter: -1 },
       maxIterations: 3,
-      outputSchema: z.object({ done: z.boolean(), iter: z.number() }),
       do: ({ iter, step }) => {
         const task = step("loop_task").task({
-          outputSchema: z.object({ done: z.boolean(), rawIter: z.number() }),
           run: {
             input: { iter },
             exec: async ({ input }) => ({ done: input.iter >= 1, rawIter: input.iter }),
@@ -2463,18 +2461,16 @@ function multiNodeRootLoopWorkflow() {
     name: "scheduler-node-executor-root-loop-multi-node",
   }).build(({ step }) => {
     step("retry").loop({
+      initial: { done: false as boolean, value: "" },
       maxIterations: 3,
-      outputSchema: z.object({ done: z.boolean(), value: z.string() }),
       do: ({ iter, step }) => {
         const first = step("first_task").task({
-          outputSchema: z.object({ value: z.string() }),
           run: {
             input: { iter },
             exec: async ({ input }) => ({ value: `first-${input.iter}` }),
           },
         });
         const second = step("second_task").task({
-          outputSchema: z.object({ done: z.boolean(), value: z.string() }),
           run: {
             input: { iter, first: first.output.value },
             exec: async ({ input }) => ({ done: true, value: `${input.first}-second-${input.iter}` }),
@@ -2493,7 +2489,6 @@ function abortStatusTaskWorkflow() {
     name: "scheduler-node-executor-abort",
   }).build(({ step }) => {
     step("abort_task").task({
-      outputSchema: z.object({ aborted: z.boolean() }),
       run: {
         input: {},
         exec: async ({ abortSignal }) => ({ aborted: abortSignal.aborted }),
@@ -2508,7 +2503,6 @@ function retryingTaskWorkflow() {
     name: "scheduler-node-executor-retry",
   }).build(({ step }) => {
     step("retry_task").task({
-      outputSchema: z.object({ ok: z.boolean() }),
       run: {
         input: {},
         exec: async ({ artifact }) => {
@@ -2724,7 +2718,6 @@ function timeoutTaskWorkflow() {
     name: "scheduler-node-executor-timeout-deadline",
   }).build(({ step }) => {
     const task = step("timeout_task").task({
-      outputSchema: z.object({ ok: z.boolean() }),
       timeout: "5s",
       run: {
         input: {},
@@ -2732,5 +2725,19 @@ function timeoutTaskWorkflow() {
       },
     });
     return { ok: task.output.ok };
+  });
+}
+
+function nonAdmissibleTaskWorkflow() {
+  return defineWorkflow({
+    name: "scheduler-node-executor-non-admissible-output",
+  }).build(({ step }) => {
+    step("bad_output").task({
+      run: {
+        input: {},
+        exec: async () => ({ when: new Date() }),
+      },
+    });
+    return {};
   });
 }

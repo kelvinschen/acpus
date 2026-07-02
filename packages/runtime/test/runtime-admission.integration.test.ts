@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-import { admitWorkflowRun, getRun, listRuns, normalizeWorkflowInput, replayRun } from "@acpus/runtime";
+import { admitWorkflowRun, getRun, listRuns, normalizeSignalPayload, normalizeWorkflowInput, replayRun } from "@acpus/runtime";
 import type { TaskExecutionTargetIR, WorkflowIR } from "@acpus/core/ir";
 import {
   admitFixture,
@@ -80,22 +80,59 @@ describe.concurrent("runtime admission use cases", () => {
     });
   });
 
-  it("normalizes input defaults and rejects invalid artifact refs before admission", async () => {
+  it("normalizes input defaults and rejects invalid plain artifact ref objects before admission", async () => {
     await withRuntimeWorkspace("runtime-input-normalize", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, defaultRefInputWorkflow());
       expect(normalizeWorkflowInput(prepared.ir, {
         patch: { kind: "artifact", uri: "artifact://patch", mediaType: "text/plain" },
-        token: { kind: "secret", name: "API_TOKEN" },
+        token: "API_TOKEN",
       })).toEqual({
         base: "main",
         patch: { kind: "artifact", uri: "artifact://patch", mediaType: "text/plain" },
-        token: { kind: "secret", name: "API_TOKEN" },
+        token: "API_TOKEN",
       });
       expect(() => normalizeWorkflowInput(prepared.ir, {
         patch: { kind: "artifact", uri: "artifact://patch", mediaType: "application/json" },
-        token: { kind: "secret", name: "API_TOKEN" },
-      })).toThrow("$.patch.mediaType expected \"text/plain\"");
+        token: "API_TOKEN",
+      })).toThrow("$.patch.mediaType expected literal \"text/plain\"");
     });
+  });
+
+  it("normalizes schema-backed signal payloads and requires raw strings without schema", () => {
+    const ir: WorkflowIR = {
+      irVersion: 2,
+      name: "signals",
+      inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
+      agents: {},
+      root: {
+        nodes: [
+          {
+            id: "raw",
+            kind: "signal",
+            run: { kind: "signal_run", prompt: { kind: "template", parts: [] } },
+          },
+          {
+            id: "structured",
+            kind: "signal",
+            outputSchema: {
+              kind: "object",
+              fields: { ok: { kind: "boolean" } },
+              required: ["ok"],
+              additionalProperties: false,
+            },
+            run: { kind: "signal_run", prompt: { kind: "template", parts: [] } },
+          },
+        ],
+        outputs: {},
+      },
+      outputs: {},
+      lock: { acpusCoreVersion: "test", generatedAt: "2026-06-30T00:00:00.000Z", notes: [] },
+      diagnostics: [],
+    };
+
+    expect(normalizeSignalPayload(ir, "raw", "approved")).toBe("approved");
+    expect(() => normalizeSignalPayload(ir, "raw", { text: "approved" })).toThrow("Signal payload expected string.");
+    expect(normalizeSignalPayload(ir, "structured", { ok: true })).toEqual({ ok: true });
   });
 
   it("admits inline task source and registers artifacts for admitted task runs", async () => {
@@ -158,7 +195,7 @@ describe.concurrent("runtime admission use cases", () => {
     });
   });
 
-  it("admits a workflow prepared from a real TypeScript fixture", async () => {
+  it.sequential("admits a workflow prepared from a real TypeScript fixture", async () => {
     await withRuntimeWorkspace("runtime-compiler-wiring", async workspace => {
       const admitted = await admitFixture(workspace, "workflows/valid.workflow.ts", { ready: true });
 
@@ -174,7 +211,7 @@ describe.concurrent("runtime admission use cases", () => {
     });
   });
 
-  it("executes same-file reusable task references prepared from workflow module exports", async () => {
+  it.sequential("executes same-file reusable task references prepared from workflow module exports", async () => {
     await withRuntimeWorkspace("runtime-same-file-reusable", async workspace => {
       const prepared = await prepareFixture(workspace, "workflows/same-file-reusable.workflow.ts");
       const otherCwd = join(workspace, "not-the-workflow-dir");
@@ -279,7 +316,6 @@ describe.concurrent("runtime admission use cases", () => {
           ${JSON.stringify(`import { task, z } from ${JSON.stringify(coreSourceURL)};`)},
           "export const fallbackTask = task.define({",
           "  inputSchema: z.object({ value: z.string() }),",
-          "  outputSchema: z.object({ ok: z.boolean(), value: z.string() }),",
           "  exec: async ({ input }) => ({ ok: true, value: 'dev:' + input.value }),",
           "});",
         ].join("\\n"));
@@ -288,7 +324,6 @@ describe.concurrent("runtime admission use cases", () => {
         const output = await executeTaskNode({
           id: "fallback",
           kind: "task",
-          outputSchema: { kind: "object", fields: {}, required: [], additionalProperties: true },
           run: {
             kind: "task_run",
             input: {
@@ -313,7 +348,6 @@ describe.concurrent("runtime admission use cases", () => {
           await executeTaskNode({
             id: "throwing",
             kind: "task",
-            outputSchema: { kind: "object", fields: {}, required: [], additionalProperties: true },
             run: {
               kind: "task_run",
               input: {

@@ -1,6 +1,6 @@
 import { $ as zxDollar, quote as zxQuote } from "zx/core";
 import type { Options as ZxOptions, ProcessPromise } from "zx/core";
-import type { ArtifactRef } from "../schema/index.js";
+import type { ArtifactRef } from "./task-context.js";
 
 export type CommandResult = {
   stdout: string;

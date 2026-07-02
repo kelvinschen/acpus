@@ -1,12 +1,8 @@
 import { defineWorkflow, task, z } from "@acpus/core";
-import type { TaskToken } from "@acpus/core";
 import slash from "slash";
 
-type ReusableTask<Input, Output> = Extract<TaskToken<Input, Output>, { kind: "external" }>;
-
-export const normalizePath: ReusableTask<{ path: string }, { normalized: string }> = task.define({
+export const normalizePath = task.define({
   inputSchema: z.object({ path: z.string() }),
-  outputSchema: z.object({ normalized: z.string() }),
   exec: async ({ input }) => ({ normalized: slash(input.path) }),
 });
 

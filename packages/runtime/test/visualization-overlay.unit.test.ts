@@ -80,7 +80,7 @@ function workflow(): WorkflowIR {
   return {
     irVersion: 2,
     name: "overlay-test",
-    inputSchema: { kind: "schema", type: "object" },
+    inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
     agents: {},
     root: {
       nodes: [
@@ -90,8 +90,8 @@ function workflow(): WorkflowIR {
           kind: "parallel",
           strategy: "all",
           branches: {
-            left: { outputSchema: { kind: "schema", type: "object" }, scope: { nodes: [signal("left_approve")] } },
-            right: { outputSchema: { kind: "schema", type: "object" }, scope: { nodes: [signal("right_approve")] } },
+            left: { scope: { nodes: [signal("left_approve")] } },
+            right: { scope: { nodes: [signal("right_approve")] } },
           },
         },
       ],
@@ -106,16 +106,15 @@ function task(id: string): WorkflowIR["root"]["nodes"][number] {
   return {
     id,
     kind: "task",
-    outputSchema: { kind: "schema", type: "object" },
     run: { kind: "task_run", input: {}, target: { kind: "inline", runtime: "node", source: "async function task() {}" } },
-  } as unknown as WorkflowIR["root"]["nodes"][number];
+  };
 }
 
 function signal(id: string): WorkflowIR["root"]["nodes"][number] {
   return {
     id,
     kind: "signal",
-    outputSchema: { kind: "schema", type: "object" },
+    outputSchema: { kind: "object", fields: {}, required: [], additionalProperties: true },
     run: { kind: "signal_run", prompt: { kind: "template", parts: [] } },
-  } as unknown as WorkflowIR["root"]["nodes"][number];
+  };
 }

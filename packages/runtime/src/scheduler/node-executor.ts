@@ -3,8 +3,8 @@ import type { JsonValue } from "@acpus/expression/ir";
 import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
 import { AgentNodeCancelledError, AgentNodeTimeoutError, executeAgentNode } from "../execution/agent-node.js";
 import { executeTaskNode } from "../execution/task-executor.js";
+import { assertWorkflowData } from "../evaluation/admissible.js";
 import type { EvaluationScope } from "../evaluation/evaluator.js";
-import { normalizeValue } from "../evaluation/schema.js";
 import type { RuntimeStore } from "../store/store.js";
 import type { NodeAttemptContext, NodeExecutor } from "./advance.js";
 import { scopeForNodeAttempt } from "./scope.js";
@@ -27,7 +27,7 @@ export function createRuntimeNodeExecutor(input: RuntimeNodeExecutorInput): Node
       const node = nodes.get(context.nodeId);
       if (!node) return { status: "failed", reason: `Node '${context.nodeId}' was not found in frozen IR.` };
       const scope = scopeForAttempt(input.scope, unwrapStoreResult(input.store.scheduler.tryLoadRunSnapshot(context.runId)).projection, context.nodeKey);
-      if (node.kind === "task") return completedResult(normalizeValue(node.outputSchema, await executeTask(node, scope, context, input) as JsonValue, `Node '${node.id}' output`));
+      if (node.kind === "task") return completedResult(await executeTask(node, scope, context, input));
       if (node.kind === "agent") {
         try {
           return completedResult(await executeAgent(node, scope, context, input));
@@ -78,6 +78,7 @@ function scopeForAttempt(base: EvaluationScope, projection: SchedulerProjection,
 }
 
 function completedResult(output: unknown): AttemptCommitInput["result"] {
+  assertWorkflowData(output, "Node output");
   return output === undefined ? { status: "completed" } : { status: "completed", output: output as JsonValue };
 }
 

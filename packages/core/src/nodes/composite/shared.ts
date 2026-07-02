@@ -1,15 +1,13 @@
 import type { Expr, WorkflowValue } from "@acpus/expression";
 import type { OutputAccessor } from "../../graph/refs.js";
 import type { OutputValues, ScopeContext } from "../../graph/scope.js";
+import type { IsUnion } from "../../internal/type-utils.js";
 import type { ScopeIR } from "../../ir/types.js";
-import type { InferSchema, Schema } from "../../schema/index.js";
-
-export type ObjectSchema = Schema<Record<string, unknown>>;
-export type ScopeOutput<Output> = Output extends object ? Output : Record<string, unknown>;
-export type SchemaScopeOutput<OutSchema> = OutSchema extends ObjectSchema ? ScopeOutput<InferSchema<OutSchema>> : Record<string, unknown>;
-export type ScopeCallback<Output extends object = Record<string, unknown>> =
+export type OutputObject = Record<string, unknown>;
+export type ScopeOutput<Output> = Output extends OutputObject ? Output : OutputObject;
+export type ScopeCallback<Output extends OutputObject = OutputObject> =
   (ctx: ScopeContext) => OutputValues<Output>;
-export type BuildScope = <Extra extends object = {}, Output extends object = Record<string, unknown>>(
+export type BuildScope = <Extra extends object = {}, Output extends OutputObject = OutputObject>(
   fn: (ctx: ScopeContext & Extra) => OutputValues<Output>,
   extra?: Extra,
 ) => ScopeIR;
@@ -22,6 +20,17 @@ export type RuntimeValueOf<T> =
     : T extends readonly (infer Item)[] ? RuntimeValueOf<Item>[]
       : T extends object ? { readonly [K in keyof T]: RuntimeValueOf<T[K]> }
         : T;
+type WidenLiteral<T> =
+  [T] extends [string] ? string extends T ? T : IsUnion<T> extends true ? T : string
+    : [T] extends [number] ? number extends T ? T : IsUnion<T> extends true ? T : number
+      : [T] extends [boolean] ? boolean extends T ? T : IsUnion<T> extends true ? T : boolean
+        : T;
+
+export type WidenRuntimeValue<T> =
+  [T] extends [string | number | boolean] ? WidenLiteral<T>
+        : T extends readonly (infer Item)[] ? WidenRuntimeValue<Item>[]
+          : T extends object ? { [K in keyof T]: WidenRuntimeValue<T[K]> }
+            : T;
 export type ArrayItem<Over> =
   Over extends Expr<readonly (infer Item)[]> ? Item
     : Over extends readonly (infer Value)[] ? RuntimeValueOf<Value>
@@ -32,9 +41,9 @@ export type FanoutScopeContext<Item = any> = ScopeContext & {
   itemIndex: Expr<number>;
 };
 
-export type LoopScopeContext<Output extends object> = ScopeContext & {
+export type LoopScopeContext<Output extends OutputObject> = ScopeContext & {
   iter: Expr<number>;
-  previous: OutputAccessor<Output | undefined>;
+  previous: OutputAccessor<Output>;
 };
 
 export type LoopStopContext<Output> = {
