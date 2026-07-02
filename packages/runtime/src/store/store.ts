@@ -15,6 +15,17 @@ import type { InstancePath, SchedulerProjection } from "../scheduler/types.js";
 
 export type RunStatus = "pending" | "running" | "paused" | "awaiting" | "failed" | "completed" | "canceled";
 
+const RUNNABLE_RUNS_WHERE = `
+  status = 'pending'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM node_states
+    WHERE node_states.run_id = runs.id
+      AND node_states.status = 'pending'
+      AND node_states.error_json IS NOT NULL
+  )
+`;
+
 export type RuntimeStore = {
   scheduler: SchedulerStorePort;
   close(): void;
@@ -31,6 +42,7 @@ export type RuntimeStore = {
   replayRun(runId: string): ReplayResult;
   claimSupervisor(input: ClaimSupervisorInput): SupervisorLease;
   heartbeatSupervisor(input: HeartbeatSupervisorInput): boolean;
+  setSupervisorIdleState(input: SupervisorIdleStateInput): boolean;
   releaseSupervisor(input: HeartbeatSupervisorInput): boolean;
   releaseRunOwner(runId: string, ownerId: string): boolean;
   submitCommand(input: SubmitRunControlCommandInput): PendingRunControlCommand;
@@ -151,6 +163,8 @@ export type SupervisorDiagnostics = {
   generation: number;
   pid?: number;
   heartbeatAt?: string;
+  idleSinceAt?: string;
+  idleStopMs?: number;
   protocolVersion: number;
   packageVersion: string;
   nodeVersion: string;
@@ -292,11 +306,17 @@ export type ClaimSupervisorInput = {
   nodeVersion: string;
   execPath: string;
   staleAfterMs: number;
+  idleStopMs: number;
 };
 
 export type HeartbeatSupervisorInput = {
   workspaceRealpath: string;
   generation: number;
+};
+
+export type SupervisorIdleStateInput = HeartbeatSupervisorInput & {
+  idleSinceAt?: string;
+  idleStopMs: number;
 };
 
 export type SupervisorLease = {
@@ -857,15 +877,17 @@ class SqliteRuntimeStore implements RuntimeStore {
     this.db.prepare(`
       INSERT INTO supervisor_lease (
         workspace_realpath, generation, pid, endpoint, auth_token_hash, heartbeat_at,
-        protocol_version, package_version, node_version, exec_path, updated_at
+        idle_since_at, idle_stop_ms, protocol_version, package_version, node_version, exec_path, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(workspace_realpath) DO UPDATE SET
         generation = excluded.generation,
         pid = excluded.pid,
         endpoint = excluded.endpoint,
         auth_token_hash = excluded.auth_token_hash,
         heartbeat_at = excluded.heartbeat_at,
+        idle_since_at = excluded.idle_since_at,
+        idle_stop_ms = excluded.idle_stop_ms,
         protocol_version = excluded.protocol_version,
         package_version = excluded.package_version,
         node_version = excluded.node_version,
@@ -878,6 +900,7 @@ class SqliteRuntimeStore implements RuntimeStore {
       input.endpoint ?? null,
       input.tokenHash ?? null,
       now,
+      input.idleStopMs,
       input.protocolVersion,
       input.packageVersion,
       input.nodeVersion,
@@ -894,6 +917,16 @@ class SqliteRuntimeStore implements RuntimeStore {
       SET heartbeat_at = ?, updated_at = ?
       WHERE workspace_realpath = ? AND generation = ?
     `).run(now, now, input.workspaceRealpath, input.generation);
+    return result.changes === 1;
+  }
+
+  setSupervisorIdleState(input: SupervisorIdleStateInput): boolean {
+    const now = new Date().toISOString();
+    const result = this.db.prepare(`
+      UPDATE supervisor_lease
+      SET idle_since_at = ?, idle_stop_ms = ?, updated_at = ?
+      WHERE workspace_realpath = ? AND generation = ?
+    `).run(input.idleSinceAt ?? null, input.idleStopMs, now, input.workspaceRealpath, input.generation);
     return result.changes === 1;
   }
 
@@ -956,16 +989,18 @@ class SqliteRuntimeStore implements RuntimeStore {
     return this.db.prepare(`
       SELECT id, name, status, workflow_entry, ir_digest, source_graph_digest, created_at, updated_at
       FROM runs
-      WHERE status = 'pending'
-        AND NOT EXISTS (
-          SELECT 1
-          FROM node_states
-          WHERE node_states.run_id = runs.id
-            AND node_states.status = 'pending'
-            AND node_states.error_json IS NOT NULL
-        )
+      WHERE ${RUNNABLE_RUNS_WHERE}
       ORDER BY created_at ASC
     `).all().map(toRunRecord);
+  }
+
+  private countRunnableRuns(): number {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM runs
+      WHERE ${RUNNABLE_RUNS_WHERE}
+    `).get() as CountRow;
+    return Number(row.count);
   }
 
   claimCommand(commandId: string, options: ClaimCommandOptions = {}): boolean {
@@ -1515,7 +1550,7 @@ class SqliteRuntimeStore implements RuntimeStore {
   getRuntimeDiagnostics(): RuntimeDiagnostics {
     const now = new Date().toISOString();
     const supervisor = this.db.prepare(`
-      SELECT workspace_realpath, generation, pid, heartbeat_at, protocol_version, package_version, node_version, exec_path, updated_at
+      SELECT workspace_realpath, generation, pid, heartbeat_at, idle_since_at, idle_stop_ms, protocol_version, package_version, node_version, exec_path, updated_at
       FROM supervisor_lease
       ORDER BY updated_at DESC
       LIMIT 1
@@ -1524,6 +1559,8 @@ class SqliteRuntimeStore implements RuntimeStore {
       generation: number;
       pid: number | null;
       heartbeat_at: string | null;
+      idle_since_at: string | null;
+      idle_stop_ms: number | null;
       protocol_version: number;
       package_version: string;
       node_version: string;
@@ -1567,6 +1604,8 @@ class SqliteRuntimeStore implements RuntimeStore {
           generation: supervisor.generation,
           ...(supervisor.pid === null ? {} : { pid: supervisor.pid }),
           ...(supervisor.heartbeat_at === null ? {} : { heartbeatAt: supervisor.heartbeat_at }),
+          ...(supervisor.idle_since_at === null ? {} : { idleSinceAt: supervisor.idle_since_at }),
+          ...(supervisor.idle_stop_ms === null ? {} : { idleStopMs: supervisor.idle_stop_ms }),
           protocolVersion: supervisor.protocol_version,
           packageVersion: supervisor.package_version,
           nodeVersion: supervisor.node_version,
@@ -1589,7 +1628,7 @@ class SqliteRuntimeStore implements RuntimeStore {
         failed: Number(runs.failed ?? 0),
         completed: Number(runs.completed ?? 0),
         canceled: Number(runs.canceled ?? 0),
-        runnable: this.listRunnableRuns().length,
+        runnable: this.countRunnableRuns(),
       },
       leases: {
         activeForeground: Number(activeForeground.count),
@@ -3081,6 +3120,8 @@ function migrate(db: DatabaseSync): void {
       endpoint TEXT,
       auth_token_hash TEXT,
       heartbeat_at TEXT,
+      idle_since_at TEXT,
+      idle_stop_ms INTEGER,
       protocol_version INTEGER NOT NULL,
       package_version TEXT NOT NULL,
       node_version TEXT NOT NULL,
@@ -3304,6 +3345,8 @@ function migrate(db: DatabaseSync): void {
   addColumnIfMissing(db, "group_members", "child_frame_key", "TEXT");
   addColumnIfMissing(db, "group_members", "completion_sequence", "INTEGER");
   addColumnIfMissing(db, "run_inputs", "agent_overrides_json", "TEXT NOT NULL DEFAULT '{}'");
+  addColumnIfMissing(db, "supervisor_lease", "idle_since_at", "TEXT");
+  addColumnIfMissing(db, "supervisor_lease", "idle_stop_ms", "INTEGER");
 }
 
 function addColumnIfMissing(db: DatabaseSync, table: string, column: string, definition: string): void {

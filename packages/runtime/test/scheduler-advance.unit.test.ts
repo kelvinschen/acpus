@@ -217,6 +217,45 @@ describe("scheduler advance loop", () => {
     expect(result).toMatchObject({ status: "paused", started: 1, cancelled: 1 });
   });
 
+  it("renews the run lease while leaf work is active", async () => {
+    const store = new MemorySchedulerStore("run_1", [ready("work", 1)]);
+
+    const result = await advanceRun({
+      runId: "run_1",
+      ownerId: "owner-a",
+      store,
+      leaseMs: 3,
+      executor: executor(async () => {
+        await waitUntil(() => store.heartbeatCount >= 2);
+        return completed();
+      }),
+    });
+
+    expect(result).toMatchObject({ status: "idle", started: 1, completed: 1 });
+    expect(store.heartbeatCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it("does not drain derived transitions after heartbeat lease loss", async () => {
+    const store = new MemorySchedulerStore("run_1", [ready("work", 1)]);
+    store.failHeartbeatAfter = 1;
+
+    const result = await advanceRun({
+      runId: "run_1",
+      ownerId: "owner-a",
+      store,
+      leaseMs: 3,
+      executor: executor(context => new Promise(resolve => {
+        context.signal.addEventListener("abort", () => resolve({ status: "cancelled", reason: "superseded" }), { once: true });
+      })),
+      materialize: () => {
+        if (store.heartbeatCount > 1) throw new Error("materialize called after lease loss");
+        return [];
+      },
+    });
+
+    expect(result).toMatchObject({ status: "lease_lost", started: 1 });
+  });
+
   it("marks paused requeued work as pause_resume when it restarts", async () => {
     const store = new MemorySchedulerStore("run_1", [ready("work", 1)]);
     const reasons: Array<NodeAttemptContext["attemptStartReason"]> = [];
@@ -638,6 +677,8 @@ class PausingSerialLimiter {
 
 class MemorySchedulerStore implements SchedulerStorePort {
   claimable = true;
+  heartbeatCount = 0;
+  failHeartbeatAfter: number | undefined;
   failCommits = false;
   throwTimedOutCommits = false;
   loadCount = 0;
@@ -657,7 +698,8 @@ class MemorySchedulerStore implements SchedulerStorePort {
   }
 
   heartbeatRun(): boolean {
-    return this.claimable;
+    this.heartbeatCount += 1;
+    return this.claimable && (this.failHeartbeatAfter === undefined || this.heartbeatCount <= this.failHeartbeatAfter);
   }
 
   releaseRun(claim: RunOwnerClaim): boolean {
@@ -820,6 +862,14 @@ function ready(nodeKey: string, readinessSequence: number): SchedulerEvent {
       readinessSequence,
     },
   };
+}
+
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 1));
+  }
+  throw new Error("condition was not met");
 }
 
 function attemptResultEvents(input: AttemptCommitInput, nodeKey: string, memberKey?: string): SchedulerEvent[] {

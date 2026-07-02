@@ -102,12 +102,18 @@ function previewJson(value: unknown): string {
 function writeCompactDynamicSummary(stream: Writable, run: RunDetails): void {
   const dynamic = run.dynamic;
   if (!dynamic) return;
+  for (const wait of dynamic.signalWaits.filter(wait => wait.status === "awaiting").slice(0, 20)) {
+    stream.write(`Awaiting signal: ${wait.nodeKey}\n`);
+    stream.write(`Use: acpus runs signal ${run.id} --target ${wait.nodeKey} --payload '<json>'\n`);
+  }
   const actionable = dynamic.nodeInstances.filter(node => node.status !== "completed")
     .map(node => `${node.nodeKey} ${node.status}`)
     .slice(0, 20);
   if (actionable.length > 0) stream.write(`Actionable nodes: ${actionable.join(", ")}\n`);
   const omitted = dynamic.nodeInstances.length - actionable.length;
   if (omitted > 0) stream.write(`Node details omitted: ${omitted}\n`);
+  const signalWaitsOmitted = Math.max(0, dynamic.signalWaits.length - 20);
+  if (signalWaitsOmitted > 0) stream.write(`Signal waits omitted: ${signalWaitsOmitted}\n`);
   const agentAttempts = dynamic.executionMetadata.filter(entry => entry.kind === "agent_attempt").length;
   if (agentAttempts > 0) stream.write(`Agent attempt details omitted: ${agentAttempts}. Use --json for full metadata.\n`);
 }

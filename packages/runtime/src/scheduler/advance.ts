@@ -119,12 +119,19 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
     const limiter = input.limiter ?? createConcurrencyLimiter(maxLeafConcurrency);
     const counters = { started: 0, completed: 0, failed: 0, cancelled: 0, leaseLost: false };
     const active = new Map<string, AbortController>();
-    await Promise.all(executable.map(instance => limiter.add(async () => {
-      await runInstance(input, claim, leaseMs, now, instance, counters, active);
-      drainDerivedTransitions(input.store, input.runId, claim, now, input.materialize, input.maxAttemptsFor);
-      abortInterruptedActiveAttempts(input.store, input.runId, active);
-    })));
-    await limiter.onIdle();
+    const stopHeartbeat = startRunHeartbeat(input.store, claim, leaseMs, counters, active);
+    try {
+      await Promise.all(executable.map(instance => limiter.add(async () => {
+        if (counters.leaseLost) return;
+        await runInstance(input, claim, now, instance, counters, active);
+        if (counters.leaseLost) return;
+        drainDerivedTransitions(input.store, input.runId, claim, now, input.materialize, input.maxAttemptsFor);
+        abortInterruptedActiveAttempts(input.store, input.runId, active);
+      })));
+      await limiter.onIdle();
+    } finally {
+      stopHeartbeat();
+    }
 
     if (counters.leaseLost) {
       limiter.clear();
@@ -288,16 +295,11 @@ function retryFailedInstanceEvents(projection: SchedulerProjection, maxAttemptsF
 async function runInstance(
   input: AdvanceRunInput,
   claim: RunOwnerClaim,
-  leaseMs: number,
   now: () => Date,
   instance: NodeInstance,
   counters: { started: number; completed: number; failed: number; cancelled: number; leaseLost: boolean },
   active: Map<string, AbortController>,
 ): Promise<void> {
-  if (!input.store.heartbeatRun(claim, leaseMs)) {
-    counters.leaseLost = true;
-    return;
-  }
   let attempt: { attemptId: string; attemptNo: number };
   const snapshot = unwrapStoreResult(input.store.tryLoadRunSnapshot(input.runId));
   const deadlineAt = input.deadlineAtFor?.(instance, snapshot.projection, now())?.toISOString();
@@ -343,6 +345,7 @@ async function runInstance(
     clearInterval(monitor);
     active.delete(instance.nodeKey);
   }
+  if (counters.leaseLost) return;
   if (result.status === "completed") {
     try {
       assertWorkflowData(result.output, `Node '${instance.nodeId}' output`);
@@ -376,6 +379,30 @@ async function runInstance(
   if (result.status === "completed") counters.completed += 1;
   else if (result.status === "cancelled") counters.cancelled += 1;
   else counters.failed += 1;
+}
+
+function startRunHeartbeat(
+  store: SchedulerStorePort,
+  claim: RunOwnerClaim,
+  leaseMs: number,
+  counters: { leaseLost: boolean },
+  active: Map<string, AbortController>,
+): () => void {
+  if (!store.heartbeatRun(claim, leaseMs)) {
+    counters.leaseLost = true;
+    return () => undefined;
+  }
+  const heartbeat = setInterval(() => {
+    if (store.heartbeatRun(claim, leaseMs)) return;
+    counters.leaseLost = true;
+    for (const controller of active.values()) controller.abort();
+  }, heartbeatIntervalMs(leaseMs));
+  heartbeat.unref?.();
+  return () => clearInterval(heartbeat);
+}
+
+function heartbeatIntervalMs(leaseMs: number): number {
+  return Math.max(1, Math.floor(leaseMs / 3));
 }
 
 function attemptStartReason(instance: NodeInstance): NodeAttemptContext["attemptStartReason"] | undefined {

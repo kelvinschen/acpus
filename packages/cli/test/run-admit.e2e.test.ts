@@ -13,10 +13,14 @@ describe.concurrent("acpus workflows run smoke", () => {
       const result = await runSourceCli(workspace, ["workflows", "check", workflow, "--json"]);
 
       expect(result.exitCode).toBe(0);
-      expect(JSON.parse(result.stdout)).toMatchObject({
+      const output = JSON.parse(result.stdout);
+      expect(output).toMatchObject({
         ok: true,
         phase: "check",
       });
+      expect(output.preflightDir).toEqual(expect.stringContaining(".acpus/preflight/"));
+      expect(output.irDigest).toEqual(expect.stringMatching(/^sha256:/));
+      expect(output.sourceGraphDigest).toEqual(expect.stringMatching(/^sha256:/));
       await expect(access(join(workspace, ".acpus", "state", "runtime.db"))).rejects.toThrow();
     });
   });
@@ -29,17 +33,30 @@ describe.concurrent("acpus workflows run smoke", () => {
 
       expect(result.exitCode).toBe(0);
       const lines = result.stdout.trim().split("\n").map(line => JSON.parse(line));
-      expect(lines).toEqual(expect.arrayContaining([
-        expect.objectContaining({ phase: "run", kind: "admitted" }),
+      expect(lines[0]).toMatchObject({ phase: "run", kind: "admitted" });
+      expect(lines.slice(1, -1)).toEqual(expect.arrayContaining([
         expect.objectContaining({ phase: "run", kind: "node completed" }),
       ]));
       expect(lines.at(-1)).toMatchObject({
         ok: true,
         phase: "run",
+        kind: "terminal summary",
         run: {
           status: "completed",
         },
       });
+    });
+  });
+
+  it("prints bounded observations in foreground text mode", async () => {
+    await withTestWorkspace("run-pure-text-observations", async workspace => {
+      const workflow = await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts");
+
+      const result = await runSourceCli(workspace, ["workflows", "run", workflow, "--input", "{\"ready\":true}"]);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toMatch(/node completed: require_ready~[a-f0-9]+ completed/);
+      expect(result.stdout).toContain("Run completed.");
     });
   });
 
@@ -53,6 +70,21 @@ describe.concurrent("acpus workflows run smoke", () => {
       expect(JSON.parse(result.stdout)).toMatchObject({
         ok: false,
         phase: "usage",
+      });
+      await expect(access(join(workspace, ".acpus", "state", "runtime.db"))).rejects.toThrow();
+    });
+  });
+
+  it("rejects schema-invalid input without creating runtime state", async () => {
+    await withTestWorkspace("run-invalid-schema-input", async workspace => {
+      const workflow = await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts");
+
+      const result = await runSourceCli(workspace, ["workflows", "run", workflow, "--input", "{\"ready\":\"yes\"}", "--json"]);
+
+      expect(result.exitCode).toBe(1);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        ok: false,
+        phase: "validate",
       });
       await expect(access(join(workspace, ".acpus", "state", "runtime.db"))).rejects.toThrow();
     });

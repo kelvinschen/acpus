@@ -16,6 +16,7 @@ import {
   type PendingRunControlCommand,
   type PreparedRunWorkflow,
   type ReplayResult,
+  type RuntimeDiagnostics,
   type SupervisorDiagnostics,
   type RunDetails,
   type RunRecord,
@@ -74,7 +75,7 @@ export async function admitWorkflowRun(cwd: string, prepared: PreparedRunWorkflo
   );
 }
 
-export async function admitWorkflowRunOnly(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue, agentOverrides?: AgentOverrideMap): Promise<RunDetails> {
+export async function admitPreparedWorkflowRun(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue, agentOverrides?: AgentOverrideMap): Promise<RunDetails> {
   const store = await openRuntimeStore(cwd);
   try {
     const run = await store.admitRun({ prepared, cwd, input, ...(agentOverrides === undefined ? {} : { agentOverrides }) });
@@ -213,14 +214,10 @@ export async function signalRun(cwd: string, runId: string, nodeId: string, payl
 }
 
 export function trySignalRun(cwd: string, runId: string, nodeId: string, payload: JsonValue): ResultAsync<RuntimeMutationResult, RuntimeUseCaseError> {
-  return ResultAsync.fromPromise(signalRunResult(cwd, runId, nodeId, payload), runtimeUseCaseThrownError);
+  return ResultAsync.fromPromise(signalRunResultWithOptions(cwd, runId, nodeId, payload), runtimeUseCaseThrownError);
 }
 
-async function signalRunResult(cwd: string, runId: string, nodeId: string, payload: JsonValue): Promise<RuntimeMutationResult> {
-  return signalRunResultWithOptions(cwd, runId, nodeId, payload);
-}
-
-export async function signalRunControlOnly(cwd: string, runId: string, nodeId: string, payload: JsonValue): Promise<RuntimeMutationResult | undefined> {
+export async function applySignalRunControl(cwd: string, runId: string, nodeId: string, payload: JsonValue): Promise<RuntimeMutationResult | undefined> {
   const result = await ResultAsync.fromPromise(signalRunResultWithOptions(cwd, runId, nodeId, payload, { advance: false }), runtimeUseCaseThrownError);
   return result.match(
     value => value,
@@ -272,14 +269,10 @@ export async function mutateRun(cwd: string, runId: string, action: RuntimeMutat
 }
 
 export function tryMutateRun(cwd: string, runId: string, action: RuntimeMutationAction, input: RuntimeMutationInput = {}): ResultAsync<RuntimeMutationResult, RuntimeUseCaseError> {
-  return ResultAsync.fromPromise(mutateRunResult(cwd, runId, action, input), runtimeUseCaseThrownError);
+  return ResultAsync.fromPromise(mutateRunResultWithOptions(cwd, runId, action, input), runtimeUseCaseThrownError);
 }
 
-async function mutateRunResult(cwd: string, runId: string, action: RuntimeMutationAction, input: RuntimeMutationInput = {}): Promise<RuntimeMutationResult> {
-  return mutateRunResultWithOptions(cwd, runId, action, input);
-}
-
-export async function mutateRunControlOnly(cwd: string, runId: string, action: RuntimeMutationAction, input: RuntimeMutationInput = {}): Promise<RuntimeMutationResult | undefined> {
+export async function applyRunControl(cwd: string, runId: string, action: RuntimeMutationAction, input: RuntimeMutationInput = {}): Promise<RuntimeMutationResult | undefined> {
   const result = await ResultAsync.fromPromise(mutateRunResultWithOptions(cwd, runId, action, input, { advance: false }), runtimeUseCaseThrownError);
   return result.match(
     value => value,
@@ -364,7 +357,7 @@ export async function getRuntimeHealth(cwd: string): Promise<RuntimeHealthReport
         message: `${diagnostics.runs.total} runs, ${diagnostics.runs.runnable} runnable.`,
         details: diagnostics.runs as unknown as Record<string, JsonValue>,
       },
-      idleStopCheck(diagnostics.commands.pending, diagnostics.runs.runnable, diagnostics.leases.activeForeground),
+      idleStopCheck(diagnostics),
     ];
     if (diagnostics.leases.stale > 0) {
       checks.push({
@@ -444,16 +437,20 @@ async function applyCommandResult(cwd: string, store: NonNullable<Awaited<Return
 function supervisorCheck(supervisor: SupervisorDiagnostics | undefined): RuntimeHealthCheck {
   if (!supervisor) return { area: "supervisor", status: "ok", message: "No supervisor lease is present." };
   const heartbeatAgeMs = supervisor.heartbeatAt ? Date.now() - Date.parse(supervisor.heartbeatAt) : undefined;
+  const idleAgeMs = supervisor.idleSinceAt ? Date.now() - Date.parse(supervisor.idleSinceAt) : undefined;
   const processAlive = supervisor.pid === undefined ? undefined : isProcessAlive(supervisor.pid);
   const stale = heartbeatAgeMs !== undefined && heartbeatAgeMs > 30_000;
   return {
     area: "supervisor",
     status: stale || processAlive === false ? "warn" : "ok",
-    message: stale ? "Supervisor heartbeat is stale." : processAlive === false ? "Supervisor pid is not alive." : "Supervisor lease is fresh.",
+    message: stale ? "Supervisor heartbeat is stale." : processAlive === false ? "Supervisor pid is not alive." : idleAgeMs === undefined ? "Supervisor lease is fresh." : "Supervisor lease is fresh and idle.",
     details: {
       generation: supervisor.generation,
       ...(supervisor.pid === undefined ? {} : { pid: supervisor.pid }),
       ...(heartbeatAgeMs === undefined ? {} : { heartbeatAgeMs }),
+      ...(supervisor.idleSinceAt === undefined ? {} : { idleSinceAt: supervisor.idleSinceAt }),
+      ...(idleAgeMs === undefined ? {} : { idleAgeMs }),
+      ...(supervisor.idleStopMs === undefined ? {} : { idleStopMs: supervisor.idleStopMs }),
       ...(processAlive === undefined ? {} : { processAlive }),
       packageVersion: supervisor.packageVersion,
       nodeVersion: supervisor.nodeVersion,
@@ -462,7 +459,12 @@ function supervisorCheck(supervisor: SupervisorDiagnostics | undefined): Runtime
   };
 }
 
-function idleStopCheck(pendingCommands: number, runnableRuns: number, activeForeground: number): RuntimeHealthCheck {
+function idleStopCheck(diagnostics: RuntimeDiagnostics): RuntimeHealthCheck {
+  const { pending: pendingCommands } = diagnostics.commands;
+  const { runnable: runnableRuns } = diagnostics.runs;
+  const { activeForeground } = diagnostics.leases;
+  const idleSinceAt = diagnostics.supervisor?.idleSinceAt;
+  const idleAgeMs = idleSinceAt ? Date.now() - Date.parse(idleSinceAt) : undefined;
   const blockers = [
     pendingCommands > 0 ? "pending commands" : undefined,
     runnableRuns > 0 ? "runnable runs" : undefined,
@@ -472,7 +474,14 @@ function idleStopCheck(pendingCommands: number, runnableRuns: number, activeFore
     area: "idle-stop",
     status: "ok",
     message: blockers.length === 0 ? "No idle-stop blockers." : `Idle-stop blocked by ${blockers.join(", ")}.`,
-    details: { pendingCommands, runnableRuns, activeForeground },
+    details: {
+      pendingCommands,
+      runnableRuns,
+      activeForeground,
+      ...(idleSinceAt === undefined ? {} : { idleSinceAt }),
+      ...(idleAgeMs === undefined ? {} : { idleAgeMs }),
+      ...(diagnostics.supervisor?.idleStopMs === undefined ? {} : { idleStopMs: diagnostics.supervisor.idleStopMs }),
+    },
   };
 }
 

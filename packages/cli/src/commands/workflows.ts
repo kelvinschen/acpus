@@ -1,10 +1,10 @@
 import type { Writable } from "node:stream";
 import { Command } from "commander";
-import { advanceWorkflowRun, admitWorkflowRunOnly, normalizeWorkflowInput, releaseWorkflowRunOwner, validateAgentOverrides, type RuntimeAdvanceResult } from "@acpus/runtime";
+import { advanceWorkflowRun, admitPreparedWorkflowRun, normalizeWorkflowInput, releaseWorkflowRunOwner, validateAgentOverrides, type RuntimeAdvanceResult } from "@acpus/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
 import { writePreflightArtifact } from "@acpus/workflow-compiler";
 import { validationError } from "../errors.js";
-import { summarizeWorkflow, writeJsonLine, writeResult, type OutputFormat } from "../output.js";
+import { summarizeWorkflow, writeJsonLine, writeResult } from "../output.js";
 import { prepareWorkflowForCli } from "../workflow-preparation.js";
 import { parseAgents, parseInput } from "./json.js";
 import { ensureSupervisorRunning } from "./supervisor.js";
@@ -114,7 +114,7 @@ async function runWorkflow(ctx: WorkflowsCommandContext, workflow: string, optio
   }
 
   if (options.background) {
-    const run = await admitWorkflowRunOnly(ctx.cwd, prepared, admittedInput, agentOverrides);
+    const run = await admitPreparedWorkflowRun(ctx.cwd, prepared, admittedInput, agentOverrides);
     if (run.status !== "completed" && run.status !== "failed" && run.status !== "canceled") ensureSupervisorRunning(ctx.cwd);
     ctx.setExitCode(writeResult({
       ok: true,
@@ -129,7 +129,7 @@ async function runWorkflow(ctx: WorkflowsCommandContext, workflow: string, optio
     return;
   }
 
-  const admitted = await admitWorkflowRunOnly(ctx.cwd, prepared, admittedInput, agentOverrides);
+  const admitted = await admitPreparedWorkflowRun(ctx.cwd, prepared, admittedInput, agentOverrides);
   if (ctx.wantsJson) writeJsonLine(ctx.stdout, { ok: true, phase: "run", kind: "admitted", run: admitted });
   const ownerId = `foreground:${process.pid}`;
   const detach = installDetachHandler(ctx, admitted.id, ownerId);
@@ -140,7 +140,7 @@ async function runWorkflow(ctx: WorkflowsCommandContext, workflow: string, optio
   let advanced: RuntimeAdvanceResult;
   try {
     advanced = await advanceWorkflowRun(ctx.cwd, admitted.id, ownerId, run => {
-      if (ctx.wantsJson) writeRunObservations(ctx, seen, run);
+      writeRunObservations(ctx, seen, run);
     });
   } finally {
     detach();
@@ -187,14 +187,30 @@ function installDetachHandler(ctx: WorkflowsCommandContext, runId: string, owner
 }
 
 function writeRunObservations(ctx: WorkflowsCommandContext, seen: Set<string>, run: RuntimeAdvanceResult["run"]): void {
-  for (const observation of runObservations(seen, run)) writeJsonLine(ctx.stdout, observation);
+  for (const observation of runObservations(seen, run)) {
+    if (ctx.wantsJson) writeJsonLine(ctx.stdout, observation);
+    else ctx.stdout.write(`${observation.kind}: ${observationTarget(observation)} ${observation.status}\n`);
+  }
 }
 
-function runObservations(seen: Set<string>, run: RuntimeAdvanceResult["run"]): unknown[] {
+type RunObservation = {
+  ok: boolean;
+  phase: "run";
+  kind: string;
+  runId: string;
+  status: string;
+  nodeKey?: string;
+  frameKey?: string;
+  nodeId?: string;
+  reason?: string;
+  error?: unknown;
+};
+
+function runObservations(seen: Set<string>, run: RuntimeAdvanceResult["run"]): RunObservation[] {
   const nodes = (run.dynamic?.nodeInstances ?? [])
     .filter(node => !seen.has(`node:${node.nodeKey}:${node.status}`))
     .slice(0, 100)
-    .map(node => {
+    .map((node): RunObservation => {
       seen.add(`node:${node.nodeKey}:${node.status}`);
       return {
         ok: node.status !== "failed",
@@ -211,7 +227,7 @@ function runObservations(seen: Set<string>, run: RuntimeAdvanceResult["run"]): u
   const frames = (run.dynamic?.frames ?? [])
     .filter(frame => frame.nodeId && !seen.has(`frame:${frame.frameKey}:${frame.status}`))
     .slice(0, Math.max(0, 100 - nodes.length))
-    .map(frame => {
+    .map((frame): RunObservation => {
       seen.add(`frame:${frame.frameKey}:${frame.status}`);
       return {
         ok: frame.status !== "failed",
@@ -220,13 +236,17 @@ function runObservations(seen: Set<string>, run: RuntimeAdvanceResult["run"]): u
         runId: run.id,
         frameKey: frame.frameKey,
         ...(frame.nodeKey ? { nodeKey: frame.nodeKey } : {}),
-        nodeId: frame.nodeId,
+        ...(frame.nodeId ? { nodeId: frame.nodeId } : {}),
         status: frame.status,
         ...(frame.terminalReason ? { reason: frame.terminalReason } : {}),
         ...(frame.error ? { error: frame.error } : {}),
       };
     });
   return [...nodes, ...frames];
+}
+
+function observationTarget(observation: RunObservation): string {
+  return observation.nodeKey ?? observation.frameKey ?? observation.runId;
 }
 
 function nodeObservationKind(status: string): string {

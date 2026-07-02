@@ -35,6 +35,7 @@ export async function startSupervisorLoop(cwd: string, options: SupervisorLoopOp
     nodeVersion: options.nodeVersion ?? process.version,
     execPath: options.execPath ?? process.execPath,
     staleAfterMs: options.staleAfterMs ?? 30_000,
+    idleStopMs,
   });
 
   let ticking = false;
@@ -73,9 +74,16 @@ export async function startSupervisorLoop(cwd: string, options: SupervisorLoopOp
       const activeForeground = store.getRuntimeDiagnostics().leases.activeForeground;
       if (result.commands > 0 || result.runs > 0 || activeForeground > 0) {
         idleSince = undefined;
+        store.setSupervisorIdleState({ workspaceRealpath, generation: lease.generation, idleStopMs });
         return;
       }
       idleSince ??= Date.now();
+      store.setSupervisorIdleState({
+        workspaceRealpath,
+        generation: lease.generation,
+        idleSinceAt: new Date(idleSince).toISOString(),
+        idleStopMs,
+      });
       if (Date.now() - idleSince >= idleStopMs) {
         await shutdown();
         options.onShutdown?.();

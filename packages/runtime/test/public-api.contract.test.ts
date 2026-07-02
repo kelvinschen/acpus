@@ -4,16 +4,17 @@ import * as runtime from "@acpus/runtime";
 describe("@acpus/runtime public API", () => {
   it("exports durable runtime use cases and testable pure runtime helpers", () => {
     expect(Object.keys(runtime).sort()).toEqual([
+      "admitPreparedWorkflowRun",
       "admitWorkflowRun",
-      "admitWorkflowRunOnly",
       "advanceWorkflowRun",
+      "applyRunControl",
+      "applySignalRunControl",
       "createWorkflowVisualizationOverlay",
       "getRun",
       "getRunVisualizationOverlay",
       "getRuntimeHealth",
       "listRuns",
       "mutateRun",
-      "mutateRunControlOnly",
       "normalizeForkInput",
       "normalizeSignalPayload",
       "normalizeWorkflowInput",
@@ -21,7 +22,6 @@ describe("@acpus/runtime public API", () => {
       "releaseWorkflowRunOwner",
       "replayRun",
       "signalRun",
-      "signalRunControlOnly",
       "startSupervisorLoop",
       "tryAdmitWorkflowRun",
       "tryAdvanceRun",

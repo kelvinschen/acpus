@@ -27,6 +27,7 @@ describe("supervisor lease", () => {
       packageVersion: "0.0.0-test",
       nodeVersion: process.version,
       execPath: process.execPath,
+      idleStopMs: 30_000,
     };
 
     const first = store.claimSupervisor({ ...base, pid: 100, staleAfterMs: 60_000 });

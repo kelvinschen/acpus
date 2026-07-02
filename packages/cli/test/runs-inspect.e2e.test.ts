@@ -33,6 +33,21 @@ describe("acpus runs inspect smoke", () => {
       });
     });
   }, 15_000);
+
+  it("prints compact actionable signal guidance in text mode", async () => {
+    await withTestWorkspace("runs-inspect-signal-text", async workspace => {
+      const workflow = await copyWorkflowFixture(workspace, "workflows/signals/signal.workflow.ts");
+      const admitted = await runSourceCli(workspace, ["workflows", "run", workflow, "--json"]);
+      expect(admitted.exitCode).toBe(0);
+      const runId = JSON.parse(admitted.stdout.trim().split("\n").at(-1)!).run.id;
+
+      const inspected = await runSourceCli(workspace, ["runs", "inspect", runId]);
+
+      expect(inspected.exitCode).toBe(0);
+      expect(inspected.stdout).toMatch(/Awaiting signal: approve~[a-f0-9]+/);
+      expect(inspected.stdout).toMatch(new RegExp(`Use: acpus runs signal ${runId} --target approve~[a-f0-9]+ --payload '<json>'`));
+    });
+  }, 15_000);
 });
 
 async function expectInspectRun(workspace: string, runId: string): Promise<void> {

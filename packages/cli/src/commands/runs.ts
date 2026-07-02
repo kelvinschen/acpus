@@ -1,7 +1,7 @@
 import type { Writable } from "node:stream";
 import { Command } from "commander";
 import type { JsonValue } from "@acpus/expression/ir";
-import { getRun, listRuns, mutateRunControlOnly, normalizeForkInput, signalRunControlOnly, type PreparedRunWorkflow, type RunDetails, type RunRecord } from "@acpus/runtime";
+import { applyRunControl, applySignalRunControl, getRun, listRuns, normalizeForkInput, type PreparedRunWorkflow, type RunDetails, type RunRecord } from "@acpus/runtime";
 import { controlError, notFoundError, usageError, validationError } from "../errors.js";
 import { writeResult, type OutputFormat } from "../output.js";
 import { prepareWorkflowForCli } from "../workflow-preparation.js";
@@ -24,7 +24,6 @@ type RunsCommandOptions = {
   agents?: string;
   limit?: string;
   all?: boolean;
-  prepared?: PreparedRunWorkflow;
 };
 
 type ControlAction = "pause" | "resume" | "retry" | "fork" | "cancel";
@@ -122,9 +121,9 @@ async function inspectRun(ctx: RunsCommandContext, runId: string): Promise<void>
 
 async function signalRun(ctx: RunsCommandContext, runId: string, options: RunsCommandOptions): Promise<void> {
   const payload = parseRequiredPayload(options.payload);
-  let result: Awaited<ReturnType<typeof signalRunControlOnly>>;
+  let result: Awaited<ReturnType<typeof applySignalRunControl>>;
   try {
-    result = await signalRunControlOnly(ctx.cwd, runId, options.target!, payload);
+    result = await applySignalRunControl(ctx.cwd, runId, options.target!, payload);
   } catch (error) {
     throw controlError(error instanceof Error ? error.message : String(error));
   }
@@ -140,12 +139,12 @@ async function signalRun(ctx: RunsCommandContext, runId: string, options: RunsCo
 }
 
 async function mutateRun(ctx: RunsCommandContext, runId: string, options: RunsCommandOptions, action: ControlAction): Promise<void> {
-  const prepared = action === "fork" && options.workflow ? await prepareWorkflowForCli(options.workflow, ctx.cwd) : options.prepared;
+  const prepared = action === "fork" && options.workflow ? await prepareWorkflowForCli(options.workflow, ctx.cwd) : undefined;
   const agentOverrides = action === "fork" ? parseAgents(options.agents) : undefined;
   const forkInput = await maybeNormalizeForkInput(ctx, runId, action, options, prepared);
-  let result: Awaited<ReturnType<typeof mutateRunControlOnly>>;
+  let result: Awaited<ReturnType<typeof applyRunControl>>;
   try {
-    result = await mutateRunControlOnly(ctx.cwd, runId, action, {
+    result = await applyRunControl(ctx.cwd, runId, action, {
       ...(options.target ? { target: options.target } : {}),
       ...(prepared ? { prepared } : {}),
       ...(forkInput !== undefined ? { input: forkInput } : {}),

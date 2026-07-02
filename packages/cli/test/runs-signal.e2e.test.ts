@@ -15,7 +15,8 @@ describe("acpus runs signal smoke", () => {
       const signaled = await runSourceCli(workspace, ["runs", "signal", runId, "--target", "approve", "--payload", "{\"ok\":true}", "--json"]);
 
       expect(signaled.exitCode).toBe(0);
-      expect(JSON.parse(signaled.stdout)).toMatchObject({
+      const output = JSON.parse(signaled.stdout);
+      expect(output).toMatchObject({
         ok: true,
         phase: "control",
         command: {
@@ -26,6 +27,11 @@ describe("acpus runs signal smoke", () => {
           id: runId,
         },
       });
+      expect(output.run).toMatchObject({ id: runId });
+      expect(output.run.status).not.toBe("completed");
+      expect(output.run).not.toHaveProperty("input");
+      expect(output.run).not.toHaveProperty("output");
+      expect(output.run).not.toHaveProperty("dynamic");
 
       const completed = await waitForCompletedRun(workspace, runId);
       expect(completed).toMatchObject({

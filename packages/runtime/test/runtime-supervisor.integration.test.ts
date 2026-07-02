@@ -46,6 +46,33 @@ describe.concurrent("runtime supervisor ticks", () => {
     });
   });
 
+  it("persists supervisor idle state in runtime diagnostics", async () => {
+    await withRuntimeWorkspace("runtime-supervisor-idle-diagnostics", async workspace => {
+      const loop = await startSupervisorLoop(workspace, {
+        heartbeatMs: 5,
+        idleStopMs: 500,
+        packageVersion: "test",
+      });
+      try {
+        await waitUntil(() => {
+          const row = runtimeRow(workspace, "SELECT idle_since_at, idle_stop_ms FROM supervisor_lease") as { idle_since_at: string | null; idle_stop_ms: number | null } | undefined;
+          return row?.idle_since_at !== null && row?.idle_stop_ms === 500;
+        });
+        const store = await openRuntimeStore(workspace);
+        try {
+          expect(store.getRuntimeDiagnostics().supervisor).toMatchObject({
+            idleSinceAt: expect.any(String),
+            idleStopMs: 500,
+          });
+        } finally {
+          store.close();
+        }
+      } finally {
+        await loop.shutdown();
+      }
+    });
+  });
+
   it("applies pending signal commands", async () => {
     await withRuntimeWorkspace("runtime-supervisor-signal-command", async workspace => {
       const awaiting = await admitSyntheticWorkflow(workspace, signalWorkflow());
@@ -190,3 +217,11 @@ describe.concurrent("runtime supervisor ticks", () => {
     });
   });
 });
+
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    if (predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  throw new Error("condition was not met");
+}

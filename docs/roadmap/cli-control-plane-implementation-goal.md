@@ -859,14 +859,15 @@ Completed in this implementation:
   explicitly supplied, validates `--agents` without creating runtime state, and
   reports malformed JSON as `phase: "usage"` before workflow preparation.
 - `workflows run` foreground admits a run, advances with a foreground owner id,
-  emits JSONL admitted/projection/terminal records in JSON mode, exits at
-  terminal or action-required quiescence, and handles Ctrl-C as detach by
-  releasing foreground ownership and starting the supervisor.
+  emits JSONL admitted/projection/terminal records in JSON mode, prints bounded
+  projection observations in text mode, exits at terminal or action-required
+  quiescence, and handles Ctrl-C as detach by releasing foreground ownership and
+  starting the supervisor.
 - `workflows run --background` admits without local scheduler advancement and
   starts the detached supervisor for non-terminal work.
 - `runs inspect` is the single-run detail command; JSON preserves full run
   details and default text is compact with explicit omission markers for agent
-  metadata.
+  metadata plus actionable awaiting-signal commands.
 - `runs list` is bounded by default, ordered by `updatedAt DESC`, supports
   `--limit` / `--all`, and returns truncation metadata.
 - `runs retry`, `runs cancel`, and `runs signal` use `--target`; `signal --node`
@@ -875,16 +876,17 @@ Completed in this implementation:
   advancement and return command plus bounded run summaries.
 - `acpus doctor` is read-only, treats a missing runtime DB as healthy
   not-initialized state, and reports store, supervisor, queue, run, lease, and
-  idle-stop blocker checks.
+  idle-stop blocker checks, including supervisor idle age when a supervisor is
+  currently leased.
 - The detached supervisor lazy-start path and 30s continuous idle-stop behavior
   are implemented.
 
 Implementation gaps and intentional diffs from the roadmap wording:
 
-- Foreground JSON observations are emitted after each scheduler drive from
-  projection snapshots. They are not raw scheduler events and do not stream
-  inside a single long-running task or agent executor attempt until that attempt
-  yields back to the scheduler.
+- Foreground observations are emitted after each scheduler drive from projection
+  snapshots. They are not raw scheduler events and do not stream inside a single
+  long-running task or agent executor attempt until that attempt yields back to
+  the scheduler.
 - Ctrl-C detach is implemented with a CLI SIGINT handler that releases the
   current foreground owner id and starts the supervisor. It does not wait for or
   verify supervisor completion.

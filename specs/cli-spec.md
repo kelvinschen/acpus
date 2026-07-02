@@ -83,10 +83,14 @@ stable CLI phases and exit codes.
 - Foreground `workflows run --json` MUST emit newline-delimited JSON records:
   an admitted record, bounded projection observation records after scheduler
   drives, and a terminal summary record.
+- Foreground `workflows run` text output MUST include bounded projection
+  observations before the final run summary.
 - Text output MUST summarize successful check, run, inspection, control, doctor,
   and error results in human-readable form.
 - Text run inspection output MUST be compact by default and MUST NOT inline full
   agent prompts, model responses, raw scheduler events, or artifact contents.
+- Text run inspection output MUST show actionable awaiting signal targets with
+  a copyable `acpus runs signal` command.
 - Text diagnostic output MUST render `source` and `hint` when present.
 - `runs list` MUST order by `updatedAt DESC`, default to 20 rows, include
   truncation metadata, and accept mutually exclusive `--limit` and `--all`.
@@ -103,12 +107,16 @@ stable CLI phases and exit codes.
 
 - Tests MUST cover successful workflow check/preflight command output.
 - Tests MUST cover foreground run output for a pure completed workflow.
+- Tests MUST cover foreground text observations and JSONL admitted,
+  observation, and terminal summary ordering.
 - Tests MUST cover background run admission without local scheduler advancement.
 - Tests MUST cover check failure, compile/validation failure, invalid JSON
   input, and input-schema validation failure phase mapping.
 - Tests MUST cover diagnostic hint rendering in text output and hint
   preservation in JSON output.
-- Tests MUST cover read-only run list and inspect command output.
+- Tests MUST cover read-only run list default bounds, `--limit`, `--all`, and
+  invalid list option handling.
+- Tests MUST cover read-only run inspect command output.
 - Tests MUST cover compact text rendering for run inspection and JSON detail
   preservation.
 - Tests MUST cover signal command wiring through `--target`.

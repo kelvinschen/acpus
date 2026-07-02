@@ -268,11 +268,14 @@
 - A missing runtime store MUST be reported as a healthy not-initialized state by
   the runtime health API.
 - The runtime health API MUST report workspace/store status, supervisor lease
-  metadata, supervisor pid liveness when the host can check it, command queue
-  counts, run status counts, runnable run count, active foreground run leases,
-  stale run leases, and idle-stop blockers.
+  metadata, supervisor pid liveness when the host can check it, current
+  supervisor idle age when available, command queue counts, run status counts,
+  runnable run count, active foreground run leases, stale run leases, and
+  idle-stop blockers.
 - The runtime store MUST support SQLite-backed supervisor leases with generation fencing, heartbeat updates, stale takeover, and release by current generation only.
 - The detached supervisor MUST heartbeat under its current lease generation.
+- The detached supervisor MUST persist its current idle-since timestamp and
+  configured idle window while it is leased.
 - The detached supervisor MUST consume pending durable run-command rows for pause, resume, retry, fork, signal, and cancel.
 - The detached supervisor MUST consume pending durable supervisor-command rows for shutdown.
 - The detached supervisor MUST release its lease and exit after applying a durable shutdown command.

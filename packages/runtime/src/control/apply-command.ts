@@ -101,16 +101,14 @@ function parseForkPreparedWorkflow(value: unknown): ForkPreparedWorkflow | undef
     || (packageLockDigest !== undefined && typeof packageLockDigest !== "string")) {
     return undefined;
   }
-  return typeof value.workflowPath === "string"
-    ? {
-      workflowPath,
-      irJson,
-      irDigest,
-      sourceGraphDigest,
-      ...(packageLockDigest ? { packageLockDigest } : {}),
-      lock: lock as unknown as ForkPreparedWorkflow["lock"],
-    }
-    : undefined;
+  return {
+    workflowPath,
+    irJson,
+    irDigest,
+    sourceGraphDigest,
+    ...(packageLockDigest ? { packageLockDigest } : {}),
+    lock: lock as unknown as ForkPreparedWorkflow["lock"],
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, JsonValue> {
