@@ -273,6 +273,9 @@ describe.concurrent("runtime admission use cases", () => {
   it("loads package task source without ambient development conditions", async () => {
     const tsxImport = await import.meta.resolve("tsx");
     const coreSourceURL = new URL("../../core/src/index.ts", import.meta.url).href;
+    const sourceResolverImport = sourcePackageResolverImport({
+      "@acpus/loader": new URL("../../loader/src/index.ts", import.meta.url).href,
+    });
     const script = `
       import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
       import { tmpdir } from "node:os";
@@ -364,9 +367,25 @@ describe.concurrent("runtime admission use cases", () => {
 
     const env = { ...process.env };
     delete env.NODE_OPTIONS;
-    await expect(exec(process.execPath, ["--import", tsxImport, "--eval", script], { cwd: process.cwd(), env })).resolves.toBeDefined();
+    await expect(exec(process.execPath, ["--import", tsxImport, "--import", sourceResolverImport, "--eval", script], { cwd: process.cwd(), env })).resolves.toBeDefined();
   });
 });
+
+function sourcePackageResolverImport(aliases: Record<string, string>): string {
+  const loader = `
+const aliases = new Map(${JSON.stringify(Object.entries(aliases))});
+export async function resolve(specifier, context, nextResolve) {
+  const url = aliases.get(specifier);
+  if (url) return { url, shortCircuit: true };
+  return nextResolve(specifier, context);
+}
+`;
+  const registerer = `
+import { register } from "node:module";
+register(${JSON.stringify(`data:text/javascript,${encodeURIComponent(loader)}`)}, import.meta.url);
+`;
+  return `data:text/javascript,${encodeURIComponent(registerer)}`;
+}
 
 function setSingleTaskTarget(ir: WorkflowIR, target: TaskExecutionTargetIR): void {
   const node = ir.root.nodes.find(item => item.kind === "task");

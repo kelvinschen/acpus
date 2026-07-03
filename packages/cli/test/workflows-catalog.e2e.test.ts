@@ -11,7 +11,7 @@ describe.concurrent("workflow catalog e2e", () => {
     await withTestWorkspace("catalog-check-project", async workspace => {
       await mkdir(join(workspace, ".acpus", "workflows", "release"), { recursive: true });
       await writeFile(
-        join(workspace, ".acpus", "workflows", "release", "index.workflow.ts"),
+        join(workspace, ".acpus", "workflows", "release", "workflow.ts"),
         await readFile(fixturePath("workflows/basic/valid.workflow.ts"), "utf8"),
       );
 
@@ -26,7 +26,7 @@ describe.concurrent("workflow catalog e2e", () => {
         catalog: {
           scope: "project",
           name: "release",
-          entryPath: join(workspace, ".acpus", "workflows", "release", "index.workflow.ts"),
+          entryPath: join(workspace, ".acpus", "workflows", "release", "workflow.ts"),
         },
       });
 
@@ -84,7 +84,7 @@ describe.concurrent("workflow catalog e2e", () => {
           catalog: {
             scope: "global",
             name: "global-task",
-            entryPath: join(home, ".acpus", "workflows", "global-task", "index.workflow.ts"),
+            entryPath: join(home, ".acpus", "workflows", "global-task", "workflow.ts"),
           },
         });
         expect(terminal.run.workflowEntry).toContain(".acpus/catalog-cache/global/global-task/");
@@ -103,7 +103,7 @@ describe.concurrent("workflow catalog e2e", () => {
     await withTestWorkspace("catalog-path-precedence", async workspace => {
       await mkdir(join(workspace, ".acpus", "workflows", "workflow"), { recursive: true });
       await writeFile(
-        join(workspace, ".acpus", "workflows", "workflow", "index.workflow.ts"),
+        join(workspace, ".acpus", "workflows", "workflow", "workflow.ts"),
         projectWorkflow("catalog-workflow"),
       );
       await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts", "workflow.ts");
@@ -126,7 +126,7 @@ describe.concurrent("workflow catalog e2e", () => {
 async function globalTaskWorkflowPackage(root: string, name: string): Promise<void> {
   const dir = join(root, name);
   await mkdir(join(dir, "tasks"), { recursive: true });
-  await writeFile(join(dir, "index.workflow.ts"), [
+  await writeFile(join(dir, "workflow.ts"), [
     'import { defineWorkflow, z } from "acpus/core";',
     'import normalizeTask from "./tasks/normalize.task.js";',
     "",

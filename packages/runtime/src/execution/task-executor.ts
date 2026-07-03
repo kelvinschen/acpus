@@ -1,13 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { basename, join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { importAuthoringModule } from "@acpus/loader";
 import { task } from "@acpus/core";
 import { createDollar, type ArtifactRef, type CommandBuilder, type Dollar, type TaskContext, type TaskFunction } from "@acpus/core/runtime";
 import type { TaskExecutionTargetIR, TaskNodeIR } from "@acpus/core/ir";
-import { tsImport } from "tsx/esm/api";
 import { evaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
-import { officialAuthoringImportURL, registerOfficialAuthoringImports } from "../official-imports.js";
 import type { RuntimeStore } from "../store/store.js";
 import { parseDurationMs } from "./duration.js";
 
@@ -81,80 +80,12 @@ async function loadTaskFunction(target: TaskExecutionTargetIR, workspaceDir: str
   }
 
   const parentURL = pathToFileURL(join(workspaceDir, target.referrer.path)).href;
-  const mod = await importReusableModule(target.specifier, parentURL);
+  const mod = await importAuthoringModule(target.specifier, { parentURL });
   const token = mod[target.exportName];
   if (!task.isToken(token)) {
     throw new Error(`Reusable task module '${target.specifier}' export '${target.exportName}' is not an Acpus task.`);
   }
   return token.fn as TaskFunction<unknown, unknown>;
-}
-
-async function importReusableModule(specifier: string, parentURL: string): Promise<Record<string, unknown>> {
-  registerOfficialAuthoringImports();
-  const officialURL = officialAuthoringImportURL(specifier);
-  if (officialURL) return await tsImport(officialURL, { parentURL }) as Record<string, unknown>;
-  try {
-    return await tsImport(specifier, { parentURL }) as Record<string, unknown>;
-  } catch (error) {
-    if (!isResolutionError(error)) throw error;
-    const developmentURL = await developmentExportURL(specifier, parentURL);
-    if (!developmentURL) throw error;
-    return await tsImport(developmentURL, { parentURL }) as Record<string, unknown>;
-  }
-}
-
-async function developmentExportURL(specifier: string, parentURL: string): Promise<string | undefined> {
-  const parts = packageSpecifierParts(specifier);
-  if (!parts) return undefined;
-  const packageJson = await findPackageJson(parts.name, dirname(fileURLToPath(parentURL)));
-  if (!packageJson) return undefined;
-  const pkg = JSON.parse(await readFile(packageJson, "utf8")) as { exports?: unknown };
-  const target = exportTarget(pkg.exports, parts.subpath);
-  if (!target) return undefined;
-  return pathToFileURL(resolve(dirname(packageJson), target)).href;
-}
-
-function packageSpecifierParts(specifier: string): { name: string; subpath: string } | undefined {
-  if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("node:")) return undefined;
-  const parts = specifier.split("/");
-  if (specifier.startsWith("@")) {
-    if (parts.length < 2) return undefined;
-    return { name: `${parts[0]}/${parts[1]}`, subpath: parts.length > 2 ? `./${parts.slice(2).join("/")}` : "." };
-  }
-  return { name: parts[0] ?? specifier, subpath: parts.length > 1 ? `./${parts.slice(1).join("/")}` : "." };
-}
-
-async function findPackageJson(name: string, fromDir: string): Promise<string | undefined> {
-  let current = resolve(fromDir);
-  while (true) {
-    const candidate = join(current, "node_modules", name, "package.json");
-    try {
-      await readFile(candidate, "utf8");
-      return candidate;
-    } catch {
-      const parent = dirname(current);
-      if (parent === current) return undefined;
-      current = parent;
-    }
-  }
-}
-
-function exportTarget(exports: unknown, subpath: string): string | undefined {
-  const entry = subpath === "." ? exports : isRecord(exports) ? exports[subpath] : undefined;
-  if (typeof entry === "string") return entry;
-  if (!isRecord(entry)) return undefined;
-  const development = entry.development;
-  if (typeof development === "string") return development;
-  if (isRecord(development) && typeof development.default === "string") return development.default;
-  return undefined;
-}
-
-function isResolutionError(error: unknown): boolean {
-  const code = isRecord(error) && typeof error.code === "string" ? error.code : "";
-  return code === "ERR_MODULE_NOT_FOUND"
-    || code === "ERR_PACKAGE_PATH_NOT_EXPORTED"
-    || code === "ERR_PACKAGE_IMPORT_NOT_DEFINED"
-    || code === "ERR_UNSUPPORTED_DIR_IMPORT";
 }
 
 function evaluateEnv(env: TaskNodeIR["run"]["env"], scope: EvaluationScope): Record<string, string> {
@@ -193,10 +124,6 @@ function validateExecutionOptions(node: TaskNodeIR): void {
 function stringValue(value: unknown, label: string): string {
   if (typeof value === "string") return value;
   throw new Error(`${label} must evaluate to string.`);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function createArtifactApi(args: {

@@ -25,6 +25,7 @@
   },
   "devDependencies": {
     "@acpus/agent-executor": "workspace:*",
+    "@acpus/loader": "workspace:*",
     "@acpus/core": "workspace:*",
     "@acpus/expression": "workspace:*",
     "@acpus/runtime": "workspace:*",

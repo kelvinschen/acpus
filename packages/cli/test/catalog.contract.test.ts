@@ -17,6 +17,7 @@ describe("workflow catalog discovery", () => {
         await workflowPackage(join(home, ".acpus", "workflows"), "deploy");
         await workflowPackage(join(home, ".acpus", "workflows"), "shared");
         await workflowPackage(join(home, ".acpus", "workflows"), "Bad");
+        await legacyIndexWorkflowPackage(join(workspace, ".acpus", "workflows"), "legacy");
         await writeFile(join(workspace, ".acpus", "workflows", "loose.workflow.ts"), workflowSource("loose"));
         await mkdir(join(workspace, ".acpus", "workflows", "empty"), { recursive: true });
 
@@ -30,7 +31,7 @@ describe("workflow catalog discovery", () => {
           ["global", "shared", true],
         ]);
         expect(entries.every(entry => entry.packagePath.startsWith("/"))).toBe(true);
-        expect(entries.every(entry => entry.entryPath.endsWith("/index.workflow.ts"))).toBe(true);
+        expect(entries.every(entry => entry.entryPath.endsWith("/workflow.ts"))).toBe(true);
       });
     });
   });
@@ -54,6 +55,12 @@ describe("workflow catalog discovery", () => {
 });
 
 async function workflowPackage(root: string, name: string): Promise<void> {
+  const dir = join(root, name);
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "workflow.ts"), workflowSource(name));
+}
+
+async function legacyIndexWorkflowPackage(root: string, name: string): Promise<void> {
   const dir = join(root, name);
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, "index.workflow.ts"), workflowSource(name));

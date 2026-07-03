@@ -27,6 +27,7 @@ export type ResolvedWorkflowReference = {
 };
 
 const catalogNamePattern = /^[a-z0-9][a-z0-9-]*$/;
+const catalogWorkflowEntry = "workflow.ts";
 
 export async function discoverWorkflowCatalog(cwd: string, options: WorkflowCatalogScopeOptions = {}): Promise<WorkflowCatalogEntry[]> {
   const scope = selectedScope(options);
@@ -91,7 +92,7 @@ async function discoverScope(cwd: string, scope: WorkflowCatalogScope): Promise<
     if (!catalogNamePattern.test(name)) continue;
     const packagePath = join(root, name);
     if (!await isDirectory(packagePath)) continue;
-    const entryPath = join(packagePath, "index.workflow.ts");
+    const entryPath = join(packagePath, catalogWorkflowEntry);
     if (!await isFile(entryPath)) continue;
     entries.push({
       scope,
@@ -131,12 +132,12 @@ async function materializeGlobalCatalogEntry(cwd: string, entry: WorkflowCatalog
   try {
     const digest = await digestDirectory(entry.packagePath);
     const target = join(cwd, ".acpus", "catalog-cache", "global", entry.name, digest);
-    const targetEntry = join(target, "index.workflow.ts");
+    const targetEntry = join(target, catalogWorkflowEntry);
     if (await isFile(targetEntry)) return targetEntry;
     await rm(target, { recursive: true, force: true });
     await mkdir(dirname(target), { recursive: true });
     await cp(entry.packagePath, target, { recursive: true, dereference: true });
-    if (!await isFile(targetEntry)) throw new Error("materialized package is missing index.workflow.ts");
+    if (!await isFile(targetEntry)) throw new Error(`materialized package is missing ${catalogWorkflowEntry}`);
     return targetEntry;
   } catch (error) {
     throw inspectError(`Workflow catalog entry '${entry.name}' could not be materialized: ${causeMessage(error)}`);

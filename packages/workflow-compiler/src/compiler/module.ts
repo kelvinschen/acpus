@@ -2,11 +2,11 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve, relative } from "node:path";
 import { pathToFileURL } from "node:url";
+import { importAuthoringModule } from "@acpus/loader";
 import { compileWorkflowDefinition, isWorkflowDefinition } from "@acpus/core/workflow";
 import { validateWorkflowIR, type WorkflowIR } from "@acpus/core/ir";
 import { analyzeWorkflowTasks, resolveTaskReferenceMetadata, type TaskReferenceMetadata } from "../task-analysis/index.js";
 import { err, ok, Result, ResultAsync, type Result as NeverthrowResult } from "neverthrow";
-import { registerOfficialAuthoringImports } from "../official-imports.js";
 import { forEachTaskNode } from "./ir-walk.js";
 
 export type CompileOptions = {
@@ -88,8 +88,8 @@ export function tryCompileWorkflowModule(entry: string, options: CompileOptions 
 }
 
 function importWorkflowModule(absolute: string): Promise<Record<string, unknown>> {
-  registerOfficialAuthoringImports();
-  return import(pathToFileURL(absolute).href) as Promise<Record<string, unknown>>;
+  const url = pathToFileURL(absolute).href;
+  return importAuthoringModule(url, { parentURL: url });
 }
 
 function applyTaskReferenceMetadata(ir: WorkflowIR, metadata: Map<string, TaskReferenceMetadata>, referrerPath: string): void {

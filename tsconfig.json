@@ -1,3 +1,10 @@
 {
-  "extends": "./tsconfig.vitest.json"
+  "extends": "./tsconfig.vitest.json",
+  "include": [
+    "packages/*/src/**/*.ts",
+    "packages/*/test/**/*.ts",
+    "packages/*/test/fixtures/**/*.ts",
+    "packages/*/test/**/*.type.test-d.ts",
+    ".acpus/workflows/**/*.ts"
+  ]
 }

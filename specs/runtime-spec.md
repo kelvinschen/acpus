@@ -87,13 +87,13 @@
   owns the cancellable member subtree.
 - The runtime MUST execute task nodes through the task run target stored in frozen IR.
 - For inline task targets, the runtime MUST construct a callable function from the embedded self-contained source without writing a run-local task source file.
-- For reusable module task targets, the runtime MUST resolve the recorded source-level module specifier from the workflow referrer in the current workspace/package environment, import the module with TypeScript support, verify the selected export is an Acpus task token, and invoke the token's `fn`.
+- For reusable module task targets, the runtime MUST resolve the recorded source-level module specifier from the workflow referrer in the current workspace/package environment through `@acpus/loader`, verify the selected export is an Acpus task token, and invoke the token's `fn`.
 - For supported official authoring facade specifiers such as
   `acpus/tasks/git`, reusable task loading MUST resolve from Acpus-owned
   packages and MUST NOT require a workflow-local Acpus installation.
 - Reusable task module loading MUST support ESM JavaScript and TypeScript modules through the same live loader path.
-- TypeScript reusable task loading MUST be provided by an explicit runtime or supervisor loader boundary and MUST NOT rely on workspace root development dependencies being ambiently available.
-- Reusable task module loading MUST NOT add Acpus-owned cache-busting or dependency graph copying; normal Node/tsx module caching defines reuse within a runtime process.
+- TypeScript reusable task loading MUST be provided by the internal loader boundary and MUST NOT rely on workspace root development dependencies being ambiently available.
+- Reusable task module loading MUST NOT add Acpus-owned cache-busting or dependency graph copying; normal Node module caching behind the authoring loader defines reuse within a runtime process.
 - Task `run.cwd` MUST affect task execution context and the `$` command wrapper only. It MUST NOT change the module resolution base for reusable task imports.
 - Task execution MUST evaluate task `run.input`, `run.cwd`, and non-secret `run.env` expressions before invoking the task.
 - Task and TypeScript-owned composite outputs MUST enter runtime scope without schema normalization. Runtime MUST keep generic workflow-data admissibility guards before values enter scope, events, or durable storage; these guards MUST reject non-plain runtime values such as functions, class instances, `Date`, `Map`, `Set`, `symbol`, `bigint`, non-finite numbers, sparse arrays, and cycles without reintroducing business-shape validation.

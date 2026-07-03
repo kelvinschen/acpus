@@ -60,7 +60,7 @@ stable CLI phases and exit codes.
 - Workflow catalog discovery MUST inspect only first-level directories under
   `<workspace>/.acpus/workflows` and `$HOME/.acpus/workflows`.
 - A workflow catalog entry MUST be a directory whose name matches
-  `[a-z0-9][a-z0-9-]*` and that contains `index.workflow.ts`.
+  `[a-z0-9][a-z0-9-]*` and that contains `workflow.ts`.
 - Workflow catalog discovery MUST ignore non-package directories, invalid
   package names, direct `.workflow.ts` files under the catalog root, and nested
   package-looking directories inside a catalog package.
@@ -70,7 +70,7 @@ stable CLI phases and exit codes.
   across project and global scopes.
 - Scoped catalog lookup MUST search only the selected project or global scope.
 - `workflows check` and `workflows run` MUST resolve non-path-like workflow
-  arguments as catalog names and then use the resolved `index.workflow.ts` with
+  arguments as catalog names and then use the resolved `workflow.ts` with
   the existing workflow preparation flow.
 - `workflows check` and `workflows run` MUST keep path-like workflow arguments
   on the existing direct path preparation flow unless `--project` or `--global`

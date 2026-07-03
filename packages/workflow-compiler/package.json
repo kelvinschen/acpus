@@ -34,15 +34,16 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@acpus/loader": "workspace:*",
     "@acpus/core": "workspace:*",
     "@acpus/expression": "workspace:*",
     "@acpus/tasks": "workspace:*",
     "@types/node": "^22.15.30",
     "neverthrow": "^8.2.0",
-    "tsx": "^4.20.3",
     "typescript": "^5.9.0"
   },
   "devDependencies": {
-    "slash": "^3.0.0"
+    "slash": "^3.0.0",
+    "tsx": "^4.22.4"
   }
 }

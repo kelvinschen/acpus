@@ -1,7 +1,9 @@
+import { execFile } from "node:child_process";
 import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
   compileWorkflowModule,
@@ -9,7 +11,10 @@ import {
 } from "../src/index.js";
 import type { NodeIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
 
+const execFileAsync = promisify(execFile);
 const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
+const tsxImport = import.meta.resolve("tsx");
+const compilerEntry = new URL("../src/index.ts", import.meta.url).href;
 
 describe.concurrent("workflow module compiler", () => {
   it("compiles a TypeScript workflow module with reusable module references and inline task source", async () => {
@@ -85,6 +90,47 @@ describe.concurrent("workflow module compiler", () => {
         type: "invalid-default-export",
         entry: workflow,
         message: `Default export of ${workflow} is not an Acpus workflow definition.`,
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("imports a TypeScript workflow directly without project loader setup", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "compiler-direct-import-"));
+    try {
+      const workflow = join(cwd, "workflow.ts");
+      await writeFile(workflow, `import { defineWorkflow, task, z } from "acpus/core";
+
+export const noop = task.define({
+  inputSchema: z.object({}),
+  exec: async () => ({ ok: true }),
+});
+
+export default defineWorkflow({
+  name: "direct-import",
+  inputSchema: z.object({}),
+}).build(({ step }) => {
+  const result = step("run").task({ run: { task: noop, input: {} } });
+  return { ok: result.output.ok };
+});
+`);
+
+      const stdout = await runCompilerScript(`
+import { tryCompileWorkflowModule } from ${JSON.stringify(compilerEntry)};
+
+const result = await tryCompileWorkflowModule(${JSON.stringify(workflow)}, { cwd: ${JSON.stringify(cwd)} });
+if (result.isErr()) throw new Error(result.error.message);
+const node = result.value.root.nodes.find(item => item.id === "run");
+console.log(JSON.stringify({ name: result.value.name, target: node.run.target }));
+`);
+
+      const result = JSON.parse(stdout) as { name: string; target: unknown };
+      expect(result.name).toBe("direct-import");
+      expect(result.target).toMatchObject({
+        kind: "module",
+        specifier: "./workflow.ts",
+        exportName: "noop",
       });
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -320,6 +366,18 @@ async function compileFixture(relativePath: string): Promise<WorkflowIR> {
 
 function fixture(relativePath: string): string {
   return fileURLToPath(new URL(`./fixtures/workflows/${relativePath}`, import.meta.url));
+}
+
+async function runCompilerScript(script: string): Promise<string> {
+  const result = await execFileAsync(process.execPath, [
+    "--conditions=development",
+    "--import",
+    tsxImport,
+    "--input-type=module",
+    "--eval",
+    script,
+  ], { cwd: repoRoot });
+  return result.stdout.trim();
 }
 
 function taskTarget(scope: ScopeIR, nodeId: string): Extract<NodeIR, { kind: "task" }>["run"]["target"] {

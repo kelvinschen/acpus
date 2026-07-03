@@ -1,9 +1,9 @@
-import { readFile, writeFile } from "node:fs/promises";
-import { dirname, join, relative, resolve } from "node:path";
+import { writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { officialAuthoringTypeScriptPaths } from "@acpus/loader";
 import type { DiagnosticIR } from "@acpus/core/ir";
 import ts from "typescript";
-import { officialAuthoringTypeScriptPaths } from "../official-imports.js";
 
 export type TypeScriptCheck = {
   diagnostics: DiagnosticIR[];
@@ -58,7 +58,6 @@ function sourceLocation(file: ts.SourceFile, start: number): NonNullable<Diagnos
 }
 
 async function writeTypecheckConfig(entry: string, cwd: string, scratchDir: string): Promise<string> {
-  const baseConfig = await findUp("tsconfig.json", dirname(entry));
   const configPath = join(scratchDir, "tsconfig.acpus-run.json");
   const compilerOptions: Record<string, unknown> = {
     target: "ES2022",
@@ -81,29 +80,8 @@ async function writeTypecheckConfig(entry: string, cwd: string, scratchDir: stri
   if (officialImports.usesSource) compilerOptions.customConditions = ["development"];
 
   const config: Record<string, unknown> = { compilerOptions, files: [entry] };
-  if (baseConfig) config.extends = configRelative(scratchDir, baseConfig);
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
   return configPath;
-}
-
-async function findUp(name: string, start: string): Promise<string | undefined> {
-  let current = resolve(start);
-  for (;;) {
-    const candidate = join(current, name);
-    try {
-      await readFile(candidate);
-      return candidate;
-    } catch {
-      const parent = dirname(current);
-      if (parent === current) return undefined;
-      current = parent;
-    }
-  }
-}
-
-function configRelative(fromDir: string, to: string): string {
-  const path = relative(fromDir, to).replaceAll("\\", "/");
-  return path.startsWith(".") ? path : `./${path}`;
 }
 
 function typeRoots(cwd: string): string[] {

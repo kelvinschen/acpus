@@ -1,9 +1,9 @@
 {
-  "name": "@acpus/runtime",
-  "version": "0.8.0-alpha",
+  "name": "@acpus/loader",
+  "version": "0.1.0-alpha",
   "private": true,
   "type": "module",
-  "description": "Acpus local durable runtime.",
+  "description": "Acpus internal TypeScript authoring module loader.",
   "license": "MIT",
   "engines": {
     "node": ">=22.12"
@@ -28,14 +28,10 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@acpus/agent-executor": "workspace:*",
-    "@acpus/loader": "workspace:*",
     "@acpus/core": "workspace:*",
     "@acpus/expression": "workspace:*",
     "@acpus/tasks": "workspace:*",
-    "jsonrepair": "^3.14.1",
-    "neverthrow": "^8.2.0",
-    "p-queue": "^9.3.0"
+    "tsx": "^4.22.4"
   },
   "devDependencies": {
     "@types/node": "^22.15.30"

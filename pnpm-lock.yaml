@@ -17,6 +17,9 @@ importers:
       '@acpus/expression':
         specifier: workspace:*
         version: link:packages/expression
+      '@acpus/loader':
+        specifier: workspace:*
+        version: link:packages/loader
       '@acpus/runtime':
         specifier: workspace:*
         version: link:packages/runtime
@@ -84,13 +87,13 @@ importers:
       commander:
         specifier: ^15.0.0
         version: 15.0.0
-      tsx:
-        specifier: ^4.20.3
-        version: 4.22.4
     devDependencies:
       '@types/node':
         specifier: ^22.15.30
         version: 22.19.19
+      tsx:
+        specifier: ^4.22.4
+        version: 4.22.4
 
   packages/core:
     dependencies:
@@ -117,6 +120,25 @@ importers:
         specifier: ^8.2.0
         version: 8.2.0
 
+  packages/loader:
+    dependencies:
+      '@acpus/core':
+        specifier: workspace:*
+        version: link:../core
+      '@acpus/expression':
+        specifier: workspace:*
+        version: link:../expression
+      '@acpus/tasks':
+        specifier: workspace:*
+        version: link:../tasks
+      tsx:
+        specifier: ^4.22.4
+        version: 4.22.4
+    devDependencies:
+      '@types/node':
+        specifier: ^22.15.30
+        version: 22.19.19
+
   packages/runtime:
     dependencies:
       '@acpus/agent-executor':
@@ -128,6 +150,9 @@ importers:
       '@acpus/expression':
         specifier: workspace:*
         version: link:../expression
+      '@acpus/loader':
+        specifier: workspace:*
+        version: link:../loader
       '@acpus/tasks':
         specifier: workspace:*
         version: link:../tasks
@@ -140,9 +165,6 @@ importers:
       p-queue:
         specifier: ^9.3.0
         version: 9.3.0
-      tsx:
-        specifier: ^4.22.4
-        version: 4.22.4
     devDependencies:
       '@types/node':
         specifier: ^22.15.30
@@ -169,6 +191,9 @@ importers:
       '@acpus/expression':
         specifier: workspace:*
         version: link:../expression
+      '@acpus/loader':
+        specifier: workspace:*
+        version: link:../loader
       '@acpus/tasks':
         specifier: workspace:*
         version: link:../tasks
@@ -178,9 +203,6 @@ importers:
       neverthrow:
         specifier: ^8.2.0
         version: 8.2.0
-      tsx:
-        specifier: ^4.20.3
-        version: 4.22.4
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
@@ -188,6 +210,9 @@ importers:
       slash:
         specifier: ^3.0.0
         version: 3.0.0
+      tsx:
+        specifier: ^4.22.4
+        version: 4.22.4
 
 packages:
 

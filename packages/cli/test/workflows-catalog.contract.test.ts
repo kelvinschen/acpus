@@ -26,7 +26,7 @@ describe("workflow catalog CLI contracts", () => {
           ],
         });
         expect(listed.json.catalogEntries[0].packagePath).toBe(join(home, ".acpus", "workflows", "deploy"));
-        expect(listed.json.catalogEntries[2].entryPath).toBe(join(workspace, ".acpus", "workflows", "release", "index.workflow.ts"));
+        expect(listed.json.catalogEntries[2].entryPath).toBe(join(workspace, ".acpus", "workflows", "release", "workflow.ts"));
 
         const shown = await runJson(workspace, ["workflows", "show", "release", "--json"]);
         expect(shown.exitCode).toBe(0);
@@ -37,7 +37,7 @@ describe("workflow catalog CLI contracts", () => {
             scope: "project",
             name: "release",
             packagePath: join(workspace, ".acpus", "workflows", "release"),
-            entryPath: join(workspace, ".acpus", "workflows", "release", "index.workflow.ts"),
+            entryPath: join(workspace, ".acpus", "workflows", "release", "workflow.ts"),
           },
         });
 
@@ -107,7 +107,7 @@ async function runJson(workspace: string, args: string[]): Promise<{ exitCode: n
 async function workflowPackage(root: string, name: string, source?: string): Promise<void> {
   const dir = join(root, name);
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "index.workflow.ts"), source ?? [
+  await writeFile(join(dir, "workflow.ts"), source ?? [
     'import { defineWorkflow } from "acpus/core";',
     "",
     `export default defineWorkflow({ name: ${JSON.stringify(name)} }).build(() => ({ ok: true }));`,

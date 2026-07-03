@@ -2,7 +2,9 @@ node_modules/
 dist/
 coverage/
 .tmp-tests/
-.acpus/
+.acpus/*
+!.acpus/workflows/
+!.acpus/workflows/**
 legacy/
 .DS_Store
 legacy/.acpus/state/

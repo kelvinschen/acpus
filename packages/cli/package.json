@@ -44,10 +44,10 @@
     "@acpus/runtime": "workspace:*",
     "@acpus/tasks": "workspace:*",
     "@acpus/workflow-compiler": "workspace:*",
-    "commander": "^15.0.0",
-    "tsx": "^4.20.3"
+    "commander": "^15.0.0"
   },
   "devDependencies": {
-    "@types/node": "^22.15.30"
+    "@types/node": "^22.15.30",
+    "tsx": "^4.22.4"
   }
 }

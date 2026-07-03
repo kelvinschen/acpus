@@ -17,7 +17,15 @@ describe("workflow check pipeline", () => {
         const wrong: string = 1;
 
         export default defineWorkflow({ name: "ts_check" }).build(() => ({ wrong }));
-      `);
+      `, {
+        "tsconfig.json": `${JSON.stringify({
+          compilerOptions: {
+            strict: true,
+          },
+          include: ["unrelated.ts"],
+        }, null, 2)}\n`,
+        "unrelated.ts": "const value: string = 1;\n",
+      });
 
       expect(result.diagnostics).toEqual(expect.arrayContaining([
         expect.objectContaining({
@@ -30,6 +38,7 @@ describe("workflow check pipeline", () => {
           }),
         }),
       ]));
+      expect(result.diagnostics.filter(diagnostic => diagnostic.source?.file?.includes("unrelated.ts"))).toEqual([]);
     });
   });
 

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`@acpus/workflow-compiler` prepares TypeScript workflow modules for runtime admission. It runs a static `check` phase, imports workflow modules with a TypeScript-aware loader, compiles exported workflow definitions through `@acpus/core`, performs parser-only task callsite analysis, prepares reusable task module references, validates the resulting IR, and writes preflight artifacts. It does not execute workflows or persist runtime state.
+`@acpus/workflow-compiler` prepares TypeScript workflow modules for runtime admission. It runs a static `check` phase, imports workflow modules through `@acpus/loader`, compiles exported workflow definitions through `@acpus/core`, performs parser-only task callsite analysis, prepares reusable task module references, validates the resulting IR, and writes preflight artifacts. It does not execute workflows or persist runtime state.
 
 ## Requirements
 
@@ -35,10 +35,15 @@
 - TypeScript diagnostics MUST use existing `DiagnosticIR` fields with `code: "TS####"`, flattened `message`, and `source` file, line, and column when available.
 - The TypeScript check MUST use stable `typescript`, not `@typescript/native-preview`.
 - The TypeScript check MUST use a scratch tsconfig with NodeNext module resolution and no emit.
+- The TypeScript check MUST keep the scratch tsconfig self-contained to the
+  workflow entry and its import graph; it MUST NOT inherit host `tsconfig.json`
+  `files`, `include`, or project references.
 - The TypeScript check MUST resolve supported official authoring facade
   specifiers `acpus/core`, `acpus/expression`, and `acpus/tasks/git` from
   Acpus-owned packages, without requiring the workflow workspace to install
   Acpus dependencies.
+- The TypeScript check MUST get supported official authoring facade paths from
+  `@acpus/loader`.
 - In workspace development, official `acpus/*` facade specifiers SHOULD resolve
   to live package source through the `development` condition.
 - Published installs MUST rely on normal package resolution for non-Acpus
@@ -53,9 +58,12 @@
 - Branch-like producers for `if`, `switch`, and `parallel` `race` MUST produce `OA003` diagnostics when branch output key sets differ or matching field types do not converge to a common assignable type that TypeScript has not already rejected.
 - Workflow root return branches MUST converge to a stable object shape when multiple root return statements are present.
 - Loop `initial` MUST be a statically known object output, loop `initial` and body output types MUST converge, and negative literal `maxIterations` MUST produce `OA004`.
-- Full preparation MUST compile through a worker/import path that can load
-  TypeScript workflow modules and resolve supported official `acpus/*`
-  authoring facade specifiers from Acpus-owned packages.
+- Full preparation MUST compile through a worker/import path that loads
+  TypeScript workflow modules and supported official `acpus/*` authoring
+  facade specifiers through `@acpus/loader`.
+- Repository source-mode worker bootstrap MAY use a development TypeScript
+  loader only to execute the compiler's own `.ts` worker file; it MUST NOT
+  encode workflow module or reusable task module loading policy.
 - Check failures MUST be reported as `WorkflowPreparationError` with phase `"check"` and `DiagnosticIR[]`.
 - Module import or compile failures MUST be reported as phase `"compile"`.
 - IR diagnostics containing any `severity: "error"` MUST be reported as phase `"validate"`.

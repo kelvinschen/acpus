@@ -1,4 +1,4 @@
-import { access, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { WorkflowIR } from "@acpus/core/ir";
@@ -10,19 +10,11 @@ export type CompileWorkerResult =
 
 export async function compileWorkflow(entry: string, cwd: string, scratchDir: string): Promise<CompileWorkerResult> {
   const out = join(scratchDir, "workflow-ir.json");
-  const worker = fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "./compile-worker.ts" : "./compile-worker.js", import.meta.url));
-  const tsxImport = await import.meta.resolve("tsx");
-  const conditions = import.meta.url.endsWith(".ts") || await hasWorkspaceCoreSource(cwd) ? ["development"] : [];
-  const args = [
-    "--import",
-    tsxImport,
-    worker,
-    entry,
-    entry,
-    out,
-    cwd,
-  ];
-  if (conditions.length > 0) {
+  const isSourceWorker = import.meta.url.endsWith(".ts");
+  const worker = fileURLToPath(new URL(isSourceWorker ? "./compile-worker.ts" : "./compile-worker.js", import.meta.url));
+  const args = [worker, entry, entry, out, cwd];
+  if (isSourceWorker) {
+    args.unshift("--import", await import.meta.resolve("tsx"));
     // Workspace development should compile workflows against live core source.
     // Published installs must omit this condition and resolve normal package dist.
     args.unshift("--conditions=development");
@@ -36,15 +28,6 @@ export async function compileWorkflow(entry: string, cwd: string, scratchDir: st
   }
   const raw = await readFile(out, "utf8");
   return { ok: true, ir: JSON.parse(raw) as WorkflowIR };
-}
-
-async function hasWorkspaceCoreSource(cwd: string): Promise<boolean> {
-  try {
-    await access(join(cwd, "packages/core/src/index.ts"));
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 async function readWorkerResult(path: string): Promise<CompileWorkerResult | undefined> {
