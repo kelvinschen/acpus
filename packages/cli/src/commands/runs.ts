@@ -1,9 +1,10 @@
 import type { Readable, Writable } from "node:stream";
 import { Command } from "commander";
 import type { JsonValue } from "@acpus/expression/ir";
-import { applyRunControl, applySignalRunControl, getRun, listRuns, normalizeForkInput, type PreparedRunWorkflow, type RunDetails, type RunRecord } from "@acpus/runtime";
+import { applyRunControl, applySignalRunControl, getRun, getRunInspection, listRuns, normalizeForkInput, type PreparedRunWorkflow, type RunDetails, type RunRecord } from "@acpus/runtime";
 import { controlError, notFoundError, usageError, validationError } from "../errors.js";
 import { writeResult, type OutputFormat } from "../output.js";
+import { formatRunStatusSurface } from "../run-status-surface.js";
 import { prepareWorkflowForCli } from "../workflow-preparation.js";
 import { parseAgents, parseJsonOption, parseRequiredPayload } from "./json.js";
 import { canPickRun, pickRunId } from "./runs-picker.js";
@@ -114,6 +115,13 @@ async function listRecentRuns(ctx: RunsCommandContext, options: RunsCommandOptio
 }
 
 async function inspectRun(ctx: RunsCommandContext, runId: string): Promise<void> {
+  if (!ctx.wantsJson) {
+    const inspection = await getRunInspection(ctx.cwd, runId);
+    if (!inspection) throw notFoundError(`Run '${runId}' was not found.`);
+    ctx.stdout.write(formatRunStatusSurface(inspection.run, inspection.staticNodes));
+    ctx.setExitCode(0);
+    return;
+  }
   const run = await getRun(ctx.cwd, runId);
   if (!run) throw notFoundError(`Run '${runId}' was not found.`);
   ctx.setExitCode(writeResult({

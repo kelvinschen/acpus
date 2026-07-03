@@ -130,12 +130,32 @@ stable CLI phases and exit codes.
   drives, and a terminal summary record.
 - Foreground `workflows run` text output MUST include bounded projection
   observations before the final run summary.
+- Foreground `workflows run` text observations and final run summaries MUST use
+  the same compact run status surface vocabulary as `runs inspect`.
 - Text output MUST summarize successful check, run, inspection, control, doctor,
   and error results in human-readable form.
-- Text run inspection output MUST be compact by default and MUST NOT inline full
-  agent prompts, model responses, raw scheduler events, or artifact contents.
-- Text run inspection output MUST show actionable awaiting signal targets with
-  a copyable `acpus runs signal` command.
+- Text run inspection output MUST render a compact run status surface headed by
+  `Run <id>  <workflow-name>  <status>  <duration>`.
+- Text run status surface rows MUST render in deterministic workflow order for
+  static nodes and dynamic key order for repeated instances of the same node.
+- Text run status surface node rows MUST use dynamic node keys, compact node
+  kinds `task`, `agent`, `signal`, `assert`, `if`, `switch`, `parallel`,
+  `fanout`, and `loop`, status for non-completed nodes, duration when known,
+  and attempt numbers only when greater than one.
+- Text run status surface status glyphs MUST be `○` for `pending` or `ready`,
+  `⠋` for `running` or `started`, `⏳` for `awaiting`, `✓` for `completed`,
+  `◆` for `failed` or `timed_out`, `⏸` for `paused`, and `✗` for `canceled`
+  or `cancelled`.
+- Text run status surface durations MUST use `<1s`, whole seconds below one
+  minute, `MmSs` below one hour, `Hh` below forty-eight hours, and `Dd`
+  thereafter.
+- Text run status surface output MUST NOT inline full agent prompts, model
+  responses, raw scheduler events, or artifact contents.
+- Text run status surface output MUST show actionable awaiting signal targets
+  with rendered prompt text when available, expected payload guidance, and a
+  copyable `acpus runs signal` command.
+- Text run status surface output MUST render completed workflow output as a full
+  pretty-JSON `Output:` section and MUST omit missing or empty outputs.
 - Interactive run picker output MUST render on stderr and MUST leave stdout for
   the selected run inspection output.
 - Text diagnostic output MUST render `source` and `hint` when present.
@@ -168,9 +188,11 @@ stable CLI phases and exit codes.
   preservation in JSON output.
 - Tests MUST cover read-only run list default bounds, `--limit`, `--all`, and
   invalid list option handling.
-- Tests MUST cover read-only run inspect command output.
+- Tests MUST cover read-only run inspect status surface output.
 - Tests MUST cover compact text rendering for run inspection and JSON detail
   preservation.
+- Tests MUST cover actionable awaiting signal status surface output including
+  prompt, payload guidance, and signal command.
 - Tests MUST cover signal command wiring through `--target`.
 - Tests MUST cover fork command wiring through `--target`, `--unsafe-reuse`,
   and empty fork target usage rejection.

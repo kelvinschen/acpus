@@ -2,29 +2,32 @@ import { describe, expect, it } from "vitest";
 import type { WorkflowIR } from "@acpus/core/ir";
 import { createWorkflowVisualizationOverlay } from "../src/visualization/overlay.js";
 
+const timing = { createdAt: "2026-07-03T00:00:00.000Z", updatedAt: "2026-07-03T00:00:01.000Z" };
+const attemptTiming = { startedAt: "2026-07-03T00:00:00.000Z", finishedAt: "2026-07-03T00:00:01.000Z" };
+
 describe("workflow visualization overlay", () => {
   it("combines static node structure with dynamic runtime projection summaries", () => {
     const overlay = createWorkflowVisualizationOverlay(workflow(), {
       version: 9,
       frames: [
-        { frameKey: "root", frameKind: "root", status: "running" },
-        { frameKey: "approval", nodeId: "approval", frameKind: "node", status: "running", strategy: "all" },
-        { frameKey: "approval.left", nodeId: "approval", frameKind: "branch", status: "running", strategy: "all" },
-        { frameKey: "approval.right", nodeId: "approval", frameKind: "branch", status: "completed", strategy: "all" },
+        { frameKey: "root", frameKind: "root", status: "running", ...timing },
+        { frameKey: "approval", nodeId: "approval", frameKind: "node", status: "running", strategy: "all", ...timing },
+        { frameKey: "approval.left", nodeId: "approval", frameKind: "branch", status: "running", strategy: "all", ...timing },
+        { frameKey: "approval.right", nodeId: "approval", frameKind: "branch", status: "completed", strategy: "all", ...timing },
       ],
       nodeInstances: [
-        { nodeKey: "left_approve", nodeId: "left_approve", status: "awaiting" },
-        { nodeKey: "right_approve", nodeId: "right_approve", status: "completed", output: { ok: true } },
+        { nodeKey: "left_approve", nodeId: "left_approve", status: "awaiting", ...timing },
+        { nodeKey: "right_approve", nodeId: "right_approve", status: "completed", output: { ok: true }, ...timing },
       ],
       attempts: [
-        { attemptId: "attempt_prepare", nodeKey: "prepare", nodeId: "prepare", attemptNo: 1, status: "completed" },
+        { attemptId: "attempt_prepare", nodeKey: "prepare", nodeId: "prepare", attemptNo: 1, status: "completed", ...attemptTiming },
       ],
       groupMembers: [
-        { groupKey: "approval", memberKey: "approval.left", memberKind: "branch", branchId: "left", status: "running" },
-        { groupKey: "approval", memberKey: "approval.right", memberKind: "branch", branchId: "right", status: "completed" },
+        { groupKey: "approval", memberKey: "approval.left", memberKind: "branch", branchId: "left", status: "running", ...timing },
+        { groupKey: "approval", memberKey: "approval.right", memberKind: "branch", branchId: "right", status: "completed", ...timing },
       ],
       signalWaits: [
-        { nodeKey: "left_approve", nodeId: "left_approve", status: "awaiting" },
+        { nodeKey: "left_approve", nodeId: "left_approve", status: "awaiting", ...timing },
       ],
     }, { runId: "run_1", status: "awaiting" });
 
@@ -56,11 +59,11 @@ describe("workflow visualization overlay", () => {
       version: 10,
       frames: [],
       nodeInstances: [
-        { nodeKey: "prepare", nodeId: "prepare", status: "completed", output: { ok: true } },
+        { nodeKey: "prepare", nodeId: "prepare", status: "completed", output: { ok: true }, ...timing },
       ],
       attempts: [
-        { attemptId: "attempt_failed", nodeKey: "prepare", nodeId: "prepare", attemptNo: 1, status: "failed", error: { reason: "first" } },
-        { attemptId: "attempt_completed", nodeKey: "prepare", nodeId: "prepare", attemptNo: 2, status: "completed", result: { ok: true } },
+        { attemptId: "attempt_failed", nodeKey: "prepare", nodeId: "prepare", attemptNo: 1, status: "failed", error: { reason: "first" }, ...attemptTiming },
+        { attemptId: "attempt_completed", nodeKey: "prepare", nodeId: "prepare", attemptNo: 2, status: "completed", result: { ok: true }, ...attemptTiming },
       ],
       groupMembers: [],
       signalWaits: [],

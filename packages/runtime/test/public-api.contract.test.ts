@@ -11,6 +11,7 @@ describe("@acpus/runtime public API", () => {
       "applySignalRunControl",
       "createWorkflowVisualizationOverlay",
       "getRun",
+      "getRunInspection",
       "getRunVisualizationOverlay",
       "getRuntimeHealth",
       "listRuns",

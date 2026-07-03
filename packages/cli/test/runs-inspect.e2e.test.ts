@@ -79,8 +79,11 @@ describe.concurrent("acpus runs inspect smoke", () => {
       const inspected = await runSourceCli(workspace, ["runs", "inspect", runId]);
 
       expect(inspected.exitCode).toBe(0);
-      expect(inspected.stdout).toMatch(/Awaiting signal: approve~[a-f0-9]+/);
-      expect(inspected.stdout).toMatch(new RegExp(`Use: acpus runs signal ${runId} --target approve~[a-f0-9]+ --payload '<json>'`));
+      expect(inspected.stdout).toMatch(new RegExp(`Run ${runId}  cli-signal  awaiting  (?:<1s|\\d+s)`));
+      expect(inspected.stdout).toMatch(/◌ approve~[a-f0-9]+  \[signal\]  awaiting/);
+      expect(inspected.stdout).toContain("Prompt:\n      approve");
+      expect(inspected.stdout).toContain("Expected payload:\n      ok: boolean (required)");
+      expect(inspected.stdout).toMatch(new RegExp(`Signal: acpus runs signal ${runId} --target approve~[a-f0-9]+ --payload '<json>'`));
     });
   }, 15_000);
 
@@ -99,8 +102,7 @@ describe.concurrent("acpus runs inspect smoke", () => {
       stdin.end("\x1b[B\r");
 
       expect(await inspected).toBe(0);
-      expect(stdout.text).toContain("Run inspected.");
-      expect(stdout.text).toContain(`Run: ${first.id}`);
+      expect(stdout.text).toContain(`Run ${first.id}  cli-valid  pending`);
       expect(stderr.text).toContain("Select a run to inspect:");
       expect(stdin.rawModes).toEqual([true, false]);
     });

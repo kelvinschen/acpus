@@ -6,6 +6,7 @@ import { writePreflightArtifact } from "@acpus/workflow-compiler";
 import { validationError } from "../errors.js";
 import { discoverWorkflowCatalog, resolveWorkflowReference, showWorkflowCatalogEntry, type WorkflowCatalogScopeOptions } from "../catalog.js";
 import { summarizeWorkflow, writeJsonLine, writeResult, type OutputFormat } from "../output.js";
+import { formatRunObservationRow, formatRunStatusSurface, staticNodesForWorkflow, type RunStatusStaticNode } from "../run-status-surface.js";
 import { prepareWorkflowForCli } from "../workflow-preparation.js";
 import { parseAgents, parseInput } from "./json.js";
 import { ensureSupervisorRunning } from "./supervisor.js";
@@ -159,6 +160,7 @@ async function runWorkflow(ctx: WorkflowsCommandContext, workflow: string, optio
   }
 
   const admitted = await admitPreparedWorkflowRun(ctx.cwd, prepared, admittedInput, agentOverrides);
+  const staticNodes = staticNodesForWorkflow(prepared.ir);
   if (ctx.wantsJson) writeJsonLine(ctx.stdout, { ok: true, phase: "run", kind: "admitted", run: admitted, ...(resolved.catalog ? { catalog: resolved.catalog } : {}) });
   const ownerId = `foreground:${process.pid}`;
   const detach = installDetachHandler(ctx, admitted.id, ownerId);
@@ -169,7 +171,7 @@ async function runWorkflow(ctx: WorkflowsCommandContext, workflow: string, optio
   let advanced: RuntimeAdvanceResult;
   try {
     advanced = await advanceWorkflowRun(ctx.cwd, admitted.id, ownerId, run => {
-      writeRunObservations(ctx, seen, run);
+      writeRunObservations(ctx, seen, run, staticNodes);
     });
   } finally {
     detach();
@@ -185,17 +187,8 @@ async function runWorkflow(ctx: WorkflowsCommandContext, workflow: string, optio
     ctx.setExitCode(advanced.status === "failed" ? 1 : 0);
     return;
   }
-  ctx.setExitCode(writeResult({
-    ok: advanced.status !== "failed",
-    phase: "run",
-    message: runMessage(advanced),
-    workflow: summarizeWorkflow(prepared.ir),
-    diagnostics: prepared.ir.diagnostics,
-    irDigest: prepared.irDigest,
-    sourceGraphDigest: prepared.sourceGraphDigest,
-    run: advanced.run,
-    ...(resolved.catalog ? { catalog: resolved.catalog } : {}),
-  }, "text", ctx, advanced.status === "failed" ? 1 : 0));
+  ctx.stdout.write(formatRunStatusSurface(advanced.run, staticNodes));
+  ctx.setExitCode(advanced.status === "failed" ? 1 : 0);
 }
 
 function outputFormat(ctx: WorkflowsCommandContext): OutputFormat {
@@ -221,10 +214,10 @@ function installDetachHandler(ctx: WorkflowsCommandContext, runId: string, owner
   };
 }
 
-function writeRunObservations(ctx: WorkflowsCommandContext, seen: Set<string>, run: RuntimeAdvanceResult["run"]): void {
+function writeRunObservations(ctx: WorkflowsCommandContext, seen: Set<string>, run: RuntimeAdvanceResult["run"], staticNodes: readonly RunStatusStaticNode[]): void {
   for (const observation of runObservations(seen, run)) {
     if (ctx.wantsJson) writeJsonLine(ctx.stdout, observation);
-    else ctx.stdout.write(`${observation.kind}: ${observationTarget(observation)} ${observation.status}\n`);
+    else ctx.stdout.write(`${formatRunObservationRow(run, observationTarget(observation), Date.now(), staticNodes) ?? `${observation.kind}: ${observationTarget(observation)} ${observation.status}`}\n`);
   }
 }
 
@@ -297,14 +290,4 @@ function terminalKind(status: string): string {
   if (status === "awaiting") return "node awaiting signal";
   if (status === "paused") return "run paused";
   return status === "failed" || status === "completed" || status === "canceled" ? "terminal summary" : "run idle";
-}
-
-function runMessage(result: RuntimeAdvanceResult): string {
-  if (result.status === "completed") return "Run completed.";
-  if (result.status === "failed") return result.message;
-  if (result.status === "awaiting") return `Run awaiting signal '${result.nodeKey}'. Use: acpus runs signal ${result.run.id} --target ${result.nodeKey} --payload '<json>'`;
-  if (result.status === "paused") return `Run paused. Use: acpus runs resume ${result.run.id}`;
-  if (result.status === "canceled") return "Run canceled.";
-  if (result.status === "lease_lost") return "Run admitted but scheduler ownership was busy.";
-  return "Run admitted.";
 }

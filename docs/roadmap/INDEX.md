@@ -18,6 +18,7 @@ pre-TypeScript history remains under `legacy/`.
 - [Durable Runtime Roadmap](durable-runtime-roadmap.md) — active durable runtime audit, remaining gaps, and implementation target ordering.
 - [Spec Gap Audit](spec-gap-audit.md) — follow-up gaps found while aligning specs to package ownership.
 - [CLI Control Plane Implementation Goal](cli-control-plane-implementation-goal.md) — working goal for regrouping workflow, run, hooks, and runtime CLI commands around clearer product nouns.
+- [WebUI Foundation Goal](webui-foundation-goal.md) — accepted direction and open technology-selection questions for the local-first WebUI, web service, run graph, node inspection, and preflight preview foundation.
 
 ## Archive
 

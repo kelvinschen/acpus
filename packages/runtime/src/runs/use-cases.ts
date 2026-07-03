@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { NodeIR, SchemaIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import { ResultAsync } from "neverthrow";
 import { normalizeSignalPayload, normalizeWorkflowInput } from "../admission/input.js";
@@ -26,6 +27,18 @@ import {
 export type RuntimeMutationAction = "pause" | "resume" | "retry" | "fork" | "cancel";
 
 export type RuntimeCommandRecord = Pick<PendingControlCommand, "id" | "type" | "status" | "runId" | "payload">;
+
+export type RunInspectionStaticNode = {
+  nodeId: string;
+  kind: NodeIR["kind"];
+  order: number;
+  outputSchema?: SchemaIR;
+};
+
+export type RunInspection = {
+  run: RunDetails;
+  staticNodes: RunInspectionStaticNode[];
+};
 
 export type RuntimeMutationInput = {
   target?: string;
@@ -155,6 +168,22 @@ export async function getRun(cwd: string, runId: string): Promise<RunDetails | u
   }
 }
 
+export async function getRunInspection(cwd: string, runId: string): Promise<RunInspection | undefined> {
+  const store = await openExistingRuntimeStore(cwd);
+  if (!store) return undefined;
+  try {
+    const run = store.getRun(runId);
+    if (!run) return undefined;
+    const frozen = store.getFrozenRun(runId);
+    return {
+      run,
+      staticNodes: frozen ? inspectionStaticNodes(frozen.ir) : [],
+    };
+  } finally {
+    store.close();
+  }
+}
+
 export async function getRunVisualizationOverlay(cwd: string, runId: string): Promise<WorkflowVisualizationOverlay | undefined> {
   const store = await openExistingRuntimeStore(cwd);
   if (!store) return undefined;
@@ -166,6 +195,32 @@ export async function getRunVisualizationOverlay(cwd: string, runId: string): Pr
   } finally {
     store.close();
   }
+}
+
+function inspectionStaticNodes(ir: WorkflowIR): RunInspectionStaticNode[] {
+  const nodes: RunInspectionStaticNode[] = [];
+  visitScope(ir.root, nodes);
+  return nodes;
+}
+
+function visitScope(scope: ScopeIR, nodes: RunInspectionStaticNode[]): void {
+  for (const node of scope.nodes) {
+    nodes.push({
+      nodeId: node.id,
+      kind: node.kind,
+      order: nodes.length,
+      ...(node.kind === "signal" ? { outputSchema: node.outputSchema } : {}),
+    });
+    for (const child of childScopes(node)) visitScope(child, nodes);
+  }
+}
+
+function childScopes(node: NodeIR): ScopeIR[] {
+  if (node.kind === "if") return [node.then, node.else];
+  if (node.kind === "switch") return [...node.cases.map(item => item.then), node.default];
+  if (node.kind === "parallel") return Object.values(node.branches).map(branch => branch.scope);
+  if (node.kind === "fanout" || node.kind === "loop") return [node.do];
+  return [];
 }
 
 export async function normalizeForkInput(cwd: string, runId: string, input: JsonValue | undefined, prepared?: PreparedRunWorkflow): Promise<JsonValue | undefined> {

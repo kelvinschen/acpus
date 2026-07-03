@@ -29,6 +29,24 @@ export type LoopNextStep =
   | { action: "complete"; output: JsonValue; terminalReason: "stopped" | "exhausted_return_last" }
   | { action: "fail"; error: JsonObject; terminalReason: "loop_exhausted" };
 
+export type TimestampedSchedulerEvent = {
+  event: SchedulerEvent;
+  createdAt: string;
+};
+
+export type SchedulerProjectionTiming = {
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SchedulerProjectionTimings = {
+  frame: Map<string, SchedulerProjectionTiming>;
+  instance: Map<string, SchedulerProjectionTiming>;
+  attempt: Map<string, SchedulerProjectionTiming>;
+  member: Map<string, SchedulerProjectionTiming>;
+  signal: Map<string, SchedulerProjectionTiming>;
+};
+
 export function signalTimeoutEvents(projection: SchedulerProjection, now: Date): SchedulerEvent[] {
   return Object.values(projection.signalWaits).flatMap(wait => {
     if (wait.status !== "awaiting" || wait.deadlineAt === undefined || wait.deadlineAt > now.toISOString()) return [];
@@ -79,6 +97,27 @@ export function applySchedulerEvent(projection: SchedulerProjection, event: Sche
 
 export function applySchedulerEvents(projection: SchedulerProjection, events: readonly SchedulerEvent[]): SchedulerProjection {
   return events.reduce((current, event) => applySchedulerEvent(current, event), projection);
+}
+
+export function applyTimestampedSchedulerEvents(runId: string, events: readonly TimestampedSchedulerEvent[]): { projection: SchedulerProjection; timings: SchedulerProjectionTimings } {
+  let projection = createSchedulerProjection(runId);
+  const timings: SchedulerProjectionTimings = {
+    frame: new Map(),
+    instance: new Map(),
+    attempt: new Map(),
+    member: new Map(),
+    signal: new Map(),
+  };
+  for (const item of events) {
+    const next = applySchedulerEvent(projection, item.event);
+    syncTimingMap(timings.frame, projection.frames, next.frames, item.createdAt, frame => frame.status);
+    syncTimingMap(timings.instance, projection.instances, next.instances, item.createdAt, instance => instance.status);
+    syncTimingMap(timings.attempt, projection.attempts, next.attempts, item.createdAt, attempt => attempt.status);
+    syncTimingMap(timings.member, projection.groupMembers, next.groupMembers, item.createdAt, member => member.status);
+    syncTimingMap(timings.signal, projection.signalWaits, next.signalWaits, item.createdAt, wait => wait.status);
+    projection = next;
+  }
+  return { projection, timings };
 }
 
 export function evaluateGroupCompletion(group: GroupProjection, members: readonly GroupMember[]): GroupCompletion {
@@ -746,6 +785,7 @@ function applySignalEvent(projection: SchedulerProjection, event: Extract<Schedu
       nodeId: event.payload.nodeId,
       status: "awaiting",
       ...(event.payload.deadlineAt === undefined ? {} : { deadlineAt: event.payload.deadlineAt }),
+      ...(event.payload.renderedPrompt === undefined ? {} : { renderedPrompt: event.payload.renderedPrompt }),
     });
     return;
   }
@@ -785,6 +825,39 @@ function cloneProjection(projection: SchedulerProjection): SchedulerProjection {
     signalWaits: { ...projection.signalWaits },
     branchDecisions: { ...projection.branchDecisions },
   };
+}
+
+function syncTimingMap<T>(
+  timings: Map<string, SchedulerProjectionTiming>,
+  before: Record<string, T>,
+  after: Record<string, T>,
+  at: string,
+  statusOf: (value: T) => string,
+): void {
+  for (const key of [...timings.keys()]) {
+    if (!(key in after)) timings.delete(key);
+  }
+  for (const [key, current] of Object.entries(after)) {
+    const previous = before[key];
+    if (!previous) {
+      timings.set(key, { createdAt: at, updatedAt: at });
+      continue;
+    }
+    if (stableJson(previous) === stableJson(current)) continue;
+    const existing = timings.get(key);
+    timings.set(key, {
+      createdAt: resetsLifecycle(statusOf(previous), statusOf(current)) ? at : existing?.createdAt ?? at,
+      updatedAt: at,
+    });
+  }
+}
+
+function resetsLifecycle(previous: string, current: string): boolean {
+  return terminalProjectionStatus(previous) && !terminalProjectionStatus(current);
+}
+
+function terminalProjectionStatus(status: string): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled" || status === "canceled" || status === "timed_out" || status === "consumed" || status === "superseded";
 }
 
 function requireKey<T>(values: Record<string, T>, key: string, label: string): T {

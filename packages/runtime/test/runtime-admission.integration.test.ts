@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-import { admitWorkflowRun, getRun, listRuns, normalizeSignalPayload, normalizeWorkflowInput } from "@acpus/runtime";
+import { admitWorkflowRun, getRun, getRunInspection, listRuns, normalizeSignalPayload, normalizeWorkflowInput } from "@acpus/runtime";
 import type { TaskExecutionTargetIR, WorkflowIR } from "@acpus/core/ir";
 import {
   admitFixture,
@@ -18,6 +18,7 @@ import {
   preparedWorkflow,
   runtimeRow,
   runtimeRows,
+  signalWorkflow,
   taskArtifactWorkflow,
   taskInvocationOptionsWorkflow,
   validWorkflow,
@@ -50,6 +51,30 @@ describe.concurrent("runtime admission use cases", () => {
         expect.objectContaining({ type: "run.admitted" }),
         expect.objectContaining({ type: "run.completed" }),
       ]));
+    });
+  });
+
+  it("inspects frozen static metadata without reading live workflow source", async () => {
+    await withRuntimeWorkspace("runtime-inspect-frozen-static", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, signalWorkflow());
+      const admitted = await admitWorkflowRun(workspace, prepared, normalizeWorkflowInput(prepared.ir, {}));
+      await writeFile(prepared.workflowPath, "throw new Error('live source should not be read');\n");
+
+      await expect(getRunInspection(workspace, admitted.run.id)).resolves.toMatchObject({
+        run: { id: admitted.run.id, name: "cli-signal" },
+        staticNodes: expect.arrayContaining([
+          expect.objectContaining({
+            nodeId: "approve",
+            kind: "signal",
+            order: 1,
+            outputSchema: expect.objectContaining({
+              kind: "object",
+              fields: { ok: { kind: "boolean" } },
+              required: ["ok"],
+            }),
+          }),
+        ]),
+      });
     });
   });
 

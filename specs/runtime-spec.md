@@ -69,6 +69,14 @@
   frame model.
 - Static `nodeId` MUST remain the frozen IR node id. Dynamic execution identity MUST use a derived `nodeKey` from the instance path.
 - Scheduler events and projection rows for dynamic work MUST preserve structured instance path data when the dynamic instance is known.
+- Runtime run detail read APIs MUST expose dynamic frame, node instance, attempt,
+  group member, and signal wait timing fields needed for compact status
+  rendering.
+- Runtime run detail read APIs MUST expose persisted rendered signal prompts for
+  awaiting signal waits so read-only inspection can render operator guidance.
+- Runtime read APIs used for run inspection MUST expose frozen static node
+  metadata, including signal output schemas, so CLI output can render expected
+  signal payload guidance without reading live workflow source.
 - Dynamic node outputs MUST resolve through lexical execution scope; child scope outputs MUST expose only declared composite outputs to the parent scope.
 - The scheduler MUST materialize valid frozen IR compositions recursively,
   including nested `assert`, `if`, `switch`, `parallel`, `fanout`, and `loop`
@@ -111,6 +119,9 @@
 - Attempt-local output directories, work directories, and task artifacts MUST use dynamic `nodeKey` and attempt-specific subpaths for scheduler-backed task execution.
 - Task artifact writes after task timeout MUST be rejected and MUST NOT create artifact registry rows.
 - Signal execution that cannot complete immediately MUST leave the durable run in a resumable awaiting state.
+- Awaiting signal projection MUST persist the rendered signal prompt so read-only
+  inspection can show the exact operator prompt without re-executing workflow
+  logic.
 - Missing executors, providers, or runner prerequisites MUST fail the scheduler-backed run rather than creating a durable blocked state.
 
 ### Agents

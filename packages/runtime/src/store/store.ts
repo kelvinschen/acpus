@@ -8,7 +8,7 @@ import { valueToExprIR } from "@acpus/expression/ir";
 import { ArtifactRewriteError, rewriteArtifactValue } from "../artifacts/rewrite.js";
 import { compactUndefined, parseAgentOverrideMap, parseCommandPayload } from "../control/command-payloads.js";
 import { evaluateExpr } from "../evaluation/evaluator.js";
-import { applySchedulerEvents, cancellationEventsForFrame, cancellationEventsForNode, createSchedulerProjection } from "../scheduler/transitions.js";
+import { applySchedulerEvents, applyTimestampedSchedulerEvents, cancellationEventsForFrame, cancellationEventsForNode, createSchedulerProjection, type TimestampedSchedulerEvent } from "../scheduler/transitions.js";
 import { ancestorGroupMembersForFrame, ancestorGroupMembersForNode } from "../scheduler/membership.js";
 import { ForkSeedPlanError, planTargetedForkSeed, type ForkSeedFailure, type ForkSeedPlan } from "../scheduler/fork-seed.js";
 import type { SchedulerEvent } from "../scheduler/events.js";
@@ -206,6 +206,8 @@ export type RunDynamicFrame = {
   terminalReason?: string;
   result?: unknown;
   error?: unknown;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type RunDynamicNodeInstance = {
@@ -218,6 +220,8 @@ export type RunDynamicNodeInstance = {
   output?: unknown;
   error?: unknown;
   acceptedAttemptId?: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type RunDynamicAttempt = {
@@ -231,6 +235,8 @@ export type RunDynamicAttempt = {
   error?: unknown;
   terminalReason?: string;
   cancelReason?: string;
+  startedAt: string;
+  finishedAt?: string;
 };
 
 export type RunDynamicGroupMember = {
@@ -248,6 +254,8 @@ export type RunDynamicGroupMember = {
   terminalReason?: string;
   output?: unknown;
   error?: unknown;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type RunDynamicSignalWait = {
@@ -255,7 +263,10 @@ export type RunDynamicSignalWait = {
   nodeId: string;
   status: string;
   deadlineAt?: string;
+  renderedPrompt?: string;
   terminalReason?: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type CompleteRunInput = {
@@ -2140,6 +2151,10 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     return schedulerEvents(this.db, runId);
   }
 
+  private timestampedSchedulerEvents(runId: string): TimestampedSchedulerEvent[] {
+    return timestampedSchedulerEvents(this.db, runId);
+  }
+
   private currentVersion(runId: string): number {
     return this.nextSequence(runId) - 1;
   }
@@ -2217,10 +2232,8 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
   }
 
   private syncSchedulerProjectionTables(runId: string, now: string): void {
-    const projection = applySchedulerEvents(createSchedulerProjection(runId), this.schedulerEvents(runId));
-    const existingAttempts = new Map((this.db.prepare("SELECT attempt_id, started_at, finished_at FROM node_attempts WHERE run_id = ?").all(runId) as Array<{ attempt_id: string; started_at: string; finished_at: string | null }>)
-      .map(row => [row.attempt_id, row]));
-    const existingSignalWaits = new Map((this.db.prepare("SELECT node_key, consumed_at, timed_out_at FROM signal_waits WHERE run_id = ?").all(runId) as Array<{ node_key: string; consumed_at: string | null; timed_out_at: string | null }>)
+    const { projection, timings } = applyTimestampedSchedulerEvents(runId, this.timestampedSchedulerEvents(runId));
+    const existingSignalWaits = new Map((this.db.prepare("SELECT node_key, consumed_at, timed_out_at, created_at FROM signal_waits WHERE run_id = ?").all(runId) as Array<{ node_key: string; consumed_at: string | null; timed_out_at: string | null; created_at: string | null }>)
       .map(row => [row.node_key, row]));
     this.db.prepare("DELETE FROM scheduler_frames WHERE run_id = ?").run(runId);
     this.db.prepare("DELETE FROM node_instances WHERE run_id = ?").run(runId);
@@ -2229,6 +2242,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     this.db.prepare("DELETE FROM signal_waits WHERE run_id = ?").run(runId);
 
     for (const frame of Object.values(projection.frames)) {
+      const timing = timings.frame.get(frame.frameKey);
       this.db.prepare(`
         INSERT INTO scheduler_frames (
           run_id, frame_key, parent_frame_key, node_key, node_id, frame_kind, status, strategy,
@@ -2250,12 +2264,13 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         frame.loop === undefined ? null : stableJson(frame.loop),
         frame.result === undefined ? null : stableJson(frame.result),
         frame.error === undefined ? null : stableJson(frame.error),
-        now,
-        now,
+        timing?.createdAt ?? now,
+        timing?.updatedAt ?? now,
       );
     }
 
     for (const instance of Object.values(projection.instances)) {
+      const timing = timings.instance.get(instance.nodeKey);
       this.db.prepare(`
         INSERT INTO node_instances (
           run_id, node_key, node_id, parent_frame_key, instance_path_json, status, status_reason,
@@ -2274,13 +2289,13 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         instance.output === undefined ? null : stableJson(instance.output),
         instance.error === undefined ? null : stableJson(instance.error),
         instance.acceptedAttemptId ?? null,
-        now,
-        now,
+        timing?.createdAt ?? now,
+        timing?.updatedAt ?? now,
       );
     }
 
     for (const attempt of Object.values(projection.attempts)) {
-      const existing = existingAttempts.get(attempt.attemptId);
+      const timing = timings.attempt.get(attempt.attemptId);
       this.db.prepare(`
         INSERT INTO node_attempts (
           run_id, attempt_id, node_key, node_id, attempt_no, owner_epoch, status, deadline_at,
@@ -2296,8 +2311,8 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         attempt.ownerEpoch,
         attempt.status,
         attempt.deadlineAt ?? null,
-        existing?.started_at ?? now,
-        attempt.status === "started" ? null : existing?.finished_at ?? now,
+        timing?.createdAt ?? now,
+        attempt.status === "started" ? null : timing?.updatedAt ?? now,
         attempt.result === undefined ? null : stableJson(attempt.result),
         attempt.error === undefined ? null : stableJson(attempt.error),
         attempt.terminalReason ?? null,
@@ -2306,6 +2321,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     }
 
     for (const member of Object.values(projection.groupMembers)) {
+      const timing = timings.member.get(member.memberKey);
       this.db.prepare(`
         INSERT INTO group_members (
           run_id, group_key, member_key, member_kind, branch_id, item_key, item_index, item_json, child_frame_key,
@@ -2329,19 +2345,20 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         member.terminalReason ?? null,
         member.output === undefined ? null : stableJson(member.output),
         member.error === undefined ? null : stableJson(member.error),
-        now,
-        now,
+        timing?.createdAt ?? now,
+        timing?.updatedAt ?? now,
       );
     }
 
     for (const wait of Object.values(projection.signalWaits)) {
       const existing = existingSignalWaits.get(wait.nodeKey);
+      const timing = timings.signal.get(wait.nodeKey);
       this.db.prepare(`
         INSERT INTO signal_waits (
           run_id, node_key, node_id, status, payload_json, payload_digest, command_idempotency_key,
-          deadline_at, consumed_at, timed_out_at, terminal_reason
+          deadline_at, rendered_prompt, consumed_at, timed_out_at, terminal_reason, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         wait.runId,
         wait.nodeKey,
@@ -2351,9 +2368,12 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         wait.payloadDigest ?? null,
         wait.commandIdempotencyKey ?? null,
         wait.deadlineAt ?? null,
-        wait.status === "consumed" ? existing?.consumed_at ?? now : null,
-        wait.status === "timed_out" ? existing?.timed_out_at ?? now : null,
+        wait.renderedPrompt ?? null,
+        wait.status === "consumed" ? timing?.updatedAt ?? existing?.consumed_at ?? now : null,
+        wait.status === "timed_out" ? timing?.updatedAt ?? existing?.timed_out_at ?? now : null,
         wait.terminalReason ?? null,
+        timing?.createdAt ?? existing?.created_at ?? now,
+        timing?.updatedAt ?? now,
       );
     }
   }
@@ -2465,6 +2485,14 @@ function schedulerEvents(db: DatabaseSync, runId: string): SchedulerEvent[] {
   });
 }
 
+function timestampedSchedulerEvents(db: DatabaseSync, runId: string): TimestampedSchedulerEvent[] {
+  const rows = db.prepare("SELECT type, payload_json, created_at FROM run_events WHERE run_id = ? ORDER BY sequence").all(runId) as Array<{ type: string; payload_json: string; created_at: string }>;
+  return rows.flatMap(row => {
+    if (!isSchedulerEventType(row.type)) return [];
+    return [{ event: { type: row.type, payload: decodeSchedulerPayload(row.payload_json, row.type) } as SchedulerEvent, createdAt: row.created_at }];
+  });
+}
+
 function rootTerminalEventCount(events: readonly SchedulerEvent[], type: "frame.completed" | "frame.failed" | "frame.cancelled"): number {
   return events.filter(event => event.type === type && event.payload.frameKey === "root").length;
 }
@@ -2472,7 +2500,7 @@ function rootTerminalEventCount(events: readonly SchedulerEvent[], type: "frame.
 function readRunDynamicFrames(db: DatabaseSync, runId: string): RunDynamicFrame[] {
   const rows = db.prepare(`
     SELECT frame_key, parent_frame_key, node_key, node_id, frame_kind, status, strategy,
-      terminal_reason, instance_path_json, result_json, error_json
+      terminal_reason, instance_path_json, result_json, error_json, created_at, updated_at
     FROM scheduler_frames
     WHERE run_id = ?
     ORDER BY frame_key
@@ -2489,13 +2517,15 @@ function readRunDynamicFrames(db: DatabaseSync, runId: string): RunDynamicFrame[
     terminalReason: nullableString(row.terminal_reason),
     result: parseOptionalJson(row.result_json),
     error: parseOptionalJson(row.error_json),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
   }) as RunDynamicFrame);
 }
 
 function readRunDynamicNodeInstances(db: DatabaseSync, runId: string): RunDynamicNodeInstance[] {
   const rows = db.prepare(`
     SELECT node_key, node_id, parent_frame_key, instance_path_json, status, status_reason,
-      output_json, error_json, accepted_attempt_id
+      output_json, error_json, accepted_attempt_id, created_at, updated_at
     FROM node_instances
     WHERE run_id = ?
     ORDER BY node_key
@@ -2510,13 +2540,15 @@ function readRunDynamicNodeInstances(db: DatabaseSync, runId: string): RunDynami
     output: parseOptionalJson(row.output_json),
     error: parseOptionalJson(row.error_json),
     acceptedAttemptId: nullableString(row.accepted_attempt_id),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
   }) as RunDynamicNodeInstance);
 }
 
 function readRunDynamicAttempts(db: DatabaseSync, runId: string): RunDynamicAttempt[] {
   const rows = db.prepare(`
     SELECT attempt_id, node_key, node_id, attempt_no, status, deadline_at,
-      result_json, error_json, terminal_reason, cancel_reason
+      started_at, finished_at, result_json, error_json, terminal_reason, cancel_reason
     FROM node_attempts
     WHERE run_id = ?
     ORDER BY attempt_id
@@ -2528,6 +2560,8 @@ function readRunDynamicAttempts(db: DatabaseSync, runId: string): RunDynamicAtte
     attemptNo: Number(row.attempt_no),
     status: String(row.status),
     deadlineAt: nullableString(row.deadline_at),
+    startedAt: String(row.started_at),
+    finishedAt: nullableString(row.finished_at),
     result: parseOptionalJson(row.result_json),
     error: parseOptionalJson(row.error_json),
     terminalReason: nullableString(row.terminal_reason),
@@ -2538,7 +2572,7 @@ function readRunDynamicAttempts(db: DatabaseSync, runId: string): RunDynamicAtte
 function readRunDynamicGroupMembers(db: DatabaseSync, runId: string): RunDynamicGroupMember[] {
   const rows = db.prepare(`
     SELECT group_key, member_key, member_kind, branch_id, item_key, item_index, item_json, child_frame_key,
-      status, completion_sequence, accepted_rank, terminal_reason, output_json, error_json
+      status, completion_sequence, accepted_rank, terminal_reason, output_json, error_json, created_at, updated_at
     FROM group_members
     WHERE run_id = ?
     ORDER BY member_key
@@ -2558,12 +2592,15 @@ function readRunDynamicGroupMembers(db: DatabaseSync, runId: string): RunDynamic
     terminalReason: nullableString(row.terminal_reason),
     output: parseOptionalJson(row.output_json),
     error: parseOptionalJson(row.error_json),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
   }) as RunDynamicGroupMember);
 }
 
 function readRunDynamicSignalWaits(db: DatabaseSync, runId: string): RunDynamicSignalWait[] {
   const rows = db.prepare(`
-    SELECT node_key, node_id, status, deadline_at, terminal_reason
+    SELECT node_key, node_id, status, deadline_at,
+      rendered_prompt, terminal_reason, created_at, updated_at
     FROM signal_waits
     WHERE run_id = ?
     ORDER BY node_key
@@ -2573,7 +2610,10 @@ function readRunDynamicSignalWaits(db: DatabaseSync, runId: string): RunDynamicS
     nodeId: String(row.node_id),
     status: String(row.status),
     deadlineAt: nullableString(row.deadline_at),
+    renderedPrompt: nullableString(row.rendered_prompt),
     terminalReason: nullableString(row.terminal_reason),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
   }) as RunDynamicSignalWait);
 }
 
@@ -2937,9 +2977,12 @@ function migrate(db: DatabaseSync): void {
       payload_digest TEXT,
       command_idempotency_key TEXT,
       deadline_at TEXT,
+      rendered_prompt TEXT,
       consumed_at TEXT,
       timed_out_at TEXT,
       terminal_reason TEXT,
+      created_at TEXT,
+      updated_at TEXT,
       PRIMARY KEY (run_id, node_key)
     );
 
@@ -2988,11 +3031,19 @@ function migrate(db: DatabaseSync): void {
   addColumnIfMissing(db, "run_inputs", "agent_overrides_json", "TEXT NOT NULL DEFAULT '{}'");
   addColumnIfMissing(db, "supervisor_lease", "idle_since_at", "TEXT");
   addColumnIfMissing(db, "supervisor_lease", "idle_stop_ms", "INTEGER");
+  addColumnIfMissing(db, "signal_waits", "rendered_prompt", "TEXT");
+  addColumnIfMissing(db, "signal_waits", "created_at", "TEXT");
+  addColumnIfMissing(db, "signal_waits", "updated_at", "TEXT");
+  db.exec("UPDATE signal_waits SET created_at = COALESCE(created_at, datetime('now')), updated_at = COALESCE(updated_at, datetime('now')) WHERE created_at IS NULL OR updated_at IS NULL;");
 }
 
 function addColumnIfMissing(db: DatabaseSync, table: string, column: string, definition: string): void {
+  if (!hasColumn(db, table, column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
+}
+
+function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-  if (!rows.some(row => row.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
+  return rows.some(row => row.name === column);
 }
 
 function parseAgentOverrides(json: string | null | undefined): AgentOverrideMap {

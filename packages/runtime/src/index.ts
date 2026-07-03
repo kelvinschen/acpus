@@ -13,6 +13,7 @@ export {
   admitWorkflowRun,
   getRuntimeHealth,
   getRun,
+  getRunInspection,
   getRunVisualizationOverlay,
   listRuns,
   applyRunControl,
@@ -33,6 +34,8 @@ export {
   type RuntimeMutationInput,
   type RuntimeMutationResult,
   type RuntimeUseCaseError,
+  type RunInspection,
+  type RunInspectionStaticNode,
 } from "./runs/use-cases.js";
 export {
   tryAdvanceRuntimeRun,

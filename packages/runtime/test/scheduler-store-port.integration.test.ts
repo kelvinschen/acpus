@@ -443,6 +443,7 @@ describe("scheduler store port", () => {
         });
 
         expect(store.getRun(run.id)).toMatchObject({ status: "failed" });
+        setSchedulerEventTypesCreatedAt(workspace, run.id, ["frame.started", "instance.ready", "instance.failed", "frame.failed"], "2026-01-01T00:00:00.000Z");
 
         const retried = store.scheduler.retry({
           runId: run.id,
@@ -455,6 +456,8 @@ describe("scheduler store port", () => {
         expect(retried.projection.frames.root).toMatchObject({ status: "running" });
         expect(retried.projection.instances["require_ready~1"]).toMatchObject({ status: "ready", statusReason: "retry" });
         expect(store.getRun(run.id)).toMatchObject({ status: "pending" });
+        const retryCreatedAt = dbScalar(workspace, "SELECT created_at FROM run_events WHERE run_id = ? AND type = 'instance.retry_requested'", run.id);
+        expect(dbRow(workspace, "SELECT created_at FROM node_instances WHERE run_id = ? AND node_key = 'require_ready~1'", run.id)).toEqual({ created_at: retryCreatedAt });
       } finally {
         store.close();
       }
@@ -596,6 +599,54 @@ describe("scheduler store port", () => {
         const superseded = store.scheduler.markExpiredOwnerAttemptsSuperseded(run.id, first!.ownerEpoch);
         expect(superseded.projection.attempts[attempt.attemptId]).toMatchObject({ status: "superseded" });
         expect(dbScalar(workspace, "SELECT status FROM node_attempts WHERE attempt_id = ?", attempt.attemptId)).toBe("superseded");
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("derives attempt timings from scheduler event timestamps", async () => {
+    await withRuntimeWorkspace("scheduler-store-attempt-timings", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        readyNode(store, run.id, claim, "attempt-timing-ready");
+        const attempt = store.scheduler.startAttempt({
+          runId: run.id,
+          nodeKey: "require_ready~1",
+          nodeId: "require_ready",
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "attempt:timing:start",
+        });
+        store.scheduler.commitAttemptResult({
+          runId: run.id,
+          attemptId: attempt.attemptId,
+          ownerEpoch: claim.ownerEpoch,
+          result: { status: "completed", output: { ok: true } },
+          idempotencyKey: "attempt:timing:complete",
+        });
+
+        const startedAt = "2026-07-03T01:02:03.000Z";
+        const finishedAt = "2026-07-03T01:02:07.000Z";
+        setSchedulerEventTypesCreatedAt(workspace, run.id, ["attempt.started"], startedAt);
+        setSchedulerEventTypesCreatedAt(workspace, run.id, ["attempt.completed"], finishedAt);
+        const snapshot = store.scheduler.loadRunSnapshot(run.id);
+        store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: snapshot.version,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "scheduler:after-attempt-timing",
+          events: [{ type: "control.paused", payload: { reason: "test" } }],
+        });
+
+        expect(dbRow(workspace, "SELECT started_at, finished_at FROM node_attempts WHERE attempt_id = ?", attempt.attemptId)).toEqual({
+          started_at: startedAt,
+          finished_at: finishedAt,
+        });
+        const dynamicAttempt = store.getRun(run.id)?.dynamic?.attempts.find(row => row.attemptId === attempt.attemptId);
+        expect(dynamicAttempt).toMatchObject({ startedAt, finishedAt });
       } finally {
         store.close();
       }
@@ -1375,6 +1426,16 @@ function dbRows(workspace: string, sql: string, ...params: SQLInputValue[]): Arr
   const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"), { readOnly: true });
   try {
     return db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+  } finally {
+    db.close();
+  }
+}
+
+function setSchedulerEventTypesCreatedAt(workspace: string, runId: string, types: string[], createdAt: string): void {
+  const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+  try {
+    const placeholders = types.map(() => "?").join(", ");
+    db.prepare(`UPDATE run_events SET created_at = ? WHERE run_id = ? AND type IN (${placeholders})`).run(createdAt, runId, ...types);
   } finally {
     db.close();
   }

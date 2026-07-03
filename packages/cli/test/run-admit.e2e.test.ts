@@ -125,8 +125,8 @@ export default defineWorkflow({
       const result = await runSourceCli(workspace, ["workflows", "run", workflow, "--input", "{\"ready\":true}"]);
 
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toMatch(/node completed: require_ready~[a-f0-9]+ completed/);
-      expect(result.stdout).toContain("Run completed.");
+      expect(result.stdout).toMatch(/✓ require_ready~[a-f0-9]+  \[assert\]  (?:<1s|\d+s)/);
+      expect(result.stdout).toMatch(/Run \d{14}[A-F0-9]{20}  cli-valid  completed  (?:<1s|\d+s)/);
     });
   });
 

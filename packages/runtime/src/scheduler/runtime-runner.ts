@@ -7,6 +7,8 @@ import { bootstrapRootEvents, continueRootEvents } from "./materialize.js";
 import { createRuntimeNodeExecutor } from "./node-executor.js";
 import { parseDurationMs } from "../execution/duration.js";
 import { indexNodes } from "./ir-walk.js";
+import { renderTemplate } from "../evaluation/evaluator.js";
+import { scopeForNodeAttempt } from "./scope.js";
 
 export type AdvanceFrozenRunInput = {
   cwd: string;
@@ -34,12 +36,20 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
     ...(input.now === undefined ? {} : { now: input.now }),
     localConcurrencyLimitFor: localConcurrencyLimitForRoot(frozen.ir),
     maxAttemptsFor: () => undefined,
-    awaitableEventsFor: instance => {
+    awaitableEventsFor: (instance, projection) => {
       const node = nodes.get(instance.nodeId);
       return node?.kind === "signal"
         ? [
           { type: "instance.awaiting", payload: { nodeKey: instance.nodeKey, statusReason: "signal" } },
-          { type: "signal.awaiting", payload: { runId: input.runId, nodeKey: instance.nodeKey, nodeId: instance.nodeId } },
+          {
+            type: "signal.awaiting",
+            payload: {
+              runId: input.runId,
+              nodeKey: instance.nodeKey,
+              nodeId: instance.nodeId,
+              renderedPrompt: renderTemplate(node.run.prompt, scopeForNodeAttempt(scope, projection, instance.nodeKey)),
+            },
+          },
         ]
         : [];
     },
