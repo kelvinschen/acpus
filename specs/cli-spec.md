@@ -28,7 +28,7 @@ stable CLI phases and exit codes.
 - The CLI MUST support `--project` and `--global` on workflow check and run
   commands as explicit catalog scope selectors.
 - The CLI MUST support `acpus runs list [--limit <n> | --all]`.
-- The CLI MUST support `acpus runs inspect <run-id>`.
+- The CLI MUST support `acpus runs inspect [run-id]`.
 - The CLI MUST support `acpus runs pause <run-id>`,
   `resume <run-id>`, `retry <run-id>`, `cancel <run-id>`,
   `fork <run-id>`, and `signal <run-id>`.
@@ -100,6 +100,13 @@ stable CLI phases and exit codes.
 - Runtime admission and run-control behavior MUST be delegated to
   `@acpus/runtime`.
 - Run inspection commands MUST delegate to runtime read APIs.
+- `runs inspect` without a run id MUST be available only in text-mode
+  interactive TTY sessions, MUST list known runs through runtime read APIs, and
+  MUST inspect the run selected by the user.
+- `runs inspect --json` without a run id and non-interactive text
+  `runs inspect` without a run id MUST fail as usage errors.
+- Interactive `runs inspect` without any available runs MUST fail as an
+  inspect error.
 - Run control commands MUST apply durable control intent but MUST NOT
   synchronously advance scheduler work in the CLI process.
 - Run control commands that leave non-terminal runnable work SHOULD start the
@@ -129,6 +136,8 @@ stable CLI phases and exit codes.
   agent prompts, model responses, raw scheduler events, or artifact contents.
 - Text run inspection output MUST show actionable awaiting signal targets with
   a copyable `acpus runs signal` command.
+- Interactive run picker output MUST render on stderr and MUST leave stdout for
+  the selected run inspection output.
 - Text diagnostic output MUST render `source` and `hint` when present.
 - `runs list` MUST order by `updatedAt DESC`, default to 20 rows, include
   truncation metadata, and accept mutually exclusive `--limit` and `--all`.

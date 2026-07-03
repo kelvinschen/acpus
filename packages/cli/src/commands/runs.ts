@@ -1,4 +1,4 @@
-import type { Writable } from "node:stream";
+import type { Readable, Writable } from "node:stream";
 import { Command } from "commander";
 import type { JsonValue } from "@acpus/expression/ir";
 import { applyRunControl, applySignalRunControl, getRun, listRuns, normalizeForkInput, type PreparedRunWorkflow, type RunDetails, type RunRecord } from "@acpus/runtime";
@@ -6,10 +6,12 @@ import { controlError, notFoundError, usageError, validationError } from "../err
 import { writeResult, type OutputFormat } from "../output.js";
 import { prepareWorkflowForCli } from "../workflow-preparation.js";
 import { parseAgents, parseJsonOption, parseRequiredPayload } from "./json.js";
+import { canPickRun, pickRunId } from "./runs-picker.js";
 import { ensureSupervisorRunning } from "./supervisor.js";
 
 export type RunsCommandContext = {
   cwd: string;
+  stdin: Readable;
   stdout: Writable;
   stderr: Writable;
   wantsJson: boolean;
@@ -51,9 +53,9 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
 
   command.addCommand(new Command("inspect")
     .exitOverride()
-    .argument("<run-id>", "run id")
-    .action(async (runId: string) => {
-      await inspectRun(ctx, runId);
+    .argument("[run-id]", "run id")
+    .action(async (runId: string | undefined) => {
+      await inspectRunCommand(ctx, runId);
     }));
 
   for (const name of ["pause", "resume", "retry", "cancel"] as const) {
@@ -120,6 +122,22 @@ async function inspectRun(ctx: RunsCommandContext, runId: string): Promise<void>
     message: "Run inspected.",
     run,
   }, outputFormat(ctx), ctx, 0));
+}
+
+async function inspectRunCommand(ctx: RunsCommandContext, runId: string | undefined): Promise<void> {
+  if (runId !== undefined) {
+    await inspectRun(ctx, runId);
+    return;
+  }
+  if (ctx.wantsJson) throw usageError("Run id is required when --json is used.");
+  if (!canPickRun(ctx)) throw usageError("Run id is required when not running in an interactive terminal.");
+
+  const runs = await listRuns(ctx.cwd);
+  if (runs.length === 0) throw notFoundError("No runs found.");
+
+  const selectedRunId = await pickRunId(runs, ctx);
+  if (selectedRunId === undefined) throw usageError("Run selection cancelled.");
+  await inspectRun(ctx, selectedRunId);
 }
 
 async function signalRun(ctx: RunsCommandContext, runId: string, options: RunsCommandOptions): Promise<void> {

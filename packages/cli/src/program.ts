@@ -1,4 +1,4 @@
-import type { Writable } from "node:stream";
+import type { Readable, Writable } from "node:stream";
 import { Command, CommanderError } from "commander";
 import { createDoctorCommand } from "./commands/doctor.js";
 import { createRunsCommand } from "./commands/runs.js";
@@ -8,6 +8,7 @@ import { writeResult } from "./output.js";
 
 export type CliIo = {
   cwd: string;
+  stdin?: Readable;
   stdout: Writable;
   stderr: Writable;
 };
@@ -40,6 +41,7 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
 }
 
 function createProgram(io: CliIo, setExitCode: (code: number) => void, wantsJson: boolean): Command {
+  const stdin = io.stdin ?? process.stdin;
   const program = new Command()
     .name("acpus")
     .description("Acpus TypeScript workflow CLI.")
@@ -61,6 +63,7 @@ function createProgram(io: CliIo, setExitCode: (code: number) => void, wantsJson
   }));
   program.addCommand(createRunsCommand({
     ...io,
+    stdin,
     wantsJson,
     setExitCode,
   }));

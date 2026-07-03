@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { PassThrough } from "node:stream";
+import { admitPreparedWorkflowRun } from "@acpus/runtime";
+import { runCli } from "../src/program.js";
+import { prepareWorkflowForCli } from "../src/workflow-preparation.js";
+import { CaptureStream } from "./support/capture-stream.js";
 import { runSourceCli } from "./support/cli-runner.js";
 import { copyWorkflowFixture } from "./support/fixtures.js";
 import { withTestWorkspace } from "./support/workspace.js";
@@ -78,6 +83,76 @@ describe.concurrent("acpus runs inspect smoke", () => {
       expect(inspected.stdout).toMatch(new RegExp(`Use: acpus runs signal ${runId} --target approve~[a-f0-9]+ --payload '<json>'`));
     });
   }, 15_000);
+
+  it("opens a TTY picker when run id is omitted", async () => {
+    await withTestWorkspace("runs-inspect-picker", async workspace => {
+      const workflow = await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts");
+      const prepared = await prepareWorkflowForCli(workflow, workspace);
+      const first = await admitPreparedWorkflowRun(workspace, prepared, { ready: true });
+      await new Promise(resolve => setTimeout(resolve, 1));
+      await admitPreparedWorkflowRun(workspace, prepared, { ready: false });
+
+      const stdin = new TtyInput();
+      const stdout = ttyCapture();
+      const stderr = ttyCapture();
+      const inspected = runCli(["runs", "inspect"], { cwd: workspace, stdin, stdout, stderr });
+      stdin.end("\x1b[B\r");
+
+      expect(await inspected).toBe(0);
+      expect(stdout.text).toContain("Run inspected.");
+      expect(stdout.text).toContain(`Run: ${first.id}`);
+      expect(stderr.text).toContain("Select a run to inspect:");
+      expect(stdin.rawModes).toEqual([true, false]);
+    });
+  }, 15_000);
+
+  it("rejects omitted run id in JSON mode", async () => {
+    await withTestWorkspace("runs-inspect-json-missing-run-id", async workspace => {
+      const inspected = await runSourceCli(workspace, ["runs", "inspect", "--json"]);
+
+      expect(inspected.exitCode).toBe(2);
+      expect(JSON.parse(inspected.stdout)).toMatchObject({
+        ok: false,
+        phase: "usage",
+        message: "Run id is required when --json is used.",
+      });
+    });
+  });
+
+  it("rejects omitted run id outside an interactive terminal", async () => {
+    await withTestWorkspace("runs-inspect-non-tty-missing-run-id", async workspace => {
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+
+      const exitCode = await runCli(["runs", "inspect"], {
+        cwd: workspace,
+        stdin: new PassThrough(),
+        stdout,
+        stderr,
+      });
+
+      expect(exitCode).toBe(2);
+      expect(stderr.text).toContain("Run id is required when not running in an interactive terminal.");
+    });
+  });
+
+  it("reports no runs from the interactive picker path", async () => {
+    await withTestWorkspace("runs-inspect-picker-empty", async workspace => {
+      const stdout = ttyCapture();
+      const stderr = ttyCapture();
+
+      const exitCode = await runCli(["runs", "inspect"], {
+        cwd: workspace,
+        stdin: new TtyInput(),
+        stdout,
+        stderr,
+      });
+
+      expect(exitCode).toBe(1);
+      expect(stderr.text).toContain("No runs found.");
+      expect(stdout.text).toBe("");
+    });
+  });
 });
 
 async function expectInspectRun(workspace: string, runId: string): Promise<void> {
@@ -108,4 +183,25 @@ async function expectListRuns(workspace: string, runId: string): Promise<void> {
   expect(JSON.parse(list.stdout).runs).toEqual([
     expect.objectContaining({ id: runId, status: "completed", name: "cli-valid" }),
   ]);
+}
+
+class TtyInput extends PassThrough {
+  readonly isTTY = true;
+  isRaw = false;
+  rawModes: boolean[] = [];
+
+  setRawMode(mode: boolean): this {
+    this.isRaw = mode;
+    this.rawModes.push(mode);
+    return this;
+  }
+}
+
+type TtyCaptureStream = CaptureStream & {
+  columns: number;
+  isTTY: true;
+};
+
+function ttyCapture(): TtyCaptureStream {
+  return Object.assign(new CaptureStream(), { columns: 120, isTTY: true as const });
 }
