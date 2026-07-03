@@ -51,7 +51,7 @@ export type AgentRunSpec = {
   prompt: TemplateInput;
   permissionMode?: AgentPermissionMode;
   policy?: never;
-  session?: { key?: TemplateInput };
+  sessionKey?: TemplateInput;
   cwd?: WorkflowValue<string>;
   env?: EnvInput;
 };
@@ -99,7 +99,7 @@ function agentRunToIR(spec: AgentRunSpec): AgentRunIR {
     agent: spec.agent.key,
     prompt: templateToIR(spec.prompt),
     permissionMode: spec.permissionMode,
-    session: spec.session?.key === undefined ? undefined : { key: templateToIR(spec.session.key) },
+    sessionKey: spec.sessionKey === undefined ? undefined : templateToIR(spec.sessionKey),
     cwd: spec.cwd === undefined ? undefined : valueToExprIR(spec.cwd),
     env: spec.env === undefined ? undefined : envToIR(spec.env),
   }) as AgentRunIR;

@@ -183,9 +183,9 @@ function agentSelector(definition: AgentDefinitionIR): AgentTurnRequest["agent"]
 }
 
 function renderSessionKey(node: AgentNodeIR, scope: EvaluationScope): string | undefined {
-  if (!node.run.session?.key) return undefined;
-  const rendered = renderTemplate(node.run.session.key, scope);
-  if (rendered.trim().length === 0) throw new Error(`Agent node '${node.id}' session key must render to a non-empty string.`);
+  if (!node.run.sessionKey) return undefined;
+  const rendered = renderTemplate(node.run.sessionKey, scope);
+  if (rendered.trim().length === 0) throw new Error(`Agent node '${node.id}' sessionKey must render to a non-empty string.`);
   return rendered;
 }
 

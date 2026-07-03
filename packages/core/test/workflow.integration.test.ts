@@ -69,7 +69,7 @@ describe("workflow compilation", () => {
         run: {
           agent: agents.reviewer,
           prompt: template`Review ${tests.output.summary}`,
-          session: { key: template`release:${tests.output.summary}` },
+          sessionKey: template`release:${tests.output.summary}`,
           cwd: input.repoPath,
           env: {
             REVIEW_MODE: "strict",
@@ -181,20 +181,18 @@ describe("workflow compilation", () => {
             { kind: "text", value: "" },
           ],
         },
-        session: {
-          key: {
-            parts: [
-              { kind: "text", value: "release:" },
-              {
-                kind: "expr",
-                expr: {
-                  kind: "ref",
-                  path: ["nodes", "run_tests", "output", "summary"],
-                },
+        sessionKey: {
+          parts: [
+            { kind: "text", value: "release:" },
+            {
+              kind: "expr",
+              expr: {
+                kind: "ref",
+                path: ["nodes", "run_tests", "output", "summary"],
               },
-              { kind: "text", value: "" },
-            ],
-          },
+            },
+            { kind: "text", value: "" },
+          ],
         },
         cwd: { kind: "ref", path: ["input", "repoPath"] },
         env: {

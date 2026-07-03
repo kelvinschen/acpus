@@ -1978,14 +1978,14 @@ describe("runtime scheduler node executor", () => {
           store,
           agents: prepared.ir.agents,
           executeTurn: async () => completedAgentTurn("{\"ok\":true}"),
-        })).rejects.toThrow("session key must render to a non-empty string");
+        })).rejects.toThrow("sessionKey must render to a non-empty string");
 
         const entry = store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt");
         expect(entry).toMatchObject({ attemptId: "attempt_setup" });
         expect(entry?.metadata).toMatchObject({
           status: "failed",
           turnCount: 0,
-          message: "Agent node 'review' session key must render to a non-empty string.",
+          message: "Agent node 'review' sessionKey must render to a non-empty string.",
           turns: [],
         });
       } finally {
@@ -1994,7 +1994,7 @@ describe("runtime scheduler node executor", () => {
     });
   });
 
-  it("uses rendered explicit agent session keys instead of dynamic node keys", async () => {
+  it("uses rendered explicit agent sessionKeys instead of dynamic node keys", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-agent-explicit-session", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, explicitSessionAgentWorkflow());
       const node = prepared.ir.root.nodes.find(node => node.id === "review");
@@ -2022,6 +2022,21 @@ describe("runtime scheduler node executor", () => {
 
         expect(turns).toHaveLength(2);
         expect(turns[1]!.sessionName).toBe(turns[0]!.sessionName);
+        const secondRun = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        await executeAgentNode(node, {}, {
+          cwd: workspace,
+          runId: secondRun.id,
+          nodeKey: "review.dynamic_a",
+          attemptId: "attempt_second_run",
+          attemptNo: 1,
+          store,
+          agents: prepared.ir.agents,
+          executeTurn: async request => {
+            turns.push(request);
+            return completedAgentTurn("{\"ok\":true}");
+          },
+        });
+        expect(turns[2]!.sessionName).not.toBe(turns[0]!.sessionName);
         const agentMetadata = store.getRun(run.id)?.dynamic?.executionMetadata.filter(entry => entry.kind === "agent_attempt").map(entry => entry.metadata) as Array<{ sessionKey?: string; sessionName?: string }> | undefined;
         expect(agentMetadata).toEqual([
           expect.objectContaining({ sessionKey: "shared-session", sessionName: turns[0]!.sessionName }),
@@ -2881,7 +2896,7 @@ function explicitSessionAgentWorkflow() {
   }).build(({ agents, step }) => {
     step("review").agent({
       outputSchema: z.object({ ok: z.boolean() }),
-      run: { agent: agents.reviewer, prompt: "review", session: { key: "shared-session" } },
+      run: { agent: agents.reviewer, prompt: "review", sessionKey: "shared-session" },
     });
     return {};
   });
@@ -2896,7 +2911,7 @@ function blankSessionAgentWorkflow() {
   }).build(({ agents, step }) => {
     step("review").agent({
       outputSchema: z.object({ ok: z.boolean() }),
-      run: { agent: agents.reviewer, prompt: "review", session: { key: "" } },
+      run: { agent: agents.reviewer, prompt: "review", sessionKey: "" },
     });
     return {};
   });

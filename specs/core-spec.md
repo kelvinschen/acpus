@@ -55,7 +55,7 @@
 - Runtime bindings and accessors MUST continue to use `input` and `output`; scopes MUST declare their `output` by returning a plain object, not by calling an output helper.
 - Executable nodes MUST use `run` as the execution boundary. TypeScript-owned task outputs MUST be inferred from `exec`; they MUST NOT declare author-facing `outputSchema`.
 - Node ids MUST be bound through `step("id")`; node kind methods MUST receive only the kind-specific spec.
-- Agent nodes MUST use `step("id").agent({ outputSchema?, run: { agent: agents.<key>, prompt, permissionMode?, session?, cwd?, env? }, timeout?, retry? })`.
+- Agent nodes MUST use `step("id").agent({ outputSchema?, run: { agent: agents.<key>, prompt, permissionMode?, sessionKey?, cwd?, env? }, timeout?, retry? })`.
 - Agent definitions MAY declare `permissionMode?: "approve-reads" | "approve-all" | "deny-all"` and `agentMode?: string`.
 - Agent definitions MUST NOT accept broad `options` fields.
 - Signal nodes MUST use `step("id").signal({ outputSchema?, run: { prompt }, timeout?, onTimeout? })`. Schema-less signals expose raw `Expr<string>` output; schema-backed signals expose parsed structured output.
@@ -63,7 +63,8 @@
 - Task nodes MUST use `run.input` as the explicit expression-to-runtime-value boundary.
 - Inline Task nodes MUST use `step("id").task({ run: { input, exec, cwd?, env?, execution? }, timeout? })`; output is inferred from `Awaited<ReturnType<exec>>`.
 - Reusable Task nodes MUST use `step("id").task({ run: { task, input, cwd?, env?, execution? }, timeout? })`; output is inferred from the reusable Task token's `exec`.
-- Agent and Signal node graph dependencies MUST be expressed by refs inside `run.prompt`, `run.cwd`, `run.env`, and `run.session`.
+- Agent node graph dependencies MUST be expressed by refs inside `run.prompt`, `run.cwd`, `run.env`, and `run.sessionKey`.
+- Signal node graph dependencies MUST be expressed by refs inside `run.prompt`.
 - Agent and Task `cwd` MUST be a string workflow value.
 - Agent and Task `env` values MUST be string workflow values or `secret(...)` tokens.
 - Assert nodes MUST use `step("id").assert({ condition, message? })`.

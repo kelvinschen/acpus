@@ -1,5 +1,5 @@
 import { defineWorkflow, z } from "acpus/core";
-import { every, md, template, where } from "acpus/expression";
+import { every, md, where } from "acpus/expression";
 
 const ReviewOutput = z.object({
   agent: z.enum(["pi", "claude"]),
@@ -55,7 +55,7 @@ export default defineWorkflow({
             run: {
               agent: agents.pi,
               cwd: meta.workspaceDir,
-              session: { key: template`${meta.workflowName}:${meta.runId}:pi-review` },
+              sessionKey: "pi-review",
               prompt: md`
                 You are the Pi primary reviewer.
 
@@ -89,7 +89,7 @@ export default defineWorkflow({
             run: {
               agent: agents.claude,
               cwd: meta.workspaceDir,
-              session: { key: template`${meta.workflowName}:${meta.runId}:claude-review` },
+              sessionKey: "claude-review",
               prompt: md`
                 You are the Claude primary reviewer.
 
@@ -130,7 +130,7 @@ export default defineWorkflow({
             run: {
               agent: agents.claude,
               cwd: meta.workspaceDir,
-              session: { key: template`${meta.workflowName}:${meta.runId}:claude-verify-pi` },
+              sessionKey: "claude-verify-pi",
               prompt: md`
                 You are the adversarial verifier for the Pi review.
 
@@ -169,7 +169,7 @@ export default defineWorkflow({
             run: {
               agent: agents.pi,
               cwd: meta.workspaceDir,
-              session: { key: template`${meta.workflowName}:${meta.runId}:pi-verify-claude` },
+              sessionKey: "pi-verify-claude",
               prompt: md`
                 You are the adversarial verifier for the Claude review.
 

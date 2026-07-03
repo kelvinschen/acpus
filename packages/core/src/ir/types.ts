@@ -82,7 +82,7 @@ export type AgentRunIR = {
   agent: string;
   prompt: TemplateIR;
   permissionMode?: "approve-reads" | "approve-all" | "deny-all";
-  session?: { key?: TemplateIR };
+  sessionKey?: TemplateIR;
   cwd?: ExprIR;
   env?: Record<string, ExprIR | SecretRefIR>;
 };

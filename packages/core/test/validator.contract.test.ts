@@ -15,6 +15,26 @@ function minimalWorkflow(overrides: Partial<WorkflowIR> = {}): WorkflowIR {
 }
 
 describe("WorkflowIR diagnostics contract", () => {
+  it("accepts agent sessionKey templates", () => {
+    const ir = minimalWorkflow({
+      agents: { reviewer: { kind: "agent_definition", use: "codex" } },
+      root: {
+        nodes: [{
+          id: "review",
+          kind: "agent",
+          run: {
+            kind: "agent_run",
+            agent: "reviewer",
+            prompt: { kind: "template", parts: [] },
+            sessionKey: { kind: "template", parts: [{ kind: "text", value: "shared" }] },
+          },
+        }],
+      },
+    });
+
+    expect(validateWorkflowIR(ir)).toEqual([]);
+  });
+
   it("accepts expression lambda IR through the workflow validator", () => {
     const ir: WorkflowIR = {
       irVersion: 2,
@@ -540,7 +560,13 @@ describe("WorkflowIR diagnostics contract", () => {
           {
             id: "review",
             kind: "agent",
-            run: { kind: "agent_run", agent: "reviewer", use: "reviewer", prompt: { kind: "template", parts: [] } },
+            run: {
+              kind: "agent_run",
+              agent: "reviewer",
+              use: "reviewer",
+              session: { key: { kind: "template", parts: [] } },
+              prompt: { kind: "template", parts: [] },
+            },
           },
           {
             id: "assert_ready",
@@ -594,6 +620,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
     expect(diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "IR001", path: "root.nodes.review.run.use" }),
+      expect.objectContaining({ code: "IR001", path: "root.nodes.review.run.session" }),
       expect.objectContaining({ code: "IR001", path: "root.nodes.assert_ready.that" }),
       expect.objectContaining({ code: "IR001", path: "root.nodes.gate.when" }),
       expect.objectContaining({ code: "IR001", path: "root.nodes.gate.otherwise" }),

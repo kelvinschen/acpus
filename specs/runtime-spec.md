@@ -141,9 +141,10 @@
   identity-tied fields `model` and `agentMode` MUST be cleared unless the same
   override supplies replacements. `permissionMode` MUST remain inherited across
   identity changes.
-- Explicit agent session keys MUST render to non-empty strings and determine the
-  acpx session identity for the run. When no explicit key is declared, runtime
-  MUST derive a deterministic session identity from run id and dynamic node key.
+- Explicit agent `sessionKey` values MUST render to non-empty strings and act as
+  run-local logical session keys. Runtime MUST include run id in the final acpx
+  session identity when present. When no explicit key is declared, runtime MUST
+  derive a deterministic session identity from run id and dynamic node key.
 - For schema-backed agent nodes, runtime MUST append the schema prompt section
   to the initial turn and to response repair turns.
 - For schema-less agent nodes, runtime MUST return raw response text as the node output and MUST NOT run schema conformance repair.
@@ -198,7 +199,7 @@
   MUST NOT replace the schema-projected workflow-visible node output.
 - Each scheduler-backed agent attempt MUST write structured execution metadata
   that records the turn list, artifact references, status, encoded acpx session
-  name, and rendered explicit session key when one was declared. Scheduler
+  name, and rendered explicit `sessionKey` when one was declared. Scheduler
   reducers MUST NOT depend on those artifact contents or metadata rows for
   attempt state transitions.
 - Turn metadata MUST include a compact telemetry summary containing event

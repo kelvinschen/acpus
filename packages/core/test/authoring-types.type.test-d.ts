@@ -14,7 +14,7 @@ import {
   type StepDeclaration,
   type TaskStepSpec,
 } from "../src/index.js";
-import { pick, template, type Expr } from "@acpus/expression";
+import { md, pick, template, type Expr } from "@acpus/expression";
 
 test("step declaration object exposes kind methods", () => {
   defineWorkflow({ name: "typed-step-declaration" }).build(({ input, step }) => {
@@ -289,6 +289,23 @@ test("plain prompts and templates are accepted", () => {
       run: {
         agent: agents.reviewer,
         prompt: template`Review ${input.title}`,
+        sessionKey: "plain-session",
+      },
+    });
+    step("agent_template_session").agent({
+      run: {
+        agent: agents.reviewer,
+        prompt: "Review",
+        sessionKey: template`release:${input.title}`,
+      },
+    });
+    step("agent_md_session").agent({
+      run: {
+        agent: agents.reviewer,
+        prompt: "Review",
+        sessionKey: md`
+          release:${input.title}
+        `,
       },
     });
     return {};

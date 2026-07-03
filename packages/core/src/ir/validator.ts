@@ -234,17 +234,12 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
 
 function validateAgentRun(run: unknown, diagnostics: DiagnosticIR[], path: string): void {
   if (!requireRecord(run, diagnostics, path, "A003", "Agent run must be an object.")) return;
-  validateKnownFields(run, ["kind", "agent", "prompt", "permissionMode", "session", "cwd", "env"], diagnostics, path);
+  validateKnownFields(run, ["kind", "agent", "prompt", "permissionMode", "sessionKey", "cwd", "env"], diagnostics, path);
   if (run.kind !== "agent_run") addError(diagnostics, "A003", "Agent run kind must be agent_run.", `${path}.kind`);
   validateRequiredNonEmptyString(run.agent, diagnostics, `${path}.agent`, "A003", "Agent run agent must be a non-empty string.");
   validateTemplate(run.prompt, diagnostics, `${path}.prompt`);
   validatePermissionMode(run.permissionMode, diagnostics, `${path}.permissionMode`);
-  if (run.session !== undefined) {
-    if (requireRecord(run.session, diagnostics, `${path}.session`, "A003", "Agent run session must be an object.")) {
-      validateKnownFields(run.session, ["key"], diagnostics, `${path}.session`);
-      if (run.session.key) validateTemplate(run.session.key, diagnostics, `${path}.session.key`);
-    }
-  }
+  if (run.sessionKey) validateTemplate(run.sessionKey, diagnostics, `${path}.sessionKey`);
   if (run.cwd) validateExpr(run.cwd, diagnostics, `${path}.cwd`);
   validateEnv(run.env, diagnostics, `${path}.env`);
 }
