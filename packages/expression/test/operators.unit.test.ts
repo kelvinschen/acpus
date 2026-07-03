@@ -19,6 +19,7 @@ import {
   map,
   matches,
   max,
+  md,
   min,
   ne,
   not,
@@ -88,6 +89,28 @@ describe("expression operators", () => {
           { kind: "text", value: "count=" },
           { kind: "expr", expr: { kind: "call", fn: "len", args: [{ kind: "ref", path: ["input", "items"] }] } },
           { kind: "text", value: "" },
+        ],
+      },
+    });
+  });
+
+  it("dedents markdown templates while preserving expressions and Markdown structure", () => {
+    expect(md`
+      # Review
+
+      Subject:
+      ${refExpr<string>(["input", "subject"])}
+
+      - keep item indentation
+        - keep nested item indentation
+    `.__ir).toEqual({
+      kind: "template",
+      template: {
+        kind: "template",
+        parts: [
+          { kind: "text", value: "# Review\n\nSubject:\n" },
+          { kind: "expr", expr: { kind: "ref", path: ["input", "subject"] } },
+          { kind: "text", value: "\n\n- keep item indentation\n  - keep nested item indentation" },
         ],
       },
     });

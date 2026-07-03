@@ -43,6 +43,7 @@ type ObjectWhere<T> = {
 } & {
   readonly [K in ReservedWhereFieldKey<T>]?: never;
 };
+type TemplatePart = { kind: "text"; value: string } | { kind: "expr"; expr: ExprIR };
 type Where<T> =
   [NonNullable<T>] extends [string]
     ? StringWhere | NullWhere<T>
@@ -114,13 +115,108 @@ export function pick<T, const K extends readonly AccessorKey<T>[]>(source: Objec
   }
   return out as { readonly [P in K[number]]: OutputAccessor<NonNullable<T>[P] | Extract<T, null | undefined>> };
 }
+/**
+ * Builds an exact string template expression and preserves authored whitespace.
+ * Use `md` for multiline Markdown prompts that should be dedented.
+ */
 export function template(strings: TemplateStringsArray, ...values: WorkflowValue[]): Expr<string> {
-  const parts: Array<{ kind: "text"; value: string } | { kind: "expr"; expr: ExprIR }> = [];
+  return templateExpr(templateParts(strings, values));
+}
+
+/**
+ * Builds a multiline Markdown template for prompts and messages.
+ * Unlike `template`, this helper removes surrounding blank lines and common indentation.
+ */
+export function md(strings: TemplateStringsArray, ...values: WorkflowValue[]): Expr<string> {
+  return templateExpr(dedentTemplateParts(templateParts(strings, values)));
+}
+
+function templateParts(strings: TemplateStringsArray, values: WorkflowValue[]): TemplatePart[] {
+  const parts: TemplatePart[] = [];
   strings.forEach((text, index) => {
     parts.push({ kind: "text", value: text });
     if (index < values.length) parts.push({ kind: "expr", expr: valueToExprIR(values[index]) });
   });
+  return parts;
+}
+
+function templateExpr(parts: TemplatePart[]): Expr<string> {
   return accessor<string>({ kind: "template", template: { kind: "template", parts } });
+}
+
+function dedentTemplateParts(parts: TemplatePart[]): TemplatePart[] {
+  const trimmed = trimBoundaryBlankLines(parts);
+  const commonIndent = findCommonIndent(trimmed);
+  if (commonIndent === 0) return trimmed;
+  let atLineStart = true;
+  let remainingIndent = commonIndent;
+  return trimmed.map(part => {
+    if (part.kind === "expr") {
+      atLineStart = false;
+      return part;
+    }
+    let value = "";
+    for (const char of part.value) {
+      if (char === "\n") {
+        value += char;
+        atLineStart = true;
+        remainingIndent = commonIndent;
+        continue;
+      }
+      if (atLineStart && remainingIndent > 0 && (char === " " || char === "\t")) {
+        remainingIndent--;
+        continue;
+      }
+      value += char;
+      if (char !== " " && char !== "\t") atLineStart = false;
+    }
+    return { kind: "text", value };
+  });
+}
+
+function trimBoundaryBlankLines(parts: TemplatePart[]): TemplatePart[] {
+  const trimmed = parts.map(part => part.kind === "text" ? { ...part } : part);
+  const firstText = trimmed.find(part => part.kind === "text");
+  if (firstText?.kind === "text") firstText.value = firstText.value.replace(/^(?:[ \t]*\r?\n)+/, "");
+  for (let index = trimmed.length - 1; index >= 0; index--) {
+    const part = trimmed[index];
+    if (part?.kind === "text") {
+      part.value = part.value.replace(/(?:\r?\n[ \t]*)+$/, "");
+      break;
+    }
+  }
+  return trimmed;
+}
+
+function findCommonIndent(parts: TemplatePart[]): number {
+  const indents: number[] = [];
+  let atLineStart = true;
+  let indent = 0;
+  let lineHasContent = false;
+  for (const part of parts) {
+    if (part.kind === "expr") {
+      lineHasContent = true;
+      atLineStart = false;
+      continue;
+    }
+    for (const char of part.value) {
+      if (char === "\n") {
+        if (lineHasContent) indents.push(indent);
+        atLineStart = true;
+        indent = 0;
+        lineHasContent = false;
+        continue;
+      }
+      if (atLineStart && (char === " " || char === "\t")) {
+        indent++;
+        continue;
+      }
+      lineHasContent = true;
+      atLineStart = false;
+    }
+  }
+  if (lineHasContent) indents.push(indent);
+  return indents.length === 0 ? 0 : Math.min(...indents);
 }
 
 function scopedCollection<R, T>(fn: string, array: WorkflowValue<readonly T[]>, callback: (value: OutputAccessor<T>, index: OutputAccessor<number>) => unknown): OutputAccessor<R> {

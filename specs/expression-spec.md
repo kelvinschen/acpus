@@ -8,7 +8,7 @@
 
 ### Public API
 
-- The root `@acpus/expression` entrypoint MUST expose the authoring surface: `isExpr`, `not`, `and`, `or`, `ifElse`, `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `coalesce`, `len`, `includes`, `isEmpty`, `startsWith`, `endsWith`, `matches`, `get`, `head`, `every`, `some`, `filter`, `map`, `max`, `min`, `where`, `pick`, `template`, and the public `Expr`, `OutputAccessor`, and `WorkflowValue` types.
+- The root `@acpus/expression` entrypoint MUST expose the authoring surface: `isExpr`, `not`, `and`, `or`, `ifElse`, `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `coalesce`, `len`, `includes`, `isEmpty`, `startsWith`, `endsWith`, `matches`, `get`, `head`, `every`, `some`, `filter`, `map`, `max`, `min`, `where`, `pick`, `template`, `md`, and the public `Expr`, `OutputAccessor`, and `WorkflowValue` types.
 - The root `@acpus/expression` entrypoint MUST NOT export raw construction helpers such as `expr`, `refExpr`, or `valueToExprIR`.
 - `@acpus/expression/ir` MUST expose serializable IR and JSON types plus advanced construction helpers needed by package internals and tests, including `tryValueToExprIR`.
 - `@acpus/expression/evaluator` MUST expose generic expression and template evaluators.
@@ -38,7 +38,8 @@
 - `head(array)` MUST lower to `get(array, 0)`.
 - `pick(source, keys)` MUST project object accessor fields and MUST NOT create a distinct IR shape.
 - `pick(source, keys)` MUST reject reserved expression token keys at the type boundary when possible and at runtime as a fallback.
-- `template` MUST lower tagged template strings to an expression node containing `TemplateIR`.
+- `template` MUST lower tagged template strings to an expression node containing `TemplateIR` while preserving authored whitespace exactly.
+- `md` MUST lower tagged template strings to normal `TemplateIR` after removing surrounding blank lines and common indentation from literal text parts. Expression interpolations MUST remain unchanged. Authors SHOULD use `md` for multiline Markdown prompts and messages.
 
 ### Operators And Collections
 

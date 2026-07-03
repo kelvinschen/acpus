@@ -1,5 +1,5 @@
 import { defineWorkflow, z } from "acpus/core";
-import { every, template, where } from "acpus/expression";
+import { every, md, template, where } from "acpus/expression";
 
 const ReviewOutput = z.object({
   agent: z.enum(["pi", "claude"]),
@@ -56,7 +56,7 @@ export default defineWorkflow({
               agent: agents.pi,
               cwd: meta.workspaceDir,
               session: { key: template`${meta.workflowName}:${meta.runId}:pi-review` },
-              prompt: template`
+              prompt: md`
                 You are the Pi primary reviewer.
 
                 Subject:
@@ -90,7 +90,7 @@ export default defineWorkflow({
               agent: agents.claude,
               cwd: meta.workspaceDir,
               session: { key: template`${meta.workflowName}:${meta.runId}:claude-review` },
-              prompt: template`
+              prompt: md`
                 You are the Claude primary reviewer.
 
                 Subject:
@@ -131,7 +131,7 @@ export default defineWorkflow({
               agent: agents.claude,
               cwd: meta.workspaceDir,
               session: { key: template`${meta.workflowName}:${meta.runId}:claude-verify-pi` },
-              prompt: template`
+              prompt: md`
                 You are the adversarial verifier for the Pi review.
 
                 Subject:
@@ -170,7 +170,7 @@ export default defineWorkflow({
               agent: agents.pi,
               cwd: meta.workspaceDir,
               session: { key: template`${meta.workflowName}:${meta.runId}:pi-verify-claude` },
-              prompt: template`
+              prompt: md`
                 You are the adversarial verifier for the Claude review.
 
                 Subject:
@@ -217,7 +217,7 @@ export default defineWorkflow({
 
   step("require_adversarial_acceptance").assert({
     condition: accepted,
-    message: template`
+    message: md`
       Adversarial verification failed.
 
       Claude checking Pi:

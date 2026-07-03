@@ -7,6 +7,7 @@ import {
   head,
   ifElse,
   map,
+  md,
   pick,
   some,
   where,
@@ -55,6 +56,7 @@ test("authoring helpers infer core expression shapes", () => {
   assertType<Expr<Item | undefined>>(head(items));
   assertType<Expr<Item | undefined>>(get(items, 0));
   assertType<Expr<string>>(coalesce(maybeName, "unknown"));
+  assertType<Expr<string>>(md`hello ${maybeName}`);
   assertType<Expr<string | number>>(ifElse(refExpr<boolean>(["input", "ok"]), "ok", 1));
   assertType<Expr<boolean>>(where(head(items), { done: true }));
   assertType<Expr<boolean>>(where(maybeName, null));

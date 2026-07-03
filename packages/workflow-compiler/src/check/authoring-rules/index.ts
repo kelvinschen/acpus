@@ -67,7 +67,7 @@ function checkExprAuthoring(sourceFile: ts.SourceFile, checker: ts.TypeChecker, 
       }
     }
     if (ts.isTemplateExpression(node) && !ts.isTaggedTemplateExpression(node.parent) && node.templateSpans.some(span => isExpr(checker, span.expression))) {
-      diagnostics.push(diagnostic("AL004", "Expr values cannot be interpolated with untagged template literals.", node, "Use the template tag from @acpus/expression."));
+      diagnostics.push(diagnostic("AL004", "Expr values cannot be interpolated with untagged template literals.", node, "Use template or md from @acpus/expression."));
     }
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && ARRAY_METHODS.has(node.expression.name.text) && isExpr(checker, node.expression.expression)) {
       diagnostics.push(diagnostic("AL005", "Expr accessors do not support JavaScript array methods at workflow authoring time.", node, "Use Acpus collection helpers such as map(...), filter(...), every(...), or some(...)."));

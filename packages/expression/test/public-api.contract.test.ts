@@ -27,6 +27,7 @@ describe("@acpus/expression public API", () => {
       "map",
       "matches",
       "max",
+      "md",
       "min",
       "ne",
       "not",
