@@ -1560,10 +1560,10 @@ describe("runtime scheduler node executor", () => {
         for (const [agentOverrides, message] of [
           [{ reviewer: { policy: "full" } }, "must use permissionMode, not policy"],
           [{ reviewer: { kind: "agent_definition" } }, "must not include kind"],
-          [{ reviewer: { timeout: "1s" } }, "must not include 'timeout'"],
+          [{ reviewer: { timeout: "1s" } }, "$.reviewer Unrecognized key"],
           [{ reviewer: { use: "codex", command: "custom-acp-server" } }, "must not specify both use and command"],
-          [{ reviewer: { cwd: 123 } }, "cwd must be a string"],
-          [{ reviewer: { env: { FLAG: true } } }, "env.FLAG must be a string"],
+          [{ reviewer: { cwd: 123 } }, "$.reviewer.cwd"],
+          [{ reviewer: { env: { FLAG: true } } }, "$.reviewer.env.FLAG"],
         ] as Array<[any, string]>) {
           await expect(store.admitRun({
             prepared,

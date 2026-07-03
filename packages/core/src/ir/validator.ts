@@ -4,17 +4,17 @@ import type { DiagnosticIR, ExprIR, NodeIR, SchemaIR, SecretRefIR, TemplateIR, W
 export function validateWorkflowIR(ir: WorkflowIR): DiagnosticIR[] {
   const diagnostics: DiagnosticIR[] = [];
   if (!isRecord(ir)) {
-    diagnostics.push({ code: "IR002", severity: "error", message: "WorkflowIR must be an object.", path: "" });
+    addError(diagnostics, "IR002", "WorkflowIR must be an object.", "");
     return diagnostics;
   }
   validateKnownFields(ir, ["irVersion", "name", "inputSchema", "agents", "root", "outputs", "lock", "diagnostics"], diagnostics, "");
-  if (ir.irVersion !== 2) diagnostics.push({ code: "IR002", severity: "error", message: "WorkflowIR irVersion must be 2.", path: "irVersion" });
+  if (ir.irVersion !== 2) addError(diagnostics, "IR002", "WorkflowIR irVersion must be 2.", "irVersion");
   if (!ir.name || !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(ir.name)) {
-    diagnostics.push({ code: "W002", severity: "warning", message: `Workflow name '${ir.name}' is not identifier-like. This is allowed but discouraged.` });
+    addWarning(diagnostics, "W002", `Workflow name '${ir.name}' is not identifier-like. This is allowed but discouraged.`);
   }
   validateSchema(ir.inputSchema, diagnostics, "inputSchema");
   const agents = isRecord(ir.agents) ? ir.agents : undefined;
-  if (!agents) diagnostics.push({ code: "IR002", severity: "error", message: "WorkflowIR agents must be an object.", path: "agents" });
+  if (!agents) addError(diagnostics, "IR002", "WorkflowIR agents must be an object.", "agents");
   else validateAgents(agents, diagnostics);
   validateLock(ir.lock, diagnostics, "lock");
   validateDiagnostics(ir.diagnostics, diagnostics, "diagnostics");
@@ -29,51 +29,38 @@ export function validateWorkflowIR(ir: WorkflowIR): DiagnosticIR[] {
 }
 
 function validateLock(lock: unknown, diagnostics: DiagnosticIR[], path: string): void {
-  if (!isRecord(lock)) {
-    diagnostics.push({ code: "IR002", severity: "error", message: "WorkflowIR lock must be an object.", path });
-    return;
-  }
+  if (!requireRecord(lock, diagnostics, path, "IR002", "WorkflowIR lock must be an object.")) return;
   validateKnownFields(lock, ["acpusCoreVersion", "workflowSource", "workflowSourceDigest", "generatedAt", "notes"], diagnostics, path);
-  if (typeof lock.acpusCoreVersion !== "string" || lock.acpusCoreVersion.length === 0) diagnostics.push({ code: "IR002", severity: "error", message: "WorkflowIR lock acpusCoreVersion must be a non-empty string.", path: `${path}.acpusCoreVersion` });
-  if (typeof lock.generatedAt !== "string" || lock.generatedAt.length === 0) diagnostics.push({ code: "IR002", severity: "error", message: "WorkflowIR lock generatedAt must be a non-empty string.", path: `${path}.generatedAt` });
-  if (!Array.isArray(lock.notes)) {
-    diagnostics.push({ code: "IR002", severity: "error", message: "WorkflowIR lock notes must be an array.", path: `${path}.notes` });
-  } else {
-    forEachDense(lock.notes, diagnostics, `${path}.notes`, (note, index) => {
-      if (typeof note !== "string") diagnostics.push({ code: "IR002", severity: "error", message: "WorkflowIR lock notes must be a string array.", path: `${path}.notes.${index}` });
-    }, { code: "IR002" });
-  }
+  validateRequiredNonEmptyString(lock.acpusCoreVersion, diagnostics, `${path}.acpusCoreVersion`, "IR002", "WorkflowIR lock acpusCoreVersion must be a non-empty string.");
+  validateRequiredNonEmptyString(lock.generatedAt, diagnostics, `${path}.generatedAt`, "IR002", "WorkflowIR lock generatedAt must be a non-empty string.");
+  const notes = requireArray<unknown>(lock.notes, diagnostics, `${path}.notes`, "IR002", "WorkflowIR lock notes must be an array.");
+  if (!notes) return;
+  forEachDense(notes, diagnostics, `${path}.notes`, (note, index) => {
+    if (typeof note !== "string") addError(diagnostics, "IR002", "WorkflowIR lock notes must be a string array.", `${path}.notes.${index}`);
+  }, { code: "IR002" });
 }
 
 function validateDiagnostics(value: unknown, diagnostics: DiagnosticIR[], path: string): void {
-  if (!Array.isArray(value)) {
-    diagnostics.push({ code: "IR002", severity: "error", message: "WorkflowIR diagnostics must be an array.", path });
-    return;
-  }
-  forEachDense(value, diagnostics, path, (diagnostic, index) => {
-    if (!isRecord(diagnostic)) {
-      diagnostics.push({ code: "IR002", severity: "error", message: "WorkflowIR diagnostic entries must be objects.", path: `${path}.${index}` });
+  const items = requireArray<unknown>(value, diagnostics, path, "IR002", "WorkflowIR diagnostics must be an array.");
+  if (!items) return;
+  forEachDense(items, diagnostics, path, (diagnostic, index) => {
+    if (!requireRecord(diagnostic, diagnostics, `${path}.${index}`, "IR002", "WorkflowIR diagnostic entries must be objects.")) {
       return;
     }
     validateKnownFields(diagnostic, ["code", "severity", "message", "path", "source", "hint"], diagnostics, `${path}.${index}`);
-    if (typeof diagnostic.code !== "string" || diagnostic.code.length === 0) diagnostics.push({ code: "IR002", severity: "error", message: "WorkflowIR diagnostic code must be a non-empty string.", path: `${path}.${index}.code` });
-    if (diagnostic.severity !== "error" && diagnostic.severity !== "warning" && diagnostic.severity !== "info") diagnostics.push({ code: "IR002", severity: "error", message: "WorkflowIR diagnostic severity must be error, warning, or info.", path: `${path}.${index}.severity` });
-    if (typeof diagnostic.message !== "string" || diagnostic.message.length === 0) diagnostics.push({ code: "IR002", severity: "error", message: "WorkflowIR diagnostic message must be a non-empty string.", path: `${path}.${index}.message` });
+    validateRequiredNonEmptyString(diagnostic.code, diagnostics, `${path}.${index}.code`, "IR002", "WorkflowIR diagnostic code must be a non-empty string.");
+    validateRequiredEnum(diagnostic.severity, ["error", "warning", "info"], diagnostics, `${path}.${index}.severity`, "IR002", "WorkflowIR diagnostic severity must be error, warning, or info.");
+    validateRequiredNonEmptyString(diagnostic.message, diagnostics, `${path}.${index}.message`, "IR002", "WorkflowIR diagnostic message must be a non-empty string.");
   }, { code: "IR002" });
 }
 
 function validateAgents(agents: WorkflowIR["agents"], diagnostics: DiagnosticIR[]): void {
   for (const [name, agent] of Object.entries(agents)) {
     const path = `agents.${name}`;
-    if (!isRecord(agent)) {
-      diagnostics.push({ code: "A002", severity: "error", message: `Agent '${name}' definition must be an object.`, path });
-      continue;
-    }
+    if (!requireRecord(agent, diagnostics, path, "A002", `Agent '${name}' definition must be an object.`)) continue;
     if (agent.kind === "agent_definition") {
       validateKnownFields(agent, ["kind", "use", "model", "permissionMode", "agentMode", "cwd", "env"], diagnostics, path);
-      if (typeof (agent as { use?: unknown }).use !== "string" || agent.use.length === 0) {
-        diagnostics.push({ code: "A002", severity: "error", message: `Agent '${name}' use must be a non-empty string.`, path: `${path}.use` });
-      }
+      validateRequiredNonEmptyString(agent.use, diagnostics, `${path}.use`, "A002", `Agent '${name}' use must be a non-empty string.`);
       validatePermissionMode(agent.permissionMode, diagnostics, `${path}.permissionMode`);
       validateAgentMode(agent.agentMode, diagnostics, `${path}.agentMode`);
       if (agent.cwd) validateExpr(agent.cwd, diagnostics, `${path}.cwd`);
@@ -83,9 +70,7 @@ function validateAgents(agents: WorkflowIR["agents"], diagnostics: DiagnosticIR[
 
     if (agent.kind === "agent_command") {
       validateKnownFields(agent, ["kind", "command", "model", "permissionMode", "agentMode", "cwd", "env"], diagnostics, path);
-      if (typeof (agent as { command?: unknown }).command !== "string" || agent.command.length === 0) {
-        diagnostics.push({ code: "A002", severity: "error", message: `Command-backed agent '${name}' command must be a non-empty string.`, path: `${path}.command` });
-      }
+      validateRequiredNonEmptyString(agent.command, diagnostics, `${path}.command`, "A002", `Command-backed agent '${name}' command must be a non-empty string.`);
       validatePermissionMode(agent.permissionMode, diagnostics, `${path}.permissionMode`);
       validateAgentMode(agent.agentMode, diagnostics, `${path}.agentMode`);
       if (agent.cwd) validateExpr(agent.cwd, diagnostics, `${path}.cwd`);
@@ -93,7 +78,7 @@ function validateAgents(agents: WorkflowIR["agents"], diagnostics: DiagnosticIR[
       continue;
     }
 
-    diagnostics.push({ code: "A002", severity: "error", message: `Agent '${name}' kind must be agent_definition or agent_command.`, path });
+    addError(diagnostics, "A002", `Agent '${name}' kind must be agent_definition or agent_command.`, path);
   }
 }
 
@@ -104,30 +89,22 @@ type ScopeContext = {
 };
 
 function validateScope(scope: unknown, diagnostics: DiagnosticIR[], ctx: ScopeContext): void {
-  if (!isRecord(scope)) {
-    diagnostics.push({ code: "IR002", severity: "error", message: "Scope must be an object.", path: ctx.path });
-    return;
-  }
+  if (!requireRecord(scope, diagnostics, ctx.path, "IR002", "Scope must be an object.")) return;
   validateKnownFields(scope, ["nodes", "outputs"], diagnostics, ctx.path);
-  if (!Array.isArray(scope.nodes)) {
-    diagnostics.push({ code: "IR002", severity: "error", message: "Scope nodes must be an array.", path: `${ctx.path}.nodes` });
-    return;
-  }
-  forEachDense(scope.nodes, diagnostics, `${ctx.path}.nodes`, node => validateNode(node as NodeIR, diagnostics, ctx), { code: "IR002" });
+  const nodes = requireArray<unknown>(scope.nodes, diagnostics, `${ctx.path}.nodes`, "IR002", "Scope nodes must be an array.");
+  if (!nodes) return;
+  forEachDense(nodes, diagnostics, `${ctx.path}.nodes`, node => validateNode(node as NodeIR, diagnostics, ctx), { code: "IR002" });
   if (scope.outputs !== undefined) {
     validateExprObject(scope.outputs, diagnostics, `${ctx.path}.outputs`);
   }
 }
 
 function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeContext): void {
-  if (!isRecord(node)) {
-    diagnostics.push({ code: "IR002", severity: "error", message: "Node must be an object.", path: `${ctx.path}.nodes` });
-    return;
-  }
+  if (!requireRecord(node, diagnostics, `${ctx.path}.nodes`, "IR002", "Node must be an object.")) return;
   const id = typeof node.id === "string" ? node.id : "<unknown>";
   const path = `${ctx.path}.nodes.${id}`;
-  if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(id)) diagnostics.push({ code: "ID001", severity: "error", message: `Invalid node id '${id}'.`, path });
-  if (ctx.ids.has(id)) diagnostics.push({ code: "ID002", severity: "error", message: `Duplicate node id '${id}'.`, path });
+  if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(id)) addError(diagnostics, "ID001", `Invalid node id '${id}'.`, path);
+  if (ctx.ids.has(id)) addError(diagnostics, "ID002", `Duplicate node id '${id}'.`, path);
   ctx.ids.add(id);
 
   switch (node.kind) {
@@ -189,14 +166,11 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
     case "switch": {
       validateKnownFields(node, ["id", "source", "kind", "cases", "default"], diagnostics, path);
       if (!Array.isArray(node.cases)) {
-        diagnostics.push({ code: "IR002", severity: "error", message: "Switch cases must be an array.", path: `${path}.cases` });
+        addError(diagnostics, "IR002", "Switch cases must be an array.", `${path}.cases`);
       } else {
         forEachDense(node.cases, diagnostics, `${path}.cases`, (c, i) => {
           const casePath = `${path}.cases.${i}`;
-          if (!isRecord(c)) {
-            diagnostics.push({ code: "IR002", severity: "error", message: "Switch case must be an object.", path: casePath });
-            return;
-          }
+          if (!requireRecord(c, diagnostics, casePath, "IR002", "Switch case must be an object.")) return;
           validateKnownFields(c, ["when", "then"], diagnostics, casePath);
           validateExpr(c.when, diagnostics, `${casePath}.when`);
           validateScope(c.then, diagnostics, { ...ctx, path: `${casePath}.then` });
@@ -217,18 +191,15 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
     }
     case "parallel": {
       validateKnownFields(node, ["id", "source", "kind", "branches", "strategy", "maxConcurrency"], diagnostics, path);
-      if (node.strategy !== "all" && node.strategy !== "race") diagnostics.push({ code: "P001", severity: "error", message: `Parallel node '${node.id}' strategy must be 'all' or 'race'.`, path: `${path}.strategy` });
+      if (node.strategy !== "all" && node.strategy !== "race") addError(diagnostics, "P001", `Parallel node '${node.id}' strategy must be 'all' or 'race'.`, `${path}.strategy`);
       if (!isRecord(node.branches)) {
-        diagnostics.push({ code: "IR002", severity: "error", message: "Parallel branches must be an object.", path: `${path}.branches` });
+        addError(diagnostics, "IR002", "Parallel branches must be an object.", `${path}.branches`);
         break;
       }
-      if (node.strategy === "race" && Object.keys(node.branches).length === 0) diagnostics.push({ code: "P002", severity: "error", message: `Parallel race node '${node.id}' must declare at least one branch.`, path: `${path}.branches` });
+      if (node.strategy === "race" && Object.keys(node.branches).length === 0) addError(diagnostics, "P002", `Parallel race node '${node.id}' must declare at least one branch.`, `${path}.branches`);
       for (const [name, branch] of Object.entries(node.branches)) {
         const branchPath = `${path}.branches.${name}`;
-        if (!isRecord(branch)) {
-          diagnostics.push({ code: "IR002", severity: "error", message: "Parallel branch must be an object.", path: branchPath });
-          continue;
-        }
+        if (!requireRecord(branch, diagnostics, branchPath, "IR002", "Parallel branch must be an object.")) continue;
         validateKnownFields(branch, ["scope"], diagnostics, branchPath);
         validateScope(branch.scope, diagnostics, { ...ctx, path: `${branchPath}.scope` });
       }
@@ -238,9 +209,9 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
       validateKnownFields(node, ["id", "source", "kind", "over", "key", "do", "maxConcurrency", "strategy", "count"], diagnostics, path);
       const strategy = (node as { strategy?: string }).strategy;
       const count = (node as { count?: number }).count;
-      if (strategy !== "all" && strategy !== "quorum") diagnostics.push({ code: "F001", severity: "error", message: `Fanout node '${node.id}' strategy must be 'all' or 'quorum'.`, path: `${path}.strategy` });
-      if (strategy === "quorum" && (!Number.isInteger(count) || (count ?? 0) <= 0)) diagnostics.push({ code: "F002", severity: "error", message: `Fanout node '${node.id}' quorum count must be a positive integer.`, path: `${path}.count` });
-      if (strategy !== "quorum" && count !== undefined) diagnostics.push({ code: "F003", severity: "error", message: `Fanout node '${node.id}' count is only valid with quorum strategy.`, path: `${path}.count` });
+      if (strategy !== "all" && strategy !== "quorum") addError(diagnostics, "F001", `Fanout node '${node.id}' strategy must be 'all' or 'quorum'.`, `${path}.strategy`);
+      if (strategy === "quorum" && (!Number.isInteger(count) || (count ?? 0) <= 0)) addError(diagnostics, "F002", `Fanout node '${node.id}' quorum count must be a positive integer.`, `${path}.count`);
+      if (strategy !== "quorum" && count !== undefined) addError(diagnostics, "F003", `Fanout node '${node.id}' count is only valid with quorum strategy.`, `${path}.count`);
       const validOver = validateExpr(node.over, diagnostics, `${path}.over`);
       if (validOver) validateFanoutOver(node.over, diagnostics, `${path}.over`);
       if (node.key) validateTemplate(node.key, diagnostics, `${path}.key`);
@@ -250,31 +221,26 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
     case "loop": {
       validateKnownFields(node, ["id", "source", "kind", "initial", "maxIterations", "do", "stopWhen", "onExhausted"], diagnostics, path);
       validateExpr(node.initial, diagnostics, `${path}.initial`);
-      if (!Number.isInteger(node.maxIterations) || node.maxIterations < 0) diagnostics.push({ code: "L001", severity: "error", message: `Loop node '${node.id}' maxIterations must be a non-negative integer.`, path: `${path}.maxIterations` });
-      if (node.onExhausted !== undefined && node.onExhausted !== "fail" && node.onExhausted !== "returnLast") diagnostics.push({ code: "L002", severity: "error", message: `Loop node '${node.id}' onExhausted must be 'fail' or 'returnLast'.`, path: `${path}.onExhausted` });
+      if (!Number.isInteger(node.maxIterations) || node.maxIterations < 0) addError(diagnostics, "L001", `Loop node '${node.id}' maxIterations must be a non-negative integer.`, `${path}.maxIterations`);
+      if (node.onExhausted !== undefined && node.onExhausted !== "fail" && node.onExhausted !== "returnLast") addError(diagnostics, "L002", `Loop node '${node.id}' onExhausted must be 'fail' or 'returnLast'.`, `${path}.onExhausted`);
       validateExpr(node.stopWhen, diagnostics, `${path}.stopWhen`);
       validateScope(node.do, diagnostics, { ...ctx, path: `${path}.do` });
       break;
     }
     default:
-      diagnostics.push({ code: "N001", severity: "error", message: `Unknown node kind '${String((node as { kind?: unknown }).kind)}'.`, path: `${path}.kind` });
+      addError(diagnostics, "N001", `Unknown node kind '${String((node as { kind?: unknown }).kind)}'.`, `${path}.kind`);
   }
 }
 
 function validateAgentRun(run: unknown, diagnostics: DiagnosticIR[], path: string): void {
-  if (!isRecord(run)) {
-    diagnostics.push({ code: "A003", severity: "error", message: "Agent run must be an object.", path });
-    return;
-  }
+  if (!requireRecord(run, diagnostics, path, "A003", "Agent run must be an object.")) return;
   validateKnownFields(run, ["kind", "agent", "prompt", "permissionMode", "session", "cwd", "env"], diagnostics, path);
-  if (run.kind !== "agent_run") diagnostics.push({ code: "A003", severity: "error", message: "Agent run kind must be agent_run.", path: `${path}.kind` });
-  if (typeof run.agent !== "string" || run.agent.length === 0) diagnostics.push({ code: "A003", severity: "error", message: "Agent run agent must be a non-empty string.", path: `${path}.agent` });
+  if (run.kind !== "agent_run") addError(diagnostics, "A003", "Agent run kind must be agent_run.", `${path}.kind`);
+  validateRequiredNonEmptyString(run.agent, diagnostics, `${path}.agent`, "A003", "Agent run agent must be a non-empty string.");
   validateTemplate(run.prompt, diagnostics, `${path}.prompt`);
   validatePermissionMode(run.permissionMode, diagnostics, `${path}.permissionMode`);
   if (run.session !== undefined) {
-    if (!isRecord(run.session)) {
-      diagnostics.push({ code: "A003", severity: "error", message: "Agent run session must be an object.", path: `${path}.session` });
-    } else {
+    if (requireRecord(run.session, diagnostics, `${path}.session`, "A003", "Agent run session must be an object.")) {
       validateKnownFields(run.session, ["key"], diagnostics, `${path}.session`);
       if (run.session.key) validateTemplate(run.session.key, diagnostics, `${path}.session.key`);
     }
@@ -284,50 +250,41 @@ function validateAgentRun(run: unknown, diagnostics: DiagnosticIR[], path: strin
 }
 
 function validatePermissionMode(value: unknown, diagnostics: DiagnosticIR[], path: string): void {
-  if (value === undefined) return;
-  if (value !== "approve-reads" && value !== "approve-all" && value !== "deny-all") {
-    diagnostics.push({ code: "A002", severity: "error", message: "Agent permissionMode must be approve-reads, approve-all, or deny-all.", path });
-  }
+  validateOptionalEnum(value, ["approve-reads", "approve-all", "deny-all"], diagnostics, path, "A002", "Agent permissionMode must be approve-reads, approve-all, or deny-all.");
 }
 
 function validateAgentMode(value: unknown, diagnostics: DiagnosticIR[], path: string): void {
   if (value === undefined) return;
   if (typeof value !== "string" || value.length === 0) {
-    diagnostics.push({ code: "A002", severity: "error", message: "Agent agentMode must be a non-empty string.", path });
+    addError(diagnostics, "A002", "Agent agentMode must be a non-empty string.", path);
   }
 }
 
 function validateRetry(value: unknown, diagnostics: DiagnosticIR[], path: string, allowed: boolean): void {
   if (value === undefined) return;
   if (!allowed) {
-    diagnostics.push({ code: "IR001", severity: "error", message: "Agent retry is only valid when outputSchema is declared.", path });
+    addError(diagnostics, "IR001", "Agent retry is only valid when outputSchema is declared.", path);
     return;
   }
-  if (!isRecord(value)) {
-    diagnostics.push({ code: "IR001", severity: "error", message: "Retry must be an object.", path });
-    return;
-  }
+  if (!requireRecord(value, diagnostics, path, "IR001", "Retry must be an object.")) return;
   validateKnownFields(value, ["max"], diagnostics, path);
   const max = (value as { max?: unknown }).max;
   if (max !== undefined && (typeof max !== "number" || !Number.isInteger(max) || max < 0)) {
-    diagnostics.push({ code: "IR001", severity: "error", message: "Retry max must be a non-negative integer.", path: `${path}.max` });
+    addError(diagnostics, "IR001", "Retry max must be a non-negative integer.", `${path}.max`);
   }
 }
 
 function validateDuration(value: unknown, diagnostics: DiagnosticIR[], path: string, label: string, code: string): void {
   if (value === undefined) return;
   if (typeof value !== "string" || !/^\d+(ms|s|m|h)?$/.test(value)) {
-    diagnostics.push({ code, severity: "error", message: `${label} must be a duration string like 500ms, 30s, 5m, 1h, or 1000.`, path });
+    addError(diagnostics, code, `${label} must be a duration string like 500ms, 30s, 5m, 1h, or 1000.`, path);
   }
 }
 
 function validateTaskRun(run: unknown, diagnostics: DiagnosticIR[], path: string): void {
-  if (!isRecord(run)) {
-    diagnostics.push({ code: "T007", severity: "error", message: "Task run must be an object.", path });
-    return;
-  }
+  if (!requireRecord(run, diagnostics, path, "T007", "Task run must be an object.")) return;
   validateKnownFields(run, ["kind", "input", "target", "cwd", "env", "execution"], diagnostics, path);
-  if (run.kind !== "task_run") diagnostics.push({ code: "T007", severity: "error", message: "Task run kind must be task_run.", path: `${path}.kind` });
+  if (run.kind !== "task_run") addError(diagnostics, "T007", "Task run kind must be task_run.", `${path}.kind`);
   validateExprObject(run.input, diagnostics, `${path}.input`);
   validateTaskTarget(run.target, diagnostics, `${path}.target`);
   if (run.cwd) validateExpr(run.cwd, diagnostics, `${path}.cwd`);
@@ -336,90 +293,72 @@ function validateTaskRun(run: unknown, diagnostics: DiagnosticIR[], path: string
 }
 
 function validateTaskTarget(target: unknown, diagnostics: DiagnosticIR[], path: string): void {
-  if (!isRecord(target)) {
-    diagnostics.push({ code: "T007", severity: "error", message: "Task run target must be an object.", path });
-    return;
-  }
+  if (!requireRecord(target, diagnostics, path, "T007", "Task run target must be an object.")) return;
   if (target.kind === "inline") {
     validateKnownFields(target, ["kind", "runtime", "source"], diagnostics, path);
-    if (target.runtime !== "node") diagnostics.push({ code: "T007", severity: "error", message: "Inline task target runtime must be node.", path: `${path}.runtime` });
-    if (typeof target.source !== "string" || target.source.length === 0) diagnostics.push({ code: "T007", severity: "error", message: "Inline task target source must be a non-empty string.", path: `${path}.source` });
+    if (target.runtime !== "node") addError(diagnostics, "T007", "Inline task target runtime must be node.", `${path}.runtime`);
+    validateRequiredNonEmptyString(target.source, diagnostics, `${path}.source`, "T007", "Inline task target source must be a non-empty string.");
     return;
   }
   if (target.kind === "module") {
     validateKnownFields(target, ["kind", "runtime", "specifier", "exportName", "referrer"], diagnostics, path);
-    if (target.runtime !== "node") diagnostics.push({ code: "T007", severity: "error", message: "Module task target runtime must be node.", path: `${path}.runtime` });
-    if (typeof target.specifier !== "string" || target.specifier.length === 0) diagnostics.push({ code: "T007", severity: "error", message: "Module task target specifier must be a non-empty string.", path: `${path}.specifier` });
-    if (typeof target.exportName !== "string" || target.exportName.length === 0) diagnostics.push({ code: "T007", severity: "error", message: "Module task target exportName must be a non-empty string.", path: `${path}.exportName` });
+    if (target.runtime !== "node") addError(diagnostics, "T007", "Module task target runtime must be node.", `${path}.runtime`);
+    validateRequiredNonEmptyString(target.specifier, diagnostics, `${path}.specifier`, "T007", "Module task target specifier must be a non-empty string.");
+    validateRequiredNonEmptyString(target.exportName, diagnostics, `${path}.exportName`, "T007", "Module task target exportName must be a non-empty string.");
     validateTaskReferrer(target.referrer, diagnostics, `${path}.referrer`);
     return;
   }
-  diagnostics.push({ code: "T007", severity: "error", message: "Task run target kind must be inline or module.", path: `${path}.kind` });
+  addError(diagnostics, "T007", "Task run target kind must be inline or module.", `${path}.kind`);
 }
 
 function validateTaskReferrer(referrer: unknown, diagnostics: DiagnosticIR[], path: string): void {
-  if (!isRecord(referrer)) {
-    diagnostics.push({ code: "T007", severity: "error", message: "Module task target referrer must be an object.", path });
-    return;
-  }
+  if (!requireRecord(referrer, diagnostics, path, "T007", "Module task target referrer must be an object.")) return;
   validateKnownFields(referrer, ["kind", "path"], diagnostics, path);
-  if (referrer.kind !== "workflow") diagnostics.push({ code: "T007", severity: "error", message: "Module task target referrer kind must be workflow.", path: `${path}.kind` });
+  if (referrer.kind !== "workflow") addError(diagnostics, "T007", "Module task target referrer kind must be workflow.", `${path}.kind`);
   if (typeof referrer.path !== "string" || referrer.path.length === 0) {
-    diagnostics.push({ code: "T007", severity: "error", message: "Module task target referrer path must be a non-empty string.", path: `${path}.path` });
+    addError(diagnostics, "T007", "Module task target referrer path must be a non-empty string.", `${path}.path`);
   } else if (referrer.path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(referrer.path)) {
-    diagnostics.push({ code: "T007", severity: "error", message: "Module task target referrer path must be workspace-relative.", path: `${path}.path` });
+    addError(diagnostics, "T007", "Module task target referrer path must be workspace-relative.", `${path}.path`);
   } else if (referrer.path.split(/[\\/]/).includes("..")) {
-    diagnostics.push({ code: "T007", severity: "error", message: "Module task target referrer path must stay inside the workspace.", path: `${path}.path` });
+    addError(diagnostics, "T007", "Module task target referrer path must stay inside the workspace.", `${path}.path`);
   }
 }
 
 function validateSignalRun(run: unknown, diagnostics: DiagnosticIR[], path: string): void {
-  if (!isRecord(run)) {
-    diagnostics.push({ code: "S002", severity: "error", message: "Signal run must be an object.", path });
-    return;
-  }
+  if (!requireRecord(run, diagnostics, path, "S002", "Signal run must be an object.")) return;
   validateKnownFields(run, ["kind", "prompt"], diagnostics, path);
-  if (run.kind !== "signal_run") diagnostics.push({ code: "S002", severity: "error", message: "Signal run kind must be signal_run.", path: `${path}.kind` });
+  if (run.kind !== "signal_run") addError(diagnostics, "S002", "Signal run kind must be signal_run.", `${path}.kind`);
   validateTemplate(run.prompt, diagnostics, `${path}.prompt`);
 }
 
 function validateSignalTimeout(onTimeout: unknown, diagnostics: DiagnosticIR[], path: string, id: string): void {
   if (!onTimeout) return;
-  if (!isRecord(onTimeout)) {
-    diagnostics.push({ code: "S001", severity: "error", message: `Signal node '${id}' onTimeout must be an object.`, path });
-    return;
-  }
+  if (!requireRecord(onTimeout, diagnostics, path, "S001", `Signal node '${id}' onTimeout must be an object.`)) return;
   validateKnownFields(onTimeout, ["action", "message"], diagnostics, path);
-  if (onTimeout.action !== "fail") diagnostics.push({ code: "S001", severity: "error", message: `Signal node '${id}' onTimeout action must be 'fail'.`, path: `${path}.action` });
+  if (onTimeout.action !== "fail") addError(diagnostics, "S001", `Signal node '${id}' onTimeout action must be 'fail'.`, `${path}.action`);
 }
 
 function validateFanoutOver(expr: ExprIR, diagnostics: DiagnosticIR[], path: string): void {
   if (expr.kind === "literal" && !Array.isArray(expr.value)) {
-    diagnostics.push({ code: "F004", severity: "error", message: "Fanout over literal must be an array.", path });
+    addError(diagnostics, "F004", "Fanout over literal must be an array.", path);
   }
   if (expr.kind === "object") {
-    diagnostics.push({ code: "F004", severity: "error", message: "Fanout over object expression must be an array value.", path });
+    addError(diagnostics, "F004", "Fanout over object expression must be an array value.", path);
   }
 }
 
 function validateExprObject(values: unknown, diagnostics: DiagnosticIR[], path: string): void {
   if (!values) {
-    diagnostics.push({ code: "E000", severity: "error", message: "Expression object is required.", path });
+    addError(diagnostics, "E000", "Expression object is required.", path);
     return;
   }
-  if (!isRecord(values)) {
-    diagnostics.push({ code: "E004", severity: "error", message: "Expression object fields must be an object.", path });
-    return;
-  }
+  if (!requireRecord(values, diagnostics, path, "E004", "Expression object fields must be an object.")) return;
   for (const [key, expr] of Object.entries(values)) validateExpr(expr, diagnostics, `${path}.${key}`);
 }
 
 function validateEnv(values: unknown, diagnostics: DiagnosticIR[], path: string): void {
   if (values === undefined) return;
-  if (!isRecord(values)) {
-    diagnostics.push({ code: "E004", severity: "error", message: "Env must be an object.", path });
-    return;
-  }
+  if (!requireRecord(values, diagnostics, path, "E004", "Env must be an object.")) return;
   for (const [key, value] of Object.entries(values)) {
     if (isSecretRef(value)) {
       validateSecretRef(value, diagnostics, `${path}.${key}`);
@@ -432,29 +371,26 @@ function validateEnv(values: unknown, diagnostics: DiagnosticIR[], path: string)
 function validateSecretRef(value: SecretRefIR, diagnostics: DiagnosticIR[], path: string): void {
   validateKnownFields(value, ["kind", "name"], diagnostics, path);
   if (typeof value.name !== "string" || value.name.length === 0) {
-    diagnostics.push({ code: "SEC001", severity: "error", message: "Secret ref name must be a non-empty string.", path: `${path}.name` });
+    addError(diagnostics, "SEC001", "Secret ref name must be a non-empty string.", `${path}.name`);
   }
 }
 
 function validateTemplate(template: unknown, diagnostics: DiagnosticIR[], path: string): boolean {
   if (!template) {
-    diagnostics.push({ code: "TM001", severity: "error", message: "Template is required.", path });
+    addError(diagnostics, "TM001", "Template is required.", path);
     return false;
   }
   if (!isRecord(template) || template.kind !== "template" || !Array.isArray(template.parts)) {
-    diagnostics.push({ code: "TM001", severity: "error", message: "Template must be a template object with parts.", path });
+    addError(diagnostics, "TM001", "Template must be a template object with parts.", path);
     return false;
   }
   validateKnownFields(template, ["kind", "parts"], diagnostics, path);
   forEachDense(template.parts, diagnostics, `${path}.parts`, (part, index) => {
     const partPath = `${path}.parts.${index}`;
-    if (!isRecord(part)) {
-      diagnostics.push({ code: "TM002", severity: "error", message: "Template part must be an object.", path: partPath });
-      return;
-    }
+    if (!requireRecord(part, diagnostics, partPath, "TM002", "Template part must be an object.")) return;
     if (part.kind === "text") {
       validateKnownFields(part, ["kind", "value"], diagnostics, partPath);
-      if (typeof part.value !== "string") diagnostics.push({ code: "TM002", severity: "error", message: "Template text value must be a string.", path: `${partPath}.value` });
+      if (typeof part.value !== "string") addError(diagnostics, "TM002", "Template text value must be a string.", `${partPath}.value`);
       return;
     }
     if (part.kind === "expr") {
@@ -462,38 +398,31 @@ function validateTemplate(template: unknown, diagnostics: DiagnosticIR[], path: 
       validateExpr(part.expr, diagnostics, `${partPath}.expr`);
       return;
     }
-    diagnostics.push({ code: "TM002", severity: "error", message: `Unknown template part kind '${String(part.kind)}'.`, path: `${partPath}.kind` });
+    addError(diagnostics, "TM002", `Unknown template part kind '${String(part.kind)}'.`, `${partPath}.kind`);
   }, { code: "TM002" });
   return true;
 }
 
 function validateTaskExecution(execution: unknown, diagnostics: DiagnosticIR[], path: string): void {
   if (!execution) return;
-  if (!isRecord(execution)) {
-    diagnostics.push({ code: "T006", severity: "error", message: "Task execution must be an object.", path });
-    return;
-  }
+  if (!requireRecord(execution, diagnostics, path, "T006", "Task execution must be an object.")) return;
   validateKnownFields(execution, ["shell", "defaultCommandTimeout", "commandRunner"], diagnostics, path);
-  if (execution.shell !== undefined && execution.shell !== "bash" && execution.shell !== "powershell" && execution.shell !== "pwsh") {
-    diagnostics.push({ code: "T006", severity: "error", message: "Task execution shell must be bash, powershell, or pwsh.", path: `${path}.shell` });
-  }
+  validateOptionalEnum(execution.shell, ["bash", "powershell", "pwsh"], diagnostics, `${path}.shell`, "T006", "Task execution shell must be bash, powershell, or pwsh.");
   validateDuration(execution.defaultCommandTimeout, diagnostics, `${path}.defaultCommandTimeout`, "Task defaultCommandTimeout", "T006");
-  if (execution.commandRunner !== undefined && execution.commandRunner !== "acpus-zx-core" && execution.commandRunner !== "custom") {
-    diagnostics.push({ code: "T006", severity: "error", message: "Task commandRunner must be acpus-zx-core or custom.", path: `${path}.commandRunner` });
-  }
+  validateOptionalEnum(execution.commandRunner, ["acpus-zx-core", "custom"], diagnostics, `${path}.commandRunner`, "T006", "Task commandRunner must be acpus-zx-core or custom.");
 }
 
 function validateExpr(expr: unknown, diagnostics: DiagnosticIR[], path: string): expr is ExprIR {
   if (expr === undefined || expr === null) {
-    diagnostics.push({ code: "E000", severity: "error", message: "Expression is required.", path });
+    addError(diagnostics, "E000", "Expression is required.", path);
     return false;
   }
   if (!isRecord(expr) || typeof expr.kind !== "string") {
-    diagnostics.push({ code: "E004", severity: "error", message: "Expression must be an object with kind.", path });
+    addError(diagnostics, "E004", "Expression must be an object with kind.", path);
     return false;
   }
   if (expr.kind === "literal" && !Object.prototype.hasOwnProperty.call(expr, "value")) {
-    diagnostics.push({ code: "E003", severity: "error", message: "Expression literal must include value.", path: `${path}.value` });
+    addError(diagnostics, "E003", "Expression literal must include value.", `${path}.value`);
     return true;
   }
   const issues = validateExprIR(expr);
@@ -524,7 +453,7 @@ function expressionPath(basePath: string, path: string | undefined): string {
 function validateSchema(schema: unknown, diagnostics: DiagnosticIR[], path: string): void {
   if (!schema) return;
   if (!isRecord(schema) || typeof schema.kind !== "string") {
-    diagnostics.push({ code: "SC002", severity: "error", message: "Schema must be an object with kind.", path });
+    addError(diagnostics, "SC002", "Schema must be an object with kind.", path);
     return;
   }
   validateSchemaMetadata(schema, diagnostics, path);
@@ -539,28 +468,28 @@ function validateSchema(schema: unknown, diagnostics: DiagnosticIR[], path: stri
       break;
     case "literal":
       validateKnownFields(schema, ["kind", "value", "description", "default", "optional", "nullable"], diagnostics, path);
-      if (!Object.prototype.hasOwnProperty.call(schema, "value") || !isJsonPrimitive(schema.value)) diagnostics.push({ code: "SC002", severity: "error", message: "Literal schema value must be a JSON primitive.", path: `${path}.value` });
+      if (!Object.prototype.hasOwnProperty.call(schema, "value") || !isJsonPrimitive(schema.value)) addError(diagnostics, "SC002", "Literal schema value must be a JSON primitive.", `${path}.value`);
       break;
     case "enum":
       validateKnownFields(schema, ["kind", "values", "description", "default", "optional", "nullable"], diagnostics, path);
       if (!Array.isArray(schema.values)) {
-        diagnostics.push({ code: "SC002", severity: "error", message: "Enum schema values must be an array.", path: `${path}.values` });
+        addError(diagnostics, "SC002", "Enum schema values must be an array.", `${path}.values`);
       } else {
         forEachDense(schema.values, diagnostics, `${path}.values`, (value, index) => {
-          if (!isJsonPrimitive(value)) diagnostics.push({ code: "SC002", severity: "error", message: "Enum schema values must be JSON primitives.", path: `${path}.values.${index}` });
+          if (!isJsonPrimitive(value)) addError(diagnostics, "SC002", "Enum schema values must be JSON primitives.", `${path}.values.${index}`);
         });
       }
       break;
     case "object": {
       validateKnownFields(schema, ["kind", "fields", "required", "additionalProperties", "description", "default", "optional", "nullable"], diagnostics, path);
-      if (!isRecord(schema.fields)) diagnostics.push({ code: "SC002", severity: "error", message: "Object schema fields must be an object.", path: `${path}.fields` });
+      if (!isRecord(schema.fields)) addError(diagnostics, "SC002", "Object schema fields must be an object.", `${path}.fields`);
       const fields = isRecord(schema.fields) ? schema.fields : {};
       const required = Array.isArray(schema.required) ? schema.required : [];
-      if (!Array.isArray(schema.required)) diagnostics.push({ code: "SC002", severity: "error", message: "Object schema required must be an array.", path: `${path}.required` });
+      if (!Array.isArray(schema.required)) addError(diagnostics, "SC002", "Object schema required must be an array.", `${path}.required`);
       else forEachDense(required, diagnostics, `${path}.required`, (req, index) => {
-        if (typeof req !== "string" || !(req in fields)) diagnostics.push({ code: "SC001", severity: "error", message: `Required field '${String(req)}' is not present in object fields.`, path: `${path}.required.${index}` });
+        if (typeof req !== "string" || !(req in fields)) addError(diagnostics, "SC001", `Required field '${String(req)}' is not present in object fields.`, `${path}.required.${index}`);
       });
-      if (typeof schema.additionalProperties !== "boolean") diagnostics.push({ code: "SC002", severity: "error", message: "Object schema additionalProperties must be a boolean.", path: `${path}.additionalProperties` });
+      if (typeof schema.additionalProperties !== "boolean") addError(diagnostics, "SC002", "Object schema additionalProperties must be a boolean.", `${path}.additionalProperties`);
       for (const [key, field] of Object.entries(fields)) validateSchema(field as SchemaIR, diagnostics, `${path}.fields.${key}`);
       break;
     }
@@ -575,27 +504,27 @@ function validateSchema(schema: unknown, diagnostics: DiagnosticIR[], path: stri
     case "union": {
       validateKnownFields(schema, ["kind", "variants", "description", "default", "optional", "nullable"], diagnostics, path);
       if (!Array.isArray(schema.variants)) {
-        diagnostics.push({ code: "SC002", severity: "error", message: "Union schema variants must be an array.", path: `${path}.variants` });
+        addError(diagnostics, "SC002", "Union schema variants must be an array.", `${path}.variants`);
         break;
       }
       forEachDense(schema.variants, diagnostics, `${path}.variants`, (variant, index) => validateSchema(variant as SchemaIR, diagnostics, `${path}.variants.${index}`));
       break;
     }
     default:
-      diagnostics.push({ code: "SC002", severity: "error", message: `Unknown schema kind '${schema.kind}'.`, path: `${path}.kind` });
+      addError(diagnostics, "SC002", `Unknown schema kind '${schema.kind}'.`, `${path}.kind`);
   }
 }
 
 function validateSchemaMetadata(schema: Record<string, unknown>, diagnostics: DiagnosticIR[], path: string): void {
-  if (schema.description !== undefined && typeof schema.description !== "string") diagnostics.push({ code: "SC002", severity: "error", message: "Schema description must be a string.", path: `${path}.description` });
-  if (schema.optional !== undefined && typeof schema.optional !== "boolean") diagnostics.push({ code: "SC002", severity: "error", message: "Schema optional must be a boolean.", path: `${path}.optional` });
-  if (schema.nullable !== undefined && typeof schema.nullable !== "boolean") diagnostics.push({ code: "SC002", severity: "error", message: "Schema nullable must be a boolean.", path: `${path}.nullable` });
-  if (schema.default !== undefined && !isJsonValue(schema.default)) diagnostics.push({ code: "SC002", severity: "error", message: "Schema default must be JSON-compatible.", path: `${path}.default` });
+  if (schema.description !== undefined && typeof schema.description !== "string") addError(diagnostics, "SC002", "Schema description must be a string.", `${path}.description`);
+  if (schema.optional !== undefined && typeof schema.optional !== "boolean") addError(diagnostics, "SC002", "Schema optional must be a boolean.", `${path}.optional`);
+  if (schema.nullable !== undefined && typeof schema.nullable !== "boolean") addError(diagnostics, "SC002", "Schema nullable must be a boolean.", `${path}.nullable`);
+  if (schema.default !== undefined && !isJsonValue(schema.default)) addError(diagnostics, "SC002", "Schema default must be JSON-compatible.", `${path}.default`);
 }
 
 function validateRequiredNestedSchema(schema: unknown, diagnostics: DiagnosticIR[], path: string): void {
   if (!schema) {
-    diagnostics.push({ code: "SC002", severity: "error", message: "Nested schema is required.", path });
+    addError(diagnostics, "SC002", "Nested schema is required.", path);
     return;
   }
   validateSchema(schema, diagnostics, path);
@@ -603,10 +532,42 @@ function validateRequiredNestedSchema(schema: unknown, diagnostics: DiagnosticIR
 
 function validateRequiredSchema(schema: unknown, diagnostics: DiagnosticIR[], path: string): void {
   if (!schema) {
-    diagnostics.push({ code: "SC000", severity: "error", message: "Schema is required.", path });
+    addError(diagnostics, "SC000", "Schema is required.", path);
     return;
   }
   validateSchema(schema, diagnostics, path);
+}
+
+function addError(diagnostics: DiagnosticIR[], code: DiagnosticIR["code"], message: string, path?: string): void {
+  diagnostics.push({ code, severity: "error", message, ...(path === undefined ? {} : { path }) });
+}
+
+function addWarning(diagnostics: DiagnosticIR[], code: DiagnosticIR["code"], message: string, path?: string): void {
+  diagnostics.push({ code, severity: "warning", message, ...(path === undefined ? {} : { path }) });
+}
+
+function requireRecord(value: unknown, diagnostics: DiagnosticIR[], path: string, code: DiagnosticIR["code"], message: string): value is Record<string, unknown> {
+  if (isRecord(value)) return true;
+  addError(diagnostics, code, message, path);
+  return false;
+}
+
+function requireArray<T>(value: unknown, diagnostics: DiagnosticIR[], path: string, code: DiagnosticIR["code"], message: string): T[] | undefined {
+  if (Array.isArray(value)) return value as T[];
+  addError(diagnostics, code, message, path);
+  return undefined;
+}
+
+function validateRequiredNonEmptyString(value: unknown, diagnostics: DiagnosticIR[], path: string, code: DiagnosticIR["code"], message: string): void {
+  if (typeof value !== "string" || value.length === 0) addError(diagnostics, code, message, path);
+}
+
+function validateRequiredEnum<T extends string>(value: unknown, allowed: readonly T[], diagnostics: DiagnosticIR[], path: string, code: DiagnosticIR["code"], message: string): void {
+  if (!allowed.includes(value as T)) addError(diagnostics, code, message, path);
+}
+
+function validateOptionalEnum<T extends string>(value: unknown, allowed: readonly T[], diagnostics: DiagnosticIR[], path: string, code: DiagnosticIR["code"], message: string): void {
+  if (value !== undefined) validateRequiredEnum(value, allowed, diagnostics, path, code, message);
 }
 
 function validateKnownFields(value: unknown, allowed: readonly string[], diagnostics: DiagnosticIR[], path: string): void {

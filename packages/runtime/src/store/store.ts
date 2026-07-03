@@ -6,6 +6,7 @@ import type { AgentDefinitionIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
 import type { ExprIR, JsonValue } from "@acpus/expression/ir";
 import { valueToExprIR } from "@acpus/expression/ir";
 import { ArtifactRewriteError, rewriteArtifactValue } from "../artifacts/rewrite.js";
+import { compactUndefined, parseAgentOverrideMap, parseCommandPayload } from "../control/command-payloads.js";
 import { evaluateExpr } from "../evaluation/evaluator.js";
 import { applySchedulerEvents, cancellationEventsForFrame, cancellationEventsForNode, createSchedulerProjection } from "../scheduler/transitions.js";
 import { ancestorGroupMembersForFrame, ancestorGroupMembersForNode } from "../scheduler/membership.js";
@@ -334,7 +335,7 @@ export type PauseCommandPayload = { reason?: string };
 export type EmptyCommandPayload = Record<string, never>;
 export type RetryCommandPayload = { target?: string };
 export type CancelCommandPayload = { target?: string };
-export type ForkCommandPayload = { prepared?: JsonValue; input?: JsonValue; agentOverrides?: JsonValue; target?: string; unsafeReuse?: boolean };
+export type ForkCommandPayload = { prepared?: ForkPreparedWorkflow; input?: JsonValue; agentOverrides?: AgentOverrideMap; target?: string; unsafeReuse?: boolean };
 export type SignalCommandPayload = { node: string; payload?: JsonValue };
 export type AppliedCommandPayload = { status: string; forkRunId?: string; target?: string; targetKey?: string };
 export type FailedCommandPayload =
@@ -342,7 +343,7 @@ export type FailedCommandPayload =
   | { type: SchedulerStoreError["type"]; message: string }
   | ForkSeedFailure;
 
-type CommandPayload<T extends ControlCommandType> =
+export type CommandPayload<T extends ControlCommandType> =
   T extends "pause" ? PauseCommandPayload
     : T extends "resume" ? EmptyCommandPayload
       : T extends "retry" ? RetryCommandPayload
@@ -393,7 +394,7 @@ export type SubmitCommandInput =
   | SubmitSupervisorCommandInput;
 
 export type FinishCommandInput =
-  | { id: string; status: "applied"; payload?: AppliedCommandPayload }
+  | { id: string; status: "applied"; payload: AppliedCommandPayload }
   | { id: string; status: "failed"; payload: FailedCommandPayload };
 
 export type ControlOptions = {
@@ -1004,11 +1005,12 @@ class SqliteRuntimeStore implements RuntimeStore {
   }
 
   finishCommand(input: FinishCommandInput): void {
+    const payload = parseCommandPayload("shutdown", input.status, input.payload ?? {});
     this.db.prepare(`
       UPDATE commands
       SET status = ?, payload_json = ?, updated_at = ?
       WHERE id = ? AND status IN ('pending', 'running')
-    `).run(input.status, stableJson(input.payload ?? {}), new Date().toISOString(), input.id);
+    `).run(input.status, stableJson(payload), new Date().toISOString(), input.id);
   }
 
   pauseRun(runId: string, options: ControlOptions = {}): RunRecord {
@@ -2992,8 +2994,7 @@ function addColumnIfMissing(db: DatabaseSync, table: string, column: string, def
 
 function parseAgentOverrides(json: string | null | undefined): AgentOverrideMap {
   if (!json) return {};
-  const value = JSON.parse(json) as JsonValue;
-  return normalizeAgentOverrideShape(value, undefined);
+  return parseAgentOverrideMap(JSON.parse(json) as unknown);
 }
 
 export function validateAgentOverrides(ir: WorkflowIR, input: AgentOverrideMap | undefined): AgentOverrideMap {
@@ -3003,40 +3004,13 @@ export function validateAgentOverrides(ir: WorkflowIR, input: AgentOverrideMap |
 function normalizeAgentOverrides(ir: WorkflowIR, input: AgentOverrideMap | undefined, inherited: AgentOverrideMap = {}): AgentOverrideMap {
   const base = Object.fromEntries(Object.entries(inherited).filter(([name]) => ir.agents[name])) as AgentOverrideMap;
   if (input === undefined) return base;
-  const incoming = normalizeAgentOverrideShape(input as JsonValue, ir);
+  const incoming = parseAgentOverrideMap(input, ir.agents);
   const merged = Object.fromEntries(Object.entries(incoming).map(([name, override]) => {
     const previous = base[name] ?? {};
     const declared = ir.agents[name]!;
     return [name, mergeAgentOverride(declared, previous, override)];
   }));
   return { ...base, ...merged };
-}
-
-function normalizeAgentOverrideShape(input: JsonValue, ir: WorkflowIR | undefined): AgentOverrideMap {
-  if (!isJsonRecord(input)) throw new Error("Agent overrides must be a JSON object keyed by declared agent name.");
-  return Object.fromEntries(Object.entries(input).map(([name, value]) => {
-    if (ir && !ir.agents[name]) throw new Error(`Agent override '${name}' does not reference a declared agent.`);
-    if (!isJsonRecord(value)) throw new Error(`Agent override '${name}' must be a JSON object.`);
-    if ("options" in value) throw new Error(`Agent override '${name}' must not use options.`);
-    if ("policy" in value) throw new Error(`Agent override '${name}' must use permissionMode, not policy.`);
-    if ("kind" in value) throw new Error(`Agent override '${name}' must not include kind.`);
-    const allowedKeys = new Set(["use", "command", "model", "permissionMode", "agentMode", "cwd", "env"]);
-    const unknownKey = Object.keys(value).find(key => !allowedKeys.has(key));
-    if (unknownKey) throw new Error(`Agent override '${name}' must not include '${unknownKey}'.`);
-    const hasUse = value.use !== undefined;
-    const hasCommand = value.command !== undefined;
-    if (hasUse && hasCommand) throw new Error(`Agent override '${name}' must not specify both use and command.`);
-    const override = stripUndefined({
-      use: optionalNonEmptyString(value.use, `Agent override '${name}' use`),
-      command: optionalNonEmptyString(value.command, `Agent override '${name}' command`),
-      model: optionalString(value.model, `Agent override '${name}' model`),
-      permissionMode: optionalPermissionMode(value.permissionMode, `Agent override '${name}' permissionMode`),
-      agentMode: optionalNonEmptyString(value.agentMode, `Agent override '${name}' agentMode`),
-      cwd: optionalString(value.cwd, `Agent override '${name}' cwd`),
-      env: optionalStringRecord(value.env, `Agent override '${name}' env`),
-    }) as AgentOverrideSpec;
-    return [name, override];
-  }));
 }
 
 function mergeAgentOverride(declared: AgentDefinitionIR, previous: AgentOverrideSpec, incoming: AgentOverrideSpec): AgentOverrideSpec {
@@ -3050,7 +3024,7 @@ function mergeAgentOverride(declared: AgentDefinitionIR, previous: AgentOverride
     : { ...previous, ...incoming };
   if (incoming.use !== undefined) delete merged.command;
   if (incoming.command !== undefined) delete merged.use;
-  return stripUndefined(merged) as AgentOverrideSpec;
+  return compactUndefined(merged) as AgentOverrideSpec;
 }
 
 function withAgentOverrides(ir: WorkflowIR, overrides: AgentOverrideMap): WorkflowIR {
@@ -3077,9 +3051,9 @@ function applyAgentOverride(definition: AgentDefinitionIR, override: AgentOverri
     cwd: override.cwd === undefined ? definition.cwd : valueToExprIR(override.cwd),
     env: override.env === undefined ? definition.env : Object.fromEntries(Object.entries(override.env).map(([key, value]) => [key, valueToExprIR(value)])),
   };
-  if (override.command !== undefined) return stripUndefined({ kind: "agent_command", command: override.command, ...shared }) as AgentDefinitionIR;
-  if (override.use !== undefined) return stripUndefined({ kind: "agent_definition", use: override.use, ...shared }) as AgentDefinitionIR;
-  return stripUndefined({ ...definition, ...shared }) as AgentDefinitionIR;
+  if (override.command !== undefined) return compactUndefined({ kind: "agent_command", command: override.command, ...shared }) as AgentDefinitionIR;
+  if (override.use !== undefined) return compactUndefined({ kind: "agent_definition", use: override.use, ...shared }) as AgentDefinitionIR;
+  return compactUndefined({ ...definition, ...shared }) as AgentDefinitionIR;
 }
 
 function agentIdentity(definition: AgentDefinitionIR, override: AgentOverrideSpec): { kind: "use" | "command"; value: string } {
@@ -3090,37 +3064,6 @@ function agentIdentity(definition: AgentDefinitionIR, override: AgentOverrideSpe
     : { kind: "use", value: definition.use };
 }
 
-function optionalString(value: JsonValue | undefined, label: string): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value === "string") return value;
-  throw new Error(`${label} must be a string.`);
-}
-
-function optionalNonEmptyString(value: JsonValue | undefined, label: string): string | undefined {
-  const out = optionalString(value, label);
-  if (out !== undefined && out.length === 0) throw new Error(`${label} must be a non-empty string.`);
-  return out;
-}
-
-function optionalPermissionMode(value: JsonValue | undefined, label: string): AgentOverrideSpec["permissionMode"] | undefined {
-  if (value === undefined) return undefined;
-  if (value === "approve-reads" || value === "approve-all" || value === "deny-all") return value;
-  throw new Error(`${label} must be approve-reads, approve-all, or deny-all.`);
-}
-
-function optionalStringRecord(value: JsonValue | undefined, label: string): Record<string, string> | undefined {
-  if (value === undefined) return undefined;
-  if (!isJsonRecord(value)) throw new Error(`${label} must be a JSON object with string values.`);
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, optionalString(item, `${label}.${key}`)!]));
-}
-
-function isJsonRecord(value: JsonValue): value is Record<string, JsonValue> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
-function stripUndefined<T extends Record<string, unknown>>(value: T): Partial<T> {
-  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)) as Partial<T>;
-}
 
 function toRunRecord(row: Record<string, unknown>): RunRecord {
   return {
@@ -3160,130 +3103,6 @@ function parseControlCommandType(value: unknown): ControlCommandType {
 function parseControlCommandStatus(value: unknown): ControlCommandStatus {
   if (value === "pending" || value === "running" || value === "applied" || value === "failed") return value;
   throw new Error(`Unsupported command status '${String(value)}'.`);
-}
-
-function parseCommandPayload(type: ControlCommandType, status: ControlCommandStatus, value: JsonValue): CommandPayload<ControlCommandType> | AppliedCommandPayload | FailedCommandPayload {
-  if (!isJsonRecord(value)) throw new Error(`Command '${type}' payload must be a JSON object.`);
-  if (status === "applied") return appliedCommandPayload(value);
-  if (status === "failed") return failedCommandPayload(value);
-  switch (type) {
-    case "pause": return pauseCommandPayload(value);
-    case "resume": return emptyCommandPayload(type, value);
-    case "retry": return retryCommandPayload(value);
-    case "cancel": return cancelCommandPayload(value);
-    case "fork": return forkCommandPayload(value);
-    case "signal": return signalCommandPayload(value);
-    case "shutdown": return emptyCommandPayload(type, value);
-  }
-}
-
-function pauseCommandPayload(value: Record<string, JsonValue>): PauseCommandPayload {
-  rejectUnknownCommandPayloadKeys("pause", value, ["reason"]);
-  if (value.reason !== undefined && typeof value.reason !== "string") throw new Error("Pause command payload.reason must be a string.");
-  return value.reason === undefined ? {} : { reason: value.reason };
-}
-
-function retryCommandPayload(value: Record<string, JsonValue>): RetryCommandPayload {
-  rejectUnknownCommandPayloadKeys("retry", value, ["target"]);
-  if (value.target !== undefined && typeof value.target !== "string") throw new Error("Retry command payload.target must be a string.");
-  return value.target === undefined ? {} : { target: value.target };
-}
-
-function cancelCommandPayload(value: Record<string, JsonValue>): CancelCommandPayload {
-  rejectUnknownCommandPayloadKeys("cancel", value, ["target"]);
-  if (value.target !== undefined && typeof value.target !== "string") throw new Error("Cancel command payload.target must be a string.");
-  return value.target === undefined ? {} : { target: value.target };
-}
-
-function forkCommandPayload(value: Record<string, JsonValue>): ForkCommandPayload {
-  rejectUnknownCommandPayloadKeys("fork", value, ["prepared", "input", "agentOverrides", "target", "unsafeReuse"]);
-  if (value.target !== undefined && (typeof value.target !== "string" || value.target.length === 0)) throw new Error("Fork command payload.target must be a non-empty string.");
-  if (value.unsafeReuse !== undefined && typeof value.unsafeReuse !== "boolean") throw new Error("Fork command payload.unsafeReuse must be a boolean.");
-  return {
-    ...(value.prepared === undefined ? {} : { prepared: value.prepared }),
-    ...(value.input === undefined ? {} : { input: value.input }),
-    ...(value.agentOverrides === undefined ? {} : { agentOverrides: value.agentOverrides }),
-    ...(value.target === undefined ? {} : { target: value.target }),
-    ...(value.unsafeReuse === true ? { unsafeReuse: true } : {}),
-  };
-}
-
-function signalCommandPayload(value: Record<string, JsonValue>): SignalCommandPayload {
-  rejectUnknownCommandPayloadKeys("signal", value, ["node", "payload"]);
-  if (typeof value.node !== "string" || value.node.length === 0) throw new Error("Signal command payload.node must be a non-empty string.");
-  return { node: value.node, ...(value.payload === undefined ? {} : { payload: value.payload }) };
-}
-
-function emptyCommandPayload(type: ControlCommandType, value: Record<string, JsonValue>): EmptyCommandPayload {
-  rejectUnknownCommandPayloadKeys(type, value, []);
-  return {};
-}
-
-function appliedCommandPayload(value: Record<string, JsonValue>): AppliedCommandPayload {
-  rejectUnknownCommandPayloadKeys("applied command", value, ["status", "forkRunId", "target", "targetKey"]);
-  if (typeof value.status !== "string") throw new Error("Applied command payload.status must be a string.");
-  if (value.forkRunId !== undefined && typeof value.forkRunId !== "string") throw new Error("Applied command payload.forkRunId must be a string.");
-  if (value.target !== undefined && typeof value.target !== "string") throw new Error("Applied command payload.target must be a string.");
-  if (value.targetKey !== undefined && typeof value.targetKey !== "string") throw new Error("Applied command payload.targetKey must be a string.");
-  return {
-    status: value.status,
-    ...(value.forkRunId === undefined ? {} : { forkRunId: value.forkRunId }),
-    ...(value.target === undefined ? {} : { target: value.target }),
-    ...(value.targetKey === undefined ? {} : { targetKey: value.targetKey }),
-  };
-}
-
-function failedCommandPayload(value: Record<string, JsonValue>): FailedCommandPayload {
-  if (typeof value.type !== "string") throw new Error("Failed command payload.type must be a string.");
-  if (typeof value.message !== "string") throw new Error("Failed command payload.message must be a string.");
-  if (value.type === "unhandled-error") {
-    rejectUnknownCommandPayloadKeys("failed command", value, ["type", "message"]);
-    return { type: value.type, message: value.message };
-  }
-  if (value.type === "target-resolution-failure" || value.type === "dynamic-target-ambiguity") {
-    rejectUnknownCommandPayloadKeys("failed command", value, ["type", "target", "message"]);
-    if (typeof value.target !== "string") throw new Error("Failed command payload.target must be a string.");
-    return { type: value.type, target: value.target, message: value.message };
-  }
-  if (value.type === "artifact-rewrite-failure") {
-    rejectUnknownCommandPayloadKeys("failed command", value, ["type", "artifactId", "message"]);
-    if (typeof value.artifactId !== "string") throw new Error("Failed command payload.artifactId must be a string.");
-    return { type: value.type, artifactId: value.artifactId, message: value.message };
-  }
-  if (isSchedulerStoreFailureType(value.type)) {
-    rejectUnknownCommandPayloadKeys("failed command", value, ["type", "message"]);
-    return { type: value.type, message: value.message };
-  }
-  throw new Error(`Failed command payload.type '${value.type}' is not supported.`);
-}
-
-function isSchedulerStoreFailureType(value: string): value is SchedulerStoreError["type"] {
-  return schedulerStoreFailureTypes.has(value as SchedulerStoreError["type"]);
-}
-
-const schedulerStoreFailureTypes = new Set<SchedulerStoreError["type"]>([
-  "run-not-found",
-  "version-mismatch",
-  "owner-epoch-inactive",
-  "owner-epoch-still-active",
-  "run-paused",
-  "terminal-attempt",
-  "attempt-not-found",
-  "owner-epoch-stale",
-  "signal-wait-not-found",
-  "signal-wait-terminal",
-  "idempotency-conflict",
-  "missing-retry-target",
-  "invalid-retry-target",
-  "missing-cancel-target",
-  "invalid-cancel-target",
-  "invalid-control-state",
-]);
-
-function rejectUnknownCommandPayloadKeys(label: string, value: Record<string, JsonValue>, allowed: string[]): void {
-  const allowedSet = new Set(allowed);
-  const unknownKey = Object.keys(value).find(key => !allowedSet.has(key));
-  if (unknownKey) throw new Error(`Command ${label} payload must not include '${unknownKey}'.`);
 }
 
 function collectNodeIds(scope: ScopeIR): string[] {

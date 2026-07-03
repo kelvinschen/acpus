@@ -136,10 +136,8 @@ function applySchedulerControlIntent(store: RuntimeStore, command: PendingRunCon
   throw new Error(`Unsupported scheduler command type '${command.type}'.`);
 }
 
-function commandReason(command: PendingRunControlCommand): string | undefined {
-  const payload = commandInputPayload(command);
-  if (!isRecord(payload)) return undefined;
-  return typeof payload.reason === "string" && payload.reason.length > 0 ? payload.reason : undefined;
+function commandReason(command: Extract<PendingRunControlCommand, { type: "pause" }>): string | undefined {
+  return command.status === "pending" || command.status === "running" ? command.payload.reason : undefined;
 }
 
 function retryTargetKey(target: string, commandId: string, snapshot: SchedulerSnapshot): string {
@@ -180,11 +178,11 @@ function isTerminalStatus(status: string): boolean {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
 
-function signalPayload(command: PendingRunControlCommand, snapshot: SchedulerSnapshot): { nodeKey: string; nodeId: string; payload: JsonValue } {
-  const payload = commandInputPayload(command);
-  if (!isRecord(payload) || typeof payload.node !== "string" || payload.node.length === 0) {
+function signalPayload(command: Extract<PendingRunControlCommand, { type: "signal" }>, snapshot: SchedulerSnapshot): { nodeKey: string; nodeId: string; payload: JsonValue } {
+  if (command.status !== "pending" && command.status !== "running") {
     throw new Error(`Scheduler signal command '${command.id}' requires payload.node.`);
   }
+  const payload = command.payload;
   const target = payload.node;
   if (isOpenSignalWait(snapshot, target)) return { nodeKey: target, nodeId: snapshot.projection.signalWaits[target]!.nodeId, payload: payload.payload as JsonValue };
   const matches = Object.values(snapshot.projection.signalWaits)
@@ -203,20 +201,10 @@ function isOpenSignalWait(snapshot: SchedulerSnapshot, nodeKey: string): boolean
     && snapshot.projection.instances[nodeKey]?.status === "awaiting";
 }
 
-function commandTarget(command: PendingRunControlCommand): string | undefined {
-  const payload = commandInputPayload(command);
-  if (!isRecord(payload)) return undefined;
-  return typeof payload.target === "string" && payload.target.length > 0 ? payload.target : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, JsonValue> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+function commandTarget(command: Extract<PendingRunControlCommand, { type: "retry" | "cancel" }>): string | undefined {
+  return command.status === "pending" || command.status === "running" ? command.payload.target : undefined;
 }
 
 function unwrapStoreResult<T>(result: SchedulerStoreResult<T>): T {
   return throwSchedulerStoreResult(result);
-}
-
-function commandInputPayload(command: PendingRunControlCommand): JsonValue | undefined {
-  return command.status === "pending" || command.status === "running" ? command.payload : undefined;
 }

@@ -247,7 +247,7 @@ describe.concurrent("runtime supervisor ticks", () => {
       const invalidStore = await openExistingWritableRuntimeStore(workspace);
       expect(invalidStore).toBeDefined();
       try {
-        expect(() => invalidStore!.getCommand(commandId)).toThrow("Command failed command payload must not include 'extra'.");
+        expect(() => invalidStore!.getCommand(commandId)).toThrow("Failed command payload is invalid: $ Unrecognized key");
       } finally {
         invalidStore?.close();
       }

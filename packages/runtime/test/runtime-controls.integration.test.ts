@@ -253,13 +253,13 @@ describe.concurrent("runtime controls and recovery use cases", () => {
           type: "fork",
           payload: { target: "" },
           idempotencyKey: `test-empty-target:${completed.run.id}`,
-        })).toThrow("Fork command payload.target must be a non-empty string.");
+        })).toThrow("Fork command payload is invalid: $.target");
         expect(() => store!.submitCommand({
           runId: completed.run.id,
           type: "fork",
           payload: { unsafeReuse: "yes" } as never,
           idempotencyKey: `test-invalid-unsafe-reuse:${completed.run.id}`,
-        })).toThrow("Fork command payload.unsafeReuse must be a boolean.");
+        })).toThrow("Fork command payload is invalid: $.unsafeReuse");
       } finally {
         store?.close();
       }

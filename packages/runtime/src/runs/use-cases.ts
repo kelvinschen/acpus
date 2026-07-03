@@ -402,9 +402,9 @@ function mutationCommandInput(runId: string, action: RuntimeMutationAction, inpu
         runId,
         type: "fork",
         payload: {
-          ...(input.prepared ? { prepared: toForkPrepared(input.prepared) as unknown as JsonValue } : {}),
+          ...(input.prepared ? { prepared: toForkPrepared(input.prepared) } : {}),
           ...(input.input !== undefined ? { input: input.input } : {}),
-          ...(input.agentOverrides !== undefined ? { agentOverrides: input.agentOverrides as unknown as JsonValue } : {}),
+          ...(input.agentOverrides !== undefined ? { agentOverrides: input.agentOverrides } : {}),
           ...(input.target === undefined ? {} : { target: input.target }),
           ...(input.unsafeReuse === true ? { unsafeReuse: true } : {}),
         },
