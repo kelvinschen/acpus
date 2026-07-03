@@ -131,7 +131,7 @@ async function prepareWorkflowResult(options: PreflightOptions, workflowPath: st
 
 export async function writePreflightArtifact(prepared: PreparedWorkflow, cwd: string): Promise<PreflightArtifact> {
   const id = `${timestampId()}-${prepared.irDigest.slice("sha256:".length, "sha256:".length + 12)}`;
-  const dir = join(cwd, ".acpus", "preflight", id);
+  const dir = join(cwd, ".acpus", ".local", "preflight", id);
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, "workflow.ir.json"), prepared.irJson);
   await writeFile(join(dir, "lock.json"), `${JSON.stringify(prepared.lock, null, 2)}\n`);

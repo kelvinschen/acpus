@@ -8,8 +8,9 @@
 
 ### Admission And Store
 
-- The runtime MUST create `.acpus/state/runtime.db` as the durable runtime store for a workspace.
+- The runtime MUST create `.acpus/.local/state/runtime.db` as the durable runtime store for a workspace.
 - The runtime store MUST use SQLite for run admission data, public run events, scheduler events, scheduler projection tables, public run and node projections, command rows, supervisor lease rows, and artifact registry rows.
+- Runtime-generated run ids MUST use local time `YYYYMMDDHHmmss` followed by 20 uppercase hexadecimal random characters.
 - Run admission MUST accept a prepared workflow containing frozen IR JSON, lock metadata, and source graph digest.
 - Run admission MUST accept input that has already been normalized against the workflow input schema.
 - Run admission MAY accept agent overrides keyed by declared top-level agent
@@ -18,7 +19,7 @@
 - Run admission MUST persist the `WorkflowIR`, workflow input, lock metadata, workflow entry, IR digest, source graph digest, and run directory path.
 - Run admission MUST write a `run.admitted` event and the run projection in the same SQLite transaction.
 - Run admission MUST create public `pending` node projection rows for static node summaries and MUST advance executable work from the frozen admitted IR, not from live workflow source.
-- Run admission MUST copy only current frozen workflow artifacts such as `workflow.ir.json` and `lock.json` into the run directory. It MUST NOT copy reusable task source or dependency artifacts.
+- Run admission MUST copy only current frozen workflow artifacts such as `workflow.ir.json` and `lock.json` into `.acpus/.local/runs/<run-id>/`. It MUST NOT copy reusable task source or dependency artifacts.
 - Completed scheduler-backed runs MUST persist root output, bridge completed dynamic node instances into public node projections where unambiguous, and write a `run.completed` event.
 - Runtime failures after admission MUST persist failed run state and a `run.failed` event.
 
@@ -149,8 +150,7 @@
   to the initial turn and to response repair turns.
 - For schema-less agent nodes, runtime MUST return raw response text as the node output and MUST NOT run schema conformance repair.
 - The schema prompt section MUST ask for exactly one JSON value that conforms to
-  the schema, with no Markdown or prose. It MUST mention extra-key acceptance
-  only for object schemas.
+  the schema, with no Markdown or prose.
 - For schema-backed agent nodes, runtime MUST recover JSON from whole-response
   JSON, prose/Markdown-wrapped balanced JSON candidates, and conservative JSON
   repair before classifying output as non-conforming.
@@ -193,10 +193,10 @@
   a turn metadata reference. Other values MUST leave raw ACP debug artifact
   capture disabled. Raw ACP debug artifacts MUST NOT affect scheduling,
   response repair or conformance decisions.
-- Each scheduler-backed schema-backed acpx turn that recovers JSON from the
-  agent response MUST write the raw recovered value as a diagnostic artifact
-  and expose that artifact reference in turn metadata. Raw recovered output
-  MUST NOT replace the schema-projected workflow-visible node output.
+- Each scheduler-backed schema-backed acpx turn that parses JSON from the
+  agent response MUST write the raw parsed value as a diagnostic artifact and
+  expose that artifact reference in turn metadata. Raw parsed output MUST NOT
+  replace the schema-projected workflow-visible node output.
 - Each scheduler-backed agent attempt MUST write structured execution metadata
   that records the turn list, artifact references, status, encoded acpx session
   name, and rendered explicit `sessionKey` when one was declared. Scheduler
@@ -356,7 +356,7 @@
   session context, and compact telemetry summaries.
 - Tests MUST cover the `ACPUS_AGENT_RAW_ACP_DEBUG=1` diagnostic switch and the
   default absence of raw ACP debug artifacts.
-- Tests MUST cover raw recovered schema-backed agent output artifacts and prove
+- Tests MUST cover raw parsed schema-backed agent output artifacts and prove
   they remain diagnostic rather than workflow-visible output.
 - Tests MUST cover pause, resume, run retry, dynamic node retry, cancel, signal targeting and idempotency, fork, targeted fork seed planning, unsafe targeted fork reuse, targeted fork missing/dynamic targets, static composite target subtree boundaries, durable command rows, and fork artifact reachability.
 - Tests MUST cover supervisor lease acquisition, active lease rejection, stale takeover, heartbeat fencing, release fencing, durable command consumption, and shutdown.

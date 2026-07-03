@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { access, cp, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -27,6 +27,9 @@ const RUNNABLE_RUNS_WHERE = `
       AND node_states.error_json IS NOT NULL
   )
 `;
+
+const localStateRoot = ".acpus/.local";
+const runIdPattern = /^\d{14}[A-F0-9]{20}$/;
 
 export type RuntimeStore = {
   scheduler: SchedulerStorePort;
@@ -492,7 +495,7 @@ type ArtifactRow = {
 };
 
 export async function openRuntimeStore(cwd: string): Promise<RuntimeStore> {
-  const stateDir = join(cwd, ".acpus", "state");
+  const stateDir = join(cwd, localStateRoot, "state");
   await mkdir(stateDir, { recursive: true });
   const db = openDatabase(join(stateDir, "runtime.db"));
   db.exec("PRAGMA journal_mode = WAL;");
@@ -509,7 +512,7 @@ export async function openExistingWritableRuntimeStore(cwd: string): Promise<Run
 }
 
 async function openExistingStore(cwd: string, readOnly: boolean): Promise<RuntimeStore | undefined> {
-  const path = join(cwd, ".acpus", "state", "runtime.db");
+  const path = join(cwd, localStateRoot, "state", "runtime.db");
   try {
     await access(path);
   } catch {
@@ -543,7 +546,7 @@ class SqliteRuntimeStore implements RuntimeStore {
     const runId = newRunId();
     const now = new Date().toISOString();
     const workflowEntry = relative(input.cwd, input.prepared.workflowPath);
-    const runDir = join(input.cwd, ".acpus", "runs", runId);
+    const runDir = join(input.cwd, localStateRoot, "runs", runId);
     try {
       await mkdir(runDir, { recursive: true });
       await writeFile(join(runDir, "workflow.ir.json"), input.prepared.irJson);
@@ -1085,9 +1088,9 @@ class SqliteRuntimeStore implements RuntimeStore {
     const targetedReplacement = replacement;
     const forkStatus = source.status === "completed" && !replacement ? "completed" : "pending";
     const sourceRunDir = input.run_dir ? containedRunDir(this.cwd, input.run_dir) : undefined;
-    const forkRunDir = join(".acpus", "runs", forkId);
+    const forkRunDir = join(localStateRoot, "runs", forkId);
     const forkRunPath = join(this.cwd, forkRunDir);
-    const stagedForkRunPath = join(this.cwd, ".acpus", "runs", `.staging-${forkId}`);
+    const stagedForkRunPath = join(this.cwd, localStateRoot, "runs", `.staging-${forkId}`);
     const completedOutputRows = completedSchedulerOutputRows(this.db, runId);
     const completedNodeKeys = new Set([
       ...this.db.prepare(`
@@ -1296,7 +1299,7 @@ class SqliteRuntimeStore implements RuntimeStore {
   }
 
   async cleanupRunDirectories(options: CleanupRunDirectoriesOptions = {}): Promise<CleanupRunDirectoriesResult> {
-    const runsDir = join(this.cwd, ".acpus", "runs");
+    const runsDir = join(this.cwd, localStateRoot, "runs");
     const olderThanMs = options.olderThanMs ?? 60_000;
     const removeOrphanedRuns = options.removeOrphanedRuns ?? false;
     let entries: string[];
@@ -1316,8 +1319,8 @@ class SqliteRuntimeStore implements RuntimeStore {
         staged += 1;
         continue;
       }
-      const relativePath = join(".acpus", "runs", entry);
-      if (removeOrphanedRuns && entry.startsWith("run_") && !validRunDirs.has(relativePath)) {
+      const relativePath = join(localStateRoot, "runs", entry);
+      if (removeOrphanedRuns && runIdPattern.test(entry) && !validRunDirs.has(relativePath)) {
         await rm(absolutePath, { recursive: true, force: true });
         orphaned += 1;
       }
@@ -3405,11 +3408,11 @@ async function readContainedFile(root: string, relativePath: string): Promise<Bu
 class PathEscapeError extends Error {}
 
 function containedRunDir(cwd: string, runDir: string): string {
-  const runsRoot = resolve(cwd, ".acpus", "runs");
+  const runsRoot = resolve(cwd, localStateRoot, "runs");
   const absolute = resolve(cwd, runDir);
   const name = absolute.slice(runsRoot.length + 1);
-  if (!absolute.startsWith(`${runsRoot}/`) || !name.startsWith("run_") || name.includes("/")) {
-    throw new Error(`Run directory '${runDir}' is outside .acpus/runs.`);
+  if (!absolute.startsWith(`${runsRoot}/`) || !runIdPattern.test(name) || name.includes("/")) {
+    throw new Error(`Run directory '${runDir}' is outside ${localStateRoot}/runs.`);
   }
   return absolute;
 }
@@ -3473,6 +3476,20 @@ function digest(bytes: Uint8Array): string {
 }
 
 function newRunId(): string {
-  const suffix = createHash("sha256").update(randomUUID()).digest("hex").slice(0, 12);
-  return `run_${new Date().toISOString().replaceAll(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z")}_${suffix}`;
+  return `${localTimestampId(new Date())}${randomBytes(10).toString("hex").toUpperCase()}`;
+}
+
+function localTimestampId(date: Date): string {
+  return [
+    date.getFullYear(),
+    pad2(date.getMonth() + 1),
+    pad2(date.getDate()),
+    pad2(date.getHours()),
+    pad2(date.getMinutes()),
+    pad2(date.getSeconds()),
+  ].join("");
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, "0");
 }

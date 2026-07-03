@@ -87,7 +87,7 @@ describe.concurrent("workflow catalog e2e", () => {
             entryPath: join(home, ".acpus", "workflows", "global-task", "workflow.ts"),
           },
         });
-        expect(terminal.run.workflowEntry).toContain(".acpus/catalog-cache/global/global-task/");
+        expect(terminal.run.workflowEntry).toContain(".acpus/.local/catalog-cache/global/global-task/");
         const materializedTask = join(workspace, dirname(terminal.run.workflowEntry), "tasks", "normalize.task.ts");
         expect((await lstat(materializedTask)).isSymbolicLink()).toBe(false);
 

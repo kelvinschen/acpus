@@ -297,7 +297,7 @@ First-version checks:
 
 - workspace: resolved cwd, whether Acpus runtime state exists, and whether the
   runtime SQLite store can be opened read-only;
-- missing `.acpus/state/runtime.db`: report a healthy stopped/not-initialized
+- missing `.acpus/.local/state/runtime.db`: report a healthy stopped/not-initialized
   state, exit 0, and do not create runtime directories or files;
 - store: schema/migration readability and basic state counts;
 - supervisor: lease presence, generation, pid, process liveness when the host

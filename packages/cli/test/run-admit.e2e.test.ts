@@ -5,6 +5,8 @@ import { runSourceCli } from "./support/cli-runner.js";
 import { copyWorkflowFixture } from "./support/fixtures.js";
 import { withIsolatedTestWorkspace, withTestWorkspace } from "./support/workspace.js";
 
+const runIdPattern = /^\d{14}[A-F0-9]{20}$/;
+
 describe.concurrent("acpus workflows run smoke", () => {
   it("checks a workflow without validating missing submit input", async () => {
     await withTestWorkspace("workflow-check-no-input", async workspace => {
@@ -18,10 +20,10 @@ describe.concurrent("acpus workflows run smoke", () => {
         ok: true,
         phase: "check",
       });
-      expect(output.preflightDir).toEqual(expect.stringContaining(".acpus/preflight/"));
+      expect(output.preflightDir).toEqual(expect.stringContaining(".acpus/.local/preflight/"));
       expect(output.irDigest).toEqual(expect.stringMatching(/^sha256:/));
       expect(output.sourceGraphDigest).toEqual(expect.stringMatching(/^sha256:/));
-      await expect(access(join(workspace, ".acpus", "state", "runtime.db"))).rejects.toThrow();
+      await expect(access(join(workspace, ".acpus", ".local", "state", "runtime.db"))).rejects.toThrow();
     });
   });
 
@@ -34,6 +36,7 @@ describe.concurrent("acpus workflows run smoke", () => {
       expect(result.exitCode).toBe(0);
       const lines = result.stdout.trim().split("\n").map(line => JSON.parse(line));
       expect(lines[0]).toMatchObject({ phase: "run", kind: "admitted" });
+      expect(lines[0].run.id).toMatch(runIdPattern);
       expect(lines.slice(1, -1)).toEqual(expect.arrayContaining([
         expect.objectContaining({ phase: "run", kind: "node completed" }),
       ]));
@@ -138,7 +141,7 @@ export default defineWorkflow({
         ok: false,
         phase: "usage",
       });
-      await expect(access(join(workspace, ".acpus", "state", "runtime.db"))).rejects.toThrow();
+      await expect(access(join(workspace, ".acpus", ".local", "state", "runtime.db"))).rejects.toThrow();
     });
   });
 
@@ -153,7 +156,7 @@ export default defineWorkflow({
         ok: false,
         phase: "validate",
       });
-      await expect(access(join(workspace, ".acpus", "state", "runtime.db"))).rejects.toThrow();
+      await expect(access(join(workspace, ".acpus", ".local", "state", "runtime.db"))).rejects.toThrow();
     });
   });
 
@@ -170,7 +173,7 @@ export default defineWorkflow({
           phase: "usage",
         });
       }
-      await expect(access(join(workspace, ".acpus", "state", "runtime.db"))).rejects.toThrow();
+      await expect(access(join(workspace, ".acpus", ".local", "state", "runtime.db"))).rejects.toThrow();
     });
   });
 
@@ -218,6 +221,7 @@ export default defineWorkflow({
       const admitted = await runSourceCli(workspace, ["workflows", "run", workflow, "--input", "{\"value\":\" ok \"}", "--background", "--json"]);
       expect(admitted.exitCode).toBe(0);
       const runId = JSON.parse(admitted.stdout).run.id as string;
+      expect(runId).toMatch(runIdPattern);
 
       await expectRunCompleted(workspace, runId, { value: "ok" });
     });

@@ -20,7 +20,7 @@ afterEach(async () => {
 
 describe("scheduler store schema", () => {
   it("creates durable scheduler projection tables and query indexes", () => {
-    const db = new DatabaseSync(join(dir, ".acpus", "state", "runtime.db"), { readOnly: true });
+    const db = new DatabaseSync(join(dir, ".acpus", ".local", "state", "runtime.db"), { readOnly: true });
     try {
       expect(sqliteNames(db, "table")).toEqual(expect.arrayContaining([
         "run_leases",

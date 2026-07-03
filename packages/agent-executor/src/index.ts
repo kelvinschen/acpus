@@ -3,7 +3,6 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 
-const MAX_AGENT_OUTPUT_BYTES = 1_000_000;
 const FORCE_KILL_GRACE_MS = 5_000;
 const TOOL_INPUT_PREVIEW_EDGE_BYTES = 4 * 1024;
 const FINAL_TOOL_STATUSES = new Set(["completed", "failed", "cancelled"]);
@@ -32,8 +31,7 @@ export type AgentBackendFailureKind =
   | "config"
   | "spawn"
   | "provider_exit"
-  | "timeout"
-  | "output_overflow";
+  | "timeout";
 
 export type AgentIoPreview = {
   preview: string;
@@ -134,7 +132,6 @@ type AcpxProcessResult = {
   stdout: string;
   stderr: string;
   timedOut: boolean;
-  overflowed: boolean;
   aborted: boolean;
   spawnError?: string;
 };
@@ -176,7 +173,7 @@ export async function executeAgentTurn(request: AgentTurnRequest): Promise<Agent
     ...(ensureTimeout.timeout === undefined ? {} : { timeout: ensureTimeout.timeout }),
     ...(request.signal === undefined ? {} : { signal: request.signal }),
   });
-  if (ensure.exitCode !== 0 || ensure.spawnError || ensure.timedOut || ensure.overflowed || ensure.aborted) {
+  if (ensure.exitCode !== 0 || ensure.spawnError || ensure.timedOut || ensure.aborted) {
     return failedControlResult("sessions ensure", ensure, "provider_exit", request.timeout);
   }
 
@@ -192,7 +189,7 @@ export async function executeAgentTurn(request: AgentTurnRequest): Promise<Agent
       ...(setModeTimeout.timeout === undefined ? {} : { timeout: setModeTimeout.timeout }),
       ...(request.signal === undefined ? {} : { signal: request.signal }),
     });
-    if (setMode.exitCode !== 0 || setMode.spawnError || setMode.timedOut || setMode.overflowed || setMode.aborted) {
+    if (setMode.exitCode !== 0 || setMode.spawnError || setMode.timedOut || setMode.aborted) {
       return failedControlResult("set-mode", setMode, "config", request.timeout);
     }
   }
@@ -217,7 +214,6 @@ export async function executeAgentTurn(request: AgentTurnRequest): Promise<Agent
   const rawDebug = request.captureRawDebug ? { stdout: prompt.stdout } : undefined;
   if (prompt.aborted) return withRawDebug({ status: "cancelled", message: "Agent turn was aborted.", responseText: summary.responseText, stderr: prompt.stderr, telemetry: summary.telemetry }, rawDebug);
   if (prompt.timedOut) return withRawDebug({ status: "failed", failureKind: "timeout", message: timeoutMessage(request.timeout), responseText: summary.responseText, stderr: prompt.stderr, telemetry: summary.telemetry }, rawDebug);
-  if (prompt.overflowed) return withRawDebug({ status: "failed", failureKind: "output_overflow", message: `Agent output exceeded ${MAX_AGENT_OUTPUT_BYTES} bytes.`, responseText: summary.responseText, stderr: prompt.stderr, telemetry: summary.telemetry }, rawDebug);
   if (prompt.spawnError) return withRawDebug({ status: "failed", failureKind: "spawn", message: prompt.spawnError, responseText: summary.responseText, stderr: prompt.stderr, telemetry: summary.telemetry }, rawDebug);
   if (summary.malformedLine) return withRawDebug({ status: "failed", failureKind: "provider_exit", message: `Malformed acpx JSON output: ${boundedTail(summary.malformedLine)}`, responseText: summary.responseText, stderr: prompt.stderr, telemetry: summary.telemetry }, rawDebug);
   if (summary.errorMessage) return withRawDebug({ status: "failed", failureKind: classifyFailureText(summary.errorMessage), message: summary.errorMessage, responseText: summary.responseText, stderr: prompt.stderr, telemetry: summary.telemetry }, rawDebug);
@@ -262,14 +258,13 @@ function runAcpx(invocation: AcpxInvocation): Promise<AcpxProcessResult> {
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (error) {
-      resolve({ exitCode: null, stdout: "", stderr: "", timedOut: false, overflowed: false, aborted: false, spawnError: errorMessage(error) });
+      resolve({ exitCode: null, stdout: "", stderr: "", timedOut: false, aborted: false, spawnError: errorMessage(error) });
       return;
     }
 
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
-    let outputBytes = 0;
-    let termination: "timeout" | "overflow" | "abort" | undefined;
+    let termination: "timeout" | "abort" | undefined;
     let timeout: NodeJS.Timeout | undefined;
     let killTimeout: NodeJS.Timeout | undefined;
     const abort = () => terminate("abort");
@@ -279,7 +274,7 @@ function runAcpx(invocation: AcpxInvocation): Promise<AcpxProcessResult> {
       invocation.signal?.removeEventListener("abort", abort);
     };
 
-    const terminate = (reason: "timeout" | "overflow" | "abort") => {
+    const terminate = (reason: "timeout" | "abort") => {
       if (termination) return;
       termination = reason;
       if (timeout) clearTimeout(timeout);
@@ -296,13 +291,7 @@ function runAcpx(invocation: AcpxInvocation): Promise<AcpxProcessResult> {
 
     const collect = (target: Buffer[], chunk: unknown) => {
       if (termination) return;
-      const bytes = Buffer.from(chunk as any);
-      outputBytes += bytes.byteLength;
-      if (outputBytes > MAX_AGENT_OUTPUT_BYTES) {
-        terminate("overflow");
-        return;
-      }
-      target.push(bytes);
+      target.push(Buffer.from(chunk as any));
     };
 
     child.stdout.on("data", chunk => collect(stdout, chunk));
@@ -314,13 +303,12 @@ function runAcpx(invocation: AcpxInvocation): Promise<AcpxProcessResult> {
         stdout: Buffer.concat(stdout).toString("utf8"),
         stderr: Buffer.concat(stderr).toString("utf8"),
         timedOut: termination === "timeout",
-        overflowed: termination === "overflow",
         aborted: termination === "abort",
       });
     });
     child.on("error", error => {
       cleanup();
-      resolve({ exitCode: null, stdout: "", stderr: error.message, timedOut: false, overflowed: false, aborted: false, spawnError: error.message });
+      resolve({ exitCode: null, stdout: "", stderr: error.message, timedOut: false, aborted: false, spawnError: error.message });
     });
     child.stdin.end(invocation.input ?? "");
   });
@@ -506,7 +494,6 @@ function emptyTelemetry(): AgentTurnTelemetry {
 function failedControlResult(command: string, result: AcpxProcessResult, defaultKind: AgentBackendFailureKind = "provider_exit", timeout: string | undefined = undefined): AgentTurnResult {
   if (result.aborted) return cancelledResult(`Agent ${command} was aborted.`);
   if (result.timedOut) return failedResult("timeout", timeoutMessage(timeout), result);
-  if (result.overflowed) return failedResult("output_overflow", `Agent output exceeded ${MAX_AGENT_OUTPUT_BYTES} bytes.`, result);
   if (result.spawnError) return failedResult("spawn", result.spawnError, result);
   const message = failureMessage(result);
   return failedResult(defaultKind === "provider_exit" ? classifyFailureText(message) : defaultKind, message, result);

@@ -4,7 +4,7 @@
 
 `@acpus/agent-executor` executes one resolved acpx-backed ACP agent turn for
 runtime consumers. It owns acpx CLI resolution, acpx argument construction,
-process timeout/cancellation, output caps, ACP JSON stream parsing, and
+process timeout/cancellation, ACP JSON stream parsing, and
 backend failure classification. It does not own workflow prompt rendering,
 SchemaIR validation, response repair policy, scheduler attempts, or durable
 runtime state.
@@ -59,8 +59,8 @@ goes through the resolved acpx turn API.
 - `set-mode` rejection MUST be surfaced as `config` and MUST NOT send a prompt.
 - The timeout budget MUST apply to the full turn command sequence, not
   independently to each acpx subprocess.
-- Prompt timeout, abort, and output overflow MUST best-effort call acpx
-  `cancel -s <session>` before force-killing the active prompt subprocess.
+- Prompt timeout and abort MUST best-effort call acpx `cancel -s <session>`
+  before force-killing the active prompt subprocess.
 
 ### Results
 
@@ -71,7 +71,7 @@ goes through the resolved acpx turn API.
   facts.
 - `cancelled` results MUST be separate from backend failure kinds.
 - Stable backend failure kinds MUST include `config`, `spawn`,
-  `provider_exit`, `timeout`, and `output_overflow`.
+  `provider_exit`, and `timeout`.
 - The executor MUST NOT expose raw ACP JSON lines as runtime decision input.
   It MUST derive normalized per-turn telemetry from the ACP JSON stream.
 - Normalized turn telemetry MUST include event count, optional stop reason,
@@ -94,10 +94,9 @@ goes through the resolved acpx turn API.
 - Tool telemetry MUST preserve the complete per-turn call list. The reported
   total tool call count MUST equal the call list length.
 - Prompt and response IO previews in executor telemetry MUST be untruncated.
-  The response remains bounded by the executor output cap.
-- When raw debug capture is requested, results MAY include bounded raw acpx
-  prompt stdout as opaque debug material. Runtime consumers MUST NOT need that
-  field for execution decisions.
+- When raw debug capture is requested, results MAY include raw acpx prompt
+  stdout as opaque debug material. Runtime consumers MUST NOT need that field
+  for execution decisions.
 - Non-empty malformed stdout lines from `--format json --json-strict` MUST be
   backend failures, not successful empty responses.
 - JSON-RPC error objects MUST be summarized to bounded human-readable error

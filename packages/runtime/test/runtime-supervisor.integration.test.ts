@@ -7,6 +7,8 @@ import { runSupervisorTick } from "../src/supervisor/tick.js";
 import { openExistingWritableRuntimeStore, openRuntimeStore } from "../src/store/store.js";
 import { admitSyntheticWorkflow, runtimeRow, runtimeRows, signalWorkflow, taskArtifactWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 
+const runIdPattern = /^\d{14}[A-F0-9]{20}$/;
+
 describe.concurrent("runtime supervisor ticks", () => {
   it("releases its lease after a continuous idle window", async () => {
     await withRuntimeWorkspace("runtime-supervisor-idle-stop", async workspace => {
@@ -160,7 +162,7 @@ describe.concurrent("runtime supervisor ticks", () => {
       }
       const forkCommand = runtimeRow(workspace, "SELECT status, payload_json FROM commands WHERE run_id = ? AND type = 'fork'", completed.run.id);
       expect(forkCommand).toMatchObject({ status: "applied" });
-      expect(JSON.parse(String(forkCommand?.payload_json)).forkRunId).toMatch(/^run_/);
+      expect(JSON.parse(String(forkCommand?.payload_json)).forkRunId).toMatch(runIdPattern);
     });
   }, 15_000);
 
@@ -190,7 +192,7 @@ describe.concurrent("runtime supervisor ticks", () => {
       const forkCommand = runtimeRow(workspace, "SELECT status, payload_json FROM commands WHERE id = ?", commandId);
       expect(forkCommand).toMatchObject({ status: "applied" });
       const appliedPayload = JSON.parse(String(forkCommand?.payload_json));
-      expect(appliedPayload).toMatchObject({ target: "local_task", forkRunId: expect.stringMatching(/^run_/) });
+      expect(appliedPayload).toMatchObject({ target: "local_task", forkRunId: expect.stringMatching(runIdPattern) });
       const forkedEvent = runtimeRow(workspace, "SELECT payload_json FROM run_events WHERE run_id = ? AND type = 'run.forked'", appliedPayload.forkRunId);
       expect(JSON.parse(String(forkedEvent?.payload_json))).toMatchObject({ sourceRunId: completed.run.id, target: "local_task", unsafeReuse: true });
     });
@@ -233,7 +235,7 @@ describe.concurrent("runtime supervisor ticks", () => {
       } finally {
         readStore?.close();
       }
-      const db = new DatabaseSync(join(workspace, ".acpus", "state", "runtime.db"));
+      const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
       try {
         db.prepare("UPDATE commands SET payload_json = ? WHERE id = ?").run(JSON.stringify({
           type: "target-resolution-failure",
@@ -265,7 +267,7 @@ describe.concurrent("runtime supervisor ticks", () => {
 
         const stale = store!.submitCommand({ runId: completed.run.id, type: "fork", idempotencyKey: "stale" });
         expect(store!.claimCommand(stale.id, { ownerGeneration: 1 })).toBe(true);
-        const db = new DatabaseSync(join(workspace, ".acpus", "state", "runtime.db"));
+        const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
         try {
           db.prepare("UPDATE commands SET updated_at = ? WHERE id = ?").run(new Date(Date.now() - 120_000).toISOString(), stale.id);
         } finally {
@@ -284,8 +286,8 @@ describe.concurrent("runtime supervisor ticks", () => {
   it("cleans stale staged directories but preserves admitted runs", async () => {
     await withRuntimeWorkspace("runtime-supervisor-cleanup", async workspace => {
       const completed = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
-      const staged = join(workspace, ".acpus", "runs", ".staging-old");
-      const orphan = join(workspace, ".acpus", "runs", "run_20990101T000000Z_oldorphan");
+      const staged = join(workspace, ".acpus", ".local", "runs", ".staging-old");
+      const orphan = join(workspace, ".acpus", ".local", "runs", "20990101000000F2CF49A02B2A537F5E8A");
       await mkdir(staged, { recursive: true });
       await mkdir(orphan, { recursive: true });
       await writeFile(join(staged, "leftover.txt"), "staged");

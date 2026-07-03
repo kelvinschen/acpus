@@ -40,7 +40,7 @@ type AgentTurnRecord = {
   stderrArtifact?: AgentArtifactRef;
   telemetryArtifact?: AgentArtifactRef;
   rawAcpDebugArtifact?: AgentArtifactRef;
-  rawRecoveredOutputArtifact?: AgentArtifactRef;
+  rawParsedOutputArtifact?: AgentArtifactRef;
   failureKind?: string;
   message?: string;
 };
@@ -122,9 +122,9 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
         return result.responseText;
       }
       const conformed = conformAgentOutput(node.outputSchema, result.responseText, node.id);
-      if (conformed.rawRecoveredOutput !== undefined) {
-        const rawRecoveredOutputArtifact = await writeAgentRawRecoveredOutputArtifact(node, options, turn + 1, conformed.rawRecoveredOutput);
-        if (rawRecoveredOutputArtifact) turns[turn] = { ...turns[turn]!, rawRecoveredOutputArtifact };
+      if (conformed.rawParsedOutput !== undefined) {
+        const rawParsedOutputArtifact = await writeAgentRawParsedOutputArtifact(node, options, turn + 1, conformed.rawParsedOutput);
+        if (rawParsedOutputArtifact) turns[turn] = { ...turns[turn]!, rawParsedOutputArtifact };
       }
       if (conformed.ok) {
         await writeTerminalMetadata("completed");
@@ -198,22 +198,21 @@ function sessionName(runId: string | undefined, nodeKey: string, explicitKey: st
 
 function buildAgentPrompt(text: string, schema: SchemaIR | undefined): string {
   if (!schema) return text;
-  const extraKeys = schema.kind === "object" ? " Extra keys are accepted but are not available to later workflow expressions." : "";
-  return `${text}\n\n# OUTPUT SCHEMA\n**After completing the task, your final response MUST be exactly one JSON value that conforms to this schema, with no Markdown or prose.${extraKeys}**\n${JSON.stringify(schemaToJsonSchema(schema), null, 2)}`;
+  return `${text}\n\n# OUTPUT SCHEMA\n**After completing the task, your final response MUST be exactly one JSON value that conforms to this schema, with no Markdown or prose.**\n${JSON.stringify(schemaToJsonSchema(schema), null, 2)}`;
 }
 
 type ConformanceResult =
-  | { ok: true; output: JsonValue; rawRecoveredOutput: JsonValue }
-  | { ok: false; kind: "output_conformance" | "empty_response"; message: string; rawRecoveredOutput?: JsonValue };
+  | { ok: true; output: JsonValue; rawParsedOutput: JsonValue }
+  | { ok: false; kind: "output_conformance" | "empty_response"; message: string; rawParsedOutput?: JsonValue };
 
 function conformAgentOutput(schema: SchemaIR, text: string, nodeId: string): ConformanceResult {
   if (text.trim().length === 0) return { ok: false, kind: "empty_response", message: `Agent node '${nodeId}' returned an empty response.` };
   const recovered = recoverJson(text);
   if (recovered === undefined) return { ok: false, kind: "output_conformance", message: `Agent node '${nodeId}' response could not be recovered as JSON.` };
   try {
-    return { ok: true, output: normalizeValue(schema, projectToSchema(schema, recovered), `Node '${nodeId}' output`), rawRecoveredOutput: recovered };
+    return { ok: true, output: normalizeValue(schema, projectToSchema(schema, recovered), `Node '${nodeId}' output`), rawParsedOutput: recovered };
   } catch (error) {
-    return { ok: false, kind: "output_conformance", message: error instanceof Error ? error.message : String(error), rawRecoveredOutput: recovered };
+    return { ok: false, kind: "output_conformance", message: error instanceof Error ? error.message : String(error), rawParsedOutput: recovered };
   }
 }
 
@@ -390,12 +389,12 @@ async function writeAgentArtifact(options: AgentExecutorOptions, turn: number, n
   return { artifactId: id, relativePath, mediaType };
 }
 
-async function writeAgentRawRecoveredOutputArtifact(node: AgentNodeIR, options: AgentExecutorOptions, turn: number, rawRecoveredOutput: JsonValue): Promise<AgentArtifactRef | undefined> {
+async function writeAgentRawParsedOutputArtifact(node: AgentNodeIR, options: AgentExecutorOptions, turn: number, rawParsedOutput: JsonValue): Promise<AgentArtifactRef | undefined> {
   if (!options.store || !options.runId) return undefined;
-  return writeAgentArtifact(options, turn, "raw-output.json", `${JSON.stringify({
+  return writeAgentArtifact(options, turn, "raw-parsed-output.json", `${JSON.stringify({
     nodeId: node.id,
     turn,
-    rawRecoveredOutput,
+    rawParsedOutput,
   }, null, 2)}\n`, "application/json");
 }
 

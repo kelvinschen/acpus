@@ -10,7 +10,6 @@ test("@acpus/agent-executor public types accept only resolved execution requests
   assertType<AgentBackendFailureKind>("spawn");
   assertType<AgentBackendFailureKind>("provider_exit");
   assertType<AgentBackendFailureKind>("timeout");
-  assertType<AgentBackendFailureKind>("output_overflow");
   // @ts-expect-error output conformance is a runtime failure kind, not an executor backend failure.
   assertType<AgentBackendFailureKind>("output_conformance");
   assertType<AgentTurnResult>({ status: "completed", responseText: "ok", stderr: "", telemetry });

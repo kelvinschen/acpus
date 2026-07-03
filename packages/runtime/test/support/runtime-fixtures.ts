@@ -381,7 +381,7 @@ function digest(value: string | Uint8Array): string {
 }
 
 export function runtimeRow(workspace: string, sql: string, ...params: string[]): Record<string, unknown> | undefined {
-  const db = new DatabaseSync(join(workspace, ".acpus", "state", "runtime.db"), { readOnly: true });
+  const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"), { readOnly: true });
   try {
     return db.prepare(sql).get(...params);
   } finally {
@@ -390,7 +390,7 @@ export function runtimeRow(workspace: string, sql: string, ...params: string[]):
 }
 
 export function runtimeRows(workspace: string, sql: string, ...params: string[]): Array<Record<string, unknown>> {
-  const db = new DatabaseSync(join(workspace, ".acpus", "state", "runtime.db"), { readOnly: true });
+  const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"), { readOnly: true });
   try {
     return db.prepare(sql).all(...params);
   } finally {

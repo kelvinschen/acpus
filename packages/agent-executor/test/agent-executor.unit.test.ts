@@ -462,7 +462,7 @@ describe("executeAgentTurn", () => {
     });
   });
 
-  it("classifies provider exits and output overflow", async () => {
+  it("classifies provider exits", async () => {
     const { executeAgentTurn } = await import("@acpus/agent-executor");
 
     fake.state.scenarios.push(fake.scenario.success, fake.scenario.exit(2, "agent crashed"));
@@ -474,17 +474,6 @@ describe("executeAgentTurn", () => {
       sessionName: "session",
       permissionMode: "approve-all",
     })).resolves.toMatchObject({ status: "failed", failureKind: "provider_exit", message: "agent crashed" });
-
-    fake.state.scenarios.push(fake.scenario.success, fake.scenario.stdout("x".repeat(1_000_001)));
-    await expect(executeAgentTurn({
-      agent: { kind: "named", name: "codex" },
-      prompt: "review",
-      cwd: "/repo",
-      env: {},
-      sessionName: "session",
-      permissionMode: "approve-all",
-    })).resolves.toMatchObject({ status: "failed", failureKind: "output_overflow" });
-    expect(fake.state.calls.map(call => tailFromAgent(call.args, "codex"))).toContainEqual(["codex", "cancel", "-s", "session"]);
   });
 
   it("classifies turn timeouts", async () => {

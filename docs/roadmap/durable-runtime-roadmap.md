@@ -87,7 +87,7 @@
 
 #### Runtime admission
 
-当前实现：`acpus run <workflow-module>` 已从 dry-run-only 变为可 durable admission。admission 会 check、compile、validate、normalize input，写 `.acpus/state/runtime.db` 和 `.acpus/runs/<run-id>/`。`--dry-run` 为显式 opt-in，仅产出 preflight artifact 不开 store。
+当前实现：`acpus workflows run <workflow-module>` 会 durable admission。admission 会 check、compile、validate、normalize input，写 `.acpus/.local/state/runtime.db` 和 `.acpus/.local/runs/<run-id>/`。`acpus workflows check` 仅产出 `.acpus/.local/preflight/<id>/` artifact，不开 store。
 
 证据：`packages/cli/src/commands/run.ts`, `packages/cli/src/workflow-preparation.ts`, `packages/runtime/src/store/store.ts` (`admitRun`), `packages/runtime/src/admission/input.ts`, `packages/runtime/src/runs/use-cases.ts` (`admitWorkflowRun`), `packages/workflow-compiler/src/preflight.ts`（dry-run 专用）
 
@@ -96,7 +96,7 @@
 **审计新增：**
 - Admission 通过 `admitWorkflowRun` facade 统一入口（open store → admitRun → advanceRun → close store）。
 - `admitRun` 使用 `BEGIN IMMEDIATE` 事务，写 `run.admitted` event，失败回滚并清理 run dir。
-- Run ID 格式：`run_<ISO-timestamp>_<sha256-suffix>`。
+- Run ID 格式：本地时间 `YYYYMMDDHHmmss` + 20 位大写 hex 随机后缀。
 - 新增第四种终止结果 `blocked`（executor 缺失时），非独立 RunStatus。
 
 标注：

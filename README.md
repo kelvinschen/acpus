@@ -29,17 +29,18 @@ Representative workflow compiler fixtures live in `packages/workflow-compiler/te
 
 ## CLI
 
-The new `acpus` package currently exposes the pre-run gate only:
+The new `acpus` package exposes workflow check/run commands:
 
 ```sh
 pnpm --filter acpus build
-pnpm exec acpus run packages/workflow-compiler/test/fixtures/workflows/module.workflow.ts --dry-run
+pnpm exec acpus workflows check packages/workflow-compiler/test/fixtures/workflows/basic/valid.workflow.ts
+pnpm exec acpus workflows run packages/workflow-compiler/test/fixtures/workflows/basic/valid.workflow.ts --input '{"ready":true}'
 ```
 
-`acpus run <workflow.ts> --dry-run` typechecks, compiles, validates, and writes
-`.acpus/preflight/<id>/` with frozen IR, bundled task assets, and a lock file.
-Runtime execution is intentionally not implemented yet, so
-`acpus run <workflow.ts>` without `--dry-run` fails.
+`acpus workflows check <workflow.ts>` typechecks, compiles, validates, and
+writes `.acpus/.local/preflight/<id>/` with frozen IR and a lock file.
+`acpus workflows run <workflow.ts>` admits a durable run under
+`.acpus/.local/state/runtime.db` and `.acpus/.local/runs/<run-id>/`.
 
 ## Development
 

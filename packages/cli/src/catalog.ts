@@ -131,7 +131,7 @@ async function isPathLikeWorkflowReference(cwd: string, workflow: string): Promi
 async function materializeGlobalCatalogEntry(cwd: string, entry: WorkflowCatalogEntry): Promise<string> {
   try {
     const digest = await digestDirectory(entry.packagePath);
-    const target = join(cwd, ".acpus", "catalog-cache", "global", entry.name, digest);
+    const target = join(cwd, ".acpus", ".local", "catalog-cache", "global", entry.name, digest);
     const targetEntry = join(target, catalogWorkflowEntry);
     if (await isFile(targetEntry)) return targetEntry;
     await rm(target, { recursive: true, force: true });

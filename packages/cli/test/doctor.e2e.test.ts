@@ -22,7 +22,7 @@ describe.concurrent("acpus doctor", () => {
           }),
         ],
       });
-      await expect(access(join(workspace, ".acpus", "state", "runtime.db"))).rejects.toThrow();
+      await expect(access(join(workspace, ".acpus", ".local", "state", "runtime.db"))).rejects.toThrow();
     });
   });
 

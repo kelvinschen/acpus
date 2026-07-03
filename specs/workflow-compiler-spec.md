@@ -111,8 +111,8 @@
 - The IR digest MUST be a `sha256:` digest of stable pretty JSON written as `workflow.ir.json`.
 - The source graph digest MUST be derived from workflow source digest and package lock digest when present.
 - Package lock digest MAY be computed from `pnpm-lock.yaml`, `package-lock.json`, or `yarn.lock`.
-- `writePreflightArtifact(...)` MUST write `.acpus/preflight/<id>/workflow.ir.json`.
-- `writePreflightArtifact(...)` MUST write `.acpus/preflight/<id>/lock.json`.
+- `writePreflightArtifact(...)` MUST write `.acpus/.local/preflight/<id>/workflow.ir.json`.
+- `writePreflightArtifact(...)` MUST write `.acpus/.local/preflight/<id>/lock.json`.
 - `writePreflightArtifact(...)` MUST NOT write task code artifacts.
 - The lock artifact MUST reference workflow entry, IR digest, source graph digest, and optional package lock digest.
 

@@ -114,11 +114,11 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       const supersededRelativePath = join("artifacts", nodeKey, "attempt-99", "superseded.txt");
       const failedBytes = Buffer.from("failed attempt artifact\n");
       const supersededBytes = Buffer.from("superseded attempt artifact\n");
-      await mkdir(join(workspace, ".acpus", "runs", source.run.id, "artifacts", nodeKey, "attempt-98"), { recursive: true });
-      await mkdir(join(workspace, ".acpus", "runs", source.run.id, "artifacts", nodeKey, "attempt-99"), { recursive: true });
-      await writeFile(join(workspace, ".acpus", "runs", source.run.id, failedRelativePath), failedBytes);
-      await writeFile(join(workspace, ".acpus", "runs", source.run.id, supersededRelativePath), supersededBytes);
-      const db = new DatabaseSync(join(workspace, ".acpus", "state", "runtime.db"));
+      await mkdir(join(workspace, ".acpus", ".local", "runs", source.run.id, "artifacts", nodeKey, "attempt-98"), { recursive: true });
+      await mkdir(join(workspace, ".acpus", ".local", "runs", source.run.id, "artifacts", nodeKey, "attempt-99"), { recursive: true });
+      await writeFile(join(workspace, ".acpus", ".local", "runs", source.run.id, failedRelativePath), failedBytes);
+      await writeFile(join(workspace, ".acpus", ".local", "runs", source.run.id, supersededRelativePath), supersededBytes);
+      const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
       try {
         db.prepare(`
           INSERT INTO node_attempts (
@@ -165,8 +165,8 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       expect(forkArtifacts).toHaveLength(1);
       expect(forkArtifacts.map(row => row.relative_path)).not.toContain(failedRelativePath);
       expect(forkArtifacts.map(row => row.relative_path)).not.toContain(supersededRelativePath);
-      await expect(access(join(workspace, ".acpus", "runs", fork!.run.id, failedRelativePath))).rejects.toThrow();
-      await expect(access(join(workspace, ".acpus", "runs", fork!.run.id, supersededRelativePath))).rejects.toThrow();
+      await expect(access(join(workspace, ".acpus", ".local", "runs", fork!.run.id, failedRelativePath))).rejects.toThrow();
+      await expect(access(join(workspace, ".acpus", ".local", "runs", fork!.run.id, supersededRelativePath))).rejects.toThrow();
     });
   }, 15_000);
 

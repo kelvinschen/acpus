@@ -25,6 +25,7 @@ import {
 } from "./support/runtime-fixtures.js";
 
 const exec = promisify(execFile);
+const runIdPattern = /^\d{14}[A-F0-9]{20}$/;
 
 describe.concurrent("runtime admission use cases", () => {
   it("admits a pure run and exposes read-only inspection", async () => {
@@ -32,6 +33,7 @@ describe.concurrent("runtime admission use cases", () => {
       const admitted = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
 
       expect(admitted.status).toBe("completed");
+      expect(admitted.run.id).toMatch(runIdPattern);
       expect(await listRuns(workspace)).toEqual([
         expect.objectContaining({ id: admitted.run.id, status: "completed", name: "cli-valid" }),
       ]);
@@ -132,11 +134,11 @@ describe.concurrent("runtime admission use cases", () => {
       const artifact = artifacts[0];
       expect(artifact).toMatchObject({ attempt: 1, media_type: "text/plain", size: 12 });
       expect(String(artifact?.relative_path)).toContain(`${String(artifact?.node_key)}/attempt-1/`);
-      const bytes = await readFile(join(workspace, ".acpus", "runs", admitted.run.id, String(artifact?.relative_path)));
+      const bytes = await readFile(join(workspace, ".acpus", ".local", "runs", admitted.run.id, String(artifact?.relative_path)));
       expect(bytes.toString("utf8")).toBe("artifact-ok\n");
       expect(artifact?.digest).toBe(`sha256:${createHash("sha256").update(bytes).digest("hex")}`);
-      await access(join(workspace, ".acpus", "runs", admitted.run.id, "workflow.ir.json"));
-      await access(join(workspace, ".acpus", "runs", admitted.run.id, "lock.json"));
+      await access(join(workspace, ".acpus", ".local", "runs", admitted.run.id, "workflow.ir.json"));
+      await access(join(workspace, ".acpus", ".local", "runs", admitted.run.id, "lock.json"));
     });
   });
 
@@ -329,7 +331,7 @@ describe.concurrent("runtime admission use cases", () => {
         }, {}, {
           cwd: workspace,
           runId: "run_1",
-          store: { getRunDir: () => ".acpus/runs/run_1", registerArtifact: () => {} },
+          store: { getRunDir: () => ".acpus/.local/runs/run_1", registerArtifact: () => {} },
         });
         if (output.value !== "dev:loaded") throw new Error("development export fallback was not used");
         let masked = false;
@@ -353,7 +355,7 @@ describe.concurrent("runtime admission use cases", () => {
           }, {}, {
             cwd: workspace,
             runId: "run_2",
-            store: { getRunDir: () => ".acpus/runs/run_2", registerArtifact: () => {} },
+            store: { getRunDir: () => ".acpus/.local/runs/run_2", registerArtifact: () => {} },
           });
           masked = true;
         } catch (error) {

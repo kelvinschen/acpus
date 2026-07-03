@@ -76,7 +76,7 @@ stable CLI phases and exit codes.
   on the existing direct path preparation flow unless `--project` or `--global`
   is passed.
 - Global catalog entries MUST be materialized into a content-addressed
-  `.acpus/catalog-cache/global/<name>/<digest>/` package snapshot before
+  `.acpus/.local/catalog-cache/global/<name>/<digest>/` package snapshot before
   workflow preparation.
 - Global catalog materialization MUST follow symlinks and copy target content.
 - Runtime run records MUST NOT persist catalog metadata.

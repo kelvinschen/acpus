@@ -10,7 +10,7 @@ acpus run workflow.ts --input '{"ready":true}'
 
 `acpus run workflow.ts --dry-run` statically checks and prepares the workflow through
 `@acpus/workflow-compiler`, validates the resulting `WorkflowIR`, and writes
-`.acpus/preflight/<id>/` with the IR and lock file.
+`.acpus/.local/preflight/<id>/` with the IR and lock file.
 
 Without `--dry-run`, `acpus run` delegates prepared workflows to `@acpus/runtime`
 and reports the admitted run. The `acpus runs` command group inspects and

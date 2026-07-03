@@ -773,7 +773,7 @@ describe("runtime scheduler node executor", () => {
         const artifact = runtimeRow(workspace, "SELECT attempt, relative_path FROM artifacts WHERE run_id = ? AND node_key = ?", run.id, "context_task.dynamic");
         expect(artifact).toMatchObject({ attempt: 7 });
         expect(String(artifact?.relative_path)).toContain("artifacts/context_task.dynamic/attempt-7/");
-        const bytes = await readFile(join(workspace, ".acpus", "runs", run.id, String(artifact?.relative_path)));
+        const bytes = await readFile(join(workspace, ".acpus", ".local", "runs", run.id, String(artifact?.relative_path)));
         expect(bytes.toString("utf8")).toBe("dynamic artifact\n");
       } finally {
         store.close();
@@ -875,11 +875,11 @@ describe("runtime scheduler node executor", () => {
         const artifactRows = runtimeRows(workspace, "SELECT id, media_type, relative_path FROM artifacts WHERE run_id = ? AND node_key = ? ORDER BY relative_path", run.id, "review.dynamic") as RuntimeArtifactRow[];
         expect(artifactRows).toEqual([
           expect.objectContaining({ media_type: "text/markdown", relative_path: "artifacts/review.dynamic/attempt-1/agent/turn-001.prompt.md" }),
-          expect.objectContaining({ media_type: "application/json", relative_path: "artifacts/review.dynamic/attempt-1/agent/turn-001.raw-output.json" }),
+          expect.objectContaining({ media_type: "application/json", relative_path: "artifacts/review.dynamic/attempt-1/agent/turn-001.raw-parsed-output.json" }),
           expect.objectContaining({ media_type: "text/markdown", relative_path: "artifacts/review.dynamic/attempt-1/agent/turn-001.response.md" }),
           expect.objectContaining({ media_type: "application/json", relative_path: "artifacts/review.dynamic/attempt-1/agent/turn-001.telemetry.json" }),
           expect.objectContaining({ media_type: "text/markdown", relative_path: "artifacts/review.dynamic/attempt-1/agent/turn-002.prompt.md" }),
-          expect.objectContaining({ media_type: "application/json", relative_path: "artifacts/review.dynamic/attempt-1/agent/turn-002.raw-output.json" }),
+          expect.objectContaining({ media_type: "application/json", relative_path: "artifacts/review.dynamic/attempt-1/agent/turn-002.raw-parsed-output.json" }),
           expect.objectContaining({ media_type: "text/markdown", relative_path: "artifacts/review.dynamic/attempt-1/agent/turn-002.response.md" }),
           expect.objectContaining({ media_type: "text/plain", relative_path: "artifacts/review.dynamic/attempt-1/agent/turn-002.stderr.log" }),
           expect.objectContaining({ media_type: "application/json", relative_path: "artifacts/review.dynamic/attempt-1/agent/turn-002.telemetry.json" }),
@@ -913,15 +913,15 @@ describe("runtime scheduler node executor", () => {
           ],
         });
         expectAgentArtifactRef(metadata?.turns?.[0]?.promptArtifact, "artifacts/review.dynamic/attempt-1/agent/turn-001.prompt.md", "text/markdown", artifactRows);
-        expectAgentArtifactRef(metadata?.turns?.[0]?.rawRecoveredOutputArtifact, "artifacts/review.dynamic/attempt-1/agent/turn-001.raw-output.json", "application/json", artifactRows);
+        expectAgentArtifactRef(metadata?.turns?.[0]?.rawParsedOutputArtifact, "artifacts/review.dynamic/attempt-1/agent/turn-001.raw-parsed-output.json", "application/json", artifactRows);
         expectAgentArtifactRef(metadata?.turns?.[0]?.responseArtifact, "artifacts/review.dynamic/attempt-1/agent/turn-001.response.md", "text/markdown", artifactRows);
         expectAgentArtifactRef(metadata?.turns?.[0]?.telemetryArtifact, "artifacts/review.dynamic/attempt-1/agent/turn-001.telemetry.json", "application/json", artifactRows);
-        expectAgentArtifactRef(metadata?.turns?.[1]?.rawRecoveredOutputArtifact, "artifacts/review.dynamic/attempt-1/agent/turn-002.raw-output.json", "application/json", artifactRows);
+        expectAgentArtifactRef(metadata?.turns?.[1]?.rawParsedOutputArtifact, "artifacts/review.dynamic/attempt-1/agent/turn-002.raw-parsed-output.json", "application/json", artifactRows);
         expectAgentArtifactRef(metadata?.turns?.[1]?.stderrArtifact, "artifacts/review.dynamic/attempt-1/agent/turn-002.stderr.log", "text/plain", artifactRows);
         const runDir = store.getRunDir(run.id);
         if (!runDir) throw new Error("expected run dir");
-        await expect(readJsonFile(join(workspace, runDir, "artifacts/review.dynamic/attempt-1/agent/turn-001.raw-output.json"))).resolves.toMatchObject({
-          rawRecoveredOutput: { attempt: 1, extra: "drop" },
+        await expect(readJsonFile(join(workspace, runDir, "artifacts/review.dynamic/attempt-1/agent/turn-001.raw-parsed-output.json"))).resolves.toMatchObject({
+          rawParsedOutput: { attempt: 1, extra: "drop" },
         });
         await expect(readJsonFile(join(workspace, runDir, "artifacts/review.dynamic/attempt-1/agent/turn-001.telemetry.json"))).resolves.toMatchObject({
           telemetry: {
@@ -952,8 +952,8 @@ describe("runtime scheduler node executor", () => {
             acpxRecordId: "record-1",
           },
         });
-        await expect(readJsonFile(join(workspace, runDir, "artifacts/review.dynamic/attempt-1/agent/turn-002.raw-output.json"))).resolves.toMatchObject({
-          rawRecoveredOutput: { attempt: "2", extra: "drop" },
+        await expect(readJsonFile(join(workspace, runDir, "artifacts/review.dynamic/attempt-1/agent/turn-002.raw-parsed-output.json"))).resolves.toMatchObject({
+          rawParsedOutput: { attempt: "2", extra: "drop" },
         });
       } finally {
         store.close();
@@ -994,7 +994,6 @@ describe("runtime scheduler node executor", () => {
         expect(turns).toHaveLength(1);
         expect(turns[0]!.prompt).toContain("exactly one JSON value");
         expect(turns[0]!.prompt).not.toContain("exactly one JSON object");
-        expect(turns[0]!.prompt).not.toContain("Extra keys are accepted");
       } finally {
         store.close();
       }
@@ -1465,7 +1464,7 @@ describe("runtime scheduler node executor", () => {
       });
 
       const runIdsBefore = new Set(runtimeRows(workspace, "SELECT id FROM runs").map(row => String(row.id)));
-      const runDirsBefore = (await readdir(join(workspace, ".acpus", "runs"))).sort();
+      const runDirsBefore = (await readdir(join(workspace, ".acpus", ".local", "runs"))).sort();
 
       const forkStore = await openRuntimeStore(workspace);
       try {
@@ -1489,7 +1488,7 @@ describe("runtime scheduler node executor", () => {
         nodeStates: [],
         artifacts: [],
       });
-      await expect(readdir(join(workspace, ".acpus", "runs")).then(entries => entries.sort())).resolves.toEqual(runDirsBefore);
+      await expect(readdir(join(workspace, ".acpus", ".local", "runs")).then(entries => entries.sort())).resolves.toEqual(runDirsBefore);
     });
   });
 
@@ -1675,8 +1674,8 @@ describe("runtime scheduler node executor", () => {
     });
   });
 
-  it("does not write raw recovered output artifacts when agent JSON recovery fails", async () => {
-    await withRuntimeWorkspace("scheduler-node-executor-agent-no-raw-output", async workspace => {
+  it("does not write raw parsed output artifacts when agent JSON recovery fails", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-agent-no-raw-parsed-output", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, retryZeroAgentWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
@@ -1699,7 +1698,7 @@ describe("runtime scheduler node executor", () => {
         ]);
         const metadata = store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt")?.metadata as AgentAttemptMetadata | undefined;
         expect(metadata?.turns).toEqual([
-          expect.not.objectContaining({ rawRecoveredOutputArtifact: expect.anything() }),
+          expect.not.objectContaining({ rawParsedOutputArtifact: expect.anything() }),
         ]);
       } finally {
         store.close();
@@ -1707,8 +1706,8 @@ describe("runtime scheduler node executor", () => {
     });
   });
 
-  it("does not write raw recovered output artifacts for empty agent responses", async () => {
-    await withRuntimeWorkspace("scheduler-node-executor-agent-empty-no-raw-output", async workspace => {
+  it("does not write raw parsed output artifacts for empty agent responses", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-agent-empty-no-raw-parsed-output", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, retryZeroAgentWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
@@ -1734,7 +1733,7 @@ describe("runtime scheduler node executor", () => {
           expect.objectContaining({ failureKind: "empty_response" }),
         ]);
         expect(metadata?.turns).toEqual([
-          expect.not.objectContaining({ rawRecoveredOutputArtifact: expect.anything() }),
+          expect.not.objectContaining({ rawParsedOutputArtifact: expect.anything() }),
         ]);
       } finally {
         store.close();
@@ -3055,7 +3054,7 @@ function targetedForkCompletedSourceWorkflow() {
 }
 
 function replaceCompletedInstanceEventOutput(workspace: string, runId: string, nodeKey: string, output: unknown): void {
-  const db = new DatabaseSync(join(workspace, ".acpus", "state", "runtime.db"));
+  const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
   try {
     db.prepare("UPDATE run_events SET payload_json = ? WHERE run_id = ? AND type = 'instance.completed' AND node_key = ?").run(
       JSON.stringify({ schedulerEventVersion: 1, payload: { nodeKey, output } }),

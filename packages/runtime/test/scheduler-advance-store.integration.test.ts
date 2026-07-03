@@ -291,7 +291,7 @@ describe("durable scheduler advance with store", () => {
 });
 
 function expireLease(workspace: string, runId: string): void {
-  const db = new DatabaseSync(join(workspace, ".acpus", "state", "runtime.db"));
+  const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
   try {
     db.prepare("UPDATE run_leases SET lease_expires_at = ? WHERE run_id = ?").run(new Date(Date.now() - 1_000).toISOString(), runId);
   } finally {

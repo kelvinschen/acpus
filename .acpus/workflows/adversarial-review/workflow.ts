@@ -1,26 +1,24 @@
 import { defineWorkflow, z } from "acpus/core";
-import { every, md, where } from "acpus/expression";
+import { md } from "acpus/expression";
 
 const ReviewOutput = z.object({
-  agent: z.enum(["pi", "claude"]),
-  verdict: z.enum(["approve", "revise", "reject"]),
   summary: z.string(),
-  strengths: z.array(z.string()),
-  concerns: z.array(z.string()),
-  recommendations: z.array(z.string()),
-  confidence: z.number(),
+  findings: z.string(),
+  concerns: z.string(),
+  recommendation: z.string(),
 });
 
-const VerificationOutput = z.object({
-  reviewedAgent: z.enum(["pi", "claude"]),
-  verifierAgent: z.enum(["pi", "claude"]),
-  accepted: z.boolean(),
-  score: z.number(),
-  rubricFailures: z.array(z.string()),
-  missedIssues: z.array(z.string()),
-  unsupportedClaims: z.array(z.string()),
-  requiredCorrections: z.array(z.string()),
-  summary: z.string(),
+const CritiqueOutput = z.object({
+  critique: z.string(),
+  objections: z.string(),
+  questions: z.string(),
+});
+
+const SynthesisOutput = z.object({
+  assessment: z.string(),
+  consensus: z.string(),
+  disagreements: z.string(),
+  actions: z.string(),
 });
 
 export default defineWorkflow({
@@ -31,33 +29,48 @@ export default defineWorkflow({
     rubric: z.string(),
     criteria: z.array(z.string()).default([]),
     context: z.string().default(""),
-    minimumScore: z.number().default(4),
   }),
 
   agents: {
-    pi: {
+    alpha: {
       use: "pi",
       permissionMode: "approve-reads",
     },
-    claude: {
+    beta: {
+      use: "pi",
+      permissionMode: "approve-reads",
+    },
+    gamma: {
+      use: "claude",
+      permissionMode: "approve-reads",
+    },
+    delta: {
+      use: "claude",
+      permissionMode: "approve-reads",
+    },
+    synthesizer: {
       use: "claude",
       permissionMode: "approve-reads",
     },
   },
 }).build(({ input, agents, meta, step }) => {
-  const primaryReviews = step("primary_reviews").parallel({
-    maxConcurrency: 2,
+  const reviews = step("worker_reviews").parallel({
+    maxConcurrency: 4,
     branches: {
-      pi: {
+      alpha: {
         do: ({ step }) => {
-          const review = step("pi_review").agent({
+          const review = step("alpha_review").agent({
             outputSchema: ReviewOutput,
             run: {
-              agent: agents.pi,
+              agent: agents.alpha,
               cwd: meta.workspaceDir,
-              sessionKey: "pi-review",
+              sessionKey: "alpha-review",
               prompt: md`
-                You are the Pi primary reviewer.
+                You are Alpha. Your lens is correctness and feasibility.
+
+                Work independently. Do not assume what any other reviewer will say.
+                Focus on whether the subject is technically correct, coherent,
+                feasible, and supported by the given context.
 
                 Subject:
                 ${input.subject}
@@ -71,9 +84,9 @@ export default defineWorkflow({
                 Criteria:
                 ${input.criteria}
 
-                Produce an independent review. Set agent to "pi". Use confidence
-                as a 0 to 1 score. Be specific about evidence, assumptions, risks,
-                and recommended changes. Return JSON matching the declared schema.
+                Return JSON matching the declared schema. Use each field as a
+                concise natural-language paragraph. Do not split content into
+                arrays or nested structures.
               `,
             },
             timeout: "45m",
@@ -82,16 +95,20 @@ export default defineWorkflow({
           return { review: review.output };
         },
       },
-      claude: {
+      beta: {
         do: ({ step }) => {
-          const review = step("claude_review").agent({
+          const review = step("beta_review").agent({
             outputSchema: ReviewOutput,
             run: {
-              agent: agents.claude,
+              agent: agents.beta,
               cwd: meta.workspaceDir,
-              sessionKey: "claude-review",
+              sessionKey: "beta-review",
               prompt: md`
-                You are the Claude primary reviewer.
+                You are Beta. Your lens is risks and edge cases.
+
+                Work independently. Do not assume what any other reviewer will say.
+                Look for failure modes, hidden assumptions, operational risks,
+                ambiguous requirements, and edge cases that could be missed.
 
                 Subject:
                 ${input.subject}
@@ -105,10 +122,86 @@ export default defineWorkflow({
                 Criteria:
                 ${input.criteria}
 
-                Produce an independent review. Set agent to "claude". Use
-                confidence as a 0 to 1 score. Be specific about evidence,
-                assumptions, risks, and recommended changes. Return JSON matching
-                the declared schema.
+                Return JSON matching the declared schema. Use each field as a
+                concise natural-language paragraph. Do not split content into
+                arrays or nested structures.
+              `,
+            },
+            timeout: "45m",
+          });
+
+          return { review: review.output };
+        },
+      },
+      gamma: {
+        do: ({ step }) => {
+          const review = step("gamma_review").agent({
+            outputSchema: ReviewOutput,
+            run: {
+              agent: agents.gamma,
+              cwd: meta.workspaceDir,
+              sessionKey: "gamma-review",
+              prompt: md`
+                You are Gamma. Your lens is rubric compliance.
+
+                Work independently. Do not assume what any other reviewer will say.
+                Check the subject against the rubric and criteria directly. Call
+                out gaps, partial matches, overclaims, and ambiguous compliance.
+
+                Subject:
+                ${input.subject}
+
+                Context:
+                ${input.context}
+
+                Rubric:
+                ${input.rubric}
+
+                Criteria:
+                ${input.criteria}
+
+                Return JSON matching the declared schema. Use each field as a
+                concise natural-language paragraph. Do not split content into
+                arrays or nested structures.
+              `,
+            },
+            timeout: "45m",
+          });
+
+          return { review: review.output };
+        },
+      },
+      delta: {
+        do: ({ step }) => {
+          const review = step("delta_review").agent({
+            outputSchema: ReviewOutput,
+            run: {
+              agent: agents.delta,
+              cwd: meta.workspaceDir,
+              sessionKey: "delta-review",
+              prompt: md`
+                You are Delta. Your lens is evidence and missing assumptions.
+
+                Work independently. Do not assume what any other reviewer will say.
+                Separate what is supported from what is inferred. Identify missing
+                evidence, untested assumptions, and places where the conclusion
+                needs stronger grounding.
+
+                Subject:
+                ${input.subject}
+
+                Context:
+                ${input.context}
+
+                Rubric:
+                ${input.rubric}
+
+                Criteria:
+                ${input.criteria}
+
+                Return JSON matching the declared schema. Use each field as a
+                concise natural-language paragraph. Do not split content into
+                arrays or nested structures.
               `,
             },
             timeout: "45m",
@@ -120,25 +213,27 @@ export default defineWorkflow({
     },
   });
 
-  const adversarialChecks = step("adversarial_checks").parallel({
-    maxConcurrency: 2,
+  const critiques = step("adversarial_critiques").parallel({
+    maxConcurrency: 4,
     branches: {
-      claude_checks_pi: {
+      alpha: {
         do: ({ step }) => {
-          const verification = step("claude_verify_pi").agent({
-            outputSchema: VerificationOutput,
+          const critique = step("alpha_critique").agent({
+            outputSchema: CritiqueOutput,
             run: {
-              agent: agents.claude,
+              agent: agents.alpha,
               cwd: meta.workspaceDir,
-              sessionKey: "claude-verify-pi",
+              sessionKey: "alpha-critique",
               prompt: md`
-                You are the adversarial verifier for the Pi review.
+                You are Alpha. Now act as a red-team critic.
+
+                Attack the other workers' reviews. Do not merely summarize them.
+                Find weak evidence, missed issues, overconfidence, contradictions,
+                and rubric coverage gaps. You may note self-corrections, but your
+                primary target is Beta, Gamma, and Delta.
 
                 Subject:
                 ${input.subject}
-
-                Context:
-                ${input.context}
 
                 Rubric:
                 ${input.rubric}
@@ -146,38 +241,42 @@ export default defineWorkflow({
                 Criteria:
                 ${input.criteria}
 
-                Pi review to verify:
-                ${primaryReviews.output.pi.review}
+                Worker reviews:
+                Alpha: ${reviews.output.alpha.review}
+                Beta: ${reviews.output.beta.review}
+                Gamma: ${reviews.output.gamma.review}
+                Delta: ${reviews.output.delta.review}
 
-                Attack the review against the rubric. Look for missed issues,
-                unsupported claims, weak evidence, and gaps in the criteria.
-                Set reviewedAgent to "pi" and verifierAgent to "claude".
-                Set accepted to true only if the review satisfies the rubric.
-                Score from 0 to 5. Return JSON matching the declared schema.
+                Return JSON matching the declared schema. Use each field as a
+                concise natural-language paragraph. Do not split content into
+                arrays or nested structures. Do not output scores or acceptance
+                decisions.
               `,
             },
             timeout: "45m",
           });
 
-          return { verification: verification.output };
+          return { critique: critique.output };
         },
       },
-      pi_checks_claude: {
+      beta: {
         do: ({ step }) => {
-          const verification = step("pi_verify_claude").agent({
-            outputSchema: VerificationOutput,
+          const critique = step("beta_critique").agent({
+            outputSchema: CritiqueOutput,
             run: {
-              agent: agents.pi,
+              agent: agents.beta,
               cwd: meta.workspaceDir,
-              sessionKey: "pi-verify-claude",
+              sessionKey: "beta-critique",
               prompt: md`
-                You are the adversarial verifier for the Claude review.
+                You are Beta. Now act as a red-team critic.
+
+                Attack the other workers' reviews. Do not merely summarize them.
+                Find weak evidence, missed issues, overconfidence, contradictions,
+                and rubric coverage gaps. You may note self-corrections, but your
+                primary target is Alpha, Gamma, and Delta.
 
                 Subject:
                 ${input.subject}
-
-                Context:
-                ${input.context}
 
                 Rubric:
                 ${input.rubric}
@@ -185,54 +284,171 @@ export default defineWorkflow({
                 Criteria:
                 ${input.criteria}
 
-                Claude review to verify:
-                ${primaryReviews.output.claude.review}
+                Worker reviews:
+                Alpha: ${reviews.output.alpha.review}
+                Beta: ${reviews.output.beta.review}
+                Gamma: ${reviews.output.gamma.review}
+                Delta: ${reviews.output.delta.review}
 
-                Attack the review against the rubric. Look for missed issues,
-                unsupported claims, weak evidence, and gaps in the criteria.
-                Set reviewedAgent to "claude" and verifierAgent to "pi".
-                Set accepted to true only if the review satisfies the rubric.
-                Score from 0 to 5. Return JSON matching the declared schema.
+                Return JSON matching the declared schema. Use each field as a
+                concise natural-language paragraph. Do not split content into
+                arrays or nested structures. Do not output scores or acceptance
+                decisions.
               `,
             },
             timeout: "45m",
           });
 
-          return { verification: verification.output };
+          return { critique: critique.output };
+        },
+      },
+      gamma: {
+        do: ({ step }) => {
+          const critique = step("gamma_critique").agent({
+            outputSchema: CritiqueOutput,
+            run: {
+              agent: agents.gamma,
+              cwd: meta.workspaceDir,
+              sessionKey: "gamma-critique",
+              prompt: md`
+                You are Gamma. Now act as a red-team critic.
+
+                Attack the other workers' reviews. Do not merely summarize them.
+                Find weak evidence, missed issues, overconfidence, contradictions,
+                and rubric coverage gaps. You may note self-corrections, but your
+                primary target is Alpha, Beta, and Delta.
+
+                Subject:
+                ${input.subject}
+
+                Rubric:
+                ${input.rubric}
+
+                Criteria:
+                ${input.criteria}
+
+                Worker reviews:
+                Alpha: ${reviews.output.alpha.review}
+                Beta: ${reviews.output.beta.review}
+                Gamma: ${reviews.output.gamma.review}
+                Delta: ${reviews.output.delta.review}
+
+                Return JSON matching the declared schema. Use each field as a
+                concise natural-language paragraph. Do not split content into
+                arrays or nested structures. Do not output scores or acceptance
+                decisions.
+              `,
+            },
+            timeout: "45m",
+          });
+
+          return { critique: critique.output };
+        },
+      },
+      delta: {
+        do: ({ step }) => {
+          const critique = step("delta_critique").agent({
+            outputSchema: CritiqueOutput,
+            run: {
+              agent: agents.delta,
+              cwd: meta.workspaceDir,
+              sessionKey: "delta-critique",
+              prompt: md`
+                You are Delta. Now act as a red-team critic.
+
+                Attack the other workers' reviews. Do not merely summarize them.
+                Find weak evidence, missed issues, overconfidence, contradictions,
+                and rubric coverage gaps. You may note self-corrections, but your
+                primary target is Alpha, Beta, and Gamma.
+
+                Subject:
+                ${input.subject}
+
+                Rubric:
+                ${input.rubric}
+
+                Criteria:
+                ${input.criteria}
+
+                Worker reviews:
+                Alpha: ${reviews.output.alpha.review}
+                Beta: ${reviews.output.beta.review}
+                Gamma: ${reviews.output.gamma.review}
+                Delta: ${reviews.output.delta.review}
+
+                Return JSON matching the declared schema. Use each field as a
+                concise natural-language paragraph. Do not split content into
+                arrays or nested structures. Do not output scores or acceptance
+                decisions.
+              `,
+            },
+            timeout: "45m",
+          });
+
+          return { critique: critique.output };
         },
       },
     },
   });
 
-  const accepted = every([
-    where(adversarialChecks.output.claude_checks_pi.verification, {
-      accepted: true,
-      score: { gte: input.minimumScore },
-    }),
-    where(adversarialChecks.output.pi_checks_claude.verification, {
-      accepted: true,
-      score: { gte: input.minimumScore },
-    }),
-  ]);
+  const synthesis = step("synthesize_result").agent({
+    outputSchema: SynthesisOutput,
+    run: {
+      agent: agents.synthesizer,
+      cwd: meta.workspaceDir,
+      sessionKey: "synthesizer",
+      prompt: md`
+        You are the synthesizer for an adversarial review workflow.
 
-  step("require_adversarial_acceptance").assert({
-    condition: accepted,
-    message: md`
-      Adversarial verification failed.
+        Produce the overall result. Do not average opinions mechanically. Weigh
+        the blind reviews against the red-team critiques, identify which concerns
+        are well-supported, and separate consensus from unresolved disagreement.
 
-      Claude checking Pi:
-      ${adversarialChecks.output.claude_checks_pi.verification}
+        Subject:
+        ${input.subject}
 
-      Pi checking Claude:
-      ${adversarialChecks.output.pi_checks_claude.verification}
-    `,
+        Context:
+        ${input.context}
+
+        Rubric:
+        ${input.rubric}
+
+        Criteria:
+        ${input.criteria}
+
+        Blind worker reviews:
+        Alpha: ${reviews.output.alpha.review}
+        Beta: ${reviews.output.beta.review}
+        Gamma: ${reviews.output.gamma.review}
+        Delta: ${reviews.output.delta.review}
+
+        Adversarial critiques:
+        Alpha: ${critiques.output.alpha.critique}
+        Beta: ${critiques.output.beta.critique}
+        Gamma: ${critiques.output.gamma.critique}
+        Delta: ${critiques.output.delta.critique}
+
+        Return JSON matching the declared schema. Use each field as a concise
+        natural-language paragraph. Do not split content into arrays or nested
+        structures.
+      `,
+    },
+    timeout: "45m",
   });
 
   return {
-    accepted,
-    piReview: primaryReviews.output.pi.review,
-    claudeReview: primaryReviews.output.claude.review,
-    claudeChecksPi: adversarialChecks.output.claude_checks_pi.verification,
-    piChecksClaude: adversarialChecks.output.pi_checks_claude.verification,
+    synthesis: synthesis.output,
+    reviews: {
+      alpha: reviews.output.alpha.review,
+      beta: reviews.output.beta.review,
+      gamma: reviews.output.gamma.review,
+      delta: reviews.output.delta.review,
+    },
+    critiques: {
+      alpha: critiques.output.alpha.critique,
+      beta: critiques.output.beta.critique,
+      gamma: critiques.output.gamma.critique,
+      delta: critiques.output.delta.critique,
+    },
   };
 });

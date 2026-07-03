@@ -5,6 +5,8 @@ import { runSourceCli } from "./support/cli-runner.js";
 import { copyWorkflowFixture } from "./support/fixtures.js";
 import { withTestWorkspace } from "./support/workspace.js";
 
+const runIdPattern = /^\d{14}[A-F0-9]{20}$/;
+
 describe.concurrent("acpus runs inspect smoke", () => {
   it("inspects, lists, and validates fork agent overrides for an admitted run", async () => {
     await withTestWorkspace("runs-inspect", async workspace => {
@@ -51,8 +53,8 @@ describe.concurrent("acpus runs inspect smoke", () => {
 
       expect(forked.exitCode).toBe(0);
       const forkRunId = JSON.parse(forked.stdout).forkRunId;
-      expect(forkRunId).toMatch(/^run_/);
-      const db = new DatabaseSync(join(workspace, ".acpus", "state", "runtime.db"));
+      expect(forkRunId).toMatch(runIdPattern);
+      const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
       try {
         const row = db.prepare("SELECT payload_json FROM run_events WHERE run_id = ? AND type = 'run.forked'").get(forkRunId) as { payload_json?: string } | undefined;
         expect(JSON.parse(String(row?.payload_json))).toMatchObject({ sourceRunId: runId, unsafeReuse: true });

@@ -34,7 +34,7 @@ describe.concurrent("acpus workflows check preparation failure smoke", () => {
         ok: false,
         phase: "validate",
       });
-      await expect(access(join(workspace, ".acpus", "state", "runtime.db"))).rejects.toThrow();
+      await expect(access(join(workspace, ".acpus", ".local", "state", "runtime.db"))).rejects.toThrow();
     });
   });
 
@@ -49,7 +49,7 @@ describe.concurrent("acpus workflows check preparation failure smoke", () => {
         ok: false,
         phase: "usage",
       });
-      await expect(access(join(workspace, ".acpus", "state", "runtime.db"))).rejects.toThrow();
+      await expect(access(join(workspace, ".acpus", ".local", "state", "runtime.db"))).rejects.toThrow();
     });
   });
 });
