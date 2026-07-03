@@ -1,6 +1,8 @@
 export { isExpr, type Expr, type OutputAccessor, type WorkflowValue } from "./internal/expr.js";
 import { accessor, callExpr, isExpr, valueToExprIR, varExpr } from "./internal/expr.js";
+import { WHERE_OPERATOR_KEY_SET } from "./internal/operators.js";
 import type { Expr, OutputAccessor, WorkflowValue } from "./internal/expr.js";
+import type { WhereOperatorKey } from "./internal/operators.js";
 import type { ExprIR } from "./ir.js";
 
 type Predicate<T> = (value: OutputAccessor<T>, index: OutputAccessor<number>) => WorkflowValue<boolean>;
@@ -34,7 +36,6 @@ type ObjectAccessor<T> = NonNullable<T> extends object
   ? NonNullable<T> extends readonly unknown[] ? never : OutputAccessor<T>
   : never;
 type AccessorKey<T> = Exclude<Extract<keyof NonNullable<T>, string>, keyof Expr<any>>;
-type WhereOperatorKey = "eq" | "ne" | "lt" | "lte" | "gt" | "gte" | "contains" | "startsWith" | "endsWith" | "matches" | "length";
 type WhereFieldKey<T> = Exclude<AccessorKey<T>, WhereOperatorKey>;
 type ReservedWhereFieldKey<T> = Extract<Extract<keyof NonNullable<T>, string>, WhereOperatorKey | keyof Expr<any>>;
 type ObjectWhere<T> = {
@@ -158,7 +159,7 @@ function lowerWhere(target: unknown, filter: unknown): Expr<boolean> {
   const entries = Object.entries(filter);
   if (entries.length === 0) throw new Error("where(target, filter) requires at least one filter entry.");
   if (isObjectTyped(target)) return lowerObjectWhere(target, filter);
-  if (entries.every(([key]) => WHERE_OPERATOR_KEYS.has(key))) return lowerWhereOperators(target, filter);
+  if (entries.every(([key]) => WHERE_OPERATOR_KEY_SET.has(key as WhereOperatorKey))) return lowerWhereOperators(target, filter);
   return lowerObjectWhere(target, filter);
 }
 
@@ -167,7 +168,7 @@ function lowerObjectWhere(target: unknown, filter: unknown): Expr<boolean> {
   const entries = Object.entries(filter);
   if (entries.length === 0) throw new Error("where(target, filter) requires at least one filter entry.");
   const clauses = entries.map(([key, value]) => {
-    if (WHERE_OPERATOR_KEYS.has(key) || RESERVED_ACCESSOR_KEYS.has(key)) throw new Error(`where(target, filter) cannot use reserved filter key '${key}'.`);
+    if (WHERE_OPERATOR_KEY_SET.has(key as WhereOperatorKey) || RESERVED_ACCESSOR_KEYS.has(key)) throw new Error(`where(target, filter) cannot use reserved filter key '${key}'.`);
     return lowerWhere((target as Record<string, unknown>)[key], value);
   });
   return clauses.length === 1 ? clauses[0]! : and(...clauses);
@@ -199,7 +200,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
-const WHERE_OPERATOR_KEYS = new Set(["eq", "ne", "lt", "lte", "gt", "gte", "contains", "startsWith", "endsWith", "matches", "length"]);
 const RESERVED_ACCESSOR_KEYS = new Set(["__ir", "__type"]);
 
 function isObjectTyped(value: unknown): boolean {

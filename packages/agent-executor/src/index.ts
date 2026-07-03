@@ -347,13 +347,8 @@ function summarizePromptOutput(stdout: string, options?: PromptSummaryOptions): 
   const tools = new Map<string, AgentToolCallTelemetry>();
   let context: AgentContextTelemetry | undefined;
   let tokenUsage: AgentTokenUsageTelemetry | undefined;
-  for (const raw of stdout.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line) continue;
-    let event: unknown;
-    try {
-      event = JSON.parse(line) as unknown;
-    } catch {
+  for (const { line, event } of acpxJsonLines(stdout)) {
+    if (event === undefined) {
       malformedLine ??= line;
       continue;
     }
@@ -471,15 +466,10 @@ function rawInputPreview(update: Record<string, any>): AgentIoPreview | undefine
 }
 
 function extractAcpxRecordId(stdout: string): string | undefined {
-  for (const raw of stdout.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line) continue;
-    try {
-      const event = JSON.parse(line) as unknown;
-      if (isRecord(event) && typeof event.acpxRecordId === "string") return event.acpxRecordId;
-      const result = isRecord(event) && isRecord(event.result) ? event.result : undefined;
-      if (typeof result?.acpxRecordId === "string") return result.acpxRecordId;
-    } catch {}
+  for (const { event } of acpxJsonLines(stdout)) {
+    if (isRecord(event) && typeof event.acpxRecordId === "string") return event.acpxRecordId;
+    const result = isRecord(event) && isRecord(event.result) ? event.result : undefined;
+    if (typeof result?.acpxRecordId === "string") return result.acpxRecordId;
   }
   return undefined;
 }
@@ -556,15 +546,7 @@ function boundedTail(value: string, max = 4000): string {
 }
 
 function extractHumanError(value: string): string {
-  for (const raw of value.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line) continue;
-    let event: unknown;
-    try {
-      event = JSON.parse(line) as unknown;
-    } catch {
-      continue;
-    }
+  for (const { event } of acpxJsonLines(value)) {
     const message = jsonRpcErrorMessage(event);
     if (message) return boundedTail(message);
   }
@@ -579,16 +561,19 @@ function jsonRpcErrorMessage(event: unknown): string | undefined {
 }
 
 function nonJsonTail(value: string): string {
-  return boundedTail(value.split(/\r?\n/).filter(line => {
-    const trimmed = line.trim();
-    if (!trimmed) return false;
+  return boundedTail([...acpxJsonLines(value)].filter(line => line.event === undefined).map(line => line.raw).join("\n"));
+}
+
+function* acpxJsonLines(value: string): Generator<{ raw: string; line: string; event?: unknown }> {
+  for (const raw of value.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
     try {
-      JSON.parse(trimmed);
-      return false;
+      yield { raw, line, event: JSON.parse(line) as unknown };
     } catch {
-      return true;
+      yield { raw, line };
     }
-  }).join("\n"));
+  }
 }
 
 function killProcess(pid: number | undefined, signal: NodeJS.Signals = "SIGTERM"): void {

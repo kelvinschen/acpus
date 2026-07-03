@@ -1,13 +1,11 @@
+import { EXPRESSION_OPERATORS } from "./internal/operators.js";
+import type { OperatorSpec } from "./internal/operators.js";
+
 export type ExpressionDiagnostic = {
   code: `EX${number}`;
   severity: "error" | "warning" | "info";
   message: string;
   path?: string;
-};
-
-type OperatorSpec = {
-  arity: number[] | { min: number };
-  lambdaArgs: Set<number>;
 };
 
 export function validateExprIR(expr: unknown): ExpressionDiagnostic[] {
@@ -89,7 +87,7 @@ function validateCall(expr: Record<string, unknown>, diagnostics: ExpressionDiag
     diagnostics.push(error("EX002", "Expression call fn must be a string.", `${path}.fn`));
     return;
   }
-  const spec = OPERATORS[expr.fn];
+  const spec = EXPRESSION_OPERATORS[expr.fn];
   if (!spec) {
     diagnostics.push(error("EX001", `Unknown expression operator '${expr.fn}'.`, `${path}.fn`));
     return;
@@ -330,29 +328,3 @@ function isJsonValue(value: unknown, seen = new Set<object>()): boolean {
 function formatArity(arity: number[]): string {
   return arity.length === 1 ? String(arity[0]) : arity.join(" or ");
 }
-
-const OPERATORS: Record<string, OperatorSpec> = {
-  not: { arity: [1], lambdaArgs: new Set() },
-  and: { arity: { min: 0 }, lambdaArgs: new Set() },
-  or: { arity: { min: 0 }, lambdaArgs: new Set() },
-  ifElse: { arity: [3], lambdaArgs: new Set() },
-  eq: { arity: [2], lambdaArgs: new Set() },
-  ne: { arity: [2], lambdaArgs: new Set() },
-  lt: { arity: [2], lambdaArgs: new Set() },
-  lte: { arity: [2], lambdaArgs: new Set() },
-  gt: { arity: [2], lambdaArgs: new Set() },
-  gte: { arity: [2], lambdaArgs: new Set() },
-  len: { arity: [1], lambdaArgs: new Set() },
-  includes: { arity: [2], lambdaArgs: new Set() },
-  startsWith: { arity: [2], lambdaArgs: new Set() },
-  endsWith: { arity: [2], lambdaArgs: new Set() },
-  matches: { arity: [2], lambdaArgs: new Set() },
-  coalesce: { arity: { min: 1 }, lambdaArgs: new Set() },
-  get: { arity: [2], lambdaArgs: new Set() },
-  every: { arity: [1, 2], lambdaArgs: new Set([1]) },
-  some: { arity: [1, 2], lambdaArgs: new Set([1]) },
-  filter: { arity: [2], lambdaArgs: new Set([1]) },
-  map: { arity: [2], lambdaArgs: new Set([1]) },
-  max: { arity: [1], lambdaArgs: new Set() },
-  min: { arity: [1], lambdaArgs: new Set() },
-};

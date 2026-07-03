@@ -1,4 +1,4 @@
-import type { AgentNodeIR, NodeIR, TaskNodeIR, WorkflowIR } from "@acpus/core/ir";
+import type { AgentNodeIR, TaskNodeIR, WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
 import { AgentNodeCancelledError, AgentNodeTimeoutError, executeAgentNode } from "../execution/agent-node.js";
@@ -10,6 +10,7 @@ import type { NodeAttemptContext, NodeExecutor } from "./advance.js";
 import { scopeForNodeAttempt } from "./scope.js";
 import { throwSchedulerStoreResult, type AttemptCommitInput, type SchedulerStoreResult } from "./store-port.js";
 import type { SchedulerProjection } from "./types.js";
+import { indexNodes } from "./ir-walk.js";
 
 export type RuntimeNodeExecutorInput = {
   cwd: string;
@@ -80,22 +81,4 @@ function scopeForAttempt(base: EvaluationScope, projection: SchedulerProjection,
 function completedResult(output: unknown): AttemptCommitInput["result"] {
   assertWorkflowData(output, "Node output");
   return output === undefined ? { status: "completed" } : { status: "completed", output: output as JsonValue };
-}
-
-function indexNodes(scope: WorkflowIR["root"], nodes = new Map<string, NodeIR>()): Map<string, NodeIR> {
-  for (const node of scope.nodes) {
-    nodes.set(node.id, node);
-    if (node.kind === "if") {
-      indexNodes(node.then, nodes);
-      if (node.else) indexNodes(node.else, nodes);
-    } else if (node.kind === "switch") {
-      for (const c of node.cases) indexNodes(c.then, nodes);
-      if (node.default) indexNodes(node.default, nodes);
-    } else if (node.kind === "parallel") {
-      for (const branch of Object.values(node.branches)) indexNodes(branch.scope, nodes);
-    } else if (node.kind === "fanout" || node.kind === "loop") {
-      indexNodes(node.do, nodes);
-    }
-  }
-  return nodes;
 }

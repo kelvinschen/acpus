@@ -29,15 +29,7 @@ type AnalyzeContext = {
 };
 
 export async function analyzeWorkflowTasks(workflowFile: string, source: string): Promise<WorkflowTaskAnalysis> {
-  const sourceFile = parseSourceFile(workflowFile, source);
-  const imports = collectImportBindings(sourceFile);
-  const locals = collectLocalValueNames(sourceFile);
-  const localExports = collectWorkflowTaskExports(sourceFile);
-  const analysis: WorkflowTaskAnalysis = new Map();
-  for (const callsite of findTaskCallsites(sourceFile)) {
-    setAnalyzedCallsite(analysis, callsite, await analyzeCallsite(callsite, { workflowFile, imports, locals, localExports }));
-  }
-  return analysis;
+  return analyzeWorkflowTasksSync(workflowFile, source);
 }
 
 export function analyzeWorkflowTasksSync(workflowFile: string, source: string): WorkflowTaskAnalysis {
@@ -47,7 +39,7 @@ export function analyzeWorkflowTasksSync(workflowFile: string, source: string): 
   const localExports = collectWorkflowTaskExports(sourceFile);
   const analysis: WorkflowTaskAnalysis = new Map();
   for (const callsite of findTaskCallsites(sourceFile)) {
-    setAnalyzedCallsite(analysis, callsite, analyzeCallsiteSync(callsite, { workflowFile, imports, locals, localExports }));
+    setAnalyzedCallsite(analysis, callsite, analyzeCallsite(callsite, { workflowFile, imports, locals, localExports }));
   }
   return analysis;
 }
@@ -69,39 +61,16 @@ export function resolveTaskReferenceMetadata(analysis: WorkflowTaskAnalysis): Ma
   return metadata;
 }
 
-async function analyzeCallsite(callsite: TaskCallsite, ctx: AnalyzeContext): Promise<AnalyzedTask> {
+function analyzeCallsite(callsite: TaskCallsite, ctx: AnalyzeContext): AnalyzedTask {
   const run = objectProperty(callsite.options, "run");
   const taskValue = run && ts.isObjectLiteralExpression(run) ? objectProperty(run, "task") : undefined;
-  if (taskValue) return withIssueSource(await analyzeReusable(taskValue, ctx), callsite);
+  if (taskValue) return withIssueSource(analyzeReusable(taskValue, ctx), callsite);
   const exec = execFunction(callsite.options);
   if (exec) return withIssueSource(analyzeInline(exec), callsite);
   return { inline: true };
 }
 
-function analyzeCallsiteSync(callsite: TaskCallsite, ctx: AnalyzeContext): AnalyzedTask {
-  const run = objectProperty(callsite.options, "run");
-  const taskValue = run && ts.isObjectLiteralExpression(run) ? objectProperty(run, "task") : undefined;
-  if (taskValue) return withIssueSource(analyzeReusableSync(taskValue, ctx), callsite);
-  const exec = execFunction(callsite.options);
-  if (exec) return withIssueSource(analyzeInline(exec), callsite);
-  return { inline: true };
-}
-
-async function analyzeReusable(taskValue: ts.Expression, ctx: AnalyzeContext): Promise<AnalyzedTask> {
-  if (!ts.isIdentifier(taskValue)) {
-    return reusableIssue({ kind: "invalid-reusable-task-reference" });
-  }
-  const local = analyzeLocalReusable(taskValue, ctx);
-  if (local) return local;
-  const name = taskValue.text;
-  const binding = ctx.imports.get(name);
-  if (!binding) {
-    return reusableIssue({ kind: "invalid-reusable-task-reference", name });
-  }
-  return reusableMetadata(binding.specifier, binding.importedName);
-}
-
-function analyzeReusableSync(taskValue: ts.Expression, ctx: AnalyzeContext): AnalyzedTask {
+function analyzeReusable(taskValue: ts.Expression, ctx: AnalyzeContext): AnalyzedTask {
   if (!ts.isIdentifier(taskValue)) {
     return reusableIssue({ kind: "invalid-reusable-task-reference" });
   }

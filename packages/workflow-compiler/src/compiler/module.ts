@@ -3,10 +3,11 @@ import { readFile } from "node:fs/promises";
 import { resolve, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { compileWorkflowDefinition, isWorkflowDefinition } from "@acpus/core/workflow";
-import { validateWorkflowIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
+import { validateWorkflowIR, type WorkflowIR } from "@acpus/core/ir";
 import { analyzeWorkflowTasks, resolveTaskReferenceMetadata, type TaskReferenceMetadata } from "../task-analysis/index.js";
 import { err, ok, Result, ResultAsync, type Result as NeverthrowResult } from "neverthrow";
 import { registerOfficialAuthoringImports } from "../official-imports.js";
+import { forEachTaskNode } from "./ir-walk.js";
 
 export type CompileOptions = {
   sourcePath?: string;
@@ -92,10 +93,10 @@ function importWorkflowModule(absolute: string): Promise<Record<string, unknown>
 }
 
 function applyTaskReferenceMetadata(ir: WorkflowIR, metadata: Map<string, TaskReferenceMetadata>, referrerPath: string): void {
-  for (const node of taskNodes(ir.root)) {
-    if (node.run.target.kind !== "module") continue;
+  forEachTaskNode(ir.root, node => {
+    if (node.run.target.kind !== "module") return;
     const task = metadata.get(node.id);
-    if (!task?.specifier || !task.exportName) continue;
+    if (!task?.specifier || !task.exportName) return;
     node.run.target = {
       kind: "module",
       runtime: "node",
@@ -103,24 +104,7 @@ function applyTaskReferenceMetadata(ir: WorkflowIR, metadata: Map<string, TaskRe
       exportName: task.exportName,
       referrer: { kind: "workflow", path: referrerPath },
     };
-  }
-}
-
-function* taskNodes(scope: ScopeIR): Generator<Extract<ScopeIR["nodes"][number], { kind: "task" }>> {
-  for (const node of scope.nodes) {
-    if (node.kind === "task") yield node;
-    if (node.kind === "if") {
-      yield* taskNodes(node.then);
-      if (node.else) yield* taskNodes(node.else);
-    } else if (node.kind === "switch") {
-      for (const item of node.cases) yield* taskNodes(item.then);
-      if (node.default) yield* taskNodes(node.default);
-    } else if (node.kind === "parallel") {
-      for (const branch of Object.values(node.branches)) yield* taskNodes(branch.scope);
-    } else if (node.kind === "fanout" || node.kind === "loop") {
-      yield* taskNodes(node.do);
-    }
-  }
+  });
 }
 
 function toContainedWorkspacePath(cwd: string, workflowFile: string): NeverthrowResult<string, CompileWorkflowModuleError> {
