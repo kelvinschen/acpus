@@ -39,6 +39,11 @@ stable CLI phases and exit codes.
   as a replacement workflow module for the fork.
 - The CLI MUST support `acpus runs fork <run-id> --input <json>` and
   `--agents <json>`.
+- The CLI MUST support `acpus runs fork <run-id> --target <run-target>` and
+  MUST reject an empty fork target before runtime mutation.
+- The CLI MUST support `acpus runs fork <run-id> --unsafe-reuse` as an explicit
+  dangerous targeted fork option that may reuse completed prerequisites despite
+  workflow, input, or signature changes.
 - The CLI MUST support top-level `acpus doctor`.
 - The CLI MUST support global `--json` before or after command names.
 - The CLI MUST keep help on `-h` and `--help` and MUST NOT expose an
@@ -158,6 +163,8 @@ stable CLI phases and exit codes.
 - Tests MUST cover compact text rendering for run inspection and JSON detail
   preservation.
 - Tests MUST cover signal command wiring through `--target`.
+- Tests MUST cover fork command wiring through `--target`, `--unsafe-reuse`,
+  and empty fork target usage rejection.
 - Tests MUST cover cancel command wiring and bounded control output.
 - Tests MUST cover workflow catalog discovery, scope filtering, stable ordering,
   ambiguity handling, catalog-backed check and run, global materialization,

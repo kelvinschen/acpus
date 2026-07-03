@@ -5,7 +5,7 @@ import { runSourceCli } from "./support/cli-runner.js";
 import { copyWorkflowFixture } from "./support/fixtures.js";
 import { withTestWorkspace } from "./support/workspace.js";
 
-describe("acpus workflows check preparation failure smoke", () => {
+describe.concurrent("acpus workflows check preparation failure smoke", () => {
   it("reports workflow check failures through the CLI phase mapping", async () => {
     await withTestWorkspace("run-check", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/invalid/type-error.workflow.fixture", "type-error.workflow.ts");

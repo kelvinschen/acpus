@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { runSourceCli } from "./support/cli-runner.js";
 import { copyWorkflowFixture } from "./support/fixtures.js";
 import { withTestWorkspace } from "./support/workspace.js";
 
-describe("acpus runs inspect smoke", () => {
-  it("inspects and lists an admitted run", async () => {
+describe.concurrent("acpus runs inspect smoke", () => {
+  it("inspects, lists, and validates fork agent overrides for an admitted run", async () => {
     await withTestWorkspace("runs-inspect", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts");
       const admitted = await runSourceCli(workspace, ["workflows", "run", workflow, "--input", "{\"ready\":true}", "--json"]);
@@ -13,15 +15,6 @@ describe("acpus runs inspect smoke", () => {
 
       await expectInspectRun(workspace, runId);
       await expectListRuns(workspace, runId);
-    });
-  }, 15_000);
-
-  it("passes fork agent overrides to runtime validation", async () => {
-    await withTestWorkspace("runs-fork-agents-validation", async workspace => {
-      const workflow = await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts");
-      const admitted = await runSourceCli(workspace, ["workflows", "run", workflow, "--input", "{\"ready\":true}", "--json"]);
-      expect(admitted.exitCode).toBe(0);
-      const runId = JSON.parse(admitted.stdout.trim().split("\n").at(-1)!).run.id;
 
       const forked = await runSourceCli(workspace, ["runs", "fork", runId, "--agents", "{\"reviewer\":{\"use\":\"codex\"}}", "--json"]);
 
@@ -31,6 +24,41 @@ describe("acpus runs inspect smoke", () => {
         phase: "control",
         message: "Agent override 'reviewer' does not reference a declared agent.",
       });
+    });
+  }, 15_000);
+
+  it("rejects an empty fork target", async () => {
+    await withTestWorkspace("runs-fork-empty-target", async workspace => {
+      const forked = await runSourceCli(workspace, ["runs", "fork", "run_missing", "--target", "", "--json"]);
+
+      expect(forked.exitCode).toBe(2);
+      expect(JSON.parse(forked.stdout)).toMatchObject({
+        ok: false,
+        phase: "usage",
+        message: "--target must be a non-empty string.",
+      });
+    });
+  }, 15_000);
+
+  it("passes unsafe fork reuse through to runtime audit events", async () => {
+    await withTestWorkspace("runs-fork-unsafe-reuse", async workspace => {
+      const workflow = await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts");
+      const admitted = await runSourceCli(workspace, ["workflows", "run", workflow, "--input", "{\"ready\":true}", "--json"]);
+      expect(admitted.exitCode).toBe(0);
+      const runId = JSON.parse(admitted.stdout.trim().split("\n").at(-1)!).run.id;
+
+      const forked = await runSourceCli(workspace, ["runs", "fork", runId, "--unsafe-reuse", "--json"]);
+
+      expect(forked.exitCode).toBe(0);
+      const forkRunId = JSON.parse(forked.stdout).forkRunId;
+      expect(forkRunId).toMatch(/^run_/);
+      const db = new DatabaseSync(join(workspace, ".acpus", "state", "runtime.db"));
+      try {
+        const row = db.prepare("SELECT payload_json FROM run_events WHERE run_id = ? AND type = 'run.forked'").get(forkRunId) as { payload_json?: string } | undefined;
+        expect(JSON.parse(String(row?.payload_json))).toMatchObject({ sourceRunId: runId, unsafeReuse: true });
+      } finally {
+        db.close();
+      }
     });
   }, 15_000);
 

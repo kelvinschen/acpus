@@ -213,7 +213,6 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       const input = await normalizeForkInput(workspace, inputSource.run.id, { value: "new" });
       if (input === undefined) throw new Error("expected fork input to normalize");
       const inputFork = await mutateRun(workspace, inputSource.run.id, "fork", { input });
-      expect(inputFork?.run.status).toBe("pending");
       const store2 = await openExistingWritableRuntimeStore(workspace);
       expect(store2).toBeDefined();
       try {
@@ -224,6 +223,48 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       await expect(getRun(workspace, inputFork!.run.id)).resolves.toMatchObject({ status: "completed", output: { value: "new" } });
     });
   }, 20_000);
+
+  it("reports targeted fork seed failures as typed runtime errors", async () => {
+    await withRuntimeWorkspace("runtime-fork-seed-typed-error", async workspace => {
+      const completed = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
+
+      const result = await tryMutateRun(workspace, completed.run.id, "fork", { target: "missing~abc" });
+
+      expect(result.isErr()).toBe(true);
+      if (result.isOk()) throw new Error("expected typed fork seed failure");
+      expect(result.error).toMatchObject({
+        type: "fork-seed-failed",
+        cause: {
+          type: "target-resolution-failure",
+          target: "missing~abc",
+        },
+      });
+    });
+  }, 15_000);
+
+  it("rejects empty fork targets at the durable command boundary", async () => {
+    await withRuntimeWorkspace("runtime-fork-empty-target-command", async workspace => {
+      const completed = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
+      const store = await openExistingWritableRuntimeStore(workspace);
+      expect(store).toBeDefined();
+      try {
+        expect(() => store!.submitCommand({
+          runId: completed.run.id,
+          type: "fork",
+          payload: { target: "" },
+          idempotencyKey: `test-empty-target:${completed.run.id}`,
+        })).toThrow("Fork command payload.target must be a non-empty string.");
+        expect(() => store!.submitCommand({
+          runId: completed.run.id,
+          type: "fork",
+          payload: { unsafeReuse: "yes" } as never,
+          idempotencyKey: `test-invalid-unsafe-reuse:${completed.run.id}`,
+        })).toThrow("Fork command payload.unsafeReuse must be a boolean.");
+      } finally {
+        store?.close();
+      }
+    });
+  }, 15_000);
 
   it("signals awaiting runs and rejects invalid signals without mutation", async () => {
     await withRuntimeWorkspace("runtime-signal", async workspace => {

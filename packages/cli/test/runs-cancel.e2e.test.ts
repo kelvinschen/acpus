@@ -3,7 +3,7 @@ import { runSourceCli } from "./support/cli-runner.js";
 import { copyWorkflowFixture } from "./support/fixtures.js";
 import { withTestWorkspace } from "./support/workspace.js";
 
-describe("acpus runs cancel smoke", () => {
+describe.concurrent("acpus runs cancel smoke", () => {
   it("cancels an awaiting scheduler run", async () => {
     await withTestWorkspace("runs-cancel", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/signals/signal.workflow.ts");

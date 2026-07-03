@@ -239,6 +239,49 @@
   `operator_cancelled` and MUST NOT reset unrelated runnable work.
 - Fork MUST create a new run from frozen source run data without reading live workflow source.
 - Fork MAY freeze a replacement prepared workflow and/or input override for the new run.
+- Fork command payloads MAY include a non-empty `target` string. Supplying a
+  target MUST select targeted replacement fork semantics, while omitting target
+  in targeted replacement fork mode MUST mean the workflow root completion target.
+- Fork command payloads MAY include `unsafeReuse: true`. Supplying
+  `unsafeReuse` MUST select targeted replacement fork semantics and instruct
+  seed planning to reuse scheduler-accepted completed facts without enforcing
+  source/replacement semantic signature or changed-input compatibility.
+- Targeted replacement fork MUST seed scheduler-visible replacement-run events
+  for compatible completed prerequisites selected by the implicit root
+  completion target, an explicitly resolved static leaf target, or a dynamic
+  `nodeKey` target whose replacement instance path can be proven, and MUST NOT
+  create fork-local `attempt.started` or `attempt.completed` events for
+  inherited work.
+- For the implicit root completion target, targeted replacement fork MAY reuse
+  only the accepted winner branch of a completed `race` parallel group and MAY
+  reuse accepted members of a completed `quorum` fanout only when the accepted
+  member order matches replacement natural materialization order.
+- Before an explicit downstream target, targeted replacement fork MAY
+  conservatively skip `race` and `quorum` prerequisite reuse and let the forked
+  run execute that group work normally.
+- Dynamic `nodeKey` fork targets MUST resolve to a replacement instance path
+  before seed planning can inherit prerequisites for them. If unseeded or
+  incompatible prerequisites keep the target from materializing during seed
+  planning but the replacement control path remains possible, the fork MAY be
+  admitted so those prerequisites run normally. If replacement materialization
+  proves the dynamic path impossible, the fork MUST fail before admission.
+- Targeted replacement fork MUST reject missing static targets, missing dynamic
+  `nodeKey` targets, and ambiguous static targets before creating a misleading
+  runnable fork. Static composite/control targets MUST seed only compatible
+  prerequisites before the target node and MUST NOT seed completed work inside
+  the target subtree.
+- Static targets inside dynamic fanout or loop expansion MUST be accepted only
+  when replacement materialization proves exactly one dynamic target instance.
+  Ambiguous fanout aliases and repeating loop aliases MUST fail before
+  admission and require a dynamic `nodeKey` target.
+- Targeted replacement fork with changed input MUST NOT inherit completed
+  source outputs, but SHOULD still initialize replacement scheduler
+  materialization so later runtime advancement starts from scheduler-visible
+  state.
+- Targeted replacement fork with `unsafeReuse: true` MAY inherit completed
+  source outputs despite changed input or workflow signature changes, but MUST
+  still honor target prerequisite closure, target non-seeding, replacement
+  materialization, artifact rewriting, and completed-only inheritance.
 - Fork MUST inherit source run agent overrides that still reference declared
   agents in the forked workflow. Fork-time agent overrides MUST merge over the
   inherited overrides using the same identity replacement rules as admission.
@@ -314,5 +357,5 @@
   default absence of raw ACP debug artifacts.
 - Tests MUST cover raw recovered schema-backed agent output artifacts and prove
   they remain diagnostic rather than workflow-visible output.
-- Tests MUST cover pause, resume, run retry, dynamic node retry, cancel, signal targeting and idempotency, fork, durable command rows, and fork artifact reachability.
+- Tests MUST cover pause, resume, run retry, dynamic node retry, cancel, signal targeting and idempotency, fork, targeted fork seed planning, unsafe targeted fork reuse, targeted fork missing/dynamic targets, static composite target subtree boundaries, durable command rows, and fork artifact reachability.
 - Tests MUST cover supervisor lease acquisition, active lease rejection, stale takeover, heartbeat fencing, release fencing, durable command consumption, and shutdown.

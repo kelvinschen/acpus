@@ -3,7 +3,7 @@ import { runSourceCli } from "./support/cli-runner.js";
 import { copyWorkflowFixture } from "./support/fixtures.js";
 import { withTestWorkspace } from "./support/workspace.js";
 
-describe("acpus workflows check validation failure smoke", () => {
+describe.concurrent("acpus workflows check validation failure smoke", () => {
   it("reports compiled IR diagnostics through the CLI phase mapping", async () => {
     await withTestWorkspace("run-validate", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/basic/malformed.workflow.ts");

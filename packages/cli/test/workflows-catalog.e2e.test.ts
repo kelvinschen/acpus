@@ -6,7 +6,7 @@ import { copyWorkflowFixture, fixturePath } from "./support/fixtures.js";
 import { repoRoot } from "./support/cli-runner.js";
 import { withTestWorkspace } from "./support/workspace.js";
 
-describe("workflow catalog e2e", () => {
+describe.concurrent("workflow catalog e2e", () => {
   it("checks a project catalog workflow", async () => {
     await withTestWorkspace("catalog-check-project", async workspace => {
       await mkdir(join(workspace, ".acpus", "workflows", "release"), { recursive: true });

@@ -164,6 +164,96 @@ describe.concurrent("runtime supervisor ticks", () => {
     });
   }, 15_000);
 
+  it("passes fork targets through command application", async () => {
+    await withRuntimeWorkspace("runtime-supervisor-fork-target-payload", async workspace => {
+      const completed = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
+      const store = await openExistingWritableRuntimeStore(workspace);
+      expect(store).toBeDefined();
+      let commandId = "";
+      try {
+        const command = store!.submitCommand({
+          runId: completed.run.id,
+          type: "fork",
+          payload: { target: "local_task", unsafeReuse: true },
+          idempotencyKey: `test-fork-target:${completed.run.id}`,
+        });
+        expect(command).toMatchObject({
+          type: "fork",
+          status: "pending",
+          payload: { target: "local_task", unsafeReuse: true },
+        });
+        commandId = command.id;
+        await expect(runSupervisorTick(workspace, store!)).resolves.toMatchObject({ commands: 1 });
+      } finally {
+        store?.close();
+      }
+      const forkCommand = runtimeRow(workspace, "SELECT status, payload_json FROM commands WHERE id = ?", commandId);
+      expect(forkCommand).toMatchObject({ status: "applied" });
+      const appliedPayload = JSON.parse(String(forkCommand?.payload_json));
+      expect(appliedPayload).toMatchObject({ target: "local_task", forkRunId: expect.stringMatching(/^run_/) });
+      const forkedEvent = runtimeRow(workspace, "SELECT payload_json FROM run_events WHERE run_id = ? AND type = 'run.forked'", appliedPayload.forkRunId);
+      expect(JSON.parse(String(forkedEvent?.payload_json))).toMatchObject({ sourceRunId: completed.run.id, target: "local_task", unsafeReuse: true });
+    });
+  }, 15_000);
+
+  it("preserves typed fork seed failure tags", async () => {
+    await withRuntimeWorkspace("runtime-supervisor-fork-target-failure", async workspace => {
+      const completed = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
+      const store = await openExistingWritableRuntimeStore(workspace);
+      expect(store).toBeDefined();
+      let commandId = "";
+      try {
+        const command = store!.submitCommand({
+          runId: completed.run.id,
+          type: "fork",
+          payload: { target: "missing~abc" },
+          idempotencyKey: `test-fork-missing-target:${completed.run.id}`,
+        });
+        commandId = command.id;
+        await expect(runSupervisorTick(workspace, store!)).resolves.toMatchObject({ commands: 1 });
+      } finally {
+        store?.close();
+      }
+      const forkCommand = runtimeRow(workspace, "SELECT status, payload_json FROM commands WHERE id = ?", commandId);
+      expect(forkCommand).toMatchObject({ status: "failed" });
+      expect(JSON.parse(String(forkCommand?.payload_json))).toMatchObject({
+        type: "target-resolution-failure",
+        target: "missing~abc",
+      });
+      const readStore = await openExistingWritableRuntimeStore(workspace);
+      expect(readStore).toBeDefined();
+      try {
+        expect(readStore!.getCommand(commandId)).toMatchObject({
+          status: "failed",
+          payload: {
+            type: "target-resolution-failure",
+            target: "missing~abc",
+          },
+        });
+      } finally {
+        readStore?.close();
+      }
+      const db = new DatabaseSync(join(workspace, ".acpus", "state", "runtime.db"));
+      try {
+        db.prepare("UPDATE commands SET payload_json = ? WHERE id = ?").run(JSON.stringify({
+          type: "target-resolution-failure",
+          target: "missing~abc",
+          message: "bad payload",
+          extra: true,
+        }), commandId);
+      } finally {
+        db.close();
+      }
+      const invalidStore = await openExistingWritableRuntimeStore(workspace);
+      expect(invalidStore).toBeDefined();
+      try {
+        expect(() => invalidStore!.getCommand(commandId)).toThrow("Command failed command payload must not include 'extra'.");
+      } finally {
+        invalidStore?.close();
+      }
+    });
+  }, 15_000);
+
   it("recovers only stale commands owned by the current supervisor", async () => {
     await withRuntimeWorkspace("runtime-supervisor-stale", async workspace => {
       const completed = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());

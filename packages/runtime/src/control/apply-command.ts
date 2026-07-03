@@ -2,6 +2,7 @@ import type { JsonValue } from "@acpus/expression/ir";
 import { applySchedulerControlCommand } from "../scheduler/control.js";
 import { advanceRuntimeRun, type RuntimeAdvanceResult } from "../runs/advance-runtime.js";
 import type { AgentOverrideMap, ForkPreparedWorkflow, PendingRunControlCommand, RuntimeStore } from "../store/store.js";
+import { ForkSeedPlanError } from "../scheduler/fork-seed.js";
 
 export type AppliedControlCommand = {
   command: PendingRunControlCommand;
@@ -25,7 +26,9 @@ export async function applyControlCommand(cwd: string, store: RuntimeStore, comm
     store.finishCommand({
       id: command.id,
       status: "failed",
-      payload: { type: "unhandled-error", message: error instanceof Error ? error.message : String(error) },
+      payload: error instanceof ForkSeedPlanError
+        ? { ...error.failure, message: error.message }
+        : { type: "unhandled-error", message: error instanceof Error ? error.message : String(error) },
     });
     throw error;
   }
@@ -63,6 +66,8 @@ async function applyControlCommandUnchecked(cwd: string, store: RuntimeStore, co
     ...(payload.prepared ? { prepared: payload.prepared } : {}),
     ...(payload.input !== undefined ? { input: payload.input } : {}),
     ...(payload.agentOverrides !== undefined ? { agentOverrides: payload.agentOverrides } : {}),
+    ...(payload.target !== undefined ? { target: payload.target } : {}),
+    ...(payload.unsafeReuse === true ? { unsafeReuse: true } : {}),
   });
   return { command, sourceRunId: runId, run: requireRun(store, fork.id), forkRunId: fork.id };
 }
@@ -73,15 +78,19 @@ function requireRun(store: RuntimeStore, runId: string): NonNullable<ReturnType<
   return run;
 }
 
-function forkCommandPayload(command: PendingRunControlCommand): { prepared?: ForkPreparedWorkflow; input?: JsonValue; agentOverrides?: AgentOverrideMap } {
+function forkCommandPayload(command: PendingRunControlCommand): { prepared?: ForkPreparedWorkflow; input?: JsonValue; agentOverrides?: AgentOverrideMap; target?: string; unsafeReuse?: boolean } {
   const payload = commandInputPayload(command);
   if (!isRecord(payload)) return {};
   const prepared = parseForkPreparedWorkflow(payload.prepared);
   if (payload.prepared !== undefined && !prepared) throw new Error(`Fork command '${command.id}' has invalid prepared workflow payload.`);
+  if (payload.target !== undefined && (typeof payload.target !== "string" || payload.target.length === 0)) throw new Error(`Fork command '${command.id}' has invalid target payload.`);
+  if (payload.unsafeReuse !== undefined && typeof payload.unsafeReuse !== "boolean") throw new Error(`Fork command '${command.id}' has invalid unsafeReuse payload.`);
   return {
     ...(prepared ? { prepared } : {}),
     ...(payload.input !== undefined ? { input: payload.input } : {}),
     ...(payload.agentOverrides !== undefined ? { agentOverrides: payload.agentOverrides as AgentOverrideMap } : {}),
+    ...(payload.target !== undefined ? { target: payload.target } : {}),
+    ...(payload.unsafeReuse === true ? { unsafeReuse: true } : {}),
   };
 }
 

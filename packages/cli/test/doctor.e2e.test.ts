@@ -6,7 +6,7 @@ import { runSourceCli } from "./support/cli-runner.js";
 import { copyWorkflowFixture } from "./support/fixtures.js";
 import { withTestWorkspace } from "./support/workspace.js";
 
-describe("acpus doctor", () => {
+describe.concurrent("acpus doctor", () => {
   it("reports a no-store workspace as healthy without creating state", async () => {
     await withTestWorkspace("doctor-no-store", async workspace => {
       const result = await runSourceCli(workspace, ["doctor", "--json"]);

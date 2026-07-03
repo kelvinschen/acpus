@@ -5,7 +5,7 @@ import { copyWorkflowFixture } from "./support/fixtures.js";
 import { withTestWorkspace } from "./support/workspace.js";
 import { prepareWorkflowForCli } from "../src/workflow-preparation.js";
 
-describe("acpus runs list", () => {
+describe.concurrent("acpus runs list", () => {
   it("defaults to 20 recent runs and supports limit/all options", async () => {
     await withTestWorkspace("runs-list-options", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/signals/signal.workflow.ts");

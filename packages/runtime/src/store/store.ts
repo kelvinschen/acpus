@@ -5,9 +5,11 @@ import { DatabaseSync } from "node:sqlite";
 import type { AgentDefinitionIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
 import type { ExprIR, JsonValue } from "@acpus/expression/ir";
 import { valueToExprIR } from "@acpus/expression/ir";
+import { ArtifactRewriteError, rewriteArtifactValue } from "../artifacts/rewrite.js";
 import { evaluateExpr } from "../evaluation/evaluator.js";
 import { applySchedulerEvents, cancellationEventsForFrame, cancellationEventsForNode, createSchedulerProjection } from "../scheduler/transitions.js";
 import { ancestorGroupMembersForFrame, ancestorGroupMembersForNode } from "../scheduler/membership.js";
+import { ForkSeedPlanError, planTargetedForkSeed, type ForkSeedFailure, type ForkSeedPlan } from "../scheduler/fork-seed.js";
 import type { SchedulerEvent } from "../scheduler/events.js";
 import { SchedulerStoreException, schedulerStoreResult, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStorePort, type AttemptStartInput, type AttemptCommitInput, type SignalConsumeInput, type SchedulerPauseInput, type SchedulerResumeInput, type SchedulerRetryInput, type SchedulerRunRetryInput, type SchedulerStoreError, type SchedulerStoreResult } from "../scheduler/store-port.js";
 import type { InstancePath } from "../scheduler/types.js";
@@ -332,10 +334,13 @@ export type PauseCommandPayload = { reason?: string };
 export type EmptyCommandPayload = Record<string, never>;
 export type RetryCommandPayload = { target?: string };
 export type CancelCommandPayload = { target?: string };
-export type ForkCommandPayload = { prepared?: JsonValue; input?: JsonValue; agentOverrides?: JsonValue };
+export type ForkCommandPayload = { prepared?: JsonValue; input?: JsonValue; agentOverrides?: JsonValue; target?: string; unsafeReuse?: boolean };
 export type SignalCommandPayload = { node: string; payload?: JsonValue };
-export type AppliedCommandPayload = { status: string; forkRunId?: string; targetKey?: string };
-export type FailedCommandPayload = { type: string; message: string };
+export type AppliedCommandPayload = { status: string; forkRunId?: string; target?: string; targetKey?: string };
+export type FailedCommandPayload =
+  | { type: "unhandled-error"; message: string }
+  | { type: SchedulerStoreError["type"]; message: string }
+  | ForkSeedFailure;
 
 type CommandPayload<T extends ControlCommandType> =
   T extends "pause" ? PauseCommandPayload
@@ -396,6 +401,8 @@ export type ControlOptions = {
   prepared?: ForkPreparedWorkflow;
   input?: JsonValue;
   agentOverrides?: AgentOverrideMap;
+  target?: string;
+  unsafeReuse?: boolean;
 };
 
 export type ForkPreparedWorkflow = {
@@ -514,11 +521,15 @@ async function openExistingStore(cwd: string, readOnly: boolean): Promise<Runtim
 }
 
 class SqliteRuntimeStore implements RuntimeStore {
-  private schedulerPort?: SchedulerStorePort;
+  private schedulerPort?: SqliteSchedulerStorePort;
 
   constructor(private readonly db: DatabaseSync, private readonly cwd: string) {}
 
   get scheduler(): SchedulerStorePort {
+    return this.schedulerStore();
+  }
+
+  private schedulerStore(): SqliteSchedulerStorePort {
     this.schedulerPort ??= new SqliteSchedulerStorePort(this.db);
     return this.schedulerPort;
   }
@@ -913,10 +924,11 @@ class SqliteRuntimeStore implements RuntimeStore {
   submitCommand(input: SubmitCommandInput): PendingControlCommand {
     const now = new Date().toISOString();
     const id = `cmd_${randomUUID()}`;
+    const payload = parseCommandPayload(input.type, "pending", input.payload ?? {});
     this.db.prepare(`
       INSERT OR IGNORE INTO commands (id, run_id, type, payload_json, status, idempotency_key, created_at, updated_at)
       VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)
-    `).run(id, input.runId ?? null, input.type, stableJson(input.payload ?? {}), input.idempotencyKey, now, now);
+    `).run(id, input.runId ?? null, input.type, stableJson(payload), input.idempotencyKey, now, now);
     const row = this.db.prepare(`
       SELECT id, run_id, type, status, idempotency_key, payload_json
       FROM commands
@@ -1055,6 +1067,9 @@ class SqliteRuntimeStore implements RuntimeStore {
     const forkIr = JSON.parse(forkIrJson) as WorkflowIR;
     const sourceAgentOverrides = parseAgentOverrides(input.agent_overrides_json);
     const forkAgentOverrides = normalizeAgentOverrides(forkIr, options.agentOverrides, sourceAgentOverrides);
+    const sourceIr = JSON.parse(input.workflow_ir_json) as WorkflowIR;
+    const sourceEffectiveIr = withAgentOverrides(sourceIr, sourceAgentOverrides);
+    const forkEffectiveIr = withAgentOverrides(forkIr, forkAgentOverrides);
     const forkInputJson = options.input === undefined ? input.input_json : stableJson(options.input);
     const forkLockJson = options.prepared ? stableJson(options.prepared.lock) : input.lock_json;
     const forkPackageLockDigest = options.prepared?.packageLockDigest ?? input.package_lock_digest ?? null;
@@ -1064,7 +1079,8 @@ class SqliteRuntimeStore implements RuntimeStore {
     const forkSourceGraphDigest = options.prepared?.sourceGraphDigest ?? source.sourceGraphDigest;
     const forkId = newRunId();
     const now = new Date().toISOString();
-    const replacement = Boolean(options.prepared || options.input !== undefined || stableJson(forkAgentOverrides) !== stableJson(sourceAgentOverrides));
+    const replacement = Boolean(options.prepared || options.input !== undefined || options.target !== undefined || options.agentOverrides !== undefined || options.unsafeReuse === true);
+    const targetedReplacement = replacement;
     const forkStatus = source.status === "completed" && !replacement ? "completed" : "pending";
     const sourceRunDir = input.run_dir ? containedRunDir(this.cwd, input.run_dir) : undefined;
     const forkRunDir = join(".acpus", "runs", forkId);
@@ -1079,17 +1095,44 @@ class SqliteRuntimeStore implements RuntimeStore {
     `).all(runId).map(row => String(row.node_key)),
       ...completedOutputRows.map(row => row.nodeKey),
     ]);
-    const sourceIr = JSON.parse(input.workflow_ir_json) as WorkflowIR;
-    const sourceNodeSignatures = nodeSignatures(sourceIr.root);
-    const forkNodeSignatures = nodeSignatures(forkIr.root);
+    const sourceNodeSignatures = nodeSignatures(sourceEffectiveIr.root);
+    const forkNodeSignatures = nodeSignatures(forkEffectiveIr.root);
     const irNodeKeys = new Set(forkNodeSignatures.keys());
     const knownCompletedNodeKeys = new Set([...completedNodeKeys].filter(nodeKey => {
       if (forkNodeSignatures.has(nodeKey)) return forkNodeSignatures.get(nodeKey) === sourceNodeSignatures.get(nodeKey);
       return !replacement && source.status === "completed";
     }));
-    const inheritableNodeKeys = options.input !== undefined ? new Set<string>() : source.status === "completed"
+    const seedPlan = targetedReplacement
+      ? planTargetedForkSeed({
+          forkRunId: forkId,
+          sourceWorkflow: sourceEffectiveIr,
+          replacementWorkflow: forkEffectiveIr,
+          replacementScope: {
+            input: JSON.parse(forkInputJson) as JsonValue,
+            nodes: {},
+            meta: {
+              runId: forkId,
+              workflowPath: forkWorkflowEntry,
+              workflowName: forkName,
+              workspaceDir: resolve(this.cwd),
+            },
+            fanout: {},
+            loop: {},
+          },
+          sourceProjection: this.scheduler.loadRunSnapshot(runId).projection,
+          inputChanged: options.input !== undefined,
+          unsafeReuse: options.unsafeReuse === true,
+          ...(options.target === undefined ? {} : { target: options.target }),
+        }).match(
+          value => value,
+          failure => {
+            throw new ForkSeedPlanError(failure);
+          },
+        )
+      : undefined;
+    const inheritableNodeKeys = seedPlan?.inheritedNodeKeys ?? (options.input !== undefined ? new Set<string>() : source.status === "completed"
       ? knownCompletedNodeKeys
-      : inheritableCompletedNodeKeys(forkIr, knownCompletedNodeKeys);
+      : inheritableCompletedNodeKeys(forkIr, knownCompletedNodeKeys));
     const nodeRows = this.db.prepare("SELECT node_key, node_id, status, output_json, error_json, attempt FROM node_states WHERE run_id = ?").all(runId) as Array<Record<string, unknown>>;
     const reachableArtifactIds = reachableInheritedArtifactIds({
       runId,
@@ -1097,6 +1140,9 @@ class SqliteRuntimeStore implements RuntimeStore {
       nodeRows,
       inheritableNodeKeys,
     });
+    if (seedPlan) {
+      for (const event of seedPlan.events) collectArtifactIds(event.payload as JsonValue, runId, reachableArtifactIds);
+    }
     const artifacts = this.db.prepare(`
       SELECT id, node_key, attempt, media_type, digest, size, relative_path
       FROM artifacts
@@ -1141,8 +1187,10 @@ class SqliteRuntimeStore implements RuntimeStore {
     } else if (artifacts.length > 0) {
       throw new Error(`Run '${runId}' has artifacts but no run directory.`);
     }
-    this.db.exec("BEGIN IMMEDIATE");
+    let transactionStarted = false;
     try {
+      this.db.exec("BEGIN IMMEDIATE");
+      transactionStarted = true;
       this.db.prepare(`
         INSERT INTO runs (id, name, status, workflow_entry, ir_digest, source_graph_digest, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -1166,39 +1214,49 @@ class SqliteRuntimeStore implements RuntimeStore {
       this.db.prepare(`
         INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
         VALUES (?, 1, 'run.forked', NULL, ?, ?, ?)
-      `).run(forkId, stableJson({ sourceRunId: runId, ...(Object.keys(forkAgentOverrides).length > 0 ? { agentOverrides: forkAgentOverrides } : {}) }), now, `fork:${forkId}:${runId}`);
+      `).run(forkId, stableJson({ sourceRunId: runId, ...(options.target === undefined ? {} : { target: options.target }), ...(options.unsafeReuse === true ? { unsafeReuse: true } : {}), ...(Object.keys(forkAgentOverrides).length > 0 ? { agentOverrides: forkAgentOverrides } : {}) }), now, `fork:${forkId}:${runId}`);
       if (forkStatus === "completed" && forkOutputJson) {
         this.db.prepare(`
           INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
           VALUES (?, 2, 'run.completed', NULL, ?, ?, ?)
         `).run(forkId, stableJson({ output: JSON.parse(forkOutputJson) as JsonValue }), now, `complete:${forkId}`);
       }
-      const insertedNodeKeys = new Set<string>();
-      for (const row of nodeRows) {
-        const nodeKey = String(row.node_key);
-        if (!irNodeKeys.has(nodeKey) && !inheritableNodeKeys.has(nodeKey)) continue;
-        insertedNodeKeys.add(nodeKey);
-        this.db.prepare(`
-          INSERT INTO node_states (run_id, node_key, node_id, status, output_json, error_json, attempt, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          forkId,
-          nodeKey,
-          String(row.node_id),
-          inheritableNodeKeys.has(nodeKey) ? "completed" : "pending",
-          inheritableNodeKeys.has(nodeKey) && row.output_json ? rewriteArtifactRefs(String(row.output_json), runId, forkId, artifactIdMap) : null,
-          null,
-          Number(row.attempt ?? 0),
+      if (targetedReplacement && seedPlan) {
+        this.schedulerStore().insertForkSeedEventsInTransaction({
+          runId: forkId,
+          sourceRunId: runId,
+          artifactIdMap,
+          plan: seedPlan,
           now,
-          now,
-        );
-      }
-      for (const nodeKey of irNodeKeys) {
-        if (insertedNodeKeys.has(nodeKey)) continue;
-        this.db.prepare(`
-          INSERT INTO node_states (run_id, node_key, node_id, status, created_at, updated_at)
-          VALUES (?, ?, ?, 'pending', ?, ?)
-        `).run(forkId, nodeKey, nodeKey, now, now);
+        });
+      } else {
+        const insertedNodeKeys = new Set<string>();
+        for (const row of nodeRows) {
+          const nodeKey = String(row.node_key);
+          if (!irNodeKeys.has(nodeKey) && !inheritableNodeKeys.has(nodeKey)) continue;
+          insertedNodeKeys.add(nodeKey);
+          this.db.prepare(`
+            INSERT INTO node_states (run_id, node_key, node_id, status, output_json, error_json, attempt, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            forkId,
+            nodeKey,
+            String(row.node_id),
+            inheritableNodeKeys.has(nodeKey) ? "completed" : "pending",
+            inheritableNodeKeys.has(nodeKey) && row.output_json ? rewriteArtifactRefs(String(row.output_json), runId, forkId, artifactIdMap) : null,
+            null,
+            Number(row.attempt ?? 0),
+            now,
+            now,
+          );
+        }
+        for (const nodeKey of irNodeKeys) {
+          if (insertedNodeKeys.has(nodeKey)) continue;
+          this.db.prepare(`
+            INSERT INTO node_states (run_id, node_key, node_id, status, created_at, updated_at)
+            VALUES (?, ?, ?, 'pending', ?, ?)
+          `).run(forkId, nodeKey, nodeKey, now, now);
+        }
       }
       for (const artifact of artifacts) {
         this.db.prepare(`
@@ -1216,12 +1274,20 @@ class SqliteRuntimeStore implements RuntimeStore {
           now,
         );
       }
-      if (options.commandId) this.finishCommandInTransaction(options.commandId, "applied", { forkRunId: forkId, status: forkStatus }, now);
+      if (options.commandId) this.finishCommandInTransaction(options.commandId, "applied", { forkRunId: forkId, status: forkStatus, ...(options.target === undefined ? {} : { target: options.target }) }, now);
       this.db.exec("COMMIT");
+      transactionStarted = false;
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      if (transactionStarted) this.db.exec("ROLLBACK");
       await rm(stagedForkRunPath, { recursive: true, force: true });
       await rm(forkRunPath, { recursive: true, force: true });
+      if (error instanceof ArtifactRewriteError) {
+        throw new ForkSeedPlanError({
+          type: "artifact-rewrite-failure",
+          artifactId: error.artifactId,
+          message: error.message,
+        });
+      }
       throw error;
     }
     return this.requireRun(forkId);
@@ -1611,6 +1677,37 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  insertForkSeedEventsInTransaction(input: {
+    runId: string;
+    sourceRunId: string;
+    artifactIdMap: Record<string, string>;
+    plan: ForkSeedPlan;
+    now: string;
+  }): void {
+    if (input.plan.events.length === 0) return;
+    const events = input.plan.events.map(event => ({
+      ...event,
+      payload: rewriteArtifactValue(event.payload as JsonValue, input.sourceRunId, input.runId, input.artifactIdMap),
+    }) as SchedulerEvent);
+    applySchedulerEvents(createSchedulerProjection(input.runId), events);
+    const currentVersion = this.currentVersion(input.runId);
+    const commitKey = `fork-seed:${input.runId}`;
+    this.db.prepare(`
+      INSERT INTO scheduler_commits (run_id, idempotency_key, event_count, event_digest, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(input.runId, commitKey, events.length, schedulerCommitDigest(events), input.now);
+    let sequence = currentVersion + 1;
+    for (const [index, event] of events.entries()) {
+      this.db.prepare(`
+        INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(input.runId, sequence, event.type, eventNodeKey(event), encodeSchedulerPayload(event.payload), input.now, schedulerEventIdempotencyKey(input.runId, commitKey, index));
+      sequence += 1;
+    }
+    this.syncSchedulerProjectionTables(input.runId, input.now);
+    this.syncPublicRunProjection(input.runId, input.now);
   }
 
   tryStartAttempt(input: AttemptStartInput): SchedulerStoreResult<{ attemptId: string; attemptNo: number }> {
@@ -3099,11 +3196,15 @@ function cancelCommandPayload(value: Record<string, JsonValue>): CancelCommandPa
 }
 
 function forkCommandPayload(value: Record<string, JsonValue>): ForkCommandPayload {
-  rejectUnknownCommandPayloadKeys("fork", value, ["prepared", "input", "agentOverrides"]);
+  rejectUnknownCommandPayloadKeys("fork", value, ["prepared", "input", "agentOverrides", "target", "unsafeReuse"]);
+  if (value.target !== undefined && (typeof value.target !== "string" || value.target.length === 0)) throw new Error("Fork command payload.target must be a non-empty string.");
+  if (value.unsafeReuse !== undefined && typeof value.unsafeReuse !== "boolean") throw new Error("Fork command payload.unsafeReuse must be a boolean.");
   return {
     ...(value.prepared === undefined ? {} : { prepared: value.prepared }),
     ...(value.input === undefined ? {} : { input: value.input }),
     ...(value.agentOverrides === undefined ? {} : { agentOverrides: value.agentOverrides }),
+    ...(value.target === undefined ? {} : { target: value.target }),
+    ...(value.unsafeReuse === true ? { unsafeReuse: true } : {}),
   };
 }
 
@@ -3119,23 +3220,65 @@ function emptyCommandPayload(type: ControlCommandType, value: Record<string, Jso
 }
 
 function appliedCommandPayload(value: Record<string, JsonValue>): AppliedCommandPayload {
-  rejectUnknownCommandPayloadKeys("applied command", value, ["status", "forkRunId", "targetKey"]);
+  rejectUnknownCommandPayloadKeys("applied command", value, ["status", "forkRunId", "target", "targetKey"]);
   if (typeof value.status !== "string") throw new Error("Applied command payload.status must be a string.");
   if (value.forkRunId !== undefined && typeof value.forkRunId !== "string") throw new Error("Applied command payload.forkRunId must be a string.");
+  if (value.target !== undefined && typeof value.target !== "string") throw new Error("Applied command payload.target must be a string.");
   if (value.targetKey !== undefined && typeof value.targetKey !== "string") throw new Error("Applied command payload.targetKey must be a string.");
   return {
     status: value.status,
     ...(value.forkRunId === undefined ? {} : { forkRunId: value.forkRunId }),
+    ...(value.target === undefined ? {} : { target: value.target }),
     ...(value.targetKey === undefined ? {} : { targetKey: value.targetKey }),
   };
 }
 
 function failedCommandPayload(value: Record<string, JsonValue>): FailedCommandPayload {
-  rejectUnknownCommandPayloadKeys("failed command", value, ["type", "message"]);
   if (typeof value.type !== "string") throw new Error("Failed command payload.type must be a string.");
   if (typeof value.message !== "string") throw new Error("Failed command payload.message must be a string.");
-  return { type: value.type, message: value.message };
+  if (value.type === "unhandled-error") {
+    rejectUnknownCommandPayloadKeys("failed command", value, ["type", "message"]);
+    return { type: value.type, message: value.message };
+  }
+  if (value.type === "target-resolution-failure" || value.type === "dynamic-target-ambiguity") {
+    rejectUnknownCommandPayloadKeys("failed command", value, ["type", "target", "message"]);
+    if (typeof value.target !== "string") throw new Error("Failed command payload.target must be a string.");
+    return { type: value.type, target: value.target, message: value.message };
+  }
+  if (value.type === "artifact-rewrite-failure") {
+    rejectUnknownCommandPayloadKeys("failed command", value, ["type", "artifactId", "message"]);
+    if (typeof value.artifactId !== "string") throw new Error("Failed command payload.artifactId must be a string.");
+    return { type: value.type, artifactId: value.artifactId, message: value.message };
+  }
+  if (isSchedulerStoreFailureType(value.type)) {
+    rejectUnknownCommandPayloadKeys("failed command", value, ["type", "message"]);
+    return { type: value.type, message: value.message };
+  }
+  throw new Error(`Failed command payload.type '${value.type}' is not supported.`);
 }
+
+function isSchedulerStoreFailureType(value: string): value is SchedulerStoreError["type"] {
+  return schedulerStoreFailureTypes.has(value as SchedulerStoreError["type"]);
+}
+
+const schedulerStoreFailureTypes = new Set<SchedulerStoreError["type"]>([
+  "run-not-found",
+  "version-mismatch",
+  "owner-epoch-inactive",
+  "owner-epoch-still-active",
+  "run-paused",
+  "terminal-attempt",
+  "attempt-not-found",
+  "owner-epoch-stale",
+  "signal-wait-not-found",
+  "signal-wait-terminal",
+  "idempotency-conflict",
+  "missing-retry-target",
+  "invalid-retry-target",
+  "missing-cancel-target",
+  "invalid-cancel-target",
+  "invalid-control-state",
+]);
 
 function rejectUnknownCommandPayloadKeys(label: string, value: Record<string, JsonValue>, allowed: string[]): void {
   const allowedSet = new Set(allowed);
@@ -3331,24 +3474,6 @@ function completedOutputMap(rows: Array<{ nodeKey: string; nodeId: string; outpu
 function rewriteArtifactRefs(json: string, sourceRunId: string, forkRunId: string, artifactIds: Record<string, string>): string {
   const value = JSON.parse(json) as JsonValue;
   return stableJson(rewriteArtifactValue(value, sourceRunId, forkRunId, artifactIds));
-}
-
-function rewriteArtifactValue(value: JsonValue, sourceRunId: string, forkRunId: string, artifactIds: Record<string, string>): JsonValue {
-  if (!value || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map(item => rewriteArtifactValue(item, sourceRunId, forkRunId, artifactIds));
-  if (value.kind === "artifact" && typeof value.uri === "string") {
-    const prefix = `artifact://${sourceRunId}/`;
-    if (value.uri.startsWith(prefix)) {
-      const sourceArtifactId = value.uri.slice(prefix.length);
-      const forkArtifactId = artifactIds[sourceArtifactId];
-      if (!forkArtifactId) throw new Error(`Missing fork artifact id for '${sourceArtifactId}'.`);
-      return { ...value, uri: `artifact://${forkRunId}/${forkArtifactId}` };
-    }
-  }
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [
-    key,
-    rewriteArtifactValue(item, sourceRunId, forkRunId, artifactIds),
-  ])) as JsonValue;
 }
 
 function requireArtifactId(map: Record<string, string>, sourceId: string): string {

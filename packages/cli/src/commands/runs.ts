@@ -22,6 +22,7 @@ type RunsCommandOptions = {
   input?: string;
   workflow?: string;
   agents?: string;
+  unsafeReuse?: boolean;
   limit?: string;
   all?: boolean;
 };
@@ -73,6 +74,8 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
     .option("--workflow <workflow-module>", "use a replacement workflow module for the fork")
     .option("--input <json>", "override workflow input for the fork")
     .option("--agents <json>", "override inherited agents for the fork")
+    .option("--target <run-target>", "target a replacement workflow recovery point")
+    .option("--unsafe-reuse", "dangerously reuse completed fork prerequisites despite workflow, input, or signature changes")
     .action(async (runId: string, options: RunsCommandOptions) => {
       await mutateRun(ctx, runId, options, "fork");
     }));
@@ -139,6 +142,7 @@ async function signalRun(ctx: RunsCommandContext, runId: string, options: RunsCo
 }
 
 async function mutateRun(ctx: RunsCommandContext, runId: string, options: RunsCommandOptions, action: ControlAction): Promise<void> {
+  if (action === "fork" && options.target === "") throw usageError("--target must be a non-empty string.");
   const prepared = action === "fork" && options.workflow ? await prepareWorkflowForCli(options.workflow, ctx.cwd) : undefined;
   const agentOverrides = action === "fork" ? parseAgents(options.agents) : undefined;
   const forkInput = await maybeNormalizeForkInput(ctx, runId, action, options, prepared);
@@ -149,6 +153,7 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, options: RunsCo
       ...(prepared ? { prepared } : {}),
       ...(forkInput !== undefined ? { input: forkInput } : {}),
       ...(agentOverrides !== undefined ? { agentOverrides } : {}),
+      ...(action === "fork" && options.unsafeReuse === true ? { unsafeReuse: true } : {}),
     });
   } catch (error) {
     throw controlError(error instanceof Error ? error.message : String(error));

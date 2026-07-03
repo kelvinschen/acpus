@@ -4,6 +4,7 @@ import { ResultAsync } from "neverthrow";
 import { normalizeSignalPayload, normalizeWorkflowInput } from "../admission/input.js";
 import { applyControlCommand } from "../control/apply-command.js";
 import { tryAdvanceRuntimeRun, type RuntimeAdvanceError, type RuntimeAdvanceObserver, type RuntimeAdvanceResult } from "./advance-runtime.js";
+import { ForkSeedPlanError, type ForkSeedFailure } from "../scheduler/fork-seed.js";
 import { schedulerStoreError, type SchedulerStoreError } from "../scheduler/store-port.js";
 import { createWorkflowVisualizationOverlay, type WorkflowVisualizationOverlay } from "../visualization/overlay.js";
 import {
@@ -31,6 +32,7 @@ export type RuntimeMutationInput = {
   prepared?: PreparedRunWorkflow;
   input?: JsonValue;
   agentOverrides?: AgentOverrideMap;
+  unsafeReuse?: boolean;
 };
 
 export type RuntimeMutationResult = {
@@ -62,6 +64,7 @@ export type RuntimeUseCaseError =
   | { type: "scheduler-store-failed"; cause: SchedulerStoreError; message: string }
   | { type: "runtime-advance-failed"; cause: RuntimeAdvanceError; message: string }
   | { type: "invalid-signal-payload"; nodeId: string; message: string }
+  | { type: "fork-seed-failed"; cause: ForkSeedFailure; message: string }
   | { type: "control-command-failed"; commandType: PendingControlCommand["type"]; message: string };
 
 export async function admitWorkflowRun(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue, agentOverrides?: AgentOverrideMap): Promise<RuntimeAdvanceResult> {
@@ -374,6 +377,7 @@ export async function getRuntimeHealth(cwd: string): Promise<RuntimeHealthReport
 }
 
 function mutationCommandInput(runId: string, action: RuntimeMutationAction, input: RuntimeMutationInput): SubmitRunControlCommandInput {
+  if (action === "fork" && input.target === "") throw new Error("Fork target must be a non-empty string.");
   switch (action) {
     case "pause":
       return { runId, type: "pause", idempotencyKey: `pause:${runId}:${randomUUID()}` };
@@ -401,8 +405,10 @@ function mutationCommandInput(runId: string, action: RuntimeMutationAction, inpu
           ...(input.prepared ? { prepared: toForkPrepared(input.prepared) as unknown as JsonValue } : {}),
           ...(input.input !== undefined ? { input: input.input } : {}),
           ...(input.agentOverrides !== undefined ? { agentOverrides: input.agentOverrides as unknown as JsonValue } : {}),
+          ...(input.target === undefined ? {} : { target: input.target }),
+          ...(input.unsafeReuse === true ? { unsafeReuse: true } : {}),
         },
-        idempotencyKey: `fork:${runId}:${randomUUID()}`,
+        idempotencyKey: `fork:${runId}:${input.target ?? "root"}:${randomUUID()}`,
       };
   }
 }
@@ -417,6 +423,9 @@ async function applyCommandResult(cwd: string, store: NonNullable<Awaited<Return
   try {
     return await applyControlCommand(cwd, store, command, options);
   } catch (error) {
+    if (error instanceof ForkSeedPlanError) {
+      throw new RuntimeUseCaseException({ type: "fork-seed-failed", cause: error.failure, message: error.message });
+    }
     const storeError = schedulerStoreError(error);
     if (storeError) throw new RuntimeUseCaseException({ type: "scheduler-store-failed", cause: storeError, message: storeError.message });
     throw new RuntimeUseCaseException({ type: "control-command-failed", commandType: command.type, message: error instanceof Error ? error.message : String(error) });

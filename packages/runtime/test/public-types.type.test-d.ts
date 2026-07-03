@@ -7,6 +7,8 @@ import type {
   CancelCommandPayload,
   ControlCommandType,
   EmptyCommandPayload,
+  ForkCommandPayload,
+  ForkSeedFailure,
   ForkPreparedWorkflow,
   PauseCommandPayload,
   PreparedRunWorkflow,
@@ -78,6 +80,7 @@ test("@acpus/runtime public types describe use-case level runtime APIs", () => {
   expectTypeOf<RunDetails>().toMatchTypeOf<RunRecord>();
   expectTypeOf<NonNullable<RunDetails["dynamic"]>>().toEqualTypeOf<RunDynamicDetails>();
   expectTypeOf<RunDynamicDetails["frames"][number]>().toEqualTypeOf<RunDynamicFrame>();
+  expectTypeOf<Extract<RuntimeUseCaseError, { type: "fork-seed-failed" }>["cause"]>().toEqualTypeOf<ForkSeedFailure>();
   expectTypeOf<RunDynamicDetails["nodeInstances"][number]>().toEqualTypeOf<RunDynamicNodeInstance>();
   expectTypeOf<RunDynamicDetails["attempts"][number]>().toEqualTypeOf<RunDynamicAttempt>();
   expectTypeOf<RunDynamicDetails["groupMembers"][number]>().toEqualTypeOf<RunDynamicGroupMember>();
@@ -92,7 +95,7 @@ test("@acpus/runtime public types describe use-case level runtime APIs", () => {
   expectTypeOf<RunStatus>().toEqualTypeOf<"pending" | "running" | "paused" | "awaiting" | "failed" | "completed" | "canceled">();
   expectTypeOf<RuntimeMutationAction>().toEqualTypeOf<"pause" | "resume" | "retry" | "fork" | "cancel">();
   expectTypeOf<RuntimeHealthReport["checks"][number]>().toEqualTypeOf<RuntimeHealthCheck>();
-  expectTypeOf<RuntimeMutationInput>().toMatchTypeOf<{ target?: string }>();
+  expectTypeOf<RuntimeMutationInput>().toMatchTypeOf<{ target?: string; unsafeReuse?: boolean }>();
   expectTypeOf<RunControlCommandType>().toEqualTypeOf<"pause" | "resume" | "retry" | "fork" | "signal" | "cancel">();
   expectTypeOf<SupervisorCommandType>().toEqualTypeOf<"shutdown">();
   expectTypeOf<ControlCommandType>().toEqualTypeOf<RunControlCommandType | SupervisorCommandType>();
@@ -101,6 +104,8 @@ test("@acpus/runtime public types describe use-case level runtime APIs", () => {
   expectTypeOf<Extract<SubmitCommandInput, { type: "signal" }>["payload"]>().toEqualTypeOf<SignalCommandPayload | undefined>();
   expectTypeOf<Extract<SubmitCommandInput, { type: "retry" }>["payload"]>().toEqualTypeOf<RetryCommandPayload | undefined>();
   expectTypeOf<Extract<SubmitCommandInput, { type: "cancel" }>["payload"]>().toEqualTypeOf<CancelCommandPayload | undefined>();
+  expectTypeOf<Extract<SubmitCommandInput, { type: "fork" }>["payload"]>().toEqualTypeOf<ForkCommandPayload | undefined>();
+  expectTypeOf<ForkCommandPayload>().toMatchTypeOf<{ unsafeReuse?: boolean }>();
   expectTypeOf<RetryCommandPayload>().toEqualTypeOf<{ target?: string }>();
   expectTypeOf<CancelCommandPayload>().toEqualTypeOf<{ target?: string }>();
   expectTypeOf<SchedulerStoreResult<unknown>>().toEqualTypeOf<Result<unknown, SchedulerStoreError>>();

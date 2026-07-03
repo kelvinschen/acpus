@@ -25,10 +25,30 @@ export async function withRuntimeWorkspace<T>(name: string, fn: (workspace: stri
   try {
     await symlink(join(repoRoot, "node_modules"), join(workspace, "node_modules"), "dir");
     await linkWorkspaceCore(workspace);
+    await writeWorkspaceTsconfig(workspace);
     return await fn(workspace);
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
+}
+
+async function writeWorkspaceTsconfig(workspace: string): Promise<void> {
+  await writeFile(join(workspace, "tsconfig.json"), `${JSON.stringify({
+    compilerOptions: {
+      target: "ES2022",
+      lib: ["ES2022"],
+      module: "NodeNext",
+      moduleResolution: "NodeNext",
+      strict: true,
+      esModuleInterop: true,
+      forceConsistentCasingInFileNames: true,
+      skipLibCheck: true,
+      noEmit: true,
+      types: ["node"],
+      customConditions: ["development"],
+    },
+    include: ["*.ts"],
+  }, null, 2)}\n`);
 }
 
 async function linkWorkspaceCore(workspace: string): Promise<void> {

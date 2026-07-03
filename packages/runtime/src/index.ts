@@ -88,6 +88,9 @@ export {
   type AdvanceRunSummary,
 } from "./scheduler/advance.js";
 export {
+  type ForkSeedFailure,
+} from "./scheduler/fork-seed.js";
+export {
   type SchedulerStoreError,
   type SchedulerStorePort,
   type SchedulerStoreResult,
