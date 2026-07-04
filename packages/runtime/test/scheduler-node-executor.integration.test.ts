@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { createRuntimeNodeExecutor } from "../src/scheduler/node-executor.js";
 import { advanceFrozenRun } from "../src/scheduler/runtime-runner.js";
-import { applySchedulerControlCommand } from "../src/scheduler/control.js";
+import { applySchedulerControlIntent } from "../src/scheduler/control.js";
 import { executeAgentNode } from "../src/execution/agent-node.js";
 import { openRuntimeStore } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, runtimeRow, runtimeRows, taskArtifactWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
@@ -100,13 +100,50 @@ describe("runtime scheduler node executor", () => {
         await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "awaiting", started: 0 });
         expect(store.getRun(run.id)).toMatchObject({ status: "awaiting" });
 
-        const command = store.submitCommand({ runId: run.id, type: "signal", payload: { node: "approve", payload: { ok: true } }, idempotencyKey: `signal:${run.id}:approve` });
-        const applied = await applySchedulerControlCommand(workspace, store, command, { ownerId: "owner-b" });
+        const applied = await applySchedulerControlIntent(workspace, store, {
+          requestId: `signal:${run.id}:approve`,
+          runId: run.id,
+          type: "signal",
+          node: "approve",
+          payload: { ok: true },
+          commandIdempotencyKey: `signal:${run.id}:approve`,
+        }, { ownerId: "owner-b" });
 
         expect(applied.advanced).toMatchObject({ status: "completed" });
         expect(store.scheduler.loadRunSnapshot(run.id).projection.instances[nodeKey]).toMatchObject({ status: "completed", output: { ok: true } });
         expect(store.getRun(run.id)).toMatchObject({ status: "completed", output: { ok: true } });
         expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'run.completed'", run.id)).toMatchObject({ count: 1 });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("persists signal timeout deadlines from frozen workflow metadata", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-signal-timeout-deadline", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, rootTimedSignalWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const nodeKey = deriveInstanceKey(appendNode([], "approve"));
+
+        await expect(advanceFrozenRun({
+          cwd: workspace,
+          runId: run.id,
+          ownerId: "owner-a",
+          store,
+          now: () => new Date("2026-07-01T00:00:00.000Z"),
+        })).resolves.toMatchObject({ status: "awaiting" });
+
+        expect(store.scheduler.loadRunSnapshot(run.id).projection.signalWaits[nodeKey]).toMatchObject({
+          status: "awaiting",
+          deadlineAt: "2026-07-01T00:00:05.000Z",
+          timeoutMessage: "Approval timed out",
+        });
+        expect(runtimeRow(workspace, "SELECT deadline_at, timeout_message FROM signal_waits WHERE run_id = ? AND node_key = ?", run.id, nodeKey)).toMatchObject({
+          deadline_at: "2026-07-01T00:00:05.000Z",
+          timeout_message: "Approval timed out",
+        });
       } finally {
         store.close();
       }
@@ -226,8 +263,12 @@ describe("runtime scheduler node executor", () => {
         });
         store.scheduler.releaseRun(claim);
 
-        const command = store.submitCommand({ runId: run.id, type: "retry", payload: { target: "gate" }, idempotencyKey: `retry:${run.id}:gate` });
-        const applied = await applySchedulerControlCommand(workspace, store, command, { ownerId: "owner-a" });
+        const applied = await applySchedulerControlIntent(workspace, store, {
+          requestId: `retry:${run.id}:gate`,
+          runId: run.id,
+          type: "retry",
+          target: "gate",
+        }, { ownerId: "owner-a" });
 
         expect(applied.advanced).toMatchObject({ status: "idle", started: 1, completed: 1 });
         const afterRetryAdvance = store.scheduler.loadRunSnapshot(run.id).projection;
@@ -663,16 +704,28 @@ describe("runtime scheduler node executor", () => {
         expect(awaiting.groupMembers[rightBranchKey]).toMatchObject({ status: "ready" });
         expect(awaiting.signalWaits[rightSignalKey]).toBeUndefined();
 
-        const command = store.submitCommand({ runId: run.id, type: "signal", payload: { node: "left_signal", payload: { ok: true } }, idempotencyKey: `signal:${run.id}:left` });
-        await expect(applySchedulerControlCommand(workspace, store, command, { ownerId: "owner-b" })).resolves.toMatchObject({
+        await expect(applySchedulerControlIntent(workspace, store, {
+          requestId: `signal:${run.id}:left`,
+          runId: run.id,
+          type: "signal",
+          node: "left_signal",
+          payload: { ok: true },
+          commandIdempotencyKey: `signal:${run.id}:left`,
+        }, { ownerId: "owner-b" })).resolves.toMatchObject({
           advanced: { status: "awaiting", started: 0 },
         });
         const rightAwaiting = store.scheduler.loadRunSnapshot(run.id).projection;
         expect(rightAwaiting.instances[rightSignalKey]).toMatchObject({ status: "awaiting" });
         expect(rightAwaiting.groupMembers[rightBranchKey]).toMatchObject({ status: "running" });
 
-        const right = store.submitCommand({ runId: run.id, type: "signal", payload: { node: "right_signal", payload: { ok: true } }, idempotencyKey: `signal:${run.id}:right` });
-        await expect(applySchedulerControlCommand(workspace, store, right, { ownerId: "owner-c" })).resolves.toMatchObject({
+        await expect(applySchedulerControlIntent(workspace, store, {
+          requestId: `signal:${run.id}:right`,
+          runId: run.id,
+          type: "signal",
+          node: "right_signal",
+          payload: { ok: true },
+          commandIdempotencyKey: `signal:${run.id}:right`,
+        }, { ownerId: "owner-c" })).resolves.toMatchObject({
           advanced: { status: "completed", started: 0 },
         });
         expect(store.scheduler.loadRunSnapshot(run.id).projection.frames[gateKey]).toMatchObject({ status: "completed" });
@@ -1549,7 +1602,7 @@ describe("runtime scheduler node executor", () => {
           input: {},
           cwd: workspace,
           agentOverrides: { reviewer: { options: {} } } as any,
-        })).rejects.toThrow("must not use options");
+        })).rejects.toThrow("$.reviewer Unrecognized key");
         await expect(store.admitRun({
           prepared,
           input: {},
@@ -1557,8 +1610,8 @@ describe("runtime scheduler node executor", () => {
           agentOverrides: { missing: { use: "codex" } },
         })).rejects.toThrow("does not reference a declared agent");
         for (const [agentOverrides, message] of [
-          [{ reviewer: { policy: "full" } }, "must use permissionMode, not policy"],
-          [{ reviewer: { kind: "agent_definition" } }, "must not include kind"],
+          [{ reviewer: { policy: "full" } }, "$.reviewer Unrecognized key"],
+          [{ reviewer: { kind: "agent_definition" } }, "$.reviewer Unrecognized key"],
           [{ reviewer: { timeout: "1s" } }, "$.reviewer Unrecognized key"],
           [{ reviewer: { use: "codex", command: "custom-acp-server" } }, "must not specify both use and command"],
           [{ reviewer: { cwd: 123 } }, "$.reviewer.cwd"],
@@ -2322,6 +2375,20 @@ function rootSignalWorkflow() {
   }).build(({ step }) => {
     const approval = step("approve").signal({
       outputSchema: z.object({ ok: z.boolean() }),
+      run: { prompt: "approve" },
+    });
+    return { ok: approval.output.ok };
+  });
+}
+
+function rootTimedSignalWorkflow() {
+  return defineWorkflow({
+    name: "scheduler-node-executor-signal-timeout",
+  }).build(({ step }) => {
+    const approval = step("approve").signal({
+      outputSchema: z.object({ ok: z.boolean() }),
+      timeout: "5s",
+      onTimeout: { action: "fail", message: "Approval timed out" },
       run: { prompt: "approve" },
     });
     return { ok: approval.output.ok };

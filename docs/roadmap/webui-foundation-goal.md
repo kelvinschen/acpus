@@ -4,6 +4,14 @@ This document records the accepted direction and open design questions for the
 Acpus WebUI foundation. It is a roadmap goal record, not current product truth.
 Implemented behavior belongs in `specs/` after implementation lands.
 
+> **Runtime-control supersession (2026-07-04)**: Earlier WebUI control notes in
+> this document refer to durable runtime commands, command-status APIs, and a
+> detached supervisor. Those control mechanics are superseded. Future WebUI work
+> MUST align with `specs/runtime-spec.md`, `specs/cli-spec.md`, and
+> `docs/roadmap/runtime-control-abstraction-refactor-roadmap.md`: controls go
+> through the local daemon socket and return applied/failed/timeout outcomes;
+> WebUI code must not reintroduce a durable command queue.
+
 The immediate purpose is to preserve the decisions from the WebUI foundation
 brainstorm so the next discussion can focus on technology choices for the local
 web service and frontend.
@@ -13,7 +21,7 @@ web service and frontend.
 - [x] Product shape accepted: the WebUI starts as a local-first operator
   console, not a hosted team service.
 - [x] Scope accepted: v1 focuses on run observation, run controls, node
-  inspection, supervisor health, and static preflight graph preview.
+  inspection, daemon health, and static preflight graph preview.
 - [x] Static preview accepted: preview reads existing preflight artifacts under
   `.acpus/.local/preflight/`; the WebUI does not run workflow preparation in v1.
 - [x] Package boundary accepted: create a new `@acpus/web` package. The `acpus`
@@ -34,11 +42,10 @@ web service and frontend.
 - [x] Node inspection accepted: show metadata and artifact references by
   default; fetch prompt, response, stderr, telemetry, and artifact contents
   lazily with preview limits.
-- [x] Control boundary accepted: UI actions submit durable runtime commands and
-  do not advance scheduler work inside the web server.
-- [x] Supervisor direction accepted: auto-start the detached supervisor when a
-  command leaves runnable work, while still surfacing supervisor health and
-  operations.
+- [x] Control boundary superseded: UI actions should call the local daemon
+  control surface and must not advance scheduler work inside the web server.
+- [x] Daemon direction superseded: auto-start/wake the local daemon when control
+  leaves runnable work, while surfacing daemon health and operations.
 - [x] Local access direction accepted: bind localhost by default; when binding a
   network host, require a generated token.
 - [x] Frontend stack accepted: React, Vite, TypeScript, TanStack Query, React
@@ -61,10 +68,10 @@ Acpus already has the runtime facts needed for a useful operator console:
   directories;
 - the runtime store persists runs, public run events, scheduler projection
   rows, dynamic frames, node instances, attempts, group members, signal waits,
-  execution metadata, commands, supervisor leases, and artifacts;
+  execution metadata, daemon liveness diagnostics, and artifacts;
 - runtime public APIs already expose run lists, run details, health checks,
-  durable controls, and a visualization overlay helper that combines frozen IR
-  structure with dynamic scheduler projection state;
+  daemon control clients, and a visualization overlay helper that combines
+  frozen IR structure with dynamic scheduler projection state;
 - workflow preflight writes `workflow.ir.json` and `lock.json` under
   `.acpus/.local/preflight/<id>/`.
 
@@ -73,7 +80,7 @@ only to name the important product elements:
 
 - Run Graph visualization;
 - Node Inspection;
-- Runs history and command feedback.
+- Runs history and control feedback.
 
 The main foundation question is therefore not whether data exists. It is how to
 shape a web-facing control plane without leaking runtime internals into the
@@ -84,14 +91,14 @@ frontend or turning the runtime package into a UI package.
 Create a local web foundation that can support:
 
 - a Runtime workbench centered on the currently selected run, including run
-  identity, run status, freshness/version metadata, graph, inspection, command
+  identity, run status, freshness/version metadata, graph, inspection, control
   feedback, and runtime controls;
 - a Runs page for selecting and filtering historical runs;
 - a Run Graph with static/runtime modes, status rollups, scoped expansion, and
   selected-node synchronization with inspection;
 - Node Inspection for static nodes, dynamic node instances, attempts, signal
   waits, outputs, errors, execution metadata, and artifacts;
-- command feedback for pause, resume, retry, cancel, signal, and future fork
+- control feedback for pause, resume, retry, cancel, signal, and future fork
   actions;
 - static graph preview for already-written preflight artifacts.
 
@@ -136,7 +143,8 @@ for polling:
 
 - runs list: updated time/count metadata;
 - run detail and graph: runtime dynamic version when projection rows exist;
-- command feedback: command status and update time where available.
+- control feedback: applied/failed/timeout outcome and update time where
+  available.
 
 Candidate API families:
 
@@ -145,7 +153,7 @@ Candidate API families:
 - `GET /api/runs/:id`;
 - `GET /api/runs/:id/graph?mode=static|runtime`;
 - `GET /api/runs/:id/nodes/:target`;
-- `POST /api/runs/:id/commands`;
+- `POST /api/runs/:id/controls`;
 - `GET /api/runs/:id/artifacts/:artifactId/preview`;
 - `GET /api/preflights`;
 - `GET /api/preflights/:id/graph`.
@@ -187,15 +195,15 @@ lookup, run-local path resolution, media type handling, and max preview bytes.
 Prompt, response, stderr, telemetry, raw parsed output, and raw ACP debug
 artifacts are inspection data, not graph data.
 
-### Controls And Supervisor
+### Controls And Daemon
 
-UI actions submit durable runtime command rows through runtime control APIs.
-The web server does not mutate scheduler projection tables and does not drive
-scheduler advancement itself.
+UI actions call the local daemon control surface and wait for
+applied/failed/timeout outcomes. The web server does not mutate scheduler
+projection tables and does not drive scheduler advancement itself.
 
-When a command leaves runnable work, the web service can follow the CLI pattern
-and ensure the detached supervisor is running. The UI should still make
-supervisor health and operational state visible.
+When a control leaves runnable work, the web service can follow the CLI pattern
+and ensure the local daemon is running. The UI should still make daemon health
+and operational state visible.
 
 ### Local Access
 
@@ -355,7 +363,7 @@ The v1 navigation model is intentionally small:
 
 - Runtime: the primary selected-run workbench. It contains run identity,
   status/version metadata, graph, node inspection, signal actions, durable run
-  controls, command feedback, and supervisor status/actions.
+  controls, control feedback, and daemon status/actions.
 - Runs: a list/search/filter surface for selecting a run to inspect in Runtime.
 - Preflights: a static preview list and graph view for existing preflight
   artifacts.
@@ -385,11 +393,11 @@ These are the intended next decisions before implementation planning:
 - Exact Hono middleware shape for localhost/network-token access, static asset
   fallback, route errors, and preview limits.
 - Component inventory for the first shell: sidebar, toolbar, cards, tables,
-  tabs, inspector sections, command feedback, artifact preview, and modals.
+  tabs, inspector sections, control feedback, artifact preview, and modals.
 - Graph interaction details: expansion controls, minimap placement, fit-view
   behavior, selection sync, keyboard affordances, and large-run degradation.
 - Polling intervals by screen state: active run, terminal run, runs list,
-  health, command feedback, and artifact previews.
+  health, control feedback, and artifact previews.
 - Whether browser smoke tests start with Playwright, Vitest Browser Mode, or a
   smaller screenshot-free route/component test layer first.
 
@@ -398,7 +406,7 @@ These are the intended next decisions before implementation planning:
 - Graph view-model tests for static graphs, runtime overlays, nested
   fanout/switch, loops, mixed statuses, and scoped expansion.
 - Web API contract tests for success shapes, tagged error shapes, polling
-  versions, command submission, and preflight preview.
+  versions, control submission, and preflight preview.
 - Integration tests using runtime fixtures while keeping web code behind runtime
   public APIs.
 - Artifact preview tests for media type limits, size truncation, unsupported

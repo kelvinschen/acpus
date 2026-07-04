@@ -2,14 +2,15 @@
 
 ## Purpose
 
-`@acpus/runtime` persists and advances prepared workflow runs in a workspace-local durable store. It accepts a prepared workflow and normalized input, writes SQLite state and run-local files, executes supported frozen IR, exposes read APIs and durable controls, handles signal continuation, and runs a detached supervisor. Workflow static checks, module compile, and preflight preparation belong to `@acpus/workflow-compiler`.
+`@acpus/runtime` persists and advances prepared workflow runs in a workspace-local durable store. It accepts a prepared workflow and normalized input, writes SQLite state and run-local files, executes supported frozen IR, exposes read APIs, handles signal continuation, and owns the local daemon that controls live run execution sessions. Workflow static checks, module compile, and preflight preparation belong to `@acpus/workflow-compiler`.
 
 ## Requirements
 
 ### Admission And Store
 
 - The runtime MUST create `.acpus/.local/state/runtime.db` as the durable runtime store for a workspace.
-- The runtime store MUST use SQLite for run admission data, public run events, scheduler events, scheduler projection tables, public run and node projections, command rows, supervisor lease rows, and artifact registry rows.
+- The runtime store MUST use SQLite for run admission data, public run events, scheduler events, scheduler projection tables, public run and node projections, daemon lease rows, run lease rows, execution metadata, and artifact registry rows.
+- The runtime store MUST NOT store durable command rows, durable command status, command queue counts, control request wait state, daemon endpoint, daemon port, daemon auth token, daemon auth token hash, or daemon service-discovery rows.
 - Runtime-generated run ids MUST use local time `YYYYMMDDHHmmss` followed by 20 uppercase hexadecimal random characters.
 - Run admission MUST accept a prepared workflow containing frozen IR JSON, lock metadata, and source graph digest.
 - Run admission MUST accept input that has already been normalized against the workflow input schema.
@@ -114,11 +115,17 @@
   budget inside one scheduler-visible attempt, not scheduler-visible automatic
   retry.
 - Task and agent timeout options MUST be persisted as scheduler attempt deadlines for scheduler-backed runs.
+- Signal timeout options MUST be persisted as scheduler signal wait deadlines.
 - In-flight task and agent timeout enforcement MAY occur inside the executor attempt, while stale or recovered attempts MUST be derivable from scheduler deadlines.
 - Task artifact APIs MUST write run-local artifact files and register metadata in SQLite.
 - Attempt-local output directories, work directories, and task artifacts MUST use dynamic `nodeKey` and attempt-specific subpaths for scheduler-backed task execution.
 - Task artifact writes after task timeout MUST be rejected and MUST NOT create artifact registry rows.
 - Signal execution that cannot complete immediately MUST leave the durable run in a resumable awaiting state.
+- Signal timeout expiration MUST mark the signal wait timed out, fail the signal
+  node instance with `signal_timeout`, and fail running ancestor group members so
+  composite completion can proceed.
+- Pausing a run MUST pause open signal timeout clocks and resuming that run MUST
+  restore their remaining timeout budgets as new deadlines.
 - Awaiting signal projection MUST persist the rendered signal prompt so read-only
   inspection can show the exact operator prompt without re-executing workflow
   logic.
@@ -219,25 +226,68 @@
   present. Turn metadata MUST NOT need to embed full prompt/response IO or full
   tool parameter previews because those live in the telemetry artifact.
 
-### Controls, Fork, And Signal
+### Controls, Daemon, Fork, And Signal
 
 - Pause MUST record a durable pause gate and MUST prevent new scheduler-visible attempts from starting while paused.
-- Runtime durable run-command inputs MUST use the known discriminated command
-  types `pause`, `resume`, `retry`, `fork`, `signal`, and `cancel`, not an open command
+- Pause on an already paused run MUST return `applied` without writing duplicate
+  control events.
+- Runtime control intents MUST use the known discriminated control types
+  `pause`, `resume`, `retry`, `fork`, `signal`, and `cancel`, not an open control
   type string.
-- Runtime durable supervisor-command inputs MUST use the known discriminated
-  command type `shutdown`.
-- Runtime durable command variants MUST expose typed JSON payload shapes for
+- Runtime control intent variants MUST expose typed JSON payload shapes for
   known payload fields such as pause reason, retry target, cancel target, fork
   options, and signal node/payload.
+- The runtime daemon MUST expose a small local request/response interface:
+  `startRun(runId)`, `control(runId, intent)`, `observeRun(runId)`,
+  `shutdown()`, and `status()`.
+- Runtime control requests from clients MUST route through the local daemon and
+  daemon-hosted per-run execution sessions; clients MUST NOT apply scheduler
+  controls directly through SQLite or become scheduler run owners.
+- Daemon control responses MUST be `applied` or `failed`. Client wait timeouts
+  are client outcomes and MUST NOT be persisted as runtime state.
+- The daemon API MUST use a workspace-derived local Unix domain socket or
+  platform-equivalent named pipe and a small stdlib JSON request/response
+  protocol.
+- The daemon API MUST NOT use an HTTP localhost port as its control protocol.
+- The daemon socket or named pipe path MUST be derived from the workspace and
+  MUST NOT be stored in SQLite.
+- Daemon single-instance arbitration MUST use fixed socket or named-pipe
+  binding. Daemon lease rows MUST NOT act as a startup lock, leader election, or
+  distributed ownership protocol.
+- A daemon that loses socket binding to a live daemon MUST exit after `status()`
+  confirms the live daemon. Stale socket removal MUST require local evidence
+  such as a dead daemon pid or expired daemon heartbeat.
+- Public daemon error codes MUST be limited to `RUN_NOT_FOUND`,
+  `RUN_TERMINAL`, `RUN_NOT_CONTROLLABLE`, `INVALID_CONTROL`,
+  `CONTROL_CONFLICT`, `EXECUTION_UNAVAILABLE`, `STORE_ERROR`, and
+  `INTERNAL_ERROR`.
+- Daemon public responses MUST NOT expose scheduler/store internals such as
+  `lease_lost`, owner epoch mismatch, SQLite constraint names, or projection
+  internals as API contract values.
+- The daemon MUST host one execution session per active or recoverable run.
+- Different run sessions MAY progress concurrently.
+- Within one run session, durable scheduler writes MUST be serialized per run,
+  but long task or agent executor waits MUST NOT block control requests from
+  entering the same run session.
+- `cancel` and `pause` MUST reach a live session promptly, persist the durable
+  fenced scheduler effect, and directly abort active attempt controllers before
+  returning an applied response.
+- Late executor results MUST be fenced by attempt identity, owner epoch, and/or
+  current projection state so they cannot overwrite already-applied cancel,
+  pause, resume, retry, signal, or fork outcomes.
 - Pause MUST best-effort cancel started scheduler-visible attempts and requeue eligible dynamic work for a later resume.
 - Pausing an active scheduler-backed agent turn MUST abort the executor signal
   and MUST preserve available prompt, response, stderr, telemetry artifacts,
   and cancelled turn metadata.
 - Resume MUST clear the durable pause gate and re-drive eligible scheduler work.
+- Resume on an already resumed run MUST return `applied` without writing
+  duplicate control events.
 - Retry MUST target a failed scheduler run, failed dynamic leaf `nodeKey`, or
   failed dynamic composite/control `frameKey`.
 - Run-level retry MUST reset scheduler projection to a clean pending materialization point while preserving historical event facts.
+- Retry MUST derive stable scheduler commit identity from the retry target and
+  retry intent so repeated retry requests cannot create duplicate retry
+  branches.
 - Targeted retry MUST accept a dynamic leaf `nodeKey`, a dynamic
   composite/control `frameKey`, or a static node alias only when that alias
   resolves to exactly one failed dynamic retry target.
@@ -247,14 +297,19 @@
   non-terminal dynamic composite/control `frameKey`, or a static node alias only
   when that alias resolves to exactly one non-terminal dynamic cancel target.
 - Run-level cancel MUST terminalize the run as `canceled`.
+- Cancel on an already canceled run MUST return `applied` without writing
+  duplicate cancel events.
 - Targeted cancel MUST terminalize the selected scheduler subtree with reason
   `operator_cancelled` and MUST NOT reset unrelated runnable work.
 - Fork MUST create a new run from frozen source run data without reading live workflow source.
+- Fork MUST derive or record stable fork identity at the scheduler commit layer
+  so repeated fork requests return the same fork run id instead of creating
+  multiple fork runs.
 - Fork MAY freeze a replacement prepared workflow and/or input override for the new run.
-- Fork command payloads MAY include a non-empty `target` string. Supplying a
+- Fork control payloads MAY include a non-empty `target` string. Supplying a
   target MUST select targeted replacement fork semantics, while omitting target
   in targeted replacement fork mode MUST mean the workflow root completion target.
-- Fork command payloads MAY include `unsafeReuse: true`. Supplying
+- Fork control payloads MAY include `unsafeReuse: true`. Supplying
   `unsafeReuse` MUST select targeted replacement fork semantics and instruct
   seed planning to reuse scheduler-accepted completed facts without enforcing
   source/replacement semantic signature or changed-input compatibility.
@@ -300,10 +355,24 @@
 - Fork MUST inherit compatible completed accepted outputs and artifacts reachable from inherited outputs.
 - Fork MUST NOT inherit active scheduler frames, attempts, signal waits, or artifacts from failed, cancelled, or superseded attempts.
 - Fork MUST verify copied artifacts and current frozen run files before writing fork rows.
-- Signal commands MUST store normalized signal payloads, consume open signal waits idempotently, and continue execution from frozen SQLite state.
+- Signal controls MUST normalize signal payloads, consume open signal waits
+  idempotently, and continue execution from frozen SQLite state.
+- Signal controls MUST use signal name plus waiting instance identity to consume
+  the intended wait exactly once.
 - Signal targeting MUST accept a dynamic `nodeKey` directly or a static signal alias only when that alias resolves to exactly one open signal wait.
+- The daemon MUST start or wake for `resume` and `signal` controls, recover the
+  targeted run session, apply the requested effect, and continue execution if
+  runnable work is unlocked.
+- `shutdown()` MUST be daemon service lifecycle, not run control.
+- `shutdown()` MUST return `applied` and stop the daemon only when there are no
+  active run execution sessions.
+- `shutdown()` with active sessions MUST return `failed` with
+  `CONTROL_CONFLICT`.
+- Runtime MUST NOT provide force shutdown in the daemon control model.
+- Daemon shutdown and idle-stop MUST NOT cancel, pause, fail, or otherwise
+  mutate runs.
 
-### Read APIs And Supervisor
+### Read APIs And Daemon
 
 - `listRuns`, `getRun`, and visualization overlay APIs MUST read SQLite projections rather than live workflow source.
 - `listRuns` MUST order runs by `updatedAt DESC` with `createdAt DESC` as a
@@ -321,28 +390,57 @@
   exists.
 - A missing runtime store MUST be reported as a healthy not-initialized state by
   the runtime health API.
-- The runtime health API MUST report workspace/store status, supervisor lease
-  metadata, supervisor pid liveness when the host can check it, current
-  supervisor idle age when available, command queue counts, run status counts,
-  runnable run count, active foreground run leases, stale run leases, and
-  idle-stop blockers.
-- The runtime store MUST support SQLite-backed supervisor leases with generation fencing, heartbeat updates, stale takeover, and release by current generation only.
-- The detached supervisor MUST heartbeat under its current lease generation.
-- The detached supervisor MUST persist its current idle-since timestamp and
-  configured idle window while it is leased.
-- The detached supervisor MUST consume pending durable run-command rows for pause, resume, retry, fork, signal, and cancel.
-- The detached supervisor MUST consume pending durable supervisor-command rows for shutdown.
-- The detached supervisor MUST release its lease and exit after applying a durable shutdown command.
-- The detached supervisor MUST NOT process later commands or advance runnable runs in the same tick after applying shutdown.
-- The detached supervisor MUST release its lease and exit after a continuous
-  idle window with no processed commands, no advanced runnable runs, and no
-  active foreground run leases.
-- The default supervisor idle window MUST be 30,000 milliseconds.
-- Any tick that processes a command, advances a runnable run, or sees active
-  foreground run ownership MUST reset the supervisor idle window.
-- The detached supervisor MUST recover stale running command rows for its current lease generation before consuming commands.
-- The detached supervisor MUST NOT recover foreground CLI-owned commands or commands owned by a different supervisor generation.
-- The detached supervisor MUST advance runnable pending scheduler-backed runs from frozen SQLite state without reading live workflow source.
+- Runtime read APIs used by inspection MUST combine durable run projection with
+  local liveness evidence such as daemon heartbeat, daemon pid liveness when
+  available, run lease expiry, and active owner metadata, and MUST expose
+  derived execution states `active`, `inactive`, `stale`, `terminal`, and
+  `unknown`.
+- Derived execution states MUST NOT be persisted as durable run statuses.
+- Read-only inspection MUST report stale non-terminal execution without writing
+  recovery events or mutating run status.
+- The daemon heartbeat interval MUST be 1,000 milliseconds.
+- Runtime inspection MAY classify non-terminal execution as stale after 5,000
+  milliseconds without a credible daemon heartbeat or immediately when the
+  recorded daemon pid is known dead.
+- Runtime inspection MAY classify non-terminal execution as stale when the run
+  lease has expired or active owner metadata is no longer credible.
+- The 5,000 millisecond daemon stale threshold MUST NOT trigger scheduler
+  recovery, run ownership takeover, or durable status mutation.
+- Scheduler run lease stale detection MUST remain separate from daemon
+  heartbeat staleness and MUST use a 30,000 millisecond stale window.
+- The runtime health API MUST report workspace/store status, daemon lease
+  metadata, daemon pid liveness when the host can check it, current daemon idle
+  age when available, run status counts, runnable run count, stale run leases,
+  and idle-stop blockers.
+- The runtime health API MUST NOT report command queue counts.
+- Daemon request ids, if introduced, MUST be ephemeral logging or tracing values
+  and MUST NOT be persisted as command/request state.
+- The runtime store MUST support SQLite-backed daemon leases with generation
+  fencing, heartbeat updates, pid metadata, idle metadata, protocol/runtime
+  metadata, and release by current generation only.
+- Daemon lease rows MUST NOT store endpoint, port, auth token, auth token hash,
+  or service-discovery fields.
+- The daemon MUST heartbeat under its current lease generation independently of
+  long task or agent execution.
+- The daemon MUST persist its current idle-since timestamp and configured idle
+  window while it is leased.
+- The daemon MUST release its lease and exit after a continuous 30,000
+  millisecond idle window with no active run sessions, no attached observe
+  clients, and no admitted non-terminal run that is currently runnable or
+  otherwise continuable locally.
+- Paused runs and signal waits without timeout MUST NOT keep the daemon resident
+  solely because future input may resume them.
+- Signal waits with timeout deadlines MUST keep the daemon resident until the
+  deadline is reached and the timeout is durably settled.
+- Daemon startup MAY recover admitted non-terminal runs that are currently
+  runnable or otherwise continuable.
+- Daemon startup MUST NOT become a whole-store repair sweep.
+- Runs explicitly targeted by `startRun` or `control` MUST be recoverable even
+  when they are paused, waiting for signal, or otherwise not currently runnable.
+- Read-only APIs such as `listRuns`, `getRun`, visualization overlay, and health
+  inspection MUST NOT start or wake the daemon.
+- The daemon MUST advance runnable pending scheduler-backed runs from frozen
+  SQLite state without reading live workflow source.
 
 ## Verification
 
@@ -369,5 +467,15 @@
   default absence of raw ACP debug artifacts.
 - Tests MUST cover raw parsed schema-backed agent output artifacts and prove
   they remain diagnostic rather than workflow-visible output.
-- Tests MUST cover pause, resume, run retry, dynamic node retry, cancel, signal targeting and idempotency, fork, targeted fork seed planning, unsafe targeted fork reuse, targeted fork missing/dynamic targets, static composite target subtree boundaries, durable command rows, and fork artifact reachability.
-- Tests MUST cover supervisor lease acquisition, active lease rejection, stale takeover, heartbeat fencing, release fencing, durable command consumption, and shutdown.
+- Tests MUST cover pause, resume, run retry, dynamic node retry, cancel, signal targeting and idempotency, fork, targeted fork seed planning, unsafe targeted fork reuse, targeted fork missing/dynamic targets, static composite target subtree boundaries, direct daemon control application, and fork artifact reachability.
+- Tests MUST cover daemon socket single-instance binding, stale socket handling,
+  daemon lease metadata, heartbeat fencing, heartbeat during long execution,
+  release fencing, idle-stop, shutdown, and the absence of durable command rows.
+- Tests MUST cover daemon-hosted run execution session control responsiveness
+  while executor work is in flight, active attempt abort, per-run durable write
+  serialization, and late executor result fencing.
+- Tests MUST cover mapping scheduler/store failures such as lease loss, owner
+  epoch mismatch, SQLite constraint failures, and projection inconsistencies to
+  stable public daemon error codes without exposing internal details.
+- Tests MUST cover read-only inspect stale execution classification without
+  daemon startup or store mutation.

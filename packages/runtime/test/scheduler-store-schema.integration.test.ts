@@ -67,6 +67,11 @@ describe("scheduler store schema", () => {
         "item_json",
         "child_frame_key",
       ]));
+      expect(columns(db, "signal_waits")).toEqual(expect.arrayContaining([
+        "deadline_at",
+        "timeout_message",
+        "timeout_remaining_ms",
+      ]));
       expect(sqliteNames(db, "index")).toEqual(expect.arrayContaining([
         "idx_run_leases_expires",
         "idx_node_instances_node_status",

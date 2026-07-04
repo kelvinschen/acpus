@@ -458,7 +458,21 @@ describe("WorkflowIR diagnostics contract", () => {
               additionalProperties: false,
             },
             run: { kind: "signal_run", prompt: { kind: "template", parts: [] } },
+            timeout: "1m",
             onTimeout: { action: "retry" },
+          } as any,
+          {
+            id: "missing_timeout",
+            kind: "signal",
+            run: { kind: "signal_run", prompt: { kind: "template", parts: [] } },
+            onTimeout: { action: "fail" },
+          } as any,
+          {
+            id: "bad_timeout_message",
+            kind: "signal",
+            run: { kind: "signal_run", prompt: { kind: "template", parts: [] } },
+            timeout: "1m",
+            onTimeout: { action: "fail", message: 123 },
           } as any,
           {
             id: "bad_exhausted",
@@ -482,7 +496,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
     const diagnostics = validateWorkflowIR(ir);
 
-    expect(diagnostics.map(diagnostic => diagnostic.code)).toEqual(["S001", "L002"]);
+    expect(diagnostics.map(diagnostic => diagnostic.code)).toEqual(["S001", "S001", "S001", "L002"]);
   });
 
   it("validates required aligned IR fields", () => {

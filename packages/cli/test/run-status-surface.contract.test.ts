@@ -213,6 +213,9 @@ function runBase(id: string, name: string, status: RunDetails["status"]): RunDet
     input: {},
     eventCount: 1,
     nodeCount: 1,
+    execution: status === "completed" || status === "failed" || status === "canceled"
+      ? { state: "terminal", lastStatus: status }
+      : { state: "unknown", lastStatus: status },
   };
 }
 

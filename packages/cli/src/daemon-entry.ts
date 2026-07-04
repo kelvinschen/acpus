@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-import { startSupervisorLoop } from "@acpus/runtime";
+import { startDaemonLoop } from "@acpus/runtime";
 
 const [cwdArg, heartbeatMsArg] = process.argv.slice(2);
 const cwd = cwdArg ?? process.cwd();
 const heartbeatMs = Number(heartbeatMsArg ?? 1_000);
-const loop = await startSupervisorLoop(cwd, {
+const loop = await startDaemonLoop(cwd, {
   heartbeatMs,
   packageVersion: "0.6.0-alpha",
   onShutdown: () => {

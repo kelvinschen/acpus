@@ -8,8 +8,9 @@ import { where } from "@acpus/expression";
 import { type WorkflowDefinition, compileWorkflowDefinition } from "@acpus/core/workflow";
 import type { WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
-import { admitWorkflowRun, normalizeWorkflowInput, type PreparedRunWorkflow, type RunWorkflowLockArtifact } from "@acpus/runtime";
+import { normalizeWorkflowInput, type PreparedRunWorkflow, type RunWorkflowLockArtifact } from "@acpus/runtime";
 import { prepareWorkflow } from "@acpus/workflow-compiler";
+import { admitWorkflowRun } from "../../src/runs/use-cases.js";
 
 export const repoRoot = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const runtimeFixtureRoot = join(repoRoot, "packages", "runtime", "test", "fixtures");
@@ -263,6 +264,20 @@ export function signalWorkflow() {
       run: { prompt: "approve" },
     });
     step("after").assert({ condition: approval.output.ok });
+    return { ok: approval.output.ok };
+  });
+}
+
+export function timedSignalWorkflow(timeout: "100ms" | "1ms" = "100ms") {
+  return defineWorkflow({
+    name: "cli-timed-signal",
+  }).build(({ step }) => {
+    const approval = step("approve").signal({
+      outputSchema: z.object({ ok: z.boolean() }),
+      timeout,
+      onTimeout: { action: "fail", message: "Approval timed out" },
+      run: { prompt: "approve" },
+    });
     return { ok: approval.output.ok };
   });
 }

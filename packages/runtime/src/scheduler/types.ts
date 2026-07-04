@@ -118,6 +118,8 @@ export type SignalWait = {
   payloadDigest?: string;
   commandIdempotencyKey?: string;
   deadlineAt?: string;
+  timeoutMessage?: string;
+  timeoutRemainingMs?: number;
   renderedPrompt?: string;
   terminalReason?: string;
 };

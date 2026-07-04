@@ -1,16 +1,8 @@
 import { expectTypeOf, test } from "vitest";
 import type {
   AgentOverrideMap,
-  AdvanceRunError,
-  AdvanceRunInput,
-  AdvanceRunSummary,
-  CancelCommandPayload,
-  ControlCommandType,
-  EmptyCommandPayload,
-  ForkCommandPayload,
   ForkSeedFailure,
   ForkPreparedWorkflow,
-  PauseCommandPayload,
   PreparedRunWorkflow,
   RunDynamicAttempt,
   RunDynamicDetails,
@@ -20,59 +12,52 @@ import type {
   RunDynamicSignalWait,
   RunDetails,
   RunRecord,
-  RunControlCommandType,
   RunStatus,
   RunWorkflowLockArtifact,
-  RuntimeAdvanceError,
-  RuntimeAdvanceObserver,
   RuntimeAdvanceResult,
-  RuntimeCommandRecord,
   RuntimeHealthCheck,
   RuntimeHealthReport,
   RuntimeMutationAction,
   RuntimeMutationInput,
   RuntimeMutationResult,
-  RuntimeStore,
   RuntimeUseCaseError,
-  RetryCommandPayload,
   SchedulerStoreError,
   SchedulerStoreResult,
-  SignalCommandPayload,
-  SubmitCommandInput,
-  SupervisorCommandType,
-  SupervisorLoopHandle,
-  SupervisorLoopOptions,
+  DaemonControlIntent,
+  DaemonErrorCode,
+  DaemonLoopHandle,
+  DaemonLoopOptions,
+  DaemonWork,
+  DaemonShutdownResult,
+  DaemonStatus,
   WorkflowVisualizationGroup,
   WorkflowVisualizationNode,
   WorkflowVisualizationOverlay,
 } from "@acpus/runtime";
-import { admitPreparedWorkflowRun, admitWorkflowRun, advanceWorkflowRun, applyRunControl, applySignalRunControl, createWorkflowVisualizationOverlay, getRun, getRuntimeHealth, getRunVisualizationOverlay, listRuns, mutateRun, normalizeForkInput, normalizeSignalPayload, normalizeWorkflowInput, queueSupervisorShutdown, releaseWorkflowRunOwner, signalRun, startSupervisorLoop, tryAdvanceRun, tryAdvanceRuntimeRun, tryAdmitWorkflowRun, tryMutateRun, trySignalRun, validateAgentOverrides } from "@acpus/runtime";
+import { DaemonRequestError, RuntimeUseCaseException, admitPreparedWorkflowRun, createWorkflowVisualizationOverlay, daemonEndpoint, getRun, getRuntimeHealth, getRunVisualizationOverlay, listRuns, normalizeForkInput, normalizeSignalPayload, normalizeWorkflowInput, requestDaemonControl, requestDaemonObserveRun, requestDaemonShutdown, requestDaemonStartRun, requestDaemonStatus, startDaemonLoop, validateAgentOverrides } from "@acpus/runtime";
 import type { WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
-import type { Result, ResultAsync } from "neverthrow";
+import type { Result } from "neverthrow";
 
 test("@acpus/runtime public types describe use-case level runtime APIs", () => {
-  expectTypeOf(admitWorkflowRun).toMatchTypeOf<(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue, agentOverrides?: AgentOverrideMap) => Promise<unknown>>();
   expectTypeOf(admitPreparedWorkflowRun).toEqualTypeOf<(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue, agentOverrides?: AgentOverrideMap) => Promise<RunDetails>>();
-  expectTypeOf(advanceWorkflowRun).toEqualTypeOf<(cwd: string, runId: string, ownerId?: string, observe?: RuntimeAdvanceObserver) => Promise<RuntimeAdvanceResult>>();
   expectTypeOf(listRuns).toEqualTypeOf<(cwd: string) => Promise<RunRecord[]>>();
   expectTypeOf(getRun).toEqualTypeOf<(cwd: string, runId: string) => Promise<RunDetails | undefined>>();
   expectTypeOf(getRuntimeHealth).toEqualTypeOf<(cwd: string) => Promise<RuntimeHealthReport>>();
   expectTypeOf(getRunVisualizationOverlay).toEqualTypeOf<(cwd: string, runId: string) => Promise<WorkflowVisualizationOverlay | undefined>>();
-  expectTypeOf(releaseWorkflowRunOwner).toEqualTypeOf<(cwd: string, runId: string, ownerId: string) => Promise<boolean>>();
-  expectTypeOf(queueSupervisorShutdown).toEqualTypeOf<(cwd: string) => Promise<RuntimeCommandRecord | undefined>>();
   expectTypeOf(normalizeForkInput).toEqualTypeOf<(cwd: string, runId: string, input: JsonValue | undefined, prepared?: PreparedRunWorkflow) => Promise<JsonValue | undefined>>();
-  expectTypeOf(signalRun).toEqualTypeOf<(cwd: string, runId: string, nodeId: string, payload: JsonValue) => Promise<RuntimeMutationResult | undefined>>();
-  expectTypeOf(applySignalRunControl).toEqualTypeOf<(cwd: string, runId: string, nodeId: string, payload: JsonValue) => Promise<RuntimeMutationResult | undefined>>();
-  expectTypeOf(mutateRun).toEqualTypeOf<(cwd: string, runId: string, action: RuntimeMutationAction, input?: RuntimeMutationInput) => Promise<RuntimeMutationResult | undefined>>();
-  expectTypeOf(applyRunControl).toEqualTypeOf<(cwd: string, runId: string, action: RuntimeMutationAction, input?: RuntimeMutationInput) => Promise<RuntimeMutationResult | undefined>>();
-  expectTypeOf(tryAdmitWorkflowRun).toEqualTypeOf<(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue, agentOverrides?: AgentOverrideMap) => ResultAsync<RuntimeAdvanceResult, RuntimeUseCaseError>>();
-  expectTypeOf(trySignalRun).toEqualTypeOf<(cwd: string, runId: string, nodeId: string, payload: JsonValue) => ResultAsync<RuntimeMutationResult, RuntimeUseCaseError>>();
-  expectTypeOf(tryMutateRun).toEqualTypeOf<(cwd: string, runId: string, action: RuntimeMutationAction, input?: RuntimeMutationInput) => ResultAsync<RuntimeMutationResult, RuntimeUseCaseError>>();
   expectTypeOf(normalizeWorkflowInput).toEqualTypeOf<(ir: WorkflowIR, input: JsonValue, label?: string) => JsonValue>();
   expectTypeOf(normalizeSignalPayload).toEqualTypeOf<(ir: WorkflowIR, nodeId: string, payload: JsonValue) => JsonValue>();
   expectTypeOf(validateAgentOverrides).toEqualTypeOf<(ir: WorkflowIR, input: AgentOverrideMap | undefined) => AgentOverrideMap>();
-  expectTypeOf(startSupervisorLoop).toEqualTypeOf<(cwd: string, options: SupervisorLoopOptions) => Promise<SupervisorLoopHandle>>();
+  expectTypeOf(startDaemonLoop).toEqualTypeOf<(cwd: string, options: DaemonLoopOptions) => Promise<DaemonLoopHandle>>();
+  expectTypeOf(daemonEndpoint).toEqualTypeOf<(cwd: string) => string>();
+  expectTypeOf(requestDaemonStatus).toEqualTypeOf<(cwd: string) => Promise<DaemonStatus>>();
+  expectTypeOf(requestDaemonControl).toEqualTypeOf<(cwd: string, control: DaemonControlIntent) => Promise<RuntimeMutationResult>>();
+  expectTypeOf(requestDaemonStartRun).toEqualTypeOf<(cwd: string, runId: string) => Promise<RunDetails>>();
+  expectTypeOf(requestDaemonObserveRun).toEqualTypeOf<(cwd: string, runId: string) => Promise<RuntimeAdvanceResult>>();
+  expectTypeOf(requestDaemonShutdown).toEqualTypeOf<(cwd: string) => Promise<DaemonShutdownResult>>();
+  expectTypeOf(new DaemonRequestError("RUN_NOT_CONTROLLABLE", "failed").code).toEqualTypeOf<DaemonErrorCode>();
+  expectTypeOf(new RuntimeUseCaseException({ type: "runtime-store-not-found", message: "missing" }).failure).toEqualTypeOf<RuntimeUseCaseError>();
   expectTypeOf(createWorkflowVisualizationOverlay).toMatchTypeOf<(ir: WorkflowIR, dynamic?: RunDynamicDetails, options?: { runId?: string; status?: string }) => WorkflowVisualizationOverlay>();
 
   expectTypeOf<PreparedRunWorkflow["lock"]>().toEqualTypeOf<RunWorkflowLockArtifact>();
@@ -96,19 +81,6 @@ test("@acpus/runtime public types describe use-case level runtime APIs", () => {
   expectTypeOf<RuntimeMutationAction>().toEqualTypeOf<"pause" | "resume" | "retry" | "fork" | "cancel">();
   expectTypeOf<RuntimeHealthReport["checks"][number]>().toEqualTypeOf<RuntimeHealthCheck>();
   expectTypeOf<RuntimeMutationInput>().toMatchTypeOf<{ target?: string; unsafeReuse?: boolean }>();
-  expectTypeOf<RunControlCommandType>().toEqualTypeOf<"pause" | "resume" | "retry" | "fork" | "signal" | "cancel">();
-  expectTypeOf<SupervisorCommandType>().toEqualTypeOf<"shutdown">();
-  expectTypeOf<ControlCommandType>().toEqualTypeOf<RunControlCommandType | SupervisorCommandType>();
-  expectTypeOf<Extract<SubmitCommandInput, { type: "pause" }>["payload"]>().toEqualTypeOf<PauseCommandPayload | undefined>();
-  expectTypeOf<Extract<SubmitCommandInput, { type: "shutdown" }>["payload"]>().toEqualTypeOf<EmptyCommandPayload | undefined>();
-  expectTypeOf<Extract<SubmitCommandInput, { type: "signal" }>["payload"]>().toEqualTypeOf<SignalCommandPayload | undefined>();
-  expectTypeOf<Extract<SubmitCommandInput, { type: "retry" }>["payload"]>().toEqualTypeOf<RetryCommandPayload | undefined>();
-  expectTypeOf<Extract<SubmitCommandInput, { type: "cancel" }>["payload"]>().toEqualTypeOf<CancelCommandPayload | undefined>();
-  expectTypeOf<Extract<SubmitCommandInput, { type: "fork" }>["payload"]>().toEqualTypeOf<ForkCommandPayload | undefined>();
-  expectTypeOf<ForkCommandPayload>().toMatchTypeOf<{ unsafeReuse?: boolean }>();
-  expectTypeOf<RetryCommandPayload>().toEqualTypeOf<{ target?: string }>();
-  expectTypeOf<CancelCommandPayload>().toEqualTypeOf<{ target?: string }>();
   expectTypeOf<SchedulerStoreResult<unknown>>().toEqualTypeOf<Result<unknown, SchedulerStoreError>>();
-  expectTypeOf(tryAdvanceRun).toEqualTypeOf<(input: AdvanceRunInput) => ResultAsync<AdvanceRunSummary, AdvanceRunError>>();
-  expectTypeOf(tryAdvanceRuntimeRun).toEqualTypeOf<(cwd: string, store: RuntimeStore, runId: string, ownerId?: string, observe?: RuntimeAdvanceObserver) => ResultAsync<RuntimeAdvanceResult, RuntimeAdvanceError>>();
+  expectTypeOf<DaemonWork>().toEqualTypeOf<{ startableRuns: RunRecord[]; idleBlockers: number }>();
 });

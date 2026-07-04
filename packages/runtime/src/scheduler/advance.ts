@@ -35,10 +35,23 @@ export type AdvanceRunInput = {
   localConcurrencyLimitFor?: (groupKey: string, projection: SchedulerProjection) => number | undefined;
   maxAttemptsFor?: (instance: NodeInstance, projection: SchedulerProjection) => number | undefined;
   deadlineAtFor?: (instance: NodeInstance, projection: SchedulerProjection, now: Date) => Date | undefined;
-  awaitableEventsFor?: (instance: NodeInstance, projection: SchedulerProjection) => SchedulerEvent[];
+  awaitableEventsFor?: (instance: NodeInstance, projection: SchedulerProjection, now: Date) => SchedulerEvent[];
   bootstrap?: (snapshot: SchedulerSnapshot) => SchedulerEvent[];
   materialize?: (snapshot: SchedulerSnapshot) => SchedulerEvent[];
+  onClaim?: (claim: RunOwnerClaim) => void;
+  onRelease?: (claim: RunOwnerClaim) => void;
+  onActiveAttempt?: (attempt: ActiveAttempt) => void | (() => void);
   now?: () => Date;
+};
+
+export type ActiveAttempt = {
+  runId: string;
+  nodeKey: string;
+  nodeId: string;
+  attemptId: string;
+  attemptNo: number;
+  ownerEpoch: number;
+  controller: AbortController;
 };
 
 export type AdvanceRunSummary = {
@@ -72,6 +85,7 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
   const leaseMs = input.leaseMs ?? DEFAULT_LEASE_MS;
   const claim = input.store.claimRun(input.runId, input.ownerId, leaseMs);
   if (!claim) return summary(input.runId, "lease_lost");
+  input.onClaim?.(claim);
   try {
     const now = input.now ?? (() => new Date());
     const preflight = terminalSummary(unwrapStoreResult(input.store.tryLoadRunSnapshot(input.runId)).projection, claim);
@@ -93,7 +107,8 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
     const ready = selectReadyInstances(initial.projection, maxLeafConcurrency, input.memberForInstance, input.localConcurrencyLimitFor);
     if (ready.length === 0) return idleSummary(initial.projection, claim);
 
-    const waitEvents = ready.flatMap(instance => input.awaitableEventsFor?.(instance, initial.projection) ?? []);
+    const waitNow = now();
+    const waitEvents = ready.flatMap(instance => input.awaitableEventsFor?.(instance, initial.projection, waitNow) ?? []);
     if (waitEvents.length > 0) {
       unwrapStoreResult(input.store.tryAppendSchedulerEvents({
         runId: input.runId,
@@ -155,7 +170,11 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
     const idle = idleSummary(latest.projection, claim);
     return { ...idle, started: counters.started, completed: counters.completed, failed: counters.failed, cancelled: counters.cancelled };
   } finally {
-    input.store.releaseRun(claim);
+    try {
+      input.store.releaseRun(claim);
+    } finally {
+      input.onRelease?.(claim);
+    }
   }
 }
 
@@ -227,10 +246,10 @@ function reserveGroupCapacity(
   return true;
 }
 
-function drainDerivedTransitions(
+export function drainDerivedTransitions(
   store: SchedulerStorePort,
   runId: string,
-  claim: RunOwnerClaim,
+  claim: Pick<RunOwnerClaim, "runId" | "ownerEpoch">,
   now: () => Date,
   materialize?: (snapshot: SchedulerSnapshot) => SchedulerEvent[],
   maxAttemptsFor?: AdvanceRunInput["maxAttemptsFor"],
@@ -324,6 +343,15 @@ async function runInstance(
 
   const controller = new AbortController();
   active.set(instance.nodeKey, controller);
+  const unregister = input.onActiveAttempt?.({
+    runId: input.runId,
+    nodeKey: instance.nodeKey,
+    nodeId: instance.nodeId,
+    attemptId: attempt.attemptId,
+    attemptNo: attempt.attemptNo,
+    ownerEpoch: claim.ownerEpoch,
+    controller,
+  });
   const monitor = setInterval(() => abortInterruptedActiveAttempts(input.store, input.runId, active), 10);
   monitor.unref?.();
   let result: AttemptCommitInput["result"];
@@ -343,6 +371,7 @@ async function runInstance(
     result = { status: "failed", reason: error instanceof Error ? error.message : String(error) };
   } finally {
     clearInterval(monitor);
+    unregister?.();
     active.delete(instance.nodeKey);
   }
   if (counters.leaseLost) return;

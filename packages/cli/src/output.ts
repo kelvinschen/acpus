@@ -1,6 +1,6 @@
 import type { Writable } from "node:stream";
 import type { DiagnosticIR, WorkflowIR } from "@acpus/core/ir";
-import type { RunDetails, RunRecord, RuntimeCommandRecord, RuntimeHealthCheck } from "@acpus/runtime";
+import type { RunDetails, RunRecord, RuntimeHealthCheck } from "@acpus/runtime";
 import type { WorkflowCatalogEntry } from "./catalog.js";
 
 export type ResultPhase = "usage" | "check" | "compile" | "validate" | "run" | "inspect" | "control" | "doctor";
@@ -32,9 +32,10 @@ export type CliResult = {
   list?: { total: number; limit?: number; truncated: boolean; order: "updatedAt DESC" };
   catalog?: WorkflowCatalogEntry;
   catalogEntries?: WorkflowCatalogEntry[];
-  command?: RuntimeCommandRecord;
   forkRunId?: string;
   checks?: RuntimeHealthCheck[];
+  errorCode?: string;
+  control?: { type: string; runId: string };
 };
 
 export type OutputFormat = "text" | "json";
@@ -76,6 +77,8 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
       if (result.run.dynamic) writeCompactDynamicSummary(stream, result.run);
     }
   }
+  if (result.errorCode) stream.write(`Error code: ${result.errorCode}\n`);
+  if (result.control) stream.write(`Control: ${result.control.type} ${result.control.runId}\n`);
   if (result.runs) {
     if (result.runs.length === 0) {
       stream.write("No runs.\n");
@@ -86,7 +89,6 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
       if (result.list?.truncated) stream.write(`showing ${result.runs.length} of ${result.list.total}\n`);
     }
   }
-  if (result.command) stream.write(`Command: ${result.command.id}\t${result.command.type}\t${result.command.status}\n`);
   if (result.forkRunId) stream.write(`Fork run: ${result.forkRunId}\n`);
   if (result.checks) {
     for (const check of result.checks) stream.write(`${check.status}\t${check.area}\t${check.message}\n`);

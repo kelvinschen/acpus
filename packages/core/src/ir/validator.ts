@@ -135,6 +135,7 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
     case "signal": {
       validateKnownFields(node, ["id", "source", "kind", "outputSchema", "run", "timeout", "onTimeout"], diagnostics, path);
       validateDuration(node.timeout, diagnostics, `${path}.timeout`, `Signal node '${node.id}' timeout`, "IR002");
+      if (node.onTimeout && node.timeout === undefined) addError(diagnostics, "S001", `Signal node '${node.id}' onTimeout requires timeout.`, `${path}.onTimeout`);
       validateSignalRun(node.run, diagnostics, `${path}.run`);
       validateSignalTimeout(node.onTimeout, diagnostics, `${path}.onTimeout`, node.id);
       validateSchema(node.outputSchema, diagnostics, `${path}.outputSchema`);
@@ -331,6 +332,9 @@ function validateSignalTimeout(onTimeout: unknown, diagnostics: DiagnosticIR[], 
   if (!requireRecord(onTimeout, diagnostics, path, "S001", `Signal node '${id}' onTimeout must be an object.`)) return;
   validateKnownFields(onTimeout, ["action", "message"], diagnostics, path);
   if (onTimeout.action !== "fail") addError(diagnostics, "S001", `Signal node '${id}' onTimeout action must be 'fail'.`, `${path}.action`);
+  if (onTimeout.message !== undefined && typeof onTimeout.message !== "string") {
+    addError(diagnostics, "S001", `Signal node '${id}' onTimeout message must be a string.`, `${path}.message`);
+  }
 }
 
 function validateFanoutOver(expr: ExprIR, diagnostics: DiagnosticIR[], path: string): void {

@@ -1,14 +1,14 @@
 import type { Readable, Writable } from "node:stream";
 import { Command } from "commander";
 import type { JsonValue } from "@acpus/expression/ir";
-import { applyRunControl, applySignalRunControl, getRun, getRunInspection, listRuns, normalizeForkInput, type PreparedRunWorkflow, type RunDetails, type RunRecord } from "@acpus/runtime";
+import { getRun, getRunInspection, listRuns, normalizeForkInput, type PreparedRunWorkflow, type RunDetails, type RunRecord } from "@acpus/runtime";
 import { controlError, notFoundError, usageError, validationError } from "../errors.js";
 import { writeResult, type OutputFormat } from "../output.js";
 import { formatRunStatusSurface } from "../run-status-surface.js";
 import { prepareWorkflowForCli } from "../workflow-preparation.js";
 import { parseAgents, parseJsonOption, parseRequiredPayload } from "./json.js";
 import { canPickRun, pickRunId } from "./runs-picker.js";
-import { ensureSupervisorRunning } from "./supervisor.js";
+import { DaemonControlFailure, daemonControlRequestId, sendDaemonControl } from "./daemon.js";
 
 export type RunsCommandContext = {
   cwd: string;
@@ -150,19 +150,16 @@ async function inspectRunCommand(ctx: RunsCommandContext, runId: string | undefi
 
 async function signalRun(ctx: RunsCommandContext, runId: string, options: RunsCommandOptions): Promise<void> {
   const payload = parseRequiredPayload(options.payload);
-  let result: Awaited<ReturnType<typeof applySignalRunControl>>;
+  let result: Awaited<ReturnType<typeof sendDaemonControl>>;
   try {
-    result = await applySignalRunControl(ctx.cwd, runId, options.target!, payload);
+    result = await sendDaemonControl(ctx.cwd, { requestId: daemonControlRequestId(), type: "signal", runId, nodeId: options.target!, payload });
   } catch (error) {
-    throw controlError(error instanceof Error ? error.message : String(error));
+    throw runControlError(error);
   }
-  if (!result) throw controlError(`Run '${runId}' was not found.`);
-  if (shouldWakeSupervisor(result.run)) ensureSupervisorRunning(ctx.cwd);
   ctx.setExitCode(writeResult({
     ok: true,
     phase: "control",
     message: "Signal accepted.",
-    ...(result.command ? { command: result.command } : {}),
     run: runSummary(result.run),
   }, outputFormat(ctx), ctx, 0));
 }
@@ -172,25 +169,27 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, options: RunsCo
   const prepared = action === "fork" && options.workflow ? await prepareWorkflowForCli(options.workflow, ctx.cwd) : undefined;
   const agentOverrides = action === "fork" ? parseAgents(options.agents) : undefined;
   const forkInput = await maybeNormalizeForkInput(ctx, runId, action, options, prepared);
-  let result: Awaited<ReturnType<typeof applyRunControl>>;
+  let result: Awaited<ReturnType<typeof sendDaemonControl>>;
   try {
-    result = await applyRunControl(ctx.cwd, runId, action, {
+    result = await sendDaemonControl(ctx.cwd, {
+      requestId: daemonControlRequestId(),
+      type: action,
+      runId,
+      input: {
       ...(options.target ? { target: options.target } : {}),
       ...(prepared ? { prepared } : {}),
       ...(forkInput !== undefined ? { input: forkInput } : {}),
       ...(agentOverrides !== undefined ? { agentOverrides } : {}),
       ...(action === "fork" && options.unsafeReuse === true ? { unsafeReuse: true } : {}),
+      },
     });
   } catch (error) {
-    throw controlError(error instanceof Error ? error.message : String(error));
+    throw runControlError(error);
   }
-  if (!result) throw controlError(`Run '${runId}' was not found.`);
-  if (shouldWakeSupervisor(result.run)) ensureSupervisorRunning(ctx.cwd);
   ctx.setExitCode(writeResult({
     ok: true,
     phase: "control",
     message: action === "fork" ? "Run forked." : action === "cancel" ? "Run canceled." : `Run ${action}d.`,
-    ...(result.command ? { command: result.command } : {}),
     run: runSummary(result.run),
     ...(result.forkRunId ? { forkRunId: result.forkRunId } : {}),
   }, outputFormat(ctx), ctx, 0));
@@ -223,6 +222,17 @@ function outputFormat(ctx: RunsCommandContext): OutputFormat {
   return ctx.wantsJson ? "json" : "text";
 }
 
+function runControlError(error: unknown): ReturnType<typeof controlError> {
+  if (error instanceof DaemonControlFailure) {
+    return controlError(error.message, {
+      errorCode: error.code,
+      control: { type: error.controlType, runId: error.runId },
+      ...(error.run ? { run: runSummary(error.run) } : {}),
+    });
+  }
+  return controlError(error instanceof Error ? error.message : String(error));
+}
+
 function runSummary(run: RunDetails): RunRecord {
   return {
     id: run.id,
@@ -234,8 +244,4 @@ function runSummary(run: RunDetails): RunRecord {
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,
   };
-}
-
-function shouldWakeSupervisor(run: RunDetails): boolean {
-  return run.status === "pending" || run.status === "running";
 }

@@ -48,14 +48,21 @@ export type SchedulerProjectionTimings = {
 };
 
 export function signalTimeoutEvents(projection: SchedulerProjection, now: Date): SchedulerEvent[] {
+  if (projection.run.status === "paused") return [];
   return Object.values(projection.signalWaits).flatMap(wait => {
     if (wait.status !== "awaiting" || wait.deadlineAt === undefined || wait.deadlineAt > now.toISOString()) return [];
     const instance = projection.instances[wait.nodeKey];
+    const error = {
+      reason: "signal_timeout",
+      ...(wait.timeoutMessage === undefined ? {} : { message: wait.timeoutMessage }),
+    };
+    const members = ancestorGroupMembersForNode(projection, wait.nodeKey).filter(member => member.status === "running");
     return [
-      { type: "signal.timed_out", payload: { nodeKey: wait.nodeKey, terminalReason: "signal_timeout" } },
+      { type: "signal.timed_out", payload: { nodeKey: wait.nodeKey, terminalReason: "signal_timeout", ...(wait.timeoutMessage === undefined ? {} : { message: wait.timeoutMessage }) } },
       ...(instance && instance.status === "awaiting"
-        ? [{ type: "instance.failed", payload: { nodeKey: wait.nodeKey, error: { reason: "signal_timeout" }, statusReason: "signal_timeout" } } satisfies SchedulerEvent]
+        ? [{ type: "instance.failed", payload: { nodeKey: wait.nodeKey, error, statusReason: "signal_timeout" } } satisfies SchedulerEvent]
         : []),
+      ...members.map(member => ({ type: "group.member_failed", payload: { memberKey: member.memberKey, error, terminalReason: "signal_timeout" } }) satisfies SchedulerEvent),
     ];
   });
 }
@@ -571,9 +578,11 @@ function isGroupEvent(event: SchedulerEvent): event is Extract<SchedulerEvent, {
   }
 }
 
-function isSignalEvent(event: SchedulerEvent): event is Extract<SchedulerEvent, { type: "signal.awaiting" | "signal.consumed" | "signal.timed_out" | "signal.cancelled" }> {
+function isSignalEvent(event: SchedulerEvent): event is Extract<SchedulerEvent, { type: "signal.awaiting" | "signal.timeout_paused" | "signal.timeout_resumed" | "signal.consumed" | "signal.timed_out" | "signal.cancelled" }> {
   switch (event.type) {
     case "signal.awaiting":
+    case "signal.timeout_paused":
+    case "signal.timeout_resumed":
     case "signal.consumed":
     case "signal.timed_out":
     case "signal.cancelled":
@@ -776,7 +785,7 @@ function reopenGroupForControlRetry(projection: SchedulerProjection, groupKey: s
   reopenFrameForControlRetry(projection, group.nodeKey);
 }
 
-function applySignalEvent(projection: SchedulerProjection, event: Extract<SchedulerEvent, { type: "signal.awaiting" | "signal.consumed" | "signal.timed_out" | "signal.cancelled" }>): void {
+function applySignalEvent(projection: SchedulerProjection, event: Extract<SchedulerEvent, { type: "signal.awaiting" | "signal.timeout_paused" | "signal.timeout_resumed" | "signal.consumed" | "signal.timed_out" | "signal.cancelled" }>): void {
   if (event.type === "signal.awaiting") {
     if (projection.signalWaits[event.payload.nodeKey]) throw new Error(`Signal wait '${event.payload.nodeKey}' already exists.`);
     projection.signalWaits[event.payload.nodeKey] = compactSignalWait({
@@ -785,11 +794,30 @@ function applySignalEvent(projection: SchedulerProjection, event: Extract<Schedu
       nodeId: event.payload.nodeId,
       status: "awaiting",
       ...(event.payload.deadlineAt === undefined ? {} : { deadlineAt: event.payload.deadlineAt }),
+      ...(event.payload.timeoutMessage === undefined ? {} : { timeoutMessage: event.payload.timeoutMessage }),
       ...(event.payload.renderedPrompt === undefined ? {} : { renderedPrompt: event.payload.renderedPrompt }),
     });
     return;
   }
   const wait = requireKey(projection.signalWaits, event.payload.nodeKey, "signal wait");
+  if (event.type === "signal.timeout_paused") {
+    assertSignalOpen(wait.status, event.payload.nodeKey);
+    projection.signalWaits[event.payload.nodeKey] = compactSignalWait({
+      ...wait,
+      deadlineAt: undefined,
+      timeoutRemainingMs: event.payload.remainingMs,
+    });
+    return;
+  }
+  if (event.type === "signal.timeout_resumed") {
+    assertSignalOpen(wait.status, event.payload.nodeKey);
+    projection.signalWaits[event.payload.nodeKey] = compactSignalWait({
+      ...wait,
+      deadlineAt: event.payload.deadlineAt,
+      timeoutRemainingMs: undefined,
+    });
+    return;
+  }
   if (event.type === "signal.consumed") {
     if (wait.status === "consumed") {
       if (wait.commandIdempotencyKey === event.payload.commandIdempotencyKey && stableJson(wait.payload) === stableJson(event.payload.payload)) return;

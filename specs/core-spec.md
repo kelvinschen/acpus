@@ -60,6 +60,7 @@
 - Agent definitions MUST NOT accept broad `options` fields.
 - Signal nodes MUST use `step("id").signal({ outputSchema?, run: { prompt }, timeout?, onTimeout? })`. Schema-less signals expose raw `Expr<string>` output; schema-backed signals expose parsed structured output.
 - Signal `onTimeout`, when present, MUST use `{ action: "fail", message? }`.
+- Signal `onTimeout` MUST NOT be present unless `timeout` is present.
 - Task nodes MUST use `run.input` as the explicit expression-to-runtime-value boundary.
 - Inline Task nodes MUST use `step("id").task({ run: { input, exec, cwd?, env?, execution? }, timeout? })`; output is inferred from `Awaited<ReturnType<exec>>`.
 - Reusable Task nodes MUST use `step("id").task({ run: { task, input, cwd?, env?, execution? }, timeout? })`; output is inferred from the reusable Task token's `exec`.

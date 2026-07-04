@@ -1,0 +1,181 @@
+import { access, mkdir, utimes, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import { startDaemonLoop } from "@acpus/runtime";
+import { runDaemonTick } from "../src/daemon/tick.js";
+import { openExistingWritableRuntimeStore, openRuntimeStore } from "../src/store/store.js";
+import { admitSyntheticWorkflow, prepareSyntheticWorkflow, runtimeRow, runtimeRows, taskArtifactWorkflow, timedSignalWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+
+describe.concurrent("runtime daemon ticks", () => {
+  it("releases its lease after a continuous idle window", async () => {
+    await withRuntimeWorkspace("runtime-daemon-idle-stop", async workspace => {
+      let resolveShutdown!: () => void;
+      const shutdown = new Promise<void>(resolve => {
+        resolveShutdown = resolve;
+      });
+      const loop = await startDaemonLoop(workspace, {
+        heartbeatMs: 5,
+        idleStopMs: 10,
+        packageVersion: "test",
+        onShutdown: resolveShutdown,
+      });
+      await shutdown;
+
+      expect(runtimeRows(workspace, "SELECT generation FROM daemon_lease")).toEqual([]);
+      await loop.shutdown();
+    });
+  });
+
+  it("persists daemon idle state in runtime diagnostics", async () => {
+    await withRuntimeWorkspace("runtime-daemon-idle-diagnostics", async workspace => {
+      const loop = await startDaemonLoop(workspace, {
+        heartbeatMs: 5,
+        idleStopMs: 500,
+        packageVersion: "test",
+      });
+      try {
+        await waitUntil(() => {
+          const row = runtimeRow(workspace, "SELECT idle_since_at, idle_stop_ms FROM daemon_lease") as { idle_since_at: string | null; idle_stop_ms: number | null } | undefined;
+          return row?.idle_since_at !== null && row?.idle_stop_ms === 500;
+        });
+        const store = await openRuntimeStore(workspace);
+        try {
+          expect(store.getRuntimeDiagnostics().daemon).toMatchObject({
+            idleSinceAt: expect.any(String),
+            idleStopMs: 500,
+          });
+        } finally {
+          store.close();
+        }
+      } finally {
+        await loop.shutdown();
+      }
+    });
+  });
+
+  it("cleans stale staged directories but preserves admitted runs", async () => {
+    await withRuntimeWorkspace("runtime-daemon-cleanup", async workspace => {
+      const completed = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
+      const staged = join(workspace, ".acpus", ".local", "runs", ".staging-old");
+      const orphan = join(workspace, ".acpus", ".local", "runs", "20990101000000F2CF49A02B2A537F5E8A");
+      await mkdir(staged, { recursive: true });
+      await mkdir(orphan, { recursive: true });
+      await writeFile(join(staged, "leftover.txt"), "staged");
+      const old = new Date(Date.now() - 120_000);
+      await utimes(staged, old, old);
+      await utimes(orphan, old, old);
+
+      const store = await openExistingWritableRuntimeStore(workspace);
+      expect(store).toBeDefined();
+      try {
+        await expect(runDaemonTick(store!, { startRun: () => {
+          throw new Error("no run should start");
+        } })).resolves.toMatchObject({ runs: 0 });
+      } finally {
+        store?.close();
+      }
+
+      expect(runtimeRows(workspace, "SELECT id FROM runs")).toEqual([{ id: completed.run.id }]);
+      await expect(access(staged)).rejects.toThrow();
+      await expect(access(orphan)).resolves.toBeUndefined();
+    });
+  });
+
+  it("treats timed signal waits as daemon work without starting future deadlines", async () => {
+    await withRuntimeWorkspace("runtime-daemon-signal-timeout-work", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        appendTimedSignalWait(store, run.id, "2099-01-01T00:00:00.000Z");
+
+        expect(store.listDaemonWork(new Date("2026-07-01T00:00:00.000Z"))).toMatchObject({
+          startableRuns: [],
+          idleBlockers: 1,
+        });
+
+        const started: string[] = [];
+        await expect(runDaemonTick(store, { startRun: runId => started.push(runId) })).resolves.toMatchObject({
+          runs: 0,
+          idleBlockers: 1,
+        });
+        expect(started).toEqual([]);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("starts runs with due signal timeout work", async () => {
+    await withRuntimeWorkspace("runtime-daemon-signal-timeout-due", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        appendTimedSignalWait(store, run.id, "2000-01-01T00:00:00.000Z");
+
+        const started: string[] = [];
+        await expect(runDaemonTick(store, { startRun: runId => started.push(runId) })).resolves.toMatchObject({
+          runs: 1,
+          idleBlockers: 1,
+        });
+        expect(started).toEqual([run.id]);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("settles expired signal timeouts through a daemon run session", async () => {
+    await withRuntimeWorkspace("runtime-daemon-signal-timeout-settlement", async workspace => {
+      const awaiting = await admitSyntheticWorkflow(workspace, timedSignalWorkflow());
+      expect(awaiting.status).toBe("awaiting");
+      await waitUntil(() => {
+        const row = runtimeRow(workspace, "SELECT deadline_at FROM signal_waits WHERE run_id = ?", awaiting.run.id) as { deadline_at?: string } | undefined;
+        return typeof row?.deadline_at === "string" && Date.now() > Date.parse(row.deadline_at);
+      });
+
+      const loop = await startDaemonLoop(workspace, {
+        heartbeatMs: 5,
+        idleStopMs: 500,
+        packageVersion: "test",
+      });
+      try {
+        await waitUntil(() => runtimeRow(workspace, "SELECT status FROM runs WHERE id = ?", awaiting.run.id)?.status === "failed");
+        expect(runtimeRows(workspace, "SELECT status, terminal_reason FROM signal_waits WHERE run_id = ?", awaiting.run.id)).toEqual([
+          { status: "timed_out", terminal_reason: "signal_timeout" },
+        ]);
+      } finally {
+        await loop.shutdown();
+      }
+    });
+  });
+});
+
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  throw new Error("condition was not met");
+}
+
+function appendTimedSignalWait(store: Awaited<ReturnType<typeof openRuntimeStore>>, runId: string, deadlineAt: string): void {
+  const claim = store.scheduler.claimRun(runId, "owner-a", 60_000);
+  if (!claim) throw new Error("failed to claim test run");
+  try {
+    store.scheduler.appendSchedulerEvents({
+      runId,
+      expectedVersion: store.scheduler.loadRunSnapshot(runId).version,
+      ownerEpoch: claim.ownerEpoch,
+      idempotencyKey: `daemon-signal-timeout:${deadlineAt}`,
+      events: [
+        { type: "instance.ready", payload: { runId, nodeKey: "approve~1", nodeId: "approve", instancePath: [{ kind: "node", nodeId: "approve" }], readinessSequence: 1 } },
+        { type: "instance.awaiting", payload: { nodeKey: "approve~1", statusReason: "signal" } },
+        { type: "signal.awaiting", payload: { runId, nodeKey: "approve~1", nodeId: "approve", deadlineAt } },
+      ],
+    });
+  } finally {
+    store.scheduler.releaseRun(claim);
+  }
+}

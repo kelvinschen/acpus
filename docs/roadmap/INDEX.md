@@ -15,6 +15,6 @@ pre-TypeScript history remains under `legacy/`.
 ## Roadmap
 
 - [Core Roadmap](core-roadmap.md) — the path from the current authoring/compile core to a full runtime (task execution, executors, persistence, lint plugin, runner profiles).
-- [Durable Runtime Roadmap](durable-runtime-roadmap.md) — active durable runtime audit, remaining gaps, and implementation target ordering.
+- [Durable Runtime Roadmap](archive/durable-runtime-roadmap.md) — superseded durable runtime audit retained as historical context; current runtime truth is in specs and newer roadmap records.
 - [WebUI Foundation Goal](webui-foundation-goal.md) — accepted direction and open technology-selection questions for the local-first WebUI, web service, run graph, node inspection, and preflight preview foundation.
-- [Runtime Control Command Latency Roadmap](runtime-control-command-latency-roadmap.md) — dogfooding incident record and future fix candidates for cancel commands that are accepted but delayed by active scheduler execution.
+- [Runtime Control Abstraction Refactor Roadmap](runtime-control-abstraction-refactor-roadmap.md) — roadmap for replacing queue-shaped runtime control with local daemon request/response control over live run execution sessions.

@@ -2,7 +2,7 @@ import type { NodeIR, WorkflowIR } from "@acpus/core/ir";
 import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
 import type { EvaluationScope } from "../evaluation/evaluator.js";
 import type { FrozenRun, RuntimeStore } from "../store/store.js";
-import { advanceRun, type AdvanceRunInput, type AdvanceRunSummary } from "./advance.js";
+import { advanceRun, drainDerivedTransitions, type AdvanceRunInput, type AdvanceRunSummary } from "./advance.js";
 import { bootstrapRootEvents, continueRootEvents } from "./materialize.js";
 import { createRuntimeNodeExecutor } from "./node-executor.js";
 import { parseDurationMs } from "../execution/duration.js";
@@ -20,6 +20,9 @@ export type AdvanceFrozenRunInput = {
   now?: () => Date;
   executeAgentTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult>;
   agentRepairDelayMs?: number;
+  onClaim?: AdvanceRunInput["onClaim"];
+  onRelease?: AdvanceRunInput["onRelease"];
+  onActiveAttempt?: AdvanceRunInput["onActiveAttempt"];
 };
 
 export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<AdvanceRunSummary> {
@@ -36,8 +39,11 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
     ...(input.now === undefined ? {} : { now: input.now }),
     localConcurrencyLimitFor: localConcurrencyLimitForRoot(frozen.ir),
     maxAttemptsFor: () => undefined,
-    awaitableEventsFor: (instance, projection) => {
+    awaitableEventsFor: (instance, projection, now) => {
       const node = nodes.get(instance.nodeId);
+      const deadlineAt = node?.kind === "signal" && node.timeout !== undefined
+        ? new Date(now.getTime() + parseDurationMs(node.timeout)).toISOString()
+        : undefined;
       return node?.kind === "signal"
         ? [
           { type: "instance.awaiting", payload: { nodeKey: instance.nodeKey, statusReason: "signal" } },
@@ -47,6 +53,8 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
               runId: input.runId,
               nodeKey: instance.nodeKey,
               nodeId: instance.nodeId,
+              ...(deadlineAt === undefined ? {} : { deadlineAt }),
+              ...(node.onTimeout?.message === undefined ? {} : { timeoutMessage: node.onTimeout.message }),
               renderedPrompt: renderTemplate(node.run.prompt, scopeForNodeAttempt(scope, projection, instance.nodeKey)),
             },
           },
@@ -60,6 +68,9 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
     },
     bootstrap: snapshot => snapshot.projection.frames.root ? [] : bootstrapRootEvents(input.runId, frozen.ir, scope),
     materialize: snapshot => continueRootEvents(frozen.ir, snapshot.projection, scope),
+    ...(input.onClaim === undefined ? {} : { onClaim: input.onClaim }),
+    ...(input.onRelease === undefined ? {} : { onRelease: input.onRelease }),
+    ...(input.onActiveAttempt === undefined ? {} : { onActiveAttempt: input.onActiveAttempt }),
     executor: createRuntimeNodeExecutor({
       cwd: input.cwd,
       ir: frozen.ir,
@@ -69,6 +80,25 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
       ...(input.agentRepairDelayMs === undefined ? {} : { agentRepairDelayMs: input.agentRepairDelayMs }),
     }),
   });
+}
+
+export function drainFrozenRunTransitions(input: {
+  store: RuntimeStore;
+  runId: string;
+  ownerEpoch: number;
+  now?: () => Date;
+}) {
+  const frozen = input.store.getFrozenRun(input.runId);
+  if (!frozen) throw new Error(`Run '${input.runId}' has no frozen workflow.`);
+  const scope = rootScope(frozen);
+  return drainDerivedTransitions(
+    input.store.scheduler,
+    input.runId,
+    { runId: input.runId, ownerEpoch: input.ownerEpoch },
+    input.now ?? (() => new Date()),
+    snapshot => continueRootEvents(frozen.ir, snapshot.projection, scope),
+    () => undefined,
+  );
 }
 
 function isSchedulerRetryLeaf(node: NodeIR): node is Extract<NodeIR, { kind: "task" | "agent" }> {

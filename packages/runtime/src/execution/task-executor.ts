@@ -73,7 +73,7 @@ export async function executeTaskNode(node: TaskNodeIR, scope: EvaluationScope, 
 
 async function loadTaskFunction(target: TaskExecutionTargetIR, workspaceDir: string): Promise<TaskFunction<unknown, unknown>> {
   if (target.kind === "inline") {
-    const mod = await import(`data:text/javascript,${encodeURIComponent(`export default ${target.source};`)}`);
+    const mod = await import(`data:text/javascript,${encodeURIComponent(`const __name = (target, _name) => target;\nexport default ${target.source};`)}`);
     const fn = mod.default;
     if (typeof fn !== "function") throw new Error("Inline task source did not evaluate to a function.");
     return fn as TaskFunction<unknown, unknown>;

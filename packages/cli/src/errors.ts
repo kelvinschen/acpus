@@ -21,6 +21,6 @@ export function validationError(message: string): CliError {
   return new CliError(1, { ok: false, phase: "validate", message });
 }
 
-export function controlError(message: string): CliError {
-  return new CliError(1, { ok: false, phase: "control", message });
+export function controlError(message: string, details: Pick<CliResult, "control" | "errorCode" | "run"> = {}): CliError {
+  return new CliError(1, { ok: false, phase: "control", message, ...details });
 }

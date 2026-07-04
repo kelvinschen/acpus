@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { join } from "node:path";
 import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
+import { deriveInstanceKey } from "../src/scheduler/identity.js";
 import type { RunOwnerClaim } from "../src/scheduler/store-port.js";
-import { prepareSyntheticWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { prepareSyntheticWorkflow, timedSignalWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 
 describe("scheduler store port", () => {
   it("claims run ownership, appends scheduler events, and rebuilds snapshots", async () => {
@@ -106,10 +107,10 @@ describe("scheduler store port", () => {
           actualVersion: 1,
         });
 
-        const invalidResume = store.scheduler.tryResumeRun({ runId: run.id, ownerEpoch: claim.ownerEpoch, idempotencyKey: "typed:resume" });
-        expect(invalidResume.isErr()).toBe(true);
-        if (invalidResume.isOk()) throw new Error("expected invalid resume state");
-        expect(invalidResume.error).toMatchObject({ type: "invalid-control-state", runId: run.id, command: "resume", status: "pending" });
+        const alreadyResumed = store.scheduler.tryResumeRun({ runId: run.id, ownerEpoch: claim.ownerEpoch, idempotencyKey: "typed:resume" });
+        expect(alreadyResumed.isOk()).toBe(true);
+        if (alreadyResumed.isErr()) throw new Error("expected already-resumed success");
+        expect(alreadyResumed.value.projection.run.status).toBe("pending");
 
         const invalidRunRetry = store.scheduler.tryRetryRun({ runId: run.id, ownerEpoch: claim.ownerEpoch, idempotencyKey: "typed:run-retry" });
         expect(invalidRunRetry.isErr()).toBe(true);
@@ -1159,6 +1160,15 @@ describe("scheduler store port", () => {
           idempotencyKey: "signal:consume",
         });
         expect(duplicate.version).toBe(consumed.version);
+        const duplicateWithFreshCommand = store.scheduler.consumeSignal({
+          runId: run.id,
+          nodeKey: "approve~1",
+          ownerEpoch: claim.ownerEpoch,
+          payload: { ok: true },
+          commandIdempotencyKey: "other-command",
+          idempotencyKey: "signal:consume:other",
+        });
+        expect(duplicateWithFreshCommand.version).toBe(consumed.version);
 
         expect(() => store.scheduler.consumeSignal({
           runId: run.id,
@@ -1167,7 +1177,7 @@ describe("scheduler store port", () => {
           payload: { ok: false },
           commandIdempotencyKey: "signal-command",
           idempotencyKey: "signal:consume",
-        })).toThrow("conflicts");
+        })).toThrow("already consumed a different payload");
         expect(() => store.scheduler.consumeSignal({
           runId: run.id,
           nodeKey: "approve~1",
@@ -1345,6 +1355,109 @@ describe("scheduler store port", () => {
       }
     });
   });
+
+  it("freezes and resumes signal timeout deadlines while paused", async () => {
+    await withRuntimeWorkspace("scheduler-store-signal-timeout-pause-resume", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        awaitingSignal(store, run.id, claim, "signal-timeout-pause-awaiting", {
+          deadlineAt: "2026-07-01T00:00:05.000Z",
+          timeoutMessage: "Approval timed out",
+        });
+
+        const paused = store.scheduler.pauseRun({
+          runId: run.id,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "signal-timeout:pause",
+          now: new Date("2026-07-01T00:00:01.000Z"),
+        });
+        expect(paused.projection.signalWaits["approve~1"]).toMatchObject({
+          status: "awaiting",
+          timeoutMessage: "Approval timed out",
+          timeoutRemainingMs: 4_000,
+        });
+        expect(paused.projection.signalWaits["approve~1"]?.deadlineAt).toBeUndefined();
+
+        const resumed = store.scheduler.resumeRun({
+          runId: run.id,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "signal-timeout:resume",
+          now: new Date("2026-07-01T00:00:10.000Z"),
+        });
+        expect(resumed.projection.signalWaits["approve~1"]).toMatchObject({
+          status: "awaiting",
+          deadlineAt: "2026-07-01T00:00:14.000Z",
+          timeoutMessage: "Approval timed out",
+        });
+        expect(resumed.projection.signalWaits["approve~1"]?.timeoutRemainingMs).toBeUndefined();
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("times out overdue signal waits before consuming late payloads", async () => {
+    await withRuntimeWorkspace("scheduler-store-signal-timeout-before-consume", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, timedSignalWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        const nodeKey = awaitingRootSignal(store, run.id, claim, "signal-timeout-late-awaiting", {
+          deadlineAt: "2026-07-01T00:00:00.000Z",
+        });
+
+        expect(() => store.scheduler.consumeSignal({
+          runId: run.id,
+          nodeKey,
+          ownerEpoch: claim.ownerEpoch,
+          payload: { ok: true },
+          commandIdempotencyKey: "late-signal-command",
+          idempotencyKey: "signal-timeout:late-consume",
+          now: new Date("2026-07-01T00:00:01.000Z"),
+        })).toThrow("already timed_out");
+
+        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        expect(projection.signalWaits[nodeKey]).toMatchObject({ status: "timed_out", terminalReason: "signal_timeout" });
+        expect(projection.instances[nodeKey]).toMatchObject({ status: "failed", statusReason: "signal_timeout" });
+        expect(projection.frames.root).toMatchObject({ status: "failed", terminalReason: "signal_timeout" });
+        expect(store.getRun(run.id)).toMatchObject({ status: "failed" });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("settles overdue signal timeouts before applying pause", async () => {
+    await withRuntimeWorkspace("scheduler-store-signal-timeout-before-pause", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, timedSignalWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        const nodeKey = awaitingRootSignal(store, run.id, claim, "signal-timeout-pause-awaiting", {
+          deadlineAt: "2026-07-01T00:00:00.000Z",
+        });
+
+        expect(() => store.scheduler.pauseRun({
+          runId: run.id,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "signal-timeout:late-pause",
+          now: new Date("2026-07-01T00:00:01.000Z"),
+        })).toThrow("Cannot pause failed run.");
+
+        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        expect(projection.signalWaits[nodeKey]).toMatchObject({ status: "timed_out", terminalReason: "signal_timeout" });
+        expect(projection.frames.root).toMatchObject({ status: "failed", terminalReason: "signal_timeout" });
+        expect(store.getRun(run.id)).toMatchObject({ status: "failed" });
+      } finally {
+        store.close();
+      }
+    });
+  });
 });
 
 function readyNode(store: RuntimeStore, runId: string, claim: RunOwnerClaim, idempotencyKey: string): void {
@@ -1375,7 +1488,7 @@ function readyGroupNode(store: RuntimeStore, runId: string, claim: RunOwnerClaim
   });
 }
 
-function awaitingSignal(store: RuntimeStore, runId: string, claim: RunOwnerClaim, idempotencyKey: string): void {
+function awaitingSignal(store: RuntimeStore, runId: string, claim: RunOwnerClaim, idempotencyKey: string, signal: { deadlineAt?: string; timeoutMessage?: string } = {}): void {
   const snapshot = store.scheduler.loadRunSnapshot(runId);
   store.scheduler.appendSchedulerEvents({
     runId,
@@ -1385,9 +1498,27 @@ function awaitingSignal(store: RuntimeStore, runId: string, claim: RunOwnerClaim
     events: [
       { type: "instance.ready", payload: { runId, nodeKey: "approve~1", nodeId: "approve", instancePath: [{ kind: "node", nodeId: "approve" }], readinessSequence: 1 } },
       { type: "instance.awaiting", payload: { nodeKey: "approve~1", statusReason: "signal" } },
-      { type: "signal.awaiting", payload: { runId, nodeKey: "approve~1", nodeId: "approve" } },
+      { type: "signal.awaiting", payload: { runId, nodeKey: "approve~1", nodeId: "approve", ...signal } },
     ],
   });
+}
+
+function awaitingRootSignal(store: RuntimeStore, runId: string, claim: RunOwnerClaim, idempotencyKey: string, signal: { deadlineAt?: string; timeoutMessage?: string } = {}): string {
+  const snapshot = store.scheduler.loadRunSnapshot(runId);
+  const nodeKey = deriveInstanceKey([{ kind: "node", nodeId: "approve" }]);
+  store.scheduler.appendSchedulerEvents({
+    runId,
+    expectedVersion: snapshot.version,
+    ownerEpoch: claim.ownerEpoch,
+    idempotencyKey,
+    events: [
+      { type: "frame.started", payload: { runId, frameKey: "root", frameKind: "root", scope: { approve: nodeKey } } },
+      { type: "instance.ready", payload: { runId, nodeKey, nodeId: "approve", instancePath: [{ kind: "node", nodeId: "approve" }], parentFrameKey: "root", readinessSequence: 1 } },
+      { type: "instance.awaiting", payload: { nodeKey, statusReason: "signal" } },
+      { type: "signal.awaiting", payload: { runId, nodeKey, nodeId: "approve", ...signal } },
+    ],
+  });
+  return nodeKey;
 }
 
 function awaitingGroupSignal(store: RuntimeStore, runId: string, claim: RunOwnerClaim, idempotencyKey: string): void {

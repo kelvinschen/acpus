@@ -2,10 +2,10 @@ import { randomUUID } from "node:crypto";
 import type { NodeIR, SchemaIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import { ResultAsync } from "neverthrow";
-import { normalizeSignalPayload, normalizeWorkflowInput } from "../admission/input.js";
-import { applyControlCommand } from "../control/apply-command.js";
-import { tryAdvanceRuntimeRun, type RuntimeAdvanceError, type RuntimeAdvanceObserver, type RuntimeAdvanceResult } from "./advance-runtime.js";
+import { normalizeWorkflowInput } from "../admission/input.js";
+import { runtimeAdvanceResult, tryAdvanceRuntimeRun, type RuntimeAdvanceError, type RuntimeAdvanceObserver, type RuntimeAdvanceResult } from "./advance-runtime.js";
 import { ForkSeedPlanError, type ForkSeedFailure } from "../scheduler/fork-seed.js";
+import { applySchedulerControlIntent, InvalidSignalPayloadError, type RunControlIntent } from "../scheduler/control.js";
 import { schedulerStoreError, type SchedulerStoreError } from "../scheduler/store-port.js";
 import { createWorkflowVisualizationOverlay, type WorkflowVisualizationOverlay } from "../visualization/overlay.js";
 import {
@@ -14,19 +14,14 @@ import {
   openRuntimeStore,
   type AgentOverrideMap,
   type ForkPreparedWorkflow,
-  type PendingControlCommand,
-  type PendingRunControlCommand,
   type PreparedRunWorkflow,
   type RuntimeDiagnostics,
-  type SupervisorDiagnostics,
+  type DaemonDiagnostics,
   type RunDetails,
   type RunRecord,
-  type SubmitRunControlCommandInput,
 } from "../store/store.js";
 
 export type RuntimeMutationAction = "pause" | "resume" | "retry" | "fork" | "cancel";
-
-export type RuntimeCommandRecord = Pick<PendingControlCommand, "id" | "type" | "status" | "runId" | "payload">;
 
 export type RunInspectionStaticNode = {
   nodeId: string;
@@ -41,6 +36,7 @@ export type RunInspection = {
 };
 
 export type RuntimeMutationInput = {
+  requestId?: string;
   target?: string;
   prepared?: PreparedRunWorkflow;
   input?: JsonValue;
@@ -51,14 +47,13 @@ export type RuntimeMutationInput = {
 export type RuntimeMutationResult = {
   run: RunDetails;
   advanced?: RuntimeAdvanceResult;
-  command?: RuntimeCommandRecord;
   forkRunId?: string;
 };
 
 export type RuntimeHealthStatus = "ok" | "warn" | "fail";
 
 export type RuntimeHealthCheck = {
-  area: "workspace" | "store" | "supervisor" | "queues" | "runs" | "idle-stop";
+  area: "workspace" | "store" | "daemon" | "runs" | "idle-stop";
   status: RuntimeHealthStatus;
   message: string;
   details?: Record<string, JsonValue>;
@@ -78,14 +73,14 @@ export type RuntimeUseCaseError =
   | { type: "runtime-advance-failed"; cause: RuntimeAdvanceError; message: string }
   | { type: "invalid-signal-payload"; nodeId: string; message: string }
   | { type: "fork-seed-failed"; cause: ForkSeedFailure; message: string }
-  | { type: "control-command-failed"; commandType: PendingControlCommand["type"]; message: string };
+  | { type: "run-control-failed"; controlType: RuntimeMutationAction | "signal"; message: string };
 
 export async function admitWorkflowRun(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue, agentOverrides?: AgentOverrideMap): Promise<RuntimeAdvanceResult> {
   const result = await tryAdmitWorkflowRun(cwd, prepared, input, agentOverrides);
   return result.match(
     value => value,
     error => {
-      throw new Error(error.message);
+      throw new RuntimeUseCaseException(error);
     },
   );
 }
@@ -113,16 +108,6 @@ export async function advanceWorkflowRun(cwd: string, runId: string, ownerId = "
         throw new Error(error.message);
       },
     );
-  } finally {
-    store.close();
-  }
-}
-
-export async function releaseWorkflowRunOwner(cwd: string, runId: string, ownerId: string): Promise<boolean> {
-  const store = await openExistingWritableRuntimeStore(cwd);
-  if (!store) return false;
-  try {
-    return store.releaseRunOwner(runId, ownerId);
   } finally {
     store.close();
   }
@@ -236,26 +221,13 @@ export async function normalizeForkInput(cwd: string, runId: string, input: Json
   }
 }
 
-export async function queueSupervisorShutdown(cwd: string): Promise<RuntimeCommandRecord | undefined> {
-  const store = await openExistingWritableRuntimeStore(cwd);
-  if (!store) return undefined;
-  try {
-    return store.submitCommand({
-      type: "shutdown",
-      idempotencyKey: "shutdown",
-    });
-  } finally {
-    store.close();
-  }
-}
-
 export async function signalRun(cwd: string, runId: string, nodeId: string, payload: JsonValue): Promise<RuntimeMutationResult | undefined> {
   const result = await trySignalRun(cwd, runId, nodeId, payload);
   return result.match(
     value => value,
     error => {
       if (error.type === "runtime-store-not-found" || error.type === "run-not-found") return undefined;
-      throw new Error(error.message);
+      throw new RuntimeUseCaseException(error);
     },
   );
 }
@@ -264,41 +236,33 @@ export function trySignalRun(cwd: string, runId: string, nodeId: string, payload
   return ResultAsync.fromPromise(signalRunResultWithOptions(cwd, runId, nodeId, payload), runtimeUseCaseThrownError);
 }
 
-export async function applySignalRunControl(cwd: string, runId: string, nodeId: string, payload: JsonValue): Promise<RuntimeMutationResult | undefined> {
-  const result = await ResultAsync.fromPromise(signalRunResultWithOptions(cwd, runId, nodeId, payload, { advance: false }), runtimeUseCaseThrownError);
+export async function applySignalRunControl(cwd: string, runId: string, nodeId: string, payload: JsonValue, options: { requestId?: string } = {}): Promise<RuntimeMutationResult | undefined> {
+  const result = await ResultAsync.fromPromise(signalRunResultWithOptions(cwd, runId, nodeId, payload, { advance: false, ...(options.requestId === undefined ? {} : { requestId: options.requestId }) }), runtimeUseCaseThrownError);
   return result.match(
     value => value,
     error => {
       if (error.type === "runtime-store-not-found" || error.type === "run-not-found") return undefined;
-      throw new Error(error.message);
+      throw new RuntimeUseCaseException(error);
     },
   );
 }
 
-async function signalRunResultWithOptions(cwd: string, runId: string, nodeId: string, payload: JsonValue, options: { advance?: boolean } = {}): Promise<RuntimeMutationResult> {
+async function signalRunResultWithOptions(cwd: string, runId: string, nodeId: string, payload: JsonValue, options: { advance?: boolean; requestId?: string } = {}): Promise<RuntimeMutationResult> {
   const store = await openExistingWritableRuntimeStore(cwd);
   if (!store) throw new RuntimeUseCaseException({ type: "runtime-store-not-found", message: "Runtime store was not found." });
   try {
     const frozen = store.getFrozenRun(runId);
     if (!frozen) throw new RuntimeUseCaseException({ type: "run-not-found", runId, message: `Run '${runId}' was not found.` });
-    const snapshot = store.scheduler.tryLoadRunSnapshot(runId);
-    if (snapshot.isErr()) throw new RuntimeUseCaseException({ type: "scheduler-store-failed", cause: snapshot.error, message: snapshot.error.message });
-    const signalNodeId = snapshot.value.projection.signalWaits[nodeId]?.nodeId ?? nodeId;
-    let normalized: JsonValue;
-    try {
-      normalized = normalizeSignalPayload(frozen.ir, signalNodeId, payload);
-    } catch (error) {
-      throw new RuntimeUseCaseException({ type: "invalid-signal-payload", nodeId: signalNodeId, message: error instanceof Error ? error.message : String(error) });
-    }
-    const command = store.submitCommand({
+    const requestId = options.requestId ?? `signal:${runId}:${nodeId}:${randomUUID()}`;
+    const result = await applySchedulerIntentResult(cwd, store, {
+      requestId,
       runId,
       type: "signal",
-      payload: { node: nodeId, payload: normalized },
-      idempotencyKey: `signal:${runId}:${nodeId}:${randomUUID()}`,
-    });
-    const result = await applyCommandResult(cwd, store, command, options);
-    const appliedCommand = store.getCommand(command.id) ?? command;
-    return { run: result.run, ...(result.advanced ? { advanced: result.advanced } : {}), command: appliedCommand };
+      node: nodeId,
+      payload,
+      commandIdempotencyKey: requestId,
+    }, options);
+    return result;
   } finally {
     store.close();
   }
@@ -310,7 +274,7 @@ export async function mutateRun(cwd: string, runId: string, action: RuntimeMutat
     value => value,
     error => {
       if (error.type === "runtime-store-not-found" || error.type === "run-not-found") return undefined;
-      throw new Error(error.message);
+      throw new RuntimeUseCaseException(error);
     },
   );
 }
@@ -325,7 +289,7 @@ export async function applyRunControl(cwd: string, runId: string, action: Runtim
     value => value,
     error => {
       if (error.type === "runtime-store-not-found" || error.type === "run-not-found") return undefined;
-      throw new Error(error.message);
+      throw new RuntimeUseCaseException(error);
     },
   );
 }
@@ -334,19 +298,9 @@ async function mutateRunResultWithOptions(cwd: string, runId: string, action: Ru
   const store = await openExistingWritableRuntimeStore(cwd);
   if (!store) throw new RuntimeUseCaseException({ type: "runtime-store-not-found", message: "Runtime store was not found." });
   try {
-    const command = store.submitCommand(mutationCommandInput(runId, action, input));
-    if (command.status === "applied") {
-      const run = store.getRun(runId);
-      if (!run) throw new RuntimeUseCaseException({ type: "run-not-found", runId, message: `Run '${runId}' was not found.` });
-      const applied = store.getCommand(command.id) ?? command;
-      const forkRunId = applied.type === "fork" && applied.status === "applied" && typeof applied.payload.forkRunId === "string"
-        ? applied.payload.forkRunId
-        : undefined;
-      return { run, command: applied, ...(forkRunId ? { forkRunId } : {}) };
-    }
-    const result = await applyCommandResult(cwd, store, command, options);
-    const appliedCommand = store.getCommand(command.id) ?? command;
-    return { run: result.run, ...(result.advanced ? { advanced: result.advanced } : {}), command: appliedCommand, ...(result.forkRunId ? { forkRunId: result.forkRunId } : {}) };
+    requireRun(store, runId);
+    if (action === "fork") return await forkRunResult(store, runId, input);
+    return await applySchedulerIntentResult(cwd, store, mutationIntent(runId, action, input), options);
   } finally {
     store.close();
   }
@@ -386,18 +340,7 @@ export async function getRuntimeHealth(cwd: string): Promise<RuntimeHealthReport
     const checks: RuntimeHealthCheck[] = [
       { area: "workspace", status: "ok", message: "Workspace resolved.", details: { cwd } },
       { area: "store", status: "ok", message: "Runtime store opened read-only." },
-      supervisorCheck(diagnostics.supervisor),
-      {
-        area: "queues",
-        status: diagnostics.commands.failed > 0 ? "warn" : "ok",
-        message: `${diagnostics.commands.pending} pending, ${diagnostics.commands.running} running, ${diagnostics.commands.failed} failed commands.`,
-        details: {
-          pending: diagnostics.commands.pending,
-          running: diagnostics.commands.running,
-          failed: diagnostics.commands.failed,
-          ...(diagnostics.commands.oldestPendingAt ? { oldestPendingAt: diagnostics.commands.oldestPendingAt } : {}),
-        },
-      },
+      daemonCheck(diagnostics.daemon),
       {
         area: "runs",
         status: "ok",
@@ -431,109 +374,130 @@ export async function getRuntimeHealth(cwd: string): Promise<RuntimeHealthReport
   }
 }
 
-function mutationCommandInput(runId: string, action: RuntimeMutationAction, input: RuntimeMutationInput): SubmitRunControlCommandInput {
-  if (action === "fork" && input.target === "") throw new Error("Fork target must be a non-empty string.");
+function mutationIntent(runId: string, action: Exclude<RuntimeMutationAction, "fork">, input: RuntimeMutationInput): RunControlIntent {
   switch (action) {
     case "pause":
-      return { runId, type: "pause", idempotencyKey: `pause:${runId}:${randomUUID()}` };
+      return { requestId: input.requestId ?? `pause:${runId}:${randomUUID()}`, runId, type: "pause" };
     case "resume":
-      return { runId, type: "resume", idempotencyKey: `resume:${runId}:${randomUUID()}` };
+      return { requestId: input.requestId ?? `resume:${runId}:${randomUUID()}`, runId, type: "resume" };
     case "retry":
       return {
+        requestId: input.requestId ?? `retry:${runId}:${input.target ?? "run"}:${randomUUID()}`,
         runId,
         type: "retry",
-        ...(input.target ? { payload: { target: input.target } } : {}),
-        idempotencyKey: `retry:${runId}:${input.target ?? "run"}:${randomUUID()}`,
+        ...(input.target ? { target: input.target } : {}),
       };
     case "cancel":
       return {
+        requestId: input.requestId ?? `cancel:${runId}:${input.target ?? "run"}:${randomUUID()}`,
         runId,
         type: "cancel",
-        ...(input.target ? { payload: { target: input.target } } : {}),
-        idempotencyKey: `cancel:${runId}:${input.target ?? "run"}:${randomUUID()}`,
-      };
-    case "fork":
-      return {
-        runId,
-        type: "fork",
-        payload: {
-          ...(input.prepared ? { prepared: toForkPrepared(input.prepared) } : {}),
-          ...(input.input !== undefined ? { input: input.input } : {}),
-          ...(input.agentOverrides !== undefined ? { agentOverrides: input.agentOverrides } : {}),
-          ...(input.target === undefined ? {} : { target: input.target }),
-          ...(input.unsafeReuse === true ? { unsafeReuse: true } : {}),
-        },
-        idempotencyKey: `fork:${runId}:${input.target ?? "root"}:${randomUUID()}`,
+        ...(input.target ? { target: input.target } : {}),
       };
   }
 }
 
-class RuntimeUseCaseException extends Error {
+export class RuntimeUseCaseException extends Error {
   constructor(readonly failure: RuntimeUseCaseError) {
     super(failure.message);
   }
 }
 
-async function applyCommandResult(cwd: string, store: NonNullable<Awaited<ReturnType<typeof openExistingWritableRuntimeStore>>>, command: PendingRunControlCommand, options: { advance?: boolean } = {}): Promise<Awaited<ReturnType<typeof applyControlCommand>>> {
+async function applySchedulerIntentResult(cwd: string, store: NonNullable<Awaited<ReturnType<typeof openExistingWritableRuntimeStore>>>, intent: RunControlIntent, options: { advance?: boolean } = {}): Promise<RuntimeMutationResult> {
   try {
-    return await applyControlCommand(cwd, store, command, options);
+    const result = await applySchedulerControlIntent(cwd, store, intent, options);
+    if (result.advanced?.status === "lease_lost") {
+      throw new RuntimeUseCaseException({ type: "run-control-failed", controlType: intent.type, message: `Run '${intent.runId}' is currently controlled by another owner.` });
+    }
+    return {
+      run: requireRun(store, result.runId),
+      ...(result.advanced ? { advanced: runtimeAdvanceResult(store, result.runId, result.advanced) } : {}),
+    };
+  } catch (error) {
+    if (error instanceof InvalidSignalPayloadError) {
+      throw new RuntimeUseCaseException({
+        type: "invalid-signal-payload",
+        nodeId: error.nodeId,
+        message: error.message,
+      });
+    }
+    const storeError = schedulerStoreError(error);
+    if (storeError) throw new RuntimeUseCaseException({ type: "scheduler-store-failed", cause: storeError, message: storeError.message });
+    throw new RuntimeUseCaseException({ type: "run-control-failed", controlType: intent.type, message: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+async function forkRunResult(store: NonNullable<Awaited<ReturnType<typeof openExistingWritableRuntimeStore>>>, runId: string, input: RuntimeMutationInput): Promise<RuntimeMutationResult> {
+  if (input.target === "") throw new Error("Fork target must be a non-empty string.");
+  requireRun(store, runId);
+  try {
+    const fork = await store.forkRun(runId, {
+      ...(input.requestId === undefined ? {} : { requestId: input.requestId }),
+      ...(input.prepared ? { prepared: toForkPrepared(input.prepared) } : {}),
+      ...(input.input !== undefined ? { input: input.input } : {}),
+      ...(input.agentOverrides !== undefined ? { agentOverrides: input.agentOverrides } : {}),
+      ...(input.target === undefined ? {} : { target: input.target }),
+      ...(input.unsafeReuse === true ? { unsafeReuse: true } : {}),
+    });
+    return { run: requireRun(store, fork.id), forkRunId: fork.id };
   } catch (error) {
     if (error instanceof ForkSeedPlanError) {
       throw new RuntimeUseCaseException({ type: "fork-seed-failed", cause: error.failure, message: error.message });
     }
-    const storeError = schedulerStoreError(error);
-    if (storeError) throw new RuntimeUseCaseException({ type: "scheduler-store-failed", cause: storeError, message: storeError.message });
-    throw new RuntimeUseCaseException({ type: "control-command-failed", commandType: command.type, message: error instanceof Error ? error.message : String(error) });
+    if (error instanceof Error && error.message.includes("conflicts with a different fork input")) {
+      throw new RuntimeUseCaseException({ type: "run-control-failed", controlType: "fork", message: error.message });
+    }
+    throw error;
   }
 }
 
-function supervisorCheck(supervisor: SupervisorDiagnostics | undefined): RuntimeHealthCheck {
-  if (!supervisor) return { area: "supervisor", status: "ok", message: "No supervisor lease is present." };
-  const heartbeatAgeMs = supervisor.heartbeatAt ? Date.now() - Date.parse(supervisor.heartbeatAt) : undefined;
-  const idleAgeMs = supervisor.idleSinceAt ? Date.now() - Date.parse(supervisor.idleSinceAt) : undefined;
-  const processAlive = supervisor.pid === undefined ? undefined : isProcessAlive(supervisor.pid);
+function requireRun(store: NonNullable<Awaited<ReturnType<typeof openExistingWritableRuntimeStore>>>, runId: string): RunDetails {
+  const run = store.getRun(runId);
+  if (!run) throw new RuntimeUseCaseException({ type: "run-not-found", runId, message: `Run '${runId}' was not found.` });
+  return run;
+}
+
+function daemonCheck(daemon: DaemonDiagnostics | undefined): RuntimeHealthCheck {
+  if (!daemon) return { area: "daemon", status: "ok", message: "No daemon lease is present." };
+  const heartbeatAgeMs = daemon.heartbeatAt ? Date.now() - Date.parse(daemon.heartbeatAt) : undefined;
+  const idleAgeMs = daemon.idleSinceAt ? Date.now() - Date.parse(daemon.idleSinceAt) : undefined;
+  const processAlive = daemon.pid === undefined ? undefined : isProcessAlive(daemon.pid);
   const stale = heartbeatAgeMs !== undefined && heartbeatAgeMs > 30_000;
   return {
-    area: "supervisor",
+    area: "daemon",
     status: stale || processAlive === false ? "warn" : "ok",
-    message: stale ? "Supervisor heartbeat is stale." : processAlive === false ? "Supervisor pid is not alive." : idleAgeMs === undefined ? "Supervisor lease is fresh." : "Supervisor lease is fresh and idle.",
+    message: stale ? "Daemon heartbeat is stale." : processAlive === false ? "Daemon pid is not alive." : idleAgeMs === undefined ? "Daemon lease is fresh." : "Daemon lease is fresh and idle.",
     details: {
-      generation: supervisor.generation,
-      ...(supervisor.pid === undefined ? {} : { pid: supervisor.pid }),
+      generation: daemon.generation,
+      ...(daemon.pid === undefined ? {} : { pid: daemon.pid }),
       ...(heartbeatAgeMs === undefined ? {} : { heartbeatAgeMs }),
-      ...(supervisor.idleSinceAt === undefined ? {} : { idleSinceAt: supervisor.idleSinceAt }),
+      ...(daemon.idleSinceAt === undefined ? {} : { idleSinceAt: daemon.idleSinceAt }),
       ...(idleAgeMs === undefined ? {} : { idleAgeMs }),
-      ...(supervisor.idleStopMs === undefined ? {} : { idleStopMs: supervisor.idleStopMs }),
+      ...(daemon.idleStopMs === undefined ? {} : { idleStopMs: daemon.idleStopMs }),
       ...(processAlive === undefined ? {} : { processAlive }),
-      packageVersion: supervisor.packageVersion,
-      nodeVersion: supervisor.nodeVersion,
-      execPath: supervisor.execPath,
+      packageVersion: daemon.packageVersion,
+      nodeVersion: daemon.nodeVersion,
+      execPath: daemon.execPath,
     },
   };
 }
 
 function idleStopCheck(diagnostics: RuntimeDiagnostics): RuntimeHealthCheck {
-  const { pending: pendingCommands } = diagnostics.commands;
   const { runnable: runnableRuns } = diagnostics.runs;
-  const { activeForeground } = diagnostics.leases;
-  const idleSinceAt = diagnostics.supervisor?.idleSinceAt;
+  const idleSinceAt = diagnostics.daemon?.idleSinceAt;
   const idleAgeMs = idleSinceAt ? Date.now() - Date.parse(idleSinceAt) : undefined;
   const blockers = [
-    pendingCommands > 0 ? "pending commands" : undefined,
     runnableRuns > 0 ? "runnable runs" : undefined,
-    activeForeground > 0 ? "active foreground ownership" : undefined,
   ].filter((blocker): blocker is string => blocker !== undefined);
   return {
     area: "idle-stop",
     status: "ok",
     message: blockers.length === 0 ? "No idle-stop blockers." : `Idle-stop blocked by ${blockers.join(", ")}.`,
     details: {
-      pendingCommands,
       runnableRuns,
-      activeForeground,
       ...(idleSinceAt === undefined ? {} : { idleSinceAt }),
       ...(idleAgeMs === undefined ? {} : { idleAgeMs }),
-      ...(diagnostics.supervisor?.idleStopMs === undefined ? {} : { idleStopMs: diagnostics.supervisor.idleStopMs }),
+      ...(diagnostics.daemon?.idleStopMs === undefined ? {} : { idleStopMs: diagnostics.daemon.idleStopMs }),
     },
   };
 }

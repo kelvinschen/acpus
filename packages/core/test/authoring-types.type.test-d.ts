@@ -158,6 +158,12 @@ test("signal nodes support raw string and schema-backed output", () => {
       run: { prompt: "bad" },
     });
 
+    step("typed_bad_signal_timeout_without_duration").signal({
+      // @ts-expect-error onTimeout has no effect without timeout.
+      onTimeout: { action: "fail" },
+      run: { prompt: "bad" },
+    });
+
     return { approved: structured.output.approved, raw: raw.output };
   });
 });

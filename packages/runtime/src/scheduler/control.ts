@@ -1,72 +1,50 @@
 import type { JsonValue } from "@acpus/expression/ir";
+import type { WorkflowIR } from "@acpus/core/ir";
 import { normalizeSignalPayload } from "../admission/input.js";
-import type { PendingRunControlCommand, RuntimeStore } from "../store/store.js";
-import { schedulerStoreError, throwSchedulerStoreResult, type SchedulerSnapshot, type SchedulerStoreResult } from "./store-port.js";
-import { advanceFrozenRun } from "./runtime-runner.js";
+import type { RuntimeStore } from "../store/store.js";
+import { throwSchedulerStoreResult, type SchedulerSnapshot, type SchedulerStoreResult } from "./store-port.js";
+import { advanceFrozenRun, drainFrozenRunTransitions } from "./runtime-runner.js";
 import type { AdvanceRunSummary } from "./advance.js";
 
-export type AppliedSchedulerControlCommand = {
-  command: PendingRunControlCommand;
+export type RunControlIntent =
+  | { requestId: string; runId: string; type: "pause"; reason?: string }
+  | { requestId: string; runId: string; type: "resume" }
+  | { requestId: string; runId: string; type: "retry"; target?: string }
+  | { requestId: string; runId: string; type: "cancel"; target?: string }
+  | { requestId: string; runId: string; type: "signal"; node: string; payload: JsonValue; commandIdempotencyKey?: string };
+
+export type AppliedSchedulerControlIntent = {
+  intent: RunControlIntent;
   runId: string;
   snapshot: SchedulerSnapshot;
   advanced?: AdvanceRunSummary;
 };
 
-export type ApplySchedulerControlCommandOptions = {
-  ownerGeneration?: number;
+export type ApplySchedulerControlIntentOptions = {
   ownerId?: string;
   leaseMs?: number;
   advance?: boolean;
-  claimCommand?: boolean;
 };
 
-export async function applySchedulerControlCommand(
-  cwd: string,
-  store: RuntimeStore,
-  command: PendingRunControlCommand,
-  options: ApplySchedulerControlCommandOptions = {},
-): Promise<AppliedSchedulerControlCommand> {
-  if (command.status === "applied") return appliedCommandResult(store, command);
-  if (options.claimCommand !== false && !store.claimCommand(command.id, options.ownerGeneration === undefined ? {} : { ownerGeneration: options.ownerGeneration })) {
-    const current = store.getCommand(command.id);
-    if (current?.status === "applied" && current.type !== "shutdown") return appliedCommandResult(store, current);
-    throw new Error(`Command '${command.id}' is already ${current?.status ?? "missing"}.`);
-  }
-  try {
-    return await applySchedulerControlCommandUnchecked(cwd, store, command, options);
-  } catch (error) {
-    const storeError = schedulerStoreError(error);
-    store.finishCommand({
-      id: command.id,
-      status: "failed",
-      payload: {
-        type: storeError?.type ?? "unhandled-error",
-        message: error instanceof Error ? error.message : String(error),
-      },
-    });
-    throw error;
+export class InvalidSignalPayloadError extends Error {
+  constructor(readonly nodeId: string, message: string) {
+    super(message);
   }
 }
 
-function appliedCommandResult(store: RuntimeStore, command: PendingRunControlCommand): AppliedSchedulerControlCommand {
-  const runId = command.runId;
-  return { command, runId, snapshot: unwrapStoreResult(store.scheduler.tryLoadRunSnapshot(runId)) };
-}
-
-async function applySchedulerControlCommandUnchecked(
+export async function applySchedulerControlIntent(
   cwd: string,
   store: RuntimeStore,
-  command: PendingRunControlCommand,
-  options: ApplySchedulerControlCommandOptions,
-): Promise<AppliedSchedulerControlCommand> {
-  const runId = command.runId;
+  intent: RunControlIntent,
+  options: ApplySchedulerControlIntentOptions = {},
+): Promise<AppliedSchedulerControlIntent> {
+  const runId = intent.runId;
   const ownerId = options.ownerId ?? "scheduler-control";
   const leaseMs = options.leaseMs ?? 30_000;
   const claim = store.scheduler.claimRun(runId, ownerId, leaseMs);
   if (!claim) {
-    store.deferCommand(command.id);
     return {
-      command,
+      intent,
       runId,
       snapshot: unwrapStoreResult(store.scheduler.tryLoadRunSnapshot(runId)),
       advanced: { status: "lease_lost", runId, started: 0, completed: 0, failed: 0, cancelled: 0, active: 0 },
@@ -75,24 +53,36 @@ async function applySchedulerControlCommandUnchecked(
 
   let snapshot: SchedulerSnapshot;
   try {
-    snapshot = applySchedulerControlIntent(store, command, runId, claim.ownerEpoch);
-    store.finishCommand({ id: command.id, status: "applied", payload: { status: snapshot.projection.run.status } });
+    snapshot = applySchedulerControlProjection(store, intent, runId, claim.ownerEpoch);
   } finally {
     store.scheduler.releaseRun(claim);
   }
 
-  if (command.type !== "pause" && options.advance !== false) {
+  if (intent.type !== "pause" && options.advance !== false) {
     const advanced = await advanceFrozenRun({ cwd, store, runId, ownerId, leaseMs });
-    return { command, runId, snapshot: unwrapStoreResult(store.scheduler.tryLoadRunSnapshot(runId)), advanced };
+    return { intent, runId, snapshot: unwrapStoreResult(store.scheduler.tryLoadRunSnapshot(runId)), advanced };
   }
-  return { command, runId, snapshot };
+  return { intent, runId, snapshot };
 }
 
-function applySchedulerControlIntent(store: RuntimeStore, command: PendingRunControlCommand, runId: string, ownerEpoch: number): SchedulerSnapshot {
-  const idempotencyKey = `scheduler:control:${command.id}`;
-  const snapshot = unwrapStoreResult(store.scheduler.tryLoadRunSnapshot(runId));
-  if (command.type === "pause") {
-    const reason = commandReason(command);
+export function applySchedulerControlIntentWithOwnerEpoch(
+  store: RuntimeStore,
+  intent: RunControlIntent,
+  ownerEpoch: number,
+): AppliedSchedulerControlIntent {
+  const runId = intent.runId;
+  return {
+    intent,
+    runId,
+    snapshot: applySchedulerControlProjection(store, intent, runId, ownerEpoch),
+  };
+}
+
+function applySchedulerControlProjection(store: RuntimeStore, intent: RunControlIntent, runId: string, ownerEpoch: number): SchedulerSnapshot {
+  const idempotencyKey = `scheduler:control:${intent.requestId}`;
+  const snapshot = drainFrozenRunTransitions({ store, runId, ownerEpoch });
+  if (intent.type === "pause") {
+    const reason = intent.reason;
     return unwrapStoreResult(store.scheduler.tryPauseRun({
       runId,
       ownerEpoch,
@@ -100,18 +90,18 @@ function applySchedulerControlIntent(store: RuntimeStore, command: PendingRunCon
       ...(reason === undefined ? {} : { reason }),
     }));
   }
-  if (command.type === "resume") {
+  if (intent.type === "resume") {
     return unwrapStoreResult(store.scheduler.tryResumeRun({ runId, ownerEpoch, idempotencyKey }));
   }
-  if (command.type === "retry") {
-    const target = commandTarget(command);
+  if (intent.type === "retry") {
+    const target = intent.target;
     return target === undefined
       ? unwrapStoreResult(store.scheduler.tryRetryRun({ runId, ownerEpoch, idempotencyKey }))
-      : unwrapStoreResult(store.scheduler.tryRetry({ runId, ownerEpoch, idempotencyKey, targetKey: retryTargetKey(target, command.id, snapshot) }));
+      : unwrapStoreResult(store.scheduler.tryRetry({ runId, ownerEpoch, idempotencyKey, targetKey: retryTargetKey(target, intent.requestId, snapshot) }));
   }
-  if (command.type === "cancel") {
-    const target = commandTarget(command);
-    const targetKey = target === undefined ? undefined : cancelTargetKey(target, command.id, snapshot);
+  if (intent.type === "cancel") {
+    const target = intent.target;
+    const targetKey = target === undefined ? undefined : cancelTargetKey(target, intent.requestId, snapshot);
     return unwrapStoreResult(store.scheduler.tryCancel({
       runId,
       ownerEpoch,
@@ -119,28 +109,35 @@ function applySchedulerControlIntent(store: RuntimeStore, command: PendingRunCon
       ...(targetKey === undefined ? {} : { targetKey }),
     }));
   }
-  if (command.type === "signal") {
-    const signal = signalPayload(command, snapshot);
+  if (intent.type === "signal") {
     const frozen = store.getFrozenRun(runId);
     if (!frozen) throw new Error(`Run '${runId}' was not found.`);
-    const normalized = normalizeSignalPayload(frozen.ir, signal.nodeId, signal.payload);
+    let signal: ReturnType<typeof signalPayload>;
+    try {
+      signal = signalPayload(intent, snapshot);
+    } catch (error) {
+      if (!looksLikeInstanceKey(intent.node) && !hasSignalNode(frozen.ir, intent.node)) throw new Error(`Signal node '${intent.node}' was not found.`);
+      throw error;
+    }
+    let normalized: JsonValue;
+    try {
+      normalized = normalizeSignalPayload(frozen.ir, signal.nodeId, signal.payload);
+    } catch (error) {
+      throw new InvalidSignalPayloadError(signal.nodeId, error instanceof Error ? error.message : String(error));
+    }
     return unwrapStoreResult(store.scheduler.tryConsumeSignal({
       runId,
       ownerEpoch,
       nodeKey: signal.nodeKey,
       payload: normalized,
-      commandIdempotencyKey: command.idempotencyKey,
+      commandIdempotencyKey: intent.commandIdempotencyKey ?? intent.requestId,
       idempotencyKey,
     }));
   }
-  throw new Error(`Unsupported scheduler command type '${command.type}'.`);
+  return assertNever(intent);
 }
 
-function commandReason(command: Extract<PendingRunControlCommand, { type: "pause" }>): string | undefined {
-  return command.status === "pending" || command.status === "running" ? command.payload.reason : undefined;
-}
-
-function retryTargetKey(target: string, commandId: string, snapshot: SchedulerSnapshot): string {
+function retryTargetKey(target: string, requestId: string, snapshot: SchedulerSnapshot): string {
   if (snapshot.projection.instances[target]) return target;
   if (snapshot.projection.frames[target]) return target;
   const instanceMatches = Object.values(snapshot.projection.instances)
@@ -153,11 +150,11 @@ function retryTargetKey(target: string, commandId: string, snapshot: SchedulerSn
     .sort();
   const matches = [...instanceMatches, ...frameMatches].sort();
   if (matches.length === 1) return matches[0]!;
-  if (matches.length > 1) throw new Error(`Scheduler retry command '${commandId}' target '${target}' is ambiguous. Candidate target keys: ${matches.join(", ")}.`);
+  if (matches.length > 1) throw new Error(`Scheduler retry control request '${requestId}' target '${target}' is ambiguous. Candidate target keys: ${matches.join(", ")}.`);
   return target;
 }
 
-function cancelTargetKey(target: string, commandId: string, snapshot: SchedulerSnapshot): string {
+function cancelTargetKey(target: string, requestId: string, snapshot: SchedulerSnapshot): string {
   if (snapshot.projection.instances[target]) return target;
   if (snapshot.projection.frames[target]) return target;
   const instanceMatches = Object.values(snapshot.projection.instances)
@@ -170,7 +167,7 @@ function cancelTargetKey(target: string, commandId: string, snapshot: SchedulerS
     .sort();
   const matches = [...instanceMatches, ...frameMatches].sort();
   if (matches.length === 1) return matches[0]!;
-  if (matches.length > 1) throw new Error(`Scheduler cancel command '${commandId}' target '${target}' is ambiguous. Candidate target keys: ${matches.join(", ")}.`);
+  if (matches.length > 1) throw new Error(`Scheduler cancel control request '${requestId}' target '${target}' is ambiguous. Candidate target keys: ${matches.join(", ")}.`);
   return target;
 }
 
@@ -178,22 +175,49 @@ function isTerminalStatus(status: string): boolean {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
 
-function signalPayload(command: Extract<PendingRunControlCommand, { type: "signal" }>, snapshot: SchedulerSnapshot): { nodeKey: string; nodeId: string; payload: JsonValue } {
-  if (command.status !== "pending" && command.status !== "running") {
-    throw new Error(`Scheduler signal command '${command.id}' requires payload.node.`);
-  }
-  const payload = command.payload;
-  const target = payload.node;
-  if (isOpenSignalWait(snapshot, target)) return { nodeKey: target, nodeId: snapshot.projection.signalWaits[target]!.nodeId, payload: payload.payload as JsonValue };
+function signalPayload(intent: Extract<RunControlIntent, { type: "signal" }>, snapshot: SchedulerSnapshot): { nodeKey: string; nodeId: string; payload: JsonValue } {
+  const target = intent.node;
+  if (isOpenSignalWait(snapshot, target)) return { nodeKey: target, nodeId: snapshot.projection.signalWaits[target]!.nodeId, payload: intent.payload };
   const matches = Object.values(snapshot.projection.signalWaits)
     .filter(wait => wait.nodeId === target && isOpenSignalWait(snapshot, wait.nodeKey))
     .sort((left, right) => left.nodeKey.localeCompare(right.nodeKey));
-  if (matches.length === 1) return { nodeKey: matches[0]!.nodeKey, nodeId: matches[0]!.nodeId, payload: payload.payload as JsonValue };
-  if (matches.length > 1) throw new Error(`Scheduler signal command '${command.id}' target '${target}' is ambiguous. Candidate nodeKeys: ${matches.map(wait => wait.nodeKey).join(", ")}.`);
+  if (matches.length === 1) return { nodeKey: matches[0]!.nodeKey, nodeId: matches[0]!.nodeId, payload: intent.payload };
+  if (matches.length > 1) throw new Error(`Scheduler signal control request '${intent.requestId}' target '${target}' is ambiguous. Candidate nodeKeys: ${matches.map(wait => wait.nodeKey).join(", ")}.`);
+  const consumedMatches = Object.values(snapshot.projection.signalWaits)
+    .filter(wait => wait.status === "consumed" && (wait.nodeKey === target || wait.nodeId === target))
+    .sort((left, right) => left.nodeKey.localeCompare(right.nodeKey));
+  if (consumedMatches.length === 1) return { nodeKey: consumedMatches[0]!.nodeKey, nodeId: consumedMatches[0]!.nodeId, payload: intent.payload };
+  if (consumedMatches.length > 1) throw new Error(`Scheduler signal control request '${intent.requestId}' target '${target}' is ambiguous. Candidate nodeKeys: ${consumedMatches.map(wait => wait.nodeKey).join(", ")}.`);
   const duplicate = Object.values(snapshot.projection.signalWaits)
-    .find(wait => wait.commandIdempotencyKey === command.idempotencyKey);
-  if (duplicate) return { nodeKey: duplicate.nodeKey, nodeId: duplicate.nodeId, payload: payload.payload as JsonValue };
-  throw new Error(`Scheduler signal command '${command.id}' target '${target}' was not found.`);
+    .find(wait => wait.commandIdempotencyKey === (intent.commandIdempotencyKey ?? intent.requestId));
+  if (duplicate) return { nodeKey: duplicate.nodeKey, nodeId: duplicate.nodeId, payload: intent.payload };
+  throw new Error(`Scheduler signal control request '${intent.requestId}' target '${target}' was not found.`);
+}
+
+function hasSignalNode(ir: WorkflowIR, nodeId: string): boolean {
+  return scopeHasSignalNode(ir.root, nodeId);
+}
+
+function looksLikeInstanceKey(value: string): boolean {
+  return /~[0-9a-f]{12}$/i.test(value);
+}
+
+function scopeHasSignalNode(scope: WorkflowIR["root"], nodeId: string): boolean {
+  for (const node of scope.nodes) {
+    if (node.kind === "signal" && node.id === nodeId) return true;
+    for (const child of childScopes(node)) {
+      if (scopeHasSignalNode(child, nodeId)) return true;
+    }
+  }
+  return false;
+}
+
+function childScopes(node: WorkflowIR["root"]["nodes"][number]): WorkflowIR["root"][] {
+  if (node.kind === "if") return [node.then, ...(node.else ? [node.else] : [])];
+  if (node.kind === "switch") return [...node.cases.map(item => item.then), ...(node.default ? [node.default] : [])];
+  if (node.kind === "parallel") return Object.values(node.branches).map(branch => branch.scope);
+  if (node.kind === "fanout" || node.kind === "loop") return [node.do];
+  return [];
 }
 
 function isOpenSignalWait(snapshot: SchedulerSnapshot, nodeKey: string): boolean {
@@ -201,10 +225,10 @@ function isOpenSignalWait(snapshot: SchedulerSnapshot, nodeKey: string): boolean
     && snapshot.projection.instances[nodeKey]?.status === "awaiting";
 }
 
-function commandTarget(command: Extract<PendingRunControlCommand, { type: "retry" | "cancel" }>): string | undefined {
-  return command.status === "pending" || command.status === "running" ? command.payload.target : undefined;
-}
-
 function unwrapStoreResult<T>(result: SchedulerStoreResult<T>): T {
   return throwSchedulerStoreResult(result);
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unexpected scheduler control intent: ${String(value)}`);
 }

@@ -6,14 +6,16 @@ import type { AgentDefinitionIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
 import type { ExprIR, JsonValue } from "@acpus/expression/ir";
 import { valueToExprIR } from "@acpus/expression/ir";
 import { ArtifactRewriteError, rewriteArtifactValue } from "../artifacts/rewrite.js";
-import { compactUndefined, parseAgentOverrideMap, parseCommandPayload } from "../control/command-payloads.js";
-import { evaluateExpr } from "../evaluation/evaluator.js";
+import { compactUndefined, parseAgentOverrideMap } from "../control/agent-overrides.js";
+import { evaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
 import { applySchedulerEvents, applyTimestampedSchedulerEvents, cancellationEventsForFrame, cancellationEventsForNode, createSchedulerProjection, type TimestampedSchedulerEvent } from "../scheduler/transitions.js";
 import { ancestorGroupMembersForFrame, ancestorGroupMembersForNode } from "../scheduler/membership.js";
-import { ForkSeedPlanError, planTargetedForkSeed, type ForkSeedFailure, type ForkSeedPlan } from "../scheduler/fork-seed.js";
+import { ForkSeedPlanError, planTargetedForkSeed, type ForkSeedPlan } from "../scheduler/fork-seed.js";
 import type { SchedulerEvent } from "../scheduler/events.js";
 import { SchedulerStoreException, schedulerStoreResult, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStorePort, type AttemptStartInput, type AttemptCommitInput, type SignalConsumeInput, type SchedulerPauseInput, type SchedulerResumeInput, type SchedulerRetryInput, type SchedulerRunRetryInput, type SchedulerStoreError, type SchedulerStoreResult } from "../scheduler/store-port.js";
 import type { InstancePath } from "../scheduler/types.js";
+import { drainDerivedTransitions } from "../scheduler/advance.js";
+import { continueRootEvents } from "../scheduler/materialize.js";
 
 export type RunStatus = "pending" | "running" | "paused" | "awaiting" | "failed" | "completed" | "canceled";
 
@@ -25,6 +27,29 @@ const RUNNABLE_RUNS_WHERE = `
     WHERE node_states.run_id = runs.id
       AND node_states.status = 'pending'
       AND node_states.error_json IS NOT NULL
+  )
+`;
+
+const TIMED_SIGNAL_WAIT_WHERE = `
+  status NOT IN ('paused', 'failed', 'completed', 'canceled')
+  AND EXISTS (
+    SELECT 1
+    FROM signal_waits
+    WHERE signal_waits.run_id = runs.id
+      AND signal_waits.status = 'awaiting'
+      AND signal_waits.deadline_at IS NOT NULL
+  )
+`;
+
+const DUE_SIGNAL_WAIT_WHERE = `
+  ${TIMED_SIGNAL_WAIT_WHERE}
+  AND EXISTS (
+    SELECT 1
+    FROM signal_waits
+    WHERE signal_waits.run_id = runs.id
+      AND signal_waits.status = 'awaiting'
+      AND signal_waits.deadline_at IS NOT NULL
+      AND signal_waits.deadline_at <= ?
   )
 `;
 
@@ -40,28 +65,15 @@ export type RuntimeStore = {
   blockRun(input: BlockRunInput): RunRecord;
   failRun(input: FailRunInput): RunRecord;
   awaitSignal(input: AwaitSignalInput): RunRecord;
-  signalRun(input: SignalRunInput): RunRecord;
   getSignalPayloads(runId: string): Record<string, unknown>;
   getCompletedNodeOutputs(runId: string): Record<string, unknown>;
   getFrozenRun(runId: string): FrozenRun | undefined;
-  claimSupervisor(input: ClaimSupervisorInput): SupervisorLease;
-  heartbeatSupervisor(input: HeartbeatSupervisorInput): boolean;
-  setSupervisorIdleState(input: SupervisorIdleStateInput): boolean;
-  releaseSupervisor(input: HeartbeatSupervisorInput): boolean;
-  releaseRunOwner(runId: string, ownerId: string): boolean;
-  submitCommand(input: SubmitRunControlCommandInput): PendingRunControlCommand;
-  submitCommand(input: SubmitSupervisorCommandInput): PendingSupervisorCommand;
-  submitCommand(input: SubmitCommandInput): PendingControlCommand;
-  getCommand(commandId: string): PendingControlCommand | undefined;
-  claimCommand(commandId: string, options?: ClaimCommandOptions): boolean;
-  deferCommand(commandId: string): void;
-  recoverStaleCommands(options?: RecoverStaleCommandsOptions): number;
-  listPendingCommands(): PendingControlCommand[];
+  claimDaemon(input: ClaimDaemonInput): DaemonLease;
+  heartbeatDaemon(input: HeartbeatDaemonInput): boolean;
+  setDaemonIdleState(input: DaemonIdleStateInput): boolean;
+  releaseDaemon(input: HeartbeatDaemonInput): boolean;
   listRunnableRuns(): RunRecord[];
-  finishCommand(input: FinishCommandInput): void;
-  pauseRun(runId: string, options?: ControlOptions): RunRecord;
-  resumeRun(runId: string, options?: ControlOptions): RunRecord;
-  retryRun(runId: string, options?: ControlOptions): RunRecord;
+  listDaemonWork(now?: Date): DaemonWork;
   forkRun(runId: string, options?: ControlOptions): Promise<RunRecord>;
   cleanupRunDirectories(options?: CleanupRunDirectoriesOptions): Promise<CleanupRunDirectoriesResult>;
   getRunDir(runId: string): string | undefined;
@@ -70,6 +82,11 @@ export type RuntimeStore = {
   getRun(runId: string): RunDetails | undefined;
   listRuns(): RunRecord[];
   getRuntimeDiagnostics(): RuntimeDiagnostics;
+};
+
+export type DaemonWork = {
+  startableRuns: RunRecord[];
+  idleBlockers: number;
 };
 
 export type AdmitRunInput = {
@@ -134,17 +151,21 @@ export type RunDetails = RunRecord & {
   agentOverrides?: AgentOverrideMap;
   eventCount: number;
   nodeCount: number;
+  execution: RunExecutionState;
   dynamic?: RunDynamicDetails;
 };
 
+export type RunExecutionState = {
+  state: "active" | "inactive" | "stale" | "terminal" | "unknown";
+  lastStatus: RunStatus;
+  reason?: "terminal" | "daemon_heartbeat_expired" | "daemon_pid_dead" | "run_lease_expired" | "run_lease_active" | "daemon_alive" | "no_liveness_evidence";
+  daemonHeartbeatAt?: string;
+  ownerId?: string;
+  leaseExpiresAt?: string;
+};
+
 export type RuntimeDiagnostics = {
-  supervisor?: SupervisorDiagnostics;
-  commands: {
-    pending: number;
-    running: number;
-    failed: number;
-    oldestPendingAt?: string;
-  };
+  daemon?: DaemonDiagnostics;
   runs: {
     total: number;
     pending: number;
@@ -157,12 +178,11 @@ export type RuntimeDiagnostics = {
     runnable: number;
   };
   leases: {
-    activeForeground: number;
     stale: number;
   };
 };
 
-export type SupervisorDiagnostics = {
+export type DaemonDiagnostics = {
   workspaceRealpath: string;
   generation: number;
   pid?: number;
@@ -263,6 +283,8 @@ export type RunDynamicSignalWait = {
   nodeId: string;
   status: string;
   deadlineAt?: string;
+  timeoutMessage?: string;
+  timeoutRemainingMs?: number;
   renderedPrompt?: string;
   terminalReason?: string;
   createdAt: string;
@@ -298,12 +320,6 @@ export type AwaitSignalInput = {
   nodes: Record<string, { status: "completed"; output: unknown }>;
 };
 
-export type SignalRunInput = {
-  runId: string;
-  nodeKey: string;
-  payload: JsonValue;
-};
-
 export type FrozenRun = {
   ir: WorkflowIR;
   input: JsonValue;
@@ -311,108 +327,35 @@ export type FrozenRun = {
   meta: Record<string, string>;
 };
 
-export type ClaimSupervisorInput = {
+export type ClaimDaemonInput = {
   workspaceRealpath: string;
   pid: number;
-  endpoint?: string;
-  tokenHash?: string;
   protocolVersion: number;
   packageVersion: string;
   nodeVersion: string;
   execPath: string;
-  staleAfterMs: number;
   idleStopMs: number;
 };
 
-export type HeartbeatSupervisorInput = {
+export type HeartbeatDaemonInput = {
   workspaceRealpath: string;
   generation: number;
 };
 
-export type SupervisorIdleStateInput = HeartbeatSupervisorInput & {
+export type DaemonIdleStateInput = HeartbeatDaemonInput & {
   idleSinceAt?: string;
   idleStopMs: number;
 };
 
-export type SupervisorLease = {
+export type DaemonLease = {
   workspaceRealpath: string;
   generation: number;
   pid: number;
   heartbeatAt: string;
 };
 
-export type RunControlCommandType = "pause" | "resume" | "retry" | "fork" | "signal" | "cancel";
-export type SupervisorCommandType = "shutdown";
-export type ControlCommandType = RunControlCommandType | SupervisorCommandType;
-export type ControlCommandStatus = "pending" | "running" | "applied" | "failed";
-export type PauseCommandPayload = { reason?: string };
-export type EmptyCommandPayload = Record<string, never>;
-export type RetryCommandPayload = { target?: string };
-export type CancelCommandPayload = { target?: string };
-export type ForkCommandPayload = { prepared?: ForkPreparedWorkflow; input?: JsonValue; agentOverrides?: AgentOverrideMap; target?: string; unsafeReuse?: boolean };
-export type SignalCommandPayload = { node: string; payload?: JsonValue };
-export type AppliedCommandPayload = { status: string; forkRunId?: string; target?: string; targetKey?: string };
-export type FailedCommandPayload =
-  | { type: "unhandled-error"; message: string }
-  | { type: SchedulerStoreError["type"]; message: string }
-  | ForkSeedFailure;
-
-export type CommandPayload<T extends ControlCommandType> =
-  T extends "pause" ? PauseCommandPayload
-    : T extends "resume" ? EmptyCommandPayload
-      : T extends "retry" ? RetryCommandPayload
-        : T extends "cancel" ? CancelCommandPayload
-          : T extends "fork" ? ForkCommandPayload
-            : T extends "signal" ? SignalCommandPayload
-              : EmptyCommandPayload;
-
-type ControlCommandBase<T extends ControlCommandType> = {
-  id: string;
-  type: T;
-  idempotencyKey: string;
-};
-
-export type ControlCommand =
-  | { [T in RunControlCommandType]: ControlCommandBase<T> & { runId: string; status: ControlCommandStatus } }[RunControlCommandType]
-  | (ControlCommandBase<"shutdown"> & { runId?: undefined; status: ControlCommandStatus });
-
-type CommandStatePayload<T extends ControlCommandType> =
-  | { status: "pending" | "running"; payload: CommandPayload<T> }
-  | { status: "applied"; payload: AppliedCommandPayload }
-  | { status: "failed"; payload: FailedCommandPayload };
-
-export type PendingControlCommand =
-  | PendingRunControlCommand
-  | PendingSupervisorCommand;
-
-export type PendingRunControlCommand = {
-  [T in RunControlCommandType]: ControlCommandBase<T> & { runId: string } & CommandStatePayload<T>
-}[RunControlCommandType];
-
-export type PendingSupervisorCommand = ControlCommandBase<"shutdown"> & { runId?: undefined } & CommandStatePayload<"shutdown">;
-
-type SubmitCommandBase<T extends ControlCommandType> = {
-  type: T;
-  payload?: CommandPayload<T>;
-  idempotencyKey: string;
-};
-
-export type SubmitRunControlCommandInput = {
-  [T in RunControlCommandType]: SubmitCommandBase<T> & { runId: string }
-}[RunControlCommandType];
-
-export type SubmitSupervisorCommandInput = SubmitCommandBase<"shutdown"> & { runId?: undefined };
-
-export type SubmitCommandInput =
-  | SubmitRunControlCommandInput
-  | SubmitSupervisorCommandInput;
-
-export type FinishCommandInput =
-  | { id: string; status: "applied"; payload: AppliedCommandPayload }
-  | { id: string; status: "failed"; payload: FailedCommandPayload };
-
 export type ControlOptions = {
-  commandId?: string;
+  requestId?: string;
   prepared?: ForkPreparedWorkflow;
   input?: JsonValue;
   agentOverrides?: AgentOverrideMap;
@@ -429,10 +372,6 @@ export type ForkPreparedWorkflow = {
   lock: RunWorkflowLockArtifact;
 };
 
-export type ClaimCommandOptions = {
-  ownerGeneration?: number;
-};
-
 export type CleanupRunDirectoriesOptions = {
   olderThanMs?: number;
   removeOrphanedRuns?: boolean;
@@ -441,11 +380,6 @@ export type CleanupRunDirectoriesOptions = {
 export type CleanupRunDirectoriesResult = {
   staged: number;
   orphaned: number;
-};
-
-export type RecoverStaleCommandsOptions = {
-  olderThanMs?: number;
-  ownerGeneration?: number;
 };
 
 export type RegisterArtifactInput = {
@@ -545,7 +479,7 @@ class SqliteRuntimeStore implements RuntimeStore {
   }
 
   private schedulerStore(): SqliteSchedulerStorePort {
-    this.schedulerPort ??= new SqliteSchedulerStorePort(this.db);
+    this.schedulerPort ??= new SqliteSchedulerStorePort(this.db, this.cwd);
     return this.schedulerPort;
   }
 
@@ -778,36 +712,6 @@ class SqliteRuntimeStore implements RuntimeStore {
     return this.requireRun(input.runId);
   }
 
-  signalRun(input: SignalRunInput): RunRecord {
-    const now = new Date().toISOString();
-    const payload = assertJsonValue(input.payload, "signal payload");
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const nextSequence = this.nextSequence(input.runId);
-      const nodeUpdate = this.db.prepare(`
-        UPDATE node_states
-        SET status = 'completed', output_json = ?, error_json = NULL, updated_at = ?
-        WHERE run_id = ? AND node_key = ? AND status = 'awaiting'
-      `).run(stableJson(payload), now, input.runId, input.nodeKey);
-      if (nodeUpdate.changes !== 1) throw new Error(`Signal node '${input.nodeKey}' is not awaiting.`);
-      const transition = this.db.prepare(`
-        UPDATE runs
-        SET status = 'pending', updated_at = ?
-        WHERE id = ? AND status = 'awaiting'
-      `).run(now, input.runId);
-      if (transition.changes !== 1) throw new Error(`Run '${input.runId}' cannot accept a signal.`);
-      this.db.prepare(`
-        INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
-        VALUES (?, ?, 'signal.received', ?, ?, ?, ?)
-      `).run(input.runId, nextSequence, input.nodeKey, stableJson({ payload }), now, `signal:${input.runId}:${input.nodeKey}:${nextSequence}`);
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
-    return this.requireRun(input.runId);
-  }
-
   getSignalPayloads(runId: string): Record<string, unknown> {
     const rows = this.db.prepare(`
       SELECT node_key, node_id, output_json
@@ -848,28 +752,23 @@ class SqliteRuntimeStore implements RuntimeStore {
     };
   }
 
-  claimSupervisor(input: ClaimSupervisorInput): SupervisorLease {
+  claimDaemon(input: ClaimDaemonInput): DaemonLease {
     const now = new Date().toISOString();
     const existing = this.db.prepare(`
-      SELECT generation, heartbeat_at
-      FROM supervisor_lease
+      SELECT generation
+      FROM daemon_lease
       WHERE workspace_realpath = ?
-    `).get(input.workspaceRealpath) as { generation: number; heartbeat_at: string | null } | undefined;
-    if (existing?.heartbeat_at && Date.now() - Date.parse(existing.heartbeat_at) <= input.staleAfterMs) {
-      throw new Error(`Supervisor lease for '${input.workspaceRealpath}' is still active.`);
-    }
+    `).get(input.workspaceRealpath) as { generation: number } | undefined;
     const generation = (existing?.generation ?? 0) + 1;
     this.db.prepare(`
-      INSERT INTO supervisor_lease (
-        workspace_realpath, generation, pid, endpoint, auth_token_hash, heartbeat_at,
+      INSERT INTO daemon_lease (
+        workspace_realpath, generation, pid, heartbeat_at,
         idle_since_at, idle_stop_ms, protocol_version, package_version, node_version, exec_path, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(workspace_realpath) DO UPDATE SET
         generation = excluded.generation,
         pid = excluded.pid,
-        endpoint = excluded.endpoint,
-        auth_token_hash = excluded.auth_token_hash,
         heartbeat_at = excluded.heartbeat_at,
         idle_since_at = excluded.idle_since_at,
         idle_stop_ms = excluded.idle_stop_ms,
@@ -882,8 +781,6 @@ class SqliteRuntimeStore implements RuntimeStore {
       input.workspaceRealpath,
       generation,
       input.pid,
-      input.endpoint ?? null,
-      input.tokenHash ?? null,
       now,
       input.idleStopMs,
       input.protocolVersion,
@@ -895,80 +792,32 @@ class SqliteRuntimeStore implements RuntimeStore {
     return { workspaceRealpath: input.workspaceRealpath, generation, pid: input.pid, heartbeatAt: now };
   }
 
-  heartbeatSupervisor(input: HeartbeatSupervisorInput): boolean {
+  heartbeatDaemon(input: HeartbeatDaemonInput): boolean {
     const now = new Date().toISOString();
     const result = this.db.prepare(`
-      UPDATE supervisor_lease
+      UPDATE daemon_lease
       SET heartbeat_at = ?, updated_at = ?
       WHERE workspace_realpath = ? AND generation = ?
     `).run(now, now, input.workspaceRealpath, input.generation);
     return result.changes === 1;
   }
 
-  setSupervisorIdleState(input: SupervisorIdleStateInput): boolean {
+  setDaemonIdleState(input: DaemonIdleStateInput): boolean {
     const now = new Date().toISOString();
     const result = this.db.prepare(`
-      UPDATE supervisor_lease
+      UPDATE daemon_lease
       SET idle_since_at = ?, idle_stop_ms = ?, updated_at = ?
       WHERE workspace_realpath = ? AND generation = ?
     `).run(input.idleSinceAt ?? null, input.idleStopMs, now, input.workspaceRealpath, input.generation);
     return result.changes === 1;
   }
 
-  releaseSupervisor(input: HeartbeatSupervisorInput): boolean {
+  releaseDaemon(input: HeartbeatDaemonInput): boolean {
     const result = this.db.prepare(`
-      DELETE FROM supervisor_lease
+      DELETE FROM daemon_lease
       WHERE workspace_realpath = ? AND generation = ?
     `).run(input.workspaceRealpath, input.generation);
     return result.changes === 1;
-  }
-
-  releaseRunOwner(runId: string, ownerId: string): boolean {
-    const now = new Date().toISOString();
-    const result = this.db.prepare(`
-      UPDATE run_leases
-      SET released_at = ?, heartbeat_at = ?
-      WHERE run_id = ? AND owner_id = ? AND released_at IS NULL
-    `).run(now, now, runId, ownerId);
-    return result.changes === 1;
-  }
-
-  submitCommand(input: SubmitRunControlCommandInput): PendingRunControlCommand;
-  submitCommand(input: SubmitSupervisorCommandInput): PendingSupervisorCommand;
-  submitCommand(input: SubmitCommandInput): PendingControlCommand;
-  submitCommand(input: SubmitCommandInput): PendingControlCommand {
-    const now = new Date().toISOString();
-    const id = `cmd_${randomUUID()}`;
-    const payload = parseCommandPayload(input.type, "pending", input.payload ?? {});
-    this.db.prepare(`
-      INSERT OR IGNORE INTO commands (id, run_id, type, payload_json, status, idempotency_key, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)
-    `).run(id, input.runId ?? null, input.type, stableJson(payload), input.idempotencyKey, now, now);
-    const row = this.db.prepare(`
-      SELECT id, run_id, type, status, idempotency_key, payload_json
-      FROM commands
-      WHERE idempotency_key = ?
-    `).get(input.idempotencyKey) as Record<string, unknown> | undefined;
-    if (!row) throw new Error(`Command '${input.idempotencyKey}' was not persisted.`);
-    return toPendingCommand(row);
-  }
-
-  getCommand(commandId: string): PendingControlCommand | undefined {
-    const row = this.db.prepare(`
-      SELECT id, run_id, type, status, idempotency_key, payload_json
-      FROM commands
-      WHERE id = ?
-    `).get(commandId) as Record<string, unknown> | undefined;
-    return row ? toPendingCommand(row) : undefined;
-  }
-
-  listPendingCommands(): PendingControlCommand[] {
-    return this.db.prepare(`
-      SELECT id, run_id, type, status, idempotency_key, payload_json
-      FROM commands
-      WHERE status = 'pending'
-      ORDER BY created_at ASC
-    `).all().map(toPendingCommand);
   }
 
   listRunnableRuns(): RunRecord[] {
@@ -980,6 +829,22 @@ class SqliteRuntimeStore implements RuntimeStore {
     `).all().map(toRunRecord);
   }
 
+  listDaemonWork(now: Date = new Date()): DaemonWork {
+    const nowIso = now.toISOString();
+    const startableRuns = this.db.prepare(`
+      SELECT id, name, status, workflow_entry, ir_digest, source_graph_digest, created_at, updated_at
+      FROM runs
+      WHERE (${RUNNABLE_RUNS_WHERE}) OR (${DUE_SIGNAL_WAIT_WHERE})
+      ORDER BY created_at ASC
+    `).all(nowIso).map(toRunRecord);
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM runs
+      WHERE (${RUNNABLE_RUNS_WHERE}) OR (${TIMED_SIGNAL_WAIT_WHERE})
+    `).get() as CountRow;
+    return { startableRuns, idleBlockers: Number(row.count) };
+  }
+
   private countRunnableRuns(): number {
     const row = this.db.prepare(`
       SELECT COUNT(*) AS count
@@ -989,87 +854,30 @@ class SqliteRuntimeStore implements RuntimeStore {
     return Number(row.count);
   }
 
-  claimCommand(commandId: string, options: ClaimCommandOptions = {}): boolean {
-    const result = this.db.prepare(`
-      UPDATE commands
-      SET status = 'running', owner_generation = ?, updated_at = ?
-      WHERE id = ? AND status = 'pending'
-    `).run(options.ownerGeneration ?? null, new Date().toISOString(), commandId);
-    return result.changes === 1;
-  }
-
-  deferCommand(commandId: string): void {
-    this.db.prepare(`
-      UPDATE commands
-      SET status = 'pending', owner_generation = NULL, updated_at = ?
-      WHERE id = ? AND status = 'running'
-    `).run(new Date().toISOString(), commandId);
-  }
-
-  recoverStaleCommands(options: RecoverStaleCommandsOptions = {}): number {
-    const olderThanMs = options.olderThanMs ?? 30_000;
-    if (options.ownerGeneration === undefined) return 0;
-    const cutoff = new Date(Date.now() - olderThanMs).toISOString();
-    const result = this.db.prepare(`
-      UPDATE commands
-      SET status = 'pending', owner_generation = NULL, updated_at = ?
-      WHERE status = 'running' AND owner_generation = ? AND updated_at < ?
-    `).run(new Date().toISOString(), options.ownerGeneration, cutoff);
-    return Number(result.changes);
-  }
-
-  finishCommand(input: FinishCommandInput): void {
-    const payload = parseCommandPayload("shutdown", input.status, input.payload ?? {});
-    this.db.prepare(`
-      UPDATE commands
-      SET status = ?, payload_json = ?, updated_at = ?
-      WHERE id = ? AND status IN ('pending', 'running')
-    `).run(input.status, stableJson(payload), new Date().toISOString(), input.id);
-  }
-
-  pauseRun(runId: string, options: ControlOptions = {}): RunRecord {
-    return this.transitionRun(runId, "paused", ["pending", "running"], "run.paused", options);
-  }
-
-  resumeRun(runId: string, options: ControlOptions = {}): RunRecord {
-    return this.transitionRun(runId, "pending", ["paused"], "run.resumed", options);
-  }
-
-  retryRun(runId: string, options: ControlOptions = {}): RunRecord {
-    const now = new Date().toISOString();
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const nextSequence = this.nextSequence(runId);
-      const transition = this.db.prepare(`
-        UPDATE runs
-        SET status = 'pending', updated_at = ?
-        WHERE id = ? AND status = 'failed'
-      `).run(now, runId);
-      if (transition.changes !== 1) throw new Error(`Run '${runId}' cannot transition to pending.`);
-      this.db.prepare(`
-        UPDATE run_inputs
-        SET output_json = NULL
-        WHERE run_id = ?
-      `).run(runId);
-      this.db.prepare(`
-        UPDATE node_states
-        SET status = 'pending', output_json = NULL, error_json = NULL, updated_at = ?
-        WHERE run_id = ?
-      `).run(now, runId);
-      this.db.prepare(`
-        INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
-        VALUES (?, ?, 'run.retried', NULL, ?, ?, ?)
-      `).run(runId, nextSequence, stableJson({}), now, `retry:${runId}:${nextSequence}`);
-      if (options.commandId) this.finishCommandInTransaction(options.commandId, "applied", { status: "pending" }, now);
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
-    return this.requireRun(runId);
-  }
-
   async forkRun(runId: string, options: ControlOptions = {}): Promise<RunRecord> {
+    const forkRequestKey = options.requestId === undefined ? undefined : `fork-request:${options.requestId}`;
+    const requestFingerprint = forkRequestFingerprint(runId, options);
+    if (forkRequestKey) {
+      const existing = this.db.prepare(`
+        SELECT run_id, payload_json
+        FROM run_events
+        WHERE idempotency_key = ? AND type = 'run.forked'
+      `).get(forkRequestKey) as { run_id: string; payload_json: string } | undefined;
+      if (existing) {
+        const payload = JSON.parse(existing.payload_json) as Record<string, unknown>;
+        if (payload.requestFingerprint !== requestFingerprint) {
+          throw new Error(`Fork request '${options.requestId}' conflicts with a different fork input.`);
+        }
+        return this.requireRun(existing.run_id);
+      }
+    }
+    const matchingFork = (this.db.prepare(`
+      SELECT run_id, payload_json
+      FROM run_events
+      WHERE type = 'run.forked'
+    `).all() as Array<{ run_id: string; payload_json: string }>)
+      .find(row => (JSON.parse(row.payload_json) as Record<string, unknown>).requestFingerprint === requestFingerprint);
+    if (matchingFork) return this.requireRun(matchingFork.run_id);
     const source = this.getRunRecord(runId);
     if (!source) throw new Error(`Run '${runId}' was not found.`);
     const input = this.db.prepare(`
@@ -1230,7 +1038,7 @@ class SqliteRuntimeStore implements RuntimeStore {
       this.db.prepare(`
         INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
         VALUES (?, 1, 'run.forked', NULL, ?, ?, ?)
-      `).run(forkId, stableJson({ sourceRunId: runId, ...(options.target === undefined ? {} : { target: options.target }), ...(options.unsafeReuse === true ? { unsafeReuse: true } : {}), ...(Object.keys(forkAgentOverrides).length > 0 ? { agentOverrides: forkAgentOverrides } : {}) }), now, `fork:${forkId}:${runId}`);
+      `).run(forkId, stableJson({ sourceRunId: runId, requestFingerprint, ...(options.target === undefined ? {} : { target: options.target }), ...(options.unsafeReuse === true ? { unsafeReuse: true } : {}), ...(Object.keys(forkAgentOverrides).length > 0 ? { agentOverrides: forkAgentOverrides } : {}) }), now, forkRequestKey ?? `fork:${forkId}:${runId}`);
       if (forkStatus === "completed" && forkOutputJson) {
         this.db.prepare(`
           INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
@@ -1290,7 +1098,6 @@ class SqliteRuntimeStore implements RuntimeStore {
           now,
         );
       }
-      if (options.commandId) this.finishCommandInTransaction(options.commandId, "applied", { forkRunId: forkId, status: forkStatus, ...(options.target === undefined ? {} : { target: options.target }) }, now);
       this.db.exec("COMMIT");
       transactionStarted = false;
     } catch (error) {
@@ -1394,8 +1201,39 @@ class SqliteRuntimeStore implements RuntimeStore {
       ...(Object.keys(agentOverrides).length > 0 ? { agentOverrides } : {}),
       eventCount,
       nodeCount,
+      execution: this.getRunExecutionState(run),
       ...(dynamic ? { dynamic } : {}),
     };
+  }
+
+  private getRunExecutionState(run: RunRecord): RunExecutionState {
+    if (run.status === "completed" || run.status === "failed" || run.status === "canceled") return { state: "terminal", lastStatus: run.status, reason: "terminal" };
+    const now = Date.now();
+    const daemon = this.db.prepare(`
+      SELECT pid, heartbeat_at
+      FROM daemon_lease
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `).get() as { pid: number | null; heartbeat_at: string | null } | undefined;
+    const lease = this.db.prepare(`
+      SELECT owner_id, lease_expires_at
+      FROM run_leases
+      WHERE run_id = ? AND released_at IS NULL
+      ORDER BY claimed_at DESC
+      LIMIT 1
+    `).get(run.id) as { owner_id: string; lease_expires_at: string } | undefined;
+    if (daemon?.heartbeat_at && now - Date.parse(daemon.heartbeat_at) > 5_000) {
+      return { state: "stale", lastStatus: run.status, reason: "daemon_heartbeat_expired", daemonHeartbeatAt: daemon.heartbeat_at, ...(lease ? { ownerId: lease.owner_id, leaseExpiresAt: lease.lease_expires_at } : {}) };
+    }
+    if (daemon?.pid !== null && daemon?.pid !== undefined && !isProcessAlive(daemon.pid)) {
+      return { state: "stale", lastStatus: run.status, reason: "daemon_pid_dead", ...(daemon.heartbeat_at ? { daemonHeartbeatAt: daemon.heartbeat_at } : {}), ...(lease ? { ownerId: lease.owner_id, leaseExpiresAt: lease.lease_expires_at } : {}) };
+    }
+    if (lease && Date.parse(lease.lease_expires_at) <= now) {
+      return { state: "stale", lastStatus: run.status, reason: "run_lease_expired", ...(daemon?.heartbeat_at ? { daemonHeartbeatAt: daemon.heartbeat_at } : {}), ownerId: lease.owner_id, leaseExpiresAt: lease.lease_expires_at };
+    }
+    if (lease) return { state: "active", lastStatus: run.status, reason: "run_lease_active", ...(daemon?.heartbeat_at ? { daemonHeartbeatAt: daemon.heartbeat_at } : {}), ownerId: lease.owner_id, leaseExpiresAt: lease.lease_expires_at };
+    if (daemon?.heartbeat_at) return { state: "inactive", lastStatus: run.status, reason: "daemon_alive", daemonHeartbeatAt: daemon.heartbeat_at };
+    return { state: "inactive", lastStatus: run.status, reason: "no_liveness_evidence" };
   }
 
   private tryGetRunDynamicDetails(runId: string): RunDynamicDetails | undefined {
@@ -1431,9 +1269,9 @@ class SqliteRuntimeStore implements RuntimeStore {
 
   getRuntimeDiagnostics(): RuntimeDiagnostics {
     const now = new Date().toISOString();
-    const supervisor = this.db.prepare(`
+    const daemon = this.db.prepare(`
       SELECT workspace_realpath, generation, pid, heartbeat_at, idle_since_at, idle_stop_ms, protocol_version, package_version, node_version, exec_path, updated_at
-      FROM supervisor_lease
+      FROM daemon_lease
       ORDER BY updated_at DESC
       LIMIT 1
     `).get() as {
@@ -1449,14 +1287,6 @@ class SqliteRuntimeStore implements RuntimeStore {
       exec_path: string;
       updated_at: string;
     } | undefined;
-    const commands = this.db.prepare(`
-      SELECT
-        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
-        SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
-        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
-        MIN(CASE WHEN status = 'pending' THEN created_at ELSE NULL END) AS oldest_pending_at
-      FROM commands
-    `).get() as { pending: number | null; running: number | null; failed: number | null; oldest_pending_at: string | null };
     const runs = this.db.prepare(`
       SELECT
         COUNT(*) AS total,
@@ -1469,38 +1299,27 @@ class SqliteRuntimeStore implements RuntimeStore {
         SUM(CASE WHEN status = 'canceled' THEN 1 ELSE 0 END) AS canceled
       FROM runs
     `).get() as Record<string, number | null>;
-    const activeForeground = this.db.prepare(`
-      SELECT COUNT(*) AS count
-      FROM run_leases
-      WHERE released_at IS NULL AND lease_expires_at > ? AND owner_id LIKE 'foreground:%'
-    `).get(now) as CountRow;
     const stale = this.db.prepare(`
       SELECT COUNT(*) AS count
       FROM run_leases
       WHERE released_at IS NULL AND lease_expires_at <= ?
     `).get(now) as CountRow;
     return {
-      ...(supervisor ? {
-        supervisor: {
-          workspaceRealpath: supervisor.workspace_realpath,
-          generation: supervisor.generation,
-          ...(supervisor.pid === null ? {} : { pid: supervisor.pid }),
-          ...(supervisor.heartbeat_at === null ? {} : { heartbeatAt: supervisor.heartbeat_at }),
-          ...(supervisor.idle_since_at === null ? {} : { idleSinceAt: supervisor.idle_since_at }),
-          ...(supervisor.idle_stop_ms === null ? {} : { idleStopMs: supervisor.idle_stop_ms }),
-          protocolVersion: supervisor.protocol_version,
-          packageVersion: supervisor.package_version,
-          nodeVersion: supervisor.node_version,
-          execPath: supervisor.exec_path,
-          updatedAt: supervisor.updated_at,
+      ...(daemon ? {
+        daemon: {
+          workspaceRealpath: daemon.workspace_realpath,
+          generation: daemon.generation,
+          ...(daemon.pid === null ? {} : { pid: daemon.pid }),
+          ...(daemon.heartbeat_at === null ? {} : { heartbeatAt: daemon.heartbeat_at }),
+          ...(daemon.idle_since_at === null ? {} : { idleSinceAt: daemon.idle_since_at }),
+          ...(daemon.idle_stop_ms === null ? {} : { idleStopMs: daemon.idle_stop_ms }),
+          protocolVersion: daemon.protocol_version,
+          packageVersion: daemon.package_version,
+          nodeVersion: daemon.node_version,
+          execPath: daemon.exec_path,
+          updatedAt: daemon.updated_at,
         },
       } : {}),
-      commands: {
-        pending: Number(commands.pending ?? 0),
-        running: Number(commands.running ?? 0),
-        failed: Number(commands.failed ?? 0),
-        ...(commands.oldest_pending_at ? { oldestPendingAt: commands.oldest_pending_at } : {}),
-      },
       runs: {
         total: Number(runs.total ?? 0),
         pending: Number(runs.pending ?? 0),
@@ -1513,7 +1332,6 @@ class SqliteRuntimeStore implements RuntimeStore {
         runnable: this.countRunnableRuns(),
       },
       leases: {
-        activeForeground: Number(activeForeground.count),
         stale: Number(stale.count),
       },
     };
@@ -1534,38 +1352,6 @@ class SqliteRuntimeStore implements RuntimeStore {
     return run;
   }
 
-  private transitionRun(runId: string, status: RunStatus, from: RunStatus[], eventType: string, options: ControlOptions = {}): RunRecord {
-    const now = new Date().toISOString();
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const nextSequence = this.nextSequence(runId);
-      const transition = this.db.prepare(`
-        UPDATE runs
-        SET status = ?, updated_at = ?
-        WHERE id = ? AND status IN (${from.map(() => "?").join(", ")})
-      `).run(status, now, runId, ...from);
-      if (transition.changes !== 1) throw new Error(`Run '${runId}' cannot transition to ${status}.`);
-      this.db.prepare(`
-        INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
-        VALUES (?, ?, ?, NULL, ?, ?, ?)
-      `).run(runId, nextSequence, eventType, stableJson({ status }), now, `${eventType}:${runId}:${nextSequence}`);
-      if (options.commandId) this.finishCommandInTransaction(options.commandId, "applied", { status }, now);
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
-    return this.requireRun(runId);
-  }
-
-  private finishCommandInTransaction(id: string, status: "applied" | "failed", payload: JsonValue, now: string): void {
-    this.db.prepare(`
-      UPDATE commands
-      SET status = ?, payload_json = ?, updated_at = ?
-      WHERE id = ? AND status IN ('pending', 'running')
-    `).run(status, stableJson(payload), now, id);
-  }
-
   private count(table: "run_events" | "node_states", runId: string): number {
     const row = this.db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE run_id = ?`).get(runId) as CountRow | undefined;
     return row?.count ?? 0;
@@ -1578,7 +1364,7 @@ class SqliteRuntimeStore implements RuntimeStore {
 }
 
 class SqliteSchedulerStorePort implements SchedulerStorePort {
-  constructor(private readonly db: DatabaseSync) {}
+  constructor(private readonly db: DatabaseSync, private readonly cwd: string) {}
 
   claimRun(runId: string, ownerId: string, leaseMs: number): RunOwnerClaim | undefined {
     const now = new Date().toISOString();
@@ -1853,18 +1639,22 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
   }
 
   consumeSignal(input: SignalConsumeInput): SchedulerSnapshot {
-    const snapshot = this.loadRunSnapshot(input.runId);
-    const wait = snapshot.projection.signalWaits[input.nodeKey];
+    const now = input.now ?? new Date();
+    let snapshot = this.loadRunSnapshot(input.runId);
+    let wait = snapshot.projection.signalWaits[input.nodeKey];
     if (!wait) throwSchedulerStoreError({ type: "signal-wait-not-found", runId: input.runId, nodeKey: input.nodeKey, message: `Signal wait '${input.nodeKey}' was not found.` });
-    if (wait.status === "consumed" && wait.commandIdempotencyKey === input.commandIdempotencyKey && stableJson(wait.payload) === stableJson(input.payload)) {
+    if (wait.status === "consumed" && stableJson(wait.payload) === stableJson(input.payload)) {
       return snapshot;
-    }
-    if (wait.status === "consumed" && wait.commandIdempotencyKey === input.commandIdempotencyKey) {
-      throwSchedulerStoreError({ type: "signal-wait-terminal", runId: input.runId, nodeKey: input.nodeKey, status: wait.status, message: `Signal consume idempotency key '${input.idempotencyKey}' conflicts with different payload.` });
     }
     if (wait.status === "consumed") {
       throwSchedulerStoreError({ type: "signal-wait-terminal", runId: input.runId, nodeKey: input.nodeKey, status: wait.status, message: `Signal wait '${input.nodeKey}' has already consumed a different payload.` });
     }
+    if (wait.status !== "awaiting") {
+      throwSchedulerStoreError({ type: "signal-wait-terminal", runId: input.runId, nodeKey: input.nodeKey, status: wait.status, message: `Signal wait '${input.nodeKey}' is already ${wait.status}.` });
+    }
+    snapshot = this.drainDueSignalTimeouts(input.runId, input.ownerEpoch, now);
+    wait = snapshot.projection.signalWaits[input.nodeKey];
+    if (!wait) throwSchedulerStoreError({ type: "signal-wait-not-found", runId: input.runId, nodeKey: input.nodeKey, message: `Signal wait '${input.nodeKey}' was not found.` });
     if (wait.status !== "awaiting") {
       throwSchedulerStoreError({ type: "signal-wait-terminal", runId: input.runId, nodeKey: input.nodeKey, status: wait.status, message: `Signal wait '${input.nodeKey}' is already ${wait.status}.` });
     }
@@ -1915,11 +1705,23 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
   pauseRun(input: SchedulerPauseInput): SchedulerSnapshot {
     const duplicate = this.duplicateIntentIdempotency(input.runId, input.idempotencyKey);
     if (duplicate) return duplicate;
-    const snapshot = this.loadRunSnapshot(input.runId);
+    const now = input.now ?? new Date();
+    const snapshot = this.drainDueSignalTimeouts(input.runId, input.ownerEpoch, now);
     if (snapshot.projection.run.status === "paused") return snapshot;
     const events: SchedulerEvent[] = [
       { type: "control.paused", payload: input.reason === undefined ? {} : { reason: input.reason } },
     ];
+    for (const wait of Object.values(snapshot.projection.signalWaits).filter(wait => wait.status === "awaiting" && wait.deadlineAt !== undefined)) {
+      const deadlineAt = wait.deadlineAt;
+      if (deadlineAt === undefined) continue;
+      events.push({
+        type: "signal.timeout_paused",
+        payload: {
+          nodeKey: wait.nodeKey,
+          remainingMs: Math.max(0, new Date(deadlineAt).getTime() - now.getTime()),
+        },
+      });
+    }
     const requeuedMemberKeys = new Set<string>();
     for (const attempt of Object.values(snapshot.projection.attempts).filter(attempt => attempt.status === "started")) {
       const instance = snapshot.projection.instances[attempt.nodeKey];
@@ -1963,16 +1765,29 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
   resumeRun(input: SchedulerResumeInput): SchedulerSnapshot {
     const duplicate = this.duplicateIntentIdempotency(input.runId, input.idempotencyKey);
     if (duplicate) return duplicate;
+    const now = input.now ?? new Date();
     const snapshot = this.loadRunSnapshot(input.runId);
     if (snapshot.projection.run.status !== "paused") {
-      throwSchedulerStoreError({ type: "invalid-control-state", runId: input.runId, command: "resume", status: snapshot.projection.run.status, message: `Cannot resume run from ${snapshot.projection.run.status}.` });
+      return snapshot;
+    }
+    const events: SchedulerEvent[] = [{ type: "control.resumed", payload: {} }];
+    for (const wait of Object.values(snapshot.projection.signalWaits).filter(wait => wait.status === "awaiting" && wait.timeoutRemainingMs !== undefined)) {
+      const timeoutRemainingMs = wait.timeoutRemainingMs;
+      if (timeoutRemainingMs === undefined) continue;
+      events.push({
+        type: "signal.timeout_resumed",
+        payload: {
+          nodeKey: wait.nodeKey,
+          deadlineAt: new Date(now.getTime() + timeoutRemainingMs).toISOString(),
+        },
+      });
     }
     return this.appendSchedulerEvents({
       runId: input.runId,
       expectedVersion: snapshot.version,
       ownerEpoch: input.ownerEpoch,
       idempotencyKey: input.idempotencyKey,
-      events: [{ type: "control.resumed", payload: {} }],
+      events,
     });
   }
 
@@ -2082,6 +1897,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     const duplicate = this.duplicateIntentIdempotency(input.runId, input.idempotencyKey);
     if (duplicate) return duplicate;
     const snapshot = this.loadRunSnapshot(input.runId);
+    if (input.targetKey === undefined && snapshot.projection.run.status === "canceled") return snapshot;
     const targetKey = input.targetKey ?? "root";
     const events = targetKey === "root" && !snapshot.projection.frames.root && snapshot.projection.run.status === "pending"
       ? [
@@ -2170,6 +1986,41 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     if (!row || row.owner_epoch !== ownerEpoch || row.released_at !== null || row.lease_expires_at <= now) {
       throwSchedulerStoreError({ type: "owner-epoch-inactive", runId, ownerEpoch, message: `Run '${runId}' scheduler owner epoch is not active.` });
     }
+  }
+
+  private drainDueSignalTimeouts(runId: string, ownerEpoch: number, now: Date): SchedulerSnapshot {
+    const frozen = this.loadFrozenRun(runId);
+    return drainDerivedTransitions(
+      this,
+      runId,
+      { runId, ownerEpoch },
+      () => now,
+      snapshot => continueRootEvents(frozen.ir, snapshot.projection, rootScope(frozen)),
+      () => undefined,
+    );
+  }
+
+  private loadFrozenRun(runId: string): FrozenRun {
+    const row = this.db.prepare(`
+      SELECT runs.id, runs.name, runs.workflow_entry, run_inputs.workflow_ir_json, run_inputs.input_json, run_inputs.agent_overrides_json
+      FROM run_inputs
+      JOIN runs ON runs.id = run_inputs.run_id
+      WHERE run_inputs.run_id = ?
+    `).get(runId) as (RunInputRow & { id: string; name: string; workflow_entry: string }) | undefined;
+    if (!row?.workflow_ir_json) throw new Error(`Run '${runId}' has no frozen workflow.`);
+    const originalIr = JSON.parse(row.workflow_ir_json) as WorkflowIR;
+    const agentOverrides = parseAgentOverrides(row.agent_overrides_json);
+    return {
+      ir: withAgentOverrides(originalIr, agentOverrides),
+      input: JSON.parse(row.input_json) as JsonValue,
+      agentOverrides,
+      meta: {
+        runId: String(row.id),
+        workflowPath: String(row.workflow_entry),
+        workflowName: String(row.name),
+        workspaceDir: resolve(this.cwd),
+      },
+    };
   }
 
   private assertOwnerEpochExpired(runId: string, ownerEpoch: number): void {
@@ -2356,9 +2207,9 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       this.db.prepare(`
         INSERT INTO signal_waits (
           run_id, node_key, node_id, status, payload_json, payload_digest, command_idempotency_key,
-          deadline_at, rendered_prompt, consumed_at, timed_out_at, terminal_reason, created_at, updated_at
+          deadline_at, timeout_message, timeout_remaining_ms, rendered_prompt, consumed_at, timed_out_at, terminal_reason, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         wait.runId,
         wait.nodeKey,
@@ -2368,6 +2219,8 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         wait.payloadDigest ?? null,
         wait.commandIdempotencyKey ?? null,
         wait.deadlineAt ?? null,
+        wait.timeoutMessage ?? null,
+        wait.timeoutRemainingMs ?? null,
         wait.renderedPrompt ?? null,
         wait.status === "consumed" ? timing?.updatedAt ?? existing?.consumed_at ?? now : null,
         wait.status === "timed_out" ? timing?.updatedAt ?? existing?.timed_out_at ?? now : null,
@@ -2600,7 +2453,7 @@ function readRunDynamicGroupMembers(db: DatabaseSync, runId: string): RunDynamic
 function readRunDynamicSignalWaits(db: DatabaseSync, runId: string): RunDynamicSignalWait[] {
   const rows = db.prepare(`
     SELECT node_key, node_id, status, deadline_at,
-      rendered_prompt, terminal_reason, created_at, updated_at
+      timeout_message, timeout_remaining_ms, rendered_prompt, terminal_reason, created_at, updated_at
     FROM signal_waits
     WHERE run_id = ?
     ORDER BY node_key
@@ -2610,6 +2463,8 @@ function readRunDynamicSignalWaits(db: DatabaseSync, runId: string): RunDynamicS
     nodeId: String(row.node_id),
     status: String(row.status),
     deadlineAt: nullableString(row.deadline_at),
+    timeoutMessage: nullableString(row.timeout_message),
+    timeoutRemainingMs: nullableNumber(row.timeout_remaining_ms),
     renderedPrompt: nullableString(row.rendered_prompt),
     terminalReason: nullableString(row.terminal_reason),
     createdAt: String(row.created_at),
@@ -2775,6 +2630,8 @@ function isSchedulerEventType(type: string): type is SchedulerEvent["type"] {
     "group.cancelled",
     "branch.decided",
     "signal.awaiting",
+    "signal.timeout_paused",
+    "signal.timeout_resumed",
     "signal.consumed",
     "signal.timed_out",
     "signal.cancelled",
@@ -2789,17 +2646,17 @@ function openDatabase(path: string, readOnly = false): DatabaseSync {
 
 function migrate(db: DatabaseSync): void {
   db.exec(`
+    DROP TABLE IF EXISTS commands;
+
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version INTEGER PRIMARY KEY,
       applied_at TEXT NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS supervisor_lease (
+    CREATE TABLE IF NOT EXISTS daemon_lease (
       workspace_realpath TEXT PRIMARY KEY,
       generation INTEGER NOT NULL,
       pid INTEGER,
-      endpoint TEXT,
-      auth_token_hash TEXT,
       heartbeat_at TEXT,
       idle_since_at TEXT,
       idle_stop_ms INTEGER,
@@ -2807,18 +2664,6 @@ function migrate(db: DatabaseSync): void {
       package_version TEXT NOT NULL,
       node_version TEXT NOT NULL,
       exec_path TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS commands (
-      id TEXT PRIMARY KEY,
-      run_id TEXT,
-      type TEXT NOT NULL,
-      payload_json TEXT NOT NULL,
-      status TEXT NOT NULL,
-      owner_generation INTEGER,
-      idempotency_key TEXT NOT NULL UNIQUE,
-      created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
 
@@ -2977,6 +2822,8 @@ function migrate(db: DatabaseSync): void {
       payload_digest TEXT,
       command_idempotency_key TEXT,
       deadline_at TEXT,
+      timeout_message TEXT,
+      timeout_remaining_ms INTEGER,
       rendered_prompt TEXT,
       consumed_at TEXT,
       timed_out_at TEXT,
@@ -3021,7 +2868,6 @@ function migrate(db: DatabaseSync): void {
     INSERT OR IGNORE INTO schema_migrations (version, applied_at)
     VALUES (1, datetime('now'));
   `);
-  addColumnIfMissing(db, "commands", "owner_generation", "INTEGER");
   addColumnIfMissing(db, "scheduler_frames", "instance_path_json", "TEXT");
   addColumnIfMissing(db, "scheduler_frames", "loop_json", "TEXT");
   addColumnIfMissing(db, "node_instances", "instance_path_json", "TEXT NOT NULL DEFAULT '[]'");
@@ -3029,9 +2875,11 @@ function migrate(db: DatabaseSync): void {
   addColumnIfMissing(db, "group_members", "child_frame_key", "TEXT");
   addColumnIfMissing(db, "group_members", "completion_sequence", "INTEGER");
   addColumnIfMissing(db, "run_inputs", "agent_overrides_json", "TEXT NOT NULL DEFAULT '{}'");
-  addColumnIfMissing(db, "supervisor_lease", "idle_since_at", "TEXT");
-  addColumnIfMissing(db, "supervisor_lease", "idle_stop_ms", "INTEGER");
+  addColumnIfMissing(db, "daemon_lease", "idle_since_at", "TEXT");
+  addColumnIfMissing(db, "daemon_lease", "idle_stop_ms", "INTEGER");
   addColumnIfMissing(db, "signal_waits", "rendered_prompt", "TEXT");
+  addColumnIfMissing(db, "signal_waits", "timeout_message", "TEXT");
+  addColumnIfMissing(db, "signal_waits", "timeout_remaining_ms", "INTEGER");
   addColumnIfMissing(db, "signal_waits", "created_at", "TEXT");
   addColumnIfMissing(db, "signal_waits", "updated_at", "TEXT");
   db.exec("UPDATE signal_waits SET created_at = COALESCE(created_at, datetime('now')), updated_at = COALESCE(updated_at, datetime('now')) WHERE created_at IS NULL OR updated_at IS NULL;");
@@ -3132,33 +2980,6 @@ function toRunRecord(row: Record<string, unknown>): RunRecord {
   };
 }
 
-function toPendingCommand(row: Record<string, unknown>): PendingControlCommand {
-  const type = parseControlCommandType(row.type);
-  const status = parseControlCommandStatus(row.status);
-  const payload = parseCommandPayload(type, status, JSON.parse(String(row.payload_json)) as JsonValue);
-  const command = {
-    id: String(row.id),
-    ...(row.run_id === null ? {} : { runId: String(row.run_id) }),
-    type,
-    status,
-    idempotencyKey: String(row.idempotency_key),
-    payload,
-  };
-  if (type !== "shutdown" && typeof command.runId !== "string") throw new Error(`Command '${command.id}' has no run id.`);
-  if (type === "shutdown" && command.runId !== undefined) throw new Error(`Shutdown command '${command.id}' must not have a run id.`);
-  return command as PendingControlCommand;
-}
-
-function parseControlCommandType(value: unknown): ControlCommandType {
-  if (value === "pause" || value === "resume" || value === "retry" || value === "fork" || value === "signal" || value === "cancel" || value === "shutdown") return value;
-  throw new Error(`Unsupported command type '${String(value)}'.`);
-}
-
-function parseControlCommandStatus(value: unknown): ControlCommandStatus {
-  if (value === "pending" || value === "running" || value === "applied" || value === "failed") return value;
-  throw new Error(`Unsupported command status '${String(value)}'.`);
-}
-
 function collectNodeIds(scope: ScopeIR): string[] {
   const ids: string[] = [];
   for (const node of scope.nodes) {
@@ -3184,6 +3005,15 @@ function collectNodeIds(scope: ScopeIR): string[] {
     }
   }
   return ids;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "EPERM";
+  }
 }
 
 function inheritableCompletedNodeKeys(ir: WorkflowIR, completed: Set<string>): Set<string> {
@@ -3456,6 +3286,24 @@ async function readContainedFile(root: string, relativePath: string): Promise<Bu
   return readFile(absolutePath);
 }
 
+function forkRequestFingerprint(runId: string, options: ControlOptions): string {
+  return stableJson({
+    runId,
+    ...(options.prepared === undefined ? {} : {
+      prepared: {
+        workflowPath: options.prepared.workflowPath,
+        irDigest: options.prepared.irDigest,
+        sourceGraphDigest: options.prepared.sourceGraphDigest,
+        ...(options.prepared.packageLockDigest === undefined ? {} : { packageLockDigest: options.prepared.packageLockDigest }),
+      },
+    }),
+    ...(options.input === undefined ? {} : { input: options.input }),
+    ...(options.agentOverrides === undefined ? {} : { agentOverrides: options.agentOverrides }),
+    ...(options.target === undefined ? {} : { target: options.target }),
+    ...(options.unsafeReuse === true ? { unsafeReuse: true } : {}),
+  });
+}
+
 class PathEscapeError extends Error {}
 
 function containedRunDir(cwd: string, runDir: string): string {
@@ -3516,6 +3364,16 @@ function countNodes(scope: ScopeIR): number {
     }
   }
   return total;
+}
+
+function rootScope(frozen: FrozenRun): EvaluationScope {
+  return {
+    input: frozen.input,
+    nodes: {},
+    meta: frozen.meta,
+    fanout: {},
+    loop: {},
+  };
 }
 
 function throwSchedulerStoreError(error: SchedulerStoreError): never {

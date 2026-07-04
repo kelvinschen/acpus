@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { DatabaseSync } from "node:sqlite";
+import { join } from "node:path";
 import { runSourceCli } from "./support/cli-runner.js";
 import { copyWorkflowFixture } from "./support/fixtures.js";
 import { withTestWorkspace } from "./support/workspace.js";
@@ -19,19 +21,20 @@ describe("acpus runs signal smoke", () => {
       expect(output).toMatchObject({
         ok: true,
         phase: "control",
-        command: {
-          type: "signal",
-          status: "applied",
-        },
         run: {
           id: runId,
         },
       });
+      expect(output).not.toHaveProperty("command");
       expect(output.run).toMatchObject({ id: runId });
       expect(output.run.status).not.toBe("completed");
       expect(output.run).not.toHaveProperty("input");
       expect(output.run).not.toHaveProperty("output");
       expect(output.run).not.toHaveProperty("dynamic");
+      expect(signalWaitRows(workspace, runId)).toEqual([{
+        node_key: expect.stringMatching(/^approve/),
+        status: "consumed",
+      }]);
 
       const completed = await waitForCompletedRun(workspace, runId);
       expect(completed).toMatchObject({
@@ -51,4 +54,13 @@ async function waitForCompletedRun(workspace: string, runId: string): Promise<Re
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   throw new Error(`Timed out waiting for completed run. Last: ${JSON.stringify(last)}`);
+}
+
+function signalWaitRows(workspace: string, runId: string): Array<{ node_key: string; status: string }> {
+  const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"), { readOnly: true });
+  try {
+    return db.prepare("SELECT node_key, status FROM signal_waits WHERE run_id = ?").all(runId) as Array<{ node_key: string; status: string }>;
+  } finally {
+    db.close();
+  }
 }

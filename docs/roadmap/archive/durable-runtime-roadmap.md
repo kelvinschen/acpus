@@ -4,6 +4,14 @@
 
 本文档用于 durable runtime 实现阶段之后的人工审阅、能力盘点和后续目标选择。当前产品和设计真相仍以 `specs/` 为准；本文档是 roadmap/handoff 材料，不是规范文件。
 
+> **Superseded runtime-control note (2026-07-04)**: 本文档中关于
+> `commands` 表、`supervisor_lease`、supervisor endpoint/auth、durable command
+> queue、以及 CLI/Web 通过数据库命令行控制运行时的描述已经过时。当前运行时控制设计以
+> `specs/runtime-spec.md`、`specs/cli-spec.md` 和
+> `docs/roadmap/runtime-control-abstraction-refactor-roadmap.md` 为准：本地
+> daemon 是控制权威，控制请求通过 workspace socket request/response
+> 应用，不再使用 durable command queue。
+
 > **审计注（2026-06-29）**：代码已从 monolithic `packages/acpus/` 拆分为五个独立 package（`cli`、`runtime`、`core`、`agent-executor`、`workflow-compiler`）。本文档证据路径已更新为当前代码结构。审计发现的新增能力和差异已在各条目中标注。
 
 > **审计注（2026-07-01）**：代码已引入 event-sourced 持久化 scheduler（`packages/runtime/src/scheduler/`），与旧 scheduler（`packages/runtime/src/execution/scheduler.ts`）并存。新 scheduler 已关闭多个旧 scheduler 的 gap（`maxConcurrency`、signal timeout、fanout lane 隔离、agent JSON recovery）。本文档已更新以反映双 scheduler 架构，并修正了 15 处与代码不一致的 claim（详见各条目和"当前状态"节）。
@@ -20,8 +28,10 @@
 - Runtime execution: `packages/runtime/src/execution/` (scheduler, advance, task-executor, agent-node, ir)
 - Runtime event-sourced scheduler: `packages/runtime/src/scheduler/` (advance, materialize, transitions, identity, types, limiter, runtime-runner, node-executor, control, events, store-port)
 - Runtime evaluation: `packages/runtime/src/evaluation/` (evaluator, schema)
-- Runtime control: `packages/runtime/src/control/apply-command.ts`
-- Runtime supervisor: `packages/runtime/src/supervisor/` (loop, tick)
+- Removed runtime control queue: `packages/runtime/src/control/apply-command.ts`
+  (superseded by daemon socket request/response)
+- Removed runtime supervisor: `packages/runtime/src/supervisor/` (superseded by
+  `packages/runtime/src/daemon/`)
 - Runtime admission: `packages/runtime/src/admission/input.ts`
 - Runtime use-cases facade: `packages/runtime/src/runs/use-cases.ts`
 - Agent executor: `packages/agent-executor/src/index.ts`

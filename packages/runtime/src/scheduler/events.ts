@@ -59,9 +59,11 @@ export type SchedulerEvent =
   // Persists branch choice so resume does not re-evaluate the condition.
   | BaseEvent<"branch.decided", { frameKey: string; branchId: string }>
   // Stores normalized signal wait/consume transitions.
-  | BaseEvent<"signal.awaiting", { runId: string; nodeKey: string; nodeId: string; deadlineAt?: string; renderedPrompt?: string }>
+  | BaseEvent<"signal.awaiting", { runId: string; nodeKey: string; nodeId: string; deadlineAt?: string; timeoutMessage?: string; renderedPrompt?: string }>
+  | BaseEvent<"signal.timeout_paused", { nodeKey: string; remainingMs: number }>
+  | BaseEvent<"signal.timeout_resumed", { nodeKey: string; deadlineAt: string }>
   | BaseEvent<"signal.consumed", { nodeKey: string; payload: JsonValue; commandIdempotencyKey: string; payloadDigest?: string }>
-  | BaseEvent<"signal.timed_out", { nodeKey: string; terminalReason?: string }>
+  | BaseEvent<"signal.timed_out", { nodeKey: string; terminalReason?: string; message?: string }>
   | BaseEvent<"signal.cancelled", { nodeKey: string; cancelReason: CancellationReason }>;
 
 export function isTerminalFrameStatus(status: FrameStatus): boolean {

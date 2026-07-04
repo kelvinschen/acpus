@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { DatabaseSync } from "node:sqlite";
+import { join } from "node:path";
 import { admitPreparedWorkflowRun } from "@acpus/runtime";
 import { runSourceCli } from "./support/cli-runner.js";
 import { copyWorkflowFixture } from "./support/fixtures.js";
@@ -41,6 +43,7 @@ describe.concurrent("acpus runs list", () => {
       expect(allOutput.list).not.toHaveProperty("limit");
       expect(allOutput.runs).toHaveLength(21);
       expectUpdatedAtDesc(allOutput.runs);
+      expect(daemonLeaseCount(workspace)).toBe(0);
     });
   }, 15_000);
 
@@ -57,4 +60,13 @@ describe.concurrent("acpus runs list", () => {
 
 function expectUpdatedAtDesc(runs: Array<{ updatedAt: string }>): void {
   expect(runs.map(run => run.updatedAt)).toEqual([...runs].map(run => run.updatedAt).sort().reverse());
+}
+
+function daemonLeaseCount(workspace: string): number {
+  const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"), { readOnly: true });
+  try {
+    return Number((db.prepare("SELECT COUNT(*) AS count FROM daemon_lease").get() as { count: number }).count);
+  } finally {
+    db.close();
+  }
 }

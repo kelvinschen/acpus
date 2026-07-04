@@ -97,6 +97,7 @@ export type SignalConsumeInput = {
   payload: JsonValue;
   commandIdempotencyKey: string;
   idempotencyKey: string;
+  now?: Date;
 };
 
 export type SchedulerPauseInput = {
@@ -104,12 +105,14 @@ export type SchedulerPauseInput = {
   ownerEpoch: number;
   reason?: string;
   idempotencyKey: string;
+  now?: Date;
 };
 
 export type SchedulerResumeInput = {
   runId: string;
   ownerEpoch: number;
   idempotencyKey: string;
+  now?: Date;
 };
 
 export type SchedulerRetryInput = {

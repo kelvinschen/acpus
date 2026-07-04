@@ -1,6 +1,6 @@
 import type { Writable } from "node:stream";
 import { Command } from "commander";
-import { advanceWorkflowRun, admitPreparedWorkflowRun, normalizeWorkflowInput, releaseWorkflowRunOwner, validateAgentOverrides, type RuntimeAdvanceResult } from "@acpus/runtime";
+import { admitPreparedWorkflowRun, normalizeWorkflowInput, validateAgentOverrides, type RuntimeAdvanceResult } from "@acpus/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
 import { writePreflightArtifact } from "@acpus/workflow-compiler";
 import { validationError } from "../errors.js";
@@ -9,7 +9,7 @@ import { summarizeWorkflow, writeJsonLine, writeResult, type OutputFormat } from
 import { formatRunObservationRow, formatRunStatusSurface, staticNodesForWorkflow, type RunStatusStaticNode } from "../run-status-surface.js";
 import { prepareWorkflowForCli } from "../workflow-preparation.js";
 import { parseAgents, parseInput } from "./json.js";
-import { ensureSupervisorRunning } from "./supervisor.js";
+import { sendDaemonObserveRun, sendDaemonStartRun } from "./daemon.js";
 
 export type WorkflowsCommandContext = {
   cwd: string;
@@ -144,7 +144,7 @@ async function runWorkflow(ctx: WorkflowsCommandContext, workflow: string, optio
 
   if (options.background) {
     const run = await admitPreparedWorkflowRun(ctx.cwd, prepared, admittedInput, agentOverrides);
-    if (run.status !== "completed" && run.status !== "failed" && run.status !== "canceled") ensureSupervisorRunning(ctx.cwd);
+    if (run.status !== "completed" && run.status !== "failed" && run.status !== "canceled") await sendDaemonStartRun(ctx.cwd, run.id);
     ctx.setExitCode(writeResult({
       ok: true,
       phase: "run",
@@ -162,51 +162,46 @@ async function runWorkflow(ctx: WorkflowsCommandContext, workflow: string, optio
   const admitted = await admitPreparedWorkflowRun(ctx.cwd, prepared, admittedInput, agentOverrides);
   const staticNodes = staticNodesForWorkflow(prepared.ir);
   if (ctx.wantsJson) writeJsonLine(ctx.stdout, { ok: true, phase: "run", kind: "admitted", run: admitted, ...(resolved.catalog ? { catalog: resolved.catalog } : {}) });
-  const ownerId = `foreground:${process.pid}`;
-  const detach = installDetachHandler(ctx, admitted.id, ownerId);
   const seen = new Set([
     ...(admitted.dynamic?.nodeInstances.map(node => `node:${node.nodeKey}:${node.status}`) ?? []),
     ...(admitted.dynamic?.frames.map(frame => `frame:${frame.frameKey}:${frame.status}`) ?? []),
   ]);
+  const detach = installDetachHandler(ctx, admitted.id);
   let advanced: RuntimeAdvanceResult;
   try {
-    advanced = await advanceWorkflowRun(ctx.cwd, admitted.id, ownerId, run => {
-      writeRunObservations(ctx, seen, run, staticNodes);
-    });
+    advanced = await sendDaemonObserveRun(ctx.cwd, admitted.id);
+    writeRunObservations(ctx, seen, advanced.run, staticNodes);
   } finally {
     detach();
   }
   if (ctx.wantsJson) {
     writeJsonLine(ctx.stdout, {
-      ok: advanced.status !== "failed",
+      ok: advanced.status !== "failed" && advanced.status !== "canceled",
       phase: "run",
       kind: terminalKind(advanced.status),
       run: advanced.run,
       ...(resolved.catalog ? { catalog: resolved.catalog } : {}),
     });
-    ctx.setExitCode(advanced.status === "failed" ? 1 : 0);
+    ctx.setExitCode(advanced.status === "failed" || advanced.status === "canceled" ? 1 : 0);
     return;
   }
   ctx.stdout.write(formatRunStatusSurface(advanced.run, staticNodes));
-  ctx.setExitCode(advanced.status === "failed" ? 1 : 0);
+  ctx.setExitCode(advanced.status === "failed" || advanced.status === "canceled" ? 1 : 0);
 }
 
 function outputFormat(ctx: WorkflowsCommandContext): OutputFormat {
   return ctx.wantsJson ? "json" : "text";
 }
 
-function installDetachHandler(ctx: WorkflowsCommandContext, runId: string, ownerId: string): () => void {
+function installDetachHandler(ctx: WorkflowsCommandContext, runId: string): () => void {
   const handler = (): void => {
-    void releaseWorkflowRunOwner(ctx.cwd, runId, ownerId).finally(() => {
-      ensureSupervisorRunning(ctx.cwd);
-      if (ctx.wantsJson) {
-        writeJsonLine(ctx.stdout, { ok: true, phase: "run", kind: "detached", run: { id: runId } });
-      } else {
-        ctx.stdout.write(`Detached from run ${runId}. Background supervisor started.\n`);
-      }
-      process.exitCode = 0;
-      process.exit(0);
-    });
+    if (ctx.wantsJson) {
+      writeJsonLine(ctx.stdout, { ok: true, phase: "run", kind: "detached", run: { id: runId } });
+    } else {
+      ctx.stdout.write(`Detached from run ${runId}. Background daemon continues running.\n`);
+    }
+    process.exitCode = 0;
+    process.exit(0);
   };
   process.once("SIGINT", handler);
   return () => {

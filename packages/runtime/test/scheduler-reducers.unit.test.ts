@@ -324,18 +324,52 @@ describe("scheduler identity and reducers", () => {
 
   it("derives signal timeout events from durable deadlines", () => {
     const projection = applySchedulerEvents(createSchedulerProjection("run_1"), [
+      { type: "group.started", payload: { runId: "run_1", groupKey: "parallel~1", nodeKey: "parallel~1", nodeId: "parallel", kind: "parallel", strategy: "all" } },
+      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "parallel~1", memberKey: "approve~1", memberKind: "branch", branchId: "left", readinessSequence: 1 } },
+      { type: "group.member_started", payload: { memberKey: "approve~1" } },
       { type: "instance.ready", payload: { runId: "run_1", nodeKey: "approve~1", nodeId: "approve", instancePath: appendNode([], "approve") } },
       { type: "instance.awaiting", payload: { nodeKey: "approve~1", statusReason: "signal" } },
-      { type: "signal.awaiting", payload: { runId: "run_1", nodeKey: "approve~1", nodeId: "approve", deadlineAt: "2026-06-30T00:00:00.000Z" } },
+      { type: "signal.awaiting", payload: { runId: "run_1", nodeKey: "approve~1", nodeId: "approve", deadlineAt: "2026-06-30T00:00:00.000Z", timeoutMessage: "Approval timed out" } },
       { type: "signal.awaiting", payload: { runId: "run_1", nodeKey: "later~1", nodeId: "later", deadlineAt: "2026-07-01T00:00:00.000Z" } },
       { type: "signal.awaiting", payload: { runId: "run_1", nodeKey: "done~1", nodeId: "done", deadlineAt: "2026-06-29T00:00:00.000Z" } },
       { type: "signal.consumed", payload: { nodeKey: "done~1", payload: { ok: true }, commandIdempotencyKey: "signal-done" } },
     ]);
 
     expect(signalTimeoutEvents(projection, new Date("2026-06-30T00:00:01.000Z"))).toEqual([
-      { type: "signal.timed_out", payload: { nodeKey: "approve~1", terminalReason: "signal_timeout" } },
-      { type: "instance.failed", payload: { nodeKey: "approve~1", error: { reason: "signal_timeout" }, statusReason: "signal_timeout" } },
+      { type: "signal.timed_out", payload: { nodeKey: "approve~1", terminalReason: "signal_timeout", message: "Approval timed out" } },
+      { type: "instance.failed", payload: { nodeKey: "approve~1", error: { reason: "signal_timeout", message: "Approval timed out" }, statusReason: "signal_timeout" } },
+      { type: "group.member_failed", payload: { memberKey: "approve~1", error: { reason: "signal_timeout", message: "Approval timed out" }, terminalReason: "signal_timeout" } },
     ]);
+  });
+
+  it("pauses and resumes signal timeout deadlines through durable events", () => {
+    const paused = applySchedulerEvents(createSchedulerProjection("run_1"), [
+      { type: "instance.ready", payload: { runId: "run_1", nodeKey: "approve~1", nodeId: "approve", instancePath: appendNode([], "approve") } },
+      { type: "instance.awaiting", payload: { nodeKey: "approve~1", statusReason: "signal" } },
+      { type: "signal.awaiting", payload: { runId: "run_1", nodeKey: "approve~1", nodeId: "approve", deadlineAt: "2026-06-30T00:00:00.000Z", timeoutMessage: "Approval timed out" } },
+      { type: "control.paused", payload: {} },
+      { type: "signal.timeout_paused", payload: { nodeKey: "approve~1", remainingMs: 2_000 } },
+    ]);
+
+    expect(paused.signalWaits["approve~1"]).toMatchObject({
+      status: "awaiting",
+      timeoutMessage: "Approval timed out",
+      timeoutRemainingMs: 2_000,
+    });
+    expect(paused.signalWaits["approve~1"]?.deadlineAt).toBeUndefined();
+    expect(signalTimeoutEvents(paused, new Date("2026-07-01T00:00:00.000Z"))).toEqual([]);
+
+    const resumed = applySchedulerEvents(paused, [
+      { type: "control.resumed", payload: {} },
+      { type: "signal.timeout_resumed", payload: { nodeKey: "approve~1", deadlineAt: "2026-07-01T00:00:02.000Z" } },
+    ]);
+
+    expect(resumed.signalWaits["approve~1"]).toMatchObject({
+      status: "awaiting",
+      deadlineAt: "2026-07-01T00:00:02.000Z",
+      timeoutMessage: "Approval timed out",
+    });
+    expect(resumed.signalWaits["approve~1"]?.timeoutRemainingMs).toBeUndefined();
   });
 
   it("derives attempt timeout events from durable deadlines", () => {

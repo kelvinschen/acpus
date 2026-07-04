@@ -29,7 +29,10 @@ describe.concurrent("acpus runs inspect smoke", () => {
       expect(JSON.parse(forked.stdout)).toMatchObject({
         ok: false,
         phase: "control",
-        message: "Agent override 'reviewer' does not reference a declared agent.",
+        message: expect.stringContaining("Agent override 'reviewer' does not reference a declared agent."),
+        errorCode: "RUN_NOT_CONTROLLABLE",
+        control: { type: "fork", runId },
+        run: { id: runId, status: "completed" },
       });
     });
   }, 15_000);
@@ -84,6 +87,68 @@ describe.concurrent("acpus runs inspect smoke", () => {
       expect(inspected.stdout).toContain("Prompt:\n      approve");
       expect(inspected.stdout).toContain("Expected payload:\n      ok: boolean (required)");
       expect(inspected.stdout).toMatch(new RegExp(`Signal: acpus runs signal ${runId} --target approve~[a-f0-9]+ --payload '<json>'`));
+    });
+  }, 15_000);
+
+  it("reports stale non-terminal execution without mutating durable status", async () => {
+    await withTestWorkspace("runs-inspect-stale", async workspace => {
+      const workflow = await copyWorkflowFixture(workspace, "workflows/signals/signal.workflow.ts");
+      const prepared = await prepareWorkflowForCli(workflow, workspace);
+      const admitted = await admitPreparedWorkflowRun(workspace, prepared, {});
+      const runId = admitted.id;
+      const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+      try {
+        db.prepare(`
+          INSERT INTO daemon_lease (
+            workspace_realpath, generation, pid, heartbeat_at, idle_since_at,
+            idle_stop_ms, protocol_version, package_version, node_version,
+            exec_path, updated_at
+          )
+          VALUES (?, 1, ?, ?, NULL, 30000, 1, 'test', ?, ?, ?)
+        `).run(workspace, process.pid, new Date(Date.now() - 10_000).toISOString(), process.version, process.execPath, new Date().toISOString());
+      } finally {
+        db.close();
+      }
+
+      const inspected = await runSourceCli(workspace, ["runs", "inspect", runId]);
+      expect(inspected.exitCode).toBe(0);
+      expect(inspected.stdout).toContain(`stale (daemon heartbeat expired, last status: pending)`);
+
+      const inspectedJson = await runSourceCli(workspace, ["runs", "inspect", runId, "--json"]);
+      expect(JSON.parse(inspectedJson.stdout)).toMatchObject({
+        run: {
+          status: "pending",
+          execution: {
+            state: "stale",
+            lastStatus: "pending",
+            reason: "daemon_heartbeat_expired",
+          },
+        },
+      });
+    });
+  }, 15_000);
+
+  it("inspects inactive non-terminal runs without starting the daemon", async () => {
+    await withTestWorkspace("runs-inspect-inactive-no-daemon", async workspace => {
+      const workflow = await copyWorkflowFixture(workspace, "workflows/signals/signal.workflow.ts");
+      const prepared = await prepareWorkflowForCli(workflow, workspace);
+      const admitted = await admitPreparedWorkflowRun(workspace, prepared, {});
+
+      const inspected = await runSourceCli(workspace, ["runs", "inspect", admitted.id, "--json"]);
+
+      expect(inspected.exitCode).toBe(0);
+      expect(JSON.parse(inspected.stdout)).toMatchObject({
+        run: {
+          id: admitted.id,
+          status: "pending",
+          execution: {
+            state: "inactive",
+            lastStatus: "pending",
+            reason: "no_liveness_evidence",
+          },
+        },
+      });
+      expect(daemonLeaseCount(workspace)).toBe(0);
     });
   }, 15_000);
 
@@ -206,4 +271,13 @@ type TtyCaptureStream = CaptureStream & {
 
 function ttyCapture(): TtyCaptureStream {
   return Object.assign(new CaptureStream(), { columns: 120, isTTY: true as const });
+}
+
+function daemonLeaseCount(workspace: string): number {
+  const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"), { readOnly: true });
+  try {
+    return Number((db.prepare("SELECT COUNT(*) AS count FROM daemon_lease").get() as { count: number }).count);
+  } finally {
+    db.close();
+  }
 }

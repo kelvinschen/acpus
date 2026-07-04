@@ -33,7 +33,7 @@ export function staticNodesForWorkflow(ir: WorkflowIR): RunStatusStaticNode[] {
 
 export function formatRunStatusSurface(run: RunDetails, staticNodes: readonly RunStatusStaticNode[] = [], nowMs = Date.now()): string {
   const index = staticIndex(staticNodes);
-  const lines = [`Run ${run.id}  ${run.name}  ${run.status}  ${formatRunDuration(run, nowMs)}`];
+  const lines = [`Run ${run.id}  ${run.name}  ${displayRunExecutionStatus(run)}  ${formatRunDuration(run, nowMs)}`];
   const rows = statusRows(run, staticNodes, index);
   for (const row of rows) {
     lines.push(...formatRow(row, run.id, nowMs, index));
@@ -44,6 +44,13 @@ export function formatRunStatusSurface(run: RunDetails, staticNodes: readonly Ru
     lines.push(...output);
   }
   return `${lines.join("\n")}\n`;
+}
+
+function displayRunExecutionStatus(run: RunDetails): string {
+  if (run.execution?.state !== "stale") return run.status;
+  if (run.execution.reason === "daemon_pid_dead") return `stale (daemon pid dead, last status: ${run.status})`;
+  if (run.execution.reason === "run_lease_expired") return `stale (run lease expired, last status: ${run.status})`;
+  return `stale (daemon heartbeat expired, last status: ${run.status})`;
 }
 
 export function formatRunObservationRow(run: RunDetails, nodeKey: string, nowMs = Date.now(), staticNodes: readonly RunStatusStaticNode[] = []): string | undefined {

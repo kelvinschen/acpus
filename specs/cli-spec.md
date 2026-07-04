@@ -4,9 +4,9 @@
 
 The `acpus` package provides the user-facing command-line interface. It parses
 commands and options, delegates workflow preparation to
-`@acpus/workflow-compiler`, delegates durable admission and run controls to
-`@acpus/runtime`, formats JSON/text output, and maps delegated failures to
-stable CLI phases and exit codes.
+`@acpus/workflow-compiler`, delegates durable admission, daemon execution, and
+run controls to `@acpus/runtime`, formats JSON/text output, and maps delegated
+failures to stable CLI phases and exit codes.
 
 ## Requirements
 
@@ -81,11 +81,15 @@ stable CLI phases and exit codes.
 - Global catalog materialization MUST follow symlinks and copy target content.
 - Runtime run records MUST NOT persist catalog metadata.
 - `workflows run` MUST call workflow preparation, normalize submitted input,
-  validate agent overrides, admit a durable run, and foreground-advance it until
-  runtime quiescence.
-- `workflows run --background` MUST admit a durable run without synchronously
-  advancing scheduler work in the CLI process, then MUST start a detached
-  supervisor for non-terminal work.
+  validate agent overrides, admit a durable run, start or wake the workspace
+  daemon, call daemon `startRun(runId)`, and observe daemon-owned execution until
+  the run reaches a terminal durable status.
+- `workflows run` MUST NOT synchronously advance scheduler work in the CLI
+  process, hold runtime run leases, own active attempts, or create runtime
+  execution abort controllers.
+- `workflows run --background` MUST admit a durable run, start or wake the
+  workspace daemon, call daemon `startRun(runId)`, and return only after the
+  daemon accepts responsibility for the admitted run.
 - Invalid JSON input MUST fail as a usage error before workflow preparation.
 - Invalid `--agents` JSON, or a non-object `--agents` value, MUST fail as a
   usage error before workflow preparation or runtime mutation.
@@ -97,9 +101,10 @@ stable CLI phases and exit codes.
 - The CLI package MUST carry official Acpus authoring dependencies so workflow
   modules can import supported `acpus/*` facade subpaths without installing
   Acpus packages in the workflow workspace.
-- Runtime admission and run-control behavior MUST be delegated to
-  `@acpus/runtime`.
+- Runtime admission, daemon start/wake, daemon observation, and run-control
+  behavior MUST be delegated to `@acpus/runtime`.
 - Run inspection commands MUST delegate to runtime read APIs.
+- Run inspection commands MUST NOT start or wake the daemon.
 - `runs inspect` without a run id MUST be available only in text-mode
   interactive TTY sessions, MUST list known runs through runtime read APIs, and
   MUST inspect the run selected by the user.
@@ -107,18 +112,57 @@ stable CLI phases and exit codes.
   `runs inspect` without a run id MUST fail as usage errors.
 - Interactive `runs inspect` without any available runs MUST fail as an
   inspect error.
-- Run control commands MUST apply durable control intent but MUST NOT
-  synchronously advance scheduler work in the CLI process.
-- Run control commands that leave non-terminal runnable work SHOULD start the
-  detached supervisor.
+- For `runs fork --workflow`, the CLI MUST prepare the replacement workflow
+  through `@acpus/workflow-compiler` before sending daemon control. The daemon
+  MUST receive frozen prepared workflow data and MUST NOT compile or import live
+  workflow source for the fork.
+- For `runs fork --input`, the CLI MUST normalize the replacement input against
+  the replacement workflow when provided, or against the source run's frozen
+  workflow otherwise, before sending daemon control.
+- For `runs fork --agents`, the CLI MUST validate replacement agent overrides
+  against the replacement workflow when provided, or against the source run's
+  frozen workflow otherwise, before sending daemon control.
+- Run control commands MUST start or wake the workspace daemon and send the
+  requested control through daemon `control(runId, intent)`.
+- Run control commands MUST NOT synchronously advance scheduler work in the CLI
+  process, hold runtime run leases, own active attempts, or create runtime
+  execution abort controllers.
+- Run control commands MUST wait by default until daemon control application is
+  confirmed as applied, failed, or the fixed 30 second client wait expires.
+- Run control commands MUST NOT wait for the run to become quiescent or terminal
+  after the requested control effect is applied.
+- `runs resume` MUST wait only until the pause gate is cleared.
+- `runs retry` MUST wait only until retry events are applied.
+- `runs signal` MUST wait only until the signal payload is consumed.
+- `runs fork` MUST wait only until the fork run is created.
+- Run control commands MUST NOT expose `--no-wait`, `--timeout`, or project/user
+  timeout configuration.
+- Run control command success MUST mean the daemon applied the requested effect
+  and the durable projection reflects it.
+- Run control command timeout MUST report that application was not confirmed in
+  the interactive wait window, include the run id, requested control type, and
+  current run summary, exit nonzero, and MUST NOT create or expose a runtime
+  command state.
+- Run control command text and JSON failures MUST derive from stable daemon error
+  codes plus concise messages.
+- `runs resume <run-id>` and `runs signal <run-id>` MUST start or wake the
+  daemon even when the daemon previously idle-stopped because the run was paused
+  or waiting for signal.
 - `doctor` MUST delegate to a read-only runtime health API and MUST NOT create
   runtime state in an uninitialized workspace.
+- Read-only commands such as `runs list`, `runs inspect`, and `doctor` MUST NOT
+  start or wake the daemon.
+- On `Ctrl-C` during foreground `workflows run`, the CLI MUST detach from
+  observation without canceling the daemon-owned run, print the run id and an
+  explicit `acpus runs cancel <run-id>` command, and exit.
+- The CLI MUST NOT implement hidden terminal-signal controls such as
+  double-`Ctrl-C` cancel.
 
 ### Output And Exit Codes
 
 - JSON output MUST include stable keys for `ok`, `phase`, workflow summary,
   diagnostics, preflight directory when available, IR digest, source graph
-  digest, run summaries or details when available, command records when
+  digest, run summaries or details when available, control outcome when
   available, workflow catalog entries or invocation source when available, and
   doctor checks when available.
 - JSON diagnostic output MUST preserve `hint` and `source` fields when present.
@@ -126,8 +170,7 @@ stable CLI phases and exit codes.
   `validate`, `run`, `inspect`, `control`, and `doctor`.
 - Non-streaming commands MUST emit one JSON object.
 - Foreground `workflows run --json` MUST emit newline-delimited JSON records:
-  an admitted record, bounded projection observation records after scheduler
-  drives, and a terminal summary record.
+  an admitted record, daemon observation records, and a terminal summary record.
 - Foreground `workflows run` text output MUST include bounded projection
   observations before the final run summary.
 - Foreground `workflows run` text observations and final run summaries MUST use
@@ -136,6 +179,10 @@ stable CLI phases and exit codes.
   and error results in human-readable form.
 - Text run inspection output MUST render a compact run status surface headed by
   `Run <id>  <workflow-name>  <status>  <duration>`.
+- Text run inspection output MUST show stale non-terminal execution as an
+  execution state, for example
+  `stale (daemon heartbeat expired, last status: running)`, without implying a
+  fabricated durable terminal status.
 - Text run status surface rows MUST render in deterministic workflow order for
   static nodes and dynamic key order for repeated instances of the same node.
 - Text run status surface node rows MUST use dynamic node keys, compact node
@@ -171,6 +218,12 @@ stable CLI phases and exit codes.
 - Usage errors MUST exit with code `2`.
 - Successful check, run, inspection, control, and doctor commands MUST exit with
   code `0`.
+- Foreground `workflows run` completion MUST choose its exit code from the
+  durable terminal run status: `completed` exits `0`, while `failed` and
+  `canceled` exit `1`.
+- Foreground `workflows run` interrupted by `Ctrl-C` after successful detach
+  MUST exit `0` without canceling the daemon-owned run.
+- Run control timeout MUST exit `1`.
 - Check, compile, validation, runtime admission, run lookup, runtime control,
   catalog lookup or materialization, and failed doctor commands MUST exit with
   code `1`.
@@ -181,7 +234,8 @@ stable CLI phases and exit codes.
 - Tests MUST cover foreground run output for a pure completed workflow.
 - Tests MUST cover foreground text observations and JSONL admitted,
   observation, and terminal summary ordering.
-- Tests MUST cover background run admission without local scheduler advancement.
+- Tests MUST cover background run admission and daemon acceptance without local
+  scheduler advancement.
 - Tests MUST cover check failure, compile/validation failure, invalid JSON
   input, and input-schema validation failure phase mapping.
 - Tests MUST cover diagnostic hint rendering in text output and hint
@@ -189,14 +243,23 @@ stable CLI phases and exit codes.
 - Tests MUST cover read-only run list default bounds, `--limit`, `--all`, and
   invalid list option handling.
 - Tests MUST cover read-only run inspect status surface output.
+- Tests MUST cover read-only run list, run inspect, and doctor without daemon
+  startup.
 - Tests MUST cover compact text rendering for run inspection and JSON detail
   preservation.
+- Tests MUST cover stale non-terminal execution rendering in run inspect.
 - Tests MUST cover actionable awaiting signal status surface output including
   prompt, payload guidance, and signal command.
 - Tests MUST cover signal command wiring through `--target`.
 - Tests MUST cover fork command wiring through `--target`, `--unsafe-reuse`,
   and empty fork target usage rejection.
-- Tests MUST cover cancel command wiring and bounded control output.
+- Tests MUST cover cancel, pause, resume, retry, signal, and fork command wiring
+  through daemon control, applied/failed/timeout output, fixed 30 second wait
+  behavior, and absence of `--no-wait` and timeout configuration.
+- Tests MUST cover `runs resume` and `runs signal` start/wake behavior for
+  daemon-idle-stopped paused or signal-waiting runs.
+- Tests MUST cover foreground `workflows run` daemon observation, final exit
+  code from durable terminal status, and `Ctrl-C` detach without cancellation.
 - Tests MUST cover workflow catalog discovery, scope filtering, stable ordering,
   ambiguity handling, catalog-backed check and run, global materialization,
   doctor no-store output, package boundary, and program output contracts.

@@ -4,7 +4,8 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-import { admitWorkflowRun, getRun, getRunInspection, listRuns, normalizeSignalPayload, normalizeWorkflowInput } from "@acpus/runtime";
+import { getRun, getRunInspection, listRuns, normalizeSignalPayload, normalizeWorkflowInput } from "@acpus/runtime";
+import { admitWorkflowRun } from "../src/runs/use-cases.js";
 import type { TaskExecutionTargetIR, WorkflowIR } from "@acpus/core/ir";
 import {
   admitFixture,

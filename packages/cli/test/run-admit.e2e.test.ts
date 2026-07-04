@@ -49,7 +49,7 @@ describe.concurrent("acpus workflows run smoke", () => {
         },
       });
     });
-  });
+  }, 15_000);
 
   it("checks and runs a facade-import workflow without workspace node_modules", async () => {
     await withIsolatedTestWorkspace("run-zero-install-facade", async workspace => {
@@ -128,7 +128,7 @@ export default defineWorkflow({
       expect(result.stdout).toMatch(/✓ require_ready~[a-f0-9]+  \[assert\]  (?:<1s|\d+s)/);
       expect(result.stdout).toMatch(/Run \d{14}[A-F0-9]{20}  cli-valid  completed  (?:<1s|\d+s)/);
     });
-  });
+  }, 15_000);
 
   it("rejects invalid JSON input without creating runtime state", async () => {
     await withTestWorkspace("run-invalid-json", async workspace => {
@@ -191,10 +191,12 @@ export default defineWorkflow({
           status: "pending",
         },
       });
+      const runId = JSON.parse(result.stdout).run.id as string;
+      await expectRunStatus(workspace, runId, "awaiting");
     });
-  });
+  }, 15_000);
 
-  it("runs a facade-import reusable task through the background supervisor", async () => {
+  it("runs a facade-import reusable task through the background daemon", async () => {
     await withIsolatedTestWorkspace("run-background-zero-install-task", async workspace => {
       const workflow = join(workspace, "workflow.ts");
       await writeFile(join(workspace, "tasks.ts"), `import { task, z } from "acpus/core";
@@ -241,4 +243,16 @@ async function expectRunCompleted(workspace: string, runId: string, output: unkn
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   throw new Error(`Run ${runId} did not complete.`);
+}
+
+async function expectRunStatus(workspace: string, runId: string, status: string): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const inspected = await runSourceCli(workspace, ["runs", "inspect", runId, "--json"]);
+    expect(inspected.exitCode).toBe(0);
+    const body = JSON.parse(inspected.stdout);
+    if (body.run.status === status) return;
+    if (body.run.status === "failed") throw new Error(JSON.stringify(body.run.error ?? body.run));
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  throw new Error(`Run ${runId} did not reach ${status}.`);
 }

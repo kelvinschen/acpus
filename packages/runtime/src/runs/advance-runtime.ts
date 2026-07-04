@@ -1,7 +1,7 @@
 import { ResultAsync } from "neverthrow";
 import type { AdvanceRunSummary } from "../scheduler/advance.js";
 import { advanceFrozenRun } from "../scheduler/runtime-runner.js";
-import { schedulerStoreError, throwSchedulerStoreResult, type SchedulerStoreError, type SchedulerStoreResult } from "../scheduler/store-port.js";
+import { schedulerStoreError, throwSchedulerStoreResult, type RunOwnerClaim, type SchedulerStoreError, type SchedulerStoreResult } from "../scheduler/store-port.js";
 import type { RunDetails, RuntimeStore } from "../store/store.js";
 
 export type RuntimeAdvanceResult =
@@ -17,6 +17,11 @@ export type RuntimeAdvanceError =
   | { type: "runtime-not-quiescent"; runId: string; drives: number; message: string };
 
 export type RuntimeAdvanceObserver = (run: RunDetails, summary: AdvanceRunSummary) => void;
+export type RuntimeAdvanceOptions = {
+  onClaim?: (claim: RunOwnerClaim) => void;
+  onRelease?: (claim: RunOwnerClaim) => void;
+  onActiveAttempt?: Parameters<typeof advanceFrozenRun>[0]["onActiveAttempt"];
+};
 
 class RuntimeAdvanceException extends Error {
   constructor(readonly failure: RuntimeAdvanceError) {
@@ -24,9 +29,9 @@ class RuntimeAdvanceException extends Error {
   }
 }
 
-export function tryAdvanceRuntimeRun(cwd: string, store: RuntimeStore, runId: string, ownerId = "runtime-public", observe?: RuntimeAdvanceObserver): ResultAsync<RuntimeAdvanceResult, RuntimeAdvanceError> {
+export function tryAdvanceRuntimeRun(cwd: string, store: RuntimeStore, runId: string, ownerId = "runtime-public", observe?: RuntimeAdvanceObserver, options: RuntimeAdvanceOptions = {}): ResultAsync<RuntimeAdvanceResult, RuntimeAdvanceError> {
   return ResultAsync.fromPromise(
-    advanceRuntimeRun(cwd, store, runId, ownerId, observe),
+    advanceRuntimeRun(cwd, store, runId, ownerId, observe, options),
     error => {
       const storeError = schedulerStoreError(error);
       if (storeError) return storeError;
@@ -36,13 +41,21 @@ export function tryAdvanceRuntimeRun(cwd: string, store: RuntimeStore, runId: st
   );
 }
 
-export async function advanceRuntimeRun(cwd: string, store: RuntimeStore, runId: string, ownerId = "runtime-public", observe?: RuntimeAdvanceObserver): Promise<RuntimeAdvanceResult> {
+export async function advanceRuntimeRun(cwd: string, store: RuntimeStore, runId: string, ownerId = "runtime-public", observe?: RuntimeAdvanceObserver, options: RuntimeAdvanceOptions = {}): Promise<RuntimeAdvanceResult> {
   if (!store.getFrozenRun(runId)) {
     throw new RuntimeAdvanceException({ type: "run-not-found", runId, message: `Run '${runId}' was not found.` });
   }
   let last: AdvanceRunSummary | undefined;
   for (let drives = 0; drives < 1_000; drives += 1) {
-    last = await advanceFrozenRun({ cwd, store, runId, ownerId });
+    last = await advanceFrozenRun({
+      cwd,
+      store,
+      runId,
+      ownerId,
+      ...(options.onClaim === undefined ? {} : { onClaim: options.onClaim }),
+      ...(options.onRelease === undefined ? {} : { onRelease: options.onRelease }),
+      ...(options.onActiveAttempt === undefined ? {} : { onActiveAttempt: options.onActiveAttempt }),
+    });
     const run = store.getRun(runId);
     if (run) observe?.(run, last);
     if (last.status === "idle" && madeProgress(last)) continue;
