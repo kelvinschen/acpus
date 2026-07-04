@@ -44,6 +44,7 @@ describe("CLI result output contracts", () => {
         updatedAt: "2026-06-29T00:00:01.000Z",
         input: { ready: true },
         output: { ready: true },
+        hooks: [],
         eventCount: 2,
         nodeCount: 1,
       },
@@ -75,6 +76,7 @@ describe("CLI result output contracts", () => {
         updatedAt: "2026-06-29T00:00:01.000Z",
         input: {},
         output: { ok: true },
+        hooks: [],
         eventCount: 4,
         nodeCount: 1,
         dynamic: {
@@ -132,6 +134,7 @@ describe("CLI result output contracts", () => {
         createdAt: "2026-06-29T00:00:00.000Z",
         updatedAt: "2026-06-29T00:00:01.000Z",
         input: {},
+        hooks: [],
         eventCount: 1,
         nodeCount: 1,
         dynamic: {

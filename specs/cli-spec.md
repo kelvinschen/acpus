@@ -45,6 +45,8 @@ failures to stable CLI phases and exit codes.
   dangerous targeted fork option that may reuse completed prerequisites despite
   workflow, input, or signature changes.
 - The CLI MUST support top-level `acpus doctor`.
+- The CLI MUST support `acpus hooks validate [--project | --global]`.
+- The CLI MUST support `acpus hooks list [--project | --global]`.
 - The CLI MUST support global `--json` before or after command names.
 - The CLI MUST keep help on `-h` and `--help` and MUST NOT expose an
   `acpus help` command.
@@ -152,6 +154,13 @@ failures to stable CLI phases and exit codes.
   runtime state in an uninitialized workspace.
 - Read-only commands such as `runs list`, `runs inspect`, and `doctor` MUST NOT
   start or wake the daemon.
+- Hook inspection commands MUST read hook configuration files and MUST NOT start
+  or wake the daemon.
+- `hooks validate` and `hooks list` MUST reject simultaneous `--project` and
+  `--global` scope selectors.
+- `hooks list` text output MUST group hooks by project and global scope when
+  unscoped, and MUST include the relevant hooks file path for each displayed
+  scope.
 - On `Ctrl-C` during foreground `workflows run`, the CLI MUST detach from
   observation without canceling the daemon-owned run, print the run id and an
   explicit `acpus runs cancel <run-id>` command, and exit.
@@ -163,8 +172,8 @@ failures to stable CLI phases and exit codes.
 - JSON output MUST include stable keys for `ok`, `phase`, workflow summary,
   diagnostics, preflight directory when available, IR digest, source graph
   digest, run summaries or details when available, control outcome when
-  available, workflow catalog entries or invocation source when available, and
-  doctor checks when available.
+  available, workflow catalog entries or invocation source when available,
+  hook validation/list details when available, and doctor checks when available.
 - JSON diagnostic output MUST preserve `hint` and `source` fields when present.
 - Supported JSON `phase` values MUST be `usage`, `check`, `compile`,
   `validate`, `run`, `inspect`, `control`, and `doctor`.
@@ -179,6 +188,11 @@ failures to stable CLI phases and exit codes.
   and error results in human-readable form.
 - Text run inspection output MUST render a compact run status surface headed by
   `Run <id>  <workflow-name>  <status>  <duration>`.
+- Text run inspection output MUST append a `Hooks:` section only for terminal
+  runs with hook journal rows, and MUST omit that section when no hook history is
+  available.
+- Hook history rows MUST be rendered in workflow trigger order: `eventSequence`,
+  then `triggerOrder`, then journal row id.
 - Text run inspection output MUST show stale non-terminal execution as an
   execution state, for example
   `stale (daemon heartbeat expired, last status: running)`, without implying a
@@ -243,6 +257,8 @@ failures to stable CLI phases and exit codes.
 - Tests MUST cover read-only run list default bounds, `--limit`, `--all`, and
   invalid list option handling.
 - Tests MUST cover read-only run inspect status surface output.
+- Tests MUST cover run inspect hook history rendering only for terminal runs
+  with hook journal rows.
 - Tests MUST cover read-only run list, run inspect, and doctor without daemon
   startup.
 - Tests MUST cover compact text rendering for run inspection and JSON detail
@@ -263,3 +279,5 @@ failures to stable CLI phases and exit codes.
 - Tests MUST cover workflow catalog discovery, scope filtering, stable ordering,
   ambiguity handling, catalog-backed check and run, global materialization,
   doctor no-store output, package boundary, and program output contracts.
+- Tests MUST cover `hooks validate`, `hooks list`, hook scope filtering, hook
+  JSON output envelope fields, and mutually exclusive hook scope selectors.

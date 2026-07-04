@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { startDaemonLoop } from "@acpus/runtime";
 import { runDaemonTick } from "../src/daemon/tick.js";
+import type { HookJournalEntry } from "../src/hooks/journal.js";
 import { openExistingWritableRuntimeStore, openRuntimeStore } from "../src/store/store.js";
 import { admitSyntheticWorkflow, prepareSyntheticWorkflow, runtimeRow, runtimeRows, taskArtifactWorkflow, timedSignalWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 
@@ -78,6 +79,27 @@ describe.concurrent("runtime daemon ticks", () => {
       expect(runtimeRows(workspace, "SELECT id FROM runs")).toEqual([{ id: completed.run.id }]);
       await expect(access(staged)).rejects.toThrow();
       await expect(access(orphan)).resolves.toBeUndefined();
+    });
+  });
+
+  it("prunes expired hook journal rows during daemon ticks", async () => {
+    await withRuntimeWorkspace("runtime-daemon-hook-journal-prune", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        store.completeRun({ runId: run.id, output: { ready: true }, nodes: { require_ready: { status: "completed", output: true } } });
+        store.writeHookJournal(hookJournalEntry(run.id, "old", "2000-01-01T00:00:00.000Z"));
+        store.writeHookJournal(hookJournalEntry(run.id, "fresh", "2099-01-01T00:00:00.000Z"));
+
+        await expect(runDaemonTick(store, { startRun: () => {
+          throw new Error("no run should start");
+        } })).resolves.toMatchObject({ runs: 0 });
+
+        expect(store.getHookJournal(run.id).map(entry => entry.definitionHash)).toEqual(["fresh"]);
+      } finally {
+        store.close();
+      }
     });
   });
 
@@ -178,4 +200,20 @@ function appendTimedSignalWait(store: Awaited<ReturnType<typeof openRuntimeStore
   } finally {
     store.scheduler.releaseRun(claim);
   }
+}
+
+function hookJournalEntry(runId: string, definitionHash: string, triggeredAt: string): HookJournalEntry {
+  return {
+    runId,
+    eventSequence: definitionHash === "old" ? 1 : 2,
+    triggerOrder: 1,
+    event: "run.completed",
+    source: "project",
+    sourcePath: "/workspace/.acpus/hooks.json",
+    handlerId: definitionHash,
+    definitionHash,
+    status: "completed",
+    exitCode: 0,
+    triggeredAt,
+  };
 }

@@ -9,14 +9,20 @@ describe("@acpus/runtime public API", () => {
       "admitPreparedWorkflowRun",
       "createWorkflowVisualizationOverlay",
       "daemonEndpoint",
+      "formatHookLoadError",
       "getRun",
       "getRunInspection",
       "getRunVisualizationOverlay",
       "getRuntimeHealth",
+      "globalHooksPath",
+      "hookEvents",
       "listRuns",
+      "loadHooksConfigScope",
+      "loadHooksConfigScopes",
       "normalizeForkInput",
       "normalizeSignalPayload",
       "normalizeWorkflowInput",
+      "projectHooksPath",
       "requestDaemonControl",
       "requestDaemonObserveRun",
       "requestDaemonShutdown",
@@ -24,6 +30,7 @@ describe("@acpus/runtime public API", () => {
       "requestDaemonStatus",
       "startDaemonLoop",
       "validateAgentOverrides",
+      "validateHooksFile",
     ]);
   });
 });

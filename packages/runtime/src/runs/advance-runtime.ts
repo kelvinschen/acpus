@@ -3,6 +3,7 @@ import type { AdvanceRunSummary } from "../scheduler/advance.js";
 import { advanceFrozenRun } from "../scheduler/runtime-runner.js";
 import { schedulerStoreError, throwSchedulerStoreResult, type RunOwnerClaim, type SchedulerStoreError, type SchedulerStoreResult } from "../scheduler/store-port.js";
 import type { RunDetails, RuntimeStore } from "../store/store.js";
+import type { HookRunner } from "../hooks/runner.js";
 
 export type RuntimeAdvanceResult =
   | { status: "completed"; run: RunDetails; summary: AdvanceRunSummary }
@@ -21,6 +22,7 @@ export type RuntimeAdvanceOptions = {
   onClaim?: (claim: RunOwnerClaim) => void;
   onRelease?: (claim: RunOwnerClaim) => void;
   onActiveAttempt?: Parameters<typeof advanceFrozenRun>[0]["onActiveAttempt"];
+  hookRunner?: HookRunner;
 };
 
 class RuntimeAdvanceException extends Error {
@@ -55,6 +57,7 @@ export async function advanceRuntimeRun(cwd: string, store: RuntimeStore, runId:
       ...(options.onClaim === undefined ? {} : { onClaim: options.onClaim }),
       ...(options.onRelease === undefined ? {} : { onRelease: options.onRelease }),
       ...(options.onActiveAttempt === undefined ? {} : { onActiveAttempt: options.onActiveAttempt }),
+      ...(options.hookRunner === undefined ? {} : { hookRunner: options.hookRunner }),
     });
     const run = store.getRun(runId);
     if (run) observe?.(run, last);

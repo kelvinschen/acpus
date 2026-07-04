@@ -8,6 +8,7 @@ import { valueToExprIR } from "@acpus/expression/ir";
 import { ArtifactRewriteError, rewriteArtifactValue } from "../artifacts/rewrite.js";
 import { compactUndefined, parseAgentOverrideMap } from "../control/agent-overrides.js";
 import { evaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
+import type { HookJournalEntry } from "../hooks/journal.js";
 import { applySchedulerEvents, applyTimestampedSchedulerEvents, cancellationEventsForFrame, cancellationEventsForNode, createSchedulerProjection, type TimestampedSchedulerEvent } from "../scheduler/transitions.js";
 import { ancestorGroupMembersForFrame, ancestorGroupMembersForNode } from "../scheduler/membership.js";
 import { ForkSeedPlanError, planTargetedForkSeed, type ForkSeedPlan } from "../scheduler/fork-seed.js";
@@ -16,6 +17,8 @@ import { SchedulerStoreException, schedulerStoreResult, type RunOwnerClaim, type
 import type { InstancePath } from "../scheduler/types.js";
 import { drainDerivedTransitions } from "../scheduler/advance.js";
 import { continueRootEvents } from "../scheduler/materialize.js";
+import { decodeSchedulerPayload, isSchedulerEventType } from "../scheduler/event-codec.js";
+import { decodeCommittedRuntimeEventRow, type CommittedRuntimeEventRow } from "../hooks/events.js";
 
 export type RunStatus = "pending" | "running" | "paused" | "awaiting" | "failed" | "completed" | "canceled";
 
@@ -74,8 +77,13 @@ export type RuntimeStore = {
   releaseDaemon(input: HeartbeatDaemonInput): boolean;
   listRunnableRuns(): RunRecord[];
   listDaemonWork(now?: Date): DaemonWork;
-  forkRun(runId: string, options?: ControlOptions): Promise<RunRecord>;
+  forkRun(runId: string, options?: ControlOptions): Promise<ForkRunRecord>;
   cleanupRunDirectories(options?: CleanupRunDirectoriesOptions): Promise<CleanupRunDirectoriesResult>;
+  writeHookJournal(entry: HookJournalEntry): void;
+  getHookJournal(runId: string): HookJournalEntry[];
+  pruneHookJournal(cutoff: Date): number;
+  getLastRunEventSequence(runId: string): number;
+  getCommittedRuntimeEventsAfter(runId: string, sequence: number): CommittedRuntimeEventRow[];
   getRunDir(runId: string): string | undefined;
   registerArtifact(input: RegisterArtifactInput): void;
   writeExecutionMetadata(input: WriteExecutionMetadataInput): void;
@@ -145,10 +153,15 @@ export type RunRecord = {
   updatedAt: string;
 };
 
+export type ForkRunRecord = RunRecord & {
+  forkCreated: boolean;
+};
+
 export type RunDetails = RunRecord & {
   input: JsonValue;
   output?: JsonValue;
   agentOverrides?: AgentOverrideMap;
+  hooks: HookJournalEntry[];
   eventCount: number;
   nodeCount: number;
   execution: RunExecutionState;
@@ -437,6 +450,26 @@ type ArtifactRow = {
   digest: unknown;
   size: unknown;
   relative_path: unknown;
+};
+
+type HookJournalRow = {
+  id: number;
+  run_id: string;
+  event_sequence: number;
+  trigger_order: number;
+  event: HookJournalEntry["event"];
+  source: HookJournalEntry["source"];
+  source_path: string;
+  handler_id: string;
+  definition_hash: string;
+  node_key: string | null;
+  status: HookJournalEntry["status"];
+  exit_code: number | null;
+  stdout: string | null;
+  stderr: string | null;
+  duration_ms: number | null;
+  error: string | null;
+  triggered_at: string;
 };
 
 export async function openRuntimeStore(cwd: string): Promise<RuntimeStore> {
@@ -854,7 +887,7 @@ class SqliteRuntimeStore implements RuntimeStore {
     return Number(row.count);
   }
 
-  async forkRun(runId: string, options: ControlOptions = {}): Promise<RunRecord> {
+  async forkRun(runId: string, options: ControlOptions = {}): Promise<ForkRunRecord> {
     const forkRequestKey = options.requestId === undefined ? undefined : `fork-request:${options.requestId}`;
     const requestFingerprint = forkRequestFingerprint(runId, options);
     if (forkRequestKey) {
@@ -868,7 +901,7 @@ class SqliteRuntimeStore implements RuntimeStore {
         if (payload.requestFingerprint !== requestFingerprint) {
           throw new Error(`Fork request '${options.requestId}' conflicts with a different fork input.`);
         }
-        return this.requireRun(existing.run_id);
+        return { ...this.requireRun(existing.run_id), forkCreated: false };
       }
     }
     const matchingFork = (this.db.prepare(`
@@ -877,7 +910,7 @@ class SqliteRuntimeStore implements RuntimeStore {
       WHERE type = 'run.forked'
     `).all() as Array<{ run_id: string; payload_json: string }>)
       .find(row => (JSON.parse(row.payload_json) as Record<string, unknown>).requestFingerprint === requestFingerprint);
-    if (matchingFork) return this.requireRun(matchingFork.run_id);
+    if (matchingFork) return { ...this.requireRun(matchingFork.run_id), forkCreated: false };
     const source = this.getRunRecord(runId);
     if (!source) throw new Error(`Run '${runId}' was not found.`);
     const input = this.db.prepare(`
@@ -1113,7 +1146,7 @@ class SqliteRuntimeStore implements RuntimeStore {
       }
       throw error;
     }
-    return this.requireRun(forkId);
+    return { ...this.requireRun(forkId), forkCreated: true };
   }
 
   async cleanupRunDirectories(options: CleanupRunDirectoriesOptions = {}): Promise<CleanupRunDirectoriesResult> {
@@ -1144,6 +1177,72 @@ class SqliteRuntimeStore implements RuntimeStore {
       }
     }
     return { staged, orphaned };
+  }
+
+  writeHookJournal(entry: HookJournalEntry): void {
+    this.db.prepare(`
+      INSERT INTO hook_journal (
+        run_id, event_sequence, trigger_order, event, source, source_path, handler_id, definition_hash,
+        node_key, status, exit_code, stdout, stderr, duration_ms, error, triggered_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(run_id, event_sequence, definition_hash) DO NOTHING
+    `).run(
+      entry.runId,
+      entry.eventSequence,
+      entry.triggerOrder,
+      entry.event,
+      entry.source,
+      entry.sourcePath,
+      entry.handlerId,
+      entry.definitionHash,
+      entry.nodeKey ?? null,
+      entry.status,
+      entry.exitCode ?? null,
+      entry.stdout ?? null,
+      entry.stderr ?? null,
+      entry.durationMs ?? null,
+      entry.error ?? null,
+      entry.triggeredAt,
+    );
+  }
+
+  getHookJournal(runId: string): HookJournalEntry[] {
+    const rows = this.db.prepare(`
+      SELECT id, run_id, event_sequence, trigger_order, event, source, source_path, handler_id, definition_hash,
+        node_key, status, exit_code, stdout, stderr, duration_ms, error, triggered_at
+      FROM hook_journal
+      WHERE run_id = ?
+      ORDER BY event_sequence ASC, trigger_order ASC, id ASC
+    `).all(runId) as HookJournalRow[];
+    return rows.map(hookJournalEntryFromRow);
+  }
+
+  pruneHookJournal(cutoff: Date): number {
+    return Number(this.db.prepare("DELETE FROM hook_journal WHERE triggered_at < ?").run(cutoff.toISOString()).changes);
+  }
+
+  getLastRunEventSequence(runId: string): number {
+    const row = this.db.prepare("SELECT COALESCE(MAX(sequence), 0) AS sequence FROM run_events WHERE run_id = ?").get(runId) as { sequence: number } | undefined;
+    return Number(row?.sequence ?? 0);
+  }
+
+  getCommittedRuntimeEventsAfter(runId: string, sequence: number): CommittedRuntimeEventRow[] {
+    const rows = this.db.prepare(`
+      SELECT run_id, sequence, type, node_key, payload_json, created_at, idempotency_key
+      FROM run_events
+      WHERE run_id = ? AND sequence > ?
+      ORDER BY sequence ASC
+    `).all(runId, sequence) as Array<{
+      run_id: string;
+      sequence: number;
+      type: string;
+      node_key: string | null;
+      payload_json: string;
+      created_at: string;
+      idempotency_key: string;
+    }>;
+    return rows.map(decodeCommittedRuntimeEventRow);
   }
 
   getRunDir(runId: string): string | undefined {
@@ -1199,6 +1298,7 @@ class SqliteRuntimeStore implements RuntimeStore {
       input: JSON.parse(input.input_json) as JsonValue,
       ...(input.output_json ? { output: JSON.parse(input.output_json) as JsonValue } : {}),
       ...(Object.keys(agentOverrides).length > 0 ? { agentOverrides } : {}),
+      hooks: isTerminalRunStatus(run.status) ? this.getHookJournal(runId) : [],
       eventCount,
       nodeCount,
       execution: this.getRunExecutionState(run),
@@ -2500,6 +2600,32 @@ function nullableNumber(value: unknown): number | undefined {
   return value === null || value === undefined ? undefined : Number(value);
 }
 
+function hookJournalEntryFromRow(row: HookJournalRow): HookJournalEntry {
+  return {
+    id: Number(row.id),
+    runId: row.run_id,
+    eventSequence: Number(row.event_sequence),
+    triggerOrder: Number(row.trigger_order),
+    event: row.event,
+    source: row.source,
+    sourcePath: row.source_path,
+    handlerId: row.handler_id,
+    definitionHash: row.definition_hash,
+    ...(row.node_key === null ? {} : { nodeKey: row.node_key }),
+    status: row.status,
+    ...(row.exit_code === null ? {} : { exitCode: Number(row.exit_code) }),
+    ...(row.stdout === null ? {} : { stdout: row.stdout }),
+    ...(row.stderr === null ? {} : { stderr: row.stderr }),
+    ...(row.duration_ms === null ? {} : { durationMs: Number(row.duration_ms) }),
+    ...(row.error === null ? {} : { error: row.error }),
+    triggeredAt: row.triggered_at,
+  };
+}
+
+function isTerminalRunStatus(status: RunStatus): boolean {
+  return status === "completed" || status === "failed" || status === "canceled";
+}
+
 function parseOptionalJson(value: unknown): unknown {
   return value === null || value === undefined ? undefined : JSON.parse(String(value));
 }
@@ -2569,16 +2695,6 @@ function encodeSchedulerPayload(payload: object): string {
   return stableJson({ schedulerEventVersion: 1, payload });
 }
 
-function decodeSchedulerPayload(payloadJson: string, eventType: string): Record<string, unknown> {
-  const envelope = JSON.parse(payloadJson) as unknown;
-  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) throw new Error(`Scheduler event '${eventType}' has an invalid scheduler envelope.`);
-  const payload = (envelope as { schedulerEventVersion?: unknown; payload?: unknown }).payload;
-  if ((envelope as { schedulerEventVersion?: unknown }).schedulerEventVersion !== 1 || !payload || typeof payload !== "object" || Array.isArray(payload)) {
-    throw new Error(`Scheduler event '${eventType}' has an invalid scheduler envelope.`);
-  }
-  return payload as Record<string, unknown>;
-}
-
 function schedulerCommitDigest(events: SchedulerEvent[]): string {
   return createHash("sha256").update(stableJson(events as unknown as JsonValue)).digest("hex");
 }
@@ -2590,52 +2706,6 @@ function schedulerEventIdempotencyKey(runId: string, commitKey: string, index: n
 
 function derivedIdempotencyKey(idempotencyKey: string, suffix: string): string {
   return `${idempotencyKey}:${suffix}`;
-}
-
-function isSchedulerEventType(type: string): type is SchedulerEvent["type"] {
-  return [
-    "control.paused",
-    "control.resumed",
-    "control.run_retry_requested",
-    "frame.started",
-    "frame.completed",
-    "frame.failed",
-    "frame.cancelled",
-    "frame.retry_requested",
-    "frame.loop_advanced",
-    "instance.ready",
-    "instance.started",
-    "instance.awaiting",
-    "instance.requeued",
-    "instance.retry_requested",
-    "instance.completed",
-    "instance.failed",
-    "instance.cancelled",
-    "attempt.started",
-    "attempt.completed",
-    "attempt.failed",
-    "attempt.timed_out",
-    "attempt.cancelled",
-    "attempt.superseded",
-    "group.started",
-    "group.member_ready",
-    "group.member_started",
-    "group.member_requeued",
-    "group.member_retry_requested",
-    "group.member_completed",
-    "group.member_failed",
-    "group.member_cancelled",
-    "group.completed",
-    "group.failed",
-    "group.cancelled",
-    "branch.decided",
-    "signal.awaiting",
-    "signal.timeout_paused",
-    "signal.timeout_resumed",
-    "signal.consumed",
-    "signal.timed_out",
-    "signal.cancelled",
-  ].includes(type);
 }
 
 function openDatabase(path: string, readOnly = false): DatabaseSync {
@@ -2842,6 +2912,26 @@ function migrate(db: DatabaseSync): void {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS hook_journal (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      event_sequence INTEGER NOT NULL,
+      trigger_order INTEGER NOT NULL,
+      event TEXT NOT NULL,
+      source TEXT NOT NULL,
+      source_path TEXT NOT NULL,
+      handler_id TEXT NOT NULL,
+      definition_hash TEXT NOT NULL,
+      node_key TEXT,
+      status TEXT NOT NULL CHECK (status IN ('completed', 'failed', 'timed_out')),
+      exit_code INTEGER,
+      stdout TEXT,
+      stderr TEXT,
+      duration_ms INTEGER,
+      error TEXT,
+      triggered_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_run_leases_expires ON run_leases(lease_expires_at);
     CREATE INDEX IF NOT EXISTS idx_scheduler_frames_parent_status ON scheduler_frames(run_id, parent_frame_key, status);
     CREATE INDEX IF NOT EXISTS idx_node_instances_node_status ON node_instances(run_id, node_id, status);
@@ -2852,6 +2942,10 @@ function migrate(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_group_members_status ON group_members(run_id, group_key, status);
     CREATE INDEX IF NOT EXISTS idx_signal_waits_status ON signal_waits(run_id, node_key, status);
     CREATE INDEX IF NOT EXISTS idx_signal_waits_deadline_status ON signal_waits(run_id, deadline_at, status);
+    CREATE INDEX IF NOT EXISTS idx_hook_journal_run_id ON hook_journal(run_id);
+    CREATE INDEX IF NOT EXISTS idx_hook_journal_triggered_at ON hook_journal(triggered_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_hook_journal_event_handler
+      ON hook_journal(run_id, event_sequence, definition_hash);
 
     CREATE TABLE IF NOT EXISTS artifacts (
       id TEXT PRIMARY KEY,
@@ -2882,6 +2976,7 @@ function migrate(db: DatabaseSync): void {
   addColumnIfMissing(db, "signal_waits", "timeout_remaining_ms", "INTEGER");
   addColumnIfMissing(db, "signal_waits", "created_at", "TEXT");
   addColumnIfMissing(db, "signal_waits", "updated_at", "TEXT");
+  addColumnIfMissing(db, "hook_journal", "trigger_order", "INTEGER NOT NULL DEFAULT 0");
   db.exec("UPDATE signal_waits SET created_at = COALESCE(created_at, datetime('now')), updated_at = COALESCE(updated_at, datetime('now')) WHERE created_at IS NULL OR updated_at IS NULL;");
 }
 

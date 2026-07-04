@@ -1,6 +1,7 @@
 import type { Readable, Writable } from "node:stream";
 import { Command, CommanderError } from "commander";
 import { createDoctorCommand } from "./commands/doctor.js";
+import { createHooksCommand } from "./commands/hooks.js";
 import { createRunsCommand } from "./commands/runs.js";
 import { createWorkflowsCommand } from "./commands/workflows.js";
 import { CliError, usageError } from "./errors.js";
@@ -64,6 +65,11 @@ function createProgram(io: CliIo, setExitCode: (code: number) => void, wantsJson
   program.addCommand(createRunsCommand({
     ...io,
     stdin,
+    wantsJson,
+    setExitCode,
+  }));
+  program.addCommand(createHooksCommand({
+    ...io,
     wantsJson,
     setExitCode,
   }));

@@ -3,6 +3,8 @@ import { advanceRuntimeRun, runtimeAdvanceResult, type RuntimeAdvanceResult } fr
 import type { RuntimeMutationInput, RuntimeMutationResult } from "../runs/use-cases.js";
 import type { ActiveAttempt } from "../scheduler/advance.js";
 import { applySchedulerControlIntentWithOwnerEpoch, type RunControlIntent } from "../scheduler/control.js";
+import type { HookRunner } from "../hooks/runner.js";
+import { triggerHooksForCommittedRowsForRun } from "../scheduler/runtime-runner.js";
 import type { RunDetails, RuntimeStore } from "../store/store.js";
 import { DaemonRequestError, type DaemonControlIntent } from "./socket.js";
 
@@ -16,10 +18,18 @@ type ActiveRunSession = {
 export class RunExecutionSessions {
   private readonly sessions = new Map<string, ActiveRunSession>();
 
-  constructor(private readonly cwd: string, private readonly store: RuntimeStore) {}
+  constructor(private readonly cwd: string, private readonly store: RuntimeStore, private readonly hookRunner?: HookRunner) {}
 
   activeCount(): number {
     return this.sessions.size;
+  }
+
+  hookActiveCount(): number {
+    return this.hookRunner?.activeCount() ?? 0;
+  }
+
+  async drainHooks(): Promise<void> {
+    await this.hookRunner?.drain();
   }
 
   start(runId: string): RunDetails {
@@ -48,7 +58,9 @@ export class RunExecutionSessions {
       await Promise.race([waitForOwnerEpoch(session), session.promise]);
       if (!session.ownerEpoch) return undefined;
     }
+    const eventCursor = this.store.getLastRunEventSequence(intent.runId);
     const result = applySchedulerControlIntentWithOwnerEpoch(this.store, controlIntent(intent), session.ownerEpoch);
+    this.triggerHooks(intent.runId, eventCursor);
     if (intent.type === "pause" || intent.type === "cancel") {
       for (const controller of session.activeAttempts.values()) controller.abort();
     }
@@ -67,7 +79,9 @@ export class RunExecutionSessions {
     this.sessions.set(intent.runId, session);
     try {
       if (intent.type === "fork") return await this.fork(intent);
+      const eventCursor = this.store.getLastRunEventSequence(intent.runId);
       const result = applySchedulerControlIntentWithOwnerEpoch(this.store, controlIntent(intent), claim.ownerEpoch);
+      this.triggerHooks(intent.runId, eventCursor);
       const run = this.store.getRun(result.runId);
       if (!run) throw new DaemonRequestError("RUN_NOT_FOUND", `Run '${result.runId}' was not found.`);
       return { run };
@@ -79,9 +93,20 @@ export class RunExecutionSessions {
 
   private async fork(intent: Extract<DaemonControlIntent, { type: "fork" }>): Promise<RuntimeMutationResult> {
     const fork = await this.store.forkRun(intent.runId, { ...(intent.input ?? {}), requestId: intent.requestId });
+    if (fork.forkCreated) this.triggerHooks(fork.id, 0);
     const run = this.store.getRun(intent.runId);
     if (!run) throw new DaemonRequestError("RUN_NOT_FOUND", `Run '${intent.runId}' was not found.`);
     return { run, forkRunId: fork.id };
+  }
+
+  private triggerHooks(runId: string, afterSequence: number): void {
+    triggerHooksForCommittedRowsForRun({
+      cwd: this.cwd,
+      store: this.store,
+      runId,
+      ...(this.hookRunner === undefined ? {} : { hookRunner: this.hookRunner }),
+      afterSequence,
+    });
   }
 
   private async run(runId: string): Promise<RuntimeAdvanceResult> {
@@ -101,6 +126,7 @@ export class RunExecutionSessions {
           if (attempt.runId !== runId || !session) return undefined;
           return trackActiveAttempt(session, attempt);
         },
+        ...(this.hookRunner === undefined ? {} : { hookRunner: this.hookRunner }),
       });
     } finally {
       if (session) resolveOwnerEpochWaiters(session);

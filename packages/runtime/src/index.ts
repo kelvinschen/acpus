@@ -43,6 +43,29 @@ export {
   type RuntimeAdvanceResult,
 } from "./runs/advance-runtime.js";
 export {
+  hookEvents,
+  validateHooksFile,
+  type HookConfig,
+  type HookEvent,
+  type HookMatch,
+  type HooksFile,
+  type HookValidationError,
+  type LoadedHookConfig,
+} from "./hooks/config.js";
+export {
+  formatHookLoadError,
+  globalHooksPath,
+  loadHooksConfigScope,
+  loadHooksConfigScopes,
+  projectHooksPath,
+  type HookConfigScope,
+  type HookLoadError,
+} from "./hooks/loader.js";
+export {
+  type HookJournalEntry,
+  type HookJournalStatus,
+} from "./hooks/journal.js";
+export {
   createWorkflowVisualizationOverlay,
   type WorkflowVisualizationGroup,
   type WorkflowVisualizationNode,
@@ -61,6 +84,7 @@ export {
   type RunDynamicNodeInstance,
   type RunDynamicSignalWait,
   type RunDetails,
+  type ForkRunRecord,
   type RunRecord,
   type RunStatus,
   type RuntimeStore,

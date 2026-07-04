@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { defineWorkflow, z } from "@acpus/core";
 import { admitPreparedWorkflowRun, daemonEndpoint, requestDaemonControl, requestDaemonObserveRun, requestDaemonShutdown, requestDaemonStartRun, requestDaemonStatus, startDaemonLoop } from "../src/index.js";
 import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
-import { admitSyntheticWorkflow, prepareSyntheticWorkflow, runtimeRows, signalWorkflow } from "./support/runtime-fixtures.js";
+import { admitSyntheticWorkflow, prepareSyntheticWorkflow, runtimeRows, signalWorkflow, validWorkflow } from "./support/runtime-fixtures.js";
 
 let dir: string;
 let store: RuntimeStore;
@@ -141,6 +141,41 @@ describe("daemon lease", () => {
     }
   }, 5_000);
 
+  it("runs hooks for daemon-owned active controls", async () => {
+    await mkdir(join(dir, ".acpus"), { recursive: true });
+    await writeFile(join(dir, ".acpus", "hooks.json"), JSON.stringify({
+      "run.canceled": [{
+        id: "active-canceled",
+        command: `${process.execPath} -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>process.stdout.write(JSON.parse(s).run.status))"`,
+      }],
+    }));
+    const markerPath = join(dir, "active-cancel-hook.marker");
+    const prepared = await prepareSyntheticWorkflow(dir, activeTaskWorkflow());
+    const admitted = await admitPreparedWorkflowRun(dir, prepared, { markerPath });
+    const loop = await startDaemonLoop(dir, {
+      heartbeatMs: 10,
+      packageVersion: "0.0.0-test",
+    });
+    try {
+      await expect(requestDaemonStartRun(dir, admitted.id)).resolves.toMatchObject({ id: admitted.id });
+      await waitUntil(() => runtimeRows(dir, "SELECT status FROM node_attempts WHERE run_id = ? AND status = 'started'", admitted.id).length > 0);
+      await expect(requestDaemonControl(dir, { requestId: "test-active-cancel-hook", type: "cancel", runId: admitted.id, input: {} })).resolves.toMatchObject({
+        run: { id: admitted.id, status: "canceled" },
+      });
+      await waitUntil(() => store.getHookJournal(admitted.id).length > 0);
+      expect(store.getHookJournal(admitted.id)).toEqual([
+        expect.objectContaining({
+          handlerId: "active-canceled",
+          event: "run.canceled",
+          status: "completed",
+          stdout: "canceled",
+        }),
+      ]);
+    } finally {
+      await loop.shutdown();
+    }
+  }, 5_000);
+
   it("applies immediate control after start without falling back to a second owner", async () => {
     const markerPath = join(dir, "immediate-cancel.marker");
     const prepared = await prepareSyntheticWorkflow(dir, activeTaskWorkflow());
@@ -162,6 +197,110 @@ describe("daemon lease", () => {
       await loop.shutdown();
     }
   }, 5_000);
+
+  it("runs configured project hooks from daemon-owned execution", async () => {
+    await mkdir(join(dir, ".acpus"), { recursive: true });
+    await writeFile(join(dir, ".acpus", "hooks.json"), JSON.stringify({
+      "run.completed": [{
+        id: "print-run",
+        command: `${process.execPath} -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>process.stdout.write(JSON.parse(s).run.id))"`,
+      }],
+    }));
+    const prepared = await prepareSyntheticWorkflow(dir, validWorkflow());
+    const admitted = await admitPreparedWorkflowRun(dir, prepared, { ready: true });
+    const loop = await startDaemonLoop(dir, {
+      heartbeatMs: 10,
+      packageVersion: "0.0.0-test",
+    });
+    try {
+      await expect(requestDaemonStartRun(dir, admitted.id)).resolves.toMatchObject({ id: admitted.id });
+      await expect(requestDaemonObserveRun(dir, admitted.id)).resolves.toMatchObject({ status: "completed" });
+      await waitUntil(() => store.getHookJournal(admitted.id).length > 0);
+      expect(store.getHookJournal(admitted.id)).toEqual([
+        expect.objectContaining({
+          handlerId: "print-run",
+          event: "run.completed",
+          status: "completed",
+          stdout: admitted.id,
+        }),
+      ]);
+    } finally {
+      await loop.shutdown();
+    }
+  }, 5_000);
+
+  it("runs hooks for short-session signal controls", async () => {
+    await mkdir(join(dir, ".acpus"), { recursive: true });
+    await writeFile(join(dir, ".acpus", "hooks.json"), JSON.stringify({
+      "node.completed": [{
+        id: "signal-completed",
+        match: { nodeId: "^approve$" },
+        command: `${process.execPath} -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>process.stdout.write(JSON.parse(s).node.key))"`,
+      }],
+    }));
+    const awaiting = await admitSyntheticWorkflow(dir, signalWorkflow());
+    const loop = await startDaemonLoop(dir, {
+      heartbeatMs: 10,
+      packageVersion: "0.0.0-test",
+    });
+    try {
+      await expect(requestDaemonControl(dir, { requestId: "test-signal-hook", type: "signal", runId: awaiting.run.id, nodeId: "approve", payload: { ok: true } }))
+        .resolves.toMatchObject({ run: { id: awaiting.run.id } });
+      await waitUntil(() => store.getHookJournal(awaiting.run.id).length > 0);
+      expect(store.getHookJournal(awaiting.run.id)).toEqual([
+        expect.objectContaining({
+          handlerId: "signal-completed",
+          event: "node.completed",
+          status: "completed",
+          stdout: expect.stringMatching(/^approve/),
+        }),
+      ]);
+    } finally {
+      await loop.shutdown();
+    }
+  }, 5_000);
+
+  it("runs hooks for daemon-created fork runs", async () => {
+    await mkdir(join(dir, ".acpus"), { recursive: true });
+    await writeFile(join(dir, ".acpus", "hooks.json"), JSON.stringify({
+      "run.completed": [{
+        id: "fork-completed",
+        command: `${process.execPath} -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>process.stdout.write(JSON.parse(s).run.id))"`,
+      }],
+    }));
+    const source = await admitSyntheticWorkflow(dir, validWorkflow(), { ready: true });
+    const loop = await startDaemonLoop(dir, {
+      heartbeatMs: 10,
+      packageVersion: "0.0.0-test",
+    });
+    try {
+      const fork = await requestDaemonControl(dir, { requestId: "test-fork-hook", type: "fork", runId: source.run.id, input: {} });
+      expect(fork.forkRunId).toEqual(expect.any(String));
+      await waitUntil(() => store.getHookJournal(fork.forkRunId!).length > 0);
+      expect(store.getHookJournal(fork.forkRunId!)).toEqual([
+        expect.objectContaining({
+          handlerId: "fork-completed",
+          event: "run.completed",
+          status: "completed",
+          stdout: fork.forkRunId,
+        }),
+      ]);
+    } finally {
+      await loop.shutdown();
+    }
+  }, 5_000);
+
+  it("fails daemon startup for invalid hooks config", async () => {
+    await mkdir(join(dir, ".acpus"), { recursive: true });
+    await writeFile(join(dir, ".acpus", "hooks.json"), JSON.stringify({
+      "run.completed": [{ command: "" }],
+    }));
+
+    await expect(startDaemonLoop(dir, {
+      heartbeatMs: 10,
+      packageVersion: "0.0.0-test",
+    })).rejects.toThrow("Invalid hooks config");
+  });
 
   it("rejects shutdown while a run execution session is active", async () => {
     const markerPath = join(dir, "shutdown-active.marker");

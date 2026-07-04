@@ -43,6 +43,11 @@ export function formatRunStatusSurface(run: RunDetails, staticNodes: readonly Ru
     lines.push("");
     lines.push(...output);
   }
+  const hooks = formatHooks(run);
+  if (hooks) {
+    lines.push("");
+    lines.push(...hooks);
+  }
   return `${lines.join("\n")}\n`;
 }
 
@@ -191,6 +196,22 @@ function schemaKind(schema: SchemaIR): string {
 function formatOutput(run: RunDetails): string[] | undefined {
   if (run.status !== "completed" || run.output === undefined || emptyObject(run.output)) return undefined;
   return ["Output:", ...JSON.stringify(run.output, null, 2).split("\n").map(line => `  ${line}`)];
+}
+
+function formatHooks(run: RunDetails): string[] | undefined {
+  if (!terminalRunStatus(run.status) || run.hooks.length === 0) return undefined;
+  return [
+    "Hooks:",
+    ...run.hooks.map(entry => {
+      const duration = entry.durationMs === undefined ? "" : `  ${formatMs(entry.durationMs)}`;
+      const exit = entry.exitCode === undefined ? "" : `  exit=${entry.exitCode}`;
+      return `  ${entry.status}  ${entry.handlerId}  ${entry.event}  #${entry.eventSequence}${duration}${exit}`;
+    }),
+  ];
+}
+
+function formatMs(ms: number): string {
+  return ms < 1_000 ? `${ms}ms` : `${(ms / 1_000).toFixed(1)}s`;
 }
 
 function formatRunDuration(run: RunDetails, nowMs: number): string {

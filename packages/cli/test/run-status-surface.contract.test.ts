@@ -198,6 +198,48 @@ describe("run status surface", () => {
     expect(output).toContain("\"field_29\": 29");
     expect(output).not.toContain("omitted");
   });
+
+  it("prints hook history only for terminal runs with hooks", () => {
+    const completed = formatRunStatusSurface({
+      ...runBase("run_hooks", "hooked", "completed"),
+      hooks: [{
+        runId: "run_hooks",
+        eventSequence: 42,
+        triggerOrder: 1,
+        event: "run.completed",
+        source: "project",
+        sourcePath: "/workspace/.acpus/hooks.json",
+        handlerId: "notify",
+        definitionHash: "hash",
+        status: "completed",
+        exitCode: 0,
+        durationMs: 120,
+        triggeredAt: "2026-07-03T00:00:01.000Z",
+      }],
+    }, [], Date.parse("2026-07-03T00:00:01.000Z"));
+
+    expect(completed).toContain("Hooks:");
+    expect(completed).toContain("completed  notify  run.completed  #42  120ms  exit=0");
+
+    const running = formatRunStatusSurface({
+      ...runBase("run_running_hooks", "hooked", "running"),
+      hooks: [{
+        runId: "run_running_hooks",
+        eventSequence: 42,
+        triggerOrder: 1,
+        event: "run.completed",
+        source: "project",
+        sourcePath: "/workspace/.acpus/hooks.json",
+        handlerId: "notify",
+        definitionHash: "hash",
+        status: "completed",
+        triggeredAt: "2026-07-03T00:00:01.000Z",
+      }],
+    }, [], Date.parse("2026-07-03T00:00:01.000Z"));
+
+    expect(running).not.toContain("Hooks:");
+    expect(formatRunStatusSurface(runBase("run_no_hooks", "plain", "completed"))).not.toContain("Hooks:");
+  });
 });
 
 function runBase(id: string, name: string, status: RunDetails["status"]): RunDetails {
@@ -211,6 +253,7 @@ function runBase(id: string, name: string, status: RunDetails["status"]): RunDet
     createdAt: "2026-07-03T00:00:00.000Z",
     updatedAt: "2026-07-03T00:00:01.000Z",
     input: {},
+    hooks: [],
     eventCount: 1,
     nodeCount: 1,
     execution: status === "completed" || status === "failed" || status === "canceled"

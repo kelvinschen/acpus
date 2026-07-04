@@ -34,6 +34,7 @@ One short paragraph describing the current feature boundary.
 | [Workflow Compiler Spec](workflow-compiler-spec.md) | `@acpus/workflow-compiler` | `pnpm --filter @acpus/workflow-compiler typecheck`, `pnpm test:contract -- packages/workflow-compiler`, `pnpm test:integration -- packages/workflow-compiler` |
 | [Tasks Spec](tasks-spec.md) | `@acpus/tasks` | `pnpm --filter @acpus/tasks typecheck`, `pnpm test:integration -- packages/tasks`, `pnpm test:type -- packages/tasks` |
 | [Runtime Spec](runtime-spec.md) | `@acpus/runtime` | `pnpm --filter @acpus/runtime typecheck`, `pnpm test:unit -- packages/runtime`, `pnpm test:integration -- packages/runtime`, `pnpm test:contract -- packages/runtime` |
+| [Runtime Hooks Spec](hooks-spec.md) | `@acpus/runtime`, `acpus` | `pnpm --filter @acpus/runtime typecheck`, `pnpm --filter acpus typecheck`, `pnpm test:unit -- packages/runtime`, `pnpm test:integration -- packages/runtime`, `pnpm test:contract -- packages/cli`, `pnpm test:e2e -- packages/cli` |
 | [Agent Executor Spec](agent-executor-spec.md) | `@acpus/agent-executor` | `pnpm --filter @acpus/agent-executor typecheck`, `pnpm test:unit -- packages/agent-executor`, `pnpm test:integration -- packages/agent-executor`, `pnpm test:contract -- packages/agent-executor`, `pnpm test:type -- packages/agent-executor` |
 | [CLI Spec](cli-spec.md) | `acpus` | `pnpm --filter acpus typecheck`, `pnpm test:e2e -- packages/cli`, `pnpm test:contract -- packages/cli` |
 

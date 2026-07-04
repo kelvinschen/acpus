@@ -31,6 +31,7 @@ describe("scheduler store schema", () => {
         "group_members",
         "signal_waits",
         "execution_metadata",
+        "hook_journal",
       ]));
       expect(columns(db, "node_instances")).toEqual(expect.arrayContaining([
         "run_id",
@@ -72,12 +73,23 @@ describe("scheduler store schema", () => {
         "timeout_message",
         "timeout_remaining_ms",
       ]));
+      expect(columns(db, "hook_journal")).toEqual(expect.arrayContaining([
+        "run_id",
+        "event_sequence",
+        "trigger_order",
+        "definition_hash",
+        "status",
+        "triggered_at",
+      ]));
       expect(sqliteNames(db, "index")).toEqual(expect.arrayContaining([
         "idx_run_leases_expires",
         "idx_node_instances_node_status",
         "idx_node_attempts_deadline_status",
         "idx_group_members_ready",
         "idx_signal_waits_deadline_status",
+        "idx_hook_journal_run_id",
+        "idx_hook_journal_triggered_at",
+        "idx_hook_journal_event_handler",
       ]));
     } finally {
       db.close();

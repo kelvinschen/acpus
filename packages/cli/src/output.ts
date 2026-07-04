@@ -1,6 +1,6 @@
 import type { Writable } from "node:stream";
 import type { DiagnosticIR, WorkflowIR } from "@acpus/core/ir";
-import type { RunDetails, RunRecord, RuntimeHealthCheck } from "@acpus/runtime";
+import type { HookConfigScope, LoadedHookConfig, RunDetails, RunRecord, RuntimeHealthCheck } from "@acpus/runtime";
 import type { WorkflowCatalogEntry } from "./catalog.js";
 
 export type ResultPhase = "usage" | "check" | "compile" | "validate" | "run" | "inspect" | "control" | "doctor";
@@ -36,7 +36,11 @@ export type CliResult = {
   checks?: RuntimeHealthCheck[];
   errorCode?: string;
   control?: { type: string; runId: string };
+  hookValidation?: { count: number };
+  hooks?: HookListResult;
 };
+
+export type HookListResult = Partial<Record<HookConfigScope["source"], { path: string; hooks: LoadedHookConfig[] }>>;
 
 export type OutputFormat = "text" | "json";
 
@@ -47,7 +51,7 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
   }
 
   const stream = result.ok ? streams.stdout : streams.stderr;
-  stream.write(`${result.message ?? (result.ok ? "OK" : "Failed")}\n`);
+  if (!result.hooks) stream.write(`${result.message ?? (result.ok ? "OK" : "Failed")}\n`);
   if (result.workflow) {
     stream.write(`Workflow: ${result.workflow.name}\n`);
     stream.write(`IR version: ${result.workflow.irVersion}\n`);
@@ -93,6 +97,7 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
   if (result.checks) {
     for (const check of result.checks) stream.write(`${check.status}\t${check.area}\t${check.message}\n`);
   }
+  if (result.hooks) writeHooks(stream, result.hooks);
   if (result.irDigest) stream.write(`IR digest: ${result.irDigest}\n`);
   if (result.diagnostics?.length) {
     for (const diagnostic of result.diagnostics) {
@@ -102,6 +107,30 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
     }
   }
   return exitCode;
+}
+
+function writeHooks(stream: Writable, scopes: HookListResult): void {
+  stream.write(scopes.project && scopes.global ? "Hooks (project + global):\n\n" : "Hooks:\n\n");
+  if (scopes.project) writeHookScope(stream, "Project", scopes.project);
+  if (scopes.project && scopes.global) stream.write("\n");
+  if (scopes.global) writeHookScope(stream, "Global", scopes.global);
+}
+
+function writeHookScope(stream: Writable, label: "Project" | "Global", scope: NonNullable<HookListResult["project"]>): void {
+  stream.write(`${label}: ${scope.path}\n`);
+  if (scope.hooks.length === 0) {
+    stream.write("  (none)\n");
+    return;
+  }
+  const byEvent = new Map<string, LoadedHookConfig[]>();
+  for (const hook of scope.hooks) byEvent.set(hook.event, [...(byEvent.get(hook.event) ?? []), hook]);
+  for (const [event, hooks] of byEvent) {
+    stream.write(`  ${event}\n`);
+    for (const hook of hooks) {
+      const match = hook.match ? `  (match: ${Object.entries(hook.match).map(([key, value]) => `${key}=${value}`).join(", ")})` : "";
+      stream.write(`    ${hook.id ?? hook.effectiveId}  ->  ${hook.command}${match}\n`);
+    }
+  }
 }
 
 function writeCatalogEntry(stream: Writable, entry: WorkflowCatalogEntry): void {

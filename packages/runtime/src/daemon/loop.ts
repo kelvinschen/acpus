@@ -1,4 +1,6 @@
 import { openRuntimeStore } from "../store/store.js";
+import { formatHookLoadError, loadHooksConfig } from "../hooks/loader.js";
+import { createHookRunner } from "../hooks/runner.js";
 import { RuntimeUseCaseException } from "../runs/use-cases.js";
 import { RunExecutionSessions } from "./sessions.js";
 import { DaemonRequestError, startDaemonServer, type DaemonErrorCode, type DaemonServerHandle } from "./socket.js";
@@ -26,7 +28,13 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
   const workspaceRealpath = options.workspaceRealpath ?? cwd;
   let leaseGeneration: number | undefined;
   const store = await openRuntimeStore(cwd);
-  const sessions = new RunExecutionSessions(cwd, store);
+  const hooksConfig = await loadHooksConfig(cwd);
+  if (hooksConfig.isErr()) {
+    store.close();
+    throw new Error(formatHookLoadError(hooksConfig.error));
+  }
+  const hookRunner = createHookRunner(hooksConfig.value, store);
+  const sessions = new RunExecutionSessions(cwd, store, hookRunner);
   let server: DaemonServerHandle;
   try {
     server = await startDaemonServer(cwd, {
@@ -102,6 +110,7 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
       if (source !== "tick") await activeTick;
       if (source !== "heartbeat") await activeHeartbeat;
       await closeDaemonServer(server);
+      await sessions.drainHooks();
       store.releaseDaemon({
         workspaceRealpath,
         generation: lease.generation,
@@ -131,7 +140,7 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
     try {
       const result = await runDaemonTick(store, { startRun: runId => sessions.start(runId) });
       if (stopped) return;
-      if (result.runs > 0 || result.idleBlockers > 0 || sessions.activeCount() > 0) {
+      if (result.runs > 0 || result.idleBlockers > 0 || sessions.activeCount() > 0 || sessions.hookActiveCount() > 0) {
         idleSince = undefined;
         store.setDaemonIdleState({ workspaceRealpath, generation: lease.generation, idleStopMs });
         return;
