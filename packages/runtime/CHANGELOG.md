@@ -1,5 +1,15 @@
 # @acpus/runtime
 
+## 0.8.0
+
+### Minor Changes
+
+- 450fe13: Update the acpx dependency to 0.12.0 and default `ACPX_CLAUDE_INCLUDE_USER_SETTINGS=1` for builtin `claude` agents; the inherited process environment and agent `env` can override the default.
+
+### Patch Changes
+
+- 04cb596: Shorten bounded node storage keys while preserving readable head and tail slug context.
+
 ## 0.7.1
 
 ### Patch Changes
