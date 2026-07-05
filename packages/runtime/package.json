@@ -50,7 +50,7 @@
     "@acpus/core": "workspace:*",
     "@hono/node-server": "^1.14.0",
     "@marcbachmann/cel-js": "^7.6.1",
-    "acpx": "0.10.0",
+    "acpx": "0.12.0",
     "ajv": "^8.20.0",
     "execa": "^9.6.0",
     "hono": "^4.7.0",

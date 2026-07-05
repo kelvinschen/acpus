@@ -61,7 +61,8 @@ export class AgentExecutor implements ExecutorAdapter<AgentExecutionRequest> {
     try {
       // Step-level cwd overrides the agent definition's default cwd.
       cwd = this.resolveCwd(node.metadata.cwd ?? agent.cwd, context);
-      env = { ...process.env, ...this.stringEnv(agent.env, context) };
+      // Adapter defaults sit below inherited env and agent `env`, so either can override them.
+      env = { ...this.defaultAgentEnv(agent), ...process.env, ...this.stringEnv(agent.env, context) };
       prompt = preparedPrompt ?? renderAgentRequestPrompt(node, context, this.evaluator, Boolean(continuation), Boolean(retry));
       const sessionKey = preparedSessionKey ?? renderAgentSessionKey(node, context, this.evaluator);
       sessionName = this.sessionName(context.run_id, nodeKey, sessionKey);
@@ -316,6 +317,14 @@ export class AgentExecutor implements ExecutorAdapter<AgentExecutionRequest> {
         : undefined;
     if (milliseconds === undefined || milliseconds <= 0) return undefined;
     return String(milliseconds / 1000);
+  }
+
+  /** Adapter-specific env defaults, layered under inherited env and above agent `env` overrides. */
+  private defaultAgentEnv(agent: AgentSpec): Record<string, string> {
+    if ((agent.type ?? "builtin") === "builtin" && agent.use === "claude") {
+      return { ACPX_CLAUDE_INCLUDE_USER_SETTINGS: "1" };
+    }
+    return {};
   }
 
   private stringEnv(env: Record<string, unknown> | undefined, context: ExpressionContext): Record<string, string> {

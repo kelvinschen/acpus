@@ -66,6 +66,7 @@ Workflow Specs are YAML documents that declare local durable workflows made of A
 - An Agent Step `cwd` that is declared but renders empty (including the literal `cwd: ""`) MUST resolve to the executor process working directory, bypassing the agent definition's `cwd`; this is the canonical way to opt a single step out of an agent's default `cwd`.
 - Agent `env` values MUST add to or override the executor process environment, and MUST be template-evaluated and stringified before being passed to acpx.
 - Agent `env` MUST NOT delete inherited environment variables.
+- For a `builtin` agent with `use: claude`, the runtime MUST default `ACPX_CLAUDE_INCLUDE_USER_SETTINGS` to `1`; this default MUST be overridable by the inherited process environment and by the agent's declared `env`.
 - Agent Override `env` values MUST merge into the selected top-level agent's `env` by key and MUST NOT delete existing agent environment keys.
 - An Agent Override MAY declare `policy` as one of `read` or `full`; policy is a whole-value replacement and MUST NOT be cleared by an Agent Override. When an Agent Override changes `type`/`use` (identity change), the agent's `policy` MUST be preserved (policy is orthogonal to agent identity, unlike `model` which is cleared).
 - An Agent Step MAY omit `output` when no structured output parsing is required.

@@ -104,6 +104,27 @@ console.log(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_t
   return { script, envPath };
 }
 
+function writeClaudeEnvRecordingAcpxScript(dir: string): { script: string; envPath: string } {
+  const script = join(dir, "mock-acpx-claude-env.js");
+  const envPath = join(dir, "claude-env.log");
+  writeFileSync(script, `#!/usr/bin/env node
+const fs = require("node:fs");
+if (process.argv.includes("ensure")) {
+  if (process.argv.includes("--format") && process.argv.includes("json")) {
+    console.log(JSON.stringify({ action: "session_ensured", created: true, acpxRecordId: "mock-session-id" }));
+  }
+  process.exit(0);
+}
+fs.writeFileSync(${JSON.stringify(envPath)}, JSON.stringify({
+  include: process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS ?? null
+}));
+console.log(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } } } }));
+console.log(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } }));
+`);
+  chmodSync(script, 0o755);
+  return { script, envPath };
+}
+
 function writeSlowEnsureRecordingAcpxScript(dir: string): { script: string; logPath: string } {
   const script = join(dir, "mock-acpx-slow-ensure.js");
   const logPath = join(dir, "argv.log");
@@ -514,6 +535,51 @@ describe("AgentExecutor: acpx timeout", () => {
         override: "agent-step-value",
         bool: "false"
       });
+    });
+  });
+
+  it("defaults ACPX_CLAUDE_INCLUDE_USER_SETTINGS=1 for builtin claude agents", async () => {
+    await withEnv({ ACPX_CLAUDE_INCLUDE_USER_SETTINGS: undefined }, async () => {
+      const dir = mkdtempSync(join(tmpdir(), "acpus-agent-test-"));
+      tmpDirs.push(dir);
+      const { script, envPath } = writeClaudeEnvRecordingAcpxScript(dir);
+
+      const executor = new AgentExecutor({ acpxPath: script });
+      const node = makeAgentNode({ agent: { type: "builtin", use: "claude" }, prompt: "Hello" });
+      await executor.execute(agentRequest(node));
+
+      expect(JSON.parse(readFileSync(envPath, "utf8"))).toEqual({ include: "1" });
+    });
+  });
+
+  it("lets agent env override the claude include-user-settings default", async () => {
+    await withEnv({ ACPX_CLAUDE_INCLUDE_USER_SETTINGS: undefined }, async () => {
+      const dir = mkdtempSync(join(tmpdir(), "acpus-agent-test-"));
+      tmpDirs.push(dir);
+      const { script, envPath } = writeClaudeEnvRecordingAcpxScript(dir);
+
+      const executor = new AgentExecutor({ acpxPath: script });
+      const node = makeAgentNode({
+        agent: { type: "builtin", use: "claude", env: { ACPX_CLAUDE_INCLUDE_USER_SETTINGS: "0" } },
+        prompt: "Hello"
+      });
+      await executor.execute(agentRequest(node));
+
+      expect(JSON.parse(readFileSync(envPath, "utf8"))).toEqual({ include: "0" });
+    });
+  });
+
+  it("does not inject the claude default for non-claude builtin agents", async () => {
+    await withEnv({ ACPX_CLAUDE_INCLUDE_USER_SETTINGS: undefined }, async () => {
+      const dir = mkdtempSync(join(tmpdir(), "acpus-agent-test-"));
+      tmpDirs.push(dir);
+      const { script, envPath } = writeClaudeEnvRecordingAcpxScript(dir);
+
+      const executor = new AgentExecutor({ acpxPath: script });
+      const node = makeAgentNode({ agent: { type: "builtin", use: "pi" }, prompt: "Hello" });
+      await executor.execute(agentRequest(node));
+
+      expect(JSON.parse(readFileSync(envPath, "utf8"))).toEqual({ include: null });
     });
   });
 });
