@@ -55,7 +55,7 @@ describe("Program-only composite workflow fixtures", () => {
       ]
     });
 
-    const perItem = byId(nodes, "per_item");
+    const perItem = byId(nodes, "per_item").sort((a, b) => a.nodeKey.localeCompare(b.nodeKey));
     expect(perItem).toHaveLength(2);
     expect(perItem.map((node) => node.output)).toEqual([
       { output: { upper: { item: "alpha", upper: "ALPHA" }, routed: { route: "alpha", item: "alpha" } } },
@@ -65,7 +65,7 @@ describe("Program-only composite workflow fixtures", () => {
     expect(byId(nodes, "alpha_route")).toHaveLength(1);
     expect(byId(nodes, "default_route")).toHaveLength(1);
 
-    const leafKeys = byId(nodes, "upper_value").map((node) => node.nodeKey);
+    const leafKeys = byId(nodes, "upper_value").map((node) => node.nodeKey).sort();
     expect(leafKeys).toEqual([
       "workflow/mapped/$do/per_item/$upper/upper_value/item:alpha/lane:0/branch:upper",
       "workflow/mapped/$do/per_item/$upper/upper_value/item:beta/lane:1/branch:upper"
