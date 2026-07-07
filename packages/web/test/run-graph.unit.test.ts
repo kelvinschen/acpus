@@ -318,13 +318,13 @@ describe("runtime status rendering contract", () => {
     expect(runGraphSource).toContain("nextModel.items.get(selectedNodeId)?.status");
   });
 
-  it("uses circle status icons for the visible runtime status enum", () => {
+  it("uses status icons for the visible runtime status enum", () => {
     const iconSource = runGraphSource.slice(
       runGraphSource.indexOf("const STATUS_ICONS"),
       runGraphSource.indexOf("function StatusGlyph"),
     );
     expect(iconSource).toContain("queued: CircleDashed");
-    expect(iconSource).toContain("running: CirclePlay");
+    expect(iconSource).toContain("running: LoaderCircle");
     expect(iconSource).toContain("awaiting: CircleEllipsis");
     expect(iconSource).toContain("paused: CirclePause");
     expect(iconSource).toContain("completed: CircleCheck");

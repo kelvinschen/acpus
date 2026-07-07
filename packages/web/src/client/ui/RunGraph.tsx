@@ -6,10 +6,10 @@ import CircleCheck from "lucide-react/dist/esm/icons/circle-check.js";
 import CircleDashed from "lucide-react/dist/esm/icons/circle-dashed.js";
 import CircleEllipsis from "lucide-react/dist/esm/icons/circle-ellipsis.js";
 import CirclePause from "lucide-react/dist/esm/icons/circle-pause.js";
-import CirclePlay from "lucide-react/dist/esm/icons/circle-play.js";
 import CircleX from "lucide-react/dist/esm/icons/circle-x.js";
 import GitBranch from "lucide-react/dist/esm/icons/git-branch.js";
 import GitFork from "lucide-react/dist/esm/icons/git-fork.js";
+import LoaderCircle from "lucide-react/dist/esm/icons/loader-circle.js";
 import Minus from "lucide-react/dist/esm/icons/minus.js";
 import Plus from "lucide-react/dist/esm/icons/plus.js";
 import Radio from "lucide-react/dist/esm/icons/radio.js";
@@ -91,7 +91,7 @@ function KindIcon({ kind, size }: { kind: string; size: number }) {
 
 const STATUS_ICONS: Record<string, LucideIcon> = {
   queued: CircleDashed,
-  running: CirclePlay,
+  running: LoaderCircle,
   awaiting: CircleEllipsis,
   paused: CirclePause,
   completed: CircleCheck,
