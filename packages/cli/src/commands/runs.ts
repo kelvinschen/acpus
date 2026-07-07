@@ -1,13 +1,13 @@
 import type { Readable, Writable } from "node:stream";
 import { Command } from "commander";
 import type { JsonValue } from "@acpus/expression/ir";
-import { getRun, getRunInspection, listRuns, normalizeForkInput, type PreparedRunWorkflow, type RunDetails, type RunRecord } from "@acpus/runtime";
-import { controlError, notFoundError, usageError, validationError } from "../errors.js";
+import { deleteRun as deleteRuntimeRun, getRun, getRunInspection, listRuns, normalizeForkInput, RuntimeUseCaseException, type PreparedRunWorkflow, type RunDetails, type RunRecord } from "@acpus/runtime";
+import { controlError, deleteError, notFoundError, usageError, validationError } from "../errors.js";
 import { writeResult, type OutputFormat } from "../output.js";
 import { formatRunStatusSurface } from "../run-status-surface.js";
 import { prepareWorkflowForCli } from "../workflow-preparation.js";
 import { parseAgents, parseJsonOption, parseRequiredPayload } from "./json.js";
-import { canPickRun, pickRunId } from "./runs-picker.js";
+import { canPickRun, confirmDelete, pickRunId, pickRunsToDelete, type DeleteRunChoice } from "./runs-picker.js";
 import { DaemonControlFailure, daemonControlRequestId, sendDaemonControl } from "./daemon.js";
 
 export type RunsCommandContext = {
@@ -26,8 +26,6 @@ type RunsCommandOptions = {
   workflow?: string;
   agents?: string;
   unsafeReuse?: boolean;
-  limit?: string;
-  all?: boolean;
 };
 
 type ControlAction = "pause" | "resume" | "retry" | "fork" | "cancel";
@@ -44,19 +42,18 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
     })
     .description("Inspect and control durable runs.");
 
-  command.addCommand(new Command("list")
-    .exitOverride()
-    .option("--limit <n>", "maximum number of recent runs to list")
-    .option("--all", "list all runs")
-    .action(async (options: RunsCommandOptions) => {
-      await listRecentRuns(ctx, options);
-    }));
-
   command.addCommand(new Command("inspect")
     .exitOverride()
     .argument("[run-id]", "run id")
     .action(async (runId: string | undefined) => {
       await inspectRunCommand(ctx, runId);
+    }));
+
+  command.addCommand(new Command("delete")
+    .exitOverride()
+    .argument("[run-id]", "run id")
+    .action(async (runId: string | undefined) => {
+      await deleteRunCommand(ctx, runId);
     }));
 
   for (const name of ["pause", "resume", "retry", "cancel"] as const) {
@@ -95,25 +92,6 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
   return command;
 }
 
-async function listRecentRuns(ctx: RunsCommandContext, options: RunsCommandOptions): Promise<void> {
-  if (options.all && options.limit !== undefined) throw usageError("--limit and --all are mutually exclusive.");
-  const limit = options.all ? undefined : options.limit === undefined ? 20 : parseLimit(options.limit);
-  const allRuns = await listRuns(ctx.cwd);
-  const runs = limit === undefined ? allRuns : allRuns.slice(0, limit);
-  ctx.setExitCode(writeResult({
-    ok: true,
-    phase: "inspect",
-    message: "Runs listed.",
-    runs,
-    list: {
-      total: allRuns.length,
-      ...(limit === undefined ? {} : { limit }),
-      truncated: limit !== undefined && allRuns.length > limit,
-      order: "updatedAt DESC",
-    },
-  }, outputFormat(ctx), ctx, 0));
-}
-
 async function inspectRun(ctx: RunsCommandContext, runId: string): Promise<void> {
   if (!ctx.wantsJson) {
     const inspection = await getRunInspection(ctx.cwd, runId);
@@ -146,6 +124,97 @@ async function inspectRunCommand(ctx: RunsCommandContext, runId: string | undefi
   const selectedRunId = await pickRunId(runs, ctx);
   if (selectedRunId === undefined) throw usageError("Run selection cancelled.");
   await inspectRun(ctx, selectedRunId);
+}
+
+async function deleteRunCommand(ctx: RunsCommandContext, runId: string | undefined): Promise<void> {
+  if (runId !== undefined) {
+    const deleted = await deleteOneRun(ctx, runId);
+    ctx.setExitCode(writeResult({
+      ok: true,
+      phase: "delete",
+      message: "Run deleted.",
+      run: deleted,
+      deletedRuns: [deleted],
+      skippedRuns: [],
+    }, outputFormat(ctx), ctx, 0));
+    return;
+  }
+  if (ctx.wantsJson) throw usageError("Run id is required when --json is used.");
+  if (!canPickRun(ctx)) throw usageError("Run id is required when not running in an interactive terminal.");
+
+  const choices = await deleteChoices(ctx);
+  if (choices.length === 0) throw deleteError("No runs found.");
+  if (!choices.some(choice => choice.disabled !== true)) throw deleteError("No deletable runs found.");
+
+  const selection = await pickRunsToDelete(choices, ctx);
+  if (selection === undefined) throw usageError("Run selection cancelled.");
+  if (selection.runIds.length === 0) throw usageError("No runs selected.");
+
+  const confirmed = await confirmDelete(selection.runIds.length, ctx);
+  if (confirmed !== true) throw usageError("Run deletion cancelled.");
+
+  const initialSkipped = selection.selectedAll ? choices.filter(choice => choice.disabled === true).map(choice => choice.run) : [];
+  const { deletedRuns, skippedRuns } = await deleteManyRuns(ctx, selection.runIds, initialSkipped);
+  ctx.setExitCode(writeResult({
+    ok: true,
+    phase: "delete",
+    message: deletedRuns.length === 1 ? "Run deleted." : "Runs deleted.",
+    deletedRuns,
+    skippedRuns,
+  }, outputFormat(ctx), ctx, 0));
+}
+
+async function deleteChoices(ctx: RunsCommandContext): Promise<DeleteRunChoice[]> {
+  const runs = await listRuns(ctx.cwd);
+  return await Promise.all(runs.map(async run => {
+    const details = await getRun(ctx.cwd, run.id);
+    const active = details?.execution.state === "active";
+    return {
+      run,
+      ...(active ? { disabled: true, hint: "active" } : {}),
+    };
+  }));
+}
+
+async function deleteManyRuns(ctx: RunsCommandContext, runIds: string[], initialSkipped: RunRecord[] = []): Promise<{ deletedRuns: RunRecord[]; skippedRuns: RunRecord[] }> {
+  const deletedRuns: RunRecord[] = [];
+  const skippedRuns = [...initialSkipped];
+  const skippedIds = new Set(skippedRuns.map(run => run.id));
+  for (const id of runIds) {
+    try {
+      const deleted = await deleteRuntimeRun(ctx.cwd, id);
+      if (!deleted) continue;
+      deletedRuns.push(deleted);
+    } catch (error) {
+      if (error instanceof RuntimeUseCaseException && error.failure.type === "run-delete-active") {
+        const run = await getRun(ctx.cwd, id);
+        if (run && !skippedIds.has(run.id)) {
+          skippedRuns.push(runSummary(run));
+          skippedIds.add(run.id);
+        }
+        continue;
+      }
+      throw error;
+    }
+  }
+  return { deletedRuns, skippedRuns };
+}
+
+async function deleteOneRun(ctx: RunsCommandContext, runId: string): Promise<RunRecord> {
+  try {
+    const deleted = await deleteRuntimeRun(ctx.cwd, runId);
+    if (!deleted) throw deleteError(`Run '${runId}' was not found.`);
+    return deleted;
+  } catch (error) {
+    if (error instanceof RuntimeUseCaseException && error.failure.type === "run-delete-active") {
+      const run = await getRun(ctx.cwd, runId);
+      throw deleteError(error.message, {
+        errorCode: "RUN_ACTIVE",
+        ...(run ? { run: runSummary(run) } : {}),
+      });
+    }
+    throw error;
+  }
 }
 
 async function signalRun(ctx: RunsCommandContext, runId: string, options: RunsCommandOptions): Promise<void> {
@@ -210,12 +279,6 @@ async function maybeNormalizeForkInput(
   } catch (error) {
     throw validationError(error instanceof Error ? error.message : String(error));
   }
-}
-
-function parseLimit(raw: string): number {
-  const limit = Number(raw);
-  if (!Number.isInteger(limit) || limit <= 0) throw usageError("--limit must be a positive integer.");
-  return limit;
 }
 
 function outputFormat(ctx: RunsCommandContext): OutputFormat {

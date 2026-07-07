@@ -1,12 +1,9 @@
-import { rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const packageRoot = join(root, "..");
-
-await rm(join(packageRoot, "dist"), { recursive: true, force: true });
 
 await Promise.all([
   run(process.execPath, ["scripts/build-static-viz.mjs"]),

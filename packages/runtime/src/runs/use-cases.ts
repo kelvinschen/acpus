@@ -81,7 +81,8 @@ export type RuntimeUseCaseError =
   | { type: "runtime-advance-failed"; cause: RuntimeAdvanceError; message: string }
   | { type: "invalid-signal-payload"; nodeId: string; message: string }
   | { type: "fork-seed-failed"; cause: ForkSeedFailure; message: string }
-  | { type: "run-control-failed"; controlType: RuntimeMutationAction | "signal"; message: string };
+  | { type: "run-control-failed"; controlType: RuntimeMutationAction | "signal"; message: string }
+  | { type: "run-delete-active"; runId: string; message: string };
 
 export async function admitWorkflowRun(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue, agentOverrides?: AgentOverrideMap): Promise<RuntimeAdvanceResult> {
   const result = await tryAdmitWorkflowRun(cwd, prepared, input, agentOverrides);
@@ -156,6 +157,42 @@ export async function getRun(cwd: string, runId: string): Promise<RunDetails | u
   if (!store) return undefined;
   try {
     return store.getRun(runId);
+  } finally {
+    store.close();
+  }
+}
+
+export async function deleteRun(cwd: string, runId: string): Promise<RunRecord | undefined> {
+  const result = await tryDeleteRun(cwd, runId);
+  return result.match(
+    value => value,
+    error => {
+      if (error.type === "runtime-store-not-found" || error.type === "run-not-found") return undefined;
+      throw new RuntimeUseCaseException(error);
+    },
+  );
+}
+
+function tryDeleteRun(cwd: string, runId: string): ResultAsync<RunRecord | undefined, RuntimeUseCaseError> {
+  return ResultAsync.fromPromise(deleteRunResult(cwd, runId), runtimeUseCaseThrownError);
+}
+
+async function deleteRunResult(cwd: string, runId: string): Promise<RunRecord> {
+  const store = await openExistingWritableRuntimeStore(cwd);
+  if (!store) throw new RuntimeUseCaseException({ type: "runtime-store-not-found", message: "Runtime store was not found." });
+  try {
+    const run = store.getRun(runId);
+    if (!run) throw new RuntimeUseCaseException({ type: "run-not-found", runId, message: `Run '${runId}' was not found.` });
+    if (run.execution.state === "active") {
+      throw new RuntimeUseCaseException({
+        type: "run-delete-active",
+        runId,
+        message: `Run '${runId}' is active and cannot be deleted.`,
+      });
+    }
+    const deleted = await store.deleteRun(runId);
+    if (!deleted) throw new RuntimeUseCaseException({ type: "run-not-found", runId, message: `Run '${runId}' was not found.` });
+    return deleted;
   } finally {
     store.close();
   }

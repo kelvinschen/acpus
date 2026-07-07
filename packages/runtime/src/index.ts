@@ -24,6 +24,7 @@ export {
   admitPreparedWorkflowRun,
   applyRunControl,
   applySignalRunControl,
+  deleteRun,
   getArtifact,
   getRuntimeHealth,
   getRun,

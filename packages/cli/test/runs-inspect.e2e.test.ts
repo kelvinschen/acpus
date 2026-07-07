@@ -13,7 +13,7 @@ import { withTestWorkspace } from "./support/workspace.js";
 const runIdPattern = /^\d{14}[A-F0-9]{20}$/;
 
 describe.concurrent("acpus runs inspect smoke", () => {
-  it("inspects, lists, and validates fork agent overrides for an admitted run", async () => {
+  it("inspects and validates fork agent overrides for an admitted run", async () => {
     await withTestWorkspace("runs-inspect", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts");
       const admitted = await runSourceCli(workspace, ["workflows", "run", workflow, "--input", "{\"ready\":true}", "--json"]);
@@ -21,7 +21,6 @@ describe.concurrent("acpus runs inspect smoke", () => {
       const runId = JSON.parse(admitted.stdout.trim().split("\n").at(-1)!).run.id;
 
       await expectInspectRun(workspace, runId);
-      await expectListRuns(workspace, runId);
 
       const forked = await runSourceCli(workspace, ["runs", "fork", runId, "--agents", "{\"reviewer\":{\"use\":\"codex\"}}", "--json"]);
 
@@ -169,7 +168,10 @@ describe.concurrent("acpus runs inspect smoke", () => {
       expect(await inspected).toBe(0);
       expect(stdout.text).toContain(`Run ${first.id}  cli-valid  pending`);
       expect(stderr.text).toContain("Select a run to inspect:");
-      expect(stdin.rawModes).toEqual([true, false]);
+      expect(stderr.text).toContain(first.id);
+      expect(stderr.text).toContain("\x1b[3A\x1b[J");
+      expect(stderr.text).not.toContain(".workflow.ts");
+      expect(stdin.rawModes).toContain(true);
     });
   }, 15_000);
 
@@ -235,21 +237,6 @@ async function expectInspectRun(workspace: string, runId: string): Promise<void>
       output: { ready: true },
     },
   });
-}
-
-async function expectListRuns(workspace: string, runId: string): Promise<void> {
-  const list = await runSourceCli(workspace, ["runs", "list", "--json"]);
-  expect(list.exitCode).toBe(0);
-  expect(JSON.parse(list.stdout)).toMatchObject({
-    list: {
-      total: 1,
-      truncated: false,
-      order: "updatedAt DESC",
-    },
-  });
-  expect(JSON.parse(list.stdout).runs).toEqual([
-    expect.objectContaining({ id: runId, status: "completed", name: "cli-valid" }),
-  ]);
 }
 
 class TtyInput extends PassThrough {

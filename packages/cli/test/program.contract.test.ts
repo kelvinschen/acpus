@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
@@ -52,6 +52,34 @@ describe("CLI program usage contracts", () => {
 
       try {
         const exitCode = await runCli(["workflows", "list", "--json"], {
+          cwd: workspace,
+          stdout,
+          stderr,
+        });
+
+        expect(exitCode).toBe(0);
+        expect(JSON.parse(stdout.text)).toMatchObject({
+          ok: true,
+          phase: "inspect",
+          catalogEntries: [],
+        });
+        expect(stderr.text).toBe("");
+      } finally {
+        if (previousHome === undefined) delete process.env.HOME;
+        else process.env.HOME = previousHome;
+      }
+    });
+  });
+
+  it("accepts wf as the workflows command alias", async () => {
+    await withTestWorkspace("catalog-empty-alias", async workspace => {
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const previousHome = process.env.HOME;
+      process.env.HOME = workspace;
+
+      try {
+        const exitCode = await runCli(["wf", "list", "--json"], {
           cwd: workspace,
           stdout,
           stderr,
@@ -294,6 +322,404 @@ export default defineWorkflow({
       expect(exitCode).toBe(1);
       expect(JSON.parse(stdout.text)).toMatchObject({ ok: false, phase: "validate" });
       expect(stdout.text).toContain("Invalid hooks config");
+      expect(stderr.text).toBe("");
+    });
+  });
+
+  it("installs and uninstalls the bundled Acpus skill into existing project skills roots", async () => {
+    await withTestWorkspace("skill-install", async workspace => {
+      await mkdir(join(workspace, ".agents", "skills"), { recursive: true });
+      await mkdir(join(workspace, ".claude", "skills"), { recursive: true });
+
+      const installStdout = new CaptureStream();
+      const installStderr = new CaptureStream();
+      const installExit = await runCli(["skill", "install", "--json"], {
+        cwd: workspace,
+        stdout: installStdout,
+        stderr: installStderr,
+      });
+
+      const agentsPath = join(workspace, ".agents", "skills", "acpus");
+      const claudePath = join(workspace, ".claude", "skills", "acpus");
+      expect(installExit).toBe(0);
+      expect(JSON.parse(installStdout.text)).toMatchObject({
+        ok: true,
+        phase: "skill",
+        skill: {
+          action: "install",
+          packageName: "acpus",
+          skillName: "acpus",
+          targetName: "acpus",
+          scope: "project",
+          installations: [
+            { scope: "project", kind: "agents", targetPath: agentsPath, status: "installed" },
+            { scope: "project", kind: "claude", targetPath: claudePath, status: "installed" },
+          ],
+        },
+      });
+      expect((await lstat(agentsPath)).isDirectory()).toBe(true);
+      expect((await lstat(agentsPath)).isSymbolicLink()).toBe(false);
+      expect((await lstat(claudePath)).isDirectory()).toBe(true);
+      expect(await readFile(join(agentsPath, "SKILL.md"), "utf8")).toContain("name: acpus");
+      await expect(lstat(join(workspace, ".gitignore"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(installStderr.text).toBe("");
+
+      const uninstallStdout = new CaptureStream();
+      const uninstallStderr = new CaptureStream();
+      const uninstallExit = await runCli(["skill", "uninstall", "--json"], {
+        cwd: workspace,
+        stdout: uninstallStdout,
+        stderr: uninstallStderr,
+      });
+
+      expect(uninstallExit).toBe(0);
+      expect(JSON.parse(uninstallStdout.text)).toMatchObject({
+        ok: true,
+        phase: "skill",
+        skill: {
+          action: "uninstall",
+          targetName: "acpus",
+          scope: "project",
+          removals: [
+            { scope: "project", kind: "agents", targetPath: agentsPath, status: "removed" },
+            { scope: "project", kind: "claude", targetPath: claudePath, status: "removed" },
+          ],
+        },
+      });
+      await expect(lstat(agentsPath)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(lstat(claudePath)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(uninstallStderr.text).toBe("");
+    });
+  });
+
+  it("skips unsafe Acpus skill uninstall targets", async () => {
+    await withTestWorkspace("skill-uninstall-unsafe", async workspace => {
+      const targetPath = join(workspace, ".agents", "skills", "acpus");
+      await mkdir(targetPath, { recursive: true });
+      await writeFile(join(targetPath, "SKILL.md"), "name: other\n");
+
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exitCode = await runCli(["skill", "uninstall", "--json"], {
+        cwd: workspace,
+        stdout,
+        stderr,
+      });
+
+      expect(exitCode).toBe(1);
+      expect(JSON.parse(stdout.text)).toMatchObject({
+        ok: false,
+        phase: "skill",
+        skill: {
+          targetName: "acpus",
+          removals: [{ scope: "project", kind: "agents", targetPath, status: "skipped", error: "target is not the Acpus skill" }],
+        },
+      });
+      expect((await lstat(targetPath)).isDirectory()).toBe(true);
+      expect(stderr.text).toBe("");
+    });
+  });
+
+  it("does not overwrite unsafe Acpus skill install targets", async () => {
+    await withTestWorkspace("skill-install-unsafe", async workspace => {
+      const targetPath = join(workspace, ".agents", "skills", "acpus");
+      await mkdir(targetPath, { recursive: true });
+      await writeFile(join(targetPath, "SKILL.md"), "name: other\n");
+
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exitCode = await runCli(["skill", "install", "--json"], {
+        cwd: workspace,
+        stdout,
+        stderr,
+      });
+
+      expect(exitCode).toBe(1);
+      expect(JSON.parse(stdout.text)).toMatchObject({
+        ok: false,
+        phase: "skill",
+        skill: {
+          targetName: "acpus",
+          installations: [{
+            scope: "project",
+            kind: "agents",
+            targetPath,
+            status: "failed",
+            error: "target exists and is not the Acpus skill",
+          }],
+        },
+      });
+      expect((await lstat(targetPath)).isDirectory()).toBe(true);
+      expect(await readFile(join(targetPath, "SKILL.md"), "utf8")).toBe("name: other\n");
+      expect(stderr.text).toBe("");
+    });
+  });
+
+  it("updates an existing copied Acpus skill on reinstall", async () => {
+    await withTestWorkspace("skill-install-update", async workspace => {
+      const targetPath = join(workspace, ".agents", "skills", "acpus");
+      await mkdir(targetPath, { recursive: true });
+      await writeFile(join(targetPath, "SKILL.md"), "---\nname: acpus\n---\nold\n");
+      await writeFile(join(targetPath, "stale.txt"), "stale");
+
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exitCode = await runCli(["skill", "install", "--json"], {
+        cwd: workspace,
+        stdout,
+        stderr,
+      });
+
+      expect(exitCode).toBe(0);
+      expect(JSON.parse(stdout.text)).toMatchObject({
+        ok: true,
+        phase: "skill",
+        skill: {
+          installations: [{ scope: "project", kind: "agents", targetPath, status: "updated" }],
+        },
+      });
+      expect(await readFile(join(targetPath, "SKILL.md"), "utf8")).toContain("description:");
+      await expect(lstat(join(targetPath, "stale.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(stderr.text).toBe("");
+    });
+  });
+
+  it("replaces an existing Acpus skill symlink with a copied directory", async () => {
+    await withTestWorkspace("skill-install-replaces-symlink", async workspace => {
+      const oldSkill = join(workspace, "old-acpus-skill");
+      const targetPath = join(workspace, ".agents", "skills", "acpus");
+      await mkdir(oldSkill);
+      await writeFile(join(oldSkill, "SKILL.md"), "---\nname: acpus\n---\nold\n");
+      await mkdir(join(workspace, ".agents", "skills"), { recursive: true });
+      await symlink(oldSkill, targetPath);
+
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exitCode = await runCli(["skill", "install", "--json"], {
+        cwd: workspace,
+        stdout,
+        stderr,
+      });
+
+      expect(exitCode).toBe(0);
+      expect(JSON.parse(stdout.text)).toMatchObject({
+        ok: true,
+        phase: "skill",
+        skill: {
+          installations: [{ scope: "project", kind: "agents", targetPath, status: "updated" }],
+        },
+      });
+      expect((await lstat(targetPath)).isDirectory()).toBe(true);
+      expect((await lstat(targetPath)).isSymbolicLink()).toBe(false);
+      expect(await readFile(join(oldSkill, "SKILL.md"), "utf8")).toContain("old");
+      expect(stderr.text).toBe("");
+    });
+  });
+
+  it("reports Acpus skill dry-run removals as planned", async () => {
+    await withTestWorkspace("skill-uninstall-dry-run", async workspace => {
+      await mkdir(join(workspace, ".agents", "skills"), { recursive: true });
+      const installExit = await runCli(["skill", "install", "--json"], {
+        cwd: workspace,
+        stdout: new CaptureStream(),
+        stderr: new CaptureStream(),
+      });
+      expect(installExit).toBe(0);
+
+      const targetPath = join(workspace, ".agents", "skills", "acpus");
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exitCode = await runCli(["skill", "uninstall", "--dry-run", "--json"], {
+        cwd: workspace,
+        stdout,
+        stderr,
+      });
+
+      expect(exitCode).toBe(0);
+      expect(JSON.parse(stdout.text)).toMatchObject({
+        ok: true,
+        phase: "skill",
+        skill: {
+          dryRun: true,
+          removals: [{ scope: "project", kind: "agents", targetPath, status: "would-remove" }],
+        },
+      });
+      expect((await lstat(targetPath)).isDirectory()).toBe(true);
+      expect(stderr.text).toBe("");
+    });
+  });
+
+  it("does not uninstall symlinks that do not point at the Acpus skill", async () => {
+    await withTestWorkspace("skill-uninstall-wrong-target", async workspace => {
+      const otherSkill = join(workspace, "other-skill");
+      const targetPath = join(workspace, ".agents", "skills", "acpus");
+      await mkdir(otherSkill);
+      await mkdir(join(workspace, ".agents", "skills"), { recursive: true });
+      await symlink(otherSkill, targetPath);
+
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exitCode = await runCli(["skill", "uninstall", "--json"], {
+        cwd: workspace,
+        stdout,
+        stderr,
+      });
+
+      expect(exitCode).toBe(1);
+      expect(JSON.parse(stdout.text)).toMatchObject({
+        ok: false,
+        phase: "skill",
+        skill: {
+          removals: [{ scope: "project", kind: "agents", targetPath, status: "skipped", error: "target is not the Acpus skill" }],
+        },
+      });
+      expect((await lstat(targetPath)).isSymbolicLink()).toBe(true);
+      expect(stderr.text).toBe("");
+    });
+  });
+
+  it("supports symlinked agent skills directories", async () => {
+    await withTestWorkspace("skill-symlinked-dir", async workspace => {
+      const realSkillsDir = join(workspace, "real-skills");
+      await mkdir(realSkillsDir);
+      await mkdir(join(workspace, ".agents"));
+      await symlink(realSkillsDir, join(workspace, ".agents", "skills"));
+
+      const installStdout = new CaptureStream();
+      const installExit = await runCli(["skill", "install", "--json"], {
+        cwd: workspace,
+        stdout: installStdout,
+        stderr: new CaptureStream(),
+      });
+      const targetPath = join(workspace, ".agents", "skills", "acpus");
+
+      expect(installExit).toBe(0);
+      expect(JSON.parse(installStdout.text)).toMatchObject({
+        ok: true,
+        phase: "skill",
+        skill: {
+          installations: [{ scope: "project", kind: "agents", targetPath, status: "installed" }],
+        },
+      });
+      expect((await lstat(join(realSkillsDir, "acpus"))).isDirectory()).toBe(true);
+
+      const uninstallStdout = new CaptureStream();
+      const uninstallExit = await runCli(["skill", "uninstall", "--json"], {
+        cwd: workspace,
+        stdout: uninstallStdout,
+        stderr: new CaptureStream(),
+      });
+
+      expect(uninstallExit).toBe(0);
+      expect(JSON.parse(uninstallStdout.text)).toMatchObject({
+        ok: true,
+        phase: "skill",
+        skill: {
+          removals: [{ scope: "project", kind: "agents", targetPath, status: "removed" }],
+        },
+      });
+      await expect(lstat(join(realSkillsDir, "acpus"))).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
+  it("installs only into existing project skills roots by default", async () => {
+    await withTestWorkspace("skill-project-existing-roots", async workspace => {
+      await mkdir(join(workspace, ".claude", "skills"), { recursive: true });
+
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exitCode = await runCli(["skill", "install", "--json"], { cwd: workspace, stdout, stderr });
+      const claudePath = join(workspace, ".claude", "skills", "acpus");
+
+      expect(exitCode).toBe(0);
+      expect(JSON.parse(stdout.text)).toMatchObject({
+        ok: true,
+        phase: "skill",
+        skill: {
+          targets: [{ scope: "project", kind: "claude", targetPath: claudePath }],
+          installations: [{ scope: "project", kind: "claude", targetPath: claudePath, status: "installed" }],
+        },
+      });
+      await expect(lstat(join(workspace, ".agents", "skills", "acpus"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await lstat(claudePath)).isDirectory()).toBe(true);
+      expect(stderr.text).toBe("");
+    });
+  });
+
+  it("installs into Codex and Claude global skills roots", async () => {
+    await withTestWorkspace("skill-global", async workspace => {
+      const codexHome = join(workspace, "codex-home");
+      const claudeHome = join(workspace, "claude-home");
+      await mkdir(join(codexHome, "skills"), { recursive: true });
+      await mkdir(join(claudeHome, "skills"), { recursive: true });
+      const previousCodexHome = process.env.CODEX_HOME;
+      const previousClaudeHome = process.env.CLAUDE_CONFIG_DIR;
+      process.env.CODEX_HOME = codexHome;
+      process.env.CLAUDE_CONFIG_DIR = claudeHome;
+
+      try {
+        const stdout = new CaptureStream();
+        const stderr = new CaptureStream();
+        const exitCode = await runCli(["skill", "install", "--global", "--json"], { cwd: workspace, stdout, stderr });
+        const agentsPath = join(codexHome, "skills", "acpus");
+        const claudePath = join(claudeHome, "skills", "acpus");
+
+        expect(exitCode).toBe(0);
+        expect(JSON.parse(stdout.text)).toMatchObject({
+          ok: true,
+          phase: "skill",
+          skill: {
+            scope: "global",
+            installations: [
+              { scope: "global", kind: "agents", targetPath: agentsPath, status: "installed" },
+              { scope: "global", kind: "claude", targetPath: claudePath, status: "installed" },
+            ],
+          },
+        });
+        expect((await lstat(agentsPath)).isDirectory()).toBe(true);
+        expect((await lstat(claudePath)).isDirectory()).toBe(true);
+        await expect(lstat(join(workspace, ".gitignore"))).rejects.toMatchObject({ code: "ENOENT" });
+        expect(stderr.text).toBe("");
+      } finally {
+        if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+        else process.env.CODEX_HOME = previousCodexHome;
+        if (previousClaudeHome === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+        else process.env.CLAUDE_CONFIG_DIR = previousClaudeHome;
+      }
+    });
+  });
+
+  it("rejects simultaneous Acpus skill scope selectors", async () => {
+    await withTestWorkspace("skill-scope-conflict", async workspace => {
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exitCode = await runCli(["skill", "install", "--project", "--global", "--json"], { cwd: workspace, stdout, stderr });
+
+      expect(exitCode).toBe(2);
+      expect(JSON.parse(stdout.text)).toMatchObject({ ok: false, phase: "usage" });
+      expect(stdout.text).toContain("Pass only one of --project or --global.");
+      expect(stderr.text).toBe("");
+    });
+  });
+
+  it("fails when no selected skills roots exist", async () => {
+    await withTestWorkspace("skill-no-roots", async workspace => {
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exitCode = await runCli(["skill", "install", "--json"], { cwd: workspace, stdout, stderr });
+
+      expect(exitCode).toBe(1);
+      expect(JSON.parse(stdout.text)).toMatchObject({
+        ok: false,
+        phase: "skill",
+        skill: {
+          installations: [
+            { scope: "project", kind: "agents", targetPath: join(workspace, ".agents", "skills", "acpus"), status: "skipped", error: "skills root does not exist" },
+            { scope: "project", kind: "claude", targetPath: join(workspace, ".claude", "skills", "acpus"), status: "skipped", error: "skills root does not exist" },
+          ],
+        },
+      });
+      expect(stdout.text).toContain("No project skills directories found");
       expect(stderr.text).toBe("");
     });
   });

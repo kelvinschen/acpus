@@ -1,0 +1,263 @@
+import type { Writable } from "node:stream";
+import { constants } from "node:fs";
+import { access, cp, lstat, mkdtemp, readFile, readlink, rename, rm, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { Command } from "commander";
+import { skillError, usageError } from "../errors.js";
+import { writeResult, type SkillCommandResult } from "../output.js";
+
+const ACPUS_PACKAGE = "acpus";
+const ACPUS_SKILL = "acpus";
+const ACPUS_TARGET = "acpus";
+
+export type SkillCommandContext = {
+  cwd: string;
+  stdout: Writable;
+  stderr: Writable;
+  wantsJson: boolean;
+  setExitCode(code: number): void;
+};
+
+type SkillScope = "project" | "global";
+type SkillTargetKind = "agents" | "claude";
+
+type SkillOptions = {
+  project?: boolean;
+  global?: boolean;
+  dryRun?: boolean;
+};
+
+type SkillTarget = {
+  scope: SkillScope;
+  kind: SkillTargetKind;
+  rootPath: string;
+  targetPath: string;
+};
+
+type InstallationResult = NonNullable<SkillCommandResult["installations"]>[number];
+type RemovalResult = NonNullable<SkillCommandResult["removals"]>[number];
+
+export function createSkillCommand(ctx: SkillCommandContext): Command {
+  const command = new Command("skill")
+    .exitOverride()
+    .configureOutput({
+      writeOut: text => ctx.stdout.write(text),
+      writeErr: text => {
+        if (!ctx.wantsJson) ctx.stderr.write(text);
+      },
+      outputError: (text, write) => write(text),
+    })
+    .description("Install or uninstall the bundled Acpus agent skill.");
+
+  command.addCommand(new Command("install")
+    .exitOverride()
+    .option("--project", "install into project skills directories")
+    .option("--global", "install into global skills directories")
+    .option("--dry-run", "show what would be installed without changing files")
+    .action(async (options: SkillOptions) => {
+      const scope = parseScope(options);
+      const sourcePath = await bundledSkillPath();
+      const targets = await resolveExistingTargets(ctx.cwd, scope, "install");
+      const installations = await installAcpusSkill(sourcePath, targets, options.dryRun === true);
+      const ok = installOk(installations);
+      ctx.setExitCode(writeResult({
+        ok,
+        phase: "skill",
+        message: ok ? "Acpus skill installed." : "Acpus skill installation skipped unsafe entries.",
+        skill: skillResult("install", scope, options.dryRun === true, targets, { installations }),
+      }, ctx.wantsJson ? "json" : "text", ctx, ok ? 0 : 1));
+    }));
+
+  command.addCommand(new Command("uninstall")
+    .exitOverride()
+    .option("--project", "uninstall from project skills directories")
+    .option("--global", "uninstall from global skills directories")
+    .option("--dry-run", "show what would be removed without changing files")
+    .action(async (options: SkillOptions) => {
+      const scope = parseScope(options);
+      const targets = await resolveExistingTargets(ctx.cwd, scope, "uninstall");
+      const removals = await uninstallAcpusSkill(targets, options.dryRun === true);
+      const ok = uninstallOk(removals);
+      ctx.setExitCode(writeResult({
+        ok,
+        phase: "skill",
+        message: ok ? "Acpus skill uninstalled." : "Acpus skill uninstall skipped unsafe entries.",
+        skill: skillResult("uninstall", scope, options.dryRun === true, targets, { removals }),
+      }, ctx.wantsJson ? "json" : "text", ctx, ok ? 0 : 1));
+    }));
+
+  return command;
+}
+
+function parseScope(options: Pick<SkillOptions, "project" | "global">): SkillScope {
+  if (options.project === true && options.global === true) throw usageError("Pass only one of --project or --global.");
+  return options.global === true ? "global" : "project";
+}
+
+async function bundledSkillPath(): Promise<string> {
+  const sourcePath = fileURLToPath(new URL("../../skills/acpus", import.meta.url));
+  try {
+    await access(join(sourcePath, "SKILL.md"), constants.R_OK);
+    return sourcePath;
+  } catch {
+    throw skillError("Bundled Acpus skill was not found in this acpus package.");
+  }
+}
+
+async function resolveExistingTargets(cwd: string, scope: SkillScope, action: "install" | "uninstall"): Promise<SkillTarget[]> {
+  const candidates = scope === "project" ? projectTargets(cwd) : globalTargets();
+  const targets: SkillTarget[] = [];
+  for (const candidate of candidates) {
+    if (await isDirectory(candidate.rootPath)) targets.push(candidate);
+  }
+  if (targets.length === 0) {
+    const missing = candidates.map(candidate => ({
+      scope,
+      kind: candidate.kind,
+      targetPath: candidate.targetPath,
+      status: "skipped" as const,
+      error: "skills root does not exist",
+    }));
+    throw skillError(`No ${scope} skills directories found: ${candidates.map(candidate => candidate.rootPath).join(", ")}`, {
+      skill: skillResult(action, scope, false, candidates, action === "install" ? { installations: missing } : { removals: missing }),
+    });
+  }
+  return targets;
+}
+
+function projectTargets(cwd: string): SkillTarget[] {
+  return [
+    target("project", "agents", join(cwd, ".agents", "skills")),
+    target("project", "claude", join(cwd, ".claude", "skills")),
+  ];
+}
+
+function globalTargets(): SkillTarget[] {
+  const codexHome = process.env.CODEX_HOME?.trim() || join(homedir(), ".codex");
+  const claudeHome = process.env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude");
+  return [
+    target("global", "agents", join(codexHome, "skills")),
+    target("global", "claude", join(claudeHome, "skills")),
+  ];
+}
+
+function target(scope: SkillScope, kind: SkillTargetKind, rootPath: string): SkillTarget {
+  return { scope, kind, rootPath, targetPath: join(rootPath, ACPUS_TARGET) };
+}
+
+async function installAcpusSkill(sourcePath: string, targets: SkillTarget[], dryRun: boolean): Promise<InstallationResult[]> {
+  const results: InstallationResult[] = [];
+  for (const target of targets) {
+    const existing = await classifyExistingTarget(target.targetPath);
+    if (existing === "unsafe") {
+      results.push({ scope: target.scope, kind: target.kind, targetPath: target.targetPath, status: "failed", error: "target exists and is not the Acpus skill" });
+      continue;
+    }
+
+    const status = existing === "missing" ? dryRun ? "would-install" : "installed" : dryRun ? "would-update" : "updated";
+    if (!dryRun) await replaceDirectory(sourcePath, target.targetPath);
+    results.push({ scope: target.scope, kind: target.kind, targetPath: target.targetPath, status });
+  }
+  return results;
+}
+
+async function uninstallAcpusSkill(targets: SkillTarget[], dryRun: boolean): Promise<RemovalResult[]> {
+  const results: RemovalResult[] = [];
+  for (const target of targets) {
+    const existing = await classifyExistingTarget(target.targetPath);
+    if (existing === "missing") {
+      results.push({ scope: target.scope, kind: target.kind, targetPath: target.targetPath, status: "missing" });
+      continue;
+    }
+    if (existing === "unsafe") {
+      results.push({ scope: target.scope, kind: target.kind, targetPath: target.targetPath, status: "skipped", error: "target is not the Acpus skill" });
+      continue;
+    }
+    if (!dryRun) await rm(target.targetPath, { recursive: true, force: true });
+    results.push({ scope: target.scope, kind: target.kind, targetPath: target.targetPath, status: dryRun ? "would-remove" : "removed" });
+  }
+  return results;
+}
+
+async function classifyExistingTarget(targetPath: string): Promise<"missing" | "acpus" | "unsafe"> {
+  try {
+    const stats = await lstat(targetPath);
+    if (stats.isSymbolicLink()) return await isAcpusSkillSymlink(targetPath) ? "acpus" : "unsafe";
+    if (stats.isDirectory()) return await isAcpusSkillDirectory(targetPath) ? "acpus" : "unsafe";
+    return "unsafe";
+  } catch (error) {
+    if (isNotFound(error)) return "missing";
+    return "unsafe";
+  }
+}
+
+async function isAcpusSkillSymlink(targetPath: string): Promise<boolean> {
+  try {
+    return await isAcpusSkillDirectory(resolve(dirname(targetPath), await readlink(targetPath)));
+  } catch {
+    return false;
+  }
+}
+
+async function isAcpusSkillDirectory(targetPath: string): Promise<boolean> {
+  try {
+    const skill = await readFile(join(targetPath, "SKILL.md"), "utf8");
+    return /^name:\s*acpus\s*$/m.test(skill);
+  } catch {
+    return false;
+  }
+}
+
+async function replaceDirectory(sourcePath: string, targetPath: string): Promise<void> {
+  const tempParent = await mkdtemp(join(dirname(targetPath), ".acpus-skill-"));
+  const tempPath = join(tempParent, basename(targetPath));
+  try {
+    await cp(sourcePath, tempPath, { recursive: true, verbatimSymlinks: true });
+    await rm(targetPath, { recursive: true, force: true });
+    await rename(tempPath, targetPath);
+  } finally {
+    await rm(tempParent, { recursive: true, force: true });
+  }
+}
+
+function installOk(results: InstallationResult[]): boolean {
+  return results.some(result => result.status === "installed" || result.status === "updated" || result.status === "would-install" || result.status === "would-update")
+    && results.every(result => result.status !== "failed" && result.status !== "skipped");
+}
+
+function uninstallOk(results: RemovalResult[]): boolean {
+  return results.every(result => result.status !== "failed" && result.status !== "skipped");
+}
+
+function skillResult(
+  action: "install" | "uninstall",
+  scope: SkillScope,
+  dryRun: boolean,
+  targets: SkillTarget[],
+  details: Pick<SkillCommandResult, "installations" | "removals">,
+): SkillCommandResult {
+  return {
+    action,
+    packageName: ACPUS_PACKAGE,
+    skillName: ACPUS_SKILL,
+    targetName: ACPUS_TARGET,
+    scope,
+    dryRun,
+    targets: targets.map(target => ({ scope: target.scope, kind: target.kind, rootPath: target.rootPath, targetPath: target.targetPath })),
+    ...details,
+  };
+}
+
+async function isDirectory(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function isNotFound(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}

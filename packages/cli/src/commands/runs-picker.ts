@@ -1,21 +1,14 @@
-import { emitKeypressEvents } from "node:readline";
 import type { Readable, Writable } from "node:stream";
+import { confirm, isCancel, multiselect, select } from "@clack/prompts";
 import type { RunRecord } from "@acpus/runtime";
 
 type TtyInput = Readable & {
-  isRaw?: boolean;
   isTTY?: boolean;
   setRawMode?(mode: boolean): TtyInput;
 };
 
 type TtyOutput = Writable & {
-  columns?: number;
   isTTY?: boolean;
-};
-
-type Key = {
-  ctrl?: boolean;
-  name?: string;
 };
 
 export type RunPickerIo = {
@@ -23,6 +16,19 @@ export type RunPickerIo = {
   stdout: Writable;
   stderr: Writable;
 };
+
+export type DeleteRunChoice = {
+  run: RunRecord;
+  disabled?: boolean;
+  hint?: string;
+};
+
+export type DeleteRunSelection = {
+  runIds: string[];
+  selectedAll: boolean;
+};
+
+const allDeletableRunsValue = "__acpus_all_deletable_runs__";
 
 export function canPickRun(io: RunPickerIo): boolean {
   const stdin = io.stdin as TtyInput;
@@ -33,90 +39,71 @@ export function canPickRun(io: RunPickerIo): boolean {
 }
 
 export async function pickRunId(runs: RunRecord[], io: RunPickerIo): Promise<string | undefined> {
-  const input = io.stdin as TtyInput;
-  const output = io.stderr as TtyOutput;
-  let selected = 0;
-  let renderedLines = 0;
-  let settled = false;
-  const wasRaw = input.isRaw === true;
-
-  // If this grows beyond simple arrow selection, replace the stdlib TTY code with @clack/prompts.
-  emitKeypressEvents(input);
-  input.setRawMode?.(true);
-  input.resume();
-  output.write("\x1b[?25l");
-
-  return await new Promise(resolve => {
-    const finish = (runId: string | undefined): void => {
-      if (settled) return;
-      settled = true;
-      input.off("keypress", onKeypress);
-      clear();
-      output.write("\x1b[?25h");
-      input.setRawMode?.(wasRaw);
-      input.pause();
-      resolve(runId);
-    };
-
-    const onKeypress = (_text: string, key: Key): void => {
-      if (key.ctrl && key.name === "c") {
-        finish(undefined);
-        return;
-      }
-      if (key.name === "escape" || key.name === "q") {
-        finish(undefined);
-        return;
-      }
-      if (key.name === "return" || key.name === "enter") {
-        finish(runs[selected]?.id);
-        return;
-      }
-      if (key.name === "up") {
-        selected = selected === 0 ? runs.length - 1 : selected - 1;
-        render();
-        return;
-      }
-      if (key.name === "down") {
-        selected = (selected + 1) % runs.length;
-        render();
-      }
-    };
-
-    function render(): void {
-      clear();
-      const width = terminalWidth(output);
-      const lines = [
-        "Select a run to inspect:",
-        "",
-        ...runs.map((run, index) => formatRun(run, index === selected, width)),
-        "",
-        "Use Up/Down to choose, Enter to inspect, q/Esc to cancel.",
-      ];
-      output.write(`${lines.join("\n")}\n`);
-      renderedLines = lines.length;
-    }
-
-    function clear(): void {
-      if (renderedLines === 0) return;
-      output.write(`\x1b[${renderedLines}A\x1b[J`);
-      renderedLines = 0;
-    }
-
-    input.on("keypress", onKeypress);
-    render();
+  const picked = await select({
+    message: "Select a run to inspect:",
+    options: runs.map(run => ({
+      value: run.id,
+      label: formatRunLabel(run),
+      hint: formatRunHint(run),
+    })),
+    input: io.stdin,
+    output: io.stderr,
   });
+  if (isCancel(picked)) return undefined;
+  clearSubmittedSelect(io.stderr);
+  return picked;
 }
 
-function formatRun(run: RunRecord, selected: boolean, width: number): string {
-  return truncate(`${selected ? ">" : " "} ${run.id} ${run.status} ${run.updatedAt} ${run.name} ${run.workflowEntry}`, width);
+export async function pickRunsToDelete(choices: DeleteRunChoice[], io: RunPickerIo): Promise<DeleteRunSelection | undefined> {
+  const deletable = choices.filter(choice => choice.disabled !== true).map(choice => choice.run.id);
+  const picked = await multiselect({
+    message: "Select runs to delete:",
+    required: true,
+    options: [
+      {
+        value: allDeletableRunsValue,
+        label: "All deletable runs",
+        hint: `${deletable.length} runs`,
+        disabled: deletable.length === 0,
+      },
+      ...choices.map(choice => ({
+        value: choice.run.id,
+        label: formatRunLabel(choice.run),
+        hint: choice.hint ? `${choice.hint} · ${formatRunHint(choice.run)}` : formatRunHint(choice.run),
+        ...(choice.disabled === true ? { disabled: true } : {}),
+      })),
+    ],
+    input: io.stdin,
+    output: io.stderr,
+  });
+  if (isCancel(picked)) return undefined;
+  const selectedAll = picked.includes(allDeletableRunsValue);
+  return { runIds: selectedAll ? deletable : picked, selectedAll };
 }
 
-function terminalWidth(output: TtyOutput): number {
-  return Math.max(20, output.columns ?? 80);
+export async function confirmDelete(count: number, io: RunPickerIo): Promise<boolean | undefined> {
+  const confirmed = await confirm({
+    message: `Delete ${count} ${count === 1 ? "run" : "runs"}?`,
+    initialValue: false,
+    input: io.stdin,
+    output: io.stderr,
+  });
+  return isCancel(confirmed) ? undefined : confirmed;
 }
 
-function truncate(text: string, width: number): string {
-  if (text.length <= width) return text;
-  if (width <= 3) return text.slice(0, width);
-  return `${text.slice(0, width - 3)}...`;
+function formatRunLabel(run: RunRecord): string {
+  return run.id;
+}
+
+function formatRunHint(run: RunRecord): string {
+  return `${run.status} · ${run.name} · ${formatUpdatedAt(run.updatedAt)}`;
+}
+
+function formatUpdatedAt(updatedAt: string): string {
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(updatedAt);
+  return match ? `${match[1]} ${match[2]}` : updatedAt;
+}
+
+function clearSubmittedSelect(output: Writable): void {
+  if ((output as TtyOutput).isTTY === true) output.write("\x1b[3A\x1b[J");
 }

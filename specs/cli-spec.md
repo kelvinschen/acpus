@@ -13,11 +13,14 @@ failures to stable CLI phases and exit codes.
 ### Package And Command Surface
 
 - The CLI package MUST be named `acpus` and MUST expose a binary named `acpus`.
+- The `acpus` package MUST include the official Acpus agent skill under
+  `skills/acpus/SKILL.md` in the published package.
 - The `acpus` package MUST expose authoring facade subpaths for `acpus/core`,
   `acpus/expression`, and `acpus/tasks/git`.
 - The `acpus` package MUST NOT expose a root authoring entrypoint that mixes
   workflow DSL, expression helpers, and task libraries.
 - The CLI command surface MUST be implemented with Commander.
+- The CLI MUST support `acpus wf` as an alias for `acpus workflows`.
 - The CLI MUST support `acpus workflows check <workflow-module>`.
 - The CLI MUST support `acpus workflows run <workflow-module>`.
 - The CLI MUST support `acpus workflows run <workflow-module> --background`.
@@ -29,8 +32,8 @@ failures to stable CLI phases and exit codes.
 - The CLI MUST support `acpus workflows show <name> [--project | --global]`.
 - The CLI MUST support `--project` and `--global` on workflow check and run
   commands as explicit catalog scope selectors.
-- The CLI MUST support `acpus runs list [--limit <n> | --all]`.
 - The CLI MUST support `acpus runs inspect [run-id]`.
+- The CLI MUST support `acpus runs delete [run-id]`.
 - The CLI MUST support `acpus runs pause <run-id>`,
   `resume <run-id>`, `retry <run-id>`, `cancel <run-id>`,
   `fork <run-id>`, and `signal <run-id>`.
@@ -47,6 +50,8 @@ failures to stable CLI phases and exit codes.
   dangerous targeted fork option that may reuse completed prerequisites despite
   workflow, input, or signature changes.
 - The CLI MUST support top-level `acpus doctor`.
+- The CLI MUST support `acpus skill install`.
+- The CLI MUST support `acpus skill uninstall`.
 - The CLI MUST support `acpus hooks validate [--project | --global]`.
 - The CLI MUST support `acpus hooks list [--project | --global]`.
 - The CLI MUST support global `--json` before or after command names.
@@ -127,6 +132,21 @@ failures to stable CLI phases and exit codes.
   `runs inspect` without a run id MUST fail as usage errors.
 - Interactive `runs inspect` without any available runs MUST fail as an
   inspect error.
+- `runs delete <run-id>` MUST hard-delete the durable run record, cascaded
+  runtime rows, and `.acpus/.local/runs/<run-id>` directory through runtime
+  APIs, and MUST NOT start or wake the daemon.
+- `runs delete` without a run id MUST be available only in text-mode
+  interactive TTY sessions, MUST list known runs through runtime read APIs, and
+  MUST use the same mature prompt-backed run picker capability as
+  `runs inspect`.
+- Interactive `runs delete` MUST support multi-select and an all-deletable-runs
+  selection, MUST require confirmation before mutation, and MUST render picker
+  and confirmation output on stderr.
+- `runs delete` MUST reject active live runs. Interactive delete MUST keep
+  active live runs non-selectable and report them as skipped when the
+  all-deletable-runs selection is used.
+- `runs delete --json` without a run id and non-interactive text `runs delete`
+  without a run id MUST fail as usage errors.
 - For `runs fork --workflow`, the CLI MUST prepare the replacement workflow
   through `@acpus/workflow-compiler` before sending daemon control. The daemon
   MUST receive frozen prepared workflow data and MUST NOT compile or import live
@@ -164,10 +184,28 @@ failures to stable CLI phases and exit codes.
   daemon for paused runs and runs waiting for signal.
 - `doctor` MUST delegate to a read-only runtime health API and MUST NOT create
   runtime state in an uninitialized workspace.
-- Read-only commands such as `runs list`, `runs inspect`, and `doctor` MUST NOT
-  start or wake the daemon.
+- Read-only commands such as `runs inspect` and `doctor` MUST NOT start or wake
+  the daemon.
 - Hook inspection commands MUST read hook configuration files and MUST NOT start
   or wake the daemon.
+- `skill install` MUST install only the bundled Acpus skill from the local
+  `acpus` npm package.
+- `skill install` MUST copy the bundled Acpus skill into existing selected
+  skills roots as a real `acpus` directory, not as a symlink.
+- `skill install` and `skill uninstall` MUST support `--project`, `--global`,
+  and `--dry-run`.
+- `skill install` and `skill uninstall` MUST default to project scope and MUST
+  reject simultaneous `--project` and `--global`.
+- Project scope MUST consider only `<cwd>/.agents/skills` and
+  `<cwd>/.claude/skills`; global scope MUST consider only `$CODEX_HOME/skills`
+  or `~/.codex/skills`, and `$CLAUDE_CONFIG_DIR/skills` or `~/.claude/skills`.
+- `skill install` and `skill uninstall` MUST skip missing skills roots and MUST
+  fail when no selected skills root exists.
+- `skill install` MUST replace an existing target only when it can be identified
+  as the Acpus skill; it MUST NOT overwrite other user content.
+- `skill uninstall` MUST remove only `acpus` targets that can be identified as
+  the Acpus skill.
+- `skill install` and `skill uninstall` MUST NOT start or wake the daemon.
 - `hooks validate` and `hooks list` MUST reject simultaneous `--project` and
   `--global` scope selectors.
 - `hooks list` text output MUST group hooks by project and global scope when
@@ -188,7 +226,8 @@ failures to stable CLI phases and exit codes.
   hook validation/list details when available, and doctor checks when available.
 - JSON diagnostic output MUST preserve `hint` and `source` fields when present.
 - Supported JSON `phase` values MUST be `usage`, `check`, `compile`,
-  `validate`, `run`, `inspect`, `control`, `doctor`, and `viz`.
+  `validate`, `run`, `inspect`, `control`, `delete`, `doctor`, `viz`, and
+  `skill`.
 - Non-streaming commands MUST emit one JSON object.
 - Foreground `workflows run --json` MUST emit newline-delimited JSON records:
   an admitted record, daemon observation records, and a terminal summary record.
@@ -230,10 +269,11 @@ failures to stable CLI phases and exit codes.
 - Text run status surface output MUST render completed workflow output as a full
   pretty-JSON `Output:` section and MUST omit missing or empty outputs.
 - Interactive run picker output MUST render on stderr and MUST leave stdout for
-  the selected run inspection output.
+  the selected command output.
 - Text diagnostic output MUST render `source` and `hint` when present.
-- `runs list` MUST order by `updatedAt DESC`, default to 20 rows, include
-  truncation metadata, and accept mutually exclusive `--limit` and `--all`.
+- Delete JSON output MUST include `deletedRuns` and `skippedRuns` arrays for
+  aggregate delete results. Explicit single-run delete MAY also include `run`
+  for the deleted run summary.
 - Workflow catalog JSON output MUST expose `scope`, `name`, `packagePath`,
   `entryPath`, `status`, and `requiresScope` for catalog entries.
 - Workflow catalog path fields MUST be absolute paths.
@@ -242,8 +282,8 @@ failures to stable CLI phases and exit codes.
 - Project and global entries with the same name MUST keep
   `status: "available"` and set `requiresScope: true`.
 - Usage errors MUST exit with code `2`.
-- Successful check, run, inspection, control, and doctor commands MUST exit with
-  code `0`.
+- Successful check, run, inspection, control, delete, and doctor commands MUST
+  exit with code `0`.
 - Foreground `workflows run` completion MUST choose its exit code from the
   durable terminal run status: `completed` exits `0`, while `failed` and
   `canceled` exit `1`.
@@ -251,8 +291,8 @@ failures to stable CLI phases and exit codes.
   MUST exit `0` without canceling the daemon-owned run.
 - Run control timeout MUST exit `1`.
 - Check, compile, validation, runtime admission, run lookup, runtime control,
-  catalog lookup or materialization, and failed doctor commands MUST exit with
-  code `1`.
+  runtime delete, catalog lookup or materialization, and failed doctor commands
+  MUST exit with code `1`.
 
 ## Verification
 
@@ -268,13 +308,13 @@ failures to stable CLI phases and exit codes.
   input, and input-schema validation failure phase mapping.
 - Tests MUST cover diagnostic hint rendering in text output and hint
   preservation in JSON output.
-- Tests MUST cover read-only run list default bounds, `--limit`, `--all`, and
-  invalid list option handling.
 - Tests MUST cover read-only run inspect status surface output.
 - Tests MUST cover run inspect hook history rendering only for terminal runs
   with hook journal rows.
-- Tests MUST cover read-only run list, run inspect, and doctor without daemon
-  startup.
+- Tests MUST cover read-only run inspect and doctor without daemon startup.
+- Tests MUST cover explicit run delete, picker delete, picker all-deletable
+  delete, active-run skip reporting, active explicit-delete rejection,
+  hard-deleted run directories, omitted-id usage errors, and daemon non-startup.
 - Tests MUST cover compact text rendering for run inspection and JSON detail
   preservation.
 - Tests MUST cover stale non-terminal execution rendering in run inspect.
@@ -295,3 +335,6 @@ failures to stable CLI phases and exit codes.
   doctor no-store output, package boundary, and program output contracts.
 - Tests MUST cover `hooks validate`, `hooks list`, hook scope filtering, hook
   JSON output envelope fields, and mutually exclusive hook scope selectors.
+- Tests MUST cover Acpus skill install and uninstall JSON output, exact `acpus`
+  target handling, project and global skills roots, unsafe overwrite and delete
+  skips, and published package inclusion of `skills/acpus/SKILL.md`.

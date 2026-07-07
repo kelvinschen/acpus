@@ -17,7 +17,7 @@ Acpus is a local durable harness for AI-first workflows. In the next implementat
 | Author / adapt | create or edit a TypeScript workflow module, task, agent, signal, composite, schema, or prompt | Read `references/authoring-typescript-workflows.md`, then examples under `assets/examples/`. |
 | Check | validate a workflow before running it | Use `acpus workflows check <workflow.ts>`; read `references/cli-operations.md`. |
 | Run | start an existing workflow or catalog entry | Use `acpus workflows run <workflow-or-catalog>`; read `references/cli-operations.md`. |
-| Inspect / monitor | list runs, inspect a run, observe status, diagnose awaiting signal or stale execution | Use `acpus runs list` and `acpus runs inspect`; read `references/runtime-recovery.md`. |
+| Inspect / monitor | inspect a run, pick a run interactively, observe status, diagnose awaiting signal or stale execution | Use `acpus runs inspect [run-id]`; read `references/runtime-recovery.md`. |
 | Recover / control | pause, resume, retry, cancel, fork, or signal a run | Inspect first; then choose the smallest safe control in `references/runtime-recovery.md`. |
 | Configure hooks | validate or explain runtime hook config | Read `references/hooks-json.md`. |
 
@@ -26,7 +26,7 @@ A single conversation may move through several paths. Re-classify before each ma
 ## Operating defaults
 
 1. Verify the command surface before taking action: `acpus --help`. Use `acpus doctor` for read-only workspace health checks.
-2. Prefer read-only commands first: `acpus doctor`, `acpus runs list`, `acpus runs inspect`, `acpus workflows list`, `acpus workflows show`, `acpus hooks validate`, and `acpus hooks list`.
+2. Prefer read-only commands first: `acpus doctor`, `acpus runs inspect`, `acpus workflows list`, `acpus workflows show`, `acpus hooks validate`, and `acpus hooks list`.
 3. Ask before destructive or hard-to-reverse actions: `runs cancel`, targeted `cancel`, deleting `.acpus`, `runs fork --unsafe-reuse`, publishing packages, pushing Git refs, deleting files, or running arbitrary external side-effect commands.
 4. Use `--json` only when structured parsing is needed. For human diagnosis, compact text output is often enough and cheaper.
 5. Treat live workflow source as authoring input only. Runtime inspection and controls operate on frozen admitted runs in `.acpus/.local/`.
@@ -49,10 +49,10 @@ acpus workflows viz <workflow.ts-or-catalog> --out workflow-viz.html [--force] [
 acpus workflows run <workflow.ts-or-catalog> [--input '<json>'] [--agents '<json>'] [--background] [--project | --global]
 
 # Inspect durable runtime state
-acpus runs list [--limit <n> | --all]
 acpus runs inspect [run-id]
 
 # Runtime controls
+acpus runs delete [run-id]
 acpus runs pause <run-id>
 acpus runs resume <run-id>
 acpus runs retry <run-id> [--target <nodeKey-or-frameKey-or-static-alias>]

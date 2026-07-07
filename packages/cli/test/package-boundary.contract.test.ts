@@ -1,10 +1,15 @@
+import { execFile } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 
+const execFileAsync = promisify(execFile);
+const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const srcRoot = fileURLToPath(new URL("../src", import.meta.url));
 const packageJsonPath = fileURLToPath(new URL("../package.json", import.meta.url));
+const skillPath = fileURLToPath(new URL("../skills/acpus/SKILL.md", import.meta.url));
 
 describe("acpus package boundaries", () => {
   it("uses runtime only through the package root", async () => {
@@ -26,6 +31,11 @@ describe("acpus package boundaries", () => {
     expect(pkg.dependencies).not.toHaveProperty("@acpus/agent-executor");
   });
 
+  it("does not depend on skills-npm for bundled skill installation", async () => {
+    const pkg = JSON.parse(await readFile(packageJsonPath, "utf8")) as { dependencies?: Record<string, string> };
+    expect(pkg.dependencies).not.toHaveProperty("skills-npm");
+  });
+
   it("does not expose a mixed root authoring entrypoint", async () => {
     const pkg = JSON.parse(await readFile(packageJsonPath, "utf8")) as { exports?: Record<string, unknown> };
     expect(pkg.exports).toBeDefined();
@@ -35,6 +45,19 @@ describe("acpus package boundaries", () => {
       "./expression",
       "./tasks/git",
     ]);
+  });
+
+  it("includes the bundled Acpus skill in the published package files", async () => {
+    const pkg = JSON.parse(await readFile(packageJsonPath, "utf8")) as { private?: boolean; files?: string[] };
+    expect(pkg.private).not.toBe(true);
+    expect(pkg.files).toContain("skills");
+    expect(await readFile(skillPath, "utf8")).toContain("name: acpus");
+
+    const { stdout } = await execFileAsync("npm", ["pack", "--dry-run", "--json"], { cwd: packageRoot });
+    const files = (JSON.parse(stdout) as [{ files: { path: string }[] }])[0].files.map(file => file.path);
+    expect(files).toContain("skills/acpus/SKILL.md");
+    expect(files).toContain("dist/commands/skill.js");
+    expect(files).toContain("dist/commands/skill.d.ts");
   });
 });
 

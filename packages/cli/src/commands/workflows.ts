@@ -30,6 +30,7 @@ type WorkflowOptions = {
 
 export function createWorkflowsCommand(ctx: WorkflowsCommandContext): Command {
   const command = new Command("workflows")
+    .alias("wf")
     .exitOverride()
     .configureOutput({
       writeOut: text => ctx.stdout.write(text),

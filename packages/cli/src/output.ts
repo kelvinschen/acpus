@@ -3,7 +3,7 @@ import type { DiagnosticIR, WorkflowIR } from "@acpus/core/ir";
 import type { HookConfigScope, LoadedHookConfig, RunDetails, RunRecord, RuntimeHealthCheck } from "@acpus/runtime";
 import type { WorkflowCatalogEntry } from "./catalog.js";
 
-export type ResultPhase = "usage" | "check" | "compile" | "validate" | "run" | "inspect" | "control" | "doctor" | "viz";
+export type ResultPhase = "usage" | "check" | "compile" | "validate" | "run" | "inspect" | "control" | "delete" | "doctor" | "viz" | "skill";
 
 export type WorkflowSummary = {
   name: string;
@@ -28,6 +28,8 @@ export type CliResult = {
   sourceGraphDigest?: string;
   run?: RunRecord | RunDetails;
   runs?: RunRecord[];
+  deletedRuns?: RunRecord[];
+  skippedRuns?: RunRecord[];
   list?: { total: number; limit?: number; truncated: boolean; order: "updatedAt DESC" };
   catalog?: WorkflowCatalogEntry;
   catalogEntries?: WorkflowCatalogEntry[];
@@ -38,9 +40,39 @@ export type CliResult = {
   hookValidation?: { count: number };
   hooks?: HookListResult;
   outputPath?: string;
+  skill?: SkillCommandResult;
 };
 
 export type HookListResult = Partial<Record<HookConfigScope["source"], { path: string; hooks: LoadedHookConfig[] }>>;
+
+export type SkillCommandResult = {
+  action: "install" | "uninstall";
+  packageName: string;
+  skillName: string;
+  targetName: string;
+  scope: "project" | "global";
+  dryRun: boolean;
+  targets: {
+    scope: "project" | "global";
+    kind: "agents" | "claude";
+    rootPath: string;
+    targetPath: string;
+  }[];
+  installations?: {
+    scope: "project" | "global";
+    kind: "agents" | "claude";
+    targetPath: string;
+    status: "installed" | "updated" | "would-install" | "would-update" | "skipped" | "failed";
+    error?: string;
+  }[];
+  removals?: {
+    scope: "project" | "global";
+    kind: "agents" | "claude";
+    targetPath: string;
+    status: "removed" | "would-remove" | "missing" | "skipped" | "failed";
+    error?: string;
+  }[];
+};
 
 export type OutputFormat = "text" | "json";
 
@@ -93,11 +125,18 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
       if (result.list?.truncated) stream.write(`showing ${result.runs.length} of ${result.list.total}\n`);
     }
   }
+  if (result.deletedRuns) {
+    for (const run of result.deletedRuns) stream.write(`Deleted: ${run.id}\t${run.status}\t${run.name}\n`);
+  }
+  if (result.skippedRuns?.length) {
+    for (const run of result.skippedRuns) stream.write(`Skipped: ${run.id}\t${run.status}\t${run.name}\n`);
+  }
   if (result.forkRunId) stream.write(`Fork run: ${result.forkRunId}\n`);
   if (result.checks) {
     for (const check of result.checks) stream.write(`${check.status}\t${check.area}\t${check.message}\n`);
   }
   if (result.hooks) writeHooks(stream, result.hooks);
+  if (result.skill) writeSkillResult(stream, result.skill);
   if (result.irDigest) stream.write(`IR digest: ${result.irDigest}\n`);
   if (result.diagnostics?.length) {
     for (const diagnostic of result.diagnostics) {
@@ -107,6 +146,22 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
     }
   }
   return exitCode;
+}
+
+function writeSkillResult(stream: Writable, result: SkillCommandResult): void {
+  stream.write(`Skill: ${result.packageName}/${result.skillName}\n`);
+  stream.write(`Target: ${result.targetName}\n`);
+  stream.write(`Scope: ${result.scope}\n`);
+  if (result.installations) {
+    for (const installation of result.installations) {
+      stream.write(`${installation.status}\t${installation.kind}\t${installation.targetPath}${installation.error ? `\t${installation.error}` : ""}\n`);
+    }
+  }
+  if (result.removals) {
+    for (const removal of result.removals) {
+      stream.write(`${removal.status}\t${removal.kind}\t${removal.targetPath}${removal.error ? `\t${removal.error}` : ""}\n`);
+    }
+  }
 }
 
 function writeHooks(stream: Writable, scopes: HookListResult): void {

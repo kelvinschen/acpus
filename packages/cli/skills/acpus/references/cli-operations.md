@@ -87,14 +87,15 @@ Catalog packages live under project `.acpus/workflows/<name>/workflow.ts` or glo
 ## Run inspection
 
 ```sh
-acpus runs list
-acpus runs list --limit 50
-acpus runs list --all
+acpus runs inspect
 acpus runs inspect <run-id>
 acpus --json runs inspect <run-id>
 ```
 
-Use `runs inspect`, not legacy `runs show`. Read-only run inspection should not start or wake the daemon. It reports durable status plus derived execution state such as active, inactive, stale, terminal, or unknown.
+Use `runs inspect`, not legacy `runs show`. In interactive text terminals,
+omitting the run id opens the run picker. Read-only run inspection should not
+start or wake the daemon. It reports durable status plus derived execution state
+such as active, inactive, stale, terminal, or unknown.
 
 Compact text node rows use static ids and dynamic node keys. When a signal is awaiting input, text output should include the rendered prompt, expected payload guidance, and a copyable `runs signal` command.
 
@@ -127,12 +128,19 @@ acpus runs retry <run-id>
 acpus runs retry <run-id> --target <target>
 acpus runs cancel <run-id>
 acpus runs cancel <run-id> --target <target>
+acpus runs delete <run-id>
+acpus runs delete
 acpus runs signal <run-id> --target <signal-target> --payload '{"approved":true,"notes":"ok"}'
 acpus runs fork <run-id> --workflow replacement.workflow.ts --input '{"ready":true}'
 acpus runs fork <run-id> --target review --workflow replacement.workflow.ts
 ```
 
 Controls route through the workspace daemon and wait only until the control is confirmed applied, failed, or the fixed client wait expires. They do not wait for the entire run to become terminal after the control effect.
+
+`runs delete` is not a control command. It hard-deletes durable run state and
+run-local artifacts without starting the daemon, rejects active live runs, and
+opens a multi-select picker with an all-deletable option when no run id is
+provided.
 
 No `--no-wait` or custom timeout options are part of the next command surface.
 

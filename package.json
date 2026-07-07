@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "pnpm -r build",
+    "build:clean": "pnpm clean && pnpm build",
     "typecheck": "pnpm --filter @acpus/core build && pnpm -r typecheck",
     "test": "vitest run --typecheck",
     "test:watch": "vitest",

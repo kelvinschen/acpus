@@ -96,6 +96,7 @@ export type RuntimeStore = {
   listDaemonWork(now?: Date): DaemonWork;
   forkRun(runId: string, options?: ControlOptions): Promise<ForkRunRecord>;
   cleanupRunDirectories(options?: CleanupRunDirectoriesOptions): Promise<CleanupRunDirectoriesResult>;
+  deleteRun(runId: string): Promise<RunRecord | undefined>;
   writeHookJournal(entry: HookJournalEntry): void;
   getHookJournal(runId: string): HookJournalEntry[];
   pruneHookJournal(cutoff: Date): number;
@@ -1210,6 +1211,16 @@ class SqliteRuntimeStore implements RuntimeStore {
       }
     }
     return { staged, orphaned };
+  }
+
+  async deleteRun(runId: string): Promise<RunRecord | undefined> {
+    const run = this.getRunRecord(runId);
+    if (!run) return undefined;
+    const runDir = this.getRunDir(runId);
+    const absoluteRunDir = runDir ? containedRunDir(this.cwd, runDir) : undefined;
+    this.db.prepare("DELETE FROM runs WHERE id = ?").run(runId);
+    if (absoluteRunDir) await rm(absoluteRunDir, { recursive: true, force: true });
+    return run;
   }
 
   writeHookJournal(entry: HookJournalEntry): void {
