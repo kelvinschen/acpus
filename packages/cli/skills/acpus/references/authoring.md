@@ -96,7 +96,7 @@ const review = step("review").agent({
 });
 ```
 
-Top-level agent definitions use either `use` or `command`, never both. use `acpus runs retry` for control-plane retry after a failed run. Omit `sessionKey` by default; set it only when a multi-turn loop explicitly needs the agent to reuse one session. Omit `permissionMode` for normal authoring; the default is write-capable and usually gives coding agents better tool performance. Use `permissionMode: "approve-reads"` only for agents that are explicitly not allowed to write, such as audit-only inspection.
+Top-level agent definitions use either `use` or `command`, never both. Omit `outputSchema` when natural-language text is enough; the node returns `Expr<string>`. Use `acpus runs retry` for control-plane retry after a failed run. Omit `sessionKey` by default; set it only when a multi-turn loop explicitly needs the agent to reuse one session. Omit `permissionMode` for normal authoring; the default is write-capable and usually gives coding agents better tool performance. Use `permissionMode: "approve-reads"` only for agents that are explicitly not allowed to write, such as audit-only inspection.
 
 Signal nodes wait for operator input; use them only when the workflow needs external control:
 ```ts
