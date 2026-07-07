@@ -9,7 +9,7 @@ describe("acpus runs signal smoke", () => {
   it("accepts a signal payload and completes an awaiting run", async () => {
     await withTestWorkspace("runs-signal", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/signals/signal.workflow.ts");
-      const admitted = await runSourceCli(workspace, ["workflows", "run", workflow, "--json"]);
+      const admitted = await runSourceCli(workspace, ["workflow", "run", workflow, "--json"]);
       expect(admitted.exitCode).toBe(0);
       const runId = JSON.parse(admitted.stdout.trim().split("\n").at(-1)!).run.id;
       expect(JSON.parse(admitted.stdout.trim().split("\n").at(-1)!).run.status).toBe("awaiting");

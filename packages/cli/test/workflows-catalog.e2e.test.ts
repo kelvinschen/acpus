@@ -15,7 +15,7 @@ describe.concurrent("workflow catalog e2e", () => {
         await readFile(fixturePath("workflows/basic/valid.workflow.ts"), "utf8"),
       );
 
-      const result = await runSourceCli(workspace, ["workflows", "check", "release", "--json"]);
+      const result = await runSourceCli(workspace, ["workflow", "check", "release", "--json"]);
 
       expect(result.exitCode).toBe(0);
       expect(result.stderr).toBe("");
@@ -30,7 +30,7 @@ describe.concurrent("workflow catalog e2e", () => {
         },
       });
 
-      const run = await runSourceCli(workspace, ["workflows", "run", "release", "--project", "--input", "{\"ready\":true}", "--json"]);
+      const run = await runSourceCli(workspace, ["workflow", "run", "release", "--project", "--input", "{\"ready\":true}", "--json"]);
       expect(run.exitCode).toBe(0);
       expect(run.stderr).toBe("");
       const terminal = run.stdout.trim().split("\n").map(line => JSON.parse(line)).at(-1);
@@ -50,7 +50,7 @@ describe.concurrent("workflow catalog e2e", () => {
 
         const checked = await runSourceCli(
           workspace,
-          ["workflows", "check", "global-task", "--input", "{\"value\":\" ok \"}", "--json"],
+          ["workflow", "check", "global-task", "--input", "{\"value\":\" ok \"}", "--json"],
           { env: { HOME: home } },
         );
         expect(checked.exitCode).toBe(0);
@@ -66,7 +66,7 @@ describe.concurrent("workflow catalog e2e", () => {
 
         const result = await runSourceCli(
           workspace,
-          ["workflows", "run", "global-task", "--input", "{\"value\":\" ok \"}", "--json"],
+          ["workflow", "run", "global-task", "--input", "{\"value\":\" ok \"}", "--json"],
           { env: { HOME: home } },
         );
 
@@ -108,7 +108,7 @@ describe.concurrent("workflow catalog e2e", () => {
       );
       await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts", "workflow.ts");
 
-      const result = await runSourceCli(workspace, ["workflows", "check", "workflow.ts", "--json"]);
+      const result = await runSourceCli(workspace, ["workflow", "check", "workflow.ts", "--json"]);
 
       expect(result.exitCode).toBe(0);
       expect(result.stderr).toBe("");

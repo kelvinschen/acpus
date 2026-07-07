@@ -7,6 +7,7 @@ export type ResultPhase = "usage" | "check" | "compile" | "validate" | "run" | "
 
 export type WorkflowSummary = {
   name: string;
+  description?: string;
   irVersion: number;
   nodeCount: number;
   outputKeys: string[];
@@ -86,6 +87,7 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
   if (!result.hooks) stream.write(`${result.message ?? (result.ok ? "OK" : "Failed")}\n`);
   if (result.workflow) {
     stream.write(`Workflow: ${result.workflow.name}\n`);
+    if (result.workflow.description) stream.write(`Description: ${result.workflow.description}\n`);
     stream.write(`IR version: ${result.workflow.irVersion}\n`);
     stream.write(`Nodes: ${result.workflow.nodeCount}\n`);
     stream.write(`Outputs: ${result.workflow.outputKeys.length ? result.workflow.outputKeys.join(", ") : "(none)"}\n`);
@@ -233,6 +235,7 @@ export function summarizeWorkflow(ir: WorkflowIR): WorkflowSummary {
   };
   return {
     name: ir.name,
+    ...(ir.description === undefined ? {} : { description: ir.description }),
     irVersion: ir.irVersion,
     nodeCount: countNodes(ir.root),
     outputKeys: Object.keys(ir.outputs).sort(),

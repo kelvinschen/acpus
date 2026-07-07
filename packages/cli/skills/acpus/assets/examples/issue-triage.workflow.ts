@@ -4,6 +4,7 @@ import { summarizeIssue } from "./issue-triage.tasks.js";
 
 export default defineWorkflow({
   name: "issue-triage",
+  description: "Triage repository issues with metadata summarization, agent review, and routing decisions.",
   inputSchema: z.object({
     issues: z.array(z.object({
       id: z.string(),

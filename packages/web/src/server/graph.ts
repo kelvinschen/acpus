@@ -578,6 +578,7 @@ function staticOverlay(overlay: WorkflowVisualizationOverlay): WorkflowVisualiza
   return {
     workflow: {
       name: overlay.workflow.name,
+      ...(overlay.workflow.description === undefined ? {} : { description: overlay.workflow.description }),
       ...(overlay.workflow.runId === undefined ? {} : { runId: overlay.workflow.runId }),
       ...(overlay.workflow.status === undefined ? {} : { status: overlay.workflow.status }),
     },

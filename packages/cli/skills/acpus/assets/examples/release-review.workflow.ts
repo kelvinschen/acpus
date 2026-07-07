@@ -3,6 +3,7 @@ import { and, lte, md, template } from "acpus/expression";
 
 export default defineWorkflow({
   name: "release-review",
+  description: "Collect a release diff, review ship readiness, and enforce a maximum risk threshold.",
   inputSchema: z.object({
     repoPath: z.path(),
     baseRef: z.string().default("main"),

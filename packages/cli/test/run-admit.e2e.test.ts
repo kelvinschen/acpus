@@ -7,12 +7,12 @@ import { withIsolatedTestWorkspace, withTestWorkspace } from "./support/workspac
 
 const runIdPattern = /^\d{14}[A-F0-9]{20}$/;
 
-describe.concurrent("acpus workflows run smoke", () => {
+describe.concurrent("acpus workflow run smoke", () => {
   it("checks a workflow without validating missing submit input", async () => {
     await withTestWorkspace("workflow-check-no-input", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts");
 
-      const result = await runSourceCli(workspace, ["workflows", "check", workflow, "--json"]);
+      const result = await runSourceCli(workspace, ["workflow", "check", workflow, "--json"]);
 
       expect(result.exitCode).toBe(0);
       const output = JSON.parse(result.stdout);
@@ -32,7 +32,7 @@ describe.concurrent("acpus workflows run smoke", () => {
     await withTestWorkspace("run-pure", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts");
 
-      const result = await runSourceCli(workspace, ["workflows", "run", workflow, "--input", "{\"ready\":true}", "--json"]);
+      const result = await runSourceCli(workspace, ["workflow", "run", workflow, "--input", "{\"ready\":true}", "--json"]);
 
       expect(result.exitCode).toBe(0);
       const lines = result.stdout.trim().split("\n").map(line => JSON.parse(line));
@@ -67,7 +67,7 @@ export default defineWorkflow({
 });
 `);
 
-      const checked = await runSourceCli(workspace, ["workflows", "check", workflow, "--json"]);
+      const checked = await runSourceCli(workspace, ["workflow", "check", workflow, "--json"]);
       expect(checked.exitCode).toBe(0);
       expect(JSON.parse(checked.stdout)).toMatchObject({
         ok: true,
@@ -75,7 +75,7 @@ export default defineWorkflow({
         workflow: { name: "zero-install" },
       });
 
-      const ran = await runSourceCli(workspace, ["workflows", "run", workflow, "--input", "{\"ready\":true}", "--json"]);
+      const ran = await runSourceCli(workspace, ["workflow", "run", workflow, "--input", "{\"ready\":true}", "--json"]);
       expect(ran.exitCode).toBe(0);
       expect(JSON.parse(ran.stdout.trim().split("\n").at(-1)!)).toMatchObject({
         ok: true,
@@ -108,7 +108,7 @@ export default defineWorkflow({
 });
 `);
 
-      const checked = await runSourceCli(workspace, ["workflows", "check", workflow, "--json"]);
+      const checked = await runSourceCli(workspace, ["workflow", "check", workflow, "--json"]);
 
       expect(checked.exitCode).toBe(0);
       expect(JSON.parse(checked.stdout)).toMatchObject({
@@ -123,7 +123,7 @@ export default defineWorkflow({
     await withTestWorkspace("run-pure-text-observations", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts");
 
-      const result = await runSourceCli(workspace, ["workflows", "run", workflow, "--input", "{\"ready\":true}"]);
+      const result = await runSourceCli(workspace, ["workflow", "run", workflow, "--input", "{\"ready\":true}"]);
 
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toMatch(/✓ require_ready~[a-f0-9]+  \[assert\]  (?:<1s|\d+s)/);
@@ -135,7 +135,7 @@ export default defineWorkflow({
     await withTestWorkspace("run-invalid-json", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts");
 
-      const result = await runSourceCli(workspace, ["workflows", "run", workflow, "--input", "{", "--json"]);
+      const result = await runSourceCli(workspace, ["workflow", "run", workflow, "--input", "{", "--json"]);
 
       expect(result.exitCode).toBe(2);
       expect(JSON.parse(result.stdout)).toMatchObject({
@@ -150,7 +150,7 @@ export default defineWorkflow({
     await withTestWorkspace("run-invalid-schema-input", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts");
 
-      const result = await runSourceCli(workspace, ["workflows", "run", workflow, "--input", "{\"ready\":\"yes\"}", "--json"]);
+      const result = await runSourceCli(workspace, ["workflow", "run", workflow, "--input", "{\"ready\":\"yes\"}", "--json"]);
 
       expect(result.exitCode).toBe(1);
       expect(JSON.parse(result.stdout)).toMatchObject({
@@ -166,7 +166,7 @@ export default defineWorkflow({
       const workflow = await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts");
 
       for (const agents of ["{", "[]"]) {
-        const result = await runSourceCli(workspace, ["workflows", "run", workflow, "--agents", agents, "--json"]);
+        const result = await runSourceCli(workspace, ["workflow", "run", workflow, "--agents", agents, "--json"]);
 
         expect(result.exitCode).toBe(2);
         expect(JSON.parse(result.stdout)).toMatchObject({
@@ -182,7 +182,7 @@ export default defineWorkflow({
     await withTestWorkspace("run-background", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/signals/signal.workflow.ts");
 
-      const result = await runSourceCli(workspace, ["workflows", "run", workflow, "--background", "--json"]);
+      const result = await runSourceCli(workspace, ["workflow", "run", workflow, "--background", "--json"]);
 
       expect(result.exitCode).toBe(0);
       expect(JSON.parse(result.stdout)).toMatchObject({
@@ -221,7 +221,7 @@ export default defineWorkflow({
 });
 `);
 
-      const admitted = await runSourceCli(workspace, ["workflows", "run", workflow, "--input", "{\"value\":\" ok \"}", "--background", "--json"]);
+      const admitted = await runSourceCli(workspace, ["workflow", "run", workflow, "--input", "{\"value\":\" ok \"}", "--background", "--json"]);
       expect(admitted.exitCode).toBe(0);
       const runId = JSON.parse(admitted.stdout).run.id as string;
       expect(runId).toMatch(runIdPattern);

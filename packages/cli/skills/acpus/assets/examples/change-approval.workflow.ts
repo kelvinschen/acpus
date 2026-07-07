@@ -9,6 +9,7 @@ const PlanOut = z.object({
 
 export default defineWorkflow({
   name: "change-approval",
+  description: "Draft and refine an implementation plan, then optionally wait for human approval.",
   inputSchema: z.object({
     repoPath: z.path(),
     request: z.string(),

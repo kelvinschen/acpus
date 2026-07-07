@@ -81,6 +81,7 @@ function useInspectorPresence(target: GraphInspectionTarget | undefined, onExite
 function StaticWorkflowInspector({ data }: { data: StaticGraphData }) {
   const workflow = data.workflow ?? {
     name: data.graph.workflow.name,
+    ...(data.graph.workflow.description === undefined ? {} : { description: data.graph.workflow.description }),
     irVersion: data.graph.version ?? 0,
     nodeCount: data.graph.nodes.length,
   };
@@ -88,6 +89,7 @@ function StaticWorkflowInspector({ data }: { data: StaticGraphData }) {
     <div className="inspector-stack">
       <InspectorSection title="Workflow">
         <KeyValue label="Name" value={workflow.name} />
+        {workflow.description && <KeyValue label="Description" value={workflow.description} />}
         <KeyValue label="IR version" value={String(workflow.irVersion)} />
         <KeyValue label="Node count" value={String(workflow.nodeCount)} />
         {data.irDigest && <KeyValue label="IR digest" value={data.irDigest} />}

@@ -16,7 +16,7 @@ describe.concurrent("acpus runs inspect smoke", () => {
   it("inspects and validates fork agent overrides for an admitted run", async () => {
     await withTestWorkspace("runs-inspect", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts");
-      const admitted = await runSourceCli(workspace, ["workflows", "run", workflow, "--input", "{\"ready\":true}", "--json"]);
+      const admitted = await runSourceCli(workspace, ["workflow", "run", workflow, "--input", "{\"ready\":true}", "--json"]);
       expect(admitted.exitCode).toBe(0);
       const runId = JSON.parse(admitted.stdout.trim().split("\n").at(-1)!).run.id;
 
@@ -52,7 +52,7 @@ describe.concurrent("acpus runs inspect smoke", () => {
   it("passes unsafe fork reuse through to runtime audit events", async () => {
     await withTestWorkspace("runs-fork-unsafe-reuse", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts");
-      const admitted = await runSourceCli(workspace, ["workflows", "run", workflow, "--input", "{\"ready\":true}", "--json"]);
+      const admitted = await runSourceCli(workspace, ["workflow", "run", workflow, "--input", "{\"ready\":true}", "--json"]);
       expect(admitted.exitCode).toBe(0);
       const runId = JSON.parse(admitted.stdout.trim().split("\n").at(-1)!).run.id;
 
@@ -74,7 +74,7 @@ describe.concurrent("acpus runs inspect smoke", () => {
   it("prints compact actionable signal guidance in text mode", async () => {
     await withTestWorkspace("runs-inspect-signal-text", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/signals/signal.workflow.ts");
-      const admitted = await runSourceCli(workspace, ["workflows", "run", workflow, "--json"]);
+      const admitted = await runSourceCli(workspace, ["workflow", "run", workflow, "--json"]);
       expect(admitted.exitCode).toBe(0);
       const runId = JSON.parse(admitted.stdout.trim().split("\n").at(-1)!).run.id;
 

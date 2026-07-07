@@ -63,6 +63,7 @@ export type ArtifactReference = {
 export type WebGraph = {
   workflow: {
     name: string;
+    description?: string;
     runId?: string;
     status?: string;
     dynamicVersion?: number;
@@ -314,7 +315,7 @@ export type WorkflowVisualizationResult =
   | {
     status: "ready";
     graph: WebGraph;
-    workflow: { name: string; irVersion: number; nodeCount: number };
+    workflow: { name: string; description?: string; irVersion: number; nodeCount: number };
     contract: { inputSchema?: unknown; outputs: Record<string, unknown> };
     diagnostics: unknown[];
     irDigest: string;

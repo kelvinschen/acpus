@@ -27,6 +27,7 @@ import { template } from "acpus/expression";
 
 export default defineWorkflow({
   name: "my-workflow",
+  description: "Analyze a topic in a repository.",
   inputSchema: z.object({ repoPath: z.path(), topic: z.string() }),
   agents: { worker: { use: "codex" } },
 }).build(({ input, agents, meta, step }) => {
@@ -146,4 +147,4 @@ Boundary schemas use `z` from `acpus/core`. Keep workflow input, Agent output, S
 
 ## Checks
 
-Run `acpus workflows check <workflow.ts-or-catalog>` before admitting a run. It prepares the workflow in memory and catches TypeScript diagnostics plus Acpus authoring diagnostics such as Expr truthiness, native operators over Expr values, dynamic node ids, task callsites that cannot be joined to task metadata, inline task captures, and non-admissible outputs.
+Run `acpus workflow check <workflow.ts-or-catalog>` before admitting a run. It prepares the workflow in memory and catches TypeScript diagnostics plus Acpus authoring diagnostics such as Expr truthiness, native operators over Expr values, dynamic node ids, task callsites that cannot be joined to task metadata, inline task captures, and non-admissible outputs.

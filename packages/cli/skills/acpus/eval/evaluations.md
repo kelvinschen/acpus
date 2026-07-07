@@ -12,7 +12,7 @@ Use these scenarios to test that the Skill guides agents toward current Acpus be
 - Uses a TypeScript `workflow.ts`.
 - Uses `step("...").task({ run: { input, exec } })`.
 - Does not add `outputSchema` to the task.
-- Suggests `acpus workflows check workflow.ts` before `run`.
+- Suggests `acpus workflow check workflow.ts` before `run`.
 
 ## Evaluation 2: Recover a failed run after source fix
 
@@ -44,4 +44,4 @@ Use these scenarios to test that the Skill guides agents toward current Acpus be
 
 - Explains `input.ready` is an expression token, not runtime boolean.
 - Replaces JavaScript control flow with graph-level `step().if` or expression helpers such as `and`, `eq`, `ifElse`.
-- Mentions `workflows check` catches Expr truthiness misuse.
+- Mentions `workflow check` catches Expr truthiness misuse.

@@ -4,7 +4,7 @@
 
 ```sh
 acpus --help
-acpus workflows --help
+acpus workflow --help
 acpus runs --help
 acpus hooks --help
 acpus <cmd> --help
@@ -17,14 +17,14 @@ Prefer command help for exact options. The skill should describe operating strat
 ## Operating defaults
 
 - Run `acpus doctor` when the workspace health is uncertain.
-- Use `acpus workflows check <workflow.ts-or-catalog>` before `run`.
-- Use `acpus workflows list` and `acpus workflows show <name>` for catalog discovery.
+- Use `acpus workflow check <workflow.ts-or-catalog>` before `run`.
+- Use `acpus workflow list` and `acpus workflow show <name>` for catalog discovery.
 - Use `acpus runs inspect [run-id]` before any retry, fork, signal, pause, resume, cancel, or delete.
 - Use `--json` only when structured parsing is needed. Text output is usually better for human diagnosis.
 
-`workflows check` prepares the workflow in memory and reports diagnostics, digests, and workflow summary data. It does not admit a runtime run and does not write durable preflight artifacts.
+`workflow check` prepares the workflow in memory and reports diagnostics, digests, and workflow summary data. It does not admit a runtime run and does not write durable preflight artifacts.
 
-Agent nodes and agent declarations are validated by `workflows check`, but check does not invoke `acpx`, start an agent session, run Task or Signal nodes, admit a run, or count as an Agent workflow execution.
+Agent nodes and agent declarations are validated by `workflow check`, but check does not invoke `acpx`, start an agent session, run Task or Signal nodes, admit a run, or count as an Agent workflow execution.
 
 Failure phases:
 
@@ -43,7 +43,7 @@ Foreground `--json` emits newline-delimited JSON: admitted record, observation r
 
 For workflows that must receive a Signal, `--background` is usually the cleanest operator loop:
 
-1. Run once with `acpus workflows run <workflow.ts> --background --input '<json>'`.
+1. Run once with `acpus workflow run <workflow.ts> --background --input '<json>'`.
 2. Poll with `acpus runs inspect <run-id>` until the signal row is awaiting.
 3. Send a schema-valid payload to the dynamic signal target, for example `acpus runs signal <run-id> --target approval~abc123 --payload '{"approved":true,"notes":"ok"}'`.
 4. Inspect again for the terminal state. A denial payload is still valid signal handling and may intentionally drive a downstream assert failure.
@@ -67,7 +67,7 @@ Text inspection is intentionally compact. For composite-heavy runs, JSON inspect
 Agent overrides are JSON objects keyed by declared top-level agent names:
 
 ```sh
-acpus workflows run review.workflow.ts \
+acpus workflow run review.workflow.ts \
   --agents '{"reviewer":{"use":"codex","model":"opus"}}'
 
 acpus runs fork <run-id> \

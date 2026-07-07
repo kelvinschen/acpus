@@ -7,9 +7,8 @@ runtime, you author them as typed **TypeScript** modules that compile to a froze
 serializable IR which a runtime consumes.
 
 > **Status: foundation rewrite in progress.** This repository currently contains
-> the new core (`@acpus/core`) — the authoring and compile layer — plus the first
-> `acpus run --dry-run` CLI gate. The runtime and TUI are being rebuilt on top of
-> them. The previous YAML Workflow-Spec
+> the new TypeScript workflow core (`@acpus/core`), workflow compiler, durable
+> runtime, and `acpus workflow` CLI surface. The previous YAML Workflow-Spec
 > implementation (the full runtime, TUI, CLI, catalog, skill, and site) is
 > preserved, read-only, under [`legacy/`](legacy/README.md).
 
@@ -33,13 +32,13 @@ The new `acpus` package exposes workflow check/run commands:
 
 ```sh
 pnpm --filter acpus build
-pnpm exec acpus workflows check packages/workflow-compiler/test/fixtures/workflows/basic/valid.workflow.ts
-pnpm exec acpus workflows run packages/workflow-compiler/test/fixtures/workflows/basic/valid.workflow.ts --input '{"ready":true}'
+pnpm exec acpus workflow check packages/workflow-compiler/test/fixtures/workflows/basic/valid.workflow.ts
+pnpm exec acpus workflow run packages/workflow-compiler/test/fixtures/workflows/basic/valid.workflow.ts --input '{"ready":true}'
 ```
 
-`acpus workflows check <workflow.ts>` typechecks, compiles, validates, and
-writes `.acpus/.local/preflight/<id>/` with frozen IR and a lock file.
-`acpus workflows run <workflow.ts>` admits a durable run under
+`acpus workflow check <workflow.ts>` typechecks, compiles, and validates
+without admitting runtime state. `acpus workflow run <workflow.ts>` admits a
+durable run under
 `.acpus/.local/state/runtime.db` and `.acpus/.local/runs/<run-id>/`.
 
 ## Development

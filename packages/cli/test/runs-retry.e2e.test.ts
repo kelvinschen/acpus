@@ -19,7 +19,7 @@ describe("acpus runs retry smoke", () => {
   it("forwards a targeted retry option", async () => {
     await withTestWorkspace("runs-retry-target", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts");
-      const admitted = await runSourceCli(workspace, ["workflows", "run", workflow, "--input", "{\"ready\":false}", "--json"]);
+      const admitted = await runSourceCli(workspace, ["workflow", "run", workflow, "--input", "{\"ready\":false}", "--json"]);
       expect(admitted.exitCode).toBe(1);
       const runId = JSON.parse(admitted.stdout.trim().split("\n").at(-1)!).run.id;
 

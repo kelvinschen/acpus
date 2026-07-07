@@ -38,6 +38,8 @@ describe("workflow visualization helpers", () => {
     const result = workflowVisualizationFromPrepared(preparedWorkflow());
 
     expect(result.status).toBe("ready");
+    expect(result.workflow.description).toBe("Prepared workflow description.");
+    expect(result.graph.workflow.description).toBe("Prepared workflow description.");
     expect(result.contract.inputSchema).toMatchObject({ kind: "object" });
     expect(result.contract.outputs).toEqual(expect.objectContaining({
       approved: expect.any(Object),
@@ -112,6 +114,7 @@ function preparedWorkflow(): PreparedWorkflow {
   const ir: WorkflowIR = {
     irVersion: 2,
     name: "prepared-static",
+    description: "Prepared workflow description.",
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
     agents: {},
     root: {

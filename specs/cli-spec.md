@@ -20,16 +20,17 @@ failures to stable CLI phases and exit codes.
 - The `acpus` package MUST NOT expose a root authoring entrypoint that mixes
   workflow DSL, expression helpers, and task libraries.
 - The CLI command surface MUST be implemented with Commander.
-- The CLI MUST support `acpus wf` as an alias for `acpus workflows`.
-- The CLI MUST support `acpus workflows check <workflow-module>`.
-- The CLI MUST support `acpus workflows run <workflow-module>`.
-- The CLI MUST support `acpus workflows run <workflow-module> --background`.
-- The CLI MUST support `acpus workflows viz <workflow-module> --out <file.html>`.
-- The CLI MUST support `--force` on `workflows viz` to overwrite an existing output file.
+- The CLI MUST support `acpus wf` as an alias for `acpus workflow`.
+- The CLI MUST NOT support `acpus workflows` as a compatibility command.
+- The CLI MUST support `acpus workflow check <workflow-module>`.
+- The CLI MUST support `acpus workflow run <workflow-module>`.
+- The CLI MUST support `acpus workflow run <workflow-module> --background`.
+- The CLI MUST support `acpus workflow viz <workflow-module> --out <file.html>`.
+- The CLI MUST support `--force` on `workflow viz` to overwrite an existing output file.
 - The CLI MUST support `--input <json>` and `--agents <json>` on workflow
   check and run commands.
-- The CLI MUST support `acpus workflows list [--project | --global]`.
-- The CLI MUST support `acpus workflows show <name> [--project | --global]`.
+- The CLI MUST support `acpus workflow list [--project | --global]`.
+- The CLI MUST support `acpus workflow show <name> [--project | --global]`.
 - The CLI MUST support `--project` and `--global` on workflow check and run
   commands as explicit catalog scope selectors.
 - The CLI MUST support `acpus runs inspect [run-id]`.
@@ -60,11 +61,11 @@ failures to stable CLI phases and exit codes.
 
 ### Delegation Boundaries
 
-- `workflows check` MUST call workflow preparation without creating runtime
+- `workflow check` MUST call workflow preparation without creating runtime
   state or writing durable preflight artifacts.
-- `workflows check --input` MUST normalize and validate workflow input without
+- `workflow check --input` MUST normalize and validate workflow input without
   admitting a run.
-- `workflows check --agents` MUST validate agent overrides against declared
+- `workflow check --agents` MUST validate agent overrides against declared
   workflow agents without admitting a run.
 - Workflow catalog discovery MUST inspect only first-level directories under
   `<workspace>/.acpus/workflows` and `$HOME/.acpus/workflows`.
@@ -73,15 +74,15 @@ failures to stable CLI phases and exit codes.
 - Workflow catalog discovery MUST ignore non-package directories, invalid
   package names, direct `.workflow.ts` files under the catalog root, and nested
   package-looking directories inside a catalog package.
-- `workflows list` and `workflows show` MUST NOT compile, import, or validate
+- `workflow list` and `workflow show` MUST NOT compile, import, or validate
   workflow modules.
 - Unscoped catalog lookup MUST succeed only when the catalog name is unique
   across project and global scopes.
 - Scoped catalog lookup MUST search only the selected project or global scope.
-- `workflows check`, `workflows run`, and `workflows viz` MUST resolve non-path-like workflow
+- `workflow check`, `workflow run`, and `workflow viz` MUST resolve non-path-like workflow
   arguments as catalog names and then use the resolved `workflow.ts` with
   the existing workflow preparation flow.
-- `workflows check`, `workflows run`, and `workflows viz` MUST keep path-like workflow arguments
+- `workflow check`, `workflow run`, and `workflow viz` MUST keep path-like workflow arguments
   on the existing direct path preparation flow unless `--project` or `--global`
   is passed.
 - Global catalog entries MUST be materialized into a content-addressed
@@ -89,14 +90,14 @@ failures to stable CLI phases and exit codes.
   workflow preparation.
 - Global catalog materialization MUST follow symlinks and copy target content.
 - Runtime run records MUST NOT persist catalog metadata.
-- `workflows run` MUST call workflow preparation, normalize submitted input,
+- `workflow run` MUST call workflow preparation, normalize submitted input,
   validate agent overrides, admit a durable run, start or wake the workspace
   daemon, call daemon `startRun(runId)`, and observe daemon-owned execution until
   the run reaches a terminal durable status.
-- `workflows run` MUST NOT synchronously advance scheduler work in the CLI
+- `workflow run` MUST NOT synchronously advance scheduler work in the CLI
   process, hold runtime run leases, own active attempts, or create runtime
   execution abort controllers.
-- `workflows run --background` MUST admit a durable run, start or wake the
+- `workflow run --background` MUST admit a durable run, start or wake the
   workspace daemon, call daemon `startRun(runId)`, and return only after the
   daemon accepts responsibility for the admitted run.
 - Invalid JSON input MUST fail as a usage error before workflow preparation.
@@ -104,16 +105,16 @@ failures to stable CLI phases and exit codes.
   usage error before workflow preparation or runtime mutation.
 - Workflow preparation failures MUST be mapped to `check`, `compile`, or
   `validate` result phases.
-- `workflows viz` MUST generate a single self-contained HTML file that renders
+- `workflow viz` MUST generate a single self-contained HTML file that renders
   the static workflow graph without live WebUI API calls.
-- `workflows viz` HTML output MUST visually align with the WebUI static graph
+- `workflow viz` HTML output MUST visually align with the WebUI static graph
   renderer.
-- `workflows viz` HTML output MAY embed the WebUI static graph React runtime,
+- `workflow viz` HTML output MAY embed the WebUI static graph React runtime,
   but MUST NOT embed live WebUI API polling, source browsing, runtime controls,
   or the Workflows source picker.
-- `workflows viz --out` MUST fail before overwriting an existing file unless
+- `workflow viz --out` MUST fail before overwriting an existing file unless
   `--force` is passed.
-- `workflows viz` MUST reuse `@acpus/web` workflow graph and HTML rendering
+- `workflow viz` MUST reuse `@acpus/web` workflow graph and HTML rendering
   helpers.
 - CLI workflow preparation adapters MUST consume `@acpus/workflow-compiler`
   typed preparation results at the package boundary and map tagged failures to
@@ -211,7 +212,7 @@ failures to stable CLI phases and exit codes.
 - `hooks list` text output MUST group hooks by project and global scope when
   unscoped, and MUST include the relevant hooks file path for each displayed
   scope.
-- On `Ctrl-C` during foreground `workflows run`, the CLI MUST detach from
+- On `Ctrl-C` during foreground `workflow run`, the CLI MUST detach from
   observation without canceling the daemon-owned run, print the run id and an
   explicit `acpus runs cancel <run-id>` command, and exit.
 - The CLI MUST NOT implement hidden terminal-signal controls such as
@@ -229,11 +230,11 @@ failures to stable CLI phases and exit codes.
   `validate`, `run`, `inspect`, `control`, `delete`, `doctor`, `viz`, and
   `skill`.
 - Non-streaming commands MUST emit one JSON object.
-- Foreground `workflows run --json` MUST emit newline-delimited JSON records:
+- Foreground `workflow run --json` MUST emit newline-delimited JSON records:
   an admitted record, daemon observation records, and a terminal summary record.
-- Foreground `workflows run` text output MUST include bounded projection
+- Foreground `workflow run` text output MUST include bounded projection
   observations before the final run summary.
-- Foreground `workflows run` text observations and final run summaries MUST use
+- Foreground `workflow run` text observations and final run summaries MUST use
   the same compact run status surface vocabulary as `runs inspect`.
 - Text output MUST summarize successful check, run, inspection, control, doctor,
   and error results in human-readable form.
@@ -277,17 +278,17 @@ failures to stable CLI phases and exit codes.
 - Workflow catalog JSON output MUST expose `scope`, `name`, `packagePath`,
   `entryPath`, `status`, and `requiresScope` for catalog entries.
 - Workflow catalog path fields MUST be absolute paths.
-- `workflows list` MUST sort catalog entries by `name ASC`, with project
+- `workflow list` MUST sort catalog entries by `name ASC`, with project
   entries before global entries for equal names.
 - Project and global entries with the same name MUST keep
   `status: "available"` and set `requiresScope: true`.
 - Usage errors MUST exit with code `2`.
 - Successful check, run, inspection, control, delete, and doctor commands MUST
   exit with code `0`.
-- Foreground `workflows run` completion MUST choose its exit code from the
+- Foreground `workflow run` completion MUST choose its exit code from the
   durable terminal run status: `completed` exits `0`, while `failed` and
   `canceled` exit `1`.
-- Foreground `workflows run` interrupted by `Ctrl-C` after successful detach
+- Foreground `workflow run` interrupted by `Ctrl-C` after successful detach
   MUST exit `0` without canceling the daemon-owned run.
 - Run control timeout MUST exit `1`.
 - Check, compile, validation, runtime admission, run lookup, runtime control,
@@ -297,7 +298,7 @@ failures to stable CLI phases and exit codes.
 ## Verification
 
 - Tests MUST cover successful workflow check command output without durable preflight artifacts.
-- Tests MUST cover `workflows viz` HTML output, existing-file failure, and
+- Tests MUST cover `workflow viz` HTML output, existing-file failure, and
   `--force` overwrite behavior.
 - Tests MUST cover foreground run output for a pure completed workflow.
 - Tests MUST cover foreground text observations and JSONL admitted,
@@ -328,7 +329,7 @@ failures to stable CLI phases and exit codes.
   behavior, and absence of `--no-wait` and timeout configuration.
 - Tests MUST cover `runs resume` and `runs signal` start/wake behavior for
   daemon-idle-stopped paused or signal-waiting runs.
-- Tests MUST cover foreground `workflows run` daemon observation, final exit
+- Tests MUST cover foreground `workflow run` daemon observation, final exit
   code from durable terminal status, and `Ctrl-C` detach without cancellation.
 - Tests MUST cover workflow catalog discovery, scope filtering, stable ordering,
   ambiguity handling, catalog-backed check and run, global materialization,

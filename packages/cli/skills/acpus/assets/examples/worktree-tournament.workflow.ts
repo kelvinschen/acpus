@@ -10,6 +10,7 @@ const ImplementationOut = z.object({
 
 export default defineWorkflow({
   name: "worktree-tournament",
+  description: "Create competing worktree implementations and have an agent judge the best result.",
   inputSchema: z.object({
     repoPath: z.path(),
     worktreeRoot: z.path(),

@@ -10,6 +10,7 @@ import type {
 export type WorkflowVisualizationOverlay = {
   workflow: {
     name: string;
+    description?: string;
     runId?: string;
     status?: string;
     dynamicVersion?: number;
@@ -71,6 +72,7 @@ export function createWorkflowVisualizationOverlay(
   return {
     workflow: {
       name: ir.name,
+      ...(ir.description === undefined ? {} : { description: ir.description }),
       ...(options.runId === undefined ? {} : { runId: options.runId }),
       ...(options.status === undefined ? {} : { status: options.status }),
       ...(dynamic === undefined ? {} : { dynamicVersion: dynamic.version }),

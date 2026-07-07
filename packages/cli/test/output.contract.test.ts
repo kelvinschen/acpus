@@ -14,6 +14,7 @@ describe("CLI result output contracts", () => {
       phase: "check",
       workflow: {
         name: "cli-valid",
+        description: "Validate CLI workflow summaries.",
         irVersion: 2,
         nodeCount: 1,
         outputKeys: ["ready"],
@@ -166,6 +167,12 @@ describe("CLI result output contracts", () => {
       },
     });
     expect(stderr.text).toBe("");
+
+    const textStdout = new CaptureStream();
+    const textStderr = new CaptureStream();
+    expect(writeResult(checkResult(), "text", { stdout: textStdout, stderr: textStderr }, 0)).toBe(0);
+    expect(textStdout.text).toContain("Description: Validate CLI workflow summaries.");
+    expect(textStderr.text).toBe("");
   });
 
   it("writes text check summaries and failed results to the correct streams", () => {
@@ -239,6 +246,7 @@ function checkResult(): CliResult {
     message: "Workflow check passed.",
     workflow: {
       name: "cli-valid",
+      description: "Validate CLI workflow summaries.",
       irVersion: 2,
       nodeCount: 1,
       outputKeys: ["ready"],

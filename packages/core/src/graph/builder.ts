@@ -46,6 +46,7 @@ type WorkflowMeta = {
 
 export type WorkflowConfig<InputSchema extends Schema<any> | undefined, Agents extends AgentMap | undefined> = {
   name: string;
+  description?: string;
   inputSchema?: InputSchema;
   agents?: Agents;
   defaults?: {
@@ -391,6 +392,7 @@ export function compileWorkflowDefinition(definition: WorkflowDefinition<any, an
   const ir = stripUndefined({
     irVersion: 2,
     name: definition.config.name,
+    description: definition.config.description,
     inputSchema: definition.config.inputSchema ? toSchemaIR(definition.config.inputSchema) : undefined,
     agents: normalizeAgents(definition.config.agents, diagnostics),
     root: { nodes: builder.nodes },

@@ -734,6 +734,7 @@ function StaticWorkflowInspector({ result }: { result: Extract<WorkflowVisualiza
     <div className="inspector-stack">
       <InspectorSection title="Workflow">
         <KeyValue label="Name" value={result.workflow.name} />
+        {result.workflow.description && <KeyValue label="Description" value={result.workflow.description} />}
         <KeyValue label="IR version" value={String(result.workflow.irVersion)} />
         <KeyValue label="Node count" value={String(result.workflow.nodeCount)} />
         <KeyValue label="IR digest" value={result.irDigest} />

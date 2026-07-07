@@ -53,6 +53,11 @@ describe.concurrent("runtime admission use cases", () => {
         expect.objectContaining({ type: "run.admitted" }),
         expect.objectContaining({ type: "run.completed" }),
       ]));
+      const admittedPayload = JSON.parse(String(runtimeRows(workspace, "SELECT payload_json FROM run_events WHERE run_id = ? AND type = 'run.admitted'", admitted.run.id)[0]?.payload_json));
+      expect(admittedPayload.workflow).toMatchObject({
+        name: "cli-valid",
+        description: "Validate a boolean ready input.",
+      });
     });
   });
 

@@ -5,7 +5,7 @@ import { createHooksCommand } from "./commands/hooks.js";
 import { createRunsCommand } from "./commands/runs.js";
 import { createSkillCommand } from "./commands/skill.js";
 import { createWebCommand } from "./commands/web.js";
-import { createWorkflowsCommand } from "./commands/workflows.js";
+import { createWorkflowCommand } from "./commands/workflow.js";
 import { CliError, usageError } from "./errors.js";
 import { writeResult } from "./output.js";
 
@@ -59,7 +59,7 @@ function createProgram(io: CliIo, setExitCode: (code: number) => void, wantsJson
       outputError: (text, write) => write(text),
     });
 
-  program.addCommand(createWorkflowsCommand({
+  program.addCommand(createWorkflowCommand({
     ...io,
     wantsJson,
     setExitCode,

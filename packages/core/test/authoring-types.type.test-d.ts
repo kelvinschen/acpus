@@ -17,7 +17,7 @@ import {
 import { md, pick, template, type Expr } from "@acpus/expression";
 
 test("step declaration object exposes kind methods", () => {
-  defineWorkflow({ name: "typed-step-declaration" }).build(({ input, step }) => {
+  defineWorkflow({ name: "typed-step-declaration", description: "Type-level workflow metadata." }).build(({ input, step }) => {
     // @ts-expect-error workflows without inputSchema have no input fields.
     input.repoPath;
     const declaration = step("require_true");

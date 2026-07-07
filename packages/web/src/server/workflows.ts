@@ -28,7 +28,7 @@ export type WorkflowVisualizationResult =
   | {
     status: "ready";
     graph: WebGraph;
-    workflow: { name: string; irVersion: number; nodeCount: number };
+    workflow: { name: string; description?: string; irVersion: number; nodeCount: number };
     contract: { inputSchema?: WorkflowIR["inputSchema"]; outputs: WorkflowIR["outputs"] };
     diagnostics: WorkflowIR["diagnostics"];
     irDigest: string;
@@ -122,6 +122,7 @@ export function workflowVisualizationFromPrepared(prepared: PreparedWorkflow): E
     graph: workflowIrToWebGraph(prepared.ir),
     workflow: {
       name: prepared.ir.name,
+      ...(prepared.ir.description === undefined ? {} : { description: prepared.ir.description }),
       irVersion: prepared.ir.irVersion,
       nodeCount: countNodes(prepared.ir.root),
     },

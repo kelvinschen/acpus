@@ -209,6 +209,7 @@ export type WorkflowLockIR = {
 export type WorkflowIR = {
   irVersion: 2;
   name: string;
+  description?: string;
   inputSchema?: SchemaIR;
   agents: Record<string, AgentDefinitionIR>;
   root: ScopeIR;

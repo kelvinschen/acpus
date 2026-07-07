@@ -15,6 +15,12 @@ function minimalWorkflow(overrides: Partial<WorkflowIR> = {}): WorkflowIR {
 }
 
 describe("WorkflowIR diagnostics contract", () => {
+  it("accepts optional workflow description metadata", () => {
+    expect(validateWorkflowIR(minimalWorkflow({
+      description: "Summarize workflow intent for operators.",
+    }))).toEqual([]);
+  });
+
   it("accepts agent sessionKey templates", () => {
     const ir = minimalWorkflow({
       agents: { reviewer: { kind: "agent_definition", use: "codex" } },

@@ -23,7 +23,7 @@
 | Symptom | Likely phase | Fix |
 | --- | --- | --- |
 | invalid JSON input or invalid CLI option | `usage` | Fix command syntax before preparing. |
-| TypeScript diagnostics, Expr in JS truthiness, task capture, output admissibility | `check` | Edit workflow TypeScript, then run `workflows check` again. |
+| TypeScript diagnostics, Expr in JS truthiness, task capture, output admissibility | `check` | Edit workflow TypeScript, then run `workflow check` again. |
 | module import failed, default export invalid, build callback throws | `compile` | Fix module exports/imports or build-time code. |
 | unknown IR fields, malformed task target, invalid schema/expression IR | `validate` | Fix authoring shape or Acpus package mismatch. |
 | task command failed, agent failed, signal timed out, assert false | `run` | Inspect artifacts; retry/fork/signal depending on cause. |

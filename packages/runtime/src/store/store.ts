@@ -3518,6 +3518,7 @@ async function isStalePath(path: string, olderThanMs: number): Promise<boolean> 
 
 function summarizeWorkflowForEvent(ir: WorkflowIR): {
   name: string;
+  description?: string;
   irVersion: number;
   nodeCount: number;
   outputKeys: string[];
@@ -3525,6 +3526,7 @@ function summarizeWorkflowForEvent(ir: WorkflowIR): {
 } {
   return {
     name: ir.name,
+    ...(ir.description === undefined ? {} : { description: ir.description }),
     irVersion: ir.irVersion,
     nodeCount: countNodes(ir.root),
     outputKeys: Object.keys(ir.outputs).sort(),

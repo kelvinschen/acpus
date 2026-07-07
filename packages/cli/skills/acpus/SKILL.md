@@ -1,6 +1,6 @@
 ---
 name: acpus
-description: Helps author, check, run, inspect, recover, and explain Acpus TypeScript workflows, durable runs, agent/task/signal nodes, runtime controls, catalog entries, hooks.json. Use when the user mentions Acpus, acpus workflows/runs/hooks, TypeScript workflow modules, WorkflowIR, task.define, acpus/core, acpus/expression, acpus/tasks/git, or retry/fork/signal/pause/resume/cancel operations.
+description: Helps author, check, run, inspect, recover, and explain Acpus TypeScript workflows, durable runs, agent/task/signal nodes, runtime controls, catalog entries, hooks.json. Use when the user mentions Acpus, acpus workflow/runs/hooks, TypeScript workflow modules, WorkflowIR, task.define, acpus/core, acpus/expression, acpus/tasks/git, or retry/fork/signal/pause/resume/cancel operations.
 ---
 
 # Acpus
@@ -17,8 +17,8 @@ Assume the user can run the CLI as `acpus`. If the CLI is unavailable, ask wheth
 | --- | --- | --- |
 | Explain | understand Acpus concepts, node types, WorkflowIR, expressions, or durable runs | Answer conceptually; use the focused reference for the topic. |
 | Author / adapt | create or edit a TypeScript workflow module, task, agent, signal, composite, schema, or prompt | Read `references/authoring.md`, then examples under `assets/examples/`. |
-| Check | validate a workflow before running it | Use `acpus workflows check <workflow.ts>`; read `references/cli-operations.md`. |
-| Run | start an existing workflow or catalog entry | Use `acpus workflows run <workflow-or-catalog>`; read `references/cli-operations.md`. |
+| Check | validate a workflow before running it | Use `acpus workflow check <workflow.ts>`; read `references/cli-operations.md`. |
+| Run | start an existing workflow or catalog entry | Use `acpus workflow run <workflow-or-catalog>`; read `references/cli-operations.md`. |
 | Inspect / monitor | inspect a run, pick a run interactively, observe status, diagnose awaiting signal or stale execution | Use `acpus runs inspect [run-id]`; read `references/runtime-recovery.md`. |
 | Recover / control | pause, resume, retry, cancel, fork, or signal a run | Inspect first; then choose the smallest safe control in `references/runtime-recovery.md`. |
 | Configure hooks | validate or explain runtime hook config | Read `references/hooks-json.md`. |
@@ -40,6 +40,7 @@ import { template, and, lte } from "acpus/expression";
 
 export default defineWorkflow({
   name: "release-review",
+  description: "Review a release diff for ship readiness.",
   inputSchema: z.object({ repoPath: z.path(), headRef: z.string().default("HEAD") }),
   agents: {
     reviewer: { use: "codex" },
@@ -84,13 +85,13 @@ export default defineWorkflow({
 Check before admitting a durable run:
 
 ```sh
-acpus workflows check <workflow.ts-or-catalog>
+acpus workflow check <workflow.ts-or-catalog>
 ```
 
 Run workflow with input, `--background` for background run:
 
 ```sh
-acpus workflows run <workflow.ts-or-catalog> --input '<json>'  [--background]
+acpus workflow run <workflow.ts-or-catalog> --input '<json>'  [--background]
 ```
 
 Inspect run

@@ -14,7 +14,7 @@ describe("workflow catalog CLI contracts", () => {
         await workflowPackage(join(workspace, ".acpus", "workflows"), "poison", "throw new Error('list/show must not import workflow modules');\n");
         await workflowPackage(join(home, ".acpus", "workflows"), "deploy");
 
-        const listed = await runJson(workspace, ["workflows", "list", "--json"]);
+        const listed = await runJson(workspace, ["workflow", "list", "--json"]);
         expect(listed.exitCode).toBe(0);
         expect(listed.json).toMatchObject({
           ok: true,
@@ -28,7 +28,7 @@ describe("workflow catalog CLI contracts", () => {
         expect(listed.json.catalogEntries[0].packagePath).toBe(join(home, ".acpus", "workflows", "deploy"));
         expect(listed.json.catalogEntries[2].entryPath).toBe(join(workspace, ".acpus", "workflows", "release", "workflow.ts"));
 
-        const shown = await runJson(workspace, ["workflows", "show", "release", "--json"]);
+        const shown = await runJson(workspace, ["workflow", "show", "release", "--json"]);
         expect(shown.exitCode).toBe(0);
         expect(shown.json).toMatchObject({
           ok: true,
@@ -41,7 +41,7 @@ describe("workflow catalog CLI contracts", () => {
           },
         });
 
-        const poison = await runJson(workspace, ["workflows", "show", "poison", "--json"]);
+        const poison = await runJson(workspace, ["workflow", "show", "poison", "--json"]);
         expect(poison.exitCode).toBe(0);
         expect(poison.json).toMatchObject({
           ok: true,
@@ -57,13 +57,13 @@ describe("workflow catalog CLI contracts", () => {
         await workflowPackage(join(workspace, ".acpus", "workflows"), "shared");
         await workflowPackage(join(home, ".acpus", "workflows"), "shared");
 
-        const scoped = await runJson(workspace, ["workflows", "list", "--project", "--json"]);
+        const scoped = await runJson(workspace, ["workflow", "list", "--project", "--json"]);
         expect(scoped.exitCode).toBe(0);
         expect(scoped.json.catalogEntries).toMatchObject([
           { scope: "project", name: "shared", status: "available", requiresScope: true },
         ]);
 
-        const ambiguous = await runJson(workspace, ["workflows", "show", "shared", "--json"]);
+        const ambiguous = await runJson(workspace, ["workflow", "show", "shared", "--json"]);
         expect(ambiguous.exitCode).toBe(2);
         expect(ambiguous.json).toMatchObject({
           ok: false,
@@ -71,21 +71,21 @@ describe("workflow catalog CLI contracts", () => {
         });
         expect(ambiguous.json.message).toContain("Pass --project or --global");
 
-        const missing = await runJson(workspace, ["workflows", "show", "missing", "--project", "--json"]);
+        const missing = await runJson(workspace, ["workflow", "show", "missing", "--project", "--json"]);
         expect(missing.exitCode).toBe(1);
         expect(missing.json).toMatchObject({
           ok: false,
           phase: "inspect",
         });
 
-        const invalid = await runJson(workspace, ["workflows", "show", "not_valid", "--json"]);
+        const invalid = await runJson(workspace, ["workflow", "show", "not_valid", "--json"]);
         expect(invalid.exitCode).toBe(2);
         expect(invalid.json).toMatchObject({
           ok: false,
           phase: "usage",
         });
 
-        const scopeConflict = await runJson(workspace, ["workflows", "list", "--project", "--global", "--json"]);
+        const scopeConflict = await runJson(workspace, ["workflow", "list", "--project", "--global", "--json"]);
         expect(scopeConflict.exitCode).toBe(2);
         expect(scopeConflict.json).toMatchObject({
           ok: false,

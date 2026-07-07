@@ -7,10 +7,13 @@ export function validateWorkflowIR(ir: WorkflowIR): DiagnosticIR[] {
     addError(diagnostics, "IR002", "WorkflowIR must be an object.", "");
     return diagnostics;
   }
-  validateKnownFields(ir, ["irVersion", "name", "inputSchema", "agents", "root", "outputs", "lock", "diagnostics"], diagnostics, "");
+  validateKnownFields(ir, ["irVersion", "name", "description", "inputSchema", "agents", "root", "outputs", "lock", "diagnostics"], diagnostics, "");
   if (ir.irVersion !== 2) addError(diagnostics, "IR002", "WorkflowIR irVersion must be 2.", "irVersion");
   if (!ir.name || !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(ir.name)) {
     addWarning(diagnostics, "W002", `Workflow name '${ir.name}' is not identifier-like. This is allowed but discouraged.`);
+  }
+  if (ir.description !== undefined && typeof ir.description !== "string") {
+    addError(diagnostics, "IR002", "WorkflowIR description must be a string.", "description");
   }
   validateSchema(ir.inputSchema, diagnostics, "inputSchema");
   const agents = isRecord(ir.agents) ? ir.agents : undefined;

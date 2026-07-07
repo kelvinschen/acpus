@@ -23,6 +23,7 @@ const SynthesisOutput = z.object({
 
 export default defineWorkflow({
   name: "multi-aspect-review",
+  description: "Run multiple independent review lenses and synthesize consensus, disagreements, and actions.",
 
   inputSchema: z.object({
     subject: z.string(),

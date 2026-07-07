@@ -12,7 +12,7 @@ import { prepareWorkflowForCli } from "../workflow-preparation.js";
 import { parseAgents, parseInput } from "./json.js";
 import { sendDaemonObserveRun, sendDaemonStartRun } from "./daemon.js";
 
-export type WorkflowsCommandContext = {
+export type WorkflowCommandContext = {
   cwd: string;
   stdout: Writable;
   stderr: Writable;
@@ -28,8 +28,8 @@ type WorkflowOptions = {
   force?: boolean;
 } & WorkflowCatalogScopeOptions;
 
-export function createWorkflowsCommand(ctx: WorkflowsCommandContext): Command {
-  const command = new Command("workflows")
+export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
+  const command = new Command("workflow")
     .alias("wf")
     .exitOverride()
     .configureOutput({
@@ -100,7 +100,7 @@ export function createWorkflowsCommand(ctx: WorkflowsCommandContext): Command {
   return command;
 }
 
-async function listCatalog(ctx: WorkflowsCommandContext, options: WorkflowOptions): Promise<void> {
+async function listCatalog(ctx: WorkflowCommandContext, options: WorkflowOptions): Promise<void> {
   const catalogEntries = await discoverWorkflowCatalog(ctx.cwd, options);
   ctx.setExitCode(writeResult({
     ok: true,
@@ -110,7 +110,7 @@ async function listCatalog(ctx: WorkflowsCommandContext, options: WorkflowOption
   }, outputFormat(ctx), ctx, 0));
 }
 
-async function showCatalog(ctx: WorkflowsCommandContext, name: string, options: WorkflowOptions): Promise<void> {
+async function showCatalog(ctx: WorkflowCommandContext, name: string, options: WorkflowOptions): Promise<void> {
   const catalog = await showWorkflowCatalogEntry(ctx.cwd, name, options);
   ctx.setExitCode(writeResult({
     ok: true,
@@ -120,7 +120,7 @@ async function showCatalog(ctx: WorkflowsCommandContext, name: string, options: 
   }, outputFormat(ctx), ctx, 0));
 }
 
-async function checkWorkflow(ctx: WorkflowsCommandContext, workflow: string, options: WorkflowOptions): Promise<void> {
+async function checkWorkflow(ctx: WorkflowCommandContext, workflow: string, options: WorkflowOptions): Promise<void> {
   const input = options.input === undefined ? undefined : parseInput(options.input);
   const agentOverrides = parseAgents(options.agents);
   const resolved = await resolveWorkflowReference(ctx.cwd, workflow, options);
@@ -143,7 +143,7 @@ async function checkWorkflow(ctx: WorkflowsCommandContext, workflow: string, opt
   }, outputFormat(ctx), ctx, 0));
 }
 
-async function runWorkflow(ctx: WorkflowsCommandContext, workflow: string, options: WorkflowOptions): Promise<void> {
+async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, options: WorkflowOptions): Promise<void> {
   const input = parseInput(options.input);
   const agentOverrides = parseAgents(options.agents);
   const resolved = await resolveWorkflowReference(ctx.cwd, workflow, options);
@@ -203,7 +203,7 @@ async function runWorkflow(ctx: WorkflowsCommandContext, workflow: string, optio
   ctx.setExitCode(advanced.status === "failed" || advanced.status === "canceled" ? 1 : 0);
 }
 
-async function visualizeWorkflow(ctx: WorkflowsCommandContext, workflow: string, options: WorkflowOptions): Promise<void> {
+async function visualizeWorkflow(ctx: WorkflowCommandContext, workflow: string, options: WorkflowOptions): Promise<void> {
   const resolved = await resolveWorkflowReference(ctx.cwd, workflow, options);
   const prepared = await prepareWorkflowForCli(resolved.workflow, ctx.cwd);
   const { renderWorkflowVizHtml, workflowIrToWebGraph, writeWorkflowVizHtml } = await import("@acpus/web");
@@ -214,6 +214,7 @@ async function visualizeWorkflow(ctx: WorkflowsCommandContext, workflow: string,
     title: prepared.ir.name,
     workflow: {
       name: prepared.ir.name,
+      ...(prepared.ir.description === undefined ? {} : { description: prepared.ir.description }),
       irVersion: prepared.ir.irVersion,
       nodeCount: countWorkflowNodes(prepared.ir.root),
     },
@@ -243,7 +244,7 @@ async function visualizeWorkflow(ctx: WorkflowsCommandContext, workflow: string,
   }, outputFormat(ctx), ctx, 0));
 }
 
-function outputFormat(ctx: WorkflowsCommandContext): OutputFormat {
+function outputFormat(ctx: WorkflowCommandContext): OutputFormat {
   return ctx.wantsJson ? "json" : "text";
 }
 
@@ -258,7 +259,7 @@ function countWorkflowNodes(scope: WorkflowIR["root"]): number {
   }, 0);
 }
 
-function installDetachHandler(ctx: WorkflowsCommandContext, runId: string): () => void {
+function installDetachHandler(ctx: WorkflowCommandContext, runId: string): () => void {
   const handler = (): void => {
     if (ctx.wantsJson) {
       writeJsonLine(ctx.stdout, { ok: true, phase: "run", kind: "detached", run: { id: runId } });
@@ -274,7 +275,7 @@ function installDetachHandler(ctx: WorkflowsCommandContext, runId: string): () =
   };
 }
 
-function writeRunObservations(ctx: WorkflowsCommandContext, seen: Set<string>, run: RuntimeAdvanceResult["run"], staticNodes: readonly RunStatusStaticNode[]): void {
+function writeRunObservations(ctx: WorkflowCommandContext, seen: Set<string>, run: RuntimeAdvanceResult["run"], staticNodes: readonly RunStatusStaticNode[]): void {
   for (const observation of runObservations(seen, run)) {
     if (ctx.wantsJson) writeJsonLine(ctx.stdout, observation);
     else ctx.stdout.write(`${formatRunObservationRow(run, observationTarget(observation), Date.now(), staticNodes) ?? `${observation.kind}: ${observationTarget(observation)} ${observation.status}`}\n`);

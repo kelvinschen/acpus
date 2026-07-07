@@ -24,6 +24,7 @@ describe("workflow compilation", () => {
   it("compiles leaf nodes, asserts, secrets, task descriptors, and outputs into WorkflowIR", () => {
     const definition = defineWorkflow({
       name: "release_review",
+      description: "Review a package release for readiness.",
       inputSchema: z.object({
         repoPath: z.path(),
         packageName: z.string(),
@@ -101,6 +102,7 @@ describe("workflow compilation", () => {
     });
 
     expect(ir.diagnostics).toEqual([]);
+    expect(ir.description).toBe("Review a package release for readiness.");
     expect(ir.root.nodes.map((node) => node.kind)).toEqual([
       "task",
       "task",

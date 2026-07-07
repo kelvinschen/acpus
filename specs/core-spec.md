@@ -18,6 +18,7 @@
 ### Workflow Authoring
 
 - The core MUST expose `defineWorkflow(...).build(...)` as the workflow entry point, where `build` receives `{ input, agents, meta, step }`.
+- Workflow authoring config MAY declare `description?: string`, and compilation MUST preserve it as top-level `WorkflowIR.description` metadata when present.
 - During graph construction, `input.*` fields MUST be exposed as `Expr<T>` tokens.
 - During graph construction, `meta.runId`, `meta.workflowPath`, `meta.workflowName`, and `meta.workspaceDir` MUST be exposed as run-level `Expr<string>` tokens.
 - Agent definitions MUST be declared at workflow top level under `agents` as plain object definitions.
@@ -103,6 +104,7 @@
 
 - `compileWorkflowDefinition(definition)` MUST lower an in-memory workflow definition to serializable `WorkflowIR` with `irVersion: 2`.
 - `WorkflowIR`, node IR, scope IR, schema IR, template IR, expression IR, agent definitions, task runs, and task execution targets MUST use closed serialized object shapes.
+- `WorkflowIR.description`, when present, MUST be a string.
 - `validateWorkflowIR(ir)` MUST diagnose unknown fields, malformed agent definitions, malformed node runs, invalid expressions/templates/schemas, missing required composite branches/defaults, and malformed task execution targets. It MUST NOT enforce TypeScript-owned task/composite business output shape through generated schemas.
 - `DurationIR` fields MUST be duration strings matching `^\d+(ms|s|m|h)?$`; omitted units MUST mean milliseconds.
 - Task runs MUST contain a closed `target` descriptor that is either an inline source target or a reusable module target.

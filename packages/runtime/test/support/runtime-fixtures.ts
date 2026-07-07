@@ -83,6 +83,7 @@ export async function admitSyntheticWorkflow(workspace: string, definition: Work
 export function validWorkflow() {
   return defineWorkflow({
     name: "cli-valid",
+    description: "Validate a boolean ready input.",
     inputSchema: z.object({ ready: z.boolean() }),
   }).build(({ input, step }) => {
     step("require_ready").assert({ condition: where(input, { ready: true }) });

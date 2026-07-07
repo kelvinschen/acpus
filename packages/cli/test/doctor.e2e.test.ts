@@ -29,7 +29,7 @@ describe.concurrent("acpus doctor", () => {
   it("reports runtime health after background admission", async () => {
     await withTestWorkspace("doctor-runtime", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/signals/signal.workflow.ts");
-      const admitted = await runSourceCli(workspace, ["workflows", "run", workflow, "--background", "--json"]);
+      const admitted = await runSourceCli(workspace, ["workflow", "run", workflow, "--background", "--json"]);
       expect(admitted.exitCode).toBe(0);
 
       const result = await runSourceCli(workspace, ["doctor", "--json"]);

@@ -51,7 +51,7 @@ describe("CLI program usage contracts", () => {
       process.env.HOME = workspace;
 
       try {
-        const exitCode = await runCli(["workflows", "list", "--json"], {
+        const exitCode = await runCli(["workflow", "list", "--json"], {
           cwd: workspace,
           stdout,
           stderr,
@@ -71,7 +71,7 @@ describe("CLI program usage contracts", () => {
     });
   });
 
-  it("accepts wf as the workflows command alias", async () => {
+  it("accepts wf as the workflow command alias", async () => {
     await withTestWorkspace("catalog-empty-alias", async workspace => {
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
@@ -107,6 +107,7 @@ describe("CLI program usage contracts", () => {
 
 export default defineWorkflow({
   name: "program-viz",
+  description: "Program viz description.",
   inputSchema: z.object({ ready: z.boolean() }),
 }).build(({ input, step }) => {
   step("require_ready").assert({ condition: input.ready });
@@ -116,7 +117,7 @@ export default defineWorkflow({
 
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
-      const exitCode = await runCli(["workflows", "viz", workflow, "--out", out, "--json"], { cwd: workspace, stdout, stderr });
+      const exitCode = await runCli(["workflow", "viz", workflow, "--out", out, "--json"], { cwd: workspace, stdout, stderr });
 
       expect(exitCode).toBe(0);
       expect(JSON.parse(stdout.text)).toMatchObject({
@@ -127,11 +128,12 @@ export default defineWorkflow({
       });
       const html = await readFile(out, "utf8");
       expect(html).toContain("window.__ACPUS_WORKFLOW_VIZ__=");
+      expect(html).toContain("Program viz description.");
       expect(html).not.toMatch(/\s(?:src|href)=["']https?:\/\//);
       expect(stderr.text).toBe("");
 
       const duplicateStdout = new CaptureStream();
-      const duplicateExit = await runCli(["workflows", "viz", workflow, "--out", out, "--json"], {
+      const duplicateExit = await runCli(["workflow", "viz", workflow, "--out", out, "--json"], {
         cwd: workspace,
         stdout: duplicateStdout,
         stderr: new CaptureStream(),
@@ -140,7 +142,7 @@ export default defineWorkflow({
       expect(JSON.parse(duplicateStdout.text).message).toContain("already exists");
 
       const forcedStdout = new CaptureStream();
-      const forcedExit = await runCli(["workflows", "viz", workflow, "--out", out, "--force", "--json"], {
+      const forcedExit = await runCli(["workflow", "viz", workflow, "--out", out, "--force", "--json"], {
         cwd: workspace,
         stdout: forcedStdout,
         stderr: new CaptureStream(),
