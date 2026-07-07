@@ -11,6 +11,7 @@ type LoopState<Initial extends OutputObject> =
     ? State extends OutputObject ? State : never
     : never;
 
+/** Authoring spec for a seeded pre-check loop with a bounded iteration count. */
 export type LoopStepSpec<Initial extends OutputObject = OutputObject> = {
   initial: WorkflowValue<Initial>;
   maxIterations: number;

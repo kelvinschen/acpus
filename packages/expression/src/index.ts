@@ -57,55 +57,88 @@ type Where<T> =
           ? ObjectWhere<T> | NullWhere<T>
             : never;
 
+/** Negates a workflow boolean value. */
 export function not(value: WorkflowValue<boolean>): Expr<boolean> { return callExpr<boolean>("not", [value]); }
+/** Combines workflow boolean values with logical AND. */
 export function and(...values: WorkflowValue<boolean>[]): Expr<boolean> { return callExpr<boolean>("and", values); }
+/** Combines workflow boolean values with logical OR. */
 export function or(...values: WorkflowValue<boolean>[]): Expr<boolean> { return callExpr<boolean>("or", values); }
+/** Selects one of two workflow values from a boolean expression. */
 export function ifElse<C extends boolean, T, E>(condition: WorkflowValue<C>, thenValue: WorkflowValue<T>, elseValue: WorkflowValue<E>): Expr<T | E> { return callExpr<T | E>("ifElse", [condition, thenValue, elseValue]); }
+/** Compares two workflow values for equality. */
 export function eq<T>(a: WorkflowValue<T>, b: WorkflowValue<T>): Expr<boolean> { return callExpr<boolean>("eq", [a, b]); }
+/** Compares two workflow values for inequality. */
 export function ne<T>(a: WorkflowValue<T>, b: WorkflowValue<T>): Expr<boolean> { return callExpr<boolean>("ne", [a, b]); }
+/** Compares two workflow numbers with less-than. */
 export function lt(a: WorkflowValue<number>, b: WorkflowValue<number>): Expr<boolean> { return callExpr<boolean>("lt", [a, b]); }
+/** Compares two workflow numbers with less-than-or-equal. */
 export function lte(a: WorkflowValue<number>, b: WorkflowValue<number>): Expr<boolean> { return callExpr<boolean>("lte", [a, b]); }
+/** Compares two workflow numbers with greater-than. */
 export function gt(a: WorkflowValue<number>, b: WorkflowValue<number>): Expr<boolean> { return callExpr<boolean>("gt", [a, b]); }
+/** Compares two workflow numbers with greater-than-or-equal. */
 export function gte(a: WorkflowValue<number>, b: WorkflowValue<number>): Expr<boolean> { return callExpr<boolean>("gte", [a, b]); }
+/** Returns the first non-nullish workflow value. */
 export function coalesce<T>(value: WorkflowValue<T | null | undefined>, ...values: WorkflowValue<T | null | undefined>[]): Expr<NonNullable<T>> { return callExpr<NonNullable<T>>("coalesce", [value, ...values]); }
+/** Returns the length of a workflow string or array value. */
 export function len(value: WorkflowValue<readonly unknown[] | string>): Expr<number> { return callExpr<number>("len", [value]); }
+/** Checks whether a workflow string contains a substring. */
 export function includes(_collection: WorkflowValue<string>, _value: WorkflowValue<string>): Expr<boolean>;
+/** Checks whether a workflow array contains a value. */
 export function includes<T>(_collection: WorkflowValue<readonly T[]>, _value: WorkflowValue<T>): Expr<boolean>;
 export function includes(collection?: unknown, value?: unknown): Expr<boolean> { return callExpr<boolean>("includes", [collection, value]); }
+/** Checks whether a workflow string or array value is empty. */
 export function isEmpty(value: WorkflowValue<readonly unknown[] | string>): Expr<boolean> { return eq(len(value), 0); }
+/** Checks whether a workflow string starts with a prefix. */
 export function startsWith(value: WorkflowValue<string>, prefix: WorkflowValue<string>): Expr<boolean> { return callExpr<boolean>("startsWith", [value, prefix]); }
+/** Checks whether a workflow string ends with a suffix. */
 export function endsWith(value: WorkflowValue<string>, suffix: WorkflowValue<string>): Expr<boolean> { return callExpr<boolean>("endsWith", [value, suffix]); }
+/** Checks whether a workflow string matches a pattern. */
 export function matches(value: WorkflowValue<string>, pattern: WorkflowValue<string>): Expr<boolean> { return callExpr<boolean>("matches", [value, pattern]); }
+/** Reads an item from a workflow array by numeric index. */
 export function get<T>(_target: WorkflowValue<readonly T[]>, _key: WorkflowValue<number>): OutputAccessor<T | undefined>;
+/** Reads a value from a workflow record by key. */
 export function get<T>(_target: string extends keyof NonNullable<T> ? WorkflowValue<T> : never, _key: WorkflowValue<string>): OutputAccessor<RecordItem<T> | undefined>;
 export function get(target?: unknown, key?: unknown): OutputAccessor<unknown> {
   return callExpr<unknown>("get", [target, key]);
 }
+/** Reads the first item from a workflow array. */
 export function head<T>(array: WorkflowValue<readonly T[]>): OutputAccessor<T | undefined> { return get(array, 0); }
+/** Checks whether every item in a workflow array matches a predicate. */
 export function every<T>(_array: WorkflowValue<readonly T[]>, _predicate: Predicate<T>): Expr<boolean>;
+/** Checks whether every workflow boolean in an array is true. */
 export function every(_values: WorkflowValue<readonly boolean[]>): Expr<boolean>;
 export function every<T>(array?: WorkflowValue<readonly T[]> | WorkflowValue<readonly boolean[]>, predicate?: Predicate<T>): Expr<boolean> {
   return predicate ? scopedCollection<boolean, T>("every", array as WorkflowValue<readonly T[]>, predicate) : callExpr<boolean>("every", [array]);
 }
+/** Checks whether any item in a workflow array matches a predicate. */
 export function some<T>(_array: WorkflowValue<readonly T[]>, _predicate: Predicate<T>): Expr<boolean>;
+/** Checks whether any workflow boolean in an array is true. */
 export function some(_values: WorkflowValue<readonly boolean[]>): Expr<boolean>;
 export function some<T>(array?: WorkflowValue<readonly T[]> | WorkflowValue<readonly boolean[]>, predicate?: Predicate<T>): Expr<boolean> {
   return predicate ? scopedCollection<boolean, T>("some", array as WorkflowValue<readonly T[]>, predicate) : callExpr<boolean>("some", [array]);
 }
+/** Filters a workflow array with a scoped predicate. */
 export function filter<T>(array: WorkflowValue<readonly T[]>, predicate: Predicate<T>): Expr<readonly T[]> {
   return scopedCollection<readonly T[], T>("filter", array, predicate);
 }
+/** Maps a workflow array with a scoped mapper. */
 export function map<T, R>(array: WorkflowValue<readonly T[]>, mapper: (value: OutputAccessor<T>, index: OutputAccessor<number>) => WorkflowValue<R>): Expr<readonly R[]> {
   return scopedCollection<readonly R[], T>("map", array, mapper);
 }
+/** Returns the maximum number from a workflow array. */
 export function max(values: WorkflowValue<readonly number[]>): Expr<number> { return callExpr<number>("max", [values]); }
+/** Returns the minimum number from a workflow array. */
 export function min(values: WorkflowValue<readonly number[]>): Expr<number> { return callExpr<number>("min", [values]); }
+/** Builds a field-wise predicate over an expression object. */
 export function where<T>(target: Expr<T>, filter: Where<T>): Expr<boolean>;
+/** Builds a predicate over a primitive workflow value. */
 export function where<T extends string | number | boolean>(target: T, filter: Where<T>): Expr<boolean>;
+/** Builds a predicate over a workflow array value. */
 export function where<T>(target: readonly WorkflowValue<T>[], filter: ArrayWhere<T>): Expr<boolean>;
 export function where(target: unknown, filter: unknown): Expr<boolean> {
   return lowerWhere(target, filter);
 }
+/** Projects selected fields from an object accessor. */
 export function pick<T, const K extends readonly AccessorKey<T>[]>(source: ObjectAccessor<T>, keys: K): { readonly [P in K[number]]: OutputAccessor<NonNullable<T>[P] | Extract<T, null | undefined>> } {
   const out: Record<string, OutputAccessor<unknown>> = {};
   const accessor = source as unknown as Record<string, OutputAccessor<unknown>>;

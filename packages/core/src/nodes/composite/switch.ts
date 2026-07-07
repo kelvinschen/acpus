@@ -4,6 +4,7 @@ import type { WorkflowValue } from "@acpus/expression";
 import type { DiagnosticIR, SwitchNodeIR } from "../../ir/types.js";
 import type { ScopeCallback, BuildScope, RuntimeValueOf } from "./shared.js";
 
+/** Authoring spec for selecting one branch from ordered cases plus a required default. */
 export type SwitchStepSpec = {
   outputSchema?: never;
   cases: ReadonlyArray<{ when: WorkflowValue<boolean>; then: ScopeCallback }>;

@@ -4,6 +4,7 @@ import type { WorkflowValue } from "@acpus/expression";
 import type { DiagnosticIR, IfNodeIR } from "../../ir/types.js";
 import type { ScopeCallback, BuildScope, OutputObject } from "./shared.js";
 
+/** Authoring spec for a graph-level conditional branch. */
 export type IfStepSpec<Output extends OutputObject = OutputObject> = {
   condition: WorkflowValue<boolean>;
   outputSchema?: never;

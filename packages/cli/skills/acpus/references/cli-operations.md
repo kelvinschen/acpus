@@ -1,36 +1,28 @@
 # CLI Operations
 
-## Verify environment
+## Discover commands
 
 ```sh
 acpus --help
-acpus doctor
+acpus workflows --help
+acpus runs --help
+acpus hooks --help
+acpus <cmd> --help
 ```
 
-In an Acpus source checkout:
-
-```sh
-pnpm install
-pnpm build
-pnpm typecheck
-pnpm test
-pnpm exec acpus --help
-```
+Prefer command help for exact options. The skill should describe operating strategy, not mirror the whole CLI surface.
 
 `doctor` is read-only and should not create runtime state in an uninitialized workspace.
 
-## Workflow check
+## Operating defaults
 
-```sh
-acpus workflows check <workflow.ts-or-catalog>
-acpus workflows check <workflow.ts-or-catalog> --input '{"ready":true}'
-acpus workflows check <workflow.ts-or-catalog> --agents '{"reviewer":{"use":"codex","model":"opus"}}'
-acpus --json workflows check <workflow.ts-or-catalog> --input '{"ready":true}'
-```
+- Run `acpus doctor` when the workspace health is uncertain.
+- Use `acpus workflows check <workflow.ts-or-catalog>` before `run`.
+- Use `acpus workflows list` and `acpus workflows show <name>` for catalog discovery.
+- Use `acpus runs inspect [run-id]` before any retry, fork, signal, pause, resume, cancel, or delete.
+- Use `--json` only when structured parsing is needed. Text output is usually better for human diagnosis.
 
 `workflows check` prepares the workflow in memory and reports diagnostics, digests, and workflow summary data. It does not admit a runtime run and does not write durable preflight artifacts.
-
-The workflow file must be inside the CLI workspace `cwd`. For scratch authoring inside this repository, prefer an ignored path such as `.acpus/tmp/<scenario>/workflow.ts` and run commands from the repository root. Do not put scratch workflows under `/tmp` and then check them from the repo root; the compiler rejects workflow files outside the workspace.
 
 Agent nodes and agent declarations are validated by `workflows check`, but check does not invoke `acpx`, start an agent session, run Task or Signal nodes, admit a run, or count as an Agent workflow execution.
 
@@ -43,22 +35,7 @@ Failure phases:
 
 Use `--json` when the exact phase matters. For example, invalid `--agents` overrides are reported in the JSON `phase` field before any runtime admission.
 
-## Workflow visualization
-
-```sh
-acpus workflows viz <workflow.ts-or-catalog> --out workflow-viz.html
-acpus workflows viz <workflow.ts-or-catalog> --out workflow-viz.html --force
-```
-
-`workflows viz` prepares the workflow in memory and writes one self-contained static visualization HTML file. It fails rather than overwriting an existing file unless `--force` is passed.
-
 ## Workflow run
-
-```sh
-acpus workflows run <workflow.ts-or-catalog> --input '{"ready":true}'
-acpus workflows run <workflow.ts-or-catalog> --background --input '{"ready":true}'
-acpus --json workflows run <workflow.ts-or-catalog> --input '{"ready":true}'
-```
 
 Foreground `--json` emits newline-delimited JSON: admitted record, observation records, terminal summary. Text mode shows bounded compact observations and a final summary.
 
@@ -73,33 +50,15 @@ For workflows that must receive a Signal, `--background` is usually the cleanest
 
 ## Catalog entries
 
-```sh
-acpus workflows list
-acpus workflows list --project
-acpus workflows list --global
-acpus workflows show <name>
-acpus workflows show <name> --project
-acpus workflows show <name> --global
-```
-
 Catalog packages live under project `.acpus/workflows/<name>/workflow.ts` or global `$HOME/.acpus/workflows/<name>/workflow.ts`. Discovery inspects only first-level directories. If project and global entries share a name, pass `--project` or `--global`.
 
 ## Run inspection
 
-```sh
-acpus runs inspect
-acpus runs inspect <run-id>
-acpus --json runs inspect <run-id>
-```
-
-Use `runs inspect`, not legacy `runs show`. In interactive text terminals,
-omitting the run id opens the run picker. Read-only run inspection should not
-start or wake the daemon. It reports durable status plus derived execution state
-such as active, inactive, stale, terminal, or unknown.
+In interactive text terminals, omitting the run id opens the run picker. Read-only run inspection should not start or wake the daemon. It reports durable status plus derived execution state such as active, inactive, stale, terminal, or unknown.
 
 Compact text node rows use static ids and dynamic node keys. When a signal is awaiting input, text output should include the rendered prompt, expected payload guidance, and a copyable `runs signal` command.
 
-Terminal text inspection includes the final workflow output when present. This is useful for benchmark reports and operator handoffs.
+Terminal text inspection includes the final workflow output when present. This is useful for operator handoffs.
 
 Text inspection is intentionally compact. For composite-heavy runs, JSON inspection exposes the full dynamic frame/node metadata and Agent telemetry that text mode may omit.
 
@@ -109,31 +68,17 @@ Agent overrides are JSON objects keyed by declared top-level agent names:
 
 ```sh
 acpus workflows run review.workflow.ts \
-  --agents '{"reviewer":{"use":"codex","model":"opus","permissionMode":"approve-reads"}}'
+  --agents '{"reviewer":{"use":"codex","model":"opus"}}'
 
 acpus runs fork <run-id> \
-  --agents '{"reviewer":{"command":"my-acp-server --stdio","permissionMode":"deny-all"}}'
+  --agents '{"reviewer":{"command":"my-acp-server --stdio"}}'
 ```
 
-Overrides reject unknown agent names, simultaneous `use` and `command`, legacy `policy`, broad `options`, raw IR `kind`, and fields outside the allowlist.
+Overrides reject unknown agent names, simultaneous `use` and `command`, `policy`, broad `options`, raw IR `kind`, and fields outside the allowlist.
 
 If `use` or `command` changes identity, inherited `model` and `agentMode` are cleared unless replacements are supplied. `permissionMode` remains inherited across identity changes.
 
 ## Runtime controls
-
-```sh
-acpus runs pause <run-id>
-acpus runs resume <run-id>
-acpus runs retry <run-id>
-acpus runs retry <run-id> --target <target>
-acpus runs cancel <run-id>
-acpus runs cancel <run-id> --target <target>
-acpus runs delete <run-id>
-acpus runs delete
-acpus runs signal <run-id> --target <signal-target> --payload '{"approved":true,"notes":"ok"}'
-acpus runs fork <run-id> --workflow replacement.workflow.ts --input '{"ready":true}'
-acpus runs fork <run-id> --target review --workflow replacement.workflow.ts
-```
 
 Controls route through the workspace daemon and wait only until the control is confirmed applied, failed, or the fixed client wait expires. They do not wait for the entire run to become terminal after the control effect.
 
@@ -146,11 +91,4 @@ No `--no-wait` or custom timeout options are part of the next command surface.
 
 ## Hooks
 
-```sh
-acpus hooks validate
-acpus hooks list
-acpus hooks validate --project
-acpus hooks list --global
-```
-
-Use hooks JSON files, not legacy `hooks.yaml`. See `references/hooks-json.md`.
+Use hooks JSON files. See `references/hooks-json.md`.

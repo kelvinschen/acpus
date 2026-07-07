@@ -6,7 +6,6 @@
 
    ```sh
    acpus runs inspect <run-id>
-   acpus --json runs inspect <run-id>
    ```
 
 2. Identify:
@@ -47,7 +46,7 @@ Use fork when the workflow source, input, or agent mapping must change:
 acpus runs fork <run-id> --workflow fixed.workflow.ts
 acpus runs fork <run-id> --input '{"repoPath":"/repo","ready":true}'
 acpus runs fork <run-id> --agents '{"reviewer":{"use":"codex"}}'
-acpus runs fork <run-id> --target <target> --workflow fixed.workflow.ts
+acpus runs fork <run-id> --target <target> --workflow fixed.workflow.ts --unsafe-reuse
 ```
 
 Fork creates a new run from frozen source run data and may freeze replacement prepared workflow/input/agents. It should not read live workflow source except where the CLI explicitly prepares a replacement `--workflow`.
@@ -95,4 +94,4 @@ Do not edit SQLite state or run-local frozen files by hand. Use CLI controls.
 
 ## Agent telemetry
 
-`runs inspect --json` exposes Agent attempt metadata under `run.dynamic.executionMetadata[]` entries with `kind: "agent_attempt"`. These entries can include session name, turn count, stop reason, workflow Agent tool-call telemetry, and artifact references for prompt, response, parsed JSON, and telemetry. JSON inspection can be large for composite-heavy runs; use it when exact telemetry or dynamic node keys matter.
+`runs inspect --json` exposes Agent attempt metadata under `run.dynamic.executionMetadata[]` entries with `kind: "agent_attempt"`. These entries can include session name, turn count, stop reason, workflow Agent tool-call telemetry, and artifact references for prompt, response, parsed JSON, and telemetry. JSON inspection can be large for composite-heavy runs; use it with `jq` to query exact telemetry or dynamic node keys you need.

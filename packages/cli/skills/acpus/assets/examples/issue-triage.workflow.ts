@@ -1,0 +1,145 @@
+import { defineWorkflow, z } from "acpus/core";
+import { eq, md, template } from "acpus/expression";
+import { summarizeIssue } from "./issue-triage.tasks.js";
+
+export default defineWorkflow({
+  name: "issue-triage",
+  inputSchema: z.object({
+    issues: z.array(z.object({
+      id: z.string(),
+      title: z.string(),
+      body: z.string(),
+      labels: z.array(z.string()).default([]),
+    })),
+    repoPath: z.path(),
+  }),
+  agents: {
+    triager: { use: "codex" },
+  },
+}).build(({ input, agents, meta, step }) => {
+  const triaged = step("triage_issues").fanout({
+    over: input.issues,
+    key: ({ item }) => template`issue-${item.id}`,
+    maxConcurrency: 3,
+    do: ({ item, step }) => {
+      const lane = step("triage_lane").parallel({
+        branches: {
+          metadata: {
+            do: ({ step }) => {
+              const metadata = step("summarize_issue").task({
+                run: {
+                  task: summarizeIssue,
+                  input: { id: item.id, title: item.title, labels: item.labels },
+                  cwd: input.repoPath,
+                },
+              });
+              return {
+                labelCount: metadata.output.labelCount,
+                titleLine: metadata.output.titleLine,
+              };
+            },
+          },
+          review: {
+            do: ({ step }) => {
+              const review = step("review_issue").agent({
+                outputSchema: z.object({
+                  route: z.enum(["now", "later", "escalate"]),
+                  priority: z.number(),
+                  summary: z.string(),
+                }),
+                run: {
+                  agent: agents.triager,
+                  cwd: input.repoPath,
+                  prompt: md`
+                    Triage this issue for the current repository.
+
+                    ID: ${item.id}
+                    Title: ${item.title}
+                    Body: ${item.body}
+                    Labels: ${item.labels}
+
+                    Choose route "now", "later", or "escalate".
+                  `,
+                },
+                timeout: "20m",
+              });
+              return {
+                route: review.output.route,
+                priority: review.output.priority,
+                summary: review.output.summary,
+              };
+            },
+          },
+        },
+      });
+
+      const routed = step("route_issue").switch({
+        cases: [
+          {
+            when: eq(lane.output.review.route, "escalate"),
+            then: ({ step }) => {
+              const escalation = step("prepare_escalation").task({
+                run: {
+                  input: {
+                    id: item.id,
+                    priority: lane.output.review.priority,
+                    summary: lane.output.review.summary,
+                  },
+                  exec: async ({ input }) => ({
+                    owner: "maintainer",
+                    action: `Escalate ${input.id} with priority ${input.priority}: ${input.summary}`,
+                  }),
+                },
+              });
+              return {
+                owner: escalation.output.owner,
+                action: escalation.output.action,
+              };
+            },
+          },
+          {
+            when: eq(lane.output.review.route, "now"),
+            then: ({ step }) => {
+              const queue = step("queue_now").task({
+                run: {
+                  input: { id: item.id, title: lane.output.metadata.titleLine },
+                  exec: async ({ input }) => ({
+                    owner: "oncall",
+                    action: `Queue ${input.title} for this sprint`,
+                  }),
+                },
+              });
+              return { owner: queue.output.owner, action: queue.output.action };
+            },
+          },
+        ],
+        default: ({ step }) => {
+          const backlog = step("backlog_later").task({
+            run: {
+              input: { id: item.id, labelCount: lane.output.metadata.labelCount },
+              exec: async ({ input }) => ({
+                owner: "backlog",
+                action: `Backlog ${input.id} with ${input.labelCount} labels`,
+              }),
+            },
+          });
+          return { owner: backlog.output.owner, action: backlog.output.action };
+        },
+      });
+
+      return {
+        id: item.id,
+        route: lane.output.review.route,
+        priority: lane.output.review.priority,
+        owner: routed.output.owner,
+        action: routed.output.action,
+        summary: lane.output.review.summary,
+      };
+    },
+  });
+
+  return {
+    runId: meta.runId,
+    triaged: triaged.output,
+  };
+});

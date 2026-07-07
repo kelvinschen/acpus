@@ -8,6 +8,7 @@ export type ParallelBranchSpec = {
   do: ScopeCallback;
 };
 
+/** Authoring spec for static parallel branches. */
 export type ParallelStepSpec<
   Branches extends Record<string, ParallelBranchSpec> = Record<string, ParallelBranchSpec>,
   Strategy extends ParallelStrategy = "all",

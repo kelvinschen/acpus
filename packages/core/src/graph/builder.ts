@@ -59,6 +59,13 @@ export type WorkflowDefinition<InputSchema extends Schema<any> | undefined, Agen
   readonly buildFn: BuildFn<InputSchema, Agents>;
 };
 
+/**
+ * Context passed to a workflow `.build(...)` callback.
+ *
+ * The `input`, `meta`, and node output values available through this context
+ * are expression tokens during graph construction, not runtime JavaScript
+ * values.
+ */
 export type BuildContext<InputSchema extends Schema<any> | undefined, Agents extends AgentMap | undefined = undefined> = {
   input: InputSchema extends Schema<infer Input> ? OutputAccessor<Input> : {};
   agents: AgentRegistry<Agents>;
@@ -68,6 +75,14 @@ export type BuildContext<InputSchema extends Schema<any> | undefined, Agents ext
 
 export type BuildFn<InputSchema extends Schema<any> | undefined, Agents extends AgentMap | undefined = undefined> = (ctx: BuildContext<InputSchema, Agents>) => Record<string, unknown>;
 
+/**
+ * Creates a typed Acpus workflow definition.
+ *
+ * Call `.build(({ input, agents, meta, step }) => ...)` on the returned builder
+ * to declare the workflow graph. Values from `input`, `agents`, and prior node
+ * outputs are expression tokens during graph construction, not runtime
+ * JavaScript values.
+ */
 export function defineWorkflow<InputSchema extends Schema<any> | undefined = undefined, Agents extends AgentMap | undefined = undefined>(config: WorkflowConfig<InputSchema, Agents>) {
   return {
     build(buildFn: BuildFn<InputSchema, Agents>): WorkflowDefinition<InputSchema, Agents> {
@@ -81,6 +96,7 @@ export function isWorkflowDefinition(value: unknown): value is WorkflowDefinitio
 }
 
 export type StepDeclaration = {
+  /** Declares an Agent node for model-backed judgment, synthesis, planning, or review. */
   agent<OutSchema extends Schema<any>>(
     spec: AgentStepSpec<OutSchema>,
   ): NodeRef<InferSchema<OutSchema>>;
@@ -89,6 +105,7 @@ export type StepDeclaration = {
     spec: AgentStepSpec<undefined>,
   ): NodeRef<string>;
 
+  /** Declares a Task node for deterministic local automation and artifact writing. */
   task<const Input extends StepInput, Exec extends TaskFunction<RuntimeInput<Input>, any>>(
     spec: InlineTaskStepSpec<Input, Exec>,
   ): NodeRef<Awaited<ReturnType<Exec>>>;
@@ -97,6 +114,7 @@ export type StepDeclaration = {
     spec: ReusableTaskStepSpec<Input, TaskInput, Output> & (RuntimeInput<Input> extends TaskInput ? unknown : never),
   ): NodeRef<Output>;
 
+  /** Declares a Signal node that waits for operator input. */
   signal<OutSchema extends Schema<any>>(
     spec: SignalStepSpec<OutSchema>,
   ): NodeRef<InferSchema<OutSchema>>;
@@ -105,16 +123,20 @@ export type StepDeclaration = {
     spec: SignalStepSpec<undefined>,
   ): NodeRef<string>;
 
+  /** Declares an Assert node that fails the run when its condition is false. */
   assert(spec: AssertSpec): void;
 
+  /** Declares a graph-level conditional branch. */
   if<Output extends OutputObject>(
     spec: IfStepSpec<Output>,
   ): NodeRef<RuntimeValueOf<Output>>;
 
+  /** Declares a graph-level switch with explicit cases and a required default branch. */
   switch<const Spec extends SwitchStepSpec>(
     spec: Spec,
   ): NodeRef<SwitchNodeRefOutput<Spec>>;
 
+  /** Declares static parallel branches. Race strategy returns a winner/result envelope. */
   parallel<const Branches extends Record<string, ParallelBranchSpec>>(
     spec: ParallelStepSpec<Branches, "race">,
   ): NodeRef<ParallelNodeRefOutput<Branches, "race">>;
@@ -123,6 +145,7 @@ export type StepDeclaration = {
     spec: ParallelStepSpec<Branches, "all">,
   ): NodeRef<ParallelNodeRefOutput<Branches, "all">>;
 
+  /** Declares runtime fanout over a workflow array value. */
   fanout<const Over extends WorkflowArrayValue<any>, Output extends OutputObject>(
     spec: FanoutStepSpec<Over, Output, "quorum">,
   ): NodeRef<FanoutNodeRefOutput<Output, "quorum">>;
@@ -131,6 +154,7 @@ export type StepDeclaration = {
     spec: FanoutStepSpec<Over, Output, "all">,
   ): NodeRef<FanoutNodeRefOutput<Output, "all">>;
 
+  /** Declares a seeded pre-check loop with a bounded iteration count. */
   loop<Initial extends OutputObject>(
     spec: LoopStepSpec<Initial>,
   ): NodeRef<WidenRuntimeValue<RuntimeValueOf<Initial>>>;

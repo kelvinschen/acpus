@@ -4,6 +4,7 @@ import { assertStableId, stripUndefined } from "../../graph/lowering.js";
 import { templateToIR, type TemplateInput } from "../../template/template.js";
 import type { AssertNodeIR, DiagnosticIR } from "../../ir/types.js";
 
+/** Authoring spec for an Assert node that fails when `condition` is false. */
 export type AssertSpec = {
   condition: WorkflowValue<boolean>;
   message?: TemplateInput;

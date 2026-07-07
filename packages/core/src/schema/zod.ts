@@ -4,6 +4,12 @@ export type Schema<T = unknown> = zod.ZodType<T>;
 export type InferSchema<S> = S extends zod.ZodType ? zod.output<S> : never;
 
 type AcpusZodExtensions = {
+  /**
+   * Declares a filesystem path string crossing an Acpus workflow boundary.
+   *
+   * Use this for workflow inputs and reusable task inputs that represent local
+   * paths so the schema lowers to durable path metadata.
+   */
   path(): zod.ZodType<string>;
 };
 

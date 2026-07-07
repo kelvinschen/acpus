@@ -11,6 +11,7 @@ type SignalTimeoutSpec =
   | { timeout: string; onTimeout?: { action: "fail"; message?: string } }
   | { timeout?: undefined; onTimeout?: never };
 
+/** Authoring spec for a Signal node that waits for operator input. */
 export type SignalStepSpec<OutSchema extends Schema<any> | undefined = Schema<any> | undefined> =
   (OutSchema extends Schema<any>
     ? {

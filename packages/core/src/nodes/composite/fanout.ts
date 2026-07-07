@@ -15,6 +15,7 @@ type BaseFanoutStepSpec<Over extends WorkflowArrayValue<any>, Output extends Out
   itemOutputSchema?: never;
 };
 
+/** Authoring spec for runtime fanout over a workflow array value. */
 export type FanoutStepSpec<
   Over extends WorkflowArrayValue<any> = WorkflowArrayValue<any>,
   Output extends OutputObject = OutputObject,

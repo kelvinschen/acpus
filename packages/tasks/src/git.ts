@@ -4,6 +4,7 @@ import { task, z } from "@acpus/core";
 import type { Dollar } from "@acpus/core/runtime";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 
+/** Input accepted by the Git worktree reusable task. */
 export type CreateWorktreeInput = {
   repo: string;
   path: string;
@@ -12,6 +13,7 @@ export type CreateWorktreeInput = {
   forceRemove?: boolean | undefined;
 };
 
+/** Output returned after a Git worktree is created. */
 export type CreateWorktreeOutput = {
   ok: boolean;
   repoPath: string;
@@ -23,6 +25,7 @@ export type CreateWorktreeOutput = {
   dirtyStatus: string;
 };
 
+/** Recoverable errors returned by the low-level Git worktree helper. */
 export type CreateWorktreeError =
   | { type: "non-detached-worktree"; message: string }
   | { type: "dirty-repository"; repoPath: string; dirtyStatus: string; message: string }
@@ -30,6 +33,11 @@ export type CreateWorktreeError =
   | { type: "unregistered-worktree-removal"; repoPath: string; worktreePath: string; message: string }
   | { type: "git-command-failed"; message: string };
 
+/**
+ * Reusable Task token that creates a detached Git worktree from a clean source repository.
+ *
+ * Use it from a workflow Task node with `run: { task: createWorktree, input: ... }`.
+ */
 export const createWorktree = task.define({
   inputSchema: z.object({
     repo: z.path(),
@@ -49,6 +57,7 @@ export const createWorktree = task.define({
   },
 });
 
+/** Low-level ResultAsync helper used by `createWorktree`. */
 export function tryCreateWorktree(input: CreateWorktreeInput, $: Dollar): ResultAsync<CreateWorktreeOutput, CreateWorktreeError> {
   return ResultAsync.fromPromise(
     createWorktreeResult(input, $),

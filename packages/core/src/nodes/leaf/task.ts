@@ -93,11 +93,19 @@ export function createInlineTaskToken<Input, Output>(fn: TaskFunction<Input, Out
 }
 
 export interface TaskFactory {
+  /**
+   * Defines a reusable Task token for workflow modules.
+   *
+   * The task definition owns its input schema and executable body. Workflow
+   * call sites pass values through `run.input` and reference the token through
+   * `run.task`.
+   */
   define<InputSchema extends Schema<any>, Exec extends TaskFunction<InferSchema<InputSchema>, any>>(config: {
     inputSchema: InputSchema;
     outputSchema?: never;
     exec: Exec;
   }): ReusableTaskToken<InferSchema<InputSchema>, Awaited<ReturnType<Exec>>>;
+  /** Returns true when a value is an Acpus Task token. */
   isToken(value: unknown): value is TaskToken<any, any>;
 }
 

@@ -7,6 +7,7 @@ import type { WorkflowValue } from "@acpus/expression";
 import type { AgentDefinitionIR, AgentNodeIR, AgentRunIR, DiagnosticIR, RetryIR } from "../../ir/types.js";
 import type { EnvInput } from "./shared.js";
 
+/** Permission modes accepted by Acpus agent definitions and Agent node runs. */
 export type AgentPermissionMode = "approve-reads" | "approve-all" | "deny-all";
 
 export type AgentUseSpec = {
@@ -35,6 +36,7 @@ export type AgentCommandSpec = {
   env?: EnvInput;
 };
 
+/** Top-level workflow agent definition keyed by the workflow's `agents` map. */
 export type AgentDefinitionSpec = AgentUseSpec | AgentCommandSpec;
 
 export type AgentToken<Key extends string = string> = {
@@ -56,6 +58,7 @@ export type AgentRunSpec = {
   env?: EnvInput;
 };
 
+/** Authoring spec for an Agent node. Schema-backed agents return parsed JSON; schema-less agents return text. */
 export type AgentStepSpec<
   OutSchema extends Schema<any> | undefined = Schema<any> | undefined,
 > = (OutSchema extends Schema<any> ? {
