@@ -51,6 +51,7 @@ async function executeTask(node: TaskNodeIR, scope: EvaluationScope, context: No
   return executeTaskNode(node, scope, {
     cwd: input.cwd,
     runId: context.runId,
+    attemptId: context.attemptId,
     store: input.store,
     nodeKey: context.nodeKey,
     attemptNo: context.attemptNo,

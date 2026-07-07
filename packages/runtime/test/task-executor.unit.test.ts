@@ -18,6 +18,7 @@ afterEach(async () => {
 
 describe("task executor", () => {
   it("executes inline task source that contains esbuild name helpers", async () => {
+    const metadata: unknown[] = [];
     const node = {
       id: "inline",
       kind: "task",
@@ -43,7 +44,22 @@ describe("task executor", () => {
       store: {
         getRunDir: () => ".acpus/.local/runs/run_1",
         registerArtifact: () => {},
+        writeExecutionMetadata: (input: unknown) => metadata.push(input),
       } as unknown as RuntimeStore,
     })).resolves.toEqual({ value: "ok" });
+
+    expect(metadata).toEqual([
+      expect.objectContaining({
+        runId: "run_1",
+        kind: "task_attempt",
+        metadata: {
+          nodeId: "inline",
+          nodeKey: "inline",
+          attemptNo: 1,
+          input: { value: "ok" },
+          cwd: workspace,
+        },
+      }),
+    ]);
   });
 });

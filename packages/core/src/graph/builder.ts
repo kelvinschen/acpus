@@ -377,7 +377,7 @@ export function compileWorkflowDefinition(definition: WorkflowDefinition<any, an
       generatedAt: new Date().toISOString(),
       notes: [
         "Workflow definition was lowered into Acpus IR.",
-        "Production module compilation attaches reusable task module references before preflight admission.",
+        "Production module compilation attaches reusable task module references before workflow admission.",
       ],
     },
     diagnostics,

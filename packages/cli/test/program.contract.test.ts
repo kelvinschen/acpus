@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
@@ -70,6 +70,56 @@ describe("CLI program usage contracts", () => {
       }
     });
   });
+
+  it("generates workflow visualization HTML with overwrite controls", async () => {
+    await withTestWorkspace("workflow-viz-program", async workspace => {
+      const workflow = join(workspace, "workflow.ts");
+      const out = join(workspace, "viz.html");
+      await writeFile(workflow, `import { defineWorkflow, z } from "acpus/core";
+
+export default defineWorkflow({
+  name: "program-viz",
+  inputSchema: z.object({ ready: z.boolean() }),
+}).build(({ input, step }) => {
+  step("require_ready").assert({ condition: input.ready });
+  return { ready: input.ready };
+});
+`);
+
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exitCode = await runCli(["workflows", "viz", workflow, "--out", out, "--json"], { cwd: workspace, stdout, stderr });
+
+      expect(exitCode).toBe(0);
+      expect(JSON.parse(stdout.text)).toMatchObject({
+        ok: true,
+        phase: "viz",
+        outputPath: out,
+        workflow: { name: "program-viz" },
+      });
+      const html = await readFile(out, "utf8");
+      expect(html).toContain("window.__ACPUS_WORKFLOW_VIZ__=");
+      expect(html).not.toMatch(/\s(?:src|href)=["']https?:\/\//);
+      expect(stderr.text).toBe("");
+
+      const duplicateStdout = new CaptureStream();
+      const duplicateExit = await runCli(["workflows", "viz", workflow, "--out", out, "--json"], {
+        cwd: workspace,
+        stdout: duplicateStdout,
+        stderr: new CaptureStream(),
+      });
+      expect(duplicateExit).toBe(2);
+      expect(JSON.parse(duplicateStdout.text).message).toContain("already exists");
+
+      const forcedStdout = new CaptureStream();
+      const forcedExit = await runCli(["workflows", "viz", workflow, "--out", out, "--force", "--json"], {
+        cwd: workspace,
+        stdout: forcedStdout,
+        stderr: new CaptureStream(),
+      });
+      expect(forcedExit).toBe(0);
+    });
+  }, 15_000);
 
   it("validates and lists project hooks", async () => {
     await withTestWorkspace("hooks-project", async workspace => {
@@ -189,6 +239,44 @@ describe("CLI program usage contracts", () => {
 
     expect(exitCode).toBe(2);
     expect(JSON.parse(stdout.text)).toMatchObject({ ok: false, phase: "usage" });
+    expect(stderr.text).toBe("");
+  });
+
+  it("rejects malformed web ports through the CLI JSON error contract", async () => {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+
+    const exitCode = await runCli(["web", "--port", "123abc", "--json"], {
+      cwd: process.cwd(),
+      stdout,
+      stderr,
+    });
+
+    expect(exitCode).toBe(2);
+    expect(JSON.parse(stdout.text)).toMatchObject({
+      ok: false,
+      phase: "usage",
+      message: "--port must be an integer between 1 and 65535.",
+    });
+    expect(stderr.text).toBe("");
+  });
+
+  it("rejects out-of-range web ports through the CLI JSON error contract", async () => {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+
+    const exitCode = await runCli(["web", "--port", "70000", "--json"], {
+      cwd: process.cwd(),
+      stdout,
+      stderr,
+    });
+
+    expect(exitCode).toBe(2);
+    expect(JSON.parse(stdout.text)).toMatchObject({
+      ok: false,
+      phase: "usage",
+      message: "--port must be an integer between 1 and 65535.",
+    });
     expect(stderr.text).toBe("");
   });
 

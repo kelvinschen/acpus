@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import type { WorkflowIR } from "@acpus/core/ir";
 import { checkWorkflow } from "../check/runner.js";
@@ -7,13 +7,13 @@ import { compileWorkflow } from "../compiler/worker.js";
 import { createScratchDir } from "./temp.js";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 
-export type PreflightOptions = {
+export type WorkflowPreparationOptions = {
   workflow: string;
   cwd: string;
 };
 
-export type WorkflowLockArtifact = {
-  kind: "acpus_preflight_lock";
+export type WorkflowPreparationLock = {
+  kind: "acpus_workflow_preparation_lock";
   version: 1;
   workflow: {
     entry: string;
@@ -35,11 +35,7 @@ export type PreparedWorkflow = {
   irDigest: string;
   sourceGraphDigest: string;
   packageLockDigest?: string;
-  lock: WorkflowLockArtifact;
-};
-
-export type PreflightArtifact = {
-  dir: string;
+  lock: WorkflowPreparationLock;
 };
 
 export type WorkflowPreparationFailure =
@@ -53,7 +49,7 @@ export class WorkflowPreparationError extends Error {
   }
 }
 
-export async function prepareWorkflow(options: PreflightOptions): Promise<PreparedWorkflow> {
+export async function prepareWorkflow(options: WorkflowPreparationOptions): Promise<PreparedWorkflow> {
   const result = await tryPrepareWorkflow(options);
   return result.match(
     prepared => prepared,
@@ -63,7 +59,7 @@ export async function prepareWorkflow(options: PreflightOptions): Promise<Prepar
   );
 }
 
-export function tryPrepareWorkflow(options: PreflightOptions): ResultAsync<PreparedWorkflow, WorkflowPreparationFailure> {
+export function tryPrepareWorkflow(options: WorkflowPreparationOptions): ResultAsync<PreparedWorkflow, WorkflowPreparationFailure> {
   const workflowPath = resolve(options.cwd, options.workflow);
   return ResultAsync.fromPromise(
     prepareWorkflowResult(options, workflowPath),
@@ -75,7 +71,7 @@ export function tryPrepareWorkflow(options: PreflightOptions): ResultAsync<Prepa
   ).andThen(result => result);
 }
 
-async function prepareWorkflowResult(options: PreflightOptions, workflowPath: string): Promise<Result<PreparedWorkflow, WorkflowPreparationFailure>> {
+async function prepareWorkflowResult(options: WorkflowPreparationOptions, workflowPath: string): Promise<Result<PreparedWorkflow, WorkflowPreparationFailure>> {
   const scratchDir = await createScratchDir();
   try {
     const check = await checkWorkflow(workflowPath, options.cwd, scratchDir);
@@ -129,18 +125,9 @@ async function prepareWorkflowResult(options: PreflightOptions, workflowPath: st
   }
 }
 
-export async function writePreflightArtifact(prepared: PreparedWorkflow, cwd: string): Promise<PreflightArtifact> {
-  const id = `${timestampId()}-${prepared.irDigest.slice("sha256:".length, "sha256:".length + 12)}`;
-  const dir = join(cwd, ".acpus", ".local", "preflight", id);
-  await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "workflow.ir.json"), prepared.irJson);
-  await writeFile(join(dir, "lock.json"), `${JSON.stringify(prepared.lock, null, 2)}\n`);
-  return { dir };
-}
-
-function buildLock(ir: WorkflowIR, workflowPath: string, cwd: string, irDigest: string, sourceGraphDigest: string, packageLock: string | undefined): WorkflowLockArtifact {
+function buildLock(ir: WorkflowIR, workflowPath: string, cwd: string, irDigest: string, sourceGraphDigest: string, packageLock: string | undefined): WorkflowPreparationLock {
   return {
-    kind: "acpus_preflight_lock",
+    kind: "acpus_workflow_preparation_lock",
     version: 1,
     workflow: {
       entry: relative(cwd, workflowPath),
@@ -173,8 +160,4 @@ function digest(value: string): string {
 
 function causeMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
-}
-
-function timestampId(): string {
-  return new Date().toISOString().replaceAll(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
 }

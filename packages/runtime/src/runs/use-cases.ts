@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { NodeIR, SchemaIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
+import type { ExprIR, NodeIR, SchemaIR, ScopeIR, TemplateIR, WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import { ResultAsync } from "neverthrow";
 import { normalizeWorkflowInput } from "../admission/input.js";
@@ -18,8 +18,9 @@ import {
   type RuntimeDiagnostics,
   type DaemonDiagnostics,
   type RunDetails,
-  type RunRecord,
+  type ArtifactRecord, type RunRecord,
 } from "../store/store.js";
+export type { ArtifactRecord };
 
 export type RuntimeMutationAction = "pause" | "resume" | "retry" | "fork" | "cancel";
 
@@ -27,12 +28,19 @@ export type RunInspectionStaticNode = {
   nodeId: string;
   kind: NodeIR["kind"];
   order: number;
+  input?: Record<string, ExprIR>;
+  prompt?: TemplateIR;
   outputSchema?: SchemaIR;
 };
 
 export type RunInspection = {
   run: RunDetails;
   staticNodes: RunInspectionStaticNode[];
+};
+
+export type RunVisualizationSnapshot = {
+  run: RunDetails;
+  overlay: WorkflowVisualizationOverlay;
 };
 
 export type RuntimeMutationInput = {
@@ -169,14 +177,50 @@ export async function getRunInspection(cwd: string, runId: string): Promise<RunI
   }
 }
 
-export async function getRunVisualizationOverlay(cwd: string, runId: string): Promise<WorkflowVisualizationOverlay | undefined> {
+export async function getArtifact(cwd: string, runId: string, artifactId: string): Promise<ArtifactRecord | undefined> {
+  const store = await openExistingRuntimeStore(cwd);
+  if (!store) return undefined;
+  try {
+    return store.getArtifact(runId, artifactId);
+  } finally {
+    store.close();
+  }
+}
+
+export async function listArtifacts(cwd: string, runId: string): Promise<ArtifactRecord[]> {
+  const store = await openExistingRuntimeStore(cwd);
+  if (!store) return [];
+  try {
+    return store.listArtifacts(runId);
+  } finally {
+    store.close();
+  }
+}
+
+export async function getRunVisualizationSnapshot(cwd: string, runId: string): Promise<RunVisualizationSnapshot | undefined> {
   const store = await openExistingRuntimeStore(cwd);
   if (!store) return undefined;
   try {
     const frozen = store.getFrozenRun(runId);
     const run = store.getRun(runId);
     if (!frozen || !run) return undefined;
-    return createWorkflowVisualizationOverlay(frozen.ir, run.dynamic, { runId, status: run.status });
+    return {
+      run,
+      overlay: createWorkflowVisualizationOverlay(frozen.ir, run.dynamic, { runId, status: run.status }),
+    };
+  } finally {
+    store.close();
+  }
+}
+
+export async function getRunStaticVisualizationOverlay(cwd: string, runId: string): Promise<WorkflowVisualizationOverlay | undefined> {
+  const store = await openExistingRuntimeStore(cwd);
+  if (!store) return undefined;
+  try {
+    const frozen = store.getFrozenRun(runId);
+    const run = store.getRun(runId);
+    if (!frozen || !run) return undefined;
+    return createWorkflowVisualizationOverlay(frozen.ir, undefined, { runId, status: run.status });
   } finally {
     store.close();
   }
@@ -194,6 +238,8 @@ function visitScope(scope: ScopeIR, nodes: RunInspectionStaticNode[]): void {
       nodeId: node.id,
       kind: node.kind,
       order: nodes.length,
+      ...(node.kind === "task" ? { input: node.run.input } : {}),
+      ...(node.kind === "agent" || node.kind === "signal" ? { prompt: node.run.prompt } : {}),
       ...(node.kind === "signal" ? { outputSchema: node.outputSchema } : {}),
     });
     for (const child of childScopes(node)) visitScope(child, nodes);

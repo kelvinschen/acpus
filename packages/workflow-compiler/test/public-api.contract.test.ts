@@ -9,7 +9,6 @@ describe("@acpus/workflow-compiler public API", () => {
       "prepareWorkflow",
       "tryCompileWorkflowModule",
       "tryPrepareWorkflow",
-      "writePreflightArtifact",
     ]);
   });
 });

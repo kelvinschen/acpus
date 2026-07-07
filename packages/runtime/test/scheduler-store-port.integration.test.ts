@@ -286,6 +286,37 @@ describe("scheduler store port", () => {
     });
   });
 
+  it("bridges active scheduler work to public running status", async () => {
+    await withRuntimeWorkspace("scheduler-store-public-running-status", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+
+        store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "public:running-root",
+          events: [{ type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } }],
+        });
+        expect(store.getRun(run.id)).toMatchObject({ status: "running" });
+
+        store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "public:running-ready-instance",
+          events: [{ type: "instance.ready", payload: { runId: run.id, nodeKey: "left~1", nodeId: "left", parentFrameKey: "root", instancePath: [{ kind: "node", nodeId: "left" }], readinessSequence: 1 } }],
+        });
+        expect(store.getRun(run.id)).toMatchObject({ status: "running" });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   it("cancels a run before root materialization", async () => {
     await withRuntimeWorkspace("scheduler-store-cancel-before-root", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
@@ -456,7 +487,7 @@ describe("scheduler store port", () => {
         expect(retried.projection.run).toMatchObject({ status: "pending", paused: false });
         expect(retried.projection.frames.root).toMatchObject({ status: "running" });
         expect(retried.projection.instances["require_ready~1"]).toMatchObject({ status: "ready", statusReason: "retry" });
-        expect(store.getRun(run.id)).toMatchObject({ status: "pending" });
+        expect(store.getRun(run.id)).toMatchObject({ status: "running" });
         const retryCreatedAt = dbScalar(workspace, "SELECT created_at FROM run_events WHERE run_id = ? AND type = 'instance.retry_requested'", run.id);
         expect(dbRow(workspace, "SELECT created_at FROM node_instances WHERE run_id = ? AND node_key = 'require_ready~1'", run.id)).toEqual({ created_at: retryCreatedAt });
       } finally {
@@ -510,7 +541,7 @@ describe("scheduler store port", () => {
         expect(retried.projection.groups["parallel~1"]).toMatchObject({ status: "running" });
         expect(retried.projection.groupMembers["branch~left"]).toMatchObject({ status: "ready" });
         expect(retried.projection.instances["leaf~1"]).toMatchObject({ status: "ready", statusReason: "retry" });
-        expect(store.getRun(run.id)).toMatchObject({ status: "pending" });
+        expect(store.getRun(run.id)).toMatchObject({ status: "running" });
       } finally {
         store.close();
       }
@@ -862,7 +893,7 @@ describe("scheduler store port", () => {
         expect(retried.projection.frames["choose.then~1"]).toBeUndefined();
         expect(retried.projection.instances["leaf~1"]).toBeUndefined();
         expect(retried.projection.branchDecisions["choose~1"]).toBeUndefined();
-        expect(store.getRun(run.id)).toMatchObject({ status: "pending" });
+        expect(store.getRun(run.id)).toMatchObject({ status: "running" });
         expect(dbScalar(workspace, "SELECT COUNT(*) FROM scheduler_frames WHERE run_id = ? AND frame_key = ?", run.id, "choose.then~1")).toBe(0);
         expect(dbScalar(workspace, "SELECT COUNT(*) FROM node_instances WHERE run_id = ? AND node_key = ?", run.id, "leaf~1")).toBe(0);
         expect(dbScalar(workspace, "SELECT COUNT(*) FROM node_attempts WHERE run_id = ? AND attempt_id = ?", run.id, "attempt_leaf")).toBe(0);
@@ -942,7 +973,7 @@ describe("scheduler store port", () => {
         expect(canceled.projection.run.status).toBe("pending");
         expect(canceled.projection.instances["left~1"]).toMatchObject({ status: "cancelled", statusReason: "operator_cancelled" });
         expect(canceled.projection.instances["right~1"]).toMatchObject({ status: "ready" });
-        expect(store.getRun(run.id)).toMatchObject({ status: "pending" });
+        expect(store.getRun(run.id)).toMatchObject({ status: "running" });
       } finally {
         store.close();
       }

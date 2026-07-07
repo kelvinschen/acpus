@@ -3,7 +3,7 @@ import { access, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { getRun, getRunVisualizationOverlay, listRuns, normalizeForkInput } from "@acpus/runtime";
+import { getRun, getRunVisualizationSnapshot, listRuns, normalizeForkInput } from "@acpus/runtime";
 import { advanceRuntimeRun } from "../src/runs/advance-runtime.js";
 import { mutateRun, signalRun, tryMutateRun, trySignalRun } from "../src/runs/use-cases.js";
 import { openExistingWritableRuntimeStore } from "../src/store/store.js";
@@ -240,7 +240,7 @@ describe.concurrent("runtime controls and recovery use cases", () => {
 
       const fork = await mutateRun(workspace, source.run.id, "fork", { prepared: replacement });
 
-      expect(fork?.run).toMatchObject({ name: "cli-task-replacement", status: "pending" });
+      expect(fork?.run).toMatchObject({ name: "cli-task-replacement", status: "running" });
       const store = await openExistingWritableRuntimeStore(workspace);
       expect(store).toBeDefined();
       try {
@@ -361,9 +361,9 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       const run = await getRun(workspace, awaiting.run.id);
       expect(run?.dynamic?.nodeInstances.filter(instance => instance.nodeId === "approve" && instance.status === "awaiting")).toHaveLength(2);
       expect(run?.dynamic?.signalWaits.filter(wait => wait.nodeId === "approve" && wait.status === "awaiting")).toHaveLength(2);
-      const overlay = await getRunVisualizationOverlay(workspace, awaiting.run.id);
-      expect(overlay?.workflow).toMatchObject({ name: "cli-fanout-signal", runId: awaiting.run.id, status: "awaiting" });
-      expect(overlay?.nodes.find(node => node.nodeId === "approve")).toMatchObject({
+      const snapshot = await getRunVisualizationSnapshot(workspace, awaiting.run.id);
+      expect(snapshot?.overlay.workflow).toMatchObject({ name: "cli-fanout-signal", runId: awaiting.run.id, status: "awaiting" });
+      expect(snapshot?.overlay.nodes.find(node => node.nodeId === "approve")).toMatchObject({
         kind: "signal",
         status: "awaiting",
         instances: expect.arrayContaining([
@@ -371,7 +371,7 @@ describe.concurrent("runtime controls and recovery use cases", () => {
           expect.objectContaining({ nodeId: "approve", status: "awaiting" }),
         ]),
       });
-      expect(overlay?.groups).toEqual([
+      expect(snapshot?.overlay.groups).toEqual([
         expect.objectContaining({
           nodeId: "approvals",
           kind: "fanout",

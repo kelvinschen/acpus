@@ -276,7 +276,7 @@ describe("runtime scheduler node executor", () => {
         expect(afterRetryAdvance.frames[ifKey]).toMatchObject({ status: "completed", result: { value: "then" } });
         expect(afterRetryAdvance.instances[branchTaskKey]).toMatchObject({ status: "completed", output: { value: "then" } });
         expect(afterRetryAdvance.instances[finalKey]).toMatchObject({ status: "ready" });
-        expect(store.getRun(run.id)).toMatchObject({ status: "pending" });
+        expect(store.getRun(run.id)).toMatchObject({ status: "running" });
 
         await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-b", store })).resolves.toMatchObject({ status: "completed" });
         expect(store.getRun(run.id)).toMatchObject({ status: "completed", output: { final: "then-final" } });
@@ -828,6 +828,18 @@ describe("runtime scheduler node executor", () => {
         expect(String(artifact?.relative_path)).toContain("artifacts/context_task.dynamic/attempt-7/");
         const bytes = await readFile(join(workspace, ".acpus", ".local", "runs", run.id, String(artifact?.relative_path)));
         expect(bytes.toString("utf8")).toBe("dynamic artifact\n");
+        const metadata = store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "task_attempt");
+        expect(metadata).toMatchObject({
+          attemptId: "attempt_7",
+          kind: "task_attempt",
+          metadata: expect.objectContaining({
+            nodeId: "context_task",
+            nodeKey: "context_task.dynamic",
+            attemptNo: 7,
+            input: {},
+            cwd: workspace,
+          }),
+        });
       } finally {
         store.close();
       }
@@ -1569,7 +1581,7 @@ describe("runtime scheduler node executor", () => {
           agentOverrides: { reviewer: { command: "custom-acp-server" } },
         });
         const forkRun = store.getRun(fork.id);
-        expect(forkRun).toMatchObject({ status: "pending" });
+        expect(forkRun).toMatchObject({ status: "running" });
         expect(forkRun).not.toHaveProperty("output");
 
         await expect(advanceFrozenRun({

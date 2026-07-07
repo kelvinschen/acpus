@@ -1,4 +1,4 @@
-import type { NodeIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
+import type { AgentDefinitionIR, ExprIR, NodeIR, SchemaIR, ScopeIR, TemplateIR, WorkflowIR } from "@acpus/core/ir";
 import type {
   RunDynamicAttempt,
   RunDynamicFrame,
@@ -18,11 +18,24 @@ export type WorkflowVisualizationOverlay = {
   groups: WorkflowVisualizationGroup[];
 };
 
+// Semantic summary of a node's authored configuration, rendered by browser-facing packages.
+export type NodeDetail =
+  | { kind: "task"; inputs: string[]; target: "inline" | "module" }
+  | { kind: "agent"; agent: string; use?: string; command?: string; model?: string; outputSchema?: SchemaIR }
+  | { kind: "signal"; outputSchema?: SchemaIR }
+  | { kind: "assert"; condition: ExprIR; message?: TemplateIR }
+  | { kind: "if"; condition: ExprIR }
+  | { kind: "switch"; cases: ExprIR[]; hasDefault: boolean }
+  | { kind: "parallel"; branches: string[]; strategy: "all" | "race" }
+  | { kind: "fanout"; over: ExprIR; strategy: "all" | "quorum"; count?: number }
+  | { kind: "loop"; maxIterations: number; stopWhen: ExprIR };
+
 export type WorkflowVisualizationNode = {
   nodeId: string;
   kind: NodeIR["kind"];
   path: string[];
   parentNodeId?: string;
+  detail?: NodeDetail;
   instances: RunDynamicNodeInstance[];
   frames: RunDynamicFrame[];
   attempts: RunDynamicAttempt[];
@@ -62,7 +75,7 @@ export function createWorkflowVisualizationOverlay(
       ...(options.status === undefined ? {} : { status: options.status }),
       ...(dynamic === undefined ? {} : { dynamicVersion: dynamic.version }),
     },
-    nodes: staticNodes.map(node => nodeOverlay(node, dynamic)),
+    nodes: staticNodes.map(node => nodeOverlay(node, dynamic, ir.agents)),
     groups: groupOverlays(dynamic, staticNodeById),
   };
 }
@@ -99,7 +112,7 @@ function childScopes(node: NodeIR): Array<{ label: string; scope: ScopeIR }> {
   return [];
 }
 
-function nodeOverlay(node: StaticNode, dynamic: WorkflowVisualizationDynamicInput | undefined): WorkflowVisualizationNode {
+function nodeOverlay(node: StaticNode, dynamic: WorkflowVisualizationDynamicInput | undefined, agents: WorkflowIR["agents"]): WorkflowVisualizationNode {
   const instances = dynamic?.nodeInstances.filter(instance => instance.nodeId === node.node.id) ?? [];
   const frames = dynamic?.frames.filter(frame => frame.nodeId === node.node.id) ?? [];
   const attempts = dynamic?.attempts.filter(attempt => attempt.nodeId === node.node.id) ?? [];
@@ -107,17 +120,60 @@ function nodeOverlay(node: StaticNode, dynamic: WorkflowVisualizationDynamicInpu
   const primaryFrames = frames.filter(frame => frame.frameKind === "node" || frame.frameKind === "loop");
   const currentStatuses = [...instances.map(instance => instance.status), ...primaryFrames.map(frame => frame.status), ...signalWaits.map(wait => wait.status)];
   const attemptStatuses = attempts.map(attempt => attempt.status);
+  const detail = safeNodeDetail(node.node, agents);
   return {
     nodeId: node.node.id,
     kind: node.node.kind,
     path: node.path,
     ...(node.parentNodeId === undefined ? {} : { parentNodeId: node.parentNodeId }),
+    ...(detail === undefined ? {} : { detail }),
     instances,
     frames,
     attempts,
     signalWaits,
     status: overlayStatus(currentStatuses.length > 0 ? currentStatuses : attemptStatuses),
   };
+}
+
+// Enrichment reads untrusted frozen-run JSON, so any malformed node yields no detail.
+function safeNodeDetail(node: NodeIR, agents: WorkflowIR["agents"]): NodeDetail | undefined {
+  try {
+    return nodeDetail(node, agents ?? {});
+  } catch {
+    return undefined;
+  }
+}
+
+function nodeDetail(node: NodeIR, agents: WorkflowIR["agents"]): NodeDetail {
+  switch (node.kind) {
+    case "task":
+      return { kind: "task", inputs: Object.keys(node.run.input), target: node.run.target.kind };
+    case "agent": {
+      const definition: AgentDefinitionIR | undefined = agents[node.run.agent];
+      return {
+        kind: "agent",
+        agent: node.run.agent,
+        ...(definition?.kind === "agent_definition" ? { use: definition.use } : {}),
+        ...(definition?.kind === "agent_command" ? { command: definition.command } : {}),
+        ...(definition?.model === undefined ? {} : { model: definition.model }),
+        ...(node.outputSchema === undefined ? {} : { outputSchema: node.outputSchema }),
+      };
+    }
+    case "signal":
+      return { kind: "signal", ...(node.outputSchema === undefined ? {} : { outputSchema: node.outputSchema }) };
+    case "assert":
+      return { kind: "assert", condition: node.condition, ...(node.message === undefined ? {} : { message: node.message }) };
+    case "if":
+      return { kind: "if", condition: node.condition };
+    case "switch":
+      return { kind: "switch", cases: node.cases.map(branch => branch.when), hasDefault: node.default.nodes.length > 0 };
+    case "parallel":
+      return { kind: "parallel", branches: Object.keys(node.branches), strategy: node.strategy };
+    case "fanout":
+      return { kind: "fanout", over: node.over, strategy: node.strategy, ...(node.strategy === "quorum" ? { count: node.count } : {}) };
+    case "loop":
+      return { kind: "loop", maxIterations: node.maxIterations, stopWhen: node.stopWhen };
+  }
 }
 
 function groupOverlays(dynamic: WorkflowVisualizationDynamicInput | undefined, staticNodeById: ReadonlyMap<string, NodeIR>): WorkflowVisualizationGroup[] {

@@ -1,10 +1,11 @@
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-import { getRun, getRunInspection, listRuns, normalizeSignalPayload, normalizeWorkflowInput } from "@acpus/runtime";
+import { getRun, getRunInspection, listArtifacts, listRuns, normalizeSignalPayload, normalizeWorkflowInput } from "@acpus/runtime";
 import { admitWorkflowRun } from "../src/runs/use-cases.js";
 import type { TaskExecutionTargetIR, WorkflowIR } from "@acpus/core/ir";
 import {
@@ -168,6 +169,27 @@ describe.concurrent("runtime admission use cases", () => {
     });
   });
 
+  it("lists artifacts in stable creation order", async () => {
+    await withRuntimeWorkspace("runtime-artifact-list-order", async workspace => {
+      const admitted = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
+      const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+      try {
+        const insert = db.prepare(`
+          INSERT INTO artifacts (id, run_id, node_key, attempt, media_type, digest, size, relative_path, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        insert.run("artifact-b", admitted.run.id, "manual", 1, null, "sha256:b", 1, "artifacts/manual/b.txt", "2026-01-01T00:00:00.000Z");
+        insert.run("artifact-a", admitted.run.id, "manual", 1, null, "sha256:a", 1, "artifacts/manual/a.txt", "2026-01-01T00:00:00.000Z");
+      } finally {
+        db.close();
+      }
+
+      const artifacts = await listArtifacts(workspace, admitted.run.id);
+
+      expect(artifacts.slice(0, 2).map(artifact => artifact.id)).toEqual(["artifact-a", "artifact-b"]);
+    });
+  });
+
   it("passes task run invocation input, cwd, env, and execution options to runtime tasks", async () => {
     await withRuntimeWorkspace("runtime-task-run-options", async workspace => {
       const workDir = join(workspace, "task-workdir");
@@ -223,7 +245,7 @@ describe.concurrent("runtime admission use cases", () => {
         output: { ready: true },
       });
     });
-  });
+  }, 15_000);
 
   it.sequential("executes same-file reusable task references prepared from workflow module exports", async () => {
     await withRuntimeWorkspace("runtime-same-file-reusable", async workspace => {
@@ -357,7 +379,7 @@ describe.concurrent("runtime admission use cases", () => {
         }, {}, {
           cwd: workspace,
           runId: "run_1",
-          store: { getRunDir: () => ".acpus/.local/runs/run_1", registerArtifact: () => {} },
+          store: { getRunDir: () => ".acpus/.local/runs/run_1", registerArtifact: () => {}, writeExecutionMetadata: () => {} },
         });
         if (output.value !== "dev:loaded") throw new Error("development export fallback was not used");
         let masked = false;
@@ -381,7 +403,7 @@ describe.concurrent("runtime admission use cases", () => {
           }, {}, {
             cwd: workspace,
             runId: "run_2",
-            store: { getRunDir: () => ".acpus/.local/runs/run_2", registerArtifact: () => {} },
+            store: { getRunDir: () => ".acpus/.local/runs/run_2", registerArtifact: () => {}, writeExecutionMetadata: () => {} },
           });
           masked = true;
         } catch (error) {

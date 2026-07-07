@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`@acpus/runtime` persists and advances prepared workflow runs in a workspace-local durable store. It accepts a prepared workflow and normalized input, writes SQLite state and run-local files, executes supported frozen IR, exposes read APIs, handles signal continuation, and owns the local daemon that controls live run execution sessions. Workflow static checks, module compile, and preflight preparation belong to `@acpus/workflow-compiler`.
+`@acpus/runtime` persists and advances prepared workflow runs in a workspace-local durable store. It accepts a prepared workflow and normalized input, writes SQLite state and run-local files, executes supported frozen IR, exposes read APIs, handles signal continuation, and owns the local daemon that controls live run execution sessions. Workflow static checks, module compile, and in-memory workflow preparation belong to `@acpus/workflow-compiler`.
 
 ## Requirements
 
@@ -73,6 +73,13 @@
 - Runtime run detail read APIs MUST expose dynamic frame, node instance, attempt,
   group member, and signal wait timing fields needed for compact status
   rendering.
+- Public run status MUST distinguish queued admission from active execution:
+  `pending` means admitted or reset but no scheduler frame, runnable instance,
+  group member, or attempt has started or become ready; public status MUST be
+  `running` once scheduler projection contains a root frame, active frame,
+  ready/running node instance, ready/running group member, running group, or
+  started attempt, unless the run is awaiting, paused, failed, completed, or
+  canceled.
 - Runtime run detail read APIs MUST expose persisted rendered signal prompts for
   awaiting signal waits so read-only inspection can render operator guidance.
 - Runtime read APIs used for run inspection MUST expose frozen static node

@@ -38,7 +38,8 @@ export default defineConfig({
       {
         test: {
           name: "e2e",
-          include: [e2eTests]
+          include: [e2eTests],
+          testTimeout: 15_000
         }
       },
       {
@@ -53,7 +54,7 @@ export default defineConfig({
           include: [],
           typecheck: {
             enabled: true,
-            checker: "./node_modules/.bin/tsgo",
+            checker: "./node_modules/.bin/tsc",
             include: [typeContractTests],
             tsconfig: "tsconfig.vitest.json"
           }

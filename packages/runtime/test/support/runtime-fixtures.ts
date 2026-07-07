@@ -368,7 +368,7 @@ export function preparedWorkflow(ir: WorkflowIR, workflowPath: string, cwd: stri
   const irDigest = digest(irJson);
   const sourceGraphDigest = digest(`${ir.lock.workflowSourceDigest ?? ""}\n`);
   const lock: RunWorkflowLockArtifact = {
-    kind: "acpus_preflight_lock",
+    kind: "acpus_workflow_preparation_lock",
     version: 1,
     workflow: {
       entry: workflowPath.slice(cwd.length + 1),

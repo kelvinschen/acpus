@@ -175,7 +175,7 @@ describe("CLI result output contracts", () => {
     expect(writeResult(checkResult(), "text", { stdout: checkStdout, stderr: checkStderr }, 0)).toBe(0);
     expect(checkStdout.text).toContain("Workflow check passed.");
     expect(checkStdout.text).toContain("Workflow: cli-valid");
-    expect(checkStdout.text).toContain("Preflight:");
+    expect(checkStdout.text).not.toContain("Preflight:");
     expect(checkStdout.text).toContain("IR digest: sha256:");
     expect(checkStderr.text).toBe("");
 
@@ -250,7 +250,6 @@ function checkResult(): CliResult {
       },
     },
     diagnostics: [],
-    preflightDir: "/tmp/preflight",
     irDigest: "sha256:abc",
     sourceGraphDigest: "sha256:def",
   };

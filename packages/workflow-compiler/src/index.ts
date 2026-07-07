@@ -7,11 +7,9 @@ export {
 export {
   prepareWorkflow,
   tryPrepareWorkflow,
-  writePreflightArtifact,
   type PreparedWorkflow,
-  type PreflightArtifact,
-  type PreflightOptions,
-  type WorkflowLockArtifact,
+  type WorkflowPreparationLock,
+  type WorkflowPreparationOptions,
   WorkflowPreparationError,
   type WorkflowPreparationFailure,
 } from "./preflight/index.js";

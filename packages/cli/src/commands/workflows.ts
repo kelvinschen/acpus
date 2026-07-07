@@ -1,9 +1,10 @@
 import type { Writable } from "node:stream";
+import { resolve } from "node:path";
 import { Command } from "commander";
+import type { WorkflowIR } from "@acpus/core/ir";
 import { admitPreparedWorkflowRun, normalizeWorkflowInput, validateAgentOverrides, type RuntimeAdvanceResult } from "@acpus/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
-import { writePreflightArtifact } from "@acpus/workflow-compiler";
-import { validationError } from "../errors.js";
+import { usageError, validationError } from "../errors.js";
 import { discoverWorkflowCatalog, resolveWorkflowReference, showWorkflowCatalogEntry, type WorkflowCatalogScopeOptions } from "../catalog.js";
 import { summarizeWorkflow, writeJsonLine, writeResult, type OutputFormat } from "../output.js";
 import { formatRunObservationRow, formatRunStatusSurface, staticNodesForWorkflow, type RunStatusStaticNode } from "../run-status-surface.js";
@@ -23,6 +24,8 @@ type WorkflowOptions = {
   input?: string;
   agents?: string;
   background?: boolean;
+  out?: string;
+  force?: boolean;
 } & WorkflowCatalogScopeOptions;
 
 export function createWorkflowsCommand(ctx: WorkflowsCommandContext): Command {
@@ -58,7 +61,7 @@ export function createWorkflowsCommand(ctx: WorkflowsCommandContext): Command {
 
   command.addCommand(new Command("check")
     .exitOverride()
-    .description("Typecheck, compile, validate, and write a preflight artifact.")
+    .description("Typecheck, compile, and validate a workflow without mutating runtime state.")
     .argument("<workflow-module>", "workflow module path or catalog name")
     .option("--input <json>", "validate this JSON value as the workflow input")
     .option("--agents <json>", "validate submit-time agent overrides")
@@ -79,6 +82,18 @@ export function createWorkflowsCommand(ctx: WorkflowsCommandContext): Command {
     .option("--global", "resolve workflow name from the global catalog")
     .action(async (workflow: string, options: WorkflowOptions) => {
       await runWorkflow(ctx, workflow, options);
+    }));
+
+  command.addCommand(new Command("viz")
+    .exitOverride()
+    .description("Generate a self-contained static workflow visualization HTML file.")
+    .argument("<workflow-module>", "workflow module path or catalog name")
+    .requiredOption("--out <file.html>", "write the visualization HTML to this file")
+    .option("--force", "overwrite the output file if it already exists")
+    .option("--project", "resolve workflow name from the project catalog")
+    .option("--global", "resolve workflow name from the global catalog")
+    .action(async (workflow: string, options: WorkflowOptions) => {
+      await visualizeWorkflow(ctx, workflow, options);
     }));
 
   return command;
@@ -115,14 +130,12 @@ async function checkWorkflow(ctx: WorkflowsCommandContext, workflow: string, opt
   } catch (error) {
     throw validationError(error instanceof Error ? error.message : String(error));
   }
-  const artifact = await writePreflightArtifact(prepared, ctx.cwd);
   ctx.setExitCode(writeResult({
     ok: true,
     phase: "check",
     message: "Workflow check passed.",
     workflow: summarizeWorkflow(prepared.ir),
     diagnostics: prepared.ir.diagnostics,
-    preflightDir: artifact.dir,
     irDigest: prepared.irDigest,
     sourceGraphDigest: prepared.sourceGraphDigest,
     ...(resolved.catalog ? { catalog: resolved.catalog } : {}),
@@ -189,8 +202,59 @@ async function runWorkflow(ctx: WorkflowsCommandContext, workflow: string, optio
   ctx.setExitCode(advanced.status === "failed" || advanced.status === "canceled" ? 1 : 0);
 }
 
+async function visualizeWorkflow(ctx: WorkflowsCommandContext, workflow: string, options: WorkflowOptions): Promise<void> {
+  const resolved = await resolveWorkflowReference(ctx.cwd, workflow, options);
+  const prepared = await prepareWorkflowForCli(resolved.workflow, ctx.cwd);
+  const { renderWorkflowVizHtml, workflowIrToWebGraph, writeWorkflowVizHtml } = await import("@acpus/web");
+  const outputPath = resolve(ctx.cwd, options.out!);
+  const graph = workflowIrToWebGraph(prepared.ir);
+  const html = renderWorkflowVizHtml({
+    graph,
+    title: prepared.ir.name,
+    workflow: {
+      name: prepared.ir.name,
+      irVersion: prepared.ir.irVersion,
+      nodeCount: countWorkflowNodes(prepared.ir.root),
+    },
+    contract: {
+      ...(prepared.ir.inputSchema === undefined ? {} : { inputSchema: prepared.ir.inputSchema }),
+      outputs: prepared.ir.outputs,
+    },
+    diagnostics: prepared.ir.diagnostics,
+    irDigest: prepared.irDigest,
+    sourceGraphDigest: prepared.sourceGraphDigest,
+  });
+  try {
+    await writeWorkflowVizHtml(outputPath, html, { force: options.force === true });
+  } catch (error) {
+    throw usageError(error instanceof Error ? error.message : String(error));
+  }
+  ctx.setExitCode(writeResult({
+    ok: true,
+    phase: "viz",
+    message: "Workflow visualization written.",
+    workflow: summarizeWorkflow(prepared.ir),
+    diagnostics: prepared.ir.diagnostics,
+    irDigest: prepared.irDigest,
+    sourceGraphDigest: prepared.sourceGraphDigest,
+    outputPath,
+    ...(resolved.catalog ? { catalog: resolved.catalog } : {}),
+  }, outputFormat(ctx), ctx, 0));
+}
+
 function outputFormat(ctx: WorkflowsCommandContext): OutputFormat {
   return ctx.wantsJson ? "json" : "text";
+}
+
+function countWorkflowNodes(scope: WorkflowIR["root"]): number {
+  return scope.nodes.reduce((total, node) => {
+    if (node.kind === "if") return total + 1 + countWorkflowNodes(node.then) + (node.else ? countWorkflowNodes(node.else) : 0);
+    if (node.kind === "switch") return total + 1 + node.cases.reduce((sum, branch) => sum + countWorkflowNodes(branch.then), 0) + countWorkflowNodes(node.default);
+    if (node.kind === "parallel") return total + 1 + Object.values(node.branches).reduce((sum, branch) => sum + countWorkflowNodes(branch.scope), 0);
+    if (node.kind === "fanout") return total + 1 + countWorkflowNodes(node.do);
+    if (node.kind === "loop") return total + 1 + countWorkflowNodes(node.do);
+    return total + 1;
+  }, 0);
 }
 
 function installDetachHandler(ctx: WorkflowsCommandContext, runId: string): () => void {

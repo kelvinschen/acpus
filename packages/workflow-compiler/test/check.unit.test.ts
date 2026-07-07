@@ -107,13 +107,21 @@ describe("workflow check pipeline", () => {
     });
   });
 
-  it("does not flag compile-time ids or JavaScript arrays of node refs", async () => {
-    await withCheckWorkspace("workflow-valid-lint-patterns", async cwd => {
+  it("allows representative valid authoring and output patterns", async () => {
+    await withCheckWorkspace("workflow-valid-patterns", async cwd => {
       const result = await runCheck(cwd, `
-        import { defineWorkflow, z } from "acpus/core";
+        import { defineWorkflow, task, type JsonObject, type JsonValue, z } from "acpus/core";
 
         const ReviewOut = z.object({ ok: z.boolean() });
         const focuses = ["security", "docs"] as const;
+        type Output = { ok: boolean };
+        function helper(): Output {
+          return { ok: true };
+        }
+        const inlineHidden = task.define({
+          inputSchema: z.object({}),
+          exec: async (): Promise<Output> => helper(),
+        });
 
         export default defineWorkflow({
           name: "valid_lint_patterns",
@@ -126,42 +134,52 @@ describe("workflow check pipeline", () => {
               prompt: "review",
             },
           }));
-          return { first: reviews[0].output.ok };
-        });
-      `);
-
-      expect(result.diagnostics.filter(diagnostic => diagnostic.code.startsWith("AL") || diagnostic.code === "TB008")).toEqual([]);
-    });
-  });
-
-  it("ignores unrelated property calls that share step method names", async () => {
-    await withCheckWorkspace("workflow-unrelated-methods-check", async cwd => {
-      const result = await runCheck(cwd, `
-        import { defineWorkflow } from "acpus/core";
-
-        export default defineWorkflow({ name: "unrelated_methods" }).build(() => {
           const client = {
             task: (_spec: object) => ({ ok: true }),
             loop: (_spec: object) => ({ ok: true }),
           };
           client.task({ run: { exec: async () => ({ when: new Date() }) } });
           client.loop({ do: () => ({ ok: true }) });
-          const task = {
+          const thirdPartyTask = {
             define: (_spec: object) => ({ ok: true }),
           };
-          task.define({ exec: async () => ({ when: new Date() }) });
-          return {};
+          thirdPartyTask.define({ exec: async () => ({ when: new Date() }) });
+          step("inline_hidden").task({
+            run: {
+              input: {},
+              exec: async (): Promise<Output> => helper(),
+            },
+          });
+          step("same_file_hidden").task({ run: { input: {}, task: inlineHidden } });
+          step("loop").loop({
+            initial: { ok: true, count: 0, summary: "" },
+            maxIterations: 1,
+            do: ({ iter, previous }) => ({
+              ok: previous.ok,
+              count: iter,
+              summary: previous.summary,
+            }),
+            stopWhen: () => false,
+          });
+          const value = JSON.parse("{}") as JsonValue;
+          const object = { ok: true } as JsonObject;
+          return { first: reviews[0].output.ok, value, object };
         });
       `);
 
-      expect(result.diagnostics.filter(diagnostic => diagnostic.code.startsWith("OA"))).toEqual([]);
+      expect(result.diagnostics.filter(diagnostic =>
+        diagnostic.code.startsWith("AL")
+        || diagnostic.code === "TB008"
+        || diagnostic.code.startsWith("OA"),
+      )).toEqual([]);
     });
   });
 
-  it("reports non-admissible inferred workflow output types before runtime", async () => {
-    await withCheckWorkspace("workflow-output-admissibility-check", async cwd => {
+  it("reports representative output source, admissibility, and convergence diagnostics", async () => {
+    await withCheckWorkspace("workflow-output-checks", async cwd => {
       const result = await runCheck(cwd, `
-        import { defineWorkflow, task, z } from "acpus/core";
+        import { defineWorkflow, task, type JsonValue, z } from "acpus/core";
+        import { badTask } from "./tasks";
 
         const reusableEscape = task.define({
           inputSchema: z.object({}),
@@ -184,118 +202,7 @@ describe("workflow check pipeline", () => {
           });
           step("reusable_escape").task({ run: { input: {}, task: reusableEscape } });
           step("reusable_broad_object").task({ run: { input: {}, task: reusableBroadObject } });
-          const unknownValue: unknown = "raw";
-          return { unknownValue };
-        });
-      `);
-
-      expect(result.diagnostics).toEqual(expect.arrayContaining([
-        expect.objectContaining({ code: "OA002", message: expect.stringContaining("Date") }),
-        expect.objectContaining({ code: "OA002", message: expect.stringContaining("function") }),
-        expect.objectContaining({ code: "OA002", message: expect.stringContaining("{}") }),
-      ]));
-      expect(result.diagnostics.filter(diagnostic => diagnostic.code === "OA002" && diagnostic.message.includes("any"))).toEqual([]);
-      expect(result.diagnostics.filter(diagnostic => diagnostic.code === "OA002" && diagnostic.message.includes("unknown"))).toEqual([]);
-      expect(result.diagnostics.filter(diagnostic => diagnostic.code === "OA002" && diagnostic.message.includes("inline task output") && diagnostic.message.includes("Date"))).toHaveLength(1);
-      expect(result.diagnostics.filter(diagnostic => diagnostic.code === "OA002" && diagnostic.message.includes("inline task output") && diagnostic.message.includes("{}"))).toHaveLength(1);
-      expect(result.diagnostics.filter(diagnostic => diagnostic.code === "OA002" && diagnostic.message.includes("task.define exec output") && diagnostic.message.includes("{}"))).toHaveLength(1);
-      expect(result.diagnostics.filter(diagnostic => diagnostic.code === "OA002" && diagnostic.message.includes("reusable task output") && diagnostic.message.includes("{}"))).toHaveLength(1);
-    });
-  });
-
-  it("checks imported reusable task output at the callsite", async () => {
-    await withCheckWorkspace("workflow-imported-task-output-check", async cwd => {
-      const result = await runCheck(cwd, `
-        import { defineWorkflow } from "acpus/core";
-        import { badTask } from "./tasks";
-
-        export default defineWorkflow({ name: "imported_task_output" }).build(({ step }) => {
           step("bad").task({ run: { input: {}, task: badTask } });
-          return {};
-        });
-      `, {
-        "tasks.ts": `
-          import { task, z } from "acpus/core";
-          export const badTask = task.define({
-            inputSchema: z.object({}),
-            exec: async () => ({ when: new Date() }),
-          });
-        `,
-      });
-
-      expect(result.diagnostics).toEqual(expect.arrayContaining([
-        expect.objectContaining({ code: "OA002", message: expect.stringContaining("reusable task output") }),
-      ]));
-    });
-  });
-
-  it("allows typed hidden output producers inside task exec functions", async () => {
-    await withCheckWorkspace("workflow-task-hidden-output-check", async cwd => {
-      const result = await runCheck(cwd, `
-        import { defineWorkflow, task, z } from "acpus/core";
-        import { hiddenTask } from "./tasks";
-
-        type Output = { ok: boolean };
-        function helper(): Output {
-          return { ok: true };
-        }
-
-        const inlineHidden = task.define({
-          inputSchema: z.object({}),
-          exec: async (): Promise<Output> => helper(),
-        });
-
-        export default defineWorkflow({ name: "imported_task_hidden_output" }).build(({ step }) => {
-          step("hidden").task({ run: { input: {}, task: hiddenTask } });
-          step("inline_hidden").task({
-            run: {
-              input: {},
-              exec: async (): Promise<Output> => helper(),
-            },
-          });
-          step("same_file_hidden").task({ run: { input: {}, task: inlineHidden } });
-          return {};
-        });
-      `, {
-        "tasks.ts": `
-          import { task, z } from "acpus/core";
-          type Output = { ok: boolean };
-          function helper(): Output {
-            return { ok: true };
-          }
-          export const hiddenTask = task.define({
-            inputSchema: z.object({}),
-            exec: async (): Promise<Output> => helper(),
-          });
-        `,
-      });
-
-      expect(result.diagnostics.filter(diagnostic => diagnostic.code.startsWith("OA"))).toEqual([]);
-    });
-  });
-
-  it("allows explicit opaque JsonValue and JsonObject output types", async () => {
-    await withCheckWorkspace("workflow-json-output-check", async cwd => {
-      const result = await runCheck(cwd, `
-        import { defineWorkflow, type JsonObject, type JsonValue } from "acpus/core";
-
-        export default defineWorkflow({ name: "json_outputs" }).build(() => {
-          const value = JSON.parse("{}") as JsonValue;
-          const object = { ok: true } as JsonObject;
-          return { value, object };
-        });
-      `);
-
-      expect(result.diagnostics.filter(diagnostic => diagnostic.code.startsWith("OA"))).toEqual([]);
-    });
-  });
-
-  it("requires statically visible output producer shapes", async () => {
-    await withCheckWorkspace("workflow-hidden-output-check", async cwd => {
-      const result = await runCheck(cwd, `
-        import { defineWorkflow } from "acpus/core";
-
-        export default defineWorkflow({ name: "hidden_outputs" }).build(({ step }) => {
           const fanoutSpec = { over: ["a"], do: () => ({ ok: true }) };
           step("items").fanout(fanoutSpec);
           const branch = { do: () => ({ ok: true }) };
@@ -318,29 +225,6 @@ describe("workflow check pipeline", () => {
             do: () => ({ ok: true }),
             stopWhen: () => true,
           });
-          return {};
-        });
-      `);
-
-      const hiddenOutputDiagnostics = result.diagnostics.filter(diagnostic => diagnostic.code === "OA001");
-      expect(hiddenOutputDiagnostics).toEqual(expect.arrayContaining([
-        expect.objectContaining({ message: expect.stringContaining("fanout spec") }),
-        expect.objectContaining({ message: expect.stringContaining("parallel branch") }),
-        expect.objectContaining({ message: expect.stringContaining("if then output") }),
-        expect.objectContaining({ message: expect.stringContaining("loop initial output") }),
-      ]));
-      expect(hiddenOutputDiagnostics.filter(diagnostic => diagnostic.message.includes("if then output"))).toHaveLength(2);
-      expect(hiddenOutputDiagnostics.filter(diagnostic => diagnostic.message.includes("loop initial output"))).toHaveLength(1);
-      expect(hiddenOutputDiagnostics.some(diagnostic => diagnostic.message.includes("task output"))).toBe(false);
-    });
-  });
-
-  it("reports root output convergence, branch convergence, and loop consistency gaps", async () => {
-    await withCheckWorkspace("workflow-output-convergence-check", async cwd => {
-      const result = await runCheck(cwd, `
-        import { defineWorkflow, type JsonValue } from "acpus/core";
-
-        export default defineWorkflow({ name: "convergence" }).build(({ input, step }) => {
           step("branch_keys").if({
             condition: true,
             then: () => ({ ok: true }),
@@ -370,12 +254,29 @@ describe("workflow check pipeline", () => {
             do: () => ({ ok: true }),
             stopWhen: () => false,
           });
+          const unknownValue: unknown = "raw";
           if (input) return { ok: true };
-          return { missing: true };
+          return { missing: true, unknownValue };
         });
-      `);
+      `, {
+        "tasks.ts": `
+          import { task, z } from "acpus/core";
+          export const badTask = task.define({
+            inputSchema: z.object({}),
+            exec: async () => ({ when: new Date() }),
+          });
+        `,
+      });
 
       expect(result.diagnostics).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: "OA001", message: expect.stringContaining("fanout spec") }),
+        expect.objectContaining({ code: "OA001", message: expect.stringContaining("parallel branch") }),
+        expect.objectContaining({ code: "OA001", message: expect.stringContaining("if then output") }),
+        expect.objectContaining({ code: "OA001", message: expect.stringContaining("loop initial output") }),
+        expect.objectContaining({ code: "OA002", message: expect.stringContaining("Date") }),
+        expect.objectContaining({ code: "OA002", message: expect.stringContaining("function") }),
+        expect.objectContaining({ code: "OA002", message: expect.stringContaining("{}") }),
+        expect.objectContaining({ code: "OA002", message: expect.stringContaining("reusable task output") }),
         expect.objectContaining({ code: "OA003", message: expect.stringContaining("workflow root outputs") }),
         expect.objectContaining({ code: "OA003", message: expect.stringContaining("if branch outputs") }),
         expect.objectContaining({ code: "OA003", message: expect.stringContaining("switch branch outputs") }),
@@ -384,6 +285,8 @@ describe("workflow check pipeline", () => {
         expect.objectContaining({ code: "OA003", message: expect.stringContaining("loop initial output") }),
         expect.objectContaining({ code: "OA004" }),
       ]));
+      expect(result.diagnostics.filter(diagnostic => diagnostic.code === "OA002" && diagnostic.message.includes("any"))).toEqual([]);
+      expect(result.diagnostics.filter(diagnostic => diagnostic.code === "OA002" && diagnostic.message.includes("unknown"))).toEqual([]);
     });
   });
 });

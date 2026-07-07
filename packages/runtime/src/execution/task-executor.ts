@@ -6,6 +6,7 @@ import { importAuthoringModule } from "@acpus/loader";
 import { task } from "@acpus/core";
 import { createDollar, type ArtifactRef, type CommandBuilder, type Dollar, type TaskContext, type TaskFunction } from "@acpus/core/runtime";
 import type { TaskExecutionTargetIR, TaskNodeIR } from "@acpus/core/ir";
+import type { JsonValue } from "@acpus/expression/ir";
 import { evaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
 import type { RuntimeStore } from "../store/store.js";
 import { parseDurationMs } from "./duration.js";
@@ -15,6 +16,7 @@ export type TaskExecutorOptions = {
   runId: string;
   store: RuntimeStore;
   nodeKey?: string;
+  attemptId?: string;
   attemptNo?: number;
   signal?: AbortSignal;
 };
@@ -29,6 +31,18 @@ export async function executeTaskNode(node: TaskNodeIR, scope: EvaluationScope, 
   const cwd = node.run.cwd ? stringValue(evaluateExpr(node.run.cwd, scope), `Task node '${node.id}' cwd`) : options.cwd;
   const env = evaluateEnv(node.run.env, scope);
   const visibleAttempt = options.attemptNo ?? 1;
+  options.store.writeExecutionMetadata({
+    runId: options.runId,
+    ...(options.attemptId ? { attemptId: options.attemptId } : {}),
+    kind: "task_attempt",
+    metadata: {
+      nodeId: node.id,
+      nodeKey,
+      attemptNo: visibleAttempt,
+      input: input as JsonValue,
+      cwd,
+    },
+  });
   const attemptDir = `attempt-${visibleAttempt}`;
   const outputDir = join(absoluteRunDir, "outputs", nodeKey, attemptDir);
   const workDir = join(absoluteRunDir, "work", nodeKey, attemptDir);

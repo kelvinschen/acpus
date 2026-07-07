@@ -48,6 +48,12 @@ describe("internal Acpus ESLint plugin", () => {
     expect(codes(thirdPartyMessages)).not.toContain("TB008");
   });
 
+  it("does not leak diagnostics from unrelated workflow fixtures", async () => {
+    const messages = await lintFixture("orchestration.workflow.ts");
+
+    expect(codes(messages)).not.toContain("OA001");
+  });
+
   it("reports a clear configuration diagnostic without typed parser services", async () => {
     const eslint = new ESLint({
       overrideConfigFile: true,

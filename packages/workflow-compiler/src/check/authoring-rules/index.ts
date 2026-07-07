@@ -26,15 +26,46 @@ export function checkWorkflowAuthoring(input: AuthoringRulesInput): DiagnosticIR
 }
 
 function outputAdmissibilitySources(program: ts.Program, entry: ts.SourceFile): ts.SourceFile[] {
-  if (typeof program.getSourceFiles !== "function") return [entry];
-  return program.getSourceFiles().filter(sourceFile => {
-    if (sourceFile.isDeclarationFile) return false;
-    if (sourceFile.fileName === entry.fileName) return true;
-    const fileName = sourceFile.fileName.replace(/\\/g, "/");
-    if (fileName.includes("/node_modules/")) return false;
-    if (fileName.includes("/packages/core/src/") || fileName.includes("/packages/expression/src/")) return false;
-    return true;
-  });
+  const sources: ts.SourceFile[] = [];
+  const seen = new Set<string>();
+
+  const visit = (sourceFile: ts.SourceFile): void => {
+    const fileName = sourceFile.fileName;
+    if (seen.has(fileName) || excludedOutputAdmissibilitySource(sourceFile)) return;
+    seen.add(fileName);
+    sources.push(sourceFile);
+
+    for (const specifier of localModuleSpecifiers(sourceFile)) {
+      const resolved = ts.resolveModuleName(specifier, fileName, program.getCompilerOptions(), ts.sys).resolvedModule;
+      if (!resolved) continue;
+      const imported = program.getSourceFile(resolved.resolvedFileName);
+      if (imported) visit(imported);
+    }
+  };
+
+  visit(entry);
+  return sources.length > 0 ? sources : [entry];
+}
+
+function excludedOutputAdmissibilitySource(sourceFile: ts.SourceFile): boolean {
+  if (sourceFile.isDeclarationFile) return true;
+  const fileName = sourceFile.fileName.replace(/\\/g, "/");
+  return fileName.includes("/node_modules/")
+    || fileName.includes("/packages/core/src/")
+    || fileName.includes("/packages/expression/src/");
+}
+
+function localModuleSpecifiers(sourceFile: ts.SourceFile): string[] {
+  const specifiers: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+      const text = node.moduleSpecifier.text;
+      if (text.startsWith(".") || text.startsWith("/")) specifiers.push(text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return specifiers;
 }
 
 const ARRAY_METHODS = new Set(["map", "filter", "forEach", "reduce", "some", "every"]);

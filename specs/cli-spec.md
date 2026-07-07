@@ -21,6 +21,8 @@ failures to stable CLI phases and exit codes.
 - The CLI MUST support `acpus workflows check <workflow-module>`.
 - The CLI MUST support `acpus workflows run <workflow-module>`.
 - The CLI MUST support `acpus workflows run <workflow-module> --background`.
+- The CLI MUST support `acpus workflows viz <workflow-module> --out <file.html>`.
+- The CLI MUST support `--force` on `workflows viz` to overwrite an existing output file.
 - The CLI MUST support `--input <json>` and `--agents <json>` on workflow
   check and run commands.
 - The CLI MUST support `acpus workflows list [--project | --global]`.
@@ -53,8 +55,8 @@ failures to stable CLI phases and exit codes.
 
 ### Delegation Boundaries
 
-- `workflows check` MUST call workflow preparation and write a preflight
-  artifact without creating runtime state.
+- `workflows check` MUST call workflow preparation without creating runtime
+  state or writing durable preflight artifacts.
 - `workflows check --input` MUST normalize and validate workflow input without
   admitting a run.
 - `workflows check --agents` MUST validate agent overrides against declared
@@ -71,10 +73,10 @@ failures to stable CLI phases and exit codes.
 - Unscoped catalog lookup MUST succeed only when the catalog name is unique
   across project and global scopes.
 - Scoped catalog lookup MUST search only the selected project or global scope.
-- `workflows check` and `workflows run` MUST resolve non-path-like workflow
+- `workflows check`, `workflows run`, and `workflows viz` MUST resolve non-path-like workflow
   arguments as catalog names and then use the resolved `workflow.ts` with
   the existing workflow preparation flow.
-- `workflows check` and `workflows run` MUST keep path-like workflow arguments
+- `workflows check`, `workflows run`, and `workflows viz` MUST keep path-like workflow arguments
   on the existing direct path preparation flow unless `--project` or `--global`
   is passed.
 - Global catalog entries MUST be materialized into a content-addressed
@@ -97,6 +99,17 @@ failures to stable CLI phases and exit codes.
   usage error before workflow preparation or runtime mutation.
 - Workflow preparation failures MUST be mapped to `check`, `compile`, or
   `validate` result phases.
+- `workflows viz` MUST generate a single self-contained HTML file that renders
+  the static workflow graph without live WebUI API calls.
+- `workflows viz` HTML output MUST visually align with the WebUI static graph
+  renderer.
+- `workflows viz` HTML output MAY embed the WebUI static graph React runtime,
+  but MUST NOT embed live WebUI API polling, source browsing, runtime controls,
+  or the Workflows source picker.
+- `workflows viz --out` MUST fail before overwriting an existing file unless
+  `--force` is passed.
+- `workflows viz` MUST reuse `@acpus/web` workflow graph and HTML rendering
+  helpers.
 - CLI workflow preparation adapters MUST consume `@acpus/workflow-compiler`
   typed preparation results at the package boundary and map tagged failures to
   CLI errors.
@@ -148,8 +161,7 @@ failures to stable CLI phases and exit codes.
 - Run control command text and JSON failures MUST derive from stable daemon error
   codes plus concise messages.
 - `runs resume <run-id>` and `runs signal <run-id>` MUST start or wake the
-  daemon even when the daemon previously idle-stopped because the run was paused
-  or waiting for signal.
+  daemon for paused runs and runs waiting for signal.
 - `doctor` MUST delegate to a read-only runtime health API and MUST NOT create
   runtime state in an uninitialized workspace.
 - Read-only commands such as `runs list`, `runs inspect`, and `doctor` MUST NOT
@@ -170,13 +182,13 @@ failures to stable CLI phases and exit codes.
 ### Output And Exit Codes
 
 - JSON output MUST include stable keys for `ok`, `phase`, workflow summary,
-  diagnostics, preflight directory when available, IR digest, source graph
-  digest, run summaries or details when available, control outcome when
+  diagnostics, IR digest, source graph digest, output path when a file is
+  written, run summaries or details when available, control outcome when
   available, workflow catalog entries or invocation source when available,
   hook validation/list details when available, and doctor checks when available.
 - JSON diagnostic output MUST preserve `hint` and `source` fields when present.
 - Supported JSON `phase` values MUST be `usage`, `check`, `compile`,
-  `validate`, `run`, `inspect`, `control`, and `doctor`.
+  `validate`, `run`, `inspect`, `control`, `doctor`, and `viz`.
 - Non-streaming commands MUST emit one JSON object.
 - Foreground `workflows run --json` MUST emit newline-delimited JSON records:
   an admitted record, daemon observation records, and a terminal summary record.
@@ -244,7 +256,9 @@ failures to stable CLI phases and exit codes.
 
 ## Verification
 
-- Tests MUST cover successful workflow check/preflight command output.
+- Tests MUST cover successful workflow check command output without durable preflight artifacts.
+- Tests MUST cover `workflows viz` HTML output, existing-file failure, and
+  `--force` overwrite behavior.
 - Tests MUST cover foreground run output for a pure completed workflow.
 - Tests MUST cover foreground text observations and JSONL admitted,
   observation, and terminal summary ordering.

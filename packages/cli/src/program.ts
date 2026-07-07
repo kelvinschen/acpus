@@ -3,6 +3,7 @@ import { Command, CommanderError } from "commander";
 import { createDoctorCommand } from "./commands/doctor.js";
 import { createHooksCommand } from "./commands/hooks.js";
 import { createRunsCommand } from "./commands/runs.js";
+import { createWebCommand } from "./commands/web.js";
 import { createWorkflowsCommand } from "./commands/workflows.js";
 import { CliError, usageError } from "./errors.js";
 import { writeResult } from "./output.js";
@@ -77,6 +78,10 @@ function createProgram(io: CliIo, setExitCode: (code: number) => void, wantsJson
     ...io,
     wantsJson,
     setExitCode,
+  }));
+  program.addCommand(createWebCommand({
+    ...io,
+    wantsJson,
   }));
 
   return program;

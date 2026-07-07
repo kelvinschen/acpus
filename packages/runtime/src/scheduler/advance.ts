@@ -88,8 +88,8 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
   input.onClaim?.(claim);
   try {
     const now = input.now ?? (() => new Date());
-    const preflight = terminalSummary(unwrapStoreResult(input.store.tryLoadRunSnapshot(input.runId)).projection, claim);
-    if (preflight) return preflight;
+    const alreadyTerminal = terminalSummary(unwrapStoreResult(input.store.tryLoadRunSnapshot(input.runId)).projection, claim);
+    if (alreadyTerminal) return alreadyTerminal;
 
     appendBootstrapEvents(input, claim);
     const deadlineRecovered = drainDerivedTransitions(input.store, input.runId, claim, now, input.materialize, input.maxAttemptsFor);

@@ -22,10 +22,15 @@ export {
 } from "./daemon/socket.js";
 export {
   admitPreparedWorkflowRun,
+  applyRunControl,
+  applySignalRunControl,
+  getArtifact,
   getRuntimeHealth,
   getRun,
   getRunInspection,
-  getRunVisualizationOverlay,
+  getRunStaticVisualizationOverlay,
+  getRunVisualizationSnapshot,
+  listArtifacts,
   listRuns,
   normalizeForkInput,
   type RuntimeHealthCheck,
@@ -36,8 +41,9 @@ export {
   type RuntimeMutationResult,
   RuntimeUseCaseException,
   type RuntimeUseCaseError,
-  type RunInspection,
+  type ArtifactRecord, type RunInspection,
   type RunInspectionStaticNode,
+  type RunVisualizationSnapshot,
 } from "./runs/use-cases.js";
 export {
   type RuntimeAdvanceResult,
@@ -67,6 +73,7 @@ export {
 } from "./hooks/journal.js";
 export {
   createWorkflowVisualizationOverlay,
+  type NodeDetail,
   type WorkflowVisualizationGroup,
   type WorkflowVisualizationNode,
   type WorkflowVisualizationOverlay,

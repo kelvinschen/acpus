@@ -54,6 +54,25 @@ describe("workflow visualization overlay", () => {
     expect(overlay.groups).toHaveLength(1);
   });
 
+  it("attaches per-kind authored semantic detail from the IR", () => {
+    const overlay = createWorkflowVisualizationOverlay(detailWorkflow());
+    const detailById = new Map(overlay.nodes.map(node => [node.nodeId, node.detail]));
+
+    expect(detailById.get("prepare")).toEqual({ kind: "task", inputs: ["lane"], target: "inline" });
+    expect(detailById.get("review")).toMatchObject({
+      kind: "agent",
+      agent: "reviewer",
+      use: "codex",
+      model: "sonnet",
+      outputSchema: { kind: "object", required: ["ok"], fields: { ok: { kind: "boolean" }, note: { kind: "string", optional: true } } },
+    });
+    expect(detailById.get("gate")).toEqual({ kind: "assert", condition: call("gte", ref("input", "score"), lit(50)) });
+    expect(detailById.get("branchy")).toEqual({ kind: "if", condition: ref("input", "enabled") });
+    expect(detailById.get("router")).toEqual({ kind: "switch", cases: [call("eq", ref("input", "mode"), lit("auto"))], hasDefault: true });
+    expect(detailById.get("lanes")).toEqual({ kind: "fanout", over: ref("input", "lanes"), strategy: "all" });
+    expect(detailById.get("retry")).toEqual({ kind: "loop", maxIterations: 3, stopWhen: ref("state", "done") });
+  });
+
   it("keeps historical attempts from overriding the current node status", () => {
     const overlay = createWorkflowVisualizationOverlay(workflow(), {
       version: 10,
@@ -78,6 +97,74 @@ describe("workflow visualization overlay", () => {
     });
   });
 });
+
+function detailWorkflow(): WorkflowIR {
+  return {
+    irVersion: 2,
+    name: "detail-test",
+    inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
+    agents: { reviewer: { kind: "agent_definition", use: "codex", model: "sonnet" } },
+    root: {
+      nodes: [
+        {
+          id: "prepare",
+          kind: "task",
+          run: { kind: "task_run", input: { lane: ref("input", "lane") }, target: { kind: "inline", runtime: "node", source: "async function t() {}" } },
+        },
+        {
+          id: "review",
+          kind: "agent",
+          outputSchema: { kind: "object", fields: { ok: { kind: "boolean" }, note: { kind: "string", optional: true } }, required: ["ok"], additionalProperties: false },
+          run: { kind: "agent_run", agent: "reviewer", prompt: { kind: "template", parts: [] } },
+        },
+        { id: "gate", kind: "assert", condition: call("gte", ref("input", "score"), lit(50)) },
+        {
+          id: "branchy",
+          kind: "if",
+          condition: ref("input", "enabled"),
+          then: { nodes: [] },
+          else: { nodes: [] },
+        },
+        {
+          id: "router",
+          kind: "switch",
+          cases: [{ when: call("eq", ref("input", "mode"), lit("auto")), then: { nodes: [] } }],
+          default: { nodes: [{ id: "fallback", kind: "task", run: { kind: "task_run", input: {}, target: { kind: "inline", runtime: "node", source: "async function t() {}" } } }] },
+        },
+        {
+          id: "lanes",
+          kind: "fanout",
+          over: ref("input", "lanes"),
+          strategy: "all",
+          do: { nodes: [] },
+        },
+        {
+          id: "retry",
+          kind: "loop",
+          initial: lit({}),
+          maxIterations: 3,
+          stopWhen: ref("state", "done"),
+          do: { nodes: [] },
+        },
+      ],
+      outputs: {},
+    },
+    lock: { acpusCoreVersion: "test", generatedAt: "2026-06-30T00:00:00.000Z", notes: [] },
+    diagnostics: [],
+  } as unknown as WorkflowIR;
+}
+
+function ref(...path: string[]) {
+  return { kind: "ref", path };
+}
+
+function lit(value: unknown) {
+  return { kind: "literal", value };
+}
+
+function call(fn: string, ...args: unknown[]) {
+  return { kind: "call", fn, args };
+}
 
 function workflow(): WorkflowIR {
   return {

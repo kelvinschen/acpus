@@ -33,6 +33,23 @@ const RUNNABLE_RUNS_WHERE = `
   )
 `;
 
+const RECOVERABLE_RUNNING_RUNS_WHERE = `
+  status = 'running'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM signal_waits
+    WHERE signal_waits.run_id = runs.id
+      AND signal_waits.status = 'awaiting'
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM run_leases
+    WHERE run_leases.run_id = runs.id
+      AND run_leases.released_at IS NULL
+      AND run_leases.lease_expires_at > ?
+  )
+`;
+
 const TIMED_SIGNAL_WAIT_WHERE = `
   status NOT IN ('paused', 'failed', 'completed', 'canceled')
   AND EXISTS (
@@ -86,6 +103,8 @@ export type RuntimeStore = {
   getCommittedRuntimeEventsAfter(runId: string, sequence: number): CommittedRuntimeEventRow[];
   getRunDir(runId: string): string | undefined;
   registerArtifact(input: RegisterArtifactInput): void;
+  getArtifact(runId: string, artifactId: string): ArtifactRecord | undefined;
+  listArtifacts(runId: string): ArtifactRecord[];
   writeExecutionMetadata(input: WriteExecutionMetadataInput): void;
   getRun(runId: string): RunDetails | undefined;
   listRuns(): RunRecord[];
@@ -117,7 +136,7 @@ export type AgentOverrideSpec = {
 };
 
 export type RunWorkflowLockArtifact = {
-  kind: "acpus_preflight_lock";
+  kind: "acpus_workflow_preparation_lock";
   version: 1;
   workflow: {
     entry: string;
@@ -406,6 +425,17 @@ export type RegisterArtifactInput = {
   relativePath: string;
 };
 
+
+export type ArtifactRecord = {
+  id: string;
+  runId: string;
+  nodeKey: string;
+  attempt: number;
+  mediaType?: string;
+  digest: string;
+  size: number;
+  relativePath: string;
+};
 export type WriteExecutionMetadataInput = {
   runId: string;
   attemptId?: string;
@@ -443,6 +473,7 @@ type CountRow = {
 };
 
 type ArtifactRow = {
+  run_id: unknown;
   id: unknown;
   node_key: unknown;
   attempt: unknown;
@@ -854,12 +885,13 @@ class SqliteRuntimeStore implements RuntimeStore {
   }
 
   listRunnableRuns(): RunRecord[] {
+    const nowIso = new Date().toISOString();
     return this.db.prepare(`
       SELECT id, name, status, workflow_entry, ir_digest, source_graph_digest, created_at, updated_at
       FROM runs
-      WHERE ${RUNNABLE_RUNS_WHERE}
+      WHERE (${RUNNABLE_RUNS_WHERE}) OR (${RECOVERABLE_RUNNING_RUNS_WHERE})
       ORDER BY created_at ASC
-    `).all().map(toRunRecord);
+    `).all(nowIso).map(toRunRecord);
   }
 
   listDaemonWork(now: Date = new Date()): DaemonWork {
@@ -867,23 +899,24 @@ class SqliteRuntimeStore implements RuntimeStore {
     const startableRuns = this.db.prepare(`
       SELECT id, name, status, workflow_entry, ir_digest, source_graph_digest, created_at, updated_at
       FROM runs
-      WHERE (${RUNNABLE_RUNS_WHERE}) OR (${DUE_SIGNAL_WAIT_WHERE})
+      WHERE (${RUNNABLE_RUNS_WHERE}) OR (${DUE_SIGNAL_WAIT_WHERE}) OR (${RECOVERABLE_RUNNING_RUNS_WHERE})
       ORDER BY created_at ASC
-    `).all(nowIso).map(toRunRecord);
+    `).all(nowIso, nowIso).map(toRunRecord);
     const row = this.db.prepare(`
       SELECT COUNT(*) AS count
       FROM runs
-      WHERE (${RUNNABLE_RUNS_WHERE}) OR (${TIMED_SIGNAL_WAIT_WHERE})
-    `).get() as CountRow;
+      WHERE (${RUNNABLE_RUNS_WHERE}) OR (${TIMED_SIGNAL_WAIT_WHERE}) OR (${RECOVERABLE_RUNNING_RUNS_WHERE})
+    `).get(nowIso) as CountRow;
     return { startableRuns, idleBlockers: Number(row.count) };
   }
 
   private countRunnableRuns(): number {
+    const nowIso = new Date().toISOString();
     const row = this.db.prepare(`
       SELECT COUNT(*) AS count
       FROM runs
-      WHERE ${RUNNABLE_RUNS_WHERE}
-    `).get() as CountRow;
+      WHERE (${RUNNABLE_RUNS_WHERE}) OR (${RECOVERABLE_RUNNING_RUNS_WHERE})
+    `).get(nowIso) as CountRow;
     return Number(row.count);
   }
 
@@ -1265,6 +1298,39 @@ class SqliteRuntimeStore implements RuntimeStore {
       input.relativePath,
       new Date().toISOString(),
     );
+  }
+
+  getArtifact(runId: string, artifactId: string): ArtifactRecord | undefined {
+    const row = this.db.prepare(
+      "SELECT id, run_id, node_key, attempt, media_type, digest, size, relative_path FROM artifacts WHERE run_id = ? AND id = ?"
+    ).get(runId, artifactId) as ArtifactRow | undefined;
+    if (!row) return undefined;
+    return {
+      id: String(row.id),
+      runId: String(row.run_id),
+      nodeKey: String(row.node_key),
+      attempt: Number(row.attempt),
+      ...(row.media_type === null ? {} : { mediaType: String(row.media_type) }),
+      digest: String(row.digest),
+      size: Number(row.size),
+      relativePath: String(row.relative_path),
+    };
+  }
+
+  listArtifacts(runId: string): ArtifactRecord[] {
+    const rows = this.db.prepare(
+      "SELECT id, run_id, node_key, attempt, media_type, digest, size, relative_path FROM artifacts WHERE run_id = ? ORDER BY created_at ASC, id ASC"
+    ).all(runId) as ArtifactRow[];
+    return rows.map(row => ({
+      id: String(row.id),
+      runId: String(row.run_id),
+      nodeKey: String(row.node_key),
+      attempt: Number(row.attempt),
+      ...(row.media_type === null ? {} : { mediaType: String(row.media_type) }),
+      digest: String(row.digest),
+      size: Number(row.size),
+      relativePath: String(row.relative_path),
+    }));
   }
 
   writeExecutionMetadata(input: WriteExecutionMetadataInput): void {
@@ -2369,9 +2435,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       this.db.prepare("UPDATE runs SET status = 'paused', updated_at = ? WHERE id = ? AND status NOT IN ('completed', 'failed', 'canceled')").run(now, runId);
       return;
     }
-    const hasAwaiting = Object.values(projection.instances).some(instance => instance.status === "awaiting")
-      || Object.values(projection.signalWaits).some(wait => wait.status === "awaiting");
-    const status = hasAwaiting ? "awaiting" : "pending";
+    const status = publicRunStatus(projection);
     if (current.status === "failed") {
       this.db.prepare("UPDATE runs SET status = ?, updated_at = ? WHERE id = ?").run(status, now, runId);
       this.db.prepare("UPDATE run_inputs SET output_json = NULL WHERE run_id = ?").run(runId);
@@ -2448,6 +2512,27 @@ function timestampedSchedulerEvents(db: DatabaseSync, runId: string): Timestampe
 
 function rootTerminalEventCount(events: readonly SchedulerEvent[], type: "frame.completed" | "frame.failed" | "frame.cancelled"): number {
   return events.filter(event => event.type === type && event.payload.frameKey === "root").length;
+}
+
+function publicRunStatus(projection: ReturnType<typeof createSchedulerProjection>): RunStatus {
+  if (projection.run.status === "awaiting" || hasAwaitingWork(projection)) return "awaiting";
+  if (hasRunningWork(projection)) return "running";
+  return "pending";
+}
+
+function hasAwaitingWork(projection: ReturnType<typeof createSchedulerProjection>): boolean {
+  return Object.values(projection.instances).some(instance => instance.status === "awaiting")
+    || Object.values(projection.frames).some(frame => frame.status === "awaiting")
+    || Object.values(projection.signalWaits).some(wait => wait.status === "awaiting");
+}
+
+function hasRunningWork(projection: ReturnType<typeof createSchedulerProjection>): boolean {
+  if (projection.frames.root !== undefined) return true;
+  return Object.values(projection.frames).some(frame => frame.status === "ready" || frame.status === "running")
+    || Object.values(projection.instances).some(instance => instance.status === "ready" || instance.status === "running")
+    || Object.values(projection.groupMembers).some(member => member.status === "ready" || member.status === "running")
+    || Object.values(projection.groups).some(group => group.status === "running")
+    || Object.values(projection.attempts).some(attempt => attempt.status === "started");
 }
 
 function readRunDynamicFrames(db: DatabaseSync, runId: string): RunDynamicFrame[] {

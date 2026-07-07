@@ -598,7 +598,7 @@ function assertNever(value: never): never {
 
 function applyInstanceEvent(projection: SchedulerProjection, event: SchedulerEvent): void {
   if (!("nodeKey" in event.payload)) return;
-  const instance = requireKey(projection.instances, event.payload.nodeKey, "node instance");
+  const instance = requireKey(projection.instances, event.payload.nodeKey!, "node instance");
   if (event.type === "instance.requeued") {
     assertInstanceRequeueable(projection, instance);
     projection.instances[event.payload.nodeKey] = compactInstance({

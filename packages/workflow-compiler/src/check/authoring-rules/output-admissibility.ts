@@ -139,18 +139,20 @@ function checkParallel(spec: ts.ObjectLiteralExpression, context: RuleContext): 
 function checkLoop(spec: ts.ObjectLiteralExpression, context: RuleContext): void {
   const initial = propertyInitializer(spec, "initial");
   const body = callbackProducer(spec, "do", "loop body output", context);
+  let initialProducer: Producer | undefined;
   if (initial) {
     const initialType = context.checker.getTypeAtLocation(initial);
+    initialProducer = { label: "loop initial output", expression: initial, type: initialType };
     if (!objectOutputLiteral(initial)) {
       context.diagnostics.push(hiddenProducerDiagnostic("loop initial output", initial));
     }
-    checkProducer({ label: "loop initial output", expression: initial, type: initialType }, context);
+    checkProducer(initialProducer, context);
     checkObjectOutputType("loop initial output", initialType, initial, context);
   }
   else context.diagnostics.push(hiddenProducerDiagnostic("loop initial output", spec));
   if (body) {
     checkProducer(body, context);
-    if (initial) checkAssignableBothWays("loop initial and body outputs", context.checker.getTypeAtLocation(initial), body.type, initial, context);
+    if (initialProducer) checkConvergence("loop initial and body outputs", [initialProducer, body], context);
   }
   const maxIterations = propertyInitializer(spec, "maxIterations");
   if (maxIterations && numericLiteralValue(maxIterations) !== undefined && numericLiteralValue(maxIterations)! < 0) {
@@ -255,11 +257,6 @@ function checkConvergence(label: string, producers: Producer[], context: RuleCon
       }
     }
   }
-}
-
-function checkAssignableBothWays(label: string, left: ts.Type, right: ts.Type, node: ts.Node, context: RuleContext): void {
-  if (context.checker.isTypeAssignableTo(left, right) || context.checker.isTypeAssignableTo(right, left)) return;
-  context.diagnostics.push(convergenceDiagnostic(label, node, "types do not converge"));
 }
 
 function checkObjectOutputType(label: string, type: ts.Type, node: ts.Node, context: RuleContext): void {

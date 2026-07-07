@@ -33,12 +33,11 @@
     "@acpus/workflow-compiler": "workspace:*",
     "@changesets/cli": "^2.31.0",
     "@types/node": "^22.15.30",
-    "@typescript-eslint/parser": "^8.62.1",
-    "@typescript/native-preview": "7.0.0-dev.20260630.1",
     "acpus": "workspace:*",
     "eslint": "^10.6.0",
     "slash": "^3.0.0",
     "tsx": "^4.20.3",
+    "typescript": "6.0.3",
     "vitest": "^4.1.8"
   }
 }

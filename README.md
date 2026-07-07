@@ -48,7 +48,7 @@ This is a pnpm workspace containing the TypeScript core and the new CLI package.
 
 ```sh
 pnpm install
-pnpm build       # tsgo build of packages/*
+pnpm build       # tsc build of packages/*
 pnpm typecheck
 pnpm test        # vitest (suites pass with no tests yet)
 ```

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`@acpus/workflow-compiler` prepares TypeScript workflow modules for runtime admission. It runs a static `check` phase, imports workflow modules through `@acpus/loader`, compiles exported workflow definitions through `@acpus/core`, performs parser-only task callsite analysis, prepares reusable task module references, validates the resulting IR, and writes preflight artifacts. It does not execute workflows or persist runtime state.
+`@acpus/workflow-compiler` prepares TypeScript workflow modules for runtime admission and static visualization. It runs a static `check` phase, imports workflow modules through `@acpus/loader`, compiles exported workflow definitions through `@acpus/core`, performs parser-only task callsite analysis, prepares reusable task module references, validates the resulting IR, and returns frozen workflow data in memory. It does not execute workflows or persist runtime state.
 
 ## Requirements
 
@@ -12,8 +12,8 @@
 - The package MUST expose `tryCompileWorkflowModule(entry, options?)`.
 - The package MUST expose `prepareWorkflow(options)`.
 - The package MUST expose `tryPrepareWorkflow(options)`.
-- The package MUST expose `writePreflightArtifact(prepared, cwd)`.
-- The package MUST expose `WorkflowPreparationError` and public preparation, lock, artifact, and failure types.
+- The package MUST expose `WorkflowPreparationError` and public preparation, lock, and failure types.
+- The package MUST NOT expose a public preflight artifact writer.
 - The package MUST NOT expose a binary.
 
 ### Module Compilation
@@ -26,7 +26,7 @@
 - `compileWorkflowModule(...)` MUST lower the workflow definition through `compileWorkflowDefinition(..., { validate: false })`.
 - `compileWorkflowModule(...)` MUST attach a `sha256:` `workflowSourceDigest` computed from the workflow source text.
 - `compileWorkflowModule(...)` MUST analyze task call sites, attach reusable task module reference metadata to lowered task runs, append `validateWorkflowIR(...)` diagnostics, and return `WorkflowIR`.
-- `compileWorkflowModule(...)` MUST NOT run the preflight check phase itself.
+- `compileWorkflowModule(...)` MUST NOT run the preparation check phase itself.
 
 ### Static Check And Worker Import
 
@@ -101,24 +101,23 @@
 - Task callsites that cannot be joined to lowered task nodes by step id MUST produce check diagnostics rather than module descriptors.
 - Inline task source MUST be preserved as a self-contained function source in the serialized IR.
 - Inline task source analysis MUST treat task output as TypeScript-inferred from `exec`, not as schema-declared metadata.
-- Inline tasks that capture workflow-module scope MUST produce check diagnostics in preflight.
+- Inline tasks that capture workflow-module scope MUST produce check diagnostics during preparation.
 - Direct `compileWorkflowModule(...)` MUST NOT run Acpus authoring rules, but it MUST append validation diagnostics if compiled task runs lack valid inline or reusable execution targets.
 - The task authoring diagnostic set MUST keep inline self-containment failures as `TB007` and SHOULD assign current task callsite diagnostics around the live reusable task model.
 
-### Prepared Workflow And Preflight Artifacts
+### Prepared Workflow Data
 
-- `prepareWorkflow(options)` MUST return a prepared workflow containing workflow path, `WorkflowIR`, serialized IR JSON, IR digest, source graph digest, optional package lock digest, and lock artifact.
+- `prepareWorkflow(options)` MUST return a prepared workflow containing workflow path, `WorkflowIR`, serialized IR JSON, IR digest, source graph digest, optional package lock digest, and lock metadata.
 - The IR digest MUST be a `sha256:` digest of stable pretty JSON written as `workflow.ir.json`.
 - The source graph digest MUST be derived from workflow source digest and package lock digest when present.
 - Package lock digest MAY be computed from `pnpm-lock.yaml`, `package-lock.json`, or `yarn.lock`.
-- `writePreflightArtifact(...)` MUST write `.acpus/.local/preflight/<id>/workflow.ir.json`.
-- `writePreflightArtifact(...)` MUST write `.acpus/.local/preflight/<id>/lock.json`.
-- `writePreflightArtifact(...)` MUST NOT write task code artifacts.
-- The lock artifact MUST reference workflow entry, IR digest, source graph digest, and optional package lock digest.
+- The lock metadata MUST use kind `acpus_workflow_preparation_lock`.
+- The lock metadata MUST reference workflow entry, IR digest, source graph digest, and optional package lock digest.
+- Workflow preparation MUST NOT write `.acpus/.local/preflight/**` artifacts.
 
 ## Verification
 
-- Public API contract and type tests MUST cover exported compiler/preflight functions, error class, and public types.
+- Public API contract and type tests MUST cover exported compiler/preparation functions, error class, and public types.
 - Integration tests MUST cover compiling TypeScript workflow modules with reusable module references, inline embedded source, and package-imported reusable tasks.
 - Tests MUST cover check failure before compile, including TypeScript diagnostics converted to `DiagnosticIR` and Acpus authoring-rule diagnostics.
 - Tests MUST cover output-admissibility diagnostics for non-JSON output values, imported reusable task output types, graph-binding hidden producer source shapes, branch/root convergence, loop consistency, unrelated method-call non-matches, explicit `JsonValue`/`JsonObject` acceptance, and task `exec` hidden return expressions accepted through TypeScript return types.
@@ -126,4 +125,4 @@
 - Tests MUST cover task analysis facts and metadata for imported reusable tasks, exported same-file reusable tasks, package imports, re-exported reusable tasks, unsupported task callsite forms, and inline tasks that capture workflow-module scope.
 - Tests MUST cover stable reusable task reference metadata across compiles.
 - Tests MUST cover same-file reusable task references without rerunning workflow build callbacks at task execution time.
-- Tests MUST cover preflight artifact writing, lock shape, IR digest, and source graph digest without task code artifact files.
+- Tests MUST cover in-memory prepared workflow data, lock shape, IR digest, and source graph digest without task code artifact files.

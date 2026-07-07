@@ -59,9 +59,9 @@ test("agent tokens are typed from top-level agent keys", () => {
     expectTypeOf(structured.output.ok).toEqualTypeOf<Expr<boolean>>();
     expectTypeOf(structured.output.summary).toEqualTypeOf<Expr<string>>();
 
+    // @ts-expect-error schema-less agents have no output conformance target to repair.
     step("bad_agent_retry").agent({
       run: { agent: agents.reviewer, prompt: "bad" },
-      // @ts-expect-error schema-less agents have no output conformance target to repair.
       retry: { max: 1 },
     });
 

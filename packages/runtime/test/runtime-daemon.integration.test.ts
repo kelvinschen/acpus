@@ -5,7 +5,8 @@ import { startDaemonLoop } from "@acpus/runtime";
 import { runDaemonTick } from "../src/daemon/tick.js";
 import type { HookJournalEntry } from "../src/hooks/journal.js";
 import { openExistingWritableRuntimeStore, openRuntimeStore } from "../src/store/store.js";
-import { admitSyntheticWorkflow, prepareSyntheticWorkflow, runtimeRow, runtimeRows, taskArtifactWorkflow, timedSignalWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { applySignalRunControl } from "../src/runs/use-cases.js";
+import { admitSyntheticWorkflow, prepareSyntheticWorkflow, runtimeRow, runtimeRows, signalWorkflow, taskArtifactWorkflow, timedSignalWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 
 describe.concurrent("runtime daemon ticks", () => {
   it("releases its lease after a continuous idle window", async () => {
@@ -144,6 +145,26 @@ describe.concurrent("runtime daemon ticks", () => {
         expect(started).toEqual([run.id]);
       } finally {
         store.close();
+      }
+    });
+  });
+
+  it("recovers signal controls that were consumed without a follow-up drive", async () => {
+    await withRuntimeWorkspace("runtime-daemon-signal-control-recovery", async workspace => {
+      const awaiting = await admitSyntheticWorkflow(workspace, signalWorkflow());
+      await expect(applySignalRunControl(workspace, awaiting.run.id, "approve", { ok: true }, { requestId: "test-signal-control" })).resolves.toMatchObject({
+        run: { id: awaiting.run.id, status: "running" },
+      });
+
+      const loop = await startDaemonLoop(workspace, {
+        heartbeatMs: 5,
+        idleStopMs: 500,
+        packageVersion: "test",
+      });
+      try {
+        await waitUntil(() => runtimeRow(workspace, "SELECT status FROM runs WHERE id = ?", awaiting.run.id)?.status === "completed");
+      } finally {
+        await loop.shutdown();
       }
     });
   });

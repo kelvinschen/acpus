@@ -3,7 +3,7 @@ import type { DiagnosticIR, WorkflowIR } from "@acpus/core/ir";
 import type { HookConfigScope, LoadedHookConfig, RunDetails, RunRecord, RuntimeHealthCheck } from "@acpus/runtime";
 import type { WorkflowCatalogEntry } from "./catalog.js";
 
-export type ResultPhase = "usage" | "check" | "compile" | "validate" | "run" | "inspect" | "control" | "doctor";
+export type ResultPhase = "usage" | "check" | "compile" | "validate" | "run" | "inspect" | "control" | "doctor" | "viz";
 
 export type WorkflowSummary = {
   name: string;
@@ -24,7 +24,6 @@ export type CliResult = {
   message?: string;
   workflow?: WorkflowSummary;
   diagnostics?: DiagnosticIR[];
-  preflightDir?: string;
   irDigest?: string;
   sourceGraphDigest?: string;
   run?: RunRecord | RunDetails;
@@ -38,6 +37,7 @@ export type CliResult = {
   control?: { type: string; runId: string };
   hookValidation?: { count: number };
   hooks?: HookListResult;
+  outputPath?: string;
 };
 
 export type HookListResult = Partial<Record<HookConfigScope["source"], { path: string; hooks: LoadedHookConfig[] }>>;
@@ -59,7 +59,6 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
     stream.write(`Outputs: ${result.workflow.outputKeys.length ? result.workflow.outputKeys.join(", ") : "(none)"}\n`);
     stream.write(`Diagnostics: ${result.workflow.diagnostics.errors} errors, ${result.workflow.diagnostics.warnings} warnings, ${result.workflow.diagnostics.infos} infos\n`);
   }
-  if (result.preflightDir) stream.write(`Preflight: ${result.preflightDir}\n`);
   if (result.catalog) writeCatalogEntry(stream, result.catalog);
   if (result.catalogEntries) {
     if (result.catalogEntries.length === 0) {
@@ -83,6 +82,7 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
   }
   if (result.errorCode) stream.write(`Error code: ${result.errorCode}\n`);
   if (result.control) stream.write(`Control: ${result.control.type} ${result.control.runId}\n`);
+  if (result.outputPath) stream.write(`Output: ${result.outputPath}\n`);
   if (result.runs) {
     if (result.runs.length === 0) {
       stream.write("No runs.\n");

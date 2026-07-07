@@ -1,6 +1,8 @@
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
     "types": ["node", "vitest"],
     "customConditions": ["development"],
     "exactOptionalPropertyTypes": true,
@@ -10,6 +12,7 @@
   },
   "include": [
     "packages/*/src/**/*.ts",
+    "packages/*/src/**/*.tsx",
     "packages/*/test/**/*.ts",
     "packages/*/test/fixtures/**/*.ts",
     "packages/*/test/**/*.type.test-d.ts"

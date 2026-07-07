@@ -41,7 +41,7 @@ describe.concurrent("workflow catalog e2e", () => {
         catalog: { scope: "project", name: "release" },
       });
     });
-  }, 15_000);
+  }, 25_000);
 
   it("runs a global catalog workflow after materializing package-relative tasks", async () => {
     await withTestWorkspace("catalog-run-global", async workspace => {

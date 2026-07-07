@@ -20,12 +20,13 @@ describe.concurrent("acpus workflows run smoke", () => {
         ok: true,
         phase: "check",
       });
-      expect(output.preflightDir).toEqual(expect.stringContaining(".acpus/.local/preflight/"));
+      expect(output.preflightDir).toBeUndefined();
       expect(output.irDigest).toEqual(expect.stringMatching(/^sha256:/));
       expect(output.sourceGraphDigest).toEqual(expect.stringMatching(/^sha256:/));
+      await expect(access(join(workspace, ".acpus", ".local", "preflight"))).rejects.toThrow();
       await expect(access(join(workspace, ".acpus", ".local", "state", "runtime.db"))).rejects.toThrow();
     });
-  });
+  }, 15_000);
 
   it("runs a pure workflow and reports the completed run", async () => {
     await withTestWorkspace("run-pure", async workspace => {
