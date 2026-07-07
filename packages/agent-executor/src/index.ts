@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 
 const FORCE_KILL_GRACE_MS = 5_000;
@@ -25,6 +26,7 @@ export type AgentTurnRequest = {
   timeout?: string;
   signal?: AbortSignal;
   captureRawDebug?: boolean;
+  onProgress?: (progress: AgentTurnProgress) => unknown;
 };
 
 export type AgentBackendFailureKind =
@@ -49,7 +51,7 @@ export type AgentContextTelemetry = {
 };
 
 export type AgentTokenUsageTelemetry = {
-  source: "prompt_response";
+  source: "prompt_response" | "usage_update";
   inputTokens?: number;
   outputTokens?: number;
   cachedReadTokens?: number;
@@ -85,6 +87,12 @@ export type AgentTurnTelemetry = {
   output?: AgentIoPreview;
   cwd?: string;
   acpxRecordId?: string;
+};
+
+export type AgentTurnProgress = {
+  responseText: string;
+  telemetry: AgentTurnTelemetry;
+  updatedAt: string;
 };
 
 export type AgentTurnRawDebug = {
@@ -125,6 +133,7 @@ type AcpxInvocation = {
   cancelArgs?: string[];
   cwd: string;
   env: NodeJS.ProcessEnv;
+  onStdoutLine?: (line: string) => void;
 };
 
 type AcpxProcessResult = {
@@ -149,6 +158,18 @@ type PromptSummaryOptions = {
   acpxRecordId?: string;
 };
 
+type PromptAccumulator = {
+  responseText: string;
+  eventCount: number;
+  stopReason?: string;
+  malformedLine?: string;
+  errorMessage?: string;
+  tools: Map<string, AgentToolCallTelemetry>;
+  context?: AgentContextTelemetry;
+  tokenUsage?: AgentTokenUsageTelemetry;
+  options?: PromptSummaryOptions;
+};
+
 type TurnDeadline = {
   timeout: string;
   expiresAt: number;
@@ -163,13 +184,14 @@ export async function executeAgentTurn(request: AgentTurnRequest): Promise<Agent
     return cancelledResult("Agent turn was aborted before dispatch.");
   }
 
+  const env = requestEnv(request);
   const deadline = turnDeadline(request.timeout);
   const ensureTimeout = remainingTimeout(deadline);
   if (ensureTimeout.expired) return timeoutResult(request.timeout);
   const ensure = await runAcpx({
     args: buildAcpxArgs(request, ["sessions", "ensure", "--name", request.sessionName], ensureTimeout.timeout),
     cwd: request.cwd,
-    env: request.env,
+    env,
     ...(ensureTimeout.timeout === undefined ? {} : { timeout: ensureTimeout.timeout }),
     ...(request.signal === undefined ? {} : { signal: request.signal }),
   });
@@ -185,7 +207,7 @@ export async function executeAgentTurn(request: AgentTurnRequest): Promise<Agent
     const setMode = await runAcpx({
       args: buildAcpxArgs(request, ["set-mode", request.agentMode, "-s", request.sessionName], setModeTimeout.timeout),
       cwd: request.cwd,
-      env: request.env,
+      env,
       ...(setModeTimeout.timeout === undefined ? {} : { timeout: setModeTimeout.timeout }),
       ...(request.signal === undefined ? {} : { signal: request.signal }),
     });
@@ -196,21 +218,33 @@ export async function executeAgentTurn(request: AgentTurnRequest): Promise<Agent
 
   const promptTimeout = remainingTimeout(deadline);
   if (promptTimeout.expired) return timeoutResult(request.timeout);
+  const acpxRecordId = extractAcpxRecordId(ensure.stdout);
+  const accumulator = createPromptAccumulator({
+    prompt: request.prompt,
+    cwd: request.cwd,
+    ...(acpxRecordId ? { acpxRecordId } : {}),
+  });
   const prompt = await runAcpx({
     args: buildAcpxArgs(request, ["prompt", "-s", request.sessionName, "-f", "-"], promptTimeout.timeout),
     cancelArgs: buildAcpxArgs(request, ["cancel", "-s", request.sessionName]),
     input: request.prompt,
     cwd: request.cwd,
-    env: request.env,
+    env,
+    ...(request.onProgress ? { onStdoutLine: (line: string) => {
+      if (!consumePromptLine(accumulator, line)) return;
+      try {
+        const observed = request.onProgress?.({
+          responseText: accumulator.responseText,
+          telemetry: telemetryFromAccumulator(accumulator),
+          updatedAt: new Date().toISOString(),
+        });
+        if (observed) void Promise.resolve(observed).catch(() => {});
+      } catch {}
+    } } : {}),
     ...(promptTimeout.timeout === undefined ? {} : { timeout: promptTimeout.timeout }),
     ...(request.signal === undefined ? {} : { signal: request.signal }),
   });
-  const acpxRecordId = extractAcpxRecordId(ensure.stdout);
-  const summary = summarizePromptOutput(prompt.stdout, {
-    prompt: request.prompt,
-    cwd: request.cwd,
-    ...(acpxRecordId ? { acpxRecordId } : {}),
-  });
+  const summary = summarizePromptOutput(prompt.stdout, accumulator.options);
   const rawDebug = request.captureRawDebug ? { stdout: prompt.stdout } : undefined;
   if (prompt.aborted) return withRawDebug({ status: "cancelled", message: "Agent turn was aborted.", responseText: summary.responseText, stderr: prompt.stderr, telemetry: summary.telemetry }, rawDebug);
   if (prompt.timedOut) return withRawDebug({ status: "failed", failureKind: "timeout", message: timeoutMessage(request.timeout), responseText: summary.responseText, stderr: prompt.stderr, telemetry: summary.telemetry }, rawDebug);
@@ -223,6 +257,14 @@ export async function executeAgentTurn(request: AgentTurnRequest): Promise<Agent
 
 function withRawDebug<T extends AgentTurnResult>(result: T, rawDebug: AgentTurnRawDebug | undefined): T {
   return rawDebug ? { ...result, rawDebug } : result;
+}
+
+function requestEnv(request: AgentTurnRequest): NodeJS.ProcessEnv {
+  const env = { ...request.env };
+  if (request.agent.kind === "named" && request.agent.name === "claude" && env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS === undefined) {
+    env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS = "1";
+  }
+  return env;
 }
 
 function buildAcpxArgs(request: AgentTurnRequest, command: string[], timeout = request.timeout): string[] {
@@ -264,6 +306,8 @@ function runAcpx(invocation: AcpxInvocation): Promise<AcpxProcessResult> {
 
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
+    const stdoutDecoder = invocation.onStdoutLine ? new StringDecoder("utf8") : undefined;
+    let stdoutLineBuffer = "";
     let termination: "timeout" | "abort" | undefined;
     let timeout: NodeJS.Timeout | undefined;
     let killTimeout: NodeJS.Timeout | undefined;
@@ -289,15 +333,24 @@ function runAcpx(invocation: AcpxInvocation): Promise<AcpxProcessResult> {
     invocation.signal?.addEventListener("abort", abort, { once: true });
     if (invocation.signal?.aborted) terminate("abort");
 
-    const collect = (target: Buffer[], chunk: unknown) => {
+    const collect = (target: Buffer[], chunk: unknown, onLine?: (line: string) => void) => {
       if (termination) return;
-      target.push(Buffer.from(chunk as any));
+      const buffer = Buffer.from(chunk as any);
+      target.push(buffer);
+      if (!onLine) return;
+      stdoutLineBuffer += stdoutDecoder?.write(buffer) ?? buffer.toString("utf8");
+      emitCompleteStdoutLines(onLine);
     };
 
-    child.stdout.on("data", chunk => collect(stdout, chunk));
+    child.stdout.on("data", chunk => collect(stdout, chunk, invocation.onStdoutLine));
     child.stderr.on("data", chunk => collect(stderr, chunk));
     child.on("close", exitCode => {
       cleanup();
+      if (invocation.onStdoutLine) {
+        stdoutLineBuffer += stdoutDecoder?.end() ?? "";
+        emitCompleteStdoutLines(invocation.onStdoutLine);
+        if (stdoutLineBuffer.trim()) invocation.onStdoutLine(stdoutLineBuffer);
+      }
       resolve({
         exitCode,
         stdout: Buffer.concat(stdout).toString("utf8"),
@@ -311,6 +364,16 @@ function runAcpx(invocation: AcpxInvocation): Promise<AcpxProcessResult> {
       resolve({ exitCode: null, stdout: "", stderr: error.message, timedOut: false, aborted: false, spawnError: error.message });
     });
     child.stdin.end(invocation.input ?? "");
+
+    function emitCompleteStdoutLines(onLine: (line: string) => void): void {
+      for (;;) {
+        const newline = stdoutLineBuffer.search(/\r?\n/);
+        if (newline < 0) return;
+        const line = stdoutLineBuffer.slice(0, newline);
+        stdoutLineBuffer = stdoutLineBuffer.slice(stdoutLineBuffer[newline] === "\r" ? newline + 2 : newline + 1);
+        onLine(line);
+      }
+    }
   });
 }
 
@@ -327,45 +390,75 @@ function runDetachedAcpx(args: string[], cwd: string, env: NodeJS.ProcessEnv): v
 }
 
 function summarizePromptOutput(stdout: string, options?: PromptSummaryOptions): PromptSummary {
-  let responseText = "";
-  let eventCount = 0;
-  let stopReason: string | undefined;
-  let malformedLine: string | undefined;
-  let errorMessage: string | undefined;
-  const tools = new Map<string, AgentToolCallTelemetry>();
-  let context: AgentContextTelemetry | undefined;
-  let tokenUsage: AgentTokenUsageTelemetry | undefined;
+  const accumulator = createPromptAccumulator(options);
   for (const { line, event } of acpxJsonLines(stdout)) {
-    if (event === undefined) {
-      malformedLine ??= line;
-      continue;
-    }
-    eventCount += 1;
-    errorMessage ??= jsonRpcErrorMessage(event);
-    responseText += textFromEvent(event);
-    context = contextFromEvent(event, context);
-    captureToolEvent(event, tools);
-    const result = isRecord(event) && isRecord(event.result) ? event.result : undefined;
-    if (typeof result?.stopReason === "string") stopReason = result.stopReason;
-    tokenUsage ??= tokenUsageFromResult(result);
+    consumePromptLineEvent(accumulator, line, event);
   }
+  return summaryFromAccumulator(accumulator);
+}
+
+function createPromptAccumulator(options?: PromptSummaryOptions): PromptAccumulator {
   return {
-    responseText,
-    telemetry: {
-      eventCount,
-      ...(stopReason ? { stopReason } : {}),
-      ...(context ? { context } : {}),
-      ...(tokenUsage ? { tokenUsage } : {}),
-      tools: { totalToolCallCount: tools.size, calls: [...tools.values()] },
-      ...(options ? {
-        input: fullPreview(options.prompt),
-        output: fullPreview(responseText),
-        cwd: options.cwd,
-        ...(options.acpxRecordId ? { acpxRecordId: options.acpxRecordId } : {}),
-      } : {}),
-    },
-    ...(malformedLine ? { malformedLine } : {}),
-    ...(errorMessage ? { errorMessage } : {}),
+    responseText: "",
+    eventCount: 0,
+    tools: new Map(),
+    ...(options ? { options } : {}),
+  };
+}
+
+function consumePromptLine(accumulator: PromptAccumulator, raw: string): boolean {
+  const line = raw.trim();
+  if (!line) return false;
+  try {
+    consumePromptLineEvent(accumulator, line, JSON.parse(line) as unknown);
+  } catch {
+    consumePromptLineEvent(accumulator, line, undefined);
+  }
+  return true;
+}
+
+function consumePromptLineEvent(accumulator: PromptAccumulator, line: string, event: unknown | undefined): void {
+  if (event === undefined) {
+    accumulator.malformedLine ??= line;
+    return;
+  }
+  accumulator.eventCount += 1;
+  const errorMessage = jsonRpcErrorMessage(event);
+  if (accumulator.errorMessage === undefined && errorMessage !== undefined) accumulator.errorMessage = errorMessage;
+  accumulator.responseText += textFromEvent(event);
+  const context = contextFromEvent(event, accumulator.context);
+  if (context !== undefined) accumulator.context = context;
+  const eventTokenUsage = tokenUsageFromEvent(event);
+  if (eventTokenUsage !== undefined) accumulator.tokenUsage = eventTokenUsage;
+  captureToolEvent(event, accumulator.tools);
+  const result = isRecord(event) && isRecord(event.result) ? event.result : undefined;
+  if (typeof result?.stopReason === "string") accumulator.stopReason = result.stopReason;
+  const tokenUsage = tokenUsageFromResult(result);
+  if (tokenUsage !== undefined) accumulator.tokenUsage = tokenUsage;
+}
+
+function summaryFromAccumulator(accumulator: PromptAccumulator): PromptSummary {
+  return {
+    responseText: accumulator.responseText,
+    telemetry: telemetryFromAccumulator(accumulator),
+    ...(accumulator.malformedLine ? { malformedLine: accumulator.malformedLine } : {}),
+    ...(accumulator.errorMessage ? { errorMessage: accumulator.errorMessage } : {}),
+  };
+}
+
+function telemetryFromAccumulator(accumulator: PromptAccumulator): AgentTurnTelemetry {
+  return {
+    eventCount: accumulator.eventCount,
+    ...(accumulator.stopReason ? { stopReason: accumulator.stopReason } : {}),
+    ...(accumulator.context ? { context: accumulator.context } : {}),
+    ...(accumulator.tokenUsage ? { tokenUsage: accumulator.tokenUsage } : {}),
+    tools: { totalToolCallCount: accumulator.tools.size, calls: [...accumulator.tools.values()] },
+    ...(accumulator.options ? {
+      input: fullPreview(accumulator.options.prompt),
+      output: fullPreview(accumulator.responseText),
+      cwd: accumulator.options.cwd,
+      ...(accumulator.options.acpxRecordId ? { acpxRecordId: accumulator.options.acpxRecordId } : {}),
+    } : {}),
   };
 }
 
@@ -425,8 +518,23 @@ function eventUpdate(event: unknown): Record<string, any> | undefined {
 
 function tokenUsageFromResult(result: Record<string, any> | undefined): AgentTokenUsageTelemetry | undefined {
   const usage = isRecord(result?.usage) ? result.usage : undefined;
-  if (!usage) return undefined;
-  const tokenUsage: AgentTokenUsageTelemetry = { source: "prompt_response" };
+  return tokenUsageFromRecord(usage, "prompt_response");
+}
+
+function tokenUsageFromEvent(event: unknown): AgentTokenUsageTelemetry | undefined {
+  const update = eventUpdate(event);
+  if (update?.sessionUpdate !== "usage_update") return undefined;
+  const meta = isRecord(update._meta) ? update._meta : undefined;
+  const usage = isRecord(meta?.usage) ? meta.usage : isRecord(update.breakdown) ? update.breakdown : undefined;
+  return tokenUsageFromRecord(usage, "usage_update");
+}
+
+function tokenUsageFromRecord(
+  usage: Record<string, any> | undefined,
+  source: AgentTokenUsageTelemetry["source"],
+): AgentTokenUsageTelemetry | undefined {
+  if (usage === undefined) return undefined;
+  const tokenUsage: AgentTokenUsageTelemetry = { source };
   const inputTokens = firstNumber(usage, ["inputTokens", "input_tokens"]);
   const outputTokens = firstNumber(usage, ["outputTokens", "output_tokens"]);
   const cachedReadTokens = firstNumber(usage, ["cachedReadTokens", "cacheReadInputTokens", "cache_read_input_tokens"]);

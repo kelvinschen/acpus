@@ -10,6 +10,8 @@ describe("run status surface", () => {
       output: { ready: true },
       dynamic: {
         version: 1,
+        progressVersion: 0,
+        progress: [],
         frames: [{
           frameKey: "require_ready~abc",
           parentFrameKey: "root",
@@ -40,6 +42,8 @@ describe("run status surface", () => {
       ...runBase("run_sig", "cli-signal", "awaiting"),
       dynamic: {
         version: 1,
+        progressVersion: 0,
+        progress: [],
         frames: [],
         nodeInstances: [{
           nodeKey: "approve~abc",
@@ -78,6 +82,8 @@ describe("run status surface", () => {
       ...runBase("run_agent", "agent-run", "completed"),
       dynamic: {
         version: 1,
+        progressVersion: 0,
+        progress: [],
         frames: [],
         nodeInstances: [{
           nodeKey: "review~abc",
@@ -111,11 +117,97 @@ describe("run status surface", () => {
     expect(output).not.toContain("artifacts/review/attempt-1/prompt.md");
   });
 
+  it("renders compact agent progress telemetry", () => {
+    const output = formatRunStatusSurface({
+      ...runBase("run_agent_progress", "agent-run", "completed"),
+      dynamic: {
+        version: 1,
+        progressVersion: 1,
+        progress: [{
+          nodeKey: "review~abc",
+          nodeId: "review",
+          attemptId: "attempt_1",
+          attemptNo: 1,
+          kind: "agent",
+          status: "completed",
+          message: "turn 1 completed",
+          context: { used: 999, size: 3_000 },
+          tokenUsage: { inputTokens: 10, outputTokens: 2_000, totalTokens: 2_010 },
+          tools: {
+            totalToolCallCount: 4,
+            lastCalls: [
+              { title: "omitted", status: "completed" },
+              { toolName: "Read", status: "completed" },
+              { title: "Shell", inputPreview: "{\"command\":\"pnpm test --workspace extremely-long-suite-name --reporter verbose\"}", status: "running" },
+              { toolName: "Bash", status: "completed" },
+            ],
+          },
+          output: { tail: "line one\nline two", totalBytes: 17, truncated: false },
+          updatedAt: "2026-07-03T00:00:01.000Z",
+        }],
+        frames: [],
+        nodeInstances: [{
+          nodeKey: "review~abc",
+          nodeId: "review",
+          status: "completed",
+          createdAt: "2026-07-03T00:00:00.000Z",
+          updatedAt: "2026-07-03T00:00:01.000Z",
+        }],
+        attempts: [],
+        groupMembers: [],
+        signalWaits: [],
+        executionMetadata: [],
+      },
+    }, staticNodes([{ id: "review", kind: "agent", run: { kind: "agent_run", agent: "reviewer", prompt: { kind: "template", parts: [] } } }]), Date.parse("2026-07-03T00:00:02.000Z"));
+
+    expect(output).toContain([
+      "  ✓ review~abc  [agent]  1s",
+      "    Last active: 1s ago",
+      "    Progress: turn 1 completed",
+      "    Context: 999/3k",
+      "    Tokens: in 10, out 2k, total 2k",
+      "    Tools: 4 total; last Read, Shell, Bash",
+    ].join("\n"));
+    expect(output).not.toContain("Agent progress:");
+    expect(output).not.toContain("omitted");
+    expect(output).not.toContain("--workspace");
+    expect(output).not.toContain("--reporter verbose");
+    expect(output).not.toContain("Output: line one line two");
+  });
+
+  it("does not render last active for non-agent nodes", () => {
+    const output = formatRunStatusSurface({
+      ...runBase("run_task", "task-run", "running"),
+      dynamic: {
+        version: 1,
+        progressVersion: 0,
+        progress: [],
+        frames: [],
+        nodeInstances: [{
+          nodeKey: "work~abc",
+          nodeId: "work",
+          status: "running",
+          createdAt: "2026-07-03T00:00:00.000Z",
+          updatedAt: "2026-07-03T00:00:01.000Z",
+        }],
+        attempts: [],
+        groupMembers: [],
+        signalWaits: [],
+        executionMetadata: [],
+      },
+    }, staticNodes([{ id: "work", kind: "task", run: { kind: "task_run", input: {}, target: { kind: "inline", runtime: "node", source: "async function task() {}" } } }]), Date.parse("2026-07-03T00:00:02.000Z"));
+
+    expect(output).toContain("work~abc  [task]  running");
+    expect(output).not.toContain("Last active:");
+  });
+
   it("does not show unmaterialized branch nodes as pending after completion", () => {
     const output = formatRunStatusSurface({
       ...runBase("run_if", "branching", "completed"),
       dynamic: {
         version: 1,
+        progressVersion: 0,
+        progress: [],
         frames: [{
           frameKey: "choose~abc",
           parentFrameKey: "root",
@@ -159,6 +251,8 @@ describe("run status surface", () => {
       ...runBase("run_retry", "retrying", "pending"),
       dynamic: {
         version: 1,
+        progressVersion: 0,
+        progress: [],
         frames: [],
         nodeInstances: [{
           nodeKey: "work~abc",
@@ -252,6 +346,7 @@ function runBase(id: string, name: string, status: RunDetails["status"]): RunDet
     sourceGraphDigest: "sha256:graph",
     createdAt: "2026-07-03T00:00:00.000Z",
     updatedAt: "2026-07-03T00:00:01.000Z",
+    progressVersion: 0,
     input: {},
     hooks: [],
     eventCount: 1,

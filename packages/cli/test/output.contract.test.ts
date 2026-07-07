@@ -43,6 +43,7 @@ describe("CLI result output contracts", () => {
         sourceGraphDigest: "sha256:graph",
         createdAt: "2026-06-29T00:00:00.000Z",
         updatedAt: "2026-06-29T00:00:01.000Z",
+        progressVersion: 0,
         input: { ready: true },
         output: { ready: true },
         hooks: [],
@@ -75,6 +76,7 @@ describe("CLI result output contracts", () => {
         sourceGraphDigest: "sha256:graph",
         createdAt: "2026-06-29T00:00:00.000Z",
         updatedAt: "2026-06-29T00:00:01.000Z",
+        progressVersion: 0,
         input: {},
         output: { ok: true },
         hooks: [],
@@ -82,6 +84,8 @@ describe("CLI result output contracts", () => {
         nodeCount: 1,
         dynamic: {
           version: 1,
+          progressVersion: 0,
+          progress: [],
           frames: [],
           nodeInstances: [],
           attempts: [],
@@ -104,6 +108,133 @@ describe("CLI result output contracts", () => {
     expect(exitCode).toBe(0);
     expect(stdout.text).toContain("Agent attempt details omitted: 1. Use --json for full metadata.");
     expect(stdout.text).not.toContain("artifacts/review.dynamic/attempt-1/agent/turn-001.prompt.md");
+    expect(stderr.text).toBe("");
+  });
+
+  it("renders compact agent progress in run inspection text", () => {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    const exitCode = writeResult({
+      ok: true,
+      phase: "inspect",
+      message: "Run inspected.",
+      run: {
+        id: "run_1",
+        name: "agent-run",
+        status: "running",
+        workflowEntry: "/tmp/workflow.ts",
+        irDigest: "sha256:ir",
+        sourceGraphDigest: "sha256:graph",
+        createdAt: "2026-06-29T00:00:00.000Z",
+        updatedAt: "2026-06-29T00:00:01.000Z",
+        progressVersion: 1,
+        input: {},
+        hooks: [],
+        eventCount: 4,
+        nodeCount: 1,
+        dynamic: {
+          version: 2,
+          progressVersion: 1,
+          progress: [{
+            nodeKey: "review.dynamic",
+            nodeId: "review",
+            attemptId: "attempt_1",
+            attemptNo: 1,
+            kind: "agent",
+            status: "running",
+            message: "turn 1",
+            output: { tail: "still working", totalBytes: 13, truncated: false },
+            context: { used: 22_571, size: 200_000 },
+            tokenUsage: { inputTokens: 44_857, outputTokens: 428, totalTokens: 45_285 },
+            tools: {
+              totalToolCallCount: 4,
+              lastCalls: [
+                { title: "omitted", status: "completed" },
+                { title: "Read", status: "completed" },
+                { toolName: "Bash", title: "Shell Command With Long Display Name That Should Be Truncated For Inspect", status: "running", inputPreview: "{\"command\":\"pnpm test --workspace extremely-long-suite-name --reporter verbose\",\"description\":\"Run tests\"}" },
+                { toolName: "ApplyPatch", status: "completed" },
+              ],
+            },
+            updatedAt: "2026-06-29T00:00:01.000Z",
+          }],
+          frames: [],
+          nodeInstances: [],
+          attempts: [],
+          groupMembers: [],
+          signalWaits: [],
+          executionMetadata: [],
+        },
+      },
+    }, "text", { stdout, stderr }, 0);
+
+    expect(exitCode).toBe(0);
+    expect(stdout.text).toContain("Agent progress: review.dynamic running (turn 1)");
+    expect(stdout.text).toContain("Context: 22.6k/200k");
+    expect(stdout.text).toContain("Tokens: in 44.9k, out 428, total 45.3k");
+    expect(stdout.text).toContain("Tools: 4 total; last Read, Shell Command With Long Display Name That Shoul..., ApplyPatch");
+    expect(stdout.text).not.toContain("omitted");
+    expect(stdout.text).not.toContain("Run tests");
+    expect(stdout.text).not.toContain("--workspace");
+    expect(stdout.text).not.toContain("--reporter verbose");
+    expect(stdout.text).not.toContain("Output: still working");
+    expect(stderr.text).toBe("");
+  });
+
+  it("caps compact agent progress rows and omits agent output tails", () => {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    const exitCode = writeResult({
+      ok: true,
+      phase: "inspect",
+      message: "Run inspected.",
+      run: {
+        id: "run_1",
+        name: "agent-run",
+        status: "running",
+        workflowEntry: "/tmp/workflow.ts",
+        irDigest: "sha256:ir",
+        sourceGraphDigest: "sha256:graph",
+        createdAt: "2026-06-29T00:00:00.000Z",
+        updatedAt: "2026-06-29T00:00:01.000Z",
+        progressVersion: 6,
+        input: {},
+        hooks: [],
+        eventCount: 4,
+        nodeCount: 1,
+        dynamic: {
+          version: 2,
+          progressVersion: 6,
+          progress: Array.from({ length: 6 }, (_, index) => ({
+            nodeKey: `agent.${index}`,
+            nodeId: "review",
+            kind: "agent",
+            status: "running",
+            output: {
+              tail: index === 5 ? `line one\n${"x".repeat(180)}` : `progress ${index}`,
+              totalBytes: 200,
+              truncated: index === 5,
+            },
+            updatedAt: `2026-06-29T00:00:0${index}.000Z`,
+          })),
+          frames: [],
+          nodeInstances: [],
+          attempts: [],
+          groupMembers: [],
+          signalWaits: [],
+          executionMetadata: [],
+        },
+      },
+    }, "text", { stdout, stderr }, 0);
+
+    expect(exitCode).toBe(0);
+    expect(stdout.text).not.toContain("Agent progress: agent.0");
+    expect(stdout.text).toContain("Agent progress: agent.1");
+    expect(stdout.text).toContain("Agent progress: agent.5");
+    expect(stdout.text).not.toContain("Tokens:");
+    expect(stdout.text).not.toContain("Output tail:");
+    expect(stdout.text).not.toContain("Output: progress");
+    expect(stdout.text).not.toContain("line one");
+    expect(stdout.text).not.toContain("x".repeat(170));
     expect(stderr.text).toBe("");
   });
 
@@ -134,12 +265,15 @@ describe("CLI result output contracts", () => {
         sourceGraphDigest: "sha256:graph",
         createdAt: "2026-06-29T00:00:00.000Z",
         updatedAt: "2026-06-29T00:00:01.000Z",
+        progressVersion: 0,
         input: {},
         hooks: [],
         eventCount: 1,
         nodeCount: 1,
         dynamic: {
           version: 1,
+          progressVersion: 0,
+          progress: [],
           frames: [],
           nodeInstances: [],
           attempts: [],

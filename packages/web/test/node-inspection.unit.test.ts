@@ -11,6 +11,7 @@ const baseRun: RunInspection["run"] = {
   sourceGraphDigest: "sha256:def",
   createdAt: "2026-07-01T00:00:00.000Z",
   updatedAt: "2026-07-01T00:00:01.000Z",
+  progressVersion: 0,
   input: {},
   eventCount: 5,
   nodeCount: 3,
@@ -18,6 +19,8 @@ const baseRun: RunInspection["run"] = {
   execution: { state: "active", lastStatus: "running" },
   dynamic: {
     version: 3,
+    progressVersion: 0,
+    progress: [],
     frames: [],
     nodeInstances: [],
     attempts: [],
@@ -58,6 +61,8 @@ describe("inspectNode", () => {
         ...baseRun,
         dynamic: {
           version: 3,
+          progressVersion: 0,
+          progress: [],
           frames: [],
           nodeInstances: [
             { nodeKey: "review:1", nodeId: "review", status: "running", createdAt: "t", updatedAt: "t" },
@@ -89,6 +94,8 @@ describe("inspectNode", () => {
         ...baseRun,
         dynamic: {
           version: 3,
+          progressVersion: 0,
+          progress: [],
           frames: [
             { frameKey: "review-frame", nodeId: "review", nodeKey: "review:1", frameKind: "node", status: "running", createdAt: "t", updatedAt: "t" },
           ],
@@ -113,6 +120,8 @@ describe("inspectNode", () => {
         ...baseRun,
         dynamic: {
           version: 3,
+          progressVersion: 0,
+          progress: [],
           frames: [],
           nodeInstances: [],
           attempts: [
@@ -146,6 +155,8 @@ describe("inspectNode", () => {
         ...baseRun,
         dynamic: {
           version: 3,
+          progressVersion: 0,
+          progress: [],
           frames: [],
           nodeInstances: [],
           attempts: [
@@ -173,6 +184,8 @@ describe("inspectNode", () => {
         ...baseRun,
         dynamic: {
           version: 3,
+          progressVersion: 0,
+          progress: [],
           frames: [],
           nodeInstances: [],
           attempts: [],
@@ -197,6 +210,8 @@ describe("inspectNode", () => {
         ...baseRun,
         dynamic: {
           version: 3,
+          progressVersion: 0,
+          progress: [],
           frames: [],
           nodeInstances: [
             { nodeKey: "review:1", nodeId: "review", status: "completed", output: { ok: true }, createdAt: "2026-07-01T00:00:01.000Z", updatedAt: "2026-07-01T00:00:04.000Z" },
@@ -269,6 +284,8 @@ describe("inspectNode", () => {
         status: "completed",
         dynamic: {
           version: 3,
+          progressVersion: 0,
+          progress: [],
           frames: [],
           nodeInstances: [
             {
@@ -333,6 +350,8 @@ describe("inspectNode", () => {
         ...baseRun,
         dynamic: {
           version: 3,
+          progressVersion: 0,
+          progress: [],
           frames: [],
           nodeInstances: [
             {
@@ -383,12 +402,319 @@ describe("inspectNode", () => {
     expect(betaExecution).not.toHaveProperty("metadata");
   });
 
+  it("returns selected-scope agent progress", async () => {
+    const inspection: RunInspection = {
+      run: {
+        ...baseRun,
+        dynamic: {
+          version: 3,
+          progressVersion: 2,
+          progress: [
+            { nodeKey: "agent-alpha", nodeId: "reviewer_agent", attemptId: "attempt_alpha", attemptNo: 1, kind: "agent", status: "running", output: { tail: "alpha", totalBytes: 5, truncated: false }, updatedAt: "t3" },
+            { nodeKey: "agent-beta", nodeId: "reviewer_agent", attemptId: "attempt_beta", attemptNo: 1, kind: "agent", status: "running", output: { tail: "beta", totalBytes: 4, truncated: false }, tokenUsage: { totalTokens: 2 }, updatedAt: "t2" },
+          ],
+          frames: [],
+          nodeInstances: [
+            {
+              nodeKey: "agent-alpha",
+              nodeId: "reviewer_agent",
+              status: "running",
+              instancePath: [{ kind: "fanout", nodeId: "lanes", itemKey: "lane-alpha", itemIndex: 0 }, { kind: "node", nodeId: "reviewer_agent" }],
+              createdAt: "t",
+              updatedAt: "t",
+            },
+            {
+              nodeKey: "agent-beta",
+              nodeId: "reviewer_agent",
+              status: "running",
+              instancePath: [{ kind: "fanout", nodeId: "lanes", itemKey: "lane-beta", itemIndex: 1 }, { kind: "node", nodeId: "reviewer_agent" }],
+              createdAt: "t",
+              updatedAt: "t",
+            },
+          ],
+          attempts: [
+            { attemptId: "attempt_alpha", nodeKey: "agent-alpha", nodeId: "reviewer_agent", attemptNo: 1, status: "started", startedAt: "t" },
+            { attemptId: "attempt_beta", nodeKey: "agent-beta", nodeId: "reviewer_agent", attemptNo: 1, status: "started", startedAt: "t" },
+          ],
+          groupMembers: [],
+          signalWaits: [],
+          executionMetadata: [],
+        },
+      },
+      staticNodes: [{ nodeId: "reviewer_agent", kind: "agent", order: 0 }],
+    };
+
+    const betaExecution = await inspectNodeExecution(inspection, "reviewer_agent", [
+      { nodeId: "lanes", kind: "fanout", itemKey: "lane-beta", itemIndex: 1 },
+    ]);
+
+    expect(betaExecution).toMatchObject({
+      nodeKey: "agent-beta",
+      attemptId: "attempt_beta",
+      available: true,
+      summary: { status: "running" },
+      output: { tail: "beta" },
+      tokenUsage: { totalTokens: 2 },
+    });
+  });
+
+  it("does not use newer retry progress when inspecting an older agent attempt", async () => {
+    const inspection: RunInspection = {
+      run: {
+        ...baseRun,
+        dynamic: {
+          version: 3,
+          progressVersion: 2,
+          progress: [{
+            nodeKey: "agent-key",
+            nodeId: "reviewer_agent",
+            attemptId: "attempt_2",
+            attemptNo: 2,
+            kind: "agent",
+            status: "running",
+            output: { tail: "new attempt", totalBytes: 11, truncated: false },
+            updatedAt: "t2",
+          }],
+          frames: [],
+          nodeInstances: [
+            { nodeKey: "agent-key", nodeId: "reviewer_agent", status: "running", createdAt: "t", updatedAt: "t" },
+          ],
+          attempts: [
+            { attemptId: "attempt_1", nodeKey: "agent-key", nodeId: "reviewer_agent", attemptNo: 1, status: "failed", startedAt: "t1", finishedAt: "t1" },
+            { attemptId: "attempt_2", nodeKey: "agent-key", nodeId: "reviewer_agent", attemptNo: 2, status: "started", startedAt: "t2" },
+          ],
+          groupMembers: [],
+          signalWaits: [],
+          executionMetadata: [
+            { id: 1, attemptId: "attempt_1", kind: "agent_attempt", metadata: { status: "failed", message: "first failed" }, createdAt: "t1" },
+          ],
+        },
+      },
+      staticNodes: [{ nodeId: "reviewer_agent", kind: "agent", order: 0 }],
+    };
+
+    const execution = await inspectNodeExecution(inspection, "attempt_1");
+
+    expect(execution).toMatchObject({
+      target: { kind: "attempt", id: "attempt_1" },
+      attemptId: "attempt_1",
+      available: true,
+      summary: { status: "failed", message: "first failed" },
+    });
+    expect(execution).not.toHaveProperty("output");
+  });
+
+  it("summarizes progress-derived agent telemetry", async () => {
+    const inspection: RunInspection = {
+      run: {
+        ...baseRun,
+        dynamic: {
+          version: 3,
+          progressVersion: 1,
+          progress: [{
+            nodeKey: "agent-key",
+            nodeId: "reviewer_agent",
+            attemptId: "attempt_agent",
+            attemptNo: 1,
+            kind: "agent",
+            status: "running",
+            message: "reviewing",
+            context: { used: 50, size: 200, updatedAt: "2026-07-01T00:00:02.000Z" },
+            tokenUsage: { source: "prompt_response", inputTokens: 10, outputTokens: 3, totalTokens: 13 },
+            tools: {
+              turn: 2,
+              totalToolCallCount: 4,
+              lastCalls: [
+                { toolCallId: "b", toolName: "Read", status: "completed", inputPreview: "README.md" },
+                { toolCallId: "c", toolName: "Bash", status: "running", inputPreview: "pnpm test" },
+              ],
+            },
+            updatedAt: "2026-07-01T00:00:02.000Z",
+          }],
+          frames: [],
+          nodeInstances: [
+            { nodeKey: "agent-key", nodeId: "reviewer_agent", status: "running", createdAt: "t", updatedAt: "t" },
+          ],
+          attempts: [
+            { attemptId: "attempt_agent", nodeKey: "agent-key", nodeId: "reviewer_agent", attemptNo: 1, status: "started", startedAt: "t" },
+          ],
+          groupMembers: [],
+          signalWaits: [],
+          executionMetadata: [],
+        },
+      },
+      staticNodes: [{ nodeId: "reviewer_agent", kind: "agent", order: 0 }],
+    };
+
+    const execution = await inspectNodeExecution(inspection, "reviewer_agent");
+
+    expect(execution).toMatchObject({
+      available: true,
+      summary: { status: "running", message: "reviewing" },
+      lastActiveAt: "2026-07-01T00:00:02.000Z",
+      contextWindow: { used: 50, size: 200, percent: 25, updatedAt: "2026-07-01T00:00:02.000Z" },
+      tokenUsage: { source: "prompt_response", inputTokens: 10, outputTokens: 3, totalTokens: 13 },
+      toolCallCount: 4,
+      lastToolCalls: [
+        { turn: 2, toolCallId: "b", toolName: "Read", inputPreview: "README.md" },
+        { turn: 2, toolCallId: "c", toolName: "Bash", status: "running", inputPreview: "pnpm test" },
+      ],
+    });
+  });
+
+  it("keeps multi-turn metadata aggregates when terminal progress contains only the final turn", async () => {
+    const inspection: RunInspection = {
+      run: {
+        ...baseRun,
+        dynamic: {
+          version: 3,
+          progressVersion: 1,
+          progress: [{
+            nodeKey: "agent-key",
+            nodeId: "reviewer_agent",
+            attemptId: "attempt_agent",
+            attemptNo: 1,
+            kind: "agent",
+            status: "completed",
+            tokenUsage: { source: "prompt_response", inputTokens: 20, outputTokens: 3, totalTokens: 23 },
+            tools: {
+              turn: 2,
+              totalToolCallCount: 1,
+              lastCalls: [{ toolCallId: "c", toolName: "Bash", status: "completed", inputPreview: "pnpm test" }],
+            },
+            updatedAt: "2026-07-01T00:00:03.000Z",
+          }],
+          frames: [],
+          nodeInstances: [
+            { nodeKey: "agent-key", nodeId: "reviewer_agent", status: "completed", createdAt: "t", updatedAt: "t" },
+          ],
+          attempts: [
+            { attemptId: "attempt_agent", nodeKey: "agent-key", nodeId: "reviewer_agent", attemptNo: 1, status: "completed", startedAt: "t" },
+          ],
+          groupMembers: [],
+          signalWaits: [],
+          executionMetadata: [
+            {
+              id: 1,
+              attemptId: "attempt_agent",
+              kind: "agent_attempt",
+              metadata: {
+                status: "completed",
+                turnCount: 2,
+                turns: [
+                  { turn: 1, telemetry: { tokenUsage: { source: "prompt_response", inputTokens: 10, outputTokens: 2, totalTokens: 12 }, tools: { totalToolCallCount: 2 } }, telemetryArtifact: { relativePath: "turn-001.telemetry.json" } },
+                  { turn: 2, telemetry: { tokenUsage: { source: "prompt_response", inputTokens: 20, outputTokens: 3, totalTokens: 23 }, tools: { totalToolCallCount: 1 } }, telemetryArtifact: { relativePath: "turn-002.telemetry.json" } },
+                ],
+              },
+              createdAt: "t2",
+            },
+          ],
+        },
+      },
+      staticNodes: [{ nodeId: "reviewer_agent", kind: "agent", order: 0 }],
+    };
+
+    const execution = await inspectNodeExecution(inspection, "reviewer_agent", [], async artifact => {
+      const path = (artifact as { relativePath?: string } | undefined)?.relativePath;
+      return {
+        telemetry: {
+          tools: {
+            calls: path?.includes("001")
+              ? [
+                { toolCallId: "a", toolName: "Read", status: "completed", input: { preview: "README.md" } },
+                { toolCallId: "b", toolName: "Write", status: "completed", input: { preview: "notes.md" } },
+              ]
+              : [{ toolCallId: "c", toolName: "Bash", status: "completed", input: { preview: "pnpm test" } }],
+          },
+        },
+      };
+    });
+
+    expect(execution).toMatchObject({
+      summary: { status: "completed", turnCount: 2 },
+      tokenUsage: { source: "prompt_response", inputTokens: 30, outputTokens: 5, totalTokens: 35 },
+      toolCallCount: 3,
+      lastToolCalls: [
+        { turn: 1, toolCallId: "a", toolName: "Read" },
+        { turn: 1, toolCallId: "b", toolName: "Write" },
+        { turn: 2, toolCallId: "c", toolName: "Bash" },
+      ],
+    });
+  });
+
+  it("does not mix stale attempt metadata with newer progress", async () => {
+    const inspection: RunInspection = {
+      run: {
+        ...baseRun,
+        dynamic: {
+          version: 3,
+          progressVersion: 2,
+          progress: [{
+            nodeKey: "agent-key",
+            nodeId: "reviewer_agent",
+            attemptId: "attempt_2",
+            attemptNo: 2,
+            kind: "agent",
+            status: "running",
+            output: { tail: "running", totalBytes: 7, truncated: false },
+            tokenUsage: { totalTokens: 2 },
+            tools: {
+              turn: 1,
+              totalToolCallCount: 1,
+              lastCalls: [{ toolCallId: "new", toolName: "Bash", status: "running" }],
+            },
+            updatedAt: "t2",
+          }],
+          frames: [],
+          nodeInstances: [
+            { nodeKey: "agent-key", nodeId: "reviewer_agent", status: "running", createdAt: "t2", updatedAt: "t2" },
+          ],
+          attempts: [
+            { attemptId: "attempt_1", nodeKey: "agent-key", nodeId: "reviewer_agent", attemptNo: 1, status: "failed", startedAt: "t1", finishedAt: "t1" },
+            { attemptId: "attempt_2", nodeKey: "agent-key", nodeId: "reviewer_agent", attemptNo: 2, status: "started", startedAt: "t2" },
+          ],
+          groupMembers: [],
+          signalWaits: [],
+          executionMetadata: [
+            {
+              id: 1,
+              attemptId: "attempt_1",
+              kind: "agent_attempt",
+              metadata: {
+                status: "failed",
+                turns: [
+                  { turn: 1, telemetry: { tokenUsage: { totalTokens: 99 }, tools: { totalToolCallCount: 9 } } },
+                ],
+              },
+              createdAt: "t1",
+            },
+          ],
+        },
+      },
+      staticNodes: [{ nodeId: "reviewer_agent", kind: "agent", order: 0 }],
+    };
+
+    const execution = await inspectNodeExecution(inspection, "reviewer_agent");
+
+    expect(execution).toMatchObject({
+      attemptId: "attempt_2",
+      summary: { status: "running" },
+      lastActiveAt: "t2",
+      output: { tail: "running" },
+      tokenUsage: { totalTokens: 2 },
+      toolCallCount: 1,
+      lastToolCalls: [{ turn: 1, toolCallId: "new", toolName: "Bash", status: "running" }],
+    });
+  });
+
   it("summarizes latest agent context, token usage, and last three tool calls", async () => {
     const inspection: RunInspection = {
       run: {
         ...baseRun,
         dynamic: {
           version: 3,
+          progressVersion: 0,
+          progress: [],
           frames: [],
           nodeInstances: [
             { nodeKey: "agent-key", nodeId: "reviewer_agent", status: "completed", createdAt: "t", updatedAt: "t" },

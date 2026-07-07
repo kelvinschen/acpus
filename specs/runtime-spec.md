@@ -9,7 +9,7 @@
 ### Admission And Store
 
 - The runtime MUST create `.acpus/.local/state/runtime.db` as the durable runtime store for a workspace.
-- The runtime store MUST use SQLite for run admission data, public run events, scheduler events, scheduler projection tables, public run and node projections, daemon lease rows, run lease rows, execution metadata, and artifact registry rows.
+- The runtime store MUST use SQLite for run admission data, public run events, scheduler events, scheduler projection tables, public run and node projections, daemon lease rows, run lease rows, execution metadata, node progress snapshots, and artifact registry rows.
 - The runtime store MUST NOT store durable command rows, durable command status, command queue counts, control request wait state, daemon endpoint, daemon port, daemon auth token, daemon auth token hash, or daemon service-discovery rows.
 - Runtime-generated run ids MUST use local time `YYYYMMDDHHmmss` followed by 20 uppercase hexadecimal random characters.
 - Run admission MUST accept a prepared workflow containing frozen IR JSON, lock metadata, and source graph digest.
@@ -73,6 +73,9 @@
 - Runtime run detail read APIs MUST expose dynamic frame, node instance, attempt,
   group member, and signal wait timing fields needed for compact status
   rendering.
+- Runtime run detail read APIs MUST expose latest node progress snapshots and
+  run-level progress version metadata for polling. Progress version changes MUST
+  be independent from scheduler event sequence/version changes.
 - Public run status MUST distinguish queued admission from active execution:
   `pending` means admitted or reset but no scheduler frame, runnable instance,
   group member, or attempt has started or become ready; public status MUST be
@@ -85,6 +88,14 @@
 - Runtime read APIs used for run inspection MUST expose frozen static node
   metadata, including signal output schemas, so CLI output can render expected
   signal payload guidance without reading live workflow source.
+- Node progress snapshots MUST be latest-state observation data and MUST NOT be
+  scheduler events or scheduler transition inputs.
+- Starting a new attempt for a node MUST clear any previous progress snapshot for
+  that node so inspection never shows stale telemetry while the new attempt is
+  waiting to emit progress.
+- Node progress snapshots MUST use typed channels for status/message, bounded
+  output tail, context window, token usage, and tool-call summary where those
+  channels are available.
 - Dynamic node outputs MUST resolve through lexical execution scope; child scope outputs MUST expose only declared composite outputs to the parent scope.
 - The scheduler MUST materialize valid frozen IR compositions recursively,
   including nested `assert`, `if`, `switch`, `parallel`, `fanout`, and `loop`
@@ -144,6 +155,19 @@
   identity, model, and agent mode from frozen IR and durable execution scope.
 - The runtime MUST execute real agent definitions through the acpx-backed
   `executeAgentTurn(...)` API from `@acpus/agent-executor`.
+- Scheduler-backed agent execution MUST subscribe to the executor's normalized
+  progress callback and persist latest node progress snapshots while the
+  scheduler-visible attempt is still running.
+- Agent progress snapshots MUST be derived from normalized executor progress.
+  Runtime MUST NOT parse raw ACP JSON to produce progress.
+- Agent progress output MUST be bounded to a recent tail in SQLite. Full final
+  prompt, response, stderr, and telemetry MUST remain artifact-backed.
+- Agent progress writes SHOULD be throttled by time and meaningful telemetry or
+  tool-call changes so long-running agents remain observable without writing on
+  every output chunk.
+- Agent progress `updatedAt` MUST represent the last persisted agent stream
+  activity time and MAY lag high-frequency stream activity by the progress
+  throttle interval.
 - Named agent definitions MUST map to acpx positional agent tokens.
 - Command agent definitions MUST map to acpx `--agent <command>`, not a raw
   shell worker protocol.

@@ -51,7 +51,7 @@ acpus runs fork <run-id> --target <target> --workflow fixed.workflow.ts --unsafe
 
 Fork creates a new run from frozen source run data and may freeze replacement prepared workflow/input/agents. It should not read live workflow source except where the CLI explicitly prepares a replacement `--workflow`.
 
-`--unsafe-reuse` is dangerous. Use it only after the user explicitly accepts that completed source outputs may be reused despite changed input or workflow signature changes.
+Use `--unsafe-reuse` when the user clearly wants to reuse earlier completed nodes and accepts the side effects of doing so. Typical cases include a failed node inside one loop iteration where rerunning the whole loop is undesirable, or a fork that changes agent definitions mid-run while keeping already-completed prerequisites.
 
 ## Signal
 

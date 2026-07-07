@@ -18,7 +18,7 @@ goes through the resolved acpx turn API.
 ### Public API
 
 - The package MUST expose `executeAgentTurn(request)`.
-- The package MUST expose public acpx turn request/result types.
+- The package MUST expose public acpx turn request/result/progress types.
 - The public acpx turn request MUST NOT accept an acpx path, binary, or
   provider-command mapping override.
 - The package MUST resolve its bundled `acpx` dependency internally.
@@ -34,11 +34,24 @@ goes through the resolved acpx turn API.
 - Requests MUST include rendered prompt text, absolute cwd, process env,
   resolved acpx session name, resolved permission mode, optional model,
   optional agent mode, optional timeout, and optional abort signal.
+- For named `claude` agent requests, the executor MUST default
+  `ACPX_CLAUDE_INCLUDE_USER_SETTINGS=1` when the request env does not already
+  define that key. Explicit request env values MUST be preserved. Custom
+  command agents MUST NOT receive this default through command string matching.
 - When a timeout is supplied, the executor MUST enforce the request duration
   locally and pass acpx `--timeout` as a positive integer number of seconds.
 - Requests MAY include an optional raw debug capture flag for runtime
   diagnostics. This flag MUST NOT change prompt execution, parsing, telemetry,
   or failure classification.
+- Requests MAY include an optional progress callback. This callback MUST receive
+  normalized progress snapshots derived from the ACP JSON stream and MUST NOT
+  receive raw ACP JSON lines.
+- Progress callbacks MAY complete synchronously or asynchronously. Callback
+  throws and promise rejections MUST be treated as best-effort observer failures
+  and MUST NOT fail the agent turn.
+- Registering a progress callback MUST NOT change final response parsing,
+  telemetry normalization, timeout/cancellation behavior, or backend failure
+  classification.
 - Permission modes MUST map only to explicit acpx flags:
   `approve-reads -> --approve-reads`, `approve-all -> --approve-all`, and
   `deny-all -> --deny-all`.
@@ -77,13 +90,19 @@ goes through the resolved acpx turn API.
 - Normalized turn telemetry MUST include event count, optional stop reason,
   optional context window, optional token usage, tool-call telemetry, prompt
   input preview, response output preview, cwd, and optional acpx record id.
+- The progress callback MUST fire for valid prompt stream activity even when
+  that activity is not visible response text, including `agent_thought_chunk`
+  events.
 - Context telemetry MUST be derived from `usage_update` events. If a later
   `usage_update` reports `used = 0` after a non-zero used value, the executor
   MUST preserve the previous non-zero used value while updating size and
   timestamp.
 - Token usage telemetry MUST be derived from JSON-RPC result `usage` fields and
-  MUST accept both camelCase and snake_case variants for input, output, cached
-  read, cached write, thought, and total token counts.
+  MAY be derived from `usage_update._meta.usage` or `usage_update.breakdown`
+  fields before the final result arrives. Final result `usage` MUST replace
+  earlier event-derived token usage for the same turn. Token usage parsing MUST
+  accept both camelCase and snake_case variants for input, output, cached read,
+  cached write, thought, and total token counts.
 - Tool telemetry MUST capture `tool_call` and `tool_call_update` events,
   preserving each call's id, title, kind, acpx status, tool name from
   `_meta.claudeCode.toolName`, timestamps, and final completion timestamp for
@@ -102,14 +121,28 @@ goes through the resolved acpx turn API.
 - JSON-RPC error objects MUST be summarized to bounded human-readable error
   messages before being returned to runtime-facing results.
 
+### Progress
+
+- Progress snapshots MUST include response text collected so far, normalized
+  turn telemetry collected so far, and an update timestamp.
+- Progress snapshot telemetry MUST use the same normalized telemetry shape as
+  final turn results.
+- Progress parsing MUST be byte-safe across arbitrary stdout chunk boundaries
+  and MUST NOT treat incomplete JSON lines as events before a line boundary or
+  process close.
+- Progress callbacks MUST be best-effort observation hooks. Callback presence
+  MUST NOT be required for execution decisions.
+
 ## Verification
 
 - Public API contract tests MUST cover exported runtime keys.
 - Type tests MUST cover public acpx turn request/result types and verify no
   acpx path override or provider-command mapping override is accepted.
+- Type tests MUST cover the public progress callback and progress payload
+  shape.
 - Unit tests MUST cover acpx argument construction for named and custom agents,
   permission mode flag mapping, session ensure before prompt, `agentMode`
   `set-mode` ordering, stdin prompt delivery, assistant text extraction,
   normalized telemetry parsing for context, token usage, tool calls, tool
-  parameter preview truncation, optional raw debug capture, and backend failure
-  classification.
+  parameter preview truncation, progress callbacks across stdout chunk
+  boundaries, optional raw debug capture, and backend failure classification.

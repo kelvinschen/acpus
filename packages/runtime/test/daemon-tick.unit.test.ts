@@ -38,5 +38,6 @@ function runRecord(): RunRecord {
     sourceGraphDigest: "source",
     createdAt: "2026-07-04T00:00:00.000Z",
     updatedAt: "2026-07-04T00:00:00.000Z",
+    progressVersion: 0,
   };
 }

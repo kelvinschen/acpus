@@ -1,6 +1,7 @@
 import type { Writable } from "node:stream";
 import type { DiagnosticIR, WorkflowIR } from "@acpus/core/ir";
 import type { HookConfigScope, LoadedHookConfig, RunDetails, RunRecord, RuntimeHealthCheck } from "@acpus/runtime";
+import { formatAgentProgressLines } from "./agent-progress-format.js";
 import type { WorkflowCatalogEntry } from "./catalog.js";
 
 export type ResultPhase = "usage" | "check" | "compile" | "validate" | "run" | "inspect" | "control" | "delete" | "doctor" | "viz" | "skill";
@@ -222,6 +223,9 @@ function writeCompactDynamicSummary(stream: Writable, run: RunDetails): void {
   if (omitted > 0) stream.write(`Node details omitted: ${omitted}\n`);
   const signalWaitsOmitted = Math.max(0, dynamic.signalWaits.length - 20);
   if (signalWaitsOmitted > 0) stream.write(`Signal waits omitted: ${signalWaitsOmitted}\n`);
+  for (const progress of dynamic.progress.filter(progress => progress.kind === "agent").slice(-5)) {
+    for (const line of formatAgentProgressLines(progress)) stream.write(`${line}\n`);
+  }
   const agentAttempts = dynamic.executionMetadata.filter(entry => entry.kind === "agent_attempt").length;
   if (agentAttempts > 0) stream.write(`Agent attempt details omitted: ${agentAttempts}. Use --json for full metadata.\n`);
 }

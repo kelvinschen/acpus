@@ -9,6 +9,7 @@ import type {
   RunDynamicFrame,
   RunDynamicGroupMember,
   RunDynamicNodeInstance,
+  RunNodeProgress,
   RunDynamicSignalWait,
   RunDetails,
   RunRecord,
@@ -71,6 +72,23 @@ test("@acpus/runtime public types describe use-case level runtime APIs", () => {
   expectTypeOf<RunDynamicDetails["attempts"][number]>().toEqualTypeOf<RunDynamicAttempt>();
   expectTypeOf<RunDynamicDetails["groupMembers"][number]>().toEqualTypeOf<RunDynamicGroupMember>();
   expectTypeOf<RunDynamicDetails["signalWaits"][number]>().toEqualTypeOf<RunDynamicSignalWait>();
+  expectTypeOf<RunDynamicDetails["progress"][number]>().toEqualTypeOf<RunNodeProgress>();
+  expectTypeOf<RunDynamicDetails["progressVersion"]>().toEqualTypeOf<number>();
+  expectTypeOf<RunRecord["progressVersion"]>().toEqualTypeOf<number>();
+  expectTypeOf<RunNodeProgress>().toMatchTypeOf<{
+    nodeKey: string;
+    nodeId: string;
+    attemptId?: string;
+    attemptNo?: number;
+    kind: string;
+    status: string;
+    message?: string;
+    output?: { tail: string; totalBytes: number; truncated: boolean };
+    context?: unknown;
+    tokenUsage?: unknown;
+    tools?: unknown;
+    updatedAt: string;
+  }>();
   expectTypeOf<NonNullable<RunDynamicFrame["instancePath"]>[number]>().toMatchTypeOf<{ kind: string }>();
   expectTypeOf<NonNullable<RunDynamicNodeInstance["instancePath"]>[number]>().toMatchTypeOf<{ kind: string }>();
   expectTypeOf<undefined>().toMatchTypeOf<RunDynamicFrame["instancePath"]>();

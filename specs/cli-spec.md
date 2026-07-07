@@ -264,6 +264,12 @@ failures to stable CLI phases and exit codes.
   thereafter.
 - Text run status surface output MUST NOT inline full agent prompts, model
   responses, raw scheduler events, or artifact contents.
+- Text run status surface agent progress telemetry MUST stay compact: context
+  and token counts use `k` units at one decimal place, token rows are omitted
+  when token usage is absent, tool progress shows at most the last three command
+  names without arguments or statuses, progress detail rows include a relative
+  `Last active` age under the corresponding agent node row, and agent progress
+  output tails are not rendered.
 - Text run status surface output MUST show actionable awaiting signal targets
   with rendered prompt text when available, expected payload guidance, and a
   copyable `acpus runs signal` command.

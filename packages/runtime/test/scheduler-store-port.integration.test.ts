@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { join } from "node:path";
-import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
+import { openExistingRuntimeStore, openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
 import { deriveInstanceKey } from "../src/scheduler/identity.js";
 import type { RunOwnerClaim } from "../src/scheduler/store-port.js";
 import { prepareSyntheticWorkflow, timedSignalWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
@@ -75,6 +75,210 @@ describe("scheduler store port", () => {
       } finally {
         store.close();
       }
+    });
+  });
+
+  it("stores latest node progress without changing scheduler event version", async () => {
+    await withRuntimeWorkspace("scheduler-store-node-progress", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        readyNode(store, run.id, claim, "node-progress:ready");
+        const attempt = store.scheduler.startAttempt({
+          runId: run.id,
+          nodeKey: "require_ready~1",
+          nodeId: "require_ready",
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "node-progress:attempt",
+        });
+        const schedulerVersion = store.scheduler.loadRunSnapshot(run.id).version;
+        const eventCount = dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", run.id);
+
+        store.writeNodeProgress({
+          runId: run.id,
+          nodeKey: "require_ready~1",
+          nodeId: "require_ready",
+          attemptId: attempt.attemptId,
+          attemptNo: attempt.attemptNo,
+          kind: "agent",
+          status: "running",
+          output: { tail: "hel", totalBytes: 3, truncated: false },
+          context: { used: 80, size: 200 },
+          tokenUsage: { inputTokens: 10 },
+          tools: { totalToolCallCount: 0, lastCalls: [] },
+        });
+        store.writeNodeProgress({
+          runId: run.id,
+          nodeKey: "require_ready~1",
+          nodeId: "require_ready",
+          attemptId: attempt.attemptId,
+          attemptNo: attempt.attemptNo,
+          kind: "agent",
+          status: "running",
+          message: "still running",
+          output: { tail: "hello", totalBytes: 5, truncated: false },
+          context: { used: 90, size: 200 },
+          tokenUsage: { inputTokens: 10, outputTokens: 2 },
+          tools: { totalToolCallCount: 1, lastCalls: [{ toolName: "Bash", status: "running" }] },
+        });
+
+        const details = store.getRun(run.id);
+        expect(store.scheduler.loadRunSnapshot(run.id).version).toBe(schedulerVersion);
+        expect(dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", run.id)).toBe(eventCount);
+        expect(details?.progressVersion).toBe(2);
+        expect(details?.progressUpdatedAt).toEqual(expect.any(String));
+        expect(details?.dynamic?.version).toBe(schedulerVersion);
+        expect(details?.dynamic?.progressVersion).toBe(2);
+        expect(details?.dynamic?.progress).toEqual([
+          expect.objectContaining({
+            nodeKey: "require_ready~1",
+            nodeId: "require_ready",
+            attemptId: attempt.attemptId,
+            attemptNo: attempt.attemptNo,
+            kind: "agent",
+            status: "running",
+            message: "still running",
+            output: { tail: "hello", totalBytes: 5, truncated: false },
+            context: { used: 90, size: 200 },
+            tokenUsage: { inputTokens: 10, outputTokens: 2 },
+            tools: { totalToolCallCount: 1, lastCalls: [{ toolName: "Bash", status: "running" }] },
+            updatedAt: expect.any(String),
+          }),
+        ]);
+        expect(dbScalar(workspace, "SELECT COUNT(*) FROM node_progress WHERE run_id = ?", run.id)).toBe(1);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("ignores progress from attempts that are not running", async () => {
+    await withRuntimeWorkspace("scheduler-store-node-progress-stale-attempt", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        store.writeNodeProgress({
+          runId: run.id,
+          nodeKey: "require_ready~1",
+          nodeId: "require_ready",
+          attemptId: "attempt_missing",
+          attemptNo: 1,
+          kind: "agent",
+          status: "running",
+          message: "late",
+        });
+
+        expect(store.getRun(run.id)?.progressVersion).toBe(0);
+        expect(store.getRun(run.id)?.dynamic?.progress ?? []).toEqual([]);
+        expect(dbScalar(workspace, "SELECT COUNT(*) FROM node_progress WHERE run_id = ?", run.id)).toBe(0);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("ignores late progress from a terminal attempt after retry starts a newer attempt", async () => {
+    await withRuntimeWorkspace("scheduler-store-node-progress-late-attempt", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        readyNode(store, run.id, claim, "late-progress:ready");
+        const first = store.scheduler.startAttempt({
+          runId: run.id,
+          nodeKey: "require_ready~1",
+          nodeId: "require_ready",
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "late-progress:first",
+        });
+        store.writeNodeProgress({
+          runId: run.id,
+          nodeKey: "require_ready~1",
+          nodeId: "require_ready",
+          attemptId: first.attemptId,
+          attemptNo: first.attemptNo,
+          kind: "agent",
+          status: "running",
+          message: "first",
+        });
+        store.scheduler.commitAttemptResult({
+          runId: run.id,
+          attemptId: first.attemptId,
+          ownerEpoch: claim.ownerEpoch,
+          result: { status: "failed", reason: "retryable" },
+          idempotencyKey: "late-progress:first-failed",
+        });
+        store.scheduler.retry({
+          runId: run.id,
+          targetKey: "require_ready~1",
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "late-progress:retry",
+        });
+        const second = store.scheduler.startAttempt({
+          runId: run.id,
+          nodeKey: "require_ready~1",
+          nodeId: "require_ready",
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "late-progress:second",
+        });
+        expect(store.getRun(run.id)?.progressVersion).toBe(2);
+        expect(store.getRun(run.id)?.dynamic?.progress ?? []).toEqual([]);
+        expect(dbScalar(workspace, "SELECT COUNT(*) FROM node_progress WHERE run_id = ?", run.id)).toBe(0);
+        store.writeNodeProgress({
+          runId: run.id,
+          nodeKey: "require_ready~1",
+          nodeId: "require_ready",
+          attemptId: second.attemptId,
+          attemptNo: second.attemptNo,
+          kind: "agent",
+          status: "running",
+          message: "second",
+        });
+        const progressVersion = store.getRun(run.id)?.progressVersion;
+
+        store.writeNodeProgress({
+          runId: run.id,
+          nodeKey: "require_ready~1",
+          nodeId: "require_ready",
+          attemptId: first.attemptId,
+          attemptNo: first.attemptNo,
+          kind: "agent",
+          status: "running",
+          message: "late first",
+        });
+
+        expect(store.getRun(run.id)?.progressVersion).toBe(progressVersion);
+        expect(store.getRun(run.id)?.dynamic?.progress).toEqual([
+          expect.objectContaining({
+            attemptId: second.attemptId,
+            attemptNo: second.attemptNo,
+            message: "second",
+          }),
+        ]);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("does not migrate existing stores from read-only opener", async () => {
+    await withRuntimeWorkspace("scheduler-store-read-only-no-migration", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      store.close();
+      const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+      try {
+        db.exec("DROP TABLE node_progress;");
+      } finally {
+        db.close();
+      }
+
+      await expect(openExistingRuntimeStore(workspace)).rejects.toThrow("requires migration");
+      expect(dbScalar(workspace, "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'node_progress'")).toBeUndefined();
     });
   });
 

@@ -3,16 +3,19 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { schemaToJsonSchema } from "@acpus/core/schema";
 import type { AgentDefinitionIR, AgentNodeIR, SchemaIR, WorkflowIR } from "@acpus/core/ir";
-import { executeAgentTurn, type AgentTurnRequest, type AgentTurnResult, type AgentTurnTelemetry } from "@acpus/agent-executor";
+import { executeAgentTurn, type AgentToolCallTelemetry, type AgentTurnProgress, type AgentTurnRequest, type AgentTurnResult, type AgentTurnTelemetry } from "@acpus/agent-executor";
 import type { JsonValue } from "@acpus/expression/ir";
 import { jsonrepair } from "jsonrepair";
 import { evaluateExpr, renderTemplate, type EvaluationScope } from "../evaluation/evaluator.js";
 import { normalizeValue } from "../evaluation/schema.js";
-import type { RuntimeStore } from "../store/store.js";
+import type { RuntimeStore, WriteNodeProgressInput } from "../store/store.js";
 import { parseDurationMs } from "./duration.js";
 
 const CONTINUATION_PROMPT = "Continue the previous task from where you left off.";
 const DEFAULT_REPAIR_DELAY_MS = 5_000;
+const PROGRESS_FLUSH_INTERVAL_MS = 1_000;
+const PROGRESS_OUTPUT_TAIL_BYTES = 16 * 1024;
+const PROGRESS_TOOL_LIMIT = 3;
 
 export class AgentNodeCancelledError extends Error {}
 export class AgentNodeTimeoutError extends Error {}
@@ -62,7 +65,13 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
   let sessionNameForMetadata: string | undefined;
   let explicitSessionKey: string | undefined;
   let metadataWritten = false;
-  const writeTerminalMetadata = async (status: "completed" | "failed" | "cancelled" | "timed_out", message?: string): Promise<void> => {
+  const writeTerminalState = async (
+    status: "completed" | "failed" | "cancelled" | "timed_out",
+    message?: string,
+    result?: AgentTurnResult,
+    turn?: number,
+  ): Promise<void> => {
+    if (result && turn !== undefined) writeAgentTerminalProgress(node, options, turn, result, status, message);
     metadataWritten = true;
     await writeAgentAttemptMetadata(node, options, sessionNameForMetadata, explicitSessionKey, status, turns, message);
   };
@@ -96,29 +105,31 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
     for (let turn = 0; turn <= maxRepairTurns; turn += 1) {
       const remaining = remainingTimeout(deadline, node.id);
       const captureRawDebug = shouldCaptureRawAcpDebug();
+      const onProgress = createAgentProgressReporter(node, options, turn + 1);
       const request = {
         ...turnBase,
         prompt,
         ...(remaining === undefined ? {} : { timeout: `${remaining}ms` }),
         ...(turn === 0 && !plainContinuation && definition.agentMode ? { agentMode: definition.agentMode } : {}),
         ...(captureRawDebug ? { captureRawDebug: true } : {}),
+        ...(onProgress ? { onProgress } : {}),
       } satisfies AgentTurnRequest;
       const result = await executeTurn(request);
       turns.push(await writeAgentTurnArtifacts(node, options, turn + 1, request.prompt, result, captureRawDebug));
       if (result.status === "cancelled") {
-        await writeTerminalMetadata("cancelled", result.message);
+        await writeTerminalState("cancelled", result.message, result, turn + 1);
         throw new AgentNodeCancelledError(result.message);
       }
       if (result.status === "failed" && result.failureKind === "timeout") {
-        await writeTerminalMetadata("timed_out", result.message);
+        await writeTerminalState("timed_out", result.message, result, turn + 1);
         throw new AgentNodeTimeoutError(result.message);
       }
       if (result.status === "failed") {
-        await writeTerminalMetadata("failed", `${result.failureKind}: ${result.message}`);
+        await writeTerminalState("failed", `${result.failureKind}: ${result.message}`, result, turn + 1);
         throw new Error(`${result.failureKind}: ${result.message}`);
       }
       if (!node.outputSchema) {
-        await writeTerminalMetadata("completed");
+        await writeTerminalState("completed", undefined, result, turn + 1);
         return result.responseText;
       }
       const conformed = conformAgentOutput(node.outputSchema, result.responseText, node.id);
@@ -127,12 +138,12 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
         if (rawParsedOutputArtifact) turns[turn] = { ...turns[turn]!, rawParsedOutputArtifact };
       }
       if (conformed.ok) {
-        await writeTerminalMetadata("completed");
+        await writeTerminalState("completed", undefined, result, turn + 1);
         return conformed.output;
       }
       turns[turn] = { ...turns[turn]!, failureKind: conformed.kind, message: conformed.message };
       if (turn === maxRepairTurns) {
-        await writeTerminalMetadata("failed", `${conformed.kind}: ${conformed.message}`);
+        await writeTerminalState("failed", `${conformed.kind}: ${conformed.message}`, result, turn + 1);
         throw new Error(`${conformed.kind}: ${conformed.message}`);
       }
       await delay(options.repairDelayMs ?? DEFAULT_REPAIR_DELAY_MS, options.signal, deadline);
@@ -141,7 +152,7 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
     throw new Error(`Agent node '${node.id}' exhausted response repair.`);
   } catch (error) {
     if (!metadataWritten) {
-      await writeTerminalMetadata(error instanceof AgentNodeCancelledError ? "cancelled" : error instanceof AgentNodeTimeoutError ? "timed_out" : "failed", error instanceof Error ? error.message : String(error));
+      await writeTerminalState(error instanceof AgentNodeCancelledError ? "cancelled" : error instanceof AgentNodeTimeoutError ? "timed_out" : "failed", error instanceof Error ? error.message : String(error));
     }
     throw error;
   }
@@ -363,6 +374,97 @@ function telemetrySummary(telemetry: AgentTurnTelemetry): AgentTurnTelemetrySumm
     cwd: telemetry.cwd,
     acpxRecordId: telemetry.acpxRecordId,
   }) as AgentTurnTelemetrySummary;
+}
+
+function createAgentProgressReporter(node: AgentNodeIR, options: AgentExecutorOptions, turn: number): ((progress: AgentTurnProgress) => void) | undefined {
+  if (!options.store || !options.runId || !options.nodeKey) return undefined;
+  let lastFlushAt: number | undefined;
+  let lastSignature = "";
+  return progress => {
+    const snapshot = progressSnapshot(node, options, turn, progress);
+    const signature = JSON.stringify([snapshot.context, snapshot.tokenUsage, snapshot.tools]);
+    const now = Date.now();
+    if (lastFlushAt !== undefined && signature === lastSignature && now - lastFlushAt < PROGRESS_FLUSH_INTERVAL_MS) return;
+    lastFlushAt = now;
+    lastSignature = signature;
+    options.store?.writeNodeProgress(snapshot);
+  };
+}
+
+function writeAgentTerminalProgress(node: AgentNodeIR, options: AgentExecutorOptions, turn: number, result: AgentTurnResult, status: "completed" | "failed" | "cancelled" | "timed_out", message?: string): void {
+  if (!options.store || !options.runId || !options.nodeKey) return;
+  options.store.writeNodeProgress(progressSnapshot(node, options, turn, {
+    responseText: result.responseText,
+    telemetry: result.telemetry,
+    updatedAt: new Date().toISOString(),
+  }, status, message ?? `turn ${turn} ${status}`));
+}
+
+function progressSnapshot(
+  node: AgentNodeIR,
+  options: AgentExecutorOptions,
+  turn: number,
+  progress: AgentTurnProgress,
+  status = "running",
+  message = `turn ${turn}`,
+): WriteNodeProgressInput {
+  const output = outputTail(progress.responseText);
+  return pruneUndefined({
+    runId: options.runId,
+    nodeKey: options.nodeKey ?? node.id,
+    nodeId: node.id,
+    attemptId: options.attemptId,
+    attemptNo: options.attemptNo ?? 1,
+    kind: "agent",
+    status,
+    message,
+    output,
+    context: progress.telemetry.context,
+    tokenUsage: progress.telemetry.tokenUsage,
+    tools: progressTools(progress.telemetry.tools, turn),
+  }) as WriteNodeProgressInput;
+}
+
+function outputTail(value: string): NonNullable<WriteNodeProgressInput["output"]> | undefined {
+  if (value.length === 0) return undefined;
+  const totalBytes = Buffer.byteLength(value, "utf8");
+  if (totalBytes <= PROGRESS_OUTPUT_TAIL_BYTES) return { tail: value, totalBytes, truncated: false };
+  const chunks: string[] = [];
+  let bytes = 0;
+  for (let index = value.length; index > 0;) {
+    let start = index - 1;
+    const code = value.charCodeAt(start);
+    if (code >= 0xdc00 && code <= 0xdfff && start > 0) start -= 1;
+    const char = value.slice(start, index);
+    const nextBytes = Buffer.byteLength(char, "utf8");
+    if (bytes + nextBytes > PROGRESS_OUTPUT_TAIL_BYTES) break;
+    chunks.push(char);
+    bytes += nextBytes;
+    index = start;
+  }
+  return { tail: chunks.reverse().join(""), totalBytes, truncated: true };
+}
+
+function progressTools(tools: AgentTurnTelemetry["tools"], turn: number): JsonValue {
+  return {
+    turn,
+    totalToolCallCount: tools.totalToolCallCount,
+    lastCalls: tools.calls.slice(-PROGRESS_TOOL_LIMIT).map(progressToolCall),
+  };
+}
+
+function progressToolCall(call: AgentToolCallTelemetry): JsonValue {
+  return pruneUndefined({
+    toolCallId: call.toolCallId,
+    title: call.title,
+    kind: call.kind,
+    toolName: call.toolName,
+    status: call.status,
+    inputPreview: call.input?.preview,
+    startedAt: call.startedAt,
+    updatedAt: call.updatedAt,
+    completedAt: call.completedAt,
+  }) as JsonValue;
 }
 
 async function writeAgentArtifact(options: AgentExecutorOptions, turn: number, name: string, content: string, mediaType: string): Promise<AgentArtifactRef> {

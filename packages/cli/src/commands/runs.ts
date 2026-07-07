@@ -306,5 +306,6 @@ function runSummary(run: RunDetails): RunRecord {
     sourceGraphDigest: run.sourceGraphDigest,
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,
+    progressVersion: run.progressVersion,
   };
 }

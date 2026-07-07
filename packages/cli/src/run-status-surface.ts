@@ -1,5 +1,6 @@
 import type { NodeIR, SchemaIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
 import type { RunDetails, RunDynamicAttempt, RunDynamicFrame, RunDynamicNodeInstance, RunDynamicSignalWait } from "@acpus/runtime";
+import { formatAgentProgressDetailLines } from "./agent-progress-format.js";
 
 export type RunStatusStaticNode = {
   nodeId: string;
@@ -35,8 +36,11 @@ export function formatRunStatusSurface(run: RunDetails, staticNodes: readonly Ru
   const index = staticIndex(staticNodes);
   const lines = [`Run ${run.id}  ${run.name}  ${displayRunExecutionStatus(run)}  ${formatRunDuration(run, nowMs)}`];
   const rows = statusRows(run, staticNodes, index);
+  const agentProgress = agentProgressByNodeKey(run);
   for (const row of rows) {
     lines.push(...formatRow(row, run.id, nowMs, index));
+    const progress = row.kind === "agent" ? agentProgress.get(row.key) : undefined;
+    if (progress) lines.push(...formatAgentProgressDetailLines(progress, { includeMessage: true, nowMs }).map(line => `    ${line}`));
   }
   const output = formatOutput(run);
   if (output) {
@@ -196,6 +200,14 @@ function schemaKind(schema: SchemaIR): string {
 function formatOutput(run: RunDetails): string[] | undefined {
   if (run.status !== "completed" || run.output === undefined || emptyObject(run.output)) return undefined;
   return ["Output:", ...JSON.stringify(run.output, null, 2).split("\n").map(line => `  ${line}`)];
+}
+
+function agentProgressByNodeKey(run: RunDetails): Map<string, NonNullable<RunDetails["dynamic"]>["progress"][number]> {
+  const progressByNodeKey = new Map<string, NonNullable<RunDetails["dynamic"]>["progress"][number]>();
+  for (const progress of run.dynamic?.progress ?? []) {
+    if (progress.kind === "agent") progressByNodeKey.set(progress.nodeKey, progress);
+  }
+  return progressByNodeKey;
 }
 
 function formatHooks(run: RunDetails): string[] | undefined {

@@ -252,6 +252,7 @@ export type NodeExecutionInspection = {
     turnCount?: number;
     message?: string;
   };
+  lastActiveAt?: string;
   contextWindow?: {
     used?: number;
     size?: number;
@@ -263,6 +264,11 @@ export type NodeExecutionInspection = {
     inputTokens?: number;
     outputTokens?: number;
     totalTokens?: number;
+  };
+  output?: {
+    tail: string;
+    totalBytes: number;
+    truncated: boolean;
   };
   toolCallCount?: number;
   lastToolCalls: Array<{

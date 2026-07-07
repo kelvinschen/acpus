@@ -77,6 +77,7 @@ export type NodeExecutionInspection = {
     turnCount?: number;
     message?: string;
   };
+  lastActiveAt?: string;
   contextWindow?: {
     used?: number;
     size?: number;
@@ -88,6 +89,11 @@ export type NodeExecutionInspection = {
     inputTokens?: number;
     outputTokens?: number;
     totalTokens?: number;
+  };
+  output?: {
+    tail: string;
+    totalBytes: number;
+    truncated: boolean;
   };
   toolCallCount?: number;
   lastToolCalls: Array<{
@@ -182,28 +188,33 @@ export async function inspectNodeExecution(
   loadTelemetryArtifact?: (artifactRef: unknown) => Promise<unknown | undefined>,
 ): Promise<NodeExecutionInspection> {
   const response = inspectNode(inspection, target, [], context);
-  const agentEntry = latestBy(
-    response.executionMetadata.filter(item => item.kind === "agent_attempt"),
-    item => item.createdAt,
-  );
+  const progress = latestAgentProgress(inspection, response, target, context.length > 0);
+  const agentEntries = response.executionMetadata.filter(item => item.kind === "agent_attempt");
+  const agentEntry = latestBy(progress?.attemptId ? agentEntries.filter(item => item.attemptId === progress.attemptId) : agentEntries, item => item.createdAt);
   const metadata = agentEntry?.metadata;
   const turns = agentTurns(metadata);
-  const lastToolCalls = loadTelemetryArtifact
+  const progressToolCalls = toolCallsFromProgress(progress);
+  const metadataToolCalls = loadTelemetryArtifact && turns.length > 0
     ? (await Promise.all(turns.map(turn => toolCallsForTurn(turn, loadTelemetryArtifact)))).flat().slice(-3)
-    : [];
-  const contextWindow = latestContextWindow(turns);
-  const tokenUsage = aggregateTokenUsage(turns);
-  const toolCallCount = totalToolCallCount(turns);
+    : undefined;
+  const lastToolCalls = metadataToolCalls ?? progressToolCalls ?? [];
+  const contextWindow = contextWindowFromProgress(progress) ?? latestContextWindow(turns);
+  const tokenUsage = aggregateTokenUsage(turns) ?? tokenUsageFromProgress(progress);
+  const toolCallCount = totalToolCallCount(turns) ?? toolCallCountFromProgress(progress);
+  const available = progress !== undefined || agentEntry !== undefined;
+  const attemptId = progress?.attemptId ?? agentEntry?.attemptId;
   return {
     target: response.target,
     ...(response.summary.nodeId ? { nodeId: response.summary.nodeId } : {}),
     ...(response.summary.nodeKey ? { nodeKey: response.summary.nodeKey } : {}),
-    ...(agentEntry?.attemptId ? { attemptId: agentEntry.attemptId } : {}),
-    available: agentEntry !== undefined,
-    ...(agentEntry === undefined ? { reason: "No agent execution metadata exists for the selected scope." } : {}),
-    summary: agentExecutionSummary(metadata),
+    ...(attemptId ? { attemptId } : {}),
+    available,
+    ...(available ? {} : { reason: "No agent execution metadata exists for the selected scope." }),
+    summary: { ...agentExecutionSummary(metadata), ...agentProgressSummary(progress) },
+    ...(progress?.updatedAt ? { lastActiveAt: progress.updatedAt } : {}),
     ...(contextWindow ? { contextWindow } : {}),
     ...(tokenUsage ? { tokenUsage } : {}),
+    ...(progress?.output ? { output: progress.output } : {}),
     ...(toolCallCount === undefined ? {} : { toolCallCount }),
     lastToolCalls,
   };
@@ -336,19 +347,68 @@ function agentExecutionSummary(metadata: unknown): NodeExecutionInspection["summ
   };
 }
 
+type NodeProgress = NonNullable<RunInspection["run"]["dynamic"]>["progress"][number];
+
+function latestAgentProgress(inspection: RunInspection, response: NodeInspectionResponse, target: string, scoped: boolean): NodeProgress | undefined {
+  const attemptIds = new Set(response.attempts.map(attempt => attempt.attemptId));
+  const attemptScoped = scoped || response.target.kind === "attempt";
+  const nodeKeys = new Set([
+    ...response.instances.map(instance => instance.nodeKey),
+    ...response.attempts.map(attempt => attempt.nodeKey),
+    response.summary.nodeKey,
+  ].filter((value): value is string => typeof value === "string"));
+  return latestBy((inspection.run.dynamic?.progress ?? []).filter(progress => {
+    if (progress.kind !== "agent") return false;
+    if (progress.attemptId !== undefined) {
+      if (attemptIds.has(progress.attemptId)) return true;
+      if (attemptScoped) return false;
+    }
+    if (attemptScoped) return false;
+    if (nodeKeys.has(progress.nodeKey)) return true;
+    if (scoped) return false;
+    return progress.nodeKey === target || progress.nodeId === target;
+  }), progress => progress.updatedAt);
+}
+
+function agentProgressSummary(progress: NodeProgress | undefined): NodeExecutionInspection["summary"] {
+  if (!progress) return {};
+  return {
+    status: progress.status,
+    ...(progress.message ? { message: progress.message } : {}),
+  };
+}
+
+function contextWindowFromProgress(progress: NodeProgress | undefined): NodeExecutionInspection["contextWindow"] | undefined {
+  const context = metadataRecord(progress?.context);
+  if (!context) return undefined;
+  return contextWindowFromRecord(context);
+}
+
 function latestContextWindow(turns: Record<string, unknown>[]): NodeExecutionInspection["contextWindow"] | undefined {
   const context = [...turns].reverse()
     .map(turn => metadataRecord(metadataRecord(turn.telemetry)?.context))
     .find(Boolean);
   if (!context) return undefined;
+  return contextWindowFromRecord(context);
+}
+
+function contextWindowFromRecord(context: Record<string, unknown>): NodeExecutionInspection["contextWindow"] | undefined {
   const used = numberField(context.used);
   const size = numberField(context.size);
+  const updatedAt = stringField(context.updatedAt);
+  if (used === undefined && size === undefined && updatedAt === undefined) return undefined;
   return {
     ...(used === undefined ? {} : { used }),
     ...(size === undefined ? {} : { size }),
     ...(used !== undefined && size !== undefined && size > 0 ? { percent: Math.round((used / size) * 100) } : {}),
-    ...(typeof context.updatedAt === "string" ? { updatedAt: context.updatedAt } : {}),
+    ...(updatedAt ? { updatedAt } : {}),
   };
+}
+
+function tokenUsageFromProgress(progress: NodeProgress | undefined): NodeExecutionInspection["tokenUsage"] | undefined {
+  const usage = metadataRecord(progress?.tokenUsage);
+  if (!usage) return undefined;
+  return tokenUsageFromRecord(usage);
 }
 
 function aggregateTokenUsage(turns: Record<string, unknown>[]): NodeExecutionInspection["tokenUsage"] | undefined {
@@ -374,6 +434,24 @@ function aggregateTokenUsage(turns: Record<string, unknown>[]): NodeExecutionIns
   } : undefined;
 }
 
+function tokenUsageFromRecord(usage: Record<string, unknown>): NodeExecutionInspection["tokenUsage"] {
+  const source = stringField(usage.source);
+  const inputTokens = numberField(usage.inputTokens);
+  const outputTokens = numberField(usage.outputTokens);
+  const totalTokens = numberField(usage.totalTokens);
+  if (source === undefined && inputTokens === undefined && outputTokens === undefined && totalTokens === undefined) return undefined;
+  return {
+    ...(source ? { source } : {}),
+    ...(inputTokens === undefined ? {} : { inputTokens }),
+    ...(outputTokens === undefined ? {} : { outputTokens }),
+    ...(totalTokens === undefined ? {} : { totalTokens }),
+  };
+}
+
+function toolCallCountFromProgress(progress: NodeProgress | undefined): number | undefined {
+  return numberField(metadataRecord(progress?.tools)?.totalToolCallCount);
+}
+
 function totalToolCallCount(turns: Record<string, unknown>[]): number | undefined {
   let total = 0;
   let hasTools = false;
@@ -384,6 +462,18 @@ function totalToolCallCount(turns: Record<string, unknown>[]): number | undefine
     total += count;
   }
   return hasTools ? total : undefined;
+}
+
+function toolCallsFromProgress(progress: NodeProgress | undefined): NodeExecutionInspection["lastToolCalls"] | undefined {
+  const tools = metadataRecord(progress?.tools);
+  const calls = tools?.lastCalls;
+  if (!tools || !Array.isArray(calls)) return undefined;
+  const turn = numberField(tools.turn) ?? 0;
+  return calls.flatMap(call => {
+    const record = metadataRecord(call);
+    if (!record) return [];
+    return [toolCallFromRecord(record, turn, "progress")];
+  });
 }
 
 async function toolCallsForTurn(
@@ -397,28 +487,32 @@ async function toolCallsForTurn(
   return calls.flatMap(call => {
     const record = metadataRecord(call);
     if (!record) return [];
-    const startedAt = stringField(record.startedAt);
-    const updatedAt = stringField(record.updatedAt);
-    const completedAt = stringField(record.completedAt);
-    const toolCallId = stringField(record.toolCallId);
-    const toolName = stringField(record.toolName);
-    const status = stringField(record.status);
-    const duration = durationMs(startedAt, completedAt ?? "");
-    const inputPreview = previewField(record.input);
-    const outputPreview = previewField(record.output);
-    return [{
-      turn: turnNo,
-      ...(toolCallId ? { toolCallId } : {}),
-      ...(toolName ? { toolName } : {}),
-      ...(status ? { status } : {}),
-      ...(startedAt ? { startedAt } : {}),
-      ...(updatedAt ? { updatedAt } : {}),
-      ...(completedAt ? { completedAt } : {}),
-      ...(duration === undefined ? {} : { durationMs: duration }),
-      ...(inputPreview ? { inputPreview } : {}),
-      ...(outputPreview ? { outputPreview } : {}),
-    }];
+    return [toolCallFromRecord(record, turnNo, "artifact")];
   });
+}
+
+function toolCallFromRecord(record: Record<string, unknown>, turn: number, previewMode: "progress" | "artifact"): NodeExecutionInspection["lastToolCalls"][number] {
+  const startedAt = stringField(record.startedAt);
+  const updatedAt = stringField(record.updatedAt);
+  const completedAt = stringField(record.completedAt);
+  const toolCallId = stringField(record.toolCallId);
+  const toolName = stringField(record.toolName);
+  const status = stringField(record.status);
+  const inputPreview = previewMode === "progress" ? stringField(record.inputPreview) : previewField(record.input);
+  const outputPreview = previewMode === "artifact" ? previewField(record.output) : undefined;
+  const duration = durationMs(startedAt, completedAt ?? "");
+  return {
+    turn,
+    ...(toolCallId ? { toolCallId } : {}),
+    ...(toolName ? { toolName } : {}),
+    ...(status ? { status } : {}),
+    ...(startedAt ? { startedAt } : {}),
+    ...(updatedAt ? { updatedAt } : {}),
+    ...(completedAt ? { completedAt } : {}),
+    ...(duration === undefined ? {} : { durationMs: duration }),
+    ...(inputPreview ? { inputPreview } : {}),
+    ...(outputPreview ? { outputPreview } : {}),
+  };
 }
 
 function previewField(value: unknown): string | undefined {

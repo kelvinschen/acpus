@@ -1,5 +1,5 @@
 import { assertType, expectTypeOf, test } from "vitest";
-import type { AgentBackendFailureKind, AgentTurnRawDebug, AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
+import type { AgentBackendFailureKind, AgentTurnProgress, AgentTurnRawDebug, AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
 import { executeAgentTurn } from "@acpus/agent-executor";
 
 const telemetry = { eventCount: 1, tools: { totalToolCallCount: 0, calls: [] } };
@@ -13,6 +13,7 @@ test("@acpus/agent-executor public types accept only resolved execution requests
   // @ts-expect-error output conformance is a runtime failure kind, not an executor backend failure.
   assertType<AgentBackendFailureKind>("output_conformance");
   assertType<AgentTurnResult>({ status: "completed", responseText: "ok", stderr: "", telemetry });
+  assertType<AgentTurnProgress>({ responseText: "partial", telemetry, updatedAt: "2026-07-01T00:00:00.000Z" });
   assertType<AgentTurnRawDebug>({ stdout: "{\"jsonrpc\":\"2.0\"}\n" });
   assertType<AgentTurnResult>({ status: "completed", responseText: "ok", stderr: "", telemetry, rawDebug: { stdout: "{}\n" } });
   assertType<AgentTurnResult>({ status: "failed", failureKind: "config", message: "bad mode", responseText: "", stderr: "", telemetry: { eventCount: 0, tools: { totalToolCallCount: 0, calls: [] } } });
@@ -27,6 +28,22 @@ test("@acpus/agent-executor public types accept only resolved execution requests
     model: "gpt-5.4",
     agentMode: "agent",
     captureRawDebug: true,
+    onProgress: progress => {
+      assertType<string>(progress.responseText);
+      assertType<number>(progress.telemetry.eventCount);
+      assertType<string>(progress.updatedAt);
+    },
+  });
+  assertType<AgentTurnRequest>({
+    agent: { kind: "named", name: "codex" },
+    prompt: "review this",
+    cwd: process.cwd(),
+    env: process.env,
+    sessionName: "session",
+    permissionMode: "approve-all",
+    onProgress: async progress => {
+      assertType<string>(progress.responseText);
+    },
   });
   assertType<AgentTurnRequest>({
     agent: { kind: "command", command: "custom acp" },

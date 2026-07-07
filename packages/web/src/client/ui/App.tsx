@@ -1357,6 +1357,7 @@ function AgentExecutionTab({ runId, target, context, active }: { runId: string; 
     <div className="inspector-stack">
       <InspectorSection title="Summary">
         {data.summary.status && <KeyValue label="Status" value={data.summary.status} />}
+        {data.lastActiveAt && <KeyValue label="Last active" value={formatRelativeAge(data.lastActiveAt)} />}
         {data.summary.sessionName && <KeyValue label="Session" value={data.summary.sessionName} />}
         {data.summary.turnCount !== undefined && <KeyValue label="Turns" value={String(data.summary.turnCount)} />}
         {data.summary.message && <KeyValue label="Message" value={data.summary.message} />}
@@ -1366,6 +1367,9 @@ function AgentExecutionTab({ runId, target, context, active }: { runId: string; 
       </InspectorSection>
       <InspectorSection title="Token Usage">
         {data.tokenUsage ? <TokenUsageMetrics usage={data.tokenUsage} /> : <StateBlock tone="empty" title="No token usage" detail="The selected agent attempt did not report token usage." />}
+      </InspectorSection>
+      <InspectorSection title="Output Stream">
+        {data.output ? <TextArtifactPreview value={data.output.tail} label={progressOutputLabel(data.output)} /> : <StateBlock tone="empty" title="No streamed output" detail="The selected agent attempt did not report streamed output." />}
       </InspectorSection>
       <InspectorSection title="Last Tool Calls">
         {data.lastToolCalls.length > 0 ? <ToolCallList calls={data.lastToolCalls} total={data.toolCallCount} /> : <StateBlock tone="empty" title="No tool calls" detail="No tool calls were recorded for the selected agent attempt." />}
@@ -1399,6 +1403,11 @@ function TokenUsageMetrics({ usage }: { usage: NonNullable<NodeExecutionInspecti
       {usage.source && <Metric label="Source" value={usage.source} />}
     </div>
   );
+}
+
+function progressOutputLabel(output: NonNullable<NodeExecutionInspection["output"]>): string {
+  const retained = new TextEncoder().encode(output.tail).length;
+  return output.truncated ? `Last ${retained} of ${output.totalBytes} bytes` : `${output.totalBytes} bytes`;
 }
 
 function Metric({ label, value }: { label: string; value: number | string | undefined }) {
@@ -1719,6 +1728,13 @@ function formatDate(value: string): string {
   if (Number.isNaN(date.getTime())) return value;
   const pad = (part: number) => String(part).padStart(2, "0");
   return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function formatRelativeAge(value: string): string {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return value;
+  const ageMs = Math.max(0, Date.now() - timestamp);
+  return ageMs < 1_000 ? "<1s ago" : `${formatDuration(ageMs)} ago`;
 }
 
 function durationBetween(start: string, end: string): number {

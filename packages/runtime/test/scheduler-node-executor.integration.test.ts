@@ -4,13 +4,13 @@ import { DatabaseSync } from "node:sqlite";
 import { defineWorkflow, z } from "@acpus/core";
 import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
 import { eq, template } from "@acpus/expression";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { createRuntimeNodeExecutor } from "../src/scheduler/node-executor.js";
 import { advanceFrozenRun } from "../src/scheduler/runtime-runner.js";
 import { applySchedulerControlIntent } from "../src/scheduler/control.js";
 import { executeAgentNode } from "../src/execution/agent-node.js";
-import { openRuntimeStore } from "../src/store/store.js";
+import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, runtimeRow, runtimeRows, taskArtifactWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 
 describe("runtime scheduler node executor", () => {
@@ -1020,6 +1020,450 @@ describe("runtime scheduler node executor", () => {
         await expect(readJsonFile(join(workspace, runDir, "artifacts/review.dynamic/attempt-1/agent/turn-002.raw-parsed-output.json"))).resolves.toMatchObject({
           rawParsedOutput: { attempt: "2", extra: "drop" },
         });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("persists agent progress while a scheduler-visible attempt is still running", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-agent-progress", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const { attempt, ownerEpoch } = startReviewAttempt(store, run.id, "agent-progress");
+        const executor = createRuntimeNodeExecutor({
+          cwd: workspace,
+          ir: prepared.ir,
+          scope: {},
+          store,
+          executeAgentTurn: async request => {
+            request.onProgress?.({
+              responseText: "hello from a long running agent",
+              updatedAt: "2026-07-01T00:00:00.000Z",
+              telemetry: {
+                eventCount: 3,
+                context: { used: 90, size: 200, updatedAt: "2026-07-01T00:00:00.000Z" },
+                tokenUsage: { source: "prompt_response", inputTokens: 10, outputTokens: 2, totalTokens: 12 },
+                tools: {
+                  totalToolCallCount: 4,
+                  calls: [1, 2, 3, 4].map(index => ({
+                    toolCallId: `tool-${index}`,
+                    toolName: index === 4 ? "Bash" : "Read",
+                    status: index === 4 ? "running" : "completed",
+                    input: { preview: index === 4 ? "{\"cmd\":\"pnpm test\"}" : `file-${index}.ts`, truncated: false, originalBytes: 20, headBytes: 20 },
+                    startedAt: "2026-07-01T00:00:00.000Z",
+                    updatedAt: "2026-07-01T00:00:01.000Z",
+                  })),
+                },
+              },
+            });
+            const progress = store.getRun(run.id)?.dynamic?.progress;
+            expect(progress).toEqual([
+              expect.objectContaining({
+                nodeKey: "review.dynamic",
+                nodeId: "review",
+                attemptId: attempt.attemptId,
+                attemptNo: attempt.attemptNo,
+                kind: "agent",
+                status: "running",
+                output: {
+                  tail: "hello from a long running agent",
+                  totalBytes: 31,
+                  truncated: false,
+                },
+                context: { used: 90, size: 200, updatedAt: "2026-07-01T00:00:00.000Z" },
+                tokenUsage: { source: "prompt_response", inputTokens: 10, outputTokens: 2, totalTokens: 12 },
+                tools: expect.objectContaining({
+                  turn: 1,
+                  totalToolCallCount: 4,
+                  lastCalls: [
+                    expect.objectContaining({ toolCallId: "tool-2" }),
+                    expect.objectContaining({ toolCallId: "tool-3" }),
+                    expect.objectContaining({
+                      toolCallId: "tool-4",
+                      toolName: "Bash",
+                      status: "running",
+                      inputPreview: "{\"cmd\":\"pnpm test\"}",
+                    }),
+                  ],
+                }),
+              }),
+            ]);
+            return completedAgentTurn("{\"attempt\":\"1\"}");
+          },
+        });
+
+        await expect(executor.execute({
+          runId: run.id,
+          nodeId: "review",
+          nodeKey: "review.dynamic",
+          attemptId: attempt.attemptId,
+          attemptNo: attempt.attemptNo,
+          ownerEpoch,
+          signal: new AbortController().signal,
+        })).resolves.toEqual({
+          status: "completed",
+          output: { attempt: "1" },
+        });
+        const finalProgress = store.getRun(run.id)?.dynamic?.progress;
+        expect(store.getRun(run.id)?.dynamic?.progressVersion).toBe(2);
+        expect(finalProgress).toEqual([expect.objectContaining({ status: "completed", message: "turn 1 completed" })]);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("throttles identical agent progress but flushes changed telemetry immediately", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-agent-progress-throttle", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
+      const store = await openRuntimeStore(workspace);
+      let now: ReturnType<typeof vi.spyOn> | undefined;
+      let currentTime = 0;
+      try {
+        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const { attempt, ownerEpoch } = startReviewAttempt(store, run.id, "agent-progress-throttle");
+        now = vi.spyOn(Date, "now");
+        now.mockImplementation(() => currentTime);
+        const executor = createRuntimeNodeExecutor({
+          cwd: workspace,
+          ir: prepared.ir,
+          scope: {},
+          store,
+          executeAgentTurn: async request => {
+            const base = {
+              updatedAt: "2026-07-01T00:00:00.000Z",
+              telemetry: {
+                eventCount: 1,
+                tools: { totalToolCallCount: 0, calls: [] },
+              },
+            };
+            request.onProgress?.({ ...base, responseText: "one" });
+            const afterFirst = store.getRun(run.id)?.dynamic?.progressVersion;
+            const afterFirstUpdatedAt = store.getRun(run.id)?.dynamic?.progress[0]?.updatedAt;
+            expect(store.getRun(run.id)?.dynamic?.progress[0]).toMatchObject({
+              output: { tail: "one", totalBytes: 3, truncated: false },
+              tools: { totalToolCallCount: 0, lastCalls: [] },
+              updatedAt: expect.any(String),
+            });
+            request.onProgress?.({ ...base, responseText: "two" });
+            expect(store.getRun(run.id)?.dynamic?.progressVersion).toBe(afterFirst);
+            expect(store.getRun(run.id)?.dynamic?.progress[0]).toMatchObject({
+              output: { tail: "one", totalBytes: 3, truncated: false },
+              updatedAt: afterFirstUpdatedAt,
+            });
+
+            request.onProgress?.({
+              ...base,
+              responseText: "three",
+              telemetry: {
+                eventCount: 2,
+                tools: { totalToolCallCount: 1, calls: [{
+                  toolCallId: "tool-1",
+                  status: "running",
+                  startedAt: "2026-07-01T00:00:00.000Z",
+                  updatedAt: "2026-07-01T00:00:00.000Z",
+                }] },
+              },
+            });
+            expect(store.getRun(run.id)?.dynamic?.progressVersion).toBe((afterFirst ?? 0) + 1);
+            expect(store.getRun(run.id)?.dynamic?.progress[0]).toMatchObject({
+              output: { tail: "three", totalBytes: 5, truncated: false },
+              tools: {
+                totalToolCallCount: 1,
+                lastCalls: [expect.objectContaining({ toolCallId: "tool-1", status: "running" })],
+              },
+            });
+
+            currentTime = 1_001;
+            request.onProgress?.({ ...base, responseText: "four" });
+            expect(store.getRun(run.id)?.dynamic?.progressVersion).toBe((afterFirst ?? 0) + 2);
+            expect(store.getRun(run.id)?.dynamic?.progress[0]).toMatchObject({
+              output: { tail: "four", totalBytes: 4, truncated: false },
+              tools: { totalToolCallCount: 0, lastCalls: [] },
+              updatedAt: expect.any(String),
+            });
+            return completedAgentTurn("{\"attempt\":\"1\"}");
+          },
+        });
+
+        await expect(executor.execute({
+          runId: run.id,
+          nodeId: "review",
+          nodeKey: "review.dynamic",
+          attemptId: attempt.attemptId,
+          attemptNo: attempt.attemptNo,
+          ownerEpoch,
+          signal: new AbortController().signal,
+        })).resolves.toMatchObject({ status: "completed" });
+      } finally {
+        now?.mockRestore();
+        store.close();
+      }
+    });
+  });
+
+  it("bounds stored agent progress output tails", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-agent-progress-tail", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const { attempt, ownerEpoch } = startReviewAttempt(store, run.id, "agent-progress-tail");
+        const longText = `${"x".repeat(17 * 1024)}终`;
+        const executor = createRuntimeNodeExecutor({
+          cwd: workspace,
+          ir: prepared.ir,
+          scope: {},
+          store,
+          executeAgentTurn: async request => {
+            request.onProgress?.({
+              responseText: longText,
+              updatedAt: "2026-07-01T00:00:00.000Z",
+              telemetry: {
+                eventCount: 1,
+                tools: { totalToolCallCount: 0, calls: [] },
+              },
+            });
+            const progressOutput = store.getRun(run.id)?.dynamic?.progress[0]?.output;
+            expect(progressOutput).toMatchObject({
+              totalBytes: Buffer.byteLength(longText, "utf8"),
+              truncated: true,
+            });
+            expect(Buffer.byteLength(progressOutput?.tail ?? "", "utf8")).toBeLessThanOrEqual(16 * 1024);
+            expect(progressOutput?.tail.endsWith("终")).toBe(true);
+            return completedAgentTurn("{\"attempt\":\"1\"}");
+          },
+        });
+
+        await expect(executor.execute({
+          runId: run.id,
+          nodeId: "review",
+          nodeKey: "review.dynamic",
+          attemptId: attempt.attemptId,
+          attemptNo: attempt.attemptNo,
+          ownerEpoch,
+          signal: new AbortController().signal,
+        })).resolves.toEqual({
+          status: "completed",
+          output: { attempt: "1" },
+        });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("bounds stored terminal agent progress output tails", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-agent-terminal-progress-tail", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, largeAgentOutputWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const { attempt, ownerEpoch } = startReviewAttempt(store, run.id, "agent-terminal-progress-tail");
+        const longText = `${"x".repeat(17 * 1024)}终`;
+        const responseText = JSON.stringify({ text: longText });
+        const executor = createRuntimeNodeExecutor({
+          cwd: workspace,
+          ir: prepared.ir,
+          scope: {},
+          store,
+          executeAgentTurn: async () => completedAgentTurn(responseText),
+        });
+
+        await expect(executor.execute({
+          runId: run.id,
+          nodeId: "review",
+          nodeKey: "review.dynamic",
+          attemptId: attempt.attemptId,
+          attemptNo: attempt.attemptNo,
+          ownerEpoch,
+          signal: new AbortController().signal,
+        })).resolves.toEqual({
+          status: "completed",
+          output: { text: longText },
+        });
+
+        const output = store.getRun(run.id)?.dynamic?.progress[0]?.output;
+        expect(output).toMatchObject({
+          totalBytes: Buffer.byteLength(responseText, "utf8"),
+          truncated: true,
+        });
+        expect(Buffer.byteLength(output?.tail ?? "", "utf8")).toBeLessThanOrEqual(16 * 1024);
+        expect(output?.tail.endsWith("\"}")).toBe(true);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("writes timed out terminal agent progress", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-agent-timeout-progress", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, timeoutAgentWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const { attempt, ownerEpoch } = startReviewAttempt(store, run.id, "agent-timeout-progress");
+        const executor = createRuntimeNodeExecutor({
+          cwd: workspace,
+          ir: prepared.ir,
+          scope: {},
+          store,
+          executeAgentTurn: async () => ({
+            status: "failed",
+            failureKind: "timeout",
+            message: "Agent turn timed out after 5ms.",
+            responseText: "partial",
+            stderr: "",
+            telemetry: agentTelemetry(1),
+          }),
+        });
+
+        await expect(executor.execute({
+          runId: run.id,
+          nodeId: "review",
+          nodeKey: "review.dynamic",
+          attemptId: attempt.attemptId,
+          attemptNo: attempt.attemptNo,
+          ownerEpoch,
+          signal: new AbortController().signal,
+        })).resolves.toMatchObject({ status: "timed_out" });
+        expect(store.getRun(run.id)?.dynamic?.progress).toEqual([
+          expect.objectContaining({
+            attemptId: attempt.attemptId,
+            status: "timed_out",
+            message: "Agent turn timed out after 5ms.",
+            output: { tail: "partial", totalBytes: 7, truncated: false },
+          }),
+        ]);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("writes cancelled terminal agent progress", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-agent-cancelled-progress", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const { attempt, ownerEpoch } = startReviewAttempt(store, run.id, "agent-cancelled-progress");
+        const executor = createRuntimeNodeExecutor({
+          cwd: workspace,
+          ir: prepared.ir,
+          scope: {},
+          store,
+          executeAgentTurn: async () => ({
+            status: "cancelled",
+            message: "paused by operator",
+            responseText: "partial",
+            stderr: "",
+            telemetry: agentTelemetry(1),
+          }),
+        });
+
+        await expect(executor.execute({
+          runId: run.id,
+          nodeId: "review",
+          nodeKey: "review.dynamic",
+          attemptId: attempt.attemptId,
+          attemptNo: attempt.attemptNo,
+          ownerEpoch,
+          signal: new AbortController().signal,
+        })).resolves.toMatchObject({ status: "cancelled" });
+        expect(store.getRun(run.id)?.dynamic?.progress).toEqual([
+          expect.objectContaining({
+            attemptId: attempt.attemptId,
+            status: "cancelled",
+            message: "paused by operator",
+            output: { tail: "partial", totalBytes: 7, truncated: false },
+          }),
+        ]);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("writes failed terminal agent progress for backend failures", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-agent-provider-failure-progress", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const { attempt, ownerEpoch } = startReviewAttempt(store, run.id, "agent-provider-failure-progress");
+        const executor = createRuntimeNodeExecutor({
+          cwd: workspace,
+          ir: prepared.ir,
+          scope: {},
+          store,
+          executeAgentTurn: async () => ({
+            status: "failed",
+            failureKind: "provider_exit",
+            message: "agent failed",
+            responseText: "partial",
+            stderr: "",
+            telemetry: agentTelemetry(1),
+          }),
+        });
+
+        await expect(executor.execute({
+          runId: run.id,
+          nodeId: "review",
+          nodeKey: "review.dynamic",
+          attemptId: attempt.attemptId,
+          attemptNo: attempt.attemptNo,
+          ownerEpoch,
+          signal: new AbortController().signal,
+        })).rejects.toThrow("provider_exit: agent failed");
+        expect(store.getRun(run.id)?.dynamic?.progress).toEqual([
+          expect.objectContaining({
+            attemptId: attempt.attemptId,
+            status: "failed",
+            message: "provider_exit: agent failed",
+          }),
+        ]);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("writes failed terminal agent progress for final output conformance failures", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-agent-conformance-progress", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, retryZeroAgentWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const { attempt, ownerEpoch } = startReviewAttempt(store, run.id, "agent-conformance-progress");
+        const executor = createRuntimeNodeExecutor({
+          cwd: workspace,
+          ir: prepared.ir,
+          scope: {},
+          store,
+          agentRepairDelayMs: 0,
+          executeAgentTurn: async () => completedAgentTurn("not json"),
+        });
+
+        await expect(executor.execute({
+          runId: run.id,
+          nodeId: "review",
+          nodeKey: "review.dynamic",
+          attemptId: attempt.attemptId,
+          attemptNo: attempt.attemptNo,
+          ownerEpoch,
+          signal: new AbortController().signal,
+        })).rejects.toThrow("output_conformance");
+        expect(store.getRun(run.id)?.dynamic?.progress).toEqual([
+          expect.objectContaining({
+            attemptId: attempt.attemptId,
+            status: "failed",
+            message: expect.stringContaining("output_conformance"),
+          }),
+        ]);
       } finally {
         store.close();
       }
@@ -2862,6 +3306,21 @@ function retryingAgentWorkflow() {
   });
 }
 
+function largeAgentOutputWorkflow() {
+  return defineWorkflow({
+    name: "scheduler-node-executor-agent-large-output",
+    agents: {
+      reviewer: { use: "codex" },
+    },
+  }).build(({ agents, step }) => {
+    step("review").agent({
+      outputSchema: z.object({ text: z.string() }),
+      run: { agent: agents.reviewer, prompt: "review" },
+    });
+    return {};
+  });
+}
+
 function arrayAgentOutputWorkflow() {
   return defineWorkflow({
     name: "scheduler-node-executor-agent-array-output",
@@ -3193,6 +3652,36 @@ function expectAgentArtifactRef(ref: unknown, relativePath: string, mediaType: s
 
 function completedAgentTurn(responseText: string, stderr = "", telemetry = agentTelemetry(1)): AgentTurnResult {
   return { status: "completed", responseText, stderr, telemetry };
+}
+
+function startReviewAttempt(store: RuntimeStore, runId: string, idempotencyPrefix: string) {
+  const claim = store.scheduler.claimRun(runId, `${idempotencyPrefix}-owner`, 60_000);
+  if (!claim) throw new Error("expected run claim");
+  const snapshot = store.scheduler.loadRunSnapshot(runId);
+  store.scheduler.appendSchedulerEvents({
+    runId,
+    expectedVersion: snapshot.version,
+    ownerEpoch: claim.ownerEpoch,
+    idempotencyKey: `${idempotencyPrefix}:ready`,
+    events: [{
+      type: "instance.ready",
+      payload: {
+        runId,
+        nodeKey: "review.dynamic",
+        nodeId: "review",
+        instancePath: [{ kind: "node", nodeId: "review" }],
+        readinessSequence: 1,
+      },
+    }],
+  });
+  const attempt = store.scheduler.startAttempt({
+    runId,
+    nodeKey: "review.dynamic",
+    nodeId: "review",
+    ownerEpoch: claim.ownerEpoch,
+    idempotencyKey: `${idempotencyPrefix}:attempt`,
+  });
+  return { attempt, ownerEpoch: claim.ownerEpoch };
 }
 
 function agentTelemetry(eventCount: number): AgentTurnResult["telemetry"] {

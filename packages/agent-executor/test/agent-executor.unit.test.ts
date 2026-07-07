@@ -134,6 +134,63 @@ describe("executeAgentTurn", () => {
     ]);
   });
 
+  it("adds Claude user settings env by default without mutating request env", async () => {
+    const { executeAgentTurn } = await import("@acpus/agent-executor");
+    const env = { PATH: "/bin" };
+
+    await executeAgentTurn({
+      agent: { kind: "named", name: "claude" },
+      prompt: "review",
+      cwd: "/repo",
+      env,
+      sessionName: "run-node",
+      permissionMode: "approve-all",
+    });
+
+    expect(fake.state.calls.map(call => call.options.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS)).toEqual(["1", "1"]);
+    expect(env).toEqual({ PATH: "/bin" });
+  });
+
+  it("preserves explicit Claude user settings env overrides", async () => {
+    const { executeAgentTurn } = await import("@acpus/agent-executor");
+
+    await executeAgentTurn({
+      agent: { kind: "named", name: "claude" },
+      prompt: "review",
+      cwd: "/repo",
+      env: { ACPX_CLAUDE_INCLUDE_USER_SETTINGS: "0" },
+      sessionName: "run-node",
+      permissionMode: "approve-all",
+    });
+
+    expect(fake.state.calls.map(call => call.options.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS)).toEqual(["0", "0"]);
+  });
+
+  it("does not add Claude user settings env for other named or command agents", async () => {
+    const { executeAgentTurn } = await import("@acpus/agent-executor");
+
+    await executeAgentTurn({
+      agent: { kind: "named", name: "codex" },
+      prompt: "review",
+      cwd: "/repo",
+      env: {},
+      sessionName: "run-node",
+      permissionMode: "approve-all",
+    });
+    expect(fake.state.calls.map(call => call.options.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS)).toEqual([undefined, undefined]);
+
+    fake.state.calls.length = 0;
+    await executeAgentTurn({
+      agent: { kind: "command", command: "npx -y @agentclientprotocol/claude-agent-acp" },
+      prompt: "review",
+      cwd: "/repo",
+      env: {},
+      sessionName: "run-node",
+      permissionMode: "approve-all",
+    });
+    expect(fake.state.calls.map(call => call.options.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS)).toEqual([undefined, undefined]);
+  });
+
   it("shares one local timeout budget across ensure, set-mode, and prompt", async () => {
     vi.useFakeTimers();
     try {
@@ -212,7 +269,7 @@ describe("executeAgentTurn", () => {
       fake.state.scenarios.push(
         fake.scenario.stdout("{\"acpxRecordId\":\"record-1\"}\n"),
         fake.scenario.stdout([
-          "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"usage_update\",\"used\":120,\"size\":200}}}",
+          "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"usage_update\",\"used\":120,\"size\":200,\"_meta\":{\"usage\":{\"input_tokens\":99,\"output_tokens\":1}}}}}",
           "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"usage_update\",\"used\":0,\"size\":240}}}",
           "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"hello\"}}}}",
           "{\"jsonrpc\":\"2.0\",\"id\":\"req-1\",\"result\":{\"stopReason\":\"end_turn\",\"usage\":{\"inputTokens\":10,\"output_tokens\":2,\"cacheReadInputTokens\":3,\"cache_creation_input_tokens\":4,\"thoughtTokens\":5,\"total_tokens\":24}}}",
@@ -253,6 +310,265 @@ describe("executeAgentTurn", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("reports normalized progress while prompt stdout is still streaming", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-01T00:00:00.000Z"));
+    try {
+      fake.state.scenarios.push(
+        fake.scenario.stdout("{\"acpxRecordId\":\"record-1\"}\n"),
+        child => {
+          child.stdout.emit("data", [
+            "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"usage_update\",\"used\":80,\"size\":200,\"_meta\":{\"usage\":{\"input_tokens\":10,\"outputTokens\":2,\"cache_read_input_tokens\":3,\"cacheCreationInputTokens\":4,\"thought_tokens\":5,\"total_tokens\":24}}}}}",
+            "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"hel\"}}}}",
+          ].join("\n") + "\n");
+          child.stdout.emit("data", "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"lo\"}}}}\n");
+          child.stdout.emit("data", "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"tool_call\",\"toolCallId\":\"tool-1\",\"status\":\"running\",\"rawInput\":{\"cmd\":\"pnpm test\"},\"_meta\":{\"claudeCode\":{\"toolName\":\"Bash\"}}}}}\n");
+          setTimeout(() => child.emit("close", 0), 10);
+        },
+      );
+      const { executeAgentTurn } = await import("@acpus/agent-executor");
+      const progress: unknown[] = [];
+
+      const resultPromise = executeAgentTurn({
+        agent: { kind: "named", name: "codex" },
+        prompt: "review",
+        cwd: "/repo",
+        env: {},
+        sessionName: "session",
+        permissionMode: "approve-all",
+        onProgress: update => progress.push(update),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(Object.keys(progress[0] as Record<string, unknown>).sort()).toEqual(["responseText", "telemetry", "updatedAt"].sort());
+      expect(progress).toEqual([
+        {
+          responseText: "",
+          telemetry: {
+            eventCount: 1,
+            context: { used: 80, size: 200, updatedAt: "2026-07-01T00:00:00.000Z" },
+            tokenUsage: {
+              source: "usage_update",
+              inputTokens: 10,
+              outputTokens: 2,
+              cachedReadTokens: 3,
+              cachedWriteTokens: 4,
+              thoughtTokens: 5,
+              totalTokens: 24,
+            },
+            tools: { totalToolCallCount: 0, calls: [] },
+            input: { preview: "review", truncated: false, originalBytes: 6, headBytes: 6 },
+            output: { preview: "", truncated: false, originalBytes: 0, headBytes: 0 },
+            cwd: "/repo",
+            acpxRecordId: "record-1",
+          },
+          updatedAt: "2026-07-01T00:00:00.000Z",
+        },
+        expect.objectContaining({ responseText: "hel", telemetry: expect.objectContaining({ eventCount: 2 }) }),
+        expect.objectContaining({ responseText: "hello", telemetry: expect.objectContaining({ eventCount: 3 }) }),
+        expect.objectContaining({
+          responseText: "hello",
+          telemetry: expect.objectContaining({
+            eventCount: 4,
+            tools: {
+              totalToolCallCount: 1,
+              calls: [expect.objectContaining({
+                toolCallId: "tool-1",
+                toolName: "Bash",
+                status: "running",
+                input: expect.objectContaining({ preview: "{\"cmd\":\"pnpm test\"}" }),
+              })],
+            },
+          }),
+        }),
+      ]);
+      expect(JSON.stringify(progress)).not.toContain("session/update");
+
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(resultPromise).resolves.toMatchObject({
+        status: "completed",
+        responseText: "hello",
+        telemetry: {
+          eventCount: 4,
+          context: { used: 80, size: 200 },
+          tokenUsage: { source: "usage_update", inputTokens: 10, outputTokens: 2, totalTokens: 24 },
+          tools: { totalToolCallCount: 1 },
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports progress for thought-only prompt activity", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-01T00:00:00.000Z"));
+    try {
+      fake.state.scenarios.push(
+        fake.scenario.stdout("{}\n"),
+        child => {
+          child.stdout.emit("data", "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_thought_chunk\",\"content\":{\"type\":\"text\",\"text\":\"thinking\"}}}}\n");
+          setTimeout(() => child.emit("close", 0), 1);
+        },
+      );
+      const { executeAgentTurn } = await import("@acpus/agent-executor");
+      const progress: unknown[] = [];
+
+      const result = executeAgentTurn({
+        agent: { kind: "named", name: "codex" },
+        prompt: "review",
+        cwd: "/repo",
+        env: {},
+        sessionName: "session",
+        permissionMode: "approve-all",
+        onProgress: update => progress.push(update),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(progress).toEqual([{
+        responseText: "",
+        telemetry: expect.objectContaining({
+          eventCount: 1,
+          tools: { totalToolCallCount: 0, calls: [] },
+        }),
+        updatedAt: "2026-07-01T00:00:00.000Z",
+      }]);
+
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(result).resolves.toMatchObject({
+        status: "completed",
+        responseText: "",
+        telemetry: { eventCount: 1 },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits for a complete stdout line before reporting progress", async () => {
+    vi.useFakeTimers();
+    try {
+      const line = "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"ok\"}}}}\n";
+      fake.state.scenarios.push(
+        fake.scenario.stdout("{}\n"),
+        child => {
+          child.stdout.emit("data", line.slice(0, 40));
+          setTimeout(() => {
+            child.stdout.emit("data", line.slice(40));
+            child.emit("close", 0);
+          }, 1);
+        },
+      );
+      const { executeAgentTurn } = await import("@acpus/agent-executor");
+      const progress: unknown[] = [];
+      const result = executeAgentTurn({
+        agent: { kind: "named", name: "codex" },
+        prompt: "review",
+        cwd: "/repo",
+        env: {},
+        sessionName: "session",
+        permissionMode: "approve-all",
+        onProgress: update => progress.push(update),
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(progress).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(progress).toMatchObject([{ responseText: "ok", telemetry: { eventCount: 1 } }]);
+      await expect(result).resolves.toMatchObject({ status: "completed", responseText: "ok" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("preserves UTF-8 text when a stdout chunk splits a multibyte character", async () => {
+    vi.useFakeTimers();
+    try {
+      const text = "你好";
+      const line = `${JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: { update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } },
+      })}\n`;
+      const splitAt = Buffer.byteLength(line.slice(0, line.indexOf("你")), "utf8") + 1;
+      const bytes = Buffer.from(line, "utf8");
+      fake.state.scenarios.push(
+        fake.scenario.stdout("{}\n"),
+        child => {
+          child.stdout.emit("data", bytes.subarray(0, splitAt));
+          setTimeout(() => {
+            child.stdout.emit("data", bytes.subarray(splitAt));
+            child.emit("close", 0);
+          }, 1);
+        },
+      );
+      const { executeAgentTurn } = await import("@acpus/agent-executor");
+      const progress: unknown[] = [];
+      const result = executeAgentTurn({
+        agent: { kind: "named", name: "codex" },
+        prompt: "review",
+        cwd: "/repo",
+        env: {},
+        sessionName: "session",
+        permissionMode: "approve-all",
+        onProgress: update => progress.push(update),
+      });
+
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(progress).toMatchObject([{ responseText: text }]);
+      await expect(result).resolves.toMatchObject({ status: "completed", responseText: text });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the agent turn running when progress observation throws", async () => {
+    fake.state.scenarios.push(
+      fake.scenario.stdout("{}\n"),
+      fake.scenario.stdout("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"ok\"}}}}\n"),
+    );
+    const { executeAgentTurn } = await import("@acpus/agent-executor");
+    const onProgress = vi.fn(() => {
+      throw new Error("observer failed");
+    });
+
+    await expect(executeAgentTurn({
+      agent: { kind: "named", name: "codex" },
+      prompt: "review",
+      cwd: "/repo",
+      env: {},
+      sessionName: "session",
+      permissionMode: "approve-all",
+      onProgress,
+    })).resolves.toMatchObject({ status: "completed", responseText: "ok" });
+    expect(onProgress).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the agent turn running when async progress observation rejects", async () => {
+    fake.state.scenarios.push(
+      fake.scenario.stdout("{}\n"),
+      fake.scenario.stdout("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"ok\"}}}}\n"),
+    );
+    const { executeAgentTurn } = await import("@acpus/agent-executor");
+    const onProgress = vi.fn(async () => {
+      throw new Error("observer rejected");
+    });
+
+    await expect(executeAgentTurn({
+      agent: { kind: "named", name: "codex" },
+      prompt: "review",
+      cwd: "/repo",
+      env: {},
+      sessionName: "session",
+      permissionMode: "approve-all",
+      onProgress,
+    })).resolves.toMatchObject({ status: "completed", responseText: "ok" });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(onProgress).toHaveBeenCalledOnce();
   });
 
   it("captures tool call lifecycle and rawInput preview without rawOutput", async () => {
@@ -480,9 +796,11 @@ describe("executeAgentTurn", () => {
     vi.useFakeTimers();
     try {
       fake.state.scenarios.push(fake.scenario.success, child => {
+        child.stdout.emit("data", "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"partial\"}}}}\n");
         setTimeout(() => child.emit("close", null), 10);
       });
       const { executeAgentTurn } = await import("@acpus/agent-executor");
+      const progress: unknown[] = [];
 
       const result = executeAgentTurn({
         agent: { kind: "named", name: "codex" },
@@ -492,6 +810,7 @@ describe("executeAgentTurn", () => {
         sessionName: "session",
         permissionMode: "approve-all",
         timeout: "5ms",
+        onProgress: update => progress.push(update),
       });
       await vi.runAllTimersAsync();
 
@@ -499,7 +818,9 @@ describe("executeAgentTurn", () => {
         status: "failed",
         failureKind: "timeout",
         message: "Agent turn timed out after 5ms.",
+        responseText: "partial",
       });
+      expect(progress).toMatchObject([{ responseText: "partial", telemetry: { eventCount: 1 } }]);
     } finally {
       vi.useRealTimers();
     }
@@ -508,10 +829,12 @@ describe("executeAgentTurn", () => {
   it("runs acpx cancel for an aborted active prompt", async () => {
     const controller = new AbortController();
     fake.state.scenarios.push(fake.scenario.success, child => {
+      child.stdout.emit("data", "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"partial\"}}}}\n");
       controller.abort();
       child.emit("close", null);
     });
     const { executeAgentTurn } = await import("@acpus/agent-executor");
+    const progress: unknown[] = [];
 
     await expect(executeAgentTurn({
       agent: { kind: "named", name: "codex" },
@@ -521,8 +844,10 @@ describe("executeAgentTurn", () => {
       sessionName: "session",
       permissionMode: "approve-all",
       signal: controller.signal,
-    })).resolves.toMatchObject({ status: "cancelled" });
+      onProgress: update => progress.push(update),
+    })).resolves.toMatchObject({ status: "cancelled", responseText: "partial" });
 
+    expect(progress).toMatchObject([{ responseText: "partial", telemetry: { eventCount: 1 } }]);
     expect(fake.state.calls.map(call => tailFromAgent(call.args, "codex"))).toContainEqual(["codex", "cancel", "-s", "session"]);
   });
 

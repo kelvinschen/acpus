@@ -107,6 +107,7 @@ export type RuntimeStore = {
   getArtifact(runId: string, artifactId: string): ArtifactRecord | undefined;
   listArtifacts(runId: string): ArtifactRecord[];
   writeExecutionMetadata(input: WriteExecutionMetadataInput): void;
+  writeNodeProgress(input: WriteNodeProgressInput): void;
   getRun(runId: string): RunDetails | undefined;
   listRuns(): RunRecord[];
   getRuntimeDiagnostics(): RuntimeDiagnostics;
@@ -171,6 +172,8 @@ export type RunRecord = {
   sourceGraphDigest: string;
   createdAt: string;
   updatedAt: string;
+  progressVersion: number;
+  progressUpdatedAt?: string;
 };
 
 export type ForkRunRecord = RunRecord & {
@@ -231,12 +234,15 @@ export type DaemonDiagnostics = {
 
 export type RunDynamicDetails = {
   version: number;
+  progressVersion: number;
+  progressUpdatedAt?: string;
   frames: RunDynamicFrame[];
   nodeInstances: RunDynamicNodeInstance[];
   attempts: RunDynamicAttempt[];
   groupMembers: RunDynamicGroupMember[];
   signalWaits: RunDynamicSignalWait[];
   executionMetadata: RunExecutionMetadata[];
+  progress: RunNodeProgress[];
 };
 
 export type RunExecutionMetadata = {
@@ -245,6 +251,25 @@ export type RunExecutionMetadata = {
   kind: string;
   metadata: unknown;
   createdAt: string;
+};
+
+export type RunNodeProgress = {
+  nodeKey: string;
+  nodeId: string;
+  attemptId?: string;
+  attemptNo?: number;
+  kind: string;
+  status: string;
+  message?: string;
+  output?: {
+    tail: string;
+    totalBytes: number;
+    truncated: boolean;
+  };
+  context?: unknown;
+  tokenUsage?: unknown;
+  tools?: unknown;
+  updatedAt: string;
 };
 
 export type RunDynamicFrame = {
@@ -443,6 +468,20 @@ export type WriteExecutionMetadataInput = {
   kind: string;
   metadata: JsonValue;
 };
+export type WriteNodeProgressInput = {
+  runId: string;
+  nodeKey: string;
+  nodeId: string;
+  attemptId?: string;
+  attemptNo?: number;
+  kind: string;
+  status: string;
+  message?: string;
+  output?: RunNodeProgress["output"];
+  context?: JsonValue;
+  tokenUsage?: JsonValue;
+  tools?: JsonValue;
+};
 
 type RunRow = {
   id: string;
@@ -528,7 +567,12 @@ async function openExistingStore(cwd: string, readOnly: boolean): Promise<Runtim
   } catch {
     return undefined;
   }
-  if (readOnly) return new SqliteRuntimeStore(openDatabase(path, true), cwd);
+  if (readOnly) {
+    const db = openDatabase(path, true);
+    if (!storeNeedsMigration(db)) return new SqliteRuntimeStore(db, cwd);
+    db.close();
+    throw new Error("Runtime store requires migration; run a writable Acpus command before read-only inspection.");
+  }
   const db = openDatabase(path);
   migrate(db);
   return new SqliteRuntimeStore(db, cwd);
@@ -546,6 +590,10 @@ class SqliteRuntimeStore implements RuntimeStore {
   private schedulerStore(): SqliteSchedulerStorePort {
     this.schedulerPort ??= new SqliteSchedulerStorePort(this.db, this.cwd);
     return this.schedulerPort;
+  }
+
+  private runRecordColumns(): string {
+    return "id, name, status, workflow_entry, ir_digest, source_graph_digest, created_at, updated_at, progress_version, progress_updated_at";
   }
 
   close(): void {
@@ -888,7 +936,7 @@ class SqliteRuntimeStore implements RuntimeStore {
   listRunnableRuns(): RunRecord[] {
     const nowIso = new Date().toISOString();
     return this.db.prepare(`
-      SELECT id, name, status, workflow_entry, ir_digest, source_graph_digest, created_at, updated_at
+      SELECT ${this.runRecordColumns()}
       FROM runs
       WHERE (${RUNNABLE_RUNS_WHERE}) OR (${RECOVERABLE_RUNNING_RUNS_WHERE})
       ORDER BY created_at ASC
@@ -898,7 +946,7 @@ class SqliteRuntimeStore implements RuntimeStore {
   listDaemonWork(now: Date = new Date()): DaemonWork {
     const nowIso = now.toISOString();
     const startableRuns = this.db.prepare(`
-      SELECT id, name, status, workflow_entry, ir_digest, source_graph_digest, created_at, updated_at
+      SELECT ${this.runRecordColumns()}
       FROM runs
       WHERE (${RUNNABLE_RUNS_WHERE}) OR (${DUE_SIGNAL_WAIT_WHERE}) OR (${RECOVERABLE_RUNNING_RUNS_WHERE})
       ORDER BY created_at ASC
@@ -1357,6 +1405,71 @@ class SqliteRuntimeStore implements RuntimeStore {
     );
   }
 
+  writeNodeProgress(input: WriteNodeProgressInput): void {
+    const now = new Date().toISOString();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (input.attemptId) {
+        const started = this.db.prepare(`
+          SELECT 1
+          FROM node_attempts
+          WHERE attempt_id = ? AND run_id = ? AND node_key = ? AND status = 'started'
+        `).get(input.attemptId, input.runId, input.nodeKey);
+        if (!started) {
+          this.db.exec("COMMIT");
+          return;
+        }
+      }
+      this.db.prepare(`
+        INSERT INTO node_progress (
+          run_id, node_key, node_id, attempt_id, attempt_no, kind, status, message,
+          output_tail, output_total_bytes, output_truncated,
+          context_json, token_usage_json, tools_json, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(run_id, node_key) DO UPDATE SET
+          node_id = excluded.node_id,
+          attempt_id = excluded.attempt_id,
+          attempt_no = excluded.attempt_no,
+          kind = excluded.kind,
+          status = excluded.status,
+          message = excluded.message,
+          output_tail = excluded.output_tail,
+          output_total_bytes = excluded.output_total_bytes,
+          output_truncated = excluded.output_truncated,
+          context_json = excluded.context_json,
+          token_usage_json = excluded.token_usage_json,
+          tools_json = excluded.tools_json,
+          updated_at = excluded.updated_at
+      `).run(
+        input.runId,
+        input.nodeKey,
+        input.nodeId,
+        input.attemptId ?? null,
+        input.attemptNo ?? null,
+        input.kind,
+        input.status,
+        input.message ?? null,
+        input.output?.tail ?? null,
+        input.output?.totalBytes ?? null,
+        input.output?.truncated === undefined ? null : input.output.truncated ? 1 : 0,
+        input.context === undefined ? null : stableJson(input.context),
+        input.tokenUsage === undefined ? null : stableJson(input.tokenUsage),
+        input.tools === undefined ? null : stableJson(input.tools),
+        now,
+      );
+      this.db.prepare(`
+        UPDATE runs
+        SET progress_version = progress_version + 1, progress_updated_at = ?
+        WHERE id = ?
+      `).run(now, input.runId);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   getRun(runId: string): RunDetails | undefined {
     const run = this.getRunRecord(runId);
     if (!run) return undefined;
@@ -1421,15 +1534,20 @@ class SqliteRuntimeStore implements RuntimeStore {
       const groupMembers = readRunDynamicGroupMembers(this.db, runId);
       const signalWaits = readRunDynamicSignalWaits(this.db, runId);
       const executionMetadata = readRunExecutionMetadata(this.db, runId);
-      if (frames.length + nodeInstances.length + attempts.length + groupMembers.length + signalWaits.length + executionMetadata.length === 0) return undefined;
+      const progress = readRunNodeProgress(this.db, runId);
+      const progressVersion = runProgressVersion(this.db, runId);
+      if (frames.length + nodeInstances.length + attempts.length + groupMembers.length + signalWaits.length + executionMetadata.length + progress.length === 0) return undefined;
       return {
         version: this.nextSequence(runId) - 1,
+        progressVersion: progressVersion.version,
+        ...(progressVersion.updatedAt ? { progressUpdatedAt: progressVersion.updatedAt } : {}),
         frames,
         nodeInstances,
         attempts,
         groupMembers,
         signalWaits,
         executionMetadata,
+        progress,
       };
     } catch {
       return undefined;
@@ -1438,7 +1556,7 @@ class SqliteRuntimeStore implements RuntimeStore {
 
   listRuns(): RunRecord[] {
     return this.db.prepare(`
-      SELECT id, name, status, workflow_entry, ir_digest, source_graph_digest, created_at, updated_at
+      SELECT ${this.runRecordColumns()}
       FROM runs
       ORDER BY updated_at DESC, created_at DESC
     `).all().map(toRunRecord);
@@ -1516,7 +1634,7 @@ class SqliteRuntimeStore implements RuntimeStore {
 
   private getRunRecord(runId: string): RunRecord | undefined {
     const row = this.db.prepare(`
-      SELECT id, name, status, workflow_entry, ir_digest, source_graph_digest, created_at, updated_at
+      SELECT ${this.runRecordColumns()}
       FROM runs
       WHERE id = ?
     `).get(runId) as RunRow | undefined;
@@ -1745,6 +1863,14 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         VALUES (?, ?, 'attempt.started', ?, ?, ?, ?)
       `).run(input.runId, sequence + sequenceOffset, input.nodeKey, encodeSchedulerPayload(payload), now, input.idempotencyKey);
       this.syncSchedulerProjectionTables(input.runId, now);
+      const clearedProgress = this.db.prepare("DELETE FROM node_progress WHERE run_id = ? AND node_key = ?").run(input.runId, input.nodeKey);
+      if (clearedProgress.changes > 0) {
+        this.db.prepare(`
+          UPDATE runs
+          SET progress_version = progress_version + 1, progress_updated_at = ?
+          WHERE id = ?
+        `).run(now, input.runId);
+      }
       this.syncPublicRunProjection(input.runId, now);
       this.db.exec("COMMIT");
       return { attemptId, attemptNo };
@@ -2684,6 +2810,43 @@ function readRunExecutionMetadata(db: DatabaseSync, runId: string): RunExecution
   }) as RunExecutionMetadata);
 }
 
+function readRunNodeProgress(db: DatabaseSync, runId: string): RunNodeProgress[] {
+  const rows = db.prepare(`
+    SELECT node_key, node_id, attempt_id, attempt_no, kind, status, message,
+      output_tail, output_total_bytes, output_truncated,
+      context_json, token_usage_json, tools_json, updated_at
+    FROM node_progress
+    WHERE run_id = ?
+    ORDER BY updated_at ASC, node_key ASC
+  `).all(runId) as Array<Record<string, string | number | null>>;
+  return rows.map(row => withoutUndefined({
+    nodeKey: String(row.node_key),
+    nodeId: String(row.node_id),
+    attemptId: nullableString(row.attempt_id),
+    attemptNo: nullableNumber(row.attempt_no),
+    kind: String(row.kind),
+    status: String(row.status),
+    message: nullableString(row.message),
+    output: row.output_tail === null ? undefined : {
+      tail: String(row.output_tail),
+      totalBytes: Number(row.output_total_bytes ?? 0),
+      truncated: Boolean(row.output_truncated),
+    },
+    context: row.context_json === null ? undefined : JSON.parse(String(row.context_json)) as unknown,
+    tokenUsage: row.token_usage_json === null ? undefined : JSON.parse(String(row.token_usage_json)) as unknown,
+    tools: row.tools_json === null ? undefined : JSON.parse(String(row.tools_json)) as unknown,
+    updatedAt: String(row.updated_at),
+  }) as RunNodeProgress);
+}
+
+function runProgressVersion(db: DatabaseSync, runId: string): { version: number; updatedAt?: string } {
+  const row = db.prepare("SELECT progress_version, progress_updated_at FROM runs WHERE id = ?").get(runId) as { progress_version: number; progress_updated_at: string | null } | undefined;
+  return {
+    version: Number(row?.progress_version ?? 0),
+    ...(row?.progress_updated_at ? { updatedAt: row.progress_updated_at } : {}),
+  };
+}
+
 function withoutUndefined(input: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
 }
@@ -2841,7 +3004,9 @@ function migrate(db: DatabaseSync): void {
       ir_digest TEXT NOT NULL,
       source_graph_digest TEXT NOT NULL,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      progress_version INTEGER NOT NULL DEFAULT 0,
+      progress_updated_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS run_inputs (
@@ -3008,6 +3173,25 @@ function migrate(db: DatabaseSync): void {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS node_progress (
+      run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      node_key TEXT NOT NULL,
+      node_id TEXT NOT NULL,
+      attempt_id TEXT,
+      attempt_no INTEGER,
+      kind TEXT NOT NULL,
+      status TEXT NOT NULL,
+      message TEXT,
+      output_tail TEXT,
+      output_total_bytes INTEGER,
+      output_truncated INTEGER,
+      context_json TEXT,
+      token_usage_json TEXT,
+      tools_json TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (run_id, node_key)
+    );
+
     CREATE TABLE IF NOT EXISTS hook_journal (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -3038,6 +3222,7 @@ function migrate(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_group_members_status ON group_members(run_id, group_key, status);
     CREATE INDEX IF NOT EXISTS idx_signal_waits_status ON signal_waits(run_id, node_key, status);
     CREATE INDEX IF NOT EXISTS idx_signal_waits_deadline_status ON signal_waits(run_id, deadline_at, status);
+    CREATE INDEX IF NOT EXISTS idx_node_progress_run_updated ON node_progress(run_id, updated_at);
     CREATE INDEX IF NOT EXISTS idx_hook_journal_run_id ON hook_journal(run_id);
     CREATE INDEX IF NOT EXISTS idx_hook_journal_triggered_at ON hook_journal(triggered_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_hook_journal_event_handler
@@ -3073,7 +3258,22 @@ function migrate(db: DatabaseSync): void {
   addColumnIfMissing(db, "signal_waits", "created_at", "TEXT");
   addColumnIfMissing(db, "signal_waits", "updated_at", "TEXT");
   addColumnIfMissing(db, "hook_journal", "trigger_order", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing(db, "runs", "progress_version", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing(db, "runs", "progress_updated_at", "TEXT");
   db.exec("UPDATE signal_waits SET created_at = COALESCE(created_at, datetime('now')), updated_at = COALESCE(updated_at, datetime('now')) WHERE created_at IS NULL OR updated_at IS NULL;");
+}
+
+function storeNeedsMigration(db: DatabaseSync): boolean {
+  return !hasTable(db, "schema_migrations")
+    || db.prepare("SELECT 1 FROM schema_migrations WHERE version = 1 LIMIT 1").get() === undefined
+    || !hasColumn(db, "runs", "progress_version")
+    || !hasColumn(db, "runs", "progress_updated_at")
+    || !hasTable(db, "node_progress");
+}
+
+function hasTable(db: DatabaseSync, table: string): boolean {
+  const rows = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").all(table) as Array<{ name: string }>;
+  return rows.length > 0;
 }
 
 function addColumnIfMissing(db: DatabaseSync, table: string, column: string, definition: string): void {
@@ -3159,7 +3359,7 @@ function agentIdentity(definition: AgentDefinitionIR, override: AgentOverrideSpe
 
 
 function toRunRecord(row: Record<string, unknown>): RunRecord {
-  return {
+  return withoutUndefined({
     id: String(row.id),
     name: String(row.name),
     status: String(row.status) as RunStatus,
@@ -3168,7 +3368,9 @@ function toRunRecord(row: Record<string, unknown>): RunRecord {
     sourceGraphDigest: String(row.source_graph_digest),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
-  };
+    progressVersion: Number(row.progress_version ?? 0),
+    progressUpdatedAt: nullableString(row.progress_updated_at),
+  }) as RunRecord;
 }
 
 function collectNodeIds(scope: ScopeIR): string[] {

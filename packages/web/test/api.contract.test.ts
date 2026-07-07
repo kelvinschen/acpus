@@ -142,9 +142,48 @@ describe("web API contract", () => {
   });
 
   describe("GET /api/runs/:id/nodes/:target", () => {
+    it("returns agent execution last active from progress", async () => {
+      mockGetRunInspection.mockResolvedValue({
+        run: {
+          id: "run_1",
+          dynamic: {
+            version: 3,
+            progressVersion: 1,
+            progress: [{
+              nodeKey: "review~abc",
+              nodeId: "review",
+              attemptId: "attempt_1",
+              attemptNo: 1,
+              kind: "agent",
+              status: "running",
+              updatedAt: "2026-07-01T00:00:02.000Z",
+            }],
+            frames: [],
+            nodeInstances: [{ nodeKey: "review~abc", nodeId: "review", status: "running", createdAt: "t", updatedAt: "t" }],
+            attempts: [{ attemptId: "attempt_1", nodeKey: "review~abc", nodeId: "review", attemptNo: 1, status: "started", startedAt: "t" }],
+            groupMembers: [],
+            signalWaits: [],
+            executionMetadata: [],
+          },
+        },
+        staticNodes: [{ nodeId: "review", kind: "agent", order: 0 }],
+      });
+
+      const res = await app.request("/api/runs/run_1/nodes/review~abc/execution");
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as JsonBody;
+      expect(body.ok).toBe(true);
+      expect(body.execution).toMatchObject({
+        available: true,
+        lastActiveAt: "2026-07-01T00:00:02.000Z",
+        summary: { status: "running" },
+      });
+    });
+
     it("returns inspection details for a valid run", async () => {
       mockGetRunInspection.mockResolvedValue({
-        run: { id: "run_1", dynamic: { version: 3, frames: [], nodeInstances: [], attempts: [], groupMembers: [], signalWaits: [], executionMetadata: [] } },
+        run: { id: "run_1", dynamic: { version: 3, progressVersion: 0, progress: [], frames: [], nodeInstances: [], attempts: [], groupMembers: [], signalWaits: [], executionMetadata: [] } },
         staticNodes: [{ nodeId: "step_1", kind: "task", order: 0 }],
       });
       const res = await app.request("/api/runs/run_1/nodes/step_1");

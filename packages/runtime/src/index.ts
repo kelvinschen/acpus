@@ -90,6 +90,7 @@ export {
   type RunDynamicFrame,
   type RunDynamicGroupMember,
   type RunDynamicNodeInstance,
+  type RunNodeProgress,
   type RunDynamicSignalWait,
   type RunDetails,
   type ForkRunRecord,
