@@ -2,6 +2,7 @@ import type { AgentNodeIR, NodeIR, ScopeIR, SignalNodeIR, TaskNodeIR, WorkflowIR
 import type { ExprIR, JsonValue } from "@acpus/expression/ir";
 import { assertWorkflowData } from "../evaluation/admissible.js";
 import { evaluateExpr, renderTemplate, type EvaluationScope } from "../evaluation/evaluator.js";
+import { evaluateLoopMaxIterations } from "../evaluation/loop-limit.js";
 import { normalizeValue } from "../evaluation/schema.js";
 
 export type NonAgentExecutionResult = {
@@ -195,7 +196,8 @@ async function executeNodeAsync(node: NodeIR, scope: SchedulerScope, options: Ru
   if (node.kind === "loop") {
     try {
       let result = evaluateExpr(node.initial, scope) as Record<string, unknown>;
-      for (let iter = 0; iter < node.maxIterations; iter += 1) {
+      const maxIterations = evaluateLoopMaxIterations(node.maxIterations, scope, node.id);
+      for (let iter = 0; iter < maxIterations; iter += 1) {
         scope.loop = {
           ...scope.loop,
           [node.id]: { iter, previous: result, result },
@@ -216,7 +218,7 @@ async function executeNodeAsync(node: NodeIR, scope: SchedulerScope, options: Ru
           [node.id]: { iter, previous: result, result },
         };
       }
-      const iter = node.maxIterations;
+      const iter = maxIterations;
       scope.loop = {
         ...scope.loop,
         [node.id]: { iter, previous: result, result },
@@ -225,7 +227,7 @@ async function executeNodeAsync(node: NodeIR, scope: SchedulerScope, options: Ru
         completeNode(scope, node.id, validateNodeOutput(node, result));
         return;
       }
-      throw new Error(`Loop node '${node.id}' exhausted after ${node.maxIterations} iterations.`);
+      throw new Error(`Loop node '${node.id}' exhausted after ${maxIterations} iterations.`);
     } catch (error) {
       if (error instanceof ExecutorRequiredError || error instanceof SignalAwaitingError || error instanceof RuntimeNodeError) throw error;
       throw new RuntimeNodeError(node.id, error instanceof Error ? error.message : String(error), scope.executedNodes);

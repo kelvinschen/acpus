@@ -2,6 +2,7 @@ import type { FanoutNodeIR, LoopNodeIR, NodeIR, ParallelNodeIR, WorkflowIR } fro
 import type { JsonObject, JsonValue } from "@acpus/expression/ir";
 import { assertWorkflowData } from "../evaluation/admissible.js";
 import { evaluateExpr, renderTemplate, type EvaluationScope } from "../evaluation/evaluator.js";
+import { evaluateLoopMaxIterations } from "../evaluation/loop-limit.js";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "./identity.js";
 import type { SchedulerEvent } from "./events.js";
 import type { FrameKind, GroupMember, InstancePath, InstancePathSegment, SchedulerFrame, SchedulerProjection } from "./types.js";
@@ -180,9 +181,15 @@ function continueLoopFrameEvents(ir: WorkflowIR, projection: SchedulerProjection
   } catch (error) {
     return [{ type: "frame.failed", payload: { frameKey: frame.frameKey, error: expressionFailure(error), terminalReason: "expression_failed" } }];
   }
+  let maxIterations: number;
+  try {
+    maxIterations = evaluateLoopMaxIterations(loop.maxIterations, nodeScope, loop.id);
+  } catch (error) {
+    return [{ type: "frame.failed", payload: { frameKey: frame.frameKey, error: expressionFailure(error), terminalReason: "expression_failed" } }];
+  }
   const step = nextLoopStep({
     iter,
-    maxIterations: loop.maxIterations,
+    maxIterations,
     stop,
     ...(iteration.result === undefined ? {} : { result: iteration.result }),
     ...(previous === undefined ? {} : { previous }),
@@ -399,8 +406,10 @@ function materializeLoopEvents(input: { runId: string; node: LoopNodeIR; parentF
   const nodeKey = deriveInstanceKey(nodePath);
   const start = nodeFrameStarted(input.runId, input.node, nodePath, input.parentFrameKey, "loop");
   let initial: JsonValue;
+  let maxIterations: number;
   let stop: boolean;
   try {
+    maxIterations = evaluateLoopMaxIterations(input.node.maxIterations, input.scope, input.node.id);
     initial = evaluateExpr(input.node.initial, input.scope) as JsonValue;
     const stopScope = {
       ...input.scope,
@@ -418,9 +427,9 @@ function materializeLoopEvents(input: { runId: string; node: LoopNodeIR; parentF
 
   const seed = { type: "frame.loop_advanced", payload: { frameKey: nodeKey, iter: 0, previous: initial } } satisfies SchedulerEvent;
   if (stop) return [start, seed, { type: "frame.completed", payload: { frameKey: nodeKey, result: initial, terminalReason: "stopped" } }];
-  if (input.node.maxIterations <= 0) {
+  if (maxIterations <= 0) {
     const exhausted = loopExhaustionResult({
-      maxIterations: input.node.maxIterations,
+      maxIterations,
       ...(input.node.onExhausted === undefined ? {} : { onExhausted: input.node.onExhausted }),
       lastResult: initial,
     });

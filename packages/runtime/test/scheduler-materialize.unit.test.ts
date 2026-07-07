@@ -556,6 +556,42 @@ describe("scheduler materialization", () => {
     ]);
   });
 
+  it("evaluates root loop maxIterations from workflow input", () => {
+    const workflow = workflowWithRootNode(loopNode({
+      maxIterations: { kind: "ref", path: ["input", "rounds"] },
+    }));
+    const loopKey = deriveInstanceKey(appendNode([], "retry"));
+    const firstNodeKey = deriveInstanceKey(appendNode(appendLoopIteration([], "retry", 0), "loop_task"));
+    const secondNodeKey = deriveInstanceKey(appendNode(appendLoopIteration([], "retry", 1), "loop_task"));
+    const scope = { input: { rounds: 2 } };
+    const bootstrapped = bootstrapRootEvents("run_1", workflow, scope);
+    const projection = applySchedulerEvents(createSchedulerProjection("run_1"), [
+      ...bootstrapped,
+      { type: "instance.completed", payload: { nodeKey: firstNodeKey, output: { done: false } } },
+      { type: "frame.completed", payload: { frameKey: deriveInstanceKey(appendLoopIteration([], "retry", 0)), result: { done: false }, terminalReason: "frame_completed" } },
+    ]);
+
+    expect(continueRootEvents(workflow, projection, scope)).toEqual([
+      { type: "frame.loop_advanced", payload: { frameKey: loopKey, iter: 0, previous: { done: false }, result: { done: false } } },
+      { type: "frame.loop_advanced", payload: { frameKey: loopKey, iter: 1, previous: { done: false } } },
+      expect.objectContaining({ type: "frame.started", payload: expect.objectContaining({ frameKey: deriveInstanceKey(appendLoopIteration([], "retry", 1)), frameKind: "loop_iteration" }) }),
+      expect.objectContaining({ type: "instance.ready", payload: expect.objectContaining({ nodeKey: secondNodeKey }) }),
+    ]);
+  });
+
+  it("fails when root loop maxIterations evaluates outside non-negative integers", () => {
+    const workflow = workflowWithRootNode(loopNode({
+      maxIterations: { kind: "ref", path: ["input", "rounds"] },
+    }));
+    const loopKey = deriveInstanceKey(appendNode([], "retry"));
+
+    expect(bootstrapRootEvents("run_1", workflow, { input: { rounds: -1 } })).toEqual([
+      { type: "frame.started", payload: { runId: "run_1", frameKey: "root", frameKind: "root", scope: { retry: loopKey } } },
+      expect.objectContaining({ type: "frame.started", payload: expect.objectContaining({ frameKey: loopKey, frameKind: "loop" }) }),
+      { type: "frame.failed", payload: { frameKey: loopKey, error: { reason: "expression_failed", message: "Loop node 'retry' maxIterations must evaluate to a non-negative integer." }, terminalReason: "expression_failed" } },
+    ]);
+  });
+
   it("materializes pure root loop bodies recursively", () => {
     const nonLeaf = loopNode({ doNodes: [{ id: "check", kind: "assert", condition: { kind: "literal", value: true } }] });
     const loopKey = deriveInstanceKey(appendNode([], "retry"));
@@ -675,12 +711,12 @@ function fanoutNode(options: {
   };
 }
 
-function loopNode(options: { doNodes?: NodeIR[]; doOutputs?: WorkflowIR["root"]["outputs"]; stopWhen?: Extract<NodeIR, { kind: "loop" }>["stopWhen"] } = {}): NodeIR {
+function loopNode(options: { doNodes?: NodeIR[]; doOutputs?: WorkflowIR["root"]["outputs"]; maxIterations?: Extract<NodeIR, { kind: "loop" }>["maxIterations"]; stopWhen?: Extract<NodeIR, { kind: "loop" }>["stopWhen"] } = {}): NodeIR {
   return {
     id: "retry",
     kind: "loop",
     initial: { kind: "object", fields: { done: { kind: "literal", value: false } } },
-    maxIterations: 3,
+    maxIterations: options.maxIterations ?? { kind: "literal", value: 3 },
     stopWhen: options.stopWhen ?? { kind: "ref", path: ["loop", "retry", "result", "done"] },
     do: {
       nodes: options.doNodes ?? [taskNode("loop_task")],

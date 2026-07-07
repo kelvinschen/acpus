@@ -159,7 +159,6 @@ describe("workflow check pipeline", () => {
               count: iter,
               summary: previous.summary,
             }),
-            stopWhen: () => false,
           });
           const value = JSON.parse("{}") as JsonValue;
           const object = { ok: true } as JsonObject;

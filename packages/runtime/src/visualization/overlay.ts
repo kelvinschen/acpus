@@ -29,7 +29,7 @@ export type NodeDetail =
   | { kind: "switch"; cases: ExprIR[]; hasDefault: boolean }
   | { kind: "parallel"; branches: string[]; strategy: "all" | "race" }
   | { kind: "fanout"; over: ExprIR; strategy: "all" | "quorum"; count?: number }
-  | { kind: "loop"; maxIterations: number; stopWhen: ExprIR };
+  | { kind: "loop"; maxIterations: ExprIR; stopWhen: ExprIR };
 
 export type WorkflowVisualizationNode = {
   nodeId: string;

@@ -14,9 +14,9 @@ type LoopState<Initial extends OutputObject> =
 /** Authoring spec for a seeded pre-check loop with a bounded iteration count. */
 export type LoopStepSpec<Initial extends OutputObject = OutputObject> = {
   initial: WorkflowValue<Initial>;
-  maxIterations: number;
+  maxIterations: WorkflowValue<number>;
   do: (ctx: LoopScopeContext<LoopState<Initial>>) => OutputValues<LoopState<Initial>>;
-  stopWhen: (ctx: LoopStopContext<LoopState<Initial>>) => WorkflowValue<boolean>;
+  stopWhen?: (ctx: LoopStopContext<LoopState<Initial>>) => WorkflowValue<boolean>;
   outputSchema?: never;
   onExhausted?: "fail" | "returnLast";
 };
@@ -35,8 +35,8 @@ export function buildLoopNode<Initial extends OutputObject>(
     id,
     kind: "loop",
     initial: valueToExprIR(spec.initial),
-    maxIterations: spec.maxIterations,
-    stopWhen: valueToExprIR(spec.stopWhen({ iter, result })),
+    maxIterations: valueToExprIR(spec.maxIterations),
+    stopWhen: spec.stopWhen ? valueToExprIR(spec.stopWhen({ iter, result })) : { kind: "literal", value: false },
     onExhausted: spec.onExhausted,
     do: buildScope<{ iter: typeof iter; previous: typeof previous }, LoopState<Initial>>(spec.do, {
       iter,

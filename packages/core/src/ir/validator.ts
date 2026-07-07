@@ -225,7 +225,7 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
     case "loop": {
       validateKnownFields(node, ["id", "source", "kind", "initial", "maxIterations", "do", "stopWhen", "onExhausted"], diagnostics, path);
       validateExpr(node.initial, diagnostics, `${path}.initial`);
-      if (!Number.isInteger(node.maxIterations) || node.maxIterations < 0) addError(diagnostics, "L001", `Loop node '${node.id}' maxIterations must be a non-negative integer.`, `${path}.maxIterations`);
+      validateExpr(node.maxIterations, diagnostics, `${path}.maxIterations`);
       if (node.onExhausted !== undefined && node.onExhausted !== "fail" && node.onExhausted !== "returnLast") addError(diagnostics, "L002", `Loop node '${node.id}' onExhausted must be 'fail' or 'returnLast'.`, `${path}.onExhausted`);
       validateExpr(node.stopWhen, diagnostics, `${path}.stopWhen`);
       validateScope(node.do, diagnostics, { ...ctx, path: `${path}.do` });

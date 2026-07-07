@@ -110,7 +110,8 @@
 - Parallel `race` strategy MUST return the first successful branch with `{ winner, result }` and MUST cancel remaining running member subtrees after the winner is accepted.
 - Fanout `all` strategy MUST materialize item identity rows and aggregate item outputs as an array.
 - Fanout `quorum` strategy MUST accept outputs in completion order, return the accepted item outputs as `Array<ItemOutput>` after quorum success, and cancel remaining running member subtrees after quorum is reached.
-- Loop execution MUST use seeded pre-check semantics: `initial` is the first result, `stopWhen` checks before each body execution, `previous` is non-optional, and `maxIterations` counts only body executions.
+- Loop execution MUST use seeded pre-check semantics: `initial` is the first result, lowered `stopWhen` checks before each body execution, `previous` is non-optional, and evaluated `maxIterations` counts only body executions.
+- Loop `maxIterations` MUST evaluate once from the loop parent scope for each loop advance decision and MUST fail the loop when the value is not a non-negative integer.
 - Group member rows MUST point at the child branch or fanout-item frame that
   owns the cancellable member subtree.
 - The runtime MUST execute task nodes through the task run target stored in frozen IR.

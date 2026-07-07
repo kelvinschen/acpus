@@ -11,7 +11,7 @@ export type NodeDetail =
   | { kind: "switch"; cases: string[]; hasDefault: boolean }
   | { kind: "parallel"; branches: string[]; strategy: "all" | "race" }
   | { kind: "fanout"; over: string; strategy: "all" | "quorum"; count?: number }
-  | { kind: "loop"; maxIterations: number; stopWhen: string };
+  | { kind: "loop"; maxIterations: string; stopWhen: string };
 
 export type WebGraph = {
   workflow: WorkflowVisualizationOverlay["workflow"];
@@ -645,7 +645,7 @@ function formatNodeDetail(detail: RuntimeNodeDetail): NodeDetail {
         ...(detail.count === undefined ? {} : { count: detail.count }),
       };
     case "loop":
-      return { kind: "loop", maxIterations: detail.maxIterations, stopWhen: printExpr(detail.stopWhen) };
+      return { kind: "loop", maxIterations: printExpr(detail.maxIterations), stopWhen: printExpr(detail.stopWhen) };
   }
 }
 

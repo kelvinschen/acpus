@@ -126,9 +126,6 @@ function resolveForkTarget(input: ForkSeedInput, sourceFacts: Map<string, Comple
     return err({ type: "target-resolution-failure", target, message: `Fork target '${target}' is ambiguous in the replacement workflow.` });
   }
   if (paths[0]!.ancestors.some(node => node.kind === "fanout" || node.kind === "loop")) {
-    if (paths[0]!.ancestors.some(node => node.kind === "loop" && node.maxIterations > 1)) {
-      return err({ type: "dynamic-target-ambiguity", target, message: `Fork target '${target}' is inside repeating loop expansion; use a dynamic nodeKey target.` });
-    }
     const targets = replacementMaterializedStaticTargets(input, sourceFacts, replacementSignatures, target);
     if (targets.length !== 1) {
       return err({ type: "dynamic-target-ambiguity", target, message: `Fork target '${target}' resolved to ${targets.length} dynamic replacement instances; use a dynamic nodeKey target.` });

@@ -70,7 +70,7 @@ describe("workflow visualization overlay", () => {
     expect(detailById.get("branchy")).toEqual({ kind: "if", condition: ref("input", "enabled") });
     expect(detailById.get("router")).toEqual({ kind: "switch", cases: [call("eq", ref("input", "mode"), lit("auto"))], hasDefault: true });
     expect(detailById.get("lanes")).toEqual({ kind: "fanout", over: ref("input", "lanes"), strategy: "all" });
-    expect(detailById.get("retry")).toEqual({ kind: "loop", maxIterations: 3, stopWhen: ref("state", "done") });
+    expect(detailById.get("retry")).toEqual({ kind: "loop", maxIterations: { kind: "literal", value: 3 }, stopWhen: ref("state", "done") });
   });
 
   it("keeps historical attempts from overriding the current node status", () => {
@@ -142,7 +142,7 @@ function detailWorkflow(): WorkflowIR {
           id: "retry",
           kind: "loop",
           initial: lit({}),
-          maxIterations: 3,
+          maxIterations: { kind: "literal", value: 3 },
           stopWhen: ref("state", "done"),
           do: { nodes: [] },
         },

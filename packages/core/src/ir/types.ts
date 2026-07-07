@@ -186,7 +186,7 @@ export type FanoutNodeIR =
 export type LoopNodeIR = BaseNodeIR & {
   kind: "loop";
   initial: ExprIR;
-  maxIterations: number;
+  maxIterations: ExprIR;
   do: ScopeIR;
   stopWhen: ExprIR;
   onExhausted?: "fail" | "returnLast";

@@ -447,7 +447,7 @@ describe("workflow compilation", () => {
           summary: { kind: "literal", value: "first" },
         },
       },
-      maxIterations: 3,
+      maxIterations: { kind: "literal", value: 3 },
       onExhausted: "returnLast",
       do: {
         outputs: {
@@ -565,10 +565,54 @@ describe("workflow compilation", () => {
     expect(ir.root.nodes[1]).toMatchObject({
       id: "retry",
       kind: "loop",
-      maxIterations: 1,
+      maxIterations: { kind: "literal", value: 1 },
     });
     expect(ir.root.nodes[1]).not.toHaveProperty("onExhausted");
     expect(ir.root.nodes[1]).not.toHaveProperty("outputSchema");
+  });
+
+  it("lowers workflow-valued loop maxIterations", () => {
+    const definition = defineWorkflow({
+      name: "dynamic_loop_limit",
+      inputSchema: z.object({ rounds: z.number().default(1) }),
+    }).build(({ input, step }) => {
+      const loop = step("retry").loop({
+        initial: { ok: false as boolean },
+        maxIterations: input.rounds,
+        do: () => ({ ok: true }),
+        stopWhen: ({ result }) => result.ok,
+      });
+      return { ok: loop.output.ok };
+    });
+
+    const ir = compileWorkflowDefinition(definition);
+
+    expect(ir.diagnostics).toEqual([]);
+    expect(ir.root.nodes[0]).toMatchObject({
+      id: "retry",
+      kind: "loop",
+      maxIterations: { kind: "ref", path: ["input", "rounds"] },
+    });
+  });
+
+  it("defaults omitted loop stopWhen to false", () => {
+    const definition = defineWorkflow({ name: "counted_loop" }).build(({ step }) => {
+      const loop = step("counted").loop({
+        initial: { ok: false as boolean },
+        maxIterations: 2,
+        do: () => ({ ok: true }),
+      });
+      return { ok: loop.output.ok };
+    });
+
+    const ir = compileWorkflowDefinition(definition);
+
+    expect(ir.diagnostics).toEqual([]);
+    expect(ir.root.nodes[0]).toMatchObject({
+      id: "counted",
+      kind: "loop",
+      stopWhen: { kind: "literal", value: false },
+    });
   });
 
   it("lowers custom acpx command agent definitions and skips malformed agent definitions", () => {

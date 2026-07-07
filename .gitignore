@@ -3,6 +3,7 @@ dist/
 coverage/
 .tmp-tests/
 .acpus/*
+!.acpus/workflows
 !.acpus/workflows/
 !.acpus/workflows/**
 legacy/

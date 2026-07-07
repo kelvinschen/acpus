@@ -559,6 +559,30 @@ describe("targeted fork seed planning", () => {
     expect(plan.value.inheritedNodeKeys).toEqual(new Set([prepare]));
   });
 
+  it("resolves a static loop target when expression-backed maxIterations evaluates to one", () => {
+    const iter0 = appendLoopIteration([], "retry", 0);
+    const prepare = deriveInstanceKey(appendNode(iter0, "step"));
+    const retryWorkflow = workflow([loopNode([taskNode("step"), taskNode("target")], { kind: "ref", path: ["input", "rounds"] })]);
+    const scope = { ...rootScope(), input: { rounds: 1 } };
+    const source = sourceProjection(retryWorkflow, [
+      { type: "instance.completed", payload: { nodeKey: prepare, output: { done: false } } },
+    ], scope);
+
+    const plan = planTargetedForkSeed({
+      forkRunId: "fork",
+      sourceWorkflow: retryWorkflow,
+      replacementWorkflow: retryWorkflow,
+      replacementScope: scope,
+      sourceProjection: source,
+      inputChanged: false,
+      target: "target",
+    });
+
+    expect(plan.isOk()).toBe(true);
+    if (plan.isErr()) throw new Error(plan.error.message);
+    expect(plan.value.inheritedNodeKeys).toEqual(new Set([prepare]));
+  });
+
 
   it("seeds fanout prerequisites before a later static target", () => {
     const fanoutPathA = appendFanoutItem([], "items", 0, 0);
@@ -961,13 +985,13 @@ function fanoutNode(nodes: NodeIR[], options: { strategy?: "all" | "quorum"; cou
   return { ...base, strategy: "all" };
 }
 
-function loopNode(nodes: NodeIR[], maxIterations = 3): NodeIR {
+function loopNode(nodes: NodeIR[], maxIterations: Extract<NodeIR, { kind: "loop" }>["maxIterations"] | number = 3): NodeIR {
   return {
     id: "retry",
     kind: "loop",
     initial: { kind: "object", fields: { done: { kind: "literal", value: false } } },
     stopWhen: { kind: "ref", path: ["loop", "retry", "result", "done"] },
-    maxIterations,
+    maxIterations: typeof maxIterations === "number" ? { kind: "literal", value: maxIterations } : maxIterations,
     do: {
       nodes,
       outputs: { done: { kind: "ref", path: ["nodes", "target", "output", "done"] } },

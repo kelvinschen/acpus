@@ -1,6 +1,6 @@
 import { defineWorkflow, z } from "acpus/core";
 import { eq, md, template } from "acpus/expression";
-import { summarizeIssue } from "./issue-triage.tasks.js";
+import { summarizeIssue } from "./tasks.js";
 
 export default defineWorkflow({
   name: "issue-triage",

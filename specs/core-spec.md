@@ -82,7 +82,8 @@
 - Fanout nodes MUST express runtime array expansion and support `strategy?: "all" | "quorum"`, defaulting to `"all"`.
 - Fanout item output MUST be inferred from the `do` callback and serialize no `itemOutputSchema`.
 - Loop nodes MUST declare `initial`; loop bodies MUST receive `iter` and non-optional `previous`.
-- Loop `stopWhen({ iter, result })` MUST return a boolean workflow value and lower to `LoopNodeIR.stopWhen`.
+- Loop `maxIterations` MUST accept a workflow number value and lower to `LoopNodeIR.maxIterations`.
+- Loop `stopWhen({ iter, result })`, when present, MUST return a boolean workflow value and lower to `LoopNodeIR.stopWhen`; omitted `stopWhen` MUST lower to a literal false expression.
 - Required output fields MUST NOT accept nullable or optional refs unless the author explicitly removes the nullish case, for example with `coalesce(...)`.
 
 ### Task Authoring And Runtime Context Types

@@ -16,7 +16,7 @@ Assume the user can run the CLI as `acpus`. If the CLI is unavailable, ask wheth
 | Path | Use when the user asks to... | Start here |
 | --- | --- | --- |
 | Explain | understand Acpus concepts, node types, WorkflowIR, expressions, or durable runs | Answer conceptually; use the focused reference for the topic. |
-| Author / adapt | create or edit a TypeScript workflow module, task, agent, signal, composite, schema, or prompt | Read `references/authoring.md`, then examples under `assets/examples/`. |
+| Author / adapt | create or edit a TypeScript workflow module, task, agent, signal, composite, schema, or prompt | Read `references/authoring.md`, then examples under `examples/workflows/`. |
 | Check | validate a workflow before running it | Use `acpus workflow check <workflow.ts>`; read `references/cli-operations.md`. |
 | Run | start an existing workflow or catalog entry | Use `acpus workflow run <workflow-or-catalog>`; read `references/cli-operations.md`. |
 | Inspect / monitor | inspect a run, pick a run interactively, observe status, diagnose awaiting signal or stale execution | Use `acpus runs inspect [run-id]`; read `references/runtime-recovery.md`. |
@@ -111,8 +111,10 @@ Read only the file needed for the current task:
 | CLI operation defaults and help discovery | `references/cli-operations.md` |
 | Inspecting, monitoring, retry/fork/signal/cancel/pause/resume decisions | `references/runtime-recovery.md` |
 | hooks.json format and hook validation/listing | `references/hooks-json.md` |
-| Release review with inline task, artifact, agent, and assert | `assets/examples/release-review.workflow.ts` |
-| Issue triage with fanout, parallel, switch, companion reusable task module, and agent review | `assets/examples/issue-triage.workflow.ts` |
-| Change approval with agent plan refinement, loop, optional signal, if, and assert | `assets/examples/change-approval.workflow.ts` |
-| Worktree tournament with `createWorktree`, three implementation agents, and a judge | `assets/examples/worktree-tournament.workflow.ts` |
-| Copyable hook config | `assets/hooks.example.json` |
+| Release review with inline task, artifact, agent, and assert | `examples/workflows/release-review/workflow.ts` |
+| Issue triage with fanout, parallel, switch, companion reusable task module, and agent review | `examples/workflows/issue-triage/workflow.ts` |
+| Issue triage companion task module | `examples/workflows/issue-triage/tasks.ts` |
+| Change approval with agent plan refinement, loop, optional signal, if, and assert | `examples/workflows/change-approval/workflow.ts` |
+| Worktree tournament with `createWorktree`, three implementation agents, and a judge | `examples/workflows/worktree-tournament/workflow.ts` |
+| Multi-aspect brainstorm/review workflow | `examples/workflows/multi-aspect-brainstorm/workflow.ts` |
+| Copyable hook config | `examples/hooks.example.json` |

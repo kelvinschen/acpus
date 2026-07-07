@@ -34,6 +34,13 @@ test("loop initial defines non-optional previous and output shape", () => {
     expectTypeOf(state.output.done).toEqualTypeOf<Expr<boolean>>();
     expectTypeOf(state.output.phase).toEqualTypeOf<Expr<Phase>>();
 
+    const counted = step("counted").loop({
+      initial: { ok: false as boolean },
+      maxIterations: 2,
+      do: () => ({ ok: true }),
+    });
+    expectTypeOf(counted.output.ok).toEqualTypeOf<Expr<boolean>>();
+
     step("missing_required").loop({
       initial: { done: false, summary: "seed" },
       maxIterations: 2,

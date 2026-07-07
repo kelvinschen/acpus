@@ -88,7 +88,7 @@ export type NodeDetail =
   | { kind: "switch"; cases: string[]; hasDefault: boolean }
   | { kind: "parallel"; branches: string[]; strategy: "all" | "race" }
   | { kind: "fanout"; over: string; strategy: "all" | "quorum"; count?: number }
-  | { kind: "loop"; maxIterations: number; stopWhen: string };
+  | { kind: "loop"; maxIterations: string; stopWhen: string };
 
 export type WebGraphNode = {
   id: string;
