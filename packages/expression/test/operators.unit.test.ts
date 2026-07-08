@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  add,
   and,
   coalesce,
+  divide,
   eq,
   endsWith,
   every,
@@ -13,6 +15,7 @@ import {
   ifElse,
   includes,
   isEmpty,
+  join,
   len,
   lt,
   lte,
@@ -21,11 +24,14 @@ import {
   max,
   md,
   min,
+  mod,
+  multiply,
   ne,
   not,
   or,
   some,
   startsWith,
+  subtract,
   template,
 } from "@acpus/expression";
 import { refExpr } from "@acpus/expression/ir";
@@ -108,6 +114,17 @@ describe("expression operators", () => {
     expect(min(scores).__ir).toEqual({ kind: "call", fn: "min", args: [scores.__ir] });
   });
 
+  it("lowers arithmetic and string join helpers", () => {
+    const iter = refExpr<number>(["loop", "rounds", "iter"]);
+    const lines = refExpr<readonly string[]>(["input", "lines"]);
+    expect(add(iter, 1).__ir).toEqual({ kind: "call", fn: "add", args: [iter.__ir, { kind: "literal", value: 1 }] });
+    expect(subtract(iter, 1).__ir).toEqual({ kind: "call", fn: "subtract", args: [iter.__ir, { kind: "literal", value: 1 }] });
+    expect(multiply(iter, 2).__ir).toEqual({ kind: "call", fn: "multiply", args: [iter.__ir, { kind: "literal", value: 2 }] });
+    expect(divide(iter, 2).__ir).toEqual({ kind: "call", fn: "divide", args: [iter.__ir, { kind: "literal", value: 2 }] });
+    expect(mod(iter, 2).__ir).toEqual({ kind: "call", fn: "mod", args: [iter.__ir, { kind: "literal", value: 2 }] });
+    expect(join(lines, "\n").__ir).toEqual({ kind: "call", fn: "join", args: [lines.__ir, { kind: "literal", value: "\n" }] });
+  });
+
   it("lowers templates as expression nodes", () => {
     expect(template`count=${len(refExpr<readonly string[]>(["input", "items"]))}`.__ir).toEqual({
       kind: "template",
@@ -163,5 +180,6 @@ describe("expression operators", () => {
     expect(endsWith("release/v1", "v1").__ir).toEqual({ kind: "call", fn: "endsWith", args: [{ kind: "literal", value: "release/v1" }, { kind: "literal", value: "v1" }] });
     expect(matches("release/v1", "^release/").__ir).toEqual({ kind: "call", fn: "matches", args: [{ kind: "literal", value: "release/v1" }, { kind: "literal", value: "^release/" }] });
     expect(coalesce(null, "fallback").__ir).toEqual({ kind: "call", fn: "coalesce", args: [{ kind: "literal", value: null }, { kind: "literal", value: "fallback" }] });
+    expect(add(1, 2).__ir).toEqual({ kind: "call", fn: "add", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: 2 }] });
   });
 });

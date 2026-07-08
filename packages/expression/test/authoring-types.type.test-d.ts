@@ -1,15 +1,21 @@
 import { assertType, test } from "vitest";
 import {
+  add,
   coalesce,
+  divide,
   every,
   filter,
   get,
   head,
   ifElse,
+  join,
   map,
   md,
+  mod,
+  multiply,
   pick,
   some,
+  subtract,
   where,
   type Expr,
   type OutputAccessor,
@@ -49,6 +55,12 @@ test("authoring helpers infer core expression shapes", () => {
   assertType<Expr<string>>(coalesce(maybeName, "unknown"));
   assertType<Expr<string>>(md`hello ${maybeName}`);
   assertType<Expr<string | number>>(ifElse(refExpr<boolean>(["input", "ok"]), "ok", 1));
+  assertType<Expr<number>>(add(1, refExpr<number>(["input", "count"])));
+  assertType<Expr<number>>(subtract(refExpr<number>(["input", "count"]), 1));
+  assertType<Expr<number>>(multiply(refExpr<number>(["input", "count"]), 2));
+  assertType<Expr<number>>(divide(refExpr<number>(["input", "count"]), 2));
+  assertType<Expr<number>>(mod(refExpr<number>(["input", "count"]), 2));
+  assertType<Expr<string>>(join(map(items, item => item.name), "\n"));
   assertType<Expr<boolean>>(where(head(items), { done: true }));
   assertType<Expr<boolean>>(where(maybeName, null));
   assertType<Expr<boolean>>(where(maybeUser, { deletedAt: null, tags: { eq: ["ready"] } }));
@@ -62,6 +74,10 @@ test("authoring helpers reject unknown values where static typing can prove it",
   every(items, () => "done");
   // @ts-expect-error dynamic array get uses numeric keys.
   get(items, "0");
+  // @ts-expect-error arithmetic helpers require number workflow values.
+  add(maybeName, 1);
+  // @ts-expect-error join requires a workflow string array.
+  join(map(items, item => item.score), "\n");
   // @ts-expect-error where rejects unknown typed object keys.
   where(head(items), { missing: true });
   // @ts-expect-error where object sugar reserves operator keys; use eq(user.eq, value) instead.

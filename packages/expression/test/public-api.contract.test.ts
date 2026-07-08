@@ -7,8 +7,10 @@ import * as validator from "@acpus/expression/validator";
 describe("@acpus/expression public API", () => {
   it("exports the root authoring surface", () => {
     expect(Object.keys(expression).sort()).toEqual([
+      "add",
       "and",
       "coalesce",
+      "divide",
       "endsWith",
       "eq",
       "every",
@@ -21,6 +23,7 @@ describe("@acpus/expression public API", () => {
       "includes",
       "isEmpty",
       "isExpr",
+      "join",
       "len",
       "lt",
       "lte",
@@ -29,12 +32,15 @@ describe("@acpus/expression public API", () => {
       "max",
       "md",
       "min",
+      "mod",
+      "multiply",
       "ne",
       "not",
       "or",
       "pick",
       "some",
       "startsWith",
+      "subtract",
       "template",
       "where",
     ]);

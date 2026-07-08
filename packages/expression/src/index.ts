@@ -69,6 +69,16 @@ export function ifElse<C extends boolean, T, E>(condition: WorkflowValue<C>, the
 export function eq<T>(a: WorkflowValue<T>, b: WorkflowValue<T>): Expr<boolean> { return callExpr<boolean>("eq", [a, b]); }
 /** Compares two workflow values for inequality. */
 export function ne<T>(a: WorkflowValue<T>, b: WorkflowValue<T>): Expr<boolean> { return callExpr<boolean>("ne", [a, b]); }
+/** Adds two workflow numbers. */
+export function add(a: WorkflowValue<number>, b: WorkflowValue<number>): Expr<number> { return callExpr<number>("add", [a, b]); }
+/** Subtracts the second workflow number from the first. */
+export function subtract(a: WorkflowValue<number>, b: WorkflowValue<number>): Expr<number> { return callExpr<number>("subtract", [a, b]); }
+/** Multiplies two workflow numbers. */
+export function multiply(a: WorkflowValue<number>, b: WorkflowValue<number>): Expr<number> { return callExpr<number>("multiply", [a, b]); }
+/** Divides the first workflow number by the second. */
+export function divide(a: WorkflowValue<number>, b: WorkflowValue<number>): Expr<number> { return callExpr<number>("divide", [a, b]); }
+/** Returns the remainder of dividing the first workflow number by the second. */
+export function mod(a: WorkflowValue<number>, b: WorkflowValue<number>): Expr<number> { return callExpr<number>("mod", [a, b]); }
 /** Compares two workflow numbers with less-than. */
 export function lt(a: WorkflowValue<number>, b: WorkflowValue<number>): Expr<boolean> { return callExpr<boolean>("lt", [a, b]); }
 /** Compares two workflow numbers with less-than-or-equal. */
@@ -125,6 +135,8 @@ export function filter<T>(array: WorkflowValue<readonly T[]>, predicate: Predica
 export function map<T, R>(array: WorkflowValue<readonly T[]>, mapper: (value: OutputAccessor<T>, index: OutputAccessor<number>) => WorkflowValue<R>): Expr<readonly R[]> {
   return scopedCollection<readonly R[], T>("map", array, mapper);
 }
+/** Joins a workflow string array with a separator. */
+export function join(values: WorkflowValue<readonly string[]>, separator: WorkflowValue<string>): Expr<string> { return callExpr<string>("join", [values, separator]); }
 /** Returns the maximum number from a workflow array. */
 export function max(values: WorkflowValue<readonly number[]>): Expr<number> { return callExpr<number>("max", [values]); }
 /** Returns the minimum number from a workflow array. */

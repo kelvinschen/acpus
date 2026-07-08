@@ -251,4 +251,19 @@ describe("expression validator", () => {
       path: "$.args",
     }]);
   });
+
+  it("accepts arithmetic and join operators with fixed arity", () => {
+    expect(validateExprIR({ kind: "call", fn: "add", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: 2 }] })).toEqual([]);
+    expect(validateExprIR({ kind: "call", fn: "subtract", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: 2 }] })).toEqual([]);
+    expect(validateExprIR({ kind: "call", fn: "multiply", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: 2 }] })).toEqual([]);
+    expect(validateExprIR({ kind: "call", fn: "divide", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: 2 }] })).toEqual([]);
+    expect(validateExprIR({ kind: "call", fn: "mod", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: 2 }] })).toEqual([]);
+    expect(validateExprIR({ kind: "call", fn: "join", args: [{ kind: "array", items: [] }, { kind: "literal", value: "\n" }] })).toEqual([]);
+    expect(validateExprIR({ kind: "call", fn: "join", args: [{ kind: "array", items: [] }] })).toEqual([{
+      code: "EX003",
+      severity: "error",
+      message: "join(...) expected 2 args, got 1.",
+      path: "$.args",
+    }]);
+  });
 });

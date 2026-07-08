@@ -90,7 +90,7 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
     stream.write(`Workflow: ${result.workflow.name}\n`);
     if (result.workflow.description) stream.write(`Description: ${result.workflow.description}\n`);
     stream.write(`IR version: ${result.workflow.irVersion}\n`);
-    stream.write(`Nodes: ${result.workflow.nodeCount}\n`);
+    stream.write(`Static nodes: ${result.workflow.nodeCount}\n`);
     stream.write(`Outputs: ${result.workflow.outputKeys.length ? result.workflow.outputKeys.join(", ") : "(none)"}\n`);
     stream.write(`Diagnostics: ${result.workflow.diagnostics.errors} errors, ${result.workflow.diagnostics.warnings} warnings, ${result.workflow.diagnostics.infos} infos\n`);
   }

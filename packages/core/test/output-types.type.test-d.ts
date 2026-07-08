@@ -1,18 +1,21 @@
 import { assertType, expectTypeOf, test } from "vitest";
 import { defineWorkflow, z, type OutputValues } from "../src/index.js";
-import { get, head, type Expr } from "@acpus/expression";
+import { add, get, head, join, map, template, type Expr } from "@acpus/expression";
 
 test("loop initial defines non-optional previous and output shape", () => {
   defineWorkflow({ name: "typed-loop-output" }).build(({ step }) => {
+    type RoundResult = { round: number; summary: string };
+    const emptyHistory: RoundResult[] = [];
     const loop = step("loop").loop({
-      initial: { done: false as boolean, summary: "seed" },
+      initial: { done: false as boolean, summary: "seed", history: emptyHistory },
       maxIterations: 2,
       do: ({ previous, iter }) => {
         expectTypeOf(previous.summary).toEqualTypeOf<Expr<string>>();
         expectTypeOf(iter).toEqualTypeOf<Expr<number>>();
         return {
           done: false,
-          summary: previous.summary,
+          summary: template`Round ${add(iter, 1)}: ${previous.summary}`,
+          history: previous.history,
         };
       },
       stopWhen: ({ result }) => result.done,
@@ -20,6 +23,8 @@ test("loop initial defines non-optional previous and output shape", () => {
 
     expectTypeOf(loop.output.done).toEqualTypeOf<Expr<boolean>>();
     expectTypeOf(loop.output.summary).toEqualTypeOf<Expr<string>>();
+    expectTypeOf(head(loop.output.history).summary).toEqualTypeOf<Expr<string | undefined>>();
+    assertType<Expr<string>>(join(map(loop.output.history, item => item.summary), "\n"));
 
     type Phase = "pending" | "done";
     const state = step("state").loop({

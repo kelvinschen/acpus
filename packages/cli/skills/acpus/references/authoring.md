@@ -8,9 +8,11 @@ Use TypeScript workflow modules and user-facing facades only:
 
 ```ts
 import { defineWorkflow, task, secret, z } from "acpus/core";
-import { template, md, and, eq, lte, coalesce, len, head, get, filter, map, where, not, or, gte, includes, ifElse, ne, lt, gt, isEmpty, startsWith, endsWith, matches, every, some, max, min, pick } from "acpus/expression";
+import { template, md, and, lte, add, join, map } from "acpus/expression";
 import { createWorktree } from "acpus/tasks/git";
 ```
+
+Import only the helpers the workflow uses. For the complete surface, inspect the declarations listed under Declaration Lookup.
 
 Do not import `@acpus/*` from user workflows; those are implementation packages behind the `acpus/*` facades.
 
@@ -47,16 +49,39 @@ Expression helpers:
 | Do not write | Write |
 | --- | --- |
 | `input.ready && output.ok` | `and(input.ready, output.ok)` |
+| `!input.ready` | `not(input.ready)` |
 | `input.kind === "release"` | `eq(input.kind, "release")` |
 | `risk <= 3` | `lte(risk, 3)` |
+| `iter + 1` | `add(iter, 1)` |
 | `input.maybe ?? "fallback"` | `coalesce(input.maybe, "fallback")` |
 | `` `topic ${input.topic}` `` | `template\`topic ${input.topic}\`` |
 | `input.items.length` | `len(input.items)` |
+| `input.items.map(item => item.id)` | `map(input.items, item => item.id)` |
 | `items[0]` | `head(items)` or `get(items, 0)` |
 
 For collections: `filter(input.items, item => where(item, { tags: { contains: "ready" } }))`, `map(ready, item => item.id)`, `len(ready)`, `coalesce(head(readyIds), "(none)")`.
 
 Use `template` for compact strings and `md` for multiline prompts/messages; `md` trims surrounding blank lines and common indentation while preserving expression interpolation.
+
+Template interpolation renders strings directly, scalar non-strings with `String(value)`, and arrays/objects as compact JSON. Do not rely on array interpolation for Markdown line breaks. Build explicit lines with:
+
+```ts
+join(map(items, item => template`- ${item.id}`), "\n")
+```
+
+Common helper choices:
+
+| Need | Use |
+| --- | --- |
+| Boolean conditions | `not`, `and`, `or`, `ifElse` |
+| Equality and ordering | `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `where` |
+| Counting and arithmetic | `add`, `subtract`, `multiply`, `divide`, `mod` |
+| Nullish fallback | `coalesce(value, fallback)` |
+| Array/string size and access | `len`, `isEmpty`, `head`, `get`, `pick` |
+| Runtime array transforms | `map`, `filter`, `every`, `some` |
+| Markdown lines from arrays | Use `join(map(...), "\n")`; see the example above. |
+
+`map`, `filter`, `every`, and `some` callbacks receive `(item, index)`. Both are expression accessors; `index` is not a JavaScript number. Use `add(index, 1)` for human-facing numbering.
 
 ### Boundary Schemas
 
@@ -155,6 +180,16 @@ Graph-level composites:
 - `loop`: seeded pre-check loop. `maxIterations` counts body executions only; `stopWhen` checks before each body execution.
 
 Composite callbacks receive `{ step }` plus composite-specific values such as `item`, `iter`, and `previous`. Return a plain object to declare composite output; do not add `outputSchema` to composites. For `parallel({ strategy: "race" })`, output is `{ winner, result }`, not a branch-keyed object. For `fanout({ strategy: "quorum", count })`, output is the accepted item array, not an envelope.
+
+Loop callbacks receive `iter` as a 0-based `Expr<number>` and `previous` as the current loop state. For user-facing round numbers, write `add(iter, 1)`. `stopWhen({ iter, result })` is evaluated before the next body execution, so `result` is the latest state being checked.
+
+Loop `initial` drives TypeScript inference. Empty arrays infer as `never[]` unless you anchor the element type:
+
+```ts
+type RoundResult = { round: number; summary: string };
+const emptyHistory: RoundResult[] = [];
+const initial = { history: emptyHistory };
+```
 
 ## Best Practices
 

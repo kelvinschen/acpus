@@ -240,6 +240,8 @@ failures to stable CLI phases and exit codes.
   the same compact run status surface vocabulary as `runs inspect`.
 - Text output MUST summarize successful check, run, inspection, control, doctor,
   and error results in human-readable form.
+- Text workflow summaries MUST label workflow node counts as static graph nodes
+  rather than runtime execution nodes.
 - Text run inspection output MUST render a compact run status surface headed by
   `Run <id>  <workflow-name>  <status>  <duration>`.
 - Text run inspection output MUST append a `Hooks:` section only for terminal

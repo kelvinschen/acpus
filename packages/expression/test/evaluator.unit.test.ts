@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { evaluateExpr, ExpressionEvaluationError, renderTemplate } from "@acpus/expression/evaluator";
-import { coalesce, every, filter, get, ifElse, map, max, min, some, template } from "@acpus/expression";
+import { add, coalesce, divide, every, filter, get, ifElse, join, map, max, min, mod, multiply, some, subtract, template } from "@acpus/expression";
 import { refExpr } from "@acpus/expression/ir";
 
 describe("expression evaluator", () => {
@@ -77,12 +77,32 @@ describe("expression evaluator", () => {
     }, adapter)).toThrow("filter(...) expected boolean, got string.");
   });
 
+  it("evaluates arithmetic helpers with JavaScript number semantics", () => {
+    expect(evaluateExpr(add(2, 3).__ir, adapter)).toBe(5);
+    expect(evaluateExpr(subtract(5, 3).__ir, adapter)).toBe(2);
+    expect(evaluateExpr(multiply(4, 3).__ir, adapter)).toBe(12);
+    expect(evaluateExpr(divide(8, 2).__ir, adapter)).toBe(4);
+    expect(evaluateExpr(mod(7, 3).__ir, adapter)).toBe(1);
+    expect(evaluateExpr(divide(1, 0).__ir, adapter)).toBe(Infinity);
+    expect(Number.isNaN(evaluateExpr(mod(1, 0).__ir, adapter))).toBe(true);
+    expect(evaluateExpr(multiply(Number.MAX_VALUE, Number.MAX_VALUE).__ir, adapter)).toBe(Infinity);
+    expect(() => evaluateExpr(add(1 as any, "x" as any).__ir, adapter)).toThrow("add(...) expected number, got string.");
+  });
+
   it("preserves lambda scope inside templates and static array paths", () => {
     const rows = refExpr<readonly { name: string; tags: readonly string[] }[]>(["input", "rows"]);
     const rowAdapter = {
       resolveRef: () => [{ name: "A", tags: ["ready"] }],
     };
     expect(evaluateExpr(map(rows, row => template`${row.name}:${get(row.tags, 0)}`).__ir, rowAdapter)).toEqual(["A:ready"]);
+    expect(evaluateExpr(join(map(rows, row => template`- ${row.name}:${get(row.tags, 0)}`), "\n").__ir, rowAdapter)).toBe("- A:ready");
+    expect(renderTemplate({
+      kind: "template",
+      parts: [
+        { kind: "text", value: "rows=" },
+        { kind: "expr", expr: map(rows, row => row.name).__ir },
+      ],
+    }, rowAdapter)).toBe("rows=[\"A\"]");
   });
 
   it("fails loudly for unsupported inspected runtime values", () => {

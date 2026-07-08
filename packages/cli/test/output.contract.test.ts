@@ -27,6 +27,18 @@ describe("CLI result output contracts", () => {
     expect(stderr.text).toBe("");
   });
 
+  it("writes workflow summaries with explicit static node wording", () => {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    const exitCode = writeResult(checkResult(), "text", { stdout, stderr }, 0);
+
+    expect(exitCode).toBe(0);
+    expect(stdout.text).toContain("Workflow check passed.");
+    expect(stdout.text).toContain("Static nodes: 1");
+    expect(stdout.text).not.toContain("Nodes: 1");
+    expect(stderr.text).toBe("");
+  });
+
   it("writes text summaries for run inspection", () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();

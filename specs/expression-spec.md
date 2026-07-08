@@ -8,7 +8,7 @@
 
 ### Public API
 
-- The root `@acpus/expression` entrypoint MUST expose the authoring surface: `isExpr`, `not`, `and`, `or`, `ifElse`, `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `coalesce`, `len`, `includes`, `isEmpty`, `startsWith`, `endsWith`, `matches`, `get`, `head`, `every`, `some`, `filter`, `map`, `max`, `min`, `where`, `pick`, `template`, `md`, and the public `Expr`, `OutputAccessor`, and `WorkflowValue` types.
+- The root `@acpus/expression` entrypoint MUST expose the authoring surface: `isExpr`, `not`, `and`, `or`, `ifElse`, `eq`, `ne`, `add`, `subtract`, `multiply`, `divide`, `mod`, `lt`, `lte`, `gt`, `gte`, `coalesce`, `len`, `includes`, `isEmpty`, `startsWith`, `endsWith`, `matches`, `get`, `head`, `every`, `some`, `filter`, `map`, `join`, `max`, `min`, `where`, `pick`, `template`, `md`, and the public `Expr`, `OutputAccessor`, and `WorkflowValue` types.
 - The root `@acpus/expression` entrypoint MUST NOT export raw construction helpers such as `expr`, `refExpr`, or `valueToExprIR`.
 - `@acpus/expression/ir` MUST expose serializable IR and JSON types plus advanced construction helpers needed by package internals and tests, including `tryValueToExprIR`.
 - `@acpus/expression/evaluator` MUST expose generic expression and template evaluators.
@@ -47,11 +47,13 @@
 - Logical helpers MUST include `not`, `and`, and `or`.
 - Conditional expressions MUST use `ifElse`.
 - Comparison helpers MUST include `eq`, `ne`, `lt`, `lte`, `gt`, and `gte`.
+- Arithmetic helpers MUST include `add`, `subtract`, `multiply`, `divide`, and `mod`; they MUST require numeric operands and follow JavaScript number arithmetic.
 - String helpers MUST include `includes`, `startsWith`, `endsWith`, and `matches`.
 - Array/string length helpers MUST include `len` and `isEmpty`.
 - Nullish fallback MUST be represented by `coalesce`; `coalesce` MUST accept at least one operand.
 - `every` and `some` MUST support both boolean arrays and runtime array lambda predicates.
 - `filter` and `map` MUST require runtime array lambda callbacks.
+- `join` MUST accept a string array expression and separator and return the joined string. Authors SHOULD use `join(map(...), "\n")` for Markdown lists instead of relying on template array interpolation.
 - `max` and `min` MUST accept one numeric array expression and MUST follow `Math.max(...values)` and `Math.min(...values)` semantics for JSON-serializable numeric inputs, including empty arrays.
 
 ### Where Filters
@@ -79,7 +81,7 @@
 ## Verification
 
 - Tests MUST cover root and subpath public exports.
-- Tests MUST cover authoring type inference and type-level rejection for helpers, accessors, `where`, `get`, and `pick`.
+- Tests MUST cover authoring type inference and type-level rejection for helpers, accessors, arithmetic, `join`, `where`, `get`, and `pick`.
 - Tests MUST cover lowering for values, operators, templates, lambdas, `where`, and collection helpers.
-- Tests MUST cover evaluator semantics for templates, structural equality, nullish coalescing, collection lambdas, static array paths, and `Math.max` / `Math.min` behavior.
+- Tests MUST cover evaluator semantics for templates, structural equality, nullish coalescing, arithmetic, `join`, collection lambdas, static array paths, and `Math.max` / `Math.min` behavior.
 - Tests MUST cover validator diagnostic codes and paths for malformed expression IR.

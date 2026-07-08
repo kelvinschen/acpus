@@ -69,6 +69,11 @@ function evaluateCall(fn: string, args: ExprIR[], adapter: ExpressionEvaluatorAd
     case "ne":
       requireArity(fn, args, 2);
       return !structuralEqual(requirePresent(fn, evaluate(args[0]!, adapter, env)), requirePresent(fn, evaluate(args[1]!, adapter, env)));
+    case "add": return numericBinary(fn, args, adapter, env, (left, right) => left + right);
+    case "subtract": return numericBinary(fn, args, adapter, env, (left, right) => left - right);
+    case "multiply": return numericBinary(fn, args, adapter, env, (left, right) => left * right);
+    case "divide": return numericBinary(fn, args, adapter, env, (left, right) => left / right);
+    case "mod": return numericBinary(fn, args, adapter, env, (left, right) => left % right);
     case "lt": return compare(fn, args, adapter, env, (left, right) => left < right);
     case "lte": return compare(fn, args, adapter, env, (left, right) => left <= right);
     case "gt": return compare(fn, args, adapter, env, (left, right) => left > right);
@@ -102,6 +107,11 @@ function evaluateCall(fn: string, args: ExprIR[], adapter: ExpressionEvaluatorAd
       return evaluateMap(fn, args, adapter, env);
     case "filter":
       return evaluateFilter(fn, args, adapter, env);
+    case "join":
+      requireArity(fn, args, 2);
+      return arrayArg(fn, evaluate(args[0]!, adapter, env))
+        .map(value => stringArg(fn, value))
+        .join(stringArg(fn, evaluate(args[1]!, adapter, env)));
     case "every":
       return args.length === 1 ? arrayArg(fn, evaluate(args[0]!, adapter, env)).every(value => booleanArg(fn, value)) : evaluateQuantifier(fn, args, adapter, env, false);
     case "some":
@@ -206,6 +216,11 @@ function evaluateLambda(lambda: Extract<ExprIR, { kind: "lambda" }>, values: unk
 function compare(fn: string, args: ExprIR[], adapter: ExpressionEvaluatorAdapter, env: Env, compareValues: (left: number, right: number) => boolean): boolean {
   requireArity(fn, args, 2);
   return compareValues(numberArg(fn, evaluate(args[0]!, adapter, env)), numberArg(fn, evaluate(args[1]!, adapter, env)));
+}
+
+function numericBinary(fn: string, args: ExprIR[], adapter: ExpressionEvaluatorAdapter, env: Env, run: (left: number, right: number) => number): number {
+  requireArity(fn, args, 2);
+  return run(numberArg(fn, evaluate(args[0]!, adapter, env)), numberArg(fn, evaluate(args[1]!, adapter, env)));
 }
 
 function includes(collection: unknown, value: unknown): boolean {
