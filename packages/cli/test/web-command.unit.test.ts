@@ -60,4 +60,43 @@ describe("web command options", () => {
     });
     expect(stderr.text).toBe("");
   });
+
+  it("closes once for repeated shutdown signals", async () => {
+    let resolveClose!: () => void;
+    const close = vi.fn(() => new Promise<void>(resolve => {
+      resolveClose = resolve;
+    }));
+    const startWebServer = vi.fn(async (_options: StartedWebServerOptions) => ({
+      url: "http://localhost:4517",
+      close,
+    }));
+    const exitProcess = vi.fn();
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    const sigintListeners = process.listenerCount("SIGINT");
+    const sigtermListeners = process.listenerCount("SIGTERM");
+
+    const command = createWebCommand({
+      cwd: "/workspace",
+      stdout,
+      stderr,
+      wantsJson: false,
+      startWebServer,
+      exitProcess,
+    }).parseAsync([], { from: "user" });
+    await new Promise(resolve => setImmediate(resolve));
+
+    process.emit("SIGINT");
+    process.emit("SIGINT");
+    process.emit("SIGTERM");
+
+    expect(close).toHaveBeenCalledTimes(1);
+    resolveClose();
+    await command;
+
+    expect(exitProcess).toHaveBeenCalledTimes(1);
+    expect(exitProcess).toHaveBeenCalledWith(0);
+    expect(process.listenerCount("SIGINT")).toBe(sigintListeners);
+    expect(process.listenerCount("SIGTERM")).toBe(sigtermListeners);
+  });
 });

@@ -15,6 +15,7 @@
   "changesets": [
     "early-buckets-drum",
     "fresh-loader-publish",
-    "installed-facade-types"
+    "installed-facade-types",
+    "web-shutdown-signal"
   ]
 }

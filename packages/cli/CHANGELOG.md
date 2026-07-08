@@ -1,5 +1,13 @@
 # acpus
 
+## 0.6.0-alpha.3
+
+### Patch Changes
+
+- Make WebUI shutdown idempotent under repeated Ctrl-C signals.
+- Updated dependencies
+  - @acpus/web@0.1.0-alpha.3
+
 ## 0.6.0-alpha.2
 
 ### Patch Changes

@@ -10,6 +10,7 @@ export type WebCommandContext = {
   wantsJson: boolean;
   startWebServer?: WebServerStarter;
   waitForSignals?: boolean;
+  exitProcess?: (code: number) => never | void;
 };
 
 type WebServerStarter = (options: {
@@ -56,17 +57,37 @@ export function createWebCommand(ctx: WebCommandContext): Command {
 
       if (ctx.waitForSignals === false) return;
 
-      await new Promise<void>(() => {
-        process.on("SIGINT", async () => {
-          await server.close();
-          process.exit(0);
-        });
-        process.on("SIGTERM", async () => {
-          await server.close();
-          process.exit(0);
-        });
-      });
+      await waitForShutdownSignal(server, ctx.exitProcess ?? process.exit);
     });
+}
+
+async function waitForShutdownSignal(
+  server: Awaited<ReturnType<WebServerStarter>>,
+  exitProcess: (code: number) => never | void,
+): Promise<void> {
+  let closing: Promise<void> | undefined;
+
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      process.off("SIGINT", shutdown);
+      process.off("SIGTERM", shutdown);
+    };
+    const shutdown = () => {
+      if (closing) return;
+      closing = server.close();
+      void closing.then(() => {
+        cleanup();
+        exitProcess(0);
+        resolve();
+      }, error => {
+        cleanup();
+        reject(error);
+      });
+    };
+
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
+  });
 }
 
 function parsePort(raw: string | undefined): number | undefined {

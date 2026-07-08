@@ -1,6 +1,6 @@
 {
   "name": "acpus",
-  "version": "0.6.0-alpha.2",
+  "version": "0.6.0-alpha.3",
   "type": "module",
   "description": "Acpus CLI for TypeScript workflow validation and durable run admission.",
   "license": "MIT",

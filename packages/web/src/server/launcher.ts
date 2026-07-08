@@ -39,12 +39,12 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : options.port;
+  let closePromise: Promise<void> | undefined;
 
   return {
     url: `http://${host}:${port}${access.token === undefined ? "" : `/?token=${encodeURIComponent(access.token)}`}`,
     ...(access.token === undefined ? {} : { token: access.token }),
-    close: () =>
-      new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
+    close: () => closePromise ??= new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
   };
 }
 

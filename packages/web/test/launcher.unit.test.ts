@@ -21,4 +21,11 @@ describe("startWebServer access policy", () => {
       await server.close();
     }
   });
+
+  it("allows repeated close calls", async () => {
+    const server = await startWebServer({ cwd: process.cwd() });
+
+    await Promise.all([server.close(), server.close(), server.close()]);
+    await server.close();
+  });
 });
