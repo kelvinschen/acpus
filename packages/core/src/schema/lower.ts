@@ -33,7 +33,16 @@ export function toSchemaIR(schema: Schema<any>, path = "$schema"): SchemaIR {
   );
 }
 
+function withSchemaMetadata(schema: Schema<any>, ir: SchemaIR): SchemaIR {
+  const meta = zod.globalRegistry.get(schema as zod.ZodTypeAny) as any;
+  return typeof meta?.description === "string" ? { ...ir, description: meta.description } : ir;
+}
+
 export function tryToSchemaIR(schema: Schema<any>, path = "$schema"): Result<SchemaIR, SchemaLoweringError> {
+  return lowerSchemaIR(schema, path).map(ir => withSchemaMetadata(schema, ir));
+}
+
+function lowerSchemaIR(schema: Schema<any>, path = "$schema"): Result<SchemaIR, SchemaLoweringError> {
   const meta = zod.globalRegistry.get(schema as zod.ZodTypeAny) as any;
   const acpus = meta?.acpus as { kind?: string } | undefined;
   if (acpus?.kind === "path") return ok({ kind: "path" });
@@ -114,6 +123,8 @@ export function tryToSchemaIR(schema: Schema<any>, path = "$schema"): Result<Sch
     default: return unsupported(path, kind, `unsupported Zod schema type '${kind}'`);
   }
 }
+
+
 
 function objectToSchemaIR(schema: Schema<any>, path: string): Result<SchemaIR, SchemaLoweringError> {
   const def = defOf(schema);

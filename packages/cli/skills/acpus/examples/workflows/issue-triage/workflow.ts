@@ -7,12 +7,12 @@ export default defineWorkflow({
   description: "Triage repository issues with metadata summarization, agent review, and routing decisions.",
   inputSchema: z.object({
     issues: z.array(z.object({
-      id: z.string(),
-      title: z.string(),
-      body: z.string(),
-      labels: z.array(z.string()).default([]),
-    })),
-    repoPath: z.path(),
+      id: z.string().describe("Stable issue identifier used for fanout keys and route messages."),
+      title: z.string().describe("Issue title to show the triage agent and queue actions."),
+      body: z.string().describe("Issue body or description to triage."),
+      labels: z.array(z.string()).default([]).describe("Optional issue labels available to metadata and triage steps."),
+    })).describe("Issues to triage in parallel."),
+    repoPath: z.path().describe("Repository path where the triage agent should inspect context."),
   }),
   agents: {
     triager: { use: "codex" },

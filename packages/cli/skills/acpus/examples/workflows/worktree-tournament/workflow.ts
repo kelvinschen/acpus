@@ -2,21 +2,17 @@ import { defineWorkflow, z } from "acpus/core";
 import { md, template } from "acpus/expression";
 import { createWorktree } from "acpus/tasks/git";
 
-const ImplementationOut = z.object({
-  changedFiles: z.array(z.string()),
-  summary: z.string(),
-  testCommand: z.string().default(""),
-});
-
 export default defineWorkflow({
   name: "worktree-tournament",
   description: "Create competing worktree implementations and have an agent judge the best result.",
   inputSchema: z.object({
-    repoPath: z.path(),
-    worktreeRoot: z.path(),
-    task: z.string(),
-    baseRef: z.string().default("HEAD"),
-    forceRemove: z.boolean().default(false),
+    repoPath: z.path().describe("Source repository path used to create candidate worktrees and run the judge."),
+    worktreeRoot: z.path().describe("Directory where per-run candidate worktrees should be created."),
+    task: z.string().describe("Implementation task each candidate agent should attempt independently."),
+    baseRef: z.string().default("HEAD").describe("Git ref used as the base for each candidate worktree."),
+    forceRemove: z.boolean().default(false).describe(
+      "Whether createWorktree may remove an existing candidate worktree path before recreating it.",
+    ),
   }),
   agents: {
     implementer: { use: "codex" },
@@ -52,7 +48,6 @@ export default defineWorkflow({
           });
 
           const implementation = step("implement_alpha").agent({
-            outputSchema: ImplementationOut,
             run: {
               agent: agents.implementer,
               cwd: worktree.output.worktreePath,
@@ -61,7 +56,10 @@ export default defineWorkflow({
 
                 Task: ${input.task}
 
-                Return changed files, a concise summary, and the test command you ran.
+                Return a Markdown implementation report with:
+                - Changed files
+                - Implementation summary
+                - Test command run, or "not run" with the reason
               `,
             },
             timeout: "45m",
@@ -70,9 +68,7 @@ export default defineWorkflow({
           return {
             lane: "alpha",
             worktreePath: worktree.output.worktreePath,
-            changedFiles: implementation.output.changedFiles,
-            summary: implementation.output.summary,
-            testCommand: implementation.output.testCommand,
+            report: implementation.output,
           };
         },
       },
@@ -92,7 +88,6 @@ export default defineWorkflow({
           });
 
           const implementation = step("implement_beta").agent({
-            outputSchema: ImplementationOut,
             run: {
               agent: agents.implementer,
               cwd: worktree.output.worktreePath,
@@ -101,7 +96,10 @@ export default defineWorkflow({
 
                 Task: ${input.task}
 
-                Return changed files, a concise summary, and the test command you ran.
+                Return a Markdown implementation report with:
+                - Changed files
+                - Implementation summary
+                - Test command run, or "not run" with the reason
               `,
             },
             timeout: "45m",
@@ -110,9 +108,7 @@ export default defineWorkflow({
           return {
             lane: "beta",
             worktreePath: worktree.output.worktreePath,
-            changedFiles: implementation.output.changedFiles,
-            summary: implementation.output.summary,
-            testCommand: implementation.output.testCommand,
+            report: implementation.output,
           };
         },
       },
@@ -132,7 +128,6 @@ export default defineWorkflow({
           });
 
           const implementation = step("implement_gamma").agent({
-            outputSchema: ImplementationOut,
             run: {
               agent: agents.implementer,
               cwd: worktree.output.worktreePath,
@@ -141,7 +136,10 @@ export default defineWorkflow({
 
                 Task: ${input.task}
 
-                Return changed files, a concise summary, and the test command you ran.
+                Return a Markdown implementation report with:
+                - Changed files
+                - Implementation summary
+                - Test command run, or "not run" with the reason
               `,
             },
             timeout: "45m",
@@ -150,9 +148,7 @@ export default defineWorkflow({
           return {
             lane: "gamma",
             worktreePath: worktree.output.worktreePath,
-            changedFiles: implementation.output.changedFiles,
-            summary: implementation.output.summary,
-            testCommand: implementation.output.testCommand,
+            report: implementation.output,
           };
         },
       },
@@ -171,6 +167,8 @@ export default defineWorkflow({
         Judge the best implementation for this task.
 
         Task: ${input.task}
+
+        Each candidate includes its lane, worktree path, and Markdown implementation report.
 
         Alpha: ${candidates.output.alpha}
         Beta: ${candidates.output.beta}

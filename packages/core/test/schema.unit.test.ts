@@ -35,6 +35,24 @@ describe("schema boundary lowering", () => {
     expect(ir.fields.scores).toEqual({ kind: "record", value: { kind: "number" } });
   });
 
+  it("preserves Zod descriptions in durable SchemaIR", () => {
+    const schema = z.object({
+      repoPath: z.path().describe("Repository path."),
+      title: z.string().describe("Human-readable title."),
+      notes: z.string().default("").describe("Optional notes."),
+    }).describe("Workflow input.");
+
+    expect(toSchemaIR(schema)).toMatchObject({
+      kind: "object",
+      description: "Workflow input.",
+      fields: {
+        repoPath: { kind: "path", description: "Repository path." },
+        title: { kind: "string", description: "Human-readable title." },
+        notes: { kind: "string", optional: true, default: "", description: "Optional notes." },
+      },
+    });
+  });
+
   it("rejects unsupported graph-boundary schemas with the failing path", () => {
     expect(() => toSchemaIR(z.object({ createdAt: z.date() }))).toThrow(
       "$schema.createdAt: Zod 'date' is not supported as an Acpus graph-boundary schema",

@@ -39,8 +39,8 @@ import { defineWorkflow, z } from "acpus/core";
 import { template, and, lte } from "acpus/expression";
 
 export default defineWorkflow({
-  name: "release-review",
-  description: "Review a release diff for ship readiness.",
+  name: "diff-review",
+  description: "Review a repository diff for readiness.",
   inputSchema: z.object({ repoPath: z.path(), headRef: z.string().default("HEAD") }),
   agents: {
     reviewer: { use: "codex" },
@@ -111,10 +111,10 @@ Read only the file needed for the current task:
 | CLI operation defaults and help discovery | `references/cli-operations.md` |
 | Inspecting, monitoring, retry/fork/signal/cancel/pause/resume decisions | `references/runtime-recovery.md` |
 | hooks.json format and hook validation/listing | `references/hooks-json.md` |
-| Release review with inline task, artifact, agent, and assert | `examples/workflows/release-review/workflow.ts` |
+| Adversarial review with dynamic lenses, fanout, cross-critique, and structured synthesis | `examples/workflows/adversarial-review/workflow.ts` |
 | Issue triage with fanout, parallel, switch, companion reusable task module, and agent review | `examples/workflows/issue-triage/workflow.ts` |
 | Issue triage companion task module | `examples/workflows/issue-triage/tasks.ts` |
 | Change approval with agent plan refinement, loop, optional signal, if, and assert | `examples/workflows/change-approval/workflow.ts` |
 | Worktree tournament with `createWorktree`, three implementation agents, and a judge | `examples/workflows/worktree-tournament/workflow.ts` |
-| Multi-aspect brainstorm/review workflow | `examples/workflows/multi-aspect-brainstorm/workflow.ts` |
+| Multi-aspect brainstorm workflow | `examples/workflows/multi-aspect-brainstorm/workflow.ts` |
 | Copyable hook config | `examples/hooks.example.json` |
