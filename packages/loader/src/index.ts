@@ -44,7 +44,7 @@ export function officialAuthoringTypeScriptPaths(fromDir: string): OfficialTypeS
   let usesSource = false;
   for (const specifier of Object.keys(officialTargets)) {
     const resolved = resolveOfficialImport(specifier);
-    paths[specifier] = [configRelative(fromDir, fileURLToPath(resolved.url))];
+    paths[specifier] = [configRelative(fromDir, typecheckImportPath(resolved))];
     usesSource ||= resolved.usesSource;
   }
   return { paths, usesSource };
@@ -90,6 +90,13 @@ function resolveOfficialImport(specifier: string): { url: string; usesSource: bo
 function sourceURL(target: ImplementationSpecifier): string | undefined {
   const candidate = new URL(sourceTargets[target], import.meta.url);
   return existsSync(fileURLToPath(candidate)) ? candidate.href : undefined;
+}
+
+function typecheckImportPath(resolved: { url: string; usesSource: boolean }): string {
+  const path = fileURLToPath(resolved.url);
+  if (resolved.usesSource || !path.endsWith(".js")) return path;
+  const declarations = `${path.slice(0, -3)}.d.ts`;
+  return existsSync(declarations) ? declarations : path;
 }
 
 function configRelative(fromDir: string, to: string): string {

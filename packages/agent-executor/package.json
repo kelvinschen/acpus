@@ -1,6 +1,6 @@
 {
   "name": "@acpus/agent-executor",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "type": "module",
   "description": "Acpus acpx-backed ACP agent turn execution.",
   "license": "MIT",

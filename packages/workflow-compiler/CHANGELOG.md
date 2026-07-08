@@ -1,5 +1,16 @@
 # @acpus/workflow-compiler
 
+## 0.1.0-alpha.2
+
+### Patch Changes
+
+- Fix installed workflow typechecking for Acpus authoring facade imports.
+- Updated dependencies
+  - @acpus/core@0.7.0-alpha.2
+  - @acpus/expression@0.1.0-alpha.2
+  - @acpus/loader@0.1.0-alpha.2
+  - @acpus/tasks@0.1.0-alpha.2
+
 ## 0.1.0-alpha.1
 
 ### Patch Changes

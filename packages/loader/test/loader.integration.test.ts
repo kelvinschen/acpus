@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
@@ -239,7 +239,70 @@ console.log(JSON.stringify({ taskish: Boolean(token && typeof token === "object"
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  it("returns declaration paths for installed package typecheck configs", async () => {
+    const root = await mkdtemp(join(packageRoot, ".test-installed-"));
+    try {
+      const loaderDist = join(root, "node_modules", "@acpus", "loader", "dist");
+      await execFileAsync("pnpm", [
+        "exec",
+        "tsc",
+        "-p",
+        "packages/loader/tsconfig.json",
+        "--outDir",
+        loaderDist,
+        "--tsBuildInfoFile",
+        join(loaderDist, ".tsbuildinfo"),
+      ], { cwd: repoRoot });
+      await writeInstalledPackage(root, "@acpus/core", {
+        ".": "dist/index",
+      });
+      await writeInstalledPackage(root, "@acpus/expression", {
+        ".": "dist/index",
+      });
+      await writeInstalledPackage(root, "@acpus/tasks", {
+        "./git": "dist/git",
+      });
+
+      const cwd = join(root, "workspace");
+      await mkdir(cwd);
+      const stdout = await runPlainNodeScript(`
+import { officialAuthoringTypeScriptPaths } from ${JSON.stringify(pathToFileURL(join(loaderDist, "index.js")).href)};
+console.log(JSON.stringify(officialAuthoringTypeScriptPaths(${JSON.stringify(cwd)})));
+`);
+      const result = JSON.parse(stdout) as ReturnType<typeof officialAuthoringTypeScriptPaths>;
+
+      expect(result.usesSource).toBe(false);
+      expect(result.paths["acpus/core"]?.[0]).toMatch(/@acpus\/core\/dist\/index\.d\.ts$/);
+      expect(result.paths["acpus/expression"]?.[0]).toMatch(/@acpus\/expression\/dist\/index\.d\.ts$/);
+      expect(result.paths["acpus/tasks/git"]?.[0]).toMatch(/@acpus\/tasks\/dist\/git\.d\.ts$/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
+
+async function writeInstalledPackage(root: string, name: string, entries: Record<string, string>): Promise<void> {
+  const packageDir = join(root, "node_modules", name);
+  await mkdir(packageDir, { recursive: true });
+  const exports = Object.fromEntries(Object.entries(entries).map(([specifier, target]) => [
+    specifier,
+    {
+      types: `./${target}.d.ts`,
+      default: `./${target}.js`,
+    },
+  ]));
+  await writeFile(join(packageDir, "package.json"), JSON.stringify({
+    name,
+    type: "module",
+    exports: entries["."] ? exports["."] : exports,
+  }));
+  for (const target of Object.values(entries)) {
+    await mkdir(dirname(join(packageDir, target)), { recursive: true });
+    await writeFile(join(packageDir, `${target}.js`), "export {};\n");
+    await writeFile(join(packageDir, `${target}.d.ts`), "export {};\n");
+  }
+}
 
 async function runNodeLoaderScript(script: string): Promise<string> {
   const result = await execFileAsync(process.execPath, [
