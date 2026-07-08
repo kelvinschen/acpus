@@ -1,11 +1,59 @@
 import { describe, expect, it } from "vitest";
 import { lstat, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { getCliPackageInfo } from "../src/commands/version.js";
 import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
 import { withTestWorkspace } from "./support/workspace.js";
 
 describe("CLI program usage contracts", () => {
+  it("prints the package version through conventional version flags", async () => {
+    const version = getCliPackageInfo().version;
+
+    for (const flag of ["--version", "-V"]) {
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exitCode = await runCli([flag], {
+        cwd: process.cwd(),
+        stdout,
+        stderr,
+      });
+
+      expect(exitCode).toBe(0);
+      expect(stdout.text).toBe(`${version}\n`);
+      expect(stderr.text).toBe("");
+    }
+
+    const jsonStdout = new CaptureStream();
+    const jsonStderr = new CaptureStream();
+    const jsonExitCode = await runCli(["--json", "--version"], {
+      cwd: process.cwd(),
+      stdout: jsonStdout,
+      stderr: jsonStderr,
+    });
+
+    expect(jsonExitCode).toBe(0);
+    expect(jsonStdout.text).toBe(`${version}\n`);
+    expect(jsonStderr.text).toBe("");
+  });
+
+  it("prints the package version through the version command", async () => {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    const version = getCliPackageInfo().version;
+
+    const exitCode = await runCli(["version"], {
+      cwd: process.cwd(),
+      stdout,
+      stderr,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout.text).toBe(`${version}\n`);
+    expect(stderr.text).toBe("");
+  });
+
+
   it("returns structured JSON for commander usage errors", async () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();

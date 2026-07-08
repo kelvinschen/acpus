@@ -20,6 +20,8 @@ failures to stable CLI phases and exit codes.
 - The `acpus` package MUST NOT expose a root authoring entrypoint that mixes
   workflow DSL, expression helpers, and task libraries.
 - The CLI command surface MUST be implemented with Commander.
+- The CLI MUST support `acpus --version`, `acpus -V`, and `acpus version`
+  as version interfaces that report the `acpus` CLI package version.
 - The CLI MUST support `acpus wf` as an alias for `acpus workflow`.
 - The CLI MUST NOT support `acpus workflows` as a compatibility command.
 - The CLI MUST support `acpus workflow check <workflow-module>`.

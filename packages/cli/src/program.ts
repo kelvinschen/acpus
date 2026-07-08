@@ -4,6 +4,7 @@ import { createDoctorCommand } from "./commands/doctor.js";
 import { createHooksCommand } from "./commands/hooks.js";
 import { createRunsCommand } from "./commands/runs.js";
 import { createSkillCommand } from "./commands/skill.js";
+import { createVersionCommand, getCliPackageInfo } from "./commands/version.js";
 import { createWebCommand } from "./commands/web.js";
 import { createWorkflowCommand } from "./commands/workflow.js";
 import { CliError, usageError } from "./errors.js";
@@ -32,7 +33,7 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
       return writeResult(error.result, wantsJson ? "json" : "text", io, error.exitCode);
     }
     if (error instanceof CommanderError) {
-      if (error.code === "commander.helpDisplayed") return error.exitCode;
+      if (error.code === "commander.helpDisplayed" || error.code === "commander.version") return error.exitCode;
       if (wantsJson) {
         const result = usageError(error.message).result;
         return writeResult(result, "json", io, 2);
@@ -48,6 +49,7 @@ function createProgram(io: CliIo, setExitCode: (code: number) => void, wantsJson
   const program = new Command()
     .name("acpus")
     .description("Acpus TypeScript workflow CLI.")
+    .version(getCliPackageInfo().version)
     .exitOverride()
     .helpCommand(false)
     .showHelpAfterError()
@@ -83,6 +85,10 @@ function createProgram(io: CliIo, setExitCode: (code: number) => void, wantsJson
   program.addCommand(createSkillCommand({
     ...io,
     wantsJson,
+    setExitCode,
+  }));
+  program.addCommand(createVersionCommand({
+    stdout: io.stdout,
     setExitCode,
   }));
   program.addCommand(createWebCommand({
