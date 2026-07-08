@@ -1,5 +1,13 @@
 # @acpus/tasks
 
+## 0.1.0-alpha.1
+
+### Patch Changes
+
+- Republish the alpha package graph with built loader artifacts included.
+- Updated dependencies
+  - @acpus/core@0.7.0-alpha.1
+
 ## 0.1.0-alpha.0
 
 ### Minor Changes

@@ -1,5 +1,17 @@
 # @acpus/runtime
 
+## 0.9.0-alpha.1
+
+### Patch Changes
+
+- Republish the alpha package graph with built loader artifacts included.
+- Updated dependencies
+  - @acpus/agent-executor@0.1.0-alpha.1
+  - @acpus/core@0.7.0-alpha.1
+  - @acpus/expression@0.1.0-alpha.1
+  - @acpus/loader@0.1.0-alpha.1
+  - @acpus/tasks@0.1.0-alpha.1
+
 ## 0.9.0-alpha.0
 
 ### Minor Changes

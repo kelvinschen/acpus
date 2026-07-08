@@ -1,5 +1,18 @@
 # acpus
 
+## 0.6.0-alpha.1
+
+### Patch Changes
+
+- Republish the alpha package graph with built loader artifacts included.
+- Updated dependencies
+  - @acpus/core@0.7.0-alpha.1
+  - @acpus/expression@0.1.0-alpha.1
+  - @acpus/runtime@0.9.0-alpha.1
+  - @acpus/tasks@0.1.0-alpha.1
+  - @acpus/web@0.1.0-alpha.1
+  - @acpus/workflow-compiler@0.1.0-alpha.1
+
 ## 0.6.0-alpha.0
 
 ### Minor Changes

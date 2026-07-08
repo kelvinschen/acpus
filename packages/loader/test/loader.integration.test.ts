@@ -9,11 +9,10 @@ import { importAuthoringModule, officialAuthoringTypeScriptPaths } from "../src/
 
 const execFileAsync = promisify(execFile);
 const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
+const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const coreEntry = new URL("../../core/src/index.ts", import.meta.url).href;
 const loaderEntry = pathToFileURL(fileURLToPath(new URL("../src/index.ts", import.meta.url))).href;
 const tsxImport = import.meta.resolve("tsx");
-
-const loaderDist = fileURLToPath(new URL("../dist/index.js", import.meta.url));
 
 describe("authoring loader", () => {
   it("imports a clean TypeScript task module through official facades without user config", async () => {
@@ -182,8 +181,18 @@ try {
 
   it("registers TypeScript loading from the built package without ambient tsx", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "acpus-authoring-no-ambient-"));
+    const buildDir = await mkdtemp(join(packageRoot, ".test-loader-dist-"));
     try {
-      await execFileAsync("pnpm", ["--filter", "@acpus/loader", "build"], { cwd: repoRoot });
+      await execFileAsync("pnpm", [
+        "exec",
+        "tsc",
+        "-p",
+        "packages/loader/tsconfig.json",
+        "--outDir",
+        buildDir,
+        "--tsBuildInfoFile",
+        join(buildDir, ".tsbuildinfo"),
+      ], { cwd: repoRoot });
       const workflow = join(cwd, "index.workflow.ts");
       await writeFile(join(cwd, "package.json"), JSON.stringify({ type: "module" }));
       await writeFile(workflow, "");
@@ -197,7 +206,7 @@ export default task.define({
 `);
 
       const stdout = await runPlainNodeScript(`
-import { importAuthoringModule } from ${JSON.stringify(pathToFileURL(loaderDist).href)};
+import { importAuthoringModule } from ${JSON.stringify(pathToFileURL(join(buildDir, "index.js")).href)};
 
 const mod = await importAuthoringModule("./tasks/normalize.task.js", {
   parentURL: ${JSON.stringify(pathToFileURL(workflow).href)},
@@ -209,7 +218,7 @@ console.log(JSON.stringify({ taskish: Boolean(token && typeof token === "object"
       expect(JSON.parse(stdout)).toEqual({ taskish: true });
     } finally {
       await rm(cwd, { recursive: true, force: true });
-      await rm(join(repoRoot, "packages", "loader", "dist"), { recursive: true, force: true });
+      await rm(buildDir, { recursive: true, force: true });
     }
   });
 

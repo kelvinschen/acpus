@@ -60,6 +60,9 @@ jobs:
           git commit -m "chore: version alpha packages" || echo "No version changes to commit"
           git push origin HEAD:${GITHUB_REF_NAME}
 
+      - name: Build publish artifacts
+        run: pnpm build:clean
+
       - name: Publish alpha packages
         run: pnpm ci:publish
         env:

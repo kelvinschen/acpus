@@ -13,6 +13,7 @@
     "@acpus/workflow-compiler": "0.0.0"
   },
   "changesets": [
-    "early-buckets-drum"
+    "early-buckets-drum",
+    "fresh-loader-publish"
   ]
 }

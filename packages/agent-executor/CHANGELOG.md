@@ -1,5 +1,11 @@
 # @acpus/agent-executor
 
+## 0.1.0-alpha.1
+
+### Patch Changes
+
+- Republish the alpha package graph with built loader artifacts included.
+
 ## 0.1.0-alpha.0
 
 ### Minor Changes
