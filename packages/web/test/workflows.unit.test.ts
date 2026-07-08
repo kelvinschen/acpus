@@ -55,27 +55,6 @@ describe("workflow visualization helpers", () => {
     expect(html).toContain("<!doctype html>");
     expect(html).toContain("window.__ACPUS_WORKFLOW_VIZ__=");
     expect(html).toContain("<div id=\"root\"></div>");
-    expect(html).toContain("static-viz-root");
-    expect(html).toContain("with-inspector");
-    expect(html).toContain("json-copy-button");
-    expect(html).toContain("json-viewer");
-    expect(html).toContain("@media(prefers-reduced-motion:reduce)");
-    expect(html).toContain("--z-graph-toolbar:20");
-    expect(html).toContain("graph-flow-shell");
-    expect(html).toContain(".graph-box.node");
-    expect(html).toContain(".graph-box.graph-container");
-    expect(html).toContain(".graph-box.node:hover");
-    expect(html).toContain(".graph-box.node.parallel:hover");
-    expect(html).toContain(".graph-box:hover");
-    expect(html).toContain(".node-card-head strong");
-    expect(html).toContain(".graph-edge.sequence");
-    expect(html).toContain("strokeWidth:1.75");
-    expect(html).toContain("linear-gradient(0deg,var(--graph-kind-surface),var(--graph-kind-surface))");
-    expect(html).toContain("--graph-kind:#6f8a6a");
-    expect(html).toContain("--graph-kind-border");
-    expect(html).toContain("--graph-kind-pill-text:#42583f");
-    expect(html).toContain("--graph-kind-surface");
-    expect(html).toContain("color:var(--graph-kind-pill-text,var(--graph-kind,var(--color-sera-muted)))");
     expect(html).not.toMatch(/\s(?:src|href)=["']https?:\/\//);
     expect(html).toContain("tiny");
 

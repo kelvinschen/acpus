@@ -199,15 +199,15 @@ describe("WorkflowIR diagnostics contract", () => {
           command: "acpx worker",
           model: "gpt-5.4",
         },
-        old_policy: {
+        extra_definition_field: {
           kind: "agent_definition",
           use: "codex",
-          policy: "read",
+          extra: true,
         },
-        old_options: {
+        extra_command_field: {
           kind: "agent_command",
           command: "acpx worker",
-          options: { mode: "batch" },
+          extra: true,
         },
         bad_permission: {
           kind: "agent_definition",
@@ -250,11 +250,11 @@ describe("WorkflowIR diagnostics contract", () => {
     }));
     expect(diagnostics).toContainEqual(expect.objectContaining({
       code: "IR001",
-      path: "agents.old_policy.policy",
+      path: "agents.extra_definition_field.extra",
     }));
     expect(diagnostics).toContainEqual(expect.objectContaining({
       code: "IR001",
-      path: "agents.old_options.options",
+      path: "agents.extra_command_field.extra",
     }));
     expect(diagnostics).toContainEqual(expect.objectContaining({
       code: "A002",

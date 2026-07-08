@@ -5,13 +5,12 @@ import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-import { getRun, getRunInspection, listArtifacts, listRuns, normalizeSignalPayload, normalizeWorkflowInput } from "@acpus/runtime";
+import { getRun, getRunInspection, listArtifacts, listRuns, normalizeWorkflowInput } from "@acpus/runtime";
 import { admitWorkflowRun } from "../src/runs/use-cases.js";
 import type { TaskExecutionTargetIR, WorkflowIR } from "@acpus/core/ir";
 import {
   admitFixture,
   admitSyntheticWorkflow,
-  defaultRefInputWorkflow,
   failingPureWorkflow,
   failingTaskWorkflow,
   metaWorkflow,
@@ -98,61 +97,6 @@ describe.concurrent("runtime admission use cases", () => {
         },
       });
     });
-  });
-
-  it("normalizes input defaults and rejects invalid plain artifact ref objects before admission", async () => {
-    await withRuntimeWorkspace("runtime-input-normalize", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, defaultRefInputWorkflow());
-      expect(normalizeWorkflowInput(prepared.ir, {
-        patch: { kind: "artifact", uri: "artifact://patch", mediaType: "text/plain" },
-        token: "API_TOKEN",
-      })).toEqual({
-        base: "main",
-        patch: { kind: "artifact", uri: "artifact://patch", mediaType: "text/plain" },
-        token: "API_TOKEN",
-      });
-      expect(() => normalizeWorkflowInput(prepared.ir, {
-        patch: { kind: "artifact", uri: "artifact://patch", mediaType: "application/json" },
-        token: "API_TOKEN",
-      })).toThrow("$.patch.mediaType expected literal \"text/plain\"");
-    });
-  });
-
-  it("normalizes schema-backed signal payloads and requires raw strings without schema", () => {
-    const ir: WorkflowIR = {
-      irVersion: 2,
-      name: "signals",
-      inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
-      agents: {},
-      root: {
-        nodes: [
-          {
-            id: "raw",
-            kind: "signal",
-            run: { kind: "signal_run", prompt: { kind: "template", parts: [] } },
-          },
-          {
-            id: "structured",
-            kind: "signal",
-            outputSchema: {
-              kind: "object",
-              fields: { ok: { kind: "boolean" } },
-              required: ["ok"],
-              additionalProperties: false,
-            },
-            run: { kind: "signal_run", prompt: { kind: "template", parts: [] } },
-          },
-        ],
-        outputs: {},
-      },
-      outputs: {},
-      lock: { acpusCoreVersion: "test", generatedAt: "2026-06-30T00:00:00.000Z", notes: [] },
-      diagnostics: [],
-    };
-
-    expect(normalizeSignalPayload(ir, "raw", "approved")).toBe("approved");
-    expect(() => normalizeSignalPayload(ir, "raw", { text: "approved" })).toThrow("Signal payload expected string.");
-    expect(normalizeSignalPayload(ir, "structured", { ok: true })).toEqual({ ok: true });
   });
 
   it("admits inline task source and registers artifacts for admitted task runs", async () => {

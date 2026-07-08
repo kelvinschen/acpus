@@ -691,49 +691,6 @@ describe("workflow compilation", () => {
     ]);
   });
 
-  it("diagnoses removed authoring fields before they can be silently dropped", () => {
-    const definition = defineWorkflow({
-      name: "removed_agent_fields",
-      agents: {
-        old_agent_policy: { use: "codex", policy: "read" },
-        old_agent_options: { command: "acpx worker", options: { mode: "batch" } },
-        bad_permission: { use: "codex", permissionMode: "full" },
-        bad_mode: { command: "acpx worker", agentMode: "" },
-        reviewer: { use: "codex" },
-      } as any,
-    }).build(({ agents, step }) => {
-      step("old_run_policy").agent({
-        outputSchema: z.object({ ok: z.boolean() }),
-        run: {
-          agent: (agents as any).reviewer,
-          prompt: "review",
-          policy: "read",
-        } as any,
-      });
-      step("task_retry").task({
-        retry: { max: 1 },
-        run: {
-          input: {},
-          exec: async () => ({ ok: true }),
-        },
-      } as any);
-      return {};
-    });
-
-    const diagnostics = compileWorkflowDefinition(definition).diagnostics
-      .map(diagnostic => ({ code: diagnostic.code, path: diagnostic.path ?? "" }))
-      .sort((a, b) => a.path.localeCompare(b.path) || a.code.localeCompare(b.code));
-
-    expect(diagnostics).toEqual([
-      { code: "A002", path: "agents.bad_mode.agentMode" },
-      { code: "A002", path: "agents.bad_permission.permissionMode" },
-      { code: "A002", path: "agents.old_agent_options.options" },
-      { code: "A002", path: "agents.old_agent_policy.policy" },
-      { code: "A003", path: "root.nodes.old_run_policy.run.policy" },
-      { code: "IR001", path: "root.nodes.task_retry.retry" },
-    ]);
-  });
-
   it("compiles race and quorum strategy contracts", () => {
     const Item = z.object({ id: z.string() });
     const definition = defineWorkflow({

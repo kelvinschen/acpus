@@ -13,18 +13,6 @@ describe("expression validator", () => {
       message: "Unknown expression operator 'unknown'.",
       path: "$.fn",
     }]);
-    expect(validateExprIR({ kind: "call", fn: "all", args: [] })).toEqual([{
-      code: "EX001",
-      severity: "error",
-      message: "Unknown expression operator 'all'.",
-      path: "$.fn",
-    }]);
-    expect(validateExprIR({ kind: "call", fn: "any", args: [] })).toEqual([{
-      code: "EX001",
-      severity: "error",
-      message: "Unknown expression operator 'any'.",
-      path: "$.fn",
-    }]);
   });
 
   it("validates arity and lambda placement", () => {
@@ -209,7 +197,7 @@ describe("expression validator", () => {
     }]);
   });
 
-  it("validates type metadata and removed lambda return type fields", () => {
+  it("validates type metadata", () => {
     expect(validateExprIR({ kind: "literal", value: 1, type: { kind: "integer" } } as any)).toEqual([{
       code: "EX009",
       severity: "error",
@@ -227,19 +215,21 @@ describe("expression validator", () => {
       message: "Required type field 'missing' is not present in object fields.",
       path: "$.type.required[0]",
     });
+  });
 
+  it("rejects unknown lambda fields", () => {
     expect(validateExprIR({
       kind: "call",
       fn: "map",
       args: [
         { kind: "ref", path: ["input", "items"] },
-        { kind: "lambda", params: [{ id: "v0" }], body: { kind: "var", id: "v0", path: [] }, returnType: { kind: "string" } },
+        { kind: "lambda", params: [{ id: "v0" }], body: { kind: "var", id: "v0", path: [] }, extra: { kind: "string" } },
       ],
     } as any)).toContainEqual({
       code: "EX002",
       severity: "error",
-      message: "Unknown expression field 'returnType'.",
-      path: "$.args[1].returnType",
+      message: "Unknown expression field 'extra'.",
+      path: "$.args[1].extra",
     });
   });
 

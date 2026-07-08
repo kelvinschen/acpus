@@ -17,7 +17,7 @@ describe("workflow catalog discovery", () => {
         await workflowPackage(join(home, ".acpus", "workflows"), "deploy");
         await workflowPackage(join(home, ".acpus", "workflows"), "shared");
         await workflowPackage(join(home, ".acpus", "workflows"), "Bad");
-        await legacyIndexWorkflowPackage(join(workspace, ".acpus", "workflows"), "legacy");
+        await ignoredIndexWorkflowFilePackage(join(workspace, ".acpus", "workflows"), "index-file");
         await writeFile(join(workspace, ".acpus", "workflows", "loose.workflow.ts"), workflowSource("loose"));
         await mkdir(join(workspace, ".acpus", "workflows", "empty"), { recursive: true });
 
@@ -60,7 +60,7 @@ async function workflowPackage(root: string, name: string): Promise<void> {
   await writeFile(join(dir, "workflow.ts"), workflowSource(name));
 }
 
-async function legacyIndexWorkflowPackage(root: string, name: string): Promise<void> {
+async function ignoredIndexWorkflowFilePackage(root: string, name: string): Promise<void> {
   const dir = join(root, name);
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, "index.workflow.ts"), workflowSource(name));

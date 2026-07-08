@@ -22,19 +22,10 @@ import { expr as rootExpr } from "@acpus/expression";
 import { refExpr as rootRefExpr } from "@acpus/expression";
 // @ts-expect-error valueToExprIR is exported from @acpus/expression/ir, not the root.
 import { valueToExprIR as rootValueToExprIR } from "@acpus/expression";
-// @ts-expect-error all was removed; use every.
-import { all as rootAll } from "@acpus/expression";
-// @ts-expect-error any was removed; use some.
-import { any as rootAny } from "@acpus/expression";
-// @ts-expect-error fallback was removed; use coalesce.
-import { fallback as rootFallback } from "@acpus/expression";
 
 void rootExpr;
 void rootRefExpr;
 void rootValueToExprIR;
-void rootAll;
-void rootAny;
-void rootFallback;
 
 type Item = {
   done: boolean;

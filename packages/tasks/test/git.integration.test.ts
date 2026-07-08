@@ -52,24 +52,6 @@ describe("createWorktree", () => {
     }
   });
 
-  it("rejects dirty source repositories", async () => {
-    const root = await mkdtemp(join(tmpdir(), "acpus-create-worktree-dirty-"));
-    try {
-      const { repo, worktree } = await tinyRepo(root);
-      await writeFile(join(repo, "dirty.txt"), "dirty\n");
-
-      await expect(createWorktree.fn({
-        input: { repo, path: worktree },
-        $: createDollar({ cwd: root, env: testGitEnv() }),
-        artifact: {} as never,
-        env: {},
-        abortSignal: new AbortController().signal,
-      })).rejects.toThrow("dirty repository");
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
   it("returns typed errors for dirty source repositories", async () => {
     const root = await mkdtemp(join(tmpdir(), "acpus-create-worktree-dirty-result-"));
     try {
@@ -113,21 +95,18 @@ describe("createWorktree", () => {
     }
   });
 
-  it("rejects non-detached worktree creation in the first version", async () => {
-    const root = await mkdtemp(join(tmpdir(), "acpus-create-worktree-branch-"));
-    try {
-      const { repo, worktree } = await tinyRepo(root);
+  it("returns a typed error for non-detached worktree requests before running git", async () => {
+    const result = await tryCreateWorktree(
+      { repo: "/no/such/repo", path: "/no/such/worktree", detach: false },
+      createDollar({ cwd: "/", env: testGitEnv() }),
+    );
 
-      await expect(createWorktree.fn({
-        input: { repo, path: worktree, detach: false },
-        $: createDollar({ cwd: root, env: testGitEnv() }),
-        artifact: {} as never,
-        env: {},
-        abortSignal: new AbortController().signal,
-      })).rejects.toThrow("only supports detached");
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
+    expect(result.isErr()).toBe(true);
+    if (result.isOk()) throw new Error("expected non-detached worktree failure");
+    expect(result.error).toMatchObject({
+      type: "non-detached-worktree",
+      message: "createWorktree only supports detached worktrees in this version.",
+    });
   });
 });
 

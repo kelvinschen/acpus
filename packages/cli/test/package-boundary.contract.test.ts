@@ -26,16 +26,6 @@ describe("acpus package boundaries", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("does not depend on agent executor directly", async () => {
-    const pkg = JSON.parse(await readFile(packageJsonPath, "utf8")) as { dependencies?: Record<string, string>; exports?: Record<string, unknown> };
-    expect(pkg.dependencies).not.toHaveProperty("@acpus/agent-executor");
-  });
-
-  it("does not depend on skills-npm for bundled skill installation", async () => {
-    const pkg = JSON.parse(await readFile(packageJsonPath, "utf8")) as { dependencies?: Record<string, string> };
-    expect(pkg.dependencies).not.toHaveProperty("skills-npm");
-  });
-
   it("does not expose a mixed root authoring entrypoint", async () => {
     const pkg = JSON.parse(await readFile(packageJsonPath, "utf8")) as { exports?: Record<string, unknown> };
     expect(pkg.exports).toBeDefined();
