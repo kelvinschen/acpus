@@ -364,7 +364,7 @@ describe.concurrent("runtime admission use cases", () => {
       }
     `;
 
-    const env = { ...process.env, NODE_NO_WARNINGS: "1" };
+    const env: NodeJS.ProcessEnv = { ...process.env, NODE_NO_WARNINGS: "1" };
     delete env.NODE_OPTIONS;
     try {
       await exec(process.execPath, ["--import", tsxImport, "--import", sourceResolverImport, "--eval", script], { cwd: process.cwd(), env });
