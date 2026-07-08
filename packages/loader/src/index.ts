@@ -70,7 +70,7 @@ export async function importAuthoringModule(specifier: string, options: { parent
     return await importDefaultTarget(specifier, options.parentURL);
   } catch (error) {
     if (!developmentURL || !isResolutionError(error)) throw error;
-    return normalizeModule(await import(developmentURL) as Record<string, unknown>);
+    return normalizeModule(await tsImport(developmentURL, { parentURL: options.parentURL }) as Record<string, unknown>);
   }
 }
 

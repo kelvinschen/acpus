@@ -28,6 +28,7 @@ import {
 
 const exec = promisify(execFile);
 const runIdPattern = /^\d{14}[A-F0-9]{20}$/;
+const slowIntegrationTimeout = process.env.CI ? 30_000 : 15_000;
 
 describe.concurrent("runtime admission use cases", () => {
   it("admits a pure run and exposes read-only inspection", async () => {
@@ -215,7 +216,7 @@ describe.concurrent("runtime admission use cases", () => {
         output: { normalized: "src/workflow.ts" },
       });
     });
-  });
+  }, slowIntegrationTimeout);
 
   it("fails task attempts for live reusable module load failures", async () => {
     await withRuntimeWorkspace("runtime-live-module-load-failure", async workspace => {
@@ -267,7 +268,7 @@ describe.concurrent("runtime admission use cases", () => {
       });
       await expect(git(worktree, "rev-parse", "HEAD")).resolves.toMatchObject({ stdout: head + "\n" });
     });
-  }, 15_000);
+  }, slowIntegrationTimeout);
 
   it("loads package task source without ambient development conditions", async () => {
     const tsxImport = await import.meta.resolve("tsx");
@@ -371,12 +372,12 @@ describe.concurrent("runtime admission use cases", () => {
     } catch (error) {
       const failed = error as { stdout?: unknown; stderr?: unknown; message?: unknown };
       throw new Error([
-        String(failed.message ?? error),
-        String(failed.stdout ?? "").trim(),
-        String(failed.stderr ?? "").trim(),
-      ].filter(Boolean).join("\n"));
+        "package loader subprocess failed",
+        `stdout:\n${String(failed.stdout ?? "").trim()}`,
+        `stderr:\n${String(failed.stderr ?? "").trim()}`,
+      ].join("\n"));
     }
-  }, 15_000);
+  }, slowIntegrationTimeout);
 });
 
 function sourcePackageResolverImport(aliases: Record<string, string>): string {

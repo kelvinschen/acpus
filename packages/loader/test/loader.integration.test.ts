@@ -185,6 +185,7 @@ try {
     try {
       await execFileAsync("pnpm", ["--filter", "@acpus/loader", "build"], { cwd: repoRoot });
       const workflow = join(cwd, "index.workflow.ts");
+      await writeFile(join(cwd, "package.json"), JSON.stringify({ type: "module" }));
       await writeFile(workflow, "");
       await mkdir(join(cwd, "tasks"));
       await writeFile(join(cwd, "tasks", "normalize.task.ts"), `import { task, z } from "acpus/core";

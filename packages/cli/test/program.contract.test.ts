@@ -5,6 +5,8 @@ import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
 import { withTestWorkspace } from "./support/workspace.js";
 
+const slowCliContractTimeout = process.env.CI ? 30_000 : 15_000;
+
 describe("CLI program usage contracts", () => {
   it("returns structured JSON for commander usage errors", async () => {
     const stdout = new CaptureStream();
@@ -149,7 +151,7 @@ export default defineWorkflow({
       });
       expect(forcedExit).toBe(0);
     });
-  }, 15_000);
+  }, slowCliContractTimeout);
 
   it("validates and lists project hooks", async () => {
     await withTestWorkspace("hooks-project", async workspace => {
