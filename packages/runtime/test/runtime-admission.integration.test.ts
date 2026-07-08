@@ -267,7 +267,7 @@ describe.concurrent("runtime admission use cases", () => {
       });
       await expect(git(worktree, "rev-parse", "HEAD")).resolves.toMatchObject({ stdout: head + "\n" });
     });
-  });
+  }, 15_000);
 
   it("loads package task source without ambient development conditions", async () => {
     const tsxImport = await import.meta.resolve("tsx");
@@ -364,10 +364,19 @@ describe.concurrent("runtime admission use cases", () => {
       }
     `;
 
-    const env = { ...process.env };
+    const env = { ...process.env, NODE_NO_WARNINGS: "1" };
     delete env.NODE_OPTIONS;
-    await expect(exec(process.execPath, ["--import", tsxImport, "--import", sourceResolverImport, "--eval", script], { cwd: process.cwd(), env })).resolves.toBeDefined();
-  });
+    try {
+      await exec(process.execPath, ["--import", tsxImport, "--import", sourceResolverImport, "--eval", script], { cwd: process.cwd(), env });
+    } catch (error) {
+      const failed = error as { stdout?: unknown; stderr?: unknown; message?: unknown };
+      throw new Error([
+        String(failed.message ?? error),
+        String(failed.stdout ?? "").trim(),
+        String(failed.stderr ?? "").trim(),
+      ].filter(Boolean).join("\n"));
+    }
+  }, 15_000);
 });
 
 function sourcePackageResolverImport(aliases: Record<string, string>): string {

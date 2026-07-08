@@ -27,7 +27,7 @@ export function runProcess(command: string, args: string[], options: { cwd?: str
     const child = spawn(command, args, {
       cwd: options.cwd ?? repoRoot,
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, ...options.env, FORCE_COLOR: "0" },
+      env: { ...process.env, ...options.env, FORCE_COLOR: "0", NODE_NO_WARNINGS: "1" },
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
