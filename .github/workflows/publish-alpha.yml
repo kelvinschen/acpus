@@ -1,0 +1,58 @@
+name: Publish alpha to npm
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: publish-alpha
+  cancel-in-progress: false
+
+jobs:
+  publish-alpha:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.7.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm changeset status --verbose
+
+      - run: pnpm build
+
+      - run: pnpm typecheck
+
+      - run: pnpm test
+
+      - name: Version alpha packages
+        run: pnpm version-packages
+
+      - name: Commit versioned alpha packages
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "chore: version alpha packages" || echo "No version changes to commit"
+          git push origin HEAD:${GITHUB_REF_NAME}
+
+      - name: Publish alpha packages
+        run: pnpm changeset publish --tag alpha
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: true
