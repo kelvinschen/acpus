@@ -57,7 +57,7 @@ jobs:
           git push origin HEAD:${GITHUB_REF_NAME}
 
       - name: Publish alpha packages
-        run: pnpm changeset publish --tag alpha
+        run: pnpm ci:publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: true
