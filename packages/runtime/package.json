@@ -1,6 +1,6 @@
 {
   "name": "@acpus/runtime",
-  "version": "0.9.0-alpha.2",
+  "version": "0.9.0-alpha.3",
   "type": "module",
   "description": "Acpus local durable runtime.",
   "license": "MIT",

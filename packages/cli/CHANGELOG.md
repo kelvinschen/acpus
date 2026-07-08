@@ -1,5 +1,21 @@
 # acpus
 
+## 0.6.0-alpha.4
+
+### Minor Changes
+
+- b8fef84: Add arithmetic and string join expression helpers, clarify workflow check node count text, and expand the Acpus authoring skill reference.
+
+### Patch Changes
+
+- Updated dependencies [b8fef84]
+  - @acpus/expression@0.1.0-alpha.3
+  - @acpus/core@0.7.0-alpha.3
+  - @acpus/runtime@0.9.0-alpha.3
+  - @acpus/web@0.1.0-alpha.4
+  - @acpus/workflow-compiler@0.1.0-alpha.3
+  - @acpus/tasks@0.1.0-alpha.3
+
 ## 0.6.0-alpha.3
 
 ### Patch Changes

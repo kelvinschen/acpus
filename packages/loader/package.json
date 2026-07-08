@@ -1,6 +1,6 @@
 {
   "name": "@acpus/loader",
-  "version": "0.1.0-alpha.2",
+  "version": "0.1.0-alpha.3",
   "type": "module",
   "description": "Acpus internal TypeScript authoring module loader.",
   "license": "MIT",
