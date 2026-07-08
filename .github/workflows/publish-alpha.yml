@@ -37,7 +37,11 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - run: pnpm changeset status --verbose
+      - name: Show Changesets status
+        run: |
+          pnpm changeset status --verbose || {
+            echo "::notice::Changesets status can fail after alpha version packages have already been committed; continuing because version and publish steps are authoritative."
+          }
 
       - run: pnpm build
 
