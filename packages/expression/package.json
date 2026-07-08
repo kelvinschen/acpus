@@ -1,6 +1,6 @@
 {
   "name": "@acpus/expression",
-  "version": "0.0.0",
+  "version": "0.1.0-alpha.0",
   "type": "module",
   "description": "Acpus typed JSON-value expression language.",
   "keywords": [
