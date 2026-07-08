@@ -14,4 +14,4 @@ pre-TypeScript history remains under `legacy/`.
 
 ## Roadmap
 
-- [Expression Transform Roadmap](expression-transform-roadmap.md)
+No active roadmap records.

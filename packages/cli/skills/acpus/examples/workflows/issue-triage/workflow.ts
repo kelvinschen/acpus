@@ -1,5 +1,5 @@
 import { defineWorkflow, z } from "acpus/core";
-import { eq, md, template } from "acpus/expression";
+import { eq, md, template, transform } from "acpus/expression";
 import { summarizeIssue } from "./tasks.js";
 
 export default defineWorkflow({
@@ -61,10 +61,15 @@ export default defineWorkflow({
               },
               timeout: "20m",
             });
+            const reviewView = transform(review.output, output => ({
+              route: output.route,
+              priority: output.priority,
+              summary: output.summary.trim(),
+            }));
             return {
-              route: review.output.route,
-              priority: review.output.priority,
-              summary: review.output.summary,
+              route: reviewView.route,
+              priority: reviewView.priority,
+              summary: reviewView.summary,
             };
           },
         },

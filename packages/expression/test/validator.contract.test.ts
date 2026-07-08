@@ -266,4 +266,20 @@ describe("expression validator", () => {
       path: "$.args",
     }]);
   });
+
+  it("validates transform source argument shape", () => {
+    expect(validateExprIR({ kind: "call", fn: "transform", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: "value => value + 1" }] })).toEqual([]);
+    expect(validateExprIR({ kind: "call", fn: "transform", args: [{ kind: "literal", value: 1 }] })).toEqual([{
+      code: "EX003",
+      severity: "error",
+      message: "transform(...) expected 2 args, got 1.",
+      path: "$.args",
+    }]);
+    expect(validateExprIR({ kind: "call", fn: "transform", args: [{ kind: "literal", value: 1 }, { kind: "ref", path: ["input", "fn"] }] })).toEqual([{
+      code: "EX002",
+      severity: "error",
+      message: "transform(...) expected callback source string.",
+      path: "$.args[1]",
+    }]);
+  });
 });

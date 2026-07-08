@@ -30,6 +30,7 @@ export const EXPRESSION_OPERATORS: Record<string, OperatorSpec> = {
   some: { arity: [1, 2], lambdaArgs: new Set([1]) },
   filter: { arity: [2], lambdaArgs: new Set([1]) },
   map: { arity: [2], lambdaArgs: new Set([1]) },
+  transform: { arity: [2], lambdaArgs: new Set() },
   join: { arity: [2], lambdaArgs: new Set() },
   max: { arity: [1], lambdaArgs: new Set() },
   min: { arity: [1], lambdaArgs: new Set() },

@@ -105,6 +105,8 @@ function evaluateCall(fn: string, args: ExprIR[], adapter: ExpressionEvaluatorAd
       return getValue(evaluate(args[0]!, adapter, env), requirePresent(fn, evaluate(args[1]!, adapter, env)));
     case "map":
       return evaluateMap(fn, args, adapter, env);
+    case "transform":
+      return evaluateTransform(fn, args, adapter, env);
     case "filter":
       return evaluateFilter(fn, args, adapter, env);
     case "join":
@@ -186,6 +188,17 @@ function getValue(target: unknown, key: unknown): unknown {
 function evaluateMap(fn: string, args: ExprIR[], adapter: ExpressionEvaluatorAdapter, env: Env): unknown[] {
   const [array, lambda] = collectionArgs(fn, args, adapter, env);
   return array.map((value, index) => requirePresent(fn, evaluateLambda(lambda, [value, index], adapter, env)));
+}
+
+function evaluateTransform(fn: string, args: ExprIR[], adapter: ExpressionEvaluatorAdapter, env: Env): unknown {
+  requireArity(fn, args, 2);
+  const value = requirePresent(fn, evaluate(args[0]!, adapter, env));
+  const source = transformSource(args[1]!);
+  const callback = loadTransform(source);
+  const output = runTransform(callback, value);
+  if (isThenable(output)) throw new ExpressionEvaluationError("transform(...) callback must return synchronously.");
+  assertJsonCompatible(output, fn);
+  return output;
 }
 
 function evaluateFilter(fn: string, args: ExprIR[], adapter: ExpressionEvaluatorAdapter, env: Env): unknown[] {
@@ -277,6 +290,35 @@ function requirePresent(fn: string, value: unknown): Exclude<unknown, Missing> {
   return value as Exclude<unknown, Missing>;
 }
 
+function transformSource(expr: ExprIR): string {
+  if (expr.kind === "literal" && typeof expr.value === "string") return expr.value;
+  throw new ExpressionEvaluationError("transform(...) expected callback source string.");
+}
+
+function loadTransform(source: string): (value: unknown) => unknown {
+  try {
+    const fn = Function(`"use strict";\nreturn (${source});`)();
+    if (typeof fn !== "function") throw new ExpressionEvaluationError("transform(...) source did not evaluate to a function.");
+    return fn as (value: unknown) => unknown;
+  } catch (error) {
+    if (error instanceof ExpressionEvaluationError) throw error;
+    throw new ExpressionEvaluationError(`transform(...) source could not be loaded: ${(error as Error).message}`);
+  }
+}
+
+function runTransform(callback: (value: unknown) => unknown, value: unknown): unknown {
+  try {
+    return callback(value);
+  } catch (error) {
+    if (error instanceof ExpressionEvaluationError) throw error;
+    throw new ExpressionEvaluationError(`transform(...) callback threw: ${(error as Error).message}`);
+  }
+}
+
+function isThenable(value: unknown): boolean {
+  return Boolean(value && (typeof value === "object" || typeof value === "function") && typeof (value as { then?: unknown }).then === "function");
+}
+
 function normalizeMissing(value: unknown): unknown {
   return value === undefined ? MISSING : value;
 }
@@ -290,7 +332,11 @@ function typeOf(value: unknown): string {
 }
 
 function assertJsonCompatible(value: unknown, operator: string, seen = new Set<object>()): void {
-  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") return;
+  if (value === null || typeof value === "string" || typeof value === "boolean") return;
+  if (typeof value === "number") {
+    if (Number.isFinite(value)) return;
+    throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
+  }
   if (!value || typeof value !== "object") throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
   if (seen.has(value)) throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
   seen.add(value);

@@ -16,6 +16,7 @@ import {
   pick,
   some,
   subtract,
+  transform,
   where,
   type Expr,
   type OutputAccessor,
@@ -61,6 +62,17 @@ test("authoring helpers infer core expression shapes", () => {
   assertType<Expr<number>>(divide(refExpr<number>(["input", "count"]), 2));
   assertType<Expr<number>>(mod(refExpr<number>(["input", "count"]), 2));
   assertType<Expr<string>>(join(map(items, item => item.name), "\n"));
+  assertType<OutputAccessor<number>>(transform(refExpr<number>(["input", "count"]), value => value + 1));
+  const transformedIssue = transform(refExpr<{ title: string; labels: readonly string[] }>(["input", "issue"]), issue => ({
+    title: issue.title.trim(),
+    urgent: issue.labels.includes("urgent"),
+    meta: { labels: issue.labels },
+  }));
+  assertType<OutputAccessor<{ title: string; urgent: boolean; meta: { labels: readonly string[] } }>>(transformedIssue);
+  assertType<OutputAccessor<string>>(transformedIssue.title);
+  assertType<OutputAccessor<readonly string[]>>(transformedIssue.meta.labels);
+  assertType<OutputAccessor<string>>(transformedIssue.meta.labels[0]!);
+  assertType<OutputAccessor<string>>(pick(transformedIssue, ["title"]).title);
   assertType<Expr<boolean>>(where(head(items), { done: true }));
   assertType<Expr<boolean>>(where(maybeName, null));
   assertType<Expr<boolean>>(where(maybeUser, { deletedAt: null, tags: { eq: ["ready"] } }));
@@ -95,4 +107,8 @@ test("authoring helpers reject unknown values where static typing can prove it",
   where(refExpr<{ __ir: string }>(["input", "user"]), { __ir: "ok" });
   // @ts-expect-error accessor token property .__ir is reserved for expression IR inspection.
   assertType<Expr<string>>(refExpr<{ __ir: string }>(["input", "user"]).__ir);
+  transform(refExpr<{ title: string }>(["input", "issue"]), issue => {
+    // @ts-expect-error transform callback parameter is inferred from the input value.
+    return issue.missing;
+  });
 });

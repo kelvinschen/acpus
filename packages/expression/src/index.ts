@@ -135,6 +135,10 @@ export function filter<T>(array: WorkflowValue<readonly T[]>, predicate: Predica
 export function map<T, R>(array: WorkflowValue<readonly T[]>, mapper: (value: OutputAccessor<T>, index: OutputAccessor<number>) => WorkflowValue<R>): Expr<readonly R[]> {
   return scopedCollection<readonly R[], T>("map", array, mapper);
 }
+/** Transforms one workflow value with a runtime one-expression callback. */
+export function transform<T, U>(value: WorkflowValue<T>, fn: (value: T) => U): OutputAccessor<U> {
+  return callExpr<U>("transform", [value, fn.toString()]);
+}
 /** Joins a workflow string array with a separator. */
 export function join(values: WorkflowValue<readonly string[]>, separator: WorkflowValue<string>): Expr<string> { return callExpr<string>("join", [values, separator]); }
 /** Returns the maximum number from a workflow array. */

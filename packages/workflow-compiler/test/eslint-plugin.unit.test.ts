@@ -32,6 +32,23 @@ describe("internal Acpus ESLint plugin", () => {
     });
   });
 
+  it("reports transform authoring diagnostics from the shared check rule", async () => {
+    const messages = await lintFixture("eslint-transform.workflow.ts");
+    const transformMessages = messages.filter(message => message.message.startsWith("AL007:"));
+
+    expect(transformMessages).toHaveLength(2);
+    expect(transformMessages.find(message => message.message.includes("one expression"))).toMatchObject({
+      ruleId: "acpus-internal/check",
+      line: await lineOf("eslint-transform.workflow.ts", "const view = transform"),
+      message: expect.stringContaining("one expression"),
+    });
+    expect(transformMessages.find(message => message.message.includes("cannot reference 'suffix'"))).toMatchObject({
+      ruleId: "acpus-internal/check",
+      line: await lineOf("eslint-transform.workflow.ts", "const captured = transform"),
+      message: expect.stringContaining("cannot reference 'suffix'"),
+    });
+  });
+
   it("reports unjoinable Acpus task callsites and ignores unrelated .task methods", async () => {
     const callsiteMessages = await lintFixture("eslint-task-callsite.workflow.ts");
     const nonliteralLine = await lineOf("eslint-task-callsite.workflow.ts", 'step("nonliteral").task');

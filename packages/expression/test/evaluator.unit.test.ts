@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { evaluateExpr, ExpressionEvaluationError, renderTemplate } from "@acpus/expression/evaluator";
-import { add, coalesce, divide, every, filter, get, ifElse, join, map, max, min, mod, multiply, some, subtract, template } from "@acpus/expression";
+import { add, coalesce, divide, every, filter, get, ifElse, join, map, max, min, mod, multiply, some, subtract, template, transform } from "@acpus/expression";
 import { refExpr } from "@acpus/expression/ir";
 
 describe("expression evaluator", () => {
@@ -118,5 +118,69 @@ describe("expression evaluator", () => {
   it("uses Math max/min semantics", () => {
     expect(evaluateExpr(max([]).__ir, adapter)).toBe(-Infinity);
     expect(evaluateExpr(min([]).__ir, adapter)).toBe(Infinity);
+  });
+
+  it("evaluates runtime transforms over JSON values", () => {
+    const count = refExpr<number>(["input", "count"]);
+    const issue = refExpr<{ title: string; labels: readonly string[] }>(["input", "issue"]);
+    const transformAdapter = {
+      resolveRef: (path: string[]) => {
+        if (path.join(".") === "input.count") return 2;
+        if (path.join(".") === "input.issue") return { title: "  Ship  ", labels: ["urgent"] };
+        return undefined;
+      },
+    };
+
+    expect(evaluateExpr(transform(count, value => value + 1).__ir, transformAdapter)).toBe(3);
+    expect(evaluateExpr(transform(issue, value => ({
+      title: value.title.trim(),
+      urgent: value.labels.includes("urgent"),
+    })).__ir, transformAdapter)).toEqual({ title: "Ship", urgent: true });
+    expect(evaluateExpr(transform(issue, value => value.labels.map(label => label.toUpperCase())).__ir, transformAdapter)).toEqual(["URGENT"]);
+    expect(evaluateExpr(transform(issue, value => ({
+      meta: {
+        labels: value.labels.map(label => label.toUpperCase()),
+      },
+    })).__ir, transformAdapter)).toEqual({ meta: { labels: ["URGENT"] } });
+  });
+
+  it("rejects invalid transform callbacks and outputs", () => {
+    const evaluateTransformSource = (source: string) => evaluateExpr({
+      kind: "call",
+      fn: "transform",
+      args: [{ kind: "literal", value: 1 }, { kind: "literal", value: source }],
+    }, adapter);
+
+    expect(() => evaluateExpr({ kind: "call", fn: "transform", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: "1" }] }, adapter))
+      .toThrow("transform(...) source did not evaluate to a function.");
+    expect(() => evaluateExpr({ kind: "call", fn: "transform", args: [{ kind: "literal", value: 1 }, { kind: "ref", path: ["input", "source"] }] }, adapter))
+      .toThrow("transform(...) expected callback source string.");
+    expect(() => evaluateExpr(transform(1, () => Promise.resolve(1)).__ir, adapter))
+      .toThrow("transform(...) callback must return synchronously.");
+    for (const source of [
+      "() => new Date(0)",
+      "() => () => 1",
+      "() => new (class View {})()",
+      "() => new Map()",
+      "() => new Set()",
+      "() => Symbol('x')",
+      "() => 1n",
+      "() => ({ nested: { bad: Number.POSITIVE_INFINITY } })",
+      "() => { const items = []; items[1] = 'x'; return items; }",
+      "() => { const value = {}; value.self = value; return value; }",
+      "() => ({ bad: undefined })",
+    ]) {
+      expect(() => evaluateTransformSource(source)).toThrow("transform(...) expected JSON-compatible values.");
+    }
+    expect(() => evaluateExpr(transform(1, () => {
+      throw new Error("boom");
+    }).__ir, adapter))
+      .toThrow("transform(...) callback threw: boom");
+    expect(() => evaluateExpr(transform(1, () => {
+      throw new Error("boom");
+    }).__ir, adapter))
+      .toThrow(ExpressionEvaluationError);
+    expect(() => evaluateExpr(transform(refExpr<number>(["input", "missing"]), value => value + 1).__ir, adapter))
+      .toThrow("transform(...) received missing value.");
   });
 });

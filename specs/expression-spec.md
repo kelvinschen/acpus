@@ -8,7 +8,7 @@
 
 ### Public API
 
-- The root `@acpus/expression` entrypoint MUST expose the authoring surface: `isExpr`, `not`, `and`, `or`, `ifElse`, `eq`, `ne`, `add`, `subtract`, `multiply`, `divide`, `mod`, `lt`, `lte`, `gt`, `gte`, `coalesce`, `len`, `includes`, `isEmpty`, `startsWith`, `endsWith`, `matches`, `get`, `head`, `every`, `some`, `filter`, `map`, `join`, `max`, `min`, `where`, `pick`, `template`, `md`, and the public `Expr`, `OutputAccessor`, and `WorkflowValue` types.
+- The root `@acpus/expression` entrypoint MUST expose the authoring surface: `isExpr`, `not`, `and`, `or`, `ifElse`, `eq`, `ne`, `add`, `subtract`, `multiply`, `divide`, `mod`, `lt`, `lte`, `gt`, `gte`, `coalesce`, `len`, `includes`, `isEmpty`, `startsWith`, `endsWith`, `matches`, `get`, `head`, `every`, `some`, `filter`, `map`, `transform`, `join`, `max`, `min`, `where`, `pick`, `template`, `md`, and the public `Expr`, `OutputAccessor`, and `WorkflowValue` types.
 - The root `@acpus/expression` entrypoint MUST NOT export raw construction helpers such as `expr`, `refExpr`, or `valueToExprIR`.
 - `@acpus/expression/ir` MUST expose serializable IR and JSON types plus advanced construction helpers needed by package internals and tests, including `tryValueToExprIR`.
 - `@acpus/expression/evaluator` MUST expose generic expression and template evaluators.
@@ -40,6 +40,8 @@
 - `pick(source, keys)` MUST reject reserved expression token keys at the type boundary when possible and at runtime as a fallback.
 - `template` MUST lower tagged template strings to an expression node containing `TemplateIR` while preserving authored whitespace exactly.
 - `md` MUST lower tagged template strings to normal `TemplateIR` after removing surrounding blank lines and common indentation from literal text parts. Expression interpolations MUST remain unchanged. Authors SHOULD use `md` for multiline Markdown prompts and messages.
+- `transform(value, fn)` MUST lower to a `call` expression with operator id `transform`, the lowered workflow value as arg 0, and `fn.toString()` as a string literal arg 1.
+- `transform(value, fn)` MUST be typed as `OutputAccessor<U>` for callback return type `U` and MUST NOT require input or output schemas.
 
 ### Operators And Collections
 
@@ -53,6 +55,8 @@
 - Nullish fallback MUST be represented by `coalesce`; `coalesce` MUST accept at least one operand.
 - `every` and `some` MUST support both boolean arrays and runtime array lambda predicates.
 - `filter` and `map` MUST require runtime array lambda callbacks.
+- `transform` MUST accept exactly one workflow value and one callback source string. The callback source string MUST NOT be represented as lambda IR.
+- `transform` MUST be a non-node expression helper; it MUST NOT create a workflow node, task attempt, task context, artifact access, cwd/env boundary, timeout, retry policy, or async execution boundary.
 - `join` MUST accept a string array expression and separator and return the joined string. Authors SHOULD use `join(map(...), "\n")` for Markdown lists instead of relying on template array interpolation.
 - `max` and `min` MUST accept one numeric array expression and MUST follow `Math.max(...values)` and `Math.min(...values)` semantics for JSON-serializable numeric inputs, including empty arrays.
 
@@ -76,12 +80,15 @@
 - Equality MUST use structural JSON-compatible comparison with SameValueZero primitive behavior.
 - `includes` MUST follow JavaScript string and array inclusion semantics.
 - Invalid `matches` patterns MUST fail with `ExpressionEvaluationError`.
+- `transform` evaluation MUST evaluate arg 0 normally, load arg 1 as a single-argument JavaScript function source, invoke it synchronously, and return only JSON-compatible output.
+- `transform` evaluation MUST fail with `ExpressionEvaluationError` when the source is missing, not a string literal, cannot be loaded, does not evaluate to a function, throws, returns a thenable, returns a missing value, or returns non-JSON-compatible data such as functions, class instances, `Date`, `Map`, `Set`, `symbol`, `bigint`, non-finite numbers, sparse arrays, cycles, or `undefined` object fields.
 - The validator MUST reject malformed expression shapes, unknown fields, unknown operators, invalid arity, lambdas outside allowed operator positions, unbound variables, invalid paths, sparse IR arrays, invalid type metadata, duplicate lambda params, and literal type metadata mismatches.
+- The validator MUST reject malformed `transform` calls whose second argument is not a string literal expression.
 
 ## Verification
 
 - Tests MUST cover root and subpath public exports.
-- Tests MUST cover authoring type inference and type-level rejection for helpers, accessors, arithmetic, `join`, `where`, `get`, and `pick`.
-- Tests MUST cover lowering for values, operators, templates, lambdas, `where`, and collection helpers.
-- Tests MUST cover evaluator semantics for templates, structural equality, nullish coalescing, arithmetic, `join`, collection lambdas, static array paths, and `Math.max` / `Math.min` behavior.
+- Tests MUST cover authoring type inference and type-level rejection for helpers, accessors, arithmetic, `transform`, `join`, `where`, `get`, and `pick`.
+- Tests MUST cover lowering for values, operators, templates, lambdas, `where`, collection helpers, and `transform` source strings.
+- Tests MUST cover evaluator semantics for templates, structural equality, nullish coalescing, arithmetic, `join`, collection lambdas, `transform`, static array paths, and `Math.max` / `Math.min` behavior.
 - Tests MUST cover validator diagnostic codes and paths for malformed expression IR.

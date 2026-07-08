@@ -11,6 +11,7 @@ decisions. They are background context only; current behavior lives in `specs/`.
 - [Durable Scheduler Implementation Record](durable-scheduler-implementation-goal.md) — completed V1 durable scheduler implementation record.
 - [Expression Language Design Notes](expression-language-design.md) — historical design notes for the dedicated `@acpus/expression` package.
 - [Expression Language Implementation Goal](expression-language-implementation-goal.md) — completed `@acpus/expression` implementation checklist.
+- [Expression Transform Roadmap](expression-transform-roadmap.md) — completed expression-level transform implementation record.
 - [Live Task Execution Implementation Goal](live-task-execution-implementation-goal.md) — completed live reusable task loading implementation record.
 - [Neverthrow Error Boundary Refactor Goal](neverthrow-error-boundary-refactor-goal.md) — completed typed result boundary refactor record.
 - [Output Schema Authoring Refactor Goal](output-schema-authoring-refactor-goal.md) — completed TypeScript-owned output authoring refactor record.

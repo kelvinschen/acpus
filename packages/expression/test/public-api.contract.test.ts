@@ -42,6 +42,7 @@ describe("@acpus/expression public API", () => {
       "startsWith",
       "subtract",
       "template",
+      "transform",
       "where",
     ]);
   });

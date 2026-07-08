@@ -174,6 +174,43 @@ describe("workflow check pipeline", () => {
     });
   });
 
+  it("reports invalid expression transform callbacks during check", async () => {
+    await withCheckWorkspace("workflow-transform-checks", async cwd => {
+      const result = await runCheck(cwd, `
+        import { defineWorkflow, z } from "acpus/core";
+        import { transform } from "acpus/expression";
+
+        const suffix = "!";
+
+        export default defineWorkflow({
+          name: "transform_check",
+          inputSchema: z.object({
+            issue: z.object({
+              title: z.string(),
+            }),
+          }),
+        }).build(({ input }) => {
+          const title = transform(input.issue, issue => {
+            return issue.title + suffix;
+          });
+          return { title };
+        });
+      `);
+
+      expect(result.diagnostics).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          code: "AL007",
+          message: expect.stringContaining("one expression"),
+          source: expect.objectContaining({
+            file: expect.stringContaining("workflow.ts"),
+            line: expect.any(Number),
+            column: expect.any(Number),
+          }),
+        }),
+      ]));
+    });
+  });
+
   it("reports representative output source, admissibility, and convergence diagnostics", async () => {
     await withCheckWorkspace("workflow-output-checks", async cwd => {
       const result = await runCheck(cwd, `

@@ -102,6 +102,10 @@ function validateCall(expr: Record<string, unknown>, diagnostics: ExpressionDiag
       diagnostics.push(error("EX004", `${expr.fn}(...) expected lambda callback.`, `${path}.args[${index}]`));
       return;
     }
+    if (expr.fn === "transform" && index === 1 && (!isRecord(arg) || arg.kind !== "literal" || typeof arg.value !== "string")) {
+      diagnostics.push(error("EX002", "transform(...) expected callback source string.", `${path}.args[${index}]`));
+      return;
+    }
     validateExpr(arg, diagnostics, `${path}.args[${index}]`, scope, spec.lambdaArgs.has(index), seen);
   });
 }

@@ -8,7 +8,7 @@ Use TypeScript workflow modules and user-facing facades only:
 
 ```ts
 import { defineWorkflow, task, secret, z } from "acpus/core";
-import { template, md, and, lte, add, join, map } from "acpus/expression";
+import { template, md, and, lte, add, join, map, transform } from "acpus/expression";
 import { createWorktree } from "acpus/tasks/git";
 ```
 
@@ -40,7 +40,7 @@ export default defineWorkflow({
 
 ### Why Expressions Exist
 
-Acpus workflows are a TypeScript-authored DSL, not ordinary runtime TypeScript. `build` declares a durable graph before a run executes, so workflow input, metadata, and prior node outputs are graph values wrapped as `Expr<T>` tokens. Treat every run-dependent value as an expression token and use graph constructs plus `acpus/expression` helpers to combine, compare, select, and render those values. Use plain JavaScript only for authoring-time constants and task `exec` bodies.
+Acpus workflows are a TypeScript-authored DSL, not ordinary runtime TypeScript. `build` declares a durable graph before a run executes, so workflow input, metadata, and prior node outputs are graph values wrapped as `Expr<T>` tokens. Treat every run-dependent value (typically from `input` and `output`) as an expression token and use graph constructs plus `acpus/expression` helpers to combine, compare, select, and render those values. Use plain JavaScript only for authoring-time constants and task `exec` bodies.
 
 ### Expressions And Templates
 
@@ -61,6 +61,23 @@ Expression helpers:
 
 For collections: `filter(input.items, item => where(item, { tags: { contains: "ready" } }))`, `map(ready, item => item.id)`, `len(ready)`, `coalesce(head(readyIds), "(none)")`.
 
+Use `transform(value, fn)` for small runtime JSON transforms that are awkward as named expression helpers but too small for a Task:
+
+```ts
+const title = transform(input.issue, issue => issue.title.trim());
+const view = transform(input.issue, issue => ({
+  title: issue.title.trim(),
+  urgent: issue.labels.includes("urgent"),
+}));
+```
+`acpus workflow check` rejects block bodies, captures, imported helpers, `async`, mutation, `new`, `Math.random`, and non-allowlisted calls:
+
+```ts
+transform(input.issue, issue => issue.title.trim()); // ok
+transform(input.issue, issue => { return issue.title.trim(); }); // rejected
+transform(input.issue, issue => helper(issue)); // rejected
+```
+
 Use `template` for compact strings and `md` for multiline prompts/messages; `md` trims surrounding blank lines and common indentation while preserving expression interpolation.
 
 Template interpolation renders strings directly, scalar non-strings with `String(value)`, and arrays/objects as compact JSON. Do not rely on array interpolation for Markdown line breaks. Build explicit lines with:
@@ -79,6 +96,7 @@ Common helper choices:
 | Nullish fallback | `coalesce(value, fallback)` |
 | Array/string size and access | `len`, `isEmpty`, `head`, `get`, `pick` |
 | Runtime array transforms | `map`, `filter`, `every`, `some` |
+| Small runtime value transforms | `transform(value, value => expression)` |
 | Markdown lines from arrays | Use `join(map(...), "\n")`; see the example above. |
 
 `map`, `filter`, `every`, and `some` callbacks receive `(item, index)`. Both are expression accessors; `index` is not a JavaScript number. Use `add(index, 1)` for human-facing numbering.
@@ -87,25 +105,32 @@ Common helper choices:
 
 Boundary schemas use `z` from `acpus/core`. Use `z.path()` for filesystem paths crossing workflow boundaries.
 
-Keep workflow input, Agent output, Signal output, and reusable task input JSON-compatible and durable. Avoid transforms, functions, promises, maps, sets, dates, bigint, symbol, `undefined`, `void`, `never`, non-finite numbers, sparse arrays, cycles, and class instances in graph-boundary values or runtime outputs.
+Keep workflow input, Agent output, Signal output, and reusable task input JSON-compatible and durable. Avoid schema transforms, functions, promises, maps, sets, dates, bigint, symbol, `undefined`, `void`, `never`, non-finite numbers, sparse arrays, cycles, and class instances in graph-boundary values or runtime outputs.
 
 ## Workflow Building Blocks
 
-### Tasks
+### Leaf Nodes
 
-Task nodes run deterministic local glue, write artifacts, and infer output from `exec`:
+Leaf nodes do work or wait for external input. Keep options sparse; add schemas, timeouts, cwd, env, retry, and artifacts only when the workflow needs them.
+
+Agent nodes run an ACP agent. Without `outputSchema`, `output` is text:
 
 ```ts
-const prepared = step("prepare").task({
+const review = step("review").agent({
+  run: { agent: agents.reviewer, prompt: template`Review ${input.topic}` },
+});
+```
+
+Top-level agents use either `{ use: "codex" }` for native acpx agents or `{ command: "npx pi-acp" }` for custom ACP commands.
+
+Task nodes run local TypeScript glue. Pass workflow values through `run.input`; inside `exec`, use only task context:
+
+```ts
+const status = step("status").task({
   run: {
     input: { repoPath: input.repoPath },
-    cwd: input.repoPath,
-    exec: async ({ input, $, artifact, abortSignal }) => {
-      const status = await $`git status --short`;
-      return { dirty: status.stdout.trim().length > 0, statusFile: await artifact.writeText("status.txt", status.stdout, { mediaType: "text/plain" }) };
-    },
+    exec: async ({ input }) => ({ repoPath: input.repoPath, ok: true }),
   },
-  timeout: "2m",
 });
 ```
 
@@ -114,98 +139,106 @@ Reusable tasks own their input schema and executable body:
 ```ts
 // tasks/normalize-name.ts
 import { task, z } from "acpus/core";
-import slugify from "slugify";
 
 export const normalizeName = task.define({
   inputSchema: z.object({ name: z.string() }),
-  exec: async ({ input }) => ({ slug: slugify(input.name, { lower: true }) }),
+  exec: async ({ input }) => ({ slug: input.name.toLowerCase() }),
 });
 ```
 
 ```ts
-import { normalizeName } from "./tasks/normalize-name.js";
-const normalized = step("normalize").task({ run: { task: normalizeName, input: { name: input.name } } });
-```
-
-Inline task source is embedded in frozen IR. Pass workflow values through `run.input` and use only task context (`input`, `$`, `artifact`, `env`, `abortSignal`) inside `exec`.
-
-### Agents
-
-Agent nodes handle judgment, synthesis, planning, and review:
-
-```ts
-const review = step("review").agent({
-  outputSchema: z.object({ ready: z.boolean(), summary: z.string() }),
-  run: { agent: agents.reviewer, prompt: template`Review artifact ${prepared.output.statusFile}.`, cwd: input.repoPath },
-  retry: { max: 2 },
-  timeout: "30m",
+const normalized = step("normalize").task({
+  run: { task: normalizeName, input: { name: input.name } },
 });
 ```
-
-Top-level agent definitions use either `use` or `command`, never both. Agent nodes without `outputSchema` return `Expr<string>`. The default `permissionMode` is write-capable.
-
-### Agent Selection
-
-Native acpx `use` names include `pi`, `codex`, `claude`, `gemini`, `cursor`, `copilot`, `droid`, `fast-agent`, `grok-build`, `iflow`, `kilocode`, `kimi`, `kiro`, `mux`, `opencode`, `qoder`, `qwen`, and `trae`; for the current list, see https://github.com/openclaw/acpx/tree/main/agents.
-
-For agents not natively supported by acpx, use `command: "<acp command>"`, for example `{ command: "npx pi-acp" }`.
-
-### Signals And Asserts
 
 Signal nodes wait for operator input:
 
 ```ts
 const approval = step("approval").signal({
-  outputSchema: z.object({ approved: z.boolean(), notes: z.string().default("") }),
-  run: { prompt: template`Approve the result: ${review.output.summary}` },
-  timeout: "24h",
-  onTimeout: { action: "fail", message: "Approval timed out" },
+  outputSchema: z.object({ approved: z.boolean() }),
+  run: { prompt: template`Approve ${review.output}?` },
 });
 ```
 
 Assert nodes fail the run when an expression condition is false:
 
 ```ts
-step("require_approval").assert({ condition: approval.output.approved, message: template`Approval denied: ${approval.output.notes}` });
+step("require_approval").assert({
+  condition: approval.output.approved,
+  message: "Approval denied.",
+});
 ```
 
-### Composites
+Inline task source is embedded in frozen IR. Reusable tasks can import package dependencies; inline tasks should stay self-contained.
 
-Graph-level composites:
+### Composite And Control Nodes
 
-- `if`: conditional branch; both branches should return compatible object shapes.
-- `switch`: case list plus required `default` branch.
-- `parallel`: static named branches declared as direct callbacks; `strategy` defaults to `"all"`, with `"race"` available.
-- `fanout`: runtime array expansion; output is an array. `strategy` defaults to `"all"`, with `"quorum"` available.
-- `loop`: seeded pre-check loop. `maxIterations` counts body executions only; `stopWhen` checks before each body execution.
+Composite callbacks receive `{ step }` plus node-specific values such as `item`, `iter`, `previous`, and `result`. Return a plain object to declare output; do not add `outputSchema` to composites.
 
-Composite callbacks receive `{ step }` plus composite-specific values such as `item`, `iter`, and `previous`. Return a plain object to declare composite output; do not add `outputSchema` to composites. For `parallel({ strategy: "race" })`, output is `{ winner, result }`, not a branch-keyed object. For `fanout({ strategy: "quorum", count })`, output is the accepted item array, not an envelope.
+`if` branches on one expression. Both branches should return compatible object shapes:
 
-Parallel branches are named callbacks:
+```ts
+const gate = step("gate").if({
+  condition: input.ready,
+  then: () => ({ status: "ready" }),
+  else: () => ({ status: "blocked" }),
+});
+```
+
+`switch` chooses the first matching case and requires `default`:
+
+```ts
+const route = step("route").switch({
+  cases: [
+    { when: eq(input.kind, "bug"), then: () => ({ owner: "oncall" }) },
+  ],
+  default: () => ({ owner: "backlog" }),
+});
+```
+
+`parallel` runs static named branches:
 
 ```ts
 const checks = step("checks").parallel({
-  maxConcurrency: 2,
   branches: {
-    fast({ step }) {
-      const result = step("fast_check").task({
-        run: { input: {}, exec: async () => ({ ok: true }) },
-      });
-      return { ok: result.output.ok };
-    },
-    slow: () => ({ ok: true }),
+    lint: () => ({ ok: true }),
+    test: () => ({ ok: true }),
   },
 });
 ```
 
-Loop callbacks receive `iter` as a 0-based `Expr<number>` and `previous` as the current loop state. For user-facing round numbers, write `add(iter, 1)`. `stopWhen({ iter, result })` is evaluated before the next body execution, so `result` is the latest state being checked.
-
-Loop `initial` drives TypeScript inference. Empty arrays infer as `never[]` unless you anchor the element type:
+`fanout` expands a runtime array. Its output is an array:
 
 ```ts
-type RoundResult = { round: number; summary: string };
-const emptyHistory: RoundResult[] = [];
-const initial = { history: emptyHistory };
+const items = step("items").fanout({
+  over: input.items,
+  key: ({ item }) => template`item-${item.id}`,
+  do: ({ item }) => ({ id: item.id }),
+});
+```
+
+`loop` starts from `initial`, checks `stopWhen` before each next iteration, and counts only body executions:
+
+```ts
+const refined = step("refine").loop({
+  initial: { ready: false, summary: "" },
+  maxIterations: 3,
+  do: ({ previous }) => ({
+    ready: previous.ready,
+    summary: previous.summary,
+  }),
+  stopWhen: ({ result }) => result.ready,
+});
+```
+
+For `parallel({ strategy: "race" })`, output is `{ winner, result }`. For `fanout({ strategy: "quorum", count })`, output is the accepted item array. Loop `iter` is a 0-based `Expr<number>`; use `add(iter, 1)` for display. Empty arrays in `initial` need an explicit element type:
+
+```ts
+type Round = { summary: string };
+const initial = {
+  rounds: [] as Round[],
+};
 ```
 
 ## Best Practices
@@ -235,6 +268,7 @@ const initial = { history: emptyHistory };
 - Start from the examples; inspect declarations only when the examples do not answer the API question.
 - Use graph-level composites instead of JavaScript control flow over expression values.
 - Use expression helpers instead of native operators/properties over expression values.
+- Use `transform` only for small one-expression JSON transforms. 
 - Use `template` for compact strings and `md` for multiline prompts/messages.
 - Use signal nodes only when the workflow needs external control.
 - Keep graph-boundary schema values JSON-compatible and durable.
@@ -248,8 +282,7 @@ const initial = { history: emptyHistory };
 Run `acpus workflow check <workflow.ts-or-catalog>` before admitting a run.
 
 ### Declaration Lookup
-
-When exact API usage is unclear, inspect installed declarations instead of copied reference prose:
+Only when exact API usage is unclear, inspect installed declarations:
 
 1. Start from the global install: `$(npm root -g)/acpus/dist/authoring/`.
 2. Read facade declarations there: `core.d.ts`, `expression.d.ts`, and `tasks/git.d.ts`.

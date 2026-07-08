@@ -2,7 +2,7 @@ import type { DiagnosticIR } from "@acpus/core/ir";
 import ts from "typescript";
 import { type TaskCallsiteIssueReason, unjoinableTaskCallsiteReason } from "../../task-analysis/callsites.js";
 import { analyzeTaskAuthoring, type TaskAuthoringIssue, type WorkflowTaskAnalysis } from "../../task-analysis/index.js";
-import { checkOutputAdmissibility } from "./output-admissibility.js";
+import { checkOutputAdmissibility, workflowDataAdmissibilityDiagnostic } from "./output-admissibility.js";
 
 // Acpus authoring rules are the product check rules used by
 // checkWorkflow(...) and prepareWorkflow(...). They intentionally do not invoke
@@ -81,6 +81,7 @@ const COMPARISON_OPERATORS = new Set<ts.SyntaxKind>([
 ]);
 
 function checkExprAuthoring(sourceFile: ts.SourceFile, checker: ts.TypeChecker, diagnostics: DiagnosticIR[]): void {
+  const transformImports = collectTransformImports(sourceFile, checker);
   const visit = (node: ts.Node): void => {
     if (isConditionExpression(node) && isExpr(checker, node)) {
       diagnostics.push(diagnostic("AL001", "Expr values cannot be used as JavaScript conditions.", node, "Use Acpus expression helpers such as where(...), every(...), ifElse(...), or not(...)."));
@@ -113,10 +114,247 @@ function checkExprAuthoring(sourceFile: ts.SourceFile, checker: ts.TypeChecker, 
     if (unjoinableReason) {
       diagnostics.push(taskCallsiteDiagnostic(unjoinableReason, node));
     }
+    if (ts.isCallExpression(node) && isTransformCall(node, transformImports, checker)) {
+      const issue = transformCallbackIssue(node, checker);
+      if (issue) diagnostics.push(diagnostic("AL007", issue.message, issue.node, issue.hint));
+      else {
+        const outputDiagnostic = transformOutputDiagnostic(node, checker);
+        if (outputDiagnostic) diagnostics.push(outputDiagnostic);
+      }
+    }
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
 }
+
+type TransformImports = {
+  names: Set<ts.Symbol>;
+  namespaces: Set<ts.Symbol>;
+};
+
+type TransformIssue = {
+  node: ts.Node;
+  message: string;
+  hint: string;
+};
+
+function collectTransformImports(sourceFile: ts.SourceFile, checker: ts.TypeChecker): TransformImports {
+  const imports: TransformImports = { names: new Set(), namespaces: new Set() };
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement) || !statement.importClause || !isExpressionFacadeSpecifier(statement.moduleSpecifier)) continue;
+    const namedBindings = statement.importClause.namedBindings;
+    if (!namedBindings) continue;
+    if (ts.isNamespaceImport(namedBindings)) {
+      addSymbol(imports.namespaces, checker, namedBindings.name);
+      continue;
+    }
+    for (const element of namedBindings.elements) {
+      if ((element.propertyName ?? element.name).text === "transform") addSymbol(imports.names, checker, element.name);
+    }
+  }
+  return imports;
+}
+
+function addSymbol(symbols: Set<ts.Symbol>, checker: ts.TypeChecker, node: ts.Identifier): void {
+  const symbol = checker.getSymbolAtLocation(node);
+  if (symbol) symbols.add(symbol);
+}
+
+function isExpressionFacadeSpecifier(node: ts.Expression): boolean {
+  return ts.isStringLiteral(node) && (node.text === "acpus/expression" || node.text === "@acpus/expression");
+}
+
+function isTransformCall(call: ts.CallExpression, imports: TransformImports, checker: ts.TypeChecker): boolean {
+  if (ts.isIdentifier(call.expression)) return hasSymbol(imports.names, checker, call.expression);
+  return ts.isPropertyAccessExpression(call.expression)
+    && call.expression.name.text === "transform"
+    && ts.isIdentifier(call.expression.expression)
+    && hasSymbol(imports.namespaces, checker, call.expression.expression);
+}
+
+function hasSymbol(symbols: ReadonlySet<ts.Symbol>, checker: ts.TypeChecker, node: ts.Identifier): boolean {
+  const symbol = checker.getSymbolAtLocation(node);
+  return Boolean(symbol && symbols.has(symbol));
+}
+
+function transformCallbackIssue(call: ts.CallExpression, checker: ts.TypeChecker): TransformIssue | undefined {
+  const node = call.arguments[1];
+  if (!node) return transformIssue("transform(...) requires an inline callback.", call, "Pass a one-expression arrow such as value => value.title.");
+  if (!ts.isArrowFunction(node)) {
+    return transformIssue("transform(...) callback must be an inline one-expression arrow.", node, "Use value => value.title instead of a function expression or imported helper.");
+  }
+  if (node.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword)) {
+    return transformIssue("transform(...) callback cannot be async.", node, "Return a JSON value synchronously.");
+  }
+  const parameterName = plainArrowParameterName(node);
+  if (!parameterName) {
+    return transformIssue("transform(...) callback must have exactly one plain parameter.", node, "Use a single parameter such as value => value.title.");
+  }
+  if (ts.isBlock(node.body)) {
+    return transformIssue("transform(...) callback must be one expression, not a block body.", node.body, "Use value => expression instead of value => { return expression; }.");
+  }
+  return transformExpressionIssue(node.body, new Set([parameterName]), checker);
+}
+
+function transformOutputDiagnostic(call: ts.CallExpression, checker: ts.TypeChecker): DiagnosticIR | undefined {
+  const callback = call.arguments[1];
+  if (!callback || !ts.isArrowFunction(callback) || ts.isBlock(callback.body)) return undefined;
+  const signature = checker.getSignatureFromDeclaration(callback);
+  if (!signature) return undefined;
+  const returnType = checker.getReturnTypeOfSignature(signature);
+  return workflowDataAdmissibilityDiagnostic("transform callback output", callback.body, returnType, checker);
+}
+
+function transformExpressionIssue(node: ts.Expression, scope: ReadonlySet<string>, checker: ts.TypeChecker): TransformIssue | undefined {
+  if (ts.isParenthesizedExpression(node)) return transformExpressionIssue(node.expression, scope, checker);
+  if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node) || ts.isSatisfiesExpression(node) || ts.isNonNullExpression(node)) {
+    return transformExpressionIssue(node.expression, scope, checker);
+  }
+  if (ts.isStringLiteralLike(node) || ts.isNumericLiteral(node) || node.kind === ts.SyntaxKind.TrueKeyword || node.kind === ts.SyntaxKind.FalseKeyword || node.kind === ts.SyntaxKind.NullKeyword) return undefined;
+  if (ts.isIdentifier(node)) return scope.has(node.text) ? undefined : transformIssue(`transform(...) callback cannot reference '${node.text}'.`, node, "Use only the callback parameter and allowed pure globals Object or Math.");
+  if (node.kind === ts.SyntaxKind.ThisKeyword) return transformIssue("transform(...) callback cannot use this.", node, "Use the callback parameter explicitly.");
+  if (ts.isPropertyAccessExpression(node)) return transformExpressionIssue(node.expression, scope, checker);
+  if (ts.isElementAccessExpression(node)) return transformExpressionIssue(node.expression, scope, checker) ?? transformExpressionIssue(node.argumentExpression, scope, checker);
+  if (ts.isObjectLiteralExpression(node)) return transformObjectLiteralIssue(node, scope, checker);
+  if (ts.isArrayLiteralExpression(node)) return firstIssue(node.elements, element => ts.isSpreadElement(element) ? transformIssue("transform(...) callback cannot use spread syntax.", element, "Build explicit JSON arrays and objects.") : transformExpressionIssue(element, scope, checker));
+  if (ts.isConditionalExpression(node)) return transformExpressionIssue(node.condition, scope, checker) ?? transformExpressionIssue(node.whenTrue, scope, checker) ?? transformExpressionIssue(node.whenFalse, scope, checker);
+  if (ts.isTemplateExpression(node)) return firstIssue(node.templateSpans, span => transformExpressionIssue(span.expression, scope, checker));
+  if (ts.isNoSubstitutionTemplateLiteral(node)) return undefined;
+  if (ts.isPrefixUnaryExpression(node)) {
+    if (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken) return transformIssue("transform(...) callback cannot mutate values.", node, "Use a pure expression without assignment or update operators.");
+    return transformExpressionIssue(node.operand, scope, checker);
+  }
+  if (ts.isBinaryExpression(node)) return transformBinaryIssue(node, scope, checker);
+  if (ts.isCallExpression(node)) return transformCallIssue(node, scope, checker);
+  if (ts.isAwaitExpression(node)) return transformIssue("transform(...) callback cannot use await.", node, "Return a synchronous JSON value.");
+  if (ts.isYieldExpression(node)) return transformIssue("transform(...) callback cannot use yield.", node, "Return a direct JSON value.");
+  if (ts.isNewExpression(node)) return transformIssue("transform(...) callback cannot use new.", node, "Return plain JSON values.");
+  if (ts.isFunctionExpression(node) || ts.isArrowFunction(node)) return transformIssue("transform(...) callback cannot define nested functions except allowed array callbacks.", node, "Keep transform callbacks as one pure expression.");
+  if (ts.isClassExpression(node)) return transformIssue("transform(...) callback cannot define classes.", node, "Return plain JSON values.");
+  if (ts.isCommaListExpression(node)) return transformIssue("transform(...) callback cannot use comma expressions.", node, "Use a direct expression.");
+  if (ts.isPostfixUnaryExpression(node)) return transformIssue("transform(...) callback cannot mutate values.", node, "Use a pure expression without assignment or update operators.");
+  return transformIssue(`transform(...) callback syntax '${ts.SyntaxKind[node.kind]}' is not supported.`, node, "Use the supported pure expression subset or move the work into a Task.");
+}
+
+function transformObjectLiteralIssue(node: ts.ObjectLiteralExpression, scope: ReadonlySet<string>, checker: ts.TypeChecker): TransformIssue | undefined {
+  return firstIssue(node.properties, property => {
+    if (ts.isPropertyAssignment(property)) {
+      if (ts.isComputedPropertyName(property.name)) {
+        const issue = transformExpressionIssue(property.name.expression, scope, checker);
+        if (issue) return issue;
+      }
+      return transformExpressionIssue(property.initializer, scope, checker);
+    }
+    if (ts.isShorthandPropertyAssignment(property)) return scope.has(property.name.text) ? undefined : transformIssue(`transform(...) callback cannot reference '${property.name.text}'.`, property.name, "Use only the callback parameter.");
+    return transformIssue("transform(...) callback object literals cannot use spread, methods, getters, or setters.", property, "Return explicit JSON object properties.");
+  });
+}
+
+function transformBinaryIssue(node: ts.BinaryExpression, scope: ReadonlySet<string>, checker: ts.TypeChecker): TransformIssue | undefined {
+  if (node.operatorToken.kind === ts.SyntaxKind.CommaToken) return transformIssue("transform(...) callback cannot use comma expressions.", node, "Use a direct expression.");
+  if (ASSIGNMENT_OPERATORS.has(node.operatorToken.kind)) return transformIssue("transform(...) callback cannot assign or mutate values.", node, "Use a pure expression without assignment.");
+  return transformExpressionIssue(node.left, scope, checker) ?? transformExpressionIssue(node.right, scope, checker);
+}
+
+function transformCallIssue(node: ts.CallExpression, scope: ReadonlySet<string>, checker: ts.TypeChecker): TransformIssue | undefined {
+  if (isImportCall(node)) return transformIssue("transform(...) callback cannot import modules.", node, "Use a Task for dependency-backed work.");
+  if (ts.isPropertyAccessExpression(node.expression)) {
+    if (ts.isIdentifier(node.expression.expression) && node.expression.expression.text === "Object") return objectCallIssue(node, scope, checker);
+    if (ts.isIdentifier(node.expression.expression) && node.expression.expression.text === "Math") return mathCallIssue(node, scope, checker);
+    const method = node.expression.name.text;
+    if (!ALLOWED_TRANSFORM_METHODS.has(method)) {
+      return transformIssue(`transform(...) callback cannot call method '${method}'.`, node.expression.name, "Use an allowlisted pure method or move the logic into a Task.");
+    }
+    return transformExpressionIssue(node.expression.expression, scope, checker) ?? transformCallArgsIssue(method, node.arguments, scope, checker);
+  }
+  return transformIssue("transform(...) callback can only call allowlisted methods and pure globals.", node.expression, "Use methods such as trim/includes/slice or Object.keys/Math.abs.");
+}
+
+function objectCallIssue(node: ts.CallExpression, scope: ReadonlySet<string>, checker: ts.TypeChecker): TransformIssue | undefined {
+  const access = node.expression as ts.PropertyAccessExpression;
+  const name = access.name.text;
+  if (!isGlobalIdentifier(access.expression as ts.Identifier, checker)) return transformIssue("transform(...) callback cannot shadow global Object.", access.expression, "Use the built-in Object global only.");
+  if (!ALLOWED_OBJECT_CALLS.has(name)) return transformIssue(`transform(...) callback cannot call Object.${name}.`, node.expression, "Use Object.keys, Object.values, or Object.entries.");
+  return transformCallArgsIssue(name, node.arguments, scope, checker);
+}
+
+function mathCallIssue(node: ts.CallExpression, scope: ReadonlySet<string>, checker: ts.TypeChecker): TransformIssue | undefined {
+  const access = node.expression as ts.PropertyAccessExpression;
+  const name = access.name.text;
+  if (!isGlobalIdentifier(access.expression as ts.Identifier, checker)) return transformIssue("transform(...) callback cannot shadow global Math.", access.expression, "Use the built-in Math global only.");
+  if (!ALLOWED_MATH_CALLS.has(name)) return transformIssue(`transform(...) callback cannot call Math.${name}.`, node.expression, "Use deterministic Math functions; Math.random is not allowed.");
+  return transformCallArgsIssue(name, node.arguments, scope, checker);
+}
+
+function transformCallArgsIssue(method: string, args: ts.NodeArray<ts.Expression>, scope: ReadonlySet<string>, checker: ts.TypeChecker): TransformIssue | undefined {
+  return firstIssue(args, arg => ts.isArrowFunction(arg) ? transformNestedArrowIssue(method, arg, scope, checker) : transformExpressionIssue(arg, scope, checker));
+}
+
+function transformNestedArrowIssue(method: string, node: ts.ArrowFunction, outerScope: ReadonlySet<string>, checker: ts.TypeChecker): TransformIssue | undefined {
+  if (!CALLS_WITH_NESTED_CALLBACKS.has(method)) return transformIssue("transform(...) callback cannot pass function values here.", node, "Only array map/filter/some/every callbacks are supported.");
+  const parameterName = plainArrowParameterName(node);
+  if (node.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword) || !parameterName || ts.isBlock(node.body)) {
+    return transformIssue("transform(...) nested callbacks must be one-expression arrows with one plain parameter.", node, "Use item => expression.");
+  }
+  const scope = new Set(outerScope);
+  scope.add(parameterName);
+  return transformExpressionIssue(node.body, scope, checker);
+}
+
+function plainArrowParameterName(node: ts.ArrowFunction): string | undefined {
+  const parameter = node.parameters.length === 1 ? node.parameters[0] : undefined;
+  return parameter && ts.isIdentifier(parameter.name) && !parameter.dotDotDotToken && !parameter.initializer ? parameter.name.text : undefined;
+}
+
+function transformIssue(message: string, node: ts.Node, hint: string): TransformIssue {
+  return { message, node, hint };
+}
+
+function isGlobalIdentifier(node: ts.Identifier, checker: ts.TypeChecker): boolean {
+  const symbol = checker.getSymbolAtLocation(node);
+  if (!symbol) return false;
+  const declarations = symbol.declarations ?? [];
+  return declarations.length > 0 && declarations.every(declaration => isTypeScriptLibFile(declaration.getSourceFile().fileName));
+}
+
+function isTypeScriptLibFile(fileName: string): boolean {
+  return /(?:^|[/\\])typescript[/\\]lib[/\\]lib\..*\.d\.ts$/.test(fileName);
+}
+
+function isImportCall(node: ts.Node): boolean {
+  return ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword;
+}
+
+function firstIssue<T extends ts.Node>(items: Iterable<T>, check: (item: T) => TransformIssue | undefined): TransformIssue | undefined {
+  for (const item of items) {
+    const issue = check(item);
+    if (issue) return issue;
+  }
+  return undefined;
+}
+
+const ASSIGNMENT_OPERATORS = new Set<ts.SyntaxKind>([
+  ts.SyntaxKind.EqualsToken,
+  ts.SyntaxKind.PlusEqualsToken,
+  ts.SyntaxKind.MinusEqualsToken,
+  ts.SyntaxKind.AsteriskEqualsToken,
+  ts.SyntaxKind.AsteriskAsteriskEqualsToken,
+  ts.SyntaxKind.SlashEqualsToken,
+  ts.SyntaxKind.PercentEqualsToken,
+  ts.SyntaxKind.AmpersandEqualsToken,
+  ts.SyntaxKind.BarEqualsToken,
+  ts.SyntaxKind.CaretEqualsToken,
+  ts.SyntaxKind.LessThanLessThanEqualsToken,
+  ts.SyntaxKind.GreaterThanGreaterThanEqualsToken,
+  ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
+  ts.SyntaxKind.AmpersandAmpersandEqualsToken,
+  ts.SyntaxKind.BarBarEqualsToken,
+  ts.SyntaxKind.QuestionQuestionEqualsToken,
+]);
+const ALLOWED_TRANSFORM_METHODS = new Set(["trim", "toLowerCase", "toUpperCase", "includes", "startsWith", "endsWith", "slice", "map", "filter", "some", "every", "join"]);
+const CALLS_WITH_NESTED_CALLBACKS = new Set(["map", "filter", "some", "every"]);
+const ALLOWED_OBJECT_CALLS = new Set(["keys", "values", "entries"]);
+const ALLOWED_MATH_CALLS = new Set(["abs", "ceil", "floor", "round", "trunc", "max", "min", "pow", "sqrt"]);
 
 function isConditionExpression(node: ts.Node): node is ts.Expression {
   const parent = node.parent;

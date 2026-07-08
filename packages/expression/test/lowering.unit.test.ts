@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { get, map, pick } from "@acpus/expression";
+import { get, map, pick, transform } from "@acpus/expression";
 import { refExpr, tryValueToExprIR, valueToExprIR } from "@acpus/expression/ir";
 import { err } from "neverthrow";
 
@@ -133,6 +133,21 @@ describe("expression lowering", () => {
             ],
           },
         },
+      ],
+    });
+  });
+
+  it("lowers transform callbacks as source text", () => {
+    const count = refExpr<number>(["input", "count"]);
+    const fn = (value: number) => value + 1;
+    const expr = transform(count, fn);
+
+    expect(expr.__ir).toEqual({
+      kind: "call",
+      fn: "transform",
+      args: [
+        { kind: "ref", path: ["input", "count"] },
+        { kind: "literal", value: fn.toString() },
       ],
     });
   });

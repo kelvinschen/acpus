@@ -233,16 +233,21 @@ function checkProducers(producers: Producer[], context: RuleContext): void {
 }
 
 function checkProducer(producer: Producer, context: RuleContext): void {
-  const issue = admissibilityIssue(producer.type, producer.expression, context.checker, new Set());
+  const diagnostic = workflowDataAdmissibilityDiagnostic(producer.label, producer.expression, producer.type, context.checker);
+  if (diagnostic) context.diagnostics.push(diagnostic);
+}
+
+export function workflowDataAdmissibilityDiagnostic(label: string, expression: ts.Expression, type: ts.Type, checker: ts.TypeChecker): DiagnosticIR | undefined {
+  const issue = admissibilityIssue(type, expression, checker, new Set());
   if (!issue) return;
-  context.diagnostics.push({
+  return {
     code: "OA002",
     severity: "error",
-    message: `${producer.label} contains non-admissible workflow data: ${issue}.`,
+    message: `${label} contains non-admissible workflow data: ${issue}.`,
     path: "output.admissibility",
     hint: "Return JSON-compatible data, Expr<T> values whose T is JSON-compatible, undefined for local absence, or explicit JsonValue/JsonObject opaque values.",
-    source: sourceLocation(producer.expression),
-  });
+    source: sourceLocation(expression),
+  };
 }
 
 function checkConvergence(label: string, producers: Producer[], context: RuleContext): void {

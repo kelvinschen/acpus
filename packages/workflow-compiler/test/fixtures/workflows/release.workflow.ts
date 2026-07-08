@@ -7,6 +7,7 @@ import {
   every,
   max,
   template,
+  transform,
 } from "acpus/expression";
 import localDependencyTask from "./tasks/local-dependency.task.js";
 import nodeModuleDependencyTask from "./tasks/node-module-dependency.task.js";
@@ -183,10 +184,17 @@ export default defineWorkflow({
       timeout: "30m",
     }),
   );
+  const reviewSummaries = reviews.map((review) =>
+    transform(review.output, output => ({
+      ready: output.ready,
+      riskCount: output.riskCount,
+      summary: output.summary.trim(),
+    })),
+  );
 
   step("require_all_reviews_ready").assert({
-    condition: every(reviews.map((review) =>
-      where(review.output, {
+    condition: every(reviewSummaries.map((review) =>
+      where(review, {
         ready: true,
         riskCount: { lte: 3 },
       }),
@@ -195,7 +203,7 @@ export default defineWorkflow({
       One or more reviews failed.
 
       Review outputs:
-      ${reviews.map((review) => review.output)}
+      ${reviewSummaries}
     `,
   });
 
@@ -218,15 +226,15 @@ export default defineWorkflow({
         ${prepare.output.changelogDraft}
 
         Reviews:
-        ${reviews.map((review) => review.output)}
+        ${reviewSummaries}
       `,
     },
   });
 
   return {
     runId: meta.runId,
-    ready: every(reviews.map((review) => review.output.ready)),
-    maxRiskCount: max(reviews.map((review) => review.output.riskCount)),
+    ready: every(reviewSummaries.map((review) => review.ready)),
+    maxRiskCount: max(reviewSummaries.map((review) => review.riskCount)),
     summary: summary.output.summary,
     changelogDraft: prepare.output.changelogDraft,
   };
