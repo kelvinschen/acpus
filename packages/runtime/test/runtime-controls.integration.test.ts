@@ -76,7 +76,7 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       });
       expect(runtimeRows(workspace, "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'commands'")).toEqual([]);
     });
-  }, 15_000);
+  });
 
   it("reports unapplied controls as typed conflicts when another owner holds the run lease", async () => {
     await withRuntimeWorkspace("runtime-control-lease-conflict", async workspace => {
@@ -116,7 +116,7 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       expect(forkArtifacts.map(({ id: _id, ...row }) => row)).toEqual(sourceArtifacts.map(({ id: _id, ...row }) => row));
       await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({ output: { ok: true } });
     });
-  }, 15_000);
+  });
 
   it("reuses the fork run when a fork control request is replayed", async () => {
     await withRuntimeWorkspace("runtime-fork-idempotent-request", async workspace => {
@@ -130,7 +130,7 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       expect(third?.forkRunId).toBe(first?.forkRunId);
       expect(runtimeRows(workspace, "SELECT id FROM runs WHERE id <> ? ORDER BY id", source.run.id)).toEqual([{ id: first?.forkRunId }]);
     });
-  }, 15_000);
+  });
 
   it("rejects a reused fork request id with different input", async () => {
     await withRuntimeWorkspace("runtime-fork-idempotent-conflict", async workspace => {
@@ -144,7 +144,7 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       });
       await expect(mutateRun(workspace, source.run.id, "fork", { requestId: "fork-request-1", input: secondInput })).rejects.toThrow("conflicts with a different fork input");
     });
-  }, 15_000);
+  });
 
   it("forks only reachable artifacts from inherited accepted outputs", async () => {
     await withRuntimeWorkspace("runtime-fork-reachable-artifacts", async workspace => {
@@ -210,7 +210,7 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       await expect(access(join(workspace, ".acpus", ".local", "runs", fork!.run.id, failedRelativePath))).rejects.toThrow();
       await expect(access(join(workspace, ".acpus", ".local", "runs", fork!.run.id, supersededRelativePath))).rejects.toThrow();
     });
-  }, 15_000);
+  });
 
   it("forks completed runs with fork-local meta outputs", async () => {
     await withRuntimeWorkspace("runtime-fork-meta", async workspace => {
@@ -230,7 +230,7 @@ describe.concurrent("runtime controls and recovery use cases", () => {
         },
       });
     });
-  }, 15_000);
+  });
 
   it("forks with replacement workflow and input override without inheriting stale output", async () => {
     await withRuntimeWorkspace("runtime-fork-replacement", async workspace => {
@@ -282,14 +282,14 @@ describe.concurrent("runtime controls and recovery use cases", () => {
         },
       });
     });
-  }, 15_000);
+  });
 
   it("rejects empty fork targets before applying control", async () => {
     await withRuntimeWorkspace("runtime-fork-empty-target", async workspace => {
       const completed = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
       await expect(mutateRun(workspace, completed.run.id, "fork", { target: "" })).rejects.toThrow("Fork target must be a non-empty string.");
     });
-  }, 15_000);
+  });
 
   it("signals awaiting runs and rejects invalid signals without mutation", async () => {
     await withRuntimeWorkspace("runtime-signal", async workspace => {

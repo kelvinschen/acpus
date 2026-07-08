@@ -1850,7 +1850,7 @@ describe("runtime scheduler node executor", () => {
         store.close();
       }
     });
-  }, 15_000);
+  });
 
   it("does not seed an explicit fork target even when the source completed it", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-targeted-fork-explicit-target", async workspace => {

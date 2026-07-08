@@ -4,7 +4,6 @@ import { copyWorkflowFixture } from "./support/fixtures.js";
 import { withTestWorkspace } from "./support/workspace.js";
 
 const runIdPattern = /^\d{14}[A-F0-9]{20}$/;
-const e2eTestTimeout = process.env.CI ? 30_000 : 15_000;
 
 describe.concurrent("acpus CLI subprocess smoke", () => {
   it("runs a workflow path in foreground JSON mode", async () => {
@@ -29,7 +28,7 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
         },
       });
     });
-  }, e2eTestTimeout);
+  });
 
   it("signals an awaiting workflow through the subprocess CLI", async () => {
     await withTestWorkspace("e2e-runs-signal", async workspace => {
@@ -48,5 +47,5 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
         run: { id: runId },
       });
     });
-  }, e2eTestTimeout);
+  });
 });

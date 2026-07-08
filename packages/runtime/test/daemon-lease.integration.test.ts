@@ -344,7 +344,7 @@ describe("daemon lease", () => {
     } finally {
       await loop.shutdown();
     }
-  }, 15_000);
+  });
 
   it("returns stable daemon control error codes", async () => {
     const loop = await startDaemonLoop(dir, {

@@ -376,7 +376,7 @@ describe("web API contract", () => {
         approved: expect.any(Object),
         first_lane: expect.any(Object),
       }));
-    }, 15_000);
+    });
 
     it("rejects invalid visualization bodies", async () => {
       const res = await app.request("/api/workflows/visualize", {

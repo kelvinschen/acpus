@@ -32,7 +32,7 @@ describe("workflow preparation", () => {
       });
       expect(prepared.ir.outputs.normalized).toEqual({ kind: "ref", path: ["nodes", "normalize_path", "output", "normalized"] });
     });
-  }, 15_000);
+  });
 
   it("prepares reusable tasks imported from a real package export", async () => {
     await withCompilerWorkspace("compiler-package-task", async cwd => {

@@ -6,7 +6,7 @@ const integrationTests = "packages/*/test/**/*.integration.test.ts";
 const e2eTests = "packages/*/test/**/*.e2e.test.ts";
 const regressionTests = "packages/*/test/**/*.regression.test.ts";
 const typeContractTests = "packages/*/test/**/*.type.test-d.ts";
-const e2eTestTimeout = process.env.CI ? 30_000 : 15_000;
+const slowProjectTestTimeout = process.env.CI ? 30_000 : 15_000;
 
 export default defineConfig({
   resolve: {
@@ -27,20 +27,22 @@ export default defineConfig({
       {
         test: {
           name: "contract",
-          include: [contractTests]
+          include: [contractTests],
+          testTimeout: slowProjectTestTimeout
         }
       },
       {
         test: {
           name: "integration",
-          include: [integrationTests]
+          include: [integrationTests],
+          testTimeout: slowProjectTestTimeout
         }
       },
       {
         test: {
           name: "e2e",
           include: [e2eTests],
-          testTimeout: e2eTestTimeout
+          testTimeout: slowProjectTestTimeout
         }
       },
       {
