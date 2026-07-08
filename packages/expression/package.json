@@ -52,5 +52,9 @@
   },
   "dependencies": {
     "neverthrow": "^8.2.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kelvinschen/acpus"
   }
 }

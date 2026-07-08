@@ -40,5 +40,9 @@
   },
   "devDependencies": {
     "@types/node": "^22.15.30"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kelvinschen/acpus"
   }
 }
