@@ -1,5 +1,16 @@
 # @acpus/workflow-compiler
 
+## 0.1.0-alpha.4
+
+### Patch Changes
+
+- 6ef7549: Add expression `transform(value, fn)` for small runtime JSON transforms, with workflow authoring checks, runtime guards, and Acpus authoring references.
+- Updated dependencies [6ef7549]
+  - @acpus/expression@0.1.0-alpha.4
+  - @acpus/core@0.7.0-alpha.4
+  - @acpus/loader@0.1.0-alpha.4
+  - @acpus/tasks@0.1.0-alpha.4
+
 ## 0.1.0-alpha.3
 
 ### Patch Changes

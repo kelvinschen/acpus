@@ -17,6 +17,7 @@
     "early-buckets-drum",
     "fresh-loader-publish",
     "installed-facade-types",
+    "quiet-transform-map",
     "web-shutdown-signal"
   ]
 }

@@ -1,5 +1,11 @@
 # @acpus/expression
 
+## 0.1.0-alpha.4
+
+### Minor Changes
+
+- 6ef7549: Add expression `transform(value, fn)` for small runtime JSON transforms, with workflow authoring checks, runtime guards, and Acpus authoring references.
+
 ## 0.1.0-alpha.3
 
 ### Minor Changes

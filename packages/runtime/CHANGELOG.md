@@ -1,5 +1,15 @@
 # @acpus/runtime
 
+## 0.9.0-alpha.4
+
+### Patch Changes
+
+- Updated dependencies [6ef7549]
+  - @acpus/expression@0.1.0-alpha.4
+  - @acpus/core@0.7.0-alpha.4
+  - @acpus/loader@0.1.0-alpha.4
+  - @acpus/tasks@0.1.0-alpha.4
+
 ## 0.9.0-alpha.3
 
 ### Patch Changes
