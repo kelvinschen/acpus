@@ -175,11 +175,28 @@ Graph-level composites:
 
 - `if`: conditional branch; both branches should return compatible object shapes.
 - `switch`: case list plus required `default` branch.
-- `parallel`: static named branches; `strategy` defaults to `"all"`, with `"race"` available.
+- `parallel`: static named branches declared as direct callbacks; `strategy` defaults to `"all"`, with `"race"` available.
 - `fanout`: runtime array expansion; output is an array. `strategy` defaults to `"all"`, with `"quorum"` available.
 - `loop`: seeded pre-check loop. `maxIterations` counts body executions only; `stopWhen` checks before each body execution.
 
 Composite callbacks receive `{ step }` plus composite-specific values such as `item`, `iter`, and `previous`. Return a plain object to declare composite output; do not add `outputSchema` to composites. For `parallel({ strategy: "race" })`, output is `{ winner, result }`, not a branch-keyed object. For `fanout({ strategy: "quorum", count })`, output is the accepted item array, not an envelope.
+
+Parallel branches are named callbacks:
+
+```ts
+const checks = step("checks").parallel({
+  maxConcurrency: 2,
+  branches: {
+    fast({ step }) {
+      const result = step("fast_check").task({
+        run: { input: {}, exec: async () => ({ ok: true }) },
+      });
+      return { ok: result.output.ok };
+    },
+    slow: () => ({ ok: true }),
+  },
+});
+```
 
 Loop callbacks receive `iter` as a 0-based `Expr<number>` and `previous` as the current loop state. For user-facing round numbers, write `add(iter, 1)`. `stopWhen({ iter, result })` is evaluated before the next body execution, so `result` is the latest state being checked.
 

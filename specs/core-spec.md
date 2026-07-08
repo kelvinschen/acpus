@@ -78,7 +78,7 @@
 - Array output accessors MUST support numeric index access through `@acpus/expression` accessors and helpers.
 - If nodes MUST use `step("id").if({ condition, then, else })`.
 - Switch nodes MUST use `default` for fallback authoring, and default MUST be declared.
-- Parallel nodes MUST express static named branch concurrency and support `strategy?: "all" | "race"`, defaulting to `"all"`.
+- Parallel nodes MUST express static named branch concurrency with `branches: Record<string, ScopeCallback>` and support `strategy?: "all" | "race"`, defaulting to `"all"`.
 - Fanout nodes MUST express runtime array expansion and support `strategy?: "all" | "quorum"`, defaulting to `"all"`.
 - Fanout item output MUST be inferred from the `do` callback and serialize no `itemOutputSchema`.
 - Loop nodes MUST declare `initial`; loop bodies MUST receive `iter` and non-optional `previous`.

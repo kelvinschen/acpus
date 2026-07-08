@@ -25,51 +25,47 @@ export default defineWorkflow({
     do: ({ item, step }) => {
       const lane = step("triage_lane").parallel({
         branches: {
-          metadata: {
-            do: ({ step }) => {
-              const metadata = step("summarize_issue").task({
-                run: {
-                  task: summarizeIssue,
-                  input: { id: item.id, title: item.title, labels: item.labels },
-                  cwd: input.repoPath,
-                },
-              });
-              return {
-                labelCount: metadata.output.labelCount,
-                titleLine: metadata.output.titleLine,
-              };
-            },
+          metadata: ({ step }) => {
+            const metadata = step("summarize_issue").task({
+              run: {
+                task: summarizeIssue,
+                input: { id: item.id, title: item.title, labels: item.labels },
+                cwd: input.repoPath,
+              },
+            });
+            return {
+              labelCount: metadata.output.labelCount,
+              titleLine: metadata.output.titleLine,
+            };
           },
-          review: {
-            do: ({ step }) => {
-              const review = step("review_issue").agent({
-                outputSchema: z.object({
-                  route: z.enum(["now", "later", "escalate"]),
-                  priority: z.number(),
-                  summary: z.string(),
-                }),
-                run: {
-                  agent: agents.triager,
-                  cwd: input.repoPath,
-                  prompt: md`
-                    Triage this issue for the current repository.
+          review: ({ step }) => {
+            const review = step("review_issue").agent({
+              outputSchema: z.object({
+                route: z.enum(["now", "later", "escalate"]),
+                priority: z.number(),
+                summary: z.string(),
+              }),
+              run: {
+                agent: agents.triager,
+                cwd: input.repoPath,
+                prompt: md`
+                  Triage this issue for the current repository.
 
-                    ID: ${item.id}
-                    Title: ${item.title}
-                    Body: ${item.body}
-                    Labels: ${item.labels}
+                  ID: ${item.id}
+                  Title: ${item.title}
+                  Body: ${item.body}
+                  Labels: ${item.labels}
 
-                    Choose route "now", "later", or "escalate".
-                  `,
-                },
-                timeout: "20m",
-              });
-              return {
-                route: review.output.route,
-                priority: review.output.priority,
-                summary: review.output.summary,
-              };
-            },
+                  Choose route "now", "later", or "escalate".
+                `,
+              },
+              timeout: "20m",
+            });
+            return {
+              route: review.output.route,
+              priority: review.output.priority,
+              summary: review.output.summary,
+            };
           },
         },
       });
@@ -138,6 +134,7 @@ export default defineWorkflow({
       };
     },
   });
+
 
   return {
     runId: meta.runId,

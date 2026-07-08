@@ -309,23 +309,19 @@ export function parallelSignalAllWorkflow() {
     const approvals = step("approvals").parallel({
       strategy: "all",
       branches: {
-        left: {
-          do: ({ step }) => {
-            const approval = step("left_approve").signal({
-              outputSchema: z.object({ ok: z.boolean() }),
-              run: { prompt: "left" },
-            });
-            return { ok: approval.output.ok };
-          },
+        left: ({ step }) => {
+          const approval = step("left_approve").signal({
+            outputSchema: z.object({ ok: z.boolean() }),
+            run: { prompt: "left" },
+          });
+          return { ok: approval.output.ok };
         },
-        right: {
-          do: ({ step }) => {
-            const approval = step("right_approve").signal({
-              outputSchema: z.object({ ok: z.boolean() }),
-              run: { prompt: "right" },
-            });
-            return { ok: approval.output.ok };
-          },
+        right: ({ step }) => {
+          const approval = step("right_approve").signal({
+            outputSchema: z.object({ ok: z.boolean() }),
+            run: { prompt: "right" },
+          });
+          return { ok: approval.output.ok };
         },
       },
     });
@@ -340,23 +336,19 @@ export function parallelSignalRaceWorkflow() {
     const approval = step("approval").parallel({
       strategy: "race",
       branches: {
-        left: {
-          do: ({ step }) => {
-            const approval = step("left_approve").signal({
-              outputSchema: z.object({ ok: z.boolean() }),
-              run: { prompt: "left" },
-            });
-            return { ok: approval.output.ok };
-          },
+        left: ({ step }) => {
+          const approval = step("left_approve").signal({
+            outputSchema: z.object({ ok: z.boolean() }),
+            run: { prompt: "left" },
+          });
+          return { ok: approval.output.ok };
         },
-        right: {
-          do: ({ step }) => {
-            const approval = step("right_approve").signal({
-              outputSchema: z.object({ ok: z.boolean() }),
-              run: { prompt: "right" },
-            });
-            return { ok: approval.output.ok };
-          },
+        right: ({ step }) => {
+          const approval = step("right_approve").signal({
+            outputSchema: z.object({ ok: z.boolean() }),
+            run: { prompt: "right" },
+          });
+          return { ok: approval.output.ok };
         },
       },
     });

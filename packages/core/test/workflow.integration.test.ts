@@ -299,12 +299,8 @@ describe("workflow compilation", () => {
 
       const checks = step("checks").parallel({
         branches: {
-          fast: {
-            do: () => (pick(gate.output, ["status"])),
-          },
-          slow: {
-            do: () => ({ done: true }),
-          },
+          fast: () => (pick(gate.output, ["status"])),
+          slow: () => ({ done: true }),
         },
         maxConcurrency: 2,
       });
@@ -702,12 +698,8 @@ describe("workflow compilation", () => {
       const race = step("first_check").parallel({
         strategy: "race",
         branches: {
-          fast: {
-            do: () => ({ id: "fast", ok: true }),
-          },
-          slow: {
-            do: () => ({ id: "slow", ok: true }),
-          },
+          fast: () => ({ id: "fast", ok: true }),
+          slow: () => ({ id: "slow", ok: true }),
         },
       });
 

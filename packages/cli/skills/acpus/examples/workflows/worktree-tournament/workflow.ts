@@ -32,125 +32,119 @@ export default defineWorkflow({
 
   const candidates = step("candidate_worktrees").parallel({
     branches: {
-      alpha: {
-        do: ({ step }) => {
-          const worktree = step("create_alpha_worktree").task({
-            run: {
-              task: createWorktree,
-              input: {
-                repo: input.repoPath,
-                path: paths.output.alpha,
-                ref: input.baseRef,
-                forceRemove: input.forceRemove,
-              },
+      alpha: ({ step }) => {
+        const worktree = step("create_alpha_worktree").task({
+          run: {
+            task: createWorktree,
+            input: {
+              repo: input.repoPath,
+              path: paths.output.alpha,
+              ref: input.baseRef,
+              forceRemove: input.forceRemove,
             },
-            timeout: "2m",
-          });
+          },
+          timeout: "2m",
+        });
 
-          const implementation = step("implement_alpha").agent({
-            run: {
-              agent: agents.implementer,
-              cwd: worktree.output.worktreePath,
-              prompt: md`
-                Implement this task in the alpha worktree.
+        const implementation = step("implement_alpha").agent({
+          run: {
+            agent: agents.implementer,
+            cwd: worktree.output.worktreePath,
+            prompt: md`
+              Implement this task in the alpha worktree.
 
-                Task: ${input.task}
+              Task: ${input.task}
 
-                Return a Markdown implementation report with:
-                - Changed files
-                - Implementation summary
-                - Test command run, or "not run" with the reason
-              `,
-            },
-            timeout: "45m",
-          });
+              Return a Markdown implementation report with:
+              - Changed files
+              - Implementation summary
+              - Test command run, or "not run" with the reason
+            `,
+          },
+          timeout: "45m",
+        });
 
-          return {
-            lane: "alpha",
-            worktreePath: worktree.output.worktreePath,
-            report: implementation.output,
-          };
-        },
+        return {
+          lane: "alpha",
+          worktreePath: worktree.output.worktreePath,
+          report: implementation.output,
+        };
       },
-      beta: {
-        do: ({ step }) => {
-          const worktree = step("create_beta_worktree").task({
-            run: {
-              task: createWorktree,
-              input: {
-                repo: input.repoPath,
-                path: paths.output.beta,
-                ref: input.baseRef,
-                forceRemove: input.forceRemove,
-              },
+      beta: ({ step }) => {
+        const worktree = step("create_beta_worktree").task({
+          run: {
+            task: createWorktree,
+            input: {
+              repo: input.repoPath,
+              path: paths.output.beta,
+              ref: input.baseRef,
+              forceRemove: input.forceRemove,
             },
-            timeout: "2m",
-          });
+          },
+          timeout: "2m",
+        });
 
-          const implementation = step("implement_beta").agent({
-            run: {
-              agent: agents.implementer,
-              cwd: worktree.output.worktreePath,
-              prompt: md`
-                Implement this task in the beta worktree.
+        const implementation = step("implement_beta").agent({
+          run: {
+            agent: agents.implementer,
+            cwd: worktree.output.worktreePath,
+            prompt: md`
+              Implement this task in the beta worktree.
 
-                Task: ${input.task}
+              Task: ${input.task}
 
-                Return a Markdown implementation report with:
-                - Changed files
-                - Implementation summary
-                - Test command run, or "not run" with the reason
-              `,
-            },
-            timeout: "45m",
-          });
+              Return a Markdown implementation report with:
+              - Changed files
+              - Implementation summary
+              - Test command run, or "not run" with the reason
+            `,
+          },
+          timeout: "45m",
+        });
 
-          return {
-            lane: "beta",
-            worktreePath: worktree.output.worktreePath,
-            report: implementation.output,
-          };
-        },
+        return {
+          lane: "beta",
+          worktreePath: worktree.output.worktreePath,
+          report: implementation.output,
+        };
       },
-      gamma: {
-        do: ({ step }) => {
-          const worktree = step("create_gamma_worktree").task({
-            run: {
-              task: createWorktree,
-              input: {
-                repo: input.repoPath,
-                path: paths.output.gamma,
-                ref: input.baseRef,
-                forceRemove: input.forceRemove,
-              },
+      gamma: ({ step }) => {
+        const worktree = step("create_gamma_worktree").task({
+          run: {
+            task: createWorktree,
+            input: {
+              repo: input.repoPath,
+              path: paths.output.gamma,
+              ref: input.baseRef,
+              forceRemove: input.forceRemove,
             },
-            timeout: "2m",
-          });
+          },
+          timeout: "2m",
+        });
 
-          const implementation = step("implement_gamma").agent({
-            run: {
-              agent: agents.implementer,
-              cwd: worktree.output.worktreePath,
-              prompt: md`
-                Implement this task in the gamma worktree.
+        const implementation = step("implement_gamma").agent({
+          run: {
+            agent: agents.implementer,
+            cwd: worktree.output.worktreePath,
+            prompt: md`
+              Implement this task in the gamma worktree.
 
-                Task: ${input.task}
+              Task: ${input.task}
 
-                Return a Markdown implementation report with:
-                - Changed files
-                - Implementation summary
-                - Test command run, or "not run" with the reason
-              `,
-            },
-            timeout: "45m",
-          });
+              Return a Markdown implementation report with:
+              - Changed files
+              - Implementation summary
+              - Test command run, or "not run" with the reason
+            `,
+          },
+          timeout: "45m",
+        });
 
-          return {
-            lane: "gamma",
-            worktreePath: worktree.output.worktreePath,
-            report: implementation.output,
-          };
-        },
+        return {
+          lane: "gamma",
+          worktreePath: worktree.output.worktreePath,
+          report: implementation.output,
+        };
       },
     },
   });

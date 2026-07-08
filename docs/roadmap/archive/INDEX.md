@@ -14,4 +14,5 @@ decisions. They are background context only; current behavior lives in `specs/`.
 - [Live Task Execution Implementation Goal](live-task-execution-implementation-goal.md) — completed live reusable task loading implementation record.
 - [Neverthrow Error Boundary Refactor Goal](neverthrow-error-boundary-refactor-goal.md) — completed typed result boundary refactor record.
 - [Output Schema Authoring Refactor Goal](output-schema-authoring-refactor-goal.md) — completed TypeScript-owned output authoring refactor record.
+- [Parallel Branch Authoring Roadmap](parallel-branch-authoring-roadmap.md) — completed static parallel branch authoring cleanup.
 - [Recursive Workflow Runtime Implementation Goal](recursive-workflow-runtime-implementation-goal.md) — completed recursive runtime implementation record.

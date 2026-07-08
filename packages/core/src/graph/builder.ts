@@ -9,12 +9,12 @@ import type { RuntimeInput, StepInput } from "../nodes/leaf/shared.js";
 import { buildAssertNode, type AssertSpec } from "../nodes/control/assert.js";
 import { buildIfNode, type IfStepSpec } from "../nodes/composite/if.js";
 import { buildSwitchNode, type SwitchNodeRefOutput, type SwitchStepSpec } from "../nodes/composite/switch.js";
-import { buildParallelNode, type ParallelBranchSpec, type ParallelNodeRefOutput, type ParallelStepSpec } from "../nodes/composite/parallel.js";
+import { buildParallelNode, type ParallelNodeRefOutput, type ParallelStepSpec } from "../nodes/composite/parallel.js";
 import { buildFanoutNode, type FanoutNodeRefOutput, type FanoutStepSpec } from "../nodes/composite/fanout.js";
 import { buildLoopNode, type LoopStepSpec } from "../nodes/composite/loop.js";
 import { buildImplicitScope as buildScopeIR, isOutputObject, type OutputValues, type ScopeContext } from "./scope.js";
 import { bindingsToIR, stripUndefined } from "./lowering.js";
-import type { FanoutStrategy, OutputObject, ParallelStrategy, RuntimeValueOf, WidenRuntimeValue, WorkflowArrayValue } from "../nodes/composite/shared.js";
+import type { FanoutStrategy, OutputObject, ParallelStrategy, RuntimeValueOf, ScopeCallback, WidenRuntimeValue, WorkflowArrayValue } from "../nodes/composite/shared.js";
 import type { TaskFunction } from "../runtime/task-context.js";
 import type {
   AgentDefinitionIR,
@@ -138,11 +138,11 @@ export type StepDeclaration = {
   ): NodeRef<SwitchNodeRefOutput<Spec>>;
 
   /** Declares static parallel branches. Race strategy returns a winner/result envelope. */
-  parallel<const Branches extends Record<string, ParallelBranchSpec>>(
+  parallel<const Branches extends Record<string, ScopeCallback>>(
     spec: ParallelStepSpec<Branches, "race">,
   ): NodeRef<ParallelNodeRefOutput<Branches, "race">>;
 
-  parallel<const Branches extends Record<string, ParallelBranchSpec>>(
+  parallel<const Branches extends Record<string, ScopeCallback>>(
     spec: ParallelStepSpec<Branches, "all">,
   ): NodeRef<ParallelNodeRefOutput<Branches, "all">>;
 
@@ -176,7 +176,7 @@ class GraphBuildState {
     const assert: StepDeclaration["assert"] = spec => this.assert(id, spec);
     const ifStep: StepDeclaration["if"] = spec => this.if(id, spec);
     const switchStep: StepDeclaration["switch"] = spec => this.switch(id, spec);
-    const parallel = ((spec: ParallelStepSpec<Record<string, ParallelBranchSpec>, ParallelStrategy>) => (
+    const parallel = ((spec: ParallelStepSpec<Record<string, ScopeCallback>, ParallelStrategy>) => (
       spec.strategy === "race" ? this.parallel(id, spec) : this.parallel(id, spec)
     )) as unknown as StepDeclaration["parallel"];
     const fanout = ((spec: FanoutStepSpec<WorkflowArrayValue<any>, Record<string, unknown>, FanoutStrategy>) => this.fanout(id, spec as any)) as unknown as StepDeclaration["fanout"];
@@ -248,19 +248,19 @@ class GraphBuildState {
     return makeNodeRef(id);
   }
 
-  private parallel<const Branches extends Record<string, ParallelBranchSpec>>(
+  private parallel<const Branches extends Record<string, ScopeCallback>>(
     id: string,
     spec: ParallelStepSpec<Branches, "race">,
   ): NodeRef<ParallelNodeRefOutput<Branches, "race">>;
 
-  private parallel<const Branches extends Record<string, ParallelBranchSpec>>(
+  private parallel<const Branches extends Record<string, ScopeCallback>>(
     id: string,
     spec: ParallelStepSpec<Branches, "all">,
   ): NodeRef<ParallelNodeRefOutput<Branches, "all">>;
 
   private parallel(
     id: string,
-    spec: ParallelStepSpec<Record<string, ParallelBranchSpec>, ParallelStrategy>,
+    spec: ParallelStepSpec<Record<string, ScopeCallback>, ParallelStrategy>,
   ): NodeRef<any> {
     this.nodes.push(buildParallelNode(id, spec, this.diagnostics, this.buildImplicitScope));
     return makeNodeRef(id);

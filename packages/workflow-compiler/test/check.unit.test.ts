@@ -204,7 +204,7 @@ describe("workflow check pipeline", () => {
           step("bad").task({ run: { input: {}, task: badTask } });
           const fanoutSpec = { over: ["a"], do: () => ({ ok: true }) };
           step("items").fanout(fanoutSpec);
-          const branch = { do: () => ({ ok: true }) };
+          const branch = () => ({ ok: true });
           step("parallel").parallel({ branches: { branch } });
           const hidden = { ok: true };
           step("spread").if({
@@ -232,8 +232,10 @@ describe("workflow check pipeline", () => {
           step("race_types").parallel({
             strategy: "race",
             branches: {
-              left: { do: () => ({ value: "left" }) },
-              right: { do: () => ({ value: 1 }) },
+              left() {
+                return { value: "left" };
+              },
+              right: () => ({ value: 1 }),
             },
           });
           step("switch_keys").switch({

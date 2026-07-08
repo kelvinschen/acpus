@@ -2961,21 +2961,17 @@ function rootParallelTaskWorkflow(options: { maxConcurrency?: number } = {}) {
     step("race").parallel({
       ...(options.maxConcurrency === undefined ? {} : { maxConcurrency: options.maxConcurrency }),
       branches: {
-        left: {
-          do: ({ step }) => {
-            const task = step("left_task").task({
-              run: { input: {}, exec: async () => ({ value: "left" }) },
-            });
-            return { value: task.output.value, rootPrefix: "root" };
-          },
+        left: ({ step }) => {
+          const task = step("left_task").task({
+            run: { input: {}, exec: async () => ({ value: "left" }) },
+          });
+          return { value: task.output.value, rootPrefix: "root" };
         },
-        right: {
-          do: ({ step }) => {
-            const task = step("right_task").task({
-              run: { input: {}, exec: async () => ({ value: "right" }) },
-            });
-            return { value: task.output.value };
-          },
+        right: ({ step }) => {
+          const task = step("right_task").task({
+            run: { input: {}, exec: async () => ({ value: "right" }) },
+          });
+          return { value: task.output.value };
         },
       },
     });
@@ -2992,27 +2988,23 @@ function sequentialRootParallelWorkflow() {
     });
     const combined = step("combine").parallel({
       branches: {
-        left: {
-          do: ({ step }) => {
-            const task = step("left_task").task({
-              run: {
-                input: { prefix: prepare.output.prefix },
-                exec: async ({ input }: { input: { prefix: string } }) => ({ value: `${input.prefix}-left` }),
-              },
-            });
-            return { value: task.output.value, rootPrefix: prepare.output.prefix };
-          },
+        left: ({ step }) => {
+          const task = step("left_task").task({
+            run: {
+              input: { prefix: prepare.output.prefix },
+              exec: async ({ input }: { input: { prefix: string } }) => ({ value: `${input.prefix}-left` }),
+            },
+          });
+          return { value: task.output.value, rootPrefix: prepare.output.prefix };
         },
-        right: {
-          do: ({ step }) => {
-            const task = step("right_task").task({
-              run: {
-                input: { prefix: prepare.output.prefix },
-                exec: async ({ input }: { input: { prefix: string } }) => ({ value: `${input.prefix}-right` }),
-              },
-            });
-            return { value: task.output.value, rootPrefix: prepare.output.prefix };
-          },
+        right: ({ step }) => {
+          const task = step("right_task").task({
+            run: {
+              input: { prefix: prepare.output.prefix },
+              exec: async ({ input }: { input: { prefix: string } }) => ({ value: `${input.prefix}-right` }),
+            },
+          });
+          return { value: task.output.value, rootPrefix: prepare.output.prefix };
         },
       },
     });
@@ -3026,16 +3018,14 @@ function multiNodeRootParallelWorkflow() {
   }).build(({ step }) => {
     step("parallel").parallel({
       branches: {
-        mixed: {
-          do: ({ step }) => {
-            step("first_task").task({
-              run: { input: {}, exec: async () => ({ value: "first" }) },
-            });
-            const second = step("second_task").task({
-              run: { input: {}, exec: async () => ({ value: "second" }) },
-            });
-            return { value: second.output.value };
-          },
+        mixed: ({ step }) => {
+          step("first_task").task({
+            run: { input: {}, exec: async () => ({ value: "first" }) },
+          });
+          const second = step("second_task").task({
+            run: { input: {}, exec: async () => ({ value: "second" }) },
+          });
+          return { value: second.output.value };
         },
       },
     });
@@ -3081,34 +3071,30 @@ function nestedFanoutInParallelWorkflow() {
     const combined = step("combine").parallel({
       maxConcurrency: 1,
       branches: {
-        items: {
-          do: ({ step }) => {
-            const inner = step("inner_items").fanout({
-              over: input.items,
-              maxConcurrency: 1,
-              do: ({ item, itemIndex, step }) => {
-                const task = step("inner_task").task({
-                  run: {
-                    input: { prefix: prepare.output.prefix, item, itemIndex },
-                    exec: async ({ input }: { input: { prefix: string; item: string; itemIndex: number } }) => ({ value: `${input.prefix}-${input.item}-${input.itemIndex}` }),
-                  },
-                });
-                return { value: task.output.value };
-              },
-            });
-            return { values: inner.output };
-          },
+        items: ({ step }) => {
+          const inner = step("inner_items").fanout({
+            over: input.items,
+            maxConcurrency: 1,
+            do: ({ item, itemIndex, step }) => {
+              const task = step("inner_task").task({
+                run: {
+                  input: { prefix: prepare.output.prefix, item, itemIndex },
+                  exec: async ({ input }: { input: { prefix: string; item: string; itemIndex: number } }) => ({ value: `${input.prefix}-${input.item}-${input.itemIndex}` }),
+                },
+              });
+              return { value: task.output.value };
+            },
+          });
+          return { values: inner.output };
         },
-        sibling: {
-          do: ({ step }) => {
-            const task = step("sibling_task").task({
-              run: {
-                input: { prefix: prepare.output.prefix },
-                exec: async ({ input }: { input: { prefix: string } }) => ({ value: `${input.prefix}-sibling` }),
-              },
-            });
-            return { value: task.output.value };
-          },
+        sibling: ({ step }) => {
+          const task = step("sibling_task").task({
+            run: {
+              input: { prefix: prepare.output.prefix },
+              exec: async ({ input }: { input: { prefix: string } }) => ({ value: `${input.prefix}-sibling` }),
+            },
+          });
+          return { value: task.output.value };
         },
       },
     });
@@ -3123,23 +3109,19 @@ function parallelSignalConcurrencyWorkflow() {
     const gate = step("gate").parallel({
       maxConcurrency: 1,
       branches: {
-        left: {
-          do: ({ step }) => {
-            const approval = step("left_signal").signal({
-              outputSchema: z.object({ ok: z.boolean() }),
-              run: { prompt: "left" },
-            });
-            return { ok: approval.output.ok };
-          },
+        left: ({ step }) => {
+          const approval = step("left_signal").signal({
+            outputSchema: z.object({ ok: z.boolean() }),
+            run: { prompt: "left" },
+          });
+          return { ok: approval.output.ok };
         },
-        right: {
-          do: ({ step }) => {
-            const approval = step("right_signal").signal({
-              outputSchema: z.object({ ok: z.boolean() }),
-              run: { prompt: "right" },
-            });
-            return { ok: approval.output.ok };
-          },
+        right: ({ step }) => {
+          const approval = step("right_signal").signal({
+            outputSchema: z.object({ ok: z.boolean() }),
+            run: { prompt: "right" },
+          });
+          return { ok: approval.output.ok };
         },
       },
     });

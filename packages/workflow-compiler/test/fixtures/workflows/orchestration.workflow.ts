@@ -60,105 +60,99 @@ export default defineWorkflow({
       const laneParallel = step("lane_parallel").parallel({
         maxConcurrency: 3,
         branches: {
-          review: {
-            do: ({ step }) => {
-              const review = step("review_lane").agent({
-                outputSchema: LaneReview,
-                run: {
-                  agent: agents.reviewer,
-                  prompt: template`Review lane ${item.id} in ${item.mode} mode.`,
-                },
-              });
-              return {
-                branch: review.output.branch,
-                lane: review.output.lane,
-                ok: review.output.ok,
-              };
-            },
+          review: ({ step }) => {
+            const review = step("review_lane").agent({
+              outputSchema: LaneReview,
+              run: {
+                agent: agents.reviewer,
+                prompt: template`Review lane ${item.id} in ${item.mode} mode.`,
+              },
+            });
+            return {
+              branch: review.output.branch,
+              lane: review.output.lane,
+              ok: review.output.ok,
+            };
           },
-          repair: {
-            do: ({ step }) => {
-              const repairLoop = step("repair_loop").loop({
-                initial: {
-                  branch: "",
-                  round: 0,
-                  continue: true,
-                  summary: "",
-                },
-                maxIterations: 2,
-                do: ({ iter, previous, step }) => {
-                  const repair = step("repair_round").agent({
-                    outputSchema: LaneRepair,
-                    run: {
-                      agent: agents.worker,
-                      prompt: template`
-                        Repair lane ${item.id}.
-                        Round: ${iter}
-                        Previous summary: ${previous.summary}
-                      `,
-                    },
-                  });
-                  return {
-                    branch: repair.output.branch,
-                    round: iter,
-                    continue: repair.output.continue,
-                    summary: repair.output.summary,
-                  };
-                },
-                stopWhen: ({ result }) => not(result.continue),
-                onExhausted: "returnLast",
-              });
-              return {
-                branch: repairLoop.output.branch,
-                round: repairLoop.output.round,
-                continue: repairLoop.output.continue,
-                summary: repairLoop.output.summary,
-              };
-            },
-          },
-          route: {
-            do: ({ step }) => {
-              const route = step("route_lane").switch({
-                cases: [
-                  {
-                    when: eq(item.mode, "auto"),
-                    then: ({ step }) => {
-                      const auto = step("auto_route").agent({
-                        outputSchema: LaneRoute,
-                        run: {
-                          agent: agents.worker,
-                          prompt: template`Choose automatic route for ${item.id}.`,
-                        },
-                      });
-                      return {
-                        branch: auto.output.branch,
-                        lane: auto.output.lane,
-                        route: auto.output.route,
-                      };
-                    },
+          repair: ({ step }) => {
+            const repairLoop = step("repair_loop").loop({
+              initial: {
+                branch: "",
+                round: 0,
+                continue: true,
+                summary: "",
+              },
+              maxIterations: 2,
+              do: ({ iter, previous, step }) => {
+                const repair = step("repair_round").agent({
+                  outputSchema: LaneRepair,
+                  run: {
+                    agent: agents.worker,
+                    prompt: template`
+                      Repair lane ${item.id}.
+                      Round: ${iter}
+                      Previous summary: ${previous.summary}
+                    `,
                   },
-                ],
-                default: ({ step }) => {
-                  const manual = step("manual_route").agent({
-                    outputSchema: LaneRoute,
-                    run: {
-                      agent: agents.worker,
-                      prompt: template`Choose manual route for ${item.id}.`,
-                    },
-                  });
-                  return {
-                    branch: manual.output.branch,
-                    lane: manual.output.lane,
-                    route: manual.output.route,
-                  };
+                });
+                return {
+                  branch: repair.output.branch,
+                  round: iter,
+                  continue: repair.output.continue,
+                  summary: repair.output.summary,
+                };
+              },
+              stopWhen: ({ result }) => not(result.continue),
+              onExhausted: "returnLast",
+            });
+            return {
+              branch: repairLoop.output.branch,
+              round: repairLoop.output.round,
+              continue: repairLoop.output.continue,
+              summary: repairLoop.output.summary,
+            };
+          },
+          route: ({ step }) => {
+            const route = step("route_lane").switch({
+              cases: [
+                {
+                  when: eq(item.mode, "auto"),
+                  then: ({ step }) => {
+                    const auto = step("auto_route").agent({
+                      outputSchema: LaneRoute,
+                      run: {
+                        agent: agents.worker,
+                        prompt: template`Choose automatic route for ${item.id}.`,
+                      },
+                    });
+                    return {
+                      branch: auto.output.branch,
+                      lane: auto.output.lane,
+                      route: auto.output.route,
+                    };
+                  },
                 },
-              });
-              return {
-                branch: route.output.branch,
-                lane: route.output.lane,
-                route: route.output.route,
-              };
-            },
+              ],
+              default: ({ step }) => {
+                const manual = step("manual_route").agent({
+                  outputSchema: LaneRoute,
+                  run: {
+                    agent: agents.worker,
+                    prompt: template`Choose manual route for ${item.id}.`,
+                  },
+                });
+                return {
+                  branch: manual.output.branch,
+                  lane: manual.output.lane,
+                  route: manual.output.route,
+                };
+              },
+            });
+            return {
+              branch: route.output.branch,
+              lane: route.output.lane,
+              route: route.output.route,
+            };
           },
         },
       });

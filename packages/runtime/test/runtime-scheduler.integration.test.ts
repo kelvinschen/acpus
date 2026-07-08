@@ -31,12 +31,8 @@ describe("runtime non-agent scheduler skeleton", () => {
 
       const checks = step("checks").parallel({
         branches: {
-          fast: {
-            do: () => ({ status: gate.output.status }),
-          },
-          route: {
-            do: () => ({ code: route.output.code }),
-          },
+          fast: () => ({ status: gate.output.status }),
+          route: () => ({ code: route.output.code }),
         },
       });
 
@@ -275,15 +271,11 @@ describe("runtime non-agent scheduler skeleton", () => {
     }).build(({ step }) => {
       const composite = step("composite").parallel({
         branches: {
-          left: {
-            do: ({ step }) => {
-              step("left_internal").assert({ condition: true });
-              return { ok: true };
-            },
+          left: ({ step }) => {
+            step("left_internal").assert({ condition: true });
+            return { ok: true };
           },
-          right: {
-            do: () => ({ ok: true }),
-          },
+          right: () => ({ ok: true }),
         },
       });
       return { left: composite.output.left.ok, right: composite.output.right.ok };
@@ -357,8 +349,8 @@ describe("runtime non-agent scheduler skeleton", () => {
       const winner = step("race").parallel({
         strategy: "race",
         branches: {
-          left: { do: () => ({ value: "left" }) },
-          right: { do: () => ({ value: "right" }) },
+          left: () => ({ value: "left" }),
+          right: () => ({ value: "right" }),
         },
       });
       return { winner: winner.output.winner, value: winner.output.result.value };
@@ -371,13 +363,11 @@ describe("runtime non-agent scheduler skeleton", () => {
       const winner = step("race").parallel({
         strategy: "race",
         branches: {
-          left: {
-            do: ({ step }) => {
-              step("fail_left").assert({ condition: false });
-              return { value: "left" };
-            },
+          left: ({ step }) => {
+            step("fail_left").assert({ condition: false });
+            return { value: "left" };
           },
-          right: { do: () => ({ value: "right" }) },
+          right: () => ({ value: "right" }),
         },
       });
       return { winner: winner.output.winner, value: winner.output.result.value };
@@ -390,14 +380,14 @@ describe("runtime non-agent scheduler skeleton", () => {
       step("race").parallel({
         strategy: "race",
         branches: {
-          left: { do: ({ step }) => {
+          left: ({ step }) => {
             step("fail_left").assert({ condition: false });
             return { value: "left" };
-          } },
-          right: { do: ({ step }) => {
+          },
+          right: ({ step }) => {
             step("fail_right").assert({ condition: false });
             return { value: "right" };
-          } },
+          },
         },
       });
       return {};
@@ -411,27 +401,23 @@ describe("runtime non-agent scheduler skeleton", () => {
       const race = step("race").parallel({
         strategy: "race",
         branches: {
-          first: {
-            do: ({ step }) => {
-              const result = step("first_task").task({
-                run: { input: {}, exec: async () => {
-                  calls.push("first");
-                  return { ok: true };
-                } },
-              });
-              return { ok: result.output.ok };
-            },
+          first: ({ step }) => {
+            const result = step("first_task").task({
+              run: { input: {}, exec: async () => {
+                calls.push("first");
+                return { ok: true };
+              } },
+            });
+            return { ok: result.output.ok };
           },
-          second: {
-            do: ({ step }) => {
-              const result = step("second_task").task({
-                run: { input: {}, exec: async () => {
-                  calls.push("second");
-                  return { ok: true };
-                } },
-              });
-              return { ok: result.output.ok };
-            },
+          second: ({ step }) => {
+            const result = step("second_task").task({
+              run: { input: {}, exec: async () => {
+                calls.push("second");
+                return { ok: true };
+              } },
+            });
+            return { ok: result.output.ok };
           },
         },
       });

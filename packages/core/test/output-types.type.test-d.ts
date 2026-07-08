@@ -125,15 +125,11 @@ test("parallel all output is keyed by branch", () => {
   defineWorkflow({ name: "typed-parallel-output" }).build(({ step }) => {
     const parallel = step("parallel").parallel({
       branches: {
-        left: {
-          do: ({ step }) => {
-            expectTypeOf(step).not.toBeAny();
-            return { summary: "ok" };
-          },
+        left({ step }) {
+          expectTypeOf(step).not.toBeAny();
+          return { summary: "ok" };
         },
-        right: {
-          do: () => ({ count: 1 }),
-        },
+        right: () => ({ count: 1 }),
       },
     });
 
@@ -151,51 +147,49 @@ test("nested composite callback contexts are not any", () => {
   defineWorkflow({ name: "typed-nested-composite-contexts" }).build(({ step }) => {
     step("parallel").parallel({
       branches: {
-        branch: {
-          do: ({ step }) => {
-            expectTypeOf(step).not.toBeAny();
+        branch: ({ step }) => {
+          expectTypeOf(step).not.toBeAny();
 
-            step("loop").loop({
-              initial: { done: false, summary: "seed" },
-              maxIterations: 2,
-              do: ({ iter, previous, step }) => {
-                expectTypeOf(iter).not.toBeAny();
-                expectTypeOf(previous).not.toBeAny();
-                expectTypeOf(step).not.toBeAny();
-                expectTypeOf(previous.summary).toEqualTypeOf<Expr<string>>();
-                return { done: false, summary: previous.summary };
-              },
-              stopWhen: ({ result }) => {
-                expectTypeOf(result).not.toBeAny();
-                expectTypeOf(result.done).toEqualTypeOf<Expr<boolean>>();
-                return result.done;
-              },
-            });
+          step("loop").loop({
+            initial: { done: false, summary: "seed" },
+            maxIterations: 2,
+            do: ({ iter, previous, step }) => {
+              expectTypeOf(iter).not.toBeAny();
+              expectTypeOf(previous).not.toBeAny();
+              expectTypeOf(step).not.toBeAny();
+              expectTypeOf(previous.summary).toEqualTypeOf<Expr<string>>();
+              return { done: false, summary: previous.summary };
+            },
+            stopWhen: ({ result }) => {
+              expectTypeOf(result).not.toBeAny();
+              expectTypeOf(result.done).toEqualTypeOf<Expr<boolean>>();
+              return result.done;
+            },
+          });
 
-            step("switch").switch({
-              cases: [
-                {
-                  when: true,
-                  then: ({ step }) => {
-                    expectTypeOf(step).not.toBeAny();
-                    return { route: "auto" };
-                  },
+          step("switch").switch({
+            cases: [
+              {
+                when: true,
+                then: ({ step }) => {
+                  expectTypeOf(step).not.toBeAny();
+                  return { route: "auto" };
                 },
-              ],
-              default: ({ step }) => {
-                expectTypeOf(step).not.toBeAny();
-                return { route: "manual" };
               },
-            });
+            ],
+            default: ({ step }) => {
+              expectTypeOf(step).not.toBeAny();
+              return { route: "manual" };
+            },
+          });
 
-            const route = step("typed_switch").switch({
-              cases: [{ when: true, then: () => ({ route: "auto" }) }],
-              default: () => ({ route: "manual" }),
-            });
-            expectTypeOf(route.output.route).toEqualTypeOf<Expr<string>>();
+          const route = step("typed_switch").switch({
+            cases: [{ when: true, then: () => ({ route: "auto" }) }],
+            default: () => ({ route: "manual" }),
+          });
+          expectTypeOf(route.output.route).toEqualTypeOf<Expr<string>>();
 
-            return {};
-          },
+          return {};
         },
       },
     });
@@ -209,12 +203,8 @@ test("parallel race exposes a winner envelope", () => {
     const race = step("parallel_race").parallel({
       strategy: "race",
       branches: {
-        fast: {
-          do: () => ({ summary: "fast" }),
-        },
-        slow: {
-          do: () => ({ summary: "slow" }),
-        },
+        fast: () => ({ summary: "fast" }),
+        slow: () => ({ summary: "slow" }),
       },
     });
 

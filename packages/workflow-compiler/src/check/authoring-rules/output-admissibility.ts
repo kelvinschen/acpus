@@ -124,12 +124,18 @@ function checkParallel(spec: ts.ObjectLiteralExpression, context: RuleContext): 
   if (!branches) return;
   const producers: Producer[] = [];
   for (const branch of branches.properties) {
-    if (!ts.isPropertyAssignment(branch) || !ts.isObjectLiteralExpression(branch.initializer)) {
+    if (!ts.isPropertyAssignment(branch) && !ts.isMethodDeclaration(branch)) {
       context.diagnostics.push(hiddenProducerDiagnostic("parallel branch", branch));
       continue;
     }
-    const name = propertyName(branch.name) ?? "branch";
-    const producer = callbackProducer(branch.initializer, "do", `parallel branch '${name}' output`, context);
+    const name = propertyName(branch.name as ts.PropertyName) ?? "branch";
+    const label = `parallel branch '${name}' output`;
+    const callback = ts.isMethodDeclaration(branch) ? branch : branch.initializer;
+    if (!isFunctionLike(callback)) {
+      context.diagnostics.push(hiddenProducerDiagnostic("parallel branch", callback));
+      continue;
+    }
+    const producer = producerFromCallback(callback, label, context);
     if (producer) producers.push(producer);
   }
   checkProducers(producers, context);
@@ -178,6 +184,10 @@ function callbackProducer(spec: ts.ObjectLiteralExpression, key: string, label: 
     context.diagnostics.push(hiddenProducerDiagnostic(label, value ?? spec));
     return undefined;
   }
+  return producerFromCallback(value, label, context);
+}
+
+function producerFromCallback(value: ts.FunctionLikeDeclaration | ts.ArrowFunction, label: string, context: RuleContext): Producer | undefined {
   const returns = returnExpressions(value);
   if (returns.length !== 1) {
     context.diagnostics.push(hiddenProducerDiagnostic(label, value));
