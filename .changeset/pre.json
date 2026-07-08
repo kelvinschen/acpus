@@ -1,0 +1,16 @@
+{
+  "mode": "pre",
+  "tag": "alpha",
+  "initialVersions": {
+    "@acpus/agent-executor": "0.0.0",
+    "acpus": "0.5.2",
+    "@acpus/core": "0.6.0",
+    "@acpus/expression": "0.0.0",
+    "@acpus/loader": "0.0.0",
+    "@acpus/runtime": "0.8.0",
+    "@acpus/tasks": "0.0.0",
+    "@acpus/web": "0.0.0",
+    "@acpus/workflow-compiler": "0.0.0"
+  },
+  "changesets": []
+}

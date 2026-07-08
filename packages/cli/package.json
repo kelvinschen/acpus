@@ -1,6 +1,6 @@
 {
   "name": "acpus",
-  "version": "0.6.0-alpha",
+  "version": "0.5.2",
   "type": "module",
   "description": "Acpus CLI for TypeScript workflow validation and durable run admission.",
   "license": "MIT",
@@ -33,6 +33,9 @@
     "README.md",
     "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.fixtures.json --noEmit",

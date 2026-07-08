@@ -1,7 +1,6 @@
 {
   "name": "@acpus/expression",
-  "version": "0.1.0-alpha",
-  "private": true,
+  "version": "0.0.0",
   "type": "module",
   "description": "Acpus typed JSON-value expression language.",
   "keywords": [
@@ -43,6 +42,9 @@
     "README.md",
     "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",

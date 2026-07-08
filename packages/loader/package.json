@@ -1,7 +1,6 @@
 {
   "name": "@acpus/loader",
-  "version": "0.1.0-alpha",
-  "private": true,
+  "version": "0.0.0",
   "type": "module",
   "description": "Acpus internal TypeScript authoring module loader.",
   "license": "MIT",
@@ -22,6 +21,9 @@
     "README.md",
     "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",

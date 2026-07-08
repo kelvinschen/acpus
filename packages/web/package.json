@@ -1,7 +1,6 @@
 {
   "name": "@acpus/web",
-  "version": "0.6.0-alpha",
-  "private": true,
+  "version": "0.0.0",
   "type": "module",
   "description": "Acpus WebUI — local operator console for run observation and control.",
   "license": "MIT",
@@ -18,6 +17,9 @@
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",

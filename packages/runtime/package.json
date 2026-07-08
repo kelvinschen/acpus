@@ -1,7 +1,6 @@
 {
   "name": "@acpus/runtime",
-  "version": "0.8.0-alpha",
-  "private": true,
+  "version": "0.8.0",
   "type": "module",
   "description": "Acpus local durable runtime.",
   "license": "MIT",
@@ -22,6 +21,9 @@
     "README.md",
     "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
