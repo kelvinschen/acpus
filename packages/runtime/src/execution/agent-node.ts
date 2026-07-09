@@ -9,6 +9,7 @@ import { jsonrepair } from "jsonrepair";
 import { evaluateExpr, renderTemplate, type EvaluationScope } from "../evaluation/evaluator.js";
 import { normalizeValue } from "../evaluation/schema.js";
 import type { RuntimeStore, WriteNodeProgressInput } from "../store/store.js";
+import type { NodeProgressWriter } from "../progress/writer.js";
 import { parseDurationMs } from "./duration.js";
 
 const CONTINUATION_PROMPT = "Continue the previous task from where you left off.";
@@ -28,6 +29,7 @@ export type AgentExecutorOptions = {
   attemptId?: string;
   attemptNo?: number;
   store?: RuntimeStore;
+  progressWriter?: NodeProgressWriter;
   initialPromptKind?: "task" | "plain_continuation";
   signal?: AbortSignal;
   executeTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult>;
@@ -377,7 +379,8 @@ function telemetrySummary(telemetry: AgentTurnTelemetry): AgentTurnTelemetrySumm
 }
 
 function createAgentProgressReporter(node: AgentNodeIR, options: AgentExecutorOptions, turn: number): ((progress: AgentTurnProgress) => void) | undefined {
-  if (!options.store || !options.runId || !options.nodeKey) return undefined;
+  const writer = progressTarget(options);
+  if (!writer || !options.runId || !options.nodeKey) return undefined;
   let lastFlushAt: number | undefined;
   let lastSignature = "";
   return progress => {
@@ -387,17 +390,22 @@ function createAgentProgressReporter(node: AgentNodeIR, options: AgentExecutorOp
     if (lastFlushAt !== undefined && signature === lastSignature && now - lastFlushAt < PROGRESS_FLUSH_INTERVAL_MS) return;
     lastFlushAt = now;
     lastSignature = signature;
-    options.store?.writeNodeProgress(snapshot);
+    writer.writeNodeProgress(snapshot);
   };
 }
 
 function writeAgentTerminalProgress(node: AgentNodeIR, options: AgentExecutorOptions, turn: number, result: AgentTurnResult, status: "completed" | "failed" | "cancelled" | "timed_out", message?: string): void {
-  if (!options.store || !options.runId || !options.nodeKey) return;
-  options.store.writeNodeProgress(progressSnapshot(node, options, turn, {
+  const writer = progressTarget(options);
+  if (!writer || !options.runId || !options.nodeKey) return;
+  writer.writeNodeProgress(progressSnapshot(node, options, turn, {
     responseText: result.responseText,
     telemetry: result.telemetry,
     updatedAt: new Date().toISOString(),
   }, status, message ?? `turn ${turn} ${status}`));
+}
+
+function progressTarget(options: AgentExecutorOptions): NodeProgressWriter | undefined {
+  return options.progressWriter ?? options.store;
 }
 
 function progressSnapshot(

@@ -57,6 +57,20 @@ describe.concurrent("runtime admission use cases", () => {
         name: "cli-valid",
         description: "Validate a boolean ready input.",
       });
+      expect(runtimeRow(workspace, `
+        SELECT workflow_ir_json, workflow_ir_path, workflow_ir_digest, lock_json, lock_path, lock_digest
+        FROM run_inputs
+        WHERE run_id = ?
+      `, admitted.run.id)).toMatchObject({
+        workflow_ir_json: null,
+        workflow_ir_path: "workflow.ir.json",
+        workflow_ir_digest: expect.stringMatching(/^sha256:/),
+        lock_json: null,
+        lock_path: "lock.json",
+        lock_digest: expect.stringMatching(/^sha256:/),
+      });
+      await expect(access(join(workspace, ".acpus", ".local", "runs", admitted.run.id, "workflow.ir.json"))).resolves.toBeUndefined();
+      await expect(access(join(workspace, ".acpus", ".local", "runs", admitted.run.id, "lock.json"))).resolves.toBeUndefined();
     });
   });
 
@@ -80,6 +94,33 @@ describe.concurrent("runtime admission use cases", () => {
             }),
           }),
         ]),
+      });
+    });
+  });
+
+  it("reads frozen workflow files by digest and supports legacy DB-only rows", async () => {
+    await withRuntimeWorkspace("runtime-frozen-read-modes", async workspace => {
+      const corrupted = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
+      await writeFile(join(workspace, ".acpus", ".local", "runs", corrupted.run.id, "workflow.ir.json"), "{}\n");
+      await expect(getRunInspection(workspace, corrupted.run.id)).rejects.toThrow("Frozen workflow IR digest mismatch.");
+
+      const legacy = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
+      const workflowIrJson = await readFile(join(workspace, ".acpus", ".local", "runs", legacy.run.id, "workflow.ir.json"), "utf8");
+      const lockJson = await readFile(join(workspace, ".acpus", ".local", "runs", legacy.run.id, "lock.json"), "utf8");
+      const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+      try {
+        db.prepare(`
+          UPDATE run_inputs
+          SET workflow_ir_json = ?, workflow_ir_path = NULL, workflow_ir_digest = NULL,
+              lock_json = ?, lock_path = NULL, lock_digest = NULL
+          WHERE run_id = ?
+        `).run(workflowIrJson, lockJson, legacy.run.id);
+      } finally {
+        db.close();
+      }
+
+      await expect(getRunInspection(workspace, legacy.run.id)).resolves.toMatchObject({
+        run: { id: legacy.run.id, name: "cli-valid" },
       });
     });
   });

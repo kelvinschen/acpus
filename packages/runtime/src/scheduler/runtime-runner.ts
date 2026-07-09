@@ -5,6 +5,7 @@ import type { EvaluationScope } from "../evaluation/evaluator.js";
 import { buildHookContext } from "../hooks/context.js";
 import { mapRuntimeEventToHookEvent } from "../hooks/events.js";
 import type { HookRunner } from "../hooks/runner.js";
+import type { NodeProgressWriter } from "../progress/writer.js";
 import type { FrozenRun, RuntimeStore } from "../store/store.js";
 import { advanceRun, drainDerivedTransitions, type AdvanceRunInput, type AdvanceRunSummary } from "./advance.js";
 import { bootstrapRootEvents, continueRootEvents } from "./materialize.js";
@@ -28,6 +29,7 @@ export type AdvanceFrozenRunInput = {
   onRelease?: AdvanceRunInput["onRelease"];
   onActiveAttempt?: AdvanceRunInput["onActiveAttempt"];
   hookRunner?: HookRunner;
+  progressWriter?: NodeProgressWriter;
 };
 
 export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<AdvanceRunSummary> {
@@ -82,6 +84,7 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
       ir: frozen.ir,
       scope,
       store: input.store,
+      ...(input.progressWriter === undefined ? {} : { progressWriter: input.progressWriter }),
       ...(input.executeAgentTurn ? { executeAgentTurn: input.executeAgentTurn } : {}),
       ...(input.agentRepairDelayMs === undefined ? {} : { agentRepairDelayMs: input.agentRepairDelayMs }),
     }),

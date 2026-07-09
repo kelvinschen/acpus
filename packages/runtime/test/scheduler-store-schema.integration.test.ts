@@ -81,6 +81,12 @@ describe("scheduler store schema", () => {
         "status",
         "triggered_at",
       ]));
+      expect(columns(db, "run_inputs")).toEqual(expect.arrayContaining([
+        "workflow_ir_path",
+        "workflow_ir_digest",
+        "lock_path",
+        "lock_digest",
+      ]));
       expect(sqliteNames(db, "index")).toEqual(expect.arrayContaining([
         "idx_run_leases_expires",
         "idx_node_instances_node_status",

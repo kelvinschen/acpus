@@ -3,7 +3,7 @@ import { access, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { getRun, getRunVisualizationSnapshot, listRuns, normalizeForkInput } from "@acpus/runtime";
+import { getRun, getRunInspection, getRunVisualizationSnapshot, listRuns, normalizeForkInput } from "@acpus/runtime";
 import { advanceRuntimeRun } from "../src/runs/advance-runtime.js";
 import { mutateRun, signalRun, tryMutateRun, trySignalRun } from "../src/runs/use-cases.js";
 import { openExistingWritableRuntimeStore } from "../src/store/store.js";
@@ -249,6 +249,9 @@ describe.concurrent("runtime controls and recovery use cases", () => {
         store?.close();
       }
       await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({ status: "completed", output: { ok: true, extra: true } });
+      await expect(getRunInspection(workspace, fork!.run.id)).resolves.toMatchObject({
+        run: { id: fork!.run.id, name: "cli-task-replacement" },
+      });
       expect(runtimeRows(workspace, "SELECT relative_path FROM artifacts WHERE run_id = ? ORDER BY relative_path", fork!.run.id)).toHaveLength(1);
 
       const inputSource = await admitSyntheticWorkflow(workspace, inputEchoWorkflow(), { value: "old" });

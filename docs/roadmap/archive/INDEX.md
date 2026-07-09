@@ -17,3 +17,4 @@ decisions. They are background context only; current behavior lives in `specs/`.
 - [Output Schema Authoring Refactor Goal](output-schema-authoring-refactor-goal.md) — completed TypeScript-owned output authoring refactor record.
 - [Parallel Branch Authoring Roadmap](parallel-branch-authoring-roadmap.md) — completed static parallel branch authoring cleanup.
 - [Recursive Workflow Runtime Implementation Goal](recursive-workflow-runtime-implementation-goal.md) — completed recursive runtime implementation record.
+- [单工作区并发运行 Runtime Roadmap](single-workspace-concurrency-runtime-roadmap.md) — completed single-workspace concurrent run runtime roadmap.

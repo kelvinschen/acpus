@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { access, cp, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -494,10 +495,14 @@ type RunRow = {
 };
 
 type RunInputRow = {
-  workflow_ir_json?: string;
+  workflow_ir_json?: string | null;
+  workflow_ir_path?: string | null;
+  workflow_ir_digest?: string | null;
   input_json: string;
   agent_overrides_json?: string | null;
-  lock_json?: string;
+  lock_json?: string | null;
+  lock_path?: string | null;
+  lock_digest?: string | null;
   output_json: string | null;
   package_lock_digest?: string | null;
   run_dir?: string;
@@ -604,10 +609,16 @@ class SqliteRuntimeStore implements RuntimeStore {
     const now = new Date().toISOString();
     const workflowEntry = relative(input.cwd, input.prepared.workflowPath);
     const runDir = join(input.cwd, localStateRoot, "runs", runId);
+    const stagedRunDir = join(input.cwd, localStateRoot, "runs", `.staging-${runId}`);
+    const lockJson = stableJson(input.prepared.lock);
     try {
-      await mkdir(runDir, { recursive: true });
-      await writeFile(join(runDir, "workflow.ir.json"), input.prepared.irJson);
-      await writeFile(join(runDir, "lock.json"), `${JSON.stringify(input.prepared.lock, null, 2)}\n`);
+      await mkdir(dirname(stagedRunDir), { recursive: true });
+      await rm(stagedRunDir, { recursive: true, force: true });
+      await mkdir(stagedRunDir, { recursive: true });
+      await writeFile(join(stagedRunDir, "workflow.ir.json"), input.prepared.irJson);
+      await writeFile(join(stagedRunDir, "lock.json"), lockJson);
+      await rm(runDir, { recursive: true, force: true });
+      await rename(stagedRunDir, runDir);
       const agentOverrides = normalizeAgentOverrides(input.prepared.ir, input.agentOverrides);
 
       const eventPayload = {
@@ -624,15 +635,19 @@ class SqliteRuntimeStore implements RuntimeStore {
         `).run(runId, input.prepared.ir.name, workflowEntry, input.prepared.sourceGraphDigest, now, now);
         this.db.prepare(`
           INSERT INTO run_inputs (
-            run_id, workflow_ir_json, input_json, agent_overrides_json, lock_json, package_lock_digest, run_dir, created_at
+            run_id, workflow_ir_json, workflow_ir_path, workflow_ir_digest, input_json, agent_overrides_json, lock_json, lock_path, lock_digest, package_lock_digest, run_dir, created_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           runId,
-          input.prepared.irJson,
+          null,
+          "workflow.ir.json",
+          digest(Buffer.from(input.prepared.irJson)),
           stableJson(input.input),
           stableJson(agentOverrides),
-          stableJson(input.prepared.lock),
+          null,
+          "lock.json",
+          digest(Buffer.from(lockJson)),
           input.prepared.packageLockDigest ?? null,
           relative(input.cwd, runDir),
           now,
@@ -653,6 +668,7 @@ class SqliteRuntimeStore implements RuntimeStore {
         throw error;
       }
     } catch (error) {
+      await rm(stagedRunDir, { recursive: true, force: true });
       await rm(runDir, { recursive: true, force: true });
       throw error;
     }
@@ -843,13 +859,15 @@ class SqliteRuntimeStore implements RuntimeStore {
 
   getFrozenRun(runId: string): FrozenRun | undefined {
     const row = this.db.prepare(`
-      SELECT runs.id, runs.name, runs.workflow_entry, run_inputs.workflow_ir_json, run_inputs.input_json, run_inputs.agent_overrides_json
+      SELECT runs.id, runs.name, runs.workflow_entry, run_inputs.workflow_ir_json, run_inputs.workflow_ir_path, run_inputs.workflow_ir_digest, run_inputs.input_json, run_inputs.agent_overrides_json, run_inputs.run_dir
       FROM run_inputs
       JOIN runs ON runs.id = run_inputs.run_id
       WHERE run_inputs.run_id = ?
     `).get(runId) as (RunInputRow & { id: string; name: string; workflow_entry: string }) | undefined;
-    if (!row?.workflow_ir_json) return undefined;
-    const originalIr = JSON.parse(row.workflow_ir_json) as WorkflowIR;
+    if (!row) return undefined;
+    const workflowIrJson = frozenWorkflowIrJson(this.cwd, row);
+    if (!workflowIrJson) return undefined;
+    const originalIr = JSON.parse(workflowIrJson) as WorkflowIR;
     const agentOverrides = parseAgentOverrides(row.agent_overrides_json);
     return {
       ir: withAgentOverrides(originalIr, agentOverrides),
@@ -995,21 +1013,23 @@ class SqliteRuntimeStore implements RuntimeStore {
     const source = this.getRunRecord(runId);
     if (!source) throw new Error(`Run '${runId}' was not found.`);
     const input = this.db.prepare(`
-      SELECT workflow_ir_json, input_json, agent_overrides_json, lock_json, output_json, package_lock_digest, run_dir
+      SELECT workflow_ir_json, workflow_ir_path, workflow_ir_digest, input_json, agent_overrides_json, lock_json, lock_path, lock_digest, output_json, package_lock_digest, run_dir
       FROM run_inputs
       WHERE run_id = ?
     `).get(runId) as RunInputRow | undefined;
-    if (!input?.workflow_ir_json || !input.lock_json) throw new Error(`Run '${runId}' has no frozen input.`);
-    const forkIrJson = options.prepared?.irJson ?? input.workflow_ir_json;
+    const sourceWorkflowIrJson = input ? frozenWorkflowIrJson(this.cwd, input) : undefined;
+    const sourceLockJson = input ? frozenLockJson(this.cwd, input) : undefined;
+    if (!input || !sourceWorkflowIrJson || !sourceLockJson) throw new Error(`Run '${runId}' has no frozen input.`);
+    const forkIrJson = options.prepared?.irJson ?? sourceWorkflowIrJson;
     if (options.prepared && digest(Buffer.from(forkIrJson)) !== options.prepared.lock.ir.digest) throw new Error("Fork prepared workflow IR file digest does not match payload.");
     const forkIr = JSON.parse(forkIrJson) as WorkflowIR;
     const sourceAgentOverrides = parseAgentOverrides(input.agent_overrides_json);
     const forkAgentOverrides = normalizeAgentOverrides(forkIr, options.agentOverrides, sourceAgentOverrides);
-    const sourceIr = JSON.parse(input.workflow_ir_json) as WorkflowIR;
+    const sourceIr = JSON.parse(sourceWorkflowIrJson) as WorkflowIR;
     const sourceEffectiveIr = withAgentOverrides(sourceIr, sourceAgentOverrides);
     const forkEffectiveIr = withAgentOverrides(forkIr, forkAgentOverrides);
     const forkInputJson = options.input === undefined ? input.input_json : stableJson(options.input);
-    const forkLockJson = options.prepared ? stableJson(options.prepared.lock) : input.lock_json;
+    const forkLockJson = options.prepared ? stableJson(options.prepared.lock) : sourceLockJson;
     const forkPackageLockDigest = options.prepared?.packageLockDigest ?? input.package_lock_digest ?? null;
     const forkName = options.prepared ? forkIr.name : source.name;
     const forkWorkflowEntry = options.prepared ? relative(this.cwd, options.prepared.workflowPath) : source.workflowEntry;
@@ -1111,7 +1131,7 @@ class SqliteRuntimeStore implements RuntimeStore {
         await mkdir(dirname(stagedForkRunPath), { recursive: true });
         await cp(sourceRunDir, stagedForkRunPath, { recursive: true });
         await pruneNonInheritedArtifacts(stagedForkRunPath, artifacts);
-        if (options.prepared) await writePreparedRunFiles(stagedForkRunPath, options.prepared);
+        if (options.prepared) await writePreparedRunFiles(stagedForkRunPath, forkIrJson, forkLockJson);
         await verifyFrozenRunFiles(stagedForkRunPath, forkLockJson, forkIrJson);
         await verifyCopiedArtifacts(stagedForkRunPath, artifacts);
         await rm(forkRunPath, { recursive: true, force: true });
@@ -1134,16 +1154,20 @@ class SqliteRuntimeStore implements RuntimeStore {
       `).run(forkId, forkName, forkStatus, forkWorkflowEntry, forkSourceGraphDigest, now, now);
         this.db.prepare(`
           INSERT INTO run_inputs (
-          run_id, workflow_ir_json, input_json, agent_overrides_json, output_json, lock_json, package_lock_digest, run_dir, created_at
+          run_id, workflow_ir_json, workflow_ir_path, workflow_ir_digest, input_json, agent_overrides_json, output_json, lock_json, lock_path, lock_digest, package_lock_digest, run_dir, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         forkId,
-        forkIrJson,
+        null,
+        "workflow.ir.json",
+        digest(Buffer.from(forkIrJson)),
         forkInputJson,
         stableJson(forkAgentOverrides),
         forkOutputJson,
-        forkLockJson,
+        null,
+        "lock.json",
+        digest(Buffer.from(forkLockJson)),
         forkPackageLockDigest,
         forkRunDir,
         now,
@@ -1417,6 +1441,16 @@ class SqliteRuntimeStore implements RuntimeStore {
           this.db.exec("COMMIT");
           return;
         }
+      }
+      const existingTerminal = this.db.prepare(`
+        SELECT 1
+        FROM node_progress
+        WHERE run_id = ? AND node_key = ? AND attempt_id = ?
+          AND status IN ('completed', 'failed', 'cancelled', 'timed_out')
+      `).get(input.runId, input.nodeKey, input.attemptId ?? null);
+      if (existingTerminal && !["completed", "failed", "cancelled", "timed_out"].includes(input.status)) {
+        this.db.exec("COMMIT");
+        return;
       }
       this.db.prepare(`
         INSERT INTO node_progress (
@@ -2303,13 +2337,14 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
 
   private loadFrozenRun(runId: string): FrozenRun {
     const row = this.db.prepare(`
-      SELECT runs.id, runs.name, runs.workflow_entry, run_inputs.workflow_ir_json, run_inputs.input_json, run_inputs.agent_overrides_json
+      SELECT runs.id, runs.name, runs.workflow_entry, run_inputs.workflow_ir_json, run_inputs.workflow_ir_path, run_inputs.workflow_ir_digest, run_inputs.input_json, run_inputs.agent_overrides_json, run_inputs.run_dir
       FROM run_inputs
       JOIN runs ON runs.id = run_inputs.run_id
       WHERE run_inputs.run_id = ?
     `).get(runId) as (RunInputRow & { id: string; name: string; workflow_entry: string }) | undefined;
-    if (!row?.workflow_ir_json) throw new Error(`Run '${runId}' has no frozen workflow.`);
-    const originalIr = JSON.parse(row.workflow_ir_json) as WorkflowIR;
+    const workflowIrJson = row ? frozenWorkflowIrJson(this.cwd, row) : undefined;
+    if (!row || !workflowIrJson) throw new Error(`Run '${runId}' has no frozen workflow.`);
+    const originalIr = JSON.parse(workflowIrJson) as WorkflowIR;
     const agentOverrides = parseAgentOverrides(row.agent_overrides_json);
     return {
       ir: withAgentOverrides(originalIr, agentOverrides),
@@ -2976,8 +3011,17 @@ function derivedIdempotencyKey(idempotencyKey: string, suffix: string): string {
   return `${idempotencyKey}:${suffix}`;
 }
 
+const RUNTIME_STORE_BUSY_TIMEOUT_MS = 5_000;
+
+export function isRuntimeStoreBusyError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const candidate = error as { code?: unknown; message?: unknown };
+  return candidate.code === "SQLITE_BUSY"
+    || (typeof candidate.message === "string" && candidate.message.includes("database is locked"));
+}
+
 function openDatabase(path: string, readOnly = false): DatabaseSync {
-  const db = new DatabaseSync(path, { enableForeignKeyConstraints: true, readOnly });
+  const db = new DatabaseSync(path, { enableForeignKeyConstraints: true, readOnly, timeout: RUNTIME_STORE_BUSY_TIMEOUT_MS });
   db.exec("PRAGMA foreign_keys = ON;");
   return db;
 }
@@ -3019,11 +3063,15 @@ function migrate(db: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS run_inputs (
       run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
-      workflow_ir_json TEXT NOT NULL,
+      workflow_ir_json TEXT,
+      workflow_ir_path TEXT,
+      workflow_ir_digest TEXT,
       input_json TEXT NOT NULL,
       agent_overrides_json TEXT NOT NULL DEFAULT '{}',
       output_json TEXT,
-      lock_json TEXT NOT NULL,
+      lock_json TEXT,
+      lock_path TEXT,
+      lock_digest TEXT,
       package_lock_digest TEXT,
       run_dir TEXT NOT NULL,
       created_at TEXT NOT NULL
@@ -3268,6 +3316,11 @@ function migrate(db: DatabaseSync): void {
   addColumnIfMissing(db, "hook_journal", "trigger_order", "INTEGER NOT NULL DEFAULT 0");
   addColumnIfMissing(db, "runs", "progress_version", "INTEGER NOT NULL DEFAULT 0");
   addColumnIfMissing(db, "runs", "progress_updated_at", "TEXT");
+  addColumnIfMissing(db, "run_inputs", "workflow_ir_path", "TEXT");
+  addColumnIfMissing(db, "run_inputs", "workflow_ir_digest", "TEXT");
+  addColumnIfMissing(db, "run_inputs", "lock_path", "TEXT");
+  addColumnIfMissing(db, "run_inputs", "lock_digest", "TEXT");
+  migrateRunInputsFrozenJsonNullability(db);
   db.exec("UPDATE signal_waits SET created_at = COALESCE(created_at, datetime('now')), updated_at = COALESCE(updated_at, datetime('now')) WHERE created_at IS NULL OR updated_at IS NULL;");
 }
 
@@ -3276,6 +3329,11 @@ function storeNeedsMigration(db: DatabaseSync): boolean {
     || db.prepare("SELECT 1 FROM schema_migrations WHERE version = 1 LIMIT 1").get() === undefined
     || !hasColumn(db, "runs", "progress_version")
     || !hasColumn(db, "runs", "progress_updated_at")
+    || !hasColumn(db, "run_inputs", "workflow_ir_path")
+    || !hasColumn(db, "run_inputs", "workflow_ir_digest")
+    || !hasColumn(db, "run_inputs", "lock_path")
+    || !hasColumn(db, "run_inputs", "lock_digest")
+    || runInputsFrozenJsonNeedsNullabilityMigration(db)
     || !hasTable(db, "node_progress");
 }
 
@@ -3291,6 +3349,49 @@ function addColumnIfMissing(db: DatabaseSync, table: string, column: string, def
 function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
   return rows.some(row => row.name === column);
+}
+
+function runInputsFrozenJsonNeedsNullabilityMigration(db: DatabaseSync): boolean {
+  if (!hasTable(db, "run_inputs")) return true;
+  const columns = db.prepare("PRAGMA table_info(run_inputs)").all() as Array<{ name: string; notnull: number }>;
+  return columns.some(column => (column.name === "workflow_ir_json" || column.name === "lock_json") && column.notnull === 1);
+}
+
+function migrateRunInputsFrozenJsonNullability(db: DatabaseSync): void {
+  if (!runInputsFrozenJsonNeedsNullabilityMigration(db)) return;
+  db.exec(`
+    PRAGMA foreign_keys = OFF;
+    BEGIN IMMEDIATE;
+
+    CREATE TABLE run_inputs_new (
+      run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+      workflow_ir_json TEXT,
+      workflow_ir_path TEXT,
+      workflow_ir_digest TEXT,
+      input_json TEXT NOT NULL,
+      agent_overrides_json TEXT NOT NULL DEFAULT '{}',
+      output_json TEXT,
+      lock_json TEXT,
+      lock_path TEXT,
+      lock_digest TEXT,
+      package_lock_digest TEXT,
+      run_dir TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    INSERT INTO run_inputs_new (
+      run_id, workflow_ir_json, workflow_ir_path, workflow_ir_digest, input_json, agent_overrides_json, output_json, lock_json, lock_path, lock_digest, package_lock_digest, run_dir, created_at
+    )
+    SELECT
+      run_id, workflow_ir_json, workflow_ir_path, workflow_ir_digest, input_json, agent_overrides_json, output_json, lock_json, lock_path, lock_digest, package_lock_digest, run_dir, created_at
+    FROM run_inputs;
+
+    DROP TABLE run_inputs;
+    ALTER TABLE run_inputs_new RENAME TO run_inputs;
+
+    COMMIT;
+    PRAGMA foreign_keys = ON;
+  `);
 }
 
 function parseAgentOverrides(json: string | null | undefined): AgentOverrideMap {
@@ -3660,9 +3761,9 @@ async function pruneArtifactEntry(runDir: string, relativePath: string, keep: Se
   return false;
 }
 
-async function writePreparedRunFiles(runDir: string, prepared: ForkPreparedWorkflow): Promise<void> {
-  await writeFile(join(runDir, "workflow.ir.json"), prepared.irJson);
-  await writeFile(join(runDir, "lock.json"), `${JSON.stringify(prepared.lock, null, 2)}\n`);
+async function writePreparedRunFiles(runDir: string, workflowIrJson: string, lockJson: string): Promise<void> {
+  await writeFile(join(runDir, "workflow.ir.json"), workflowIrJson);
+  await writeFile(join(runDir, "lock.json"), lockJson);
 }
 
 async function verifyFrozenRunFiles(runDir: string, lockJson: string, workflowIrJson: string): Promise<void> {
@@ -3685,6 +3786,37 @@ async function readContainedFile(root: string, relativePath: string): Promise<Bu
   const realRoot = await realpath(rootPath);
   if (!real.startsWith(`${realRoot}/`)) throw new PathEscapeError(`Path '${relativePath}' escapes run directory.`);
   return readFile(absolutePath);
+}
+
+function frozenWorkflowIrJson(cwd: string, row: RunInputRow): string | undefined {
+  if (row.workflow_ir_json) return row.workflow_ir_json;
+  return readFrozenRunFile(cwd, row, row.workflow_ir_path, row.workflow_ir_digest, "workflow IR");
+}
+
+function frozenLockJson(cwd: string, row: RunInputRow): string | undefined {
+  if (row.lock_json) return row.lock_json;
+  return readFrozenRunFile(cwd, row, row.lock_path, row.lock_digest, "workflow lock");
+}
+
+function readFrozenRunFile(cwd: string, row: RunInputRow, path: string | null | undefined, expectedDigest: string | null | undefined, label: string): string | undefined {
+  if (!row.run_dir || !path) return undefined;
+  const runDir = containedRunDir(cwd, row.run_dir);
+  const bytes = readContainedFileSync(runDir, path);
+  if (expectedDigest && digest(bytes) !== expectedDigest) throw new Error(`Frozen ${label} digest mismatch.`);
+  return bytes.toString("utf8");
+}
+
+function readContainedFileSync(root: string, relativePath: string): Buffer {
+  const rootPath = resolve(root);
+  const absolutePath = resolve(rootPath, relativePath);
+  if (absolutePath !== rootPath && !absolutePath.startsWith(`${rootPath}/`)) throw new PathEscapeError(`Path '${relativePath}' escapes run directory.`);
+  const info = lstatSync(absolutePath);
+  if (info.isSymbolicLink()) throw new PathEscapeError(`Path '${relativePath}' is a symbolic link.`);
+  if (!info.isFile()) throw new PathEscapeError(`Path '${relativePath}' is not a file.`);
+  const real = realpathSync(absolutePath);
+  const realRoot = realpathSync(rootPath);
+  if (!real.startsWith(`${realRoot}/`)) throw new PathEscapeError(`Path '${relativePath}' escapes run directory.`);
+  return readFileSync(absolutePath);
 }
 
 function forkRequestFingerprint(runId: string, options: ControlOptions): string {

@@ -1,8 +1,11 @@
-import { openRuntimeStore } from "../store/store.js";
+import { createHash } from "node:crypto";
+import { normalizeWorkflowInput } from "../admission/input.js";
+import { isRuntimeStoreBusyError, openRuntimeStore, validateAgentOverrides } from "../store/store.js";
 import { formatHookLoadError, loadHooksConfig } from "../hooks/loader.js";
 import { createHookRunner } from "../hooks/runner.js";
 import { RuntimeUseCaseException } from "../runs/use-cases.js";
 import { RunExecutionSessions } from "./sessions.js";
+import { RuntimeMutationQueue } from "./mutation-queue.js";
 import { DaemonRequestError, startDaemonServer, type DaemonErrorCode, type DaemonServerHandle } from "./socket.js";
 import { runDaemonTick } from "./tick.js";
 
@@ -35,6 +38,7 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
   }
   const hookRunner = createHookRunner(hooksConfig.value, store);
   const sessions = new RunExecutionSessions(cwd, store, hookRunner);
+  const mutations = new RuntimeMutationQueue();
   let server: DaemonServerHandle;
   try {
     server = await startDaemonServer(cwd, {
@@ -45,7 +49,28 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
         protocolVersion: options.protocolVersion ?? 1,
         packageVersion: options.packageVersion,
       }),
-      control: async intent => {
+      admitRun: request => mutations.enqueue("admitRun", async () => {
+        let input;
+        let agentOverrides;
+        let prepared;
+        try {
+          prepared = canonicalPreparedRunWorkflow(request.prepared);
+          input = normalizeWorkflowInput(prepared.ir, request.input);
+          agentOverrides = validateAgentOverrides(prepared.ir, request.agentOverrides);
+        } catch (error) {
+          throw new DaemonRequestError("INVALID_REQUEST", error instanceof Error ? error.message : String(error));
+        }
+        try {
+          const run = await store.admitRun({ prepared, cwd, input, agentOverrides });
+          const details = store.getRun(run.id);
+          if (!details) throw new DaemonRequestError("STORE_ERROR", `Admitted run ${run.id} was not persisted.`);
+          if (request.start) sessions.start(run.id);
+          return details;
+        } catch (error) {
+          throw new DaemonRequestError(daemonAdmissionCode(error), error instanceof Error ? error.message : String(error));
+        }
+      }),
+      control: intent => mutations.enqueue(`control:${intent.type}`, async () => {
         try {
           const result = await sessions.control(intent);
           if (!result) throw new DaemonRequestError("RUN_NOT_FOUND", `Run '${intent.runId}' was not found.`);
@@ -54,10 +79,12 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
         } catch (error) {
           throw new DaemonRequestError(daemonControlCode(error), error instanceof Error ? error.message : String(error));
         }
-      },
+      }),
       startRun: runId => sessions.start(runId),
       observeRun: runId => sessions.observe(runId),
       shutdown: () => {
+        if (server.activeConnections() > 1) throw new DaemonRequestError("CONTROL_CONFLICT", "Daemon has active client requests.");
+        if (!mutations.isIdle()) throw new DaemonRequestError("CONTROL_CONFLICT", "Daemon has active runtime mutations.");
         if (sessions.activeCount() > 0) throw new DaemonRequestError("CONTROL_CONFLICT", "Daemon has active run sessions.");
         setImmediate(() => {
           void shutdown("external").then(() => options.onShutdown?.());
@@ -140,7 +167,7 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
     try {
       const result = await runDaemonTick(store, { startRun: runId => sessions.start(runId) });
       if (stopped) return;
-      if (result.runs > 0 || result.idleBlockers > 0 || sessions.activeCount() > 0 || sessions.hookActiveCount() > 0) {
+      if (result.runs > 0 || result.idleBlockers > 0 || sessions.activeCount() > 0 || sessions.hookActiveCount() > 0 || server.activeConnections() > 0) {
         idleSince = undefined;
         store.setDaemonIdleState({ workspaceRealpath, generation: lease.generation, idleStopMs });
         return;
@@ -174,8 +201,30 @@ async function closeDaemonServer(server: DaemonServerHandle): Promise<void> {
   }
 }
 
+function canonicalPreparedRunWorkflow<T extends { ir: unknown; irJson: string; lock: { ir: { digest: string } } }>(prepared: T): T {
+  const irFromJson = JSON.parse(prepared.irJson) as unknown;
+  if (canonicalJson(irFromJson) !== canonicalJson(prepared.ir)) throw new Error("Prepared workflow IR JSON does not match prepared IR.");
+  if (sha256(prepared.irJson) !== prepared.lock.ir.digest) throw new Error("Prepared workflow lock IR digest does not match IR JSON.");
+  return { ...prepared, ir: irFromJson } as T;
+}
+
+function sha256(value: string): string {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function canonicalJson(value: unknown): string {
+  return `${JSON.stringify(sortJson(value))}\n`;
+}
+
+function sortJson(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(sortJson);
+  return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, sortJson(item)]));
+}
+
 function daemonControlCode(error: unknown): DaemonErrorCode {
   if (error instanceof DaemonRequestError) return error.code;
+  if (isRuntimeStoreBusyError(error)) return "STORE_BUSY";
   if (isDaemonErrorCode((error as { code?: unknown })?.code)) return (error as { code: DaemonErrorCode }).code;
   const failure = typeof error === "object" && error !== null && "failure" in error
     ? (error as { failure?: { type?: string } }).failure
@@ -187,6 +236,13 @@ function daemonControlCode(error: unknown): DaemonErrorCode {
   return "RUN_NOT_CONTROLLABLE";
 }
 
+function daemonAdmissionCode(error: unknown): DaemonErrorCode {
+  if (error instanceof DaemonRequestError) return error.code;
+  if (isRuntimeStoreBusyError(error)) return "STORE_BUSY";
+  if (isDaemonErrorCode((error as { code?: unknown })?.code)) return (error as { code: DaemonErrorCode }).code;
+  return "STORE_ERROR";
+}
+
 function isDaemonErrorCode(value: unknown): value is DaemonErrorCode {
-  return typeof value === "string" && ["INVALID_CONTROL", "RUN_NOT_FOUND", "RUN_TERMINAL", "RUN_NOT_CONTROLLABLE", "CONTROL_CONFLICT", "EXECUTION_UNAVAILABLE", "STORE_ERROR", "INTERNAL_ERROR"].includes(value);
+  return typeof value === "string" && ["INVALID_REQUEST", "INVALID_CONTROL", "RUN_NOT_FOUND", "RUN_TERMINAL", "RUN_NOT_CONTROLLABLE", "CONTROL_CONFLICT", "EXECUTION_UNAVAILABLE", "STORE_BUSY", "STORE_ERROR", "INTERNAL_ERROR"].includes(value);
 }

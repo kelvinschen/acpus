@@ -48,4 +48,77 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
       });
     });
   });
+
+  it("admits a background workflow and lets the daemon complete it", async () => {
+    await withTestWorkspace("e2e-background-run", async workspace => {
+      const workflow = await copyWorkflowFixture(workspace, "workflows/concurrency/short-task.workflow.ts");
+
+      const admitted = await runSourceCli(workspace, ["workflow", "run", workflow, "--background", "--json"]);
+
+      expect(admitted.exitCode).toBe(0);
+      expect(admitted.stderr).toBe("");
+      const admittedJson = JSON.parse(admitted.stdout);
+      expect(admittedJson).toMatchObject({
+        ok: true,
+        phase: "run",
+        run: {
+          name: "cli-concurrency-short-task",
+        },
+      });
+      expect(admittedJson.run.id).toMatch(runIdPattern);
+
+      const inspected = await waitForCompletedRun(workspace, admittedJson.run.id);
+      expect(inspected).toMatchObject({
+        ok: true,
+        phase: "inspect",
+        run: {
+          id: admittedJson.run.id,
+          status: "completed",
+          output: { ok: true },
+        },
+      });
+    });
+  });
+
+  async function waitForCompletedRun(workspace: string, runId: string): Promise<unknown> {
+    const deadline = Date.now() + 5_000;
+    let lastJson: unknown;
+    while (Date.now() <= deadline) {
+      const inspected = await runSourceCli(workspace, ["runs", "inspect", runId, "--json"]);
+      expect(inspected.stderr).toBe("");
+      lastJson = JSON.parse(inspected.stdout);
+      if ((lastJson as { run?: { status?: unknown } }).run?.status === "completed") return lastJson;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    throw new Error(`Run ${runId} did not complete. Last inspect: ${JSON.stringify(lastJson)}`);
+  }
+
+  it("runs concurrent foreground workflows through a shared daemon", async () => {
+    await withTestWorkspace("e2e-concurrent-run", async workspace => {
+      const workflow = await copyWorkflowFixture(workspace, "workflows/concurrency/short-task.workflow.ts");
+
+      const results = await Promise.all(Array.from({ length: 2 }, () => runSourceCli(workspace, ["workflow", "run", workflow, "--json"])));
+
+      const runIds = new Set<string>();
+      for (const [index, result] of results.entries()) {
+        expect(result.stderr, `stderr for process ${index}`).not.toContain("database is locked");
+        expect(result.exitCode, `exit for process ${index}: ${result.stderr}`).toBe(0);
+        const records = result.stdout.trim().split("\n").map(line => JSON.parse(line));
+        expect(records[0], `admission for process ${index}`).toMatchObject({ ok: true, phase: "run", kind: "admitted" });
+        expect(records[0].run.id).toMatch(runIdPattern);
+        runIds.add(records[0].run.id);
+        expect(records.at(-1), `terminal for process ${index}`).toMatchObject({
+          ok: true,
+          phase: "run",
+          kind: "terminal summary",
+          run: {
+            name: "cli-concurrency-short-task",
+            status: "completed",
+            output: { ok: true },
+          },
+        });
+      }
+      expect(runIds.size).toBe(results.length);
+    });
+  });
 });

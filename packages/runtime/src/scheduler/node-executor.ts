@@ -6,6 +6,7 @@ import { executeTaskNode } from "../execution/task-executor.js";
 import { assertWorkflowData } from "../evaluation/admissible.js";
 import type { EvaluationScope } from "../evaluation/evaluator.js";
 import type { RuntimeStore } from "../store/store.js";
+import type { NodeProgressWriter } from "../progress/writer.js";
 import type { NodeAttemptContext, NodeExecutor } from "./advance.js";
 import { scopeForNodeAttempt } from "./scope.js";
 import { throwSchedulerStoreResult, type AttemptCommitInput, type SchedulerStoreResult } from "./store-port.js";
@@ -17,6 +18,7 @@ export type RuntimeNodeExecutorInput = {
   ir: WorkflowIR;
   scope: EvaluationScope;
   store: RuntimeStore;
+  progressWriter?: NodeProgressWriter;
   executeAgentTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult>;
   agentRepairDelayMs?: number;
 };
@@ -68,6 +70,7 @@ async function executeAgent(node: AgentNodeIR, scope: EvaluationScope, context: 
     attemptId: context.attemptId,
     attemptNo: context.attemptNo,
     store: input.store,
+    ...(input.progressWriter === undefined ? {} : { progressWriter: input.progressWriter }),
     initialPromptKind: context.attemptStartReason === "control_retry" || context.attemptStartReason === "pause_resume" ? "plain_continuation" : "task",
     signal: context.signal,
     ...(input.executeAgentTurn ? { executeTurn: input.executeAgentTurn } : {}),

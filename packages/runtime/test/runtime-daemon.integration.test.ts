@@ -1,7 +1,8 @@
 import { access, mkdir, utimes, writeFile } from "node:fs/promises";
+import { connect } from "node:net";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { startDaemonLoop } from "@acpus/runtime";
+import { daemonEndpoint, requestDaemonAdmitRun, requestDaemonObserveRun, requestDaemonShutdown, startDaemonLoop } from "@acpus/runtime";
 import { runDaemonTick } from "../src/daemon/tick.js";
 import type { HookJournalEntry } from "../src/hooks/journal.js";
 import { openExistingWritableRuntimeStore, openRuntimeStore } from "../src/store/store.js";
@@ -9,6 +10,100 @@ import { applySignalRunControl } from "../src/runs/use-cases.js";
 import { admitSyntheticWorkflow, prepareSyntheticWorkflow, runtimeRow, runtimeRows, signalWorkflow, taskArtifactWorkflow, timedSignalWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 
 describe.concurrent("runtime daemon ticks", () => {
+  it("admits runs through the daemon with explicit start behavior", async () => {
+    await withRuntimeWorkspace("runtime-daemon-admit-start-behavior", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const loop = await startDaemonLoop(workspace, {
+        heartbeatMs: 60_000,
+        idleStopMs: 60_000,
+        packageVersion: "test",
+      });
+      try {
+        const pending = await requestDaemonAdmitRun(workspace, {
+          prepared,
+          input: { ready: true },
+          start: false,
+        });
+
+        expect(pending).toMatchObject({
+          name: "cli-valid",
+          status: "pending",
+          input: { ready: true },
+        });
+        expect(runtimeRows(workspace, "SELECT id FROM runs WHERE id = ?", pending.id)).toEqual([{ id: pending.id }]);
+
+        const started = await requestDaemonAdmitRun(workspace, {
+          prepared,
+          input: { ready: true },
+          start: true,
+        });
+        const advanced = await requestDaemonObserveRun(workspace, started.id);
+
+        expect(started).toMatchObject({ name: "cli-valid" });
+        expect(advanced).toMatchObject({
+          status: "completed",
+          run: {
+            id: started.id,
+            status: "completed",
+            output: { ready: true },
+          },
+        });
+      } finally {
+        await loop.shutdown();
+      }
+    });
+  });
+
+  it("rejects daemon admission when prepared IR and IR JSON diverge", async () => {
+    await withRuntimeWorkspace("runtime-daemon-admit-ir-mismatch", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const loop = await startDaemonLoop(workspace, {
+        heartbeatMs: 60_000,
+        idleStopMs: 60_000,
+        packageVersion: "test",
+      });
+      try {
+        await expect(requestDaemonAdmitRun(workspace, {
+          prepared: {
+            ...prepared,
+            irJson: `${JSON.stringify({ ...prepared.ir, name: "different" })}\n`,
+          },
+          input: { ready: true },
+          start: false,
+        })).rejects.toMatchObject({
+          code: "INVALID_REQUEST",
+          message: expect.stringContaining("does not match prepared IR"),
+        });
+        expect(runtimeRows(workspace, "SELECT id FROM runs")).toEqual([]);
+      } finally {
+        await loop.shutdown();
+      }
+    });
+  });
+
+  it("rejects manual shutdown while another client request is active", async () => {
+    await withRuntimeWorkspace("runtime-daemon-shutdown-active-connection", async workspace => {
+      const loop = await startDaemonLoop(workspace, {
+        heartbeatMs: 60_000,
+        idleStopMs: 60_000,
+        packageVersion: "test",
+      });
+      const socket = connect(daemonEndpoint(workspace));
+      try {
+        await new Promise<void>((resolve, reject) => {
+          socket.once("connect", resolve);
+          socket.once("error", reject);
+        });
+        await expect(requestDaemonShutdown(workspace)).rejects.toMatchObject({
+          code: "CONTROL_CONFLICT",
+        });
+      } finally {
+        socket.destroy();
+        await loop.shutdown();
+      }
+    });
+  });
+
   it("releases its lease after a continuous idle window", async () => {
     await withRuntimeWorkspace("runtime-daemon-idle-stop", async workspace => {
       let resolveShutdown!: () => void;

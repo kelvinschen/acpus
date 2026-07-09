@@ -29,6 +29,7 @@ describe("@acpus/runtime public API", () => {
       "normalizeSignalPayload",
       "normalizeWorkflowInput",
       "projectHooksPath",
+      "requestDaemonAdmitRun",
       "requestDaemonControl",
       "requestDaemonObserveRun",
       "requestDaemonShutdown",

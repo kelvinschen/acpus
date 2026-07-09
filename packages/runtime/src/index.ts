@@ -9,6 +9,7 @@ export {
 } from "./daemon/loop.js";
 export {
   daemonEndpoint,
+  requestDaemonAdmitRun,
   requestDaemonControl,
   requestDaemonObserveRun,
   requestDaemonShutdown,
@@ -17,6 +18,7 @@ export {
   type DaemonControlIntent,
   type DaemonErrorCode,
   type DaemonShutdownResult,
+  type DaemonAdmitRunInput,
   DaemonRequestError,
   type DaemonStatus,
 } from "./daemon/socket.js";

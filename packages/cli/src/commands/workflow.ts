@@ -2,15 +2,15 @@ import type { Writable } from "node:stream";
 import { resolve } from "node:path";
 import { Command } from "commander";
 import type { WorkflowIR } from "@acpus/core/ir";
-import { admitPreparedWorkflowRun, normalizeWorkflowInput, validateAgentOverrides, type RuntimeAdvanceResult } from "@acpus/runtime";
+import { DaemonRequestError, normalizeWorkflowInput, validateAgentOverrides, type AgentOverrideMap, type PreparedRunWorkflow, type RuntimeAdvanceResult, type RunDetails } from "@acpus/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
-import { usageError, validationError } from "../errors.js";
+import { runError, usageError, validationError } from "../errors.js";
 import { discoverWorkflowCatalog, resolveWorkflowReference, showWorkflowCatalogEntry, type WorkflowCatalogScopeOptions } from "../catalog.js";
 import { summarizeWorkflow, writeJsonLine, writeResult, type OutputFormat } from "../output.js";
 import { formatRunObservationRow, formatRunStatusSurface, staticNodesForWorkflow, type RunStatusStaticNode } from "../run-status-surface.js";
 import { prepareWorkflowForCli } from "../workflow-preparation.js";
 import { parseAgents, parseInput } from "./json.js";
-import { sendDaemonObserveRun, sendDaemonStartRun } from "./daemon.js";
+import { sendDaemonAdmitRun, sendDaemonObserveStartedRun } from "./daemon.js";
 
 export type WorkflowCommandContext = {
   cwd: string;
@@ -156,8 +156,7 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
   }
 
   if (options.background) {
-    const run = await admitPreparedWorkflowRun(ctx.cwd, prepared, admittedInput, agentOverrides);
-    if (run.status !== "completed" && run.status !== "failed" && run.status !== "canceled") await sendDaemonStartRun(ctx.cwd, run.id);
+    const run = await admitWorkflowThroughDaemon(ctx.cwd, prepared, admittedInput, agentOverrides);
     ctx.setExitCode(writeResult({
       ok: true,
       phase: "run",
@@ -171,7 +170,7 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
     return;
   }
 
-  const admitted = await admitPreparedWorkflowRun(ctx.cwd, prepared, admittedInput, agentOverrides);
+  const admitted = await admitWorkflowThroughDaemon(ctx.cwd, prepared, admittedInput, agentOverrides);
   const staticNodes = staticNodesForWorkflow(prepared.ir);
   if (ctx.wantsJson) writeJsonLine(ctx.stdout, { ok: true, phase: "run", kind: "admitted", run: admitted, ...(resolved.catalog ? { catalog: resolved.catalog } : {}) });
   const seen = new Set([
@@ -181,7 +180,7 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
   const detach = installDetachHandler(ctx, admitted.id);
   let advanced: RuntimeAdvanceResult;
   try {
-    advanced = await sendDaemonObserveRun(ctx.cwd, admitted.id);
+    advanced = await sendDaemonObserveStartedRun(ctx.cwd, admitted.id);
     writeRunObservations(ctx, seen, advanced.run, staticNodes);
   } finally {
     detach();
@@ -199,6 +198,17 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
   }
   ctx.stdout.write(formatRunStatusSurface(advanced.run, staticNodes));
   ctx.setExitCode(advanced.status === "failed" || advanced.status === "canceled" ? 1 : 0);
+}
+
+async function admitWorkflowThroughDaemon(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue, agentOverrides?: AgentOverrideMap): Promise<RunDetails> {
+  try {
+    return await sendDaemonAdmitRun(cwd, { prepared, input, ...(agentOverrides === undefined ? {} : { agentOverrides }), start: true });
+  } catch (error) {
+    if (error instanceof DaemonRequestError && error.code === "STORE_BUSY") {
+      throw runError("Workspace runtime store is busy; retry the command or let the daemon finish current runtime writes.", { errorCode: "STORE_BUSY" });
+    }
+    throw error;
+  }
 }
 
 async function visualizeWorkflow(ctx: WorkflowCommandContext, workflow: string, options: WorkflowOptions): Promise<void> {

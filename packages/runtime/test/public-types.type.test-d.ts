@@ -30,13 +30,14 @@ import type {
   DaemonLoopOptions,
   DaemonWork,
   DaemonShutdownResult,
+  DaemonAdmitRunInput,
   DaemonStatus,
   WorkflowVisualizationGroup,
   WorkflowVisualizationNode,
   WorkflowVisualizationOverlay,
   RunVisualizationSnapshot,
 } from "@acpus/runtime";
-import { DaemonRequestError, RuntimeUseCaseException, admitPreparedWorkflowRun, createWorkflowVisualizationOverlay, daemonEndpoint, getRun, getRuntimeHealth, getRunVisualizationSnapshot, listRuns, normalizeForkInput, normalizeSignalPayload, normalizeWorkflowInput, requestDaemonControl, requestDaemonObserveRun, requestDaemonShutdown, requestDaemonStartRun, requestDaemonStatus, startDaemonLoop, validateAgentOverrides } from "@acpus/runtime";
+import { DaemonRequestError, RuntimeUseCaseException, admitPreparedWorkflowRun, createWorkflowVisualizationOverlay, daemonEndpoint, getRun, getRuntimeHealth, getRunVisualizationSnapshot, listRuns, normalizeForkInput, normalizeSignalPayload, normalizeWorkflowInput, requestDaemonAdmitRun, requestDaemonControl, requestDaemonObserveRun, requestDaemonShutdown, requestDaemonStartRun, requestDaemonStatus, startDaemonLoop, validateAgentOverrides } from "@acpus/runtime";
 import type { WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import type { Result } from "neverthrow";
@@ -54,6 +55,7 @@ test("@acpus/runtime public types describe use-case level runtime APIs", () => {
   expectTypeOf(startDaemonLoop).toEqualTypeOf<(cwd: string, options: DaemonLoopOptions) => Promise<DaemonLoopHandle>>();
   expectTypeOf(daemonEndpoint).toEqualTypeOf<(cwd: string) => string>();
   expectTypeOf(requestDaemonStatus).toEqualTypeOf<(cwd: string) => Promise<DaemonStatus>>();
+  expectTypeOf(requestDaemonAdmitRun).toEqualTypeOf<(cwd: string, input: Omit<DaemonAdmitRunInput, "method">) => Promise<RunDetails>>();
   expectTypeOf(requestDaemonControl).toEqualTypeOf<(cwd: string, control: DaemonControlIntent) => Promise<RuntimeMutationResult>>();
   expectTypeOf(requestDaemonStartRun).toEqualTypeOf<(cwd: string, runId: string) => Promise<RunDetails>>();
   expectTypeOf(requestDaemonObserveRun).toEqualTypeOf<(cwd: string, runId: string) => Promise<RuntimeAdvanceResult>>();

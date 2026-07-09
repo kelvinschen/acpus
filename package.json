@@ -11,7 +11,7 @@
     "build": "pnpm -r build",
     "build:clean": "pnpm clean && pnpm build",
     "typecheck": "pnpm --filter @acpus/core build && pnpm -r typecheck",
-    "test": "vitest run --typecheck",
+    "test": "vitest run --typecheck --maxWorkers=20",
     "test:watch": "vitest",
     "test:type": "vitest run --typecheck.only --project type-contract",
     "test:unit": "vitest run --project unit",

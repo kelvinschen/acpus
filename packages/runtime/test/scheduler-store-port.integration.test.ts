@@ -266,6 +266,57 @@ describe("scheduler store port", () => {
     });
   });
 
+  it("does not let running progress overwrite terminal progress for the same attempt", async () => {
+    await withRuntimeWorkspace("scheduler-store-node-progress-terminal-precedence", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        readyNode(store, run.id, claim, "terminal-progress:ready");
+        const attempt = store.scheduler.startAttempt({
+          runId: run.id,
+          nodeKey: "require_ready~1",
+          nodeId: "require_ready",
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "terminal-progress:attempt",
+        });
+        store.writeNodeProgress({
+          runId: run.id,
+          nodeKey: "require_ready~1",
+          nodeId: "require_ready",
+          attemptId: attempt.attemptId,
+          attemptNo: attempt.attemptNo,
+          kind: "agent",
+          status: "completed",
+          message: "done",
+        });
+        const progressVersion = store.getRun(run.id)?.progressVersion;
+
+        store.writeNodeProgress({
+          runId: run.id,
+          nodeKey: "require_ready~1",
+          nodeId: "require_ready",
+          attemptId: attempt.attemptId,
+          attemptNo: attempt.attemptNo,
+          kind: "agent",
+          status: "running",
+          message: "late running",
+        });
+
+        expect(store.getRun(run.id)?.progressVersion).toBe(progressVersion);
+        expect(store.getRun(run.id)?.dynamic?.progress).toEqual([
+          expect.objectContaining({
+            status: "completed",
+            message: "done",
+          }),
+        ]);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   it("does not migrate existing stores from read-only opener", async () => {
     await withRuntimeWorkspace("scheduler-store-read-only-no-migration", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());

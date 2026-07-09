@@ -3,7 +3,8 @@ import { mkdir, open, rm } from "node:fs/promises";
 import { createServer, connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { openExistingRuntimeStore } from "../store/store.js";
+import type { JsonValue } from "@acpus/expression/ir";
+import { isRuntimeStoreBusyError, openExistingRuntimeStore, type AgentOverrideMap, type PreparedRunWorkflow } from "../store/store.js";
 import { type RuntimeAdvanceResult } from "../runs/advance-runtime.js";
 import { RuntimeUseCaseException, type RuntimeMutationAction, type RuntimeMutationInput, type RuntimeMutationResult } from "../runs/use-cases.js";
 import type { RunDetails } from "../store/store.js";
@@ -28,6 +29,13 @@ export type DaemonRequest = {
   control: DaemonControlIntent;
 } | {
   id?: string;
+  method: "admitRun";
+  prepared: PreparedRunWorkflow;
+  input: JsonValue;
+  agentOverrides?: AgentOverrideMap;
+  start: boolean;
+} | {
+  id?: string;
   method: "startRun" | "observeRun";
   runId: string;
 };
@@ -41,7 +49,7 @@ export type DaemonResponse =
   | { id?: string; ok: true; outcome: "applied"; result: DaemonStatus | DaemonShutdownResult | RunDetails | RuntimeAdvanceResult | RuntimeMutationResult }
   | { id?: string; ok: false; outcome: "failed"; error: { code: DaemonErrorCode; message: string } };
 
-export type DaemonErrorCode = "INVALID_CONTROL" | "RUN_NOT_FOUND" | "RUN_TERMINAL" | "RUN_NOT_CONTROLLABLE" | "CONTROL_CONFLICT" | "EXECUTION_UNAVAILABLE" | "STORE_ERROR" | "INTERNAL_ERROR";
+export type DaemonErrorCode = "INVALID_REQUEST" | "INVALID_CONTROL" | "RUN_NOT_FOUND" | "RUN_TERMINAL" | "RUN_NOT_CONTROLLABLE" | "CONTROL_CONFLICT" | "EXECUTION_UNAVAILABLE" | "STORE_BUSY" | "STORE_ERROR" | "INTERNAL_ERROR";
 
 export type DaemonShutdownResult = {
   status: "shutdown";
@@ -55,6 +63,7 @@ export class DaemonRequestError extends Error {
 
 export type DaemonServerHandle = {
   endpoint: string;
+  activeConnections(): number;
   close(): Promise<void>;
 };
 
@@ -70,17 +79,32 @@ export function daemonEndpoint(cwd: string): string {
   return join(tmpdir(), `acpus-daemon-${digest}.sock`);
 }
 
-export async function startDaemonServer(cwd: string, handlers: { status(): DaemonStatus; control(intent: DaemonControlIntent): Promise<RuntimeMutationResult>; startRun(runId: string): Promise<RunDetails> | RunDetails; observeRun(runId: string): Promise<RuntimeAdvanceResult>; shutdown(): Promise<DaemonShutdownResult> | DaemonShutdownResult }): Promise<DaemonServerHandle> {
+export type DaemonAdmitRunInput = Extract<DaemonRequest, { method: "admitRun" }>;
+
+export async function startDaemonServer(cwd: string, handlers: DaemonHandlers): Promise<DaemonServerHandle> {
   const endpoint = daemonEndpoint(cwd);
   if (isFilesystemSocket(endpoint)) {
     await mkdir(dirname(endpoint), { recursive: true });
   }
 
   const sockets = new Set<Socket>();
+  let activeConnections = 0;
+  const requestTracker = {
+    begin: () => {
+      activeConnections += 1;
+    },
+    end: () => {
+      activeConnections -= 1;
+    },
+  };
   const server = createServer({ allowHalfOpen: true }, socket => {
+    requestTracker.begin();
     sockets.add(socket);
-    socket.once("close", () => sockets.delete(socket));
-    void handleSocket(socket, handlers);
+    socket.once("close", () => {
+      sockets.delete(socket);
+      requestTracker.end();
+    });
+    void handleSocket(socket, handlers, requestTracker);
   });
 
   try {
@@ -92,6 +116,7 @@ export async function startDaemonServer(cwd: string, handlers: { status(): Daemo
 
   return {
     endpoint,
+    activeConnections: () => activeConnections,
     close: async () => {
       for (const socket of sockets) socket.destroy();
       await new Promise<void>((resolveClose, rejectClose) => {
@@ -163,6 +188,13 @@ export async function requestDaemonControl(cwd: string, control: DaemonControlIn
   return response.result;
 }
 
+export async function requestDaemonAdmitRun(cwd: string, input: Omit<DaemonAdmitRunInput, "method">): Promise<RunDetails> {
+  const response = await requestDaemon(cwd, { ...input, method: "admitRun" });
+  if (!response.ok) throw new DaemonRequestError(response.error.code, response.error.message);
+  if (isDaemonStatus(response.result) || isRuntimeAdvanceResult(response.result) || !isRunDetails(response.result)) throw new Error("Daemon returned an invalid admitRun response.");
+  return response.result;
+}
+
 export async function requestDaemonStartRun(cwd: string, runId: string): Promise<RunDetails> {
   const response = await requestDaemon(cwd, { method: "startRun", runId });
   if (!response.ok) throw new DaemonRequestError(response.error.code, response.error.message);
@@ -189,7 +221,7 @@ async function requestDaemon(cwd: string, request: DaemonRequest): Promise<Daemo
   return new Promise<DaemonResponse>((resolveRequest, rejectRequest) => {
     const socket = connect(endpoint);
     const chunks: Buffer[] = [];
-    const timeoutMs = request.method === "observeRun" ? undefined : request.method === "control" ? 30_000 : 1_000;
+    const timeoutMs = request.method === "observeRun" || request.method === "admitRun" ? undefined : request.method === "control" ? 30_000 : 1_000;
     const timeout = timeoutMs === undefined ? undefined : setTimeout(() => {
       socket.destroy();
       rejectRequest(new DaemonRequestError("EXECUTION_UNAVAILABLE", `Timed out waiting for daemon ${describeRequest(request)} response.`));
@@ -213,7 +245,16 @@ async function requestDaemon(cwd: string, request: DaemonRequest): Promise<Daemo
   });
 }
 
-async function handleSocket(socket: Socket, handlers: { status(): DaemonStatus; control(intent: DaemonControlIntent): Promise<RuntimeMutationResult>; startRun(runId: string): Promise<RunDetails> | RunDetails; observeRun(runId: string): Promise<RuntimeAdvanceResult>; shutdown(): Promise<DaemonShutdownResult> | DaemonShutdownResult }): Promise<void> {
+type DaemonHandlers = {
+  status(): DaemonStatus;
+  admitRun(input: DaemonAdmitRunInput): Promise<RunDetails> | RunDetails;
+  control(intent: DaemonControlIntent): Promise<RuntimeMutationResult>;
+  startRun(runId: string): Promise<RunDetails> | RunDetails;
+  observeRun(runId: string): Promise<RuntimeAdvanceResult>;
+  shutdown(): Promise<DaemonShutdownResult> | DaemonShutdownResult;
+};
+
+async function handleSocket(socket: Socket, handlers: DaemonHandlers, requestTracker: { begin(): void; end(): void }): Promise<void> {
   const chunks: Buffer[] = [];
   socket.setTimeout(5_000, () => socket.destroy());
   socket.on("data", chunk => chunks.push(Buffer.from(chunk)));
@@ -233,29 +274,34 @@ function parseRequest(raw: string): { ok: true; value: DaemonRequest } | { ok: f
     if (value.method !== "status") {
       if (value.method === "shutdown") return { ok: true, value: { ...(value.id === undefined ? {} : { id: value.id }), method: value.method } };
       if (value.method === "startRun" || value.method === "observeRun") {
-        if (typeof value.runId !== "string") return { ok: false, response: failedResponse(value.id, "INVALID_CONTROL", "Invalid daemon run request.") };
+        if (typeof value.runId !== "string") return { ok: false, response: failedResponse(value.id, "INVALID_REQUEST", "Invalid daemon run request.") };
         return { ok: true, value: { ...(value.id === undefined ? {} : { id: value.id }), method: value.method, runId: value.runId } };
       }
+      if (value.method === "admitRun") {
+        if (!isAdmitRunRequest(value)) return { ok: false, response: failedResponse(value.id, "INVALID_REQUEST", "Invalid daemon admission request.") };
+        return { ok: true, value };
+      }
       if (value.method !== "control" || !isControlIntent(value.control)) {
-        return { ok: false, response: failedResponse(value.id, "INVALID_CONTROL", "Unsupported daemon method.") };
+        return { ok: false, response: failedResponse(value.id, "INVALID_REQUEST", "Unsupported daemon method.") };
       }
       return { ok: true, value: { ...(value.id === undefined ? {} : { id: value.id }), method: "control", control: value.control } };
     }
     return { ok: true, value: { ...(value.id === undefined ? {} : { id: value.id }), method: value.method } };
   } catch {
-    return { ok: false, response: failedResponse(undefined, "INVALID_CONTROL", "Invalid daemon request JSON.") };
+    return { ok: false, response: failedResponse(undefined, "INVALID_REQUEST", "Invalid daemon request JSON.") };
   }
 }
 
-async function dispatchRequest(request: DaemonRequest, handlers: { status(): DaemonStatus; control(intent: DaemonControlIntent): Promise<RuntimeMutationResult>; startRun(runId: string): Promise<RunDetails> | RunDetails; observeRun(runId: string): Promise<RuntimeAdvanceResult>; shutdown(): Promise<DaemonShutdownResult> | DaemonShutdownResult }): Promise<DaemonResponse> {
+async function dispatchRequest(request: DaemonRequest, handlers: DaemonHandlers): Promise<DaemonResponse> {
   try {
+    if (request.method === "admitRun") return appliedResponse(request.id, await handlers.admitRun(request));
     if (request.method === "control") return appliedResponse(request.id, await handlers.control(request.control));
     if (request.method === "startRun") return appliedResponse(request.id, await handlers.startRun(request.runId));
     if (request.method === "observeRun") return appliedResponse(request.id, await handlers.observeRun(request.runId));
     if (request.method === "shutdown") return appliedResponse(request.id, await handlers.shutdown());
     return appliedResponse(request.id, handlers.status());
   } catch (error) {
-    return failedResponse(request.id, request.method === "status" ? "INTERNAL_ERROR" : daemonControlErrorCode(error), error instanceof Error ? error.message : String(error));
+    return failedResponse(request.id, daemonRequestErrorCode(request, error), error instanceof Error ? error.message : String(error));
   }
 }
 
@@ -272,6 +318,7 @@ function failedResponse(id: string | undefined, code: DaemonErrorCode, message: 
 }
 
 function describeRequest(request: DaemonRequest): string {
+  if (request.method === "admitRun") return "run admission";
   if (request.method === "control") return `${request.control.type} control for run '${request.control.runId}'`;
   if (request.method === "startRun" || request.method === "observeRun") return `${request.method} for run '${request.runId}'`;
   return request.method;
@@ -279,6 +326,7 @@ function describeRequest(request: DaemonRequest): string {
 
 function daemonControlErrorCode(error: unknown): DaemonErrorCode {
   if (error instanceof DaemonRequestError) return error.code;
+  if (isRuntimeStoreBusyError(error)) return "STORE_BUSY";
   const failure = runtimeFailure(error);
   if (failure) {
     if (failure.type === "run-not-found" || failure.type === "runtime-store-not-found") return "RUN_NOT_FOUND";
@@ -287,6 +335,13 @@ function daemonControlErrorCode(error: unknown): DaemonErrorCode {
     return "RUN_NOT_CONTROLLABLE";
   }
   return "RUN_NOT_CONTROLLABLE";
+}
+
+function daemonRequestErrorCode(request: DaemonRequest, error: unknown): DaemonErrorCode {
+  if (request.method === "status") return "INTERNAL_ERROR";
+  if (error instanceof DaemonRequestError) return error.code;
+  if (request.method === "admitRun") return isRuntimeStoreBusyError(error) ? "STORE_BUSY" : "STORE_ERROR";
+  return daemonControlErrorCode(error);
 }
 
 function runtimeFailure(error: unknown): RuntimeUseCaseException["failure"] | undefined {
@@ -322,6 +377,46 @@ function isControlIntent(value: unknown): value is DaemonControlIntent {
   const intent = value as { requestId?: unknown; type?: unknown; runId?: unknown; nodeId?: unknown };
   if (typeof intent.requestId !== "string" || typeof intent.type !== "string" || typeof intent.runId !== "string") return false;
   return intent.type === "signal" ? typeof intent.nodeId === "string" : ["pause", "resume", "retry", "cancel", "fork"].includes(intent.type);
+}
+
+function isAdmitRunRequest(value: Partial<DaemonRequest>): value is DaemonAdmitRunInput {
+  return value.method === "admitRun"
+    && isPreparedRunWorkflow(value.prepared)
+    && hasOwn(value, "input")
+    && isJsonValue(value.input)
+    && (value.agentOverrides === undefined || isPlainRecord(value.agentOverrides))
+    && typeof value.start === "boolean";
+}
+
+function isPreparedRunWorkflow(value: unknown): value is PreparedRunWorkflow {
+  if (!isPlainRecord(value)) return false;
+  const ir = value.ir;
+  return typeof value.workflowPath === "string"
+    && isPlainRecord(ir)
+    && typeof ir.name === "string"
+    && isPlainRecord(ir.root)
+    && typeof value.irJson === "string"
+    && typeof value.sourceGraphDigest === "string"
+    && (value.packageLockDigest === undefined || typeof value.packageLockDigest === "string")
+    && isPlainRecord(value.lock);
+}
+
+function isJsonValue(value: unknown): value is JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(item => isJsonValue(item));
+  if (!isPlainRecord(value)) return false;
+  return Object.values(value).every(item => isJsonValue(item));
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function hasOwn(value: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
 }
 
 async function hasLiveDaemon(cwd: string): Promise<boolean> {

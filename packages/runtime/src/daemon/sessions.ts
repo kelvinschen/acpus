@@ -7,6 +7,7 @@ import type { HookRunner } from "../hooks/runner.js";
 import { triggerHooksForCommittedRowsForRun } from "../scheduler/runtime-runner.js";
 import type { RunDetails, RuntimeStore } from "../store/store.js";
 import { DaemonRequestError, type DaemonControlIntent } from "./socket.js";
+import { CoalescingNodeProgressWriter } from "../progress/writer.js";
 
 type ActiveRunSession = {
   promise?: Promise<RuntimeAdvanceResult>;
@@ -17,8 +18,11 @@ type ActiveRunSession = {
 
 export class RunExecutionSessions {
   private readonly sessions = new Map<string, ActiveRunSession>();
+  private readonly progressWriter: CoalescingNodeProgressWriter;
 
-  constructor(private readonly cwd: string, private readonly store: RuntimeStore, private readonly hookRunner?: HookRunner) {}
+  constructor(private readonly cwd: string, private readonly store: RuntimeStore, private readonly hookRunner?: HookRunner) {
+    this.progressWriter = new CoalescingNodeProgressWriter(store);
+  }
 
   activeCount(): number {
     return this.sessions.size;
@@ -124,11 +128,17 @@ export class RunExecutionSessions {
         },
         onActiveAttempt: attempt => {
           if (attempt.runId !== runId || !session) return undefined;
-          return trackActiveAttempt(session, attempt);
+          const dispose = trackActiveAttempt(session, attempt);
+          return () => {
+            this.progressWriter.flushMatching(progress => progress.runId === attempt.runId && progress.nodeKey === attempt.nodeKey);
+            dispose();
+          };
         },
         ...(this.hookRunner === undefined ? {} : { hookRunner: this.hookRunner }),
+        progressWriter: this.progressWriter,
       });
     } finally {
+      this.progressWriter.flushMatching(progress => progress.runId === runId);
       if (session) resolveOwnerEpochWaiters(session);
       if (this.sessions.get(runId) === session) this.sessions.delete(runId);
     }
