@@ -14,4 +14,4 @@ pre-TypeScript history remains under `legacy/`.
 
 ## Roadmap
 
-No active roadmap records.
+- [Expression Authoring Surface Implementation Plan](expression-authoring-surface-roadmap.md)

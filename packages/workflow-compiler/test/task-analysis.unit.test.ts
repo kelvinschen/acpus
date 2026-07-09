@@ -218,8 +218,8 @@ describe("task analysis", () => {
   it("rejects an inline task that captures workflow-scope helpers (TB007)", async () => {
     const analysis = await analyze(
       `declare const step: any;
-       declare const where: any;
-       step("run").task({ run: { input: {}, exec: async ({ input }: any) => where(input, { ready: true }) } });`,
+       declare const helper: any;
+       step("run").task({ run: { input: {}, exec: async ({ input }: any) => helper(input) } });`,
     );
 
     expectTaskIssue(analysis, { kind: "inline-task-capture" });

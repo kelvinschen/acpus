@@ -14,7 +14,7 @@ import {
   type StepDeclaration,
   type TaskStepSpec,
 } from "../src/index.js";
-import { md, pick, template, type Expr } from "@acpus/expression";
+import { fmap, md, template, type Expr } from "@acpus/expression";
 
 test("step declaration object exposes kind methods", () => {
   defineWorkflow({ name: "typed-step-declaration", description: "Type-level workflow metadata." }).build(({ input, step }) => {
@@ -223,8 +223,8 @@ test("task options accept only string cwd and string or secret env values", () =
   });
 });
 
-test("pick preserves selected output key types", () => {
-  defineWorkflow({ name: "typed-pick" }).build(({ step }) => {
+test("fmap preserves selected output object types", () => {
+  defineWorkflow({ name: "typed-fmap-selected-object" }).build(({ step }) => {
     const review = step("review").task({
       run: {
         input: {},
@@ -235,12 +235,15 @@ test("pick preserves selected output key types", () => {
         }),
       },
     });
-    const selected = pick(review.output, ["summary", "report_path"] as const);
+    const selected = fmap(review.output, output => ({
+      summary: output.summary,
+      report_path: output.report_path,
+    }));
     expectTypeOf(selected.summary).toEqualTypeOf<Expr<string>>();
     expectTypeOf(selected.report_path).toEqualTypeOf<Expr<string>>();
-    // @ts-expect-error pick result exposes only selected keys.
+    // @ts-expect-error fmap result exposes only returned keys.
     selected.ready;
-    return selected;
+    return { selected };
   });
 });
 

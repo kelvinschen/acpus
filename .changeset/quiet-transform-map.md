@@ -4,4 +4,4 @@
 "acpus": patch
 ---
 
-Add expression `transform(value, fn)` for small runtime JSON transforms, with workflow authoring checks, runtime guards, and Acpus authoring references.
+Replace the broad expression helper algebra with `fmap`, `lift2`, `lift3`, `lift`, `template`, and `md`, including callback authoring checks, runtime guards, and updated Acpus authoring references.

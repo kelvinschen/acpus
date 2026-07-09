@@ -615,16 +615,12 @@ function renderExpr(expr: ExprIR): string {
       return renderLiteral(expr.value);
     case "ref":
       return expr.path.join(".");
-    case "var":
-      return [expr.id, ...expr.path].join(".");
     case "array":
       return `[${expr.items.map(renderExpr).join(", ")}]`;
     case "object":
       return `{ ${Object.entries(expr.fields).map(([key, value]) => `${key}: ${renderExpr(value)}`).join(", ")} }`;
     case "template":
       return `\`${renderTemplate(expr.template)}\``;
-    case "lambda":
-      return `${expr.params.map(param => param.id).join(", ")} => ${renderExpr(expr.body)}`;
     case "call":
       return `${expr.fn}(${expr.args.map(renderExpr).join(", ")})`;
   }

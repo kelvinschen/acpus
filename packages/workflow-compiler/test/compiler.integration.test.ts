@@ -214,12 +214,8 @@ export default defineWorkflow({ name: "throws" }).build(() => {
       do: {
         outputs: {
           lane: {
-            kind: "call",
-            fn: "coalesce",
-            args: [
-              { kind: "ref", path: ["fanout", "lanes", "item", "id"] },
-              { kind: "literal", value: "(none)" },
-            ],
+            kind: "ref",
+            path: ["fanout", "lanes", "item", "id"],
           },
           route: {
             kind: "ref",
@@ -273,11 +269,12 @@ export default defineWorkflow({ name: "throws" }).build(() => {
         outputs: {
           stop: {
             kind: "call",
-            fn: "or",
-            args: expect.arrayContaining([
-              expect.objectContaining({ kind: "call", fn: "not" }),
-              expect.objectContaining({ kind: "call", fn: "gte" }),
-            ]),
+            fn: "lift2",
+            args: [
+              { kind: "ref", path: ["nodes", "repair_round", "output", "continue"] },
+              { kind: "ref", path: ["loop", "repair_loop", "round"] },
+              { kind: "literal", value: expect.any(String) },
+            ],
           },
         },
       },
@@ -310,10 +307,10 @@ export default defineWorkflow({ name: "throws" }).build(() => {
         {
           when: {
             kind: "call",
-            fn: "eq",
+            fn: "fmap",
             args: [
               { kind: "ref", path: ["fanout", "lanes", "item", "mode"] },
-              { kind: "literal", value: "auto" },
+              { kind: "literal", value: expect.any(String) },
             ],
           },
         },

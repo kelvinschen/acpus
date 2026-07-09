@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { defineWorkflow, z } from "@acpus/core";
-import { coalesce, eq, head, matches, or, template } from "@acpus/expression";
+import { fmap, lift2, template } from "@acpus/expression";
 import { compileWorkflowDefinition } from "@acpus/core/workflow";
 import { executeWorkflow } from "../src/execution/scheduler.js";
 
@@ -24,7 +24,7 @@ describe("runtime non-agent scheduler skeleton", () => {
 
       const route = step("route").switch({
         cases: [
-          { when: eq(input.mode, "fast"), then() { return { code: "F" }; } },
+          { when: fmap(input.mode, mode => mode === "fast"), then() { return { code: "F" }; } },
         ],
         default() { return { code: "D" }; },
       });
@@ -45,10 +45,10 @@ describe("runtime non-agent scheduler skeleton", () => {
         state: { done: false as boolean, summary: "first" },
         do({ round, state }) { return {
           state: {
-            done: eq(round, 3),
+            done: fmap(round, value => value === 3),
             summary: state.summary,
           },
-          stop: or(eq(round, 3), eq(state.done, true)),
+          stop: lift2(round, state.done, (value, done) => value === 3 || done === true),
         }; },
       });
 
@@ -56,7 +56,7 @@ describe("runtime non-agent scheduler skeleton", () => {
         status: gate.output.status,
         fastStatus: checks.output.fast.status,
         routeCode: checks.output.route.code,
-        firstItem: coalesce(head(perItem.output).label, "none"),
+        firstItem: fmap(perItem.output, items => items[0]?.label ?? "none"),
         done: retry.output.done,
         summary: retry.output.summary,
       };
@@ -94,6 +94,15 @@ describe("runtime non-agent scheduler skeleton", () => {
   });
 
   it("fails asserts and rejects executable nodes without an executor", async () => {
+    const badCallbackAssert = compileWorkflowDefinition(defineWorkflow({
+      name: "bad_callback_assert",
+    }).build(({ step }) => {
+      step("bad_callback").assert({ condition: fmap(true, _value => new Date() as any) });
+      return {};
+    }));
+
+    await expect(executeWorkflow(badCallbackAssert, {})).rejects.toThrow("fmap(...) expected JSON-compatible values.");
+
     const failedAssert = compileWorkflowDefinition(defineWorkflow({
       name: "failed_assert",
     }).build(({ step }) => {
@@ -157,7 +166,7 @@ describe("runtime non-agent scheduler skeleton", () => {
         strategy: "quorum",
         count: 2,
         over: input.items,
-        do({ item }) { return { id: item.id, ok: matches(item.id, ".+") }; },
+        do({ item }) { return { id: item.id, ok: fmap(item.id, id => /.+/.test(id)) }; },
       });
       return {
         code: route.output.code,
@@ -363,7 +372,7 @@ describe("runtime non-agent scheduler skeleton", () => {
             index,
             previousIndex: state.index,
           },
-          stop: eq(round, 3),
+          stop: fmap(round, value => value === 3),
         }; },
       });
       return { index: loop.output.index, previousIndex: loop.output.previousIndex };

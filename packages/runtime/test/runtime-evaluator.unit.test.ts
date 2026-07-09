@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { where } from "@acpus/expression";
+import { fmap } from "@acpus/expression";
 import { refExpr, type ExprIR, type TemplateIR } from "@acpus/expression/ir";
 import { evaluateExpr, renderTemplate } from "../src/evaluation/evaluator.js";
 
@@ -42,7 +42,7 @@ describe("runtime expression evaluator", () => {
       kind: "object",
       fields: {
         first: ref(["input", "tags", "0"]),
-        fallback: call("coalesce", [literal(null), ref(["input", "missing"]), literal("default")]),
+        fallback: call("fmap", [ref(["input", "tags"]), literal("tags => tags[2] ?? \"default\"")]),
       },
     };
 
@@ -54,16 +54,13 @@ describe("runtime expression evaluator", () => {
     });
   });
 
-  it("evaluates real where-lowered expression IR", () => {
+  it("evaluates real fmap-lowered expression IR", () => {
     const review = refExpr<{
       issues: string[];
       tag: string;
       summary: string;
     }>(["nodes", "review", "output"]);
-    const expr = where(review, {
-      issues: { length: 0 },
-      summary: { matches: "ready" },
-    });
+    const expr = fmap(review, value => value.issues.length === 0 && /ready/.test(value.summary));
 
     expect(evaluateExpr(expr.__ir, {
       input: {},

@@ -4,7 +4,7 @@ import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { defineWorkflow, z } from "@acpus/core";
-import { where } from "@acpus/expression";
+import { fmap } from "@acpus/expression";
 import { type WorkflowDefinition, compileWorkflowDefinition } from "@acpus/core/workflow";
 import type { WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
@@ -86,7 +86,7 @@ export function validWorkflow() {
     description: "Validate a boolean ready input.",
     inputSchema: z.object({ ready: z.boolean() }),
   }).build(({ input, step }) => {
-    step("require_ready").assert({ condition: where(input, { ready: true }) });
+    step("require_ready").assert({ condition: fmap(input.ready, ready => ready === true) });
     return { ready: input.ready };
   });
 }

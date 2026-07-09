@@ -4,7 +4,7 @@
 
 ### Patch Changes
 
-- 6ef7549: Add expression `transform(value, fn)` for small runtime JSON transforms, with workflow authoring checks, runtime guards, and Acpus authoring references.
+- 6ef7549: Replace the broad expression helper algebra with `fmap`, `lift2`, `lift3`, `lift`, `template`, and `md`, including callback authoring checks, runtime guards, and updated Acpus authoring references.
 - Updated dependencies [6ef7549]
   - @acpus/expression@0.1.0-alpha.4
   - @acpus/workflow-compiler@0.1.0-alpha.4

@@ -40,6 +40,40 @@ describe("workflow authoring rules", () => {
     );
   });
 
+  it("allows expression array index projection but rejects array methods", () => {
+    const diagnostics = checkAuthoring(`
+      declare const items: unknown[];
+      const first = items[0];
+      const mapped = items.map(item => item);
+      void [first, mapped];
+    `, {
+      isExpr: node => ts.isIdentifier(node) && node.text === "items",
+    });
+
+    const methodDiagnostics = diagnostics.filter(diagnostic => diagnostic.code === "AL005");
+    expect(methodDiagnostics).toHaveLength(1);
+    expect(methodDiagnostics[0]?.message).toContain("array methods");
+  });
+
+  it("reports shadowed runtime globals captured by inline tasks", () => {
+    const diagnostics = checkAuthoringWithProgram(`
+      export {};
+      const Math = { max: (..._values: number[]) => 1 };
+      declare const step: any;
+      step("inline").task({
+        run: {
+          exec: async () => ({ value: Math.max(1, 2) }),
+        },
+      });
+    `);
+
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: "TB007",
+      message: expect.stringContaining("'Math'"),
+      path: "tasks.inline.source",
+    }));
+  });
+
   it("reports reason-specific TB008 diagnostics for unjoinable task callsites", () => {
     const diagnostics = checkAuthoring(`
       declare const step: any;
@@ -82,58 +116,60 @@ describe("workflow authoring rules", () => {
     ]));
   });
 
-  it("accepts pure one-expression transform callbacks from the expression facade", () => {
+  it("accepts pure one-expression fmap and lift callbacks from the expression facade", () => {
     const diagnostics = checkAuthoringWithProgram(`
-      import { transform as fmap } from "acpus/expression";
+      import { fmap, lift2, lift3, lift as namedLift } from "acpus/expression";
       import * as expr from "acpus/expression";
 
       declare const issue: { title: string; labels: string[] };
+      declare const count: number;
+      declare const limit: number;
       const title = fmap(issue, value => value.title.trim());
-      const view = expr.transform(issue, value => ({
+      const overLimit = lift2(count, limit, (value, max) => value > max);
+      const routed = lift3(issue.title, count, limit, (title, value, max) => title.length + value > max);
+      const named = namedLift({ issue, count, limit }, ({ issue, count, limit }) => ({
+        title: issue.title.trim().replace(/\\s+/g, " "),
+        urgent: issue.labels.includes("urgent"),
+        labels: issue.labels.map(label => label.toLowerCase()),
+        count: Math.max(Object.keys(issue).length, count, limit),
+        serialized: JSON.stringify(issue),
+        now: Date.now(),
+        random: Math.random(),
+      }));
+      const view = expr.fmap(issue, value => ({
         title: value.title.trim(),
         urgent: value.labels.includes("urgent"),
         labels: value.labels.map(label => label.toLowerCase()),
         count: Math.max(Object.keys(value).length, 1),
       }));
-      void [title, view];
+      void [title, overLimit, routed, named, view];
     `);
 
     expect(codes(diagnostics)).not.toContain("AL007");
   });
 
   it.each([
-    ["missing callback", "transform(issue)", "requires an inline callback"],
-    ["block body", "transform(issue, value => { return value.title; })", "one expression"],
-    ["async arrow", "transform(issue, async value => value.title)", "cannot be async"],
-    ["function expression", "transform(issue, function (value) { return value.title; })", "inline one-expression arrow"],
-    ["generator expression", "transform(issue, function* (value) { yield value.title; })", "inline one-expression arrow"],
-    ["wrong arity", "transform(issue, () => \"title\")", "exactly one plain parameter"],
-    ["helper reference", "transform(issue, helper)", "inline one-expression arrow"],
-    ["helper call", "transform(issue, value => helper(value))", "can only call allowlisted methods"],
-    ["capture", "transform(issue, value => value.title + suffix)", "cannot reference 'suffix'"],
-    ["this", "transform(issue, value => this)", "cannot use this"],
-    ["arguments", "transform(issue, value => arguments)", "cannot reference 'arguments'"],
-    ["dynamic import", "transform(issue, value => import(\"dep\"))", "cannot import modules"],
-    ["assignment", "transform(issue, value => value.title = \"changed\")", "cannot assign"],
-    ["postfix update", "transform(issue, value => value.count++)", "cannot mutate"],
-    ["prefix update", "transform(issue, value => ++value.count)", "cannot mutate"],
-    ["new expression", "transform(issue, value => new Date())", "cannot use new"],
-    ["await expression", "transform(issue, value => await value.title)", "cannot use await"],
-    ["comma expression", "transform(issue, value => (value.title, value.id))", "cannot use comma"],
-    ["function expression in body", "transform(issue, value => (() => value.title))", "cannot define nested functions"],
-    ["class expression", "transform(issue, value => class View {})", "cannot define classes"],
-    ["non-allowlisted global", "transform(issue, value => Date.now())", "cannot call method 'now'"],
-    ["non-deterministic Math", "transform(issue, value => Math.random())", "Math.random"],
-    ["shadowed Math", "const Math = { max: (..._values: number[]) => 1 }; transform(issue, value => Math.max(value.count, 1))", "cannot shadow global Math"],
-    ["shadowed Object", "const Object = { keys: (_value: unknown) => [] }; transform(issue, value => Object.keys(value))", "cannot shadow global Object"],
-    ["nested block callback", "transform(issue, value => value.labels.map(label => { return label.trim(); }))", "nested callbacks"],
-    ["nested async callback", "transform(issue, value => value.labels.map(async label => label.trim()))", "nested callbacks"],
-    ["nested default parameter", "transform(issue, value => value.labels.map((label = suffix) => label))", "nested callbacks"],
-    ["nested rest parameter", "transform(issue, value => value.labels.map((...label) => label[0]))", "nested callbacks"],
-    ["nested capture", "transform(issue, value => value.labels.map(label => label + suffix))", "cannot reference 'suffix'"],
-  ])("rejects transform callback %s", (_name, statement, message) => {
+    ["missing callback", "fmap(issue)", "requires an inline callback"],
+    ["block body", "fmap(issue, value => { return value.title; })", "one expression"],
+    ["function expression", "fmap(issue, function (value) { return value.title; })", "inline one-expression arrow"],
+    ["wrong fmap arity", "fmap(issue, () => \"title\")", "simple identifiers or binding patterns"],
+    ["wrong lift2 arity", "lift2(issue, issue, value => value.title)", "simple identifiers or binding patterns"],
+    ["wrong lift3 arity", "lift3(issue, issue, issue, (a, b) => a.title + b.title)", "simple identifiers or binding patterns"],
+    ["wrong lift arity", "lift({ issue }, () => \"title\")", "simple identifiers or binding patterns"],
+    ["helper reference", "fmap(issue, helper)", "inline one-expression arrow"],
+    ["capture", "fmap(issue, value => value.title + suffix)", "external binding 'suffix'"],
+    ["this", "fmap(issue, value => this)", "cannot use this"],
+    ["shadowed Math", "const Math = { max: (..._values: number[]) => 1 }; fmap(issue, value => Math.max(value.count, 1))", "external binding 'Math'"],
+    ["shadowed JSON", "const JSON = { stringify: (_value: unknown) => \"{}\" }; fmap(issue, value => JSON.stringify(value))", "external binding 'JSON'"],
+    ["shadowed Date", "const Date = { now: () => 0 }; fmap(issue, value => Date.now() + value.count)", "external binding 'Date'"],
+    ["aliased import capture", "combine(issue, issue, (left, right) => left.title + right.title + suffix)", "external binding 'suffix'"],
+    ["nested block callback", "fmap(issue, value => value.labels.map(label => { return label.trim(); }))", "nested callbacks"],
+    ["nested default parameter", "fmap(issue, value => value.labels.map((label = suffix) => label))", "nested callback parameters"],
+    ["nested rest parameter", "fmap(issue, value => value.labels.map((...label) => label[0]))", "nested callback parameters"],
+    ["nested capture", "fmap(issue, value => value.labels.map(label => label + suffix))", "external binding 'suffix'"],
+  ])("rejects expression callback %s", (_name, statement, message) => {
     const diagnostics = checkAuthoringWithProgram(`
-      import { transform } from "acpus/expression";
+      import { fmap, lift2, lift3, lift, lift2 as combine } from "acpus/expression";
 
       declare const issue: any;
       declare const helper: (value: unknown) => unknown;
@@ -141,47 +177,48 @@ describe("workflow authoring rules", () => {
       ${statement};
     `);
 
-    const transformDiagnostics = diagnostics.filter(diagnostic => diagnostic.code === "AL007");
-    expect(transformDiagnostics).toHaveLength(1);
-    expect(transformDiagnostics[0]).toEqual(expect.objectContaining({
-      message: expect.stringContaining(message),
+    const callbackDiagnostics = diagnostics.filter(diagnostic => diagnostic.code === "AL007");
+    expect(callbackDiagnostics).toHaveLength(1);
+    expect(callbackDiagnostics[0]!.message).toContain(message);
+    expect(callbackDiagnostics[0]).toMatchObject({
       hint: expect.any(String),
-      source: expect.objectContaining({ file: "workflow.ts" }),
-    }));
+      source: { file: "workflow.ts" },
+    });
   });
 
-  it("does not report transform diagnostics for shadowed facade bindings", () => {
+  it("does not report expression callback diagnostics for shadowed facade bindings", () => {
     const diagnostics = checkAuthoringWithProgram(`
-      import { transform } from "acpus/expression";
+      import { fmap } from "acpus/expression";
       import * as expr from "acpus/expression";
 
       declare const issue: any;
       {
-        const transform = (_value: unknown, _fn: unknown) => null;
-        transform(issue, value => { return value.title; });
+        const fmap = (_value: unknown, _fn: unknown) => null;
+        fmap(issue, value => { return value.title; });
       }
-      function run(expr: { transform: (value: unknown, fn: unknown) => unknown }) {
-        expr.transform(issue, value => { return value.title; });
+      function run(expr: { fmap: (value: unknown, fn: unknown) => unknown }) {
+        expr.fmap(issue, value => { return value.title; });
       }
-      void [transform, expr, run];
+      void [fmap, expr, run];
     `);
 
     expect(codes(diagnostics)).not.toContain("AL007");
   });
 
   it.each([
-    ["Date", "transform(issue, (value: { when: Date }) => value.when)", "Date"],
-    ["function", "transform(issue, (value: { fn: () => boolean }) => value.fn)", "function"],
-    ["Promise", "transform(issue, (value: { promise: Promise<number> }) => value.promise)", "Promise"],
-    ["class instance", "transform(issue, (value: { view: View }) => value.view)", "class instance"],
-    ["Map", "transform(issue, (value: { values: Map<string, number> }) => value.values)", "Map"],
-    ["Set", "transform(issue, (value: { values: Set<string> }) => value.values)", "Set"],
-    ["symbol", "transform(issue, (value: { token: symbol }) => value.token)", "symbol"],
-    ["bigint", "transform(issue, (value: { count: bigint }) => value.count)", "bigint"],
-    ["broad object", "transform(issue, (value: { raw: object }) => value.raw)", "object"],
-  ])("reports non-admissible transform callback output %s", (_name, statement, message) => {
+    ["Date", "fmap(issue, (value: { when: Date }) => value.when)", "Date"],
+    ["function", "fmap(issue, (value: { fn: () => boolean }) => value.fn)", "function"],
+    ["Promise", "fmap(issue, (value: { promise: Promise<number> }) => value.promise)", "Promise"],
+    ["class instance", "fmap(issue, (value: { view: View }) => value.view)", "class instance"],
+    ["Map", "fmap(issue, (value: { values: Map<string, number> }) => value.values)", "Map"],
+    ["Set", "fmap(issue, (value: { values: Set<string> }) => value.values)", "Set"],
+    ["symbol", "fmap(issue, (value: { token: symbol }) => value.token)", "symbol"],
+    ["bigint", "fmap(issue, (value: { count: bigint }) => value.count)", "bigint"],
+    ["broad object", "fmap(issue, (value: { raw: object }) => value.raw)", "object"],
+    ["async", "fmap(issue, async value => value)", "Promise"],
+  ])("reports non-admissible expression callback output %s", (_name, statement, message) => {
     const diagnostics = checkAuthoringWithProgram(`
-      import { transform } from "acpus/expression";
+      import { fmap } from "acpus/expression";
 
       class View { title = "view"; }
       declare const issue: unknown;
@@ -195,13 +232,13 @@ describe("workflow authoring rules", () => {
     }));
   });
 
-  it("does not reject any or unknown transform output types during authoring check", () => {
+  it("does not reject any or unknown expression callback output types during authoring check", () => {
     const diagnostics = checkAuthoringWithProgram(`
-      import { transform } from "acpus/expression";
+      import { fmap } from "acpus/expression";
 
       declare const issue: { loose: any; opaque: unknown };
-      transform(issue, value => value.loose);
-      transform(issue, value => value.opaque);
+      fmap(issue, value => value.loose);
+      fmap(issue, value => value.opaque);
     `);
 
     expect(diagnostics.filter(diagnostic => diagnostic.code === "OA002")).toEqual([]);

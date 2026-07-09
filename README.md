@@ -18,11 +18,11 @@ serializable IR which a runtime consumes.
 
 - TypeScript workflow authoring via `defineWorkflow(...).build(...)`.
 - A **Zod 4** schema bridge with Acpus boundary extensions (`z.path`, `z.artifact`, `z.secretRef`), canonicalized to a durable `SchemaIR`.
-- Integration with `@acpus/expression`, the Acpus-owned expression language package for `ExprIR`, `TemplateIR`, typed `where(...)` filters, lambdas, and named operators.
-- Agent / Task / Signal executable nodes with explicit `run` boundaries and schema contract fields (`inputSchema`, `outputSchema`, `itemOutputSchema`), plus composite nodes (`if`, `switch`, `parallel`, `fanout`, `loop`) and boolean `assert` nodes.
+- Integration with `@acpus/expression`, the Acpus-owned expression language package for `ExprIR`, `TemplateIR`, `fmap`, `lift2`, `lift3`, `lift`, `template`, and `md`.
+- Agent / Task / Signal executable nodes with explicit `run` boundaries and schema contract fields (`inputSchema`, `outputSchema`), plus composite nodes (`if`, `switch`, `parallel`, `fanout`, `loop`) and boolean `assert` nodes.
 - Trusted local **Task** nodes (replacing program nodes) with an Acpus-owned `$` command wrapper backed by `zx/core`. Security isolation is delegated to the runner/container/profile layer, not per-node syntax.
 - Compilation to a frozen `WorkflowIR` (`irVersion: 2`) with structural validation
-  and bundled Task assets.
+  and live reusable Task references.
 
 Representative workflow compiler fixtures live in `packages/workflow-compiler/test/fixtures/workflows/`.
 

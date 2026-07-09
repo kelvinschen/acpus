@@ -35,7 +35,7 @@ A single conversation may move through several paths. Re-classify before each ma
 
 ```ts
 import { defineWorkflow, z } from "acpus/core";
-import { template, and, lte } from "acpus/expression";
+import { fmap, template } from "acpus/expression";
 
 export default defineWorkflow({
   name: "diff-review",
@@ -73,6 +73,11 @@ export default defineWorkflow({
     },
     retry: { max: 2 },
     timeout: "30m",
+  });
+
+  step("require_ready").assert({
+    condition: fmap(review.output, output => output.ready && output.riskCount <= 3),
+    message: template`Review failed: ${review.output.summary}`,
   });
 
   return { runId: meta.runId, ready: review.output.ready, summary: review.output.summary };

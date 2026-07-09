@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { get, map, pick, transform } from "@acpus/expression";
+import { fmap, lift, lift2, lift3 } from "@acpus/expression";
 import { refExpr, tryValueToExprIR, valueToExprIR } from "@acpus/expression/ir";
 import { err } from "neverthrow";
 
 describe("expression lowering", () => {
-  it("lowers advanced refs and literals through the package seam", () => {
+  it("lowers refs and literals through the package seam", () => {
     expect(refExpr<boolean>(["input", "ready"]).__ir).toEqual({ kind: "ref", path: ["input", "ready"] });
     expect(valueToExprIR({ ready: true })).toEqual({
       kind: "object",
@@ -57,20 +57,11 @@ describe("expression lowering", () => {
     expect(user.constructor.__ir).toEqual({ kind: "ref", path: ["input", "user", "constructor"] });
   });
 
-  it("lowers dynamic and computed access to get", () => {
-    const users = refExpr<readonly { name: string }[]>(["input", "users"]);
-    const firstUser = get(users, 0);
-    expect(firstUser.__ir).toEqual({
-      kind: "call",
-      fn: "get",
-      args: [
-        { kind: "ref", path: ["input", "users"] },
-        { kind: "literal", value: 0 },
-      ],
-    });
+  it("lowers computed access on non-ref expressions to internal access", () => {
+    const firstUser = fmap(refExpr<readonly { name: string }[]>(["input", "users"]), users => users[0]!);
     expect(firstUser.name.__ir).toEqual({
       kind: "call",
-      fn: "get",
+      fn: "access",
       args: [
         firstUser.__ir,
         { kind: "literal", value: "name" },
@@ -78,76 +69,56 @@ describe("expression lowering", () => {
     });
   });
 
-  it("lowers static pick projections", () => {
-    const user = refExpr<{ name: string; score: number; done: boolean }>(["input", "user"]);
-    expect(valueToExprIR(pick(user, ["name", "done"]))).toEqual({
-      kind: "object",
-      fields: {
-        name: { kind: "ref", path: ["input", "user", "name"] },
-        done: { kind: "ref", path: ["input", "user", "done"] },
-      },
-    });
-  });
+  it("lowers fmap and lift callbacks as source text", () => {
+    const count = refExpr<number>(["input", "count"]);
+    const ready = refExpr<boolean>(["input", "ready"]);
+    const kind = refExpr<string>(["input", "kind"]);
+    const maxItems = refExpr<number>(["input", "maxItems"]);
+    const fmapFn = (value: number) => value + 1;
+    const lift2Fn = (readyValue: boolean, kindValue: string) => readyValue && kindValue === "release";
+    const lift3Fn = (readyValue: boolean, kindValue: string, max: number) => readyValue && kindValue === "release" && max > 0;
+    const liftFn = ({ readyValue, kindValue }: { readyValue: boolean; kindValue: string }) => readyValue && kindValue === "release";
 
-  it("rejects reserved pick keys at runtime", () => {
-    const user = refExpr<{ __ir: string }>(["input", "user"]) as any;
-    expect(() => (pick as any)(user, ["__ir"])).toThrow("pick(source, keys) cannot project reserved accessor key '__ir'.");
-  });
-
-  it("allocates deterministic lambda binding ids", () => {
-    const items = refExpr<readonly { done: boolean }[]>(["input", "items"]);
-    expect(map(items, item => item.done).__ir).toEqual({
+    expect(fmap(count, fmapFn).__ir).toEqual({
       kind: "call",
-      fn: "map",
+      fn: "fmap",
+      args: [count.__ir, { kind: "literal", value: fmapFn.toString() }],
+    });
+    expect(lift2(ready, kind, lift2Fn).__ir).toEqual({
+      kind: "call",
+      fn: "lift2",
+      args: [ready.__ir, kind.__ir, { kind: "literal", value: lift2Fn.toString() }],
+    });
+    expect(lift3(ready, kind, maxItems, lift3Fn).__ir).toEqual({
+      kind: "call",
+      fn: "lift3",
+      args: [ready.__ir, kind.__ir, maxItems.__ir, { kind: "literal", value: lift3Fn.toString() }],
+    });
+    expect(lift({ readyValue: ready, kindValue: kind }, liftFn).__ir).toEqual({
+      kind: "call",
+      fn: "lift",
       args: [
-        { kind: "ref", path: ["input", "items"] },
-        {
-          kind: "lambda",
-          params: [{ id: "v0" }, { id: "v1" }],
-          body: { kind: "var", id: "v0", path: ["done"] },
-        },
+        { kind: "object", fields: { readyValue: ready.__ir, kindValue: kind.__ir } },
+        { kind: "literal", value: liftFn.toString() },
       ],
     });
   });
 
-  it("allocates unique nested lambda binding ids", () => {
-    const groups = refExpr<readonly { items: readonly { done: boolean }[] }[]>(["input", "groups"]);
-    expect(map(groups, group => map(group.items, item => item.done)).__ir).toEqual({
+  it("treats IR-shaped user data as workflow data in public helpers", () => {
+    const payload = { kind: "literal", value: "payload" };
+    const ir = fmap(payload, value => value).__ir;
+    expect(ir).toMatchObject({
       kind: "call",
-      fn: "map",
+      fn: "fmap",
       args: [
-        { kind: "ref", path: ["input", "groups"] },
         {
-          kind: "lambda",
-          params: [{ id: "v0" }, { id: "v1" }],
-          body: {
-            kind: "call",
-            fn: "map",
-            args: [
-              { kind: "var", id: "v0", path: ["items"] },
-              {
-                kind: "lambda",
-                params: [{ id: "v2" }, { id: "v3" }],
-                body: { kind: "var", id: "v2", path: ["done"] },
-              },
-            ],
+          kind: "object",
+          fields: {
+            kind: { kind: "literal", value: "literal" },
+            value: { kind: "literal", value: "payload" },
           },
         },
-      ],
-    });
-  });
-
-  it("lowers transform callbacks as source text", () => {
-    const count = refExpr<number>(["input", "count"]);
-    const fn = (value: number) => value + 1;
-    const expr = transform(count, fn);
-
-    expect(expr.__ir).toEqual({
-      kind: "call",
-      fn: "transform",
-      args: [
-        { kind: "ref", path: ["input", "count"] },
-        { kind: "literal", value: fn.toString() },
+        { kind: "literal", value: expect.any(String) },
       ],
     });
   });

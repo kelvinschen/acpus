@@ -78,7 +78,7 @@
 - Node ids MUST remain unique across the entire workflow IR, including nested composite scopes.
 - Parent scopes MUST access a composite node only through that node's projected `output`.
 - Composite callbacks MUST declare their scope output by returning a plain object. TypeScript-owned composite outputs MUST be inferred from callback returns and MUST NOT declare author-facing `outputSchema`.
-- Array output accessors MUST support numeric index access through `@acpus/expression` accessors and helpers.
+- Array output accessors MAY be combined through `@acpus/expression` callback helpers such as `fmap` and `lift`; no array-specific expression helper is required.
 - If nodes MUST use `step("id").if({ condition, then, else })`.
 - Switch nodes MUST use `default` for fallback authoring, and default MUST be declared.
 - Parallel nodes MUST express static named branch concurrency with named branch declaration methods and support `strategy?: "all" | "race"`, defaulting to `"all"`.
@@ -87,7 +87,7 @@
 - Loop nodes MUST declare `state`; loop bodies MUST receive `index`, `round`, and non-optional `state`.
 - Loop bodies MUST return a transition object `{ state, stop }`; transition `state` MUST converge with the declared initial `state`.
 - Loop `stop` MUST accept a boolean workflow value and lower under `LoopNodeIR.do.outputs.stop`; `loop.output` MUST expose the final transition `state`.
-- Required output fields MUST NOT accept nullable or optional refs unless the author explicitly removes the nullish case, for example with `coalesce(...)`.
+- Required output fields MUST NOT accept nullable or optional refs unless the author explicitly removes the nullish case, for example with `fmap(value, value => value ?? fallback)`.
 
 ### Task Authoring And Runtime Context Types
 

@@ -1,5 +1,5 @@
 import { defineWorkflow, z } from "acpus/core";
-import { gte, md, or, template } from "acpus/expression";
+import { lift2, md, template } from "acpus/expression";
 
 const PlanOut = z.object({
   ready: z.boolean(),
@@ -65,7 +65,7 @@ export default defineWorkflow({
           summary: review.output.summary,
           draft: review.output.nextDraft,
         },
-        stop: or(review.output.ready, gte(round, 2)),
+        stop: lift2(review.output.ready, round, (ready, currentRound) => ready || currentRound >= 2),
       };
     },
   });

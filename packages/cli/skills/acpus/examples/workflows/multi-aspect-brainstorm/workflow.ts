@@ -1,5 +1,5 @@
 import { defineWorkflow, z } from "acpus/core";
-import { eq, gte, ifElse, md } from "acpus/expression";
+import { lift2, md } from "acpus/expression";
 
 export default defineWorkflow({
   name: "multi-aspect-brainstorm",
@@ -51,7 +51,6 @@ export default defineWorkflow({
       synthesis: "",
     },
     do({ index, round, state }) {
-      const firstRound = eq(index, 0);
       const aspects = step("aspect_work").parallel({
         maxConcurrency: 4,
         branches: {
@@ -62,35 +61,30 @@ export default defineWorkflow({
                 cwd: meta.workspaceDir,
                 sessionKey: "alpha-brainstorm",
                 prompt: md`
-                  ${ifElse(firstRound, md`
-                    You are Alpha in a multi-aspect brainstorm. Your lens is practical solution design and execution paths.
+                  You are Alpha in a multi-aspect brainstorm. Your lens is practical solution design and execution paths.
 
-                    Generate feasible directions, implementation shapes, sequencing ideas, and refinements.
-                    Do not approve, reject, score, audit, or produce review findings.
-                    Work independently, but use later round updates to deepen and sharpen your ideas.
+                  Generate feasible directions, implementation shapes, sequencing ideas, and refinements.
+                  Do not approve, reject, score, audit, or produce review findings.
+                  Work independently, but use later round updates to deepen and sharpen your ideas.
 
-                    Subject:
-                    ${input.subject}
+                  Subject:
+                  ${input.subject}
 
-                    Context:
-                    ${input.context}
+                  Context:
+                  ${input.context}
 
-                    Brainstorm goals:
-                    ${input.rubric}
+                  Brainstorm goals:
+                  ${input.rubric}
 
-                    Comma-separated useful constraints and selection criteria:
-                    ${input.criteria}
-                  `, "")}
+                  Comma-separated useful constraints and selection criteria:
+                  ${input.criteria}
 
                   Round: ${round}
 
-                  ${ifElse(firstRound, "Produce your first independent pass.", md`
-                    Continue from the existing Alpha session. Do not restate the setup.
-                    Use the latest synthesis to add practical options, tighten execution paths, and refine tradeoffs.
+                  For round 1, produce your first independent pass. For later rounds, continue from the existing Alpha session and use the latest synthesis to deepen execution paths and tradeoffs.
 
-                    Previous synthesis:
-                    ${state.synthesis}
-                  `)}
+                  Previous synthesis:
+                  ${state.synthesis}
 
                   Return concise natural-language notes with options, refinements, tradeoffs, and next experiments.
                 `,
@@ -107,35 +101,30 @@ export default defineWorkflow({
                 cwd: meta.workspaceDir,
                 sessionKey: "beta-brainstorm",
                 prompt: md`
-                  ${ifElse(firstRound, md`
-                    You are Beta in a multi-aspect brainstorm. Your lens is option expansion, unusual alternatives, and edge-aware constraints.
+                  You are Beta in a multi-aspect brainstorm. Your lens is option expansion, unusual alternatives, and edge-aware constraints.
 
-                    Generate non-obvious directions, neglected constraints, surprising combinations, and ways to keep risk visible while expanding choices.
-                    Do not approve, reject, score, audit, or produce review findings.
-                    Work independently, but use later round updates to broaden and sharpen the option space.
+                  Generate non-obvious directions, neglected constraints, surprising combinations, and ways to keep risk visible while expanding choices.
+                  Do not approve, reject, score, audit, or produce review findings.
+                  Work independently, but use later round updates to broaden and sharpen the option space.
 
-                    Subject:
-                    ${input.subject}
+                  Subject:
+                  ${input.subject}
 
-                    Context:
-                    ${input.context}
+                  Context:
+                  ${input.context}
 
-                    Brainstorm goals:
-                    ${input.rubric}
+                  Brainstorm goals:
+                  ${input.rubric}
 
-                    Comma-separated useful constraints and selection criteria:
-                    ${input.criteria}
-                  `, "")}
+                  Comma-separated useful constraints and selection criteria:
+                  ${input.criteria}
 
                   Round: ${round}
 
-                  ${ifElse(firstRound, "Produce your first independent pass.", md`
-                    Continue from the existing Beta session. Do not restate the setup.
-                    Use the latest synthesis to add alternatives, expose overlooked constraints, and refine tradeoffs.
+                  For round 1, produce your first independent pass. For later rounds, continue from the existing Beta session and use the latest synthesis to broaden alternatives and expose overlooked constraints.
 
-                    Previous synthesis:
-                    ${state.synthesis}
-                  `)}
+                  Previous synthesis:
+                  ${state.synthesis}
 
                   Return concise natural-language notes with options, refinements, tradeoffs, and next experiments.
                 `,
@@ -152,35 +141,30 @@ export default defineWorkflow({
                 cwd: meta.workspaceDir,
                 sessionKey: "gamma-brainstorm",
                 prompt: md`
-                  ${ifElse(firstRound, md`
-                    You are Gamma in a multi-aspect brainstorm. Your lens is theme clustering, prioritization, and promising combinations.
+                  You are Gamma in a multi-aspect brainstorm. Your lens is theme clustering, prioritization, and promising combinations.
 
-                    Organize ideas into coherent themes, identify high-leverage priorities, and combine compatible directions into stronger concepts.
-                    Do not approve, reject, score, audit, or produce review findings.
-                    Work independently, but use later round updates to improve structure and synthesis opportunities.
+                  Organize ideas into coherent themes, identify high-leverage priorities, and combine compatible directions into stronger concepts.
+                  Do not approve, reject, score, audit, or produce review findings.
+                  Work independently, but use later round updates to improve structure and synthesis opportunities.
 
-                    Subject:
-                    ${input.subject}
+                  Subject:
+                  ${input.subject}
 
-                    Context:
-                    ${input.context}
+                  Context:
+                  ${input.context}
 
-                    Brainstorm goals:
-                    ${input.rubric}
+                  Brainstorm goals:
+                  ${input.rubric}
 
-                    Comma-separated useful constraints and selection criteria:
-                    ${input.criteria}
-                  `, "")}
+                  Comma-separated useful constraints and selection criteria:
+                  ${input.criteria}
 
                   Round: ${round}
 
-                  ${ifElse(firstRound, "Produce your first independent pass.", md`
-                    Continue from the existing Gamma session. Do not restate the setup.
-                    Use the latest synthesis to cluster ideas, refine priorities, and combine promising directions.
+                  For round 1, produce your first independent pass. For later rounds, continue from the existing Gamma session and use the latest synthesis to cluster ideas and refine priorities.
 
-                    Previous synthesis:
-                    ${state.synthesis}
-                  `)}
+                  Previous synthesis:
+                  ${state.synthesis}
 
                   Return concise natural-language notes with options, refinements, tradeoffs, and next experiments.
                 `,
@@ -197,35 +181,30 @@ export default defineWorkflow({
                 cwd: meta.workspaceDir,
                 sessionKey: "delta-brainstorm",
                 prompt: md`
-                  ${ifElse(firstRound, md`
-                    You are Delta in a multi-aspect brainstorm. Your lens is assumptions, missing information, experiments, and alternate framings.
+                  You are Delta in a multi-aspect brainstorm. Your lens is assumptions, missing information, experiments, and alternate framings.
 
-                    Surface assumptions, open questions, small experiments, useful evidence to gather, and reframes that could unlock better ideas.
-                    Do not approve, reject, score, audit, or produce review findings.
-                    Work independently, but use later round updates to enrich the question set and exploration paths.
+                  Surface assumptions, open questions, small experiments, useful evidence to gather, and reframes that could unlock better ideas.
+                  Do not approve, reject, score, audit, or produce review findings.
+                  Work independently, but use later round updates to enrich the question set and exploration paths.
 
-                    Subject:
-                    ${input.subject}
+                  Subject:
+                  ${input.subject}
 
-                    Context:
-                    ${input.context}
+                  Context:
+                  ${input.context}
 
-                    Brainstorm goals:
-                    ${input.rubric}
+                  Brainstorm goals:
+                  ${input.rubric}
 
-                    Comma-separated useful constraints and selection criteria:
-                    ${input.criteria}
-                  `, "")}
+                  Comma-separated useful constraints and selection criteria:
+                  ${input.criteria}
 
                   Round: ${round}
 
-                  ${ifElse(firstRound, "Produce your first independent pass.", md`
-                    Continue from the existing Delta session. Do not restate the setup.
-                    Use the latest synthesis to add assumptions, questions, experiments, and alternate framings.
+                  For round 1, produce your first independent pass. For later rounds, continue from the existing Delta session and use the latest synthesis to add assumptions, questions, experiments, and alternate framings.
 
-                    Previous synthesis:
-                    ${state.synthesis}
-                  `)}
+                  Previous synthesis:
+                  ${state.synthesis}
 
                   Return concise natural-language notes with options, refinements, tradeoffs, and next experiments.
                 `,
@@ -244,27 +223,25 @@ export default defineWorkflow({
           cwd: meta.workspaceDir,
           sessionKey: "multi-aspect-synthesizer",
           prompt: md`
-            ${ifElse(firstRound, md`
-              You are the synthesizer for a multi-aspect brainstorm.
-              Combine independent aspect outputs into a useful idea map.
-              Do not approve, reject, score, audit, or produce review findings.
+            You are the synthesizer for a multi-aspect brainstorm.
+            Combine independent aspect outputs into a useful idea map.
+            Do not approve, reject, score, audit, or produce review findings.
 
-              Subject:
-              ${input.subject}
+            Subject:
+            ${input.subject}
 
-              Context:
-              ${input.context}
+            Context:
+            ${input.context}
 
-              Brainstorm goals:
-              ${input.rubric}
+            Brainstorm goals:
+            ${input.rubric}
 
-              Comma-separated useful constraints and selection criteria:
-              ${input.criteria}
-            `, "")}
+            Comma-separated useful constraints and selection criteria:
+            ${input.criteria}
 
             Round: ${round}
 
-            ${ifElse(firstRound, "Produce the clearest idea map for this first round.", "Continue from the existing synthesizer session. Produce the clearest idea map for this round.")}
+            For round 1, produce the clearest first idea map. For later rounds, continue from the existing synthesizer session and produce the clearest idea map for this round.
             Do not average opinions mechanically.
 
             Current aspect outputs:
@@ -288,7 +265,7 @@ export default defineWorkflow({
           delta: aspects.output.delta.aspect,
           synthesis: synthesis.output,
         },
-        stop: gte(round, input.rounds),
+        stop: lift2(round, input.rounds, (currentRound, totalRounds) => currentRound >= totalRounds),
       };
     },
   });

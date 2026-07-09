@@ -551,11 +551,7 @@ function validateExprRefs(expr: ExprIR, diagnostics: DiagnosticIR[], path: strin
     case "template":
       validateTemplateRefs(expr.template, diagnostics, `${path}.template`, refs);
       return;
-    case "lambda":
-      validateExprRefs(expr.body, diagnostics, `${path}.body`, refs);
-      return;
     case "literal":
-    case "var":
       return;
   }
 }

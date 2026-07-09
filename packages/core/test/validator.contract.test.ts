@@ -51,24 +51,20 @@ describe("WorkflowIR diagnostics contract", () => {
     expect(validateWorkflowIR(ir)).toEqual([]);
   });
 
-  it("accepts expression lambda IR through the workflow validator", () => {
+  it("accepts expression callback-source calls through the workflow validator", () => {
     const ir: WorkflowIR = {
       irVersion: 2,
-      name: "lambda_expression",
+      name: "callback_expression",
       agents: {},
       root: {
         nodes: [],
         outputs: {
-          scores: {
+          score: {
             kind: "call",
-            fn: "map",
+            fn: "fmap",
             args: [
-              { kind: "ref", path: ["input", "items"] },
-              {
-                kind: "lambda",
-                params: [{ id: "v0" }, { id: "v1" }],
-                body: { kind: "var", id: "v0", path: ["score"] },
-              },
+              { kind: "ref", path: ["input", "item"] },
+              { kind: "literal", value: "item => item.score" },
             ],
           },
         },

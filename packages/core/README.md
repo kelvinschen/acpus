@@ -4,7 +4,7 @@ This package is a Core implementation of the Acpus TypeScript Workflow v2 direct
 
 - TypeScript workflow files generate a typed graph and compile to canonical IR.
 - Schema authoring uses **Zod 4** plus the Acpus boundary extension `z.path()`.
-- Expr authoring lives in `@acpus/expression` and supports `where(...)` plus named operators like `and`, `lte`, `every`, and `max`.
+- Expr authoring lives in `@acpus/expression` and uses `fmap`, `lift2`, `lift3`, `lift`, `template`, and `md`.
 - Program nodes are replaced by trusted local **Task** nodes.
 - Task command ergonomics use an Acpus-owned `$` wrapper backed by `zx/core`.
 - Task permissions are intentionally removed from Core. Security isolation belongs to the runner/container/profile layer, not to per-node authoring syntax.
@@ -39,7 +39,7 @@ import {
   defineWorkflow,
   z,
 } from "acpus/core";
-import { template, where } from "acpus/expression";
+import { fmap, template } from "acpus/expression";
 
 const ReviewOut = z.object({
   ready: z.boolean(),
@@ -83,11 +83,9 @@ export default defineWorkflow({
   });
 
   step("require_ready").assert({
-    condition: where(review.output, {
-      ready: true,
-      riskCount: { lte: 3 },
-      issues: { length: 0 },
-    }),
+    condition: fmap(review.output, output =>
+      output.ready && output.riskCount <= 3 && output.issues.length === 0,
+    ),
     message: template`Review failed:\n${review.output}`,
   });
 

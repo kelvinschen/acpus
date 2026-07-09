@@ -1,4 +1,5 @@
-import { EXPRESSION_OPERATORS } from "./internal/operators.js";
+import { expressionOperatorSpec } from "./internal/operators.js";
+import { callbackSourceIssue } from "./internal/callback-source.js";
 import type { OperatorSpec } from "./internal/operators.js";
 
 export type ExpressionDiagnostic = {
@@ -10,7 +11,7 @@ export type ExpressionDiagnostic = {
 
 export function validateExprIR(expr: unknown): ExpressionDiagnostic[] {
   const diagnostics: ExpressionDiagnostic[] = [];
-  validateExpr(expr, diagnostics, "$", new Set(), false, new WeakSet());
+  validateExpr(expr, diagnostics, "$", new WeakSet());
   return diagnostics;
 }
 
@@ -18,8 +19,6 @@ function validateExpr(
   expr: unknown,
   diagnostics: ExpressionDiagnostic[],
   path: string,
-  scope: Set<string>,
-  lambdaAllowed: boolean,
   seen: WeakSet<object>,
 ): void {
   if (!isRecord(expr) || typeof expr.kind !== "string") {
@@ -44,36 +43,25 @@ function validateExpr(
       validatePath(expr.path, diagnostics, `${path}.path`, "Expression ref path must be a non-empty string array.");
       validateOptionalType(expr.type, diagnostics, `${path}.type`);
       break;
-    case "var":
-      validateKnownFields(expr, ["kind", "id", "path", "type"], diagnostics, path);
-      if (typeof expr.id !== "string" || !scope.has(expr.id)) diagnostics.push(error("EX005", `Unbound expression variable '${String(expr.id)}'.`, path));
-      if (!hasOwn(expr, "path")) diagnostics.push(error("EX006", "Expression var path must be a string array.", `${path}.path`));
-      else validatePath(expr.path, diagnostics, `${path}.path`, "Expression var path must be a string array.", true);
-      validateOptionalType(expr.type, diagnostics, `${path}.type`);
-      break;
     case "array":
       validateKnownFields(expr, ["kind", "items", "type"], diagnostics, path);
-      validateExprArray(expr.items, diagnostics, `${path}.items`, scope, false, seen);
+      validateExprArray(expr.items, diagnostics, `${path}.items`, seen);
       validateOptionalType(expr.type, diagnostics, `${path}.type`);
       break;
     case "object":
       validateKnownFields(expr, ["kind", "fields", "type"], diagnostics, path);
-      validateExprFields(expr.fields, diagnostics, `${path}.fields`, scope, seen);
+      validateExprFields(expr.fields, diagnostics, `${path}.fields`, seen);
       validateOptionalType(expr.type, diagnostics, `${path}.type`);
       break;
     case "template":
       validateKnownFields(expr, ["kind", "template", "type"], diagnostics, path);
-      validateTemplate(expr.template, diagnostics, `${path}.template`, scope, seen);
+      validateTemplate(expr.template, diagnostics, `${path}.template`, seen);
       validateOptionalType(expr.type, diagnostics, `${path}.type`);
       break;
     case "call":
       validateKnownFields(expr, ["kind", "fn", "args", "type"], diagnostics, path);
-      validateCall(expr, diagnostics, path, scope, seen);
+      validateCall(expr, diagnostics, path, seen);
       validateOptionalType(expr.type, diagnostics, `${path}.type`);
-      break;
-    case "lambda":
-      validateKnownFields(expr, ["kind", "params", "body"], diagnostics, path);
-      validateLambda(expr, diagnostics, path, scope, lambdaAllowed, seen);
       break;
     default:
       diagnostics.push(error("EX002", `Unknown expression kind '${expr.kind}'.`, `${path}.kind`));
@@ -82,94 +70,57 @@ function validateExpr(
   seen.delete(expr);
 }
 
-function validateCall(expr: Record<string, unknown>, diagnostics: ExpressionDiagnostic[], path: string, scope: Set<string>, seen: WeakSet<object>): void {
+function validateCall(expr: Record<string, unknown>, diagnostics: ExpressionDiagnostic[], path: string, seen: WeakSet<object>): void {
   if (typeof expr.fn !== "string") {
     diagnostics.push(error("EX002", "Expression call fn must be a string.", `${path}.fn`));
     return;
   }
-  const spec = EXPRESSION_OPERATORS[expr.fn];
+  const fn = expr.fn;
+  const spec = expressionOperatorSpec(fn);
   if (!spec) {
-    diagnostics.push(error("EX001", `Unknown expression operator '${expr.fn}'.`, `${path}.fn`));
+    diagnostics.push(error("EX001", `Unknown expression operator '${fn}'.`, `${path}.fn`));
     return;
   }
   if (!Array.isArray(expr.args)) {
     diagnostics.push(error("EX002", "Expression call args must be an array.", `${path}.args`));
     return;
   }
-  validateArity(expr.fn, expr.args.length, spec.arity, diagnostics, `${path}.args`);
+  validateArity(fn, expr.args.length, spec.arity, diagnostics, `${path}.args`);
   forEachDense(expr.args, diagnostics, `${path}.args`, (arg, index) => {
-    if (spec.lambdaArgs.has(index) && (!isRecord(arg) || arg.kind !== "lambda")) {
-      diagnostics.push(error("EX004", `${expr.fn}(...) expected lambda callback.`, `${path}.args[${index}]`));
+    if (spec.callback?.callbackSourceArg === index && (!isRecord(arg) || arg.kind !== "literal" || typeof arg.value !== "string")) {
+      diagnostics.push(error("EX002", `${fn}(...) expected callback source string.`, `${path}.args[${index}]`));
       return;
     }
-    if (expr.fn === "transform" && index === 1 && (!isRecord(arg) || arg.kind !== "literal" || typeof arg.value !== "string")) {
-      diagnostics.push(error("EX002", "transform(...) expected callback source string.", `${path}.args[${index}]`));
-      return;
+    if (spec.callback?.callbackSourceArg === index && isRecord(arg) && arg.kind === "literal" && typeof arg.value === "string") {
+      const issue = callbackSourceIssue(arg.value, spec.callback.callbackParamCount);
+      if (issue) diagnostics.push(error("EX002", `${fn}(...) ${issue}`, `${path}.args[${index}]`));
     }
-    validateExpr(arg, diagnostics, `${path}.args[${index}]`, scope, spec.lambdaArgs.has(index), seen);
+    validateExpr(arg, diagnostics, `${path}.args[${index}]`, seen);
   });
-}
-
-function validateLambda(
-  expr: Record<string, unknown>,
-  diagnostics: ExpressionDiagnostic[],
-  path: string,
-  scope: Set<string>,
-  lambdaAllowed: boolean,
-  seen: WeakSet<object>,
-): void {
-  if (!lambdaAllowed) {
-    diagnostics.push(error("EX004", "Lambda expression is not allowed here.", path));
-    return;
-  }
-  if (!Array.isArray(expr.params)) {
-    diagnostics.push(error("EX002", "Lambda params must be an array.", `${path}.params`));
-    return;
-  }
-  const next = new Set(scope);
-  const local = new Set<string>();
-  forEachDense(expr.params, diagnostics, `${path}.params`, (param, index) => {
-    const paramPath = `${path}.params[${index}]`;
-    if (!isRecord(param)) {
-      diagnostics.push(error("EX002", "Lambda param must contain a string id.", paramPath));
-      return;
-    }
-    validateKnownFields(param, ["id", "type"], diagnostics, paramPath);
-    if (typeof param.id !== "string") diagnostics.push(error("EX002", "Lambda param must contain a string id.", paramPath));
-    else if (local.has(param.id)) diagnostics.push(error("EX007", `Duplicate lambda param id '${param.id}'.`, `${paramPath}.id`));
-    else {
-      local.add(param.id);
-      next.add(param.id);
-    }
-    validateOptionalType(param.type, diagnostics, `${paramPath}.type`);
-  });
-  validateExpr(expr.body, diagnostics, `${path}.body`, next, false, seen);
 }
 
 function validateExprArray(
   value: unknown,
   diagnostics: ExpressionDiagnostic[],
   path: string,
-  scope: Set<string>,
-  lambdaAllowed: boolean,
   seen: WeakSet<object>,
 ): void {
   if (!Array.isArray(value)) {
     diagnostics.push(error("EX002", "Expression array items must be an array.", path));
     return;
   }
-  forEachDense(value, diagnostics, path, (item, index) => validateExpr(item, diagnostics, `${path}[${index}]`, scope, lambdaAllowed, seen));
+  forEachDense(value, diagnostics, path, (item, index) => validateExpr(item, diagnostics, `${path}[${index}]`, seen));
 }
 
-function validateExprFields(value: unknown, diagnostics: ExpressionDiagnostic[], path: string, scope: Set<string>, seen: WeakSet<object>): void {
+function validateExprFields(value: unknown, diagnostics: ExpressionDiagnostic[], path: string, seen: WeakSet<object>): void {
   if (!isRecord(value)) {
     diagnostics.push(error("EX002", "Expression object fields must be an object.", path));
     return;
   }
-  for (const [key, item] of Object.entries(value)) validateExpr(item, diagnostics, `${path}.${key}`, scope, false, seen);
+  for (const [key, item] of Object.entries(value)) validateExpr(item, diagnostics, `${path}.${key}`, seen);
 }
 
-function validateTemplate(value: unknown, diagnostics: ExpressionDiagnostic[], path: string, scope: Set<string>, seen: WeakSet<object>): void {
+function validateTemplate(value: unknown, diagnostics: ExpressionDiagnostic[], path: string, seen: WeakSet<object>): void {
   if (!isRecord(value) || value.kind !== "template" || !Array.isArray(value.parts)) {
     diagnostics.push(error("EX002", "Expression template must contain template parts.", path));
     return;
@@ -181,7 +132,7 @@ function validateTemplate(value: unknown, diagnostics: ExpressionDiagnostic[], p
       diagnostics.push(error("EX002", "Template part must be an object.", partPath));
     } else if (part.kind === "expr") {
       validateKnownFields(part, ["kind", "expr"], diagnostics, partPath);
-      validateExpr(part.expr, diagnostics, `${partPath}.expr`, scope, false, seen);
+      validateExpr(part.expr, diagnostics, `${partPath}.expr`, seen);
     } else if (part.kind === "text") {
       validateKnownFields(part, ["kind", "value"], diagnostics, partPath);
       if (typeof part.value !== "string") diagnostics.push(error("EX002", "Template text value must be a string.", `${partPath}.value`));
@@ -279,11 +230,7 @@ function validateLiteralType(expr: Record<string, unknown>, diagnostics: Express
 }
 
 function validateArity(fn: string, actual: number, arity: OperatorSpec["arity"], diagnostics: ExpressionDiagnostic[], path: string): void {
-  if (Array.isArray(arity)) {
-    if (!arity.includes(actual)) diagnostics.push(error("EX003", `${fn}(...) expected ${formatArity(arity)} args, got ${actual}.`, path));
-    return;
-  }
-  if (actual < arity.min) diagnostics.push(error("EX003", `${fn}(...) expected at least ${arity.min} args, got ${actual}.`, path));
+  if (!arity.includes(actual)) diagnostics.push(error("EX003", `${fn}(...) expected ${formatArity(arity)} args, got ${actual}.`, path));
 }
 
 function forEachDense<T>(items: T[], diagnostics: ExpressionDiagnostic[], path: string, run: (item: T, index: number) => void): void {
@@ -309,7 +256,8 @@ function hasOwn(value: object, key: PropertyKey): boolean {
 }
 
 function isJsonValue(value: unknown, seen = new Set<object>()): boolean {
-  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") return true;
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
   if (Array.isArray(value)) {
     if (seen.has(value)) return false;
     seen.add(value);
@@ -329,6 +277,6 @@ function isJsonValue(value: unknown, seen = new Set<object>()): boolean {
   return true;
 }
 
-function formatArity(arity: number[]): string {
+function formatArity(arity: readonly number[]): string {
   return arity.length === 1 ? String(arity[0]) : arity.join(" or ");
 }

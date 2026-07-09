@@ -32,20 +32,20 @@ describe("internal Acpus ESLint plugin", () => {
     });
   });
 
-  it("reports transform authoring diagnostics from the shared check rule", async () => {
-    const messages = await lintFixture("eslint-transform.workflow.ts");
-    const transformMessages = messages.filter(message => message.message.startsWith("AL007:"));
+  it("reports fmap authoring diagnostics from the shared check rule", async () => {
+    const messages = await lintFixture("eslint-fmap.workflow.ts");
+    const callbackMessages = messages.filter(message => message.message.startsWith("AL007:"));
 
-    expect(transformMessages).toHaveLength(2);
-    expect(transformMessages.find(message => message.message.includes("one expression"))).toMatchObject({
+    expect(callbackMessages).toHaveLength(2);
+    expect(callbackMessages.find(message => message.message.includes("one expression"))).toMatchObject({
       ruleId: "acpus-internal/check",
-      line: await lineOf("eslint-transform.workflow.ts", "const view = transform"),
+      line: await lineOf("eslint-fmap.workflow.ts", "const view = fmap"),
       message: expect.stringContaining("one expression"),
     });
-    expect(transformMessages.find(message => message.message.includes("cannot reference 'suffix'"))).toMatchObject({
+    expect(callbackMessages.find(message => message.message.includes("external binding 'suffix'"))).toMatchObject({
       ruleId: "acpus-internal/check",
-      line: await lineOf("eslint-transform.workflow.ts", "const captured = transform"),
-      message: expect.stringContaining("cannot reference 'suffix'"),
+      line: await lineOf("eslint-fmap.workflow.ts", "const captured = fmap"),
+      message: expect.stringContaining("external binding 'suffix'"),
     });
   });
 

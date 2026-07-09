@@ -681,17 +681,6 @@ function printSchema(schema: SchemaDetail): string {
   }
 }
 
-const infixOperators: Record<string, string> = {
-  eq: "==",
-  ne: "!=",
-  lt: "<",
-  lte: "<=",
-  gt: ">",
-  gte: ">=",
-  and: "&&",
-  or: "||",
-};
-
 function printExpr(expr: ExprIR): string {
   return truncate(renderExpr(expr), 80);
 }
@@ -706,37 +695,19 @@ function renderExpr(expr: ExprIR): string {
       return renderLiteral(expr.value);
     case "ref":
       return expr.path.join(".");
-    case "var":
-      return [expr.id, ...expr.path].join(".");
     case "array":
       return `[${expr.items.map(renderExpr).join(", ")}]`;
     case "object":
       return `{ ${Object.entries(expr.fields).map(([key, value]) => `${key}: ${renderExpr(value)}`).join(", ")} }`;
     case "template":
       return `\`${renderTemplate(expr.template)}\``;
-    case "lambda":
-      return `${renderLambdaParams(expr.params)} => ${renderExpr(expr.body)}`;
     case "call":
       return renderCall(expr.fn, expr.args);
   }
 }
 
 function renderCall(fn: string, args: ExprIR[]): string {
-  const infix = infixOperators[fn];
-  if (infix && args.length >= 2) return args.map(wrapExpr).join(` ${infix} `);
-  if (fn === "not" && args.length === 1) return `!${wrapExpr(args[0]!)}`;
   return `${fn}(${args.map(renderExpr).join(", ")})`;
-}
-
-function wrapExpr(expr: ExprIR): string {
-  return expr.kind === "call" && infixOperators[expr.fn] && expr.args.length >= 2
-    ? `(${renderExpr(expr)})`
-    : renderExpr(expr);
-}
-
-function renderLambdaParams(params: { id: string }[]): string {
-  const names = params.map(param => param.id);
-  return names.length === 1 ? names[0]! : `(${names.join(", ")})`;
 }
 
 function renderTemplate(template: TemplateIR): string {

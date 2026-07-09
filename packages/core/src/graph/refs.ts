@@ -1,13 +1,13 @@
 import { NODE_REF } from "../internal/symbols.js";
-import { pick, type OutputAccessor } from "@acpus/expression";
+import type { ExprValue } from "@acpus/expression";
 import { refExpr } from "@acpus/expression/ir";
 
 export type NodeRef<Out> = {
   readonly [NODE_REF]: true;
   readonly id: string;
-  readonly output: OutputAccessor<Out>;
+  readonly output: ExprValue<Out>;
 };
-export { pick, refExpr, type OutputAccessor };
+export { refExpr, type ExprValue };
 
 export function makeNodeRef<Out>(id: string): NodeRef<Out> {
   return {

@@ -1,4 +1,5 @@
-import { isExpr, type Expr } from "@acpus/expression";
+import type { Expr } from "@acpus/expression";
+import { isExpr } from "@acpus/expression/ir";
 import { bindingsToIR } from "./lowering.js";
 import type { DiagnosticIR, NodeIR, ScopeIR } from "../ir/types.js";
 

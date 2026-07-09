@@ -1,5 +1,5 @@
 import { defineWorkflow, z } from "acpus/core";
-import { eq, md, template, transform } from "acpus/expression";
+import { fmap, md, template } from "acpus/expression";
 import { summarizeIssue } from "./tasks.js";
 
 export default defineWorkflow({
@@ -61,7 +61,7 @@ export default defineWorkflow({
               },
               timeout: "20m",
             });
-            const reviewView = transform(review.output, output => ({
+            const reviewView = fmap(review.output, output => ({
               route: output.route,
               priority: output.priority,
               summary: output.summary.trim(),
@@ -78,7 +78,7 @@ export default defineWorkflow({
       const routed = step("route_issue").switch({
         cases: [
           {
-            when: eq(lane.output.review.route, "escalate"),
+            when: fmap(lane.output.review.route, route => route === "escalate"),
             then() {
               const escalation = step("prepare_escalation").task({
                 run: {
@@ -100,7 +100,7 @@ export default defineWorkflow({
             },
           },
           {
-            when: eq(lane.output.review.route, "now"),
+            when: fmap(lane.output.review.route, route => route === "now"),
             then() {
               const queue = step("queue_now").task({
                 run: {

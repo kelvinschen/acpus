@@ -1,4 +1,6 @@
-import type { ExprIR, JsonObject, TemplateIR } from "./ir.js";
+import type { ExprIR, TemplateIR } from "./ir.js";
+import { callbackSourceIssue } from "./internal/callback-source.js";
+import { expressionOperatorSpec } from "./internal/operators.js";
 
 export type ExpressionEvaluatorAdapter = {
   resolveRef(path: string[]): unknown;
@@ -13,120 +15,102 @@ export class ExpressionEvaluationError extends Error {
 
 const MISSING = Symbol("acpus.expression.missing");
 type Missing = typeof MISSING;
-type Env = Map<string, unknown>;
 
 export function evaluateExpr(expr: ExprIR, adapter: ExpressionEvaluatorAdapter): unknown {
-  const value = evaluate(expr, adapter, new Map());
+  const value = evaluate(expr, adapter);
   return value === MISSING ? undefined : value;
 }
 
-function evaluate(expr: ExprIR, adapter: ExpressionEvaluatorAdapter, env: Env): unknown {
+function evaluate(expr: ExprIR, adapter: ExpressionEvaluatorAdapter): unknown {
   switch (expr.kind) {
     case "literal":
       return expr.value;
     case "ref":
-      return normalizeMissing(adapter.resolveRef(expr.path));
-    case "var":
-      return resolveVar(expr, env);
+      return resolvePath(adapter.resolveRef(expr.path), []);
     case "array":
-      return expr.items.map(item => requirePresent("array", evaluate(item, adapter, env)));
+      return expr.items.map(item => requirePresent("array", evaluate(item, adapter)));
     case "object":
-      return Object.fromEntries(Object.entries(expr.fields).map(([key, value]) => [key, requirePresent("object", evaluate(value, adapter, env))]));
+      return Object.fromEntries(Object.entries(expr.fields).map(([key, value]) => [key, requirePresent("object", evaluate(value, adapter))]));
     case "template":
-      return renderTemplateWithEnv(expr.template, adapter, env);
+      return renderTemplate(expr.template, adapter);
     case "call":
-      return evaluateCall(expr.fn, expr.args, adapter, env);
-    case "lambda":
-      throw new ExpressionEvaluationError(`Cannot evaluate ${expr.kind} expression directly.`);
+      return evaluateCall(expr.fn, expr.args, adapter);
   }
 }
 
 export function renderTemplate(template: TemplateIR, adapter: ExpressionEvaluatorAdapter): string {
-  return renderTemplateWithEnv(template, adapter, new Map());
+  return template.parts.map(part => part.kind === "text" ? part.value : formatTemplateValue(evaluate(part.expr, adapter))).join("");
 }
 
-function renderTemplateWithEnv(template: TemplateIR, adapter: ExpressionEvaluatorAdapter, env: Env): string {
-  return template.parts.map(part => part.kind === "text" ? part.value : formatTemplateValue(evaluate(part.expr, adapter, env))).join("");
-}
-
-function evaluateCall(fn: string, args: ExprIR[], adapter: ExpressionEvaluatorAdapter, env: Env): unknown {
+function evaluateCall(fn: string, args: ExprIR[], adapter: ExpressionEvaluatorAdapter): unknown {
+  const spec = expressionOperatorSpec(fn);
+  if (!spec) throw new ExpressionEvaluationError(`Unsupported expression operator: ${fn}.`);
+  requireArity(fn, args, spec.arity);
+  if (spec.callback) return evaluateCallback(fn, args, adapter, spec.callback.dependencyArgs, spec.callback.callbackSourceArg, spec.callback.callbackParamCount);
   switch (fn) {
-    case "not":
-      requireArity(fn, args, 1);
-      return !booleanArg(fn, evaluate(args[0]!, adapter, env));
-    case "and":
-      for (const arg of args) if (!booleanArg(fn, evaluate(arg, adapter, env))) return false;
-      return true;
-    case "or":
-      for (const arg of args) if (booleanArg(fn, evaluate(arg, adapter, env))) return true;
-      return false;
-    case "ifElse":
-      requireArity(fn, args, 3);
-      return evaluate(booleanArg(fn, evaluate(args[0]!, adapter, env)) ? args[1]! : args[2]!, adapter, env);
-    case "eq":
-      requireArity(fn, args, 2);
-      return structuralEqual(requirePresent(fn, evaluate(args[0]!, adapter, env)), requirePresent(fn, evaluate(args[1]!, adapter, env)));
-    case "ne":
-      requireArity(fn, args, 2);
-      return !structuralEqual(requirePresent(fn, evaluate(args[0]!, adapter, env)), requirePresent(fn, evaluate(args[1]!, adapter, env)));
-    case "add": return numericBinary(fn, args, adapter, env, (left, right) => left + right);
-    case "subtract": return numericBinary(fn, args, adapter, env, (left, right) => left - right);
-    case "multiply": return numericBinary(fn, args, adapter, env, (left, right) => left * right);
-    case "divide": return numericBinary(fn, args, adapter, env, (left, right) => left / right);
-    case "mod": return numericBinary(fn, args, adapter, env, (left, right) => left % right);
-    case "lt": return compare(fn, args, adapter, env, (left, right) => left < right);
-    case "lte": return compare(fn, args, adapter, env, (left, right) => left <= right);
-    case "gt": return compare(fn, args, adapter, env, (left, right) => left > right);
-    case "gte": return compare(fn, args, adapter, env, (left, right) => left >= right);
-    case "len":
-      requireArity(fn, args, 1);
-      return lengthOf(evaluate(args[0]!, adapter, env));
-    case "includes":
-      requireArity(fn, args, 2);
-      return includes(evaluate(args[0]!, adapter, env), requirePresent(fn, evaluate(args[1]!, adapter, env)));
-    case "startsWith":
-      requireArity(fn, args, 2);
-      return stringArg(fn, evaluate(args[0]!, adapter, env)).startsWith(stringArg(fn, evaluate(args[1]!, adapter, env)));
-    case "endsWith":
-      requireArity(fn, args, 2);
-      return stringArg(fn, evaluate(args[0]!, adapter, env)).endsWith(stringArg(fn, evaluate(args[1]!, adapter, env)));
-    case "matches":
-      requireArity(fn, args, 2);
-      return matches(stringArg(fn, evaluate(args[0]!, adapter, env)), stringArg(fn, evaluate(args[1]!, adapter, env)));
-    case "coalesce":
-      if (args.length === 0) throw new ExpressionEvaluationError("coalesce(...) expected at least 1 args, got 0.");
-      for (const arg of args) {
-        const value = evaluate(arg, adapter, env);
-        if (value !== MISSING && value !== null) return value;
-      }
-      return MISSING;
-    case "get":
-      requireArity(fn, args, 2);
-      return getValue(evaluate(args[0]!, adapter, env), requirePresent(fn, evaluate(args[1]!, adapter, env)));
-    case "map":
-      return evaluateMap(fn, args, adapter, env);
-    case "transform":
-      return evaluateTransform(fn, args, adapter, env);
-    case "filter":
-      return evaluateFilter(fn, args, adapter, env);
-    case "join":
-      requireArity(fn, args, 2);
-      return arrayArg(fn, evaluate(args[0]!, adapter, env))
-        .map(value => stringArg(fn, value))
-        .join(stringArg(fn, evaluate(args[1]!, adapter, env)));
-    case "every":
-      return args.length === 1 ? arrayArg(fn, evaluate(args[0]!, adapter, env)).every(value => booleanArg(fn, value)) : evaluateQuantifier(fn, args, adapter, env, false);
-    case "some":
-      return args.length === 1 ? arrayArg(fn, evaluate(args[0]!, adapter, env)).some(value => booleanArg(fn, value)) : evaluateQuantifier(fn, args, adapter, env, true);
-    case "max":
-      requireArity(fn, args, 1);
-      return Math.max(...arrayArg(fn, evaluate(args[0]!, adapter, env)).map(value => numberArg(fn, value)));
-    case "min":
-      requireArity(fn, args, 1);
-      return Math.min(...arrayArg(fn, evaluate(args[0]!, adapter, env)).map(value => numberArg(fn, value)));
+    case "access":
+      return getValue(evaluate(args[0]!, adapter), requirePresent(fn, evaluate(args[1]!, adapter)));
     default:
       throw new ExpressionEvaluationError(`Unsupported expression operator: ${fn}.`);
   }
+}
+
+function evaluateCallback(fn: string, args: ExprIR[], adapter: ExpressionEvaluatorAdapter, dependencyIndexes: readonly number[], callbackIndex: number, callbackParamCount: number): unknown {
+  const callback = loadCallback(callbackSource(fn, args[callbackIndex]!), fn, callbackParamCount);
+  const values = dependencyIndexes.map(index => cloneCallbackInput(fn, evaluateCallbackInput(args[index]!, adapter)));
+  if (fn === "lift" && !isRecord(values[0])) throw new ExpressionEvaluationError(`lift(...) expected dependency object, got ${typeOf(values[0])}.`);
+  return runCallback(fn, callback, values);
+}
+
+function evaluateCallbackInput(expr: ExprIR, adapter: ExpressionEvaluatorAdapter): unknown {
+  switch (expr.kind) {
+    case "literal":
+      return expr.value;
+    case "ref":
+      return missingToUndefined(resolvePath(adapter.resolveRef(expr.path), []));
+    case "array":
+      return expr.items.map(item => evaluateCallbackInput(item, adapter));
+    case "object":
+      return Object.fromEntries(Object.entries(expr.fields).map(([key, value]) => [key, evaluateCallbackInput(value, adapter)]));
+    case "template":
+    case "call":
+      return missingToUndefined(evaluate(expr, adapter));
+  }
+}
+
+function callbackSource(fn: string, expr: ExprIR): string {
+  if (expr.kind === "literal" && typeof expr.value === "string") return expr.value;
+  throw new ExpressionEvaluationError(`${fn}(...) expected callback source string.`);
+}
+
+function loadCallback(source: string, operator: string, expectedParams: number): (...args: unknown[]) => unknown {
+  const issue = callbackSourceIssue(source, expectedParams);
+  if (issue) throw new ExpressionEvaluationError(`${operator}(...) ${issue}`);
+  try {
+    const fn = Function(`"use strict";\nreturn (${source});`)();
+    if (typeof fn !== "function") throw new ExpressionEvaluationError(`${operator}(...) source did not evaluate to a function.`);
+    return fn as (...args: unknown[]) => unknown;
+  } catch (error) {
+    if (error instanceof ExpressionEvaluationError) throw error;
+    throw new ExpressionEvaluationError(`${operator}(...) source could not be loaded: ${(error as Error).message}`);
+  }
+}
+
+function runCallback(operator: string, callback: (...args: unknown[]) => unknown, args: unknown[]): unknown {
+  try {
+    const output = callback(...args);
+    if (isThenable(output)) throw new ExpressionEvaluationError(`${operator}(...) callback must return synchronously.`);
+    assertJsonCompatible(output, operator);
+    return output;
+  } catch (error) {
+    if (error instanceof ExpressionEvaluationError) throw error;
+    throw new ExpressionEvaluationError(`${operator}(...) callback threw: ${(error as Error).message}`);
+  }
+}
+
+function cloneCallbackInput(operator: string, value: unknown): unknown {
+  assertCallbackInputCompatible(value, operator);
+  return cloneJsonLikeWithUndefined(value);
 }
 
 function formatTemplateValue(value: unknown): string {
@@ -139,34 +123,6 @@ function formatTemplateValue(value: unknown): string {
   return rendered;
 }
 
-function structuralEqual(left: unknown, right: unknown): boolean {
-  assertJsonCompatible(left, "eq");
-  assertJsonCompatible(right, "eq");
-  if (sameValueZero(left, right)) return true;
-  if (typeof left !== "object" || typeof right !== "object" || left === null || right === null) return false;
-  if (Array.isArray(left) || Array.isArray(right)) {
-    return Array.isArray(left)
-      && Array.isArray(right)
-      && left.length === right.length
-      && left.every((item, index) => structuralEqual(item, right[index]));
-  }
-  const leftObject = left as JsonObject;
-  const rightObject = right as JsonObject;
-  const leftKeys = Object.keys(leftObject);
-  const rightKeys = Object.keys(rightObject);
-  return leftKeys.length === rightKeys.length
-    && leftKeys.every(key => Object.prototype.hasOwnProperty.call(rightObject, key) && structuralEqual(leftObject[key], rightObject[key]));
-}
-
-function sameValueZero(left: unknown, right: unknown): boolean {
-  return left === right || (typeof left === "number" && typeof right === "number" && Number.isNaN(left) && Number.isNaN(right));
-}
-
-function resolveVar(expr: Extract<ExprIR, { kind: "var" }>, env: Env): unknown {
-  if (!env.has(expr.id)) throw new ExpressionEvaluationError(`Unbound expression variable: ${expr.id}.`);
-  return resolvePath(env.get(expr.id), expr.path);
-}
-
 function resolvePath(root: unknown, path: string[]): unknown {
   let value = normalizeMissing(root);
   for (const segment of path) value = getValue(value, segment);
@@ -175,144 +131,22 @@ function resolvePath(root: unknown, path: string[]): unknown {
 
 function getValue(target: unknown, key: unknown): unknown {
   if (target === MISSING) return MISSING;
-  if (Array.isArray(target) && (typeof key === "number" || typeof key === "string")) {
+  if ((Array.isArray(target) || typeof target === "string") && (typeof key === "number" || typeof key === "string")) {
     const index = typeof key === "number" ? key : Number(key);
     if (!Number.isInteger(index) || index < 0 || String(index) !== String(key)) return MISSING;
-    return normalizeMissing(target[index]);
+    return normalizeMissing(target[index as keyof typeof target]);
   }
   if (isRecord(target) && typeof key === "string" && Object.prototype.hasOwnProperty.call(target, key)) return normalizeMissing(target[key]);
-  if (target === null) return MISSING;
   return MISSING;
 }
 
-function evaluateMap(fn: string, args: ExprIR[], adapter: ExpressionEvaluatorAdapter, env: Env): unknown[] {
-  const [array, lambda] = collectionArgs(fn, args, adapter, env);
-  return array.map((value, index) => requirePresent(fn, evaluateLambda(lambda, [value, index], adapter, env)));
-}
-
-function evaluateTransform(fn: string, args: ExprIR[], adapter: ExpressionEvaluatorAdapter, env: Env): unknown {
-  requireArity(fn, args, 2);
-  const value = requirePresent(fn, evaluate(args[0]!, adapter, env));
-  const source = transformSource(args[1]!);
-  const callback = loadTransform(source);
-  const output = runTransform(callback, value);
-  if (isThenable(output)) throw new ExpressionEvaluationError("transform(...) callback must return synchronously.");
-  assertJsonCompatible(output, fn);
-  return output;
-}
-
-function evaluateFilter(fn: string, args: ExprIR[], adapter: ExpressionEvaluatorAdapter, env: Env): unknown[] {
-  const [array, lambda] = collectionArgs(fn, args, adapter, env);
-  return array.filter((value, index) => booleanArg(fn, evaluateLambda(lambda, [value, index], adapter, env)));
-}
-
-function evaluateQuantifier(fn: string, args: ExprIR[], adapter: ExpressionEvaluatorAdapter, env: Env, some: boolean): boolean {
-  const [array, lambda] = collectionArgs(fn, args, adapter, env);
-  return some
-    ? array.some((value, index) => booleanArg(fn, evaluateLambda(lambda, [value, index], adapter, env)))
-    : array.every((value, index) => booleanArg(fn, evaluateLambda(lambda, [value, index], adapter, env)));
-}
-
-function collectionArgs(fn: string, args: ExprIR[], adapter: ExpressionEvaluatorAdapter, env: Env): [unknown[], Extract<ExprIR, { kind: "lambda" }>] {
-  requireArity(fn, args, 2);
-  const lambda = args[1]!;
-  if (lambda.kind !== "lambda") throw new ExpressionEvaluationError(`${fn}(...) expected lambda callback.`);
-  return [arrayArg(fn, evaluate(args[0]!, adapter, env)), lambda];
-}
-
-function evaluateLambda(lambda: Extract<ExprIR, { kind: "lambda" }>, values: unknown[], adapter: ExpressionEvaluatorAdapter, env: Env): unknown {
-  const next = new Map(env);
-  lambda.params.forEach((param, index) => next.set(param.id, values[index]));
-  return evaluate(lambda.body, adapter, next);
-}
-
-function compare(fn: string, args: ExprIR[], adapter: ExpressionEvaluatorAdapter, env: Env, compareValues: (left: number, right: number) => boolean): boolean {
-  requireArity(fn, args, 2);
-  return compareValues(numberArg(fn, evaluate(args[0]!, adapter, env)), numberArg(fn, evaluate(args[1]!, adapter, env)));
-}
-
-function numericBinary(fn: string, args: ExprIR[], adapter: ExpressionEvaluatorAdapter, env: Env, run: (left: number, right: number) => number): number {
-  requireArity(fn, args, 2);
-  return run(numberArg(fn, evaluate(args[0]!, adapter, env)), numberArg(fn, evaluate(args[1]!, adapter, env)));
-}
-
-function includes(collection: unknown, value: unknown): boolean {
-  const present = requirePresent("includes", collection);
-  if (typeof present === "string") return present.includes(stringArg("includes", value));
-  if (Array.isArray(present)) return present.some(item => structuralEqual(item, value));
-  throw new ExpressionEvaluationError(`includes(...) expected string or array, got ${typeOf(present)}.`);
-}
-
-function matches(value: string, pattern: string): boolean {
-  try {
-    return new RegExp(pattern).test(value);
-  } catch (cause) {
-    throw new ExpressionEvaluationError(`matches(...) received invalid regular expression: ${(cause as Error).message}`);
-  }
-}
-
-function lengthOf(value: unknown): number {
-  const present = requirePresent("len", value);
-  if (typeof present === "string" || Array.isArray(present)) return present.length;
-  throw new ExpressionEvaluationError(`len(...) expected string or array, got ${typeOf(present)}.`);
-}
-
-function booleanArg(fn: string, value: unknown): boolean {
-  const present = requirePresent(fn, value);
-  if (typeof present === "boolean") return present;
-  throw new ExpressionEvaluationError(`${fn}(...) expected boolean, got ${typeOf(present)}.`);
-}
-
-function numberArg(fn: string, value: unknown): number {
-  const present = requirePresent(fn, value);
-  if (typeof present === "number") return present;
-  throw new ExpressionEvaluationError(`${fn}(...) expected number, got ${typeOf(present)}.`);
-}
-
-function stringArg(fn: string, value: unknown): string {
-  const present = requirePresent(fn, value);
-  if (typeof present === "string") return present;
-  throw new ExpressionEvaluationError(`${fn}(...) expected string, got ${typeOf(present)}.`);
-}
-
-function arrayArg(fn: string, value: unknown): unknown[] {
-  const present = requirePresent(fn, value);
-  if (Array.isArray(present)) return present;
-  throw new ExpressionEvaluationError(`${fn}(...) expected array, got ${typeOf(present)}.`);
-}
-
-function requireArity(fn: string, args: unknown[], count: number): void {
-  if (args.length !== count) throw new ExpressionEvaluationError(`${fn}(...) expected ${count} args, got ${args.length}.`);
+function requireArity(fn: string, args: unknown[], arity: readonly number[]): void {
+  if (!arity.includes(args.length)) throw new ExpressionEvaluationError(`${fn}(...) expected ${formatArity(arity)} args, got ${args.length}.`);
 }
 
 function requirePresent(fn: string, value: unknown): Exclude<unknown, Missing> {
   if (value === MISSING) throw new ExpressionEvaluationError(`${fn}(...) received missing value.`);
   return value as Exclude<unknown, Missing>;
-}
-
-function transformSource(expr: ExprIR): string {
-  if (expr.kind === "literal" && typeof expr.value === "string") return expr.value;
-  throw new ExpressionEvaluationError("transform(...) expected callback source string.");
-}
-
-function loadTransform(source: string): (value: unknown) => unknown {
-  try {
-    const fn = Function(`"use strict";\nreturn (${source});`)();
-    if (typeof fn !== "function") throw new ExpressionEvaluationError("transform(...) source did not evaluate to a function.");
-    return fn as (value: unknown) => unknown;
-  } catch (error) {
-    if (error instanceof ExpressionEvaluationError) throw error;
-    throw new ExpressionEvaluationError(`transform(...) source could not be loaded: ${(error as Error).message}`);
-  }
-}
-
-function runTransform(callback: (value: unknown) => unknown, value: unknown): unknown {
-  try {
-    return callback(value);
-  } catch (error) {
-    if (error instanceof ExpressionEvaluationError) throw error;
-    throw new ExpressionEvaluationError(`transform(...) callback threw: ${(error as Error).message}`);
-  }
 }
 
 function isThenable(value: unknown): boolean {
@@ -321,6 +155,13 @@ function isThenable(value: unknown): boolean {
 
 function normalizeMissing(value: unknown): unknown {
   return value === undefined ? MISSING : value;
+}
+
+function missingToUndefined(value: unknown): unknown {
+  if (value === MISSING) return undefined;
+  if (Array.isArray(value)) return value.map(missingToUndefined);
+  if (isRecord(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, missingToUndefined(item)]));
+  return value;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -356,4 +197,40 @@ function assertJsonCompatible(value: unknown, operator: string, seen = new Set<o
     assertJsonCompatible(item, operator, seen);
   }
   seen.delete(value);
+}
+
+function assertCallbackInputCompatible(value: unknown, operator: string, seen = new Set<object>()): void {
+  if (value === undefined) return;
+  if (value === null || typeof value === "string" || typeof value === "boolean") return;
+  if (typeof value === "number") {
+    if (Number.isFinite(value)) return;
+    throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
+  }
+  if (!value || typeof value !== "object") throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
+  if (seen.has(value)) throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index++) {
+      if (!Object.prototype.hasOwnProperty.call(value, index)) throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
+      assertCallbackInputCompatible(value[index], operator, seen);
+    }
+    seen.delete(value);
+    return;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
+  if (Object.getOwnPropertySymbols(value).length > 0) throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
+  for (const item of Object.values(value)) assertCallbackInputCompatible(item, operator, seen);
+  seen.delete(value);
+}
+
+function cloneJsonLikeWithUndefined(value: unknown): unknown {
+  if (value === undefined || value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) return value.map(cloneJsonLikeWithUndefined);
+  if (isRecord(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cloneJsonLikeWithUndefined(item)]));
+  return value;
+}
+
+function formatArity(arity: readonly number[]): string {
+  return arity.length === 1 ? String(arity[0]) : arity.join(" or ");
 }

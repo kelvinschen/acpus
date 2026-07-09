@@ -8,7 +8,7 @@ Use TypeScript workflow modules and user-facing facades only:
 
 ```ts
 import { defineWorkflow, task, secret, z } from "acpus/core";
-import { template, md, and, lte, add, join, map, transform } from "acpus/expression";
+import { template, md, fmap, lift2, lift3, lift } from "acpus/expression";
 import { createWorktree } from "acpus/tasks/git";
 ```
 
@@ -16,7 +16,7 @@ Import only the helpers the workflow uses. For the complete surface, inspect the
 
 Do not import `@acpus/*` from user workflows; those are implementation packages behind the `acpus/*` facades.
 
-Inside `build`, every run-dependent value from `input`, `meta`, and node `output` is an `Expr<T>` token. Do not use JavaScript `if`, `&&`, `===`, `.map`, `.length`, array indexing, or template strings over those values; use workflow control nodes and `acpus/expression` helpers.
+Inside `build`, every run-dependent value from `input`, `meta`, and node `output` is an `Expr<T>` token. Field projection such as `review.output.ready` and array index projection such as `items[0]` are supported. Do not compute over expression values with authoring-time JavaScript; use workflow control nodes, `template`/`md`, and `fmap`/`lift2`/`lift3`/`lift` for computed operations.
 
 ### Minimal Workflow Skeleton
 
@@ -42,68 +42,69 @@ export default defineWorkflow({
 
 ### Why Expressions Exist
 
-Acpus workflows are a TypeScript-authored DSL, not ordinary runtime TypeScript. `build` declares a durable graph before a run executes, so workflow input, metadata, and prior node outputs are graph values wrapped as `Expr<T>` tokens. Treat every run-dependent value as an expression token and use graph constructs plus `acpus/expression` helpers to combine, compare, select, and render those values. Use plain JavaScript only for authoring-time constants and task `exec` bodies.
+Acpus workflows are TypeScript-authored durable graph definitions, not ordinary runtime TypeScript programs. `build` runs before any workflow run executes. Values from `input`, `meta`, and node `output` are therefore graph tokens: `Expr<T>`.
 
-Never branch or compute with JavaScript over expression tokens. Use `step().if` or `step().switch` for graph control, `and`/`or`/`eq`/`lte` for conditions, `map`/`filter`/`len`/`get` for collections, and `template` or `md` for rendered text.
+An `Expr<T>` means "a value of type `T` that will exist at run time." You can project through it with field and index syntax, such as `review.output.ready` and `items[0]`, because those are still graph projections. You cannot use JavaScript control flow or operators over it at authoring time, because JavaScript would need the value immediately.
 
-### Expressions And Templates
+Use graph nodes for control flow, `template`/`md` for rendered strings, and `fmap`/`lift*` for small computed values. Inside an `fmap`/`lift*` callback, write normal JavaScript over plain runtime values.
 
-Expression helpers:
+### Expression Functions
 
-| Do not write | Write |
-| --- | --- |
-| `input.ready && output.ok` | `and(input.ready, output.ok)` |
-| `!input.ready` | `not(input.ready)` |
-| `input.kind === "release"` | `eq(input.kind, "release")` |
-| `risk <= 3` | `lte(risk, 3)` |
-| `index + 1` | `add(index, 1)`; loop `round` is already 1-based |
-| `input.maybe ?? "fallback"` | `coalesce(input.maybe, "fallback")` |
-| `` `topic ${input.topic}` `` | `template\`topic ${input.topic}\`` |
-| `input.items.length` | `len(input.items)` |
-| `input.items.map(item => item.id)` | `map(input.items, item => item.id)` |
-| `items[0]` | `head(items)` or `get(items, 0)` |
-
-For collections: `filter(input.items, item => where(item, { tags: { contains: "ready" } }))`, `map(ready, item => item.id)`, `len(ready)`, `coalesce(head(readyIds), "(none)")`.
-
-Use `transform(value, fn)` for small runtime JSON transforms that are awkward as named expression helpers but too small for a Task:
+Think of `Expr` as a functor. `fmap` maps one expression value. `lift2`, `lift3`, and `lift` lift a normal JavaScript function over multiple expression dependencies.
 
 ```ts
-const title = transform(input.issue, issue => issue.title.trim());
-const view = transform(input.issue, issue => ({
-  title: issue.title.trim(),
-  urgent: issue.labels.includes("urgent"),
-}));
+// Informal signatures:
+fmap  :: Expr<A> -> (A -> WorkflowData B) -> Expr<B>
+lift2 :: Expr<A> -> Expr<B> -> ((A, B) -> WorkflowData C) -> Expr<C>
+lift3 :: Expr<A> -> Expr<B> -> Expr<C> -> ((A, B, C) -> WorkflowData D) -> Expr<D>
+lift  :: { name: Expr<A>, ... } -> ({ name: A, ... } -> WorkflowData B) -> Expr<B>
 ```
-`acpus workflow check` rejects block bodies, captures, imported helpers, `async`, mutation, `new`, `Math.random`, and non-allowlisted calls:
+
+Use `fmap` for one dependency:
 
 ```ts
-transform(input.issue, issue => issue.title.trim()); // ok
-transform(input.issue, issue => { return issue.title.trim(); }); // rejected
-transform(input.issue, issue => helper(issue)); // rejected
+const title = fmap(input.issue, issue => issue.title.trim());
+const firstId = fmap(input.items[0], item => item?.id ?? "none");
 ```
 
-Use `template` for compact strings and `md` for multiline prompts/messages; `md` trims surrounding blank lines and common indentation while preserving expression interpolation.
-
-Template interpolation renders strings directly, scalar non-strings with `String(value)`, and arrays/objects as compact JSON. Do not rely on array interpolation for Markdown line breaks. Build explicit lines with:
+Use `lift2`/`lift3` for concise positional dependencies:
 
 ```ts
-join(map(items, item => template`- ${item.id}`), "\n")
+const shouldRelease = lift2(
+  input.ready,
+  input.kind,
+  (ready, kind) => ready && kind === "release",
+);
 ```
 
-Common helper choices:
+Use named-object `lift` when names matter or there are many dependencies:
 
-| Need | Use |
-| --- | --- |
-| Boolean conditions | `not`, `and`, `or`, `ifElse` |
-| Equality and ordering | `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `where` |
-| Counting and arithmetic | `add`, `subtract`, `multiply`, `divide`, `mod` |
-| Nullish fallback | `coalesce(value, fallback)` |
-| Array/string size and access | `len`, `isEmpty`, `head`, `get`, `pick` |
-| Runtime array transforms | `map`, `filter`, `every`, `some` |
-| Small runtime value transforms | `transform(value, value => expression)` |
-| Markdown lines from arrays | Use `join(map(...), "\n")`; see the example above. |
+```ts
+const overLimit = lift(
+  { priority: input.priority, selectedCount, maxItems: input.maxItems },
+  ({ priority, selectedCount, maxItems }) => priority === "high" || selectedCount > maxItems,
+);
+```
 
-`map`, `filter`, `every`, and `some` callbacks receive `(item, index)`. Both are expression accessors; `index` is not a JavaScript number. Use `add(index, 1)` for human-facing numbering.
+Callbacks are intentionally a simplified task-like surface:
+
+- They must be synchronous expression-body arrows.
+- They must not capture workflow/module-scope runtime values; pass every dependency explicitly through `fmap`/`lift*`.
+- They must return `WorkflowData`: JSON primitives.
+
+### Templates
+
+Use `template` for compact strings and `md` for multiline prompts/messages. `md` trims surrounding blank lines and common indentation while preserving expression interpolation.
+
+Template interpolation renders strings directly, scalar non-strings with `String(value)`, and arrays/objects as compact JSON. For Markdown list rendering, compute explicit lines first:
+
+```ts
+const lines = fmap(items, items => items.map(item => `- ${item.id}`).join("\n"));
+const prompt = md`
+  Review these items:
+  ${lines}
+`;
+```
 
 ### Boundary Schemas
 
@@ -195,7 +196,7 @@ const gate = step("gate").if({
 ```ts
 const route = step("route").switch({
   cases: [
-    { when: eq(input.kind, "bug"), then() { return { owner: "oncall" }; } },
+    { when: fmap(input.kind, kind => kind === "bug"), then() { return { owner: "oncall" }; } },
   ],
   default() { return { owner: "backlog" }; },
 });
@@ -241,7 +242,7 @@ const refined = step("refine").loop({
         ready: state.ready,
         summary: state.summary,
       },
-      stop: gte(round, 3),
+      stop: fmap(round, round => round >= 3),
     };
   },
 });
@@ -284,8 +285,8 @@ const state = {
 
 - Start from the examples; inspect declarations only when the examples do not answer the API question.
 - Use graph-level composites instead of JavaScript control flow over expression values.
-- Use expression helpers instead of native operators/properties over expression values.
-- Use `transform` only for small one-expression JSON transforms. 
+- Use field/index projection directly (`review.output.ready`, `items[0]`).
+- Use `fmap`/`lift` for small one-expression JSON transforms.
 - Use `template` for compact strings and `md` for multiline prompts/messages.
 - Use signal nodes only when the workflow needs external control.
 - Keep graph-boundary schema values JSON-compatible and durable.

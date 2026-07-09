@@ -1,8 +1,8 @@
 import { defineWorkflow, z } from "acpus/core";
-import { transform } from "acpus/expression";
+import { fmap } from "acpus/expression";
 
 export default defineWorkflow({
-  name: "eslint_transform_fixture",
+  name: "eslint_fmap_fixture",
   inputSchema: z.object({
     issue: z.object({
       title: z.string(),
@@ -10,10 +10,10 @@ export default defineWorkflow({
   }),
 }).build(({ input }) => {
   const suffix = "!";
-  const view = transform(input.issue, issue => {
+  const view = fmap(input.issue, issue => {
     return { title: issue.title.trim() };
   });
-  const captured = transform(input.issue, issue => issue.title + suffix);
+  const captured = fmap(input.issue, issue => issue.title + suffix);
 
   return { title: view.title, captured };
 });

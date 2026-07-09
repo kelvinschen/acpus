@@ -1,25 +1,13 @@
 import { assertType, test } from "vitest";
 import {
-  add,
-  coalesce,
-  divide,
-  every,
-  filter,
-  get,
-  head,
-  ifElse,
-  join,
-  map,
+  fmap,
+  lift,
+  lift2,
+  lift3,
   md,
-  mod,
-  multiply,
-  pick,
-  some,
-  subtract,
-  transform,
-  where,
   type Expr,
-  type OutputAccessor,
+  type ExprValue,
+  type WorkflowData,
   type WorkflowValue,
 } from "@acpus/expression";
 import { refExpr } from "@acpus/expression/ir";
@@ -29,10 +17,13 @@ import { expr as rootExpr } from "@acpus/expression";
 import { refExpr as rootRefExpr } from "@acpus/expression";
 // @ts-expect-error valueToExprIR is exported from @acpus/expression/ir, not the root.
 import { valueToExprIR as rootValueToExprIR } from "@acpus/expression";
+// @ts-expect-error old algebra helpers are not exported from the root surface.
+import { eq as removedEq } from "@acpus/expression";
 
 void rootExpr;
 void rootRefExpr;
 void rootValueToExprIR;
+void removedEq;
 
 type Item = {
   done: boolean;
@@ -41,74 +32,51 @@ type Item = {
 };
 
 const items = refExpr<readonly Item[]>(["input", "items"]);
-const maybeName = refExpr<string | null>(["input", "name"]);
-const maybeUser = refExpr<{ deletedAt: string | null; tags: readonly string[] }>(["input", "user"]);
+const count = refExpr<number>(["input", "count"]);
+const ready = refExpr<boolean>(["input", "ready"]);
+const kind = refExpr<string>(["input", "kind"]);
+const maxItems = refExpr<number>(["input", "maxItems"]);
 
-test("authoring helpers infer core expression shapes", () => {
+test("authoring helpers infer expression shapes", () => {
+  assertType<WorkflowData>({ ok: true, values: [1, "two", null] });
   assertType<WorkflowValue<string>>("literal");
-  assertType<OutputAccessor<readonly Item[]>>(items);
-  assertType<Expr<boolean>>(every(items, () => true));
-  assertType<Expr<boolean>>(some(items, () => false));
-  assertType<Expr<readonly Item[]>>(filter(items, () => true));
-  assertType<Expr<readonly string[]>>(map(items, () => "name"));
-  assertType<Expr<Item | undefined>>(head(items));
-  assertType<Expr<Item | undefined>>(get(items, 0));
-  assertType<Expr<string>>(coalesce(maybeName, "unknown"));
-  assertType<Expr<string>>(md`hello ${maybeName}`);
-  assertType<Expr<string | number>>(ifElse(refExpr<boolean>(["input", "ok"]), "ok", 1));
-  assertType<Expr<number>>(add(1, refExpr<number>(["input", "count"])));
-  assertType<Expr<number>>(subtract(refExpr<number>(["input", "count"]), 1));
-  assertType<Expr<number>>(multiply(refExpr<number>(["input", "count"]), 2));
-  assertType<Expr<number>>(divide(refExpr<number>(["input", "count"]), 2));
-  assertType<Expr<number>>(mod(refExpr<number>(["input", "count"]), 2));
-  assertType<Expr<string>>(join(map(items, item => item.name), "\n"));
-  assertType<OutputAccessor<number>>(transform(refExpr<number>(["input", "count"]), value => value + 1));
-  const transformedIssue = transform(refExpr<{ title: string; labels: readonly string[] }>(["input", "issue"]), issue => ({
+  assertType<ExprValue<readonly Item[]>>(items);
+  assertType<Expr<string>>(md`hello ${kind}`);
+
+  assertType<ExprValue<number>>(fmap(count, value => value + 1));
+  assertType<ExprValue<number>>(fmap(items, values => values.length));
+  assertType<ExprValue<readonly string[]>>(fmap(items, values => values.map(item => item.name)));
+  assertType<ExprValue<readonly Item[]>>(fmap(items, values => values.filter(item => item.done)));
+
+  assertType<ExprValue<boolean>>(lift2(ready, kind, (ready, kind) => ready && kind === "release"));
+  assertType<ExprValue<boolean>>(lift3(ready, kind, maxItems, (ready, kind, maxItems) => ready && kind === "release" && maxItems > 0));
+  assertType<ExprValue<boolean>>(lift({ ready, kind, maxItems }, ({ ready, kind, maxItems }) => ready && kind === "release" && maxItems > 0));
+
+  const transformedIssue = fmap(refExpr<{ title: string; labels: readonly string[] }>(["input", "issue"]), issue => ({
     title: issue.title.trim(),
     urgent: issue.labels.includes("urgent"),
     meta: { labels: issue.labels },
   }));
-  assertType<OutputAccessor<{ title: string; urgent: boolean; meta: { labels: readonly string[] } }>>(transformedIssue);
-  assertType<OutputAccessor<string>>(transformedIssue.title);
-  assertType<OutputAccessor<readonly string[]>>(transformedIssue.meta.labels);
-  assertType<OutputAccessor<string>>(transformedIssue.meta.labels[0]!);
-  assertType<OutputAccessor<string>>(pick(transformedIssue, ["title"]).title);
-  assertType<Expr<boolean>>(where(head(items), { done: true }));
-  assertType<Expr<boolean>>(where(maybeName, null));
-  assertType<Expr<boolean>>(where(maybeUser, { deletedAt: null, tags: { eq: ["ready"] } }));
-  assertType<OutputAccessor<string | undefined>>(pick(head(items), ["name"]).name);
+  assertType<ExprValue<{ title: string; urgent: boolean; meta: { labels: readonly string[] } }>>(transformedIssue);
+  assertType<ExprValue<string>>(transformedIssue.title);
+  assertType<ExprValue<readonly string[]>>(transformedIssue.meta.labels);
+  assertType<ExprValue<string | undefined>>(transformedIssue.meta.labels[0]!);
+  assertType<ExprValue<string>>(fmap(transformedIssue.meta.labels[0], label => label ?? "fallback"));
 });
 
-test("authoring helpers reject unknown values where static typing can prove it", () => {
-  // @ts-expect-error coalesce requires at least one value.
-  coalesce();
-  // @ts-expect-error every callbacks must produce booleans.
-  every(items, () => "done");
-  // @ts-expect-error dynamic array get uses numeric keys.
-  get(items, "0");
-  // @ts-expect-error arithmetic helpers require number workflow values.
-  add(maybeName, 1);
-  // @ts-expect-error join requires a workflow string array.
-  join(map(items, item => item.score), "\n");
-  // @ts-expect-error where rejects unknown typed object keys.
-  where(head(items), { missing: true });
-  // @ts-expect-error where object sugar reserves operator keys; use eq(user.eq, value) instead.
-  where(refExpr<{ eq: string }>(["input", "user"]), { eq: "x" });
-  // @ts-expect-error dynamic string get is for records, not plain object refs.
-  get(refExpr<{ name: string }>(["input", "user"]), "name");
-  // @ts-expect-error pick is accessor projection sugar, not object literal projection.
-  pick({ name: "Ada" }, ["name"]);
-  assertType<OutputAccessor<string>>(pick(refExpr<{ ir: string }>(["input", "user"]), ["ir"]).ir);
-  assertType<OutputAccessor<string>>(refExpr<{ ir: string }>(["input", "user"]).ir);
-  assertType<Expr<boolean>>(where(refExpr<{ ir: string }>(["input", "user"]), { ir: "ok" }));
-  // @ts-expect-error pick cannot project reserved expression token internals.
-  pick(refExpr<{ __ir: string }>(["input", "user"]), ["__ir"]);
-  // @ts-expect-error where cannot filter reserved expression token internals.
-  where(refExpr<{ __ir: string }>(["input", "user"]), { __ir: "ok" });
-  // @ts-expect-error accessor token property .__ir is reserved for expression IR inspection.
-  assertType<Expr<string>>(refExpr<{ __ir: string }>(["input", "user"]).__ir);
-  transform(refExpr<{ title: string }>(["input", "issue"]), issue => {
-    // @ts-expect-error transform callback parameter is inferred from the input value.
+test("authoring helpers reject unsupported shapes where static typing can prove it", () => {
+  fmap(refExpr<{ title: string }>(["input", "issue"]), issue => {
+    // @ts-expect-error fmap callback parameter is inferred from the input value.
     return issue.missing;
   });
+  // @ts-expect-error async callbacks return Promise, not WorkflowData.
+  fmap(count, async value => value + 1);
+  // @ts-expect-error Date objects are not WorkflowData.
+  fmap(count, () => new Date());
+  // @ts-expect-error undefined is not WorkflowData.
+  fmap(count, () => undefined);
+  // @ts-expect-error lift takes a named dependency object, not tuple deps.
+  lift([ready, kind], ([ready, kind]) => ready && kind === "release");
+  // @ts-expect-error lift does not support variadic dependencies.
+  lift(ready, kind, (ready: boolean, kind: string) => ready && kind === "release");
 });

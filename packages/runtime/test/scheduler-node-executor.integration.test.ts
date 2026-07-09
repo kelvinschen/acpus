@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { defineWorkflow, z } from "@acpus/core";
 import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
-import { eq, template } from "@acpus/expression";
+import { fmap, template } from "@acpus/expression";
 import { describe, expect, it, vi } from "vitest";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { createRuntimeNodeExecutor } from "../src/scheduler/node-executor.js";
@@ -61,6 +61,31 @@ describe("runtime scheduler node executor", () => {
         expect(store.getRun(run.id)).toMatchObject({ status: "failed" });
         expect(store.getRun(run.id)?.output).toBeUndefined();
         expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'run.failed'", run.id)).toMatchObject({ count: 1 });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("bridges expression callback evaluation failures to the public run projection", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-expression-callback-failed", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, failingExpressionCallbackWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+
+        await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "failed" });
+
+        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        expect(projection.frames.root).toMatchObject({
+          status: "failed",
+          error: expect.objectContaining({
+            reason: "expression_failed",
+            message: expect.stringContaining("fmap(...) expected JSON-compatible values."),
+          }),
+        });
+        expect(store.getRun(run.id)).toMatchObject({ status: "failed" });
+        expect(store.getRun(run.id)?.output).toBeUndefined();
       } finally {
         store.close();
       }
@@ -2842,6 +2867,15 @@ function failingRootAssertWorkflow() {
   });
 }
 
+function failingExpressionCallbackWorkflow() {
+  return defineWorkflow({
+    name: "scheduler-node-executor-failing-expression-callback",
+  }).build(({ step }) => {
+    step("fail").assert({ condition: fmap(true, _value => new Date() as any) });
+    return {};
+  });
+}
+
 function rootSignalWorkflow() {
   return defineWorkflow({
     name: "scheduler-node-executor-signal",
@@ -2950,7 +2984,7 @@ function rootSwitchSequentialTaskWorkflow() {
     const route = step("route").switch({
       cases: [
         {
-          when: eq(input.mode, "case"),
+          when: fmap(input.mode, mode => mode === "case"),
           then() {
             const first = step("case_first").task({
               run: { input: {}, exec: async () => ({ value: "case" }) },

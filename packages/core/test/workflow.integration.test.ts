@@ -8,7 +8,7 @@ import {
   z,
 } from "../src/index.js";
 import { compileWorkflowDefinition } from "../src/workflow.js";
-import { coalesce, eq, head, matches, or, pick, template, where } from "@acpus/expression";
+import { fmap, lift2, template } from "@acpus/expression";
 
 const NormalizeInput = z.object({ packageName: z.string() });
 const ReviewOutput = z.object({ ready: z.boolean(), summary: z.string() });
@@ -63,7 +63,7 @@ describe("workflow compilation", () => {
       });
 
       step("require_tests").assert({
-        condition: where(tests.output, { passed: true }),
+        condition: fmap(tests.output, output => output.passed === true),
         message: template`Tests failed: ${tests.output.summary}`,
       });
 
@@ -91,7 +91,8 @@ describe("workflow compilation", () => {
       });
 
       return {
-        ...pick(review.output, ["ready", "summary"]),
+        ready: review.output.ready,
+        summary: review.output.summary,
         approved: humanGate.output.approved,
         slug: normalized.output.slug,
         runId: meta.runId,
@@ -160,10 +161,10 @@ describe("workflow compilation", () => {
       kind: "assert",
       condition: {
         kind: "call",
-        fn: "eq",
+        fn: "fmap",
         args: [
-          { kind: "ref", path: ["nodes", "run_tests", "output", "passed"] },
-          { kind: "literal", value: true },
+          { kind: "ref", path: ["nodes", "run_tests", "output"] },
+          { kind: "literal", value: expect.any(String) },
         ],
       },
     });
@@ -301,7 +302,7 @@ describe("workflow compilation", () => {
 
       const checks = step("checks").parallel({
         branches: {
-          fast() { return (pick(gate.output, ["status"])); },
+          fast() { return { status: gate.output.status }; },
           slow() { return { done: true }; },
         },
         maxConcurrency: 2,
@@ -310,7 +311,7 @@ describe("workflow compilation", () => {
       const perItem = step("per_item").fanout({
         over: input.items,
         key({ item, itemIndex }) { return template`item-${item}-${itemIndex}`; },
-        do({ item }) { return { ok: matches(item, ".+") }; },
+        do({ item }) { return { ok: fmap(item, value => /.+/.test(value)) }; },
         maxConcurrency: 4,
       });
 
@@ -318,17 +319,17 @@ describe("workflow compilation", () => {
         state: { done: false as boolean, summary: "first" },
         do({ round, state }) { return {
             state: {
-              done: eq(round, 3),
+              done: fmap(round, value => value === 3),
               summary: state.summary,
             },
-            stop: or(eq(round, 3), eq(state.done, true)),
+            stop: lift2(round, state.done, (value, done) => value === 3 || done === true),
           }; },
       });
 
       return {
         status: gate.output.status,
         fastStatus: checks.output.fast.status,
-        firstItemOk: coalesce(head(perItem.output).ok, false),
+        firstItemOk: fmap(perItem.output, items => items[0]?.ok ?? false),
         done: retry.output.done,
       };
     });
@@ -394,10 +395,10 @@ describe("workflow compilation", () => {
         outputs: {
           ok: {
             kind: "call",
-            fn: "matches",
+            fn: "fmap",
             args: [
               { kind: "ref", path: ["fanout", "per_item", "item"] },
-              { kind: "literal", value: ".+" },
+              { kind: "literal", value: expect.any(String) },
             ],
           },
         },
@@ -412,24 +413,10 @@ describe("workflow compilation", () => {
       },
       firstItemOk: {
         kind: "call",
-        fn: "coalesce",
+        fn: "fmap",
         args: [
-          {
-            kind: "call",
-            fn: "get",
-            args: [
-              {
-                kind: "call",
-                fn: "get",
-                args: [
-                  { kind: "ref", path: ["nodes", "per_item", "output"] },
-                  { kind: "literal", value: 0 },
-                ],
-              },
-              { kind: "literal", value: "ok" },
-            ],
-          },
-          { kind: "literal", value: false },
+          { kind: "ref", path: ["nodes", "per_item", "output"] },
+          { kind: "literal", value: expect.any(String) },
         ],
       },
     });
@@ -450,10 +437,10 @@ describe("workflow compilation", () => {
             fields: {
               done: {
                 kind: "call",
-                fn: "eq",
+                fn: "fmap",
                 args: [
                   { kind: "ref", path: ["loop", "retry_until_done", "round"] },
-                  { kind: "literal", value: 3 },
+                  { kind: "literal", value: expect.any(String) },
                 ],
               },
               summary: {
@@ -464,27 +451,11 @@ describe("workflow compilation", () => {
           },
           stop: {
             kind: "call",
-            fn: "or",
+            fn: "lift2",
             args: [
-              {
-                kind: "call",
-                fn: "eq",
-                args: [
-                  { kind: "ref", path: ["loop", "retry_until_done", "round"] },
-                  { kind: "literal", value: 3 },
-                ],
-              },
-              {
-                kind: "call",
-                fn: "eq",
-                args: [
-                  {
-                    kind: "ref",
-                    path: ["loop", "retry_until_done", "state", "done"],
-                  },
-                  { kind: "literal", value: true },
-                ],
-              },
+              { kind: "ref", path: ["loop", "retry_until_done", "round"] },
+              { kind: "ref", path: ["loop", "retry_until_done", "state", "done"] },
+              { kind: "literal", value: expect.any(String) },
             ],
           },
         },
@@ -514,7 +485,7 @@ describe("workflow compilation", () => {
         },
       });
 
-      return { first: head(fanout.output).value };
+      return { first: fmap(fanout.output, items => items[0]?.value ?? null) };
     });
 
     const ir = compileWorkflowDefinition(definition);
@@ -860,7 +831,7 @@ describe("workflow compilation", () => {
     }).build(({ input, step }) => {
       const loop = step("retry").loop({
         state: { ok: false as boolean },
-        do({ round }) { return { state: { ok: true }, stop: eq(round, input.rounds) }; },
+        do({ round }) { return { state: { ok: true }, stop: lift2(round, input.rounds, (value, limit) => value === limit) }; },
       });
       return { ok: loop.output.ok };
     });
@@ -875,10 +846,11 @@ describe("workflow compilation", () => {
         outputs: {
           stop: {
             kind: "call",
-            fn: "eq",
+            fn: "lift2",
             args: [
               { kind: "ref", path: ["loop", "retry", "round"] },
               { kind: "ref", path: ["input", "rounds"] },
+              { kind: "literal", value: expect.any(String) },
             ],
           },
         },
@@ -1038,5 +1010,35 @@ describe("workflow compilation", () => {
       count: 2,
     });
     expect(quorum).not.toHaveProperty("itemOutputSchema");
+  });
+
+  it("strips undefined only from plain workflow-data objects", () => {
+    const withUndefined = defineWorkflow({ name: "strip_undefined" }).build(() => ({
+      payload: {
+        keep: true,
+        drop: undefined,
+        nested: { keep: "yes", drop: undefined },
+      },
+    }));
+
+    expect(compileWorkflowDefinition(withUndefined).outputs).toEqual({
+      payload: {
+        kind: "object",
+        fields: {
+          keep: { kind: "literal", value: true },
+          nested: {
+            kind: "object",
+            fields: { keep: { kind: "literal", value: "yes" } },
+          },
+        },
+      },
+    });
+
+    const withDate = defineWorkflow({ name: "reject_non_plain_object" }).build(() => ({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      when: new Date(0) as any,
+    }));
+
+    expect(() => compileWorkflowDefinition(withDate)).toThrow("Unsupported expression value: non-plain object.");
   });
 });

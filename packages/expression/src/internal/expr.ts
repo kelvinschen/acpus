@@ -9,6 +9,11 @@ export interface Expr<T> {
 }
 
 export type WorkflowPrimitive = string | number | boolean | null;
+export type WorkflowData =
+  | WorkflowPrimitive
+  | readonly WorkflowData[]
+  | { readonly [key: string]: WorkflowData };
+
 export type AnyWorkflowValue =
   | Expr<any>
   | WorkflowPrimitive
@@ -28,19 +33,19 @@ type WorkflowLiteralValue<T> =
 
 type IsAny<T> = 0 extends (1 & T) ? true : false;
 
-export type WorkflowValue<T = any> = IsAny<T> extends true
+export type WorkflowValue<T = WorkflowData | undefined> = IsAny<T> extends true
   ? AnyWorkflowValue
   : Expr<T> | WorkflowLiteralValue<T>;
 
 type Primitive = string | number | boolean | null | undefined;
 type Nullish<T> = Extract<T, null | undefined>;
 
-export type OutputAccessor<T> = [NonNullable<T>] extends [Primitive]
+export type ExprValue<T> = [NonNullable<T>] extends [Primitive]
   ? Expr<T>
   : [NonNullable<T>] extends [readonly (infer Item)[]]
-    ? Expr<T> & { readonly [index: number]: OutputAccessor<Item | Nullish<T>> }
+    ? Expr<T> & { readonly [index: number]: ExprValue<Item | Nullish<T> | undefined> }
     : [NonNullable<T>] extends [object]
-      ? Expr<T> & { readonly [K in Exclude<keyof NonNullable<T>, keyof Expr<any>>]-?: OutputAccessor<NonNullable<T>[K] | Nullish<T>> }
+      ? Expr<T> & { readonly [K in Exclude<keyof NonNullable<T>, keyof Expr<any>>]-?: ExprValue<NonNullable<T>[K] | Nullish<T>> }
       : Expr<T>;
 
 class ExprImpl<T> implements Expr<T> {
@@ -117,46 +122,24 @@ function unsupportedExpressionValue(path: string, valueType: string): Result<Exp
   return err({ type: "unsupported-expression-value", path, valueType, message: `Unsupported expression value: ${valueType}.` });
 }
 
-export function accessor<T>(ir: ExprIR): OutputAccessor<T> {
+export function accessor<T>(ir: ExprIR): ExprValue<T> {
   const base = expr<T>(ir);
   return new Proxy(base as any, {
     get(target, prop, receiver) {
       if (prop === "__ir" || prop === "__type" || prop === EXPR || typeof prop === "symbol") return Reflect.get(target, prop, receiver);
       const key = String(prop);
       if (target.__ir.kind === "ref") return accessor({ kind: "ref", path: [...target.__ir.path, key] });
-      if (target.__ir.kind === "var") return accessor({ kind: "var", id: target.__ir.id, path: [...target.__ir.path, key] });
-      return accessor({ kind: "call", fn: "get", args: [target.__ir, { kind: "literal", value: key }] });
+      return accessor({ kind: "call", fn: "access", args: [target.__ir, { kind: "literal", value: key }] });
     },
-  }) as OutputAccessor<T>;
+  }) as ExprValue<T>;
 }
 
-export function refExpr<T>(path: string[], type?: TypeIR): OutputAccessor<T> {
+export function refExpr<T>(path: string[], type?: TypeIR): ExprValue<T> {
   return accessor<T>(type === undefined ? { kind: "ref", path } : { kind: "ref", path, type });
 }
 
-export function varExpr<T>(id: string, path: string[] = [], type?: TypeIR): OutputAccessor<T> {
-  return accessor<T>(type === undefined ? { kind: "var", id, path } : { kind: "var", id, path, type });
-}
-
-export function callExpr<T>(fn: string, args: unknown[], type?: TypeIR): OutputAccessor<T> {
-  const irArgs = args.map(valueToCallArgIR);
+export function callExpr<T>(fn: string, args: unknown[], type?: TypeIR): ExprValue<T> {
+  const irArgs = args.map(valueToExprIR);
   const ir = type === undefined ? { kind: "call" as const, fn, args: irArgs } : { kind: "call" as const, fn, args: irArgs, type };
   return accessor<T>(ir);
-}
-
-function valueToCallArgIR(value: unknown): ExprIR {
-  return isExprIR(value) ? value : valueToExprIR(value);
-}
-
-function isExprIR(value: unknown): value is ExprIR {
-  if (!value || typeof value !== "object") return false;
-  const kind = (value as { kind?: unknown }).kind;
-  return kind === "literal"
-    || kind === "ref"
-    || kind === "var"
-    || kind === "call"
-    || kind === "array"
-    || kind === "object"
-    || kind === "template"
-    || kind === "lambda";
 }

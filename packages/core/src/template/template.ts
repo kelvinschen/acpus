@@ -1,5 +1,5 @@
-import { isExpr, type WorkflowValue } from "@acpus/expression";
-import { valueToExprIR, type TemplateIR } from "@acpus/expression/ir";
+import type { WorkflowValue } from "@acpus/expression";
+import { isExpr, valueToExprIR, type TemplateIR } from "@acpus/expression/ir";
 
 export type TemplateInput = WorkflowValue<string>;
 

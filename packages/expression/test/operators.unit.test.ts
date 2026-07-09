@@ -1,138 +1,77 @@
 import { describe, expect, it } from "vitest";
-import {
-  add,
-  and,
-  coalesce,
-  divide,
-  eq,
-  endsWith,
-  every,
-  filter,
-  get,
-  gt,
-  gte,
-  head,
-  ifElse,
-  includes,
-  isEmpty,
-  join,
-  len,
-  lt,
-  lte,
-  map,
-  matches,
-  max,
-  md,
-  min,
-  mod,
-  multiply,
-  ne,
-  not,
-  or,
-  some,
-  startsWith,
-  subtract,
-  template,
-} from "@acpus/expression";
+import { fmap, lift, lift2, lift3, md, template } from "@acpus/expression";
 import { refExpr } from "@acpus/expression/ir";
 
 describe("expression operators", () => {
-  it("lowers scalar helpers to canonical calls", () => {
-    expect(and(true, not(false), or(false, true)).__ir).toEqual({
-      kind: "call",
-      fn: "and",
-      args: [
-        { kind: "literal", value: true },
-        { kind: "call", fn: "not", args: [{ kind: "literal", value: false }] },
-        { kind: "call", fn: "or", args: [{ kind: "literal", value: false }, { kind: "literal", value: true }] },
-      ],
-    });
-    expect(ifElse(true, "yes", "no").__ir).toEqual({
-      kind: "call",
-      fn: "ifElse",
-      args: [{ kind: "literal", value: true }, { kind: "literal", value: "yes" }, { kind: "literal", value: "no" }],
-    });
-  });
+  it("lowers fmap and lift calls to canonical operators", () => {
+    const title = refExpr<string>(["input", "title"]);
+    const ready = refExpr<boolean>(["input", "ready"]);
+    const kind = refExpr<string>(["input", "kind"]);
+    const count = refExpr<number>(["input", "count"]);
+    const trim = (value: string) => value.trim();
+    const release = (isReady: boolean, releaseKind: string) => isReady && releaseKind === "release";
+    const releaseWithCount = (isReady: boolean, releaseKind: string, itemCount: number) => isReady && releaseKind === "release" && itemCount > 0;
+    const releaseNamed = ({ ready, kind }: { ready: boolean; kind: string }) => ready && kind === "release";
 
-  it("lowers semantic sugar to canonical operators", () => {
-    const tags = refExpr<readonly string[]>(["input", "tags"]);
-    expect(head(tags).__ir).toEqual({ kind: "call", fn: "get", args: [tags.__ir, { kind: "literal", value: 0 }] });
-    expect(isEmpty(tags).__ir).toEqual({
+    expect(fmap(title, trim).__ir).toEqual({
       kind: "call",
-      fn: "eq",
+      fn: "fmap",
       args: [
-        { kind: "call", fn: "len", args: [tags.__ir] },
-        { kind: "literal", value: 0 },
+        title.__ir,
+        { kind: "literal", value: trim.toString() },
       ],
     });
-    expect(coalesce(refExpr<string | null>(["input", "name"]), "unknown").__ir).toEqual({
-      kind: "call",
-      fn: "coalesce",
-      args: [{ kind: "ref", path: ["input", "name"] }, { kind: "literal", value: "unknown" }],
-    });
-  });
 
-  it("lowers collection helpers with lambdas", () => {
-    const items = refExpr<readonly { done: boolean; score: number }[]>(["input", "items"]);
-    expect(every(items, item => item.done).__ir).toEqual({
+    expect(lift2(ready, kind, release).__ir).toEqual({
       kind: "call",
-      fn: "every",
+      fn: "lift2",
       args: [
-        items.__ir,
-        { kind: "lambda", params: [{ id: "v0" }, { id: "v1" }], body: { kind: "var", id: "v0", path: ["done"] } },
+        ready.__ir,
+        kind.__ir,
+        { kind: "literal", value: release.toString() },
       ],
     });
-    expect(some(items, item => item.done).__ir).toEqual({
-      kind: "call",
-      fn: "some",
-      args: [
-        items.__ir,
-        { kind: "lambda", params: [{ id: "v0" }, { id: "v1" }], body: { kind: "var", id: "v0", path: ["done"] } },
-      ],
-    });
-    expect(filter(items, item => item.done).__ir).toEqual({
-      kind: "call",
-      fn: "filter",
-      args: [
-        items.__ir,
-        { kind: "lambda", params: [{ id: "v0" }, { id: "v1" }], body: { kind: "var", id: "v0", path: ["done"] } },
-      ],
-    });
-    expect(map(items, item => item.score).__ir).toEqual({
-      kind: "call",
-      fn: "map",
-      args: [
-        items.__ir,
-        { kind: "lambda", params: [{ id: "v0" }, { id: "v1" }], body: { kind: "var", id: "v0", path: ["score"] } },
-      ],
-    });
-  });
 
-  it("keeps aggregators one-argument", () => {
-    const scores = refExpr<readonly number[]>(["input", "scores"]);
-    expect(max(scores).__ir).toEqual({ kind: "call", fn: "max", args: [scores.__ir] });
-    expect(min(scores).__ir).toEqual({ kind: "call", fn: "min", args: [scores.__ir] });
-  });
+    expect(lift3(ready, kind, count, releaseWithCount).__ir).toEqual({
+      kind: "call",
+      fn: "lift3",
+      args: [
+        ready.__ir,
+        kind.__ir,
+        count.__ir,
+        { kind: "literal", value: releaseWithCount.toString() },
+      ],
+    });
 
-  it("lowers arithmetic and string join helpers", () => {
-    const index = refExpr<number>(["loop", "rounds", "index"]);
-    const lines = refExpr<readonly string[]>(["input", "lines"]);
-    expect(add(index, 1).__ir).toEqual({ kind: "call", fn: "add", args: [index.__ir, { kind: "literal", value: 1 }] });
-    expect(subtract(index, 1).__ir).toEqual({ kind: "call", fn: "subtract", args: [index.__ir, { kind: "literal", value: 1 }] });
-    expect(multiply(index, 2).__ir).toEqual({ kind: "call", fn: "multiply", args: [index.__ir, { kind: "literal", value: 2 }] });
-    expect(divide(index, 2).__ir).toEqual({ kind: "call", fn: "divide", args: [index.__ir, { kind: "literal", value: 2 }] });
-    expect(mod(index, 2).__ir).toEqual({ kind: "call", fn: "mod", args: [index.__ir, { kind: "literal", value: 2 }] });
-    expect(join(lines, "\n").__ir).toEqual({ kind: "call", fn: "join", args: [lines.__ir, { kind: "literal", value: "\n" }] });
+    expect(lift({ ready, kind }, releaseNamed).__ir).toEqual({
+      kind: "call",
+      fn: "lift",
+      args: [
+        { kind: "object", fields: { ready: ready.__ir, kind: kind.__ir } },
+        { kind: "literal", value: releaseNamed.toString() },
+      ],
+    });
   });
 
   it("lowers templates as expression nodes", () => {
-    expect(template`count=${len(refExpr<readonly string[]>(["input", "items"]))}`.__ir).toEqual({
+    const length = (items: readonly string[]) => items.length;
+    expect(template`count=${fmap(refExpr<readonly string[]>(["input", "items"]), length)}`.__ir).toEqual({
       kind: "template",
       template: {
         kind: "template",
         parts: [
           { kind: "text", value: "count=" },
-          { kind: "expr", expr: { kind: "call", fn: "len", args: [{ kind: "ref", path: ["input", "items"] }] } },
+          {
+            kind: "expr",
+            expr: {
+              kind: "call",
+              fn: "fmap",
+              args: [
+                { kind: "ref", path: ["input", "items"] },
+                { kind: "literal", value: length.toString() },
+              ],
+            },
+          },
           { kind: "text", value: "" },
         ],
       },
@@ -159,27 +98,5 @@ describe("expression operators", () => {
         ],
       },
     });
-  });
-
-  it("lowers direct primitive helpers", () => {
-    expect(eq(get(refExpr<readonly string[]>(["input", "tags"]), 0), "ready").__ir).toEqual({
-      kind: "call",
-      fn: "eq",
-      args: [
-        { kind: "call", fn: "get", args: [{ kind: "ref", path: ["input", "tags"] }, { kind: "literal", value: 0 }] },
-        { kind: "literal", value: "ready" },
-      ],
-    });
-    expect(ne("draft", "ready").__ir).toEqual({ kind: "call", fn: "ne", args: [{ kind: "literal", value: "draft" }, { kind: "literal", value: "ready" }] });
-    expect(lt(1, 2).__ir).toEqual({ kind: "call", fn: "lt", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: 2 }] });
-    expect(lte(1, 1).__ir).toEqual({ kind: "call", fn: "lte", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: 1 }] });
-    expect(gt(2, 1).__ir).toEqual({ kind: "call", fn: "gt", args: [{ kind: "literal", value: 2 }, { kind: "literal", value: 1 }] });
-    expect(gte(2, 2).__ir).toEqual({ kind: "call", fn: "gte", args: [{ kind: "literal", value: 2 }, { kind: "literal", value: 2 }] });
-    expect(includes("release/v1", "v1").__ir).toEqual({ kind: "call", fn: "includes", args: [{ kind: "literal", value: "release/v1" }, { kind: "literal", value: "v1" }] });
-    expect(startsWith("release/v1", "release/").__ir).toEqual({ kind: "call", fn: "startsWith", args: [{ kind: "literal", value: "release/v1" }, { kind: "literal", value: "release/" }] });
-    expect(endsWith("release/v1", "v1").__ir).toEqual({ kind: "call", fn: "endsWith", args: [{ kind: "literal", value: "release/v1" }, { kind: "literal", value: "v1" }] });
-    expect(matches("release/v1", "^release/").__ir).toEqual({ kind: "call", fn: "matches", args: [{ kind: "literal", value: "release/v1" }, { kind: "literal", value: "^release/" }] });
-    expect(coalesce(null, "fallback").__ir).toEqual({ kind: "call", fn: "coalesce", args: [{ kind: "literal", value: null }, { kind: "literal", value: "fallback" }] });
-    expect(add(1, 2).__ir).toEqual({ kind: "call", fn: "add", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: 2 }] });
   });
 });

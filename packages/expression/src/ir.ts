@@ -17,17 +17,10 @@ export type TypeIR =
 export type ExprIR =
   | { kind: "literal"; value: JsonValue; type?: TypeIR }
   | { kind: "ref"; path: string[]; type?: TypeIR }
-  | { kind: "var"; id: string; path: string[]; type?: TypeIR }
   | { kind: "call"; fn: string; args: ExprIR[]; type?: TypeIR }
   | { kind: "array"; items: ExprIR[]; type?: TypeIR }
   | { kind: "object"; fields: Record<string, ExprIR>; type?: TypeIR }
-  | { kind: "template"; template: TemplateIR; type?: TypeIR }
-  | { kind: "lambda"; params: LambdaParamIR[]; body: ExprIR };
-
-export type LambdaParamIR = {
-  id: string;
-  type?: TypeIR;
-};
+  | { kind: "template"; template: TemplateIR; type?: TypeIR };
 
 export type TemplateIR = {
   kind: "template";
@@ -38,5 +31,7 @@ export type TemplatePartIR =
   | { kind: "text"; value: string }
   | { kind: "expr"; expr: ExprIR };
 
-export { expr, refExpr, valueToExprIR, tryValueToExprIR } from "./internal/expr.js";
-export type { Expr, ExprLoweringError, OutputAccessor, WorkflowValue } from "./internal/expr.js";
+export { expr, isExpr, refExpr, valueToExprIR, tryValueToExprIR } from "./internal/expr.js";
+export type { Expr, ExprLoweringError, ExprValue, WorkflowData, WorkflowValue } from "./internal/expr.js";
+export { EXPRESSION_OPERATORS, expressionCallbackOperatorNames, expressionOperatorSpec } from "./internal/operators.js";
+export type { ExpressionCallbackOperatorName, ExpressionOperatorName, OperatorSpec } from "./internal/operators.js";

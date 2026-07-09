@@ -15,113 +15,125 @@ describe("expression validator", () => {
     }]);
   });
 
-  it("validates arity and lambda placement", () => {
-    expect(validateExprIR({ kind: "call", fn: "eq", args: [{ kind: "literal", value: true }] })).toEqual([{
+  it("validates new operator arity and callback source placement", () => {
+    expect(validateExprIR({ kind: "call", fn: "fmap", args: [{ kind: "literal", value: true }] })).toEqual([{
       code: "EX003",
       severity: "error",
-      message: "eq(...) expected 2 args, got 1.",
+      message: "fmap(...) expected 2 args, got 1.",
       path: "$.args",
     }]);
     expect(validateExprIR({
       kind: "call",
-      fn: "eq",
-      args: [
-        { kind: "lambda", params: [{ id: "v0" }], body: { kind: "var", id: "v0", path: [] } },
-        { kind: "literal", value: true },
-      ],
+      fn: "fmap",
+      args: [{ kind: "literal", value: 1 }, { kind: "ref", path: ["input", "fn"] }],
     })).toEqual([{
-      code: "EX004",
+      code: "EX002",
       severity: "error",
-      message: "Lambda expression is not allowed here.",
-      path: "$.args[0]",
-    }]);
-    expect(validateExprIR({
-      kind: "call",
-      fn: "map",
-      args: [
-        { kind: "ref", path: ["input", "items"] },
-        { kind: "literal", value: true },
-      ],
-    })).toEqual([{
-      code: "EX004",
-      severity: "error",
-      message: "map(...) expected lambda callback.",
+      message: "fmap(...) expected callback source string.",
       path: "$.args[1]",
     }]);
+    expect(validateExprIR({ kind: "call", fn: "lift2", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: 2 }, { kind: "literal", value: "(a, b) => a + b" }] })).toEqual([]);
+    expect(validateExprIR({ kind: "call", fn: "lift3", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: 2 }, { kind: "literal", value: 3 }, { kind: "literal", value: "(a, b, c) => a + b + c" }] })).toEqual([]);
+    expect(validateExprIR({ kind: "call", fn: "lift", args: [{ kind: "object", fields: { a: { kind: "literal", value: 1 } } }, { kind: "literal", value: "({ a }) => a" }] })).toEqual([]);
+    expect(validateExprIR({ kind: "call", fn: "access", args: [{ kind: "literal", value: { a: 1 } }, { kind: "literal", value: "a" }] })).toEqual([]);
   });
 
-  it("validates lambda var scope", () => {
-    expect(validateExprIR({
-      kind: "call",
-      fn: "map",
-      args: [
-        { kind: "ref", path: ["input", "items"] },
-        { kind: "lambda", params: [{ id: "v0" }], body: { kind: "var", id: "missing", path: [] } },
-      ],
-    })).toEqual([{
-      code: "EX005",
+  it("rejects callback source strings that are not expression-body arrows", () => {
+    expect(validateExprIR({ kind: "call", fn: "fmap", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: "value => { return value; }" }] })).toEqual([{
+      code: "EX002",
       severity: "error",
-      message: "Unbound expression variable 'missing'.",
-      path: "$.args[1].body",
+      message: "fmap(...) callback source must be an expression-body arrow, not a block body.",
+      path: "$.args[1]",
+    }]);
+    expect(validateExprIR({ kind: "call", fn: "fmap", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: "value => /* comment */ { return value; }" }] })).toEqual([{
+      code: "EX002",
+      severity: "error",
+      message: "fmap(...) callback source must be an expression-body arrow, not a block body.",
+      path: "$.args[1]",
+    }]);
+    expect(validateExprIR({ kind: "call", fn: "lift2", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: 2 }, { kind: "literal", value: "value => value" }] })).toEqual([{
+      code: "EX002",
+      severity: "error",
+      message: "lift2(...) callback source expected 2 parameters, got 1.",
+      path: "$.args[2]",
     }]);
   });
 
-  it("validates duplicate lambda params and obvious type conflicts", () => {
-    expect(validateExprIR({
-      kind: "call",
-      fn: "map",
-      args: [
-        { kind: "ref", path: ["input", "items"] },
-        {
-          kind: "lambda",
-          params: [{ id: "v0" }, { id: "v0" }],
-          body: { kind: "var", id: "v0", path: [] },
-        },
-      ],
-    })).toEqual([{
-      code: "EX007",
+  it("rejects removed lambda and var IR", () => {
+    expect(validateExprIR({ kind: "var", id: "v0", path: [] } as any)).toEqual([{
+      code: "EX002",
       severity: "error",
-      message: "Duplicate lambda param id 'v0'.",
-      path: "$.args[1].params[1].id",
+      message: "Unknown expression kind 'var'.",
+      path: "$.kind",
     }]);
-    expect(validateExprIR({ kind: "literal", value: true, type: { kind: "number" } })).toEqual([{
-      code: "EX008",
+    expect(validateExprIR({ kind: "lambda", params: [{ id: "v0" }], body: { kind: "literal", value: true } } as any)).toEqual([{
+      code: "EX002",
       severity: "error",
-      message: "Literal type metadata does not match literal value.",
-      path: "$.type",
+      message: "Unknown expression kind 'lambda'.",
+      path: "$.kind",
     }]);
-    expect(validateExprIR({
-      kind: "call",
-      fn: "map",
-      args: [
-        { kind: "ref", path: ["input", "groups"] },
-        {
-          kind: "lambda",
-          params: [{ id: "v0" }],
-          body: {
-            kind: "call",
-            fn: "map",
-            args: [
-              { kind: "var", id: "v0", path: ["items"] },
-              {
-                kind: "lambda",
-                params: [{ id: "v0" }, { id: "v0" }],
-                body: { kind: "var", id: "v0", path: [] },
-              },
-            ],
-          },
-        },
-      ],
-    })).toEqual([{
-      code: "EX007",
-      severity: "error",
-      message: "Duplicate lambda param id 'v0'.",
-      path: "$.args[1].body.args[1].params[1].id",
-    }]);
+  });
+
+  it("rejects removed operators", () => {
+    for (const fn of [
+      "not",
+      "and",
+      "or",
+      "eq",
+      "ne",
+      "lt",
+      "lte",
+      "gt",
+      "gte",
+      "add",
+      "subtract",
+      "multiply",
+      "divide",
+      "mod",
+      "ifElse",
+      "coalesce",
+      "len",
+      "includes",
+      "isEmpty",
+      "startsWith",
+      "endsWith",
+      "matches",
+      "get",
+      "head",
+      "every",
+      "some",
+      "map",
+      "filter",
+      "join",
+      "max",
+      "min",
+      "where",
+      "pick",
+      "transform",
+    ]) {
+      expect(validateExprIR({ kind: "call", fn, args: [] })).toEqual([{
+        code: "EX001",
+        severity: "error",
+        message: `Unknown expression operator '${fn}'.`,
+        path: "$.fn",
+      }]);
+    }
   });
 
   it("validates malformed expression shapes", () => {
     expect(validateExprIR({ kind: "literal", value: undefined } as any)).toEqual([{
+      code: "EX002",
+      severity: "error",
+      message: "Expression literal value must be JSON-compatible.",
+      path: "$.value",
+    }]);
+    expect(validateExprIR({ kind: "literal", value: Number.POSITIVE_INFINITY } as any)).toEqual([{
+      code: "EX002",
+      severity: "error",
+      message: "Expression literal value must be JSON-compatible.",
+      path: "$.value",
+    }]);
+    expect(validateExprIR({ kind: "literal", value: Number.NaN } as any)).toEqual([{
       code: "EX002",
       severity: "error",
       message: "Expression literal value must be JSON-compatible.",
@@ -150,7 +162,7 @@ describe("expression validator", () => {
     }]);
   });
 
-  it("validates closed shapes, sparse arrays, and required var paths", () => {
+  it("validates closed shapes and sparse arrays", () => {
     expect(validateExprIR({ kind: "ref", path: ["input"], extra: true } as any)).toEqual([{
       code: "EX002",
       severity: "error",
@@ -158,22 +170,8 @@ describe("expression validator", () => {
       path: "$.extra",
     }]);
 
-    expect(validateExprIR({
-      kind: "call",
-      fn: "map",
-      args: [
-        { kind: "ref", path: ["input", "items"] },
-        { kind: "lambda", params: [{ id: "v0" }], body: { kind: "var", id: "v0" } },
-      ],
-    } as any)).toContainEqual({
-      code: "EX006",
-      severity: "error",
-      message: "Expression var path must be a string array.",
-      path: "$.args[1].body.path",
-    });
-
     const args = new Array(2);
-    expect(validateExprIR({ kind: "call", fn: "eq", args } as any)).toEqual([
+    expect(validateExprIR({ kind: "call", fn: "fmap", args } as any)).toEqual([
       {
         code: "EX002",
         severity: "error",
@@ -217,23 +215,7 @@ describe("expression validator", () => {
     });
   });
 
-  it("rejects unknown lambda fields", () => {
-    expect(validateExprIR({
-      kind: "call",
-      fn: "map",
-      args: [
-        { kind: "ref", path: ["input", "items"] },
-        { kind: "lambda", params: [{ id: "v0" }], body: { kind: "var", id: "v0", path: [] }, extra: { kind: "string" } },
-      ],
-    } as any)).toContainEqual({
-      code: "EX002",
-      severity: "error",
-      message: "Unknown expression field 'extra'.",
-      path: "$.args[1].extra",
-    });
-  });
-
-  it("rejects malformed templates and zero-arg coalesce", () => {
+  it("rejects malformed templates", () => {
     expect(validateExprIR({
       kind: "template",
       template: { kind: "not_template", parts: [] },
@@ -242,44 +224,6 @@ describe("expression validator", () => {
       severity: "error",
       message: "Expression template must contain template parts.",
       path: "$.template",
-    }]);
-
-    expect(validateExprIR({ kind: "call", fn: "coalesce", args: [] })).toEqual([{
-      code: "EX003",
-      severity: "error",
-      message: "coalesce(...) expected at least 1 args, got 0.",
-      path: "$.args",
-    }]);
-  });
-
-  it("accepts arithmetic and join operators with fixed arity", () => {
-    expect(validateExprIR({ kind: "call", fn: "add", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: 2 }] })).toEqual([]);
-    expect(validateExprIR({ kind: "call", fn: "subtract", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: 2 }] })).toEqual([]);
-    expect(validateExprIR({ kind: "call", fn: "multiply", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: 2 }] })).toEqual([]);
-    expect(validateExprIR({ kind: "call", fn: "divide", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: 2 }] })).toEqual([]);
-    expect(validateExprIR({ kind: "call", fn: "mod", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: 2 }] })).toEqual([]);
-    expect(validateExprIR({ kind: "call", fn: "join", args: [{ kind: "array", items: [] }, { kind: "literal", value: "\n" }] })).toEqual([]);
-    expect(validateExprIR({ kind: "call", fn: "join", args: [{ kind: "array", items: [] }] })).toEqual([{
-      code: "EX003",
-      severity: "error",
-      message: "join(...) expected 2 args, got 1.",
-      path: "$.args",
-    }]);
-  });
-
-  it("validates transform source argument shape", () => {
-    expect(validateExprIR({ kind: "call", fn: "transform", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: "value => value + 1" }] })).toEqual([]);
-    expect(validateExprIR({ kind: "call", fn: "transform", args: [{ kind: "literal", value: 1 }] })).toEqual([{
-      code: "EX003",
-      severity: "error",
-      message: "transform(...) expected 2 args, got 1.",
-      path: "$.args",
-    }]);
-    expect(validateExprIR({ kind: "call", fn: "transform", args: [{ kind: "literal", value: 1 }, { kind: "ref", path: ["input", "fn"] }] })).toEqual([{
-      code: "EX002",
-      severity: "error",
-      message: "transform(...) expected callback source string.",
-      path: "$.args[1]",
     }]);
   });
 });

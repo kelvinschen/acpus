@@ -1,7 +1,7 @@
 import type { Expr, WorkflowValue } from "@acpus/expression";
 import type { SecretToken } from "../../runtime/secret.js";
 
-export type StepInput = Record<string, WorkflowValue>;
+export type StepInput = Record<string, WorkflowValue<any>>;
 export type EnvInput = Record<string, WorkflowValue<string> | SecretToken>;
 
 export type GraphInput<Input extends StepInput> = {

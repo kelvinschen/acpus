@@ -1,5 +1,4 @@
-import { valueToExprIR } from "@acpus/expression/ir";
-import { isExpr } from "@acpus/expression";
+import { isExpr, valueToExprIR } from "@acpus/expression/ir";
 import { secretOrExprToIR } from "../runtime/secret.js";
 import type { DiagnosticIR, ExprIR, SecretRefIR } from "../ir/types.js";
 import type { EnvInput } from "../nodes/leaf/shared.js";
@@ -24,7 +23,7 @@ export function envToIR(env?: EnvInput): Record<string, ExprIR | SecretRefIR> | 
 export function stripUndefined<T>(value: T): T {
   if (isExpr(value)) return value;
   if (Array.isArray(value)) return value.map(stripUndefined) as T;
-  if (value && typeof value === "object") {
+  if (isPlainObject(value)) {
     const out: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
       if (item !== undefined) out[key] = stripUndefined(item);
@@ -32,6 +31,12 @@ export function stripUndefined<T>(value: T): T {
     return out as T;
   }
   return value;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 export function assertStableId(id: string, diagnostics: DiagnosticIR[]): void {

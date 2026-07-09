@@ -1,5 +1,5 @@
 import { WORKFLOW } from "../internal/symbols.js";
-import { makeNodeRef, refExpr, type NodeRef, type OutputAccessor } from "./refs.js";
+import { makeNodeRef, refExpr, type ExprValue, type NodeRef } from "./refs.js";
 import type { WorkflowValue } from "@acpus/expression";
 import { toSchemaIR, type InferSchema, type Schema } from "../schema/index.js";
 import { agentDefinitionToIR, agentToken, buildAgentNode, type AgentDefinitionSpec, type AgentStepSpec, type AgentToken } from "../nodes/leaf/agent.js";
@@ -68,9 +68,9 @@ export type WorkflowDefinition<InputSchema extends Schema<any> | undefined, Agen
  * values.
  */
 export type BuildContext<InputSchema extends Schema<any> | undefined, Agents extends AgentMap | undefined = undefined> = {
-  input: InputSchema extends Schema<infer Input> ? OutputAccessor<Input> : {};
+  input: InputSchema extends Schema<infer Input> ? ExprValue<Input> : {};
   agents: AgentRegistry<Agents>;
-  meta: OutputAccessor<WorkflowMeta>;
+  meta: ExprValue<WorkflowMeta>;
   step: StepFactory;
 };
 
@@ -319,11 +319,8 @@ class GraphBuildContext {
     const assert: StepDeclaration["assert"] = spec => this.withActiveDeclaration(scope => scope.assert(id, spec));
     const ifStep: StepDeclaration["if"] = spec => this.withActiveDeclaration(scope => scope.if(id, spec));
     const switchStep: StepDeclaration["switch"] = spec => this.withActiveDeclaration(scope => scope.switch(id, spec));
-    const parallel = ((spec: ParallelStepSpec<Record<string, ScopeCallback>, ParallelStrategy>) => (
-      spec.strategy === "race"
-        ? this.withActiveDeclaration(scope => scope.parallel(id, spec))
-        : this.withActiveDeclaration(scope => scope.parallel(id, spec))
-    )) as unknown as StepDeclaration["parallel"];
+    const parallel = ((spec: ParallelStepSpec<Record<string, ScopeCallback>, ParallelStrategy>) =>
+      this.withActiveDeclaration(scope => scope.parallel(id, spec as any))) as unknown as StepDeclaration["parallel"];
     const fanout = ((spec: FanoutStepSpec<WorkflowArrayValue<any>, Record<string, unknown>, FanoutStrategy>) =>
       this.withActiveDeclaration(scope => scope.fanout(id, spec as any))) as unknown as StepDeclaration["fanout"];
     const loop: StepDeclaration["loop"] = spec => this.withActiveDeclaration(scope => scope.loop(id, spec));

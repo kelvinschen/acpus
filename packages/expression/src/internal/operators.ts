@@ -1,41 +1,33 @@
 export type OperatorSpec = {
-  arity: number[] | { min: number };
-  lambdaArgs: ReadonlySet<number>;
+  arity: readonly number[];
+  callback?: {
+    callbackSourceArg: number;
+    callbackParamCount: number;
+    dependencyArgs: readonly number[];
+  };
 };
 
-export const EXPRESSION_OPERATORS: Record<string, OperatorSpec> = {
-  not: { arity: [1], lambdaArgs: new Set() },
-  and: { arity: { min: 0 }, lambdaArgs: new Set() },
-  or: { arity: { min: 0 }, lambdaArgs: new Set() },
-  ifElse: { arity: [3], lambdaArgs: new Set() },
-  eq: { arity: [2], lambdaArgs: new Set() },
-  ne: { arity: [2], lambdaArgs: new Set() },
-  add: { arity: [2], lambdaArgs: new Set() },
-  subtract: { arity: [2], lambdaArgs: new Set() },
-  multiply: { arity: [2], lambdaArgs: new Set() },
-  divide: { arity: [2], lambdaArgs: new Set() },
-  mod: { arity: [2], lambdaArgs: new Set() },
-  lt: { arity: [2], lambdaArgs: new Set() },
-  lte: { arity: [2], lambdaArgs: new Set() },
-  gt: { arity: [2], lambdaArgs: new Set() },
-  gte: { arity: [2], lambdaArgs: new Set() },
-  len: { arity: [1], lambdaArgs: new Set() },
-  includes: { arity: [2], lambdaArgs: new Set() },
-  startsWith: { arity: [2], lambdaArgs: new Set() },
-  endsWith: { arity: [2], lambdaArgs: new Set() },
-  matches: { arity: [2], lambdaArgs: new Set() },
-  coalesce: { arity: { min: 1 }, lambdaArgs: new Set() },
-  get: { arity: [2], lambdaArgs: new Set() },
-  every: { arity: [1, 2], lambdaArgs: new Set([1]) },
-  some: { arity: [1, 2], lambdaArgs: new Set([1]) },
-  filter: { arity: [2], lambdaArgs: new Set([1]) },
-  map: { arity: [2], lambdaArgs: new Set([1]) },
-  transform: { arity: [2], lambdaArgs: new Set() },
-  join: { arity: [2], lambdaArgs: new Set() },
-  max: { arity: [1], lambdaArgs: new Set() },
-  min: { arity: [1], lambdaArgs: new Set() },
+export type ExpressionOperatorName = "fmap" | "lift2" | "lift3" | "lift" | "access";
+export type ExpressionCallbackOperatorName = "fmap" | "lift2" | "lift3" | "lift";
+
+export const EXPRESSION_OPERATORS: Record<ExpressionOperatorName, OperatorSpec> = {
+  fmap: { arity: [2], callback: { callbackSourceArg: 1, callbackParamCount: 1, dependencyArgs: [0] } },
+  lift2: { arity: [3], callback: { callbackSourceArg: 2, callbackParamCount: 2, dependencyArgs: [0, 1] } },
+  lift3: { arity: [4], callback: { callbackSourceArg: 3, callbackParamCount: 3, dependencyArgs: [0, 1, 2] } },
+  lift: { arity: [2], callback: { callbackSourceArg: 1, callbackParamCount: 1, dependencyArgs: [0] } },
+  access: { arity: [2] },
 };
 
-export const WHERE_OPERATOR_KEYS = ["eq", "ne", "lt", "lte", "gt", "gte", "contains", "startsWith", "endsWith", "matches", "length"] as const;
-export type WhereOperatorKey = typeof WHERE_OPERATOR_KEYS[number];
-export const WHERE_OPERATOR_KEY_SET: ReadonlySet<WhereOperatorKey> = new Set(WHERE_OPERATOR_KEYS);
+const EXPRESSION_CALLBACK_OPERATOR_NAMES: ExpressionCallbackOperatorName[] = ["fmap", "lift2", "lift3", "lift"];
+
+export function expressionOperatorSpec(fn: string): OperatorSpec | undefined {
+  return isExpressionOperatorName(fn) ? EXPRESSION_OPERATORS[fn] : undefined;
+}
+
+export function expressionCallbackOperatorNames(): ExpressionCallbackOperatorName[] {
+  return [...EXPRESSION_CALLBACK_OPERATOR_NAMES];
+}
+
+function isExpressionOperatorName(fn: string): fn is ExpressionOperatorName {
+  return Object.prototype.hasOwnProperty.call(EXPRESSION_OPERATORS, fn);
+}

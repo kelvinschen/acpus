@@ -1,6 +1,6 @@
 import { assertType, expectTypeOf, test } from "vitest";
 import { defineWorkflow, task, z, type TaskContext } from "@acpus/core";
-import { coalesce, template, where, type Expr, type WorkflowValue } from "@acpus/expression";
+import { fmap, template, type Expr, type WorkflowValue } from "@acpus/expression";
 import { refExpr, type ExprIR } from "@acpus/expression/ir";
 import { validateWorkflowIR, type WorkflowIR } from "@acpus/core/ir";
 import { createDollar, type Dollar } from "@acpus/core/runtime";
@@ -8,7 +8,7 @@ import { isSchema, validateValue, type InferSchema } from "@acpus/core/schema";
 import { compileWorkflowDefinition, type WorkflowDefinition } from "@acpus/core/workflow";
 
 // @ts-expect-error expression helpers must not be exported from the root entrypoint.
-import { where as rootWhere } from "@acpus/core";
+import { fmap as rootFmap } from "@acpus/core";
 // @ts-expect-error workflow meta is exposed through build context, not root package values.
 import { runtime as rootRuntime } from "@acpus/core";
 // @ts-expect-error workflow meta is exposed through build context, not runtime subpath values.
@@ -24,9 +24,9 @@ test("public package subpaths expose the intended type surface", () => {
 
   assertType<InputValue>({ ready: true });
   expectTypeOf(refExpr<InputValue>(["input"])).toEqualTypeOf<Expr<InputValue> & { readonly ready: Expr<boolean>; readonly name: Expr<string | undefined> }>();
-  assertType<Expr<boolean>>(where(refExpr<InputValue>(["input"]), { ready: true }));
+  assertType<Expr<boolean>>(fmap(refExpr<InputValue>(["input"]), input => input.ready === true));
   assertType<WorkflowValue<string | undefined>>(refExpr<InputValue>(["input"]).name);
-  assertType<Expr<string>>(coalesce(refExpr<InputValue>(["input"]).name, ""));
+  assertType<Expr<string>>(fmap(refExpr<InputValue>(["input"]).name, name => name ?? ""));
 
   const definition = defineWorkflow({ name: "package-subpath-types", inputSchema: Input }).build(({ input }) => ({ ready: input.ready }));
   assertType<WorkflowDefinition<any, any>>(definition);
@@ -44,7 +44,7 @@ test("public package subpaths expose the intended type surface", () => {
   assertType<boolean>(isSchema(Input));
   assertType(validateValue(Input, { ready: true }));
 
-  void rootWhere;
+  void rootFmap;
   void rootRuntime;
   void runtimeRef;
   void (null as unknown as RootExpr);

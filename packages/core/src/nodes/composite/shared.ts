@@ -1,5 +1,5 @@
 import type { Expr, WorkflowValue } from "@acpus/expression";
-import type { OutputAccessor } from "../../graph/refs.js";
+import type { ExprValue } from "../../graph/refs.js";
 import type { OutputValues } from "../../graph/scope.js";
 import type { IsUnion } from "../../internal/type-utils.js";
 import type { ScopeIR } from "../../ir/types.js";
@@ -37,12 +37,12 @@ export type ArrayItem<Over> =
       : never;
 
 export type FanoutScopeContext<Item = any> = {
-  item: OutputAccessor<Item>;
+  item: ExprValue<Item>;
   itemIndex: Expr<number>;
 };
 
 export type LoopScopeContext<Output extends OutputObject> = {
   index: Expr<number>;
   round: Expr<number>;
-  state: OutputAccessor<Output>;
+  state: ExprValue<Output>;
 };

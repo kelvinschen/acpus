@@ -178,23 +178,23 @@ describe("workflow check pipeline", () => {
     });
   });
 
-  it("reports invalid expression transform callbacks during check", async () => {
-    await withCheckWorkspace("workflow-transform-checks", async cwd => {
+  it("reports invalid expression fmap callbacks during check", async () => {
+    await withCheckWorkspace("workflow-fmap-checks", async cwd => {
       const result = await runCheck(cwd, `
         import { defineWorkflow, z } from "acpus/core";
-        import { transform } from "acpus/expression";
+        import { fmap } from "acpus/expression";
 
         const suffix = "!";
 
         export default defineWorkflow({
-          name: "transform_check",
+          name: "fmap_check",
           inputSchema: z.object({
             issue: z.object({
               title: z.string(),
             }),
           }),
         }).build(({ input }) => {
-          const title = transform(input.issue, issue => {
+          const title = fmap(input.issue, issue => {
             return issue.title + suffix;
           });
           return { title };

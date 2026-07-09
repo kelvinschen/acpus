@@ -1,3 +1,6 @@
+import { cp } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { runSourceCli } from "./support/cli-runner.js";
 import { copyWorkflowFixture } from "./support/fixtures.js";
@@ -5,14 +8,37 @@ import { withTestWorkspace } from "./support/workspace.js";
 
 const runIdPattern = /^\d{14}[A-F0-9]{20}$/;
 
-describe.concurrent("acpus CLI subprocess smoke", () => {
+describe("acpus CLI subprocess smoke", () => {
+  it.each([
+    ["issue triage", "../skills/acpus/examples/workflows/issue-triage/workflow.ts"],
+    ["change approval", "../skills/acpus/examples/workflows/change-approval/workflow.ts"],
+    ["multi-aspect brainstorm", "../skills/acpus/examples/workflows/multi-aspect-brainstorm/workflow.ts"],
+  ])("checks skill example workflow: %s", async (_name, relativePath) => {
+    await withTestWorkspace(`e2e-check-${_name.replaceAll(" ", "-")}`, async workspace => {
+      const sourceWorkflow = fileURLToPath(new URL(relativePath, import.meta.url));
+      const targetDir = join(workspace, basename(dirname(sourceWorkflow)));
+      await cp(dirname(sourceWorkflow), targetDir, { recursive: true });
+      const workflow = join(targetDir, "workflow.ts");
+
+      const result = await runSourceCli(workspace, ["workflow", "check", workflow, "--json"]);
+
+      expect(result.exitCode, result.stdout || result.stderr).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        ok: true,
+        phase: "check",
+        diagnostics: [],
+      });
+    });
+  });
+
   it("runs a workflow path in foreground JSON mode", async () => {
     await withTestWorkspace("e2e-run-path", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts");
 
       const result = await runSourceCli(workspace, ["workflow", "run", workflow, "--input", "{\"ready\":true}", "--json"]);
 
-      expect(result.exitCode).toBe(0);
+      expect(result.exitCode, result.stdout || result.stderr).toBe(0);
       expect(result.stderr).toBe("");
       const records = result.stdout.trim().split("\n").map(line => JSON.parse(line));
       expect(records[0]).toMatchObject({ ok: true, phase: "run", kind: "admitted" });
@@ -34,7 +60,7 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
     await withTestWorkspace("e2e-runs-signal", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/signals/signal.workflow.ts");
       const admitted = await runSourceCli(workspace, ["workflow", "run", workflow, "--json"]);
-      expect(admitted.exitCode).toBe(0);
+      expect(admitted.exitCode, admitted.stdout || admitted.stderr).toBe(0);
       const runId = JSON.parse(admitted.stdout.trim().split("\n").at(-1)!).run.id;
 
       const signaled = await runSourceCli(workspace, ["runs", "signal", runId, "--target", "approve", "--payload", "{\"ok\":true}", "--json"]);
@@ -55,7 +81,7 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
 
       const admitted = await runSourceCli(workspace, ["workflow", "run", workflow, "--background", "--json"]);
 
-      expect(admitted.exitCode).toBe(0);
+      expect(admitted.exitCode, admitted.stdout || admitted.stderr).toBe(0);
       expect(admitted.stderr).toBe("");
       const admittedJson = JSON.parse(admitted.stdout);
       expect(admittedJson).toMatchObject({
@@ -102,7 +128,7 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
       const runIds = new Set<string>();
       for (const [index, result] of results.entries()) {
         expect(result.stderr, `stderr for process ${index}`).not.toContain("database is locked");
-        expect(result.exitCode, `exit for process ${index}: ${result.stderr}`).toBe(0);
+        expect(result.exitCode, `exit for process ${index}: ${result.stdout || result.stderr}`).toBe(0);
         const records = result.stdout.trim().split("\n").map(line => JSON.parse(line));
         expect(records[0], `admission for process ${index}`).toMatchObject({ ok: true, phase: "run", kind: "admitted" });
         expect(records[0].run.id).toMatch(runIdPattern);

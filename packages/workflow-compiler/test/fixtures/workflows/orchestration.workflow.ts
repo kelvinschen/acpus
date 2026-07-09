@@ -3,14 +3,9 @@ import {
   z,
 } from "acpus/core";
 import {
-  eq,
-  coalesce,
-  gte,
-  head,
-  not,
-  or,
+  fmap,
+  lift2,
   template,
-  where,
 } from "acpus/expression";
 
 const Lane = z.object({
@@ -103,7 +98,7 @@ export default defineWorkflow({
                     continue: repair.output.continue,
                     summary: repair.output.summary,
                   },
-                  stop: or(not(repair.output.continue), gte(round, 2)),
+                  stop: lift2(repair.output.continue, round, (shouldContinue, currentRound) => !shouldContinue || currentRound >= 2),
                 };
               },
             });
@@ -118,7 +113,7 @@ export default defineWorkflow({
             const route = step("route_lane").switch({
               cases: [
                 {
-                  when: eq(item.mode, "auto"),
+                  when: fmap(item.mode, mode => mode === "auto"),
                   then() {
                     const auto = step("auto_route").agent({
                       outputSchema: LaneRoute,
@@ -160,7 +155,7 @@ export default defineWorkflow({
       });
 
       return {
-        lane: coalesce(item.id, "(none)"),
+        lane: item.id,
         review_ok: laneParallel.output.review.ok,
         route: laneParallel.output.route.route,
         repair_summary: laneParallel.output.repair.summary,
@@ -201,9 +196,9 @@ export default defineWorkflow({
   return {
     approved: approval.output.approved,
     notes: approval.output.notes,
-    first_lane: coalesce(head(lanes.output).lane, "(none)"),
-    first_route: coalesce(head(lanes.output).route, "(none)"),
-    first_review_ok: where(head(lanes.output), { review_ok: true }),
+    first_lane: fmap(lanes.output, lanes => lanes[0]?.lane ?? "(none)"),
+    first_route: fmap(lanes.output, lanes => lanes[0]?.route ?? "(none)"),
+    first_review_ok: fmap(lanes.output, lanes => lanes[0]?.review_ok === true),
     run_id: meta.runId,
   };
 });
