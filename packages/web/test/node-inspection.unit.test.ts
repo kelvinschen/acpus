@@ -7,7 +7,6 @@ const baseRun: RunInspection["run"] = {
   name: "test",
   status: "running",
   workflowEntry: "/tmp/workflow.ts",
-  irDigest: "sha256:abc",
   sourceGraphDigest: "sha256:def",
   createdAt: "2026-07-01T00:00:00.000Z",
   updatedAt: "2026-07-01T00:00:01.000Z",

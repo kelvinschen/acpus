@@ -51,7 +51,6 @@ describe("CLI result output contracts", () => {
         name: "cli-valid",
         status: "completed",
         workflowEntry: "/tmp/workflow.ts",
-        irDigest: "sha256:ir",
         sourceGraphDigest: "sha256:graph",
         createdAt: "2026-06-29T00:00:00.000Z",
         updatedAt: "2026-06-29T00:00:01.000Z",
@@ -84,7 +83,6 @@ describe("CLI result output contracts", () => {
         name: "agent-run",
         status: "completed",
         workflowEntry: "/tmp/workflow.ts",
-        irDigest: "sha256:ir",
         sourceGraphDigest: "sha256:graph",
         createdAt: "2026-06-29T00:00:00.000Z",
         updatedAt: "2026-06-29T00:00:01.000Z",
@@ -135,7 +133,6 @@ describe("CLI result output contracts", () => {
         name: "agent-run",
         status: "running",
         workflowEntry: "/tmp/workflow.ts",
-        irDigest: "sha256:ir",
         sourceGraphDigest: "sha256:graph",
         createdAt: "2026-06-29T00:00:00.000Z",
         updatedAt: "2026-06-29T00:00:01.000Z",
@@ -204,7 +201,6 @@ describe("CLI result output contracts", () => {
         name: "agent-run",
         status: "running",
         workflowEntry: "/tmp/workflow.ts",
-        irDigest: "sha256:ir",
         sourceGraphDigest: "sha256:graph",
         createdAt: "2026-06-29T00:00:00.000Z",
         updatedAt: "2026-06-29T00:00:01.000Z",
@@ -273,7 +269,6 @@ describe("CLI result output contracts", () => {
         name: "agent-run",
         status: "completed",
         workflowEntry: "/tmp/workflow.ts",
-        irDigest: "sha256:ir",
         sourceGraphDigest: "sha256:graph",
         createdAt: "2026-06-29T00:00:00.000Z",
         updatedAt: "2026-06-29T00:00:01.000Z",
@@ -329,7 +324,7 @@ describe("CLI result output contracts", () => {
     expect(checkStdout.text).toContain("Workflow check passed.");
     expect(checkStdout.text).toContain("Workflow: cli-valid");
     expect(checkStdout.text).not.toContain("Preflight:");
-    expect(checkStdout.text).toContain("IR digest: sha256:");
+    expect(checkStdout.text).not.toContain("IR digest:");
     expect(checkStderr.text).toBe("");
 
     const failedStdout = new CaptureStream();
@@ -404,7 +399,6 @@ function checkResult(): CliResult {
       },
     },
     diagnostics: [],
-    irDigest: "sha256:abc",
     sourceGraphDigest: "sha256:def",
   };
 }

@@ -15,7 +15,6 @@ export type StaticGraphData = {
   workflow?: Extract<WorkflowVisualizationResult, { status: "ready" }>["workflow"];
   contract?: Extract<WorkflowVisualizationResult, { status: "ready" }>["contract"];
   diagnostics?: Extract<WorkflowVisualizationResult, { status: "ready" }>["diagnostics"];
-  irDigest?: string;
   sourceGraphDigest?: string;
 };
 
@@ -92,7 +91,6 @@ function StaticWorkflowInspector({ data }: { data: StaticGraphData }) {
         {workflow.description && <KeyValue label="Description" value={workflow.description} />}
         <KeyValue label="IR version" value={String(workflow.irVersion)} />
         <KeyValue label="Node count" value={String(workflow.nodeCount)} />
-        {data.irDigest && <KeyValue label="IR digest" value={data.irDigest} />}
         {data.sourceGraphDigest && <KeyValue label="Source digest" value={data.sourceGraphDigest} />}
       </InspectorSection>
       {data.contract?.inputSchema ? (

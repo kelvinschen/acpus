@@ -342,7 +342,6 @@ function runBase(id: string, name: string, status: RunDetails["status"]): RunDet
     name,
     status,
     workflowEntry: "workflow.ts",
-    irDigest: "sha256:ir",
     sourceGraphDigest: "sha256:graph",
     createdAt: "2026-07-03T00:00:00.000Z",
     updatedAt: "2026-07-03T00:00:01.000Z",

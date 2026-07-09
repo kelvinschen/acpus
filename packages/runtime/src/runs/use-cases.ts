@@ -609,7 +609,6 @@ function toForkPrepared(prepared: PreparedRunWorkflow): ForkPreparedWorkflow {
   return {
     workflowPath: prepared.workflowPath,
     irJson: prepared.irJson,
-    irDigest: prepared.irDigest,
     sourceGraphDigest: prepared.sourceGraphDigest,
     ...(prepared.packageLockDigest ? { packageLockDigest: prepared.packageLockDigest } : {}),
     lock: prepared.lock,

@@ -358,7 +358,7 @@ export function parallelSignalRaceWorkflow() {
 
 export function preparedWorkflow(ir: WorkflowIR, workflowPath: string, cwd: string): PreparedRunWorkflow {
   const irJson = `${JSON.stringify(ir, null, 2)}\n`;
-  const irDigest = digest(irJson);
+  const irFileDigest = digest(irJson);
   const sourceGraphDigest = digest(`${ir.lock.workflowSourceDigest ?? ""}\n`);
   const lock: RunWorkflowLockArtifact = {
     kind: "acpus_workflow_preparation_lock",
@@ -369,7 +369,7 @@ export function preparedWorkflow(ir: WorkflowIR, workflowPath: string, cwd: stri
     },
     ir: {
       path: "workflow.ir.json",
-      digest: irDigest,
+      digest: irFileDigest,
     },
     sourceGraphDigest,
     generatedAt: "2026-06-29T00:00:00.000Z",
@@ -378,7 +378,6 @@ export function preparedWorkflow(ir: WorkflowIR, workflowPath: string, cwd: stri
     workflowPath,
     ir,
     irJson,
-    irDigest,
     sourceGraphDigest,
     lock,
   };

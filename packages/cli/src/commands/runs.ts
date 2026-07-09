@@ -302,7 +302,6 @@ function runSummary(run: RunDetails): RunRecord {
     name: run.name,
     status: run.status,
     workflowEntry: run.workflowEntry,
-    irDigest: run.irDigest,
     sourceGraphDigest: run.sourceGraphDigest,
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,

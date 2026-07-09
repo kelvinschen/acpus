@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { copyFile, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -17,12 +18,13 @@ describe("workflow preparation", () => {
       const prepared = await prepareWorkflow({ workflow, cwd });
 
       expect(JSON.parse(prepared.irJson)).toMatchObject({ name: "same-file-reusable" });
-      expectSha256Digest(prepared.irDigest);
       expectSha256Digest(prepared.sourceGraphDigest);
+      expectSha256Digest(prepared.lock.ir.digest);
+      expect(prepared.lock.ir.digest).toBe(digest(prepared.irJson));
       expect(prepared.lock).toMatchObject({
         kind: "acpus_workflow_preparation_lock",
         version: 1,
-        ir: { path: "workflow.ir.json", digest: prepared.irDigest },
+        ir: { path: "workflow.ir.json", digest: prepared.lock.ir.digest },
       });
       expect(taskTarget(prepared.ir, "normalize_path")).toMatchObject({
         kind: "module",
@@ -95,6 +97,10 @@ export default defineWorkflow({
 
 function expectSha256Digest(value: string): void {
   expect(value).toMatch(/^sha256:[a-f0-9]{64}$/);
+}
+
+function digest(value: string): string {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
 async function expectPreparationFailure(workflow: string, cwd: string): Promise<WorkflowPreparationFailure> {

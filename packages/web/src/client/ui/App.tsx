@@ -737,7 +737,6 @@ function StaticWorkflowInspector({ result }: { result: Extract<WorkflowVisualiza
         {result.workflow.description && <KeyValue label="Description" value={result.workflow.description} />}
         <KeyValue label="IR version" value={String(result.workflow.irVersion)} />
         <KeyValue label="Node count" value={String(result.workflow.nodeCount)} />
-        <KeyValue label="IR digest" value={result.irDigest} />
         <KeyValue label="Source digest" value={result.sourceGraphDigest} />
       </InspectorSection>
       {result.contract.inputSchema

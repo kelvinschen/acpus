@@ -157,7 +157,6 @@ export type PreparedRunWorkflow = {
   workflowPath: string;
   ir: WorkflowIR;
   irJson: string;
-  irDigest: string;
   sourceGraphDigest: string;
   packageLockDigest?: string;
   lock: RunWorkflowLockArtifact;
@@ -168,7 +167,6 @@ export type RunRecord = {
   name: string;
   status: RunStatus;
   workflowEntry: string;
-  irDigest: string;
   sourceGraphDigest: string;
   createdAt: string;
   updatedAt: string;
@@ -424,7 +422,6 @@ export type ControlOptions = {
 export type ForkPreparedWorkflow = {
   workflowPath: string;
   irJson: string;
-  irDigest: string;
   sourceGraphDigest: string;
   packageLockDigest?: string;
   lock: RunWorkflowLockArtifact;
@@ -488,7 +485,6 @@ type RunRow = {
   name: string;
   status: RunStatus;
   workflow_entry: string;
-  ir_digest: string;
   source_graph_digest: string;
   created_at: string;
   updated_at: string;
@@ -593,7 +589,7 @@ class SqliteRuntimeStore implements RuntimeStore {
   }
 
   private runRecordColumns(): string {
-    return "id, name, status, workflow_entry, ir_digest, source_graph_digest, created_at, updated_at, progress_version, progress_updated_at";
+    return "id, name, status, workflow_entry, source_graph_digest, created_at, updated_at, progress_version, progress_updated_at";
   }
 
   close(): void {
@@ -620,9 +616,9 @@ class SqliteRuntimeStore implements RuntimeStore {
       this.db.exec("BEGIN IMMEDIATE");
       try {
         this.db.prepare(`
-          INSERT INTO runs (id, name, status, workflow_entry, ir_digest, source_graph_digest, created_at, updated_at)
-          VALUES (?, ?, 'pending', ?, ?, ?, ?, ?)
-        `).run(runId, input.prepared.ir.name, workflowEntry, input.prepared.irDigest, input.prepared.sourceGraphDigest, now, now);
+          INSERT INTO runs (id, name, status, workflow_entry, source_graph_digest, created_at, updated_at)
+          VALUES (?, ?, 'pending', ?, ?, ?, ?)
+        `).run(runId, input.prepared.ir.name, workflowEntry, input.prepared.sourceGraphDigest, now, now);
         this.db.prepare(`
           INSERT INTO run_inputs (
             run_id, workflow_ir_json, input_json, agent_overrides_json, lock_json, package_lock_digest, run_dir, created_at
@@ -641,7 +637,7 @@ class SqliteRuntimeStore implements RuntimeStore {
         this.db.prepare(`
           INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
           VALUES (?, 1, 'run.admitted', NULL, ?, ?, ?)
-        `).run(runId, stableJson(eventPayload), now, `admit:${runId}:${input.prepared.irDigest}`);
+        `).run(runId, stableJson(eventPayload), now, `admit:${runId}`);
         for (const nodeId of collectNodeIds(input.prepared.ir.root)) {
           this.db.prepare(`
             INSERT INTO node_states (run_id, node_key, node_id, status, created_at, updated_at)
@@ -1002,7 +998,7 @@ class SqliteRuntimeStore implements RuntimeStore {
     `).get(runId) as RunInputRow | undefined;
     if (!input?.workflow_ir_json || !input.lock_json) throw new Error(`Run '${runId}' has no frozen input.`);
     const forkIrJson = options.prepared?.irJson ?? input.workflow_ir_json;
-    if (options.prepared && digest(Buffer.from(forkIrJson)) !== options.prepared.irDigest) throw new Error("Fork prepared workflow IR digest does not match payload.");
+    if (options.prepared && digest(Buffer.from(forkIrJson)) !== options.prepared.lock.ir.digest) throw new Error("Fork prepared workflow IR file digest does not match payload.");
     const forkIr = JSON.parse(forkIrJson) as WorkflowIR;
     const sourceAgentOverrides = parseAgentOverrides(input.agent_overrides_json);
     const forkAgentOverrides = normalizeAgentOverrides(forkIr, options.agentOverrides, sourceAgentOverrides);
@@ -1014,7 +1010,6 @@ class SqliteRuntimeStore implements RuntimeStore {
     const forkPackageLockDigest = options.prepared?.packageLockDigest ?? input.package_lock_digest ?? null;
     const forkName = options.prepared ? forkIr.name : source.name;
     const forkWorkflowEntry = options.prepared ? relative(this.cwd, options.prepared.workflowPath) : source.workflowEntry;
-    const forkIrDigest = options.prepared?.irDigest ?? source.irDigest;
     const forkSourceGraphDigest = options.prepared?.sourceGraphDigest ?? source.sourceGraphDigest;
     const forkId = newRunId();
     const now = new Date().toISOString();
@@ -1114,7 +1109,7 @@ class SqliteRuntimeStore implements RuntimeStore {
         await cp(sourceRunDir, stagedForkRunPath, { recursive: true });
         await pruneNonInheritedArtifacts(stagedForkRunPath, artifacts);
         if (options.prepared) await writePreparedRunFiles(stagedForkRunPath, options.prepared);
-        await verifyFrozenRunFiles(stagedForkRunPath, forkIrDigest, forkLockJson, forkIrJson);
+        await verifyFrozenRunFiles(stagedForkRunPath, forkLockJson, forkIrJson);
         await verifyCopiedArtifacts(stagedForkRunPath, artifacts);
         await rm(forkRunPath, { recursive: true, force: true });
         await rename(stagedForkRunPath, forkRunPath);
@@ -1131,9 +1126,9 @@ class SqliteRuntimeStore implements RuntimeStore {
       this.db.exec("BEGIN IMMEDIATE");
       transactionStarted = true;
       this.db.prepare(`
-        INSERT INTO runs (id, name, status, workflow_entry, ir_digest, source_graph_digest, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(forkId, forkName, forkStatus, forkWorkflowEntry, forkIrDigest, forkSourceGraphDigest, now, now);
+        INSERT INTO runs (id, name, status, workflow_entry, source_graph_digest, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(forkId, forkName, forkStatus, forkWorkflowEntry, forkSourceGraphDigest, now, now);
         this.db.prepare(`
           INSERT INTO run_inputs (
           run_id, workflow_ir_json, input_json, agent_overrides_json, output_json, lock_json, package_lock_digest, run_dir, created_at
@@ -3001,7 +2996,6 @@ function migrate(db: DatabaseSync): void {
       name TEXT NOT NULL,
       status TEXT NOT NULL,
       workflow_entry TEXT NOT NULL,
-      ir_digest TEXT NOT NULL,
       source_graph_digest TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -3364,7 +3358,6 @@ function toRunRecord(row: Record<string, unknown>): RunRecord {
     name: String(row.name),
     status: String(row.status) as RunStatus,
     workflowEntry: String(row.workflow_entry),
-    irDigest: String(row.ir_digest),
     sourceGraphDigest: String(row.source_graph_digest),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
@@ -3658,9 +3651,10 @@ async function writePreparedRunFiles(runDir: string, prepared: ForkPreparedWorkf
   await writeFile(join(runDir, "lock.json"), `${JSON.stringify(prepared.lock, null, 2)}\n`);
 }
 
-async function verifyFrozenRunFiles(runDir: string, irDigest: string, lockJson: string, workflowIrJson: string): Promise<void> {
+async function verifyFrozenRunFiles(runDir: string, lockJson: string, workflowIrJson: string): Promise<void> {
   const irBytes = await readContainedFile(runDir, "workflow.ir.json");
-  if (digest(irBytes) !== irDigest) throw new Error("Fork workflow.ir.json failed copy verification.");
+  const lock = JSON.parse(lockJson) as RunWorkflowLockArtifact;
+  if (digest(irBytes) !== lock.ir.digest) throw new Error("Fork workflow.ir.json failed copy verification.");
   if (stableJson(JSON.parse(irBytes.toString("utf8"))) !== stableJson(JSON.parse(workflowIrJson))) throw new Error("Fork workflow.ir.json does not match frozen runtime state.");
   const lockBytes = await readContainedFile(runDir, "lock.json");
   if (stableJson(JSON.parse(lockBytes.toString("utf8"))) !== stableJson(JSON.parse(lockJson))) throw new Error("Fork lock.json failed copy verification.");
@@ -3685,7 +3679,7 @@ function forkRequestFingerprint(runId: string, options: ControlOptions): string 
     ...(options.prepared === undefined ? {} : {
       prepared: {
         workflowPath: options.prepared.workflowPath,
-        irDigest: options.prepared.irDigest,
+        irFileDigest: options.prepared.lock.ir.digest,
         sourceGraphDigest: options.prepared.sourceGraphDigest,
         ...(options.prepared.packageLockDigest === undefined ? {} : { packageLockDigest: options.prepared.packageLockDigest }),
       },

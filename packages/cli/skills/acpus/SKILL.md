@@ -7,7 +7,7 @@ description: Helps author, check, run, inspect, recover, and explain Acpus TypeS
 
 Use this Skill for the TypeScript implementation of Acpus.
 
-Acpus is a local durable harness for AI-first workflows. Authors write typed TypeScript workflow modules, Acpus compiles them to frozen `WorkflowIR`, and the durable runtime admits and advances runs from that frozen state.
+Acpus is a local durable harness for AI-first workflows. Authors write typed TypeScript workflow modules, Acpus compiles them and advances runs.
 
 Assume the user can run the CLI as `acpus`. If the CLI is unavailable, ask whether they want to install it with `npm install -g acpus` before giving installation steps.
 
@@ -30,7 +30,6 @@ A single conversation may move through several paths. Re-classify before each ma
 1. Use `acpus <cmd> --help` for exact command syntax.
 2. Check workflows before running; inspect runs before retry, fork, signal, cancel, pause, resume, or delete.
 3. Ask before destructive actions such as canceling, deleting `.acpus`, unsafe fork reuse, publishing, pushing, or deleting files.
-4. For exact authoring API signatures, inspect the installed package declarations.
 
 ## Authoring quick sheet
 
@@ -102,11 +101,12 @@ acpus runs inspect <run-id>
 
 ## Reference map
 
-Read only the file needed for the current task:
+Read only the file needed for the current task (Files are relative to this skill directory):
 
 | Need | Read |
 | --- | --- |
 | TypeScript workflow DSL, nodes, expressions, schemas, tasks, agents, artifacts | `references/authoring.md` |
+| Built-in and locally configured acpx agent names for `use` vs `command` | `references/acpx-agents.md` |
 | Exact public API signatures | Use the declaration lookup protocol in `references/authoring.md` |
 | CLI operation defaults and help discovery | `references/cli-operations.md` |
 | Inspecting, monitoring, retry/fork/signal/cancel/pause/resume decisions | `references/runtime-recovery.md` |

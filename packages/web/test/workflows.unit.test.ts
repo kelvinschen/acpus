@@ -114,7 +114,6 @@ function preparedWorkflow(): PreparedWorkflow {
     workflowPath: "/workspace/workflow.ts",
     ir,
     irJson: `${JSON.stringify(ir, null, 2)}\n`,
-    irDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     sourceGraphDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     lock: {
       kind: "acpus_workflow_preparation_lock",

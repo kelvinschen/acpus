@@ -31,7 +31,6 @@ export type WorkflowVisualizationResult =
     workflow: { name: string; description?: string; irVersion: number; nodeCount: number };
     contract: { inputSchema?: WorkflowIR["inputSchema"]; outputs: WorkflowIR["outputs"] };
     diagnostics: WorkflowIR["diagnostics"];
-    irDigest: string;
     sourceGraphDigest: string;
   }
   | {
@@ -131,7 +130,6 @@ export function workflowVisualizationFromPrepared(prepared: PreparedWorkflow): E
       outputs: prepared.ir.outputs,
     },
     diagnostics: prepared.ir.diagnostics,
-    irDigest: prepared.irDigest,
     sourceGraphDigest: prepared.sourceGraphDigest,
   };
 }
@@ -142,7 +140,6 @@ export type WorkflowVizHtmlOptions = {
   workflow?: Extract<WorkflowVisualizationResult, { status: "ready" }>["workflow"];
   contract?: Extract<WorkflowVisualizationResult, { status: "ready" }>["contract"];
   diagnostics?: Extract<WorkflowVisualizationResult, { status: "ready" }>["diagnostics"];
-  irDigest?: string;
   sourceGraphDigest?: string;
 };
 
@@ -154,7 +151,6 @@ export function renderWorkflowVizHtml(options: WorkflowVizHtmlOptions): string {
     ...(options.workflow ? { workflow: options.workflow } : {}),
     ...(options.contract ? { contract: options.contract } : {}),
     ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}),
-    ...(options.irDigest ? { irDigest: options.irDigest } : {}),
     ...(options.sourceGraphDigest ? { sourceGraphDigest: options.sourceGraphDigest } : {}),
   };
   const bundleJson = JSON.stringify(bundle).replaceAll("</", "<\\/");

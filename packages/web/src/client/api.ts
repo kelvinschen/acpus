@@ -3,7 +3,6 @@ export type RunRecord = {
   name: string;
   status: string;
   workflowEntry: string;
-  irDigest: string;
   sourceGraphDigest: string;
   createdAt: string;
   updatedAt: string;
@@ -324,7 +323,6 @@ export type WorkflowVisualizationResult =
     workflow: { name: string; description?: string; irVersion: number; nodeCount: number };
     contract: { inputSchema?: unknown; outputs: Record<string, unknown> };
     diagnostics: unknown[];
-    irDigest: string;
     sourceGraphDigest: string;
   }
   | {

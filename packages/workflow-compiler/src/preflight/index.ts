@@ -32,7 +32,6 @@ export type PreparedWorkflow = {
   workflowPath: string;
   ir: WorkflowIR;
   irJson: string;
-  irDigest: string;
   sourceGraphDigest: string;
   packageLockDigest?: string;
   lock: WorkflowPreparationLock;
@@ -104,7 +103,7 @@ async function prepareWorkflowResult(options: WorkflowPreparationOptions, workfl
     }
 
     const irJson = `${JSON.stringify(compiled.ir, null, 2)}\n`;
-    const irDigest = digest(irJson);
+    const irFileDigest = digest(irJson);
     const packageLock = await packageLockDigest(options.cwd);
     const sourceGraphDigest = digest([
       compiled.ir.lock.workflowSourceDigest ?? "",
@@ -115,17 +114,16 @@ async function prepareWorkflowResult(options: WorkflowPreparationOptions, workfl
       workflowPath,
       ir: compiled.ir,
       irJson,
-      irDigest,
       sourceGraphDigest,
       ...(packageLock ? { packageLockDigest: packageLock } : {}),
-      lock: buildLock(compiled.ir, workflowPath, options.cwd, irDigest, sourceGraphDigest, packageLock),
+      lock: buildLock(compiled.ir, workflowPath, options.cwd, irFileDigest, sourceGraphDigest, packageLock),
     });
   } finally {
     await rm(scratchDir, { recursive: true, force: true });
   }
 }
 
-function buildLock(ir: WorkflowIR, workflowPath: string, cwd: string, irDigest: string, sourceGraphDigest: string, packageLock: string | undefined): WorkflowPreparationLock {
+function buildLock(ir: WorkflowIR, workflowPath: string, cwd: string, irFileDigest: string, sourceGraphDigest: string, packageLock: string | undefined): WorkflowPreparationLock {
   return {
     kind: "acpus_workflow_preparation_lock",
     version: 1,
@@ -135,7 +133,7 @@ function buildLock(ir: WorkflowIR, workflowPath: string, cwd: string, irDigest: 
     },
     ir: {
       path: "workflow.ir.json",
-      digest: irDigest,
+      digest: irFileDigest,
     },
     ...(packageLock ? { packageLockDigest: packageLock } : {}),
     sourceGraphDigest,

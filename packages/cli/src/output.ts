@@ -26,7 +26,6 @@ export type CliResult = {
   message?: string;
   workflow?: WorkflowSummary;
   diagnostics?: DiagnosticIR[];
-  irDigest?: string;
   sourceGraphDigest?: string;
   run?: RunRecord | RunDetails;
   runs?: RunRecord[];
@@ -140,7 +139,6 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
   }
   if (result.hooks) writeHooks(stream, result.hooks);
   if (result.skill) writeSkillResult(stream, result.skill);
-  if (result.irDigest) stream.write(`IR digest: ${result.irDigest}\n`);
   if (result.diagnostics?.length) {
     for (const diagnostic of result.diagnostics) {
       stream.write(`[${diagnostic.severity}] ${diagnostic.code}${diagnostic.path ? ` ${diagnostic.path}` : ""}: ${diagnostic.message}\n`);

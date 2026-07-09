@@ -16,6 +16,8 @@ Import only the helpers the workflow uses. For the complete surface, inspect the
 
 Do not import `@acpus/*` from user workflows; those are implementation packages behind the `acpus/*` facades.
 
+Inside `build`, every run-dependent value from `input`, `meta`, and node `output` is an `Expr<T>` token. Do not use JavaScript `if`, `&&`, `===`, `.map`, `.length`, array indexing, or template strings over those values; use workflow control nodes and `acpus/expression` helpers.
+
 ### Minimal Workflow Skeleton
 
 ```ts
@@ -40,7 +42,9 @@ export default defineWorkflow({
 
 ### Why Expressions Exist
 
-Acpus workflows are a TypeScript-authored DSL, not ordinary runtime TypeScript. `build` declares a durable graph before a run executes, so workflow input, metadata, and prior node outputs are graph values wrapped as `Expr<T>` tokens. Treat every run-dependent value (typically from `input` and `output`) as an expression token and use graph constructs plus `acpus/expression` helpers to combine, compare, select, and render those values. Use plain JavaScript only for authoring-time constants and task `exec` bodies.
+Acpus workflows are a TypeScript-authored DSL, not ordinary runtime TypeScript. `build` declares a durable graph before a run executes, so workflow input, metadata, and prior node outputs are graph values wrapped as `Expr<T>` tokens. Treat every run-dependent value as an expression token and use graph constructs plus `acpus/expression` helpers to combine, compare, select, and render those values. Use plain JavaScript only for authoring-time constants and task `exec` bodies.
+
+Never branch or compute with JavaScript over expression tokens. Use `step().if` or `step().switch` for graph control, `and`/`or`/`eq`/`lte` for conditions, `map`/`filter`/`len`/`get` for collections, and `template` or `md` for rendered text.
 
 ### Expressions And Templates
 
@@ -121,7 +125,7 @@ const review = step("review").agent({
 });
 ```
 
-Top-level agents use either `{ use: "codex" }` for native acpx agents or `{ command: "npx pi-acp" }` for custom ACP commands.
+Top-level agents use either `{ use: "codex" }` for named acpx agents or `{ command: "my-acp-server --stdio" }` for raw ACP commands. Common built-ins include `codex`, `claude`, `gemini`, `cursor`, `copilot`, `qwen`, `trae`, and `opencode`; see `references/acpx-agents.md` for the full built-in list and local discovery rules.
 
 Task nodes run local TypeScript glue. Pass workflow values through `run.input`; inside `exec`, use only task context:
 
@@ -253,6 +257,8 @@ const initial = {
 ### Agent Sessions And Permissions
 
 - When the user has no agent preference, ask which agent to use.
+- Prefer `{ use: "<agent>" }` for built-in or locally configured acpx agents. Read `references/acpx-agents.md` before using `{ command: "..." }`.
+- Common built-ins visible at a glance: `codex`, `claude`, `gemini`, `cursor`, `copilot`, `qwen`, `trae`, `opencode`.
 - Check local availability with `command -v <binary>` before recommending a local agent.
 - Use `acpus runs retry` for control-plane retry after a failed run.
 - Omit `sessionKey` by default; set it only when a multi-turn loop explicitly needs the agent to reuse one session.
