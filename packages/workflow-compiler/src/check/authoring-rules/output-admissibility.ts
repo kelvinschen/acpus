@@ -179,7 +179,7 @@ function checkCallbackProperty(spec: ts.ObjectLiteralExpression, key: string, la
 }
 
 function callbackProducer(spec: ts.ObjectLiteralExpression, key: string, label: string, context: RuleContext): Producer | undefined {
-  const value = propertyInitializer(spec, key);
+  const value = callbackValue(spec, key);
   if (!value || !isFunctionLike(value)) {
     context.diagnostics.push(hiddenProducerDiagnostic(label, value ?? spec));
     return undefined;
@@ -426,6 +426,15 @@ function propertyInitializer(parent: ts.ObjectLiteralExpression, key: string): t
   for (const property of parent.properties) {
     if (!ts.isPropertyAssignment(property)) continue;
     if (propertyName(property.name) === key) return property.initializer;
+  }
+  return undefined;
+}
+
+function callbackValue(parent: ts.ObjectLiteralExpression, key: string): ts.Expression | ts.MethodDeclaration | undefined {
+  for (const property of parent.properties) {
+    if (!ts.isPropertyAssignment(property) && !ts.isMethodDeclaration(property)) continue;
+    if (propertyName(property.name as ts.PropertyName) !== key) continue;
+    return ts.isMethodDeclaration(property) ? property : property.initializer;
   }
   return undefined;
 }

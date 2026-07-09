@@ -51,12 +51,12 @@ export default defineWorkflow({
       synthesis: "",
     },
     maxIterations: input.rounds,
-    do: ({ iter, previous, step }) => {
+    do({ iter, previous }) {
       const firstRound = eq(iter, 0);
       const aspects = step("aspect_work").parallel({
         maxConcurrency: 4,
         branches: {
-          alpha: ({ step }) => {
+          alpha() {
             const aspect = step("alpha_aspect").agent({
               run: {
                 agent: agents.alpha,
@@ -101,7 +101,7 @@ export default defineWorkflow({
 
             return { aspect: aspect.output };
           },
-          beta: ({ step }) => {
+          beta() {
             const aspect = step("beta_aspect").agent({
               run: {
                 agent: agents.beta,
@@ -146,7 +146,7 @@ export default defineWorkflow({
 
             return { aspect: aspect.output };
           },
-          gamma: ({ step }) => {
+          gamma() {
             const aspect = step("gamma_aspect").agent({
               run: {
                 agent: agents.gamma,
@@ -191,7 +191,7 @@ export default defineWorkflow({
 
             return { aspect: aspect.output };
           },
-          delta: ({ step }) => {
+          delta() {
             const aspect = step("delta_aspect").agent({
               run: {
                 agent: agents.delta,

@@ -178,15 +178,15 @@ Inline task source is embedded in frozen IR. Reusable tasks can import package d
 
 ### Composite And Control Nodes
 
-Composite callbacks receive `{ step }` plus node-specific values such as `item`, `iter`, `previous`, and `result`. Return a plain object to declare output; do not add `outputSchema` to composites.
+Composite node callbacks accept only node-specific values such as `item`, `iter`, `previous`, and `result`. Declare nested nodes with the `step` provided by the enclosing `build` callback. Return a plain object to declare output; do not add `outputSchema` to composites.
 
 `if` branches on one expression. Both branches should return compatible object shapes:
 
 ```ts
 const gate = step("gate").if({
   condition: input.ready,
-  then: () => ({ status: "ready" }),
-  else: () => ({ status: "blocked" }),
+  then() { return { status: "ready" }; },
+  else() { return { status: "blocked" }; },
 });
 ```
 
@@ -195,9 +195,9 @@ const gate = step("gate").if({
 ```ts
 const route = step("route").switch({
   cases: [
-    { when: eq(input.kind, "bug"), then: () => ({ owner: "oncall" }) },
+    { when: eq(input.kind, "bug"), then() { return { owner: "oncall" }; } },
   ],
-  default: () => ({ owner: "backlog" }),
+  default() { return { owner: "backlog" }; },
 });
 ```
 
@@ -206,8 +206,8 @@ const route = step("route").switch({
 ```ts
 const checks = step("checks").parallel({
   branches: {
-    lint: () => ({ ok: true }),
-    test: () => ({ ok: true }),
+    lint() { return { ok: true }; },
+    test() { return { ok: true }; },
   },
 });
 ```
@@ -217,8 +217,16 @@ const checks = step("checks").parallel({
 ```ts
 const items = step("items").fanout({
   over: input.items,
-  key: ({ item }) => template`item-${item.id}`,
-  do: ({ item }) => ({ id: item.id }),
+  key({ item }) { return template`item-${item.id}`; },
+  do({ item }) {
+    const normalized = step("normalize_item").task({
+      run: {
+        input: { id: item.id },
+        exec: async ({ input }) => ({ id: input.id }),
+      },
+    });
+    return { id: normalized.output.id };
+  },
 });
 ```
 
@@ -228,11 +236,13 @@ const items = step("items").fanout({
 const refined = step("refine").loop({
   initial: { ready: false, summary: "" },
   maxIterations: 3,
-  do: ({ previous }) => ({
-    ready: previous.ready,
-    summary: previous.summary,
-  }),
-  stopWhen: ({ result }) => result.ready,
+  do({ previous }) {
+    return {
+      ready: previous.ready,
+      summary: previous.summary,
+    };
+  },
+  stopWhen({ result }) { return result.ready; },
 });
 ```
 

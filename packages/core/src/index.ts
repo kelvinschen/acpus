@@ -1,5 +1,5 @@
 export { defineWorkflow } from "./graph/builder.js";
-export type { AgentMap, BuildContext, OutputValue, OutputValues, WorkflowDefinition, StepDeclaration, StepFactory, StepInput, GraphInput, RuntimeInput, ScopeContext, AgentStepSpec, TaskStepSpec, SignalStepSpec } from "./graph/builder.js";
+export type { AgentMap, BuildContext, OutputValue, OutputValues, WorkflowDefinition, StepDeclaration, StepFactory, StepInput, GraphInput, RuntimeInput, AgentStepSpec, TaskStepSpec, SignalStepSpec } from "./graph/builder.js";
 export { z, s } from "./schema/index.js";
 export type { InferSchema, Schema } from "./schema/index.js";
 export type { JsonObject, JsonValue } from "./ir/types.js";

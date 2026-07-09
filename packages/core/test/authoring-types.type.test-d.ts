@@ -168,24 +168,18 @@ test("signal nodes support raw string and schema-backed output", () => {
   });
 });
 
-test("nested composite callbacks close over root agents but do not receive agents", () => {
+test("nested composite callbacks close over root agents", () => {
   defineWorkflow({
     name: "typed-nested-agent-access",
     agents: { worker: { command: "acpx worker" } },
   }).build(({ agents, step }) => {
     step("nested").if({
       condition: true,
-      then: ({ step }) => {
+      then() {
         step("nested_agent").agent({ run: { agent: agents.worker, prompt: "ok" } });
         return {};
       },
-      else: () => ({}),
-    });
-    step("no_agents_param").if({
-      condition: true,
-      // @ts-expect-error composite callbacks do not receive agents; close over root build agents instead.
-      then: ({ agents }) => ({}),
-      else: () => ({}),
+      else() { return {}; },
     });
     return {};
   });
@@ -258,27 +252,27 @@ test("boolean node conditions require boolean workflow values", () => {
         exec: async () => ({ ok: true, summary: "done" }),
       },
     });
-    step("ok_if").if({ condition: review.output.ok, then: () => ({}), else: () => ({}) });
+    step("ok_if").if({ condition: review.output.ok, then() { return {}; }, else() { return {}; } });
     step("bad_if").if({
       // @ts-expect-error if condition must be boolean.
       condition: review.output.summary,
-      then: () => ({}),
-      else: () => ({}),
+      then() { return {}; },
+      else() { return {}; },
     });
 
     step("ok_switch").switch({
-      cases: [{ when: review.output.ok, then: () => ({}) }],
-      default: () => ({}),
+      cases: [{ when: review.output.ok, then() { return {}; } }],
+      default() { return {}; },
     });
     step("bad_switch").switch({
       cases: [
         {
           // @ts-expect-error switch case condition must be boolean.
           when: review.output.summary,
-          then: () => ({}),
+          then() { return {}; },
         },
       ],
-      default: () => ({}),
+      default() { return {}; },
     });
 
     return {};

@@ -290,7 +290,7 @@ export function fanoutSignalWorkflow() {
   }).build(({ input, step }) => {
     const approvals = step("approvals").fanout({
       over: input.items,
-      do: ({ step }) => {
+      do() {
         const approval = step("approve").signal({
           outputSchema: z.object({ ok: z.boolean() }),
           run: { prompt: "approve" },
@@ -309,14 +309,14 @@ export function parallelSignalAllWorkflow() {
     const approvals = step("approvals").parallel({
       strategy: "all",
       branches: {
-        left: ({ step }) => {
+        left() {
           const approval = step("left_approve").signal({
             outputSchema: z.object({ ok: z.boolean() }),
             run: { prompt: "left" },
           });
           return { ok: approval.output.ok };
         },
-        right: ({ step }) => {
+        right() {
           const approval = step("right_approve").signal({
             outputSchema: z.object({ ok: z.boolean() }),
             run: { prompt: "right" },
@@ -336,14 +336,14 @@ export function parallelSignalRaceWorkflow() {
     const approval = step("approval").parallel({
       strategy: "race",
       branches: {
-        left: ({ step }) => {
+        left() {
           const approval = step("left_approve").signal({
             outputSchema: z.object({ ok: z.boolean() }),
             run: { prompt: "left" },
           });
           return { ok: approval.output.ok };
         },
-        right: ({ step }) => {
+        right() {
           const approval = step("right_approve").signal({
             outputSchema: z.object({ ok: z.boolean() }),
             run: { prompt: "right" },

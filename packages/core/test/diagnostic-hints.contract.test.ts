@@ -59,8 +59,8 @@ describe("core diagnostic hints contract", () => {
       .build(({ step }) => {
         step("gate").if({
           condition: true,
-          then: (() => undefined) as any,
-          else: () => ({ status: "ok" }),
+          then: (function () { return undefined; }) as any,
+          else() { return { status: "ok" }; },
         });
         return {};
       });

@@ -12,7 +12,7 @@ import { buildSwitchNode, type SwitchNodeRefOutput, type SwitchStepSpec } from "
 import { buildParallelNode, type ParallelNodeRefOutput, type ParallelStepSpec } from "../nodes/composite/parallel.js";
 import { buildFanoutNode, type FanoutNodeRefOutput, type FanoutStepSpec } from "../nodes/composite/fanout.js";
 import { buildLoopNode, type LoopStepSpec } from "../nodes/composite/loop.js";
-import { buildImplicitScope as buildScopeIR, isOutputObject, type OutputValues, type ScopeContext } from "./scope.js";
+import { buildImplicitScope as buildScopeIR, isOutputObject, type OutputValues } from "./scope.js";
 import { bindingsToIR, stripUndefined } from "./lowering.js";
 import type { FanoutStrategy, OutputObject, ParallelStrategy, RuntimeValueOf, ScopeCallback, WidenRuntimeValue, WorkflowArrayValue } from "../nodes/composite/shared.js";
 import type { TaskFunction } from "../runtime/task-context.js";
@@ -30,7 +30,7 @@ export type { AgentStepSpec } from "../nodes/leaf/agent.js";
 export type { TaskStepSpec } from "../nodes/leaf/task.js";
 export type { SignalStepSpec } from "../nodes/leaf/signal.js";
 export type { StepInput, GraphInput, RuntimeInput } from "../nodes/leaf/shared.js";
-export type { ScopeContext, OutputValue, OutputValues } from "./scope.js";
+export type { OutputValue, OutputValues } from "./scope.js";
 
 export type AgentMap = Record<string, AgentDefinitionSpec>;
 type AgentRegistry<Agents extends AgentMap | undefined = AgentMap | undefined> = Agents extends AgentMap
@@ -165,22 +165,168 @@ export type StepFactory = (id: string) => StepDeclaration;
 
 class GraphBuildState {
   readonly nodes: NodeIR[] = [];
+  readonly step: StepFactory;
+
+  constructor(private readonly context: GraphBuildContext) {
+    this.step = context.step;
+  }
+
+  agent<OutSchema extends Schema<any> | undefined>(
+    id: string,
+    spec: AgentStepSpec<OutSchema>,
+  ): NodeRef<OutSchema extends Schema<any> ? InferSchema<OutSchema> : string> {
+    this.nodes.push(buildAgentNode(id, spec, this.context.diagnostics));
+    return makeNodeRef(id);
+  }
+
+  task<const Input extends StepInput, Exec extends TaskFunction<RuntimeInput<Input>, any>>(
+    id: string,
+    spec: InlineTaskStepSpec<Input, Exec>,
+  ): NodeRef<Awaited<ReturnType<Exec>>>;
+
+  task<const Input extends StepInput, TaskInput, Output>(
+    id: string,
+    spec: ReusableTaskStepSpec<Input, TaskInput, Output> & (RuntimeInput<Input> extends TaskInput ? unknown : never),
+  ): NodeRef<Output>;
+
+  task<const Input extends StepInput>(
+    id: string,
+    spec: TaskStepSpec<Input>,
+  ): NodeRef<any> {
+    this.nodes.push(buildTaskNode(id, spec, this.context.diagnostics));
+    return makeNodeRef(id);
+  }
+
+  signal<OutSchema extends Schema<any> | undefined>(
+    id: string,
+    spec: SignalStepSpec<OutSchema>,
+  ): NodeRef<OutSchema extends Schema<any> ? InferSchema<OutSchema> : string> {
+    this.nodes.push(buildSignalNode(id, spec, this.context.diagnostics));
+    return makeNodeRef(id);
+  }
+
+  assert(id: string, spec: AssertSpec): void {
+    this.nodes.push(buildAssertNode(id, spec, this.context.diagnostics));
+  }
+
+  if<Output extends OutputObject>(
+    id: string,
+    spec: IfStepSpec<Output>,
+  ): NodeRef<RuntimeValueOf<Output>> {
+    this.nodes.push(buildIfNode(id, spec, this.context.diagnostics, this.buildImplicitScope));
+    return makeNodeRef(id);
+  }
+
+  switch<const Spec extends SwitchStepSpec>(
+    id: string,
+    spec: Spec,
+  ): NodeRef<SwitchNodeRefOutput<Spec>> {
+    this.nodes.push(buildSwitchNode(id, spec, this.context.diagnostics, this.buildImplicitScope));
+    return makeNodeRef(id);
+  }
+
+  parallel<const Branches extends Record<string, ScopeCallback>>(
+    id: string,
+    spec: ParallelStepSpec<Branches, "race">,
+  ): NodeRef<ParallelNodeRefOutput<Branches, "race">>;
+
+  parallel<const Branches extends Record<string, ScopeCallback>>(
+    id: string,
+    spec: ParallelStepSpec<Branches, "all">,
+  ): NodeRef<ParallelNodeRefOutput<Branches, "all">>;
+
+  parallel(
+    id: string,
+    spec: ParallelStepSpec<Record<string, ScopeCallback>, ParallelStrategy>,
+  ): NodeRef<any> {
+    this.nodes.push(buildParallelNode(id, spec, this.context.diagnostics, this.buildImplicitScope));
+    return makeNodeRef(id);
+  }
+
+  fanout<const Over extends WorkflowArrayValue<any>, Output extends OutputObject>(
+    id: string,
+    spec: FanoutStepSpec<Over, Output, "quorum">,
+  ): NodeRef<FanoutNodeRefOutput<Output, "quorum">>;
+
+  fanout<const Over extends WorkflowArrayValue<any>, Output extends OutputObject>(
+    id: string,
+    spec: FanoutStepSpec<Over, Output, "all">,
+  ): NodeRef<FanoutNodeRefOutput<Output, "all">>;
+
+  fanout(
+    id: string,
+    spec: FanoutStepSpec<WorkflowArrayValue<any>, Record<string, unknown>, FanoutStrategy>,
+  ): NodeRef<any> {
+    this.nodes.push(buildFanoutNode(id, spec, this.context.diagnostics, this.buildImplicitScope));
+    return makeNodeRef(id);
+  }
+
+  loop<Initial extends OutputObject>(
+    id: string,
+    spec: LoopStepSpec<Initial>,
+  ): NodeRef<WidenRuntimeValue<RuntimeValueOf<Initial>>> {
+    this.nodes.push(buildLoopNode(id, spec, this.context.diagnostics, this.buildImplicitScope));
+    return makeNodeRef(id);
+  }
+
+  private readonly buildImplicitScope = <Extra extends object = {}, Output extends OutputObject = OutputObject>(
+    fn: (ctx: Extra) => OutputValues<Output>,
+    extra?: Extra,
+  ): ScopeIR => {
+    const child = new GraphBuildState(this.context);
+    return this.context.withScope(child, () =>
+      buildScopeIR(this.context.diagnostics, child, fn as (ctx: Extra) => Record<string, unknown>, (extra ?? {}) as Extra));
+  };
+}
+
+class GraphBuildContext {
+  private readonly scopes: GraphBuildState[] = [];
+  private closed = false;
+
   readonly step: StepFactory = (id: string) => this.declare(id);
 
-  constructor(private readonly diagnostics: DiagnosticIR[]) {}
+  constructor(readonly diagnostics: DiagnosticIR[]) {}
+
+  withScope<T>(scope: GraphBuildState, fn: () => T): T {
+    if (this.closed) {
+      throw new Error("step() can only be called during workflow graph declaration.");
+    }
+    this.scopes.push(scope);
+    try {
+      return fn();
+    } finally {
+      this.scopes.pop();
+    }
+  }
+
+  private activeScope(): GraphBuildState {
+    const active = this.scopes.at(-1);
+    if (!active || this.closed) {
+      throw new Error("step() can only be called during workflow graph declaration.");
+    }
+    return active;
+  }
+
+  private withActiveDeclaration<T>(fn: (scope: GraphBuildState) => T): T {
+    return fn(this.activeScope());
+  }
 
   private declare(id: string): StepDeclaration {
-    const agent = ((spec: AgentStepSpec<Schema<any> | undefined>) => this.agent(id, spec)) as StepDeclaration["agent"];
-    const task = ((spec: TaskStepSpec<StepInput>) => this.task(id, spec as any)) as StepDeclaration["task"];
-    const signal = ((spec: SignalStepSpec<Schema<any> | undefined>) => this.signal(id, spec)) as StepDeclaration["signal"];
-    const assert: StepDeclaration["assert"] = spec => this.assert(id, spec);
-    const ifStep: StepDeclaration["if"] = spec => this.if(id, spec);
-    const switchStep: StepDeclaration["switch"] = spec => this.switch(id, spec);
+    this.activeScope();
+    const agent = ((spec: AgentStepSpec<Schema<any> | undefined>) => this.withActiveDeclaration(scope => scope.agent(id, spec))) as StepDeclaration["agent"];
+    const task = ((spec: TaskStepSpec<StepInput>) => this.withActiveDeclaration(scope => scope.task(id, spec as any))) as StepDeclaration["task"];
+    const signal = ((spec: SignalStepSpec<Schema<any> | undefined>) => this.withActiveDeclaration(scope => scope.signal(id, spec))) as StepDeclaration["signal"];
+    const assert: StepDeclaration["assert"] = spec => this.withActiveDeclaration(scope => scope.assert(id, spec));
+    const ifStep: StepDeclaration["if"] = spec => this.withActiveDeclaration(scope => scope.if(id, spec));
+    const switchStep: StepDeclaration["switch"] = spec => this.withActiveDeclaration(scope => scope.switch(id, spec));
     const parallel = ((spec: ParallelStepSpec<Record<string, ScopeCallback>, ParallelStrategy>) => (
-      spec.strategy === "race" ? this.parallel(id, spec) : this.parallel(id, spec)
+      spec.strategy === "race"
+        ? this.withActiveDeclaration(scope => scope.parallel(id, spec))
+        : this.withActiveDeclaration(scope => scope.parallel(id, spec))
     )) as unknown as StepDeclaration["parallel"];
-    const fanout = ((spec: FanoutStepSpec<WorkflowArrayValue<any>, Record<string, unknown>, FanoutStrategy>) => this.fanout(id, spec as any)) as unknown as StepDeclaration["fanout"];
-    const loop: StepDeclaration["loop"] = spec => this.loop(id, spec);
+    const fanout = ((spec: FanoutStepSpec<WorkflowArrayValue<any>, Record<string, unknown>, FanoutStrategy>) =>
+      this.withActiveDeclaration(scope => scope.fanout(id, spec as any))) as unknown as StepDeclaration["fanout"];
+    const loop: StepDeclaration["loop"] = spec => this.withActiveDeclaration(scope => scope.loop(id, spec));
     return {
       agent,
       task,
@@ -194,111 +340,9 @@ class GraphBuildState {
     };
   }
 
-  private agent<OutSchema extends Schema<any> | undefined>(
-    id: string,
-    spec: AgentStepSpec<OutSchema>,
-  ): NodeRef<OutSchema extends Schema<any> ? InferSchema<OutSchema> : string> {
-    this.nodes.push(buildAgentNode(id, spec, this.diagnostics));
-    return makeNodeRef(id);
+  close(): void {
+    this.closed = true;
   }
-
-  private task<const Input extends StepInput, Exec extends TaskFunction<RuntimeInput<Input>, any>>(
-    id: string,
-    spec: InlineTaskStepSpec<Input, Exec>,
-  ): NodeRef<Awaited<ReturnType<Exec>>>;
-
-  private task<const Input extends StepInput, TaskInput, Output>(
-    id: string,
-    spec: ReusableTaskStepSpec<Input, TaskInput, Output> & (RuntimeInput<Input> extends TaskInput ? unknown : never),
-  ): NodeRef<Output>;
-
-  private task<const Input extends StepInput>(
-    id: string,
-    spec: TaskStepSpec<Input>,
-  ): NodeRef<any> {
-    this.nodes.push(buildTaskNode(id, spec, this.diagnostics));
-    return makeNodeRef(id);
-  }
-
-  private signal<OutSchema extends Schema<any> | undefined>(
-    id: string,
-    spec: SignalStepSpec<OutSchema>,
-  ): NodeRef<OutSchema extends Schema<any> ? InferSchema<OutSchema> : string> {
-    this.nodes.push(buildSignalNode(id, spec, this.diagnostics));
-    return makeNodeRef(id);
-  }
-
-  private assert(id: string, spec: AssertSpec): void {
-    this.nodes.push(buildAssertNode(id, spec, this.diagnostics));
-  }
-
-  private if<Output extends OutputObject>(
-    id: string,
-    spec: IfStepSpec<Output>,
-  ): NodeRef<RuntimeValueOf<Output>> {
-    this.nodes.push(buildIfNode(id, spec, this.diagnostics, this.buildImplicitScope));
-    return makeNodeRef(id);
-  }
-
-  private switch<const Spec extends SwitchStepSpec>(
-    id: string,
-    spec: Spec,
-  ): NodeRef<SwitchNodeRefOutput<Spec>> {
-    this.nodes.push(buildSwitchNode(id, spec, this.diagnostics, this.buildImplicitScope));
-    return makeNodeRef(id);
-  }
-
-  private parallel<const Branches extends Record<string, ScopeCallback>>(
-    id: string,
-    spec: ParallelStepSpec<Branches, "race">,
-  ): NodeRef<ParallelNodeRefOutput<Branches, "race">>;
-
-  private parallel<const Branches extends Record<string, ScopeCallback>>(
-    id: string,
-    spec: ParallelStepSpec<Branches, "all">,
-  ): NodeRef<ParallelNodeRefOutput<Branches, "all">>;
-
-  private parallel(
-    id: string,
-    spec: ParallelStepSpec<Record<string, ScopeCallback>, ParallelStrategy>,
-  ): NodeRef<any> {
-    this.nodes.push(buildParallelNode(id, spec, this.diagnostics, this.buildImplicitScope));
-    return makeNodeRef(id);
-  }
-
-  private fanout<const Over extends WorkflowArrayValue<any>, Output extends OutputObject>(
-    id: string,
-    spec: FanoutStepSpec<Over, Output, "quorum">,
-  ): NodeRef<FanoutNodeRefOutput<Output, "quorum">>;
-
-  private fanout<const Over extends WorkflowArrayValue<any>, Output extends OutputObject>(
-    id: string,
-    spec: FanoutStepSpec<Over, Output, "all">,
-  ): NodeRef<FanoutNodeRefOutput<Output, "all">>;
-
-  private fanout(
-    id: string,
-    spec: FanoutStepSpec<WorkflowArrayValue<any>, Record<string, unknown>, FanoutStrategy>,
-  ): NodeRef<any> {
-    this.nodes.push(buildFanoutNode(id, spec, this.diagnostics, this.buildImplicitScope));
-    return makeNodeRef(id);
-  }
-
-  private loop<Initial extends OutputObject>(
-    id: string,
-    spec: LoopStepSpec<Initial>,
-  ): NodeRef<WidenRuntimeValue<RuntimeValueOf<Initial>>> {
-    this.nodes.push(buildLoopNode(id, spec, this.diagnostics, this.buildImplicitScope));
-    return makeNodeRef(id);
-  }
-
-  private readonly buildImplicitScope = <Extra extends object = {}, Output extends OutputObject = OutputObject>(
-    fn: (ctx: ScopeContext & Extra) => OutputValues<Output>,
-    extra?: Extra,
-  ): ScopeIR => {
-    const child = new GraphBuildState(this.diagnostics);
-    return buildScopeIR(this.diagnostics, child, fn as (ctx: ScopeContext & Extra) => Record<string, unknown>, (extra ?? {}) as Extra);
-  };
 }
 
 function normalizeAgents(agents: AgentMap | undefined, diagnostics: DiagnosticIR[]): Record<string, AgentDefinitionIR> {
@@ -371,22 +415,32 @@ function invalidAgentDefinition(diagnostics: DiagnosticIR[], path: string, messa
 
 export function compileWorkflowDefinition(definition: WorkflowDefinition<any, any>, options?: { source?: string; validate?: boolean }): WorkflowIR {
   const diagnostics: DiagnosticIR[] = [];
-  const builder = new GraphBuildState(diagnostics);
+  const context = new GraphBuildContext(diagnostics);
+  const builder = new GraphBuildState(context);
   const input = definition.config.inputSchema ? refExpr<any>(["input"]) : {};
-  const result = definition.buildFn({
-    input: input as any,
-    agents: createAgentRegistry(definition.config.agents),
-    meta: refExpr<WorkflowMeta>(["meta"]),
-    step: builder.step,
-  });
-  const validOutput = isOutputObject(result);
-  if (!validOutput) {
-    diagnostics.push({
-      code: "W001",
-      severity: "error",
-      message: "Workflow build must return an output object.",
-      hint: "Return a plain object from the workflow build callback, for example return { result: value }.",
+  let loweredOutputs: Record<string, any> = {};
+  try {
+    context.withScope(builder, () => {
+      const result = definition.buildFn({
+        input: input as any,
+        agents: createAgentRegistry(definition.config.agents),
+        meta: refExpr<WorkflowMeta>(["meta"]),
+        step: context.step,
+      });
+      const validOutput = isOutputObject(result);
+      if (!validOutput) {
+        diagnostics.push({
+          code: "W001",
+          severity: "error",
+          message: "Workflow build must return an output object.",
+          hint: "Return a plain object from the workflow build callback, for example return { result: value }.",
+        });
+        return;
+      }
+      loweredOutputs = bindingsToIR(result);
     });
+  } finally {
+    context.close();
   }
 
   const ir = stripUndefined({
@@ -396,7 +450,7 @@ export function compileWorkflowDefinition(definition: WorkflowDefinition<any, an
     inputSchema: definition.config.inputSchema ? toSchemaIR(definition.config.inputSchema) : undefined,
     agents: normalizeAgents(definition.config.agents, diagnostics),
     root: { nodes: builder.nodes },
-    outputs: validOutput ? bindingsToIR(result) : {},
+    outputs: loweredOutputs,
     lock: {
       acpusCoreVersion: "0.3.0-core-alpha",
       workflowSource: options?.source,

@@ -82,8 +82,8 @@ export default defineWorkflow({
     const reviews = step("blind_reviews").fanout({
         over: plan.output.lenses,
         maxConcurrency: 4,
-        key: ({ item }) => template`review-${item.id}`,
-        do: ({ item, step }) => {
+        key({ item }) { return template`review-${item.id}`; },
+        do({ item }) {
             const review = step("blind_review").agent({
                 run: {
                     agent: agents.reviewer,
@@ -135,8 +135,8 @@ export default defineWorkflow({
     const critiques = step("cross_critiques").fanout({
         over: plan.output.lenses,
         maxConcurrency: 4,
-        key: ({ item }) => template`critique-${item.id}`,
-        do: ({ item, step }) => {
+        key({ item }) { return template`critique-${item.id}`; },
+        do({ item }) {
             const critique = step("critique_reviews").agent({
                 run: {
                     agent: agents.critic,

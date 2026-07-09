@@ -1,6 +1,7 @@
 node_modules/
 dist/
 coverage/
+.tmp
 .tmp-tests/
 .acpus/*
 !.acpus/workflows

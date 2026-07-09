@@ -139,7 +139,7 @@ describe("workflow check pipeline", () => {
             loop: (_spec: object) => ({ ok: true }),
           };
           client.task({ run: { exec: async () => ({ when: new Date() }) } });
-          client.loop({ do: () => ({ ok: true }) });
+          client.loop({ do() { return { ok: true }; } });
           const thirdPartyTask = {
             define: (_spec: object) => ({ ok: true }),
           };
@@ -154,11 +154,13 @@ describe("workflow check pipeline", () => {
           step("loop").loop({
             initial: { ok: true, count: 0, summary: "" },
             maxIterations: 1,
-            do: ({ iter, previous }) => ({
-              ok: previous.ok,
-              count: iter,
-              summary: previous.summary,
-            }),
+            do({ iter, previous }) {
+              return {
+                ok: previous.ok,
+                count: iter,
+                summary: previous.summary,
+              };
+            },
           });
           const value = JSON.parse("{}") as JsonValue;
           const object = { ok: true } as JsonObject;
@@ -239,32 +241,32 @@ describe("workflow check pipeline", () => {
           step("reusable_escape").task({ run: { input: {}, task: reusableEscape } });
           step("reusable_broad_object").task({ run: { input: {}, task: reusableBroadObject } });
           step("bad").task({ run: { input: {}, task: badTask } });
-          const fanoutSpec = { over: ["a"], do: () => ({ ok: true }) };
+          const fanoutSpec = { over: ["a"], do() { return { ok: true }; } };
           step("items").fanout(fanoutSpec);
-          const branch = () => ({ ok: true });
+          function branch() { return { ok: true }; }
           step("parallel").parallel({ branches: { branch } });
           const hidden = { ok: true };
           step("spread").if({
             condition: true,
-            then: () => ({ ...hidden }),
-            else: () => ({ ok: true }),
+            then() { return { ...hidden }; },
+            else() { return { ok: true }; },
           });
           const key = "ok";
           step("computed").if({
             condition: true,
-            then: () => ({ [key]: true }),
-            else: () => ({ ok: true }),
+            then() { return { [key]: true }; },
+            else() { return { ok: true }; },
           });
           step("loop_hidden_initial").loop({
             initial: hidden,
             maxIterations: 1,
-            do: () => ({ ok: true }),
-            stopWhen: () => true,
+            do() { return { ok: true }; },
+            stopWhen() { return true; },
           });
           step("branch_keys").if({
             condition: true,
-            then: () => ({ ok: true }),
-            else: () => ({ missing: true }),
+            then() { return { ok: true }; },
+            else() { return { missing: true }; },
           });
           step("race_types").parallel({
             strategy: "race",
@@ -272,25 +274,25 @@ describe("workflow check pipeline", () => {
               left() {
                 return { value: "left" };
               },
-              right: () => ({ value: 1 }),
+              right() { return { value: 1 }; },
             },
           });
           step("switch_keys").switch({
-            cases: [{ when: true, then: () => ({ ok: true }) }],
-            default: () => ({ missing: true }),
+            cases: [{ when: true, then() { return { ok: true }; } }],
+            default() { return { missing: true }; },
           });
           step("loop").loop({
             initial: { ok: "seed" },
             maxIterations: -1,
-            do: () => ({ ok: 1 }),
-            stopWhen: () => false,
+            do() { return { ok: 1 }; },
+            stopWhen() { return false; },
           });
           const opaque = { ok: true } as JsonValue;
           step("opaque_loop").loop({
             initial: opaque,
             maxIterations: 1,
-            do: () => ({ ok: true }),
-            stopWhen: () => false,
+            do() { return { ok: true }; },
+            stopWhen() { return false; },
           });
           const unknownValue: unknown = "raw";
           if (input) return { ok: true };

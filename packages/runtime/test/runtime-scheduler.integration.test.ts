@@ -18,37 +18,37 @@ describe("runtime non-agent scheduler skeleton", () => {
 
       const gate = step("gate").if({
         condition: input.shouldRun,
-        then: () => ({ status: "run" }),
-        else: () => ({ status: "skip" }),
+        then() { return { status: "run" }; },
+        else() { return { status: "skip" }; },
       });
 
       const route = step("route").switch({
         cases: [
-          { when: eq(input.mode, "fast"), then: () => ({ code: "F" }) },
+          { when: eq(input.mode, "fast"), then() { return { code: "F" }; } },
         ],
-        default: () => ({ code: "D" }),
+        default() { return { code: "D" }; },
       });
 
       const checks = step("checks").parallel({
         branches: {
-          fast: () => ({ status: gate.output.status }),
-          route: () => ({ code: route.output.code }),
+          fast() { return { status: gate.output.status }; },
+          route() { return { code: route.output.code }; },
         },
       });
 
       const perItem = step("per_item").fanout({
         over: input.items,
-        do: ({ item, itemIndex }) => ({ label: item, index: itemIndex }),
+        do({ item, itemIndex }) { return { label: item, index: itemIndex }; },
       });
 
       const retry = step("retry").loop({
         initial: { done: false as boolean, summary: "first" },
         maxIterations: 3,
-        do: ({ iter, previous }) => ({
+        do({ iter, previous }) { return {
           done: eq(iter, 2),
           summary: previous.summary,
-        }),
-        stopWhen: ({ iter, result }) => or(eq(iter, 3), where(result, { done: true })),
+        }; },
+        stopWhen({ iter, result }) { return or(eq(iter, 3), where(result, { done: true })); },
         onExhausted: "returnLast",
       });
 
@@ -149,15 +149,15 @@ describe("runtime non-agent scheduler skeleton", () => {
     }).build(({ input, step }) => {
       const route = step("route").switch({
         cases: [
-          { when: false, then: () => ({ code: "selected" }) },
+          { when: false, then() { return { code: "selected" }; } },
         ],
-        default: () => ({ code: "default" }),
+        default() { return { code: "default" }; },
       });
       const quorum = step("quorum").fanout({
         strategy: "quorum",
         count: 2,
         over: input.items,
-        do: ({ item }) => ({ id: item.id, ok: matches(item.id, ".+") }),
+        do({ item }) { return { id: item.id, ok: matches(item.id, ".+") }; },
       });
       return {
         code: route.output.code,
@@ -181,7 +181,7 @@ describe("runtime non-agent scheduler skeleton", () => {
     }).build(({ input, step }) => {
       const all = step("items").fanout({
         over: input.items,
-        do: ({ item, step }) => {
+        do({ item }) {
           const work = step("work").task({
             run: { input: { item }, exec: async ({ input }) => ({ item: input.item }) },
           });
@@ -205,6 +205,70 @@ describe("runtime non-agent scheduler skeleton", () => {
     });
   });
 
+  it("executes fanout body tasks declared through the build-provided step", async () => {
+    const ir = compileWorkflowDefinition(defineWorkflow({
+      name: "closed_over_step_fanout",
+      inputSchema: z.object({
+        items: z.array(z.object({ id: z.string(), score: z.number() })),
+      }),
+    }).build(({ input, step }) => {
+      const evaluated = step("evaluate_items").fanout({
+        over: input.items,
+        do({ item }) {
+          const result = step("evaluate_item").task({
+            run: {
+              input: {
+                id: item.id,
+                score: item.score,
+              },
+              exec: async ({ input }) => ({
+                id: input.id,
+                score: input.score,
+                message: `score:${input.score}`,
+              }),
+            },
+          });
+          return {
+            id: result.output.id,
+            score: result.output.score,
+            message: result.output.message,
+          };
+        },
+      });
+      return { evaluated: evaluated.output };
+    }));
+    const fanout = ir.root.nodes.find((node) => node.id === "evaluate_items");
+
+    expect(ir.diagnostics).toEqual([]);
+    expect(ir.root.nodes).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "evaluate_item" }),
+    ]));
+    expect(fanout).toMatchObject({
+      kind: "fanout",
+      do: { nodes: [expect.objectContaining({ id: "evaluate_item", kind: "task" })] },
+    });
+
+    const result = await executeWorkflow(ir, {
+      items: [{ id: "a", score: 10 }, { id: "b", score: 20 }],
+    }, {
+      taskExecutor: async (_node, scope) => {
+        const item = (scope.fanout as Record<string, { item?: { id: string; score: number } }>).evaluate_items?.item;
+        return {
+          id: item?.id,
+          score: item?.score,
+          message: `score:${item?.score}`,
+        };
+      },
+    });
+
+    expect(result.output).toEqual({
+      evaluated: [
+        { id: "a", score: 10, message: "score:10" },
+        { id: "b", score: 20, message: "score:20" },
+      ],
+    });
+  });
+
   it("orders direct fanout quorum output by completion order", async () => {
     const ir = compileWorkflowDefinition(defineWorkflow({
       name: "direct_quorum_completion_order",
@@ -214,7 +278,7 @@ describe("runtime non-agent scheduler skeleton", () => {
         strategy: "quorum",
         count: 2,
         over: input.items,
-        do: ({ item, step }) => {
+        do({ item }) {
           const work = step("work").task({
             run: { input: { item }, exec: async ({ input }) => ({ item: input.item }) },
           });
@@ -245,11 +309,11 @@ describe("runtime non-agent scheduler skeleton", () => {
     }).build(({ input, step }) => {
       const gate = step("gate").if({
         condition: input.shouldRun,
-        then: ({ step }) => {
+        then() {
           step("then_internal").assert({ condition: true });
           return { status: "run" };
         },
-        else: ({ step }) => {
+        else() {
           step("else_internal").assert({ condition: true });
           return { status: "skip" };
         },
@@ -271,11 +335,11 @@ describe("runtime non-agent scheduler skeleton", () => {
     }).build(({ step }) => {
       const composite = step("composite").parallel({
         branches: {
-          left: ({ step }) => {
+          left() {
             step("left_internal").assert({ condition: true });
             return { ok: true };
           },
-          right: () => ({ ok: true }),
+          right() { return { ok: true }; },
         },
       });
       return { left: composite.output.left.ok, right: composite.output.right.ok };
@@ -295,11 +359,11 @@ describe("runtime non-agent scheduler skeleton", () => {
       const loop = step("retry").loop({
         initial: { iter: -1, previousIter: -1 },
         maxIterations: 3,
-        do: ({ iter, previous }) => ({
+        do({ iter, previous }) { return {
           iter,
           previousIter: previous.iter,
-        }),
-        stopWhen: () => false,
+        }; },
+        stopWhen() { return false; },
         onExhausted: "returnLast",
       });
       return { iter: loop.output.iter, previousIter: loop.output.previousIter };
@@ -313,8 +377,8 @@ describe("runtime non-agent scheduler skeleton", () => {
       step("retry").loop({
         initial: { ok: false as boolean },
         maxIterations: 2,
-        do: () => ({ ok: false }),
-        stopWhen: () => false,
+        do() { return { ok: false }; },
+        stopWhen() { return false; },
       });
       return {};
     }));
@@ -336,8 +400,8 @@ describe("runtime non-agent scheduler skeleton", () => {
       step("loop").loop({
         initial: { ok: false as boolean },
         maxIterations: 1,
-        do: () => ({ ok: true }),
-        stopWhen: () => "yes" as any,
+        do() { return { ok: true }; },
+        stopWhen() { return "yes" as any; },
       });
       return {};
     }));
@@ -349,8 +413,8 @@ describe("runtime non-agent scheduler skeleton", () => {
       const winner = step("race").parallel({
         strategy: "race",
         branches: {
-          left: () => ({ value: "left" }),
-          right: () => ({ value: "right" }),
+          left() { return { value: "left" }; },
+          right() { return { value: "right" }; },
         },
       });
       return { winner: winner.output.winner, value: winner.output.result.value };
@@ -363,11 +427,11 @@ describe("runtime non-agent scheduler skeleton", () => {
       const winner = step("race").parallel({
         strategy: "race",
         branches: {
-          left: ({ step }) => {
+          left() {
             step("fail_left").assert({ condition: false });
             return { value: "left" };
           },
-          right: () => ({ value: "right" }),
+          right() { return { value: "right" }; },
         },
       });
       return { winner: winner.output.winner, value: winner.output.result.value };
@@ -380,11 +444,11 @@ describe("runtime non-agent scheduler skeleton", () => {
       step("race").parallel({
         strategy: "race",
         branches: {
-          left: ({ step }) => {
+          left() {
             step("fail_left").assert({ condition: false });
             return { value: "left" };
           },
-          right: ({ step }) => {
+          right() {
             step("fail_right").assert({ condition: false });
             return { value: "right" };
           },
@@ -394,54 +458,50 @@ describe("runtime non-agent scheduler skeleton", () => {
     }));
     await expect(executeWorkflow(pureAllFail, {})).rejects.toThrow("Parallel race node 'race' had no successful branches.");
 
-    const calls: string[] = [];
     const executableRace = compileWorkflowDefinition(defineWorkflow({
-      name: "race_executable_safe",
+      name: "race_executable_first_success",
     }).build(({ step }) => {
       const race = step("race").parallel({
         strategy: "race",
         branches: {
-          first: ({ step }) => {
-            const result = step("first_task").task({
-              run: { input: {}, exec: async () => {
-                calls.push("first");
-                return { ok: true };
-              } },
+          slow() {
+            const result = step("slow_task").task({
+              run: {
+                input: { label: "slow" },
+                exec: async ({ input }) => ({ label: input.label }),
+              },
             });
-            return { ok: result.output.ok };
+            return { label: result.output.label };
           },
-          second: ({ step }) => {
-            const result = step("second_task").task({
-              run: { input: {}, exec: async () => {
-                calls.push("second");
-                return { ok: true };
-              } },
+          fast() {
+            const result = step("fast_task").task({
+              run: {
+                input: { label: "fast" },
+                exec: async ({ input }) => ({ label: input.label }),
+              },
             });
-            return { ok: result.output.ok };
+            return { label: result.output.label };
           },
         },
       });
-      return { winner: race.output.winner, ok: race.output.result.ok };
+      return { winner: race.output.winner, label: race.output.result.label };
     }));
-    const firstWins = await executeWorkflow(executableRace, {}, {
+    const fastWins = await executeWorkflow(executableRace, {}, {
       taskExecutor: async node => {
-        calls.push(node.id);
-        return { ok: true };
+        if (node.id === "slow_task") await new Promise(resolve => setTimeout(resolve, 20));
+        return { label: node.id === "fast_task" ? "fast" : "slow" };
       },
     });
-    expect(firstWins.output).toEqual({ winner: "first", ok: true });
-    expect(Object.keys(firstWins.executedNodes).sort()).toEqual(["first_task", "race"]);
-    expect(calls).toEqual(["first_task"]);
+    expect(fastWins.output).toEqual({ winner: "fast", label: "fast" });
+    expect(Object.keys(fastWins.executedNodes).sort()).toEqual(["fast_task", "race"]);
 
-    calls.length = 0;
-    await expect(executeWorkflow(executableRace, {}, {
+    const failover = await executeWorkflow(executableRace, {}, {
       taskExecutor: async node => {
-        calls.push(node.id);
-        if (node.id === "first_task") throw new Error("first failed");
-        return { ok: true };
+        if (node.id === "slow_task") throw new Error("slow failed");
+        return { label: "fast" };
       },
-    })).rejects.toThrow("first failed");
-    expect(calls).toEqual(["first_task"]);
+    });
+    expect(failover.output).toEqual({ winner: "fast", label: "fast" });
   });
 
   it("handles fanout empty input, non-array input, and impossible quorum", async () => {
@@ -451,7 +511,7 @@ describe("runtime non-agent scheduler skeleton", () => {
     }).build(({ input, step }) => {
       const fanout = step("per_item").fanout({
         over: input.items,
-        do: () => ({ ok: true }),
+        do() { return { ok: true }; },
       });
       return { items: fanout.output };
     }));
@@ -463,7 +523,7 @@ describe("runtime non-agent scheduler skeleton", () => {
     }).build(({ step }) => {
       step("per_item").fanout({
         over: "not-array" as any,
-        do: () => ({ ok: true }),
+        do() { return { ok: true }; },
       });
       return {};
     }));
@@ -477,7 +537,7 @@ describe("runtime non-agent scheduler skeleton", () => {
         strategy: "quorum",
         count: 2,
         over: input.items,
-        do: () => ({ ok: true }),
+        do() { return { ok: true }; },
       });
       return {};
     }));

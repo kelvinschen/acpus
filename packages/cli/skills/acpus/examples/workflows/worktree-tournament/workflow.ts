@@ -32,7 +32,7 @@ export default defineWorkflow({
 
   const candidates = step("candidate_worktrees").parallel({
     branches: {
-      alpha: ({ step }) => {
+      alpha() {
         const worktree = step("create_alpha_worktree").task({
           run: {
             task: createWorktree,
@@ -70,7 +70,7 @@ export default defineWorkflow({
           report: implementation.output,
         };
       },
-      beta: ({ step }) => {
+      beta() {
         const worktree = step("create_beta_worktree").task({
           run: {
             task: createWorktree,
@@ -108,7 +108,7 @@ export default defineWorkflow({
           report: implementation.output,
         };
       },
-      gamma: ({ step }) => {
+      gamma() {
         const worktree = step("create_gamma_worktree").task({
           run: {
             task: createWorktree,

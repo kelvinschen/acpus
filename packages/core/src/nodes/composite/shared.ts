@@ -1,14 +1,14 @@
 import type { Expr, WorkflowValue } from "@acpus/expression";
 import type { OutputAccessor } from "../../graph/refs.js";
-import type { OutputValues, ScopeContext } from "../../graph/scope.js";
+import type { OutputValues } from "../../graph/scope.js";
 import type { IsUnion } from "../../internal/type-utils.js";
 import type { ScopeIR } from "../../ir/types.js";
 export type OutputObject = Record<string, unknown>;
 export type ScopeOutput<Output> = Output extends OutputObject ? Output : OutputObject;
 export type ScopeCallback<Output extends OutputObject = OutputObject> =
-  (ctx: ScopeContext) => OutputValues<Output>;
+  () => OutputValues<Output>;
 export type BuildScope = <Extra extends object = {}, Output extends OutputObject = OutputObject>(
-  fn: (ctx: ScopeContext & Extra) => OutputValues<Output>,
+  fn: (ctx: Extra) => OutputValues<Output>,
   extra?: Extra,
 ) => ScopeIR;
 
@@ -36,12 +36,12 @@ export type ArrayItem<Over> =
     : Over extends readonly (infer Value)[] ? RuntimeValueOf<Value>
       : never;
 
-export type FanoutScopeContext<Item = any> = ScopeContext & {
+export type FanoutScopeContext<Item = any> = {
   item: OutputAccessor<Item>;
   itemIndex: Expr<number>;
 };
 
-export type LoopScopeContext<Output extends OutputObject> = ScopeContext & {
+export type LoopScopeContext<Output extends OutputObject> = {
   iter: Expr<number>;
   previous: OutputAccessor<Output>;
 };

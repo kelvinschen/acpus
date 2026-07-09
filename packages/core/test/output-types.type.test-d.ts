@@ -9,7 +9,7 @@ test("loop initial defines non-optional previous and output shape", () => {
     const loop = step("loop").loop({
       initial: { done: false as boolean, summary: "seed", history: emptyHistory },
       maxIterations: 2,
-      do: ({ previous, iter }) => {
+      do({ previous, iter }) {
         expectTypeOf(previous.summary).toEqualTypeOf<Expr<string>>();
         expectTypeOf(iter).toEqualTypeOf<Expr<number>>();
         return {
@@ -18,7 +18,7 @@ test("loop initial defines non-optional previous and output shape", () => {
           history: previous.history,
         };
       },
-      stopWhen: ({ result }) => result.done,
+      stopWhen({ result }) { return result.done; },
     });
 
     expectTypeOf(loop.output.done).toEqualTypeOf<Expr<boolean>>();
@@ -30,11 +30,11 @@ test("loop initial defines non-optional previous and output shape", () => {
     const state = step("state").loop({
       initial: { done: false, phase: "pending" as Phase },
       maxIterations: 2,
-      do: ({ previous }) => ({
+      do({ previous }) { return {
         done: false,
         phase: previous.phase,
-      }),
-      stopWhen: ({ result }) => result.done,
+      }; },
+      stopWhen({ result }) { return result.done; },
     });
     expectTypeOf(state.output.done).toEqualTypeOf<Expr<boolean>>();
     expectTypeOf(state.output.phase).toEqualTypeOf<Expr<Phase>>();
@@ -42,7 +42,7 @@ test("loop initial defines non-optional previous and output shape", () => {
     const counted = step("counted").loop({
       initial: { ok: false as boolean },
       maxIterations: 2,
-      do: () => ({ ok: true }),
+      do() { return { ok: true }; },
     });
     expectTypeOf(counted.output.ok).toEqualTypeOf<Expr<boolean>>();
 
@@ -50,8 +50,8 @@ test("loop initial defines non-optional previous and output shape", () => {
       initial: { done: false, summary: "seed" },
       maxIterations: 2,
       // @ts-expect-error loop do result must converge with initial shape.
-      do: () => ({ done: false }),
-      stopWhen: ({ result }) => result.done,
+      do() { return { done: false }; },
+      stopWhen({ result }) { return result.done; },
     });
 
     return { done: loop.output.done, summary: loop.output.summary };
@@ -62,31 +62,31 @@ test("control-only and output-producing if/switch require fallbacks", () => {
   defineWorkflow({ name: "typed-composite-output-paths" }).build(({ step }) => {
     step("control_only_if").if({
       condition: true,
-      then: () => ({}),
-      else: () => ({}),
+      then() { return {}; },
+      else() { return {}; },
     });
 
     step("control_only_switch").switch({
-      cases: [{ when: true, then: () => ({}) }],
-      default: () => ({}),
+      cases: [{ when: true, then() { return {}; } }],
+      default() { return {}; },
     });
 
     const branch = step("branch").if({
       condition: true,
-      then: () => ({ status: "then" }),
-      else: () => ({ status: "else" }),
+      then() { return { status: "then" }; },
+      else() { return { status: "else" }; },
     });
     expectTypeOf(branch.output.status).toEqualTypeOf<Expr<string>>();
 
     // @ts-expect-error if nodes always declare else.
     step("missing_if_else").if({
       condition: true,
-      then: () => ({ status: "then" }),
+      then() { return { status: "then" }; },
     });
 
     // @ts-expect-error switch nodes always declare default.
     step("missing_switch_default").switch({
-      cases: [{ when: true, then: () => ({ status: "case" }) }],
+      cases: [{ when: true, then() { return { status: "case" }; } }],
     });
 
     return { status: branch.output.status };
@@ -110,10 +110,10 @@ test("nested objects and arrays are inferred from task and fanout callbacks", ()
 
     const fanout = step("items").fanout({
       over: ["a"],
-      do: ({ item }) => ({
+      do({ item }) { return {
         nested: { title: item },
         items: [{ title: item }],
-      }),
+      }; },
     });
 
     assertType<Expr<string | undefined>>(head(fanout.output).nested.title);
@@ -125,11 +125,11 @@ test("parallel all output is keyed by branch", () => {
   defineWorkflow({ name: "typed-parallel-output" }).build(({ step }) => {
     const parallel = step("parallel").parallel({
       branches: {
-        left({ step }) {
+        left() {
           expectTypeOf(step).not.toBeAny();
           return { summary: "ok" };
         },
-        right: () => ({ count: 1 }),
+        right() { return { count: 1 }; },
       },
     });
 
@@ -147,20 +147,20 @@ test("nested composite callback contexts are not any", () => {
   defineWorkflow({ name: "typed-nested-composite-contexts" }).build(({ step }) => {
     step("parallel").parallel({
       branches: {
-        branch: ({ step }) => {
+        branch() {
           expectTypeOf(step).not.toBeAny();
 
           step("loop").loop({
             initial: { done: false, summary: "seed" },
             maxIterations: 2,
-            do: ({ iter, previous, step }) => {
+            do({ iter, previous }) {
               expectTypeOf(iter).not.toBeAny();
               expectTypeOf(previous).not.toBeAny();
               expectTypeOf(step).not.toBeAny();
               expectTypeOf(previous.summary).toEqualTypeOf<Expr<string>>();
               return { done: false, summary: previous.summary };
             },
-            stopWhen: ({ result }) => {
+            stopWhen({ result }) {
               expectTypeOf(result).not.toBeAny();
               expectTypeOf(result.done).toEqualTypeOf<Expr<boolean>>();
               return result.done;
@@ -171,21 +171,21 @@ test("nested composite callback contexts are not any", () => {
             cases: [
               {
                 when: true,
-                then: ({ step }) => {
+                then() {
                   expectTypeOf(step).not.toBeAny();
                   return { route: "auto" };
                 },
               },
             ],
-            default: ({ step }) => {
+            default() {
               expectTypeOf(step).not.toBeAny();
               return { route: "manual" };
             },
           });
 
           const route = step("typed_switch").switch({
-            cases: [{ when: true, then: () => ({ route: "auto" }) }],
-            default: () => ({ route: "manual" }),
+            cases: [{ when: true, then() { return { route: "auto" }; } }],
+            default() { return { route: "manual" }; },
           });
           expectTypeOf(route.output.route).toEqualTypeOf<Expr<string>>();
 
@@ -203,8 +203,8 @@ test("parallel race exposes a winner envelope", () => {
     const race = step("parallel_race").parallel({
       strategy: "race",
       branches: {
-        fast: () => ({ summary: "fast" }),
-        slow: () => ({ summary: "slow" }),
+        fast() { return { summary: "fast" }; },
+        slow() { return { summary: "slow" }; },
       },
     });
 
@@ -228,7 +228,7 @@ test("fanout all and quorum output are arrays of accepted item outputs", () => {
   }).build(({ input, step }) => {
     const allItems = step("all_items").fanout({
       over: input.items,
-      do: ({ item }) => {
+      do({ item }) {
         expectTypeOf(item.id).toEqualTypeOf<Expr<string>>();
         return { id: item.id };
       },
@@ -242,7 +242,7 @@ test("fanout all and quorum output are arrays of accepted item outputs", () => {
       strategy: "quorum",
       count: 2,
       over: input.items,
-      do: ({ item }) => ({ id: item.id }),
+      do({ item }) { return { id: item.id }; },
     });
 
     expectTypeOf(head(quorum.output).id).toEqualTypeOf<Expr<string | undefined>>();
@@ -252,7 +252,7 @@ test("fanout all and quorum output are arrays of accepted item outputs", () => {
     step("bad_string_over").fanout({
       // @ts-expect-error fanout over must be an array, not a string.
       over: input.title,
-      do: ({ item }) => ({ id: item }),
+      do({ item }) { return { id: item }; },
     });
 
     return { all: allItems.output, quorum: quorum.output };
@@ -285,15 +285,15 @@ test("scope callback outputs are named objects", () => {
     step("bad_fanout_item").fanout({
       over: ["a"],
       // @ts-expect-error fanout callbacks return named output objects.
-      do: () => "bad",
+      do() { return "bad"; },
     });
 
     step("bad_loop_body").loop({
       initial: { value: "seed" },
       maxIterations: 1,
       // @ts-expect-error loop body returns named output object matching initial.
-      do: () => "bad",
-      stopWhen: () => false,
+      do() { return "bad"; },
+      stopWhen() { return false; },
       onExhausted: "returnLast",
     });
 

@@ -3,6 +3,8 @@ import {
   defineWorkflow,
   secret,
   task,
+  type StepDeclaration,
+  type StepFactory,
   z,
 } from "../src/index.js";
 import { compileWorkflowDefinition } from "../src/workflow.js";
@@ -293,35 +295,33 @@ describe("workflow compilation", () => {
     }).build(({ input, step }) => {
       const gate = step("gate").if({
         condition: input.shouldRun,
-        then: () => ({ status: "run" }),
-        else: () => ({ status: "skip" }),
+        then() { return { status: "run" }; },
+        else() { return { status: "skip" }; },
       });
 
       const checks = step("checks").parallel({
         branches: {
-          fast: () => (pick(gate.output, ["status"])),
-          slow: () => ({ done: true }),
+          fast() { return (pick(gate.output, ["status"])); },
+          slow() { return { done: true }; },
         },
         maxConcurrency: 2,
       });
 
       const perItem = step("per_item").fanout({
         over: input.items,
-        key: ({ item, itemIndex }) => template`item-${item}-${itemIndex}`,
-        do: ({ item }) => ({ ok: matches(item, ".+") }),
+        key({ item, itemIndex }) { return template`item-${item}-${itemIndex}`; },
+        do({ item }) { return { ok: matches(item, ".+") }; },
         maxConcurrency: 4,
       });
 
       const retry = step("retry_until_done").loop({
         initial: { done: false as boolean, summary: "first" },
         maxIterations: 3,
-        do: ({ iter, previous }) =>
-          ({
+        do({ iter, previous }) { return {
             done: eq(iter, 2),
             summary: previous.summary,
-          }),
-        stopWhen: ({ iter, result }) =>
-          or(eq(iter, 3), where(result, { done: true })),
+          }; },
+        stopWhen({ iter, result }) { return or(eq(iter, 3), where(result, { done: true })); },
         onExhausted: "returnLast",
       });
 
@@ -483,6 +483,277 @@ describe("workflow compilation", () => {
     expect(ir.root.nodes[3]).not.toHaveProperty("until");
   });
 
+  it("declares closed-over step calls in the active fanout scope", () => {
+    const definition = defineWorkflow({
+      name: "active_scope_fanout_step",
+      inputSchema: z.object({
+        items: z.array(z.string()),
+      }),
+    }).build(({ input, step }) => {
+      const fanout = step("per_item").fanout({
+        over: input.items,
+        do({ item }) {
+          const echoed = step("fanout_echo").task({
+            run: {
+              input: { value: item },
+              exec: async ({ input }) => ({ value: input.value }),
+            },
+          });
+          return { value: echoed.output.value };
+        },
+      });
+
+      return { first: head(fanout.output).value };
+    });
+
+    const ir = compileWorkflowDefinition(definition);
+    const fanout = ir.root.nodes.find((node) => node.id === "per_item");
+
+    expect(ir.diagnostics).toEqual([]);
+    expect(ir.root.nodes).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "fanout_echo" }),
+    ]));
+    expect(fanout).toMatchObject({
+      kind: "fanout",
+      do: { nodes: [expect.objectContaining({ id: "fanout_echo", kind: "task" })] },
+    });
+  });
+
+  it("declares closed-over step calls in the active parallel scope", () => {
+    const definition = defineWorkflow({
+      name: "active_scope_parallel_step",
+    }).build(({ step }) => {
+      const parallel = step("lanes").parallel({
+        branches: {
+          left() {
+            const echoed = step("parallel_left_echo").task({
+              run: {
+                input: { value: "left" },
+                exec: async ({ input }) => ({ value: input.value }),
+              },
+            });
+            return { value: echoed.output.value };
+          },
+          right() { return { value: "right" }; },
+        },
+      });
+
+      return { left: parallel.output.left.value };
+    });
+
+    const ir = compileWorkflowDefinition(definition);
+    const parallel = ir.root.nodes.find((node) => node.id === "lanes");
+
+    expect(ir.diagnostics).toEqual([]);
+    expect(ir.root.nodes).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "parallel_left_echo" }),
+    ]));
+    expect(parallel).toMatchObject({
+      kind: "parallel",
+      branches: {
+        left: { scope: { nodes: [expect.objectContaining({ id: "parallel_left_echo", kind: "task" })] } },
+      },
+    });
+  });
+
+  it("declares closed-over step calls in the active if scope", () => {
+    const definition = defineWorkflow({
+      name: "active_scope_if_step",
+      inputSchema: z.object({
+        enabled: z.boolean(),
+      }),
+    }).build(({ input, step }) => {
+      const gate = step("gate").if({
+        condition: input.enabled,
+        then() {
+          const echoed = step("if_then_echo").task({
+            run: {
+              input: { value: "then" },
+              exec: async ({ input }) => ({ value: input.value }),
+            },
+          });
+          return { value: echoed.output.value };
+        },
+        else() { return { value: "else" }; },
+      });
+
+      return { gate: gate.output.value };
+    });
+
+    const ir = compileWorkflowDefinition(definition);
+    const gate = ir.root.nodes.find((node) => node.id === "gate");
+
+    expect(ir.diagnostics).toEqual([]);
+    expect(ir.root.nodes).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "if_then_echo" }),
+    ]));
+    expect(gate).toMatchObject({
+      kind: "if",
+      then: { nodes: [expect.objectContaining({ id: "if_then_echo", kind: "task" })] },
+    });
+  });
+
+  it("declares cached step declarations in the active composite scope", () => {
+    const definition = defineWorkflow({
+      name: "active_scope_cached_step_declaration",
+    }).build(({ step }) => {
+      const cached = step("cached_echo");
+      const gate = step("gate").if({
+        condition: true,
+        then() {
+          const echoed = cached.task({
+            run: {
+              input: { value: "then" },
+              exec: async ({ input }) => ({ value: input.value }),
+            },
+          });
+          return { value: echoed.output.value };
+        },
+        else() { return { value: "else" }; },
+      });
+
+      return { gate: gate.output.value };
+    });
+
+    const ir = compileWorkflowDefinition(definition);
+    const gate = ir.root.nodes.find((node) => node.id === "gate");
+
+    expect(ir.diagnostics).toEqual([]);
+    expect(ir.root.nodes).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "cached_echo" }),
+    ]));
+    expect(gate).toMatchObject({
+      kind: "if",
+      then: { nodes: [expect.objectContaining({ id: "cached_echo", kind: "task" })] },
+    });
+  });
+
+  it("declares closed-over step calls in the active switch scope", () => {
+    const definition = defineWorkflow({
+      name: "active_scope_switch_step",
+      inputSchema: z.object({
+        enabled: z.boolean(),
+      }),
+    }).build(({ input, step }) => {
+      const routed = step("routed").switch({
+        cases: [
+          {
+            when: input.enabled,
+            then() {
+              const echoed = step("switch_case_echo").task({
+                run: {
+                  input: { value: "case" },
+                  exec: async ({ input }) => ({ value: input.value }),
+                },
+              });
+              return { value: echoed.output.value };
+            },
+          },
+        ],
+        default() { return { value: "default" }; },
+      });
+
+      return { route: routed.output.value };
+    });
+
+    const ir = compileWorkflowDefinition(definition);
+    const routed = ir.root.nodes.find((node) => node.id === "routed");
+
+    expect(ir.diagnostics).toEqual([]);
+    expect(ir.root.nodes).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "switch_case_echo" }),
+    ]));
+    expect(routed).toMatchObject({
+      kind: "switch",
+      cases: [
+        { then: { nodes: [expect.objectContaining({ id: "switch_case_echo", kind: "task" })] } },
+      ],
+    });
+  });
+
+  it("declares closed-over step calls in the active loop scope", () => {
+    const definition = defineWorkflow({
+      name: "active_scope_loop_step",
+    }).build(({ step }) => {
+      const loop = step("retry").loop({
+        initial: { value: "initial" as string },
+        maxIterations: 1,
+        do({ previous }) {
+          const echoed = step("loop_echo").task({
+            run: {
+              input: { value: previous.value },
+              exec: async ({ input }) => ({ value: input.value }),
+            },
+          });
+          return { value: echoed.output.value };
+        },
+      });
+
+      return { loop: loop.output.value };
+    });
+
+    const ir = compileWorkflowDefinition(definition);
+    const loop = ir.root.nodes.find((node) => node.id === "retry");
+
+    expect(ir.diagnostics).toEqual([]);
+    expect(ir.root.nodes).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "loop_echo" }),
+    ]));
+    expect(loop).toMatchObject({
+      kind: "loop",
+      do: { nodes: [expect.objectContaining({ id: "loop_echo", kind: "task" })] },
+    });
+  });
+
+  it("diagnoses thenable composite callbacks as invalid synchronous outputs", () => {
+    const build = (({ step }: any) => {
+      step("gate").if({
+        condition: true,
+        async then() { return { value: "async" }; },
+        else() { return { value: "sync" }; },
+      });
+      return {};
+    }) as any;
+
+    const ir = compileWorkflowDefinition(defineWorkflow({
+      name: "async_composite_callback",
+    }).build(build));
+
+    expect(ir.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "B001",
+        message: "Composite scope must return an output object.",
+      }),
+    ]));
+  });
+
+  it("throws when a saved step factory is called after graph declaration closes", () => {
+    let savedStep: StepFactory | undefined;
+    let savedDeclaration: StepDeclaration | undefined;
+    const definition = defineWorkflow({
+      name: "saved_step_lifetime",
+    }).build(({ step }) => {
+      savedStep = step;
+      savedDeclaration = step("cached");
+      return {};
+    });
+
+    compileWorkflowDefinition(definition);
+
+    expect(() => savedStep?.("late").task({
+      run: {
+        input: {},
+        exec: async () => ({}),
+      },
+    })).toThrow("step() can only be called during workflow graph declaration.");
+    expect(() => savedDeclaration?.task({
+      run: {
+        input: {},
+        exec: async () => ({}),
+      },
+    })).toThrow("step() can only be called during workflow graph declaration.");
+  });
+
   it("allows node output fields named ir to be wired as normal user fields", () => {
     const definition = defineWorkflow({ name: "output_ir_field" }).build(({ step }) => {
       const inspect = step("inspect").task({
@@ -543,8 +814,8 @@ describe("workflow compilation", () => {
       const loop = step("retry").loop({
         initial: { ok: false as boolean },
         maxIterations: 1,
-        do: () => ({ ok: true }),
-        stopWhen: ({ result }) => result.ok,
+        do() { return { ok: true }; },
+        stopWhen({ result }) { return result.ok; },
       });
       return { ok: signal.output.ok, loop_ok: loop.output.ok };
     });
@@ -575,8 +846,8 @@ describe("workflow compilation", () => {
       const loop = step("retry").loop({
         initial: { ok: false as boolean },
         maxIterations: input.rounds,
-        do: () => ({ ok: true }),
-        stopWhen: ({ result }) => result.ok,
+        do() { return { ok: true }; },
+        stopWhen({ result }) { return result.ok; },
       });
       return { ok: loop.output.ok };
     });
@@ -596,7 +867,7 @@ describe("workflow compilation", () => {
       const loop = step("counted").loop({
         initial: { ok: false as boolean },
         maxIterations: 2,
-        do: () => ({ ok: true }),
+        do() { return { ok: true }; },
       });
       return { ok: loop.output.ok };
     });
@@ -698,8 +969,8 @@ describe("workflow compilation", () => {
       const race = step("first_check").parallel({
         strategy: "race",
         branches: {
-          fast: () => ({ id: "fast", ok: true }),
-          slow: () => ({ id: "slow", ok: true }),
+          fast() { return { id: "fast", ok: true }; },
+          slow() { return { id: "slow", ok: true }; },
         },
       });
 
@@ -707,7 +978,7 @@ describe("workflow compilation", () => {
         strategy: "quorum",
         count: 2,
         over: input.items,
-        do: ({ item }) => ({ id: item.id, ok: true }),
+        do({ item }) { return { id: item.id, ok: true }; },
       });
 
       return {

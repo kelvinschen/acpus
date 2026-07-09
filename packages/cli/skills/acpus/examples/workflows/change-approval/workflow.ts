@@ -40,7 +40,7 @@ export default defineWorkflow({
       draft: initial.output.nextDraft,
     },
     maxIterations: 2,
-    do: ({ iter, previous, step }) => {
+    do({ iter, previous }) {
       const review = step("refine_round").agent({
         outputSchema: PlanOut,
         run: {
@@ -66,13 +66,13 @@ export default defineWorkflow({
         draft: review.output.nextDraft,
       };
     },
-    stopWhen: ({ result }) => result.ready,
+    stopWhen({ result }) { return result.ready; },
     onExhausted: "returnLast",
   });
 
   const approval = step("approval").if({
     condition: input.requireApproval,
-    then: ({ step }) => {
+    then() {
       const human = step("human_approval").signal({
         outputSchema: z.object({
           approved: z.boolean(),
@@ -91,7 +91,7 @@ export default defineWorkflow({
       });
       return { approved: human.output.approved, notes: human.output.notes };
     },
-    else: ({ step }) => {
+    else() {
       const automatic = step("auto_approval").task({
         run: {
           input: { ready: refined.output.ready },

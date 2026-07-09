@@ -20,12 +20,12 @@ export default defineWorkflow({
 }).build(({ input, agents, meta, step }) => {
   const triaged = step("triage_issues").fanout({
     over: input.issues,
-    key: ({ item }) => template`issue-${item.id}`,
+    key({ item }) { return template`issue-${item.id}`; },
     maxConcurrency: 3,
-    do: ({ item, step }) => {
+    do({ item }) {
       const lane = step("triage_lane").parallel({
         branches: {
-          metadata: ({ step }) => {
+          metadata() {
             const metadata = step("summarize_issue").task({
               run: {
                 task: summarizeIssue,
@@ -38,7 +38,7 @@ export default defineWorkflow({
               titleLine: metadata.output.titleLine,
             };
           },
-          review: ({ step }) => {
+          review() {
             const review = step("review_issue").agent({
               outputSchema: z.object({
                 route: z.enum(["now", "later", "escalate"]),
@@ -79,7 +79,7 @@ export default defineWorkflow({
         cases: [
           {
             when: eq(lane.output.review.route, "escalate"),
-            then: ({ step }) => {
+            then() {
               const escalation = step("prepare_escalation").task({
                 run: {
                   input: {
@@ -101,7 +101,7 @@ export default defineWorkflow({
           },
           {
             when: eq(lane.output.review.route, "now"),
-            then: ({ step }) => {
+            then() {
               const queue = step("queue_now").task({
                 run: {
                   input: { id: item.id, title: lane.output.metadata.titleLine },
@@ -115,7 +115,7 @@ export default defineWorkflow({
             },
           },
         ],
-        default: ({ step }) => {
+        default() {
           const backlog = step("backlog_later").task({
             run: {
               input: { id: item.id, labelCount: lane.output.metadata.labelCount },

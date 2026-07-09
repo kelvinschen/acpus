@@ -144,22 +144,32 @@ async function executeNodeAsync(node: NodeIR, scope: SchedulerScope, options: Ru
   if (node.kind === "parallel") {
     try {
       if (node.strategy === "race") {
-        const failures: string[] = [];
-        for (const [key, branch] of Object.entries(node.branches)) {
-          const executable = scopeHasExecutableNode(branch.scope);
-          try {
+        const entries = Object.entries(node.branches);
+        if (entries.length === 0) throw new Error(`Parallel race node '${node.id}' had no successful branches.`);
+        const winner = await new Promise<{ key: string; result: Record<string, unknown>; executedNodes: Record<string, CompletedNodeState> }>((resolve, reject) => {
+          const failures: string[] = [];
+          let pending = entries.length;
+          let settled = false;
+          for (const [key, branch] of entries) {
             const branchExecuted: Record<string, CompletedNodeState> = {};
-            const result = (await executeScopeAsync(branch.scope, createChildScope(scope, {}, branchExecuted), options)).output;
-            Object.assign(scope.executedNodes, branchExecuted);
-            completeNode(scope, node.id, { winner: key, result });
-            return;
-          } catch (error) {
-            if (error instanceof ExecutorRequiredError || error instanceof SignalAwaitingError) throw error;
-            if (executable) throw error;
-            failures.push(`${key}: ${error instanceof Error ? error.message : String(error)}`);
+            executeScopeAsync(branch.scope, createChildScope(scope, {}, branchExecuted), options)
+              .then(result => {
+                if (settled) return;
+                settled = true;
+                resolve({ key, result: result.output, executedNodes: branchExecuted });
+              })
+              .catch(error => {
+                failures.push(`${key}: ${error instanceof Error ? error.message : String(error)}`);
+                pending -= 1;
+                if (!settled && pending === 0) {
+                  reject(new Error(`Parallel race node '${node.id}' had no successful branches.${failures.length ? ` ${failures.join("; ")}` : ""}`));
+                }
+              });
           }
-        }
-        throw new Error(`Parallel race node '${node.id}' had no successful branches.${failures.length ? ` ${failures.join("; ")}` : ""}`);
+        });
+        Object.assign(scope.executedNodes, winner.executedNodes);
+        completeNode(scope, node.id, { winner: winner.key, result: winner.result });
+        return;
       }
       const entries = await Promise.all(Object.entries(node.branches).map(async ([key, branch]) => [
         key,
@@ -295,17 +305,6 @@ function createFanoutItemScope(parent: SchedulerScope, nodeId: string, item: unk
       ...parent.fanout,
       [nodeId]: { item, itemIndex },
     },
-  });
-}
-
-function scopeHasExecutableNode(scope: ScopeIR): boolean {
-  return scope.nodes.some(node => {
-    if (node.kind === "task" || node.kind === "agent" || node.kind === "signal") return true;
-    if (node.kind === "if") return scopeHasExecutableNode(node.then) || Boolean(node.else && scopeHasExecutableNode(node.else));
-    if (node.kind === "switch") return node.cases.some(c => scopeHasExecutableNode(c.then)) || Boolean(node.default && scopeHasExecutableNode(node.default));
-    if (node.kind === "parallel") return Object.values(node.branches).some(branch => scopeHasExecutableNode(branch.scope));
-    if (node.kind === "fanout" || node.kind === "loop") return scopeHasExecutableNode(node.do);
-    return false;
   });
 }
 

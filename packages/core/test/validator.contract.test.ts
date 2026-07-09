@@ -14,6 +14,16 @@ function minimalWorkflow(overrides: Partial<WorkflowIR> = {}): WorkflowIR {
   };
 }
 
+const inlineTaskTarget = { kind: "inline" as const, runtime: "node" as const, source: "async function task() { return {}; }" };
+
+function taskNode(id: string, input: Record<string, any> = {}) {
+  return {
+    id,
+    kind: "task" as const,
+    run: { kind: "task_run" as const, input, target: inlineTaskTarget },
+  };
+}
+
 describe("WorkflowIR diagnostics contract", () => {
   it("accepts optional workflow description metadata", () => {
     expect(validateWorkflowIR(minimalWorkflow({
@@ -861,6 +871,248 @@ describe("WorkflowIR diagnostics contract", () => {
       code: "E001",
       path: "outputs.bad.path",
     }));
+  });
+
+  it("rejects self, later sibling, and missing node refs", () => {
+    const diagnostics = validateWorkflowIR(minimalWorkflow({
+      root: {
+        nodes: [
+          taskNode("self_ref", {
+            own: { kind: "ref", path: ["nodes", "self_ref", "output", "id"] },
+          }),
+          taskNode("later_ref", {
+            later: { kind: "ref", path: ["nodes", "later", "output", "id"] },
+          }),
+          taskNode("later"),
+          taskNode("missing_ref", {
+            missing: { kind: "ref", path: ["nodes", "missing", "output", "id"] },
+          }),
+        ],
+      },
+    }));
+
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "IR003", path: "root.nodes.self_ref.run.input.own.path" }),
+      expect.objectContaining({ code: "IR003", path: "root.nodes.later_ref.run.input.later.path" }),
+      expect.objectContaining({ code: "IR003", path: "root.nodes.missing_ref.run.input.missing.path" }),
+    ]));
+  });
+
+  it("rejects node refs that do not project through output", () => {
+    const diagnostics = validateWorkflowIR(minimalWorkflow({
+      root: {
+        nodes: [
+          taskNode("first"),
+          taskNode("bad_bare", {
+            first: { kind: "ref", path: ["nodes", "first"] },
+          }),
+          taskNode("bad_status", {
+            status: { kind: "ref", path: ["nodes", "first", "status"] },
+          }),
+        ],
+      },
+    }));
+
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "IR003", path: "root.nodes.bad_bare.run.input.first.path" }),
+      expect.objectContaining({ code: "IR003", path: "root.nodes.bad_status.run.input.status.path" }),
+    ]));
+  });
+
+  it("rejects top-level outputs that reference node internals", () => {
+    const diagnostics = validateWorkflowIR(minimalWorkflow({
+      root: {
+        nodes: [taskNode("first")],
+      },
+      outputs: {
+        bad: { kind: "ref", path: ["nodes", "first", "run", "target"] },
+      },
+    }));
+
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: "IR003",
+      path: "outputs.bad.path",
+    }));
+  });
+
+  it("allows child scopes to reference parent nodes and rejects parent access to child internals", () => {
+    const diagnostics = validateWorkflowIR(minimalWorkflow({
+      root: {
+        nodes: [
+          taskNode("parent"),
+          {
+            id: "gate",
+            kind: "if",
+            condition: { kind: "literal", value: true },
+            then: {
+              nodes: [
+                taskNode("child", {
+                  parent: { kind: "ref", path: ["nodes", "parent", "output", "id"] },
+                }),
+              ],
+              outputs: {
+                child: { kind: "ref", path: ["nodes", "child", "output", "id"] },
+              },
+            },
+            else: { nodes: [], outputs: {} },
+          },
+          taskNode("bad_child_internal", {
+            child: { kind: "ref", path: ["nodes", "child", "output", "id"] },
+          }),
+        ],
+      },
+      outputs: {
+        child: { kind: "ref", path: ["nodes", "child", "output", "id"] },
+      },
+    } as any));
+
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "IR003", path: "root.nodes.bad_child_internal.run.input.child.path" }),
+      expect.objectContaining({ code: "IR003", path: "outputs.child.path" }),
+    ]));
+    expect(diagnostics).not.toContainEqual(expect.objectContaining({
+      code: "IR003",
+      path: "root.nodes.gate.then.nodes.child.run.input.parent.path",
+    }));
+  });
+
+  it("rejects sibling parallel branch and switch case node refs", () => {
+    const diagnostics = validateWorkflowIR(minimalWorkflow({
+      root: {
+        nodes: [
+          {
+            id: "branches",
+            kind: "parallel",
+            strategy: "all",
+            branches: {
+              left: {
+                scope: {
+                  nodes: [taskNode("left_task")],
+                  outputs: { value: { kind: "ref", path: ["nodes", "left_task", "output", "value"] } },
+                },
+              },
+              right: {
+                scope: {
+                  nodes: [],
+                  outputs: { value: { kind: "ref", path: ["nodes", "left_task", "output", "value"] } },
+                },
+              },
+            },
+          },
+          {
+            id: "route",
+            kind: "switch",
+            cases: [
+              {
+                when: { kind: "literal", value: true },
+                then: {
+                  nodes: [taskNode("case_task")],
+                  outputs: { value: { kind: "ref", path: ["nodes", "case_task", "output", "value"] } },
+                },
+              },
+              {
+                when: { kind: "literal", value: false },
+                then: {
+                  nodes: [],
+                  outputs: { value: { kind: "ref", path: ["nodes", "case_task", "output", "value"] } },
+                },
+              },
+            ],
+            default: { nodes: [], outputs: {} },
+          },
+        ],
+      },
+    } as any));
+
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "IR003", path: "root.nodes.branches.branches.right.scope.outputs.value.path" }),
+      expect.objectContaining({ code: "IR003", path: "root.nodes.route.cases.1.then.outputs.value.path" }),
+    ]));
+  });
+
+  it("rejects fanout and loop local refs outside their owning scope", () => {
+    const diagnostics = validateWorkflowIR(minimalWorkflow({
+      root: {
+        nodes: [
+          {
+            id: "items",
+            kind: "fanout",
+            strategy: "all",
+            over: { kind: "array", items: [] },
+            do: {
+              nodes: [],
+              outputs: {
+                missing: { kind: "ref", path: ["nodes", "missing", "output", "id"] },
+              },
+            },
+          },
+          taskNode("bad_fanout_local", {
+            item: { kind: "ref", path: ["fanout", "items", "item", "id"] },
+          }),
+          {
+            id: "retry",
+            kind: "loop",
+            initial: { kind: "object", fields: {} },
+            maxIterations: { kind: "literal", value: 1 },
+            do: {
+              nodes: [],
+              outputs: { bad: { kind: "ref", path: ["loop", "other", "previous", "id"] } },
+            },
+            stopWhen: { kind: "ref", path: ["loop", "retry", "result", "done"] },
+          },
+          taskNode("bad_loop_local", {
+            previous: { kind: "ref", path: ["loop", "retry", "previous", "id"] },
+          }),
+        ],
+      },
+    } as any));
+
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "IR003", path: "root.nodes.items.do.outputs.missing.path" }),
+      expect.objectContaining({ code: "IR003", path: "root.nodes.bad_fanout_local.run.input.item.path" }),
+      expect.objectContaining({ code: "IR003", path: "root.nodes.retry.do.outputs.bad.path" }),
+      expect.objectContaining({ code: "IR003", path: "root.nodes.bad_loop_local.run.input.previous.path" }),
+    ]));
+  });
+
+  it("rejects unsupported fanout and loop local ref members", () => {
+    const diagnostics = validateWorkflowIR(minimalWorkflow({
+      root: {
+        nodes: [
+          {
+            id: "items",
+            kind: "fanout",
+            strategy: "all",
+            over: { kind: "array", items: [] },
+            key: { kind: "template", parts: [{ kind: "expr", expr: { kind: "ref", path: ["fanout", "items", "output"] } }] },
+            do: {
+              nodes: [],
+              outputs: {
+                bad: { kind: "ref", path: ["fanout", "items", "output"] },
+              },
+            },
+          },
+          {
+            id: "retry",
+            kind: "loop",
+            initial: { kind: "object", fields: {} },
+            maxIterations: { kind: "literal", value: 1 },
+            do: {
+              nodes: [],
+              outputs: { bad: { kind: "ref", path: ["loop", "retry", "item"] } },
+            },
+            stopWhen: { kind: "ref", path: ["loop", "retry", "item"] },
+          },
+        ],
+      },
+    } as any));
+
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "IR003", path: "root.nodes.items.key.parts.0.expr.path" }),
+      expect.objectContaining({ code: "IR003", path: "root.nodes.items.do.outputs.bad.path" }),
+      expect.objectContaining({ code: "IR003", path: "root.nodes.retry.do.outputs.bad.path" }),
+      expect.objectContaining({ code: "IR003", path: "root.nodes.retry.stopWhen.path" }),
+    ]));
   });
 
   it("returns diagnostics instead of throwing for malformed top-level containers", () => {

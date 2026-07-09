@@ -72,13 +72,16 @@
 - Assert nodes MUST use `step("id").assert({ condition, message? })`.
 - Assert nodes MUST serialize only `condition` and optional `message`, and MUST produce no output.
 - Composite nodes MUST include `step("id").if`, `switch`, `parallel`, `fanout`, and `loop`, each producing child-scope IR.
-- Composite callbacks MUST receive a `ScopeContext` containing `{ step }`.
+- Composite callbacks MUST receive only node-specific local values: fanout callbacks receive `item` and `itemIndex`; loop body callbacks receive `iter` and `previous`; loop stop callbacks receive `iter` and `result`.
+- `step` MUST be a single per-compilation active-scope dispatcher provided by the workflow `build` callback: `step("id")` declares into whichever workflow or composite declaration callback is currently executing.
+- Workflow and composite graph declaration callbacks MUST be synchronous. Calling `step()` after graph declaration has closed MUST fail with a clear authoring invariant error.
+- Node ids MUST remain unique across the entire workflow IR, including nested composite scopes.
 - Parent scopes MUST access a composite node only through that node's projected `output`.
 - Composite callbacks MUST declare their scope output by returning a plain object. TypeScript-owned composite outputs MUST be inferred from callback returns and MUST NOT declare author-facing `outputSchema`.
 - Array output accessors MUST support numeric index access through `@acpus/expression` accessors and helpers.
 - If nodes MUST use `step("id").if({ condition, then, else })`.
 - Switch nodes MUST use `default` for fallback authoring, and default MUST be declared.
-- Parallel nodes MUST express static named branch concurrency with `branches: Record<string, ScopeCallback>` and support `strategy?: "all" | "race"`, defaulting to `"all"`.
+- Parallel nodes MUST express static named branch concurrency with named branch declaration methods and support `strategy?: "all" | "race"`, defaulting to `"all"`.
 - Fanout nodes MUST express runtime array expansion and support `strategy?: "all" | "quorum"`, defaulting to `"all"`.
 - Fanout item output MUST be inferred from the `do` callback and serialize no `itemOutputSchema`.
 - Loop nodes MUST declare `initial`; loop bodies MUST receive `iter` and non-optional `previous`.
@@ -107,6 +110,11 @@
 - `WorkflowIR`, node IR, scope IR, schema IR, template IR, expression IR, agent definitions, task runs, and task execution targets MUST use closed serialized object shapes.
 - `WorkflowIR.description`, when present, MUST be a string.
 - `validateWorkflowIR(ir)` MUST diagnose unknown fields, malformed agent definitions, malformed node runs, invalid expressions/templates/schemas, missing required composite branches/defaults, and malformed task execution targets. It MUST NOT enforce TypeScript-owned task/composite business output shape through generated schemas.
+- `validateWorkflowIR(ir)` MUST diagnose scope-illegal refs with stable code `IR003`.
+- Node pre-execution fields MUST reference only workflow input/meta, visible local refs such as the current fanout or loop context, ancestor scope nodes, and previous sibling nodes in the same scope. They MUST NOT reference the current node output or later sibling node outputs.
+- Scope outputs MAY reference ancestor scope nodes and any node declared in that scope, but parent scopes and sibling branches/cases MUST NOT reference child-scope internal nodes.
+- `fanout.<id>.item` and `fanout.<id>.itemIndex` refs MUST be valid only in that fanout key/body and nested descendants.
+- `loop.<id>.iter`, `loop.<id>.previous`, and `loop.<id>.result` refs MUST be valid only in that loop body/stop condition and nested descendants.
 - `DurationIR` fields MUST be duration strings matching `^\d+(ms|s|m|h)?$`; omitted units MUST mean milliseconds.
 - Task runs MUST contain a closed `target` descriptor that is either an inline source target or a reusable module target.
 - Inline task targets MUST contain `{ kind: "inline", runtime: "node", source }`, where `source` is the self-contained `exec` function source.

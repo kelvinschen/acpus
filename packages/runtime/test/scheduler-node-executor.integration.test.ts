@@ -2876,13 +2876,13 @@ function rootIfTaskWorkflow() {
     step("require_run").assert({ condition: input.shouldRun });
     const gate = step("gate").if({
       condition: input.shouldRun,
-      then: ({ step }) => {
+      then() {
         const task = step("then_task").task({
           run: { input: {}, exec: async () => ({ value: "then" }) },
         });
         return { value: task.output.value };
       },
-      else: () => ({ value: template`else` }),
+      else() { return { value: template`else` }; },
     });
     const final = step("final_task").task({
       run: {
@@ -2901,7 +2901,7 @@ function rootIfSequentialTaskWorkflow() {
   }).build(({ input, step }) => {
     const gate = step("gate").if({
       condition: input.shouldRun,
-      then: ({ step }) => {
+      then() {
         const first = step("then_first").task({
           run: { input: {}, exec: async () => ({ value: "first" }) },
         });
@@ -2913,7 +2913,7 @@ function rootIfSequentialTaskWorkflow() {
         });
         return { value: second.output.value };
       },
-      else: () => ({ value: template`else` }),
+      else() { return { value: template`else` }; },
     });
     const final = step("final_task").task({
       run: {
@@ -2934,7 +2934,7 @@ function rootSwitchSequentialTaskWorkflow() {
       cases: [
         {
           when: eq(input.mode, "case"),
-          then: ({ step }) => {
+          then() {
             const first = step("case_first").task({
               run: { input: {}, exec: async () => ({ value: "case" }) },
             });
@@ -2948,7 +2948,7 @@ function rootSwitchSequentialTaskWorkflow() {
           },
         },
       ],
-      default: () => ({ value: template`default` }),
+      default() { return { value: template`default` }; },
     });
     return { value: route.output.value };
   });
@@ -2961,13 +2961,13 @@ function rootParallelTaskWorkflow(options: { maxConcurrency?: number } = {}) {
     step("race").parallel({
       ...(options.maxConcurrency === undefined ? {} : { maxConcurrency: options.maxConcurrency }),
       branches: {
-        left: ({ step }) => {
+        left() {
           const task = step("left_task").task({
             run: { input: {}, exec: async () => ({ value: "left" }) },
           });
           return { value: task.output.value, rootPrefix: "root" };
         },
-        right: ({ step }) => {
+        right() {
           const task = step("right_task").task({
             run: { input: {}, exec: async () => ({ value: "right" }) },
           });
@@ -2988,7 +2988,7 @@ function sequentialRootParallelWorkflow() {
     });
     const combined = step("combine").parallel({
       branches: {
-        left: ({ step }) => {
+        left() {
           const task = step("left_task").task({
             run: {
               input: { prefix: prepare.output.prefix },
@@ -2997,7 +2997,7 @@ function sequentialRootParallelWorkflow() {
           });
           return { value: task.output.value, rootPrefix: prepare.output.prefix };
         },
-        right: ({ step }) => {
+        right() {
           const task = step("right_task").task({
             run: {
               input: { prefix: prepare.output.prefix },
@@ -3018,7 +3018,7 @@ function multiNodeRootParallelWorkflow() {
   }).build(({ step }) => {
     step("parallel").parallel({
       branches: {
-        mixed: ({ step }) => {
+        mixed() {
           step("first_task").task({
             run: { input: {}, exec: async () => ({ value: "first" }) },
           });
@@ -3040,7 +3040,7 @@ function multiNodeRootFanoutWorkflow() {
   }).build(({ input, step }) => {
     step("items").fanout({
       over: input.items,
-      do: ({ item, step }) => {
+      do({ item }) {
         const first = step("first_task").task({
           run: {
             input: { item },
@@ -3071,11 +3071,11 @@ function nestedFanoutInParallelWorkflow() {
     const combined = step("combine").parallel({
       maxConcurrency: 1,
       branches: {
-        items: ({ step }) => {
+        items() {
           const inner = step("inner_items").fanout({
             over: input.items,
             maxConcurrency: 1,
-            do: ({ item, itemIndex, step }) => {
+            do({ item, itemIndex }) {
               const task = step("inner_task").task({
                 run: {
                   input: { prefix: prepare.output.prefix, item, itemIndex },
@@ -3087,7 +3087,7 @@ function nestedFanoutInParallelWorkflow() {
           });
           return { values: inner.output };
         },
-        sibling: ({ step }) => {
+        sibling() {
           const task = step("sibling_task").task({
             run: {
               input: { prefix: prepare.output.prefix },
@@ -3109,14 +3109,14 @@ function parallelSignalConcurrencyWorkflow() {
     const gate = step("gate").parallel({
       maxConcurrency: 1,
       branches: {
-        left: ({ step }) => {
+        left() {
           const approval = step("left_signal").signal({
             outputSchema: z.object({ ok: z.boolean() }),
             run: { prompt: "left" },
           });
           return { ok: approval.output.ok };
         },
-        right: ({ step }) => {
+        right() {
           const approval = step("right_signal").signal({
             outputSchema: z.object({ ok: z.boolean() }),
             run: { prompt: "right" },
@@ -3140,7 +3140,7 @@ function rootFanoutTaskWorkflow(options: { strategy?: "all" | "quorum"; count?: 
         strategy: "quorum",
         count: options.count ?? 1,
         ...(options.maxConcurrency === undefined ? {} : { maxConcurrency: options.maxConcurrency }),
-        do: ({ item, itemIndex, step }) => {
+        do({ item, itemIndex }) {
           const task = step("item_task").task({
             run: {
               input: { item, itemIndex, abortItem: options.abortItem ?? null },
@@ -3163,7 +3163,7 @@ function rootFanoutTaskWorkflow(options: { strategy?: "all" | "quorum"; count?: 
       step("items").fanout({
         over: input.items,
         ...(options.maxConcurrency === undefined ? {} : { maxConcurrency: options.maxConcurrency }),
-        do: ({ item, itemIndex, step }) => {
+        do({ item, itemIndex }) {
           const task = step("item_task").task({
             run: {
               input: { item, itemIndex, abortItem: options.abortItem ?? null },
@@ -3194,7 +3194,7 @@ function rootLoopTaskWorkflow() {
     step("retry").loop({
       initial: { done: false as boolean, iter: -1 },
       maxIterations: 3,
-      do: ({ iter, step }) => {
+      do({ iter }) {
         const task = step("loop_task").task({
           run: {
             input: { iter },
@@ -3203,7 +3203,7 @@ function rootLoopTaskWorkflow() {
         });
         return { done: task.output.done, iter: task.output.rawIter };
       },
-      stopWhen: ({ result }) => result.done,
+      stopWhen({ result }) { return result.done; },
     });
     return {};
   });
@@ -3216,7 +3216,7 @@ function multiNodeRootLoopWorkflow() {
     step("retry").loop({
       initial: { done: false as boolean, value: "" },
       maxIterations: 3,
-      do: ({ iter, step }) => {
+      do({ iter }) {
         const first = step("first_task").task({
           run: {
             input: { iter },
@@ -3231,7 +3231,7 @@ function multiNodeRootLoopWorkflow() {
         });
         return { done: second.output.done, value: second.output.value };
       },
-      stopWhen: ({ result }) => result.done,
+      stopWhen({ result }) { return result.done; },
     });
     return {};
   });
@@ -3485,7 +3485,7 @@ function unsafeLoopForkWorkflow(fixed: boolean) {
     const retry = step("retry").loop({
       initial: { done: false as boolean, last: "initial" },
       maxIterations: 4,
-      do: ({ iter, step }) => {
+      do({ iter }) {
         const prepare = step("prepare").task({
           run: {
             input: { iter },
@@ -3505,7 +3505,7 @@ function unsafeLoopForkWorkflow(fixed: boolean) {
         });
         return { done: maybe.output.done, last: maybe.output.last };
       },
-      stopWhen: ({ result }) => result.done,
+      stopWhen({ result }) { return result.done; },
     });
     return { done: retry.output.done, last: retry.output.last };
   });

@@ -55,12 +55,12 @@ export default defineWorkflow({
   const lanes = step("lanes").fanout({
     maxConcurrency: 3,
     over: input.lanes,
-    key: ({ item }) => template`lane-${item.id}`,
-    do: ({ item, step }) => {
+    key({ item }) { return template`lane-${item.id}`; },
+    do({ item }) {
       const laneParallel = step("lane_parallel").parallel({
         maxConcurrency: 3,
         branches: {
-          review: ({ step }) => {
+          review() {
             const review = step("review_lane").agent({
               outputSchema: LaneReview,
               run: {
@@ -74,7 +74,7 @@ export default defineWorkflow({
               ok: review.output.ok,
             };
           },
-          repair: ({ step }) => {
+          repair() {
             const repairLoop = step("repair_loop").loop({
               initial: {
                 branch: "",
@@ -83,7 +83,7 @@ export default defineWorkflow({
                 summary: "",
               },
               maxIterations: 2,
-              do: ({ iter, previous, step }) => {
+              do({ iter, previous }) {
                 const repair = step("repair_round").agent({
                   outputSchema: LaneRepair,
                   run: {
@@ -102,7 +102,7 @@ export default defineWorkflow({
                   summary: repair.output.summary,
                 };
               },
-              stopWhen: ({ result }) => not(result.continue),
+              stopWhen({ result }) { return not(result.continue); },
               onExhausted: "returnLast",
             });
             return {
@@ -112,12 +112,12 @@ export default defineWorkflow({
               summary: repairLoop.output.summary,
             };
           },
-          route: ({ step }) => {
+          route() {
             const route = step("route_lane").switch({
               cases: [
                 {
                   when: eq(item.mode, "auto"),
-                  then: ({ step }) => {
+                  then() {
                     const auto = step("auto_route").agent({
                       outputSchema: LaneRoute,
                       run: {
@@ -133,7 +133,7 @@ export default defineWorkflow({
                   },
                 },
               ],
-              default: ({ step }) => {
+              default() {
                 const manual = step("manual_route").agent({
                   outputSchema: LaneRoute,
                   run: {
@@ -168,7 +168,7 @@ export default defineWorkflow({
 
   const approval = step("approval").if({
     condition: input.requireHuman,
-    then: ({ step }) => {
+    then() {
       const human = step("human_approval").signal({
         outputSchema: Approval,
         run: {
@@ -177,7 +177,7 @@ export default defineWorkflow({
       });
       return { approved: human.output.approved, notes: human.output.notes };
     },
-    else: ({ step }) => {
+    else() {
       const automatic = step("automatic_approval").task({
         run: {
           input: {},

@@ -18,15 +18,23 @@ export function validateWorkflowIR(ir: WorkflowIR): DiagnosticIR[] {
   validateSchema(ir.inputSchema, diagnostics, "inputSchema");
   const agents = isRecord(ir.agents) ? ir.agents : undefined;
   if (!agents) addError(diagnostics, "IR002", "WorkflowIR agents must be an object.", "agents");
-  else validateAgents(agents, diagnostics);
+  else validateAgents(agents, diagnostics, emptyRefContext());
   validateLock(ir.lock, diagnostics, "lock");
   validateDiagnostics(ir.diagnostics, diagnostics, "diagnostics");
-  validateExprObject(ir.outputs, diagnostics, "outputs");
   const ids = new Set<string>();
+  const rootVisibleNodes = new Set<string>();
   validateScope(ir.root, diagnostics, {
     path: "root",
     ids,
     agents: new Set(agents ? Object.keys(agents) : []),
+    visibleNodes: rootVisibleNodes,
+    fanoutIds: new Set(),
+    loopIds: new Set(),
+  });
+  validateExprObject(ir.outputs, diagnostics, "outputs", {
+    visibleNodes: rootVisibleNodes,
+    fanoutIds: new Set(),
+    loopIds: new Set(),
   });
   return diagnostics;
 }
@@ -57,7 +65,7 @@ function validateDiagnostics(value: unknown, diagnostics: DiagnosticIR[], path: 
   }, { code: "IR002" });
 }
 
-function validateAgents(agents: WorkflowIR["agents"], diagnostics: DiagnosticIR[]): void {
+function validateAgents(agents: WorkflowIR["agents"], diagnostics: DiagnosticIR[], refs: RefContext): void {
   for (const [name, agent] of Object.entries(agents)) {
     const path = `agents.${name}`;
     if (!requireRecord(agent, diagnostics, path, "A002", `Agent '${name}' definition must be an object.`)) continue;
@@ -66,8 +74,8 @@ function validateAgents(agents: WorkflowIR["agents"], diagnostics: DiagnosticIR[
       validateRequiredNonEmptyString(agent.use, diagnostics, `${path}.use`, "A002", `Agent '${name}' use must be a non-empty string.`);
       validatePermissionMode(agent.permissionMode, diagnostics, `${path}.permissionMode`);
       validateAgentMode(agent.agentMode, diagnostics, `${path}.agentMode`);
-      if (agent.cwd) validateExpr(agent.cwd, diagnostics, `${path}.cwd`);
-      validateEnv(agent.env, diagnostics, `${path}.env`);
+      if (agent.cwd) validateExpr(agent.cwd, diagnostics, `${path}.cwd`, refs);
+      validateEnv(agent.env, diagnostics, `${path}.env`, refs);
       continue;
     }
 
@@ -76,8 +84,8 @@ function validateAgents(agents: WorkflowIR["agents"], diagnostics: DiagnosticIR[
       validateRequiredNonEmptyString(agent.command, diagnostics, `${path}.command`, "A002", `Command-backed agent '${name}' command must be a non-empty string.`);
       validatePermissionMode(agent.permissionMode, diagnostics, `${path}.permissionMode`);
       validateAgentMode(agent.agentMode, diagnostics, `${path}.agentMode`);
-      if (agent.cwd) validateExpr(agent.cwd, diagnostics, `${path}.cwd`);
-      validateEnv(agent.env, diagnostics, `${path}.env`);
+      if (agent.cwd) validateExpr(agent.cwd, diagnostics, `${path}.cwd`, refs);
+      validateEnv(agent.env, diagnostics, `${path}.env`, refs);
       continue;
     }
 
@@ -85,24 +93,31 @@ function validateAgents(agents: WorkflowIR["agents"], diagnostics: DiagnosticIR[
   }
 }
 
-type ScopeContext = {
+type IrScopeContext = {
   path: string;
   ids: Set<string>;
   agents: Set<string>;
+  visibleNodes: Set<string>;
+  fanoutIds: Set<string>;
+  loopIds: Set<string>;
 };
 
-function validateScope(scope: unknown, diagnostics: DiagnosticIR[], ctx: ScopeContext): void {
+function validateScope(scope: unknown, diagnostics: DiagnosticIR[], ctx: IrScopeContext): void {
   if (!requireRecord(scope, diagnostics, ctx.path, "IR002", "Scope must be an object.")) return;
   validateKnownFields(scope, ["nodes", "outputs"], diagnostics, ctx.path);
   const nodes = requireArray<unknown>(scope.nodes, diagnostics, `${ctx.path}.nodes`, "IR002", "Scope nodes must be an array.");
   if (!nodes) return;
-  forEachDense(nodes, diagnostics, `${ctx.path}.nodes`, node => validateNode(node as NodeIR, diagnostics, ctx), { code: "IR002" });
+  forEachDense(nodes, diagnostics, `${ctx.path}.nodes`, node => {
+    const id = nodeId(node);
+    validateNode(node as NodeIR, diagnostics, ctx);
+    if (id) ctx.visibleNodes.add(id);
+  }, { code: "IR002" });
   if (scope.outputs !== undefined) {
-    validateExprObject(scope.outputs, diagnostics, `${ctx.path}.outputs`);
+    validateExprObject(scope.outputs, diagnostics, `${ctx.path}.outputs`, refsFromScope(ctx));
   }
 }
 
-function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeContext): void {
+function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: IrScopeContext): void {
   if (!requireRecord(node, diagnostics, `${ctx.path}.nodes`, "IR002", "Node must be an object.")) return;
   const id = typeof node.id === "string" ? node.id : "<unknown>";
   const path = `${ctx.path}.nodes.${id}`;
@@ -114,7 +129,7 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
     case "agent": {
       validateKnownFields(node, ["id", "source", "kind", "outputSchema", "run", "timeout", "retry"], diagnostics, path);
       validateDuration(node.timeout, diagnostics, `${path}.timeout`, `Agent node '${node.id}' timeout`, "IR002");
-      validateAgentRun(node.run, diagnostics, `${path}.run`);
+      validateAgentRun(node.run, diagnostics, `${path}.run`, refsFromScope(ctx));
       validateRetry(node.retry, diagnostics, `${path}.retry`, node.outputSchema !== undefined);
       const agentKey = isRecord(node.run) && typeof node.run.agent === "string" ? node.run.agent : undefined;
       if (agentKey && !ctx.agents.has(agentKey)) {
@@ -132,38 +147,38 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
     case "task": {
       validateKnownFields(node, ["id", "source", "kind", "run", "timeout"], diagnostics, path);
       validateDuration(node.timeout, diagnostics, `${path}.timeout`, `Task node '${node.id}' timeout`, "IR002");
-      validateTaskRun(node.run, diagnostics, `${path}.run`);
+      validateTaskRun(node.run, diagnostics, `${path}.run`, refsFromScope(ctx));
       break;
     }
     case "signal": {
       validateKnownFields(node, ["id", "source", "kind", "outputSchema", "run", "timeout", "onTimeout"], diagnostics, path);
       validateDuration(node.timeout, diagnostics, `${path}.timeout`, `Signal node '${node.id}' timeout`, "IR002");
       if (node.onTimeout && node.timeout === undefined) addError(diagnostics, "S001", `Signal node '${node.id}' onTimeout requires timeout.`, `${path}.onTimeout`);
-      validateSignalRun(node.run, diagnostics, `${path}.run`);
+      validateSignalRun(node.run, diagnostics, `${path}.run`, refsFromScope(ctx));
       validateSignalTimeout(node.onTimeout, diagnostics, `${path}.onTimeout`, node.id);
       validateSchema(node.outputSchema, diagnostics, `${path}.outputSchema`);
       break;
     }
     case "assert": {
       validateKnownFields(node, ["id", "source", "kind", "condition", "message"], diagnostics, path);
-      validateExpr(node.condition, diagnostics, `${path}.condition`);
-      if (node.message) validateTemplate(node.message, diagnostics, `${path}.message`);
+      validateExpr(node.condition, diagnostics, `${path}.condition`, refsFromScope(ctx));
+      if (node.message) validateTemplate(node.message, diagnostics, `${path}.message`, refsFromScope(ctx));
       break;
     }
     case "if": {
       validateKnownFields(node, ["id", "source", "kind", "condition", "then", "else"], diagnostics, path);
-      validateExpr(node.condition, diagnostics, `${path}.condition`);
-      validateScope(node.then, diagnostics, { ...ctx, path: `${path}.then` });
+      validateExpr(node.condition, diagnostics, `${path}.condition`, refsFromScope(ctx));
+      validateScope(node.then, diagnostics, childScopeContext(ctx, `${path}.then`));
       if (!node.else) {
         diagnostics.push({
           code: "G002",
           severity: "error",
           message: `If node '${node.id}' must declare else.`,
           path: `${path}.else`,
-          hint: "Add an else branch. Use else: () => ({}) for control-only branching.",
+          hint: "Add an else branch. Use else() { return {}; } for control-only branching.",
         });
       } else {
-        validateScope(node.else, diagnostics, { ...ctx, path: `${path}.else` });
+        validateScope(node.else, diagnostics, childScopeContext(ctx, `${path}.else`));
       }
       break;
     }
@@ -176,8 +191,8 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
           const casePath = `${path}.cases.${i}`;
           if (!requireRecord(c, diagnostics, casePath, "IR002", "Switch case must be an object.")) return;
           validateKnownFields(c, ["when", "then"], diagnostics, casePath);
-          validateExpr(c.when, diagnostics, `${casePath}.when`);
-          validateScope(c.then, diagnostics, { ...ctx, path: `${casePath}.then` });
+          validateExpr(c.when, diagnostics, `${casePath}.when`, refsFromScope(ctx));
+          validateScope(c.then, diagnostics, childScopeContext(ctx, `${casePath}.then`));
         }, { code: "IR002" });
       }
       if (!node.default) {
@@ -186,10 +201,10 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
           severity: "error",
           message: `Switch node '${node.id}' must declare default.`,
           path: `${path}.default`,
-          hint: "Add a default branch. Use default: () => ({}) for control-only routing.",
+          hint: "Add a default branch. Use default() { return {}; } for control-only routing.",
         });
       } else {
-        validateScope(node.default, diagnostics, { ...ctx, path: `${path}.default` });
+        validateScope(node.default, diagnostics, childScopeContext(ctx, `${path}.default`));
       }
       break;
     }
@@ -205,7 +220,7 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
         const branchPath = `${path}.branches.${name}`;
         if (!requireRecord(branch, diagnostics, branchPath, "IR002", "Parallel branch must be an object.")) continue;
         validateKnownFields(branch, ["scope"], diagnostics, branchPath);
-        validateScope(branch.scope, diagnostics, { ...ctx, path: `${branchPath}.scope` });
+        validateScope(branch.scope, diagnostics, childScopeContext(ctx, `${branchPath}.scope`));
       }
       break;
     }
@@ -216,19 +231,19 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
       if (strategy !== "all" && strategy !== "quorum") addError(diagnostics, "F001", `Fanout node '${node.id}' strategy must be 'all' or 'quorum'.`, `${path}.strategy`);
       if (strategy === "quorum" && (!Number.isInteger(count) || (count ?? 0) <= 0)) addError(diagnostics, "F002", `Fanout node '${node.id}' quorum count must be a positive integer.`, `${path}.count`);
       if (strategy !== "quorum" && count !== undefined) addError(diagnostics, "F003", `Fanout node '${node.id}' count is only valid with quorum strategy.`, `${path}.count`);
-      const validOver = validateExpr(node.over, diagnostics, `${path}.over`);
+      const validOver = validateExpr(node.over, diagnostics, `${path}.over`, refsFromScope(ctx));
       if (validOver) validateFanoutOver(node.over, diagnostics, `${path}.over`);
-      if (node.key) validateTemplate(node.key, diagnostics, `${path}.key`);
-      validateScope(node.do, diagnostics, { ...ctx, path: `${path}.do` });
+      if (node.key) validateTemplate(node.key, diagnostics, `${path}.key`, refsWithFanout(ctx, id));
+      validateScope(node.do, diagnostics, childScopeContext(ctx, `${path}.do`, { fanoutId: id }));
       break;
     }
     case "loop": {
       validateKnownFields(node, ["id", "source", "kind", "initial", "maxIterations", "do", "stopWhen", "onExhausted"], diagnostics, path);
-      validateExpr(node.initial, diagnostics, `${path}.initial`);
-      validateExpr(node.maxIterations, diagnostics, `${path}.maxIterations`);
+      validateExpr(node.initial, diagnostics, `${path}.initial`, refsFromScope(ctx));
+      validateExpr(node.maxIterations, diagnostics, `${path}.maxIterations`, refsFromScope(ctx));
       if (node.onExhausted !== undefined && node.onExhausted !== "fail" && node.onExhausted !== "returnLast") addError(diagnostics, "L002", `Loop node '${node.id}' onExhausted must be 'fail' or 'returnLast'.`, `${path}.onExhausted`);
-      validateExpr(node.stopWhen, diagnostics, `${path}.stopWhen`);
-      validateScope(node.do, diagnostics, { ...ctx, path: `${path}.do` });
+      validateExpr(node.stopWhen, diagnostics, `${path}.stopWhen`, refsWithLoop(ctx, id));
+      validateScope(node.do, diagnostics, childScopeContext(ctx, `${path}.do`, { loopId: id }));
       break;
     }
     default:
@@ -236,16 +251,16 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: ScopeConte
   }
 }
 
-function validateAgentRun(run: unknown, diagnostics: DiagnosticIR[], path: string): void {
+function validateAgentRun(run: unknown, diagnostics: DiagnosticIR[], path: string, refs: RefContext): void {
   if (!requireRecord(run, diagnostics, path, "A003", "Agent run must be an object.")) return;
   validateKnownFields(run, ["kind", "agent", "prompt", "permissionMode", "sessionKey", "cwd", "env"], diagnostics, path);
   if (run.kind !== "agent_run") addError(diagnostics, "A003", "Agent run kind must be agent_run.", `${path}.kind`);
   validateRequiredNonEmptyString(run.agent, diagnostics, `${path}.agent`, "A003", "Agent run agent must be a non-empty string.");
-  validateTemplate(run.prompt, diagnostics, `${path}.prompt`);
+  validateTemplate(run.prompt, diagnostics, `${path}.prompt`, refs);
   validatePermissionMode(run.permissionMode, diagnostics, `${path}.permissionMode`);
-  if (run.sessionKey) validateTemplate(run.sessionKey, diagnostics, `${path}.sessionKey`);
-  if (run.cwd) validateExpr(run.cwd, diagnostics, `${path}.cwd`);
-  validateEnv(run.env, diagnostics, `${path}.env`);
+  if (run.sessionKey) validateTemplate(run.sessionKey, diagnostics, `${path}.sessionKey`, refs);
+  if (run.cwd) validateExpr(run.cwd, diagnostics, `${path}.cwd`, refs);
+  validateEnv(run.env, diagnostics, `${path}.env`, refs);
 }
 
 function validatePermissionMode(value: unknown, diagnostics: DiagnosticIR[], path: string): void {
@@ -280,14 +295,14 @@ function validateDuration(value: unknown, diagnostics: DiagnosticIR[], path: str
   }
 }
 
-function validateTaskRun(run: unknown, diagnostics: DiagnosticIR[], path: string): void {
+function validateTaskRun(run: unknown, diagnostics: DiagnosticIR[], path: string, refs: RefContext): void {
   if (!requireRecord(run, diagnostics, path, "T007", "Task run must be an object.")) return;
   validateKnownFields(run, ["kind", "input", "target", "cwd", "env", "execution"], diagnostics, path);
   if (run.kind !== "task_run") addError(diagnostics, "T007", "Task run kind must be task_run.", `${path}.kind`);
-  validateExprObject(run.input, diagnostics, `${path}.input`);
+  validateExprObject(run.input, diagnostics, `${path}.input`, refs);
   validateTaskTarget(run.target, diagnostics, `${path}.target`);
-  if (run.cwd) validateExpr(run.cwd, diagnostics, `${path}.cwd`);
-  validateEnv(run.env, diagnostics, `${path}.env`);
+  if (run.cwd) validateExpr(run.cwd, diagnostics, `${path}.cwd`, refs);
+  validateEnv(run.env, diagnostics, `${path}.env`, refs);
   validateTaskExecution(run.execution, diagnostics, `${path}.execution`);
 }
 
@@ -323,11 +338,11 @@ function validateTaskReferrer(referrer: unknown, diagnostics: DiagnosticIR[], pa
   }
 }
 
-function validateSignalRun(run: unknown, diagnostics: DiagnosticIR[], path: string): void {
+function validateSignalRun(run: unknown, diagnostics: DiagnosticIR[], path: string, refs: RefContext): void {
   if (!requireRecord(run, diagnostics, path, "S002", "Signal run must be an object.")) return;
   validateKnownFields(run, ["kind", "prompt"], diagnostics, path);
   if (run.kind !== "signal_run") addError(diagnostics, "S002", "Signal run kind must be signal_run.", `${path}.kind`);
-  validateTemplate(run.prompt, diagnostics, `${path}.prompt`);
+  validateTemplate(run.prompt, diagnostics, `${path}.prompt`, refs);
 }
 
 function validateSignalTimeout(onTimeout: unknown, diagnostics: DiagnosticIR[], path: string, id: string): void {
@@ -349,16 +364,16 @@ function validateFanoutOver(expr: ExprIR, diagnostics: DiagnosticIR[], path: str
   }
 }
 
-function validateExprObject(values: unknown, diagnostics: DiagnosticIR[], path: string): void {
+function validateExprObject(values: unknown, diagnostics: DiagnosticIR[], path: string, refs?: RefContext): void {
   if (!values) {
     addError(diagnostics, "E000", "Expression object is required.", path);
     return;
   }
   if (!requireRecord(values, diagnostics, path, "E004", "Expression object fields must be an object.")) return;
-  for (const [key, expr] of Object.entries(values)) validateExpr(expr, diagnostics, `${path}.${key}`);
+  for (const [key, expr] of Object.entries(values)) validateExpr(expr, diagnostics, `${path}.${key}`, refs);
 }
 
-function validateEnv(values: unknown, diagnostics: DiagnosticIR[], path: string): void {
+function validateEnv(values: unknown, diagnostics: DiagnosticIR[], path: string, refs?: RefContext): void {
   if (values === undefined) return;
   if (!requireRecord(values, diagnostics, path, "E004", "Env must be an object.")) return;
   for (const [key, value] of Object.entries(values)) {
@@ -366,7 +381,7 @@ function validateEnv(values: unknown, diagnostics: DiagnosticIR[], path: string)
       validateSecretRef(value, diagnostics, `${path}.${key}`);
       continue;
     }
-    validateExpr(value, diagnostics, `${path}.${key}`);
+    validateExpr(value, diagnostics, `${path}.${key}`, refs);
   }
 }
 
@@ -377,7 +392,7 @@ function validateSecretRef(value: SecretRefIR, diagnostics: DiagnosticIR[], path
   }
 }
 
-function validateTemplate(template: unknown, diagnostics: DiagnosticIR[], path: string): boolean {
+function validateTemplate(template: unknown, diagnostics: DiagnosticIR[], path: string, refs?: RefContext): boolean {
   if (!template) {
     addError(diagnostics, "TM001", "Template is required.", path);
     return false;
@@ -397,7 +412,7 @@ function validateTemplate(template: unknown, diagnostics: DiagnosticIR[], path: 
     }
     if (part.kind === "expr") {
       validateKnownFields(part, ["kind", "expr"], diagnostics, partPath);
-      validateExpr(part.expr, diagnostics, `${partPath}.expr`);
+      validateExpr(part.expr, diagnostics, `${partPath}.expr`, refs);
       return;
     }
     addError(diagnostics, "TM002", `Unknown template part kind '${String(part.kind)}'.`, `${partPath}.kind`);
@@ -414,7 +429,7 @@ function validateTaskExecution(execution: unknown, diagnostics: DiagnosticIR[], 
   validateOptionalEnum(execution.commandRunner, ["acpus-zx-core", "custom"], diagnostics, `${path}.commandRunner`, "T006", "Task commandRunner must be acpus-zx-core or custom.");
 }
 
-function validateExpr(expr: unknown, diagnostics: DiagnosticIR[], path: string): expr is ExprIR {
+function validateExpr(expr: unknown, diagnostics: DiagnosticIR[], path: string, refs?: RefContext): expr is ExprIR {
   if (expr === undefined || expr === null) {
     addError(diagnostics, "E000", "Expression is required.", path);
     return false;
@@ -429,6 +444,7 @@ function validateExpr(expr: unknown, diagnostics: DiagnosticIR[], path: string):
   }
   const issues = validateExprIR(expr);
   diagnostics.push(...issues.map(issue => expressionDiagnostic(issue, path)));
+  if (issues.length === 0 && refs) validateExprRefs(expr as ExprIR, diagnostics, path, refs);
   return issues.length === 0;
 }
 
@@ -450,6 +466,133 @@ function expressionCode(code: ExpressionDiagnostic["code"]): DiagnosticIR["code"
 function expressionPath(basePath: string, path: string | undefined): string {
   if (!path || path === "$") return basePath;
   return `${basePath}${path.slice(1).replaceAll("[", ".").replaceAll("]", "")}`;
+}
+
+type RefContext = {
+  visibleNodes: ReadonlySet<string>;
+  fanoutIds: ReadonlySet<string>;
+  loopIds: ReadonlySet<string>;
+};
+
+function emptyRefContext(): RefContext {
+  return {
+    visibleNodes: new Set(),
+    fanoutIds: new Set(),
+    loopIds: new Set(),
+  };
+}
+
+function refsFromScope(ctx: IrScopeContext): RefContext {
+  return {
+    visibleNodes: ctx.visibleNodes,
+    fanoutIds: ctx.fanoutIds,
+    loopIds: ctx.loopIds,
+  };
+}
+
+function refsWithFanout(ctx: IrScopeContext, fanoutId: string): RefContext {
+  return {
+    visibleNodes: ctx.visibleNodes,
+    fanoutIds: new Set([...ctx.fanoutIds, fanoutId]),
+    loopIds: ctx.loopIds,
+  };
+}
+
+function refsWithLoop(ctx: IrScopeContext, loopId: string): RefContext {
+  return {
+    visibleNodes: ctx.visibleNodes,
+    fanoutIds: ctx.fanoutIds,
+    loopIds: new Set([...ctx.loopIds, loopId]),
+  };
+}
+
+function childScopeContext(
+  ctx: IrScopeContext,
+  path: string,
+  options: { fanoutId?: string; loopId?: string } = {},
+): IrScopeContext {
+  const fanoutIds = new Set(ctx.fanoutIds);
+  if (options.fanoutId) fanoutIds.add(options.fanoutId);
+  const loopIds = new Set(ctx.loopIds);
+  if (options.loopId) loopIds.add(options.loopId);
+  return {
+    ...ctx,
+    path,
+    visibleNodes: new Set(ctx.visibleNodes),
+    fanoutIds,
+    loopIds,
+  };
+}
+
+function nodeId(node: unknown): string | undefined {
+  return isRecord(node) && typeof node.id === "string" ? node.id : undefined;
+}
+
+function validateExprRefs(expr: ExprIR, diagnostics: DiagnosticIR[], path: string, refs: RefContext): void {
+  switch (expr.kind) {
+    case "ref":
+      validateRefPath(expr.path, diagnostics, `${path}.path`, refs);
+      return;
+    case "call":
+      expr.args.forEach((arg, index) => validateExprRefs(arg, diagnostics, `${path}.args.${index}`, refs));
+      return;
+    case "array":
+      expr.items.forEach((item, index) => validateExprRefs(item, diagnostics, `${path}.items.${index}`, refs));
+      return;
+    case "object":
+      for (const [key, value] of Object.entries(expr.fields)) validateExprRefs(value, diagnostics, `${path}.fields.${key}`, refs);
+      return;
+    case "template":
+      validateTemplateRefs(expr.template, diagnostics, `${path}.template`, refs);
+      return;
+    case "lambda":
+      validateExprRefs(expr.body, diagnostics, `${path}.body`, refs);
+      return;
+    case "literal":
+    case "var":
+      return;
+  }
+}
+
+function validateTemplateRefs(template: TemplateIR, diagnostics: DiagnosticIR[], path: string, refs: RefContext): void {
+  template.parts.forEach((part, index) => {
+    if (part.kind === "expr") validateExprRefs(part.expr, diagnostics, `${path}.parts.${index}.expr`, refs);
+  });
+}
+
+function validateRefPath(refPath: string[], diagnostics: DiagnosticIR[], path: string, refs: RefContext): void {
+  const [root, id] = refPath;
+  if (root === "nodes") {
+    if (typeof id !== "string" || !refs.visibleNodes.has(id)) {
+      addError(diagnostics, "IR003", `Node ref '${refPath.join(".")}' is not visible from this scope.`, path);
+      return;
+    }
+    if (refPath[2] !== "output") {
+      addError(diagnostics, "IR003", `Node ref '${refPath.join(".")}' is not visible from this scope.`, path);
+    }
+    return;
+  }
+  if (root === "fanout") {
+    if (typeof id !== "string" || !refs.fanoutIds.has(id)) {
+      addError(diagnostics, "IR003", `Fanout ref '${refPath.join(".")}' is not visible from this scope.`, path);
+      return;
+    }
+    const member = refPath[2];
+    if (member !== "item" && member !== "itemIndex") {
+      addError(diagnostics, "IR003", `Fanout ref '${refPath.join(".")}' is not visible from this scope.`, path);
+    }
+    return;
+  }
+  if (root === "loop") {
+    if (typeof id !== "string" || !refs.loopIds.has(id)) {
+      addError(diagnostics, "IR003", `Loop ref '${refPath.join(".")}' is not visible from this scope.`, path);
+      return;
+    }
+    const member = refPath[2];
+    if (member !== "iter" && member !== "previous" && member !== "result") {
+      addError(diagnostics, "IR003", `Loop ref '${refPath.join(".")}' is not visible from this scope.`, path);
+    }
+  }
 }
 
 function validateSchema(schema: unknown, diagnostics: DiagnosticIR[], path: string): void {

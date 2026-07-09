@@ -1,7 +1,6 @@
 import { isExpr, type Expr } from "@acpus/expression";
 import { bindingsToIR } from "./lowering.js";
 import type { DiagnosticIR, NodeIR, ScopeIR } from "../ir/types.js";
-import type { StepFactory } from "./builder.js";
 
 type Primitive = string | number | boolean | null | undefined;
 
@@ -19,13 +18,8 @@ export type OutputValues<T extends object> = {
   [K in keyof T]: OutputValue<T[K]>;
 };
 
-export type ScopeContext = {
-  step: StepFactory;
-};
-
 type ScopeBuildState = {
   readonly nodes: NodeIR[];
-  readonly step: StepFactory;
 };
 
 export function isOutputObject(value: unknown): value is Record<string, unknown> {
@@ -37,10 +31,10 @@ export function isOutputObject(value: unknown): value is Record<string, unknown>
 export function buildImplicitScope<Extra extends object>(
   diagnostics: DiagnosticIR[],
   child: ScopeBuildState,
-  fn: (ctx: ScopeContext & Extra) => Record<string, unknown>,
+  fn: (ctx: Extra) => Record<string, unknown>,
   extra: Extra,
 ): ScopeIR {
-  const result = fn({ step: child.step, ...extra });
+  const result = fn(extra);
   if (!isOutputObject(result)) {
     diagnostics.push({
       code: "B001",
