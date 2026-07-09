@@ -260,7 +260,7 @@ export default defineWorkflow({ name: "throws" }).build(() => {
     const loop = getNode(repairBranch.scope, "repair_loop");
     expect(loop).toMatchObject({
       kind: "loop",
-      initial: {
+      state: {
         kind: "object",
         fields: {
           branch: { kind: "literal", value: "" },
@@ -269,15 +269,17 @@ export default defineWorkflow({ name: "throws" }).build(() => {
           summary: { kind: "literal", value: "" },
         },
       },
-      stopWhen: {
-        kind: "call",
-        fn: "not",
-        args: [
-          {
-            kind: "ref",
-            path: ["loop", "repair_loop", "result", "continue"],
+      do: {
+        outputs: {
+          stop: {
+            kind: "call",
+            fn: "or",
+            args: expect.arrayContaining([
+              expect.objectContaining({ kind: "call", fn: "not" }),
+              expect.objectContaining({ kind: "call", fn: "gte" }),
+            ]),
           },
-        ],
+        },
       },
     });
     if (loop?.kind !== "loop") throw new Error("expected loop fixture node");
@@ -291,7 +293,7 @@ export default defineWorkflow({ name: "throws" }).build(() => {
               kind: "expr",
               expr: {
                 kind: "ref",
-                path: ["loop", "repair_loop", "previous", "summary"],
+                path: ["loop", "repair_loop", "state", "summary"],
               },
             },
           ]),

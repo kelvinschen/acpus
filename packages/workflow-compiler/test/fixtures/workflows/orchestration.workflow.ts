@@ -5,8 +5,10 @@ import {
 import {
   eq,
   coalesce,
+  gte,
   head,
   not,
+  or,
   template,
   where,
 } from "acpus/expression";
@@ -76,34 +78,34 @@ export default defineWorkflow({
           },
           repair() {
             const repairLoop = step("repair_loop").loop({
-              initial: {
+              state: {
                 branch: "",
                 round: 0,
                 continue: true,
                 summary: "",
               },
-              maxIterations: 2,
-              do({ iter, previous }) {
+              do({ state, round }) {
                 const repair = step("repair_round").agent({
                   outputSchema: LaneRepair,
                   run: {
                     agent: agents.worker,
                     prompt: template`
                       Repair lane ${item.id}.
-                      Round: ${iter}
-                      Previous summary: ${previous.summary}
+                      Round: ${round}
+                      Previous summary: ${state.summary}
                     `,
                   },
                 });
                 return {
-                  branch: repair.output.branch,
-                  round: iter,
-                  continue: repair.output.continue,
-                  summary: repair.output.summary,
+                  state: {
+                    branch: repair.output.branch,
+                    round,
+                    continue: repair.output.continue,
+                    summary: repair.output.summary,
+                  },
+                  stop: or(not(repair.output.continue), gte(round, 2)),
                 };
               },
-              stopWhen({ result }) { return not(result.continue); },
-              onExhausted: "returnLast",
             });
             return {
               branch: repairLoop.output.branch,

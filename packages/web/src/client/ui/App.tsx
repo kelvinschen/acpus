@@ -1190,6 +1190,21 @@ function Inspector({
             </InspectorSection>
           )}
 
+          {summary.loopProgress && (
+            <>
+              <InspectorSection title="Loop Progress">
+                <KeyValue label="Round" value={String(summary.loopProgress.round)} />
+                <KeyValue label="Index" value={String(summary.loopProgress.index)} />
+                <KeyValue label="Frame Key" value={summary.loopProgress.frameKey} />
+                {summary.loopProgress.activeIterationFrameKey && <KeyValue label="Iteration Frame" value={summary.loopProgress.activeIterationFrameKey} />}
+                {summary.loopProgress.stop !== undefined && <KeyValue label="Stop" value={String(summary.loopProgress.stop)} />}
+              </InspectorSection>
+              {summary.loopProgress.activeChildNodeKeys.length > 0 && <JsonSection title="Active Child Node Keys" value={summary.loopProgress.activeChildNodeKeys} />}
+              {summary.loopProgress.state !== undefined && <JsonSection title="Loop State" value={summary.loopProgress.state} />}
+              {summary.loopProgress.transition !== undefined && <JsonSection title="Last Transition" value={summary.loopProgress.transition} />}
+            </>
+          )}
+
           {summary.output !== undefined && (
             <JsonSection title="Output" value={summary.output} />
           )}

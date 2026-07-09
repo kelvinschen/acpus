@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, canonicalPath, deriveInstanceKey } from "../src/scheduler/identity.js";
-import { applySchedulerEvents, attemptTimeoutEvents, createSchedulerProjection, evaluateGroupCompletion, groupCompletionEvents, loopExhaustionResult, materializeFanoutItems, nextLoopStep, resolveScopedNodeKey, retryTargetClass, signalTimeoutEvents } from "../src/scheduler/transitions.js";
+import { applySchedulerEvents, attemptTimeoutEvents, createSchedulerProjection, evaluateGroupCompletion, groupCompletionEvents, materializeFanoutItems, nextLoopStep, resolveScopedNodeKey, retryTargetClass, signalTimeoutEvents } from "../src/scheduler/transitions.js";
 import type { GroupMember, GroupProjection } from "../src/scheduler/types.js";
 
 describe("scheduler identity and reducers", () => {
@@ -36,9 +36,12 @@ describe("scheduler identity and reducers", () => {
       { type: "frame.started", payload: { runId: "run_1", frameKey: "if~1", frameKind: "node", nodeKey: "if~1", nodeId: "if" } },
       { type: "branch.decided", payload: { frameKey: "if~1", branchId: "then" } },
       { type: "frame.started", payload: { runId: "run_1", frameKey: "loop~1", frameKind: "loop", nodeKey: "loop~1", nodeId: "loop" } },
-      { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 0, result: { done: false, iter: 0 } } },
-      { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 1, previous: { done: false, iter: 0 }, result: { done: false } } },
-      { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 2, previous: { done: false }, result: { done: true } } },
+      { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 0, state: { done: false } } },
+      { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 0, state: { done: false, iter: 0 }, transition: { state: { done: false, iter: 0 }, stop: false } } },
+      { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 1, state: { done: false, iter: 0 } } },
+      { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 1, state: { done: false, iter: 1 }, transition: { state: { done: false, iter: 1 }, stop: false } } },
+      { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 2, state: { done: false, iter: 1 } } },
+      { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 2, state: { done: true }, transition: { state: { done: true }, stop: true } } },
       { type: "signal.awaiting", payload: { runId: "run_1", nodeKey: "approve~1", nodeId: "approve", deadlineAt: "2026-06-30T01:00:00.000Z" } },
       { type: "signal.consumed", payload: { nodeKey: "approve~1", payload: { ok: true }, payloadDigest: "sha256:1", commandIdempotencyKey: "signal-1" } },
     ]);
@@ -50,7 +53,15 @@ describe("scheduler identity and reducers", () => {
     expect(projection.groups["race~1"]).toMatchObject({ status: "completed", result: { winner: "left" } });
     expect(projection.groupMembers["race.left"]).toMatchObject({ status: "completed", acceptedRank: 1 });
     expect(projection.branchDecisions["if~1"]).toBe("then");
-    expect(projection.frames["loop~1"]).toMatchObject({ loop: { iter: 2, previous: { done: false }, result: { done: true } } });
+    expect(projection.frames["loop~1"]).toMatchObject({
+      loop: {
+        iter: 2,
+        index: 2,
+        round: 3,
+        state: { done: true },
+        transition: { state: { done: true }, stop: true },
+      },
+    });
     expect(projection.signalWaits["approve~1"]).toMatchObject({ status: "consumed", payload: { ok: true }, commandIdempotencyKey: "signal-1" });
   });
 
@@ -169,22 +180,25 @@ describe("scheduler identity and reducers", () => {
 
     const loop = applySchedulerEvents(createSchedulerProjection("run_1"), [
       { type: "frame.started", payload: { runId: "run_1", frameKey: "loop~1", frameKind: "loop" } },
-      { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 0, result: { done: false, iter: 0 } } },
-      { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 1, previous: { done: false, iter: 0 }, result: { done: false, iter: 1 } } },
-      { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 2, previous: { done: false, iter: 1 }, result: { done: true } } },
+      { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 0, state: { done: false } } },
+      { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 0, state: { done: false, iter: 0 }, transition: { state: { done: false, iter: 0 }, stop: false } } },
+      { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 1, state: { done: false, iter: 0 } } },
+      { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 1, state: { done: false, iter: 1 }, transition: { state: { done: false, iter: 1 }, stop: false } } },
+      { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 2, state: { done: false, iter: 1 } } },
+      { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 2, state: { done: true }, transition: { state: { done: true }, stop: true } } },
     ]);
     expect(() => applySchedulerEvents(loop, [
-      { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 1, result: { done: false } } },
+      { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 1, transition: { state: { done: false }, stop: false } } },
     ])).toThrow("cannot move from iteration 2 back to 1");
     expect(() => applySchedulerEvents(loop, [
-      { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 2, result: { done: false } } },
-    ])).toThrow("already recorded a different result");
+      { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 2, transition: { state: { done: false }, stop: false } } },
+    ])).toThrow("already recorded a different transition");
     expect(() => applySchedulerEvents(loop, [
-      { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 2, previous: { changed: true }, result: { done: true } } },
-    ])).toThrow("already recorded a different previous value");
+      { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 3, state: { changed: true } } },
+    ])).toThrow("next state must match iteration 2 transition state");
     expect(() => applySchedulerEvents(createSchedulerProjection("run_1"), [
       { type: "frame.started", payload: { runId: "run_1", frameKey: "loop~2", frameKind: "loop" } },
-      { type: "frame.loop_advanced", payload: { frameKey: "loop~2", iter: 2, result: { done: true } } },
+      { type: "frame.loop_advanced", payload: { frameKey: "loop~2", iter: 2, state: { done: true } } },
     ])).toThrow("must start at iteration 0");
   });
 
@@ -554,36 +568,21 @@ describe("scheduler identity and reducers", () => {
     expect(() => resolveScopedNodeKey([{ prepare: "prepare~root" }], "missing")).toThrow("Node 'missing' is not visible");
   });
 
-  it("classifies loop exhaustion and command retry targets", () => {
-    expect(nextLoopStep({ iter: 0, maxIterations: 3, stop: false, result: { iter: 0 } })).toEqual({
+  it("classifies loop transitions and command retry targets", () => {
+    expect(nextLoopStep({ iter: 0, transition: { state: { iter: 0 }, stop: false } })).toEqual({
       action: "start_iteration",
       iter: 1,
-      previous: { iter: 0 },
+      state: { iter: 0 },
     });
-    expect(nextLoopStep({ iter: 1, maxIterations: 3, stop: true, result: { done: true } })).toEqual({
+    expect(nextLoopStep({ iter: 1, transition: { state: { done: true }, stop: true } })).toEqual({
       action: "complete",
       output: { done: true },
       terminalReason: "stopped",
     });
-    expect(nextLoopStep({ iter: 2, maxIterations: 3, stop: false, result: { last: true }, onExhausted: "returnLast" })).toEqual({
-      action: "complete",
-      output: { last: true },
-      terminalReason: "exhausted_return_last",
-    });
-    expect(nextLoopStep({ iter: 2, maxIterations: 3, stop: false })).toEqual({
+    expect(nextLoopStep({ iter: 2, transition: { state: { done: false }, stop: "no" } as any })).toEqual({
       action: "fail",
-      error: { message: "Loop exhausted after 3 iterations." },
-      terminalReason: "loop_exhausted",
-    });
-    expect(loopExhaustionResult({ maxIterations: 3, onExhausted: "returnLast", lastResult: { ok: true } })).toEqual({
-      status: "completed",
-      output: { ok: true },
-      terminalReason: "exhausted_return_last",
-    });
-    expect(loopExhaustionResult({ maxIterations: 3 })).toEqual({
-      status: "failed",
-      terminalReason: "loop_exhausted",
-      error: { message: "Loop exhausted after 3 iterations." },
+      error: { reason: "invalid_loop_transition", message: "Loop body transition 'stop' must be boolean." },
+      terminalReason: "invalid_loop_transition",
     });
     expect(retryTargetClass("failed", "terminal")).toBe("retryable");
     expect(retryTargetClass("failed", "retryable")).toBe("not_retryable");

@@ -315,14 +315,14 @@ describe("workflow compilation", () => {
       });
 
       const retry = step("retry_until_done").loop({
-        initial: { done: false as boolean, summary: "first" },
-        maxIterations: 3,
-        do({ iter, previous }) { return {
-            done: eq(iter, 2),
-            summary: previous.summary,
+        state: { done: false as boolean, summary: "first" },
+        do({ round, state }) { return {
+            state: {
+              done: eq(round, 3),
+              summary: state.summary,
+            },
+            stop: or(eq(round, 3), eq(state.done, true)),
           }; },
-        stopWhen({ iter, result }) { return or(eq(iter, 3), where(result, { done: true })); },
-        onExhausted: "returnLast",
       });
 
       return {
@@ -436,47 +436,58 @@ describe("workflow compilation", () => {
     expect(ir.root.nodes[3]).toMatchObject({
       id: "retry_until_done",
       kind: "loop",
-      initial: {
+      state: {
         kind: "object",
         fields: {
           done: { kind: "literal", value: false },
           summary: { kind: "literal", value: "first" },
         },
       },
-      maxIterations: { kind: "literal", value: 3 },
-      onExhausted: "returnLast",
       do: {
         outputs: {
-          summary: {
-            kind: "ref",
-            path: ["loop", "retry_until_done", "previous", "summary"],
+          state: {
+            kind: "object",
+            fields: {
+              done: {
+                kind: "call",
+                fn: "eq",
+                args: [
+                  { kind: "ref", path: ["loop", "retry_until_done", "round"] },
+                  { kind: "literal", value: 3 },
+                ],
+              },
+              summary: {
+                kind: "ref",
+                path: ["loop", "retry_until_done", "state", "summary"],
+              },
+            },
           },
-        },
-      },
-      stopWhen: {
-        kind: "call",
-        fn: "or",
-        args: [
-          {
+          stop: {
             kind: "call",
-            fn: "eq",
-            args: [
-              { kind: "ref", path: ["loop", "retry_until_done", "iter"] },
-              { kind: "literal", value: 3 },
-            ],
-          },
-          {
-            kind: "call",
-            fn: "eq",
+            fn: "or",
             args: [
               {
-                kind: "ref",
-                path: ["loop", "retry_until_done", "result", "done"],
+                kind: "call",
+                fn: "eq",
+                args: [
+                  { kind: "ref", path: ["loop", "retry_until_done", "round"] },
+                  { kind: "literal", value: 3 },
+                ],
               },
-              { kind: "literal", value: true },
+              {
+                kind: "call",
+                fn: "eq",
+                args: [
+                  {
+                    kind: "ref",
+                    path: ["loop", "retry_until_done", "state", "done"],
+                  },
+                  { kind: "literal", value: true },
+                ],
+              },
             ],
           },
-        ],
+        },
       },
     });
     expect(ir.root.nodes[3]).not.toHaveProperty("outputSchema");
@@ -676,16 +687,15 @@ describe("workflow compilation", () => {
       name: "active_scope_loop_step",
     }).build(({ step }) => {
       const loop = step("retry").loop({
-        initial: { value: "initial" as string },
-        maxIterations: 1,
-        do({ previous }) {
+        state: { value: "initial" as string },
+        do({ state }) {
           const echoed = step("loop_echo").task({
             run: {
-              input: { value: previous.value },
+              input: { value: state.value },
               exec: async ({ input }) => ({ value: input.value }),
             },
           });
-          return { value: echoed.output.value };
+          return { state: { value: echoed.output.value }, stop: true };
         },
       });
 
@@ -803,7 +813,7 @@ describe("workflow compilation", () => {
     });
   });
 
-  it("omits optional timeout and exhaustion policy fields for default fail semantics", () => {
+  it("omits optional timeout fields and lowers loop transition output", () => {
     const Output = z.object({ ok: z.boolean() });
     const definition = defineWorkflow({ name: "default_fail_policies" }).build(({ step }) => {
       const signal = step("approval").signal({
@@ -812,10 +822,8 @@ describe("workflow compilation", () => {
         run: { prompt: "Approve?" },
       });
       const loop = step("retry").loop({
-        initial: { ok: false as boolean },
-        maxIterations: 1,
-        do() { return { ok: true }; },
-        stopWhen({ result }) { return result.ok; },
+        state: { ok: false as boolean },
+        do() { return { state: { ok: true }, stop: true }; },
       });
       return { ok: signal.output.ok, loop_ok: loop.output.ok };
     });
@@ -832,22 +840,27 @@ describe("workflow compilation", () => {
     expect(ir.root.nodes[1]).toMatchObject({
       id: "retry",
       kind: "loop",
-      maxIterations: { kind: "literal", value: 1 },
+      do: {
+        outputs: {
+          state: { kind: "object", fields: { ok: { kind: "literal", value: true } } },
+          stop: { kind: "literal", value: true },
+        },
+      },
     });
     expect(ir.root.nodes[1]).not.toHaveProperty("onExhausted");
+    expect(ir.root.nodes[1]).not.toHaveProperty("maxIterations");
+    expect(ir.root.nodes[1]).not.toHaveProperty("stopWhen");
     expect(ir.root.nodes[1]).not.toHaveProperty("outputSchema");
   });
 
-  it("lowers workflow-valued loop maxIterations", () => {
+  it("lowers workflow-valued loop stop transition", () => {
     const definition = defineWorkflow({
       name: "dynamic_loop_limit",
       inputSchema: z.object({ rounds: z.number().default(1) }),
     }).build(({ input, step }) => {
       const loop = step("retry").loop({
-        initial: { ok: false as boolean },
-        maxIterations: input.rounds,
-        do() { return { ok: true }; },
-        stopWhen({ result }) { return result.ok; },
+        state: { ok: false as boolean },
+        do({ round }) { return { state: { ok: true }, stop: eq(round, input.rounds) }; },
       });
       return { ok: loop.output.ok };
     });
@@ -858,16 +871,26 @@ describe("workflow compilation", () => {
     expect(ir.root.nodes[0]).toMatchObject({
       id: "retry",
       kind: "loop",
-      maxIterations: { kind: "ref", path: ["input", "rounds"] },
+      do: {
+        outputs: {
+          stop: {
+            kind: "call",
+            fn: "eq",
+            args: [
+              { kind: "ref", path: ["loop", "retry", "round"] },
+              { kind: "ref", path: ["input", "rounds"] },
+            ],
+          },
+        },
+      },
     });
   });
 
-  it("defaults omitted loop stopWhen to false", () => {
+  it("requires loop bodies to declare stop in the transition output", () => {
     const definition = defineWorkflow({ name: "counted_loop" }).build(({ step }) => {
       const loop = step("counted").loop({
-        initial: { ok: false as boolean },
-        maxIterations: 2,
-        do() { return { ok: true }; },
+        state: { ok: false as boolean },
+        do() { return { state: { ok: true }, stop: true }; },
       });
       return { ok: loop.output.ok };
     });
@@ -878,7 +901,11 @@ describe("workflow compilation", () => {
     expect(ir.root.nodes[0]).toMatchObject({
       id: "counted",
       kind: "loop",
-      stopWhen: { kind: "literal", value: false },
+      do: {
+        outputs: {
+          stop: { kind: "literal", value: true },
+        },
+      },
     });
   });
 

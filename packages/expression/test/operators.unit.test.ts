@@ -115,13 +115,13 @@ describe("expression operators", () => {
   });
 
   it("lowers arithmetic and string join helpers", () => {
-    const iter = refExpr<number>(["loop", "rounds", "iter"]);
+    const index = refExpr<number>(["loop", "rounds", "index"]);
     const lines = refExpr<readonly string[]>(["input", "lines"]);
-    expect(add(iter, 1).__ir).toEqual({ kind: "call", fn: "add", args: [iter.__ir, { kind: "literal", value: 1 }] });
-    expect(subtract(iter, 1).__ir).toEqual({ kind: "call", fn: "subtract", args: [iter.__ir, { kind: "literal", value: 1 }] });
-    expect(multiply(iter, 2).__ir).toEqual({ kind: "call", fn: "multiply", args: [iter.__ir, { kind: "literal", value: 2 }] });
-    expect(divide(iter, 2).__ir).toEqual({ kind: "call", fn: "divide", args: [iter.__ir, { kind: "literal", value: 2 }] });
-    expect(mod(iter, 2).__ir).toEqual({ kind: "call", fn: "mod", args: [iter.__ir, { kind: "literal", value: 2 }] });
+    expect(add(index, 1).__ir).toEqual({ kind: "call", fn: "add", args: [index.__ir, { kind: "literal", value: 1 }] });
+    expect(subtract(index, 1).__ir).toEqual({ kind: "call", fn: "subtract", args: [index.__ir, { kind: "literal", value: 1 }] });
+    expect(multiply(index, 2).__ir).toEqual({ kind: "call", fn: "multiply", args: [index.__ir, { kind: "literal", value: 2 }] });
+    expect(divide(index, 2).__ir).toEqual({ kind: "call", fn: "divide", args: [index.__ir, { kind: "literal", value: 2 }] });
+    expect(mod(index, 2).__ir).toEqual({ kind: "call", fn: "mod", args: [index.__ir, { kind: "literal", value: 2 }] });
     expect(join(lines, "\n").__ir).toEqual({ kind: "call", fn: "join", args: [lines.__ir, { kind: "literal", value: "\n" }] });
   });
 

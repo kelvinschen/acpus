@@ -35,7 +35,7 @@
 - Self-contained workflow visualization HTML MUST embed the same Sera graph and static inspector styling as the browser Workflows graph.
 - Composite nodes MUST render as scoped blocks that visually own nested leaf and composite nodes.
 - Fanout and loop composites MUST use selectors over materialized fanout items and loop iterations.
-- Loop composites MUST NOT render `maxIterations` in the graph header, and loop iteration selector labels MUST use compact `iter N` text.
+- Loop composites MUST NOT render transition control fields in the graph header, and loop iteration selector labels MUST use compact `iter N` text for dynamic 0-based iteration identities.
 - Fanout and loop composites MUST render their canonical `do` scope even when the selected runtime item or iteration has no materialized child node executions.
 - The graph API MUST return browser-ready containers and semantic control-flow edges. Edge endpoints MUST resolve to a returned node or container id.
 - Runtime run graph data MUST be served through a run runtime snapshot API that returns run details and graph data from one runtime read. WebUI MUST NOT fetch run details and run graph through separate polling loops for the same runtime page.

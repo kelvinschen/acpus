@@ -15,7 +15,7 @@ import { ancestorGroupMembersForFrame, ancestorGroupMembersForNode } from "../sc
 import { ForkSeedPlanError, planTargetedForkSeed, type ForkSeedPlan } from "../scheduler/fork-seed.js";
 import type { SchedulerEvent } from "../scheduler/events.js";
 import { SchedulerStoreException, schedulerStoreResult, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStorePort, type AttemptStartInput, type AttemptCommitInput, type SignalConsumeInput, type SchedulerPauseInput, type SchedulerResumeInput, type SchedulerRetryInput, type SchedulerRunRetryInput, type SchedulerStoreError, type SchedulerStoreResult } from "../scheduler/store-port.js";
-import type { InstancePath } from "../scheduler/types.js";
+import type { InstancePath, SchedulerFrame } from "../scheduler/types.js";
 import { drainDerivedTransitions } from "../scheduler/advance.js";
 import { continueRootEvents } from "../scheduler/materialize.js";
 import { decodeSchedulerPayload, isSchedulerEventType } from "../scheduler/event-codec.js";
@@ -279,7 +279,9 @@ export type RunDynamicFrame = {
   instancePath?: InstancePath;
   frameKind: string;
   status: string;
+  scope?: Record<string, string>;
   strategy?: string;
+  loop?: SchedulerFrame["loop"];
   terminalReason?: string;
   result?: unknown;
   error?: unknown;
@@ -2708,7 +2710,7 @@ function hasRunningWork(projection: ReturnType<typeof createSchedulerProjection>
 function readRunDynamicFrames(db: DatabaseSync, runId: string): RunDynamicFrame[] {
   const rows = db.prepare(`
     SELECT frame_key, parent_frame_key, node_key, node_id, frame_kind, status, strategy,
-      terminal_reason, instance_path_json, result_json, error_json, created_at, updated_at
+      terminal_reason, instance_path_json, scope_json, loop_json, result_json, error_json, created_at, updated_at
     FROM scheduler_frames
     WHERE run_id = ?
     ORDER BY frame_key
@@ -2721,7 +2723,9 @@ function readRunDynamicFrames(db: DatabaseSync, runId: string): RunDynamicFrame[
     instancePath: parseOptionalJson(row.instance_path_json),
     frameKind: String(row.frame_kind),
     status: String(row.status),
+    scope: parseOptionalJson(row.scope_json),
     strategy: nullableString(row.strategy),
+    loop: parseOptionalJson(row.loop_json),
     terminalReason: nullableString(row.terminal_reason),
     result: parseOptionalJson(row.result_json),
     error: parseOptionalJson(row.error_json),

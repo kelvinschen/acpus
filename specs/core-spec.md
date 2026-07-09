@@ -72,7 +72,7 @@
 - Assert nodes MUST use `step("id").assert({ condition, message? })`.
 - Assert nodes MUST serialize only `condition` and optional `message`, and MUST produce no output.
 - Composite nodes MUST include `step("id").if`, `switch`, `parallel`, `fanout`, and `loop`, each producing child-scope IR.
-- Composite callbacks MUST receive only node-specific local values: fanout callbacks receive `item` and `itemIndex`; loop body callbacks receive `iter` and `previous`; loop stop callbacks receive `iter` and `result`.
+- Composite callbacks MUST receive only node-specific local values: fanout callbacks receive `item` and `itemIndex`; loop body callbacks receive `index`, `round`, and `state`.
 - `step` MUST be a single per-compilation active-scope dispatcher provided by the workflow `build` callback: `step("id")` declares into whichever workflow or composite declaration callback is currently executing.
 - Workflow and composite graph declaration callbacks MUST be synchronous. Calling `step()` after graph declaration has closed MUST fail with a clear authoring invariant error.
 - Node ids MUST remain unique across the entire workflow IR, including nested composite scopes.
@@ -84,9 +84,9 @@
 - Parallel nodes MUST express static named branch concurrency with named branch declaration methods and support `strategy?: "all" | "race"`, defaulting to `"all"`.
 - Fanout nodes MUST express runtime array expansion and support `strategy?: "all" | "quorum"`, defaulting to `"all"`.
 - Fanout item output MUST be inferred from the `do` callback and serialize no `itemOutputSchema`.
-- Loop nodes MUST declare `initial`; loop bodies MUST receive `iter` and non-optional `previous`.
-- Loop `maxIterations` MUST accept a workflow number value and lower to `LoopNodeIR.maxIterations`.
-- Loop `stopWhen({ iter, result })`, when present, MUST return a boolean workflow value and lower to `LoopNodeIR.stopWhen`; omitted `stopWhen` MUST lower to a literal false expression.
+- Loop nodes MUST declare `state`; loop bodies MUST receive `index`, `round`, and non-optional `state`.
+- Loop bodies MUST return a transition object `{ state, stop }`; transition `state` MUST converge with the declared initial `state`.
+- Loop `stop` MUST accept a boolean workflow value and lower under `LoopNodeIR.do.outputs.stop`; `loop.output` MUST expose the final transition `state`.
 - Required output fields MUST NOT accept nullable or optional refs unless the author explicitly removes the nullish case, for example with `coalesce(...)`.
 
 ### Task Authoring And Runtime Context Types
@@ -114,7 +114,7 @@
 - Node pre-execution fields MUST reference only workflow input/meta, visible local refs such as the current fanout or loop context, ancestor scope nodes, and previous sibling nodes in the same scope. They MUST NOT reference the current node output or later sibling node outputs.
 - Scope outputs MAY reference ancestor scope nodes and any node declared in that scope, but parent scopes and sibling branches/cases MUST NOT reference child-scope internal nodes.
 - `fanout.<id>.item` and `fanout.<id>.itemIndex` refs MUST be valid only in that fanout key/body and nested descendants.
-- `loop.<id>.iter`, `loop.<id>.previous`, and `loop.<id>.result` refs MUST be valid only in that loop body/stop condition and nested descendants.
+- `loop.<id>.index`, `loop.<id>.round`, and `loop.<id>.state` refs MUST be valid only in that loop body and nested descendants.
 - `DurationIR` fields MUST be duration strings matching `^\d+(ms|s|m|h)?$`; omitted units MUST mean milliseconds.
 - Task runs MUST contain a closed `target` descriptor that is either an inline source target or a reusable module target.
 - Inline task targets MUST contain `{ kind: "inline", runtime: "node", source }`, where `source` is the self-contained `exec` function source.

@@ -2,23 +2,25 @@ import { assertType, expectTypeOf, test } from "vitest";
 import { defineWorkflow, z, type OutputValues } from "../src/index.js";
 import { add, get, head, join, map, template, type Expr } from "@acpus/expression";
 
-test("loop initial defines non-optional previous and output shape", () => {
+test("loop state defines non-optional carried state and output shape", () => {
   defineWorkflow({ name: "typed-loop-output" }).build(({ step }) => {
     type RoundResult = { round: number; summary: string };
     const emptyHistory: RoundResult[] = [];
     const loop = step("loop").loop({
-      initial: { done: false as boolean, summary: "seed", history: emptyHistory },
-      maxIterations: 2,
-      do({ previous, iter }) {
-        expectTypeOf(previous.summary).toEqualTypeOf<Expr<string>>();
-        expectTypeOf(iter).toEqualTypeOf<Expr<number>>();
+      state: { done: false as boolean, summary: "seed", history: emptyHistory },
+      do({ state, index, round }) {
+        expectTypeOf(state.summary).toEqualTypeOf<Expr<string>>();
+        expectTypeOf(index).toEqualTypeOf<Expr<number>>();
+        expectTypeOf(round).toEqualTypeOf<Expr<number>>();
         return {
-          done: false,
-          summary: template`Round ${add(iter, 1)}: ${previous.summary}`,
-          history: previous.history,
+          state: {
+            done: false,
+            summary: template`Round ${round}: ${state.summary}`,
+            history: state.history,
+          },
+          stop: false,
         };
       },
-      stopWhen({ result }) { return result.done; },
     });
 
     expectTypeOf(loop.output.done).toEqualTypeOf<Expr<boolean>>();
@@ -28,30 +30,52 @@ test("loop initial defines non-optional previous and output shape", () => {
 
     type Phase = "pending" | "done";
     const state = step("state").loop({
-      initial: { done: false, phase: "pending" as Phase },
-      maxIterations: 2,
-      do({ previous }) { return {
-        done: false,
-        phase: previous.phase,
+      state: { done: false, phase: "pending" as Phase },
+      do({ state }) { return {
+        state: {
+          done: false,
+          phase: state.phase,
+        },
+        stop: false,
       }; },
-      stopWhen({ result }) { return result.done; },
     });
     expectTypeOf(state.output.done).toEqualTypeOf<Expr<boolean>>();
     expectTypeOf(state.output.phase).toEqualTypeOf<Expr<Phase>>();
 
     const counted = step("counted").loop({
-      initial: { ok: false as boolean },
-      maxIterations: 2,
-      do() { return { ok: true }; },
+      state: { ok: false as boolean },
+      do() { return { state: { ok: true }, stop: true }; },
     });
     expectTypeOf(counted.output.ok).toEqualTypeOf<Expr<boolean>>();
 
     step("missing_required").loop({
-      initial: { done: false, summary: "seed" },
-      maxIterations: 2,
+      state: { done: false, summary: "seed" },
       // @ts-expect-error loop do result must converge with initial shape.
-      do() { return { done: false }; },
-      stopWhen({ result }) { return result.done; },
+      do() { return { state: { done: false }, stop: true }; },
+    });
+
+    step("missing_transition_state").loop({
+      state: { done: false },
+      // @ts-expect-error loop transition must include state.
+      do() { return { stop: true }; },
+    });
+
+    step("missing_transition_stop").loop({
+      state: { done: false },
+      // @ts-expect-error loop transition must include stop.
+      do() { return { state: { done: true } }; },
+    });
+
+    step("bad_transition_stop").loop({
+      state: { done: false },
+      // @ts-expect-error loop transition stop must be boolean-like.
+      do() { return { state: { done: true }, stop: "yes" }; },
+    });
+
+    step("extra_transition_key").loop({
+      state: { done: false },
+      // @ts-expect-error loop transition must contain exactly state and stop.
+      do() { return { state: { done: true }, stop: true, debug: 1 }; },
     });
 
     return { done: loop.output.done, summary: loop.output.summary };
@@ -151,19 +175,17 @@ test("nested composite callback contexts are not any", () => {
           expectTypeOf(step).not.toBeAny();
 
           step("loop").loop({
-            initial: { done: false, summary: "seed" },
-            maxIterations: 2,
-            do({ iter, previous }) {
-              expectTypeOf(iter).not.toBeAny();
-              expectTypeOf(previous).not.toBeAny();
+            state: { done: false, summary: "seed" },
+            do({ index, round, state }) {
+              expectTypeOf(index).not.toBeAny();
+              expectTypeOf(round).not.toBeAny();
+              expectTypeOf(state).not.toBeAny();
               expectTypeOf(step).not.toBeAny();
-              expectTypeOf(previous.summary).toEqualTypeOf<Expr<string>>();
-              return { done: false, summary: previous.summary };
-            },
-            stopWhen({ result }) {
-              expectTypeOf(result).not.toBeAny();
-              expectTypeOf(result.done).toEqualTypeOf<Expr<boolean>>();
-              return result.done;
+              expectTypeOf(state.summary).toEqualTypeOf<Expr<string>>();
+              return {
+                state: { done: false, summary: state.summary },
+                stop: false,
+              };
             },
           });
 
@@ -289,12 +311,9 @@ test("scope callback outputs are named objects", () => {
     });
 
     step("bad_loop_body").loop({
-      initial: { value: "seed" },
-      maxIterations: 1,
-      // @ts-expect-error loop body returns named output object matching initial.
+      state: { value: "seed" },
+      // @ts-expect-error loop body returns a transition object.
       do() { return "bad"; },
-      stopWhen() { return false; },
-      onExhausted: "returnLast",
     });
 
     assertType<OutputValues<{ value: string }>>({ value: "ok" });

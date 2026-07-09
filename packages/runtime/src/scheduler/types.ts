@@ -38,8 +38,10 @@ export type SchedulerFrame = {
   strategy?: "all" | "race" | "quorum";
   loop?: {
     iter: number;
-    previous?: JsonValue;
-    result?: JsonValue;
+    index: number;
+    round: number;
+    state?: JsonValue;
+    transition?: JsonValue;
   };
   terminalReason?: string;
   result?: JsonValue;

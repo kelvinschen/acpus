@@ -56,7 +56,7 @@ Expression helpers:
 | `!input.ready` | `not(input.ready)` |
 | `input.kind === "release"` | `eq(input.kind, "release")` |
 | `risk <= 3` | `lte(risk, 3)` |
-| `iter + 1` | `add(iter, 1)` |
+| `index + 1` | `add(index, 1)`; loop `round` is already 1-based |
 | `input.maybe ?? "fallback"` | `coalesce(input.maybe, "fallback")` |
 | `` `topic ${input.topic}` `` | `template\`topic ${input.topic}\`` |
 | `input.items.length` | `len(input.items)` |
@@ -178,7 +178,7 @@ Inline task source is embedded in frozen IR. Reusable tasks can import package d
 
 ### Composite And Control Nodes
 
-Composite node callbacks accept only node-specific values such as `item`, `iter`, `previous`, and `result`. Declare nested nodes with the `step` provided by the enclosing `build` callback. Return a plain object to declare output; do not add `outputSchema` to composites.
+Composite node callbacks accept only node-specific values such as fanout `item`/`itemIndex` and loop `state`/`index`/`round`. Declare nested nodes with the unified `step` provided by the enclosing `build` callback. Return a plain object to declare output; do not add `outputSchema` to composites.
 
 `if` branches on one expression. Both branches should return compatible object shapes:
 
@@ -230,27 +230,28 @@ const items = step("items").fanout({
 });
 ```
 
-`loop` starts from `initial`, checks `stopWhen` before each next iteration, and counts only body executions:
+`loop` is a do-while primitive: it always runs one body round, carries `state`, and each body returns `{ state, stop }`. `loop.output` is the final `state`.
 
 ```ts
 const refined = step("refine").loop({
-  initial: { ready: false, summary: "" },
-  maxIterations: 3,
-  do({ previous }) {
+  state: { ready: false, summary: "" },
+  do({ state, round }) {
     return {
-      ready: previous.ready,
-      summary: previous.summary,
+      state: {
+        ready: state.ready,
+        summary: state.summary,
+      },
+      stop: gte(round, 3),
     };
   },
-  stopWhen({ result }) { return result.ready; },
 });
 ```
 
-For `parallel({ strategy: "race" })`, output is `{ winner, result }`. For `fanout({ strategy: "quorum", count })`, output is the accepted item array. Loop `iter` is a 0-based `Expr<number>`; use `add(iter, 1)` for display. Empty arrays in `initial` need an explicit element type:
+For `parallel({ strategy: "race" })`, output is `{ winner, result }`. For `fanout({ strategy: "quorum", count })`, output is the accepted item array. Loop `index` is 0-based and `round` is 1-based. Empty arrays in `state` need an explicit element type:
 
 ```ts
 type Round = { summary: string };
-const initial = {
+const state = {
   rounds: [] as Round[],
 };
 ```

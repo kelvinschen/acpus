@@ -11,7 +11,7 @@ import { buildIfNode, type IfStepSpec } from "../nodes/composite/if.js";
 import { buildSwitchNode, type SwitchNodeRefOutput, type SwitchStepSpec } from "../nodes/composite/switch.js";
 import { buildParallelNode, type ParallelNodeRefOutput, type ParallelStepSpec } from "../nodes/composite/parallel.js";
 import { buildFanoutNode, type FanoutNodeRefOutput, type FanoutStepSpec } from "../nodes/composite/fanout.js";
-import { buildLoopNode, type LoopStepSpec } from "../nodes/composite/loop.js";
+import { buildLoopNode, type LoopStepSpec, type LoopTransitionOutput } from "../nodes/composite/loop.js";
 import { buildImplicitScope as buildScopeIR, isOutputObject, type OutputValues } from "./scope.js";
 import { bindingsToIR, stripUndefined } from "./lowering.js";
 import type { FanoutStrategy, OutputObject, ParallelStrategy, RuntimeValueOf, ScopeCallback, WidenRuntimeValue, WorkflowArrayValue } from "../nodes/composite/shared.js";
@@ -155,9 +155,9 @@ export type StepDeclaration = {
     spec: FanoutStepSpec<Over, Output, "all">,
   ): NodeRef<FanoutNodeRefOutput<Output, "all">>;
 
-  /** Declares a seeded pre-check loop with a bounded iteration count. */
-  loop<Initial extends OutputObject>(
-    spec: LoopStepSpec<Initial>,
+  /** Declares a transition-style loop that always executes at least one iteration. */
+  loop<Initial extends OutputObject, Transition extends LoopTransitionOutput<Initial>>(
+    spec: LoopStepSpec<Initial, Transition>,
   ): NodeRef<WidenRuntimeValue<RuntimeValueOf<Initial>>>;
 };
 
@@ -261,9 +261,9 @@ class GraphBuildState {
     return makeNodeRef(id);
   }
 
-  loop<Initial extends OutputObject>(
+  loop<Initial extends OutputObject, Transition extends LoopTransitionOutput<Initial>>(
     id: string,
-    spec: LoopStepSpec<Initial>,
+    spec: LoopStepSpec<Initial, Transition>,
   ): NodeRef<WidenRuntimeValue<RuntimeValueOf<Initial>>> {
     this.nodes.push(buildLoopNode(id, spec, this.context.diagnostics, this.buildImplicitScope));
     return makeNodeRef(id);

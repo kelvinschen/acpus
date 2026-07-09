@@ -536,10 +536,10 @@ describe("targeted fork seed planning", () => {
     expect(plan.error).toMatchObject({ type: "dynamic-target-ambiguity", target: "target" });
   });
 
-  it("resolves a static loop target when the loop can run only one iteration", () => {
+  it("resolves a static loop target when only one dynamic instance is materialized", () => {
     const iter0 = appendLoopIteration([], "retry", 0);
     const prepare = deriveInstanceKey(appendNode(iter0, "step"));
-    const retryWorkflow = workflow([loopNode([taskNode("step"), taskNode("target")], 1)]);
+    const retryWorkflow = workflow([loopNode([taskNode("step"), taskNode("target")])]);
     const source = sourceProjection(retryWorkflow, [
       { type: "instance.completed", payload: { nodeKey: prepare, output: { done: false } } },
     ]);
@@ -559,10 +559,27 @@ describe("targeted fork seed planning", () => {
     expect(plan.value.inheritedNodeKeys).toEqual(new Set([prepare]));
   });
 
-  it("resolves a static loop target when expression-backed maxIterations evaluates to one", () => {
+  it("rejects static loop targets that are only future nodes in a running iteration", () => {
+    const retryWorkflow = workflow([loopNode([taskNode("step"), taskNode("target")])]);
+    const plan = planTargetedForkSeed({
+      forkRunId: "fork",
+      sourceWorkflow: retryWorkflow,
+      replacementWorkflow: retryWorkflow,
+      replacementScope: rootScope(),
+      sourceProjection: sourceProjection(retryWorkflow, []),
+      inputChanged: false,
+      target: "target",
+    });
+
+    expect(plan.isErr()).toBe(true);
+    if (plan.isOk()) throw new Error("expected static loop target to require a materialized dynamic instance");
+    expect(plan.error).toMatchObject({ type: "dynamic-target-ambiguity", target: "target" });
+  });
+
+  it("resolves a static loop target independently of unrelated replacement input", () => {
     const iter0 = appendLoopIteration([], "retry", 0);
     const prepare = deriveInstanceKey(appendNode(iter0, "step"));
-    const retryWorkflow = workflow([loopNode([taskNode("step"), taskNode("target")], { kind: "ref", path: ["input", "rounds"] })]);
+    const retryWorkflow = workflow([loopNode([taskNode("step"), taskNode("target")])]);
     const scope = { ...rootScope(), input: { rounds: 1 } };
     const source = sourceProjection(retryWorkflow, [
       { type: "instance.completed", payload: { nodeKey: prepare, output: { done: false } } },
@@ -985,16 +1002,17 @@ function fanoutNode(nodes: NodeIR[], options: { strategy?: "all" | "quorum"; cou
   return { ...base, strategy: "all" };
 }
 
-function loopNode(nodes: NodeIR[], maxIterations: Extract<NodeIR, { kind: "loop" }>["maxIterations"] | number = 3): NodeIR {
+function loopNode(nodes: NodeIR[]): NodeIR {
   return {
     id: "retry",
     kind: "loop",
-    initial: { kind: "object", fields: { done: { kind: "literal", value: false } } },
-    stopWhen: { kind: "ref", path: ["loop", "retry", "result", "done"] },
-    maxIterations: typeof maxIterations === "number" ? { kind: "literal", value: maxIterations } : maxIterations,
+    state: { kind: "object", fields: { done: { kind: "literal", value: false } } },
     do: {
       nodes,
-      outputs: { done: { kind: "ref", path: ["nodes", "target", "output", "done"] } },
+      outputs: {
+        state: { kind: "object", fields: { done: { kind: "ref", path: ["nodes", "target", "output", "done"] } } },
+        stop: { kind: "ref", path: ["nodes", "target", "output", "done"] },
+      },
     },
   };
 }

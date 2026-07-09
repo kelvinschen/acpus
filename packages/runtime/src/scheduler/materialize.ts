@@ -2,12 +2,11 @@ import type { FanoutNodeIR, LoopNodeIR, NodeIR, ParallelNodeIR, WorkflowIR } fro
 import type { JsonObject, JsonValue } from "@acpus/expression/ir";
 import { assertWorkflowData } from "../evaluation/admissible.js";
 import { evaluateExpr, renderTemplate, type EvaluationScope } from "../evaluation/evaluator.js";
-import { evaluateLoopMaxIterations } from "../evaluation/loop-limit.js";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "./identity.js";
 import type { SchedulerEvent } from "./events.js";
 import type { FrameKind, GroupMember, InstancePath, InstancePathSegment, SchedulerFrame, SchedulerProjection } from "./types.js";
 import { baseScopeForFrame, completedScopeForFrame } from "./scope.js";
-import { loopExhaustionResult, nextLoopStep } from "./transitions.js";
+import { nextLoopStep } from "./transitions.js";
 
 type ScopeIR = WorkflowIR["root"];
 type ScopeFrame = {
@@ -160,43 +159,19 @@ function continueLoopFrameEvents(ir: WorkflowIR, projection: SchedulerProjection
     return [{ type: "frame.cancelled", payload: { frameKey: frame.frameKey, cancelReason: cancellationReason(iteration.terminalReason ?? "parent_failed") } }];
   }
 
-  const previous = frame.loop?.previous;
+  const state = frame.loop?.state;
   const nodeScope = scopeForNodeFrame(projection, frame, baseScope);
-  const loopScope = {
-    ...nodeScope,
-    loop: {
-      ...nodeScope.loop,
-      [loop.id]: {
-        iter,
-        ...(previous === undefined ? {} : { previous }),
-        ...(iteration.result === undefined ? {} : { result: iteration.result }),
-      },
-    },
-  };
-  let stop: boolean;
-  try {
-    const value = evaluateExpr(loop.stopWhen, loopScope);
-    if (typeof value !== "boolean") throw new Error(`Loop node '${loop.id}' condition must evaluate to boolean.`);
-    stop = value;
-  } catch (error) {
-    return [{ type: "frame.failed", payload: { frameKey: frame.frameKey, error: expressionFailure(error), terminalReason: "expression_failed" } }];
-  }
-  let maxIterations: number;
-  try {
-    maxIterations = evaluateLoopMaxIterations(loop.maxIterations, nodeScope, loop.id);
-  } catch (error) {
-    return [{ type: "frame.failed", payload: { frameKey: frame.frameKey, error: expressionFailure(error), terminalReason: "expression_failed" } }];
-  }
   const step = nextLoopStep({
     iter,
-    maxIterations,
-    stop,
-    ...(iteration.result === undefined ? {} : { result: iteration.result }),
-    ...(previous === undefined ? {} : { previous }),
-    ...(loop.onExhausted === undefined ? {} : { onExhausted: loop.onExhausted }),
+    ...(iteration.result === undefined ? {} : { transition: iteration.result }),
   });
+  const advancedState = step.action === "complete"
+    ? step.output
+    : step.action === "start_iteration"
+      ? step.state
+      : undefined;
   const events: SchedulerEvent[] = [
-    { type: "frame.loop_advanced", payload: { frameKey: frame.frameKey, iter, ...(previous === undefined ? {} : { previous }), ...(iteration.result === undefined ? {} : { result: iteration.result }) } },
+    { type: "frame.loop_advanced", payload: { frameKey: frame.frameKey, iter, ...(advancedState === undefined ? state === undefined ? {} : { state } : { state: advancedState }), ...(iteration.result === undefined ? {} : { transition: iteration.result }) } },
   ];
   if (step.action === "complete") {
     events.push({ type: "frame.completed", payload: { frameKey: frame.frameKey, result: step.output, terminalReason: step.terminalReason } });
@@ -207,7 +182,7 @@ function continueLoopFrameEvents(ir: WorkflowIR, projection: SchedulerProjection
     return events;
   }
   events.push(
-    { type: "frame.loop_advanced", payload: { frameKey: frame.frameKey, iter: step.iter, ...(step.previous === undefined ? {} : { previous: step.previous }) } },
+    { type: "frame.loop_advanced", payload: { frameKey: frame.frameKey, iter: step.iter, ...(step.state === undefined ? {} : { state: step.state }) } },
     ...materializeLoopIterationEvents({
       runId: frame.runId,
       loop,
@@ -215,7 +190,7 @@ function continueLoopFrameEvents(ir: WorkflowIR, projection: SchedulerProjection
       basePath: parentPath(frame.instancePath),
       iter: step.iter,
       readinessSequence: step.iter + 1,
-      scope: loopScopeForIteration(nodeScope, loop.id, step.iter, step.previous),
+      scope: loopScopeForIteration(nodeScope, loop.id, step.iter, step.state),
     }),
   );
   return events;
@@ -405,39 +380,14 @@ function materializeLoopEvents(input: { runId: string; node: LoopNodeIR; parentF
   const nodePath = appendNode(input.basePath, input.node.id);
   const nodeKey = deriveInstanceKey(nodePath);
   const start = nodeFrameStarted(input.runId, input.node, nodePath, input.parentFrameKey, "loop");
-  let initial: JsonValue;
-  let maxIterations: number;
-  let stop: boolean;
+  let state: JsonValue;
   try {
-    maxIterations = evaluateLoopMaxIterations(input.node.maxIterations, input.scope, input.node.id);
-    initial = evaluateExpr(input.node.initial, input.scope) as JsonValue;
-    const stopScope = {
-      ...input.scope,
-      loop: {
-        ...input.scope.loop,
-        [input.node.id]: { iter: 0, previous: initial, result: initial },
-      },
-    };
-    const value = evaluateExpr(input.node.stopWhen, stopScope);
-    if (typeof value !== "boolean") throw new Error(`Loop node '${input.node.id}' condition must evaluate to boolean.`);
-    stop = value;
+    state = evaluateExpr(input.node.state, input.scope) as JsonValue;
   } catch (error) {
     return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: expressionFailure(error), terminalReason: "expression_failed" } }];
   }
 
-  const seed = { type: "frame.loop_advanced", payload: { frameKey: nodeKey, iter: 0, previous: initial } } satisfies SchedulerEvent;
-  if (stop) return [start, seed, { type: "frame.completed", payload: { frameKey: nodeKey, result: initial, terminalReason: "stopped" } }];
-  if (maxIterations <= 0) {
-    const exhausted = loopExhaustionResult({
-      maxIterations,
-      ...(input.node.onExhausted === undefined ? {} : { onExhausted: input.node.onExhausted }),
-      lastResult: initial,
-    });
-    return exhausted.status === "completed"
-      ? [start, seed, { type: "frame.completed", payload: { frameKey: nodeKey, result: exhausted.output, terminalReason: exhausted.terminalReason } }]
-      : [start, seed, { type: "frame.failed", payload: { frameKey: nodeKey, error: exhausted.error, terminalReason: exhausted.terminalReason } }];
-  }
-
+  const seed = { type: "frame.loop_advanced", payload: { frameKey: nodeKey, iter: 0, state } } satisfies SchedulerEvent;
   return [
     start,
     seed,
@@ -448,7 +398,7 @@ function materializeLoopEvents(input: { runId: string; node: LoopNodeIR; parentF
       basePath: input.basePath,
       iter: 0,
       readinessSequence: input.readinessSequence,
-      scope: loopScopeForIteration(input.scope, input.node.id, 0, initial),
+      scope: loopScopeForIteration(input.scope, input.node.id, 0, state),
     }),
   ];
 }
@@ -738,8 +688,8 @@ function withFanout(scope: EvaluationScope, nodeId: string, item: unknown, itemI
   return { ...scope, fanout: { ...scope.fanout, [nodeId]: { item, itemIndex } } };
 }
 
-function loopScopeForIteration(scope: EvaluationScope, nodeId: string, iter: number, previous?: JsonValue): EvaluationScope {
-  return { ...scope, loop: { ...scope.loop, [nodeId]: { iter, ...(previous === undefined ? {} : { previous }) } } };
+function loopScopeForIteration(scope: EvaluationScope, nodeId: string, iter: number, state?: JsonValue): EvaluationScope {
+  return { ...scope, loop: { ...scope.loop, [nodeId]: { index: iter, round: iter + 1, ...(state === undefined ? {} : { state }) } } };
 }
 
 function evaluateOutputs(outputs: NonNullable<ScopeIR["outputs"]>, scope: EvaluationScope): JsonObject {

@@ -1,5 +1,5 @@
 import { defineWorkflow, z } from "acpus/core";
-import { eq, ifElse, md } from "acpus/expression";
+import { eq, gte, ifElse, md } from "acpus/expression";
 
 export default defineWorkflow({
   name: "multi-aspect-brainstorm",
@@ -42,7 +42,7 @@ export default defineWorkflow({
   },
 }).build(({ input, agents, meta, step }) => {
   const rounds = step("brainstorm_rounds").loop({
-    initial: {
+    state: {
       round: 0,
       alpha: "",
       beta: "",
@@ -50,9 +50,8 @@ export default defineWorkflow({
       delta: "",
       synthesis: "",
     },
-    maxIterations: input.rounds,
-    do({ iter, previous }) {
-      const firstRound = eq(iter, 0);
+    do({ index, round, state }) {
+      const firstRound = eq(index, 0);
       const aspects = step("aspect_work").parallel({
         maxConcurrency: 4,
         branches: {
@@ -83,14 +82,14 @@ export default defineWorkflow({
                     ${input.criteria}
                   `, "")}
 
-                  Round: ${iter}
+                  Round: ${round}
 
                   ${ifElse(firstRound, "Produce your first independent pass.", md`
                     Continue from the existing Alpha session. Do not restate the setup.
                     Use the latest synthesis to add practical options, tighten execution paths, and refine tradeoffs.
 
                     Previous synthesis:
-                    ${previous.synthesis}
+                    ${state.synthesis}
                   `)}
 
                   Return concise natural-language notes with options, refinements, tradeoffs, and next experiments.
@@ -128,14 +127,14 @@ export default defineWorkflow({
                     ${input.criteria}
                   `, "")}
 
-                  Round: ${iter}
+                  Round: ${round}
 
                   ${ifElse(firstRound, "Produce your first independent pass.", md`
                     Continue from the existing Beta session. Do not restate the setup.
                     Use the latest synthesis to add alternatives, expose overlooked constraints, and refine tradeoffs.
 
                     Previous synthesis:
-                    ${previous.synthesis}
+                    ${state.synthesis}
                   `)}
 
                   Return concise natural-language notes with options, refinements, tradeoffs, and next experiments.
@@ -173,14 +172,14 @@ export default defineWorkflow({
                     ${input.criteria}
                   `, "")}
 
-                  Round: ${iter}
+                  Round: ${round}
 
                   ${ifElse(firstRound, "Produce your first independent pass.", md`
                     Continue from the existing Gamma session. Do not restate the setup.
                     Use the latest synthesis to cluster ideas, refine priorities, and combine promising directions.
 
                     Previous synthesis:
-                    ${previous.synthesis}
+                    ${state.synthesis}
                   `)}
 
                   Return concise natural-language notes with options, refinements, tradeoffs, and next experiments.
@@ -218,14 +217,14 @@ export default defineWorkflow({
                     ${input.criteria}
                   `, "")}
 
-                  Round: ${iter}
+                  Round: ${round}
 
                   ${ifElse(firstRound, "Produce your first independent pass.", md`
                     Continue from the existing Delta session. Do not restate the setup.
                     Use the latest synthesis to add assumptions, questions, experiments, and alternate framings.
 
                     Previous synthesis:
-                    ${previous.synthesis}
+                    ${state.synthesis}
                   `)}
 
                   Return concise natural-language notes with options, refinements, tradeoffs, and next experiments.
@@ -263,7 +262,7 @@ export default defineWorkflow({
               ${input.criteria}
             `, "")}
 
-            Round: ${iter}
+            Round: ${round}
 
             ${ifElse(firstRound, "Produce the clearest idea map for this first round.", "Continue from the existing synthesizer session. Produce the clearest idea map for this round.")}
             Do not average opinions mechanically.
@@ -281,15 +280,17 @@ export default defineWorkflow({
       });
 
       return {
-        round: iter,
-        alpha: aspects.output.alpha.aspect,
-        beta: aspects.output.beta.aspect,
-        gamma: aspects.output.gamma.aspect,
-        delta: aspects.output.delta.aspect,
-        synthesis: synthesis.output,
+        state: {
+          round,
+          alpha: aspects.output.alpha.aspect,
+          beta: aspects.output.beta.aspect,
+          gamma: aspects.output.gamma.aspect,
+          delta: aspects.output.delta.aspect,
+          synthesis: synthesis.output,
+        },
+        stop: gte(round, input.rounds),
       };
     },
-    onExhausted: "returnLast",
   });
 
   return { synthesis: rounds.output.synthesis };

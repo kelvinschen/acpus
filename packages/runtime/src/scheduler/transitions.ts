@@ -25,9 +25,9 @@ export type FanoutItemInput = {
 };
 
 export type LoopNextStep =
-  | { action: "start_iteration"; iter: number; previous?: JsonValue }
-  | { action: "complete"; output: JsonValue; terminalReason: "stopped" | "exhausted_return_last" }
-  | { action: "fail"; error: JsonObject; terminalReason: "loop_exhausted" };
+  | { action: "start_iteration"; iter: number; state?: JsonValue }
+  | { action: "complete"; output: JsonValue; terminalReason: "stopped" }
+  | { action: "fail"; error: JsonObject; terminalReason: "invalid_loop_transition" };
 
 export type TimestampedSchedulerEvent = {
   event: SchedulerEvent;
@@ -303,33 +303,12 @@ export function materializeFanoutItems(input: FanoutItemInput): Extract<Schedule
   });
 }
 
-export function nextLoopStep(input: {
-  iter: number;
-  maxIterations: number;
-  stop: boolean;
-  result?: JsonValue;
-  previous?: JsonValue;
-  onExhausted?: "fail" | "returnLast";
-}): LoopNextStep {
-  if (input.stop) {
-    if (input.result === undefined) throw new Error("Loop stop requires the current iteration result.");
-    return { action: "complete", output: input.result, terminalReason: "stopped" };
-  }
-  const nextIter = input.iter + 1;
-  if (nextIter < input.maxIterations) {
-    return input.result === undefined
-      ? { action: "start_iteration", iter: nextIter }
-      : { action: "start_iteration", iter: nextIter, previous: input.result };
-  }
-  const lastResult = input.result ?? input.previous;
-  const exhausted = loopExhaustionResult({
-    maxIterations: input.maxIterations,
-    ...(input.onExhausted === undefined ? {} : { onExhausted: input.onExhausted }),
-    ...(lastResult === undefined ? {} : { lastResult }),
-  });
-  return exhausted.status === "completed"
-    ? { action: "complete", output: exhausted.output, terminalReason: exhausted.terminalReason }
-    : { action: "fail", error: exhausted.error, terminalReason: exhausted.terminalReason };
+export function nextLoopStep(input: { iter: number; transition?: JsonValue }): LoopNextStep {
+  const transition = loopTransition(input.transition);
+  if (!transition.ok) return { action: "fail", error: { reason: "invalid_loop_transition", message: transition.message }, terminalReason: "invalid_loop_transition" };
+  return transition.stop
+    ? { action: "complete", output: transition.state, terminalReason: "stopped" }
+    : { action: "start_iteration", iter: input.iter + 1, state: transition.state };
 }
 
 export function resolveScopedNodeKey(scopes: readonly Record<string, string>[], nodeId: string): string {
@@ -344,19 +323,13 @@ export function retryTargetClass(status: RetryTargetStatus, failureClass?: Failu
   return status === "failed" && failureClass !== "retryable" ? "retryable" : "not_retryable";
 }
 
-export function loopExhaustionResult(input: {
-  onExhausted?: "fail" | "returnLast";
-  lastResult?: JsonValue;
-  maxIterations: number;
-}): { status: "completed"; output: JsonValue; terminalReason: "exhausted_return_last" } | { status: "failed"; error: JsonObject; terminalReason: "loop_exhausted" } {
-  if (input.onExhausted === "returnLast" && input.lastResult !== undefined) {
-    return { status: "completed", output: input.lastResult, terminalReason: "exhausted_return_last" };
-  }
-  return {
-    status: "failed",
-    terminalReason: "loop_exhausted",
-    error: { message: `Loop exhausted after ${input.maxIterations} iterations.` },
-  };
+function loopTransition(value: JsonValue | undefined): { ok: true; state: JsonValue; stop: boolean } | { ok: false; message: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, message: "Loop body must return an object with { state, stop }." };
+  if (!Object.prototype.hasOwnProperty.call(value, "state")) return { ok: false, message: "Loop body transition is missing 'state'." };
+  if (!Object.prototype.hasOwnProperty.call(value, "stop")) return { ok: false, message: "Loop body transition is missing 'stop'." };
+  const transition = value as JsonObject;
+  if (typeof transition.stop !== "boolean") return { ok: false, message: "Loop body transition 'stop' must be boolean." };
+  return { ok: true, state: transition.state as JsonValue, stop: transition.stop };
 }
 
 function applyMutable(projection: SchedulerProjection, event: SchedulerEvent): void {
@@ -433,16 +406,19 @@ function applyMutable(projection: SchedulerProjection, event: SchedulerEvent): v
       if (event.payload.iter < frame.loop.iter) throw new Error(`Loop frame '${frame.frameKey}' cannot move from iteration ${frame.loop.iter} back to ${event.payload.iter}.`);
       if (event.payload.iter > frame.loop.iter) {
         if (event.payload.iter !== frame.loop.iter + 1) throw new Error(`Loop frame '${frame.frameKey}' cannot skip from iteration ${frame.loop.iter} to ${event.payload.iter}.`);
-        if (frame.loop.result === undefined) throw new Error(`Loop frame '${frame.frameKey}' cannot advance before iteration ${frame.loop.iter} has a result.`);
-        if (stableJson(event.payload.previous) !== stableJson(frame.loop.result)) {
-          throw new Error(`Loop frame '${frame.frameKey}' next previous value must match iteration ${frame.loop.iter} result.`);
+        const transition = loopTransition(frame.loop.transition);
+        if (!transition.ok) throw new Error(`Loop frame '${frame.frameKey}' cannot advance before iteration ${frame.loop.iter} has a valid transition.`);
+        if (stableJson(event.payload.state) !== stableJson(transition.state)) {
+          throw new Error(`Loop frame '${frame.frameKey}' next state must match iteration ${frame.loop.iter} transition state.`);
         }
       }
-      if (event.payload.iter === frame.loop.iter && frame.loop.result !== undefined && event.payload.result !== undefined && stableJson(frame.loop.result) !== stableJson(event.payload.result)) {
-        throw new Error(`Loop frame '${frame.frameKey}' already recorded a different result for iteration ${event.payload.iter}.`);
+      if (event.payload.iter === frame.loop.iter && frame.loop.transition !== undefined && event.payload.transition !== undefined && stableJson(frame.loop.transition) !== stableJson(event.payload.transition)) {
+        throw new Error(`Loop frame '${frame.frameKey}' already recorded a different transition for iteration ${event.payload.iter}.`);
       }
-      if (event.payload.iter === frame.loop.iter && stableJson(frame.loop.previous) !== stableJson(event.payload.previous)) {
-        throw new Error(`Loop frame '${frame.frameKey}' already recorded a different previous value for iteration ${event.payload.iter}.`);
+      if (event.payload.iter === frame.loop.iter && event.payload.state !== undefined && frame.loop.state !== undefined && stableJson(frame.loop.state) !== stableJson(event.payload.state)) {
+        const transition = loopTransition(event.payload.transition);
+        const stateMatchesTransition = transition.ok && stableJson(event.payload.state) === stableJson(transition.state);
+        if (!stateMatchesTransition) throw new Error(`Loop frame '${frame.frameKey}' already recorded a different state for iteration ${event.payload.iter}.`);
       }
     }
     if (!frame.loop && event.payload.iter !== 0) throw new Error(`Loop frame '${frame.frameKey}' must start at iteration 0.`);
@@ -451,8 +427,10 @@ function applyMutable(projection: SchedulerProjection, event: SchedulerEvent): v
       ...frame,
       loop: {
         iter: event.payload.iter,
-        previous: event.payload.previous ?? (sameIter ? frame.loop?.previous : undefined),
-        result: event.payload.result ?? (sameIter ? frame.loop?.result : undefined),
+        index: event.payload.iter,
+        round: event.payload.iter + 1,
+        state: event.payload.state ?? (sameIter ? frame.loop?.state : undefined),
+        transition: event.payload.transition ?? (sameIter ? frame.loop?.transition : undefined),
       },
     });
     return;

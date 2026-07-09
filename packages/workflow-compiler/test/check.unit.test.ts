@@ -152,13 +152,15 @@ describe("workflow check pipeline", () => {
           });
           step("same_file_hidden").task({ run: { input: {}, task: inlineHidden } });
           step("loop").loop({
-            initial: { ok: true, count: 0, summary: "" },
-            maxIterations: 1,
-            do({ iter, previous }) {
+            state: { ok: true, count: 0, summary: "" },
+            do({ round, state }) {
               return {
-                ok: previous.ok,
-                count: iter,
-                summary: previous.summary,
+                state: {
+                  ok: state.ok,
+                  count: round,
+                  summary: state.summary,
+                },
+                stop: true,
               };
             },
           });
@@ -258,10 +260,8 @@ describe("workflow check pipeline", () => {
             else() { return { ok: true }; },
           });
           step("loop_hidden_initial").loop({
-            initial: hidden,
-            maxIterations: 1,
-            do() { return { ok: true }; },
-            stopWhen() { return true; },
+            state: hidden,
+            do() { return { state: { ok: true }, stop: true }; },
           });
           step("branch_keys").if({
             condition: true,
@@ -282,17 +282,29 @@ describe("workflow check pipeline", () => {
             default() { return { missing: true }; },
           });
           step("loop").loop({
-            initial: { ok: "seed" },
-            maxIterations: -1,
-            do() { return { ok: 1 }; },
-            stopWhen() { return false; },
+            state: { ok: "seed" },
+            do() { return { state: { ok: 1 }, stop: false }; },
           });
           const opaque = { ok: true } as JsonValue;
           step("opaque_loop").loop({
-            initial: opaque,
-            maxIterations: 1,
-            do() { return { ok: true }; },
-            stopWhen() { return false; },
+            state: opaque,
+            do() { return { state: { ok: true }, stop: false }; },
+          });
+          step("bad_stop").loop({
+            state: { ok: true },
+            do() { return { state: { ok: true }, stop: "yes" as any }; },
+          });
+          step("extra_transition").loop({
+            state: { ok: true },
+            do() { return { state: { ok: true }, stop: true, debug: 1 } as any; },
+          });
+          step("missing_transition_state").loop({
+            state: { ok: true },
+            do() { return { stop: true } as any; },
+          });
+          step("missing_transition_stop").loop({
+            state: { ok: true },
+            do() { return { state: { ok: true } } as any; },
           });
           const unknownValue: unknown = "raw";
           if (input) return { ok: true };
@@ -312,7 +324,7 @@ describe("workflow check pipeline", () => {
         expect.objectContaining({ code: "OA001", message: expect.stringContaining("fanout spec") }),
         expect.objectContaining({ code: "OA001", message: expect.stringContaining("parallel branch") }),
         expect.objectContaining({ code: "OA001", message: expect.stringContaining("if then output") }),
-        expect.objectContaining({ code: "OA001", message: expect.stringContaining("loop initial output") }),
+        expect.objectContaining({ code: "OA001", message: expect.stringContaining("loop initial state") }),
         expect.objectContaining({ code: "OA002", message: expect.stringContaining("Date") }),
         expect.objectContaining({ code: "OA002", message: expect.stringContaining("function") }),
         expect.objectContaining({ code: "OA002", message: expect.stringContaining("{}") }),
@@ -321,9 +333,12 @@ describe("workflow check pipeline", () => {
         expect.objectContaining({ code: "OA003", message: expect.stringContaining("if branch outputs") }),
         expect.objectContaining({ code: "OA003", message: expect.stringContaining("switch branch outputs") }),
         expect.objectContaining({ code: "OA003", message: expect.stringContaining("parallel race branch outputs") }),
-        expect.objectContaining({ code: "OA003", message: expect.stringContaining("loop initial and body outputs") }),
-        expect.objectContaining({ code: "OA003", message: expect.stringContaining("loop initial output") }),
+        expect.objectContaining({ code: "OA003", message: expect.stringContaining("loop initial and transition state outputs") }),
+        expect.objectContaining({ code: "OA003", message: expect.stringContaining("loop initial state") }),
         expect.objectContaining({ code: "OA004" }),
+        expect.objectContaining({ code: "OA004", message: expect.stringContaining("unexpected key") }),
+        expect.objectContaining({ code: "OA001", message: expect.stringContaining("loop transition state") }),
+        expect.objectContaining({ code: "OA001", message: expect.stringContaining("loop transition stop") }),
       ]));
       expect(result.diagnostics.filter(diagnostic => diagnostic.code === "OA002" && diagnostic.message.includes("any"))).toEqual([]);
       expect(result.diagnostics.filter(diagnostic => diagnostic.code === "OA002" && diagnostic.message.includes("unknown"))).toEqual([]);

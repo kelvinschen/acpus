@@ -152,7 +152,7 @@ function compositeRunOverlay(): WorkflowVisualizationOverlay {
       }),
       node("repair_loop", "loop", ["root", "execution", "branch:lane_matrix", "lanes", "do", "repair_loop"], {
         parentNodeId: "lanes",
-        detail: { kind: "loop", maxIterations: lit(3), stopWhen: ref("state", "done") },
+        detail: { kind: "loop", state: lit({}) },
         frames: [
           frame("repair.alpha", "repair_loop", "loop", "completed", [...branchFanoutPath(0, "lane-alpha"), { kind: "node", nodeId: "repair_loop" }]),
           frame("repair.alpha.0", "repair_loop", "loop_iteration", "completed", [...branchFanoutPath(0, "lane-alpha"), { kind: "loop", nodeId: "repair_loop", iter: 0 }]),

@@ -224,7 +224,7 @@ describe("composite header metadata", () => {
       options: [{ id: "repair_loop:iteration:0", label: "iteration 0", status: "completed", iteration: 0, scopePath: [], parentSelections: [] }],
     };
 
-    expect(compositeDescriptor({ kind: "loop", maxIterations: "3", stopWhen: "done" })).toBeUndefined();
+    expect(compositeDescriptor({ kind: "loop", state: "state" })).toBeUndefined();
     expect(selectorOptionLabel(loopSelector, loopSelector.options[0]!)).toBe("iter 0");
   });
 
@@ -247,7 +247,7 @@ describe("composite header metadata", () => {
   it("keeps empty loop body scopes visible in the render model", () => {
     const graph = graphOf({
       nodes: [
-        node({ id: "repair_loop", kind: "loop", detail: { kind: "loop", maxIterations: "2", stopWhen: "done" } }),
+        node({ id: "repair_loop", kind: "loop", detail: { kind: "loop", state: "state" } }),
       ],
       containers: [
         { id: "repair_loop::do", nodeId: "repair_loop", kind: "scope", label: "do", path: ["root", "repair_loop", "do"], parentId: "repair_loop", status: "not_started" },
@@ -291,7 +291,7 @@ function fanoutGraph(): WebGraph {
       node({ id: "route", kind: "switch", parentId: "lanes::do", parentNodeId: "lanes", path: ["root", "lanes", "do", "route"], detail: { kind: "switch", cases: ["item.auto"], hasDefault: true }, status: "completed" }),
       node({ id: "auto_route", parentId: "route::case%3A0", parentNodeId: "route", path: ["root", "lanes", "do", "route", "case:0", "auto_route"], status: "completed" }),
       node({ id: "manual_route", parentId: "route::default", parentNodeId: "route", path: ["root", "lanes", "do", "route", "default", "manual_route"], status: "completed" }),
-      node({ id: "repair_loop", kind: "loop", parentId: "lanes::do", parentNodeId: "lanes", path: ["root", "lanes", "do", "repair_loop"], detail: { kind: "loop", maxIterations: "3", stopWhen: "done" }, status: "completed" }),
+      node({ id: "repair_loop", kind: "loop", parentId: "lanes::do", parentNodeId: "lanes", path: ["root", "lanes", "do", "repair_loop"], detail: { kind: "loop", state: "state" }, status: "completed" }),
     ],
     containers: [
       { id: "lanes::do", nodeId: "lanes", kind: "scope", label: "do", path: ["root", "lanes", "do"], parentId: "lanes", status: "completed" },

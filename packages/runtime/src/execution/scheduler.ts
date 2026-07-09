@@ -2,7 +2,6 @@ import type { AgentNodeIR, NodeIR, ScopeIR, SignalNodeIR, TaskNodeIR, WorkflowIR
 import type { ExprIR, JsonValue } from "@acpus/expression/ir";
 import { assertWorkflowData } from "../evaluation/admissible.js";
 import { evaluateExpr, renderTemplate, type EvaluationScope } from "../evaluation/evaluator.js";
-import { evaluateLoopMaxIterations } from "../evaluation/loop-limit.js";
 import { normalizeValue } from "../evaluation/schema.js";
 
 export type NonAgentExecutionResult = {
@@ -205,39 +204,27 @@ async function executeNodeAsync(node: NodeIR, scope: SchedulerScope, options: Ru
   }
   if (node.kind === "loop") {
     try {
-      let result = evaluateExpr(node.initial, scope) as Record<string, unknown>;
-      const maxIterations = evaluateLoopMaxIterations(node.maxIterations, scope, node.id);
-      for (let iter = 0; iter < maxIterations; iter += 1) {
-        scope.loop = {
-          ...scope.loop,
-          [node.id]: { iter, previous: result, result },
-        };
-        if (evaluateBoolean(node.stopWhen, scope, node.id)) {
-          completeNode(scope, node.id, validateNodeOutput(node, result));
-          return;
-        }
+      let state = evaluateExpr(node.state, scope) as JsonValue;
+      let index = 0;
+      for (;;) {
         const loopScope = createChildScope(scope, {
           loop: {
             ...scope.loop,
-            [node.id]: { iter, previous: result },
+            [node.id]: { index, round: index + 1, state },
           },
         });
-        result = (await executeScopeAsync(node.do, loopScope, options)).output as Record<string, unknown>;
+        const transition = normalizeLoopTransition((await executeScopeAsync(node.do, loopScope, options)).output, node.id);
+        state = transition.state;
         scope.loop = {
           ...scope.loop,
-          [node.id]: { iter, previous: result, result },
+          [node.id]: { index, round: index + 1, state },
         };
+        if (transition.stop) {
+          completeNode(scope, node.id, validateNodeOutput(node, state));
+          return;
+        }
+        index += 1;
       }
-      const iter = maxIterations;
-      scope.loop = {
-        ...scope.loop,
-        [node.id]: { iter, previous: result, result },
-      };
-      if (evaluateBoolean(node.stopWhen, scope, node.id) || node.onExhausted === "returnLast") {
-        completeNode(scope, node.id, validateNodeOutput(node, result));
-        return;
-      }
-      throw new Error(`Loop node '${node.id}' exhausted after ${maxIterations} iterations.`);
     } catch (error) {
       if (error instanceof ExecutorRequiredError || error instanceof SignalAwaitingError || error instanceof RuntimeNodeError) throw error;
       throw new RuntimeNodeError(node.id, error instanceof Error ? error.message : String(error), scope.executedNodes);
@@ -253,6 +240,15 @@ function evaluateBoolean(expr: ExprIR, scope: SchedulerScope, nodeId: string): b
   const value = evaluateExpr(expr, scope);
   if (typeof value !== "boolean") throw new Error(`Node '${nodeId}' condition must evaluate to boolean.`);
   return value;
+}
+
+function normalizeLoopTransition(output: Record<string, unknown>, nodeId: string): { state: JsonValue; stop: boolean } {
+  if (!output || typeof output !== "object" || Array.isArray(output)) throw new Error(`Loop node '${nodeId}' body must return { state, stop }.`);
+  if (!Object.prototype.hasOwnProperty.call(output, "state")) throw new Error(`Loop node '${nodeId}' body transition is missing 'state'.`);
+  if (!Object.prototype.hasOwnProperty.call(output, "stop")) throw new Error(`Loop node '${nodeId}' body transition is missing 'stop'.`);
+  if (typeof output.stop !== "boolean") throw new Error(`Loop node '${nodeId}' body transition 'stop' must be boolean.`);
+  assertWorkflowData(output.state, `Loop node '${nodeId}' transition state`);
+  return { state: output.state as JsonValue, stop: output.stop };
 }
 
 function completeNode(scope: SchedulerScope, id: string, output: unknown): void {

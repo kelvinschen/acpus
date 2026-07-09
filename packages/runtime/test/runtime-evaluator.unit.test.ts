@@ -14,7 +14,7 @@ describe("runtime expression evaluator", () => {
       nodes: { prepare: { output: { ok: true } } },
       meta: { runId: "run_1" },
       fanout: { lane: { item: { id: "b" }, itemIndex: 3 } },
-      loop: { retry: { iter: 2, previous: { summary: "again" }, result: { done: true } } },
+      loop: { retry: { index: 2, round: 3, state: { summary: "again" } } },
     };
 
     expect(evaluateExpr(ref(["workflow", "input", "packageName"]), scope)).toBe("core");
@@ -23,9 +23,9 @@ describe("runtime expression evaluator", () => {
     expect(evaluateExpr(ref(["meta", "runId"]), scope)).toBe("run_1");
     expect(evaluateExpr(ref(["fanout", "lane", "item", "id"]), scope)).toBe("b");
     expect(evaluateExpr(ref(["fanout", "lane", "itemIndex"]), scope)).toBe(3);
-    expect(evaluateExpr(ref(["loop", "retry", "iter"]), scope)).toBe(2);
-    expect(evaluateExpr(ref(["loop", "retry", "previous", "summary"]), scope)).toBe("again");
-    expect(evaluateExpr(ref(["loop", "retry", "result", "done"]), scope)).toBe(true);
+    expect(evaluateExpr(ref(["loop", "retry", "index"]), scope)).toBe(2);
+    expect(evaluateExpr(ref(["loop", "retry", "round"]), scope)).toBe(3);
+    expect(evaluateExpr(ref(["loop", "retry", "state", "summary"]), scope)).toBe("again");
   });
 
   it("does not expose array prototype or non-canonical array refs", () => {

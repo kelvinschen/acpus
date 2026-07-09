@@ -87,7 +87,7 @@ export type NodeDetail =
   | { kind: "switch"; cases: string[]; hasDefault: boolean }
   | { kind: "parallel"; branches: string[]; strategy: "all" | "race" }
   | { kind: "fanout"; over: string; strategy: "all" | "quorum"; count?: number }
-  | { kind: "loop"; maxIterations: string; stopWhen: string };
+  | { kind: "loop"; state: string };
 
 export type WebGraphNode = {
   id: string;
@@ -215,6 +215,16 @@ export type NodeInspection = {
       finishedAt?: string;
       error?: unknown;
       result?: unknown;
+    };
+    loopProgress?: {
+      frameKey: string;
+      index: number;
+      round: number;
+      state?: unknown;
+      stop?: boolean;
+      transition?: unknown;
+      activeIterationFrameKey?: string;
+      activeChildNodeKeys: string[];
     };
     artifacts: ArtifactReference[];
   };

@@ -324,17 +324,22 @@ function staticTargetMatches(workflow: WorkflowIR, projection: SchedulerProjecti
     const node = nodeAtPath(workflow.root, frame.instancePath);
     if (node) byKey.set(pathKey(frame.instancePath), { node, path: frame.instancePath });
   }
-  for (const match of futureDirectNodeMatches(workflow, projection, candidate => candidate.node.id === target)) {
+  for (const match of futureDirectNodeMatches(workflow, projection, candidate => candidate.node.id === target, { includeLoopIterations: false })) {
     byKey.set(pathKey(match.path), match);
   }
   return [...byKey.values()];
 }
 
-function futureDirectNodeMatches(workflow: WorkflowIR, projection: SchedulerProjection, predicate: (candidate: { node: NodeIR; path: InstancePath }) => boolean): Array<{ node: NodeIR; path: InstancePath }> {
+function futureDirectNodeMatches(
+  workflow: WorkflowIR,
+  projection: SchedulerProjection,
+  predicate: (candidate: { node: NodeIR; path: InstancePath }) => boolean,
+  options: { includeLoopIterations?: boolean } = {},
+): Array<{ node: NodeIR; path: InstancePath }> {
   const out: Array<{ node: NodeIR; path: InstancePath }> = [];
   const frames = Object.values(projection.frames).filter(frame =>
     frame.status === "running"
-      && (frame.frameKind === "root" || frame.frameKind === "branch" || frame.frameKind === "fanout_item" || frame.frameKind === "loop_iteration")
+      && (frame.frameKind === "root" || frame.frameKind === "branch" || frame.frameKind === "fanout_item" || (options.includeLoopIterations !== false && frame.frameKind === "loop_iteration"))
   );
   for (const frame of frames) {
     const basePath = frame.frameKey === "root" ? [] : frame.instancePath;
@@ -408,7 +413,7 @@ function semanticNodeSignature(node: NodeIR, workflow: WorkflowIR): unknown {
   if (semantic.kind === "switch") return { id: semantic.id, kind: semantic.kind, cases: semantic.cases.map(c => c.when), default: true };
   if (semantic.kind === "parallel") return { id: semantic.id, kind: semantic.kind, strategy: semantic.strategy, maxConcurrency: semantic.maxConcurrency, branchIds: Object.keys(semantic.branches) };
   if (semantic.kind === "fanout") return { id: semantic.id, kind: semantic.kind, over: semantic.over, key: semantic.key, strategy: semantic.strategy, count: semantic.count, maxConcurrency: semantic.maxConcurrency };
-  if (semantic.kind === "loop") return { id: semantic.id, kind: semantic.kind, initial: semantic.initial, stopWhen: semantic.stopWhen, maxIterations: semantic.maxIterations, onExhausted: semantic.onExhausted };
+  if (semantic.kind === "loop") return { id: semantic.id, kind: semantic.kind, state: semantic.state, outputs: semantic.do.outputs };
   return semantic;
 }
 

@@ -25,7 +25,7 @@ export type SchedulerEvent =
   | BaseEvent<"frame.failed", { frameKey: string; error: JsonObject; terminalReason?: string }>
   | BaseEvent<"frame.cancelled", { frameKey: string; cancelReason: CancellationReason }>
   | BaseEvent<"frame.retry_requested", { frameKey: string; source?: "control" }>
-  | BaseEvent<"frame.loop_advanced", { frameKey: string; iter: number; previous?: JsonValue; result?: JsonValue }>
+  | BaseEvent<"frame.loop_advanced", { frameKey: string; iter: number; state?: JsonValue; transition?: JsonValue }>
   // Makes a dynamic node instance known to the scheduler.
   | BaseEvent<"instance.ready", { runId: string; nodeKey: string; nodeId: string; instancePath: InstancePath; parentFrameKey?: string; readinessSequence?: number }>
   | BaseEvent<"instance.started", { nodeKey: string }>

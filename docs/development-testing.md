@@ -52,7 +52,7 @@ The initial core test foundation should cover these chains:
 - IR validator: invalid workflow names, schemas, duplicate node ids, empty refs, missing agents, and malformed task execution descriptors produce stable diagnostic codes and paths.
 - Workflow compiler: representative workflow-compiler package fixtures compile leaf nodes, assertions, templates, secrets, inline task source, reusable task module references, agent definitions, and outputs into validated `WorkflowIR`.
 - Composite nodes: the workflow-compiler orchestration fixture covers `step.if`, `step.switch`, `step.parallel`, `step.fanout`, `step.loop`, and `step.signal` child scopes and projected outputs without invoking any runtime.
-- Type contracts: ref/return-type inference, nullable `previous` access, `coalesce(...)` narrowing, and schema-aware composite scope output checks are covered by `*.type.test-d.ts`.
+- Type contracts: ref/return-type inference, loop `state`/`index`/`round` access, transition `{ state, stop }` shape, `coalesce(...)` narrowing, and schema-aware composite scope output checks are covered by `*.type.test-d.ts`.
 - Module compiler: a checked-in workflow module fixture compiles through `compileWorkflowModule(...)` with `irVersion: 2`, expected node ids, task execution descriptors, outputs, and the trusted-import compiler diagnostic.
 
 ## Commands

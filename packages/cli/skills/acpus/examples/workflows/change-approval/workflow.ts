@@ -1,5 +1,5 @@
 import { defineWorkflow, z } from "acpus/core";
-import { md, template } from "acpus/expression";
+import { gte, md, or, template } from "acpus/expression";
 
 const PlanOut = z.object({
   ready: z.boolean(),
@@ -33,25 +33,24 @@ export default defineWorkflow({
   });
 
   const refined = step("refine_plan").loop({
-    initial: {
+    state: {
       ready: initial.output.ready,
       round: 0,
       summary: initial.output.summary,
       draft: initial.output.nextDraft,
     },
-    maxIterations: 2,
-    do({ iter, previous }) {
+    do({ round, state }) {
       const review = step("refine_round").agent({
         outputSchema: PlanOut,
         run: {
           agent: agents.planner,
           cwd: input.repoPath,
           prompt: md`
-            Refine implementation plan round ${iter}.
+            Refine implementation plan round ${round}.
 
             Original request: ${input.request}
-            Previous draft: ${previous.draft}
-            Previous summary: ${previous.summary}
+            Previous draft: ${state.draft}
+            Previous summary: ${state.summary}
 
             Return a ready flag, concise summary, and next draft.
           `,
@@ -60,14 +59,15 @@ export default defineWorkflow({
         timeout: "20m",
       });
       return {
-        ready: review.output.ready,
-        round: iter,
-        summary: review.output.summary,
-        draft: review.output.nextDraft,
+        state: {
+          ready: review.output.ready,
+          round,
+          summary: review.output.summary,
+          draft: review.output.nextDraft,
+        },
+        stop: or(review.output.ready, gte(round, 2)),
       };
     },
-    stopWhen({ result }) { return result.ready; },
-    onExhausted: "returnLast",
   });
 
   const approval = step("approval").if({

@@ -194,8 +194,8 @@ runtime concepts and query paths delivered by the V1 implementation.
   `completed`. `accepted` is the first quorum-sized prefix by durable completion
   sequence; `completed` includes successes that committed before the group
   stopped.
-- `loop`: loop frame result is the body `ScopeIR.outputs` result from the
-  terminating iteration, or the last result when exhaustion returns last.
+- `loop`: loop frame result is the final transition `state` from the terminating
+  iteration.
 - Workflow output evaluation reads composite results through
   `nodes.<compositeId>.output`, using lexical scope rather than static ids as
   runtime storage keys.
@@ -444,8 +444,8 @@ Phase 3 implementation notes:
 - [x] Implement `fanout all` with eager item identity rows and lazy child frames.
 - [x] Implement `fanout quorum` early success, accepted order by commit
   sequence, and impossible quorum failure.
-- [x] Implement loop frames, lazy iteration creation, `maxIterations`, and
-  `onExhausted` for supported root loop bodies.
+- [x] Implement loop frames, lazy iteration creation, and transition-style
+  continuation for supported root loop bodies.
 - [x] Implement internal group result metadata separate from user-visible node
   output.
 
@@ -459,10 +459,10 @@ Exit criteria:
 Phase 4 implementation notes:
 
 - Added reducer-level composite helpers for group terminal event derivation,
-  fanout item materialization, and loop next/exhaustion decisions.
+  fanout item materialization, and loop transition decisions.
 - Added unit coverage for parallel all fail-fast cancellation, parallel race
   winner cancellation, fanout quorum accepted order and cancellation, duplicate
-  fanout keys, and loop next/exhaustion outcomes.
+  fanout keys, and loop transition outcomes.
 - Wired `advanceRun` to drain derived group completion events from durable
   projection before starting ready work.
 - Added SQLite integration coverage for interrupted `parallel race` and
@@ -533,13 +533,13 @@ Phase 4 implementation notes:
 - Root `loop` bootstrap and continuation now support loop bodies with one or
   more scheduler-visible leaves in sequence. Single-leaf loops keep the direct
   leaf path; multi-leaf loops create a durable `loop_iteration` frame for each
-  iteration and evaluate the body `ScopeIR.outputs` from that frame before
-  applying `stopWhen`.
+  iteration and evaluate the body transition from that frame before applying
+  `stop`.
 - The internal runner materializes iteration 0, rebuilds
-  `loop.<nodeId>.iter/previous` scope for leaf executors, records
-  `frame.loop_advanced` after each completed iteration, evaluates `stopWhen`
-  from durable projection state, and materializes the next iteration or terminal
-  loop frame.
+  `loop.<nodeId>.index/round/state` scope for leaf executors, records
+  `frame.loop_advanced` after each completed iteration, evaluates transition
+  `stop` from durable projection state, and materializes the next iteration or
+  terminal loop frame.
 - Loop iteration result is computed from the loop body's `ScopeIR.outputs`
   using durable `nodes.<leaf>.output`, not from the raw leaf output. Integration
   coverage uses a transformed task output to protect this distinction.

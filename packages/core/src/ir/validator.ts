@@ -117,6 +117,14 @@ function validateScope(scope: unknown, diagnostics: DiagnosticIR[], ctx: IrScope
   }
 }
 
+function validateLoopTransitionScope(scope: unknown, diagnostics: DiagnosticIR[], path: string): void {
+  if (!requireRecord(scope, diagnostics, path, "IR002", "Scope must be an object.")) return;
+  if (!requireRecord(scope.outputs, diagnostics, `${path}.outputs`, "E004", "Loop body outputs must be an object.")) return;
+  validateKnownFields(scope.outputs, ["state", "stop"], diagnostics, `${path}.outputs`);
+  if (scope.outputs.state === undefined) addError(diagnostics, "E000", "Loop body transition state is required.", `${path}.outputs.state`);
+  if (scope.outputs.stop === undefined) addError(diagnostics, "E000", "Loop body transition stop is required.", `${path}.outputs.stop`);
+}
+
 function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: IrScopeContext): void {
   if (!requireRecord(node, diagnostics, `${ctx.path}.nodes`, "IR002", "Node must be an object.")) return;
   const id = typeof node.id === "string" ? node.id : "<unknown>";
@@ -238,12 +246,10 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: IrScopeCon
       break;
     }
     case "loop": {
-      validateKnownFields(node, ["id", "source", "kind", "initial", "maxIterations", "do", "stopWhen", "onExhausted"], diagnostics, path);
-      validateExpr(node.initial, diagnostics, `${path}.initial`, refsFromScope(ctx));
-      validateExpr(node.maxIterations, diagnostics, `${path}.maxIterations`, refsFromScope(ctx));
-      if (node.onExhausted !== undefined && node.onExhausted !== "fail" && node.onExhausted !== "returnLast") addError(diagnostics, "L002", `Loop node '${node.id}' onExhausted must be 'fail' or 'returnLast'.`, `${path}.onExhausted`);
-      validateExpr(node.stopWhen, diagnostics, `${path}.stopWhen`, refsWithLoop(ctx, id));
+      validateKnownFields(node, ["id", "source", "kind", "state", "do"], diagnostics, path);
+      validateExpr(node.state, diagnostics, `${path}.state`, refsFromScope(ctx));
       validateScope(node.do, diagnostics, childScopeContext(ctx, `${path}.do`, { loopId: id }));
+      validateLoopTransitionScope(node.do, diagnostics, `${path}.do`);
       break;
     }
     default:
@@ -589,7 +595,7 @@ function validateRefPath(refPath: string[], diagnostics: DiagnosticIR[], path: s
       return;
     }
     const member = refPath[2];
-    if (member !== "iter" && member !== "previous" && member !== "result") {
+    if (member !== "index" && member !== "round" && member !== "state") {
       addError(diagnostics, "IR003", `Loop ref '${refPath.join(".")}' is not visible from this scope.`, path);
     }
   }

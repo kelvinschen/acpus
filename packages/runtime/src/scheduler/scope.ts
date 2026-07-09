@@ -16,7 +16,7 @@ export function baseScopeForFrame(projection: SchedulerProjection, frame: Schedu
   if (frame.frameKind === "loop_iteration") {
     const segment = lastSegment(frame.instancePath);
     const loopFrame = frame.parentFrameKey ? projection.frames[frame.parentFrameKey] : undefined;
-    if (segment?.kind === "loop") scope = loopScopeForIteration(scope, segment.nodeId, segment.iter, loopFrame?.loop?.previous);
+    if (segment?.kind === "loop") scope = loopScopeForIteration(scope, segment.nodeId, segment.iter, loopFrame?.loop?.state);
   }
   return scope;
 }
@@ -49,8 +49,8 @@ function withFanout(scope: EvaluationScope, nodeId: string, item: unknown, itemI
   return { ...scope, fanout: { ...scope.fanout, [nodeId]: { item, itemIndex } } };
 }
 
-function loopScopeForIteration(scope: EvaluationScope, nodeId: string, iter: number, previous?: unknown): EvaluationScope {
-  return { ...scope, loop: { ...scope.loop, [nodeId]: { iter, ...(previous === undefined ? {} : { previous }) } } };
+function loopScopeForIteration(scope: EvaluationScope, nodeId: string, iter: number, state?: unknown): EvaluationScope {
+  return { ...scope, loop: { ...scope.loop, [nodeId]: { index: iter, round: iter + 1, ...(state === undefined ? {} : { state }) } } };
 }
 
 function lastSegment(path: InstancePath | undefined): InstancePathSegment | undefined {

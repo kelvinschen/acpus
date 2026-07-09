@@ -42,11 +42,7 @@ export type FanoutScopeContext<Item = any> = {
 };
 
 export type LoopScopeContext<Output extends OutputObject> = {
-  iter: Expr<number>;
-  previous: OutputAccessor<Output>;
-};
-
-export type LoopStopContext<Output> = {
-  iter: Expr<number>;
-  result: OutputAccessor<Output>;
+  index: Expr<number>;
+  round: Expr<number>;
+  state: OutputAccessor<Output>;
 };

@@ -143,33 +143,62 @@ function checkParallel(spec: ts.ObjectLiteralExpression, context: RuleContext): 
 }
 
 function checkLoop(spec: ts.ObjectLiteralExpression, context: RuleContext): void {
-  const initial = propertyInitializer(spec, "initial");
+  const initial = propertyInitializer(spec, "state");
   const body = callbackProducer(spec, "do", "loop body output", context);
   let initialProducer: Producer | undefined;
   if (initial) {
     const initialType = context.checker.getTypeAtLocation(initial);
-    initialProducer = { label: "loop initial output", expression: initial, type: initialType };
+    initialProducer = { label: "loop initial state", expression: initial, type: initialType };
     if (!objectOutputLiteral(initial)) {
-      context.diagnostics.push(hiddenProducerDiagnostic("loop initial output", initial));
+      context.diagnostics.push(hiddenProducerDiagnostic("loop initial state", initial));
     }
     checkProducer(initialProducer, context);
-    checkObjectOutputType("loop initial output", initialType, initial, context);
+    checkObjectOutputType("loop initial state", initialType, initial, context);
   }
-  else context.diagnostics.push(hiddenProducerDiagnostic("loop initial output", spec));
+  else context.diagnostics.push(hiddenProducerDiagnostic("loop initial state", spec));
   if (body) {
     checkProducer(body, context);
-    if (initialProducer) checkConvergence("loop initial and body outputs", [initialProducer, body], context);
-  }
-  const maxIterations = propertyInitializer(spec, "maxIterations");
-  if (maxIterations && numericLiteralValue(maxIterations) !== undefined && numericLiteralValue(maxIterations)! < 0) {
-    context.diagnostics.push({
-      code: "OA004",
-      severity: "error",
-      message: "Loop maxIterations must be non-negative.",
-      path: "output.loop.maxIterations",
-      hint: "Use 0 or a positive integer. The initial value is checked before any loop body execution.",
-      source: sourceLocation(maxIterations),
-    });
+    const bodyObject = objectOutputLiteral(body.expression);
+    if (!bodyObject) return;
+    const transitionKeys = new Set<string>();
+    for (const property of bodyObject.properties) {
+      if (!ts.isPropertyAssignment(property)) continue;
+      const name = propertyName(property.name);
+      if (name) transitionKeys.add(name);
+    }
+    const extraKeys = [...transitionKeys].filter(key => key !== "state" && key !== "stop").sort();
+    if (extraKeys.length > 0) {
+      context.diagnostics.push({
+        code: "OA004",
+        severity: "error",
+        message: `Loop transition output must contain exactly state and stop; unexpected key(s): ${extraKeys.join(", ")}.`,
+        path: "output.loop.transition",
+        hint: "Return exactly { state: nextState, stop: condition } from loop bodies.",
+        source: sourceLocation(body.expression),
+      });
+    }
+    const state = propertyInitializer(bodyObject, "state");
+    const stop = propertyInitializer(bodyObject, "stop");
+    if (!state) context.diagnostics.push(hiddenProducerDiagnostic("loop transition state", body.expression));
+    if (!stop) context.diagnostics.push(hiddenProducerDiagnostic("loop transition stop", body.expression));
+    if (state && initialProducer) {
+      const stateProducer = { label: "loop transition state", expression: state, type: context.checker.getTypeAtLocation(state) };
+      checkProducer(stateProducer, context);
+      checkConvergence("loop initial and transition state outputs", [initialProducer, stateProducer], context);
+    }
+    if (stop) {
+      const stopType = context.checker.getTypeAtLocation(stop);
+      if (!isBooleanLike(stopType, stop, context.checker)) {
+        context.diagnostics.push({
+          code: "OA004",
+          severity: "error",
+          message: "Loop transition stop must be boolean-like.",
+          path: "output.loop.stop",
+          hint: "Return { state: nextState, stop: condition } where stop is a boolean or Expr<boolean>.",
+          source: sourceLocation(stop),
+        });
+      }
+    }
   }
 }
 
@@ -356,6 +385,12 @@ function unwrapExpr(type: ts.Type, node: ts.Node, checker: ts.TypeChecker): ts.T
     : type;
 }
 
+function isBooleanLike(type: ts.Type, node: ts.Node, checker: ts.TypeChecker): boolean {
+  const unwrapped = unwrapExpr(type, node, checker);
+  if (unwrapped.flags & ts.TypeFlags.BooleanLike) return true;
+  return unwrapped.isUnion() && unwrapped.types.every(part => Boolean(part.flags & ts.TypeFlags.BooleanLike));
+}
+
 function isKnownJsonAlias(type: ts.Type): boolean {
   const symbol = type.aliasSymbol ?? type.getSymbol();
   if (!symbol || (symbol.getName() !== "JsonValue" && symbol.getName() !== "JsonObject")) return false;
@@ -389,8 +424,17 @@ function returnExpressions(fn: ts.FunctionLikeDeclaration | ts.ArrowFunction): t
 
 function unwrapParentheses(expression: ts.Expression): ts.Expression {
   let current = expression;
-  while (ts.isParenthesizedExpression(current)) current = current.expression;
-  return current;
+  for (;;) {
+    if (ts.isParenthesizedExpression(current)) {
+      current = current.expression;
+      continue;
+    }
+    if (ts.isAsExpression(current) || ts.isTypeAssertionExpression(current) || ts.isSatisfiesExpression(current) || ts.isNonNullExpression(current)) {
+      current = current.expression;
+      continue;
+    }
+    return current;
+  }
 }
 
 function objectOutputLiteral(expression: ts.Expression): ts.ObjectLiteralExpression | undefined {

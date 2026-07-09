@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { defineWorkflow, z } from "@acpus/core";
-import { coalesce, eq, head, matches, or, template, where } from "@acpus/expression";
+import { coalesce, eq, head, matches, or, template } from "@acpus/expression";
 import { compileWorkflowDefinition } from "@acpus/core/workflow";
 import { executeWorkflow } from "../src/execution/scheduler.js";
 
@@ -42,14 +42,14 @@ describe("runtime non-agent scheduler skeleton", () => {
       });
 
       const retry = step("retry").loop({
-        initial: { done: false as boolean, summary: "first" },
-        maxIterations: 3,
-        do({ iter, previous }) { return {
-          done: eq(iter, 2),
-          summary: previous.summary,
+        state: { done: false as boolean, summary: "first" },
+        do({ round, state }) { return {
+          state: {
+            done: eq(round, 3),
+            summary: state.summary,
+          },
+          stop: or(eq(round, 3), eq(state.done, true)),
         }; },
-        stopWhen({ iter, result }) { return or(eq(iter, 3), where(result, { done: true })); },
-        onExhausted: "returnLast",
       });
 
       return {
@@ -352,37 +352,35 @@ describe("runtime non-agent scheduler skeleton", () => {
     expect(result.nodes).not.toHaveProperty("left_internal");
   });
 
-  it("handles loop previous output, returnLast exhaustion, and fail exhaustion", async () => {
-    const returnLast = compileWorkflowDefinition(defineWorkflow({
-      name: "loop_return_last",
+  it("handles loop carried state and explicit stop", async () => {
+    const counted = compileWorkflowDefinition(defineWorkflow({
+      name: "loop_counted_stop",
     }).build(({ step }) => {
       const loop = step("retry").loop({
-        initial: { iter: -1, previousIter: -1 },
-        maxIterations: 3,
-        do({ iter, previous }) { return {
-          iter,
-          previousIter: previous.iter,
+        state: { index: -1, previousIndex: -1 },
+        do({ index, state, round }) { return {
+          state: {
+            index,
+            previousIndex: state.index,
+          },
+          stop: eq(round, 3),
         }; },
-        stopWhen() { return false; },
-        onExhausted: "returnLast",
       });
-      return { iter: loop.output.iter, previousIter: loop.output.previousIter };
+      return { index: loop.output.index, previousIndex: loop.output.previousIndex };
     }));
 
-    expect((await executeWorkflow(returnLast, {})).output).toEqual({ iter: 2, previousIter: 1 });
+    expect((await executeWorkflow(counted, {})).output).toEqual({ index: 2, previousIndex: 1 });
 
-    const fail = compileWorkflowDefinition(defineWorkflow({
-      name: "loop_fail",
+    const once = compileWorkflowDefinition(defineWorkflow({
+      name: "loop_runs_once",
     }).build(({ step }) => {
-      step("retry").loop({
-        initial: { ok: false as boolean },
-        maxIterations: 2,
-        do() { return { ok: false }; },
-        stopWhen() { return false; },
+      const loop = step("retry").loop({
+        state: { ok: false as boolean },
+        do() { return { state: { ok: true }, stop: true }; },
       });
-      return {};
+      return { ok: loop.output.ok };
     }));
-    await expect(executeWorkflow(fail, {})).rejects.toThrow("Loop node 'retry' exhausted after 2 iterations.");
+    expect((await executeWorkflow(once, {})).output).toEqual({ ok: true });
   });
 
   it("fails non-boolean conditions and supports parallel race", async () => {
@@ -398,14 +396,12 @@ describe("runtime non-agent scheduler skeleton", () => {
       name: "bad_loop_condition",
     }).build(({ step }) => {
       step("loop").loop({
-        initial: { ok: false as boolean },
-        maxIterations: 1,
-        do() { return { ok: true }; },
-        stopWhen() { return "yes" as any; },
+        state: { ok: false as boolean },
+        do() { return { state: { ok: true }, stop: "yes" as any }; },
       });
       return {};
     }));
-    await expect(executeWorkflow(badLoop, {})).rejects.toThrow("Node 'loop' condition must evaluate to boolean.");
+    await expect(executeWorkflow(badLoop, {})).rejects.toThrow("Loop node 'loop' body transition 'stop' must be boolean.");
 
     const race = compileWorkflowDefinition(defineWorkflow({
       name: "race_supported",

@@ -457,7 +457,7 @@ describe("WorkflowIR diagnostics contract", () => {
     ]);
   });
 
-  it("validates signal timeout and loop exhaustion strategy invariants", () => {
+  it("validates signal timeout invariants", () => {
     const ir: WorkflowIR = {
       irVersion: 2,
       name: "bad_completion",
@@ -490,15 +490,6 @@ describe("WorkflowIR diagnostics contract", () => {
             timeout: "1m",
             onTimeout: { action: "fail", message: 123 },
           } as any,
-          {
-            id: "bad_exhausted",
-            kind: "loop",
-            initial: { kind: "object", fields: {} },
-            maxIterations: { kind: "literal", value: 1 },
-            do: { nodes: [], outputs: {} },
-            stopWhen: { kind: "literal", value: false },
-            onExhausted: "continue",
-          } as any,
         ],
       },
       outputs: {},
@@ -512,7 +503,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
     const diagnostics = validateWorkflowIR(ir);
 
-    expect(diagnostics.map(diagnostic => diagnostic.code)).toEqual(["S001", "S001", "S001", "L002"]);
+    expect(diagnostics.map(diagnostic => diagnostic.code)).toEqual(["S001", "S001", "S001"]);
   });
 
   it("validates required aligned IR fields", () => {
@@ -544,11 +535,9 @@ describe("WorkflowIR diagnostics contract", () => {
             cases: [{ when: { kind: "literal", value: true }, then: { nodes: [], outputs: {} } }],
           },
           {
-            id: "loop_without_initial",
+            id: "loop_without_state",
             kind: "loop",
-            maxIterations: { kind: "literal", value: 1 },
-            do: { nodes: [], outputs: {} },
-            stopWhen: { kind: "literal", value: true },
+            do: { nodes: [], outputs: { state: { kind: "object", fields: {} }, stop: { kind: "literal", value: true } } },
           },
         ],
       },
@@ -629,9 +618,10 @@ describe("WorkflowIR diagnostics contract", () => {
           {
             id: "retry",
             kind: "loop",
+            state: { kind: "object", fields: {} },
             initial: { kind: "object", fields: {} },
             maxIterations: { kind: "literal", value: 1 },
-            do: { nodes: [], outputs: {} },
+            do: { nodes: [], outputs: { state: { kind: "object", fields: {} }, stop: { kind: "literal", value: true } } },
             stopWhen: { kind: "literal", value: true },
             until: { kind: "literal", value: true },
           },
@@ -655,7 +645,36 @@ describe("WorkflowIR diagnostics contract", () => {
       expect.objectContaining({ code: "IR001", path: "root.nodes.gate.when" }),
       expect.objectContaining({ code: "IR001", path: "root.nodes.gate.otherwise" }),
       expect.objectContaining({ code: "IR001", path: "root.nodes.route.otherwise" }),
+      expect.objectContaining({ code: "IR001", path: "root.nodes.retry.initial" }),
+      expect.objectContaining({ code: "IR001", path: "root.nodes.retry.maxIterations" }),
+      expect.objectContaining({ code: "IR001", path: "root.nodes.retry.stopWhen" }),
       expect.objectContaining({ code: "IR001", path: "root.nodes.retry.until" }),
+    ]));
+  });
+
+  it("rejects malformed loop transition output contracts", () => {
+    const diagnostics = validateWorkflowIR(minimalWorkflow({
+      root: {
+        nodes: [
+          {
+            id: "missing_stop",
+            kind: "loop",
+            state: { kind: "object", fields: {} },
+            do: { nodes: [], outputs: { state: { kind: "object", fields: {} } } },
+          },
+          {
+            id: "extra_transition",
+            kind: "loop",
+            state: { kind: "object", fields: {} },
+            do: { nodes: [], outputs: { state: { kind: "object", fields: {} }, stop: { kind: "literal", value: true }, debug: { kind: "literal", value: 1 } } },
+          },
+        ],
+      },
+    } as any));
+
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "E000", path: "root.nodes.missing_stop.do.outputs.stop" }),
+      expect.objectContaining({ code: "IR001", path: "root.nodes.extra_transition.do.outputs.debug" }),
     ]));
   });
 
@@ -1052,16 +1071,17 @@ describe("WorkflowIR diagnostics contract", () => {
           {
             id: "retry",
             kind: "loop",
-            initial: { kind: "object", fields: {} },
-            maxIterations: { kind: "literal", value: 1 },
+            state: { kind: "object", fields: {} },
             do: {
               nodes: [],
-              outputs: { bad: { kind: "ref", path: ["loop", "other", "previous", "id"] } },
+              outputs: {
+                state: { kind: "ref", path: ["loop", "other", "state"] },
+                stop: { kind: "ref", path: ["loop", "retry", "state", "done"] },
+              },
             },
-            stopWhen: { kind: "ref", path: ["loop", "retry", "result", "done"] },
           },
           taskNode("bad_loop_local", {
-            previous: { kind: "ref", path: ["loop", "retry", "previous", "id"] },
+            state: { kind: "ref", path: ["loop", "retry", "state", "id"] },
           }),
         ],
       },
@@ -1070,8 +1090,8 @@ describe("WorkflowIR diagnostics contract", () => {
     expect(diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "IR003", path: "root.nodes.items.do.outputs.missing.path" }),
       expect.objectContaining({ code: "IR003", path: "root.nodes.bad_fanout_local.run.input.item.path" }),
-      expect.objectContaining({ code: "IR003", path: "root.nodes.retry.do.outputs.bad.path" }),
-      expect.objectContaining({ code: "IR003", path: "root.nodes.bad_loop_local.run.input.previous.path" }),
+      expect.objectContaining({ code: "IR003", path: "root.nodes.retry.do.outputs.state.path" }),
+      expect.objectContaining({ code: "IR003", path: "root.nodes.bad_loop_local.run.input.state.path" }),
     ]));
   });
 
@@ -1095,13 +1115,14 @@ describe("WorkflowIR diagnostics contract", () => {
           {
             id: "retry",
             kind: "loop",
-            initial: { kind: "object", fields: {} },
-            maxIterations: { kind: "literal", value: 1 },
+            state: { kind: "object", fields: {} },
             do: {
               nodes: [],
-              outputs: { bad: { kind: "ref", path: ["loop", "retry", "item"] } },
+              outputs: {
+                state: { kind: "object", fields: {} },
+                stop: { kind: "ref", path: ["loop", "retry", "item"] },
+              },
             },
-            stopWhen: { kind: "ref", path: ["loop", "retry", "item"] },
           },
         ],
       },
@@ -1110,8 +1131,7 @@ describe("WorkflowIR diagnostics contract", () => {
     expect(diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "IR003", path: "root.nodes.items.key.parts.0.expr.path" }),
       expect.objectContaining({ code: "IR003", path: "root.nodes.items.do.outputs.bad.path" }),
-      expect.objectContaining({ code: "IR003", path: "root.nodes.retry.do.outputs.bad.path" }),
-      expect.objectContaining({ code: "IR003", path: "root.nodes.retry.stopWhen.path" }),
+      expect.objectContaining({ code: "IR003", path: "root.nodes.retry.do.outputs.stop.path" }),
     ]));
   });
 

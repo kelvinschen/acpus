@@ -147,6 +147,13 @@ export type ScopeIR = {
   outputs?: Record<string, ExprIR>;
 };
 
+export type LoopTransitionScopeIR = Omit<ScopeIR, "outputs"> & {
+  outputs: {
+    state: ExprIR;
+    stop: ExprIR;
+  };
+};
+
 export type IfNodeIR = BaseNodeIR & {
   kind: "if";
   condition: ExprIR;
@@ -185,11 +192,8 @@ export type FanoutNodeIR =
 
 export type LoopNodeIR = BaseNodeIR & {
   kind: "loop";
-  initial: ExprIR;
-  maxIterations: ExprIR;
-  do: ScopeIR;
-  stopWhen: ExprIR;
-  onExhausted?: "fail" | "returnLast";
+  state: ExprIR;
+  do: LoopTransitionScopeIR;
 };
 
 export type SourceLocationIR = {

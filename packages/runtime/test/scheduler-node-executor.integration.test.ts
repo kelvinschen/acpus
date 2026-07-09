@@ -757,7 +757,24 @@ describe("runtime scheduler node executor", () => {
         const loopFrame = Object.values(projection.frames).find(frame => frame.frameKind === "loop");
         expect(second).toMatchObject({ status: "completed", started: 1, completed: 1 });
         expect(projection.frames.root).toMatchObject({ status: "completed" });
-        expect(loopFrame).toMatchObject({ status: "completed", result: { done: true, iter: 1 }, terminalReason: "stopped" });
+        expect(loopFrame).toMatchObject({
+          status: "completed",
+          result: { done: true, iter: 1 },
+          terminalReason: "stopped",
+          loop: {
+            index: 1,
+            round: 2,
+            state: { done: true, iter: 1 },
+            transition: { state: { done: true, iter: 1 }, stop: true },
+          },
+        });
+        const persistedLoopFrame = resumed.getRun(runId)?.dynamic?.frames.find(frame => frame.frameKind === "loop");
+        expect(persistedLoopFrame?.loop).toMatchObject({
+          index: 1,
+          round: 2,
+          state: { done: true, iter: 1 },
+          transition: { state: { done: true, iter: 1 }, stop: true },
+        });
         expect(Object.values(projection.instances).filter(instance => instance.status === "completed").map(instance => instance.output)).toEqual([
           { done: false, rawIter: 0 },
           { done: true, rawIter: 1 },
@@ -786,7 +803,7 @@ describe("runtime scheduler node executor", () => {
         });
         expect(Object.values(projection.frames).find(frame => frame.frameKind === "loop_iteration")).toMatchObject({
           status: "completed",
-          result: { done: true, value: "first-0-second-0" },
+          result: { state: { done: true, value: "first-0-second-0" }, stop: true },
         });
       } finally {
         store.close();
@@ -3192,18 +3209,19 @@ function rootLoopTaskWorkflow() {
     name: "scheduler-node-executor-root-loop",
   }).build(({ step }) => {
     step("retry").loop({
-      initial: { done: false as boolean, iter: -1 },
-      maxIterations: 3,
-      do({ iter }) {
+      state: { done: false as boolean, iter: -1 },
+      do({ index }) {
         const task = step("loop_task").task({
           run: {
-            input: { iter },
+            input: { iter: index },
             exec: async ({ input }) => ({ done: input.iter >= 1, rawIter: input.iter }),
           },
         });
-        return { done: task.output.done, iter: task.output.rawIter };
+        return {
+          state: { done: task.output.done, iter: task.output.rawIter },
+          stop: task.output.done,
+        };
       },
-      stopWhen({ result }) { return result.done; },
     });
     return {};
   });
@@ -3214,24 +3232,25 @@ function multiNodeRootLoopWorkflow() {
     name: "scheduler-node-executor-root-loop-multi-node",
   }).build(({ step }) => {
     step("retry").loop({
-      initial: { done: false as boolean, value: "" },
-      maxIterations: 3,
-      do({ iter }) {
+      state: { done: false as boolean, value: "" },
+      do({ index }) {
         const first = step("first_task").task({
           run: {
-            input: { iter },
+            input: { iter: index },
             exec: async ({ input }) => ({ value: `first-${input.iter}` }),
           },
         });
         const second = step("second_task").task({
           run: {
-            input: { iter, first: first.output.value },
+            input: { iter: index, first: first.output.value },
             exec: async ({ input }) => ({ done: true, value: `${input.first}-second-${input.iter}` }),
           },
         });
-        return { done: second.output.done, value: second.output.value };
+        return {
+          state: { done: second.output.done, value: second.output.value },
+          stop: second.output.done,
+        };
       },
-      stopWhen({ result }) { return result.done; },
     });
     return {};
   });
@@ -3483,18 +3502,17 @@ function unsafeLoopForkWorkflow(fixed: boolean) {
     name: fixed ? "scheduler-node-executor-unsafe-loop-replacement" : "scheduler-node-executor-unsafe-loop-source",
   }).build(({ step }) => {
     const retry = step("retry").loop({
-      initial: { done: false as boolean, last: "initial" },
-      maxIterations: 4,
-      do({ iter }) {
+      state: { done: false as boolean, last: "initial" },
+      do({ index }) {
         const prepare = step("prepare").task({
           run: {
-            input: { iter },
+            input: { iter: index },
             exec: async ({ input }) => ({ marker: `prepare-${input.iter}` }),
           },
         });
         const maybe = step("maybe_fail").task({
           run: {
-            input: { iter, marker: prepare.output.marker },
+            input: { iter: index, marker: prepare.output.marker },
             exec: fixed
               ? async ({ input }) => ({ done: input.iter >= 2, last: input.iter >= 2 ? "fixed-2" : `source-${input.iter}`, marker: input.marker })
               : async ({ input }) => {
@@ -3503,9 +3521,11 @@ function unsafeLoopForkWorkflow(fixed: boolean) {
                 },
           },
         });
-        return { done: maybe.output.done, last: maybe.output.last };
+        return {
+          state: { done: maybe.output.done, last: maybe.output.last },
+          stop: maybe.output.done,
+        };
       },
-      stopWhen({ result }) { return result.done; },
     });
     return { done: retry.output.done, last: retry.output.last };
   });

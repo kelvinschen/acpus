@@ -29,7 +29,7 @@ export type NodeDetail =
   | { kind: "switch"; cases: ExprIR[]; hasDefault: boolean }
   | { kind: "parallel"; branches: string[]; strategy: "all" | "race" }
   | { kind: "fanout"; over: ExprIR; strategy: "all" | "quorum"; count?: number }
-  | { kind: "loop"; maxIterations: ExprIR; stopWhen: ExprIR };
+  | { kind: "loop"; state: ExprIR };
 
 export type WorkflowVisualizationNode = {
   nodeId: string;
@@ -174,7 +174,7 @@ function nodeDetail(node: NodeIR, agents: WorkflowIR["agents"]): NodeDetail {
     case "fanout":
       return { kind: "fanout", over: node.over, strategy: node.strategy, ...(node.strategy === "quorum" ? { count: node.count } : {}) };
     case "loop":
-      return { kind: "loop", maxIterations: node.maxIterations, stopWhen: node.stopWhen };
+      return { kind: "loop", state: node.state };
   }
 }
 

@@ -442,52 +442,38 @@ Consumers that need to distinguish quorum success from all-item success can
 compare the input length with the output length in workflow logic. Consumers that
 need item identity should include that identity in the item output.
 
-### Seeded Loop
+### Transition Loop
 
-Loop keeps the `loop` name, but its contract changes to a seeded loop.
+Loop keeps the `loop` name, but its contract is a transition-style do-while loop.
 
-The planned authoring shape is:
+The authoring shape is:
 
 ```ts
 const repair = step("repair").loop({
-  initial: seed.output,
-  maxIterations: 3,
-  stopWhen: ({ result }) => result.done,
-  do: ({ previous, iter }) => ({
-    done: false,
-    summary: template`repair round ${iter} after ${previous.summary}`,
+  state: seed.output,
+  do: ({ state, round }) => ({
+    state: {
+      done: false,
+      summary: template`repair round ${round} after ${state.summary}`,
+    },
+    stop: gte(round, 3),
   }),
 });
 ```
 
 The loop semantics are:
 
-1. `initial` is the first result.
-2. `stopWhen` checks the current result before each `do` execution.
-3. If the initial result already satisfies `stopWhen`, the loop completes
-   without executing `do`.
-4. `previous` is always the current result, never `undefined`.
-5. `do` returns the next result.
-6. `maxIterations` limits only `do` executions and does not count `initial`.
-7. If no iteration runs, `loop.output` is `initial`.
-8. `maxIterations` may be `0`, in which case only `initial` is checked and
-   returned only if `stopWhen(initial)` is true or `onExhausted:
-   "returnLast"` is declared.
-9. If the loop reaches `maxIterations` and `stopWhen` is still false,
-   `onExhausted: "returnLast"` returns the current result; the default
-   exhaustion policy is `"fail"`.
+1. `state` is the carried state before the first round.
+2. Iteration 0 always runs; there is no zero-run mode.
+3. `index` is the 0-based public index and `round` is the 1-based public round.
+4. `state` inside the body is always the current carried state.
+5. `do` returns `{ state, stop }`.
+6. Returned `state` becomes the next carried state and the eventual `loop.output`.
+7. Returned `stop` controls whether the loop completes after the current round.
 
-`iter` is the next `do` execution index, starting at `0`. The initial
-`stopWhen({ result, iter })` check receives `iter = 0`; the first `do` receives
-`iter = 0` and `previous = initial`. The final allowed `do` execution is
-`iter = maxIterations - 1`.
-
-`stopWhen` remains required. Fixed-count loops can use `stopWhen: () => false`
-with `onExhausted: "returnLast"` instead of introducing a second loop mode.
-
-`initial` must be a workflow-admissible object and must converge with the object
-returned by `do`. Primitive loop accumulators must be wrapped in a named field,
-for example `{ value: "start" }`.
+The initial `state` must be a workflow-admissible object and must converge with
+the transition `state`. Primitive loop accumulators must be wrapped in a named
+field, for example `{ value: "start" }`.
 `loop.output` is the converged object accessor for successful completion. The
 possibility of exhaustion failure is runtime control flow and is not encoded as
 an optional or Result-like output type.
@@ -597,8 +583,8 @@ reliably:
 - Branch convergence diagnostics for `if`, `switch`, and `parallel race` only
   to the extent the public authoring types cannot make `tsc` reject divergent
   shapes directly.
-- Seeded loop consistency where `do` return type must converge with `initial`
-  and `maxIterations` must be non-negative.
+- Transition loop consistency where transition `state` must converge with the
+  initial `state` and transition `stop` must be boolean-like.
 - Schema-less signal admission checks that distinguish raw string payloads from
   schema-backed structured payloads.
 - `JsonValue` and `JsonObject` recognition must be based on their real exported

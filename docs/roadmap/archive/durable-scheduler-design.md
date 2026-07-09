@@ -53,15 +53,15 @@
 - `fanout.key` provides stable item identity. Missing keys fall back to zero-based item index, matching the usual index-key tradeoff: useful by default, but authors provide keys when stable item identity matters.
 - `fanout.key` results are limited to string or number values. Duplicate keys fail the fanout frame before item execution begins.
 - Fanout materialization follows `items eager, child scopes lazy`. Item identity, index, and key rows are created up front for duplicate checks and quorum accounting, while per-item child node instances are created only when the scheduling window reaches that item.
-- `loop` persists a loop frame and per-iteration child instances. The frame carries `iter`, `previous`, and `result` so an interrupted loop can resume without reusing a static child node output across iterations.
-- Loop iteration materialization is fully lazy. The next iteration frame is created only after the current iteration output is available, `stopWhen` does not stop, and the frozen IR `maxIterations` cap still allows another iteration.
-- Loop iteration caps are compile-layer authoring requirements. Current authoring and IR use required `maxIterations`, so scheduler enforces the frozen value rather than inventing a runtime default.
-- Loop exhaustion is a loop-frame terminal reason. `onExhausted: "fail"` fails the loop node with `loop_exhausted`; `onExhausted: "returnLast"` succeeds the loop node with the last completed iteration result and records `exhausted_return_last` metadata.
+- `loop` persists a loop frame and per-iteration child instances. The frame carries internal `iter`, public `index`/`round`, carried `state`, and the latest transition so an interrupted loop can resume without reusing a static child node output across iterations.
+- Loop iteration materialization is fully lazy after the required first round. The next iteration frame is created only after the current iteration transition is available and transition `stop` is false.
+- Loop termination is author-controlled through transition `stop`; the scheduler does not expose a public iteration cap.
+- Loop completion returns the final transition `state`, while inspect/debug state can retain the full transition envelope for the last iteration.
 - Retrying a loop node instance reruns the whole loop frame from iteration 0. Retrying a specific child leaf attempt remains the mechanism for local recovery within an iteration.
 - Awaiting signal instances do not automatically stop race, quorum, or all groups. The group continues scheduling useful remaining work and only leaves the run awaiting when it cannot make progress without signal input.
 - Composite group results are scheduler-internal and standardized for persistence, retry, and visualization. User-visible composite node output still comes from the node's declared output expression.
 - Scheduler can use unified internal group frames, while author-facing expressions use domain roots rather than a generic `group` root.
-- Planned composite expression roots include `parallel.branches`, `parallel.winner`, `parallel.completed`, `parallel.failed`, `fanout.item`, `fanout.index`, `fanout.key`, `fanout.accepted`, `fanout.completed`, `fanout.failed`, `loop.iter`, `loop.previous`, and `loop.result`.
+- Planned composite expression roots include `parallel.branches`, `parallel.winner`, `parallel.completed`, `parallel.failed`, `fanout.item`, `fanout.index`, `fanout.key`, `fanout.accepted`, `fanout.completed`, `fanout.failed`, `loop.index`, `loop.round`, and `loop.state`.
 
 ## Identity Model
 

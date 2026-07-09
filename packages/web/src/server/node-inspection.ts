@@ -61,6 +61,16 @@ export type NodeInspectionSummary = {
     error?: unknown;
     result?: unknown;
   };
+  loopProgress?: {
+    frameKey: string;
+    index: number;
+    round: number;
+    state?: unknown;
+    stop?: boolean;
+    transition?: unknown;
+    activeIterationFrameKey?: string;
+    activeChildNodeKeys: string[];
+  };
   artifacts: ArtifactRecord[];
 };
 
@@ -234,6 +244,7 @@ function summarizeNode(input: {
   const latestAttempt = latestBy(input.attempts, attempt => attempt.startedAt);
   const latestInstance = latestBy(input.instances, instance => instance.updatedAt);
   const latestFrame = latestBy(input.frames, frame => frame.updatedAt);
+  const loopProgress = summarizeLoopProgress(input.frames);
   const signalWait = latestBy(input.signalWaits, wait => wait.updatedAt ?? wait.createdAt);
   const promptArtifact = input.artifacts.find(artifact => artifact.relativePath.endsWith("prompt.md"))
     ?? input.artifacts.find(artifact => artifact.relativePath.includes("/prompt."));
@@ -282,8 +293,51 @@ function summarizeNode(input: {
         ...(latestAttempt.result !== undefined ? { result: latestAttempt.result } : {}),
       },
     } : {}),
+    ...(loopProgress === undefined ? {} : { loopProgress }),
     artifacts: input.artifacts,
   };
+}
+
+function summarizeLoopProgress(frames: NodeInspectionResponse["frames"]): NodeInspectionSummary["loopProgress"] | undefined {
+  const loopFrame = latestBy(frames.filter(frame => frame.frameKind === "loop" && loopRecord(frame.loop)), frame => frame.updatedAt);
+  const loop = loopRecord(loopFrame?.loop);
+  if (!loopFrame || !loop) return undefined;
+  const activeIterationFrame = frames.find(frame =>
+    frame.frameKind === "loop_iteration"
+      && frame.instancePath !== undefined
+      && pathMatchesContext(frame.instancePath, [{ nodeId: loopFrame.nodeId ?? "", kind: "loop", iteration: loop.index }]));
+  const activeChildNodeKeys = Object.values(scopeRecord(activeIterationFrame?.scope) ?? {}).filter((value): value is string => typeof value === "string").sort();
+  const stop = transitionStop(loop.transition);
+  return {
+    frameKey: loopFrame.frameKey,
+    index: loop.index,
+    round: loop.round,
+    ...(loop.state === undefined ? {} : { state: loop.state }),
+    ...(stop === undefined ? {} : { stop }),
+    ...(loop.transition === undefined ? {} : { transition: loop.transition }),
+    ...(activeIterationFrame?.frameKey === undefined ? {} : { activeIterationFrameKey: activeIterationFrame.frameKey }),
+    activeChildNodeKeys,
+  };
+}
+
+function loopRecord(value: unknown): { index: number; round: number; state?: unknown; transition?: unknown } | undefined {
+  const record = metadataRecord(value);
+  if (!record || typeof record.index !== "number" || typeof record.round !== "number") return undefined;
+  return {
+    index: record.index,
+    round: record.round,
+    ...(record.state === undefined ? {} : { state: record.state }),
+    ...(record.transition === undefined ? {} : { transition: record.transition }),
+  };
+}
+
+function scopeRecord(value: unknown): Record<string, unknown> | undefined {
+  return metadataRecord(value);
+}
+
+function transitionStop(value: unknown): boolean | undefined {
+  const record = metadataRecord(value);
+  return typeof record?.stop === "boolean" ? record.stop : undefined;
 }
 
 function classifyTarget(input: {

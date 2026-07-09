@@ -11,7 +11,7 @@ export type NodeDetail =
   | { kind: "switch"; cases: string[]; hasDefault: boolean }
   | { kind: "parallel"; branches: string[]; strategy: "all" | "race" }
   | { kind: "fanout"; over: string; strategy: "all" | "quorum"; count?: number }
-  | { kind: "loop"; maxIterations: string; stopWhen: string };
+  | { kind: "loop"; state: string };
 
 export type WebGraph = {
   workflow: WorkflowVisualizationOverlay["workflow"];
@@ -645,8 +645,15 @@ function formatNodeDetail(detail: RuntimeNodeDetail): NodeDetail {
         ...(detail.count === undefined ? {} : { count: detail.count }),
       };
     case "loop":
-      return { kind: "loop", maxIterations: printExpr(detail.maxIterations), stopWhen: printExpr(detail.stopWhen) };
+      return {
+        kind: "loop",
+        state: printExpr(detail.state),
+      };
   }
+}
+
+function printExprRecord(values: Record<string, ExprIR>): Record<string, string> {
+  return Object.fromEntries(Object.entries(values).map(([key, value]) => [key, printExpr(value)]));
 }
 
 type SchemaDetail = NonNullable<Extract<RuntimeNodeDetail, { kind: "agent" }>["outputSchema"]>;

@@ -113,6 +113,64 @@ describe("inspectNode", () => {
     expect(result.frames).toHaveLength(1);
   });
 
+  it("summarizes persisted loop progress from loop frames", () => {
+    const inspection: RunInspection = {
+      run: {
+        ...baseRun,
+        dynamic: {
+          version: 3,
+          progressVersion: 0,
+          progress: [],
+          frames: [
+            {
+              frameKey: "retry",
+              nodeId: "retry",
+              frameKind: "loop",
+              status: "completed",
+              loop: {
+                iter: 1,
+                index: 1,
+                round: 2,
+                state: { ready: true, draft: "final" },
+                transition: { state: { ready: true, draft: "final" }, stop: true },
+              },
+              createdAt: "2026-07-01T00:00:00.000Z",
+              updatedAt: "2026-07-01T00:00:02.000Z",
+            },
+            {
+              frameKey: "retry#1",
+              nodeId: "retry",
+              frameKind: "loop_iteration",
+              status: "completed",
+              instancePath: [{ kind: "loop", nodeId: "retry", iter: 1 }],
+              scope: { refine_round: "retry#1/refine_round" },
+              createdAt: "2026-07-01T00:00:01.000Z",
+              updatedAt: "2026-07-01T00:00:02.000Z",
+            },
+          ],
+          nodeInstances: [],
+          attempts: [],
+          groupMembers: [],
+          signalWaits: [],
+          executionMetadata: [],
+        },
+      },
+      staticNodes: [{ nodeId: "retry", kind: "loop", order: 0 }],
+    };
+
+    const result = inspectNode(inspection, "retry", []);
+    expect(result.summary.loopProgress).toEqual({
+      frameKey: "retry",
+      index: 1,
+      round: 2,
+      state: { ready: true, draft: "final" },
+      stop: true,
+      transition: { state: { ready: true, draft: "final" }, stop: true },
+      activeIterationFrameKey: "retry#1",
+      activeChildNodeKeys: ["retry#1/refine_round"],
+    });
+  });
+
   it("classifies an attempt target", () => {
     const inspection: RunInspection = {
       run: {

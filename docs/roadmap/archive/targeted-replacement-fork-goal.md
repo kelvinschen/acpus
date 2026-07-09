@@ -116,7 +116,7 @@ The initial compatibility rule is intentionally conservative:
   - `if` and `switch`: condition expressions, case order, and default/branch shape.
   - `parallel`: strategy, max concurrency, and branch ids.
   - `fanout`: `over`, `key`, strategy, count, and max concurrency.
-  - `loop`: `initial`, `stopWhen`, `maxIterations`, and `onExhausted`.
+  - `loop`: initial `state` and transition/body output semantics.
 
 Operator-requested unsafe reuse is an explicit exception to the conservative
 signature rule. When `unsafeReuse` / `--unsafe-reuse` is supplied, seed planning
