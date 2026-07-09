@@ -339,11 +339,13 @@ export type RunDynamicSignalWait = {
   nodeKey: string;
   nodeId: string;
   status: string;
+  payload?: JsonValue;
   deadlineAt?: string;
   timeoutMessage?: string;
   timeoutRemainingMs?: number;
   renderedPrompt?: string;
   terminalReason?: string;
+  consumedAt?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -2778,8 +2780,9 @@ function readRunDynamicGroupMembers(db: DatabaseSync, runId: string): RunDynamic
 
 function readRunDynamicSignalWaits(db: DatabaseSync, runId: string): RunDynamicSignalWait[] {
   const rows = db.prepare(`
-    SELECT node_key, node_id, status, deadline_at,
-      timeout_message, timeout_remaining_ms, rendered_prompt, terminal_reason, created_at, updated_at
+    SELECT node_key, node_id, status, payload_json, deadline_at,
+      timeout_message, timeout_remaining_ms, rendered_prompt, terminal_reason,
+      consumed_at, created_at, updated_at
     FROM signal_waits
     WHERE run_id = ?
     ORDER BY node_key
@@ -2788,11 +2791,13 @@ function readRunDynamicSignalWaits(db: DatabaseSync, runId: string): RunDynamicS
     nodeKey: String(row.node_key),
     nodeId: String(row.node_id),
     status: String(row.status),
+    payload: row.status === "consumed" ? parseOptionalJson(row.payload_json) : undefined,
     deadlineAt: nullableString(row.deadline_at),
     timeoutMessage: nullableString(row.timeout_message),
     timeoutRemainingMs: nullableNumber(row.timeout_remaining_ms),
     renderedPrompt: nullableString(row.rendered_prompt),
     terminalReason: nullableString(row.terminal_reason),
+    consumedAt: row.status === "consumed" ? nullableString(row.consumed_at) : undefined,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   }) as RunDynamicSignalWait);

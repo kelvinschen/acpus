@@ -72,6 +72,7 @@ test("@acpus/runtime public types describe use-case level runtime APIs", () => {
   expectTypeOf<RunDynamicDetails["attempts"][number]>().toEqualTypeOf<RunDynamicAttempt>();
   expectTypeOf<RunDynamicDetails["groupMembers"][number]>().toEqualTypeOf<RunDynamicGroupMember>();
   expectTypeOf<RunDynamicDetails["signalWaits"][number]>().toEqualTypeOf<RunDynamicSignalWait>();
+  expectTypeOf<RunDynamicSignalWait>().toMatchTypeOf<{ payload?: JsonValue; consumedAt?: string }>();
   expectTypeOf<RunDynamicDetails["progress"][number]>().toEqualTypeOf<RunNodeProgress>();
   expectTypeOf<RunDynamicDetails["progressVersion"]>().toEqualTypeOf<number>();
   expectTypeOf<RunRecord["progressVersion"]>().toEqualTypeOf<number>();

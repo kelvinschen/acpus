@@ -315,14 +315,22 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       expect(runtimeRows(workspace, "SELECT type FROM run_events WHERE run_id = ?", runId)).toHaveLength(eventCountBeforeMissingSignal);
       expect(runtimeRows(workspace, "SELECT status FROM signal_waits WHERE run_id = ?", runId)).toEqual([{ status: "awaiting" }]);
 
-      await expect(signalRun(workspace, runId, "approve", { ok: true })).resolves.toMatchObject({
+      const signalPayload = { ok: true };
+      await expect(signalRun(workspace, runId, "approve", signalPayload)).resolves.toMatchObject({
         run: { status: "completed", output: { ok: true } },
       });
-      await expect(signalRun(workspace, runId, "approve", { ok: true })).resolves.toMatchObject({
+      await expect(signalRun(workspace, runId, "approve", signalPayload)).resolves.toMatchObject({
         run: { status: "completed", output: { ok: true } },
       });
       expect(runtimeRows(workspace, "SELECT status FROM signal_waits WHERE run_id = ?", runId)).toEqual([{ status: "consumed" }]);
-      await expect(getRun(workspace, runId)).resolves.toMatchObject({ status: "completed", output: { ok: true } });
+      const completedRun = await getRun(workspace, runId);
+      expect(completedRun).toMatchObject({ status: "completed", output: { ok: true } });
+      const consumedWait = completedRun?.dynamic?.signalWaits[0];
+      expect(consumedWait).toMatchObject({
+        status: "consumed",
+        payload: signalPayload,
+      });
+      expect(consumedWait?.consumedAt).toEqual(expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/));
     });
   });
 

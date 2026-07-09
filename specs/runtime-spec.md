@@ -85,6 +85,8 @@
   canceled.
 - Runtime run detail read APIs MUST expose persisted rendered signal prompts for
   awaiting signal waits so read-only inspection can render operator guidance.
+- Runtime run detail read APIs MUST expose consumed signal wait payloads and
+  consumption timestamps for consumed signal waits.
 - Runtime read APIs used for run inspection MUST expose frozen static node
   metadata, including signal output schemas, so CLI output can render expected
   signal payload guidance without reading live workflow source.
