@@ -626,12 +626,12 @@ function applyInstanceEvent(projection: SchedulerProjection, event: SchedulerEve
     return;
   }
   assertInstanceOpen(instance);
-  if (event.type === "instance.started") projection.instances[event.payload.nodeKey] = compactInstance({ ...instance, status: "running" });
+  if (event.type === "instance.started") projection.instances[event.payload.nodeKey] = compactInstance({ ...instance, status: "running", statusReason: undefined });
   if (event.type === "instance.awaiting") {
     projection.instances[event.payload.nodeKey] = compactInstance({ ...instance, status: "awaiting", ...(event.payload.statusReason === undefined ? {} : { statusReason: event.payload.statusReason }) });
     startReadyAncestorMembers(projection, event.payload.nodeKey);
   }
-  if (event.type === "instance.completed") projection.instances[event.payload.nodeKey] = compactInstance({ ...instance, status: "completed", ...(event.payload.output === undefined ? {} : { output: event.payload.output }), ...(event.payload.acceptedAttemptId === undefined ? {} : { acceptedAttemptId: event.payload.acceptedAttemptId }) });
+  if (event.type === "instance.completed") projection.instances[event.payload.nodeKey] = compactInstance({ ...instance, status: "completed", statusReason: undefined, error: undefined, ...(event.payload.output === undefined ? {} : { output: event.payload.output }), ...(event.payload.acceptedAttemptId === undefined ? {} : { acceptedAttemptId: event.payload.acceptedAttemptId }) });
   if (event.type === "instance.failed") projection.instances[event.payload.nodeKey] = compactInstance({ ...instance, status: "failed", error: event.payload.error, ...(event.payload.statusReason === undefined ? {} : { statusReason: event.payload.statusReason }) });
   if (event.type === "instance.cancelled") projection.instances[event.payload.nodeKey] = compactInstance({ ...instance, status: "cancelled", statusReason: event.payload.cancelReason });
 }

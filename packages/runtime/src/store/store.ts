@@ -292,6 +292,7 @@ export type RunDynamicNodeInstance = {
   parentFrameKey?: string;
   instancePath?: InstancePath;
   status: string;
+  /** Current status reason only; historical control reasons are kept in run events/attempt metadata. */
   statusReason?: string;
   output?: unknown;
   error?: unknown;
@@ -2700,19 +2701,27 @@ function readRunDynamicNodeInstances(db: DatabaseSync, runId: string): RunDynami
     WHERE run_id = ?
     ORDER BY node_key
   `).all(runId) as Array<Record<string, string | null>>;
-  return rows.map(row => withoutUndefined({
-    nodeKey: String(row.node_key),
-    nodeId: String(row.node_id),
-    parentFrameKey: nullableString(row.parent_frame_key),
-    instancePath: parseOptionalJson(row.instance_path_json),
-    status: String(row.status),
-    statusReason: nullableString(row.status_reason),
-    output: parseOptionalJson(row.output_json),
-    error: parseOptionalJson(row.error_json),
-    acceptedAttemptId: nullableString(row.accepted_attempt_id),
-    createdAt: String(row.created_at),
-    updatedAt: String(row.updated_at),
-  }) as RunDynamicNodeInstance);
+  return rows.map(row => {
+    const status = String(row.status);
+    const statusReason = publicNodeInstanceStatusReason(status, nullableString(row.status_reason));
+    return withoutUndefined({
+      nodeKey: String(row.node_key),
+      nodeId: String(row.node_id),
+      parentFrameKey: nullableString(row.parent_frame_key),
+      instancePath: parseOptionalJson(row.instance_path_json),
+      status,
+      statusReason,
+      output: parseOptionalJson(row.output_json),
+      error: parseOptionalJson(row.error_json),
+      acceptedAttemptId: nullableString(row.accepted_attempt_id),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    }) as RunDynamicNodeInstance;
+  });
+}
+
+function publicNodeInstanceStatusReason(status: string, statusReason: string | undefined): string | undefined {
+  return status === "running" || status === "completed" ? undefined : statusReason;
 }
 
 function readRunDynamicAttempts(db: DatabaseSync, runId: string): RunDynamicAttempt[] {

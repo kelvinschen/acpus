@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { join } from "node:path";
 import { openExistingRuntimeStore, openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
+import { getRunInspection } from "../src/runs/use-cases.js";
 import { deriveInstanceKey } from "../src/scheduler/identity.js";
 import type { RunOwnerClaim } from "../src/scheduler/store-port.js";
 import { prepareSyntheticWorkflow, timedSignalWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
@@ -694,6 +695,27 @@ describe("scheduler store port", () => {
         expect(store.getRun(run.id)).toMatchObject({ status: "running" });
         const retryCreatedAt = dbScalar(workspace, "SELECT created_at FROM run_events WHERE run_id = ? AND type = 'instance.retry_requested'", run.id);
         expect(dbRow(workspace, "SELECT created_at FROM node_instances WHERE run_id = ? AND node_key = 'require_ready~1'", run.id)).toEqual({ created_at: retryCreatedAt });
+
+        const completed = store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: retried.version,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "public:complete-node-retry",
+          events: [
+            { type: "instance.started", payload: { nodeKey: "require_ready~1" } },
+            { type: "instance.completed", payload: { nodeKey: "require_ready~1", output: { ready: true } } },
+            { type: "frame.completed", payload: { frameKey: "root", result: { ready: true }, terminalReason: "root_completed" } },
+          ],
+        });
+
+        expect(completed.projection.instances["require_ready~1"]).toMatchObject({ status: "completed", output: { ready: true } });
+        expect(completed.projection.instances["require_ready~1"]?.statusReason).toBeUndefined();
+        expect(store.getRun(run.id)?.dynamic?.nodeInstances.find(node => node.nodeKey === "require_ready~1")?.statusReason).toBeUndefined();
+
+        dbRun(workspace, "UPDATE node_instances SET status_reason = 'retry' WHERE run_id = ? AND node_key = ?", run.id, "require_ready~1");
+        expect(store.getRun(run.id)?.dynamic?.nodeInstances.find(node => node.nodeKey === "require_ready~1")?.statusReason).toBeUndefined();
+        const inspected = await getRunInspection(workspace, run.id);
+        expect(inspected?.run.dynamic?.nodeInstances.find(node => node.nodeKey === "require_ready~1")?.statusReason).toBeUndefined();
       } finally {
         store.close();
       }
@@ -1792,6 +1814,15 @@ function dbRows(workspace: string, sql: string, ...params: SQLInputValue[]): Arr
   const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"), { readOnly: true });
   try {
     return db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+  } finally {
+    db.close();
+  }
+}
+
+function dbRun(workspace: string, sql: string, ...params: SQLInputValue[]): void {
+  const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+  try {
+    db.prepare(sql).run(...params);
   } finally {
     db.close();
   }

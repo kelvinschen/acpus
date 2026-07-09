@@ -206,6 +206,19 @@ describe("scheduler identity and reducers", () => {
     expect(retriedNode?.error).toBeUndefined();
     expect(retriedMember).toMatchObject({ status: "ready", readinessSequence: 5 });
     expect(retriedMember?.error).toBeUndefined();
+    const started = applySchedulerEvents(retried, [
+      { type: "instance.started", payload: { nodeKey: "node~1" } },
+    ]);
+    expect(started.instances["node~1"]).toMatchObject({ status: "running", readinessSequence: 4 });
+    expect(started.instances["node~1"]?.statusReason).toBeUndefined();
+
+    const completed = applySchedulerEvents(started, [
+      { type: "instance.completed", payload: { nodeKey: "node~1", output: { ok: true } } },
+    ]);
+    expect(completed.instances["node~1"]).toMatchObject({ status: "completed", output: { ok: true } });
+    expect(completed.instances["node~1"]?.statusReason).toBeUndefined();
+    expect(completed.instances["node~1"]?.error).toBeUndefined();
+
     expect(() => applySchedulerEvents(retried, [
       { type: "instance.retry_requested", payload: { nodeKey: "node~1" } },
     ])).toThrow("cannot be retried from ready");
@@ -294,6 +307,12 @@ describe("scheduler identity and reducers", () => {
 
     expect(projection.instances["node~1"]).toMatchObject({ status: "ready", readinessSequence: 9, statusReason: "paused" });
     expect(projection.groupMembers["parallel.left"]).toMatchObject({ status: "ready", readinessSequence: 10 });
+    const resumed = applySchedulerEvents(projection, [
+      { type: "instance.started", payload: { nodeKey: "node~1" } },
+      { type: "instance.completed", payload: { nodeKey: "node~1", output: { ok: true } } },
+    ]);
+    expect(resumed.instances["node~1"]).toMatchObject({ status: "completed", output: { ok: true } });
+    expect(resumed.instances["node~1"]?.statusReason).toBeUndefined();
 
     const completed = applySchedulerEvents(createSchedulerProjection("run_1"), [
       { type: "instance.ready", payload: { runId: "run_1", nodeKey: "done~1", nodeId: "done", instancePath: appendNode([], "done") } },
@@ -317,6 +336,13 @@ describe("scheduler identity and reducers", () => {
       { type: "instance.awaiting", payload: { nodeKey: "approve~1", statusReason: "signal" } },
       { type: "signal.awaiting", payload: { runId: "run_1", nodeKey: "approve~1", nodeId: "approve" } },
     ]);
+    expect(awaitingSignal.instances["approve~1"]).toMatchObject({ status: "awaiting", statusReason: "signal" });
+    const consumedSignal = applySchedulerEvents(awaitingSignal, [
+      { type: "signal.consumed", payload: { nodeKey: "approve~1", payload: { ok: true }, commandIdempotencyKey: "signal-ok" } },
+      { type: "instance.completed", payload: { nodeKey: "approve~1", output: { ok: true } } },
+    ]);
+    expect(consumedSignal.instances["approve~1"]).toMatchObject({ status: "completed", output: { ok: true } });
+    expect(consumedSignal.instances["approve~1"]?.statusReason).toBeUndefined();
     expect(() => applySchedulerEvents(awaitingSignal, [
       { type: "instance.requeued", payload: { nodeKey: "approve~1", reason: "paused" } },
     ])).toThrow("cannot be requeued while a signal wait is awaiting");

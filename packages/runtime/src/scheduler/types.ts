@@ -54,6 +54,7 @@ export type NodeInstance = {
   instancePath: InstancePath;
   parentFrameKey?: string;
   readinessSequence?: number;
+  /** Current status reason only; running/completed instances must not retain historical control reasons. */
   statusReason?: string;
   output?: JsonValue;
   error?: JsonObject;
