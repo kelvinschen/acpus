@@ -9,6 +9,8 @@ import { RuntimeMutationQueue } from "./mutation-queue.js";
 import { DaemonRequestError, startDaemonServer, type DaemonErrorCode, type DaemonServerHandle } from "./socket.js";
 import { runDaemonTick } from "./tick.js";
 
+const EXECUTOR_SHUTDOWN_GRACE_MS = 10_000;
+
 export type DaemonLoopOptions = {
   heartbeatMs?: number;
   workspaceRealpath?: string;
@@ -137,6 +139,7 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
       if (source !== "tick") await activeTick;
       if (source !== "heartbeat") await activeHeartbeat;
       await closeDaemonServer(server);
+      await sessions.stopExecutors(EXECUTOR_SHUTDOWN_GRACE_MS);
       await sessions.drainHooks();
       store.releaseDaemon({
         workspaceRealpath,

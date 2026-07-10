@@ -2,7 +2,8 @@ import type { AgentNodeIR, TaskNodeIR, WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
 import { AgentNodeCancelledError, AgentNodeTimeoutError, executeAgentNode } from "../execution/agent-node.js";
-import { executeTaskNode } from "../execution/task-executor.js";
+import { executeTaskNode, TaskAttemptExecutionError } from "../execution/task-executor.js";
+import type { TaskAttemptRunner } from "../execution/task-process.js";
 import { normalizeWorkflowData } from "../evaluation/admissible.js";
 import type { EvaluationScope } from "../evaluation/evaluator.js";
 import type { RuntimeStore } from "../store/store.js";
@@ -21,6 +22,7 @@ export type RuntimeNodeExecutorInput = {
   progressWriter?: NodeProgressWriter;
   executeAgentTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult>;
   agentRepairDelayMs?: number;
+  taskAttemptRunner?: TaskAttemptRunner;
 };
 
 export function createRuntimeNodeExecutor(input: RuntimeNodeExecutorInput): NodeExecutor {
@@ -30,7 +32,18 @@ export function createRuntimeNodeExecutor(input: RuntimeNodeExecutorInput): Node
       const node = nodes.get(context.nodeId);
       if (!node) return { status: "failed", reason: `Node '${context.nodeId}' was not found in frozen IR.` };
       const scope = scopeForAttempt(input.scope, unwrapStoreResult(input.store.scheduler.tryLoadRunSnapshot(context.runId)).projection, context.nodeKey);
-      if (node.kind === "task") return completedResult(await executeTask(node, scope, context, input), true);
+      if (node.kind === "task") {
+        try {
+          return completedResult(await executeTask(node, scope, context, input), true);
+        } catch (error) {
+          if (error instanceof TaskAttemptExecutionError) {
+            if (error.failure.type === "cancelled") return { status: "cancelled", reason: "paused" };
+            if (error.failure.type === "timed_out") return { status: "timed_out", reason: error.message };
+            return { status: "failed", reason: error.message };
+          }
+          throw error;
+        }
+      }
       if (node.kind === "agent") {
         try {
           return completedResult(await executeAgent(node, scope, context, input), false);
@@ -58,6 +71,7 @@ async function executeTask(node: TaskNodeIR, scope: EvaluationScope, context: No
     nodeKey: context.nodeKey,
     attemptNo: context.attemptNo,
     signal: context.signal,
+    ...(input.taskAttemptRunner === undefined ? {} : { taskAttemptRunner: input.taskAttemptRunner }),
   });
 }
 

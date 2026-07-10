@@ -37,6 +37,7 @@ test("public package subpaths expose the intended type surface", () => {
   assertType<Dollar>(createDollar());
   const ctx = null as unknown as TaskContext<{}>;
   expectTypeOf<keyof TaskContext<{}>>().toEqualTypeOf<"input" | "$" | "artifact" | "env" | "abortSignal">();
+  expectTypeOf(ctx.env).toEqualTypeOf<Record<string, string | undefined>>();
   assertType<Dollar>(ctx.$);
   assertType<AbortSignal>(ctx.abortSignal);
   assertType(task);

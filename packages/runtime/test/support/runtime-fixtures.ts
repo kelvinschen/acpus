@@ -153,7 +153,10 @@ export function taskInvocationOptionsWorkflow() {
           return {
             inputName: input.name,
             cwd: command.stdout.trim(),
+            processCwd: process.cwd(),
             envValue: env.RUNTIME_TASK_ENV ?? "",
+            processEnvValue: process.env.RUNTIME_TASK_ENV ?? "",
+            sameEnvObject: env === process.env,
             inputMode: input.mode,
           };
         },
@@ -162,7 +165,10 @@ export function taskInvocationOptionsWorkflow() {
     return {
       inputName: result.output.inputName,
       cwd: result.output.cwd,
+      processCwd: result.output.processCwd,
       envValue: result.output.envValue,
+      processEnvValue: result.output.processEnvValue,
+      sameEnvObject: result.output.sameEnvObject,
       inputMode: result.output.inputMode,
     };
   });

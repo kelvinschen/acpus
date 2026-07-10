@@ -1,12 +1,9 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { rm } from "node:fs/promises";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { checkWorkflow } from "../src/check/runner.js";
 import { createScratchDir } from "../src/preflight/temp.js";
-
-const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
+import { runCheck, withCheckWorkspace } from "./support/check-workspace.js";
 
 describe("workflow check pipeline", () => {
   it("converts TypeScript compiler diagnostics to DiagnosticIR", async () => {
@@ -80,33 +77,6 @@ describe("workflow check pipeline", () => {
     });
   });
 
-  it("aggregates TypeScript and Acpus authoring diagnostics", async () => {
-    await withCheckWorkspace("workflow-mixed-check", async cwd => {
-      const result = await runCheck(cwd, `
-        import { defineWorkflow, z } from "acpus/core";
-
-        export default defineWorkflow({
-          name: "mixed_check",
-          inputSchema: z.object({
-            ready: z.boolean(),
-          }),
-        }).build(({ input, step }) => {
-          const wrong: string = 1;
-          if (input.ready) step("ready").assert({ condition: true });
-          return { wrong };
-        });
-      `);
-
-      expect(codes(result.diagnostics)).toEqual(expect.arrayContaining([
-        "TS2322",
-        "AL001",
-      ]));
-      expect(result.diagnostics).toEqual(expect.arrayContaining([
-        expect.objectContaining({ code: "AL001", hint: expect.any(String) }),
-      ]));
-    });
-  });
-
   it("allows representative valid authoring and output patterns", async () => {
     await withCheckWorkspace("workflow-valid-patterns", async cwd => {
       const result = await runCheck(cwd, `
@@ -177,153 +147,6 @@ describe("workflow check pipeline", () => {
     });
   });
 
-  it("reports invalid expression fmap callbacks during check", async () => {
-    await withCheckWorkspace("workflow-fmap-checks", async cwd => {
-      const result = await runCheck(cwd, `
-        import { defineWorkflow, z } from "acpus/core";
-        import { fmap } from "acpus/expression";
-
-        const suffix = "!";
-
-        export default defineWorkflow({
-          name: "fmap_check",
-          inputSchema: z.object({
-            issue: z.object({
-              title: z.string(),
-            }),
-          }),
-        }).build(({ input }) => {
-          const title = fmap(input.issue, issue => {
-            return issue.title + suffix;
-          });
-          return { title };
-        });
-      `);
-
-      expect(result.diagnostics).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          code: "AL006",
-          message: expect.stringContaining("external binding 'suffix'"),
-          source: expect.objectContaining({
-            file: expect.stringContaining("workflow.ts"),
-            line: expect.any(Number),
-            column: expect.any(Number),
-          }),
-        }),
-      ]));
-    });
-  });
-
-  it("reports oversized expression callbacks during check", async () => {
-    await withCheckWorkspace("workflow-expression-budget", async cwd => {
-      const result = await runCheck(cwd, `
-        import { defineWorkflow, z } from "acpus/core";
-        import { fmap } from "acpus/expression";
-
-        export default defineWorkflow({
-          name: "expression_budget",
-          inputSchema: z.object({ value: z.number() }),
-        }).build(({ input }) => {
-          const value = fmap(input.value, value => {
-            const value1 = value;
-            const value2 = value1;
-            const value3 = value2;
-            const value4 = value3;
-            const value5 = value4;
-            const value6 = value5;
-            const value7 = value6;
-            const value8 = value7;
-            return value8;
-          });
-          return { value };
-        });
-      `);
-
-      expect(result.diagnostics).toContainEqual(expect.objectContaining({
-        code: "AL007",
-        severity: "error",
-        message: expect.stringContaining("9 executable statements"),
-        hint: expect.stringContaining("Task"),
-      }));
-    });
-  });
-
-  it("accepts loop transition shorthand properties and still checks their types and keys", async () => {
-    await withCheckWorkspace("workflow-loop-shorthand", async cwd => {
-      const result = await runCheck(cwd, `
-        import { defineWorkflow, z } from "acpus/core";
-        import { lift2 } from "acpus/expression";
-
-        export default defineWorkflow({
-          name: "loop_shorthand",
-          inputSchema: z.object({ shouldContinue: z.boolean() }),
-        }).build(({ input, step }) => {
-          const shorthand = step("shorthand").loop({
-            state: { round: 0, shouldContinue: true },
-            do({ round }) {
-              const state = { round, shouldContinue: input.shouldContinue };
-              const stop = lift2(input.shouldContinue, round, (shouldContinue, currentRound) => !shouldContinue || currentRound >= 2);
-              return { state, stop };
-            },
-          });
-          const explicit = step("explicit").loop({
-            state: { round: 0, shouldContinue: true },
-            do({ round }) {
-              const state = { round, shouldContinue: input.shouldContinue };
-              const stop = lift2(input.shouldContinue, round, (shouldContinue, currentRound) => !shouldContinue || currentRound >= 2);
-              return { state: state, stop: stop };
-            },
-          });
-          return { shorthand: shorthand.output, explicit: explicit.output };
-        });
-      `);
-
-      expect(result.diagnostics).toEqual([]);
-    });
-  });
-
-  it("accepts aliases, spreads, computed keys, callback variables, and heterogeneous branches", async () => {
-    await withCheckWorkspace("workflow-output-source-shapes", async cwd => {
-      const result = await runCheck(cwd, `
-        import { defineWorkflow } from "acpus/core";
-
-        export default defineWorkflow({ name: "output_source_shapes" }).build(({ step }) => {
-          const hidden = { ok: true };
-          const fanoutSpec = { over: ["a"], do() { return { ok: true }; } };
-          step("items").fanout(fanoutSpec);
-          function branch() { return { ok: true }; }
-          step("parallel").parallel({ branches: { branch } });
-          step("spread").if({
-            condition: true,
-            then() { return { ...hidden }; },
-            else() { return { missing: true }; },
-          });
-          const key = "computed";
-          step("computed").if({
-            condition: true,
-            then() { return { [key]: true }; },
-            else() { return { fallback: true }; },
-          });
-          step("loop").loop({
-            state: hidden,
-            do() {
-              const state = { ok: true };
-              const stop = true;
-              return { state, stop };
-            },
-          });
-          step("switch").switch({
-            cases: [{ when: true, then() { return { selected: true }; } }],
-            default() { return { fallback: true }; },
-          });
-          return { ok: true };
-        });
-      `);
-
-      expect(result.diagnostics).toEqual([]);
-    });
-  });
-
   it("reports durable output and loop contract violations as TypeScript diagnostics only", async () => {
     await withCheckWorkspace("workflow-output-types", async cwd => {
       const result = await runCheck(cwd, `
@@ -367,42 +190,3 @@ describe("workflow check pipeline", () => {
     });
   });
 });
-
-type WorkflowCheck = Awaited<ReturnType<typeof checkWorkflow>>;
-
-async function runCheck(cwd: string, workflowSource: string, files: Record<string, string> = {}): Promise<WorkflowCheck> {
-  for (const [name, content] of Object.entries(files)) {
-    const path = join(cwd, name);
-    await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, content);
-  }
-
-  const workflow = join(cwd, "workflow.ts");
-  await writeFile(workflow, workflowSource);
-  const scratchDir = await createScratchDir();
-  try {
-    return await checkWorkflow(workflow, cwd, scratchDir);
-  } finally {
-    await rm(scratchDir, { recursive: true, force: true });
-  }
-}
-
-function codes(diagnostics: WorkflowCheck["diagnostics"]): string[] {
-  return diagnostics.map(diagnostic => diagnostic.code);
-}
-
-async function withCheckWorkspace<T>(name: string, fn: (cwd: string) => Promise<T>): Promise<T> {
-  const cwd = await mkdtemp(join(tmpdir(), `${name}-`));
-  try {
-    await symlink(join(repoRoot, "node_modules"), join(cwd, "node_modules"), "dir");
-    await linkWorkspaceCore(cwd);
-    return await fn(cwd);
-  } finally {
-    await rm(cwd, { recursive: true, force: true });
-  }
-}
-
-async function linkWorkspaceCore(cwd: string): Promise<void> {
-  await mkdir(join(cwd, "packages"), { recursive: true });
-  await symlink(join(repoRoot, "packages", "core"), join(cwd, "packages", "core"), "dir");
-}

@@ -14,6 +14,7 @@ import { parseDurationMs } from "../execution/duration.js";
 import { indexNodes } from "./ir-walk.js";
 import { renderTemplate } from "../evaluation/evaluator.js";
 import { scopeForNodeAttempt } from "./scope.js";
+import type { TaskAttemptRunner } from "../execution/task-process.js";
 
 export type AdvanceFrozenRunInput = {
   cwd: string;
@@ -30,6 +31,7 @@ export type AdvanceFrozenRunInput = {
   onActiveAttempt?: AdvanceRunInput["onActiveAttempt"];
   hookRunner?: HookRunner;
   progressWriter?: NodeProgressWriter;
+  taskAttemptRunner?: TaskAttemptRunner;
 };
 
 export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<AdvanceRunSummary> {
@@ -87,6 +89,7 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
       ...(input.progressWriter === undefined ? {} : { progressWriter: input.progressWriter }),
       ...(input.executeAgentTurn ? { executeAgentTurn: input.executeAgentTurn } : {}),
       ...(input.agentRepairDelayMs === undefined ? {} : { agentRepairDelayMs: input.agentRepairDelayMs }),
+      ...(input.taskAttemptRunner === undefined ? {} : { taskAttemptRunner: input.taskAttemptRunner }),
     }),
   });
   triggerHooksForCommittedRows({ ...input, frozen, baseScope: scope, afterSequence: eventCursor });

@@ -288,6 +288,10 @@ const state = {
 
 - Put reusable tasks in separate task modules when they need shared code or third-party packages installed with the workflow package.
 - Keep inline tasks self-contained: no third-party imports, module-scope environment reads, or module-scope captures.
+- Each Task attempt runs in a fresh Node process. Task module globals and module caches do not carry across tasks or retries.
+- `run.cwd` is the Task process cwd: `process.cwd()`, relative Node filesystem calls, `artifact.fromFile(...)`, and default `$` commands all use it. Relative cwd values resolve from the workflow workspace, and the directory must exist before the attempt starts.
+- `run.env` overlays the host environment. `process.env`, task context `env`, module top-level code, and default `$` commands see the same effective values.
+- A Task may call `process.chdir(...)` or update `process.env`; later relative Node operations and default `$` commands follow the changed process state.
 
 ### Expression And Schema Hygiene
 

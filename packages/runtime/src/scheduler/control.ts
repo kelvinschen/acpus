@@ -5,6 +5,7 @@ import type { RuntimeStore } from "../store/store.js";
 import { throwSchedulerStoreResult, type SchedulerSnapshot, type SchedulerStoreResult } from "./store-port.js";
 import { advanceFrozenRun, drainFrozenRunTransitions } from "./runtime-runner.js";
 import type { AdvanceRunSummary } from "./advance.js";
+import type { TaskAttemptRunner } from "../execution/task-process.js";
 
 export type RunControlIntent =
   | { requestId: string; runId: string; type: "pause"; reason?: string }
@@ -24,6 +25,7 @@ export type ApplySchedulerControlIntentOptions = {
   ownerId?: string;
   leaseMs?: number;
   advance?: boolean;
+  taskAttemptRunner?: TaskAttemptRunner;
 };
 
 export class InvalidSignalPayloadError extends Error {
@@ -59,7 +61,14 @@ export async function applySchedulerControlIntent(
   }
 
   if (intent.type !== "pause" && options.advance !== false) {
-    const advanced = await advanceFrozenRun({ cwd, store, runId, ownerId, leaseMs });
+    const advanced = await advanceFrozenRun({
+      cwd,
+      store,
+      runId,
+      ownerId,
+      leaseMs,
+      ...(options.taskAttemptRunner === undefined ? {} : { taskAttemptRunner: options.taskAttemptRunner }),
+    });
     return { intent, runId, snapshot: unwrapStoreResult(store.scheduler.tryLoadRunSnapshot(runId)), advanced };
   }
   return { intent, runId, snapshot };

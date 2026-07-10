@@ -17,7 +17,7 @@ export type TaskContext<Input> = {
   input: Input;
   $: Dollar;
   artifact: ArtifactApi;
-  env: Record<string, string>;
+  env: Record<string, string | undefined>;
   abortSignal: AbortSignal;
 };
 

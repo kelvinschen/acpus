@@ -105,7 +105,9 @@
   require `outputSchema`.
 - Task invocation options MAY support `run.cwd`, `run.env`, and `run.execution`.
 - Task code MUST receive a context containing only `input`, `$`, `artifact`, `env`, and `abortSignal`.
+- Task context `env` MUST use `Record<string, string | undefined>` and MUST expose the Task process's live `process.env` object.
 - Task code MUST receive an Acpus-owned `$` wrapper backed by `zx/core`.
+- Without an explicit per-call cwd or env override, the `$` wrapper MUST read the live process cwd and environment when each command starts rather than capturing them when the wrapper is created.
 - The wrapper MUST support `` $`cmd` ``, `$({ cwd, env, timeout, nothrow, allowExitCode })`, `.allowExitCode([...])`, `.nothrow()`, `.timeout("10m")`, `.json<T>()`, `.text()`, and `.lines()`.
 - Programmatic arguments MUST use zx array interpolation.
 

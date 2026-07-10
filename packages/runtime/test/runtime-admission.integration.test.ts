@@ -193,7 +193,10 @@ describe.concurrent("runtime admission use cases", () => {
         output: {
           inputName: "runtime",
           cwd: workDir,
+          processCwd: workDir,
           envValue: "from-run-env",
+          processEnvValue: "from-run-env",
+          sameEnvObject: true,
           inputMode: "strict",
         },
       });

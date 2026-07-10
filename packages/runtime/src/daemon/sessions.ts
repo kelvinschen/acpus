@@ -3,6 +3,7 @@ import { advanceRuntimeRun, runtimeAdvanceResult, type RuntimeAdvanceResult } fr
 import type { RuntimeMutationInput, RuntimeMutationResult } from "../runs/use-cases.js";
 import type { ActiveAttempt } from "../scheduler/advance.js";
 import { applySchedulerControlIntentWithOwnerEpoch, type RunControlIntent } from "../scheduler/control.js";
+import type { RunOwnerClaim } from "../scheduler/store-port.js";
 import type { HookRunner } from "../hooks/runner.js";
 import { triggerHooksForCommittedRowsForRun } from "../scheduler/runtime-runner.js";
 import type { RunDetails, RuntimeStore } from "../store/store.js";
@@ -11,6 +12,7 @@ import { CoalescingNodeProgressWriter } from "../progress/writer.js";
 
 type ActiveRunSession = {
   promise?: Promise<RuntimeAdvanceResult>;
+  claim?: RunOwnerClaim;
   ownerEpoch?: number;
   ownerEpochWaiters: Array<() => void>;
   activeAttempts: Map<string, AbortController>;
@@ -34,6 +36,21 @@ export class RunExecutionSessions {
 
   async drainHooks(): Promise<void> {
     await this.hookRunner?.drain();
+  }
+
+  async stopExecutors(timeoutMs: number): Promise<void> {
+    for (const session of this.sessions.values()) {
+      if (session.claim) this.store.scheduler.releaseRun(session.claim);
+      for (const controller of session.activeAttempts.values()) controller.abort();
+    }
+    let timeout: NodeJS.Timeout | undefined;
+    await Promise.race([
+      Promise.allSettled([...this.sessions.values()].flatMap(session => session.promise ? [session.promise] : [])),
+      new Promise<void>(resolve => {
+        timeout = setTimeout(resolve, timeoutMs);
+      }),
+    ]);
+    if (timeout) clearTimeout(timeout);
   }
 
   start(runId: string): RunDetails {
@@ -79,6 +96,7 @@ export class RunExecutionSessions {
     const claim = this.store.scheduler.claimRun(intent.runId, `daemon:${process.pid}:${intent.runId}:control`, 30_000);
     if (!claim) throw new DaemonRequestError("CONTROL_CONFLICT", `Run '${intent.runId}' is currently controlled by another owner.`);
     const session = createSession();
+    session.claim = claim;
     session.ownerEpoch = claim.ownerEpoch;
     this.sessions.set(intent.runId, session);
     try {
@@ -119,12 +137,16 @@ export class RunExecutionSessions {
       return await advanceRuntimeRun(this.cwd, this.store, runId, `daemon:${process.pid}:${runId}`, undefined, {
         onClaim: claim => {
           if (claim.runId === runId && session) {
+            session.claim = claim;
             session.ownerEpoch = claim.ownerEpoch;
             resolveOwnerEpochWaiters(session);
           }
         },
         onRelease: claim => {
-          if (claim.runId === runId && session?.ownerEpoch === claim.ownerEpoch) delete session.ownerEpoch;
+          if (claim.runId === runId && session?.ownerEpoch === claim.ownerEpoch) {
+            delete session.claim;
+            delete session.ownerEpoch;
+          }
         },
         onActiveAttempt: attempt => {
           if (attempt.runId !== runId || !session) return undefined;

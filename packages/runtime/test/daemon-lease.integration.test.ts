@@ -135,7 +135,7 @@ describe("daemon lease", () => {
         status: "canceled",
         run: { id: admitted.id, status: "canceled" },
       });
-      expect(await readFile(markerPath, "utf8")).toBe("aborted");
+      await waitUntil(async () => await readFile(markerPath, "utf8").catch(() => undefined) === "aborted");
     } finally {
       await loop.shutdown();
     }
@@ -318,7 +318,30 @@ describe("daemon lease", () => {
         run: { id: admitted.id, status: "canceled" },
       });
       await expect(requestDaemonObserveRun(dir, admitted.id)).resolves.toMatchObject({ status: "canceled" });
-      expect(await readFile(markerPath, "utf8")).toBe("aborted");
+      await waitUntil(async () => await readFile(markerPath, "utf8").catch(() => undefined) === "aborted");
+    } finally {
+      await loop.shutdown();
+    }
+  }, 5_000);
+
+  it("fences and stops active executors during host teardown without mutating the run", async () => {
+    const markerPath = join(dir, "host-teardown.marker");
+    const prepared = await prepareSyntheticWorkflow(dir, activeTaskWorkflow());
+    const admitted = await admitPreparedWorkflowRun(dir, prepared, { markerPath });
+    const loop = await startDaemonLoop(dir, {
+      heartbeatMs: 10,
+      packageVersion: "0.0.0-test",
+    });
+    try {
+      await requestDaemonStartRun(dir, admitted.id);
+      await waitUntil(() => runtimeRows(dir, "SELECT status FROM node_attempts WHERE run_id = ? AND status = 'started'", admitted.id).length > 0);
+
+      await loop.shutdown();
+
+      await waitUntil(async () => await readFile(markerPath, "utf8").catch(() => undefined) === "aborted");
+      expect(runtimeRows(dir, "SELECT status FROM runs WHERE id = ?", admitted.id)).toEqual([{ status: "running" }]);
+      expect(runtimeRows(dir, "SELECT status FROM node_attempts WHERE run_id = ?", admitted.id)).toEqual([{ status: "started" }]);
+      expect(runtimeRows(dir, "SELECT released_at IS NOT NULL AS released FROM run_leases WHERE run_id = ?", admitted.id)).toEqual([{ released: 1 }]);
     } finally {
       await loop.shutdown();
     }
@@ -476,9 +499,9 @@ function activeTaskWorkflow() {
   });
 }
 
-async function waitUntil(predicate: () => boolean): Promise<void> {
+async function waitUntil(predicate: () => boolean | Promise<boolean>): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (predicate()) return;
+    if (await predicate()) return;
     await new Promise(resolve => setTimeout(resolve, 10));
   }
   throw new Error("condition was not met");

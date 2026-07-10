@@ -35,6 +35,8 @@ Keep tests hermetic. No network. No dependence on local Git state, user config, 
 
 Use the public entrypoint for public behavior tests: import from `../src/index.js` in core tests. Import internal modules only when the test is intentionally about a private helper.
 
+Use the runtime's internal `TaskAttemptRunner` adapter for scheduler state tests. Process isolation, inline/module loading, `cwd`/`env`, `$`, artifacts, and timeout/kill behavior MUST remain covered by real-process integration tests.
+
 Use Vitest type tests for TypeScript authoring contracts that can regress without changing runtime output. Put these in `*.type.test-d.ts`, import `expectTypeOf` or `assertType` from `vitest`, and use `@ts-expect-error` for negative contracts. These files are statically checked by Vitest's typecheck runner; they are not runtime tests, so keep assertions about IR lowering in integration or contract tests.
 
 Keep reusable type-level helpers in `packages/core/src/internal/type-utils.ts`. Core does not directly depend on `type-fest`; if a new generic helper is needed, copy or adapt a small type-fest-style definition only after checking license, TypeScript compatibility, public `.d.ts` impact, and whether it changes public authoring semantics.
@@ -67,9 +69,13 @@ pnpm test:e2e
 pnpm test:type
 pnpm test
 pnpm typecheck
+pnpm build:clean
+pnpm test:dist
 ```
 
-`pnpm test:type` runs only Vitest type-contract tests with `--typecheck.only`. `pnpm test` also runs type-contract tests because the default test script uses `vitest run --typecheck`. `pnpm typecheck` remains the broader package/source/fixture compilation check.
+`pnpm test:type` runs only Vitest type-contract tests with `--typecheck.only`. `pnpm test` uses `scripts/test.mjs` to run the type-contract, unit, contract, integration, E2E, and regression projects in parallel with the same per-project worker cap, then prints each project's output as one block. Use the matching `pnpm test:<layer> <filter-or-option>` command when passing file filters or other Vitest options. `pnpm typecheck` remains the broader package/source/fixture compilation check.
+
+`pnpm test:dist` is a repository-level release smoke and expects a fresh build. Run it after `pnpm build:clean`. It invokes the built `acpus` CLI without injecting an ambient `tsx` loader or the `development` export condition, then executes a real inline Task through the built authoring facade, compiler, loader, runtime, daemon, and Task subprocess. Keep distribution verification at this user-facing seam rather than adding package-local dist smokes for internal files. It is intentionally separate from the source-oriented `pnpm test` feedback loop.
 
 For changes limited to docs or specs, tests may be skipped only when there is no executable behavior to validate; say that explicitly in the handoff.
 

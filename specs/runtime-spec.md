@@ -124,12 +124,15 @@
   packages and MUST NOT require a workflow-local Acpus installation.
 - Reusable task module loading MUST support ESM JavaScript and TypeScript modules through the same live loader path.
 - TypeScript reusable task loading MUST be provided by the internal loader boundary and MUST NOT rely on workspace root development dependencies being ambiently available.
-- Reusable task module loading MUST NOT add Acpus-owned cache-busting or dependency graph copying; normal Node module caching behind the authoring loader defines reuse within a runtime process.
-- Task `run.cwd` MUST affect task execution context and the `$` command wrapper only. It MUST NOT change the module resolution base for reusable task imports.
+- Every Task attempt MUST execute in a fresh Node process. Normal Node module caching MUST apply within one attempt only; separate tasks and retried attempts MUST reload reusable task modules and MUST NOT share module globals.
+- Task `run.cwd` MUST define the Task process's initial working directory. An omitted cwd MUST use the workspace directory, an absolute cwd MUST be used as-is, and a relative cwd MUST resolve against the workspace directory. The directory MUST exist when the attempt starts.
+- Task `run.cwd` MUST be observed consistently by `process.cwd()`, relative Node filesystem access, `artifact.fromFile(...)`, module top-level code, and the default `$` command wrapper. It MUST NOT change the module resolution base for reusable task imports.
+- A Task process environment MUST start from the runtime host environment with evaluated `run.env` values overriding matching keys. `process.env`, task context `env`, module top-level code, and the default `$` command wrapper MUST observe that effective environment.
+- The default Task `$` wrapper MUST inherit the live process cwd and environment at each command invocation so task-local `process.chdir(...)` and `process.env` mutations remain consistent with later commands.
 - Task execution MUST evaluate task `run.input`, `run.cwd`, and non-secret `run.env` expressions before invoking the task.
 - Task and TypeScript-owned composite outputs MUST enter runtime scope without schema normalization. Runtime MUST normalize generic workflow data before values enter scope, events, or durable storage: a Task top-level `undefined` means no output, object properties whose value is `undefined` are omitted recursively, and array-element `undefined` is rejected. The normalizer MUST reject non-plain runtime values such as functions, class instances, `Date`, `Map`, `Set`, `symbol`, `bigint`, non-finite numbers, sparse arrays, and cycles without reintroducing business-shape validation.
 - The runtime MUST pass task execution options to the task `$` command wrapper, including default command timeout.
-- The runtime MUST pass a per-attempt `abortSignal` into task code for cooperative cancellation.
+- The runtime MUST pass a per-attempt `abortSignal` into task code for cooperative cancellation. After cancellation or timeout, it MUST reject late successful output and artifact registration, then terminate the isolated Task process tree after a bounded cooperative grace period.
 - Supported task execution values MUST be `commandRunner: "acpus-zx-core"` and `shell: "bash"`.
 - Task nodes MUST NOT support workflow-level automatic retry.
 - Agent node `retry.max` MUST be runtime-owned schema-backed response repair
@@ -138,7 +141,7 @@
 - Task and agent timeout options MUST be persisted as scheduler attempt deadlines for scheduler-backed runs.
 - Signal timeout options MUST be persisted as scheduler signal wait deadlines.
 - In-flight task and agent timeout enforcement MAY occur inside the executor attempt, while stale or recovered attempts MUST be derivable from scheduler deadlines.
-- Task artifact APIs MUST write run-local artifact files and register metadata in SQLite.
+- Task artifact APIs MUST write run-local artifact files from the Task process while the runtime parent remains the sole owner of SQLite artifact registration.
 - Attempt-local output directories, work directories, and task artifacts MUST use dynamic `nodeKey` and attempt-specific subpaths for scheduler-backed task execution.
 - Task artifact writes after task timeout MUST be rejected and MUST NOT create artifact registry rows.
 - Signal execution that cannot complete immediately MUST leave the durable run in a resumable awaiting state.
@@ -405,6 +408,9 @@
 - Runtime MUST NOT provide force shutdown in the daemon control model.
 - Daemon shutdown and idle-stop MUST NOT cancel, pause, fail, or otherwise
   mutate runs.
+- Daemon host teardown with active execution MUST release run ownership before
+  aborting local executors, MUST fence their late results from durable commit,
+  and MUST bound the wait before releasing daemon resources.
 
 ### Read APIs And Daemon
 
@@ -485,7 +491,7 @@
 - Tests MUST cover read-only list/show/status APIs without live source reads or state creation for missing stores.
 - Tests MUST cover scheduler execution of supported assert, if, switch, parallel, fanout, loop, dynamic identity, durable branch decisions, group completion, cancellation, retry, and timeout transitions.
 - Tests MUST cover expression evaluation, template rendering, operator errors, and boolean operand failures.
-- Tests MUST cover task execution, inline embedded-source loading, live reusable module loading, package reusable task loading, explicit TypeScript loader ownership, task invocation options, absence of workflow-level automatic task retry, timeout deadlines, task abort signal propagation, artifact writes, attempt-local artifact paths, and timeout artifact rejection.
+- Tests MUST cover isolated Task process execution, inline embedded-source loading, live reusable module loading, package reusable task loading, explicit TypeScript loader ownership, transparent cwd/env behavior, concurrent attempt isolation, attempt-local module caching, abnormal process exit, missing cwd, absence of workflow-level automatic task retry, timeout deadlines, task abort signal propagation, artifact writes, attempt-local artifact paths, and timeout artifact rejection.
 - Tests MUST cover acpx-backed agent turn integration, named and command agent
   mapping, absence of provider-command env mapping consultation, durable agent
   output conformance, empty-response repair, scheduler runtime identity

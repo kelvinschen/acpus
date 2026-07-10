@@ -4,50 +4,41 @@ import { DatabaseSync } from "node:sqlite";
 import { defineWorkflow, z } from "@acpus/core";
 import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
 import { fmap, template } from "@acpus/expression";
-import { describe, expect, it, vi } from "vitest";
+import { errAsync } from "neverthrow";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
-import { createRuntimeNodeExecutor } from "../src/scheduler/node-executor.js";
-import { advanceFrozenRun } from "../src/scheduler/runtime-runner.js";
-import { applySchedulerControlIntent } from "../src/scheduler/control.js";
+import { createRuntimeNodeExecutor as createRuntimeNodeExecutorWithRunner, type RuntimeNodeExecutorInput } from "../src/scheduler/node-executor.js";
+import { advanceFrozenRun as advanceFrozenRunWithRunner, type AdvanceFrozenRunInput } from "../src/scheduler/runtime-runner.js";
+import { applySchedulerControlIntent as applySchedulerControlIntentWithRunner, type ApplySchedulerControlIntentOptions, type RunControlIntent } from "../src/scheduler/control.js";
 import { executeAgentNode } from "../src/execution/agent-node.js";
 import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
-import { prepareSyntheticWorkflow, runtimeRow, runtimeRows, taskArtifactWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { createInlineTaskAttemptHarness } from "./support/task-attempt-harness.js";
+import { prepareSyntheticWorkflow, runtimeRow, runtimeRows, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+
+let taskAttemptHarness = createInlineTaskAttemptHarness();
+
+beforeEach(() => {
+  taskAttemptHarness = createInlineTaskAttemptHarness();
+});
+
+function advanceFrozenRun(input: AdvanceFrozenRunInput) {
+  return advanceFrozenRunWithRunner({ ...input, taskAttemptRunner: taskAttemptHarness.runAttempt });
+}
+
+function createRuntimeNodeExecutor(input: RuntimeNodeExecutorInput) {
+  return createRuntimeNodeExecutorWithRunner({ ...input, taskAttemptRunner: taskAttemptHarness.runAttempt });
+}
+
+function applySchedulerControlIntent(
+  cwd: string,
+  store: RuntimeStore,
+  intent: RunControlIntent,
+  options: ApplySchedulerControlIntentOptions = {},
+) {
+  return applySchedulerControlIntentWithRunner(cwd, store, intent, { ...options, taskAttemptRunner: taskAttemptHarness.runAttempt });
+}
 
 describe("runtime scheduler node executor", () => {
-  it("boots a frozen root task into durable scheduler projection and executes it", async () => {
-    await withRuntimeWorkspace("scheduler-node-executor-bootstrap", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, taskRuntimeContextWorkflow());
-      const store = await openRuntimeStore(workspace);
-      try {
-        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
-
-        const nodeKey = deriveInstanceKey(appendNode([], "context_task"));
-        await advanceFrozenRun({
-          cwd: workspace,
-          runId: run.id,
-          ownerId: "owner-a",
-          store,
-        });
-
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
-        expect(projection.frames.root).toMatchObject({ status: "completed", result: {} });
-        expect(projection.run).toMatchObject({ status: "completed" });
-        expect(store.getRun(run.id)).toMatchObject({ status: "completed", output: {} });
-        expect(projection.instances[nodeKey]).toMatchObject({
-          status: "completed",
-          nodeId: "context_task",
-          output: {
-            artifact: { kind: "artifact" },
-          },
-        });
-        expect(runtimeRow(workspace, "SELECT attempt, relative_path FROM artifacts WHERE run_id = ? AND node_key = ?", run.id, nodeKey)).toMatchObject({ attempt: 1 });
-        expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'run.completed'", run.id)).toMatchObject({ count: 1 });
-      } finally {
-        store.close();
-      }
-    });
-  });
-
   it("bridges scheduler root failure to the public run projection", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-public-failed", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, failingRootAssertWorkflow());
@@ -86,28 +77,6 @@ describe("runtime scheduler node executor", () => {
         });
         expect(store.getRun(run.id)).toMatchObject({ status: "failed" });
         expect(store.getRun(run.id)?.output).toBeUndefined();
-      } finally {
-        store.close();
-      }
-    });
-  });
-
-  it("fails durable task attempts before non-admissible output reaches the store", async () => {
-    await withRuntimeWorkspace("scheduler-node-executor-non-admissible-output", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, nonAdmissibleTaskWorkflow());
-      const store = await openRuntimeStore(workspace);
-      try {
-        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
-
-        await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "failed", failed: 1 });
-
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
-        const nodeKey = deriveInstanceKey(appendNode([], "bad_output"));
-        expect(projection.instances[nodeKey]).toMatchObject({
-          status: "failed",
-          error: expect.objectContaining({ reason: expect.stringContaining("not workflow-admissible") }),
-        });
-        expect(projection.attempts[Object.keys(projection.attempts)[0]!]?.result).toBeUndefined();
       } finally {
         store.close();
       }
@@ -169,28 +138,6 @@ describe("runtime scheduler node executor", () => {
           deadline_at: "2026-07-01T00:00:05.000Z",
           timeout_message: "Approval timed out",
         });
-      } finally {
-        store.close();
-      }
-    });
-  });
-
-  it("does not duplicate root bootstrap, attempts, or artifacts on repeated frozen-run advance", async () => {
-    await withRuntimeWorkspace("scheduler-node-executor-bootstrap-repeat", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, taskRuntimeContextWorkflow());
-      const store = await openRuntimeStore(workspace);
-      try {
-        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
-        const nodeKey = deriveInstanceKey(appendNode([], "context_task"));
-
-        await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "completed", started: 1 });
-        await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-b", store })).resolves.toMatchObject({ status: "completed", started: 0, ownerEpoch: 2 });
-
-        expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'frame.started'", run.id)).toMatchObject({ count: 1 });
-        expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'instance.ready' AND node_key = ?", run.id, nodeKey)).toMatchObject({ count: 1 });
-        expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM node_attempts WHERE run_id = ? AND node_key = ?", run.id, nodeKey)).toMatchObject({ count: 1 });
-        expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM artifacts WHERE run_id = ? AND node_key = ?", run.id, nodeKey)).toMatchObject({ count: 1 });
-        expect(store.scheduler.loadRunSnapshot(run.id).projection.instances[nodeKey]).toMatchObject({ status: "completed" });
       } finally {
         store.close();
       }
@@ -836,61 +783,9 @@ describe("runtime scheduler node executor", () => {
     });
   });
 
-  it("uses dynamic node key and scheduler attempt for task artifacts", async () => {
-    await withRuntimeWorkspace("scheduler-node-executor-task", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, taskRuntimeContextWorkflow());
-      const store = await openRuntimeStore(workspace);
-      try {
-        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
-        const executor = createRuntimeNodeExecutor({
-          cwd: workspace,
-          ir: prepared.ir,
-          scope: {},
-          store,
-        });
-
-        const result = await executor.execute({
-          runId: run.id,
-          nodeId: "context_task",
-          nodeKey: "context_task.dynamic",
-          attemptId: "attempt_7",
-          attemptNo: 7,
-          ownerEpoch: 1,
-          signal: new AbortController().signal,
-        });
-
-        expect(result).toMatchObject({
-          status: "completed",
-          output: {
-            artifact: { kind: "artifact" },
-          },
-        });
-        const artifact = runtimeRow(workspace, "SELECT attempt, relative_path FROM artifacts WHERE run_id = ? AND node_key = ?", run.id, "context_task.dynamic");
-        expect(artifact).toMatchObject({ attempt: 7 });
-        expect(String(artifact?.relative_path)).toContain("artifacts/context_task.dynamic/attempt-7/");
-        const bytes = await readFile(join(workspace, ".acpus", ".local", "runs", run.id, String(artifact?.relative_path)));
-        expect(bytes.toString("utf8")).toBe("dynamic artifact\n");
-        const metadata = store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "task_attempt");
-        expect(metadata).toMatchObject({
-          attemptId: "attempt_7",
-          kind: "task_attempt",
-          metadata: expect.objectContaining({
-            nodeId: "context_task",
-            nodeKey: "context_task.dynamic",
-            attemptNo: 7,
-            input: {},
-            cwd: workspace,
-          }),
-        });
-      } finally {
-        store.close();
-      }
-    });
-  });
-
   it("runs one task invocation per scheduler-visible attempt", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-single-attempt", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, retryingTaskWorkflow());
+      const prepared = await prepareSyntheticWorkflow(workspace, failingInvocationTaskWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
         const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
@@ -909,7 +804,15 @@ describe("runtime scheduler node executor", () => {
           attemptNo: 1,
           ownerEpoch: 1,
           signal: new AbortController().signal,
-        })).rejects.toThrow("first invocation fails");
+        })).resolves.toEqual({ status: "failed", reason: "first invocation fails" });
+        expect(taskAttemptHarness.calls).toHaveLength(1);
+        expect(taskAttemptHarness.calls[0]).toMatchObject({
+          nodeId: "retry_task",
+          nodeKey: "retry_task.dynamic",
+          attempt: 1,
+          input: {},
+          cwd: workspace,
+        });
       } finally {
         store.close();
       }
@@ -1965,34 +1868,6 @@ describe("runtime scheduler node executor", () => {
     });
   });
 
-  it("rewrites seeded artifact refs into fork-local scheduler payloads", async () => {
-    await withRuntimeWorkspace("scheduler-node-executor-targeted-fork-artifact-seed", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, taskArtifactWorkflow());
-      const store = await openRuntimeStore(workspace);
-      try {
-        const source = await store.admitRun({ prepared, input: {}, cwd: workspace });
-        await expect(advanceFrozenRun({
-          cwd: workspace,
-          runId: source.id,
-          ownerId: "source-owner",
-          store,
-        })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
-
-        const fork = await store.forkRun(source.id, { prepared });
-        const nodeKey = deriveInstanceKey(appendNode([], "local_task"));
-        const sourceArtifact = runtimeRow(workspace, "SELECT id FROM artifacts WHERE run_id = ? AND node_key = ?", source.id, nodeKey);
-        const forkArtifact = runtimeRow(workspace, "SELECT id FROM artifacts WHERE run_id = ? AND node_key = ?", fork.id, nodeKey);
-        expect(forkArtifact?.id).toBeDefined();
-        expect(forkArtifact?.id).not.toBe(sourceArtifact?.id);
-        expect(store.scheduler.loadRunSnapshot(fork.id).projection.instances[nodeKey]?.output).toMatchObject({
-          artifact: { kind: "artifact", uri: `artifact://${fork.id}/${String(forkArtifact?.id)}` },
-        });
-      } finally {
-        store.close();
-      }
-    });
-  });
-
   it("rolls back targeted fork admission when seed artifact rewriting fails", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-targeted-fork-rollback", async workspace => {
       const sourcePrepared = await prepareSyntheticWorkflow(workspace, targetedForkFailedSourceWorkflow());
@@ -2617,30 +2492,6 @@ describe("runtime scheduler node executor", () => {
     });
   });
 
-  it("does not apply workflow-level automatic retry to task failures", async () => {
-    await withRuntimeWorkspace("scheduler-node-executor-no-task-auto-retry", async workspace => {
-      (globalThis as Record<string, unknown>).__acpus_scheduler_node_executor_retry_count = 0;
-      const prepared = await prepareSyntheticWorkflow(workspace, retryingTaskWorkflow());
-      const store = await openRuntimeStore(workspace);
-      try {
-        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
-        const nodeKey = deriveInstanceKey(appendNode([], "retry_task"));
-
-        await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store }))
-          .resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
-        expect(projection.instances[nodeKey]).toMatchObject({ status: "failed" });
-        expect(Object.values(projection.attempts).filter(attempt => attempt.nodeKey === nodeKey).map(attempt => attempt.status)).toEqual(["failed"]);
-        expect(runtimeRows(workspace, "SELECT attempt, relative_path FROM artifacts WHERE run_id = ? AND node_key = ? ORDER BY attempt", run.id, nodeKey)).toEqual([
-          expect.objectContaining({ attempt: 1, relative_path: expect.stringContaining(`${nodeKey}/attempt-1/`) }),
-        ]);
-      } finally {
-        store.close();
-        delete (globalThis as Record<string, unknown>).__acpus_scheduler_node_executor_retry_count;
-      }
-    });
-  });
-
   it("does not turn agent response repair into scheduler-visible retry", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-no-agent-scheduler-retry", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
@@ -2813,7 +2664,36 @@ describe("runtime scheduler node executor", () => {
     });
   });
 
-  it("propagates a pre-aborted scheduler signal into task execution", async () => {
+  it("maps a timed out task attempt result into the scheduler result", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-task-timed-out-result", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, timeoutTaskWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const executor = createRuntimeNodeExecutorWithRunner({
+          cwd: workspace,
+          ir: prepared.ir,
+          scope: {},
+          store,
+          taskAttemptRunner: () => errAsync({ type: "timed_out", message: "task attempt deadline elapsed" }),
+        });
+
+        await expect(executor.execute({
+          runId: run.id,
+          nodeId: "timeout_task",
+          nodeKey: "timeout_task.dynamic",
+          attemptId: "attempt_timeout",
+          attemptNo: 2,
+          ownerEpoch: 1,
+          signal: new AbortController().signal,
+        })).resolves.toEqual({ status: "timed_out", reason: "task attempt deadline elapsed" });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("cancels a task attempt when the scheduler signal is already aborted", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-pre-aborted", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, abortStatusTaskWorkflow());
       const store = await openRuntimeStore(workspace);
@@ -2831,9 +2711,15 @@ describe("runtime scheduler node executor", () => {
           attemptNo: 3,
           ownerEpoch: 1,
           signal: controller.signal,
-        })).resolves.toEqual({
-          status: "completed",
-          output: { aborted: true },
+        })).resolves.toEqual({ status: "cancelled", reason: "paused" });
+        expect(taskAttemptHarness.calls).toHaveLength(1);
+        expect(taskAttemptHarness.calls[0]).toMatchObject({
+          nodeId: "abort_task",
+          nodeKey: "abort_task.dynamic",
+          attempt: 3,
+          input: {},
+          cwd: workspace,
+          signal: controller.signal,
         });
       } finally {
         store.close();
@@ -2841,22 +2727,6 @@ describe("runtime scheduler node executor", () => {
     });
   });
 });
-
-function taskRuntimeContextWorkflow() {
-  return defineWorkflow({
-    name: "scheduler-node-executor-task",
-  }).build(({ step }) => {
-    step("context_task").task({
-      run: {
-        input: {},
-        exec: async ({ artifact }) => ({
-          artifact: await artifact.writeText("result.txt", "dynamic artifact\n"),
-        }),
-      },
-    });
-    return {};
-  });
-}
 
 function failingRootAssertWorkflow() {
   return defineWorkflow({
@@ -3304,20 +3174,15 @@ function abortStatusTaskWorkflow() {
   });
 }
 
-function retryingTaskWorkflow() {
+function failingInvocationTaskWorkflow() {
   return defineWorkflow({
     name: "scheduler-node-executor-retry",
   }).build(({ step }) => {
     step("retry_task").task({
       run: {
         input: {},
-        exec: async ({ artifact }) => {
-          const globalKey = "__acpus_scheduler_node_executor_retry_count";
-          const current = Number((globalThis as Record<string, unknown>)[globalKey] ?? 0) + 1;
-          (globalThis as Record<string, unknown>)[globalKey] = current;
-          await artifact.writeText(`attempt-${current}.txt`, `attempt ${current}\n`);
-          if (current === 1) throw new Error("first invocation fails");
-          return { ok: true };
+        exec: async () => {
+          throw new Error("first invocation fails");
         },
       },
     });
@@ -3740,19 +3605,5 @@ function timeoutTaskWorkflow() {
       },
     });
     return { ok: task.output.ok };
-  });
-}
-
-function nonAdmissibleTaskWorkflow() {
-  return defineWorkflow({
-    name: "scheduler-node-executor-non-admissible-output",
-  }).build(({ step }) => {
-    step("bad_output").task({
-      run: {
-        input: {},
-        exec: (async () => ({ when: new Date() })) as any,
-      },
-    });
-    return {};
   });
 }

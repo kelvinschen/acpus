@@ -30,11 +30,13 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - run: pnpm build
+      - run: pnpm build:clean
 
       - run: pnpm typecheck
 
       - run: pnpm test
+
+      - run: pnpm test:dist
 
       - name: Create version PR or publish packages
         uses: changesets/action@v1

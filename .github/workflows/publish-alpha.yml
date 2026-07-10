@@ -63,6 +63,9 @@ jobs:
       - name: Build publish artifacts
         run: pnpm build:clean
 
+      - name: Verify publish artifacts
+        run: pnpm test:dist
+
       - name: Publish alpha packages
         run: pnpm ci:publish
         env:

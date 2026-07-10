@@ -43,6 +43,7 @@ export type CommandSpan = {
 export type DollarOptions = {
   cwd?: string;
   env?: Record<string, string | undefined>;
+  signal?: AbortSignal;
   onSpan?: (span: CommandSpan) => void;
   redact?: (text: string) => string;
 };
@@ -55,9 +56,9 @@ export function createDollar(options: DollarOptions = {}, config: DollarConfig =
     const command = renderCommand(strings, values, options.redact);
     const span: CommandSpan = { command, startedAt };
     options.onSpan?.(span);
-    const cwd = config.cwd ?? options.cwd;
-    const env = config.env ?? options.env;
-    const shell = cwd || env ? zxDollar({ ...(cwd ? { cwd } : {}), ...(env ? { env: env as Record<string, string> } : {}) }) : zxDollar;
+    const cwd = config.cwd ?? options.cwd ?? process.cwd();
+    const env = config.env ?? options.env ?? process.env;
+    const shell = zxDollar({ cwd, env: env as Record<string, string>, ...(options.signal ? { signal: options.signal } : {}) });
     const proc = shell(strings, ...values as any[]);
     const builder = wrapProcess(proc, command, span);
     if (config.timeout !== undefined) builder.timeout(config.timeout);
