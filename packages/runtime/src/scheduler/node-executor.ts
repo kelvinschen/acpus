@@ -3,7 +3,7 @@ import type { JsonValue } from "@acpus/expression/ir";
 import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
 import { AgentNodeCancelledError, AgentNodeTimeoutError, executeAgentNode } from "../execution/agent-node.js";
 import { executeTaskNode } from "../execution/task-executor.js";
-import { assertWorkflowData } from "../evaluation/admissible.js";
+import { normalizeWorkflowData } from "../evaluation/admissible.js";
 import type { EvaluationScope } from "../evaluation/evaluator.js";
 import type { RuntimeStore } from "../store/store.js";
 import type { NodeProgressWriter } from "../progress/writer.js";
@@ -30,10 +30,10 @@ export function createRuntimeNodeExecutor(input: RuntimeNodeExecutorInput): Node
       const node = nodes.get(context.nodeId);
       if (!node) return { status: "failed", reason: `Node '${context.nodeId}' was not found in frozen IR.` };
       const scope = scopeForAttempt(input.scope, unwrapStoreResult(input.store.scheduler.tryLoadRunSnapshot(context.runId)).projection, context.nodeKey);
-      if (node.kind === "task") return completedResult(await executeTask(node, scope, context, input));
+      if (node.kind === "task") return completedResult(await executeTask(node, scope, context, input), true);
       if (node.kind === "agent") {
         try {
-          return completedResult(await executeAgent(node, scope, context, input));
+          return completedResult(await executeAgent(node, scope, context, input), false);
         } catch (error) {
           if (error instanceof AgentNodeCancelledError) return { status: "cancelled", reason: "paused" };
           if (error instanceof AgentNodeTimeoutError) return { status: "timed_out", reason: error.message };
@@ -82,7 +82,7 @@ function scopeForAttempt(base: EvaluationScope, projection: SchedulerProjection,
   return scopeForNodeAttempt(base, projection, nodeKey);
 }
 
-function completedResult(output: unknown): AttemptCommitInput["result"] {
-  assertWorkflowData(output, "Node output");
-  return output === undefined ? { status: "completed" } : { status: "completed", output: output as JsonValue };
+function completedResult(output: unknown, allowTopLevelUndefined: boolean): AttemptCommitInput["result"] {
+  const normalized = normalizeWorkflowData(output, "Node output", { allowTopLevelUndefined });
+  return normalized === undefined ? { status: "completed" } : { status: "completed", output: normalized };
 }

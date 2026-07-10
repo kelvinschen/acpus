@@ -172,8 +172,7 @@ describe("workflow check pipeline", () => {
 
       expect(result.diagnostics.filter(diagnostic =>
         diagnostic.code.startsWith("AL")
-        || diagnostic.code === "TB008"
-        || diagnostic.code.startsWith("OA"),
+        || diagnostic.code === "TB004",
       )).toEqual([]);
     });
   });
@@ -203,7 +202,7 @@ describe("workflow check pipeline", () => {
 
       expect(result.diagnostics).toEqual(expect.arrayContaining([
         expect.objectContaining({
-          code: "AL007",
+          code: "AL006",
           message: expect.stringContaining("external binding 'suffix'"),
           source: expect.objectContaining({
             file: expect.stringContaining("workflow.ts"),
@@ -241,7 +240,7 @@ describe("workflow check pipeline", () => {
       `);
 
       expect(result.diagnostics).toContainEqual(expect.objectContaining({
-        code: "AL008",
+        code: "AL007",
         severity: "error",
         message: expect.stringContaining("9 executable statements"),
         hint: expect.stringContaining("Task"),
@@ -249,133 +248,122 @@ describe("workflow check pipeline", () => {
     });
   });
 
-  it("reports representative output source, admissibility, and convergence diagnostics", async () => {
-    await withCheckWorkspace("workflow-output-checks", async cwd => {
+  it("accepts loop transition shorthand properties and still checks their types and keys", async () => {
+    await withCheckWorkspace("workflow-loop-shorthand", async cwd => {
       const result = await runCheck(cwd, `
-        import { defineWorkflow, task, type JsonValue, z } from "acpus/core";
-        import { badTask } from "./tasks";
+        import { defineWorkflow, z } from "acpus/core";
+        import { lift2 } from "acpus/expression";
 
-        const reusableEscape = task.define({
-          inputSchema: z.object({}),
-          exec: async (): Promise<any> => ({ leaked: true }),
+        export default defineWorkflow({
+          name: "loop_shorthand",
+          inputSchema: z.object({ shouldContinue: z.boolean() }),
+        }).build(({ input, step }) => {
+          const shorthand = step("shorthand").loop({
+            state: { round: 0, shouldContinue: true },
+            do({ round }) {
+              const state = { round, shouldContinue: input.shouldContinue };
+              const stop = lift2(input.shouldContinue, round, (shouldContinue, currentRound) => !shouldContinue || currentRound >= 2);
+              return { state, stop };
+            },
+          });
+          const explicit = step("explicit").loop({
+            state: { round: 0, shouldContinue: true },
+            do({ round }) {
+              const state = { round, shouldContinue: input.shouldContinue };
+              const stop = lift2(input.shouldContinue, round, (shouldContinue, currentRound) => !shouldContinue || currentRound >= 2);
+              return { state: state, stop: stop };
+            },
+          });
+          return { shorthand: shorthand.output, explicit: explicit.output };
         });
-        const reusableBroadObject = task.define({
-          inputSchema: z.object({}),
-          exec: async (): Promise<{}> => new Date(),
-        });
+      `);
 
-        export default defineWorkflow({ name: "bad_outputs" }).build(({ step }) => {
-          step("inline_date").task({
-            run: { input: {}, exec: async () => ({ when: new Date() }) },
-          });
-          step("inline_function").task({
-            run: { input: {}, exec: async () => ({ fn: () => true }) },
-          });
-          step("inline_broad_object").task({
-            run: { input: {}, exec: async (): Promise<{}> => new Date() },
-          });
-          step("reusable_escape").task({ run: { input: {}, task: reusableEscape } });
-          step("reusable_broad_object").task({ run: { input: {}, task: reusableBroadObject } });
-          step("bad").task({ run: { input: {}, task: badTask } });
+      expect(result.diagnostics).toEqual([]);
+    });
+  });
+
+  it("accepts aliases, spreads, computed keys, callback variables, and heterogeneous branches", async () => {
+    await withCheckWorkspace("workflow-output-source-shapes", async cwd => {
+      const result = await runCheck(cwd, `
+        import { defineWorkflow } from "acpus/core";
+
+        export default defineWorkflow({ name: "output_source_shapes" }).build(({ step }) => {
+          const hidden = { ok: true };
           const fanoutSpec = { over: ["a"], do() { return { ok: true }; } };
           step("items").fanout(fanoutSpec);
           function branch() { return { ok: true }; }
           step("parallel").parallel({ branches: { branch } });
-          const hidden = { ok: true };
           step("spread").if({
             condition: true,
             then() { return { ...hidden }; },
-            else() { return { ok: true }; },
+            else() { return { missing: true }; },
           });
-          const key = "ok";
+          const key = "computed";
           step("computed").if({
             condition: true,
             then() { return { [key]: true }; },
-            else() { return { ok: true }; },
-          });
-          step("loop_hidden_initial").loop({
-            state: hidden,
-            do() { return { state: { ok: true }, stop: true }; },
-          });
-          step("branch_keys").if({
-            condition: true,
-            then() { return { ok: true }; },
-            else() { return { missing: true }; },
-          });
-          step("race_types").parallel({
-            strategy: "race",
-            branches: {
-              left() {
-                return { value: "left" };
-              },
-              right() { return { value: 1 }; },
-            },
-          });
-          step("switch_keys").switch({
-            cases: [{ when: true, then() { return { ok: true }; } }],
-            default() { return { missing: true }; },
+            else() { return { fallback: true }; },
           });
           step("loop").loop({
-            state: { ok: "seed" },
-            do() { return { state: { ok: 1 }, stop: false }; },
+            state: hidden,
+            do() {
+              const state = { ok: true };
+              const stop = true;
+              return { state, stop };
+            },
           });
-          const opaque = { ok: true } as JsonValue;
-          step("opaque_loop").loop({
-            state: opaque,
-            do() { return { state: { ok: true }, stop: false }; },
+          step("switch").switch({
+            cases: [{ when: true, then() { return { selected: true }; } }],
+            default() { return { fallback: true }; },
+          });
+          return { ok: true };
+        });
+      `);
+
+      expect(result.diagnostics).toEqual([]);
+    });
+  });
+
+  it("reports durable output and loop contract violations as TypeScript diagnostics only", async () => {
+    await withCheckWorkspace("workflow-output-types", async cwd => {
+      const result = await runCheck(cwd, `
+        import { defineWorkflow } from "acpus/core";
+
+        export default defineWorkflow({ name: "output_types" }).build(({ step }) => {
+          step("date").task({ run: { input: {}, exec: async () => ({ when: new Date() }) } });
+          step("if_date").if({
+            condition: true,
+            then() { return { when: new Date() }; },
+            else() { return { ok: true }; },
+          });
+          step("switch_date").switch({
+            cases: [{ when: true, then() { return { when: new Date() }; } }],
+            default() { return { ok: true }; },
+          });
+          step("parallel_date").parallel({
+            branches: {
+              invalid() { return { when: new Date() }; },
+              valid() { return { ok: true }; },
+            },
+          });
+          step("fanout_date").fanout({
+            over: ["item"],
+            do() { return { when: new Date() }; },
+          });
+          step("missing_stop").loop({
+            state: { ok: true },
+            do() { return { state: { ok: true } }; },
           });
           step("bad_stop").loop({
             state: { ok: true },
-            do() { return { state: { ok: true }, stop: "yes" as any }; },
+            do() { return { state: { ok: true }, stop: "yes" }; },
           });
-          step("extra_transition").loop({
-            state: { ok: true },
-            do() { return { state: { ok: true }, stop: true, debug: 1 } as any; },
-          });
-          step("missing_transition_state").loop({
-            state: { ok: true },
-            do() { return { stop: true } as any; },
-          });
-          step("missing_transition_stop").loop({
-            state: { ok: true },
-            do() { return { state: { ok: true } } as any; },
-          });
-          const unknownValue: unknown = "raw";
-          if (input) return { ok: true };
-          return { missing: true, unknownValue };
+          return { ok: true };
         });
-      `, {
-        "tasks.ts": `
-          import { task, z } from "acpus/core";
-          export const badTask = task.define({
-            inputSchema: z.object({}),
-            exec: async () => ({ when: new Date() }),
-          });
-        `,
-      });
+      `);
 
-      expect(result.diagnostics).toEqual(expect.arrayContaining([
-        expect.objectContaining({ code: "OA001", message: expect.stringContaining("fanout spec") }),
-        expect.objectContaining({ code: "OA001", message: expect.stringContaining("parallel branch") }),
-        expect.objectContaining({ code: "OA001", message: expect.stringContaining("if then output") }),
-        expect.objectContaining({ code: "OA001", message: expect.stringContaining("loop initial state") }),
-        expect.objectContaining({ code: "OA002", message: expect.stringContaining("Date") }),
-        expect.objectContaining({ code: "OA002", message: expect.stringContaining("function") }),
-        expect.objectContaining({ code: "OA002", message: expect.stringContaining("{}") }),
-        expect.objectContaining({ code: "OA002", message: expect.stringContaining("reusable task output") }),
-        expect.objectContaining({ code: "OA003", message: expect.stringContaining("workflow root outputs") }),
-        expect.objectContaining({ code: "OA003", message: expect.stringContaining("if branch outputs") }),
-        expect.objectContaining({ code: "OA003", message: expect.stringContaining("switch branch outputs") }),
-        expect.objectContaining({ code: "OA003", message: expect.stringContaining("parallel race branch outputs") }),
-        expect.objectContaining({ code: "OA003", message: expect.stringContaining("loop initial and transition state outputs") }),
-        expect.objectContaining({ code: "OA003", message: expect.stringContaining("loop initial state") }),
-        expect.objectContaining({ code: "OA004" }),
-        expect.objectContaining({ code: "OA004", message: expect.stringContaining("unexpected key") }),
-        expect.objectContaining({ code: "OA001", message: expect.stringContaining("loop transition state") }),
-        expect.objectContaining({ code: "OA001", message: expect.stringContaining("loop transition stop") }),
-      ]));
-      expect(result.diagnostics.filter(diagnostic => diagnostic.code === "OA002" && diagnostic.message.includes("any"))).toEqual([]);
-      expect(result.diagnostics.filter(diagnostic => diagnostic.code === "OA002" && diagnostic.message.includes("unknown"))).toEqual([]);
+      expect(result.diagnostics.filter(diagnostic => diagnostic.code.startsWith("TS")).length).toBeGreaterThanOrEqual(7);
+      expect(result.diagnostics.filter(diagnostic => diagnostic.code.startsWith("OA"))).toEqual([]);
     });
   });
 });

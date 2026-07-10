@@ -8,12 +8,12 @@ import { buildTaskNode, type InlineTaskStepSpec, type ReusableTaskStepSpec, type
 import { buildSignalNode, type SignalStepSpec } from "../nodes/leaf/signal.js";
 import type { RuntimeInput, StepInput } from "../nodes/leaf/shared.js";
 import { buildAssertNode, type AssertSpec } from "../nodes/control/assert.js";
-import { buildIfNode, type IfStepSpec } from "../nodes/composite/if.js";
+import { buildIfNode, type IfNodeRefOutput, type IfStepSpec } from "../nodes/composite/if.js";
 import { buildSwitchNode, type SwitchNodeRefOutput, type SwitchStepSpec } from "../nodes/composite/switch.js";
 import { buildParallelNode, type ParallelNodeRefOutput, type ParallelStepSpec } from "../nodes/composite/parallel.js";
 import { buildFanoutNode, type FanoutNodeRefOutput, type FanoutStepSpec } from "../nodes/composite/fanout.js";
 import { buildLoopNode, type LoopStepSpec, type LoopTransitionOutput } from "../nodes/composite/loop.js";
-import { buildImplicitScope as buildScopeIR, isOutputObject, type OutputValues } from "./scope.js";
+import { buildImplicitScope as buildScopeIR, isOutputObject, type GraphOutputCheck, type OutputValues } from "./scope.js";
 import { bindingsToIR, stripUndefined } from "./lowering.js";
 import type { FanoutStrategy, OutputObject, ParallelStrategy, RuntimeValueOf, ScopeCallback, WidenRuntimeValue, WorkflowArrayValue } from "../nodes/composite/shared.js";
 import type { TaskFunction } from "../runtime/task-context.js";
@@ -77,6 +77,13 @@ export type BuildContext<InputSchema extends Schema<any> | undefined, Agents ext
 
 export type BuildFn<InputSchema extends Schema<any> | undefined, Agents extends AgentMap | undefined = undefined> = (ctx: BuildContext<InputSchema, Agents>) => Record<string, unknown>;
 
+type CheckedBuildFn<
+  InputSchema extends Schema<any> | undefined,
+  Agents extends AgentMap | undefined,
+  Output extends Record<string, unknown>,
+> = ((ctx: BuildContext<InputSchema, Agents>) => Output)
+  & ((ctx: BuildContext<InputSchema, Agents>) => Output & GraphOutputCheck<NoInfer<Output>>);
+
 /**
  * Creates a typed Acpus workflow definition.
  *
@@ -87,7 +94,7 @@ export type BuildFn<InputSchema extends Schema<any> | undefined, Agents extends 
  */
 export function defineWorkflow<InputSchema extends Schema<any> | undefined = undefined, Agents extends AgentMap | undefined = undefined>(config: WorkflowConfig<InputSchema, Agents>) {
   return {
-    build(buildFn: BuildFn<InputSchema, Agents>): WorkflowDefinition<InputSchema, Agents> {
+    build<const Output extends Record<string, unknown>>(buildFn: CheckedBuildFn<InputSchema, Agents, Output>): WorkflowDefinition<InputSchema, Agents> {
       return { [WORKFLOW]: true as const, config, buildFn };
     },
   };
@@ -129,14 +136,14 @@ export type StepDeclaration = {
   assert(spec: AssertSpec): void;
 
   /** Declares a graph-level conditional branch. */
-  if<Output extends OutputObject>(
-    spec: IfStepSpec<Output>,
-  ): NodeRef<RuntimeValueOf<Output>>;
+  if<const Then extends ScopeCallback, const Else extends ScopeCallback>(
+    spec: IfStepSpec<Then, Else>,
+  ): NodeRef<IfNodeRefOutput<Then, Else>>;
 
   /** Declares a graph-level switch with explicit cases and a required default branch. */
-  switch<const Spec extends SwitchStepSpec>(
-    spec: Spec,
-  ): NodeRef<SwitchNodeRefOutput<Spec>>;
+  switch<const Cases extends ReadonlyArray<{ when: WorkflowValue<boolean>; then: ScopeCallback }>, const Default extends ScopeCallback>(
+    spec: SwitchStepSpec<Cases, Default>,
+  ): NodeRef<SwitchNodeRefOutput<Cases, Default>>;
 
   /** Declares static parallel branches. Race strategy returns a winner/result envelope. */
   parallel<const Branches extends Record<string, ScopeCallback>>(
@@ -210,18 +217,18 @@ class GraphBuildState {
     this.nodes.push(buildAssertNode(id, spec, this.context.diagnostics));
   }
 
-  if<Output extends OutputObject>(
+  if<const Then extends ScopeCallback, const Else extends ScopeCallback>(
     id: string,
-    spec: IfStepSpec<Output>,
-  ): NodeRef<RuntimeValueOf<Output>> {
+    spec: IfStepSpec<Then, Else>,
+  ): NodeRef<IfNodeRefOutput<Then, Else>> {
     this.nodes.push(buildIfNode(id, spec, this.context.diagnostics, this.buildImplicitScope));
     return makeNodeRef(id);
   }
 
-  switch<const Spec extends SwitchStepSpec>(
+  switch<const Cases extends ReadonlyArray<{ when: WorkflowValue<boolean>; then: ScopeCallback }>, const Default extends ScopeCallback>(
     id: string,
-    spec: Spec,
-  ): NodeRef<SwitchNodeRefOutput<Spec>> {
+    spec: SwitchStepSpec<Cases, Default>,
+  ): NodeRef<SwitchNodeRefOutput<Cases, Default>> {
     this.nodes.push(buildSwitchNode(id, spec, this.context.diagnostics, this.buildImplicitScope));
     return makeNodeRef(id);
   }
@@ -256,7 +263,7 @@ class GraphBuildState {
 
   fanout(
     id: string,
-    spec: FanoutStepSpec<WorkflowArrayValue<any>, Record<string, unknown>, FanoutStrategy>,
+    spec: FanoutStepSpec<WorkflowArrayValue<any>, any, FanoutStrategy>,
   ): NodeRef<any> {
     this.nodes.push(buildFanoutNode(id, spec, this.context.diagnostics, this.buildImplicitScope));
     return makeNodeRef(id);
@@ -322,7 +329,7 @@ class GraphBuildContext {
     const switchStep: StepDeclaration["switch"] = spec => this.withActiveDeclaration(scope => scope.switch(id, spec));
     const parallel = ((spec: ParallelStepSpec<Record<string, ScopeCallback>, ParallelStrategy>) =>
       this.withActiveDeclaration(scope => scope.parallel(id, spec as any))) as unknown as StepDeclaration["parallel"];
-    const fanout = ((spec: FanoutStepSpec<WorkflowArrayValue<any>, Record<string, unknown>, FanoutStrategy>) =>
+    const fanout = ((spec: FanoutStepSpec<WorkflowArrayValue<any>, any, FanoutStrategy>) =>
       this.withActiveDeclaration(scope => scope.fanout(id, spec as any))) as unknown as StepDeclaration["fanout"];
     const loop: StepDeclaration["loop"] = spec => this.withActiveDeclaration(scope => scope.loop(id, spec));
     return {

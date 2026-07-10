@@ -23,18 +23,18 @@ describe("internal Acpus ESLint plugin", () => {
   it("reports task-authoring diagnostics at task callsites", async () => {
     const messages = await lintFixture("eslint-task-authoring.workflow.ts");
 
-    expect(codes(messages)).toEqual(expect.arrayContaining(["TB004", "TB007"]));
-    expect(messages.find(message => message.message.startsWith("TB004:"))).toMatchObject({
+    expect(codes(messages)).toEqual(expect.arrayContaining(["TB001", "TB003"]));
+    expect(messages.find(message => message.message.startsWith("TB001:"))).toMatchObject({
       line: await lineOf("eslint-task-authoring.workflow.ts", 'step("local").task'),
     });
-    expect(messages.find(message => message.message.startsWith("TB007:"))).toMatchObject({
+    expect(messages.find(message => message.message.startsWith("TB003:"))).toMatchObject({
       line: await lineOf("eslint-task-authoring.workflow.ts", 'step("inline_capture").task'),
     });
   });
 
   it("reports fmap authoring diagnostics from the shared check rule", async () => {
     const messages = await lintFixture("eslint-fmap.workflow.ts");
-    const callbackMessages = messages.filter(message => message.message.startsWith("AL007:"));
+    const callbackMessages = messages.filter(message => message.message.startsWith("AL006:"));
 
     expect(callbackMessages).toHaveLength(1);
     expect(callbackMessages.find(message => message.message.includes("external binding 'suffix'"))).toMatchObject({
@@ -48,7 +48,7 @@ describe("internal Acpus ESLint plugin", () => {
     const callsiteMessages = await lintFixture("eslint-task-callsite.workflow.ts");
     const nonliteralLine = await lineOf("eslint-task-callsite.workflow.ts", 'step("nonliteral").task');
     const savedLine = await lineOf("eslint-task-callsite.workflow.ts", "saved.task");
-    expect(codes(callsiteMessages).filter(code => code === "TB008")).toHaveLength(2);
+    expect(codes(callsiteMessages).filter(code => code === "TB004")).toHaveLength(2);
     expect(callsiteMessages.find(message => message.line === nonliteralLine)).toMatchObject({
       message: expect.stringContaining("object literal"),
     });
@@ -57,13 +57,13 @@ describe("internal Acpus ESLint plugin", () => {
     });
 
     const thirdPartyMessages = await lintFixture("eslint-third-party-task-method.workflow.ts");
-    expect(codes(thirdPartyMessages)).not.toContain("TB008");
+    expect(codes(thirdPartyMessages)).not.toContain("TB004");
   });
 
   it("does not leak diagnostics from unrelated workflow fixtures", async () => {
     const messages = await lintFixture("orchestration.workflow.ts");
 
-    expect(codes(messages)).not.toContain("OA001");
+    expect(messages).toEqual([]);
   });
 
   it("reports a clear configuration diagnostic without typed parser services", async () => {

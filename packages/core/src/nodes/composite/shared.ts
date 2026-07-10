@@ -1,12 +1,14 @@
 import type { Expr, WorkflowValue } from "@acpus/expression";
 import type { ExprValue } from "../../graph/refs.js";
-import type { OutputValues } from "../../graph/scope.js";
+import type { GraphOutputCheck, OutputValues } from "../../graph/scope.js";
 import type { IsUnion } from "../../internal/type-utils.js";
 import type { ScopeIR } from "../../ir/types.js";
 export type OutputObject = Record<string, unknown>;
 export type ScopeOutput<Output> = Output extends OutputObject ? Output : OutputObject;
-export type ScopeCallback<Output extends OutputObject = OutputObject> =
+export type ScopeCallback<Output extends OutputObject = any> =
   () => OutputValues<Output>;
+export type CheckedScopeCallback<Callback extends (...args: any[]) => OutputObject> =
+  Callback & ((...args: Parameters<Callback>) => ReturnType<Callback> & GraphOutputCheck<NoInfer<ReturnType<Callback>>>);
 export type BuildScope = <Extra extends object = {}, Output extends OutputObject = OutputObject>(
   fn: (ctx: Extra) => OutputValues<Output>,
   extra?: Extra,

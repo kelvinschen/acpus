@@ -14,7 +14,8 @@ export default defineWorkflow({
   }
   const compared = input.count === input.count;
   const prompt = `${input.name}`;
-  // @ts-expect-error Fixture intentionally exercises Acpus AL005 over Expr accessors.
+  step(String(input.name)).assert({ condition: true });
+  // @ts-expect-error Expr accessors expose array operations through fmap, not JavaScript methods.
   const mapped = input.items.map((item: string) => item);
   return { compared, prompt, mapped };
 });

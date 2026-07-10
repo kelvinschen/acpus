@@ -2,7 +2,7 @@ import { valueToExprIR } from "@acpus/expression/ir";
 import { refExpr } from "../../graph/refs.js";
 import { assertStableId, stripUndefined } from "../../graph/lowering.js";
 import type { WorkflowValue } from "@acpus/expression";
-import type { OutputValues } from "../../graph/scope.js";
+import type { GraphOutputCheck, OutputValues } from "../../graph/scope.js";
 import type { DiagnosticIR, LoopNodeIR } from "../../ir/types.js";
 import type { BuildScope, LoopScopeContext, OutputObject, RuntimeValueOf, WidenRuntimeValue } from "./shared.js";
 
@@ -26,7 +26,7 @@ export type LoopStepSpec<
   Initial extends OutputObject = OutputObject,
   Transition extends LoopTransitionOutput<Initial> = LoopTransitionOutput<Initial>,
 > = {
-  state: WorkflowValue<Initial>;
+  state: WorkflowValue<Initial> & GraphOutputCheck<NoInfer<Initial>>;
   do: (ctx: LoopScopeContext<LoopState<Initial>>) => ExactTransition<Transition>;
   outputSchema?: never;
 };

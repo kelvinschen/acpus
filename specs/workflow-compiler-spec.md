@@ -50,22 +50,35 @@
 - Published installs MUST rely on normal package resolution for non-Acpus
   dependencies.
 - Acpus authoring rules MUST run only Acpus-owned checks and MUST NOT load user ESLint config, editor config, or broad third-party presets.
-- Acpus authoring rules MUST reject `Expr` values in JavaScript truthiness positions, logical/comparison operators over `Expr`, untagged template interpolation containing `Expr`, JavaScript array methods over Expr accessors, Expr-derived node ids, invalid task authoring shapes, and task callsites that cannot be joined to task metadata. Array index access is projection and MUST NOT be rejected as an array helper.
+- Public TypeScript types MUST own every authoring constraint expressible by the type system. Acpus AST authoring rules MUST NOT duplicate those constraints or remap native TypeScript diagnostics to Acpus codes.
+- Authors who use `any` opt out of TypeScript guarantees. Acpus AST authoring rules MUST NOT add compensating type or output-shape checks for values hidden behind `any`; IR validation and runtime normalization remain mandatory backstops.
+- Acpus authoring rules MUST reject `Expr` values in JavaScript truthiness positions, logical operators, TypeScript-accepted equality operators, untagged template interpolation containing `Expr`, string-typed node ids derived from Expr values, invalid callback source forms, invalid task authoring shapes, and task callsites that cannot be joined to task metadata.
+- Expr array properties and methods, relational operators, direct non-string node ids, callback output types, and other type-expressible failures MUST be left to TypeScript diagnostics.
 - Acpus authoring rules MUST inspect `fmap`, `lift2`, `lift3`, and `lift` calls imported from the supported `acpus/expression` facade, including named aliases and namespace imports.
-- Acpus authoring rules MUST reject expression callbacks unless the callback is an inline synchronous arrow with the helper's expected parameter count: one for `fmap`, two for `lift2`, three for `lift3`, and one named dependency parameter for `lift`.
-- Acpus authoring rules MUST accept expression-body and block-body arrows, including nested block-body arrows, and MUST reject normal or generator functions, helper references, callbacks with invalid parameter shape, `this`, or references to workflow/module lexical bindings outside callback parameters, local declarations, and nested callback parameters.
-- Block-body expression callbacks MUST contain at most eight executable statements across the outer callback and nested arrows. Acpus authoring rules MUST report one `AL008` error per callback at nine or more statements. The recursive count MUST include runtime control and child statements, count each variable statement once, and exclude blocks, empty statements, comments, formatting, interfaces, type aliases, and other type-only syntax.
-- Acpus authoring rules MUST allow ordinary synchronous JavaScript syntax inside expression callbacks when it does not introduce external lexical captures or exceed the statement budget, including ordinary methods, nested arrows, local declarations, control flow, runtime globals such as `Math`, `JSON`, and `Date`, assignments, `new`, and dynamic imports. TypeScript and output-admissibility checks own non-WorkflowData return types.
+- Acpus authoring rules MUST accept expression-body and block-body arrows, including nested block-body arrows, and MUST reject callable references, normal or generator functions, callback arity that TypeScript permits but the serialized operator cannot execute, default/rest/computed bindings, `this`, non-arrow nested functions, and references to workflow/module lexical bindings outside callback parameters, local declarations, and nested callback parameters.
+- Missing or non-callable callbacks, excess callback parameters, async callbacks, and non-`WorkflowData` callback returns MUST be reported only by TypeScript.
+- Block-body expression callbacks MUST contain at most eight executable statements across the outer callback and nested arrows. Acpus authoring rules MUST report one `AL007` error per callback at nine or more statements. The recursive count MUST include runtime control and child statements, count each variable statement once, and exclude blocks, empty statements, comments, formatting, interfaces, type aliases, and other type-only syntax.
+- Acpus authoring rules MUST allow ordinary synchronous JavaScript syntax inside expression callbacks when it does not introduce external lexical captures or exceed the statement budget, including ordinary methods, nested arrows, local declarations, control flow, runtime globals such as `Math`, `JSON`, and `Date`, assignments, `new`, and dynamic imports. TypeScript owns callback return-type admissibility.
 - Expression callback capture checks and inline task self-contained checks MUST share runtime-global detection, including rejection of workflow/module bindings that shadow globals such as `Math`, `JSON`, and `Date`.
-- Acpus authoring rules MUST inspect expression callback return types with the same workflow-data admissibility policy as Task outputs, without rejecting `any` or `unknown` solely as a safety measure.
-- Acpus authoring rules MUST statically inspect graph-binding output producers for workflow root returns, composite callbacks, loop `state`, and loop transition outputs, and MUST inspect inline task and reusable `task.define(...).exec` return types for non-workflow runtime data.
-- Graph-binding output producer source shapes that cannot be statically located MUST produce `OA001` diagnostics. This includes hidden specs, saved step declarations known to be Acpus step declarations, spread-heavy output objects, computed output keys, and non-literal producer callbacks where graph output shape would otherwise be inferred only at runtime. Task `exec` return expressions are ordinary TypeScript function returns and MUST NOT require source-shape visibility when their return type is known.
 - Acpus authoring rules MUST ignore unrelated property calls that merely share names such as `.task(...)` or `.loop(...)` unless the receiver is a direct `step("id")` call or is typed as an Acpus `StepDeclaration`.
-- Inferred output types containing functions, classes, `Date`, `Map`, `Set`, `symbol`, `bigint`, broad `object`, or other non-workflow data MUST produce `OA002` diagnostics before runtime. Acpus authoring rules MUST NOT reject `any` or `unknown` solely as a safety measure; authors who opt out of TypeScript precision own that tradeoff.
-- Explicit opaque `JsonValue` and `JsonObject` output types exported by Acpus packages MUST be accepted as workflow-admissible values.
-- Branch-like producers for `if`, `switch`, and `parallel` `race` MUST produce `OA003` diagnostics when branch output key sets differ or matching field types do not converge to a common assignable type that TypeScript has not already rejected.
-- Workflow root return branches MUST converge to a stable object shape when multiple root return statements are present.
-- Loop `state` MUST be a statically known object output, loop transition `state` MUST converge with the initial `state`, and loop transition `stop` MUST be boolean-like.
+- Graph output aliases, spreads, computed keys, callback variables, and heterogeneous branch or root returns MUST NOT be rejected solely because of source shape.
+- The complete Acpus authoring diagnostic set MUST be contiguous and limited to the following current codes:
+
+| Code | Meaning |
+| --- | --- |
+| `AL001` | Expr used as a JavaScript condition or with `!` |
+| `AL002` | Expr used with `&&` or `||` |
+| `AL003` | TypeScript-accepted Expr equality |
+| `AL004` | Expr interpolated into an untagged template literal |
+| `AL005` | String-typed node id derived from Expr |
+| `AL006` | Expression callback source, parameter, or capture is not serializable |
+| `AL007` | Expression callback exceeds the statement budget |
+| `TB001` | Reusable task is not exported as a loadable module value |
+| `TB002` | Reusable task reference or export is not a `task.define(...)` token |
+| `TB003` | Inline task captures an external binding |
+| `TB004` | Task callsite cannot be joined uniquely to metadata |
+
+- Removed authoring codes MUST NOT be retained as aliases or compatibility diagnostics. When a code is removed in a breaking change, the remaining codes in that family MUST be renumbered contiguously in the same change.
 - Full preparation MUST compile through a worker/import path that loads
   TypeScript workflow modules and supported official `acpus/*` authoring
   facade specifiers through `@acpus/loader`.
@@ -111,7 +124,7 @@
 - Inline task source analysis MUST treat task output as TypeScript-inferred from `exec`, not as schema-declared metadata.
 - Inline tasks that capture workflow-module scope MUST produce check diagnostics during preparation.
 - Direct `compileWorkflowModule(...)` MUST NOT run Acpus authoring rules, but it MUST append validation diagnostics if compiled task runs lack valid inline or reusable execution targets.
-- The task authoring diagnostic set MUST keep inline self-containment failures as `TB007` and SHOULD assign current task callsite diagnostics around the live reusable task model.
+- The task authoring diagnostic set MUST use `TB001` through `TB004` exactly as defined by the current authoring diagnostic table.
 
 ### Prepared Workflow Data
 
@@ -129,7 +142,8 @@
 - Integration tests MUST cover compiling TypeScript workflow modules with reusable module references, inline embedded source, and package-imported reusable tasks.
 - Tests MUST cover check failure before compile, including TypeScript diagnostics converted to `DiagnosticIR` and Acpus authoring-rule diagnostics.
 - Tests MUST cover accepted expression-body and block-body `fmap`/`lift2`/`lift3`/`lift` callbacks, recursive statement-budget diagnostics, globals and ordinary methods, and rejected captures, helper references, invalid arity, and function expressions.
-- Tests MUST cover output-admissibility diagnostics for non-JSON output values, imported reusable task output types, graph-binding hidden producer source shapes, branch/root convergence, loop consistency, unrelated method-call non-matches, explicit `JsonValue`/`JsonObject` acceptance, and task `exec` hidden return expressions accepted through TypeScript return types.
+- Type tests MUST cover durable workflow, Task, and composite outputs, heterogeneous branch/root unions, loop consistency, `JsonValue`/`JsonObject`, `unknown` rejection, and the explicit `any` escape hatch.
+- Authoring-rule tests MUST cover only source-level invariants, MUST assert the contiguous `AL001`-`AL007` and `TB001`-`TB004` sets, and MUST verify that removed codes and type-owned diagnostics are not emitted.
 - Tests MUST cover validation failure after compile.
 - Tests MUST cover task analysis facts and metadata for imported reusable tasks, exported same-file reusable tasks, package imports, re-exported reusable tasks, unsupported task callsite forms, and inline tasks that capture workflow-module scope.
 - Tests MUST cover stable reusable task reference metadata across compiles.

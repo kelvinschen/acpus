@@ -2,25 +2,33 @@ import { valueToExprIR } from "@acpus/expression/ir";
 import { assertStableId, stripUndefined } from "../../graph/lowering.js";
 import type { WorkflowValue } from "@acpus/expression";
 import type { DiagnosticIR, SwitchNodeIR } from "../../ir/types.js";
-import type { ScopeCallback, BuildScope, RuntimeValueOf } from "./shared.js";
+import type { BuildScope, CheckedScopeCallback, RuntimeValueOf, ScopeCallback } from "./shared.js";
+
+type SwitchCase = { when: WorkflowValue<boolean>; then: ScopeCallback };
+type CheckedSwitchCases<Cases extends ReadonlyArray<SwitchCase>> = {
+  readonly [Index in keyof Cases]: Cases[Index] extends { then: infer Then extends ScopeCallback }
+    ? Cases[Index] & { then: Then & CheckedScopeCallback<NoInfer<Then>> }
+    : Cases[Index];
+};
 
 /** Authoring spec for selecting one branch from ordered cases plus a required default. */
-export type SwitchStepSpec = {
+export type SwitchStepSpec<
+  Cases extends ReadonlyArray<SwitchCase> = ReadonlyArray<SwitchCase>,
+  Default extends ScopeCallback = ScopeCallback,
+> = {
   outputSchema?: never;
-  cases: ReadonlyArray<{ when: WorkflowValue<boolean>; then: ScopeCallback }>;
-  default: ScopeCallback;
+  cases: Cases & CheckedSwitchCases<NoInfer<Cases>>;
+  default: Default & CheckedScopeCallback<NoInfer<Default>>;
 };
 
 type SwitchCaseOutput<Case> = Case extends { then: (ctx: never) => infer Output } ? Output : never;
 
-export type SwitchNodeRefOutput<Spec extends SwitchStepSpec> =
-  Spec extends { cases: ReadonlyArray<infer Case>; default: (ctx: never) => infer DefaultOutput }
-    ? RuntimeValueOf<SwitchCaseOutput<Case> | DefaultOutput>
-    : never;
+export type SwitchNodeRefOutput<Cases extends ReadonlyArray<SwitchCase>, Default extends ScopeCallback> =
+  RuntimeValueOf<SwitchCaseOutput<Cases[number]> | ReturnType<Default>>;
 
-export function buildSwitchNode(
+export function buildSwitchNode<Cases extends ReadonlyArray<SwitchCase>, Default extends ScopeCallback>(
   id: string,
-  spec: SwitchStepSpec,
+  spec: SwitchStepSpec<Cases, Default>,
   diagnostics: DiagnosticIR[],
   buildScope: BuildScope,
 ): SwitchNodeIR {

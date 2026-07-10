@@ -1,14 +1,18 @@
 import { assertStableId, stripUndefined } from "../../graph/lowering.js";
 import type { Simplify, ValueOf } from "../../internal/type-utils.js";
 import type { DiagnosticIR, ParallelBranchIR, ParallelNodeIR } from "../../ir/types.js";
-import type { BuildScope, ParallelStrategy, RuntimeValueOf, ScopeCallback } from "./shared.js";
+import type { BuildScope, CheckedScopeCallback, ParallelStrategy, RuntimeValueOf, ScopeCallback } from "./shared.js";
+
+type CheckedBranches<Branches extends Record<string, ScopeCallback>> = {
+  readonly [Key in keyof Branches]: Branches[Key] & CheckedScopeCallback<NoInfer<Branches[Key]>>;
+};
 
 /** Authoring spec for static parallel branches. */
 export type ParallelStepSpec<
   Branches extends Record<string, ScopeCallback> = Record<string, ScopeCallback>,
   Strategy extends ParallelStrategy = "all",
 > = Simplify<{
-  branches: Branches;
+  branches: Branches & CheckedBranches<NoInfer<Branches>>;
   maxConcurrency?: number;
 } & (Strategy extends "race" ? { strategy: "race" } : { strategy?: "all" })>;
 

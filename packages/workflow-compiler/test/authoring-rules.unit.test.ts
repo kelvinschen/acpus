@@ -1,8 +1,13 @@
 import type { DiagnosticIR } from "@acpus/core/ir";
+import { readdir, readFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { checkWorkflowAuthoring } from "../src/check/authoring-rules/index.js";
 import type { TaskAuthoringIssue, WorkflowTaskAnalysis } from "../src/task-analysis/index.js";
+
+const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 
 describe("workflow authoring rules", () => {
   it("reports Expr authoring diagnostics without running the full check pipeline", () => {
@@ -13,10 +18,10 @@ describe("workflow authoring rules", () => {
       if (expr) {}
       const negated = !expr;
       const logical = expr && true;
-      const compared = expr > 1;
+      const compared = expr === expr;
       const prompt = \`\${expr}\`;
       const mapped = items.map((item) => item);
-      step(expr).assert({ condition: true });
+      step(String(expr)).assert({ condition: true });
       void [negated, logical, compared, prompt, mapped];
     `, {
       isExpr: node => ts.isIdentifier(node) && (node.text === "expr" || node.text === "items"),
@@ -28,7 +33,6 @@ describe("workflow authoring rules", () => {
       "AL003",
       "AL004",
       "AL005",
-      "AL006",
     ]));
     expect(diagnostics.filter(diagnostic => diagnostic.code.startsWith("AL"))).toEqual(
       expect.arrayContaining([
@@ -40,7 +44,7 @@ describe("workflow authoring rules", () => {
     );
   });
 
-  it("allows expression array index projection but rejects array methods", () => {
+  it("leaves expression array properties and methods to TypeScript", () => {
     const diagnostics = checkAuthoring(`
       declare const items: unknown[];
       const first = items[0];
@@ -50,9 +54,7 @@ describe("workflow authoring rules", () => {
       isExpr: node => ts.isIdentifier(node) && node.text === "items",
     });
 
-    const methodDiagnostics = diagnostics.filter(diagnostic => diagnostic.code === "AL005");
-    expect(methodDiagnostics).toHaveLength(1);
-    expect(methodDiagnostics[0]?.message).toContain("array methods");
+    expect(diagnostics).toEqual([]);
   });
 
   it("reports shadowed runtime globals captured by inline tasks", () => {
@@ -68,13 +70,13 @@ describe("workflow authoring rules", () => {
     `);
 
     expect(diagnostics).toContainEqual(expect.objectContaining({
-      code: "TB007",
+      code: "TB003",
       message: expect.stringContaining("'Math'"),
       path: "tasks.inline.source",
     }));
   });
 
-  it("reports reason-specific TB008 diagnostics for unjoinable task callsites", () => {
+  it("reports reason-specific TB004 diagnostics for unjoinable task callsites", () => {
     const diagnostics = checkAuthoring(`
       declare const step: any;
       declare const dynamic: string;
@@ -92,9 +94,9 @@ describe("workflow authoring rules", () => {
     });
 
     expect(diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "TB008", hint: expect.stringContaining("literal task step id") }),
-      expect.objectContaining({ code: "TB008", hint: expect.stringContaining("object literal") }),
-      expect.objectContaining({ code: "TB008", hint: expect.stringContaining('step("id").task') }),
+      expect.objectContaining({ code: "TB004", hint: expect.stringContaining("literal task step id") }),
+      expect.objectContaining({ code: "TB004", hint: expect.stringContaining("object literal") }),
+      expect.objectContaining({ code: "TB004", hint: expect.stringContaining('step("id").task') }),
     ]));
   });
 
@@ -109,11 +111,79 @@ describe("workflow authoring rules", () => {
     });
 
     expect(diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "TB004", path: "tasks.local.reference", hint: expect.any(String) }),
-      expect.objectContaining({ code: "TB005", path: "tasks.invalid_export.reference", hint: expect.any(String) }),
-      expect.objectContaining({ code: "TB007", path: "tasks.inline_capture.source", hint: expect.any(String) }),
-      expect.objectContaining({ code: "TB008", path: "tasks.duplicate.reference", hint: expect.stringContaining("unique task step ids") }),
+      expect.objectContaining({ code: "TB001", path: "tasks.local.reference", hint: expect.any(String) }),
+      expect.objectContaining({ code: "TB002", path: "tasks.invalid_export.reference", hint: expect.any(String) }),
+      expect.objectContaining({ code: "TB003", path: "tasks.inline_capture.source", hint: expect.any(String) }),
+      expect.objectContaining({ code: "TB004", path: "tasks.duplicate.reference", hint: expect.stringContaining("unique task step ids") }),
     ]));
+  });
+
+  it("uses contiguous AL and TB diagnostic families", () => {
+    const exprDiagnostics = checkAuthoring(`
+      declare const expr: unknown;
+      declare const step: any;
+      if (expr) {}
+      void (expr && true);
+      void (expr === expr);
+      void \`value: \${expr}\`;
+      step(String(expr)).assert({ condition: true });
+    `, {
+      isExpr: node => ts.isIdentifier(node) && node.text === "expr",
+    });
+    const callbackDiagnostics = checkAuthoringWithProgram(`
+      import { fmap } from "acpus/expression";
+      declare const value: string;
+      const suffix = "!";
+      fmap(value, value => {
+        const value1 = value;
+        const value2 = value1;
+        const value3 = value2;
+        const value4 = value3;
+        const value5 = value4;
+        const value6 = value5;
+        const value7 = value6;
+        const value8 = value7;
+        return value8 + suffix;
+      });
+    `);
+    const taskDiagnostics = checkAuthoring("", {
+      taskAnalysis: new Map([
+        ["local", analyzedIssue({ kind: "workflow-local-reusable-task", name: "localTask" })],
+        ["invalid", analyzedIssue({ kind: "invalid-reusable-task-reference" })],
+        ["capture", analyzedIssue({ kind: "inline-task-capture", names: ["PREFIX"] })],
+        ["duplicate", analyzedIssue({ kind: "ambiguous-task-callsite" })],
+      ]),
+    });
+
+    expect([...new Set(codes([...exprDiagnostics, ...callbackDiagnostics, ...taskDiagnostics]))].sort()).toEqual([
+      "AL001",
+      "AL002",
+      "AL003",
+      "AL004",
+      "AL005",
+      "AL006",
+      "AL007",
+      "TB001",
+      "TB002",
+      "TB003",
+      "TB004",
+    ]);
+  });
+
+  it("does not retain removed authoring codes in current source, specs, or fixtures", async () => {
+    const files = [
+      ...await filesUnder(join(repoRoot, "packages", "workflow-compiler", "src")),
+      ...await filesUnder(join(repoRoot, "packages", "workflow-compiler", "test", "fixtures")),
+      join(repoRoot, "specs", "workflow-compiler-spec.md"),
+    ];
+    const removedCode = new RegExp(["OA00[1-4]", "AL008", "TB00(?:5|7|8)"].join("|"), "g");
+    const hits: string[] = [];
+    for (const file of files) {
+      const matches = (await readFile(file, "utf8")).match(removedCode);
+      if (matches) hits.push(`${file}: ${matches.join(", ")}`);
+    }
+
+    expect(hits).toEqual([]);
   });
 
   it("accepts expression and block fmap and lift callbacks from the expression facade", () => {
@@ -160,12 +230,11 @@ describe("workflow authoring rules", () => {
       void [title, overLimit, routed, named, view];
     `);
 
+    expect(codes(diagnostics)).not.toContain("AL006");
     expect(codes(diagnostics)).not.toContain("AL007");
-    expect(codes(diagnostics)).not.toContain("AL008");
   });
 
   it.each([
-    ["missing callback", "fmap(issue)", "requires an inline callback"],
     ["function expression", "fmap(issue, function (value) { return value.title; })", "inline arrow function"],
     ["wrong fmap arity", "fmap(issue, () => \"title\")", "simple identifiers or binding patterns"],
     ["wrong lift2 arity", "lift2(issue, issue, value => value.title)", "simple identifiers or binding patterns"],
@@ -193,7 +262,7 @@ describe("workflow authoring rules", () => {
       ${statement};
     `);
 
-    const callbackDiagnostics = diagnostics.filter(diagnostic => diagnostic.code === "AL007");
+    const callbackDiagnostics = diagnostics.filter(diagnostic => diagnostic.code === "AL006");
     expect(callbackDiagnostics).toHaveLength(1);
     expect(callbackDiagnostics[0]!.message).toContain(message);
     expect(callbackDiagnostics[0]).toMatchObject({
@@ -213,14 +282,14 @@ describe("workflow authoring rules", () => {
       declare const issue: any;
       ${call(blockCallback(params, initial, 8))};
     `);
-    expect(accepted.filter(diagnostic => diagnostic.code === "AL008")).toEqual([]);
+    expect(accepted.filter(diagnostic => diagnostic.code === "AL007")).toEqual([]);
 
     const rejected = checkAuthoringWithProgram(`
       import { fmap, lift2, lift3, lift } from "acpus/expression";
       declare const issue: any;
       ${call(blockCallback(params, initial, 9))};
     `);
-    expect(rejected.filter(diagnostic => diagnostic.code === "AL008")).toEqual([
+    expect(rejected.filter(diagnostic => diagnostic.code === "AL007")).toEqual([
       expect.objectContaining({
         severity: "error",
         message: `${helper}(...) callback contains 9 executable statements; the maximum is 8.`,
@@ -247,7 +316,7 @@ describe("workflow authoring rules", () => {
         return labels;
       });
     `);
-    expect(nested.filter(diagnostic => diagnostic.code === "AL008")).toEqual([
+    expect(nested.filter(diagnostic => diagnostic.code === "AL007")).toEqual([
       expect.objectContaining({ message: expect.stringContaining("9 executable statements") }),
     ]);
 
@@ -263,7 +332,7 @@ describe("workflow authoring rules", () => {
         return { title } satisfies View;
       });
     `);
-    expect(typeOnly.filter(diagnostic => diagnostic.code === "AL008")).toEqual([]);
+    expect(typeOnly.filter(diagnostic => diagnostic.code === "AL007")).toEqual([]);
 
     const controlFlow = checkAuthoringWithProgram(`
       import { fmap } from "acpus/expression";
@@ -281,7 +350,7 @@ describe("workflow authoring rules", () => {
         return "";
       });
     `);
-    expect(controlFlow.filter(diagnostic => diagnostic.code === "AL008")).toEqual([
+    expect(controlFlow.filter(diagnostic => diagnostic.code === "AL007")).toEqual([
       expect.objectContaining({ message: expect.stringContaining("9 executable statements") }),
     ]);
   });
@@ -302,48 +371,23 @@ describe("workflow authoring rules", () => {
       void [fmap, expr, run];
     `);
 
-    expect(codes(diagnostics)).not.toContain("AL007");
+    expect(codes(diagnostics)).not.toContain("AL006");
   });
 
   it.each([
-    ["Date", "fmap(issue, (value: { when: Date }) => value.when)", "Date"],
-    ["block Date", "fmap(issue, (value: { when: Date }) => { return value.when; })", "Date"],
-    ["function", "fmap(issue, (value: { fn: () => boolean }) => value.fn)", "function"],
-    ["Promise", "fmap(issue, (value: { promise: Promise<number> }) => value.promise)", "Promise"],
-    ["block Promise", "fmap(issue, (value: { promise: Promise<number> }) => { return value.promise; })", "Promise"],
-    ["class instance", "fmap(issue, (value: { view: View }) => value.view)", "class instance"],
-    ["Map", "fmap(issue, (value: { values: Map<string, number> }) => value.values)", "Map"],
-    ["Set", "fmap(issue, (value: { values: Set<string> }) => value.values)", "Set"],
-    ["symbol", "fmap(issue, (value: { token: symbol }) => value.token)", "symbol"],
-    ["bigint", "fmap(issue, (value: { count: bigint }) => value.count)", "bigint"],
-    ["broad object", "fmap(issue, (value: { raw: object }) => value.raw)", "object"],
-    ["async", "fmap(issue, async value => value)", "Promise"],
-  ])("reports non-admissible expression callback output %s", (_name, statement, message) => {
+    ["missing callback", "fmap(issue)"],
+    ["non-callable callback", "fmap(issue, 1)"],
+    ["excess parameters", "fmap(issue, (value, extra) => value.title)"],
+    ["async callback", "fmap(issue, async value => value.title)"],
+    ["non-durable output", "fmap(issue, value => new Date(value.title))"],
+  ])("leaves %s constraints to TypeScript", (_name, statement) => {
     const diagnostics = checkAuthoringWithProgram(`
       import { fmap } from "acpus/expression";
-
-      class View { title = "view"; }
-      declare const issue: unknown;
+      declare const issue: { title: string };
       ${statement};
     `);
 
-    expect(diagnostics).toContainEqual(expect.objectContaining({
-      code: "OA002",
-      message: expect.stringContaining(message),
-      source: expect.objectContaining({ file: "workflow.ts" }),
-    }));
-  });
-
-  it("does not reject any or unknown expression callback output types during authoring check", () => {
-    const diagnostics = checkAuthoringWithProgram(`
-      import { fmap } from "acpus/expression";
-
-      declare const issue: { loose: any; opaque: unknown };
-      fmap(issue, value => value.loose);
-      fmap(issue, value => value.opaque);
-    `);
-
-    expect(diagnostics.filter(diagnostic => diagnostic.code === "OA002")).toEqual([]);
+    expect(diagnostics.filter(diagnostic => diagnostic.code === "AL006")).toEqual([]);
   });
 });
 
@@ -405,6 +449,8 @@ function fakeProgram(options: {
         stepDeclaration: options.isStepDeclaration?.(node) ?? false,
       });
     },
+    getStringType: () => fakeType({ expr: false, stepDeclaration: false }),
+    isTypeAssignableTo: () => true,
     getSymbolAtLocation: () => undefined,
   };
   return { getTypeChecker: () => checker } as unknown as ts.Program;
@@ -428,4 +474,14 @@ function analyzedIssue(issue: TaskAuthoringIssue): WorkflowTaskAnalysis extends 
 
 function codes(diagnostics: DiagnosticIR[]): string[] {
   return diagnostics.map(diagnostic => diagnostic.code);
+}
+
+async function filesUnder(root: string): Promise<string[]> {
+  const files: string[] = [];
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) files.push(...await filesUnder(path));
+    else if (entry.isFile() && (path.endsWith(".ts") || path.endsWith(".md"))) files.push(path);
+  }
+  return files;
 }

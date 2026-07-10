@@ -1,6 +1,6 @@
 import type { FanoutNodeIR, LoopNodeIR, NodeIR, ParallelNodeIR, WorkflowIR } from "@acpus/core/ir";
 import type { JsonObject, JsonValue } from "@acpus/expression/ir";
-import { assertWorkflowData } from "../evaluation/admissible.js";
+import { normalizeWorkflowData } from "../evaluation/admissible.js";
 import { evaluateExpr, renderTemplate, type EvaluationScope } from "../evaluation/evaluator.js";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "./identity.js";
 import type { SchedulerEvent } from "./events.js";
@@ -382,7 +382,7 @@ function materializeLoopEvents(input: { runId: string; node: LoopNodeIR; parentF
   const start = nodeFrameStarted(input.runId, input.node, nodePath, input.parentFrameKey, "loop");
   let state: JsonValue;
   try {
-    state = evaluateExpr(input.node.state, input.scope) as JsonValue;
+    state = normalizeWorkflowData(evaluateExpr(input.node.state, input.scope), `Loop node '${input.node.id}' initial state`) as JsonValue;
   } catch (error) {
     return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: expressionFailure(error), terminalReason: "expression_failed" } }];
   }
@@ -694,8 +694,7 @@ function loopScopeForIteration(scope: EvaluationScope, nodeId: string, iter: num
 
 function evaluateOutputs(outputs: NonNullable<ScopeIR["outputs"]>, scope: EvaluationScope): JsonObject {
   const result = Object.fromEntries(Object.entries(outputs).map(([key, expr]) => [key, evaluateExpr(expr, scope) as JsonValue]));
-  assertWorkflowData(result, "Scope output");
-  return result;
+  return normalizeWorkflowData(result, "Scope output") as JsonObject;
 }
 
 function renderAssertFailure(node: Extract<NodeIR, { kind: "assert" }>, scope: EvaluationScope): string {

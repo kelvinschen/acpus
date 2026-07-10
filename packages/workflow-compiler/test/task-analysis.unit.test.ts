@@ -78,7 +78,7 @@ describe("task analysis", () => {
     expectWorkflowLocalReusableAccepted(analysis, "local");
   });
 
-  it("rejects a non-exported reusable task defined as a workflow-local value (TB004)", async () => {
+  it("rejects a non-exported reusable task defined as a workflow-local value (TB001)", async () => {
     const analysis = await analyze(
       `import { task, z } from "acpus/core";
        const local = task.define({ inputSchema: z.object({}), exec: async () => ({ ok: true }) });
@@ -89,7 +89,7 @@ describe("task analysis", () => {
     expectTaskIssue(analysis, { kind: "workflow-local-reusable-task" });
   });
 
-  it("rejects a nested reusable task defined inside workflow scope (TB004)", async () => {
+  it("rejects a nested reusable task defined inside workflow scope (TB001)", async () => {
     const analysis = await analyze(
       `import { defineWorkflow, task, z } from "acpus/core";
        export default defineWorkflow({ name: "nested_task" }).build(({ step }) => {
@@ -133,7 +133,7 @@ describe("task analysis", () => {
     expect(analysis.get("run")?.metadata).toBeUndefined();
   });
 
-  it("rejects a same-file exported value that is not task.define(...) (TB005)", async () => {
+  it("rejects a same-file exported value that is not task.define(...) (TB002)", async () => {
     const analysis = await analyze(
       `const local = { fn: async () => ({ ok: true }) };
        export { local };
@@ -203,7 +203,7 @@ describe("task analysis", () => {
     expectInlineAccepted(analysis);
   });
 
-  it("rejects an inline task that references an outer free identifier (TB007)", async () => {
+  it("rejects an inline task that references an outer free identifier (TB003)", async () => {
     const analysis = await analyze(
       `import semver from "semver";
        declare const step: any;
@@ -215,7 +215,7 @@ describe("task analysis", () => {
     expect(verdict?.issue && "names" in verdict.issue ? verdict.issue.names : []).toContain("semver");
   });
 
-  it("rejects an inline task that captures workflow-scope helpers (TB007)", async () => {
+  it("rejects an inline task that captures workflow-scope helpers (TB003)", async () => {
     const analysis = await analyze(
       `declare const step: any;
        declare const helper: any;
@@ -225,7 +225,7 @@ describe("task analysis", () => {
     expectTaskIssue(analysis, { kind: "inline-task-capture" });
   });
 
-  it("rejects an inline task that captures an outer value via a destructuring default (TB007)", async () => {
+  it("rejects an inline task that captures an outer value via a destructuring default (TB003)", async () => {
     const analysis = await analyze(
       `import { DEFAULT_RETRIES } from "./config.js";
        declare const step: any;

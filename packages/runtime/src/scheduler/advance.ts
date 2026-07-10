@@ -6,7 +6,7 @@ import { ancestorGroupMembersForNode } from "./membership.js";
 import { schedulerStoreError, throwSchedulerStoreResult, type AttemptCommitInput, type RunOwnerClaim, type SchedulerSnapshot, type SchedulerStoreError, type SchedulerStorePort, type SchedulerStoreResult } from "./store-port.js";
 import type { GroupMember, NodeInstance, SchedulerProjection } from "./types.js";
 import { attemptTimeoutEvents, groupCompletionEvents, signalTimeoutEvents } from "./transitions.js";
-import { assertWorkflowData } from "../evaluation/admissible.js";
+import { normalizeWorkflowData } from "../evaluation/admissible.js";
 
 export type NodeAttemptContext = {
   runId: string;
@@ -377,7 +377,9 @@ async function runInstance(
   if (counters.leaseLost) return;
   if (result.status === "completed") {
     try {
-      assertWorkflowData(result.output, `Node '${instance.nodeId}' output`);
+      if (result.output !== undefined) {
+        result = { ...result, output: normalizeWorkflowData(result.output, `Node '${instance.nodeId}' output`) as JsonValue };
+      }
     } catch (error) {
       result = { status: "failed", reason: error instanceof Error ? error.message : String(error) };
     }

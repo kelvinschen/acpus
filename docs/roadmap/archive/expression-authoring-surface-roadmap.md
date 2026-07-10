@@ -303,7 +303,7 @@ deep clone 是 runtime mutation 防线。我们不在 AST 里维护 `sort` / `pu
 TypeScript 负责：
 
 - `fmap` / `lift2` / `lift3` / `lift` call shape。
-- callback arity。
+- helper call shape、缺失 callback 和 TypeScript 已拒绝的 excess callback parameters。
 - callback input resolved type inference。
 - sync callback return。`async` callback 会返回 `Promise<T>`，不满足 `WorkflowData`。
 - callback output admissibility 的第一层类型限制。
@@ -313,9 +313,9 @@ AST checker 只负责：
 
 - callback 必须是 inline arrow function。
 - callback 必须是 inline synchronous arrow；expression body 和 block body 都允许。
-- block callback（包括 nested arrows）最多包含 8 个递归 executable statements，第 9 个开始产生 `AL008` error。
+- block callback（包括 nested arrows）最多包含 8 个递归 executable statements，第 9 个开始产生 `AL007` error。
 - callback body 不能引用 callback 参数、nested callback 参数之外的 lexical binding。
-- workflow check 可以继续用现有 output admissibility 逻辑给 callback return type 产出更明确的 diagnostic。
+- callback parameter 不足等 TypeScript 允许、但 serialized operator 无法执行的 source shape 继续由 AST checker 诊断。
 
 不做这些 AST rule：
 
@@ -376,8 +376,9 @@ lift(
 - `AL002` JS logical operator hint 改为 `lift2(a, b, (a, b) => a && b)` 或 named-object `lift`。
 - `AL003` JS comparison operator hint 改为 `lift2(a, b, (a, b) => a === b)`。
 - `AL004` 继续指向 `template` / `md`。
-- `AL005` Expr array method hint 改为 `fmap(items, items => items.map/filter/length...)`。
-- `AL007` 继续作为 callback authoring diagnostic code，但文案从 `transform(...)` 改为 `fmap/lift callback`。
+- Expr array methods 只使用 TypeScript diagnostic，不再维护 AST authoring code。
+- `AL006` 作为 callback source/capture diagnostic code，文案使用 `fmap/lift callback`。
+- `AL007` 作为 callback complexity diagnostic code。
 
 移除旧 `transform` checker 的 method allowlist。Round 16 中 `transform(item.title, title => title.trim().replace(...))` 失败的根因是 `ALLOWED_TRANSFORM_METHODS` 包含 `trim` 但不包含 `replace`；新 checker 不能沿用这个架构。
 
@@ -451,8 +452,8 @@ Tasks:
 - Support identifier and simple binding-pattern params.
 - Support nested expression-body and block-body arrow callbacks.
 - Remove method allowlist and all method-specific diagnostics.
-- Update AL001-AL005 hints to the new surface.
-- Keep output admissibility diagnostic for callback return types.
+- Update AL001-AL004 hints to the new surface.
+- Keep callback return admissibility in the public TypeScript interface without a duplicate AST diagnostic.
 
 Done when:
 
@@ -530,7 +531,7 @@ Use the Round 16 repro as a regression case:
 fmap(item.title, title => title.trim().replace(/\s+/g, " "))
 ```
 
-Expected result: no `AL007`.
+Expected result: no `AL006`.
 
 ## Deferred
 

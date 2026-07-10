@@ -3,7 +3,7 @@ import { refExpr } from "../../graph/refs.js";
 import { assertStableId, stripUndefined } from "../../graph/lowering.js";
 import type { Simplify } from "../../internal/type-utils.js";
 import { templateToIR, type TemplateInput } from "../../template/template.js";
-import type { OutputValues } from "../../graph/scope.js";
+import type { GraphOutputCheck, OutputValues } from "../../graph/scope.js";
 import type { DiagnosticIR, FanoutNodeIR } from "../../ir/types.js";
 import type { ArrayItem, BuildScope, FanoutScopeContext, FanoutStrategy, OutputObject, RuntimeValueOf, WorkflowArrayValue } from "./shared.js";
 
@@ -11,14 +11,14 @@ type BaseFanoutStepSpec<Over extends WorkflowArrayValue<any>, Output extends Out
   over: Over;
   key?: TemplateInput | ((ctx: Pick<FanoutScopeContext<ArrayItem<Over>>, "item" | "itemIndex">) => TemplateInput);
   maxConcurrency?: number;
-  do: (ctx: FanoutScopeContext<ArrayItem<Over>>) => OutputValues<Output>;
+  do: (ctx: FanoutScopeContext<ArrayItem<Over>>) => OutputValues<Output> & GraphOutputCheck<NoInfer<Output>>;
   itemOutputSchema?: never;
 };
 
 /** Authoring spec for runtime fanout over a workflow array value. */
 export type FanoutStepSpec<
   Over extends WorkflowArrayValue<any> = WorkflowArrayValue<any>,
-  Output extends OutputObject = OutputObject,
+  Output extends OutputObject = any,
   Strategy extends FanoutStrategy = FanoutStrategy,
 > = Strategy extends "quorum"
   ? Simplify<BaseFanoutStepSpec<Over, Output> & { strategy: "quorum"; count: number }>

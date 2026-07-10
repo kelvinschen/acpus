@@ -2,19 +2,22 @@ import { valueToExprIR } from "@acpus/expression/ir";
 import { assertStableId, stripUndefined } from "../../graph/lowering.js";
 import type { WorkflowValue } from "@acpus/expression";
 import type { DiagnosticIR, IfNodeIR } from "../../ir/types.js";
-import type { ScopeCallback, BuildScope, OutputObject } from "./shared.js";
+import type { BuildScope, CheckedScopeCallback, RuntimeValueOf, ScopeCallback } from "./shared.js";
 
 /** Authoring spec for a graph-level conditional branch. */
-export type IfStepSpec<Output extends OutputObject = OutputObject> = {
+export type IfStepSpec<Then extends ScopeCallback = ScopeCallback, Else extends ScopeCallback = ScopeCallback> = {
   condition: WorkflowValue<boolean>;
   outputSchema?: never;
-  then: ScopeCallback<Output>;
-  else: ScopeCallback<Output>;
+  then: Then & CheckedScopeCallback<NoInfer<Then>>;
+  else: Else & CheckedScopeCallback<NoInfer<Else>>;
 };
 
-export function buildIfNode<Output extends OutputObject>(
+export type IfNodeRefOutput<Then extends ScopeCallback, Else extends ScopeCallback> =
+  RuntimeValueOf<ReturnType<Then> | ReturnType<Else>>;
+
+export function buildIfNode<Then extends ScopeCallback, Else extends ScopeCallback>(
   id: string,
-  spec: IfStepSpec<Output>,
+  spec: IfStepSpec<Then, Else>,
   diagnostics: DiagnosticIR[],
   buildScope: BuildScope,
 ): IfNodeIR {
@@ -23,7 +26,7 @@ export function buildIfNode<Output extends OutputObject>(
     id,
     kind: "if",
     condition: valueToExprIR(spec.condition),
-    then: buildScope<{}, Output>(spec.then),
-    else: buildScope<{}, Output>(spec.else),
+    then: buildScope(spec.then),
+    else: buildScope(spec.else),
   }) as IfNodeIR;
 }

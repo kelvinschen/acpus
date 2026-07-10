@@ -42,7 +42,7 @@ describe.concurrent("workflow module compiler", () => {
   it("keeps compileWorkflowModule as the lower-level no-check API", async () => {
     const ir = await compileFixture("inline-capture.workflow.ts");
 
-    expect(ir.diagnostics).not.toContainEqual(expect.objectContaining({ code: "TB007" }));
+    expect(ir.diagnostics).not.toContainEqual(expect.objectContaining({ code: "TB003" }));
     expect(ir.diagnostics).toEqual([]);
   });
 

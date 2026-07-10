@@ -9,7 +9,7 @@ export default defineWorkflow({
     run: {
       input: {},
       // References `PREFIX` from the workflow module scope, so the inline task
-      // is not self-contained and must be rejected with TB007.
+      // is not self-contained and must be rejected with TB003.
       exec: async () => ({ slug: `${PREFIX}value` }),
     },
   });

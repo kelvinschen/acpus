@@ -77,7 +77,7 @@ export default defineWorkflow({
       expect(result.error.type).toBe("check-failed");
       expect(result.error.phase).toBe("check");
       expect(result.error.diagnostics).toContainEqual(expect.objectContaining({
-        code: "TB007",
+        code: "TB003",
         source: expect.objectContaining({ file: expect.stringContaining("inline-capture.workflow.ts") }),
         hint: expect.stringContaining("run.input"),
       }));
@@ -115,7 +115,7 @@ export default defineWorkflow({
       if (result.isOk()) throw new Error("expected check failure");
       if (result.error.type !== "check-failed") throw new Error("expected typed check failure");
       expect(result.error.diagnostics).toContainEqual(expect.objectContaining({
-        code: "AL008",
+        code: "AL007",
         severity: "error",
         message: expect.stringContaining("9 executable statements"),
       }));

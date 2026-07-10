@@ -1,5 +1,5 @@
 import { assertType, expectTypeOf, test } from "vitest";
-import { defineWorkflow, z, type OutputValues } from "../src/index.js";
+import { defineWorkflow, z, type ArtifactRef, type JsonValue, type OutputValues } from "../src/index.js";
 import { fmap, template, type Expr } from "@acpus/expression";
 
 test("loop state defines non-optional carried state and output shape", () => {
@@ -271,8 +271,8 @@ test("fanout all and quorum output are arrays of accepted item outputs", () => {
     // @ts-expect-error quorum output is the accepted item array, not an envelope.
     quorum.output.accepted;
 
+    // @ts-expect-error fanout over must be an array, not a string.
     step("bad_string_over").fanout({
-      // @ts-expect-error fanout over must be an array, not a string.
       over: input.title,
       do({ item }) { return { id: item }; },
     });
@@ -299,6 +299,134 @@ test("task outputs may be primitive, array, object, union, or undefined", () => 
     expectTypeOf(maybe.output.ok).toEqualTypeOf<Expr<true | undefined>>();
 
     return { primitive: primitive.output, array: array.output, maybe: maybe.output };
+  });
+});
+
+test("workflow output types enforce durable data and preserve explicit escapes", () => {
+  const artifactRef = {} as ArtifactRef;
+  const jsonValue = {} as JsonValue;
+  const opaque = "value" as unknown;
+  const escape = undefined as any;
+
+  defineWorkflow({ name: "typed-durable-outputs" }).build(({ step }) => {
+    step("valid_task").task({
+      run: {
+        input: {},
+        exec: async () => ({ artifactRef, jsonValue, optional: undefined }),
+      },
+    });
+    step("escaped_task").task({
+      run: { input: {}, exec: async () => escape },
+    });
+    step("invalid_unknown_task").task({
+      run: {
+        input: {},
+        // @ts-expect-error unknown is not a durable Task output.
+        exec: async () => opaque,
+      },
+    });
+    step("invalid_date_task").task({
+      run: {
+        input: {},
+        // @ts-expect-error Date is not a durable Task output.
+        exec: async () => new Date(),
+      },
+    });
+    step("invalid_function_task").task({
+      run: {
+        input: {},
+        // @ts-expect-error functions are not durable Task outputs.
+        exec: async () => () => true,
+      },
+    });
+    step("invalid_promise_task").task({
+      run: {
+        input: {},
+        // @ts-expect-error nested promises are not durable Task outputs.
+        exec: async () => ({ pending: Promise.resolve("later") }),
+      },
+    });
+    step("invalid_map_task").task({
+      run: {
+        input: {},
+        // @ts-expect-error Map is not a durable Task output.
+        exec: async () => new Map([["key", "value"]]),
+      },
+    });
+    step("invalid_set_task").task({
+      run: {
+        input: {},
+        // @ts-expect-error Set is not a durable Task output.
+        exec: async () => new Set(["value"]),
+      },
+    });
+    step("invalid_symbol_task").task({
+      run: {
+        input: {},
+        // @ts-expect-error symbols are not durable Task outputs.
+        exec: async () => Symbol("value"),
+      },
+    });
+    step("invalid_bigint_task").task({
+      run: {
+        input: {},
+        // @ts-expect-error bigint is not a durable Task output.
+        exec: async () => 1n,
+      },
+    });
+    step("invalid_array_undefined_task").task({
+      run: {
+        input: {},
+        // @ts-expect-error undefined array entries are not durable.
+        exec: async () => ["ok", undefined],
+      },
+    });
+
+    return { artifactRef, jsonValue, optional: undefined, escaped: escape };
+  });
+
+  // @ts-expect-error root workflow output cannot contain unknown.
+  defineWorkflow({ name: "invalid-root-output" }).build(() => ({ opaque }));
+  // @ts-expect-error root workflow output cannot contain Date.
+  defineWorkflow({ name: "invalid-root-date" }).build(() => ({ when: new Date() }));
+});
+
+test("branch outputs infer unions while loop transitions remain exact", () => {
+  defineWorkflow({ name: "typed-union-outputs" }).build(({ step }) => {
+    const conditional = step("conditional").if({
+      condition: true,
+      then() { return { common: "then", left: true }; },
+      else() { return { common: "else", right: 1 }; },
+    });
+    expectTypeOf(conditional.output.common).toEqualTypeOf<Expr<string>>();
+    // @ts-expect-error branch-specific fields are not safe on a union output.
+    conditional.output.left;
+
+    const switched = step("switched").switch({
+      cases: [{ when: true, then() { return { common: "case", code: 1 }; } }],
+      default() { return { common: "default", fallback: true }; },
+    });
+    expectTypeOf(switched.output.common).toEqualTypeOf<Expr<string>>();
+    // @ts-expect-error switch-specific fields are not safe on a union output.
+    switched.output.code;
+
+    const raced = step("raced").parallel({
+      strategy: "race",
+      branches: {
+        left() { return { common: "left", left: true }; },
+        right() { return { common: "right", right: 1 }; },
+      },
+    });
+    expectTypeOf(raced.output.result.common).toEqualTypeOf<Expr<string>>();
+    // @ts-expect-error race-specific fields are not safe on the result union.
+    raced.output.result.left;
+
+    return { conditional: conditional.output, switched: switched.output, raced: raced.output };
+  });
+
+  defineWorkflow({ name: "root-union-output" }).build(() => {
+    if (Date.now() > 0) return { left: true };
+    return { right: true };
   });
 });
 

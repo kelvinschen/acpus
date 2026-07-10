@@ -91,6 +91,7 @@ export default defineWorkflow({
                     `,
                   },
                 });
+                const stop = lift2(repair.output.continue, round, (shouldContinue, currentRound) => !shouldContinue || currentRound >= 2);
                 return {
                   state: {
                     branch: repair.output.branch,
@@ -98,7 +99,7 @@ export default defineWorkflow({
                     continue: repair.output.continue,
                     summary: repair.output.summary,
                   },
-                  stop: lift2(repair.output.continue, round, (shouldContinue, currentRound) => !shouldContinue || currentRound >= 2),
+                  stop,
                 };
               },
             });

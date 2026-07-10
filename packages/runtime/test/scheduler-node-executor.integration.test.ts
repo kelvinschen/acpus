@@ -3750,7 +3750,7 @@ function nonAdmissibleTaskWorkflow() {
     step("bad_output").task({
       run: {
         input: {},
-        exec: async () => ({ when: new Date() }),
+        exec: (async () => ({ when: new Date() })) as any,
       },
     });
     return {};

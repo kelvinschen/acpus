@@ -1,6 +1,6 @@
 import type { AgentNodeIR, NodeIR, ScopeIR, SignalNodeIR, TaskNodeIR, WorkflowIR } from "@acpus/core/ir";
-import type { ExprIR, JsonValue } from "@acpus/expression/ir";
-import { assertWorkflowData } from "../evaluation/admissible.js";
+import type { ExprIR, JsonObject, JsonValue } from "@acpus/expression/ir";
+import { normalizeWorkflowData } from "../evaluation/admissible.js";
 import { evaluateExpr, renderTemplate, type EvaluationScope } from "../evaluation/evaluator.js";
 import { normalizeValue } from "../evaluation/schema.js";
 
@@ -64,16 +64,17 @@ type SchedulerScope = EvaluationScope & {
 export async function executeWorkflow(ir: WorkflowIR, input: JsonValue, options: RuntimeExecutionOptions = {}): Promise<NonAgentExecutionResult> {
   const scope = createRootScope(input, options.meta ?? {});
   for (const [nodeId, output] of Object.entries(options.completedNodes ?? {})) {
-    assertWorkflowData(output, `Completed node '${nodeId}' output`);
-    const state = { status: "completed" as const, output };
+    const normalized = normalizeWorkflowData(output, `Completed node '${nodeId}' output`);
+    const state = { status: "completed" as const, output: normalized };
     scope.nodes[nodeId] = state;
     scope.executedNodes[nodeId] = state;
   }
   const scopeResult = await executeScopeAsync(ir.root, scope, options);
   const rootOutput = evaluateOutputs(ir.outputs, scope);
+  const output = Object.keys(ir.outputs).length === 0 ? scopeResult.output : rootOutput;
   return {
     status: "completed",
-    output: Object.keys(ir.outputs).length === 0 ? scopeResult.output : rootOutput,
+    output: normalizeWorkflowData(output, "Workflow output") as JsonObject,
     nodes: scope.nodes,
     executedNodes: scope.executedNodes,
   };
@@ -204,7 +205,7 @@ async function executeNodeAsync(node: NodeIR, scope: SchedulerScope, options: Ru
   }
   if (node.kind === "loop") {
     try {
-      let state = evaluateExpr(node.state, scope) as JsonValue;
+      let state = normalizeWorkflowData(evaluateExpr(node.state, scope), `Loop node '${node.id}' initial state`) as JsonValue;
       let index = 0;
       for (;;) {
         const loopScope = createChildScope(scope, {
@@ -247,8 +248,8 @@ function normalizeLoopTransition(output: Record<string, unknown>, nodeId: string
   if (!Object.prototype.hasOwnProperty.call(output, "state")) throw new Error(`Loop node '${nodeId}' body transition is missing 'state'.`);
   if (!Object.prototype.hasOwnProperty.call(output, "stop")) throw new Error(`Loop node '${nodeId}' body transition is missing 'stop'.`);
   if (typeof output.stop !== "boolean") throw new Error(`Loop node '${nodeId}' body transition 'stop' must be boolean.`);
-  assertWorkflowData(output.state, `Loop node '${nodeId}' transition state`);
-  return { state: output.state as JsonValue, stop: output.stop };
+  const state = normalizeWorkflowData(output.state, `Loop node '${nodeId}' transition state`);
+  return { state: state as JsonValue, stop: output.stop };
 }
 
 function completeNode(scope: SchedulerScope, id: string, output: unknown): void {
@@ -264,8 +265,7 @@ function validateNodeOutput(node: NodeIR, output: unknown): unknown {
   const normalized = (node.kind === "agent" || node.kind === "signal") && node.outputSchema
     ? normalizeValue(node.outputSchema, output as JsonValue, `Node '${node.id}' output`)
     : output;
-  assertWorkflowData(normalized, `Node '${node.id}' output`);
-  return normalized;
+  return normalizeWorkflowData(normalized, `Node '${node.id}' output`, { allowTopLevelUndefined: node.kind === "task" });
 }
 
 function validateSignalOutput(node: SignalNodeIR, output: unknown): unknown {

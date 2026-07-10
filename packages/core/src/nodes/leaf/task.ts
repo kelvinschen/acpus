@@ -8,6 +8,7 @@ import type { WorkflowValue } from "@acpus/expression";
 import type { DiagnosticIR, TaskExecutionTargetIR, TaskNodeIR } from "../../ir/types.js";
 import type { TaskFunction } from "../../runtime/task-context.js";
 import type { EnvInput, RuntimeInput, StepInput } from "./shared.js";
+import type { TaskOutputCheck } from "../../graph/scope.js";
 
 type BaseTaskToken<Input, Output> = {
   readonly [TASK]: true;
@@ -52,7 +53,7 @@ export type InlineTaskStepSpec<
   outputSchema?: never;
   run: TaskStepOptions & {
     input: Input;
-    exec: Exec;
+    exec: Exec & TaskOutputCheck<Awaited<ReturnType<NoInfer<Exec>>>>;
   };
 }>;
 
@@ -104,7 +105,7 @@ export interface TaskFactory {
   define<InputSchema extends Schema<any>, Exec extends TaskFunction<z.output<InputSchema>, any>>(config: {
     inputSchema: InputSchema;
     outputSchema?: never;
-    exec: Exec;
+    exec: Exec & TaskOutputCheck<Awaited<ReturnType<NoInfer<Exec>>>>;
   }): ReusableTaskToken<z.output<InputSchema>, Awaited<ReturnType<Exec>>>;
   /** Returns true when a value is an Acpus Task token. */
   isToken(value: unknown): value is TaskToken<any, any>;
@@ -113,7 +114,7 @@ export interface TaskFactory {
 export const task: TaskFactory = {
   define<InputSchema extends Schema<any>, Exec extends TaskFunction<z.output<InputSchema>, any>>(config: {
     inputSchema: InputSchema;
-    exec: Exec;
+    exec: Exec & TaskOutputCheck<Awaited<ReturnType<NoInfer<Exec>>>>;
   }) {
     type Input = z.output<InputSchema>;
     type Output = Awaited<ReturnType<Exec>>;

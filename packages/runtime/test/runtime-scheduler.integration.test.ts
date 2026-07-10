@@ -392,6 +392,28 @@ describe("runtime non-agent scheduler skeleton", () => {
     expect((await executeWorkflow(once, {})).output).toEqual({ ok: true });
   });
 
+  it("rejects non-durable initial loop state before execution", async () => {
+    const valid = compileWorkflowDefinition(defineWorkflow({
+      name: "invalid_initial_loop_state",
+    }).build(({ step }) => {
+      step("retry").loop({
+        state: { ok: false as boolean },
+        do() { return { state: { ok: true }, stop: true }; },
+      });
+      return {};
+    }));
+    const loop = valid.root.nodes[0]!;
+    const invalid = {
+      ...valid,
+      root: {
+        ...valid.root,
+        nodes: [{ ...loop, state: { kind: "literal", value: new Date() } } as unknown as typeof loop],
+      },
+    };
+
+    await expect(executeWorkflow(invalid, {})).rejects.toThrow("Loop node 'retry' initial state is not workflow-admissible: $ is Date.");
+  });
+
   it("fails non-boolean conditions and supports parallel race", async () => {
     const badAssert = compileWorkflowDefinition(defineWorkflow({
       name: "bad_assert_condition",
@@ -569,14 +591,44 @@ describe("runtime non-agent scheduler skeleton", () => {
   it("rejects non-admissible task output before it enters direct scheduler scope", async () => {
     const ir = compileWorkflowDefinition(defineWorkflow({ name: "bad_task_output" }).build(({ step }) => {
       const task = step("bad").task({
-        run: { input: {}, exec: async () => ({ when: new Date() }) },
+        run: { input: {}, exec: (async () => ({ when: new Date() })) as any },
       });
-      return { when: task.output.when };
+      return { when: (task.output as any).when };
     }));
 
     await expect(executeWorkflow(ir, {}, {
       taskExecutor: async () => ({ when: new Date() }),
     })).rejects.toThrow("Node 'bad' output is not workflow-admissible");
+  });
+
+  it("omits undefined object properties before task output enters direct scheduler scope", async () => {
+    const ir = compileWorkflowDefinition(defineWorkflow({ name: "normalized_task_output" }).build(({ step }) => {
+      step("normalize").task({
+        run: { input: {}, exec: async () => ({ keep: true, omitted: undefined, nested: { keep: "value", omitted: undefined } }) },
+      });
+      return {};
+    }));
+
+    await expect(executeWorkflow(ir, {}, {
+      taskExecutor: async () => ({ keep: true, omitted: undefined, nested: { keep: "value", omitted: undefined } }),
+    })).resolves.toMatchObject({
+      nodes: {
+        normalize: { output: { keep: true, nested: { keep: "value" } } },
+      },
+    });
+  });
+
+  it("rejects undefined array entries after an any output escape", async () => {
+    const ir = compileWorkflowDefinition(defineWorkflow({ name: "invalid_task_array" }).build(({ step }) => {
+      step("invalid_array").task({
+        run: { input: {}, exec: (async () => ["ok", undefined]) as any },
+      });
+      return {};
+    }));
+
+    await expect(executeWorkflow(ir, {}, {
+      taskExecutor: async () => ["ok", undefined],
+    })).rejects.toThrow("Node 'invalid_array' output is not workflow-admissible: $[1] is undefined");
   });
 
   it("rejects seeded completed node output and non-finite numbers before direct execution scope", async () => {

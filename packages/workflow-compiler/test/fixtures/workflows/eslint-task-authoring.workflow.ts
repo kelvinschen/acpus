@@ -12,7 +12,7 @@ export default defineWorkflow({
   name: "eslint_task_authoring_fixture",
 }).build(({ step }) => {
   step("local").task({ run: { task: localTask, input: {} } });
-  // @ts-expect-error Fixture intentionally passes a non-task export for TB005.
+  // @ts-expect-error Fixture intentionally passes a non-task export for TB002.
   step("invalid_export").task({ run: { task: notTask, input: {} } });
   step("third_party").task({ run: { task: externalTask, input: {} } });
   step("inline_capture").task({

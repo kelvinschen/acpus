@@ -5,7 +5,6 @@ import { execFunction } from "../../task-analysis/ast.js";
 import { findTaskCallsites, type TaskCallsiteIssueReason, unjoinableTaskCallsiteReason } from "../../task-analysis/callsites.js";
 import { collectFreeIdentifierNodes, isRuntimeGlobalName } from "../../task-analysis/capture-analysis.js";
 import { analyzeTaskAuthoring, type TaskAuthoringIssue, type WorkflowTaskAnalysis } from "../../task-analysis/index.js";
-import { checkOutputAdmissibility, workflowDataAdmissibilityDiagnostic } from "./output-admissibility.js";
 
 // Acpus authoring rules are the product check rules used by
 // checkWorkflow(...) and prepareWorkflow(...). They intentionally do not invoke
@@ -23,66 +22,17 @@ export function checkWorkflowAuthoring(input: AuthoringRulesInput): DiagnosticIR
   const diagnostics: DiagnosticIR[] = [];
   const checker = input.program.getTypeChecker();
   checkExprAuthoring(input.sourceFile, checker, diagnostics);
-  diagnostics.push(...checkOutputAdmissibility(outputAdmissibilitySources(input.program, input.sourceFile), checker));
   checkTaskAuthoring(input.taskAnalysis, diagnostics);
   checkInlineTaskShadowedGlobalCapture(input.sourceFile, checker, diagnostics);
   return diagnostics;
 }
 
-function outputAdmissibilitySources(program: ts.Program, entry: ts.SourceFile): ts.SourceFile[] {
-  const sources: ts.SourceFile[] = [];
-  const seen = new Set<string>();
-
-  const visit = (sourceFile: ts.SourceFile): void => {
-    const fileName = sourceFile.fileName;
-    if (seen.has(fileName) || excludedOutputAdmissibilitySource(sourceFile)) return;
-    seen.add(fileName);
-    sources.push(sourceFile);
-
-    for (const specifier of localModuleSpecifiers(sourceFile)) {
-      const resolved = ts.resolveModuleName(specifier, fileName, program.getCompilerOptions(), ts.sys).resolvedModule;
-      if (!resolved) continue;
-      const imported = program.getSourceFile(resolved.resolvedFileName);
-      if (imported) visit(imported);
-    }
-  };
-
-  visit(entry);
-  return sources.length > 0 ? sources : [entry];
-}
-
-function excludedOutputAdmissibilitySource(sourceFile: ts.SourceFile): boolean {
-  if (sourceFile.isDeclarationFile) return true;
-  const fileName = sourceFile.fileName.replace(/\\/g, "/");
-  return fileName.includes("/node_modules/")
-    || fileName.includes("/packages/core/src/")
-    || fileName.includes("/packages/expression/src/");
-}
-
-function localModuleSpecifiers(sourceFile: ts.SourceFile): string[] {
-  const specifiers: string[] = [];
-  const visit = (node: ts.Node): void => {
-    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
-      const text = node.moduleSpecifier.text;
-      if (text.startsWith(".") || text.startsWith("/")) specifiers.push(text);
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sourceFile);
-  return specifiers;
-}
-
-const ARRAY_METHODS = new Set(["map", "filter", "forEach", "reduce", "some", "every"]);
 const MAX_EXPRESSION_CALLBACK_STATEMENTS = 8;
-const COMPARISON_OPERATORS = new Set<ts.SyntaxKind>([
+const EQUALITY_OPERATORS = new Set<ts.SyntaxKind>([
   ts.SyntaxKind.EqualsEqualsToken,
   ts.SyntaxKind.ExclamationEqualsToken,
   ts.SyntaxKind.EqualsEqualsEqualsToken,
   ts.SyntaxKind.ExclamationEqualsEqualsToken,
-  ts.SyntaxKind.LessThanToken,
-  ts.SyntaxKind.LessThanEqualsToken,
-  ts.SyntaxKind.GreaterThanToken,
-  ts.SyntaxKind.GreaterThanEqualsToken,
 ]);
 
 function checkExprAuthoring(sourceFile: ts.SourceFile, checker: ts.TypeChecker, diagnostics: DiagnosticIR[]): void {
@@ -99,20 +49,19 @@ function checkExprAuthoring(sourceFile: ts.SourceFile, checker: ts.TypeChecker, 
         && (isExpr(checker, node.left) || isExpr(checker, node.right))) {
         diagnostics.push(diagnostic("AL002", "Expr values cannot use JavaScript logical operators at workflow authoring time.", node, "Use lift2(a, b, (a, b) => a && b) or lift({ deps }, fn)."));
       }
-      if (COMPARISON_OPERATORS.has(node.operatorToken.kind) && (isExpr(checker, node.left) || isExpr(checker, node.right))) {
-        diagnostics.push(diagnostic("AL003", "Expr values cannot use JavaScript comparison operators at workflow authoring time.", node, "Use lift2(a, b, (a, b) => a === b) or lift({ deps }, fn)."));
+      if (EQUALITY_OPERATORS.has(node.operatorToken.kind)
+        && (isExpr(checker, node.left) || isExpr(checker, node.right))
+        && typesOverlap(checker, node.left, node.right)) {
+        diagnostics.push(diagnostic("AL003", "Expr values cannot use JavaScript equality operators at workflow authoring time.", node, "Use lift2(a, b, (a, b) => a === b) or lift({ deps }, fn)."));
       }
     }
     if (ts.isTemplateExpression(node) && !ts.isTaggedTemplateExpression(node.parent) && node.templateSpans.some(span => isExpr(checker, span.expression))) {
       diagnostics.push(diagnostic("AL004", "Expr values cannot be interpolated with untagged template literals.", node, "Use template or md from @acpus/expression."));
     }
-    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && ARRAY_METHODS.has(node.expression.name.text) && isExpr(checker, node.expression.expression)) {
-      diagnostics.push(diagnostic("AL005", "Expr accessors do not support JavaScript array methods at workflow authoring time.", node, "Use fmap(items, items => items.map/filter/length...), lift2(...), or lift({ deps }, fn)."));
-    }
     if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "step") {
       const id = node.arguments[0];
-      if (id && isExprDerived(checker, id)) {
-        diagnostics.push(diagnostic("AL006", "Node ids cannot be derived from runtime Expr values.", id, "Node ids must be compile-time stable strings."));
+      if (id && isStringAssignable(checker, id) && isExprDerived(checker, id)) {
+        diagnostics.push(diagnostic("AL005", "Node ids cannot be derived from runtime Expr values.", id, "Node ids must be compile-time stable strings."));
       }
     }
     const unjoinableReason = unjoinableTaskCallsiteReason(node, checker);
@@ -123,13 +72,9 @@ function checkExprAuthoring(sourceFile: ts.SourceFile, checker: ts.TypeChecker, 
       const helper = expressionCallbackHelper(node, callbackImports, checker);
       if (helper) {
         const issue = expressionCallbackIssue(node, helper, checker);
-        if (issue) diagnostics.push(diagnostic("AL007", issue.message, issue.node, issue.hint));
+        if (issue) diagnostics.push(diagnostic("AL006", issue.message, issue.node, issue.hint));
         const complexityDiagnostic = expressionCallbackComplexityDiagnostic(node, helper);
         if (complexityDiagnostic) diagnostics.push(complexityDiagnostic);
-        if (!issue) {
-          const outputDiagnostic = expressionCallbackOutputDiagnostic(node, helper, checker);
-          if (outputDiagnostic) diagnostics.push(outputDiagnostic);
-        }
         visitExpressionCallbackDependencies(node, helper, visit);
         return;
       }
@@ -205,8 +150,9 @@ function expressionCallbackIssue(call: ts.CallExpression, helper: ExpressionCall
   const rule = expressionOperatorSpec(helper)?.callback;
   if (!rule) return undefined;
   const node = call.arguments[rule.callbackSourceArg];
-  if (!node) return callbackIssue(`${helper}(...) requires an inline callback.`, call, callbackHint(helper));
+  if (!node) return undefined;
   if (!ts.isArrowFunction(node)) {
+    if (checker.getTypeAtLocation(node).getCallSignatures().length === 0) return undefined;
     return callbackIssue(`${helper}(...) callback must be an inline arrow function.`, node, callbackHint(helper));
   }
   const parameterIssue = callbackParameterIssue(node, rule.callbackParamCount);
@@ -223,21 +169,11 @@ function expressionCallbackComplexityDiagnostic(call: ts.CallExpression, helper:
   const count = executableStatementCount(callback.body);
   if (count <= MAX_EXPRESSION_CALLBACK_STATEMENTS) return undefined;
   return diagnostic(
-    "AL008",
+    "AL007",
     `${helper}(...) callback contains ${count} executable statements; the maximum is ${MAX_EXPRESSION_CALLBACK_STATEMENTS}.`,
     callback.body,
     "Keep expression callbacks focused on small synchronous JSON transforms. Move multi-step logic into a Task and pass dependencies through run.input.",
   );
-}
-
-function expressionCallbackOutputDiagnostic(call: ts.CallExpression, helper: ExpressionCallbackHelper, checker: ts.TypeChecker): DiagnosticIR | undefined {
-  const callbackIndex = expressionOperatorSpec(helper)?.callback?.callbackSourceArg;
-  const callback = callbackIndex === undefined ? undefined : call.arguments[callbackIndex];
-  if (!callback || !ts.isArrowFunction(callback)) return undefined;
-  const signature = checker.getSignatureFromDeclaration(callback);
-  if (!signature) return undefined;
-  const returnType = checker.getReturnTypeOfSignature(signature);
-  return workflowDataAdmissibilityDiagnostic(`${helper} callback output`, callbackOutputExpression(callback) ?? callback, returnType, checker);
 }
 
 function visitExpressionCallbackDependencies(call: ts.CallExpression, helper: ExpressionCallbackHelper, visit: (node: ts.Node) => void): void {
@@ -277,7 +213,8 @@ function callbackBodyIssue(callback: ts.ArrowFunction, checker: ts.TypeChecker, 
 }
 
 function callbackParameterIssue(node: ts.ArrowFunction, expectedCount: number): ts.Node | undefined {
-  if (node.parameters.length !== expectedCount) return node;
+  if (node.parameters.length < expectedCount) return node;
+  if (node.parameters.length > expectedCount) return undefined;
   for (const parameter of node.parameters) {
     if (parameter.dotDotDotToken || parameter.initializer) return parameter;
     if (!isSimpleBindingName(parameter.name)) return parameter.name;
@@ -303,21 +240,6 @@ function executableStatementCount(root: ts.Block): number {
   };
   visit(root);
   return count;
-}
-
-function callbackOutputExpression(callback: ts.ArrowFunction): ts.Expression | undefined {
-  if (!ts.isBlock(callback.body)) return callback.body;
-  let output: ts.Expression | undefined;
-  const visit = (node: ts.Node): void => {
-    if (output || (node !== callback && ts.isFunctionLike(node))) return;
-    if (ts.isReturnStatement(node) && node.expression) {
-      output = node.expression;
-      return;
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(callback.body);
-  return output;
 }
 
 function callbackHint(helper: ExpressionCallbackHelper): string {
@@ -370,6 +292,16 @@ function hasExprMarker(type: ts.Type): boolean {
   return Boolean(type.getProperty("__ir"));
 }
 
+function typesOverlap(checker: ts.TypeChecker, left: ts.Expression, right: ts.Expression): boolean {
+  const leftType = checker.getTypeAtLocation(left);
+  const rightType = checker.getTypeAtLocation(right);
+  return checker.isTypeAssignableTo(leftType, rightType) || checker.isTypeAssignableTo(rightType, leftType);
+}
+
+function isStringAssignable(checker: ts.TypeChecker, node: ts.Expression): boolean {
+  return checker.isTypeAssignableTo(checker.getTypeAtLocation(node), checker.getStringType());
+}
+
 function checkInlineTaskShadowedGlobalCapture(sourceFile: ts.SourceFile, checker: ts.TypeChecker, diagnostics: DiagnosticIR[]): void {
   for (const callsite of findTaskCallsites(sourceFile)) {
     const exec = execFunction(callsite.options);
@@ -399,14 +331,14 @@ function taskDiagnostic(stepId: string, issue: TaskAuthoringIssue, source: Diagn
     case "workflow-local-reusable-task":
       return {
         ...base,
-        code: "TB004",
+        code: "TB001",
         message: `Reusable task '${issue.name}' is not exported from a loadable task module.`,
         hint: "Export the top-level task.define(...) value from the workflow module, move it to an exported task module, or use an inline self-contained task.",
       };
     case "invalid-reusable-task-reference":
       return {
         ...base,
-        code: "TB005",
+        code: "TB002",
         message: issue.name
           ? `Reusable task '${issue.name}' must reference a task.define(...) export.`
           : "Reusable task must reference a task.define(...) export.",
@@ -415,21 +347,21 @@ function taskDiagnostic(stepId: string, issue: TaskAuthoringIssue, source: Diagn
     case "invalid-reusable-task-export":
       return {
         ...base,
-        code: "TB005",
+        code: "TB002",
         message: `Reusable task export '${issue.importedName}' must be initialized with task.define(...).`,
         hint: "Export a task.define(...) token from the task module.",
       };
     case "inline-task-capture":
       return {
         ...base,
-        code: "TB007",
+        code: "TB003",
         message: `Inline task is not self-contained; it references ${issue.names.map(name => `'${name}'`).join(", ")}.`,
         hint: "Move captured logic into a reusable task.define(...) module or pass data through run.input.",
       };
     case "ambiguous-task-callsite":
       return {
         ...base,
-        code: "TB008",
+        code: "TB004",
         message: `Task callsite '${stepId}' cannot be joined to task metadata because the task step id is used multiple times.`,
         hint: "Use unique task step ids so task metadata can be joined unambiguously.",
       };
@@ -454,11 +386,11 @@ function diagnostic(code: string, message: string, node: ts.Node, hint: string):
 function taskCallsiteDiagnostic(reason: TaskCallsiteIssueReason, node: ts.Node): DiagnosticIR {
   switch (reason) {
     case "saved-step-declaration":
-      return diagnostic("TB008", "Task callsite cannot be joined to task metadata through a saved step declaration.", node, "Inline the task call as step(\"id\").task({...}).");
+      return diagnostic("TB004", "Task callsite cannot be joined to task metadata through a saved step declaration.", node, "Inline the task call as step(\"id\").task({...}).");
     case "non-object-task-spec":
-      return diagnostic("TB008", "Task callsite cannot be joined to task metadata because the task spec is not an object literal.", node, "Pass the task spec as an object literal directly to .task(...).");
+      return diagnostic("TB004", "Task callsite cannot be joined to task metadata because the task spec is not an object literal.", node, "Pass the task spec as an object literal directly to .task(...).");
     case "non-literal-task-id":
-      return diagnostic("TB008", "Task callsite cannot be joined to task metadata because the task step id is not a literal string.", node, "Use a literal task step id for task metadata checks.");
+      return diagnostic("TB004", "Task callsite cannot be joined to task metadata because the task step id is not a literal string.", node, "Use a literal task step id for task metadata checks.");
   }
 }
 

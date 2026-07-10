@@ -78,15 +78,19 @@
 - Node ids MUST remain unique across the entire workflow IR, including nested composite scopes.
 - Parent scopes MUST access a composite node only through that node's projected `output`.
 - Composite callbacks MUST declare their scope output by returning a plain object. TypeScript-owned composite outputs MUST be inferred from callback returns and MUST NOT declare author-facing `outputSchema`.
+- Workflow root and composite callback return types MUST use a recursive TypeScript constraint that accepts durable primitives, arrays, plain object shapes, `JsonValue`, `ArtifactRef`, graph `Expr` values, object-property `undefined`, and unions while rejecting `unknown`, functions, promises, dates, maps, sets, symbols, bigint, and array-element `undefined`.
+- The recursive output constraint MUST preserve exact inferred output types and MUST allow `any` as the explicit TypeScript escape hatch. It MUST remain an internal type implementation detail rather than a required author import.
 - Array output accessors MAY be combined through `@acpus/expression` callback helpers such as `fmap` and `lift`; no array-specific expression helper is required.
-- If nodes MUST use `step("id").if({ condition, then, else })`.
+- If nodes MUST use `step("id").if({ condition, then, else })` and MUST infer the union of `then` and `else` outputs.
 - Switch nodes MUST use `default` for fallback authoring, and default MUST be declared.
+- Switch and parallel race outputs MUST preserve heterogeneous branch unions. Accessors over a union MUST expose only fields TypeScript can prove are present.
 - Parallel nodes MUST express static named branch concurrency with named branch declaration methods and support `strategy?: "all" | "race"`, defaulting to `"all"`.
 - Fanout nodes MUST express runtime array expansion and support `strategy?: "all" | "quorum"`, defaulting to `"all"`.
 - Fanout item output MUST be inferred from the `do` callback and serialize no `itemOutputSchema`.
 - Loop nodes MUST declare `state`; loop bodies MUST receive `index`, `round`, and non-optional `state`.
 - Loop bodies MUST return a transition object `{ state, stop }`; transition `state` MUST converge with the declared initial `state`.
 - Loop `stop` MUST accept a boolean workflow value and lower under `LoopNodeIR.do.outputs.stop`; `loop.output` MUST expose the final transition `state`.
+- Loop transition shape, stop type, and state convergence MUST be enforced by the public TypeScript interface rather than compiler AST rules.
 - Required output fields MUST NOT accept nullable or optional refs unless the author explicitly removes the nullish case, for example with `fmap(value, value => value ?? fallback)`.
 
 ### Task Authoring And Runtime Context Types
@@ -94,6 +98,7 @@
 - A reusable Task MUST be authored via `task.define({ inputSchema, exec })`.
 - A reusable Task node MUST infer output from the reusable Task's `exec` return type and MUST NOT repeat `outputSchema` at the call site.
 - A reusable Task definition's `inputSchema` MUST be the runtime input schema for its `exec` function; a reusable Task node call site's `run.input` MUST be the graph expression binding for that schema.
+- Inline and reusable Task return types MUST use the recursive durable output constraint. A Task MAY return top-level `undefined` to represent no output, but arrays MUST NOT contain `undefined` entries.
 - Task node lifecycle options MAY support top-level `timeout`.
 - Task node lifecycle options MUST NOT support workflow-level automatic `retry`.
 - Agent node `retry`, when present, MUST contain only `max?: number` and MUST

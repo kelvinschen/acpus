@@ -556,6 +556,24 @@ describe("scheduler materialization", () => {
     ]);
   });
 
+  it("rejects a non-durable initial loop state before emitting it", () => {
+    const loopKey = deriveInstanceKey(appendNode([], "retry"));
+    const invalidState = { kind: "literal", value: new Date() } as any;
+
+    expect(bootstrapRootEvents("run_1", workflowWithRootNode(loopNode({ state: invalidState })), {})).toEqual([
+      { type: "frame.started", payload: { runId: "run_1", frameKey: "root", frameKind: "root", scope: { retry: loopKey } } },
+      expect.objectContaining({ type: "frame.started", payload: expect.objectContaining({ frameKey: loopKey, frameKind: "loop" }) }),
+      {
+        type: "frame.failed",
+        payload: {
+          frameKey: loopKey,
+          error: { reason: "expression_failed", message: "Loop node 'retry' initial state is not workflow-admissible: $ is Date." },
+          terminalReason: "expression_failed",
+        },
+      },
+    ]);
+  });
+
   it("continues root loop from transition state", () => {
     const workflow = workflowWithRootNode(loopNode());
     const loopKey = deriveInstanceKey(appendNode([], "retry"));
