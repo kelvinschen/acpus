@@ -8,7 +8,7 @@ import {
   type Expr,
   type ExprValue,
   type WorkflowData,
-  type WorkflowValue,
+  type Resolvable,
 } from "@acpus/expression";
 import { refExpr } from "@acpus/expression/ir";
 // @ts-expect-error expr is exported from @acpus/expression/ir, not the root.
@@ -39,7 +39,7 @@ const maxItems = refExpr<number>(["input", "maxItems"]);
 
 test("authoring helpers infer expression shapes", () => {
   assertType<WorkflowData>({ ok: true, values: [1, "two", null] });
-  assertType<WorkflowValue<string>>("literal");
+  assertType<Resolvable<string>>("literal");
   assertType<ExprValue<readonly Item[]>>(items);
   assertType<Expr<string>>(md`hello ${kind}`);
 
@@ -61,7 +61,7 @@ test("authoring helpers infer expression shapes", () => {
   assertType<ExprValue<string>>(transformedIssue.title);
   assertType<ExprValue<readonly string[]>>(transformedIssue.meta.labels);
   assertType<ExprValue<string | undefined>>(transformedIssue.meta.labels[0]!);
-  assertType<ExprValue<string>>(fmap(transformedIssue.meta.labels[0], label => label ?? "fallback"));
+  assertType<ExprValue<string>>(fmap(transformedIssue.meta.labels[0]!, label => label ?? "fallback"));
 });
 
 test("authoring helpers reject unsupported shapes where static typing can prove it", () => {
@@ -75,6 +75,8 @@ test("authoring helpers reject unsupported shapes where static typing can prove 
   fmap(count, () => new Date());
   // @ts-expect-error undefined is not WorkflowData.
   fmap(count, () => undefined);
+  // @ts-expect-error raw undefined is not a resolvable input.
+  fmap(undefined, value => value);
   // @ts-expect-error lift takes a named dependency object, not tuple deps.
   lift([ready, kind], ([ready, kind]) => ready && kind === "release");
   // @ts-expect-error lift does not support variadic dependencies.

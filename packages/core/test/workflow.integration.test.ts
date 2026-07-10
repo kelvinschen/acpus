@@ -174,30 +174,36 @@ describe("workflow compilation", () => {
       run: {
         agent: "reviewer",
         prompt: {
-          parts: [
-            { kind: "text", value: "Review " },
-            {
-              kind: "expr",
-              expr: {
-                kind: "ref",
-                path: ["nodes", "run_tests", "output", "summary"],
+          kind: "template",
+          template: {
+            parts: [
+              { kind: "text", value: "Review " },
+              {
+                kind: "expr",
+                expr: {
+                  kind: "ref",
+                  path: ["nodes", "run_tests", "output", "summary"],
+                },
               },
-            },
-            { kind: "text", value: "" },
-          ],
+              { kind: "text", value: "" },
+            ],
+          },
         },
         sessionKey: {
-          parts: [
-            { kind: "text", value: "release:" },
-            {
-              kind: "expr",
-              expr: {
-                kind: "ref",
-                path: ["nodes", "run_tests", "output", "summary"],
+          kind: "template",
+          template: {
+            parts: [
+              { kind: "text", value: "release:" },
+              {
+                kind: "expr",
+                expr: {
+                  kind: "ref",
+                  path: ["nodes", "run_tests", "output", "summary"],
+                },
               },
-            },
-            { kind: "text", value: "" },
-          ],
+              { kind: "text", value: "" },
+            ],
+          },
         },
         cwd: { kind: "ref", path: ["input", "repoPath"] },
         env: {
@@ -210,26 +216,29 @@ describe("workflow compilation", () => {
     expect((ir.root.nodes[3] as any).run).not.toHaveProperty("use");
     expect(ir.root.nodes[4]).toMatchObject({
       kind: "signal",
-      timeout: "5m",
-      onTimeout: { action: "fail", message: "Human approval timed out" },
+      timeout: { kind: "literal", value: "5m" },
+      onTimeout: { action: "fail", message: { kind: "literal", value: "Human approval timed out" } },
       run: {
         prompt: {
-          parts: [
-            { kind: "text", value: "Approve " },
-            {
-              kind: "expr",
-              expr: {
-                kind: "ref",
-                path: ["nodes", "review", "output", "summary"],
+          kind: "template",
+          template: {
+            parts: [
+              { kind: "text", value: "Approve " },
+              {
+                kind: "expr",
+                expr: {
+                  kind: "ref",
+                  path: ["nodes", "review", "output", "summary"],
+                },
               },
-            },
-            { kind: "text", value: " for " },
-            {
-              kind: "expr",
-              expr: { kind: "ref", path: ["input", "packageName"] },
-            },
-            { kind: "text", value: "" },
-          ],
+              { kind: "text", value: " for " },
+              {
+                kind: "expr",
+                expr: { kind: "ref", path: ["input", "packageName"] },
+              },
+              { kind: "text", value: "" },
+            ],
+          },
         },
       },
     });
@@ -263,27 +272,29 @@ describe("workflow compilation", () => {
     expect(ir.root.nodes[1]).not.toHaveProperty("outputSchema");
   });
 
-  it("strips literal undefined graph binding fields during lowering", () => {
-    const ir = compileWorkflowDefinition(defineWorkflow({
-      name: "strip_undefined_outputs",
-    }).build(() => ({
-      kept: "ok",
-      omitted: undefined,
-      nested: {
-        kept: "nested",
-        omitted: undefined,
-      },
-    })));
+  it("rejects literal undefined graph binding fields during lowering", () => {
+    expect(() => compileWorkflowDefinition(defineWorkflow({
+      name: "reject_undefined_outputs",
+      // Exercise the runtime lowering backstop independently of authoring types.
+    }).build((() => ({ omitted: undefined })) as any))).toThrow("Unsupported expression value: undefined.");
 
-    expect(ir.outputs).toEqual({
-      kept: { kind: "literal", value: "ok" },
-      nested: {
-        kind: "object",
-        fields: {
-          kept: { kind: "literal", value: "nested" },
-        },
-      },
-    });
+    expect(() => compileWorkflowDefinition(defineWorkflow({
+      name: "reject_nested_undefined_outputs",
+    }).build((() => ({ payload: { kept: "nested", omitted: undefined } })) as any))).toThrow("Unsupported expression value at key 'omitted': undefined.");
+
+    expect(() => compileWorkflowDefinition(defineWorkflow({ name: "reject_undefined_task_input" }).build(({ step }) => {
+      step("task").task({
+        run: { input: { omitted: undefined as any }, exec: async () => ({}) },
+      });
+      return {};
+    }))).toThrow("Unsupported expression value: undefined.");
+
+    expect(() => compileWorkflowDefinition(defineWorkflow({ name: "reject_undefined_composite_output" }).build(({ step }) => {
+      step("parallel").parallel({
+        branches: { only: (() => ({ omitted: undefined })) as any },
+      });
+      return {};
+    }))).toThrow("Unsupported expression value: undefined.");
   });
 
   it("compiles current composite node shapes without invoking a runtime", () => {
@@ -354,7 +365,7 @@ describe("workflow compilation", () => {
       id: "checks",
       kind: "parallel",
       strategy: "all",
-      maxConcurrency: 2,
+      maxConcurrency: { kind: "literal", value: 2 },
       branches: {
         fast: {
           scope: {
@@ -788,7 +799,7 @@ describe("workflow compilation", () => {
     expect(ir.root.nodes[0]).toMatchObject({
       id: "approval",
       kind: "signal",
-      timeout: "1m",
+      timeout: { kind: "literal", value: "1m" },
     });
     expect(ir.root.nodes[0]).not.toHaveProperty("onTimeout");
     expect(ir.root.nodes[1]).toMatchObject({
@@ -900,9 +911,9 @@ describe("workflow compilation", () => {
         model: "gpt-5.4",
         permissionMode: "approve-all",
         agentMode: "bypassPermissions",
-        cwd: { kind: "literal", value: "/tmp/work" },
+        cwd: "/tmp/work",
         env: {
-          STATIC: { kind: "literal", value: "1" },
+          STATIC: "1",
           TOKEN: { kind: "secret", name: "WORKER_TOKEN" },
         },
       },
@@ -990,32 +1001,21 @@ describe("workflow compilation", () => {
       id: "review_quorum",
       kind: "fanout",
       strategy: "quorum",
-      count: 2,
+      count: { kind: "literal", value: 2 },
     });
     expect(quorum).not.toHaveProperty("itemOutputSchema");
   });
 
-  it("strips undefined only from plain workflow-data objects", () => {
-    const withUndefined = defineWorkflow({ name: "strip_undefined" }).build(() => ({
+  it("rejects undefined in plain workflow-data objects", () => {
+    const withUndefined = defineWorkflow({ name: "strip_undefined" }).build((() => ({
       payload: {
         keep: true,
         drop: undefined,
         nested: { keep: "yes", drop: undefined },
       },
-    }));
+    })) as any);
 
-    expect(compileWorkflowDefinition(withUndefined).outputs).toEqual({
-      payload: {
-        kind: "object",
-        fields: {
-          keep: { kind: "literal", value: true },
-          nested: {
-            kind: "object",
-            fields: { keep: { kind: "literal", value: "yes" } },
-          },
-        },
-      },
-    });
+    expect(() => compileWorkflowDefinition(withUndefined)).toThrow("Unsupported expression value at key 'drop': undefined.");
 
     const withDate = defineWorkflow({ name: "reject_non_plain_object" }).build(() => ({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

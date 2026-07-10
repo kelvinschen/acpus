@@ -140,14 +140,14 @@ export function taskArtifactWorkflow() {
 export function taskInvocationOptionsWorkflow() {
   return defineWorkflow({
     name: "runtime-task-invocation-options",
-    inputSchema: z.object({ workDir: z.string() }),
+    inputSchema: z.object({ workDir: z.string(), commandTimeout: z.string() }),
   }).build(({ input, step }) => {
     const result = step("inspect_invocation").task({
       run: {
         input: { name: "runtime", mode: "strict" },
         cwd: input.workDir,
         env: { RUNTIME_TASK_ENV: "from-run-env" },
-        execution: { defaultCommandTimeout: "5s" },
+        execution: { defaultCommandTimeout: input.commandTimeout },
         exec: async ({ input, $, env }) => {
           const command = await $`pwd`;
           return {

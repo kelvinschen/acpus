@@ -1,10 +1,10 @@
 import { valueToExprIR } from "@acpus/expression/ir";
 import { assertStableId, stripUndefined } from "../../graph/lowering.js";
-import type { WorkflowValue } from "@acpus/expression";
+import type { Resolvable } from "@acpus/expression";
 import type { DiagnosticIR, SwitchNodeIR } from "../../ir/types.js";
 import type { BuildScope, CheckedScopeCallback, RuntimeValueOf, ScopeCallback } from "./shared.js";
 
-type SwitchCase = { when: WorkflowValue<boolean>; then: ScopeCallback };
+type SwitchCase = { when: Resolvable<boolean>; then: ScopeCallback };
 type CheckedSwitchCases<Cases extends ReadonlyArray<SwitchCase>> = {
   readonly [Index in keyof Cases]: Cases[Index] extends { then: infer Then extends ScopeCallback }
     ? Cases[Index] & { then: Then & CheckedScopeCallback<NoInfer<Then>> }

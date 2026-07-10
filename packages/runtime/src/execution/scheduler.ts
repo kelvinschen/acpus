@@ -1,7 +1,8 @@
 import type { AgentNodeIR, NodeIR, ScopeIR, SignalNodeIR, TaskNodeIR, WorkflowIR } from "@acpus/core/ir";
 import type { ExprIR, JsonObject, JsonValue } from "@acpus/expression/ir";
 import { normalizeWorkflowData } from "../evaluation/admissible.js";
-import { evaluateExpr, renderTemplate, type EvaluationScope } from "../evaluation/evaluator.js";
+import { evaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
+import { resolveOrThrow, tryResolveInteger, tryResolveString } from "../evaluation/resolvable.js";
 import { normalizeValue } from "../evaluation/schema.js";
 
 export type NonAgentExecutionResult = {
@@ -187,12 +188,13 @@ async function executeNodeAsync(node: NodeIR, scope: SchedulerScope, options: Ru
       const items = evaluateExpr(node.over, scope);
       if (!Array.isArray(items)) throw new Error(`Fanout node '${node.id}' expected array input.`);
       if (node.strategy === "quorum") {
+        const count = resolveOrThrow(tryResolveInteger(node.count, scope, `Fanout node '${node.id}' quorum count`, 1));
         const completed: unknown[] = [];
         await Promise.all(items.map((item, itemIndex) => executeScopeAsync(node.do, createFanoutItemScope(scope, node.id, item, itemIndex), options).then(result => {
           completed.push(result.output);
         })));
-        if (completed.length < node.count) throw new Error(`Fanout quorum node '${node.id}' accepted ${completed.length} items, below required count ${node.count}.`);
-        completeNode(scope, node.id, completed.slice(0, node.count));
+        if (completed.length < count) throw new Error(`Fanout quorum node '${node.id}' accepted ${completed.length} items, below required count ${count}.`);
+        completeNode(scope, node.id, completed.slice(0, count));
         return;
       }
       const completed = await Promise.all(items.map(async (item, itemIndex) => (await executeScopeAsync(node.do, createFanoutItemScope(scope, node.id, item, itemIndex), options)).output));
@@ -306,5 +308,5 @@ function createFanoutItemScope(parent: SchedulerScope, nodeId: string, item: unk
 
 function renderAssertFailure(node: Extract<NodeIR, { kind: "assert" }>, scope: SchedulerScope): string {
   if (!node.message) return `Assert node '${node.id}' failed.`;
-  return `Assert node '${node.id}' failed: ${renderTemplate(node.message, scope)}`;
+  return `Assert node '${node.id}' failed: ${resolveOrThrow(tryResolveString(node.message, scope, `Assert node '${node.id}' message`))}`;
 }

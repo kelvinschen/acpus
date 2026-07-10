@@ -1,13 +1,36 @@
 import { describe, expect, it } from "vitest";
 import { fmap } from "@acpus/expression";
 import { refExpr, type ExprIR, type TemplateIR } from "@acpus/expression/ir";
-import { evaluateExpr, renderTemplate } from "../src/evaluation/evaluator.js";
+import { evaluateExpr } from "../src/evaluation/evaluator.js";
+import { tryResolveDuration, tryResolveInteger, tryResolveString } from "../src/evaluation/resolvable.js";
 
 const literal = (value: any): ExprIR => ({ kind: "literal", value });
 const ref = (path: string[]): ExprIR => ({ kind: "ref", path });
 const call = (fn: string, args: ExprIR[]): ExprIR => ({ kind: "call", fn, args });
 
 describe("runtime expression evaluator", () => {
+  it("classifies runtime value resolution failures", () => {
+    expect(tryResolveString(literal(1), {}, "prompt")._unsafeUnwrapErr()).toMatchObject({
+      type: "type",
+      field: "prompt",
+      expected: "string",
+      actual: "number",
+    });
+    expect(tryResolveInteger(literal(0), {}, "maxConcurrency", 1)._unsafeUnwrapErr()).toMatchObject({
+      type: "constraint",
+      field: "maxConcurrency",
+    });
+    expect(tryResolveDuration(literal("soon"), {}, "timeout")._unsafeUnwrapErr()).toMatchObject({
+      type: "constraint",
+      field: "timeout",
+    });
+    expect(tryResolveInteger(call("fmap", [literal(1), literal("value => { throw new Error('boom') }")]), {}, "count", 1)._unsafeUnwrapErr()).toMatchObject({
+      type: "evaluation",
+      field: "count",
+      message: expect.stringContaining("boom"),
+    });
+  });
+
   it("resolves workflow, node, meta, fanout, and loop refs", () => {
     const scope = {
       input: { packageName: "core", items: [{ id: "a" }] },
@@ -83,12 +106,6 @@ describe("runtime expression evaluator", () => {
       ],
     };
 
-    expect(renderTemplate(template, {
-      input: {
-        payload: { ok: true, count: 2 },
-        tags: ["ready", "green"],
-      },
-    })).toBe('payload={"ok":true,"count":2} tags=["ready","green"]');
     expect(evaluateExpr({ kind: "template", template }, {
       input: {
         payload: { ok: true, count: 2 },
@@ -96,19 +113,22 @@ describe("runtime expression evaluator", () => {
       },
     })).toBe('payload={"ok":true,"count":2} tags=["ready","green"]');
 
-    expect(() => renderTemplate({
+    expect(() => evaluateExpr({
       kind: "template",
-      parts: [
-        { kind: "expr", expr: literal(undefined) },
-        { kind: "text", value: "|" },
-        { kind: "expr", expr: literal(null) },
-        { kind: "text", value: "|" },
-        { kind: "expr", expr: literal(3) },
-        { kind: "text", value: "|" },
-        { kind: "expr", expr: literal(false) },
-        { kind: "text", value: "|" },
-        { kind: "expr", expr: literal("ok") },
-      ],
+      template: {
+        kind: "template",
+        parts: [
+          { kind: "expr", expr: literal(undefined) },
+          { kind: "text", value: "|" },
+          { kind: "expr", expr: literal(null) },
+          { kind: "text", value: "|" },
+          { kind: "expr", expr: literal(3) },
+          { kind: "text", value: "|" },
+          { kind: "expr", expr: literal(false) },
+          { kind: "text", value: "|" },
+          { kind: "expr", expr: literal("ok") },
+        ],
+      },
     }, {})).toThrow("template(...) expected JSON-compatible values.");
   });
 

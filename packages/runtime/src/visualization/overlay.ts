@@ -1,7 +1,8 @@
-import type { AgentDefinitionIR, ExprIR, NodeIR, SchemaIR, ScopeIR, TemplateIR, WorkflowIR } from "@acpus/core/ir";
+import type { AgentDefinitionIR, ExprIR, NodeIR, SchemaIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
 import type {
   RunDynamicAttempt,
   RunDynamicFrame,
+  RunDynamicGroup,
   RunDynamicGroupMember,
   RunDynamicNodeInstance,
   RunDynamicSignalWait,
@@ -24,11 +25,11 @@ export type NodeDetail =
   | { kind: "task"; inputs: string[]; target: "inline" | "module" }
   | { kind: "agent"; agent: string; use?: string; command?: string; model?: string; outputSchema?: SchemaIR }
   | { kind: "signal"; outputSchema?: SchemaIR }
-  | { kind: "assert"; condition: ExprIR; message?: TemplateIR }
+  | { kind: "assert"; condition: ExprIR; message?: ExprIR }
   | { kind: "if"; condition: ExprIR }
   | { kind: "switch"; cases: ExprIR[]; hasDefault: boolean }
-  | { kind: "parallel"; branches: string[]; strategy: "all" | "race" }
-  | { kind: "fanout"; over: ExprIR; strategy: "all" | "quorum"; count?: number }
+  | { kind: "parallel"; branches: string[]; strategy: "all" | "race"; maxConcurrency?: ExprIR }
+  | { kind: "fanout"; over: ExprIR; strategy: "all" | "quorum"; count?: ExprIR; maxConcurrency?: ExprIR }
   | { kind: "loop"; state: ExprIR };
 
 export type WorkflowVisualizationNode = {
@@ -50,6 +51,8 @@ export type WorkflowVisualizationGroup = {
   kind: "parallel" | "fanout";
   status: string;
   strategy?: string;
+  quorumCount?: number;
+  maxConcurrency?: number;
   instancePath?: RunDynamicFrame["instancePath"];
   members: RunDynamicGroupMember[];
 };
@@ -59,6 +62,7 @@ type WorkflowVisualizationDynamicInput = {
   frames: RunDynamicFrame[];
   nodeInstances: RunDynamicNodeInstance[];
   attempts: RunDynamicAttempt[];
+  groups: RunDynamicGroup[];
   groupMembers: RunDynamicGroupMember[];
   signalWaits: RunDynamicSignalWait[];
 };
@@ -171,9 +175,9 @@ function nodeDetail(node: NodeIR, agents: WorkflowIR["agents"]): NodeDetail {
     case "switch":
       return { kind: "switch", cases: node.cases.map(branch => branch.when), hasDefault: node.default.nodes.length > 0 };
     case "parallel":
-      return { kind: "parallel", branches: Object.keys(node.branches), strategy: node.strategy };
+      return { kind: "parallel", branches: Object.keys(node.branches), strategy: node.strategy, ...(node.maxConcurrency === undefined ? {} : { maxConcurrency: node.maxConcurrency }) };
     case "fanout":
-      return { kind: "fanout", over: node.over, strategy: node.strategy, ...(node.strategy === "quorum" ? { count: node.count } : {}) };
+      return { kind: "fanout", over: node.over, strategy: node.strategy, ...(node.strategy === "quorum" ? { count: node.count } : {}), ...(node.maxConcurrency === undefined ? {} : { maxConcurrency: node.maxConcurrency }) };
     case "loop":
       return { kind: "loop", state: node.state };
   }
@@ -185,12 +189,15 @@ function groupOverlays(dynamic: WorkflowVisualizationDynamicInput | undefined, s
     if (frame.frameKind !== "node" || frame.nodeId === undefined) return [];
     const staticNode = staticNodeById.get(frame.nodeId);
     if (staticNode?.kind !== "parallel" && staticNode?.kind !== "fanout") return [];
+    const effective = dynamic.groups.find(group => group.groupKey === frame.frameKey);
     return [{
       nodeId: frame.nodeId,
       groupKey: frame.frameKey,
       kind: staticNode.kind,
       status: frame.status,
       ...(frame.strategy === undefined ? {} : { strategy: frame.strategy }),
+      ...(effective?.quorumCount === undefined ? {} : { quorumCount: effective.quorumCount }),
+      ...(effective?.maxConcurrency === undefined ? {} : { maxConcurrency: effective.maxConcurrency }),
       ...(frame.instancePath === undefined ? {} : { instancePath: frame.instancePath }),
       members: dynamic.groupMembers.filter(member => member.groupKey === frame.frameKey),
     }];

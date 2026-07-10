@@ -1,6 +1,6 @@
 import { WORKFLOW } from "../internal/symbols.js";
 import { makeNodeRef, refExpr, type ExprValue, type NodeRef } from "./refs.js";
-import type { WorkflowValue } from "@acpus/expression";
+import type { Resolvable } from "@acpus/expression";
 import type { z } from "zod";
 import { toSchemaIR, type Schema } from "../schema/index.js";
 import { agentDefinitionToIR, agentToken, buildAgentNode, type AgentDefinitionSpec, type AgentStepSpec, type AgentToken } from "../nodes/leaf/agent.js";
@@ -15,7 +15,7 @@ import { buildFanoutNode, type FanoutNodeRefOutput, type FanoutStepSpec } from "
 import { buildLoopNode, type LoopStepSpec, type LoopTransitionOutput } from "../nodes/composite/loop.js";
 import { buildImplicitScope as buildScopeIR, isOutputObject, type GraphOutputCheck, type OutputValues } from "./scope.js";
 import { bindingsToIR, stripUndefined } from "./lowering.js";
-import type { FanoutStrategy, OutputObject, ParallelStrategy, RuntimeValueOf, ScopeCallback, WidenRuntimeValue, WorkflowArrayValue } from "../nodes/composite/shared.js";
+import type { FanoutStrategy, OutputObject, ParallelStrategy, ResolvableArray, RuntimeValueOf, ScopeCallback, WidenRuntimeValue } from "../nodes/composite/shared.js";
 import type { TaskFunction } from "../runtime/task-context.js";
 import type {
   AgentDefinitionIR,
@@ -50,9 +50,6 @@ export type WorkflowConfig<InputSchema extends Schema<any> | undefined, Agents e
   description?: string;
   inputSchema?: InputSchema;
   agents?: Agents;
-  defaults?: {
-    timeout?: string;
-  };
 };
 
 export type WorkflowDefinition<InputSchema extends Schema<any> | undefined, Agents extends AgentMap | undefined> = {
@@ -141,7 +138,7 @@ export type StepDeclaration = {
   ): NodeRef<IfNodeRefOutput<Then, Else>>;
 
   /** Declares a graph-level switch with explicit cases and a required default branch. */
-  switch<const Cases extends ReadonlyArray<{ when: WorkflowValue<boolean>; then: ScopeCallback }>, const Default extends ScopeCallback>(
+  switch<const Cases extends ReadonlyArray<{ when: Resolvable<boolean>; then: ScopeCallback }>, const Default extends ScopeCallback>(
     spec: SwitchStepSpec<Cases, Default>,
   ): NodeRef<SwitchNodeRefOutput<Cases, Default>>;
 
@@ -155,11 +152,11 @@ export type StepDeclaration = {
   ): NodeRef<ParallelNodeRefOutput<Branches, "all">>;
 
   /** Declares runtime fanout over a workflow array value. */
-  fanout<const Over extends WorkflowArrayValue<any>, Output extends OutputObject>(
+  fanout<const Over extends ResolvableArray<any>, Output extends OutputObject>(
     spec: FanoutStepSpec<Over, Output, "quorum">,
   ): NodeRef<FanoutNodeRefOutput<Output, "quorum">>;
 
-  fanout<const Over extends WorkflowArrayValue<any>, Output extends OutputObject>(
+  fanout<const Over extends ResolvableArray<any>, Output extends OutputObject>(
     spec: FanoutStepSpec<Over, Output, "all">,
   ): NodeRef<FanoutNodeRefOutput<Output, "all">>;
 
@@ -225,7 +222,7 @@ class GraphBuildState {
     return makeNodeRef(id);
   }
 
-  switch<const Cases extends ReadonlyArray<{ when: WorkflowValue<boolean>; then: ScopeCallback }>, const Default extends ScopeCallback>(
+  switch<const Cases extends ReadonlyArray<{ when: Resolvable<boolean>; then: ScopeCallback }>, const Default extends ScopeCallback>(
     id: string,
     spec: SwitchStepSpec<Cases, Default>,
   ): NodeRef<SwitchNodeRefOutput<Cases, Default>> {
@@ -251,19 +248,19 @@ class GraphBuildState {
     return makeNodeRef(id);
   }
 
-  fanout<const Over extends WorkflowArrayValue<any>, Output extends OutputObject>(
+  fanout<const Over extends ResolvableArray<any>, Output extends OutputObject>(
     id: string,
     spec: FanoutStepSpec<Over, Output, "quorum">,
   ): NodeRef<FanoutNodeRefOutput<Output, "quorum">>;
 
-  fanout<const Over extends WorkflowArrayValue<any>, Output extends OutputObject>(
+  fanout<const Over extends ResolvableArray<any>, Output extends OutputObject>(
     id: string,
     spec: FanoutStepSpec<Over, Output, "all">,
   ): NodeRef<FanoutNodeRefOutput<Output, "all">>;
 
   fanout(
     id: string,
-    spec: FanoutStepSpec<WorkflowArrayValue<any>, any, FanoutStrategy>,
+    spec: FanoutStepSpec<ResolvableArray<any>, any, FanoutStrategy>,
   ): NodeRef<any> {
     this.nodes.push(buildFanoutNode(id, spec, this.context.diagnostics, this.buildImplicitScope));
     return makeNodeRef(id);
@@ -329,7 +326,7 @@ class GraphBuildContext {
     const switchStep: StepDeclaration["switch"] = spec => this.withActiveDeclaration(scope => scope.switch(id, spec));
     const parallel = ((spec: ParallelStepSpec<Record<string, ScopeCallback>, ParallelStrategy>) =>
       this.withActiveDeclaration(scope => scope.parallel(id, spec as any))) as unknown as StepDeclaration["parallel"];
-    const fanout = ((spec: FanoutStepSpec<WorkflowArrayValue<any>, any, FanoutStrategy>) =>
+    const fanout = ((spec: FanoutStepSpec<ResolvableArray<any>, any, FanoutStrategy>) =>
       this.withActiveDeclaration(scope => scope.fanout(id, spec as any))) as unknown as StepDeclaration["fanout"];
     const loop: StepDeclaration["loop"] = spec => this.withActiveDeclaration(scope => scope.loop(id, spec));
     return {
@@ -449,7 +446,7 @@ export function compileWorkflowDefinition(definition: WorkflowDefinition<any, an
   }
 
   const ir = stripUndefined({
-    irVersion: 2,
+    irVersion: 3,
     name: definition.config.name,
     description: definition.config.description,
     inputSchema: definition.config.inputSchema ? toSchemaIR(definition.config.inputSchema) : undefined,

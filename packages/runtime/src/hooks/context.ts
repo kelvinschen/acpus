@@ -1,9 +1,7 @@
 import type { AgentNodeIR, NodeIR, TaskNodeIR, WorkflowIR } from "@acpus/core/ir";
-import type { JsonValue } from "@acpus/expression/ir";
-import { evaluateExpr, renderTemplate, type EvaluationScope } from "../evaluation/evaluator.js";
 import { indexNodes } from "../scheduler/ir-walk.js";
-import { scopeForNodeAttempt } from "../scheduler/scope.js";
 import type { SchedulerProjection } from "../scheduler/types.js";
+import type { RunExecutionMetadata } from "../store/store.js";
 import type { HookEvent } from "./config.js";
 import type { CommittedRuntimeEventRow } from "./events.js";
 
@@ -44,7 +42,7 @@ export function buildHookContext(input: {
   ir: WorkflowIR;
   workspaceDir: string;
   workflowPath: string;
-  baseScope: EvaluationScope;
+  executionMetadata: RunExecutionMetadata[];
 }): HookContext {
   const context: HookContext = {
     event: input.hookEvent,
@@ -65,13 +63,12 @@ export function buildHookContext(input: {
     const nodeKey = stringField(input.row.payload, "nodeKey") ?? input.row.nodeKey ?? "";
     const wait = input.projection.signalWaits[nodeKey];
     const nodeId = stringField(input.row.payload, "nodeId") ?? wait?.nodeId ?? "";
-    const node = indexNodes(input.ir.root).get(nodeId);
-    const prompt = stringField(input.row.payload, "renderedPrompt") ?? wait?.renderedPrompt ?? renderSignalPrompt(node, input.baseScope, input.projection, nodeKey);
+    const prompt = stringField(input.row.payload, "renderedPrompt") ?? wait?.renderedPrompt;
     const nodeContext = buildNodeContext(input, nodeKey);
     return {
       ...context,
       ...(nodeContext === undefined ? {} : { node: nodeContext }),
-      signal: { nodeId, nodeKey, prompt },
+      ...(prompt === undefined ? {} : { signal: { nodeId, nodeKey, prompt } }),
     };
   }
 
@@ -90,25 +87,31 @@ function buildNodeContext(input: Parameters<typeof buildHookContext>[0], nodeKey
   if (!nodeId) return undefined;
   const node = indexNodes(input.ir.root).get(nodeId);
   if (!node || !isHookNode(node)) return undefined;
-  const scope = scopeForNodeAttempt(input.baseScope, input.projection, nodeKey);
   const base = {
     id: node.id,
     key: nodeKey,
     kind: node.kind,
     status: nodeStatusForEvent(input.hookEvent) ?? instance?.status ?? input.projection.signalWaits[nodeKey]?.status ?? "unknown",
   };
-  if (node.kind === "agent") return { ...base, agentPrompt: renderTemplate(node.run.prompt, scope), ...nodeResultFields(input.hookEvent, input.row.payload) };
-  if (node.kind === "task") return { ...base, taskInput: taskInput(node, scope), ...nodeResultFields(input.hookEvent, input.row.payload) };
+  const metadata = latestAttemptMetadata(input.executionMetadata, nodeKey, `${node.kind}_attempt`);
+  if (node.kind === "agent") {
+    const agentPrompt = stringField(metadata, "renderedPrompt");
+    return { ...base, ...(agentPrompt === undefined ? {} : { agentPrompt }), ...nodeResultFields(input.hookEvent, input.row.payload) };
+  }
+  if (node.kind === "task") {
+    const taskInput = metadata.input;
+    return { ...base, ...(taskInput === undefined ? {} : { taskInput }), ...nodeResultFields(input.hookEvent, input.row.payload) };
+  }
   return { ...base, ...nodeResultFields(input.hookEvent, input.row.payload) };
 }
 
-function taskInput(node: TaskNodeIR, scope: EvaluationScope): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(node.run.input).map(([key, expr]) => [key, evaluateExpr(expr, scope)]));
-}
-
-function renderSignalPrompt(node: NodeIR | undefined, baseScope: EvaluationScope, projection: SchedulerProjection, nodeKey: string): string {
-  if (!node || node.kind !== "signal") return "";
-  return renderTemplate(node.run.prompt, scopeForNodeAttempt(baseScope, projection, nodeKey));
+function latestAttemptMetadata(rows: RunExecutionMetadata[], nodeKey: string, kind: string): Record<string, unknown> {
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index]!;
+    const metadata = recordValue(row.metadata);
+    if (row.kind === kind && metadata.nodeKey === nodeKey) return metadata;
+  }
+  return {};
 }
 
 function nodeResultFields(hookEvent: HookEvent, payload: Record<string, unknown>): Pick<NonNullable<HookContext["node"]>, "output" | "error"> {
@@ -146,6 +149,10 @@ function errorFrom(value: unknown): { message: string } {
 function stringField(value: Record<string, unknown>, key: string): string | undefined {
   const found = value[key];
   return typeof found === "string" ? found : undefined;
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function isHookNode(node: NodeIR): node is AgentNodeIR | TaskNodeIR | Extract<NodeIR, { kind: "signal" }> {

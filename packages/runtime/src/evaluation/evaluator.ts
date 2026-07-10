@@ -1,5 +1,5 @@
-import { evaluateExpr as evaluateExpression, renderTemplate as renderExpressionTemplate } from "@acpus/expression/evaluator";
-import type { ExprIR, TemplateIR } from "@acpus/expression/ir";
+import { evaluateExpr as evaluateExpression } from "@acpus/expression/evaluator";
+import type { ExprIR } from "@acpus/expression/ir";
 
 export type EvaluationScope = {
   input?: unknown;
@@ -11,10 +11,6 @@ export type EvaluationScope = {
 
 export function evaluateExpr(expr: ExprIR, scope: EvaluationScope): unknown {
   return evaluateExpression(expr, { resolveRef: path => resolvePath(scope, path) });
-}
-
-export function renderTemplate(template: TemplateIR, scope: EvaluationScope): string {
-  return renderExpressionTemplate(template, { resolveRef: path => resolvePath(scope, path) });
 }
 
 function resolvePath(scope: EvaluationScope, path: string[]): unknown {

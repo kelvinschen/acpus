@@ -5,7 +5,6 @@ import { dirname, join, relative, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { AgentDefinitionIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
 import type { ExprIR, JsonValue } from "@acpus/expression/ir";
-import { valueToExprIR } from "@acpus/expression/ir";
 import { ArtifactRewriteError, rewriteArtifactValue } from "../artifacts/rewrite.js";
 import { compactUndefined, parseAgentOverrideMap } from "../control/agent-overrides.js";
 import { evaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
@@ -15,7 +14,7 @@ import { ancestorGroupMembersForFrame, ancestorGroupMembersForNode } from "../sc
 import { ForkSeedPlanError, planTargetedForkSeed, type ForkSeedPlan } from "../scheduler/fork-seed.js";
 import type { SchedulerEvent } from "../scheduler/events.js";
 import { SchedulerStoreException, schedulerStoreResult, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStorePort, type AttemptStartInput, type AttemptCommitInput, type SignalConsumeInput, type SchedulerPauseInput, type SchedulerResumeInput, type SchedulerRetryInput, type SchedulerRunRetryInput, type SchedulerStoreError, type SchedulerStoreResult } from "../scheduler/store-port.js";
-import type { GroupMemberIdentity, InstancePath, SchedulerFrame } from "../scheduler/types.js";
+import type { GroupMemberIdentity, GroupProjection, InstancePath, SchedulerFrame } from "../scheduler/types.js";
 import { drainDerivedTransitions } from "../scheduler/advance.js";
 import { continueRootEvents } from "../scheduler/materialize.js";
 import { decodeSchedulerPayload, isSchedulerEventType } from "../scheduler/event-codec.js";
@@ -108,6 +107,7 @@ export type RuntimeStore = {
   getArtifact(runId: string, artifactId: string): ArtifactRecord | undefined;
   listArtifacts(runId: string): ArtifactRecord[];
   writeExecutionMetadata(input: WriteExecutionMetadataInput): void;
+  getExecutionMetadata(runId: string): RunExecutionMetadata[];
   writeNodeProgress(input: WriteNodeProgressInput): void;
   getRun(runId: string): RunDetails | undefined;
   listRuns(): RunRecord[];
@@ -238,11 +238,25 @@ export type RunDynamicDetails = {
   frames: RunDynamicFrame[];
   nodeInstances: RunDynamicNodeInstance[];
   attempts: RunDynamicAttempt[];
+  groups: RunDynamicGroup[];
   groupMembers: RunDynamicGroupMember[];
   signalWaits: RunDynamicSignalWait[];
   executionMetadata: RunExecutionMetadata[];
   progress: RunNodeProgress[];
 };
+
+type RunDynamicGroupBase = {
+  groupKey: string;
+  nodeKey: string;
+  nodeId: string;
+  status: "running" | "completed" | "failed" | "cancelled";
+  maxConcurrency?: number;
+};
+
+export type RunDynamicGroup =
+  | (RunDynamicGroupBase & { kind: "parallel"; strategy: "all" | "race"; quorumCount?: never })
+  | (RunDynamicGroupBase & { kind: "fanout"; strategy: "all"; quorumCount?: never })
+  | (RunDynamicGroupBase & { kind: "fanout"; strategy: "quorum"; quorumCount: number });
 
 export type RunExecutionMetadata = {
   id: number;
@@ -1426,6 +1440,10 @@ class SqliteRuntimeStore implements RuntimeStore {
     );
   }
 
+  getExecutionMetadata(runId: string): RunExecutionMetadata[] {
+    return readRunExecutionMetadata(this.db, runId);
+  }
+
   writeNodeProgress(input: WriteNodeProgressInput): void {
     const now = new Date().toISOString();
     this.db.exec("BEGIN IMMEDIATE");
@@ -1562,12 +1580,13 @@ class SqliteRuntimeStore implements RuntimeStore {
       const frames = readRunDynamicFrames(this.db, runId);
       const nodeInstances = readRunDynamicNodeInstances(this.db, runId);
       const attempts = readRunDynamicAttempts(this.db, runId);
+      const groups = Object.values(this.schedulerStore().loadRunSnapshot(runId).projection.groups).map(runDynamicGroup);
       const groupMembers = readRunDynamicGroupMembers(this.db, runId);
       const signalWaits = readRunDynamicSignalWaits(this.db, runId);
-      const executionMetadata = readRunExecutionMetadata(this.db, runId);
+      const executionMetadata = this.getExecutionMetadata(runId);
       const progress = readRunNodeProgress(this.db, runId);
       const progressVersion = runProgressVersion(this.db, runId);
-      if (frames.length + nodeInstances.length + attempts.length + groupMembers.length + signalWaits.length + executionMetadata.length + progress.length === 0) return undefined;
+      if (frames.length + nodeInstances.length + attempts.length + groups.length + groupMembers.length + signalWaits.length + executionMetadata.length + progress.length === 0) return undefined;
       return {
         version: this.nextSequence(runId) - 1,
         progressVersion: progressVersion.version,
@@ -1575,6 +1594,7 @@ class SqliteRuntimeStore implements RuntimeStore {
         frames,
         nodeInstances,
         attempts,
+        groups,
         groupMembers,
         signalWaits,
         executionMetadata,
@@ -2390,7 +2410,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       return { type: "group.member_completed", payload: { memberKey: member.memberKey, completionSequence: this.nextSequence(runId), ...(result.output === undefined ? {} : { output: result.output }) } };
     }
     if (result.status === "cancelled") return { type: "group.member_cancelled", payload: { memberKey: member.memberKey, cancelReason: result.reason } };
-    return { type: "group.member_failed", payload: { memberKey: member.memberKey, error: { reason: result.reason }, terminalReason: result.status === "timed_out" ? "timed_out" : result.reason } };
+    return { type: "group.member_failed", payload: { memberKey: member.memberKey, error: result.error ?? { reason: result.reason }, terminalReason: result.status === "timed_out" ? "timed_out" : result.reason } };
   }
 
   private duplicateAppendIdempotency(commit: SchedulerCommit): SchedulerSnapshot | undefined {
@@ -2851,6 +2871,19 @@ function readRunDynamicSignalWaits(db: DatabaseSync, runId: string): RunDynamicS
   }) as RunDynamicSignalWait);
 }
 
+function runDynamicGroup(group: GroupProjection): RunDynamicGroup {
+  const base: RunDynamicGroupBase = {
+    groupKey: group.groupKey,
+    nodeKey: group.nodeKey,
+    nodeId: group.nodeId,
+    status: group.status,
+    ...(group.maxConcurrency === undefined ? {} : { maxConcurrency: group.maxConcurrency }),
+  };
+  if (group.kind === "parallel") return { ...base, kind: "parallel", strategy: group.strategy };
+  if (group.strategy === "quorum") return { ...base, kind: "fanout", strategy: "quorum", quorumCount: group.quorumCount };
+  return { ...base, kind: "fanout", strategy: "all" };
+}
+
 function readRunExecutionMetadata(db: DatabaseSync, runId: string): RunExecutionMetadata[] {
   const rows = db.prepare(`
     SELECT id, attempt_id, kind, metadata_json, created_at
@@ -2962,12 +2995,12 @@ function attemptResultEvent(input: AttemptCommitInput, nodeKey: string): Extract
     };
   }
   if (input.result.status === "timed_out") {
-    return { type: "attempt.timed_out", payload: { attemptId: input.attemptId, error: { reason: input.result.reason, nodeKey } } };
+    return { type: "attempt.timed_out", payload: { attemptId: input.attemptId, error: input.result.error ?? { reason: input.result.reason, nodeKey } } };
   }
   if (input.result.status === "cancelled") {
     return { type: "attempt.cancelled", payload: { attemptId: input.attemptId, cancelReason: input.result.reason } };
   }
-  return { type: "attempt.failed", payload: { attemptId: input.attemptId, error: { reason: input.result.reason, nodeKey }, terminalReason: input.result.reason } };
+  return { type: "attempt.failed", payload: { attemptId: input.attemptId, error: input.result.error ?? { reason: input.result.reason, nodeKey }, terminalReason: input.result.reason } };
 }
 
 function instanceResultEvent(
@@ -3462,8 +3495,8 @@ function applyAgentOverride(definition: AgentDefinitionIR, override: AgentOverri
     model: override.model ?? (identityChanged ? undefined : definition.model),
     permissionMode: override.permissionMode ?? definition.permissionMode,
     agentMode: override.agentMode ?? (identityChanged ? undefined : definition.agentMode),
-    cwd: override.cwd === undefined ? definition.cwd : valueToExprIR(override.cwd),
-    env: override.env === undefined ? definition.env : Object.fromEntries(Object.entries(override.env).map(([key, value]) => [key, valueToExprIR(value)])),
+    cwd: override.cwd ?? definition.cwd,
+    env: override.env ?? definition.env,
   };
   if (override.command !== undefined) return compactUndefined({ kind: "agent_command", command: override.command, ...shared }) as AgentDefinitionIR;
   if (override.use !== undefined) return compactUndefined({ kind: "agent_definition", use: override.use, ...shared }) as AgentDefinitionIR;

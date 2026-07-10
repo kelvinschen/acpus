@@ -1,8 +1,9 @@
-import type { Expr, WorkflowValue } from "@acpus/expression";
+import type { Expr, Resolvable } from "@acpus/expression";
 import type { SecretToken } from "../../runtime/secret.js";
 
-export type StepInput = Record<string, WorkflowValue<any>>;
-export type EnvInput = Record<string, WorkflowValue<string> | SecretToken>;
+export type StepInput = Record<string, Resolvable<any>>;
+export type EnvInput = Record<string, Resolvable<string> | SecretToken>;
+export type StaticEnvInput = Record<string, string | SecretToken>;
 
 export type GraphInput<Input extends StepInput> = {
   readonly [K in keyof Input]: Input[K];

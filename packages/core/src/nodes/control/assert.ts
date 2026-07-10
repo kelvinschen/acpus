@@ -1,13 +1,12 @@
-import { type WorkflowValue } from "@acpus/expression";
+import { type Resolvable } from "@acpus/expression";
 import { valueToExprIR } from "@acpus/expression/ir";
 import { assertStableId, stripUndefined } from "../../graph/lowering.js";
-import { templateToIR, type TemplateInput } from "../../template/template.js";
 import type { AssertNodeIR, DiagnosticIR } from "../../ir/types.js";
 
 /** Authoring spec for an Assert node that fails when `condition` is false. */
 export type AssertSpec = {
-  condition: WorkflowValue<boolean>;
-  message?: TemplateInput;
+  condition: Resolvable<boolean>;
+  message?: Resolvable<string>;
 };
 
 export function buildAssertNode(id: string, spec: AssertSpec, diagnostics: DiagnosticIR[]): AssertNodeIR {
@@ -16,6 +15,6 @@ export function buildAssertNode(id: string, spec: AssertSpec, diagnostics: Diagn
     id,
     kind: "assert",
     condition: valueToExprIR(spec.condition),
-    message: spec.message === undefined ? undefined : templateToIR(spec.message),
+    message: spec.message === undefined ? undefined : valueToExprIR(spec.message),
   }) as AssertNodeIR;
 }

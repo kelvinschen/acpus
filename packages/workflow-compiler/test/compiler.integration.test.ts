@@ -20,7 +20,7 @@ describe.concurrent("workflow module compiler", () => {
   it("compiles a TypeScript workflow module with reusable module references and inline task source", async () => {
     const ir = await compileFixture("release.workflow.ts");
 
-    expect(ir.irVersion).toBe(2);
+    expect(ir.irVersion).toBe(3);
     expect(ir.name).toBe("release-readiness");
     expect(ir.diagnostics).toEqual([]);
     expect(ir.lock.workflowSourceDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
@@ -276,15 +276,18 @@ export default defineWorkflow({ name: "throws" }).build(() => {
       kind: "agent",
       run: {
         prompt: {
-          parts: expect.arrayContaining([
-            {
-              kind: "expr",
-              expr: {
-                kind: "ref",
-                path: ["loop", "repair_loop", "state", "summary"],
+          kind: "template",
+          template: {
+            parts: expect.arrayContaining([
+              {
+                kind: "expr",
+                expr: {
+                  kind: "ref",
+                  path: ["loop", "repair_loop", "state", "summary"],
+                },
               },
-            },
-          ]),
+            ]),
+          },
         },
       },
     });

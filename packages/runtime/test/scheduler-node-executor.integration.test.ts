@@ -15,6 +15,12 @@ import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
 import { createInlineTaskAttemptHarness } from "./support/task-attempt-harness.js";
 import { prepareSyntheticWorkflow, runtimeRow, runtimeRows, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 
+declare global {
+  var __acpusPromptResolutionCount: number | undefined;
+  var __acpusRepairResolutionCount: number | undefined;
+  var __acpusTimeoutResolutionCount: number | undefined;
+}
+
 let taskAttemptHarness = createInlineTaskAttemptHarness();
 
 beforeEach(() => {
@@ -118,7 +124,7 @@ describe("runtime scheduler node executor", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, rootTimedSignalWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const run = await store.admitRun({ prepared, input: { timeout: "5s", prompt: "Approve release?", timeoutMessage: "Approval timed out" }, cwd: workspace });
         const nodeKey = deriveInstanceKey(appendNode([], "approve"));
 
         await expect(advanceFrozenRun({
@@ -132,6 +138,7 @@ describe("runtime scheduler node executor", () => {
         expect(store.scheduler.loadRunSnapshot(run.id).projection.signalWaits[nodeKey]).toMatchObject({
           status: "awaiting",
           deadlineAt: "2026-07-01T00:00:05.000Z",
+          renderedPrompt: "Approve release?",
           timeoutMessage: "Approval timed out",
         });
         expect(runtimeRow(workspace, "SELECT deadline_at, timeout_message FROM signal_waits WHERE run_id = ? AND node_key = ?", run.id, nodeKey)).toMatchObject({
@@ -430,10 +437,10 @@ describe("runtime scheduler node executor", () => {
 
   it("honors root parallel maxConcurrency across repeated frozen-run advances", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-root-parallel-max-concurrency", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, rootParallelTaskWorkflow({ maxConcurrency: 1 }));
+      const prepared = await prepareSyntheticWorkflow(workspace, rootParallelTaskWorkflow({ dynamicMaxConcurrency: true }));
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const run = await store.admitRun({ prepared, input: { maxConcurrency: 1 }, cwd: workspace });
         const first = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store });
         const afterFirst = store.scheduler.loadRunSnapshot(run.id).projection;
         expect(first).toMatchObject({ status: "idle", started: 1, completed: 1 });
@@ -443,7 +450,7 @@ describe("runtime scheduler node executor", () => {
         const afterSecond = store.scheduler.loadRunSnapshot(run.id).projection;
         expect(second).toMatchObject({ status: "completed", started: 1, completed: 1 });
         expect(Object.values(afterSecond.instances).filter(instance => instance.status === "completed")).toHaveLength(2);
-        expect(Object.values(afterSecond.groups)[0]).toMatchObject({ status: "completed" });
+        expect(Object.values(afterSecond.groups)[0]).toMatchObject({ status: "completed", maxConcurrency: 1 });
       } finally {
         store.close();
       }
@@ -482,16 +489,17 @@ describe("runtime scheduler node executor", () => {
     });
   });
 
-  it("rebuilds fanout item scope from durable events after reopening the store", async () => {
+  it("rebuilds effective fanout limits and item scope after reopening the store", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-root-fanout-resume", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, rootFanoutTaskWorkflow({ maxConcurrency: 1 }));
+      const prepared = await prepareSyntheticWorkflow(workspace, rootFanoutTaskWorkflow({ strategy: "quorum", dynamicLimits: true }));
       const firstStore = await openRuntimeStore(workspace);
       let runId = "";
       try {
-        const run = await firstStore.admitRun({ prepared, input: { items: ["a", "b"] }, cwd: workspace });
+        const run = await firstStore.admitRun({ prepared, input: { items: ["a", "b", "c"], quorum: 2, parallelism: 1 }, cwd: workspace });
         runId = run.id;
         const first = await advanceFrozenRun({ cwd: workspace, runId, ownerId: "owner-a", store: firstStore });
         expect(first).toMatchObject({ status: "idle", started: 1, completed: 1 });
+        expect(Object.values(firstStore.scheduler.loadRunSnapshot(runId).projection.groups)[0]).toMatchObject({ quorumCount: 2, maxConcurrency: 1 });
       } finally {
         firstStore.close();
       }
@@ -502,7 +510,10 @@ describe("runtime scheduler node executor", () => {
         const projection = resumedStore.scheduler.loadRunSnapshot(runId).projection;
         expect(second).toMatchObject({ status: "completed", started: 1, completed: 1 });
         expect(projection.run).toMatchObject({ status: "completed" });
-        expect(Object.values(projection.instances).map(instance => instance.output).sort((a, b) => Number((a as { index: number }).index) - Number((b as { index: number }).index))).toEqual([
+        expect(Object.values(projection.groups)[0]).toMatchObject({ status: "completed", quorumCount: 2, maxConcurrency: 1 });
+        expect(Object.values(projection.groupMembers).filter(member => member.status === "completed")).toHaveLength(2);
+        expect(Object.values(projection.groupMembers).filter(member => member.status === "cancelled")).toHaveLength(1);
+        expect(Object.values(projection.instances).filter(instance => instance.status === "completed").map(instance => instance.output).sort((a, b) => Number((a as { index: number }).index) - Number((b as { index: number }).index))).toEqual([
           { item: "a", index: 0 },
           { item: "b", index: 1 },
         ]);
@@ -514,10 +525,10 @@ describe("runtime scheduler node executor", () => {
 
   it("honors root fanout quorum and maxConcurrency without running cancelled items", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-root-fanout-quorum", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, rootFanoutTaskWorkflow({ strategy: "quorum", count: 2, maxConcurrency: 2 }));
+      const prepared = await prepareSyntheticWorkflow(workspace, rootFanoutTaskWorkflow({ strategy: "quorum", dynamicLimits: true }));
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { items: ["a", "b", "c"] }, cwd: workspace });
+        const run = await store.admitRun({ prepared, input: { items: ["a", "b", "c"], quorum: 2, parallelism: 2 }, cwd: workspace });
         const summary = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store });
         const projection = store.scheduler.loadRunSnapshot(run.id).projection;
 
@@ -533,6 +544,7 @@ describe("runtime scheduler node executor", () => {
         expect(Object.values(projection.groupMembers).filter(member => member.status === "cancelled")).toHaveLength(1);
         expect(Object.values(projection.instances).filter(instance => instance.status === "completed")).toHaveLength(2);
         expect(Object.values(projection.instances).filter(instance => instance.status === "cancelled")).toHaveLength(1);
+        expect(Object.values(projection.groups)[0]).toMatchObject({ quorumCount: 2, maxConcurrency: 2 });
       } finally {
         store.close();
       }
@@ -619,7 +631,7 @@ describe("runtime scheduler node executor", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, nestedFanoutInParallelWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { items: ["a", "b"] }, cwd: workspace });
+        const run = await store.admitRun({ prepared, input: { items: ["a", "b"], parallelism: 1 }, cwd: workspace });
         const firstItemNodeKey = deriveInstanceKey(appendNode(appendFanoutItem(appendBranch([], "combine", "items"), "inner_items", 0), "inner_task"));
         const secondItemNodeKey = deriveInstanceKey(appendNode(appendFanoutItem(appendBranch([], "combine", "items"), "inner_items", 1), "inner_task"));
 
@@ -655,6 +667,10 @@ describe("runtime scheduler node executor", () => {
         expect(details?.dynamic?.groupMembers.find(member => member.memberKey === deriveInstanceKey(appendFanoutItem(appendBranch([], "combine", "items"), "inner_items", 0)))).toMatchObject({
           childFrameKey: deriveInstanceKey(appendFanoutItem(appendBranch([], "combine", "items"), "inner_items", 0)),
         });
+        expect(details?.dynamic?.groups).toEqual(expect.arrayContaining([
+          expect.objectContaining({ nodeId: "combine", maxConcurrency: 1 }),
+          expect.objectContaining({ nodeId: "inner_items", maxConcurrency: 1 }),
+        ]));
       } finally {
         store.close();
       }
@@ -2105,6 +2121,51 @@ describe("runtime scheduler node executor", () => {
     });
   });
 
+  it("resolves agent timeout, prompt, and repair max once per attempt", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-agent-dynamic-config", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, dynamicAgentConfigWorkflow());
+      const store = await openRuntimeStore(workspace);
+      globalThis.__acpusPromptResolutionCount = 0;
+      globalThis.__acpusRepairResolutionCount = 0;
+      globalThis.__acpusTimeoutResolutionCount = 0;
+      try {
+        const run = await store.admitRun({ prepared, input: { timeout: "5s", prompt: "dynamic review", repairMax: 0 }, cwd: workspace });
+        const now = new Date();
+        const turns: AgentTurnRequest[] = [];
+
+        await expect(advanceFrozenRun({
+          cwd: workspace,
+          runId: run.id,
+          ownerId: "owner-a",
+          store,
+          now: () => now,
+          executeAgentTurn: async request => {
+            turns.push(request);
+            return completedAgentTurn("{\"ok\":true}");
+          },
+        })).resolves.toMatchObject({ status: "completed", completed: 1 });
+
+        expect(turns[0]?.prompt).toContain("dynamic review");
+        expect(globalThis.__acpusPromptResolutionCount).toBe(1);
+        expect(globalThis.__acpusRepairResolutionCount).toBe(1);
+        expect(globalThis.__acpusTimeoutResolutionCount).toBe(1);
+        expect(runtimeRow(workspace, "SELECT deadline_at FROM node_attempts WHERE run_id = ?", run.id)).toMatchObject({
+          deadline_at: new Date(now.getTime() + 5_000).toISOString(),
+        });
+        expect(store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt")?.metadata).toMatchObject({
+          renderedPrompt: "dynamic review",
+          repairMax: 0,
+          deadlineAt: new Date(now.getTime() + 5_000).toISOString(),
+        });
+      } finally {
+        globalThis.__acpusPromptResolutionCount = undefined;
+        globalThis.__acpusRepairResolutionCount = undefined;
+        globalThis.__acpusTimeoutResolutionCount = undefined;
+        store.close();
+      }
+    });
+  });
+
   it("does not write raw parsed output artifacts when agent JSON recovery fails", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-agent-no-raw-parsed-output", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, retryZeroAgentWorkflow());
@@ -2390,34 +2451,101 @@ describe("runtime scheduler node executor", () => {
     });
   });
 
-  it("records zero-turn agent metadata for pre-turn setup failures", async () => {
+  it("persists empty sessionKey as a constraint-tagged attempt failure", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-agent-setup-failure-metadata", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, blankSessionAgentWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
         const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
-        const node = prepared.ir.root.nodes.find(node => node.id === "review");
-        if (!node || node.kind !== "agent") throw new Error("expected review agent node");
-
-        await expect(executeAgentNode(node, {}, {
+        await expect(advanceFrozenRun({
           cwd: workspace,
           runId: run.id,
-          nodeKey: "review.dynamic",
-          attemptId: "attempt_setup",
-          attemptNo: 1,
+          ownerId: "owner-a",
           store,
-          agents: prepared.ir.agents,
-          executeTurn: async () => completedAgentTurn("{\"ok\":true}"),
-        })).rejects.toThrow("sessionKey must render to a non-empty string");
+          executeAgentTurn: async () => {
+            throw new Error("agent turn must not start");
+          },
+        })).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
+
+        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        expect(Object.values(projection.attempts)[0]).toMatchObject({
+          status: "failed",
+          terminalReason: "expression_resolution_failed",
+          error: {
+            reason: "expression_resolution_failed",
+            type: "constraint",
+            field: "Agent node 'review' sessionKey",
+            expected: "non-empty string",
+          },
+        });
 
         const entry = store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt");
-        expect(entry).toMatchObject({ attemptId: "attempt_setup" });
+        expect(entry?.attemptId).toBe(Object.values(projection.attempts)[0]?.attemptId);
         expect(entry?.metadata).toMatchObject({
           status: "failed",
           turnCount: 0,
           message: "Agent node 'review' sessionKey must render to a non-empty string.",
           turns: [],
         });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("persists task configuration type failures through scheduler and public run details", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-task-resolution-type", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, wrongTypeTaskConfigWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { cwd: "workspace" }, cwd: workspace });
+        await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({
+          status: "failed",
+          started: 1,
+          failed: 1,
+        });
+
+        const expectedError = expect.objectContaining({
+          reason: "expression_resolution_failed",
+          type: "type",
+          field: "Task node 'build' cwd",
+          expected: "string",
+          actual: "number",
+        });
+        expect(Object.values(store.scheduler.loadRunSnapshot(run.id).projection.attempts)[0]).toMatchObject({
+          status: "failed",
+          terminalReason: "expression_resolution_failed",
+          error: expectedError,
+        });
+        expect(store.getRun(run.id)?.dynamic?.attempts[0]).toMatchObject({ error: expectedError });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("persists signal evaluation failures without creating an attempt", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-signal-resolution-evaluation", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, failingSignalPromptWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { prompt: "approve" }, cwd: workspace });
+        await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "failed" });
+
+        const expectedError = expect.objectContaining({
+          reason: "expression_resolution_failed",
+          type: "evaluation",
+          field: "Signal node 'approve' prompt",
+          message: "fmap(...) callback threw: signal prompt exploded: approve",
+        });
+        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        expect(Object.values(projection.instances)[0]).toMatchObject({
+          status: "failed",
+          statusReason: "expression_resolution_failed",
+          error: expectedError,
+        });
+        expect(Object.values(projection.attempts)).toHaveLength(0);
+        expect(store.getRun(run.id)?.dynamic?.nodeInstances[0]).toMatchObject({ error: expectedError });
       } finally {
         store.close();
       }
@@ -2651,18 +2779,40 @@ describe("runtime scheduler node executor", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, timeoutTaskWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const run = await store.admitRun({ prepared, input: { timeout: "5s" }, cwd: workspace });
+        const now = new Date();
         await expect(advanceFrozenRun({
           cwd: workspace,
           runId: run.id,
           ownerId: "owner-a",
           store,
-          now: () => new Date("2026-07-01T00:00:00.000Z"),
+          now: () => now,
         })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
 
         expect(runtimeRow(workspace, "SELECT deadline_at FROM node_attempts WHERE run_id = ?", run.id)).toMatchObject({
-          deadline_at: "2026-07-01T00:00:05.000Z",
+          deadline_at: new Date(now.getTime() + 5_000).toISOString(),
         });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("classifies an already-expired task deadline as timed_out", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-expired-task-deadline", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, timeoutTaskWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { timeout: "0ms" }, cwd: workspace });
+        await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({
+          status: "failed",
+          started: 1,
+          failed: 1,
+        });
+
+        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        expect(Object.values(projection.attempts)[0]).toMatchObject({ status: "timed_out", terminalReason: "timed_out" });
+        expect(Object.values(projection.instances)[0]).toMatchObject({ status: "failed", statusReason: "timed_out" });
       } finally {
         store.close();
       }
@@ -2674,7 +2824,7 @@ describe("runtime scheduler node executor", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, timeoutTaskWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const run = await store.admitRun({ prepared, input: { timeout: "5s" }, cwd: workspace });
         const executor = createRuntimeNodeExecutorWithRunner({
           cwd: workspace,
           ir: prepared.ir,
@@ -2766,12 +2916,13 @@ function rootSignalWorkflow() {
 function rootTimedSignalWorkflow() {
   return defineWorkflow({
     name: "scheduler-node-executor-signal-timeout",
-  }).build(({ step }) => {
+    inputSchema: z.object({ timeout: z.string(), prompt: z.string(), timeoutMessage: z.string() }),
+  }).build(({ input, step }) => {
     const approval = step("approve").signal({
       outputSchema: z.object({ ok: z.boolean() }),
-      timeout: "5s",
-      onTimeout: { action: "fail", message: "Approval timed out" },
-      run: { prompt: "approve" },
+      timeout: input.timeout,
+      onTimeout: { action: "fail", message: input.timeoutMessage },
+      run: { prompt: input.prompt },
     });
     return { ok: approval.output.ok };
   });
@@ -2880,12 +3031,13 @@ function rootSwitchSequentialTaskWorkflow() {
   });
 }
 
-function rootParallelTaskWorkflow(options: { maxConcurrency?: number } = {}) {
+function rootParallelTaskWorkflow(options: { maxConcurrency?: number; dynamicMaxConcurrency?: boolean } = {}) {
   return defineWorkflow({
     name: "scheduler-node-executor-root-parallel",
-  }).build(({ step }) => {
+    inputSchema: z.object({ maxConcurrency: z.number().default(options.maxConcurrency ?? 2) }),
+  }).build(({ input, step }) => {
     step("race").parallel({
-      ...(options.maxConcurrency === undefined ? {} : { maxConcurrency: options.maxConcurrency }),
+      ...(options.dynamicMaxConcurrency ? { maxConcurrency: input.maxConcurrency } : options.maxConcurrency === undefined ? {} : { maxConcurrency: options.maxConcurrency }),
       branches: {
         left() {
           const task = step("left_task").task({
@@ -2989,18 +3141,18 @@ function multiNodeRootFanoutWorkflow() {
 function nestedFanoutInParallelWorkflow() {
   return defineWorkflow({
     name: "scheduler-node-executor-nested-fanout",
-    inputSchema: z.object({ items: z.array(z.string()) }),
+    inputSchema: z.object({ items: z.array(z.string()), parallelism: z.number() }),
   }).build(({ input, step }) => {
     const prepare = step("prepare").task({
       run: { input: {}, exec: async () => ({ prefix: "root" }) },
     });
     const combined = step("combine").parallel({
-      maxConcurrency: 1,
+      maxConcurrency: input.parallelism,
       branches: {
         items() {
           const inner = step("inner_items").fanout({
             over: input.items,
-            maxConcurrency: 1,
+            maxConcurrency: input.parallelism,
             do({ item, itemIndex }) {
               const task = step("inner_task").task({
                 run: {
@@ -3055,17 +3207,21 @@ function parallelSignalConcurrencyWorkflow() {
   });
 }
 
-function rootFanoutTaskWorkflow(options: { strategy?: "all" | "quorum"; count?: number; maxConcurrency?: number; abortItem?: string } = {}) {
+function rootFanoutTaskWorkflow(options: { strategy?: "all" | "quorum"; count?: number; maxConcurrency?: number; abortItem?: string; dynamicLimits?: boolean } = {}) {
   return defineWorkflow({
     name: "scheduler-node-executor-root-fanout",
-    inputSchema: z.object({ items: z.array(z.string()) }),
+    inputSchema: z.object({
+      items: z.array(z.string()),
+      quorum: z.number().default(options.count ?? 1),
+      parallelism: z.number().default(options.maxConcurrency ?? 32),
+    }),
   }).build(({ input, step }) => {
     if (options.strategy === "quorum") {
       step("items").fanout({
         over: input.items,
         strategy: "quorum",
-        count: options.count ?? 1,
-        ...(options.maxConcurrency === undefined ? {} : { maxConcurrency: options.maxConcurrency }),
+        count: options.dynamicLimits ? input.quorum : options.count ?? 1,
+        ...(options.dynamicLimits ? { maxConcurrency: input.parallelism } : options.maxConcurrency === undefined ? {} : { maxConcurrency: options.maxConcurrency }),
         do({ item, itemIndex }) {
           const task = step("item_task").task({
             run: {
@@ -3257,6 +3413,33 @@ function retryZeroAgentWorkflow() {
   });
 }
 
+function dynamicAgentConfigWorkflow() {
+  return defineWorkflow({
+    name: "scheduler-node-executor-agent-dynamic-config",
+    inputSchema: z.object({ timeout: z.string(), prompt: z.string(), repairMax: z.number() }),
+    agents: {
+      reviewer: { use: "codex" },
+    },
+  }).build(({ input, agents, step }) => {
+    step("review").agent({
+      outputSchema: z.object({ ok: z.boolean() }),
+      timeout: fmap(input.timeout, value => {
+        globalThis.__acpusTimeoutResolutionCount = (globalThis.__acpusTimeoutResolutionCount ?? 0) + 1;
+        return value;
+      }),
+      retry: { max: fmap(input.repairMax, value => {
+        globalThis.__acpusRepairResolutionCount = (globalThis.__acpusRepairResolutionCount ?? 0) + 1;
+        return value;
+      }) },
+      run: { agent: agents.reviewer, prompt: fmap(input.prompt, value => {
+        globalThis.__acpusPromptResolutionCount = (globalThis.__acpusPromptResolutionCount ?? 0) + 1;
+        return value;
+      }) },
+    });
+    return {};
+  });
+}
+
 function overrideAgentWorkflow() {
   return defineWorkflow({
     name: "scheduler-node-executor-agent-override",
@@ -3354,6 +3537,34 @@ function blankSessionAgentWorkflow() {
     step("review").agent({
       outputSchema: z.object({ ok: z.boolean() }),
       run: { agent: agents.reviewer, prompt: "review", sessionKey: "" },
+    });
+    return {};
+  });
+}
+
+function wrongTypeTaskConfigWorkflow() {
+  return defineWorkflow({
+    name: "scheduler-node-executor-task-resolution-type",
+    inputSchema: z.object({ cwd: z.string() }),
+  }).build(({ input, step }) => {
+    step("build").task({
+      run: {
+        input: {},
+        cwd: fmap(input.cwd, value => value.length) as any,
+        exec: async () => ({ ok: true }),
+      },
+    });
+    return {};
+  });
+}
+
+function failingSignalPromptWorkflow() {
+  return defineWorkflow({
+    name: "scheduler-node-executor-signal-resolution-evaluation",
+    inputSchema: z.object({ prompt: z.string() }),
+  }).build(({ input, step }) => {
+    step("approve").signal({
+      run: { prompt: fmap(input.prompt, value => { throw new Error(`signal prompt exploded: ${value}`); }) },
     });
     return {};
   });
@@ -3541,6 +3752,7 @@ type AgentAttemptMetadata = {
   status?: string;
   sessionName?: string;
   sessionKey?: string;
+  renderedPrompt?: string;
   turnCount?: number;
   turns?: Array<Record<string, any>>;
   message?: string;
@@ -3601,9 +3813,10 @@ async function readJsonFile(path: string): Promise<unknown> {
 function timeoutTaskWorkflow() {
   return defineWorkflow({
     name: "scheduler-node-executor-timeout-deadline",
-  }).build(({ step }) => {
+    inputSchema: z.object({ timeout: z.string() }),
+  }).build(({ input, step }) => {
     const task = step("timeout_task").task({
-      timeout: "5s",
+      timeout: input.timeout,
       run: {
         input: {},
         exec: async () => ({ ok: true }),

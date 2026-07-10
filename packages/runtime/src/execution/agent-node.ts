@@ -6,11 +6,11 @@ import type { AgentDefinitionIR, AgentNodeIR, SchemaIR, WorkflowIR } from "@acpu
 import { executeAgentTurn, type AgentToolCallTelemetry, type AgentTurnProgress, type AgentTurnRequest, type AgentTurnResult, type AgentTurnTelemetry } from "@acpus/agent-executor";
 import type { JsonValue } from "@acpus/expression/ir";
 import { jsonrepair } from "jsonrepair";
-import { evaluateExpr, renderTemplate, type EvaluationScope } from "../evaluation/evaluator.js";
+import { type EvaluationScope } from "../evaluation/evaluator.js";
+import { ResolutionException, resolveOrThrow, tryResolveInteger, tryResolveString } from "../evaluation/resolvable.js";
 import { normalizeValue } from "../evaluation/schema.js";
 import type { RuntimeStore, WriteNodeProgressInput } from "../store/store.js";
 import type { NodeProgressWriter } from "../progress/writer.js";
-import { parseDurationMs } from "./duration.js";
 
 const CONTINUATION_PROMPT = "Continue the previous task from where you left off.";
 const DEFAULT_REPAIR_DELAY_MS = 5_000;
@@ -28,6 +28,7 @@ export type AgentExecutorOptions = {
   nodeKey?: string;
   attemptId?: string;
   attemptNo?: number;
+  deadlineAt?: string;
   store?: RuntimeStore;
   progressWriter?: NodeProgressWriter;
   initialPromptKind?: "task" | "plain_continuation";
@@ -66,6 +67,8 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
   const turns: AgentTurnRecord[] = [];
   let sessionNameForMetadata: string | undefined;
   let explicitSessionKey: string | undefined;
+  let effectiveRepairMax: number | undefined;
+  let renderedPromptForMetadata: string | undefined;
   let metadataWritten = false;
   const writeTerminalState = async (
     status: "completed" | "failed" | "cancelled" | "timed_out",
@@ -75,20 +78,22 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
   ): Promise<void> => {
     if (result && turn !== undefined) writeAgentTerminalProgress(node, options, turn, result, status, message);
     metadataWritten = true;
-    await writeAgentAttemptMetadata(node, options, sessionNameForMetadata, explicitSessionKey, status, turns, message);
+    await writeAgentAttemptMetadata(node, options, sessionNameForMetadata, explicitSessionKey, renderedPromptForMetadata, effectiveRepairMax, status, turns, message);
   };
 
   try {
     const definition = options.agents[node.run.agent];
     if (!definition) throw new Error(`Agent '${node.run.agent}' is not declared.`);
-    const cwd = node.run.cwd ? stringValue(evaluateExpr(node.run.cwd, scope), "agent cwd") : definition.cwd ? stringValue(evaluateExpr(definition.cwd, scope), "agent cwd") : options.cwd;
+    const cwd = node.run.cwd
+      ? resolveOrThrow(tryResolveString(node.run.cwd, scope, "agent cwd"))
+      : definition.cwd ?? options.cwd;
     const env: NodeJS.ProcessEnv = {
       ...process.env,
-      ...evaluateEnv(definition.env, scope),
-      ...evaluateEnv(node.run.env, scope),
+      ...staticEnv(definition.env),
+      ...dynamicEnv(node.run.env, scope),
     };
     applyRuntimeAgentEnv(env, node.id, options);
-    const deadline = node.timeout ? Date.now() + parseDurationMs(node.timeout) : undefined;
+    const deadline = options.deadlineAt === undefined ? undefined : new Date(options.deadlineAt).getTime();
     explicitSessionKey = renderSessionKey(node, scope);
     sessionNameForMetadata = sessionName(options.runId, options.nodeKey ?? node.id, explicitSessionKey);
     const turnBase = {
@@ -101,9 +106,19 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
       ...(options.signal ? { signal: options.signal } : {}),
     } satisfies Omit<AgentTurnRequest, "prompt" | "agentMode">;
     const executeTurn = options.executeTurn ?? executeAgentTurn;
-    const maxRepairTurns = node.outputSchema ? (node.retry?.max ?? 2) : 0;
+    const maxRepairTurns = node.outputSchema
+      ? node.retry?.max === undefined
+        ? 2
+        : resolveOrThrow(tryResolveInteger(node.retry.max, scope, `Agent node '${node.id}' retry max`, 0))
+      : 0;
+    effectiveRepairMax = maxRepairTurns;
     const plainContinuation = options.initialPromptKind === "plain_continuation";
-    let prompt = plainContinuation ? CONTINUATION_PROMPT : buildAgentPrompt(renderTemplate(node.run.prompt, scope), node.outputSchema);
+    renderedPromptForMetadata = plainContinuation
+      ? CONTINUATION_PROMPT
+      : resolveOrThrow(tryResolveString(node.run.prompt, scope, `Agent node '${node.id}' prompt`));
+    let prompt = plainContinuation
+      ? renderedPromptForMetadata
+      : buildAgentPrompt(renderedPromptForMetadata, node.outputSchema);
     for (let turn = 0; turn <= maxRepairTurns; turn += 1) {
       const remaining = remainingTimeout(deadline, node.id);
       const captureRawDebug = shouldCaptureRawAcpDebug();
@@ -176,17 +191,20 @@ function setOptionalEnv(env: NodeJS.ProcessEnv, key: string, value: string | und
   else env[key] = value;
 }
 
-function evaluateEnv(env: Record<string, any> | undefined, scope: EvaluationScope): Record<string, string> {
+function dynamicEnv(env: AgentNodeIR["run"]["env"], scope: EvaluationScope): Record<string, string> {
   if (!env) return {};
   return Object.fromEntries(Object.entries(env).map(([key, value]) => {
     if (value && typeof value === "object" && value.kind === "secret") throw new Error(`Agent env '${key}' references an unresolved secret.`);
-    return [key, stringValue(evaluateExpr(value, scope), `agent env ${key}`)];
+    return [key, resolveOrThrow(tryResolveString(value, scope, `Agent env '${key}'`))];
   }));
 }
 
-function stringValue(value: unknown, label: string): string {
-  if (typeof value === "string") return value;
-  throw new Error(`${label} must evaluate to string.`);
+function staticEnv(env: AgentDefinitionIR["env"]): Record<string, string> {
+  if (!env) return {};
+  return Object.fromEntries(Object.entries(env).map(([key, value]) => {
+    if (typeof value !== "string") throw new Error(`Agent env '${key}' references an unresolved secret.`);
+    return [key, value];
+  }));
 }
 
 function agentSelector(definition: AgentDefinitionIR): AgentTurnRequest["agent"] {
@@ -197,8 +215,16 @@ function agentSelector(definition: AgentDefinitionIR): AgentTurnRequest["agent"]
 
 function renderSessionKey(node: AgentNodeIR, scope: EvaluationScope): string | undefined {
   if (!node.run.sessionKey) return undefined;
-  const rendered = renderTemplate(node.run.sessionKey, scope);
-  if (rendered.trim().length === 0) throw new Error(`Agent node '${node.id}' sessionKey must render to a non-empty string.`);
+  const field = `Agent node '${node.id}' sessionKey`;
+  const rendered = resolveOrThrow(tryResolveString(node.run.sessionKey, scope, field));
+  if (rendered.trim().length === 0) {
+    throw new ResolutionException({
+      type: "constraint",
+      field,
+      expected: "non-empty string",
+      message: `${field} must render to a non-empty string.`,
+    });
+  }
   return rendered;
 }
 
@@ -513,6 +539,8 @@ async function writeAgentAttemptMetadata(
   options: AgentExecutorOptions,
   sessionName: string | undefined,
   explicitSessionKey: string | undefined,
+  renderedPrompt: string | undefined,
+  repairMax: number | undefined,
   status: "completed" | "failed" | "cancelled" | "timed_out",
   turns: AgentTurnRecord[],
   message?: string,
@@ -529,6 +557,9 @@ async function writeAgentAttemptMetadata(
       status,
       ...(sessionName ? { sessionName } : {}),
       ...(explicitSessionKey ? { sessionKey: explicitSessionKey } : {}),
+      ...(renderedPrompt === undefined ? {} : { renderedPrompt }),
+      ...(options.deadlineAt ? { deadlineAt: options.deadlineAt } : {}),
+      ...(repairMax === undefined ? {} : { repairMax }),
       turnCount: turns.length,
       turns: turns.map(turn => pruneUndefined(turn) as JsonValue),
       ...(message ? { message } : {}),

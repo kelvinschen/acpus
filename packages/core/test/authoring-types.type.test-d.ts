@@ -314,3 +314,120 @@ test("plain prompts and templates are accepted", () => {
     return {};
   });
 });
+
+test("runtime configuration fields share the Resolvable seam", () => {
+  defineWorkflow({
+    name: "typed-resolvable-config",
+    inputSchema: z.object({
+      timeout: z.string(),
+      text: z.string(),
+      count: z.number(),
+      ready: z.boolean(),
+      items: z.array(z.string()),
+    }),
+    agents: { reviewer: { use: "codex" } },
+  }).build(({ input, agents, step }) => {
+    step("agent").agent({
+      outputSchema: z.object({ ok: z.boolean() }),
+      timeout: input.timeout,
+      retry: { max: input.count },
+      run: {
+        agent: agents.reviewer,
+        prompt: input.text,
+        sessionKey: input.text,
+        cwd: input.text,
+        env: { VALUE: input.text },
+      },
+    });
+    step("task").task({
+      timeout: input.timeout,
+      run: {
+        input: { text: input.text },
+        cwd: input.text,
+        env: { VALUE: input.text },
+        execution: { defaultCommandTimeout: input.timeout },
+        exec: async ({ input }) => ({ text: input.text }),
+      },
+    });
+    step("signal").signal({
+      timeout: input.timeout,
+      onTimeout: { action: "fail", message: input.text },
+      run: { prompt: input.text },
+    });
+    step("assert").assert({ condition: input.ready, message: input.text });
+    step("parallel").parallel({
+      maxConcurrency: input.count,
+      branches: { only() { return {}; } },
+    });
+    step("fanout").fanout({
+      over: input.items,
+      strategy: "quorum",
+      count: input.count,
+      maxConcurrency: input.count,
+      do({ item }) { return { item }; },
+    });
+    return {};
+  });
+});
+
+test("declaration-time structure stays plain", () => {
+  const dynamicString = null as unknown as Expr<string>;
+
+  // @ts-expect-error agent selector is declaration-time structure.
+  assertType<AgentDefinitionSpec>({ use: dynamicString });
+  // @ts-expect-error top-level agent cwd is static.
+  assertType<AgentDefinitionSpec>({ use: "codex", cwd: dynamicString });
+  // @ts-expect-error top-level agent env is static.
+  assertType<AgentDefinitionSpec>({ use: "codex", env: { VALUE: dynamicString } });
+  // @ts-expect-error agent model is declaration-time structure.
+  assertType<AgentDefinitionSpec>({ use: "codex", model: dynamicString });
+  // @ts-expect-error agent mode is declaration-time structure.
+  assertType<AgentDefinitionSpec>({ use: "codex", agentMode: dynamicString });
+  // @ts-expect-error permission mode is declaration-time structure.
+  assertType<AgentDefinitionSpec>({ use: "codex", permissionMode: dynamicString });
+
+  defineWorkflow({
+    name: "typed-static-structure",
+    inputSchema: z.object({ strategy: z.string() }),
+    agents: { reviewer: { use: "codex" } },
+  }).build(({ input, agents, step }) => {
+    // @ts-expect-error node ids are declaration-time structure.
+    step(input.strategy);
+    step("parallel").parallel({
+      // @ts-expect-error strategy is declaration-time structure.
+      strategy: input.strategy,
+      branches: { only() { return {}; } },
+    });
+    // @ts-expect-error fanout strategy is declaration-time structure.
+    step("fanout").fanout({
+      over: ["item"],
+      strategy: input.strategy,
+      do() { return {}; },
+    });
+    // @ts-expect-error output schemas are declaration-time structure.
+    step("schema").agent({ outputSchema: input.strategy, run: { agent: agents.reviewer, prompt: "review" } });
+    // @ts-expect-error reusable task targets are declaration-time structure.
+    step("target").task({ run: { task: input.strategy, input: {} } });
+    // @ts-expect-error shell and command runner are declaration-time structure.
+    step("runner").task({
+      run: {
+        input: {},
+        execution: {
+          shell: input.strategy,
+          commandRunner: input.strategy,
+        },
+        exec: async () => ({}),
+      },
+    });
+    step("invalid_input").task({
+      run: {
+        input: {
+          // @ts-expect-error Task input cannot contain raw undefined.
+          omitted: undefined,
+        },
+        exec: async () => ({}),
+      },
+    });
+    return {};
+  });
+});

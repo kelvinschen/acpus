@@ -90,6 +90,7 @@ export {
   type RunDynamicDetails,
   type RunExecutionMetadata,
   type RunDynamicFrame,
+  type RunDynamicGroup,
   type RunDynamicGroupMember,
   type RunDynamicNodeInstance,
   type RunNodeProgress,

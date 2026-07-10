@@ -91,7 +91,7 @@ function tinyGraph(): WebGraph {
 
 function preparedWorkflow(): PreparedWorkflow {
   const ir: WorkflowIR = {
-    irVersion: 2,
+    irVersion: 3,
     name: "prepared-static",
     description: "Prepared workflow description.",
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },

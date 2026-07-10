@@ -33,6 +33,8 @@ A single conversation may move through several paths. Re-classify before each ma
 
 ## Authoring quick sheet
 
+Use one boundary rule throughout authoring: plain `T` is declaration-time structure; `Resolvable<T>` accepts either a durable literal or an `Expr<T>` and resolves from workflow scope at run time. Timeouts, prompts/messages, node cwd/env, repair/quorum counts, and concurrency limits are resolvable. Node ids, strategies, schemas, task targets, agent identity/policy, runners, shells, and secret names are static. Top-level Agent cwd/env are static; node `run.cwd`/`run.env` are resolvable.
+
 For a new workflow, create a checkable scaffold before editing:
 
 ```sh

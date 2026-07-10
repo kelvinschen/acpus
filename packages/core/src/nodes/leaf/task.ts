@@ -4,7 +4,7 @@ import { envToIR, bindingsToIR, assertStableId, stripUndefined } from "../../gra
 import { valueToExprIR } from "@acpus/expression/ir";
 import type { z } from "zod";
 import { type Schema } from "../../schema/index.js";
-import type { WorkflowValue } from "@acpus/expression";
+import type { Resolvable } from "@acpus/expression";
 import type { DiagnosticIR, TaskExecutionTargetIR, TaskNodeIR } from "../../ir/types.js";
 import type { TaskFunction } from "../../runtime/task-context.js";
 import type { EnvInput, RuntimeInput, StepInput } from "./shared.js";
@@ -32,17 +32,17 @@ export type TaskToken<Input, Output> =
   | ReusableTaskToken<Input, Output>;
 
 type TaskStepOptions = {
-  cwd?: WorkflowValue<string>;
+  cwd?: Resolvable<string>;
   env?: EnvInput;
   execution?: {
     shell?: "bash" | "powershell" | "pwsh";
-    defaultCommandTimeout?: string;
+    defaultCommandTimeout?: Resolvable<string>;
     commandRunner?: "acpus-zx-core" | "custom";
   };
 };
 
 type TaskNodeOptions = {
-  timeout?: string;
+  timeout?: Resolvable<string>;
   retry?: never;
 };
 
@@ -151,13 +151,18 @@ export function buildTaskNode<const Input extends StepInput>(
       target: taskTarget(parsed.run),
       cwd: parsed.runOptions.cwd === undefined ? undefined : valueToExprIR(parsed.runOptions.cwd),
       env: envToIR(parsed.runOptions.env),
-      execution: parsed.runOptions.execution,
+      execution: parsed.runOptions.execution === undefined ? undefined : {
+        ...parsed.runOptions.execution,
+        defaultCommandTimeout: parsed.runOptions.execution.defaultCommandTimeout === undefined
+          ? undefined
+          : valueToExprIR(parsed.runOptions.execution.defaultCommandTimeout),
+      },
     } : {
       kind: "task_run",
       input: {},
       target: { kind: "inline", runtime: "node", source: "" },
     },
-    timeout: spec.timeout,
+    timeout: spec.timeout === undefined ? undefined : valueToExprIR(spec.timeout),
   }) as TaskNodeIR;
 }
 

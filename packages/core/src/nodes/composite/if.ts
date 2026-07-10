@@ -1,12 +1,12 @@
 import { valueToExprIR } from "@acpus/expression/ir";
 import { assertStableId, stripUndefined } from "../../graph/lowering.js";
-import type { WorkflowValue } from "@acpus/expression";
+import type { Resolvable } from "@acpus/expression";
 import type { DiagnosticIR, IfNodeIR } from "../../ir/types.js";
 import type { BuildScope, CheckedScopeCallback, RuntimeValueOf, ScopeCallback } from "./shared.js";
 
 /** Authoring spec for a graph-level conditional branch. */
 export type IfStepSpec<Then extends ScopeCallback = ScopeCallback, Else extends ScopeCallback = ScopeCallback> = {
-  condition: WorkflowValue<boolean>;
+  condition: Resolvable<boolean>;
   outputSchema?: never;
   then: Then & CheckedScopeCallback<NoInfer<Then>>;
   else: Else & CheckedScopeCallback<NoInfer<Else>>;

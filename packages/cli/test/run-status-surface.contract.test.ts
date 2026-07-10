@@ -26,6 +26,7 @@ describe("run status surface", () => {
         }],
         nodeInstances: [],
         attempts: [],
+        groups: [],
         groupMembers: [],
         signalWaits: [],
         executionMetadata: [],
@@ -53,6 +54,7 @@ describe("run status surface", () => {
           updatedAt: "2026-07-03T00:00:00.000Z",
         }],
         attempts: [],
+        groups: [],
         groupMembers: [],
         signalWaits: [{
           nodeKey: "approve~abc",
@@ -68,7 +70,7 @@ describe("run status surface", () => {
       id: "approve",
       kind: "signal",
       outputSchema: { kind: "object", fields: { ok: { kind: "boolean" } }, required: ["ok"], additionalProperties: false },
-      run: { kind: "signal_run", prompt: { kind: "template", parts: [{ kind: "text", value: "approve" }] } },
+      run: { kind: "signal_run", prompt: { kind: "literal", value: "approve" } },
     }]), Date.parse("2026-07-03T00:00:01.000Z"));
 
     expect(output).toContain("  ◌ approve~abc  [signal]  awaiting  1s");
@@ -101,6 +103,7 @@ describe("run status surface", () => {
           startedAt: "2026-07-03T00:00:00.000Z",
           finishedAt: "2026-07-03T00:00:01.000Z",
         }],
+        groups: [],
         groupMembers: [],
         signalWaits: [],
         executionMetadata: [{
@@ -111,7 +114,7 @@ describe("run status surface", () => {
           metadata: { promptArtifact: { relativePath: "artifacts/review/attempt-1/prompt.md" } },
         }],
       },
-    }, staticNodes([{ id: "review", kind: "agent", run: { kind: "agent_run", agent: "reviewer", prompt: { kind: "template", parts: [] } } }]), Date.parse("2026-07-03T00:00:02.000Z"));
+    }, staticNodes([{ id: "review", kind: "agent", run: { kind: "agent_run", agent: "reviewer", prompt: { kind: "literal", value: "" } } }]), Date.parse("2026-07-03T00:00:02.000Z"));
 
     expect(output).toContain("  ✓ review~abc  [agent]  1s");
     expect(output).not.toContain("artifacts/review/attempt-1/prompt.md");
@@ -154,11 +157,12 @@ describe("run status surface", () => {
           updatedAt: "2026-07-03T00:00:01.000Z",
         }],
         attempts: [],
+        groups: [],
         groupMembers: [],
         signalWaits: [],
         executionMetadata: [],
       },
-    }, staticNodes([{ id: "review", kind: "agent", run: { kind: "agent_run", agent: "reviewer", prompt: { kind: "template", parts: [] } } }]), Date.parse("2026-07-03T00:00:02.000Z"));
+    }, staticNodes([{ id: "review", kind: "agent", run: { kind: "agent_run", agent: "reviewer", prompt: { kind: "literal", value: "" } } }]), Date.parse("2026-07-03T00:00:02.000Z"));
 
     expect(output).toContain([
       "  ✓ review~abc  [agent]  1s",
@@ -191,6 +195,7 @@ describe("run status surface", () => {
           updatedAt: "2026-07-03T00:00:01.000Z",
         }],
         attempts: [],
+        groups: [],
         groupMembers: [],
         signalWaits: [],
         executionMetadata: [],
@@ -229,6 +234,7 @@ describe("run status surface", () => {
           updatedAt: "2026-07-03T00:00:01.000Z",
         }],
         attempts: [],
+        groups: [],
         groupMembers: [],
         signalWaits: [],
         executionMetadata: [],
@@ -272,6 +278,7 @@ describe("run status surface", () => {
           finishedAt: "2026-07-03T00:00:01.000Z",
           error: { reason: "old failure" },
         }],
+        groups: [],
         groupMembers: [],
         signalWaits: [],
         executionMetadata: [],
@@ -358,7 +365,7 @@ function runBase(id: string, name: string, status: RunDetails["status"]): RunDet
 
 function workflow(nodes: WorkflowIR["root"]["nodes"]): WorkflowIR {
   return {
-    irVersion: 2,
+    irVersion: 3,
     name: "test",
     agents: { reviewer: { kind: "agent_definition", use: "codex" } },
     root: { nodes },

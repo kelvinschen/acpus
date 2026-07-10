@@ -1,4 +1,6 @@
 import { assertStableId, stripUndefined } from "../../graph/lowering.js";
+import { valueToExprIR } from "@acpus/expression/ir";
+import type { Resolvable } from "@acpus/expression";
 import type { Simplify, ValueOf } from "../../internal/type-utils.js";
 import type { DiagnosticIR, ParallelBranchIR, ParallelNodeIR } from "../../ir/types.js";
 import type { BuildScope, CheckedScopeCallback, ParallelStrategy, RuntimeValueOf, ScopeCallback } from "./shared.js";
@@ -13,7 +15,7 @@ export type ParallelStepSpec<
   Strategy extends ParallelStrategy = "all",
 > = Simplify<{
   branches: Branches & CheckedBranches<NoInfer<Branches>>;
-  maxConcurrency?: number;
+  maxConcurrency?: Resolvable<number>;
 } & (Strategy extends "race" ? { strategy: "race" } : { strategy?: "all" })>;
 
 type BranchOutput<Branch> = Branch extends (ctx: never) => infer Output ? RuntimeValueOf<Output> : never;
@@ -51,7 +53,7 @@ export function buildParallelNode<
     id,
     kind: "parallel",
     strategy: spec.strategy ?? "all",
-    maxConcurrency: spec.maxConcurrency,
+    maxConcurrency: spec.maxConcurrency === undefined ? undefined : valueToExprIR(spec.maxConcurrency),
     branches,
   }) as ParallelNodeIR;
 }

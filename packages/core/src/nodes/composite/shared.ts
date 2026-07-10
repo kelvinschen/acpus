@@ -1,4 +1,4 @@
-import type { Expr, WorkflowValue } from "@acpus/expression";
+import type { Expr, Resolvable } from "@acpus/expression";
 import type { ExprValue } from "../../graph/refs.js";
 import type { GraphOutputCheck, OutputValues } from "../../graph/scope.js";
 import type { IsUnion } from "../../internal/type-utils.js";
@@ -16,7 +16,7 @@ export type BuildScope = <Extra extends object = {}, Output extends OutputObject
 
 export type ParallelStrategy = "all" | "race";
 export type FanoutStrategy = "all" | "quorum";
-export type WorkflowArrayValue<Item> = Expr<readonly Item[]> | readonly WorkflowValue<Item>[];
+export type ResolvableArray<Item> = Resolvable<readonly Item[]>;
 export type RuntimeValueOf<T> =
   T extends Expr<infer Value> ? Value
     : T extends readonly (infer Item)[] ? RuntimeValueOf<Item>[]

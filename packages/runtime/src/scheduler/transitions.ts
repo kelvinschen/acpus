@@ -415,6 +415,7 @@ function applyMutable(projection: SchedulerProjection, event: SchedulerEvent): v
       instancePath: event.payload.instancePath,
       ...(event.payload.parentFrameKey === undefined ? {} : { parentFrameKey: event.payload.parentFrameKey }),
       ...(event.payload.readinessSequence === undefined ? {} : { readinessSequence: event.payload.readinessSequence }),
+      ...(event.payload.timeoutMs === undefined ? {} : { timeoutMs: event.payload.timeoutMs }),
     });
     return;
   }
@@ -444,8 +445,12 @@ function applyMutable(projection: SchedulerProjection, event: SchedulerEvent): v
     if (projection.groups[event.payload.groupKey]) throw new Error(`Group '${event.payload.groupKey}' already exists.`);
     assertGroupKindStrategy(event.payload.kind, event.payload.strategy, event.payload.groupKey);
     const quorumCount = event.payload.quorumCount;
+    const maxConcurrency = event.payload.maxConcurrency;
     if (event.payload.strategy === "quorum" && (typeof quorumCount !== "number" || !Number.isInteger(quorumCount) || quorumCount <= 0)) {
       throw new Error(`Quorum group '${event.payload.groupKey}' requires a positive quorum count.`);
+    }
+    if (maxConcurrency !== undefined && (!Number.isInteger(maxConcurrency) || maxConcurrency <= 0)) {
+      throw new Error(`Group '${event.payload.groupKey}' requires a positive maxConcurrency.`);
     }
     projection.groups[event.payload.groupKey] = compactGroup({
       runId: event.payload.runId,
@@ -456,6 +461,7 @@ function applyMutable(projection: SchedulerProjection, event: SchedulerEvent): v
       strategy: event.payload.strategy,
       status: "running",
       ...(quorumCount === undefined ? {} : { quorumCount }),
+      ...(maxConcurrency === undefined ? {} : { maxConcurrency }),
     });
     return;
   }

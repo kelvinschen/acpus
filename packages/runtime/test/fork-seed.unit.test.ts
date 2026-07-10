@@ -397,6 +397,28 @@ describe("targeted fork seed planning", () => {
     expect(plan.value.inheritedNodeKeys).toEqual(new Set());
   });
 
+  it("includes runtime configuration expressions in semantic signatures", () => {
+    const nodeKey = deriveInstanceKey(appendNode([], "first"));
+    const sourceWorkflow = workflow([{ ...taskNode("first"), timeout: { kind: "literal", value: "5s" } }]);
+    const source = sourceProjection(sourceWorkflow, [
+      { type: "instance.completed", payload: { nodeKey, output: { ok: true } } },
+    ]);
+    const replacementWorkflow = workflow([{ ...taskNode("first"), timeout: { kind: "ref", path: ["input", "timeout"] } }]);
+
+    const plan = planTargetedForkSeed({
+      forkRunId: "fork",
+      sourceWorkflow,
+      replacementWorkflow,
+      replacementScope: { ...rootScope(), input: { timeout: "5s" } },
+      sourceProjection: source,
+      inputChanged: false,
+    });
+
+    expect(plan.isOk()).toBe(true);
+    if (plan.isErr()) throw new Error(plan.error.message);
+    expect(plan.value.inheritedNodeKeys).toEqual(new Set());
+  });
+
   it("fails static targets on an unselected conditional path", () => {
     const plan = planTargetedForkSeed({
       forkRunId: "fork",
@@ -917,7 +939,7 @@ function rootScope() {
 
 function workflow(nodes: NodeIR[], agents: WorkflowIR["agents"] = {}): WorkflowIR {
   return {
-    irVersion: 2,
+    irVersion: 3,
     name: "fork-seed-test",
     agents,
     root: { nodes },
@@ -938,12 +960,12 @@ function agentNode(id: string, agent: string): NodeIR {
     run: {
       kind: "agent_run",
       agent,
-      prompt: { kind: "template", parts: [{ kind: "text", value: "review" }] },
+      prompt: { kind: "literal", value: "review" },
     },
   };
 }
 
-function taskNode(id: string, source = "async function task() { return {}; }"): NodeIR {
+function taskNode(id: string, source = "async function task() { return {}; }"): Extract<NodeIR, { kind: "task" }> {
   return {
     id,
     kind: "task",
@@ -997,7 +1019,7 @@ function fanoutNode(nodes: NodeIR[], options: { strategy?: "all" | "quorum"; cou
     do: { nodes, outputs: {} },
   };
   if (options.strategy === "quorum") {
-    return { ...base, strategy: "quorum", count: options.count ?? 1 };
+    return { ...base, strategy: "quorum", count: { kind: "literal", value: options.count ?? 1 } };
   }
   return { ...base, strategy: "all" };
 }

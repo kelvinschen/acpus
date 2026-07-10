@@ -26,12 +26,12 @@ type DurableOutput<T, AllowUndefined extends boolean, AllowExpr extends boolean>
       : T extends undefined ? AllowUndefined extends true ? undefined : never
         : T extends string | number | boolean | null ? T
           : T extends Expr<infer Value> ? AllowExpr extends true
-            ? [Value] extends [DurableOutput<Value, AllowUndefined, false>] ? T : never
+            ? [Value] extends [DurableOutput<Value, true, false>] ? T : never
             : never
             : T extends (...args: any[]) => any ? never
               : T extends abstract new (...args: any[]) => any ? never
                 : T extends readonly (infer Item)[] ? readonly DurableOutput<Item, false, AllowExpr>[]
-                  : T extends object ? { readonly [K in keyof T]: DurableOutput<T[K], true, AllowExpr> }
+                  : T extends object ? { readonly [K in keyof T]: DurableOutput<T[K], AllowUndefined, AllowExpr> }
                     : never;
 
 type OutputCheck<T, AllowUndefined extends boolean, AllowExpr extends boolean> =

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ExprIR, NodeIR, SchemaIR, ScopeIR, TemplateIR, WorkflowIR } from "@acpus/core/ir";
+import type { ExprIR, NodeIR, SchemaIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import { ResultAsync } from "neverthrow";
 import { normalizeWorkflowInput } from "../admission/input.js";
@@ -29,7 +29,7 @@ export type RunInspectionStaticNode = {
   kind: NodeIR["kind"];
   order: number;
   input?: Record<string, ExprIR>;
-  prompt?: TemplateIR;
+  prompt?: ExprIR;
   outputSchema?: SchemaIR;
 };
 

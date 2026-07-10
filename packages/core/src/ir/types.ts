@@ -1,4 +1,4 @@
-import type { ExprIR, JsonObject, JsonPrimitive, JsonValue, TemplateIR, TypeIR } from "@acpus/expression/ir";
+import type { ExprIR, JsonObject, JsonPrimitive, JsonValue, TypeIR } from "@acpus/expression/ir";
 export type { ExprIR, JsonArray, JsonObject, JsonPrimitive, JsonValue, TemplateIR, TemplatePartIR, TypeIR } from "@acpus/expression/ir";
 
 export type SchemaTypeIR =
@@ -21,10 +21,8 @@ export type SchemaIR = SchemaTypeIR & {
   nullable?: boolean;
 };
 
-export type DurationIR = string;
-
-export type RetryIR = {
-  max?: number;
+export type AgentRetryIR = {
+  max?: ExprIR;
 };
 
 export type SecretRefIR = {
@@ -39,8 +37,8 @@ export type AgentDefinitionIR =
       model?: string;
       permissionMode?: "approve-reads" | "approve-all" | "deny-all";
       agentMode?: string;
-      cwd?: ExprIR;
-      env?: Record<string, ExprIR | SecretRefIR>;
+      cwd?: string;
+      env?: Record<string, string | SecretRefIR>;
     }
   | {
       kind: "agent_command";
@@ -48,8 +46,8 @@ export type AgentDefinitionIR =
       model?: string;
       permissionMode?: "approve-reads" | "approve-all" | "deny-all";
       agentMode?: string;
-      cwd?: ExprIR;
-      env?: Record<string, ExprIR | SecretRefIR>;
+      cwd?: string;
+      env?: Record<string, string | SecretRefIR>;
     };
 
 export type NodeIR =
@@ -72,16 +70,16 @@ export type AgentNodeIR = BaseNodeIR & {
   kind: "agent";
   outputSchema?: SchemaIR;
   run: AgentRunIR;
-  timeout?: DurationIR;
-  retry?: RetryIR;
+  timeout?: ExprIR;
+  retry?: AgentRetryIR;
 };
 
 export type AgentRunIR = {
   kind: "agent_run";
   agent: string;
-  prompt: TemplateIR;
+  prompt: ExprIR;
   permissionMode?: "approve-reads" | "approve-all" | "deny-all";
-  sessionKey?: TemplateIR;
+  sessionKey?: ExprIR;
   cwd?: ExprIR;
   env?: Record<string, ExprIR | SecretRefIR>;
 };
@@ -89,7 +87,7 @@ export type AgentRunIR = {
 export type TaskNodeIR = BaseNodeIR & {
   kind: "task";
   run: TaskRunIR;
-  timeout?: DurationIR;
+  timeout?: ExprIR;
 };
 
 export type TaskRunIR = {
@@ -100,7 +98,7 @@ export type TaskRunIR = {
   env?: Record<string, ExprIR | SecretRefIR>;
   execution?: {
     shell?: "bash" | "powershell" | "pwsh";
-    defaultCommandTimeout?: DurationIR;
+    defaultCommandTimeout?: ExprIR;
     commandRunner?: "acpus-zx-core" | "custom";
   };
 };
@@ -126,19 +124,19 @@ export type SignalNodeIR = BaseNodeIR & {
   kind: "signal";
   outputSchema?: SchemaIR;
   run: SignalRunIR;
-  timeout?: DurationIR;
-  onTimeout?: { action: "fail"; message?: string };
+  timeout?: ExprIR;
+  onTimeout?: { action: "fail"; message?: ExprIR };
 };
 
 export type SignalRunIR = {
   kind: "signal_run";
-  prompt: TemplateIR;
+  prompt: ExprIR;
 };
 
 export type AssertNodeIR = BaseNodeIR & {
   kind: "assert";
   condition: ExprIR;
-  message?: TemplateIR;
+  message?: ExprIR;
 };
 
 export type ScopeIR = {
@@ -174,19 +172,19 @@ export type ParallelNodeIR = BaseNodeIR & {
   kind: "parallel";
   branches: Record<string, ParallelBranchIR>;
   strategy: "all" | "race";
-  maxConcurrency?: number;
+  maxConcurrency?: ExprIR;
 };
 
 type BaseFanoutNodeIR = BaseNodeIR & {
   kind: "fanout";
   over: ExprIR;
   do: ScopeIR;
-  maxConcurrency?: number;
+  maxConcurrency?: ExprIR;
 };
 
 export type FanoutNodeIR =
   | (BaseFanoutNodeIR & { strategy: "all"; count?: never })
-  | (BaseFanoutNodeIR & { strategy: "quorum"; count: number });
+  | (BaseFanoutNodeIR & { strategy: "quorum"; count: ExprIR });
 
 export type LoopNodeIR = BaseNodeIR & {
   kind: "loop";
@@ -209,7 +207,7 @@ export type WorkflowLockIR = {
 };
 
 export type WorkflowIR = {
-  irVersion: 2;
+  irVersion: 3;
   name: string;
   description?: string;
   inputSchema?: SchemaIR;

@@ -84,8 +84,8 @@ export type NodeDetail =
   | { kind: "assert"; condition: string; message?: string }
   | { kind: "if"; condition: string }
   | { kind: "switch"; cases: string[]; hasDefault: boolean }
-  | { kind: "parallel"; branches: string[]; strategy: "all" | "race" }
-  | { kind: "fanout"; over: string; strategy: "all" | "quorum"; count?: number }
+  | { kind: "parallel"; branches: string[]; strategy: "all" | "race"; maxConcurrency?: string }
+  | { kind: "fanout"; over: string; strategy: "all" | "quorum"; count?: string; maxConcurrency?: string }
   | { kind: "loop"; state: string };
 
 export type WebGraphNode = {
@@ -163,6 +163,8 @@ export type WebGraphGroup = {
   kind: "parallel" | "fanout";
   status: string;
   strategy?: string;
+  quorumCount?: number;
+  maxConcurrency?: number;
   members: Array<({
     memberKey: string;
     status: string;

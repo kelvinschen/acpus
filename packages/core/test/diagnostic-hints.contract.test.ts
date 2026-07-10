@@ -5,7 +5,7 @@ import { compileWorkflowDefinition } from "../src/workflow.js";
 
 function minimalWorkflow(overrides: Partial<WorkflowIR> = {}): WorkflowIR {
   return {
-    irVersion: 2,
+    irVersion: 3,
     name: "diagnostic_hints",
     agents: {},
     root: { nodes: [] },
@@ -30,7 +30,7 @@ describe("core diagnostic hints contract", () => {
           {
             id: "missing_agent",
             kind: "agent",
-            run: { kind: "agent_run", agent: "reviewer", prompt: { kind: "template", parts: [] } },
+            run: { kind: "agent_run", agent: "reviewer", prompt: { kind: "literal", value: "" } },
           },
           {
             id: "if_without_else",

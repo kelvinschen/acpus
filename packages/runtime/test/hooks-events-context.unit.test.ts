@@ -1,6 +1,5 @@
 import type { WorkflowIR } from "@acpus/core/ir";
 import { describe, expect, it } from "vitest";
-import type { EvaluationScope } from "../src/evaluation/evaluator.js";
 import { buildHookContext } from "../src/hooks/context.js";
 import { decodeRuntimeEventPayload, mapRuntimeEventToHookEvent, type CommittedRuntimeEventRow } from "../src/hooks/events.js";
 import type { SchedulerProjection } from "../src/scheduler/types.js";
@@ -30,13 +29,10 @@ describe("hooks events and context", () => {
   it("builds run, task, agent, and signal hook context fields", () => {
     const ir = workflow();
     const projection = schedulerProjection();
-    const baseScope: EvaluationScope = {
-      input: { packageName: "core" },
-      nodes: { prepare: { status: "completed", output: { tag: "ready" } } },
-      meta: { runId: "run_1", workflowName: "release", workspaceDir: "/workspace" },
-      fanout: {},
-      loop: {},
-    };
+    const executionMetadata = [
+      { id: 1, kind: "task_attempt", metadata: { nodeKey: "build~1", input: { packageName: "core" } }, createdAt: "2026-07-04T00:00:01.000Z" },
+      { id: 2, kind: "agent_attempt", metadata: { nodeKey: "review~1", renderedPrompt: "Review ready" }, createdAt: "2026-07-04T00:00:02.000Z" },
+    ];
 
     expect(buildHookContext({
       row: row("frame.started", { runId: "run_1", frameKey: "root", frameKind: "root" }, 41),
@@ -45,7 +41,7 @@ describe("hooks events and context", () => {
       ir,
       workspaceDir: "/workspace",
       workflowPath: "/workspace/workflow.ts",
-      baseScope,
+      executionMetadata,
     })).toMatchObject({
       event: "run.started",
       eventSequence: 41,
@@ -59,7 +55,7 @@ describe("hooks events and context", () => {
       ir,
       workspaceDir: "/workspace",
       workflowPath: "/workspace/workflow.ts",
-      baseScope,
+      executionMetadata,
     })).toMatchObject({
       event: "run.completed",
       eventSequence: 42,
@@ -74,7 +70,7 @@ describe("hooks events and context", () => {
       ir,
       workspaceDir: "/workspace",
       workflowPath: "/workspace/workflow.ts",
-      baseScope,
+      executionMetadata,
     }).node).toMatchObject({
       id: "build",
       key: "build~1",
@@ -91,7 +87,7 @@ describe("hooks events and context", () => {
       ir,
       workspaceDir: "/workspace",
       workflowPath: "/workspace/workflow.ts",
-      baseScope,
+      executionMetadata,
     }).node).toMatchObject({
       id: "review",
       key: "review~1",
@@ -106,17 +102,29 @@ describe("hooks events and context", () => {
       ir,
       workspaceDir: "/workspace",
       workflowPath: "/workspace/workflow.ts",
-      baseScope,
+      executionMetadata,
     }).node).not.toMatchObject({ output: expect.anything(), error: expect.anything() });
 
+    const unresolvedAgent = buildHookContext({
+      row: row("instance.failed", { nodeKey: "review~1", error: { reason: "expression_resolution_failed" } }, 45, "review~1"),
+      hookEvent: "node.failed",
+      projection,
+      ir,
+      workspaceDir: "/workspace",
+      workflowPath: "/workspace/workflow.ts",
+      executionMetadata: [],
+    });
+    expect(unresolvedAgent.node).toMatchObject({ id: "review", status: "failed" });
+    expect(unresolvedAgent.node).not.toHaveProperty("agentPrompt");
+
     expect(buildHookContext({
-      row: row("signal.awaiting", { nodeKey: "approve~1" }, 45, "approve~1"),
+      row: row("signal.awaiting", { nodeKey: "approve~1" }, 46, "approve~1"),
       hookEvent: "run.awaiting",
       projection,
       ir,
       workspaceDir: "/workspace",
       workflowPath: "/workspace/workflow.ts",
-      baseScope,
+      executionMetadata,
     })).toMatchObject({
       run: { status: "awaiting" },
       signal: { nodeId: "approve", nodeKey: "approve~1", prompt: "Approve release?" },
@@ -139,7 +147,7 @@ function row(type: string, payload: Record<string, unknown>, sequence = 1, nodeK
 
 function workflow(): WorkflowIR {
   return {
-    irVersion: 2,
+    irVersion: 3,
     name: "release",
     agents: {},
     root: {
@@ -149,7 +157,16 @@ function workflow(): WorkflowIR {
           kind: "task",
           run: {
             kind: "task_run",
-            input: { packageName: { kind: "ref", path: ["input", "packageName"] } },
+            input: {
+              packageName: {
+                kind: "call",
+                fn: "fmap",
+                args: [
+                  { kind: "literal", value: "authored" },
+                  { kind: "literal", value: "value => { throw new Error(`task input must not re-evaluate: ${value}`); }" },
+                ],
+              },
+            },
             target: { kind: "inline", runtime: "node", source: "export default async () => ({ ok: true })" },
           },
         },
@@ -160,10 +177,11 @@ function workflow(): WorkflowIR {
             kind: "agent_run",
             agent: "reviewer",
             prompt: {
-              kind: "template",
-              parts: [
-                { kind: "text", value: "Review " },
-                { kind: "expr", expr: { kind: "ref", path: ["nodes", "prepare", "output", "tag"] } },
+              kind: "call",
+              fn: "fmap",
+              args: [
+                { kind: "literal", value: "authored" },
+                { kind: "literal", value: "value => { throw new Error(`agent prompt must not re-evaluate: ${value}`); }" },
               ],
             },
           },
@@ -173,7 +191,7 @@ function workflow(): WorkflowIR {
           kind: "signal",
           run: {
             kind: "signal_run",
-            prompt: { kind: "template", parts: [{ kind: "text", value: "Approve release?" }] },
+            prompt: { kind: "literal", value: "Approve release?" },
           },
         },
       ],

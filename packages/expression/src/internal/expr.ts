@@ -14,28 +14,29 @@ export type WorkflowData =
   | readonly WorkflowData[]
   | { readonly [key: string]: WorkflowData };
 
-export type AnyWorkflowValue =
+export type AnyResolvable =
   | Expr<any>
   | WorkflowPrimitive
-  | readonly AnyWorkflowValue[]
-  | { readonly [key: string]: AnyWorkflowValue };
+  | readonly AnyResolvable[]
+  | { readonly [key: string]: AnyResolvable };
 
-type WorkflowLiteralValue<T> =
+type ResolvableLiteral<T> =
   T extends undefined
     ? never
     : T extends WorkflowPrimitive
       ? T
       : T extends readonly (infer Item)[]
-        ? readonly WorkflowValue<Item>[]
+        ? readonly Resolvable<Item>[]
         : T extends object
-          ? { readonly [K in keyof T]: WorkflowValue<T[K]> }
+          ? { readonly [K in keyof T]: Resolvable<T[K]> }
           : never;
 
 type IsAny<T> = 0 extends (1 & T) ? true : false;
 
-export type WorkflowValue<T = WorkflowData | undefined> = IsAny<T> extends true
-  ? AnyWorkflowValue
-  : Expr<T> | WorkflowLiteralValue<T>;
+/** A durable literal or expression that Acpus resolves from workflow scope at run time. */
+export type Resolvable<T = WorkflowData | undefined> = IsAny<T> extends true
+  ? AnyResolvable
+  : Expr<T> | ResolvableLiteral<T>;
 
 type Primitive = string | number | boolean | null | undefined;
 type Nullish<T> = Extract<T, null | undefined>;

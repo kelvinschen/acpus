@@ -1,4 +1,4 @@
-import type { TaskExecutionTargetIR, TaskRunIR } from "@acpus/core/ir";
+import type { TaskExecutionTargetIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 
 export type TaskArtifactRegistration = {
@@ -16,7 +16,11 @@ export type TaskProcessRequest = {
   target: TaskExecutionTargetIR;
   input: Record<string, JsonValue>;
   workspaceDir: string;
-  execution?: TaskRunIR["execution"];
+  execution?: {
+    shell?: "bash" | "powershell" | "pwsh";
+    defaultCommandTimeout?: string;
+    commandRunner?: "acpus-zx-core" | "custom";
+  };
   artifact: {
     runId: string;
     nodeKey: string;

@@ -5,6 +5,57 @@ import { bootstrapRootEvents, continueRootEvents } from "../src/scheduler/materi
 import { applySchedulerEvents, createSchedulerProjection, groupCompletionEvents } from "../src/scheduler/transitions.js";
 
 describe("scheduler materialization", () => {
+  it("persists input-driven group configuration in projection state", () => {
+    const parallel = workflowWithRootNode({
+      id: "parallel",
+      kind: "parallel",
+      strategy: "all",
+      maxConcurrency: { kind: "ref", path: ["input", "parallelism"] },
+      branches: { only: { scope: { nodes: [] } } },
+    });
+    const parallelProjection = applySchedulerEvents(
+      createSchedulerProjection("run_parallel"),
+      bootstrapRootEvents("run_parallel", parallel, { input: { parallelism: 2 } }),
+    );
+    expect(parallelProjection.groups[deriveInstanceKey(appendNode([], "parallel"))]).toMatchObject({ maxConcurrency: 2 });
+
+    const fanout = workflowWithRootNode({
+      id: "items",
+      kind: "fanout",
+      strategy: "quorum",
+      over: { kind: "ref", path: ["input", "items"] },
+      count: { kind: "ref", path: ["input", "quorum"] },
+      maxConcurrency: { kind: "ref", path: ["input", "parallelism"] },
+      do: { nodes: [] },
+    });
+    const fanoutProjection = applySchedulerEvents(
+      createSchedulerProjection("run_fanout"),
+      bootstrapRootEvents("run_fanout", fanout, { input: { items: ["a", "b"], quorum: 1, parallelism: 2 } }),
+    );
+    expect(fanoutProjection.groups[deriveInstanceKey(appendNode([], "items"))]).toMatchObject({ quorumCount: 1, maxConcurrency: 2 });
+  });
+
+  it("fails materialization with a tagged resolution constraint error", () => {
+    const frameKey = deriveInstanceKey(appendNode([], "items"));
+    const events = bootstrapRootEvents("run_1", workflowWithRootNode({
+      id: "items",
+      kind: "fanout",
+      strategy: "quorum",
+      over: { kind: "literal", value: ["a"] },
+      count: { kind: "ref", path: ["input", "quorum"] },
+      do: { nodes: [] },
+    }), { input: { quorum: 0 } });
+
+    expect(events).toContainEqual({
+      type: "frame.failed",
+      payload: {
+        frameKey,
+        terminalReason: "expression_resolution_failed",
+        error: expect.objectContaining({ reason: "expression_resolution_failed", type: "constraint", field: "Fanout node 'items' quorum count" }),
+      },
+    });
+  });
+
   it("bootstraps the root frame and first root scheduler leaf conservatively", () => {
     const taskEvents = bootstrapRootEvents("run_1", workflowWithRootNode({
       id: "task",
@@ -22,8 +73,8 @@ describe("scheduler materialization", () => {
     const events = bootstrapRootEvents("run_1", workflowWithRootNode({
       id: "approve",
       kind: "signal",
-      run: { kind: "signal_run", prompt: { kind: "template", parts: [] } },
-      timeout: "1m",
+      run: { kind: "signal_run", prompt: { kind: "literal", value: "" } },
+      timeout: { kind: "literal", value: "1m" },
     }));
 
     expect(events.map(event => event.type)).toEqual(["frame.started", "instance.ready"]);
@@ -752,7 +803,7 @@ function workflowWithRootNode(node: NodeIR): WorkflowIR {
 
 function workflowWithRootNodes(nodes: NodeIR[]): WorkflowIR {
   return {
-    irVersion: 2,
+    irVersion: 3,
     name: "test",
     inputSchema: objectSchema(),
     root: { nodes, outputs: {} },

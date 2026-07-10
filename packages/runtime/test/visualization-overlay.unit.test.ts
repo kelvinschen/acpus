@@ -22,6 +22,9 @@ describe("workflow visualization overlay", () => {
       attempts: [
         { attemptId: "attempt_prepare", nodeKey: "prepare", nodeId: "prepare", attemptNo: 1, status: "completed", ...attemptTiming },
       ],
+      groups: [
+        { groupKey: "approval", nodeKey: "approval", nodeId: "approval", kind: "parallel", strategy: "all", status: "running", maxConcurrency: 1 },
+      ],
       groupMembers: [
         { groupKey: "approval", memberKey: "approval.left", memberKind: "branch", branchId: "left", status: "running", ...timing },
         { groupKey: "approval", memberKey: "approval.right", memberKind: "branch", branchId: "right", status: "completed", ...timing },
@@ -45,6 +48,7 @@ describe("workflow visualization overlay", () => {
         kind: "parallel",
         status: "running",
         strategy: "all",
+        maxConcurrency: 1,
         instancePath: [{ kind: "node", nodeId: "approval" }],
         members: expect.arrayContaining([
           expect.objectContaining({ memberKey: "approval.left" }),
@@ -88,6 +92,7 @@ describe("workflow visualization overlay", () => {
         { attemptId: "attempt_failed", nodeKey: "prepare", nodeId: "prepare", attemptNo: 1, status: "failed", error: { reason: "first" }, ...attemptTiming },
         { attemptId: "attempt_completed", nodeKey: "prepare", nodeId: "prepare", attemptNo: 2, status: "completed", result: { ok: true }, ...attemptTiming },
       ],
+      groups: [],
       groupMembers: [],
       signalWaits: [],
     });
@@ -104,7 +109,7 @@ describe("workflow visualization overlay", () => {
 
 function detailWorkflow(): WorkflowIR {
   return {
-    irVersion: 2,
+    irVersion: 3,
     name: "detail-test",
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
     agents: { reviewer: { kind: "agent_definition", use: "codex", model: "sonnet" } },
@@ -119,7 +124,7 @@ function detailWorkflow(): WorkflowIR {
           id: "review",
           kind: "agent",
           outputSchema: { kind: "object", fields: { ok: { kind: "boolean" }, note: { kind: "string", optional: true } }, required: ["ok"], additionalProperties: false },
-          run: { kind: "agent_run", agent: "reviewer", prompt: { kind: "template", parts: [] } },
+          run: { kind: "agent_run", agent: "reviewer", prompt: { kind: "literal", value: "" } },
         },
         { id: "gate", kind: "assert", condition: call("gte", ref("input", "score"), lit(50)) },
         {
@@ -170,7 +175,7 @@ function call(fn: string, ...args: unknown[]) {
 
 function workflow(): WorkflowIR {
   return {
-    irVersion: 2,
+    irVersion: 3,
     name: "overlay-test",
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
     agents: {},
@@ -207,6 +212,6 @@ function signal(id: string): WorkflowIR["root"]["nodes"][number] {
     id,
     kind: "signal",
     outputSchema: { kind: "object", fields: {}, required: [], additionalProperties: true },
-    run: { kind: "signal_run", prompt: { kind: "template", parts: [] } },
+    run: { kind: "signal_run", prompt: { kind: "literal", value: "" } },
   };
 }

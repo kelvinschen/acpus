@@ -1,7 +1,8 @@
 import type { FanoutNodeIR, LoopNodeIR, NodeIR, ParallelNodeIR, WorkflowIR } from "@acpus/core/ir";
 import type { JsonObject, JsonValue } from "@acpus/expression/ir";
 import { normalizeWorkflowData } from "../evaluation/admissible.js";
-import { evaluateExpr, renderTemplate, type EvaluationScope } from "../evaluation/evaluator.js";
+import { evaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
+import { resolutionErrorPayload, tryResolveDuration, tryResolveInteger, tryResolveString } from "../evaluation/resolvable.js";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "./identity.js";
 import type { SchedulerEvent } from "./events.js";
 import type { FrameKind, GroupMember, InstancePath, InstancePathSegment, SchedulerFrame, SchedulerProjection } from "./types.js";
@@ -213,6 +214,7 @@ function materializeNodeEvents(input: {
       instancePath: nodePath,
       parentFrameKey: input.parentFrameKey,
       readinessSequence: input.readinessSequence,
+      scope: input.scope,
     });
   }
   if (input.node.kind === "assert") return materializeAssertEvents({ runId: input.runId, node: input.node, parentFrameKey: input.parentFrameKey, basePath: input.basePath, scope: input.scope });
@@ -230,9 +232,12 @@ function materializeAssertEvents(input: { runId: string; node: Extract<NodeIR, {
   try {
     const passed = evaluateExpr(input.node.condition, input.scope);
     if (typeof passed !== "boolean") throw new Error(`Assert node '${input.node.id}' condition must evaluate to boolean.`);
-    return passed
-      ? [start, { type: "frame.completed", payload: { frameKey: nodeKey, result: {}, terminalReason: "assert_passed" } }]
-      : [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: { message: renderAssertFailure(input.node, input.scope) }, terminalReason: "assert_failed" } }];
+    if (passed) return [start, { type: "frame.completed", payload: { frameKey: nodeKey, result: {}, terminalReason: "assert_passed" } }];
+    if (!input.node.message) return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: { message: `Assert node '${input.node.id}' failed.` }, terminalReason: "assert_failed" } }];
+    return tryResolveString(input.node.message, input.scope, `Assert node '${input.node.id}' message`).match(
+      message => [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: { message }, terminalReason: "assert_failed" } }],
+      error => [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: resolutionErrorPayload(error), terminalReason: "expression_resolution_failed" } }],
+    );
   } catch (error) {
     return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: expressionFailure(error), terminalReason: "expression_failed" } }];
   }
@@ -272,9 +277,18 @@ function materializeConditionalEvents(input: { runId: string; node: Extract<Node
 function materializeParallelEvents(input: { runId: string; node: ParallelNodeIR; parentFrameKey: string; basePath: InstancePath; scope: EvaluationScope; readinessSequence: number }): SchedulerEvent[] {
   const nodePath = appendNode(input.basePath, input.node.id);
   const nodeKey = deriveInstanceKey(nodePath);
+  const start = nodeFrameStarted(input.runId, input.node, nodePath, input.parentFrameKey, "node", input.node.strategy);
+  let maxConcurrency: number | undefined;
+  if (input.node.maxConcurrency !== undefined) {
+    const resolved = tryResolveInteger(input.node.maxConcurrency, input.scope, `Parallel node '${input.node.id}' maxConcurrency`, 1);
+    if (resolved.isErr()) {
+      return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: resolutionErrorPayload(resolved.error), terminalReason: "expression_resolution_failed" } }];
+    }
+    maxConcurrency = resolved.value;
+  }
   const events: SchedulerEvent[] = [
-    nodeFrameStarted(input.runId, input.node, nodePath, input.parentFrameKey, "node", input.node.strategy),
-    { type: "group.started", payload: { runId: input.runId, groupKey: nodeKey, nodeKey, nodeId: input.node.id, kind: "parallel", strategy: input.node.strategy } },
+    start,
+    { type: "group.started", payload: { runId: input.runId, groupKey: nodeKey, nodeKey, nodeId: input.node.id, kind: "parallel", strategy: input.node.strategy, ...(maxConcurrency === undefined ? {} : { maxConcurrency }) } },
   ];
   let readinessSequence = input.readinessSequence;
   for (const [branchId, branch] of Object.entries(input.node.branches)) {
@@ -322,11 +336,27 @@ function materializeFanoutEvents(input: { runId: string; node: FanoutNodeIR; par
     if (!Array.isArray(items)) {
       return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: { reason: "fanout_over_not_array" }, terminalReason: "fanout_over_not_array" } }];
     }
+    let maxConcurrency: number | undefined;
+    if (input.node.maxConcurrency !== undefined) {
+      const resolved = tryResolveInteger(input.node.maxConcurrency, input.scope, `Fanout node '${input.node.id}' maxConcurrency`, 1);
+      if (resolved.isErr()) {
+        return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: resolutionErrorPayload(resolved.error), terminalReason: "expression_resolution_failed" } }];
+      }
+      maxConcurrency = resolved.value;
+    }
+    let quorumCount: number | undefined;
+    if (input.node.strategy === "quorum") {
+      const resolved = tryResolveInteger(input.node.count, input.scope, `Fanout node '${input.node.id}' quorum count`, 1);
+      if (resolved.isErr()) {
+        return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: resolutionErrorPayload(resolved.error), terminalReason: "expression_resolution_failed" } }];
+      }
+      quorumCount = resolved.value;
+    }
     const events: SchedulerEvent[] = [
       start,
       input.node.strategy === "quorum"
-        ? { type: "group.started", payload: { runId: input.runId, groupKey: nodeKey, nodeKey, nodeId: input.node.id, kind: "fanout", strategy: "quorum", quorumCount: input.node.count } }
-        : { type: "group.started", payload: { runId: input.runId, groupKey: nodeKey, nodeKey, nodeId: input.node.id, kind: "fanout", strategy: "all" } },
+        ? { type: "group.started", payload: { runId: input.runId, groupKey: nodeKey, nodeKey, nodeId: input.node.id, kind: "fanout", strategy: "quorum", quorumCount: quorumCount!, ...(maxConcurrency === undefined ? {} : { maxConcurrency }) } }
+        : { type: "group.started", payload: { runId: input.runId, groupKey: nodeKey, nodeKey, nodeId: input.node.id, kind: "fanout", strategy: "all", ...(maxConcurrency === undefined ? {} : { maxConcurrency }) } },
     ];
     for (const [itemIndex, item] of items.entries()) {
       const itemPath = appendFanoutItem(input.basePath, input.node.id, itemIndex);
@@ -446,7 +476,11 @@ function schedulerLeafEvents(input: {
   instancePath: InstancePath;
   parentFrameKey: string;
   readinessSequence: number;
+  scope: EvaluationScope;
 }): SchedulerEvent[] {
+  const timeout = (input.node.kind === "agent" || input.node.kind === "task") && input.node.timeout !== undefined
+    ? tryResolveDuration(input.node.timeout, input.scope, `${input.node.kind} node '${input.node.id}' timeout`)
+    : undefined;
   const events: SchedulerEvent[] = [{
     type: "instance.ready",
     payload: {
@@ -456,8 +490,19 @@ function schedulerLeafEvents(input: {
       instancePath: input.instancePath,
       parentFrameKey: input.parentFrameKey,
       readinessSequence: input.readinessSequence,
+      ...(timeout?.isOk() ? { timeoutMs: timeout.value.milliseconds } : {}),
     },
   }];
+  if (timeout?.isErr()) {
+    events.push({
+      type: "instance.failed",
+      payload: {
+        nodeKey: input.nodeKey,
+        error: resolutionErrorPayload(timeout.error),
+        statusReason: "expression_resolution_failed",
+      },
+    });
+  }
   return events;
 }
 
@@ -567,11 +612,13 @@ function groupResult(node: ParallelNodeIR | FanoutNodeIR, projection: SchedulerP
       .map(member => member.output as JsonValue);
   }
   if (node.kind === "fanout") {
+    const quorumCount = projection.groups[groupKey]?.quorumCount;
+    if (quorumCount === undefined) throw new Error(`Fanout quorum group '${groupKey}' has no resolved quorum count.`);
     const completed = members
       .filter(member => member.memberKind === "fanout_item" && member.status === "completed")
       .sort(byCompletionSequence)
       .map(member => member.output as JsonValue);
-    return completed.slice(0, node.count);
+    return completed.slice(0, quorumCount);
   }
   return undefined;
 }
@@ -687,10 +734,6 @@ function loopScopeForIteration(scope: EvaluationScope, nodeId: string, iter: num
 function evaluateOutputs(outputs: NonNullable<ScopeIR["outputs"]>, scope: EvaluationScope): JsonObject {
   const result = Object.fromEntries(Object.entries(outputs).map(([key, expr]) => [key, evaluateExpr(expr, scope) as JsonValue]));
   return normalizeWorkflowData(result, "Scope output") as JsonObject;
-}
-
-function renderAssertFailure(node: Extract<NodeIR, { kind: "assert" }>, scope: EvaluationScope): string {
-  return node.message ? renderTemplate(node.message, scope) : `Assert node '${node.id}' failed.`;
 }
 
 function requireObjectOutput(value: unknown, label: string): JsonObject {

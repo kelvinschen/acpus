@@ -82,7 +82,7 @@ describe("expression evaluator", () => {
   it("passes missing callback dependencies as undefined", () => {
     expect(evaluateExpr(fmap(refExpr<string | undefined>(["input", "missing"]), value => value ?? "fallback").__ir, adapter))
       .toBe("fallback");
-    expect(evaluateExpr(fmap(refExpr<readonly string[]>(["input", "empty"])[0], value => value ?? "fallback").__ir, adapter))
+    expect(evaluateExpr(fmap(refExpr<readonly string[]>(["input", "empty"])[0]!, value => value ?? "fallback").__ir, adapter))
       .toBe("fallback");
     expect(evaluateExpr(lift({ maybe: refExpr<string | undefined>(["input", "missing"]) }, ({ maybe }) => maybe ?? "fallback").__ir, adapter))
       .toBe("fallback");

@@ -1,5 +1,5 @@
 import type { ArtifactRecord, RunInspection } from "@acpus/runtime";
-import type { ExprIR, JsonValue, TemplateIR } from "@acpus/expression/ir";
+import { renderExpr, renderPromptExpr } from "./expression-format.js";
 
 export type NodeInspectionTarget = {
   kind: "static-node" | "dynamic-node" | "frame" | "attempt" | "unknown";
@@ -245,7 +245,7 @@ function summarizeNode(input: {
   const signalWait = latestBy(input.signalWaits, wait => wait.updatedAt ?? wait.createdAt);
   const promptArtifact = input.artifacts.find(artifact => artifact.relativePath.endsWith("prompt.md"))
     ?? input.artifacts.find(artifact => artifact.relativePath.includes("/prompt."));
-  const authoredPrompt = input.staticNode?.prompt ? renderTemplate(input.staticNode.prompt) : undefined;
+  const authoredPrompt = input.staticNode?.prompt ? renderPromptExpr(input.staticNode.prompt) : undefined;
   const taskMetadata = latestBy(input.executionMetadata.filter(item => item.kind === "task_attempt"), item => item.createdAt)?.metadata;
   const taskInput = metadataRecord(taskMetadata)?.input;
   const authoredInput = input.staticNode?.kind === "task" && input.staticNode.input
@@ -595,37 +595,4 @@ function latestBy<T>(items: T[], getValue: (item: T) => string | undefined): T |
 
 function isLeafKind(kind: string): boolean {
   return kind === "task" || kind === "agent" || kind === "signal" || kind === "assert";
-}
-
-function renderTemplate(template: TemplateIR): string {
-  return template.parts
-    .map(part => (part.kind === "text" ? part.value : `\${${renderExpr(part.expr)}}`))
-    .join("")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function renderExpr(expr: ExprIR): string {
-  switch (expr.kind) {
-    case "literal":
-      return renderLiteral(expr.value);
-    case "ref":
-      return expr.path.join(".");
-    case "array":
-      return `[${expr.items.map(renderExpr).join(", ")}]`;
-    case "object":
-      return `{ ${Object.entries(expr.fields).map(([key, value]) => `${key}: ${renderExpr(value)}`).join(", ")} }`;
-    case "template":
-      return `\`${renderTemplate(expr.template)}\``;
-    case "call":
-      return `${expr.fn}(${expr.args.map(renderExpr).join(", ")})`;
-  }
-}
-
-function renderLiteral(value: JsonValue): string {
-  if (typeof value === "string") return JSON.stringify(value);
-  if (value === null) return "null";
-  if (Array.isArray(value)) return `[${value.map(renderLiteral).join(", ")}]`;
-  if (typeof value === "object") return `{ ${Object.entries(value).map(([key, item]) => `${key}: ${renderLiteral(item)}`).join(", ")} }`;
-  return String(value);
 }

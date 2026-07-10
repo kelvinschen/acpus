@@ -46,7 +46,7 @@ describe("runtime admission normalization", () => {
         {
           id: "raw",
           kind: "signal",
-          run: { kind: "signal_run", prompt: { kind: "template", parts: [] } },
+          run: { kind: "signal_run", prompt: { kind: "literal", value: "" } },
         },
         {
           id: "structured",
@@ -57,7 +57,7 @@ describe("runtime admission normalization", () => {
             required: ["ok"],
             additionalProperties: false,
           },
-          run: { kind: "signal_run", prompt: { kind: "template", parts: [] } },
+          run: { kind: "signal_run", prompt: { kind: "literal", value: "" } },
         },
       ],
     });
@@ -76,7 +76,7 @@ type WorkflowParts = Partial<Omit<WorkflowIR, "root">> & {
 function workflow(partial: WorkflowParts = {}): WorkflowIR {
   const { nodes, root, ...rest } = partial;
   return {
-    irVersion: 2,
+    irVersion: 3,
     name: "normalization",
     agents: {},
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },

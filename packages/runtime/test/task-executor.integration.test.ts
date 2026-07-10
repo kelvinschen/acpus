@@ -175,8 +175,8 @@ describe("task executor", () => {
   });
 
   it("maps timeout and scheduler abort to typed attempt failures", async () => {
-    const timedNode = { ...inlineTask("timed", "async ({ abortSignal }) => { if (!abortSignal.aborted) await new Promise(resolve => abortSignal.addEventListener('abort', resolve, { once: true })); return { late: true }; }"), timeout: "10ms" } satisfies TaskNodeIR;
-    await expect(executeTaskNode(timedNode, {}, taskOptions("run_timed"))).rejects.toMatchObject({
+    const timedNode = inlineTask("timed", "async ({ abortSignal }) => { if (!abortSignal.aborted) await new Promise(resolve => abortSignal.addEventListener('abort', resolve, { once: true })); return { late: true }; }");
+    await expect(executeTaskNode(timedNode, {}, { ...taskOptions("run_timed"), deadlineAt: new Date(Date.now() + 10).toISOString() })).rejects.toMatchObject({
       failure: { type: "timed_out" },
     });
 
@@ -189,8 +189,8 @@ describe("task executor", () => {
   });
 
   it("hard-stops a task that ignores timeout cancellation", async () => {
-    const hanging = { ...inlineTask("hanging", "async () => await new Promise(() => {})"), timeout: "10ms" } satisfies TaskNodeIR;
-    await expect(executeTaskNode(hanging, {}, taskOptions("run_hanging"))).rejects.toMatchObject({
+    const hanging = inlineTask("hanging", "async () => await new Promise(() => {})");
+    await expect(executeTaskNode(hanging, {}, { ...taskOptions("run_hanging"), deadlineAt: new Date(Date.now() + 10).toISOString() })).rejects.toMatchObject({
       failure: { type: "timed_out" },
     });
   });

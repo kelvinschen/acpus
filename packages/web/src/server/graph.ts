@@ -1,6 +1,7 @@
 import type { WorkflowIR } from "@acpus/core/ir";
 import { createWorkflowVisualizationOverlay, type NodeDetail as RuntimeNodeDetail, type WorkflowVisualizationOverlay } from "@acpus/runtime";
-import type { ExprIR, JsonValue, TemplateIR } from "@acpus/expression/ir";
+import type { ExprIR } from "@acpus/expression/ir";
+import { renderExpr } from "./expression-format.js";
 
 export type NodeDetail =
   | { kind: "task"; inputs: string[]; target: "inline" | "module" }
@@ -9,8 +10,8 @@ export type NodeDetail =
   | { kind: "assert"; condition: string; message?: string }
   | { kind: "if"; condition: string }
   | { kind: "switch"; cases: string[]; hasDefault: boolean }
-  | { kind: "parallel"; branches: string[]; strategy: "all" | "race" }
-  | { kind: "fanout"; over: string; strategy: "all" | "quorum"; count?: number }
+  | { kind: "parallel"; branches: string[]; strategy: "all" | "race"; maxConcurrency?: string }
+  | { kind: "fanout"; over: string; strategy: "all" | "quorum"; count?: string; maxConcurrency?: string }
   | { kind: "loop"; state: string };
 
 export type WebGraph = {
@@ -60,6 +61,8 @@ export type WebGraphGroup = {
   kind: "parallel" | "fanout";
   status: string;
   strategy?: string;
+  quorumCount?: number;
+  maxConcurrency?: number;
   members: Array<({
     memberKey: string;
     status: string;
@@ -183,6 +186,8 @@ function graphGroups(source: WorkflowVisualizationOverlay): WebGraphGroup[] {
     kind: group.kind,
     status: group.status,
     ...(group.strategy === undefined ? {} : { strategy: group.strategy }),
+    ...(group.quorumCount === undefined ? {} : { quorumCount: group.quorumCount }),
+    ...(group.maxConcurrency === undefined ? {} : { maxConcurrency: group.maxConcurrency }),
     members: group.members.map(member => {
       const value = {
         memberKey: member.memberKey,
@@ -611,20 +616,26 @@ function formatNodeDetail(detail: RuntimeNodeDetail): NodeDetail {
       return {
         kind: "assert",
         condition: printExpr(detail.condition),
-        ...(detail.message === undefined ? {} : { message: printTemplate(detail.message) }),
+        ...(detail.message === undefined ? {} : { message: printExpr(detail.message) }),
       };
     case "if":
       return { kind: "if", condition: printExpr(detail.condition) };
     case "switch":
       return { kind: "switch", cases: detail.cases.map(printExpr), hasDefault: detail.hasDefault };
     case "parallel":
-      return detail;
+      return {
+        kind: "parallel",
+        branches: detail.branches,
+        strategy: detail.strategy,
+        ...(detail.maxConcurrency === undefined ? {} : { maxConcurrency: printExpr(detail.maxConcurrency) }),
+      };
     case "fanout":
       return {
         kind: "fanout",
         over: printExpr(detail.over),
         strategy: detail.strategy,
-        ...(detail.count === undefined ? {} : { count: detail.count }),
+        ...(detail.count === undefined ? {} : { count: printExpr(detail.count) }),
+        ...(detail.maxConcurrency === undefined ? {} : { maxConcurrency: printExpr(detail.maxConcurrency) }),
       };
     case "loop":
       return {
@@ -665,49 +676,6 @@ function printSchema(schema: SchemaDetail): string {
 
 function printExpr(expr: ExprIR): string {
   return truncate(renderExpr(expr), 80);
-}
-
-function printTemplate(template: TemplateIR): string {
-  return truncate(renderTemplate(template), 80);
-}
-
-function renderExpr(expr: ExprIR): string {
-  switch (expr.kind) {
-    case "literal":
-      return renderLiteral(expr.value);
-    case "ref":
-      return expr.path.join(".");
-    case "array":
-      return `[${expr.items.map(renderExpr).join(", ")}]`;
-    case "object":
-      return `{ ${Object.entries(expr.fields).map(([key, value]) => `${key}: ${renderExpr(value)}`).join(", ")} }`;
-    case "template":
-      return `\`${renderTemplate(expr.template)}\``;
-    case "call":
-      return renderCall(expr.fn, expr.args);
-  }
-}
-
-function renderCall(fn: string, args: ExprIR[]): string {
-  return `${fn}(${args.map(renderExpr).join(", ")})`;
-}
-
-function renderTemplate(template: TemplateIR): string {
-  return template.parts
-    .map(part => (part.kind === "text" ? part.value : `\${${renderExpr(part.expr)}}`))
-    .join("")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function renderLiteral(value: JsonValue): string {
-  if (typeof value === "string") return JSON.stringify(value);
-  if (value === null) return "null";
-  if (Array.isArray(value)) return `[${value.map(renderLiteral).join(", ")}]`;
-  if (typeof value === "object") {
-    return `{ ${Object.entries(value).map(([key, item]) => `${key}: ${renderLiteral(item)}`).join(", ")} }`;
-  }
-  return String(value);
 }
 
 function truncate(text: string, maxLength: number): string {

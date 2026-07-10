@@ -382,13 +382,22 @@ test("workflow output types enforce durable data and preserve explicit escapes",
       },
     });
 
-    return { artifactRef, jsonValue, optional: undefined, escaped: escape };
+    return { artifactRef, jsonValue, escaped: escape };
   });
 
   // @ts-expect-error root workflow output cannot contain unknown.
   defineWorkflow({ name: "invalid-root-output" }).build(() => ({ opaque }));
   // @ts-expect-error root workflow output cannot contain Date.
   defineWorkflow({ name: "invalid-root-date" }).build(() => ({ when: new Date() }));
+  // @ts-expect-error root workflow output cannot contain raw undefined.
+  defineWorkflow({ name: "invalid-root-undefined" }).build(() => ({ optional: undefined }));
+  // @ts-expect-error nested root workflow output cannot contain raw undefined.
+  defineWorkflow({ name: "invalid-root-nested-undefined" }).build(() => ({ payload: { optional: undefined } }));
+  defineWorkflow({ name: "invalid-composite-undefined" }).build(({ step }) => {
+    // @ts-expect-error composite outputs cannot contain raw undefined.
+    step("parallel").parallel({ branches: { only() { return { optional: undefined }; } } });
+    return {};
+  });
 });
 
 test("branch outputs infer unions while loop transitions remain exact", () => {

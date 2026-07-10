@@ -10,10 +10,9 @@ import type { FrozenRun, RuntimeStore } from "../store/store.js";
 import { advanceRun, drainDerivedTransitions, type AdvanceRunInput, type AdvanceRunSummary } from "./advance.js";
 import { bootstrapRootEvents, continueRootEvents } from "./materialize.js";
 import { createRuntimeNodeExecutor } from "./node-executor.js";
-import { parseDurationMs } from "../execution/duration.js";
 import { indexNodes } from "./ir-walk.js";
-import { renderTemplate } from "../evaluation/evaluator.js";
 import { scopeForNodeAttempt } from "./scope.js";
+import { resolutionErrorPayload, tryResolveDuration, tryResolveString } from "../evaluation/resolvable.js";
 import type { TaskAttemptRunner } from "../execution/task-process.js";
 
 export type AdvanceFrozenRunInput = {
@@ -47,15 +46,30 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
     ...(input.leaseMs === undefined ? {} : { leaseMs: input.leaseMs }),
     ...(input.maxLeafConcurrency === undefined ? {} : { maxLeafConcurrency: input.maxLeafConcurrency }),
     ...(input.now === undefined ? {} : { now: input.now }),
-    localConcurrencyLimitFor: localConcurrencyLimitForRoot(frozen.ir),
+    localConcurrencyLimitFor: (_groupKey, projection) => projection.groups[_groupKey]?.maxConcurrency,
     maxAttemptsFor: () => undefined,
     awaitableEventsFor: (instance, projection, now) => {
       const node = nodes.get(instance.nodeId);
-      const deadlineAt = node?.kind === "signal" && node.timeout !== undefined
-        ? new Date(now.getTime() + parseDurationMs(node.timeout)).toISOString()
+      const attemptScope = scopeForNodeAttempt(scope, projection, instance.nodeKey);
+      const timeout = node?.kind === "signal" && node.timeout !== undefined
+        ? tryResolveDuration(node.timeout, attemptScope, `Signal node '${node.id}' timeout`)
         : undefined;
+      const deadlineAt = timeout?.isOk()
+        ? new Date(now.getTime() + timeout.value.milliseconds).toISOString()
+        : undefined;
+      const prompt = node?.kind === "signal"
+        ? tryResolveString(node.run.prompt, attemptScope, `Signal node '${node.id}' prompt`)
+        : undefined;
+      const timeoutMessage = node?.kind === "signal" && node.onTimeout?.message !== undefined
+        ? tryResolveString(node.onTimeout.message, attemptScope, `Signal node '${node.id}' onTimeout message`)
+        : undefined;
+      const resolutionError = timeout?.isErr() ? timeout.error : prompt?.isErr() ? prompt.error : timeoutMessage?.isErr() ? timeoutMessage.error : undefined;
+      const renderedPrompt = prompt?.isOk() ? prompt.value : undefined;
+      const renderedTimeoutMessage = timeoutMessage?.isOk() ? timeoutMessage.value : undefined;
       return node?.kind === "signal"
-        ? [
+        ? resolutionError
+          ? [{ type: "instance.failed", payload: { nodeKey: instance.nodeKey, error: resolutionErrorPayload(resolutionError), statusReason: "expression_resolution_failed" } }]
+          : [
           { type: "instance.awaiting", payload: { nodeKey: instance.nodeKey, statusReason: "signal" } },
           {
             type: "signal.awaiting",
@@ -64,8 +78,8 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
               nodeKey: instance.nodeKey,
               nodeId: instance.nodeId,
               ...(deadlineAt === undefined ? {} : { deadlineAt }),
-              ...(node.onTimeout?.message === undefined ? {} : { timeoutMessage: node.onTimeout.message }),
-              renderedPrompt: renderTemplate(node.run.prompt, scopeForNodeAttempt(scope, projection, instance.nodeKey)),
+              ...(renderedTimeoutMessage === undefined ? {} : { timeoutMessage: renderedTimeoutMessage }),
+              ...(renderedPrompt === undefined ? {} : { renderedPrompt }),
             },
           },
         ]
@@ -73,8 +87,8 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
     },
     deadlineAtFor: (_instance, _projection, now) => {
       const node = nodes.get(_instance.nodeId);
-      if (!node || !isSchedulerRetryLeaf(node) || node.timeout === undefined) return undefined;
-      return new Date(now.getTime() + parseDurationMs(node.timeout));
+      if (!node || !isSchedulerRetryLeaf(node) || _instance.timeoutMs === undefined) return undefined;
+      return new Date(now.getTime() + _instance.timeoutMs);
     },
     bootstrap: snapshot => snapshot.projection.frames.root ? [] : bootstrapRootEvents(input.runId, frozen.ir, scope),
     materialize: snapshot => continueRootEvents(frozen.ir, snapshot.projection, scope),
@@ -92,7 +106,7 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
       ...(input.taskAttemptRunner === undefined ? {} : { taskAttemptRunner: input.taskAttemptRunner }),
     }),
   });
-  triggerHooksForCommittedRows({ ...input, frozen, baseScope: scope, afterSequence: eventCursor });
+  triggerHooksForCommittedRows({ ...input, frozen, afterSequence: eventCursor });
   return summary;
 }
 
@@ -102,7 +116,6 @@ export function triggerHooksForCommittedRows(input: {
   store: RuntimeStore;
   hookRunner?: HookRunner;
   frozen: FrozenRun;
-  baseScope: EvaluationScope;
   afterSequence: number;
 }): void {
   if (!input.hookRunner) return;
@@ -119,6 +132,12 @@ export function triggerHooksForCommittedRows(input: {
   } catch {
     return;
   }
+  let executionMetadata: ReturnType<RuntimeStore["getExecutionMetadata"]> = [];
+  try {
+    executionMetadata = input.store.getExecutionMetadata(input.runId);
+  } catch {
+    // Hooks still run without optional effective attempt values.
+  }
   for (const row of rows) {
     try {
       const hookEvent = mapRuntimeEventToHookEvent(row);
@@ -130,7 +149,7 @@ export function triggerHooksForCommittedRows(input: {
         ir: input.frozen.ir,
         workspaceDir: input.frozen.meta.workspaceDir ?? input.cwd,
         workflowPath: resolve(input.cwd, input.frozen.meta.workflowPath ?? ""),
-        baseScope: input.baseScope,
+        executionMetadata,
       });
       input.hookRunner.trigger(hookEvent, context);
     } catch {
@@ -152,7 +171,6 @@ export function triggerHooksForCommittedRowsForRun(input: {
   triggerHooksForCommittedRows({
     ...input,
     frozen,
-    baseScope: rootScope(frozen),
   });
 }
 
@@ -177,19 +195,6 @@ export function drainFrozenRunTransitions(input: {
 
 function isSchedulerRetryLeaf(node: NodeIR): node is Extract<NodeIR, { kind: "task" | "agent" }> {
   return node.kind === "task" || node.kind === "agent";
-}
-
-function localConcurrencyLimitForRoot(ir: WorkflowIR): NonNullable<AdvanceRunInput["localConcurrencyLimitFor"]> {
-  const limits = new Map<string, number>();
-  for (const node of indexNodes(ir.root).values()) {
-    if ((node.kind === "parallel" || node.kind === "fanout") && node.maxConcurrency !== undefined) {
-      limits.set(node.id, node.maxConcurrency);
-    }
-  }
-  return (groupKey, projection) => {
-    const group = projection.groups[groupKey];
-    return group ? limits.get(group.nodeId) : undefined;
-  };
 }
 
 function rootScope(frozen: FrozenRun): EvaluationScope {

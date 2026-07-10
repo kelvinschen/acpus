@@ -185,10 +185,11 @@ describe.concurrent("runtime admission use cases", () => {
       const workDir = join(workspace, "task-workdir");
       await mkdir(workDir);
 
-      const admitted = await admitSyntheticWorkflow(workspace, taskInvocationOptionsWorkflow(), { workDir });
+      const admitted = await admitSyntheticWorkflow(workspace, taskInvocationOptionsWorkflow(), { workDir, commandTimeout: "5s" });
 
       expect(admitted.status).toBe("completed");
-      await expect(getRun(workspace, admitted.run.id)).resolves.toMatchObject({
+      const run = await getRun(workspace, admitted.run.id);
+      expect(run).toMatchObject({
         status: "completed",
         output: {
           inputName: "runtime",
@@ -199,6 +200,9 @@ describe.concurrent("runtime admission use cases", () => {
           sameEnvObject: true,
           inputMode: "strict",
         },
+      });
+      expect(run?.dynamic?.executionMetadata.find(entry => entry.kind === "task_attempt")?.metadata).toMatchObject({
+        defaultCommandTimeout: "5s",
       });
     });
   });

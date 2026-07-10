@@ -9,7 +9,8 @@
 ### Public API
 
 - The root `@acpus/expression` entrypoint MUST expose the authoring value surface: `fmap`, `lift2`, `lift3`, `lift`, `template`, and `md`.
-- The root `@acpus/expression` entrypoint MUST expose the public authoring types `Expr`, `ExprValue`, `WorkflowData`, and `WorkflowValue`.
+- The root `@acpus/expression` entrypoint MUST expose the public authoring types `Expr`, `ExprValue`, `WorkflowData`, and `Resolvable`.
+- The root and subpath entrypoints MUST NOT expose the removed `WorkflowValue` compatibility name.
 - The root `@acpus/expression` entrypoint MUST NOT export raw construction helpers such as `expr`, `isExpr`, `refExpr`, or `valueToExprIR`.
 - The root `@acpus/expression` entrypoint MUST NOT export the removed algebra helpers: `not`, `and`, `or`, `ifElse`, `eq`, `ne`, `add`, `subtract`, `multiply`, `divide`, `mod`, `lt`, `lte`, `gt`, `gte`, `coalesce`, `len`, `includes`, `isEmpty`, `startsWith`, `endsWith`, `matches`, `get`, `head`, `every`, `some`, `filter`, `map`, `transform`, `join`, `max`, `min`, `where`, or `pick`.
 - `@acpus/expression/ir` MUST expose serializable IR and JSON types plus advanced construction helpers needed by package internals and tests, including `expr`, `isExpr`, `refExpr`, `tryValueToExprIR`, `valueToExprIR`, and shared expression operator metadata.
@@ -29,7 +30,8 @@
 
 ### Authoring And Lowering
 
-- `WorkflowValue<T>` MUST accept expression tokens, JSON-compatible literals, arrays, and plain objects. Raw literal `undefined` MUST still fail lowering; expression tokens whose value type includes `undefined` are allowed as projection values.
+- `Resolvable<T>` MUST be the sole authoring type for values resolved from workflow scope at run time.
+- `Resolvable<T>` MUST accept expression tokens, JSON-compatible literals, arrays, and plain objects recursively. Raw literal `undefined` MUST still fail lowering; expression tokens whose value type includes `undefined` are allowed as projection values.
 - Runtime lowering MUST reject unsupported raw values such as `undefined`, sparse arrays, non-plain objects, functions, symbols, bigint, and non-finite numbers.
 - `tryValueToExprIR(value)` MUST return a neverthrow `Result<ExprIR, ExprLoweringError>` for recoverable expression lowering failures.
 - `ExprLoweringError` MUST be a serializable tagged union with stable path fields.
@@ -39,7 +41,7 @@
 - Accessors over non-ref expressions MUST lower property access to the internal `access` operator.
 - Object field access and array index access are projection surface. Array index projection MUST be typed as possibly `undefined`.
 - User object fields named `ir` MUST remain reachable as normal output accessors.
-- `fmap(value, fn)` MUST lower to a `call` expression with operator id `fmap`, the lowered workflow value as arg 0, and `fn.toString()` as a string literal arg 1.
+- `fmap(value, fn)` MUST accept `Resolvable` input and lower to a `call` expression with operator id `fmap`, the lowered value as arg 0, and `fn.toString()` as a string literal arg 1.
 - `lift2(a, b, fn)` MUST lower to operator id `lift2`, deps as args 0 and 1, and callback source as arg 2.
 - `lift3(a, b, c, fn)` MUST lower to operator id `lift3`, deps as args 0 through 2, and callback source as arg 3.
 - `lift(deps, fn)` MUST accept a plain named dependency object, lower the dependency object as arg 0, and lower callback source as arg 1.
@@ -47,7 +49,7 @@
 - Callback helpers MUST be typed as `ExprValue<R>` where callback return type `R` extends `WorkflowData`.
 - Callback helpers MUST accept inline synchronous arrow functions with either expression bodies or block bodies; source-level callback complexity and lexical capture policy belong to the workflow compiler authoring rules.
 - Callback helpers MUST NOT create workflow nodes, task attempts, task contexts, artifact access, cwd/env boundaries, timeout policies, retry policies, or async execution boundaries.
-- `template` MUST lower tagged template strings to an expression node containing `TemplateIR` while preserving authored whitespace exactly.
+- `template` MUST accept `Resolvable` interpolations and lower tagged template strings to an `ExprIR.kind: "template"` node containing internal `TemplateIR` while preserving authored whitespace exactly.
 - `md` MUST lower tagged template strings to normal `TemplateIR` after removing surrounding blank lines and common indentation from literal text parts. Expression interpolations MUST remain unchanged. Authors SHOULD use `md` for multiline Markdown prompts and messages.
 
 ### Operators

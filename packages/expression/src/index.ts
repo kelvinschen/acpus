@@ -1,43 +1,43 @@
-export type { Expr, ExprValue, WorkflowData, WorkflowValue } from "./internal/expr.js";
+export type { Expr, ExprValue, Resolvable, WorkflowData } from "./internal/expr.js";
 import { accessor, callExpr, valueToExprIR } from "./internal/expr.js";
-import type { Expr, ExprValue, WorkflowData, WorkflowValue } from "./internal/expr.js";
+import type { Expr, ExprValue, Resolvable, WorkflowData } from "./internal/expr.js";
 import type { ExprIR } from "./ir.js";
 
 type TemplatePart = { kind: "text"; value: string } | { kind: "expr"; expr: ExprIR };
-type LiftDeps = { readonly [key: string]: WorkflowValue<any> | undefined };
-type ResolvedWorkflowValue<T> =
+type LiftDeps = { readonly [key: string]: Resolvable<any> };
+type ResolvedResolvable<T> =
   T extends undefined
     ? undefined
     : T extends Expr<infer Value>
     ? Value
     : T extends readonly (infer Item)[]
-      ? readonly ResolvedWorkflowValue<Item>[]
+      ? readonly ResolvedResolvable<Item>[]
       : T extends object
-        ? { readonly [K in keyof T]: ResolvedWorkflowValue<T[K]> }
+        ? { readonly [K in keyof T]: ResolvedResolvable<T[K]> }
         : T;
 type ResolvedLiftDeps<Deps extends LiftDeps> = {
-  readonly [K in keyof Deps]: ResolvedWorkflowValue<Deps[K]>;
+  readonly [K in keyof Deps]: ResolvedResolvable<Deps[K]>;
 };
 
 export function fmap<A, R extends WorkflowData>(
-  value: WorkflowValue<A> | undefined,
+  value: Resolvable<A>,
   fn: (value: A) => R,
 ): ExprValue<R> {
   return callExpr<R>("fmap", [value, fn.toString()]);
 }
 
 export function lift2<A, B, R extends WorkflowData>(
-  a: WorkflowValue<A> | undefined,
-  b: WorkflowValue<B> | undefined,
+  a: Resolvable<A>,
+  b: Resolvable<B>,
   fn: (a: A, b: B) => R,
 ): ExprValue<R> {
   return callExpr<R>("lift2", [a, b, fn.toString()]);
 }
 
 export function lift3<A, B, C, R extends WorkflowData>(
-  a: WorkflowValue<A> | undefined,
-  b: WorkflowValue<B> | undefined,
-  c: WorkflowValue<C> | undefined,
+  a: Resolvable<A>,
+  b: Resolvable<B>,
+  c: Resolvable<C>,
   fn: (a: A, b: B, c: C) => R,
 ): ExprValue<R> {
   return callExpr<R>("lift3", [a, b, c, fn.toString()]);
@@ -55,7 +55,7 @@ export function lift<const Deps extends LiftDeps, R extends WorkflowData>(
  * Builds an exact string template expression and preserves authored whitespace.
  * Use `md` for multiline Markdown prompts that should be dedented.
  */
-export function template(strings: TemplateStringsArray, ...values: WorkflowValue<any>[]): ExprValue<string> {
+export function template(strings: TemplateStringsArray, ...values: Resolvable<any>[]): ExprValue<string> {
   return templateExpr(templateParts(strings, values));
 }
 
@@ -63,7 +63,7 @@ export function template(strings: TemplateStringsArray, ...values: WorkflowValue
  * Builds a multiline Markdown template for prompts and messages.
  * Unlike `template`, this helper removes surrounding blank lines and common indentation.
  */
-export function md(strings: TemplateStringsArray, ...values: WorkflowValue<any>[]): ExprValue<string> {
+export function md(strings: TemplateStringsArray, ...values: Resolvable<any>[]): ExprValue<string> {
   return templateExpr(dedentTemplateParts(templateParts(strings, values)));
 }
 
@@ -73,7 +73,7 @@ function assertPlainDeps(deps: unknown): void {
   if (prototype !== Object.prototype && prototype !== null) throw new Error("lift(deps, fn) requires a plain object dependency map.");
 }
 
-function templateParts(strings: TemplateStringsArray, values: WorkflowValue<any>[]): TemplatePart[] {
+function templateParts(strings: TemplateStringsArray, values: Resolvable<any>[]): TemplatePart[] {
   const parts: TemplatePart[] = [];
   strings.forEach((text, index) => {
     parts.push({ kind: "text", value: text });

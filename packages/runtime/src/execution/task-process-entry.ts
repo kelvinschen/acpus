@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import { importAuthoringModule } from "@acpus/loader";
 import { task } from "@acpus/core";
 import { createDollar, type ArtifactRef, type CommandBuilder, type Dollar, type TaskContext, type TaskFunction } from "@acpus/core/runtime";
-import type { TaskExecutionTargetIR, TaskRunIR } from "@acpus/core/ir";
+import type { TaskExecutionTargetIR } from "@acpus/core/ir";
 import { normalizeWorkflowData } from "../evaluation/admissible.js";
 import { loadInlineTaskFunction } from "./inline-task.js";
 import type { TaskArtifactRegistration, TaskProcessChildMessage, TaskProcessParentMessage, TaskProcessRequest } from "./task-process-protocol.js";
@@ -62,14 +62,14 @@ async function loadTaskFunction(target: TaskExecutionTargetIR, workspaceDir: str
   return token.fn as TaskFunction<unknown, unknown>;
 }
 
-function createTaskDollar(execution: TaskRunIR["execution"], signal: AbortSignal): Dollar {
+function createTaskDollar(execution: TaskProcessRequest["execution"], signal: AbortSignal): Dollar {
   const timeout = execution?.defaultCommandTimeout;
   return timeout
     ? createDollar({ signal }, { timeout: timeout as NonNullable<Parameters<CommandBuilder["timeout"]>[0]> })
     : createDollar({ signal });
 }
 
-function validateExecutionOptions(execution: TaskRunIR["execution"]): void {
+function validateExecutionOptions(execution: TaskProcessRequest["execution"]): void {
   if (execution?.shell && execution.shell !== "bash") throw new Error(`Task execution shell '${execution.shell}' is not supported yet.`);
   if (execution?.commandRunner && execution.commandRunner !== "acpus-zx-core") throw new Error(`Task execution commandRunner '${execution.commandRunner}' is not supported yet.`);
 }

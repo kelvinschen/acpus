@@ -15,6 +15,7 @@ export type NodeAttemptContext = {
   attemptId: string;
   attemptNo: number;
   ownerEpoch: number;
+  deadlineAt?: string;
   attemptStartReason?: "control_retry" | "pause_resume";
   signal: AbortSignal;
 };
@@ -364,6 +365,7 @@ async function runInstance(
       attemptId: attempt.attemptId,
       attemptNo: attempt.attemptNo,
       ownerEpoch: claim.ownerEpoch,
+      ...(deadlineAt === undefined ? {} : { deadlineAt }),
       ...(startReason === undefined ? {} : { attemptStartReason: startReason }),
       signal: controller.signal,
     });

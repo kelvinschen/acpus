@@ -6,6 +6,7 @@ import { executeTaskNode, TaskAttemptExecutionError } from "../execution/task-ex
 import type { TaskAttemptRunner } from "../execution/task-process.js";
 import { normalizeWorkflowData } from "../evaluation/admissible.js";
 import type { EvaluationScope } from "../evaluation/evaluator.js";
+import { ResolutionException, resolutionErrorPayload } from "../evaluation/resolvable.js";
 import type { RuntimeStore } from "../store/store.js";
 import type { NodeProgressWriter } from "../progress/writer.js";
 import type { NodeAttemptContext, NodeExecutor } from "./advance.js";
@@ -36,6 +37,7 @@ export function createRuntimeNodeExecutor(input: RuntimeNodeExecutorInput): Node
         try {
           return completedResult(await executeTask(node, scope, context, input), true);
         } catch (error) {
+          if (error instanceof ResolutionException) return resolutionFailure(error);
           if (error instanceof TaskAttemptExecutionError) {
             if (error.failure.type === "cancelled") return { status: "cancelled", reason: "paused" };
             if (error.failure.type === "timed_out") return { status: "timed_out", reason: error.message };
@@ -48,6 +50,7 @@ export function createRuntimeNodeExecutor(input: RuntimeNodeExecutorInput): Node
         try {
           return completedResult(await executeAgent(node, scope, context, input), false);
         } catch (error) {
+          if (error instanceof ResolutionException) return resolutionFailure(error);
           if (error instanceof AgentNodeCancelledError) return { status: "cancelled", reason: "paused" };
           if (error instanceof AgentNodeTimeoutError) return { status: "timed_out", reason: error.message };
           throw error;
@@ -55,6 +58,14 @@ export function createRuntimeNodeExecutor(input: RuntimeNodeExecutorInput): Node
       }
       return { status: "failed", reason: `Node '${context.nodeId}' (${node.kind}) is not a scheduler leaf executor target.` };
     },
+  };
+}
+
+function resolutionFailure(error: ResolutionException): AttemptCommitInput["result"] {
+  return {
+    status: "failed",
+    reason: "expression_resolution_failed",
+    error: resolutionErrorPayload(error.resolution),
   };
 }
 
@@ -70,6 +81,7 @@ async function executeTask(node: TaskNodeIR, scope: EvaluationScope, context: No
     store: input.store,
     nodeKey: context.nodeKey,
     attemptNo: context.attemptNo,
+    ...(context.deadlineAt === undefined ? {} : { deadlineAt: context.deadlineAt }),
     signal: context.signal,
     ...(input.taskAttemptRunner === undefined ? {} : { taskAttemptRunner: input.taskAttemptRunner }),
   });
@@ -83,6 +95,7 @@ async function executeAgent(node: AgentNodeIR, scope: EvaluationScope, context: 
     nodeKey: context.nodeKey,
     attemptId: context.attemptId,
     attemptNo: context.attemptNo,
+    ...(context.deadlineAt === undefined ? {} : { deadlineAt: context.deadlineAt }),
     store: input.store,
     ...(input.progressWriter === undefined ? {} : { progressWriter: input.progressWriter }),
     initialPromptKind: context.attemptStartReason === "control_retry" || context.attemptStartReason === "pause_resume" ? "plain_continuation" : "task",

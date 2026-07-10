@@ -33,6 +33,8 @@
 ### Expression And Template Evaluation
 
 - The runtime MUST evaluate `ExprIR` by adapting `@acpus/expression/evaluator` to durable execution scope.
+- Runtime configuration resolution MUST use typed Result helpers for strings, durations, and constrained integers. Resolution errors MUST distinguish evaluator failure, result type mismatch, and field constraint failure and MUST carry the authored field path or label.
+- Runtime Result objects MUST NOT enter events, SQLite rows, workflow output, or public JSON payloads.
 - Runtime refs MUST resolve `input`, `workflow.input`, `nodes`, `meta`, `fanout`, and `loop` paths from durable execution scope.
 - Runtime ref resolution MUST read only own object properties and canonical non-negative array indexes. Array prototype properties and non-canonical indexes such as `length`, `map`, or `01` MUST resolve as missing.
 - Runtime `meta` refs MUST expose run id, relative workflow path, workflow name, and absolute workspace directory.
@@ -112,6 +114,7 @@
 - Parallel `race` strategy MUST return the first successful branch with `{ winner, result }` and MUST cancel remaining running member subtrees after the winner is accepted.
 - Fanout `all` strategy MUST materialize item identity rows and aggregate item outputs as an array.
 - Fanout `quorum` strategy MUST accept outputs in completion order, return the accepted item outputs as `Array<ItemOutput>` after quorum success, and cancel remaining running member subtrees after quorum is reached.
+- Parallel/Fanout `maxConcurrency` and Fanout quorum `count` MUST resolve once when the group materializes. Their concrete values MUST be stored in `group.started`, rebuilt into group projection state after recovery, and used by concurrency and completion policy from that projection.
 - Fanout item identity MUST use the zero-based `itemIndex` of each array occurrence. Duplicate item values MUST materialize as distinct fanout items.
 - Branch group members MUST contain `branchId`; fanout group members MUST contain `itemIndex` and the item payload. A group member MUST NOT combine branch and fanout identity fields.
 - Loop execution MUST use do-while transition semantics: iteration 0 is materialized immediately, each iteration evaluates the body transition `{ state, stop }`, and loop completion returns the final transition `state`.
@@ -140,8 +143,12 @@
 - Agent node `retry.max` MUST be runtime-owned schema-backed response repair
   budget inside one scheduler-visible attempt, not scheduler-visible automatic
   retry.
-- Task and agent timeout options MUST be persisted as scheduler attempt deadlines for scheduler-backed runs.
-- Signal timeout options MUST be persisted as scheduler signal wait deadlines.
+- Task and Agent timeout expressions MUST resolve once before attempt start and MUST be persisted as scheduler attempt deadlines for scheduler-backed runs. Executors MUST consume the persisted deadline without re-evaluating the timeout expression.
+- Signal timeout, prompt, and timeout-message expressions MUST resolve once when the instance enters awaiting state. The deadline, rendered prompt, and rendered timeout message MUST be persisted in signal wait projection state.
+- Agent response-repair max and Task default command timeout MUST resolve once in attempt scope and MUST be recorded in attempt execution metadata.
+- A runtime configuration resolution failure MUST fail its owning frame or attempt with `expression_resolution_failed` and a payload that preserves the evaluation/type/constraint error tag.
+- An explicit Agent `sessionKey` that resolves to an empty or whitespace-only string MUST fail its attempt as an `expression_resolution_failed` constraint error.
+- A Task executor that observes an already-expired persisted attempt deadline MUST commit `attempt.timed_out`, not a generic failed attempt.
 - In-flight task and agent timeout enforcement MAY occur inside the executor attempt, while stale or recovered attempts MUST be derivable from scheduler deadlines.
 - Task artifact APIs MUST write run-local artifact files from the Task process while the runtime parent remains the sole owner of SQLite artifact registration.
 - Attempt-local output directories, work directories, and task artifacts MUST use dynamic `nodeKey` and attempt-specific subpaths for scheduler-backed task execution.
@@ -193,8 +200,8 @@
   `permissionMode`, `agentMode`, `cwd`, and `env`. Overrides MUST reject unknown
   agent names, simultaneous `use` and `command`, fields outside this allowlist,
   legacy `policy`, broad `options`, and raw IR `kind`.
-- Agent overrides MUST lower `cwd` and `env` string values to literal
-  expressions before execution.
+- Agent overrides MUST preserve top-level Agent definition `cwd` and `env`
+  string values as declaration-time plain values.
 - When an agent override changes identity through `use` or `command`,
   identity-tied fields `model` and `agentMode` MUST be cleared unless the same
   override supplies replacements. `permissionMode` MUST remain inherited across
@@ -419,7 +426,7 @@
 - `listRuns`, `getRun`, and visualization overlay APIs MUST read SQLite projections rather than live workflow source.
 - `listRuns` MUST order runs by `updatedAt DESC` with `createdAt DESC` as a
   deterministic tie-breaker.
-- `getRun` MUST expose dynamic scheduler details when scheduler projection rows exist, including version, frames, dynamic node instances, attempts, group members, and signal waits.
+- `getRun` MUST expose dynamic scheduler details when scheduler projection rows exist, including version, frames, dynamic node instances, attempts, groups with effective quorum/concurrency values, group members, and signal waits.
 - Dynamic frame and node-instance read rows MUST include structured
   `instancePath` data when present.
 - Dynamic group-member read rows MUST include `childFrameKey` when the member
@@ -427,7 +434,9 @@
 - Dynamic group-member read rows MUST preserve the branch/fanout identity shape of the scheduler projection.
 - `getRun` MUST expose runtime execution metadata rows, including agent attempt
   turn metadata, when such rows exist for a run.
-- The runtime MUST provide a visualization overlay helper that combines static `WorkflowIR` structure with dynamic scheduler projection state without adding layout-specific state.
+- The runtime MUST provide a visualization overlay helper that shows authored `ExprIR` in static detail and combines it with persisted effective group, signal, and attempt values in runtime detail without adding layout-specific state.
+- Agent and Task hook contexts MUST read rendered prompt and Task input from persisted attempt execution metadata and MUST NOT re-evaluate authored expressions. Signal-awaiting hook contexts MUST read the persisted rendered prompt from the signal event or projection.
+- Fork semantic signatures MUST include complete runtime configuration `ExprIR` so changing a configuration expression invalidates safe reuse.
 - Read-only inspection MUST NOT create runtime state when no runtime store exists.
 - Read-only health checks MUST NOT create runtime state when no runtime store
   exists.

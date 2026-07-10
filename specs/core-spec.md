@@ -44,11 +44,13 @@
 - `SchemaIR` MUST be a core-owned recursive schema union. It MUST NOT reuse expression `TypeIR` for core-only variants such as `literal`, `enum`, or schema metadata.
 - `validateWorkflowIR(ir)` MUST validate `SchemaIR` as a closed recursive union, reject unknown schema kinds and fields, and reject hand-authored `kind: "integer"` in favor of `kind: "number"`.
 
-### Expression, Templates, And Helpers
+### Resolvable Values, Templates, And Helpers
 
-- Core authoring APIs MUST accept workflow values and expression/template tokens produced by `@acpus/expression`.
-- Plain string prompts/messages MUST lower to `TemplateIR` with one text part.
-- Template interpolation MUST preserve expressions in `TemplateIR`; rendering policy belongs to runtime consumers.
+- Plain `T` in an authoring type MUST mean declaration-time structure. `Resolvable<T>` MUST mean a value evaluated from durable workflow scope at run time.
+- Core MUST use `Resolvable<T>` from `@acpus/expression` as the sole public runtime-value seam and MUST NOT define duplicate value-or-expression or template-input types.
+- Every `Resolvable` field, including literal input, MUST lower through `valueToExprIR` to `ExprIR`. Template tokens MUST be stored only as `ExprIR.kind: "template"`; node fields MUST NOT store `TemplateIR` directly.
+- Workflow, composite-scope, and Task-input authored bindings MUST reject raw `undefined` at every nesting level instead of omitting it during lowering. Runtime Task outputs remain governed by runtime output normalization.
+- Template interpolation MUST preserve expressions inside the template `ExprIR`; rendering policy belongs to runtime consumers.
 
 ### Nodes
 
@@ -67,8 +69,9 @@
 - Reusable Task nodes MUST use `step("id").task({ run: { task, input, cwd?, env?, execution? }, timeout? })`; output is inferred from the reusable Task token's `exec`.
 - Agent node graph dependencies MUST be expressed by refs inside `run.prompt`, `run.cwd`, `run.env`, and `run.sessionKey`.
 - Signal node graph dependencies MUST be expressed by refs inside `run.prompt`.
-- Agent and Task `cwd` MUST be a string workflow value.
-- Agent and Task `env` values MUST be string workflow values or `secret(...)` tokens.
+- Agent and Task node `run.cwd` MUST be `Resolvable<string>`.
+- Agent and Task node `run.env` values MUST be `Resolvable<string>` or `secret(...)` tokens.
+- Top-level Agent definition `cwd` and `env` MUST remain declaration-time plain strings or secret refs and MUST remain plain values in `WorkflowIR`.
 - Assert nodes MUST use `step("id").assert({ condition, message? })`.
 - Assert nodes MUST serialize only `condition` and optional `message`, and MUST produce no output.
 - Composite nodes MUST include `step("id").if`, `switch`, `parallel`, `fanout`, and `loop`, each producing child-scope IR.
@@ -84,8 +87,8 @@
 - If nodes MUST use `step("id").if({ condition, then, else })` and MUST infer the union of `then` and `else` outputs.
 - Switch nodes MUST use `default` for fallback authoring, and default MUST be declared.
 - Switch and parallel race outputs MUST preserve heterogeneous branch unions. Accessors over a union MUST expose only fields TypeScript can prove are present.
-- Parallel nodes MUST express static named branch concurrency with named branch declaration methods and support `strategy?: "all" | "race"`, defaulting to `"all"`.
-- Fanout nodes MUST express runtime array expansion and support `strategy?: "all" | "quorum"`, defaulting to `"all"`.
+- Parallel nodes MUST express static named branches and support declaration-time `strategy?: "all" | "race"`, defaulting to `"all"`, plus runtime `maxConcurrency?: Resolvable<number>`.
+- Fanout nodes MUST express runtime array expansion through `over: Resolvable<readonly Item[]>`, support declaration-time `strategy?: "all" | "quorum"`, and accept runtime `count: Resolvable<number>` for quorum and `maxConcurrency?: Resolvable<number>`.
 - Fanout item output MUST be inferred from the `do` callback and serialize no `itemOutputSchema`.
 - Loop nodes MUST declare `state`; loop bodies MUST receive `index`, `round`, and non-optional `state`.
 - Loop bodies MUST return a transition object `{ state, stop }`; transition `state` MUST converge with the declared initial `state`.
@@ -101,7 +104,7 @@
 - Inline and reusable Task return types MUST use the recursive durable output constraint. A Task MAY return top-level `undefined` to represent no output, but arrays MUST NOT contain `undefined` entries.
 - Task node lifecycle options MAY support top-level `timeout`.
 - Task node lifecycle options MUST NOT support workflow-level automatic `retry`.
-- Agent node `retry`, when present, MUST contain only `max?: number` and MUST
+- Agent node `retry`, when present, MUST contain only `max?: Resolvable<number>` and MUST
   require `outputSchema`.
 - Task invocation options MAY support `run.cwd`, `run.env`, and `run.execution`.
 - Task code MUST receive a context containing only `input`, `$`, `artifact`, `env`, and `abortSignal`.
@@ -113,7 +116,7 @@
 
 ### IR And Validation
 
-- `compileWorkflowDefinition(definition)` MUST lower an in-memory workflow definition to serializable `WorkflowIR` with `irVersion: 2`.
+- `compileWorkflowDefinition(definition)` MUST lower an in-memory workflow definition to serializable `WorkflowIR` with `irVersion: 3`.
 - `WorkflowIR`, node IR, scope IR, schema IR, template IR, expression IR, agent definitions, task runs, and task execution targets MUST use closed serialized object shapes.
 - `WorkflowIR.description`, when present, MUST be a string.
 - `validateWorkflowIR(ir)` MUST diagnose unknown fields, malformed agent definitions, malformed node runs, invalid expressions/templates/schemas, missing required composite branches/defaults, and malformed task execution targets. It MUST NOT enforce TypeScript-owned task/composite business output shape through generated schemas.
@@ -122,7 +125,10 @@
 - Scope outputs MAY reference ancestor scope nodes and any node declared in that scope, but parent scopes and sibling branches/cases MUST NOT reference child-scope internal nodes.
 - `fanout.<id>.item` and `fanout.<id>.itemIndex` refs MUST be valid only in that fanout body and nested descendants.
 - `loop.<id>.index`, `loop.<id>.round`, and `loop.<id>.state` refs MUST be valid only in that loop body and nested descendants.
-- `DurationIR` fields MUST be duration strings matching `^\d+(ms|s|m|h)?$`; omitted units MUST mean milliseconds.
+- Agent, Task, and Signal `timeout`, Task `execution.defaultCommandTimeout`, Agent `retry.max`, Parallel/Fanout `maxConcurrency`, Fanout quorum `count`, prompts, session keys, assert/signal messages, conditions, fanout `over`, loop state, task input/cwd/env, and other runtime values MUST be stored as `ExprIR`.
+- Literal duration expressions MUST contain strings matching `^\d+(ms|s|m|h)?$`; omitted units MUST mean milliseconds. Literal quorum/concurrency values MUST be positive integers, and literal retry max values MUST be non-negative integers.
+- `WorkflowIR` MUST NOT expose a `DurationIR` alias that hides the common `ExprIR` representation.
+- Workflow authoring config MUST NOT expose an unconsumed `defaults.timeout` field.
 - Task runs MUST contain a closed `target` descriptor that is either an inline source target or a reusable module target.
 - Inline task targets MUST contain `{ kind: "inline", runtime: "node", source }`, where `source` is the self-contained `exec` function source.
 - Reusable task targets MUST contain `{ kind: "module", runtime: "node", specifier, exportName, referrer }`, where `specifier` is the source-level module specifier, `exportName` selects the exported task token, and `referrer` identifies the workflow source file used as the resolution parent.

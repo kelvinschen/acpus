@@ -32,6 +32,6 @@ export type TemplatePartIR =
   | { kind: "expr"; expr: ExprIR };
 
 export { expr, isExpr, refExpr, valueToExprIR, tryValueToExprIR } from "./internal/expr.js";
-export type { Expr, ExprLoweringError, ExprValue, WorkflowData, WorkflowValue } from "./internal/expr.js";
+export type { Expr, ExprLoweringError, ExprValue, Resolvable, WorkflowData } from "./internal/expr.js";
 export { EXPRESSION_OPERATORS, expressionCallbackOperatorNames, expressionOperatorSpec } from "./internal/operators.js";
 export type { ExpressionCallbackOperatorName, ExpressionOperatorName, OperatorSpec } from "./internal/operators.js";

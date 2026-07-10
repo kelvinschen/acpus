@@ -3,8 +3,8 @@ import { isAbsolute, join, resolve } from "node:path";
 import type { TaskNodeIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import { evaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
+import { resolveOrThrow, tryResolveDuration, tryResolveString } from "../evaluation/resolvable.js";
 import type { RuntimeStore } from "../store/store.js";
-import { parseDurationMs } from "./duration.js";
 import { runTaskAttempt, taskAttemptFailureMessage, type TaskAttemptFailure, type TaskAttemptRunner } from "./task-process.js";
 
 export type TaskExecutorOptions = {
@@ -14,6 +14,7 @@ export type TaskExecutorOptions = {
   nodeKey?: string;
   attemptId?: string;
   attemptNo?: number;
+  deadlineAt?: string;
   signal?: AbortSignal;
   taskAttemptRunner?: TaskAttemptRunner;
 };
@@ -32,15 +33,34 @@ export async function executeTaskNode(node: TaskNodeIR, scope: EvaluationScope, 
   const absoluteRunDir = resolve(workspaceDir, runDir);
   const input = Object.fromEntries(Object.entries(node.run.input).map(([key, expr]) => [key, evaluateExpr(expr, scope)])) as Record<string, JsonValue>;
   const nodeKey = options.nodeKey ?? node.id;
-  const authoredCwd = node.run.cwd ? stringValue(evaluateExpr(node.run.cwd, scope), `Task node '${node.id}' cwd`) : workspaceDir;
+  const authoredCwd = node.run.cwd
+    ? resolveOrThrow(tryResolveString(node.run.cwd, scope, `Task node '${node.id}' cwd`))
+    : workspaceDir;
   const cwd = isAbsolute(authoredCwd) ? authoredCwd : resolve(workspaceDir, authoredCwd);
   const env: NodeJS.ProcessEnv = { ...process.env, ...evaluateEnv(node.run.env, scope) };
+  const defaultCommandTimeout = node.run.execution?.defaultCommandTimeout === undefined
+    ? undefined
+    : resolveOrThrow(tryResolveDuration(node.run.execution.defaultCommandTimeout, scope, `Task node '${node.id}' defaultCommandTimeout`));
+  const execution = node.run.execution === undefined ? undefined : {
+    ...(node.run.execution.shell === undefined ? {} : { shell: node.run.execution.shell }),
+    ...(node.run.execution.commandRunner === undefined ? {} : { commandRunner: node.run.execution.commandRunner }),
+    ...(defaultCommandTimeout === undefined ? {} : { defaultCommandTimeout: defaultCommandTimeout.value }),
+  };
+  const timeoutMs = remainingTimeout(options.deadlineAt, node.id);
   const visibleAttempt = options.attemptNo ?? 1;
   options.store.writeExecutionMetadata({
     runId: options.runId,
     ...(options.attemptId ? { attemptId: options.attemptId } : {}),
     kind: "task_attempt",
-    metadata: { nodeId: node.id, nodeKey, attemptNo: visibleAttempt, input, cwd },
+    metadata: {
+      nodeId: node.id,
+      nodeKey,
+      attemptNo: visibleAttempt,
+      input,
+      cwd,
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      ...(defaultCommandTimeout === undefined ? {} : { defaultCommandTimeout: defaultCommandTimeout.value }),
+    },
   });
   const attemptDir = `attempt-${visibleAttempt}`;
   await mkdir(join(absoluteRunDir, "outputs", nodeKey, attemptDir), { recursive: true });
@@ -54,10 +74,10 @@ export async function executeTaskNode(node: TaskNodeIR, scope: EvaluationScope, 
       target: node.run.target,
       input,
       workspaceDir,
-      ...(node.run.execution === undefined ? {} : { execution: node.run.execution }),
+      ...(execution === undefined ? {} : { execution }),
       artifact: { runId: options.runId, nodeKey, attempt: visibleAttempt, runDir: absoluteRunDir },
     },
-    ...(node.timeout === undefined ? {} : { timeoutMs: parseDurationMs(node.timeout) }),
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     registerArtifact: artifact => options.store.registerArtifact(artifact),
   });
@@ -69,7 +89,7 @@ function evaluateEnv(env: TaskNodeIR["run"]["env"], scope: EvaluationScope): Rec
   if (!env) return {};
   return Object.fromEntries(Object.entries(env).map(([key, value]) => {
     if ("kind" in value && value.kind === "secret") throw new Error(`Task env '${key}' references an unresolved secret.`);
-    return [key, stringValue(evaluateExpr(value, scope), `Task env '${key}'`)];
+    return [key, resolveOrThrow(tryResolveString(value, scope, `Task env '${key}'`))];
   }));
 }
 
@@ -78,7 +98,9 @@ function validateExecutionOptions(node: TaskNodeIR): void {
   if (node.run.execution?.commandRunner && node.run.execution.commandRunner !== "acpus-zx-core") throw new Error(`Task node '${node.id}' execution commandRunner '${node.run.execution.commandRunner}' is not supported yet.`);
 }
 
-function stringValue(value: unknown, label: string): string {
-  if (typeof value === "string") return value;
-  throw new Error(`${label} must evaluate to string.`);
+function remainingTimeout(deadlineAt: string | undefined, nodeId: string): number | undefined {
+  if (deadlineAt === undefined) return undefined;
+  const remaining = new Date(deadlineAt).getTime() - Date.now();
+  if (remaining <= 0) throw new TaskAttemptExecutionError({ type: "timed_out", message: `Task node '${nodeId}' exceeded its timeout.` });
+  return remaining;
 }

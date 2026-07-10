@@ -24,6 +24,7 @@ Runtime hooks let users run configured shell commands as workflow side effects w
 - The hook journal MUST write only terminal hook records with status `completed`, `failed`, or `timed_out`.
 - Hook journal rows MUST include `eventSequence` and `triggerOrder`. `runs inspect` MUST order hook history by `eventSequence`, then `triggerOrder`, then journal row id.
 - Hook context `run.status` and `node.status` MUST describe the hook event time, not a later scheduler projection state.
+- Hook node prompt/input fields MUST use persisted effective attempt values and MUST NOT re-evaluate authored expressions. When an attempt has no effective value because configuration resolution failed, the hook MUST still run with that optional field omitted.
 - The hook journal MUST NOT create a `running` row and MUST NOT synthesize a failure row after a hook process or daemon crash.
 - Hook stdout and stderr stored in the journal MUST be bounded.
 - Hook journal retention MUST default to 7 days. Read-only APIs MUST NOT prune hook journal rows.

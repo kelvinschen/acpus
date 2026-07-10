@@ -28,7 +28,7 @@ export type SchedulerEvent =
   | BaseEvent<"frame.retry_requested", { frameKey: string; source?: "control" }>
   | BaseEvent<"frame.loop_advanced", { frameKey: string; iter: number; state?: JsonValue; transition?: JsonValue }>
   // Makes a dynamic node instance known to the scheduler.
-  | BaseEvent<"instance.ready", { runId: string; nodeKey: string; nodeId: string; instancePath: InstancePath; parentFrameKey?: string; readinessSequence?: number }>
+  | BaseEvent<"instance.ready", { runId: string; nodeKey: string; nodeId: string; instancePath: InstancePath; parentFrameKey?: string; readinessSequence?: number; timeoutMs?: number }>
   | BaseEvent<"instance.started", { nodeKey: string }>
   | BaseEvent<"instance.awaiting", { nodeKey: string; statusReason?: string }>
   | BaseEvent<"instance.requeued", { nodeKey: string; reason: "paused" | "superseded"; readinessSequence?: number }>
@@ -44,9 +44,9 @@ export type SchedulerEvent =
   | BaseEvent<"attempt.cancelled", { attemptId: string; cancelReason: CancellationReason }>
   | BaseEvent<"attempt.superseded", { attemptId: string; cancelReason?: CancellationReason }>
   // Captures branch or item readiness and terminal status for group completion policy.
-  | BaseEvent<"group.started", { runId: string; groupKey: string; nodeKey: string; nodeId: string; kind: "parallel"; strategy: "all" | "race"; quorumCount?: never }>
-  | BaseEvent<"group.started", { runId: string; groupKey: string; nodeKey: string; nodeId: string; kind: "fanout"; strategy: "all"; quorumCount?: never }>
-  | BaseEvent<"group.started", { runId: string; groupKey: string; nodeKey: string; nodeId: string; kind: "fanout"; strategy: "quorum"; quorumCount: number }>
+  | BaseEvent<"group.started", { runId: string; groupKey: string; nodeKey: string; nodeId: string; kind: "parallel"; strategy: "all" | "race"; maxConcurrency?: number; quorumCount?: never }>
+  | BaseEvent<"group.started", { runId: string; groupKey: string; nodeKey: string; nodeId: string; kind: "fanout"; strategy: "all"; maxConcurrency?: number; quorumCount?: never }>
+  | BaseEvent<"group.started", { runId: string; groupKey: string; nodeKey: string; nodeId: string; kind: "fanout"; strategy: "quorum"; quorumCount: number; maxConcurrency?: number }>
   | BaseEvent<"group.member_ready", { runId: string; groupKey: string; memberKey: string; readinessSequence: number; childFrameKey?: string } & GroupMemberIdentity>
   | BaseEvent<"group.member_started", { memberKey: string }>
   | BaseEvent<"group.member_requeued", { memberKey: string; reason: "paused" | "superseded"; readinessSequence?: number }>

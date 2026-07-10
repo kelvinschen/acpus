@@ -1,4 +1,4 @@
-import type { JsonValue } from "@acpus/expression/ir";
+import type { JsonObject, JsonValue } from "@acpus/expression/ir";
 import { err, ok, type Result } from "neverthrow";
 import type { SchedulerEvent } from "./events.js";
 import type { SchedulerProjection } from "./types.js";
@@ -86,7 +86,7 @@ export type AttemptCommitInput = {
   runId: string;
   attemptId: string;
   ownerEpoch: number;
-  result: { status: "completed"; output?: JsonValue } | { status: "failed" | "timed_out"; reason: string } | { status: "cancelled"; reason: "parent_failed" | "race_lost" | "quorum_reached" | "paused" | "superseded" };
+  result: { status: "completed"; output?: JsonValue } | { status: "failed" | "timed_out"; reason: string; error?: JsonObject } | { status: "cancelled"; reason: "parent_failed" | "race_lost" | "quorum_reached" | "paused" | "superseded" };
   idempotencyKey: string;
 };
 

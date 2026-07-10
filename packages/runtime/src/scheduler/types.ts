@@ -56,6 +56,7 @@ export type NodeInstance = {
   instancePath: InstancePath;
   parentFrameKey?: string;
   readinessSequence?: number;
+  timeoutMs?: number;
   /** Current status reason only; running/completed instances must not retain historical control reasons. */
   statusReason?: string;
   output?: JsonValue;
@@ -86,6 +87,7 @@ type BaseGroupProjection = {
   status: "running" | "completed" | "failed" | "cancelled";
   result?: JsonValue;
   error?: JsonObject;
+  maxConcurrency?: number;
 };
 
 export type GroupProjection =

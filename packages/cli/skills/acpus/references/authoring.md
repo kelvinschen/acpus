@@ -25,6 +25,21 @@ Do not import `@acpus/*` from user workflows; those are implementation packages 
 
 Inside `build`, every run-dependent value from `input`, `meta`, and node `output` is an `Expr<T>` token. Field projection such as `review.output.ready` and array index projection such as `items[0]` are supported. Do not compute over expression values with authoring-time JavaScript; use workflow control nodes, `template`/`md`, and `fmap`/`lift2`/`lift3`/`lift` for computed operations.
 
+Use this boundary rule consistently: a plain `T` field is declaration-time structure, while `Resolvable<T>` is evaluated from workflow scope at run time. Authors normally do not need to import `Resolvable`; the public node signatures reveal which fields support both literals and expressions. For example:
+
+```ts
+timeout: "5m",
+timeout: input.timeout,
+maxConcurrency: input.parallelism,
+count: input.quorum,
+onTimeout: {
+  action: "fail",
+  message: template`Request ${input.requestId} timed out`,
+},
+```
+
+Node ids, strategies, schemas, task targets, agent selectors/model/modes, permission policy, command runner, shell, and secret names stay static. Top-level Agent `cwd`/`env` are also static; only node `run.cwd`/`run.env` are runtime-resolvable.
+
 ### Minimal Workflow Skeleton
 
 ```ts

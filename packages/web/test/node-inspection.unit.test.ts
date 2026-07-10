@@ -23,6 +23,7 @@ const baseRun: RunInspection["run"] = {
     frames: [],
     nodeInstances: [],
     attempts: [],
+    groups: [],
     groupMembers: [],
     signalWaits: [],
     executionMetadata: [],
@@ -67,6 +68,7 @@ describe("inspectNode", () => {
             { nodeKey: "review:1", nodeId: "review", status: "running", createdAt: "t", updatedAt: "t" },
           ],
           attempts: [],
+          groups: [],
           groupMembers: [],
           signalWaits: [],
           executionMetadata: [],
@@ -100,6 +102,7 @@ describe("inspectNode", () => {
           ],
           nodeInstances: [],
           attempts: [],
+          groups: [],
           groupMembers: [],
           signalWaits: [],
           executionMetadata: [],
@@ -150,6 +153,7 @@ describe("inspectNode", () => {
           ],
           nodeInstances: [],
           attempts: [],
+          groups: [],
           groupMembers: [],
           signalWaits: [],
           executionMetadata: [],
@@ -184,6 +188,7 @@ describe("inspectNode", () => {
           attempts: [
             { attemptId: "a1", nodeKey: "prepare", nodeId: "prepare", attemptNo: 1, status: "completed", startedAt: "t", finishedAt: "t" },
           ],
+          groups: [],
           groupMembers: [],
           signalWaits: [],
           executionMetadata: [],
@@ -219,6 +224,7 @@ describe("inspectNode", () => {
           attempts: [
             { attemptId: "a1", nodeKey: "prepare", nodeId: "prepare", attemptNo: 1, status: "completed", startedAt: "t", finishedAt: "t" },
           ],
+          groups: [],
           groupMembers: [],
           signalWaits: [],
           executionMetadata: [
@@ -246,6 +252,7 @@ describe("inspectNode", () => {
           frames: [],
           nodeInstances: [],
           attempts: [],
+          groups: [],
           groupMembers: [],
           signalWaits: [
             { nodeKey: "review:1", nodeId: "review", status: "awaiting", createdAt: "t", updatedAt: "t" },
@@ -276,6 +283,7 @@ describe("inspectNode", () => {
           attempts: [
             { attemptId: "a1", nodeKey: "review:1", nodeId: "review", attemptNo: 1, status: "completed", result: { ok: true }, startedAt: "2026-07-01T00:00:02.000Z", finishedAt: "2026-07-01T00:00:03.000Z" },
           ],
+          groups: [],
           groupMembers: [],
           signalWaits: [
             { nodeKey: "review:1", nodeId: "review", status: "awaiting", renderedPrompt: "Approve?", createdAt: "2026-07-01T00:00:02.000Z", updatedAt: "2026-07-01T00:00:03.000Z" },
@@ -309,7 +317,7 @@ describe("inspectNode", () => {
           nodeId: "review",
           kind: "agent",
           order: 0,
-          prompt: { kind: "template", parts: [{ kind: "text", value: "Review release" }] },
+          prompt: { kind: "literal", value: "Review release" },
         },
       ],
     };
@@ -368,6 +376,7 @@ describe("inspectNode", () => {
             { attemptId: "attempt_auto", nodeKey: "opaque-auto", nodeId: "auto_route", attemptNo: 1, status: "completed", result: { route: "auto-fast" }, startedAt: "2026-07-01T00:00:02.000Z", finishedAt: "2026-07-01T00:00:03.000Z" },
             { attemptId: "attempt_manual", nodeKey: "opaque-manual", nodeId: "manual_route", attemptNo: 1, status: "completed", result: { route: "manual" }, startedAt: "2026-07-01T00:00:02.000Z", finishedAt: "2026-07-01T00:00:03.000Z" },
           ],
+          groups: [],
           groupMembers: [],
           signalWaits: [],
           executionMetadata: [
@@ -432,6 +441,7 @@ describe("inspectNode", () => {
             { attemptId: "attempt_alpha", nodeKey: "agent-alpha", nodeId: "reviewer_agent", attemptNo: 1, status: "completed", startedAt: "t" },
             { attemptId: "attempt_beta", nodeKey: "agent-beta", nodeId: "reviewer_agent", attemptNo: 1, status: "completed", startedAt: "t" },
           ],
+          groups: [],
           groupMembers: [],
           signalWaits: [],
           executionMetadata: [
@@ -493,6 +503,7 @@ describe("inspectNode", () => {
             { attemptId: "attempt_alpha", nodeKey: "agent-alpha", nodeId: "reviewer_agent", attemptNo: 1, status: "started", startedAt: "t" },
             { attemptId: "attempt_beta", nodeKey: "agent-beta", nodeId: "reviewer_agent", attemptNo: 1, status: "started", startedAt: "t" },
           ],
+          groups: [],
           groupMembers: [],
           signalWaits: [],
           executionMetadata: [],
@@ -540,6 +551,7 @@ describe("inspectNode", () => {
             { attemptId: "attempt_1", nodeKey: "agent-key", nodeId: "reviewer_agent", attemptNo: 1, status: "failed", startedAt: "t1", finishedAt: "t1" },
             { attemptId: "attempt_2", nodeKey: "agent-key", nodeId: "reviewer_agent", attemptNo: 2, status: "started", startedAt: "t2" },
           ],
+          groups: [],
           groupMembers: [],
           signalWaits: [],
           executionMetadata: [
@@ -595,6 +607,7 @@ describe("inspectNode", () => {
           attempts: [
             { attemptId: "attempt_agent", nodeKey: "agent-key", nodeId: "reviewer_agent", attemptNo: 1, status: "started", startedAt: "t" },
           ],
+          groups: [],
           groupMembers: [],
           signalWaits: [],
           executionMetadata: [],
@@ -648,6 +661,7 @@ describe("inspectNode", () => {
           attempts: [
             { attemptId: "attempt_agent", nodeKey: "agent-key", nodeId: "reviewer_agent", attemptNo: 1, status: "completed", startedAt: "t" },
           ],
+          groups: [],
           groupMembers: [],
           signalWaits: [],
           executionMetadata: [
@@ -730,6 +744,7 @@ describe("inspectNode", () => {
             { attemptId: "attempt_1", nodeKey: "agent-key", nodeId: "reviewer_agent", attemptNo: 1, status: "failed", startedAt: "t1", finishedAt: "t1" },
             { attemptId: "attempt_2", nodeKey: "agent-key", nodeId: "reviewer_agent", attemptNo: 2, status: "started", startedAt: "t2" },
           ],
+          groups: [],
           groupMembers: [],
           signalWaits: [],
           executionMetadata: [
@@ -779,6 +794,7 @@ describe("inspectNode", () => {
           attempts: [
             { attemptId: "attempt_agent", nodeKey: "agent-key", nodeId: "reviewer_agent", attemptNo: 1, status: "completed", startedAt: "t" },
           ],
+          groups: [],
           groupMembers: [],
           signalWaits: [],
           executionMetadata: [

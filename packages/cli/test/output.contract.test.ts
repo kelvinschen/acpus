@@ -15,7 +15,7 @@ describe("CLI result output contracts", () => {
       workflow: {
         name: "cli-valid",
         description: "Validate CLI workflow summaries.",
-        irVersion: 2,
+        irVersion: 3,
         nodeCount: 1,
         outputKeys: ["ready"],
         diagnostics: {
@@ -99,6 +99,7 @@ describe("CLI result output contracts", () => {
           frames: [],
           nodeInstances: [],
           attempts: [],
+          groups: [],
           groupMembers: [],
           signalWaits: [],
           executionMetadata: [{
@@ -169,6 +170,7 @@ describe("CLI result output contracts", () => {
           frames: [],
           nodeInstances: [],
           attempts: [],
+          groups: [],
           groupMembers: [],
           signalWaits: [],
           executionMetadata: [],
@@ -227,6 +229,7 @@ describe("CLI result output contracts", () => {
           frames: [],
           nodeInstances: [],
           attempts: [],
+          groups: [],
           groupMembers: [],
           signalWaits: [],
           executionMetadata: [],
@@ -284,6 +287,7 @@ describe("CLI result output contracts", () => {
           frames: [],
           nodeInstances: [],
           attempts: [],
+          groups: [],
           groupMembers: [],
           signalWaits: [],
           executionMetadata: [{
@@ -388,7 +392,7 @@ function checkResult(): CliResult {
     workflow: {
       name: "cli-valid",
       description: "Validate CLI workflow summaries.",
-      irVersion: 2,
+      irVersion: 3,
       nodeCount: 1,
       outputKeys: ["ready"],
       diagnostics: {
