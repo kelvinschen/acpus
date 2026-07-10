@@ -1,5 +1,5 @@
 import type { JsonValue } from "@acpus/expression/ir";
-import type { WorkflowIR } from "@acpus/core/ir";
+import { walkNodes, type WorkflowIR } from "@acpus/core/ir";
 import { normalizeSignalPayload } from "../admission/input.js";
 import type { RuntimeStore } from "../store/store.js";
 import { throwSchedulerStoreResult, type SchedulerSnapshot, type SchedulerStoreResult } from "./store-port.js";
@@ -106,16 +106,15 @@ function applySchedulerControlProjection(store: RuntimeStore, intent: RunControl
     const target = intent.target;
     return target === undefined
       ? unwrapStoreResult(store.scheduler.tryRetryRun({ runId, ownerEpoch, idempotencyKey }))
-      : unwrapStoreResult(store.scheduler.tryRetry({ runId, ownerEpoch, idempotencyKey, targetKey: retryTargetKey(target, intent.requestId, snapshot) }));
+      : unwrapStoreResult(store.scheduler.tryRetry({ runId, ownerEpoch, idempotencyKey, target }));
   }
   if (intent.type === "cancel") {
     const target = intent.target;
-    const targetKey = target === undefined ? undefined : cancelTargetKey(target, intent.requestId, snapshot);
     return unwrapStoreResult(store.scheduler.tryCancel({
       runId,
       ownerEpoch,
       idempotencyKey,
-      ...(targetKey === undefined ? {} : { targetKey }),
+      ...(target === undefined ? {} : { target }),
     }));
   }
   if (intent.type === "signal") {
@@ -146,44 +145,6 @@ function applySchedulerControlProjection(store: RuntimeStore, intent: RunControl
   return assertNever(intent);
 }
 
-function retryTargetKey(target: string, requestId: string, snapshot: SchedulerSnapshot): string {
-  if (snapshot.projection.instances[target]) return target;
-  if (snapshot.projection.frames[target]) return target;
-  const instanceMatches = Object.values(snapshot.projection.instances)
-    .filter(instance => instance.nodeId === target && instance.status === "failed")
-    .map(instance => instance.nodeKey)
-    .sort();
-  const frameMatches = Object.values(snapshot.projection.frames)
-    .filter(frame => (frame.frameKind === "node" || frame.frameKind === "loop") && frame.nodeId === target && frame.status === "failed")
-    .map(frame => frame.frameKey)
-    .sort();
-  const matches = [...instanceMatches, ...frameMatches].sort();
-  if (matches.length === 1) return matches[0]!;
-  if (matches.length > 1) throw new Error(`Scheduler retry control request '${requestId}' target '${target}' is ambiguous. Candidate target keys: ${matches.join(", ")}.`);
-  return target;
-}
-
-function cancelTargetKey(target: string, requestId: string, snapshot: SchedulerSnapshot): string {
-  if (snapshot.projection.instances[target]) return target;
-  if (snapshot.projection.frames[target]) return target;
-  const instanceMatches = Object.values(snapshot.projection.instances)
-    .filter(instance => instance.nodeId === target && !isTerminalStatus(instance.status))
-    .map(instance => instance.nodeKey)
-    .sort();
-  const frameMatches = Object.values(snapshot.projection.frames)
-    .filter(frame => (frame.frameKind === "node" || frame.frameKind === "loop") && frame.nodeId === target && !isTerminalStatus(frame.status))
-    .map(frame => frame.frameKey)
-    .sort();
-  const matches = [...instanceMatches, ...frameMatches].sort();
-  if (matches.length === 1) return matches[0]!;
-  if (matches.length > 1) throw new Error(`Scheduler cancel control request '${requestId}' target '${target}' is ambiguous. Candidate target keys: ${matches.join(", ")}.`);
-  return target;
-}
-
-function isTerminalStatus(status: string): boolean {
-  return status === "completed" || status === "failed" || status === "cancelled";
-}
-
 function signalPayload(intent: Extract<RunControlIntent, { type: "signal" }>, snapshot: SchedulerSnapshot): { nodeKey: string; nodeId: string; payload: JsonValue } {
   const target = intent.node;
   if (isOpenSignalWait(snapshot, target)) return { nodeKey: target, nodeId: snapshot.projection.signalWaits[target]!.nodeId, payload: intent.payload };
@@ -204,29 +165,14 @@ function signalPayload(intent: Extract<RunControlIntent, { type: "signal" }>, sn
 }
 
 function hasSignalNode(ir: WorkflowIR, nodeId: string): boolean {
-  return scopeHasSignalNode(ir.root, nodeId);
-}
-
-function looksLikeInstanceKey(value: string): boolean {
-  return /~[0-9a-f]{12}$/i.test(value);
-}
-
-function scopeHasSignalNode(scope: WorkflowIR["root"], nodeId: string): boolean {
-  for (const node of scope.nodes) {
+  for (const { node } of walkNodes(ir.root)) {
     if (node.kind === "signal" && node.id === nodeId) return true;
-    for (const child of childScopes(node)) {
-      if (scopeHasSignalNode(child, nodeId)) return true;
-    }
   }
   return false;
 }
 
-function childScopes(node: WorkflowIR["root"]["nodes"][number]): WorkflowIR["root"][] {
-  if (node.kind === "if") return [node.then, ...(node.else ? [node.else] : [])];
-  if (node.kind === "switch") return [...node.cases.map(item => item.then), ...(node.default ? [node.default] : [])];
-  if (node.kind === "parallel") return Object.values(node.branches).map(branch => branch.scope);
-  if (node.kind === "fanout" || node.kind === "loop") return [node.do];
-  return [];
+function looksLikeInstanceKey(value: string): boolean {
+  return /~[0-9a-f]{12}$/i.test(value);
 }
 
 function isOpenSignalWait(snapshot: SchedulerSnapshot, nodeKey: string): boolean {

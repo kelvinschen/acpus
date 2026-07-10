@@ -1,5 +1,7 @@
-import { defineWorkflow, secret, task, z } from "acpus/core";
-import { and, eq, fmap, gt, gte, lift, lift2, lift3, lt, lte, md, ne, not, or, template } from "acpus/expression";
+import { defineWorkflow, z } from "acpus/core";
+import { fmap, lift2, template } from "acpus/expression";
+// Additional Expr operators and helpers:
+// import { and, eq, gt, gte, lift, lift3, lt, lte, md, ne, not, or } from "acpus/expression";
 // Optional Git task helper:
 // import { createWorktree } from "acpus/tasks/git";
 

@@ -2,6 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import type { TaskNodeIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
+import { tryParsePersistedDeadline } from "../deadline.js";
 import { evaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
 import { resolveOrThrow, tryResolveDuration, tryResolveString } from "../evaluation/resolvable.js";
 import type { RuntimeStore } from "../store/store.js";
@@ -46,7 +47,7 @@ export async function executeTaskNode(node: TaskNodeIR, scope: EvaluationScope, 
     ...(node.run.execution.commandRunner === undefined ? {} : { commandRunner: node.run.execution.commandRunner }),
     ...(defaultCommandTimeout === undefined ? {} : { defaultCommandTimeout: defaultCommandTimeout.value }),
   };
-  const timeoutMs = remainingTimeout(options.deadlineAt, node.id);
+  const metadataTimeoutMs = remainingTimeout(options.deadlineAt, node.id);
   const visibleAttempt = options.attemptNo ?? 1;
   options.store.writeExecutionMetadata({
     runId: options.runId,
@@ -58,13 +59,14 @@ export async function executeTaskNode(node: TaskNodeIR, scope: EvaluationScope, 
       attemptNo: visibleAttempt,
       input,
       cwd,
-      ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      ...(metadataTimeoutMs === undefined ? {} : { timeoutMs: metadataTimeoutMs }),
       ...(defaultCommandTimeout === undefined ? {} : { defaultCommandTimeout: defaultCommandTimeout.value }),
     },
   });
   const attemptDir = `attempt-${visibleAttempt}`;
   await mkdir(join(absoluteRunDir, "outputs", nodeKey, attemptDir), { recursive: true });
   await mkdir(join(absoluteRunDir, "work", nodeKey, attemptDir), { recursive: true });
+  const timeoutMs = remainingTimeout(options.deadlineAt, node.id);
 
   const result = await (options.taskAttemptRunner ?? runTaskAttempt)({
     nodeId: node.id,
@@ -100,7 +102,12 @@ function validateExecutionOptions(node: TaskNodeIR): void {
 
 function remainingTimeout(deadlineAt: string | undefined, nodeId: string): number | undefined {
   if (deadlineAt === undefined) return undefined;
-  const remaining = new Date(deadlineAt).getTime() - Date.now();
+  const deadline = tryParsePersistedDeadline(deadlineAt);
+  if (deadline.isErr()) {
+    throw new Error(`Task node '${nodeId}' has invalid persisted deadline ${JSON.stringify(deadlineAt)}.`);
+  }
+  const remaining = deadline.value.getTime() - Date.now();
+  if (!Number.isSafeInteger(remaining)) throw new Error(`Task node '${nodeId}' has an invalid remaining timeout.`);
   if (remaining <= 0) throw new TaskAttemptExecutionError({ type: "timed_out", message: `Task node '${nodeId}' exceeded its timeout.` });
   return remaining;
 }

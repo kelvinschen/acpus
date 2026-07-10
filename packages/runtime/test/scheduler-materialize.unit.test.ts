@@ -101,6 +101,69 @@ describe("scheduler materialization", () => {
     ]);
   });
 
+  it("resolves assert messages and reports invalid message types", () => {
+    const assertKey = deriveInstanceKey(appendNode([], "check"));
+    const workflow: WorkflowIR = {
+      ...workflowWithRootNode({
+        id: "check",
+        kind: "assert",
+        condition: { kind: "literal", value: false },
+        message: {
+          kind: "template",
+          template: {
+            kind: "template",
+            parts: [
+              { kind: "text", value: "bad " },
+              { kind: "expr", expr: { kind: "ref", path: ["input", "name"] } },
+            ],
+          },
+        },
+      }),
+      inputSchema: {
+        kind: "object",
+        fields: { name: { kind: "string" } },
+        required: ["name"],
+        additionalProperties: false,
+      },
+    };
+    const resolved = bootstrapRootEvents("run_1", workflow, { input: { name: "input" } });
+
+    expect(resolved.at(-1)).toEqual({
+      type: "frame.failed",
+      payload: { frameKey: assertKey, error: { message: "bad input" }, terminalReason: "assert_failed" },
+    });
+
+    const invalid = bootstrapRootEvents("run_1", workflowWithRootNode({
+      id: "check",
+      kind: "assert",
+      condition: { kind: "literal", value: false },
+      message: {
+        kind: "call",
+        fn: "fmap",
+        args: [
+          { kind: "literal", value: "input" },
+          { kind: "literal", value: "value => value.length" },
+        ],
+        type: { kind: "string" },
+      },
+    }));
+    expect(invalid.at(-1)).toEqual({
+      type: "frame.failed",
+      payload: {
+        frameKey: assertKey,
+        error: {
+          reason: "expression_resolution_failed",
+          type: "type",
+          field: "Assert node 'check' message",
+          expected: "string",
+          actual: "number",
+          message: "Assert node 'check' message must resolve to string; received number.",
+        },
+        terminalReason: "expression_resolution_failed",
+      },
+    });
+  });
+
   it("materializes invalid control expressions as failed frames", () => {
     const checkKey = deriveInstanceKey(appendNode([], "check"));
 
@@ -157,6 +220,41 @@ describe("scheduler materialization", () => {
     ]);
     expect(continueRootEvents(workflow, afterLeaf, {})).toEqual([
       { type: "frame.completed", payload: { frameKey: branchKey, result: { value: "then" }, terminalReason: "branch_completed" } },
+    ]);
+  });
+
+  it("selects root if else branches and returns their outputs", () => {
+    const ifNode: NodeIR = {
+      id: "choose",
+      kind: "if",
+      condition: { kind: "literal", value: false },
+      then: { nodes: [taskNode("then_task")], outputs: { value: { kind: "literal", value: "then" } } },
+      else: {
+        nodes: [taskNode("else_task")],
+        outputs: { value: { kind: "ref", path: ["nodes", "else_task", "output", "value"] } },
+      },
+    };
+    const workflow = workflowWithRootNode(ifNode);
+    const ifKey = deriveInstanceKey(appendNode([], "choose"));
+    const thenKey = deriveInstanceKey(appendBranch([], "choose", "then"));
+    const elseKey = deriveInstanceKey(appendBranch([], "choose", "else"));
+    const elseTaskKey = deriveInstanceKey(appendNode(appendBranch([], "choose", "else"), "else_task"));
+    let projection = applySchedulerEvents(createSchedulerProjection("run_1"), bootstrapRootEvents("run_1", workflow));
+
+    expect(projection.branchDecisions[ifKey]).toBe("else");
+    expect(projection.frames[thenKey]).toBeUndefined();
+    expect(projection.instances[elseTaskKey]).toMatchObject({ status: "ready" });
+    projection = applySchedulerEvents(projection, [
+      { type: "instance.started", payload: { nodeKey: elseTaskKey } },
+      { type: "instance.completed", payload: { nodeKey: elseTaskKey, output: { value: "else" } } },
+    ]);
+    const branchCompletion = continueRootEvents(workflow, projection, {});
+    expect(branchCompletion).toEqual([
+      { type: "frame.completed", payload: { frameKey: elseKey, result: { value: "else" }, terminalReason: "branch_completed" } },
+    ]);
+    projection = applySchedulerEvents(projection, branchCompletion);
+    expect(continueRootEvents(workflow, projection, {})).toEqual([
+      { type: "frame.completed", payload: { frameKey: ifKey, result: { value: "else" }, terminalReason: "branch_completed" } },
     ]);
   });
 
@@ -531,6 +629,72 @@ describe("scheduler materialization", () => {
     expect(projection.groupMembers[itemFrameKey]).toMatchObject({ status: "completed", output: { item: "a" } });
     expect(groupCompletionEvents(projection, fanoutKey)).toEqual([
       { type: "group.completed", payload: { groupKey: fanoutKey, result: { acceptedMemberKeys: [itemFrameKey] } } },
+    ]);
+  });
+
+  it("completes empty fanout inputs with an empty aggregate", () => {
+    const workflow = workflowWithRootNode(fanoutNode({ over: { kind: "literal", value: [] } }));
+    const fanoutKey = deriveInstanceKey(appendNode([], "items"));
+    const bootstrapped = applySchedulerEvents(
+      createSchedulerProjection("run_1"),
+      bootstrapRootEvents("run_1", workflow),
+    );
+    const groupEvents = groupCompletionEvents(bootstrapped, fanoutKey);
+
+    expect(groupEvents).toEqual([
+      { type: "group.completed", payload: { groupKey: fanoutKey, result: { acceptedMemberKeys: [] } } },
+    ]);
+    const afterGroup = applySchedulerEvents(bootstrapped, groupEvents);
+    const fanoutEvents = continueRootEvents(workflow, afterGroup, {});
+    expect(fanoutEvents).toEqual([
+      { type: "frame.completed", payload: { frameKey: fanoutKey, result: [], terminalReason: "group_completed" } },
+    ]);
+    expect(continueRootEvents(workflow, applySchedulerEvents(afterGroup, fanoutEvents), {})).toEqual([
+      { type: "frame.completed", payload: { frameKey: "root", result: {}, terminalReason: "root_completed" } },
+    ]);
+  });
+
+  it("aggregates fanout all outputs by item index after out-of-order completion", () => {
+    const workflow = workflowWithRootNode(fanoutNode({
+      doOutputs: { value: { kind: "ref", path: ["nodes", "item_task", "output", "value"] } },
+    }));
+    const fanoutKey = deriveInstanceKey(appendNode([], "items"));
+    const firstPath = appendFanoutItem([], "items", 0);
+    const secondPath = appendFanoutItem([], "items", 1);
+    const firstKey = deriveInstanceKey(firstPath);
+    const secondKey = deriveInstanceKey(secondPath);
+    const firstTaskKey = deriveInstanceKey(appendNode(firstPath, "item_task"));
+    const secondTaskKey = deriveInstanceKey(appendNode(secondPath, "item_task"));
+    let projection = applySchedulerEvents(
+      createSchedulerProjection("run_1"),
+      bootstrapRootEvents("run_1", workflow),
+    );
+
+    projection = applySchedulerEvents(projection, [
+      { type: "instance.started", payload: { nodeKey: secondTaskKey } },
+      { type: "instance.completed", payload: { nodeKey: secondTaskKey, output: { value: "second" } } },
+    ]);
+    const secondCompletion = continueRootEvents(workflow, projection, {});
+    expect(secondCompletion).toEqual([
+      { type: "frame.completed", payload: { frameKey: secondKey, result: { value: "second" }, terminalReason: "frame_completed" } },
+      { type: "group.member_completed", payload: { memberKey: secondKey, completionSequence: 1, output: { value: "second" } } },
+    ]);
+    projection = applySchedulerEvents(projection, secondCompletion);
+
+    projection = applySchedulerEvents(projection, [
+      { type: "instance.started", payload: { nodeKey: firstTaskKey } },
+      { type: "instance.completed", payload: { nodeKey: firstTaskKey, output: { value: "first" } } },
+    ]);
+    const firstCompletion = continueRootEvents(workflow, projection, {});
+    expect(firstCompletion).toEqual([
+      { type: "frame.completed", payload: { frameKey: firstKey, result: { value: "first" }, terminalReason: "frame_completed" } },
+      { type: "group.member_completed", payload: { memberKey: firstKey, completionSequence: 2, output: { value: "first" } } },
+    ]);
+    projection = applySchedulerEvents(projection, firstCompletion);
+    projection = applySchedulerEvents(projection, groupCompletionEvents(projection, fanoutKey));
+
+    expect(continueRootEvents(workflow, projection, {})).toEqual([
+      { type: "frame.completed", payload: { frameKey: fanoutKey, result: [{ value: "first" }, { value: "second" }], terminalReason: "group_completed" } },
     ]);
   });
 

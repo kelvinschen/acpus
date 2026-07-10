@@ -1,7 +1,8 @@
+import { tryParseDurationMs } from "@acpus/core/ir";
 import type { ExprIR, JsonObject } from "@acpus/expression/ir";
 import { err, ok, type Result } from "neverthrow";
+import { tryCreateDeadline as tryCreatePersistedDeadline } from "../deadline.js";
 import { evaluateExpr, type EvaluationScope } from "./evaluator.js";
-import { parseDurationMs } from "../execution/duration.js";
 
 export type ResolutionError =
   | { type: "evaluation"; field: string; message: string }
@@ -34,17 +35,25 @@ export function tryResolveString(expr: ExprIR, scope: EvaluationScope, field: st
 
 export function tryResolveDuration(expr: ExprIR, scope: EvaluationScope, field: string): Result<ResolvedDuration, ResolutionError> {
   return tryResolveString(expr, scope, field).andThen(value => {
-    try {
-      return ok({ value, milliseconds: parseDurationMs(value) });
-    } catch {
-      return err({
-        type: "constraint",
-        field,
-        expected: "duration string like 500ms, 30s, 5m, 1h, or 1000",
-        message: `${field} must resolve to a duration string like 500ms, 30s, 5m, 1h, or 1000.`,
-      } satisfies ResolutionError);
-    }
+    const milliseconds = tryParseDurationMs(value);
+    return milliseconds.isOk()
+      ? ok({ value, milliseconds: milliseconds.value })
+      : err({
+          type: "constraint",
+          field,
+          expected: "duration string like 500ms, 30s, 5m, 1h, or 1000",
+          message: `${field} must resolve to a duration string like 500ms, 30s, 5m, 1h, or 1000.`,
+        } satisfies ResolutionError);
   });
+}
+
+export function tryCreateDeadline(now: Date, milliseconds: number, field: string): Result<Date, ResolutionError> {
+  return tryCreatePersistedDeadline(now, milliseconds).mapErr(() => ({
+    type: "constraint",
+    field,
+    expected: "duration with a representable persisted deadline",
+    message: `${field} must produce a deadline representable by the persisted ISO timestamp format.`,
+  }));
 }
 
 export function tryResolveInteger(

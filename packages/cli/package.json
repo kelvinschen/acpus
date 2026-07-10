@@ -31,8 +31,7 @@
     "dist",
     "skills",
     "templates",
-    "README.md",
-    "LICENSE"
+    "README.md"
   ],
   "publishConfig": {
     "access": "public"

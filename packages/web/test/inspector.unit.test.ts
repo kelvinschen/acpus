@@ -1,0 +1,196 @@
+// @vitest-environment jsdom
+
+import * as React from "react";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { InspectorPanel, InspectorSection, JsonSection, KeyValue } from "../src/client/ui/Inspector.js";
+import { useInspectorPresence } from "../src/client/ui/useInspectorPresence.js";
+
+type Target = { id: string };
+type Presence = ReturnType<typeof useInspectorPresence<Target>>;
+
+const reactGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
+const originalMatchMedia = Object.getOwnPropertyDescriptor(window, "matchMedia");
+const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+const originalActEnvironment = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+
+let container: HTMLDivElement;
+let root: Root | undefined;
+let presence: Presence | undefined;
+
+function PresenceHarness({ target, onExited }: { target: Target | undefined; onExited(): void }) {
+  presence = useInspectorPresence(target, onExited);
+  return null;
+}
+
+async function render(element: React.ReactNode): Promise<void> {
+  root ??= createRoot(container);
+  await act(async () => {
+    root!.render(element);
+  });
+}
+
+async function unmount(): Promise<void> {
+  if (!root) return;
+  const mountedRoot = root;
+  root = undefined;
+  await act(async () => {
+    mountedRoot.unmount();
+  });
+}
+
+function setReducedMotion(matches: boolean): void {
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    value: vi.fn().mockReturnValue({
+      matches,
+      media: "(prefers-reduced-motion: reduce)",
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }),
+  });
+}
+
+function restoreProperty(target: object, key: PropertyKey, descriptor: PropertyDescriptor | undefined): void {
+  if (descriptor) Object.defineProperty(target, key, descriptor);
+  else Reflect.deleteProperty(target, key);
+}
+
+beforeEach(() => {
+  reactGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+  vi.useFakeTimers();
+  setReducedMotion(false);
+  container = document.createElement("div");
+  document.body.append(container);
+  presence = undefined;
+});
+
+afterEach(async () => {
+  await unmount();
+  container.remove();
+  vi.clearAllTimers();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  restoreProperty(window, "matchMedia", originalMatchMedia);
+  restoreProperty(navigator, "clipboard", originalClipboard);
+  restoreProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", originalActEnvironment);
+});
+
+describe("Inspector presence", () => {
+  it("cancels an old close when the selected target changes", async () => {
+    const onExited = vi.fn();
+    await render(React.createElement(PresenceHarness, { target: { id: "a" }, onExited }));
+
+    await act(async () => presence!.close());
+    expect(presence).toMatchObject({ exiting: true, layoutState: "closing" });
+
+    await render(React.createElement(PresenceHarness, { target: { id: "b" }, onExited }));
+    expect(presence).toMatchObject({ exiting: false, layoutState: "open" });
+    expect(vi.getTimerCount()).toBe(0);
+
+    await act(async () => vi.runAllTimers());
+    expect(onExited).not.toHaveBeenCalled();
+    expect(presence).toMatchObject({ exiting: false, layoutState: "open" });
+  });
+
+  it("closes immediately when reduced motion is requested", async () => {
+    const onExited = vi.fn();
+    setReducedMotion(true);
+    await render(React.createElement(PresenceHarness, { target: { id: "a" }, onExited }));
+
+    await act(async () => presence!.close());
+
+    expect(onExited).toHaveBeenCalledOnce();
+    expect(presence?.exiting).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not invoke the exit callback after unmount", async () => {
+    const onExited = vi.fn();
+    await render(React.createElement(PresenceHarness, { target: { id: "a" }, onExited }));
+    await act(async () => presence!.close());
+    expect(vi.getTimerCount()).toBe(1);
+
+    await unmount();
+    await act(async () => vi.runAllTimers());
+
+    expect(onExited).not.toHaveBeenCalled();
+  });
+});
+
+describe("Inspector primitives", () => {
+  it("keeps dialog, heading, key-value, Escape, and cleanup behavior", async () => {
+    const onClose = vi.fn();
+    await render(React.createElement(
+      InspectorPanel,
+      {
+        title: "Node A",
+        onClose,
+        children: React.createElement(InspectorSection, {
+          title: "Identity",
+          children: React.createElement(KeyValue, { label: "Node ID", value: "node-a" }),
+        }),
+      },
+    ));
+
+    const dialog = container.querySelector<HTMLElement>("[role='dialog']")!;
+    const keyValue = container.querySelector<HTMLElement>(".key-value")!;
+    expect(dialog.getAttribute("aria-label")).toBe("Node A");
+    expect(dialog.querySelector(".inspector-card-head strong")?.textContent).toBe("Node A");
+    expect(dialog.querySelector("h3")?.textContent).toBe("Identity");
+    expect(keyValue.tabIndex).toBe(0);
+    expect(keyValue.title).toBe("Node ID: node-a");
+    expect(keyValue.getAttribute("aria-label")).toBe("Node ID: node-a");
+    expect(keyValue.querySelector("span")?.textContent).toBe("Node ID");
+    expect(keyValue.querySelector("strong")?.textContent).toBe("node-a");
+
+    await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
+    expect(onClose).toHaveBeenCalledOnce();
+    await unmount();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("copies exact pretty JSON and resets success feedback", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const value = { zeta: 2, alpha: 1 };
+    await render(React.createElement(JsonSection, { title: "Definition", value }));
+
+    const button = container.querySelector<HTMLButtonElement>(".json-copy-button")!;
+    await act(async () => {
+      button.click();
+      await Promise.resolve();
+    });
+
+    expect(writeText).toHaveBeenCalledWith(JSON.stringify(value, null, 2));
+    expect(button.textContent).toContain("Copied");
+    expect(container.querySelector(".json-viewer")).not.toBeNull();
+
+    await act(async () => vi.advanceTimersByTime(1_400));
+    expect(button.textContent).toContain("Copy JSON");
+  });
+
+  it("shows and resets failed clipboard feedback", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
+    });
+    await render(React.createElement(JsonSection, { title: "Definition", value: { ok: true } }));
+
+    const button = container.querySelector<HTMLButtonElement>(".json-copy-button")!;
+    await act(async () => {
+      button.click();
+      await Promise.resolve();
+    });
+    expect(button.textContent).toContain("Copy failed");
+
+    await act(async () => vi.advanceTimersByTime(1_800));
+    expect(button.textContent).toContain("Copy JSON");
+  });
+});

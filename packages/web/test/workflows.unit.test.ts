@@ -39,6 +39,7 @@ describe("workflow visualization helpers", () => {
 
     expect(result.status).toBe("ready");
     expect(result.workflow.description).toBe("Prepared workflow description.");
+    expect(result.workflow.nodeCount).toBe(3);
     expect(result.graph.workflow.description).toBe("Prepared workflow description.");
     expect(result.contract.inputSchema).toMatchObject({ kind: "object" });
     expect(result.contract.outputs).toEqual(expect.objectContaining({
@@ -98,13 +99,23 @@ function preparedWorkflow(): PreparedWorkflow {
     agents: {},
     root: {
       nodes: [{
-        id: "review",
-        kind: "task",
-        run: { kind: "task_run", input: {}, target: { kind: "inline", runtime: "node", source: "async function task() {}" } },
+        id: "choose",
+        kind: "if",
+        condition: { kind: "literal", value: true },
+        then: {
+          nodes: [{
+            id: "review",
+            kind: "task",
+            run: { kind: "task_run", input: {}, target: { kind: "inline", runtime: "node", source: "async function task() {}" } },
+          }],
+        },
+        else: {
+          nodes: [{ id: "fallback", kind: "assert", condition: { kind: "literal", value: true } }],
+        },
       }],
     },
     outputs: {
-      approved: { kind: "ref", path: ["nodes", "review", "output", "approved"] },
+      approved: { kind: "literal", value: true },
       first_lane: { kind: "literal", value: "lane-alpha" },
     },
     lock: { acpusCoreVersion: "test", generatedAt: "2026-07-07T00:00:00.000Z", notes: [] },

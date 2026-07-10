@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { parseDurationMs } from "../execution/duration.js";
+import { tryParseDurationMs } from "@acpus/core/ir";
+import { scheduleCancellableTimeout } from "../cancellable-timeout.js";
 import type { HookEvent, HookMatch, LoadedHookConfig } from "./config.js";
 import type { HookContext } from "./context.js";
 import type { HookJournalEntry } from "./journal.js";
@@ -62,9 +63,10 @@ function matchesField(regex: string | undefined, value: string | undefined): boo
 }
 
 async function spawnHook(hook: LoadedHookConfig, context: HookContext, startedAt: Date, triggerOrder: number, journal: HookJournalWriter): Promise<void> {
-  const timeoutMs = parseDurationMs(hook.timeout ?? defaultTimeout);
+  const timeout = tryParseDurationMs(hook.timeout ?? defaultTimeout);
+  if (timeout.isErr()) throw new Error(`Invalid hook timeout '${hook.timeout ?? defaultTimeout}'.`);
   const startedMs = startedAt.getTime();
-  const result = await runShellCommand(hook.command, context, timeoutMs);
+  const result = await runShellCommand(hook.command, context, timeout.value);
   writeJournal(journal, journalEntry(hook, context, triggerOrder, {
     ...result,
     durationMs: Math.max(0, Date.now() - startedMs),
@@ -79,18 +81,41 @@ function runShellCommand(command: string, context: HookContext, timeoutMs: numbe
   stderr: string;
   error?: string;
 }> {
+  const timeoutStartedAt = globalThis.performance.now();
   return new Promise(resolve => {
-    const child = spawn(command, { shell: true, cwd: context.run.workspaceDir, detached: process.platform !== "win32" });
     const stdout = new OutputCollector(outputLimit);
     const stderr = new OutputCollector(outputLimit);
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(command, { shell: true, cwd: context.run.workspaceDir, detached: process.platform !== "win32" });
+    } catch (error) {
+      const timedOut = Math.max(0, globalThis.performance.now() - timeoutStartedAt) >= timeoutMs;
+      resolve({
+        status: timedOut ? "timed_out" : "failed",
+        stdout: "",
+        stderr: "",
+        error: timedOut ? "timeout" : error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
     let timedOut = false;
     let settled = false;
+    let cancelTimeout: (() => void) | undefined;
     let killTimer: NodeJS.Timeout | undefined;
-    const timeout = setTimeout(() => {
+    const markTimedOut = () => {
+      if (timedOut || settled) return;
       timedOut = true;
       killProcessTree(child.pid, "SIGTERM");
       killTimer = setTimeout(() => killProcessTree(child.pid, "SIGKILL"), 2_000);
-    }, timeoutMs);
+    };
+    const enforceTimeout = (): boolean => {
+      if (Math.max(0, globalThis.performance.now() - timeoutStartedAt) < timeoutMs) return timedOut;
+      markTimedOut();
+      return true;
+    };
+    const remainingTimeoutMs = timeoutMs - Math.max(0, globalThis.performance.now() - timeoutStartedAt);
+    if (remainingTimeoutMs <= 0) markTimedOut();
+    else cancelTimeout = scheduleCancellableTimeout(remainingTimeoutMs, markTimedOut);
 
     child.stdout?.on("data", chunk => stdout.append(Buffer.from(chunk as Buffer)));
     child.stderr?.on("data", chunk => stderr.append(Buffer.from(chunk as Buffer)));
@@ -99,18 +124,21 @@ function runShellCommand(command: string, context: HookContext, timeoutMs: numbe
       // should be recorded from process close/error, not crash the daemon.
     });
     child.on("error", error => finish({
-      status: "failed",
+      status: enforceTimeout() ? "timed_out" : "failed",
       stdout: stdout.toString(),
       stderr: stderr.toString(),
-      error: error.message,
+      error: timedOut ? "timeout" : error.message,
     }));
-    child.on("close", code => finish({
-      status: timedOut ? "timed_out" : code === 0 ? "completed" : "failed",
-      ...(timedOut || code === null ? {} : { exitCode: code }),
-      stdout: stdout.toString(),
-      stderr: stderr.toString(),
-      ...(timedOut ? { error: "timeout" } : code === 0 ? {} : { error: `exit_code_${code ?? "null"}` }),
-    }));
+    child.on("close", code => {
+      enforceTimeout();
+      finish({
+        status: timedOut ? "timed_out" : code === 0 ? "completed" : "failed",
+        ...(timedOut || code === null ? {} : { exitCode: code }),
+        stdout: stdout.toString(),
+        stderr: stderr.toString(),
+        ...(timedOut ? { error: "timeout" } : code === 0 ? {} : { error: `exit_code_${code ?? "null"}` }),
+      });
+    });
     child.stdin?.end(JSON.stringify(context));
 
     function finish(result: {
@@ -122,7 +150,7 @@ function runShellCommand(command: string, context: HookContext, timeoutMs: numbe
     }): void {
       if (settled) return;
       settled = true;
-      clearTimeout(timeout);
+      cancelTimeout?.();
       if (killTimer) clearTimeout(killTimer);
       resolve(result);
     }

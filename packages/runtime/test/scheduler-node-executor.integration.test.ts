@@ -151,6 +151,44 @@ describe("runtime scheduler node executor", () => {
     });
   });
 
+  it("fails an unrepresentable signal deadline as a constraint", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-signal-deadline-range", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, rootTimedSignalWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({
+          prepared,
+          input: { timeout: String(Number.MAX_SAFE_INTEGER), prompt: "Approve release?", timeoutMessage: "Approval timed out" },
+          cwd: workspace,
+        });
+
+        await expect(advanceFrozenRun({
+          cwd: workspace,
+          runId: run.id,
+          ownerId: "owner-a",
+          store,
+          now: () => new Date("2026-07-01T00:00:00.000Z"),
+        })).resolves.toMatchObject({ status: "failed", started: 0 });
+
+        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        expect(Object.values(projection.instances)[0]).toMatchObject({
+          status: "failed",
+          statusReason: "expression_resolution_failed",
+          error: {
+            reason: "expression_resolution_failed",
+            type: "constraint",
+            field: "Signal node 'approve' timeout",
+            expected: "duration with a representable persisted deadline",
+          },
+        });
+        expect(Object.values(projection.attempts)).toHaveLength(0);
+        expect(Object.values(projection.signalWaits)).toHaveLength(0);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   it("advances root tasks sequentially and rebuilds prior output scope", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-root-sequence", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, sequentialRootTaskWorkflow());
@@ -2128,9 +2166,9 @@ describe("runtime scheduler node executor", () => {
       globalThis.__acpusPromptResolutionCount = 0;
       globalThis.__acpusRepairResolutionCount = 0;
       globalThis.__acpusTimeoutResolutionCount = 0;
+      const now = new Date();
       try {
         const run = await store.admitRun({ prepared, input: { timeout: "5s", prompt: "dynamic review", repairMax: 0 }, cwd: workspace });
-        const now = new Date();
         const turns: AgentTurnRequest[] = [];
 
         await expect(advanceFrozenRun({
@@ -2149,6 +2187,8 @@ describe("runtime scheduler node executor", () => {
         expect(globalThis.__acpusPromptResolutionCount).toBe(1);
         expect(globalThis.__acpusRepairResolutionCount).toBe(1);
         expect(globalThis.__acpusTimeoutResolutionCount).toBe(1);
+        expect(turns[0]?.timeoutMs).toBeGreaterThan(0);
+        expect(turns[0]?.timeoutMs).toBeLessThanOrEqual(5_000);
         expect(runtimeRow(workspace, "SELECT deadline_at FROM node_attempts WHERE run_id = ?", run.id)).toMatchObject({
           deadline_at: new Date(now.getTime() + 5_000).toISOString(),
         });
@@ -2165,6 +2205,54 @@ describe("runtime scheduler node executor", () => {
       }
     });
   });
+
+  it("passes a persisted agent deadline as exact remaining milliseconds", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-agent-timeout-bridge", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, timeoutAgentWorkflow());
+      const node = prepared.ir.root.nodes.find(node => node.id === "review");
+      if (!node || node.kind !== "agent") throw new Error("expected review agent node");
+      const turns: AgentTurnRequest[] = [];
+      const dateNow = vi.spyOn(Date, "now").mockReturnValue(1_000);
+
+      try {
+        await expect(executeAgentNode(node, {}, {
+          cwd: workspace,
+          agents: prepared.ir.agents,
+          deadlineAt: new Date(6_000).toISOString(),
+          executeTurn: async request => {
+            turns.push(request);
+            return completedAgentTurn("{\"ok\":true}");
+          },
+        })).resolves.toEqual({ ok: true });
+
+        expect(turns).toHaveLength(1);
+        expect(turns[0]?.timeoutMs).toBe(5_000);
+      } finally {
+        dateNow.mockRestore();
+      }
+    });
+  });
+
+  it.each(["not-a-deadline", "+010000-01-01T00:00:00.000Z"])(
+    "rejects invalid persisted agent deadline %j before executing a turn",
+    async deadlineAt => {
+      await withRuntimeWorkspace("scheduler-node-executor-agent-invalid-deadline", async workspace => {
+        const prepared = await prepareSyntheticWorkflow(workspace, timeoutAgentWorkflow());
+        const node = prepared.ir.root.nodes.find(node => node.id === "review");
+        if (!node || node.kind !== "agent") throw new Error("expected review agent node");
+        const executeTurn = vi.fn(async () => completedAgentTurn("{\"ok\":true}"));
+
+        await expect(executeAgentNode(node, {}, {
+          cwd: workspace,
+          agents: prepared.ir.agents,
+          deadlineAt,
+          executeTurn,
+        })).rejects.toThrow(`Agent node 'review' has invalid persisted deadline ${JSON.stringify(deadlineAt)}.`);
+
+        expect(executeTurn).not.toHaveBeenCalled();
+      });
+    },
+  );
 
   it("does not write raw parsed output artifacts when agent JSON recovery fails", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-agent-no-raw-parsed-output", async workspace => {
@@ -2691,7 +2779,7 @@ describe("runtime scheduler node executor", () => {
         if (!claim) throw new Error("expected retry claim");
         store.scheduler.retry({
           runId: run.id,
-          targetKey: nodeKey,
+          target: nodeKey,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "manual-agent-retry",
         });
@@ -2791,6 +2879,38 @@ describe("runtime scheduler node executor", () => {
 
         expect(runtimeRow(workspace, "SELECT deadline_at FROM node_attempts WHERE run_id = ?", run.id)).toMatchObject({
           deadline_at: new Date(now.getTime() + 5_000).toISOString(),
+        });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("commits an unrepresentable task deadline as a constraint failure", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-task-deadline-range", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, timeoutTaskWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { timeout: String(Number.MAX_SAFE_INTEGER) }, cwd: workspace });
+
+        await expect(advanceFrozenRun({
+          cwd: workspace,
+          runId: run.id,
+          ownerId: "owner-a",
+          store,
+          now: () => new Date("2026-07-01T00:00:00.000Z"),
+        })).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
+
+        expect(taskAttemptHarness.calls).toHaveLength(0);
+        expect(Object.values(store.scheduler.loadRunSnapshot(run.id).projection.attempts)[0]).toMatchObject({
+          status: "failed",
+          terminalReason: "expression_resolution_failed",
+          error: {
+            reason: "expression_resolution_failed",
+            type: "constraint",
+            field: "task node 'timeout_task' timeout",
+            expected: "duration with a representable persisted deadline",
+          },
         });
       } finally {
         store.close();

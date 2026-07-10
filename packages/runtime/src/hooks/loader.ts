@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { err, ok, type Result } from "neverthrow";
+import { stableJson } from "../stable-json.js";
 import { hookEvents, validateHooksFile, type HookConfig, type HooksFile, type HookSource, type HookValidationError, type LoadedHookConfig } from "./config.js";
 
 export type HookConfigScope = {
@@ -48,7 +49,7 @@ export async function loadHooksConfigScope(source: HookSource, path: string): Pr
   return loadScope(source, path);
 }
 
-export function flattenHooksFile(file: HooksFile, source: HookSource, sourcePath: string): LoadedHookConfig[] {
+function flattenHooksFile(file: HooksFile, source: HookSource, sourcePath: string): LoadedHookConfig[] {
   const hooks: LoadedHookConfig[] = [];
   for (const event of hookEvents) {
     const entries = file[event] ?? [];
@@ -93,16 +94,6 @@ function hashDefinition(source: HookSource, sourcePath: string, event: string, d
   return createHash("sha256")
     .update(stableJson({ source, sourcePath, event, definitionIndex, config }))
     .digest("hex");
-}
-
-function stableJson(value: unknown): string {
-  return JSON.stringify(sortValue(value));
-}
-
-function sortValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortValue);
-  if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => [key, sortValue(item)]));
 }
 
 function isNotFound(error: unknown): boolean {

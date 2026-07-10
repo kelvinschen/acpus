@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { getRun, getRunInspection, getRunVisualizationSnapshot, listRuns, normalizeForkInput } from "@acpus/runtime";
 import { advanceRuntimeRun } from "../src/runs/advance-runtime.js";
 import { mutateRun, signalRun, tryMutateRun, trySignalRun } from "../src/runs/use-cases.js";
+import { stableJson } from "../src/stable-json.js";
 import { openExistingWritableRuntimeStore } from "../src/store/store.js";
 import {
   admitSyntheticWorkflow,
@@ -118,6 +119,16 @@ describe.concurrent("runtime controls and recovery use cases", () => {
     });
   });
 
+  it("rejects forks when the frozen workflow lock digest does not match", async () => {
+    await withRuntimeWorkspace("runtime-fork-lock-digest", async workspace => {
+      const source = await admitSyntheticWorkflow(workspace, metaWorkflow());
+      await writeFile(join(workspace, ".acpus", ".local", "runs", source.run.id, "lock.json"), "{}\n");
+
+      await expect(mutateRun(workspace, source.run.id, "fork")).rejects.toThrow("Frozen workflow lock digest mismatch.");
+      expect(runtimeRows(workspace, "SELECT id FROM runs WHERE id != ?", source.run.id)).toEqual([]);
+    });
+  });
+
   it("reuses the fork run when a fork control request is replayed", async () => {
     await withRuntimeWorkspace("runtime-fork-idempotent-request", async workspace => {
       const source = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
@@ -125,10 +136,15 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       const first = await mutateRun(workspace, source.run.id, "fork", { requestId: "fork-request-1" });
       const second = await mutateRun(workspace, source.run.id, "fork", { requestId: "fork-request-1" });
       const third = await mutateRun(workspace, source.run.id, "fork", { requestId: "fork-request-2" });
+      const forkRunId = first?.forkRunId;
+      if (!forkRunId) throw new Error("Expected fork run id.");
 
-      expect(second?.forkRunId).toBe(first?.forkRunId);
-      expect(third?.forkRunId).toBe(first?.forkRunId);
-      expect(runtimeRows(workspace, "SELECT id FROM runs WHERE id <> ? ORDER BY id", source.run.id)).toEqual([{ id: first?.forkRunId }]);
+      expect(second?.forkRunId).toBe(forkRunId);
+      expect(third?.forkRunId).toBe(forkRunId);
+      expect(runtimeRows(workspace, "SELECT id FROM runs WHERE id <> ? ORDER BY id", source.run.id)).toEqual([{ id: forkRunId }]);
+      const event = runtimeRow(workspace, "SELECT payload_json FROM run_events WHERE run_id = ? AND type = 'run.forked'", forkRunId);
+      const payload = JSON.parse(String(event?.payload_json)) as { requestFingerprint: string };
+      expect(payload.requestFingerprint).toBe(`${stableJson({ runId: source.run.id })}\n`);
     });
   });
 

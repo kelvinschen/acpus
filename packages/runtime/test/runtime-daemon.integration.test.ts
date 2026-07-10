@@ -1,10 +1,12 @@
 import { access, mkdir, utimes, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { daemonEndpoint, requestDaemonAdmitRun, requestDaemonObserveRun, requestDaemonShutdown, startDaemonLoop } from "@acpus/runtime";
+import { daemonEndpoint, requestDaemonAdmitRun, requestDaemonObserveRun, requestDaemonShutdown, requestDaemonStatus, startDaemonLoop } from "@acpus/runtime";
 import { runDaemonTick } from "../src/daemon/tick.js";
 import type { HookJournalEntry } from "../src/hooks/journal.js";
+import { advanceRuntimeRun } from "../src/runs/advance-runtime.js";
 import { openExistingWritableRuntimeStore, openRuntimeStore } from "../src/store/store.js";
 import { applySignalRunControl } from "../src/runs/use-cases.js";
 import { admitSyntheticWorkflow, prepareSyntheticWorkflow, runtimeRow, runtimeRows, signalWorkflow, taskArtifactWorkflow, timedSignalWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
@@ -123,6 +125,43 @@ describe.concurrent("runtime daemon ticks", () => {
     });
   });
 
+  it("closes instead of silently retrying a corrupted durable deadline", async () => {
+    await withRuntimeWorkspace("runtime-daemon-corrupted-deadline", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      let runId: string;
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        runId = run.id;
+        appendTimedSignalWait(store, run.id, "2099-01-01T00:00:00.000Z");
+      } finally {
+        store.close();
+      }
+      const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+      try {
+        db.prepare("UPDATE signal_waits SET deadline_at = 'not-a-deadline' WHERE run_id = ?").run(runId!);
+      } finally {
+        db.close();
+      }
+      let resolveShutdown!: () => void;
+      const shutdown = new Promise<void>(resolve => {
+        resolveShutdown = resolve;
+      });
+      const loop = await startDaemonLoop(workspace, {
+        heartbeatMs: 5,
+        idleStopMs: 60_000,
+        packageVersion: "test",
+        onShutdown: resolveShutdown,
+      });
+
+      await shutdown;
+
+      expect(runtimeRows(workspace, "SELECT generation FROM daemon_lease")).toEqual([]);
+      await expect(requestDaemonStatus(workspace)).rejects.toThrow();
+      await loop.shutdown();
+    });
+  });
+
   it("persists daemon idle state in runtime diagnostics", async () => {
     await withRuntimeWorkspace("runtime-daemon-idle-diagnostics", async workspace => {
       const loop = await startDaemonLoop(workspace, {
@@ -184,7 +223,7 @@ describe.concurrent("runtime daemon ticks", () => {
       const store = await openRuntimeStore(workspace);
       try {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
-        store.completeRun({ runId: run.id, output: { ready: true }, nodes: { require_ready: { status: "completed", output: true } } });
+        await expect(advanceRuntimeRun(workspace, store, run.id)).resolves.toMatchObject({ status: "completed" });
         store.writeHookJournal(hookJournalEntry(run.id, "old", "2000-01-01T00:00:00.000Z"));
         store.writeHookJournal(hookJournalEntry(run.id, "fresh", "2099-01-01T00:00:00.000Z"));
 

@@ -6,7 +6,6 @@ import ChevronUp from "lucide-react/dist/esm/icons/chevron-up.js";
 import { cn } from "../../lib/utils.js";
 
 export const Select = SelectPrimitive.Root;
-export const SelectGroup = SelectPrimitive.Group;
 export const SelectValue = SelectPrimitive.Value;
 
 export const SelectTrigger = React.forwardRef<

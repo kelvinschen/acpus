@@ -17,7 +17,18 @@ export default defineWorkflow({
   description: "Program viz description.",
   inputSchema: z.object({ ready: z.boolean() }),
 }).build(({ input, step }) => {
-  step("require_ready").assert({ condition: input.ready });
+  step("choose").if({
+    condition: input.ready,
+    then() {
+      step("then_check").assert({ condition: true });
+      return {};
+    },
+    else() {
+      step("else_check").assert({ condition: true });
+      return {};
+    },
+  });
+  step("after").assert({ condition: true });
   return { ready: input.ready };
 });
 `);
@@ -31,12 +42,15 @@ export default defineWorkflow({
         ok: true,
         phase: "viz",
         outputPath: out,
-        workflow: { name: "program-viz" },
+        workflow: { name: "program-viz", nodeCount: 4 },
       });
       const html = await readFile(out, "utf8");
       expect(html).toContain("window.__ACPUS_WORKFLOW_VIZ__=");
       expect(html).toContain("Program viz description.");
       expect(html).not.toMatch(/\s(?:src|href)=["']https?:\/\//);
+      const bundleJson = html.split("window.__ACPUS_WORKFLOW_VIZ__=")[1]?.split(";\n</script>")[0];
+      if (!bundleJson) throw new Error("expected workflow visualization bundle");
+      expect(JSON.parse(bundleJson).workflow.nodeCount).toBe(4);
       expect(stderr.text).toBe("");
 
       const duplicateStdout = new CaptureStream();

@@ -57,6 +57,8 @@ describe("daemon loop", () => {
       packageVersion: "test",
     });
     await waitUntil(() => runDaemonTick.mock.calls.length > 0);
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(runDaemonTick).toHaveBeenCalledOnce();
     let shutdownResolved = false;
     const shutdown = loop.shutdown().then(() => {
       shutdownResolved = true;
@@ -66,6 +68,45 @@ describe("daemon loop", () => {
     finishTick();
     await shutdown;
     expect(shutdownResolved).toBe(true);
+  });
+
+  it("retries transient store-busy tick failures", async () => {
+    runDaemonTick
+      .mockRejectedValueOnce(Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" }))
+      .mockResolvedValue({ runs: 1, idleBlockers: 0 });
+    const onShutdown = vi.fn();
+    const loop = await startDaemonLoop(dir, {
+      heartbeatMs: 5,
+      idleStopMs: 1_000,
+      packageVersion: "test",
+      onShutdown,
+    });
+    try {
+      await waitUntil(() => runDaemonTick.mock.calls.length >= 2);
+      expect(onShutdown).not.toHaveBeenCalled();
+    } finally {
+      await loop.shutdown();
+    }
+  });
+
+  it("notifies automatic shutdown even when lease release fails", async () => {
+    runDaemonTick.mockResolvedValue({ runs: 1, idleBlockers: 0 });
+    let notify!: () => void;
+    const notified = new Promise<void>(resolve => { notify = resolve; });
+    const loop = await startDaemonLoop(dir, {
+      heartbeatMs: 5,
+      idleStopMs: 1_000,
+      packageVersion: "test",
+      onShutdown: notify,
+    });
+    await waitUntil(() => runDaemonTick.mock.calls.length > 0);
+    const db = new DatabaseSync(join(dir, ".acpus", ".local", "state", "runtime.db"));
+    db.exec("DROP TABLE daemon_lease");
+    db.close();
+
+    await notified;
+
+    await expect(loop.shutdown()).rejects.toThrow("no such table: daemon_lease");
   });
 });
 

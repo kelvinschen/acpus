@@ -22,7 +22,7 @@ export function runSourceCli(cwd: string, args: string[], options: { env?: NodeJ
   ], { cwd, ...(options.env ? { env: options.env } : {}) });
 }
 
-export function runProcess(command: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): Promise<ProcessResult> {
+function runProcess(command: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): Promise<ProcessResult> {
   return new Promise(resolveProcess => {
     const child = spawn(command, args, {
       cwd: options.cwd ?? repoRoot,

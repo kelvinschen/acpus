@@ -16,7 +16,7 @@ type BaseTaskToken<Input, Output> = {
   readonly source: string;
 };
 
-export type InlineTaskToken<Input, Output> = BaseTaskToken<Input, Output> & {
+type InlineTaskToken<Input, Output> = BaseTaskToken<Input, Output> & {
   readonly kind: "inline";
   readonly inputSchema?: undefined;
   readonly outputSchema?: undefined;
@@ -90,7 +90,7 @@ function makeTaskToken<Input, Output>(args: {
   } as TaskToken<Input, Output>;
 }
 
-export function createInlineTaskToken<Input, Output>(fn: TaskFunction<Input, Output>): InlineTaskToken<Input, Output> {
+function createInlineTaskToken<Input, Output>(fn: TaskFunction<Input, Output>): InlineTaskToken<Input, Output> {
   return makeTaskToken({ kind: "inline", fn }) as InlineTaskToken<Input, Output>;
 }
 

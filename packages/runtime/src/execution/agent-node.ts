@@ -6,6 +6,7 @@ import type { AgentDefinitionIR, AgentNodeIR, SchemaIR, WorkflowIR } from "@acpu
 import { executeAgentTurn, type AgentToolCallTelemetry, type AgentTurnProgress, type AgentTurnRequest, type AgentTurnResult, type AgentTurnTelemetry } from "@acpus/agent-executor";
 import type { JsonValue } from "@acpus/expression/ir";
 import { jsonrepair } from "jsonrepair";
+import { tryParsePersistedDeadline } from "../deadline.js";
 import { type EvaluationScope } from "../evaluation/evaluator.js";
 import { ResolutionException, resolveOrThrow, tryResolveInteger, tryResolveString } from "../evaluation/resolvable.js";
 import { normalizeValue } from "../evaluation/schema.js";
@@ -93,7 +94,7 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
       ...dynamicEnv(node.run.env, scope),
     };
     applyRuntimeAgentEnv(env, node.id, options);
-    const deadline = options.deadlineAt === undefined ? undefined : new Date(options.deadlineAt).getTime();
+    const deadline = options.deadlineAt === undefined ? undefined : persistedDeadline(options.deadlineAt, node.id);
     explicitSessionKey = renderSessionKey(node, scope);
     sessionNameForMetadata = sessionName(options.runId, options.nodeKey ?? node.id, explicitSessionKey);
     const turnBase = {
@@ -126,7 +127,7 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
       const request = {
         ...turnBase,
         prompt,
-        ...(remaining === undefined ? {} : { timeout: `${remaining}ms` }),
+        ...(remaining === undefined ? {} : { timeoutMs: remaining }),
         ...(turn === 0 && !plainContinuation && definition.agentMode ? { agentMode: definition.agentMode } : {}),
         ...(captureRawDebug ? { captureRawDebug: true } : {}),
         ...(onProgress ? { onProgress } : {}),
@@ -600,4 +601,10 @@ function remainingTimeout(deadline: number | undefined, nodeId: string): number 
   const remaining = deadline - Date.now();
   if (remaining <= 0) throw new AgentNodeTimeoutError(`Agent node '${nodeId}' timed out.`);
   return remaining;
+}
+
+function persistedDeadline(value: string, nodeId: string): number {
+  const deadline = tryParsePersistedDeadline(value);
+  if (deadline.isErr()) throw new Error(`Agent node '${nodeId}' has invalid persisted deadline ${JSON.stringify(value)}.`);
+  return deadline.value.getTime();
 }

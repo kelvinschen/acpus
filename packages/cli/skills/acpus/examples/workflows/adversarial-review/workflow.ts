@@ -3,7 +3,7 @@
  * Nodes: agent, fanout
  */
 import { defineWorkflow, z } from "acpus/core";
-import { md, template } from "acpus/expression";
+import { md } from "acpus/expression";
 
 const Verdict = z.enum(["pass", "pass-with-nits", "needs-work", "block"]);
 

@@ -3,7 +3,7 @@ import { createWorkflowVisualizationOverlay, type NodeDetail as RuntimeNodeDetai
 import type { ExprIR } from "@acpus/expression/ir";
 import { renderExpr } from "./expression-format.js";
 
-export type NodeDetail =
+type NodeDetail =
   | { kind: "task"; inputs: string[]; target: "inline" | "module" }
   | { kind: "agent"; agent: string; use?: string; command?: string; model?: string; outputSchema?: string }
   | { kind: "signal"; outputSchema?: string }
@@ -45,7 +45,7 @@ export type WebGraphNode = {
   };
 };
 
-export type WebGraphContainer = {
+type WebGraphContainer = {
   id: string;
   nodeId: string;
   kind: "branch" | "scope";
@@ -55,7 +55,7 @@ export type WebGraphContainer = {
   status: string;
 };
 
-export type WebGraphGroup = {
+type WebGraphGroup = {
   nodeId: string;
   groupKey: string;
   kind: "parallel" | "fanout";
@@ -80,7 +80,7 @@ export type WebGraphEdge = {
   kind: "sequence" | "branch" | "loop";
 };
 
-export type WebGraphSelector = {
+type WebGraphSelector = {
   nodeId: string;
   kind: "fanout" | "loop";
   targetId: string;
@@ -97,11 +97,11 @@ type WebGraphSelectorOptionBase = {
   parentSelections: WebGraphSelection[];
 };
 
-export type WebGraphFanoutSelectorOption = WebGraphSelectorOptionBase & { itemIndex: number };
-export type WebGraphLoopSelectorOption = WebGraphSelectorOptionBase & { iteration: number };
-export type WebGraphSelectorOption = WebGraphFanoutSelectorOption | WebGraphLoopSelectorOption;
+type WebGraphFanoutSelectorOption = WebGraphSelectorOptionBase & { itemIndex: number };
+type WebGraphLoopSelectorOption = WebGraphSelectorOptionBase & { iteration: number };
+type WebGraphSelectorOption = WebGraphFanoutSelectorOption | WebGraphLoopSelectorOption;
 
-export type WebGraphRuntimeState = {
+type WebGraphRuntimeState = {
   targetId: string;
   nodeId: string;
   status: string;
@@ -110,7 +110,7 @@ export type WebGraphRuntimeState = {
   selectors: WebGraphSelection[];
 };
 
-export type WebGraphSelection =
+type WebGraphSelection =
   | { nodeId: string; kind: "fanout"; itemIndex: number }
   | { nodeId: string; kind: "loop"; iteration: number };
 
@@ -120,8 +120,6 @@ type OverlayInstance = OverlayNode["instances"][number];
 type OverlaySignalWait = OverlayNode["signalWaits"][number];
 type InstancePath = NonNullable<OverlayFrame["instancePath"]>;
 type InstancePathEntry = InstancePath[number];
-
-const compositeKinds = new Set(["if", "switch", "parallel", "fanout", "loop"]);
 
 export function graphFromOverlay(
   overlay: WorkflowVisualizationOverlay,
@@ -643,10 +641,6 @@ function formatNodeDetail(detail: RuntimeNodeDetail): NodeDetail {
         state: printExpr(detail.state),
       };
   }
-}
-
-function printExprRecord(values: Record<string, ExprIR>): Record<string, string> {
-  return Object.fromEntries(Object.entries(values).map(([key, value]) => [key, printExpr(value)]));
 }
 
 type SchemaDetail = NonNullable<Extract<RuntimeNodeDetail, { kind: "agent" }>["outputSchema"]>;

@@ -3,7 +3,7 @@
  * Nodes: agent, task, switch, parallel, fanout
  */
 import { defineWorkflow, z } from "acpus/core";
-import { eq, fmap, md, template } from "acpus/expression";
+import { eq, fmap, md } from "acpus/expression";
 import { summarizeIssue } from "./tasks.js";
 
 export default defineWorkflow({

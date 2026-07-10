@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const fixturesRoot = fileURLToPath(new URL("../fixtures", import.meta.url));
 
-export function fixturePath(relativePath: string): string {
+function fixturePath(relativePath: string): string {
   return join(fixturesRoot, relativePath);
 }
 

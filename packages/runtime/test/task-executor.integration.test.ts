@@ -1,9 +1,11 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { okAsync } from "neverthrow";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskNodeIR } from "@acpus/core/ir";
 import { executeTaskNode } from "../src/execution/task-executor.js";
+import type { TaskAttemptRunner } from "../src/execution/task-process.js";
 import type { RegisterArtifactInput, RuntimeStore } from "../src/store/store.js";
 
 let workspace: string;
@@ -13,6 +15,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await rm(workspace, { recursive: true, force: true });
 });
 
@@ -186,6 +189,44 @@ describe("task executor", () => {
       ...taskOptions("run_cancelled"),
       signal: controller.signal,
     })).rejects.toMatchObject({ failure: { type: "cancelled" } });
+  });
+
+  it("does not overflow distant task deadlines", async () => {
+    const deadlineAt = new Date(Date.now() + 2_147_483_647 + 60_000).toISOString();
+
+    await expect(executeTaskNode(inlineTask("distant", "async () => ({ ok: true })"), {}, {
+      ...taskOptions("run_distant"),
+      deadlineAt,
+    })).resolves.toEqual({ ok: true });
+  });
+
+  it("does not start the task runner when its deadline expires during setup", async () => {
+    const startedAt = new Date("2026-07-10T00:00:00.000Z").getTime();
+    let now = startedAt;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const options = taskOptions("run_setup_timeout");
+    options.store.writeExecutionMetadata = () => { now += 100; };
+    const taskAttemptRunner = vi.fn<TaskAttemptRunner>(() => okAsync({ ok: true }));
+
+    await expect(executeTaskNode(inlineTask("setup_timeout", "async () => ({ ok: true })"), {}, {
+      ...options,
+      deadlineAt: new Date(startedAt + 50).toISOString(),
+      taskAttemptRunner,
+    })).rejects.toMatchObject({ failure: { type: "timed_out" } });
+
+    expect(taskAttemptRunner).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed persisted deadlines before starting the task runner", async () => {
+    const taskAttemptRunner = vi.fn<TaskAttemptRunner>(() => okAsync({ ok: true }));
+
+    await expect(executeTaskNode(inlineTask("bad_deadline", "async () => ({ ok: true })"), {}, {
+      ...taskOptions("run_bad_deadline"),
+      deadlineAt: "not-a-deadline",
+      taskAttemptRunner,
+    })).rejects.toThrow("Task node 'bad_deadline' has invalid persisted deadline \"not-a-deadline\".");
+
+    expect(taskAttemptRunner).not.toHaveBeenCalled();
   });
 
   it("hard-stops a task that ignores timeout cancellation", async () => {

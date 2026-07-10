@@ -1,7 +1,8 @@
-import type { NodeIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
+import { walkNodes, type NodeChildScope, type NodeIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import { err, ok, type Result } from "neverthrow";
 import type { EvaluationScope } from "../evaluation/evaluator.js";
+import { stableJson } from "../stable-json.js";
 import { bootstrapRootEvents, continueRootEvents } from "./materialize.js";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "./identity.js";
 import { applySchedulerEvents, createSchedulerProjection, groupCompletionEvents } from "./transitions.js";
@@ -375,35 +376,10 @@ function completedFacts(projection: SchedulerProjection, signatures: Map<string,
 }
 
 function semanticNodeSignatures(workflow: WorkflowIR): Map<string, string> {
-  return semanticScopeSignatures(workflow.root, workflow, []);
-}
-
-function semanticScopeSignatures(scope: ScopeIR, workflow: WorkflowIR, basePath: InstancePath): Map<string, string> {
-  const out = new Map<string, string>();
-  for (const node of scope.nodes) {
-    const nodePath = appendNode(basePath, node.id);
-    out.set(pathKey(nodePath), stableJson(semanticNodeSignature(node, workflow)));
-    switch (node.kind) {
-      case "if":
-        mergeSignatures(out, semanticScopeSignatures(node.then, workflow, appendBranch(basePath, node.id, "then")));
-        mergeSignatures(out, semanticScopeSignatures(node.else, workflow, appendBranch(basePath, node.id, "else")));
-        break;
-      case "switch":
-        node.cases.forEach((c, index) => mergeSignatures(out, semanticScopeSignatures(c.then, workflow, appendBranch(basePath, node.id, `case:${index}`))));
-        mergeSignatures(out, semanticScopeSignatures(node.default, workflow, appendBranch(basePath, node.id, "default")));
-        break;
-      case "parallel":
-        for (const [branchId, branch] of Object.entries(node.branches)) mergeSignatures(out, semanticScopeSignatures(branch.scope, workflow, appendBranch(basePath, node.id, branchId)));
-        break;
-      case "fanout":
-        mergeSignatures(out, semanticScopeSignatures(node.do, workflow, appendFanoutItem(basePath, node.id, 0)));
-        break;
-      case "loop":
-        mergeSignatures(out, semanticScopeSignatures(node.do, workflow, appendLoopIteration(basePath, node.id, 0)));
-        break;
-    }
-  }
-  return out;
+  return new Map(Array.from(walkNodes(workflow.root), ({ node, ancestry }) => [
+    pathKey(appendNode(representativeInstancePath(ancestry), node.id)),
+    stableJsonLine(semanticNodeSignature(node, workflow)),
+  ] as const));
 }
 
 function semanticNodeSignature(node: NodeIR, workflow: WorkflowIR): unknown {
@@ -421,7 +397,7 @@ function compatibilitySignature(signatures: Map<string, string>, path: InstanceP
   const parts: string[] = [];
   for (let index = 0; index < path.length; index += 1) {
     const segment = path[index]!;
-    parts.push(stableJson(segment));
+    parts.push(stableJsonLine(segment));
     if (segment.kind === "node") {
       const signature = signatures.get(signaturePathKey(path.slice(0, index + 1)));
       if (!signature) return undefined;
@@ -432,33 +408,29 @@ function compatibilitySignature(signatures: Map<string, string>, path: InstanceP
       parts.push(signature);
     }
   }
-  return stableJson(parts);
+  return stableJsonLine(parts);
 }
 
-function nodePaths(scope: ScopeIR, ancestors: NodeIR[] = [], basePath: InstancePath = []): Array<{ node: NodeIR; ancestors: NodeIR[]; path: InstancePath }> {
-  return scope.nodes.flatMap(node => {
-    const nodePath = appendNode(basePath, node.id);
-    const current = [{ node, ancestors, path: nodePath }];
-    const childAncestors = [...ancestors, node];
-    switch (node.kind) {
-      case "if":
-        return [...current, ...nodePaths(node.then, childAncestors, appendBranch(basePath, node.id, "then")), ...nodePaths(node.else, childAncestors, appendBranch(basePath, node.id, "else"))];
-      case "switch":
-        return [...current, ...node.cases.flatMap((c, index) => nodePaths(c.then, childAncestors, appendBranch(basePath, node.id, `case:${index}`))), ...nodePaths(node.default, childAncestors, appendBranch(basePath, node.id, "default"))];
-      case "parallel":
-        return [...current, ...Object.entries(node.branches).flatMap(([branchId, branch]) => nodePaths(branch.scope, childAncestors, appendBranch(basePath, node.id, branchId)))];
-      case "fanout":
-        return [...current, ...nodePaths(node.do, childAncestors, appendFanoutItem(basePath, node.id, 0))];
-      case "loop":
-        return [...current, ...nodePaths(node.do, childAncestors, appendLoopIteration(basePath, node.id, 0))];
-      default:
-        return current;
-    }
-  });
+function nodePaths(scope: ScopeIR): Array<{ node: NodeIR; ancestors: NodeIR[]; path: InstancePath }> {
+  return Array.from(walkNodes(scope), ({ node, ancestry }) => ({
+    node,
+    ancestors: ancestry.map(({ owner }) => owner),
+    path: appendNode(representativeInstancePath(ancestry), node.id),
+  }));
+}
+
+function representativeInstancePath(ancestry: readonly NodeChildScope[]): InstancePath {
+  let path: InstancePath = [];
+  for (const child of ancestry) {
+    if (child.kind === "fanout") path = appendFanoutItem(path, child.owner.id, 0);
+    else if (child.kind === "loop") path = appendLoopIteration(path, child.owner.id, 0);
+    else path = appendBranch(path, child.owner.id, child.branchId);
+  }
+  return path;
 }
 
 function pathKey(path: readonly InstancePathSegment[]): string {
-  return stableJson(path);
+  return stableJsonLine(path);
 }
 
 type PathPatternSegment =
@@ -598,10 +570,6 @@ function isTerminalRunStatus(status: SchedulerProjection["run"]["status"]): bool
   return status === "completed" || status === "failed" || status === "canceled";
 }
 
-function mergeSignatures(target: Map<string, string>, source: Map<string, string>): void {
-  for (const [key, value] of source) target.set(key, value);
-}
-
 function signaturePathKey(path: readonly InstancePathSegment[]): string {
   return pathKey(path.map(segment => {
     if (segment.kind === "fanout") return { kind: "fanout", nodeId: segment.nodeId, itemIndex: 0 };
@@ -610,12 +578,6 @@ function signaturePathKey(path: readonly InstancePathSegment[]): string {
   }));
 }
 
-function stableJson(value: unknown): string {
-  return `${JSON.stringify(sortJson(value))}\n`;
-}
-
-function sortJson(value: unknown): unknown {
-  if (!value || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map(sortJson);
-  return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, sortJson(item)]));
+function stableJsonLine(value: unknown): string {
+  return `${stableJson(value)}\n`;
 }

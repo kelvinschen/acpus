@@ -10,7 +10,7 @@ Runtime hooks let users run configured shell commands as workflow side effects w
 - A hooks JSON file MUST be an event map whose top-level keys are supported hook events and whose values are arrays of command hooks.
 - A hooks JSON file MUST NOT use a top-level `hooks` wrapper field.
 - Supported hook events MUST be `run.started`, `run.completed`, `run.failed`, `run.canceled`, `run.awaiting`, `node.started`, `node.completed`, and `node.failed`.
-- Hook entries MUST contain a non-empty `command` string and MAY contain `id`, `timeout`, and `match`.
+- Hook entries MUST contain a non-empty `command` string without NUL bytes and MAY contain `id`, `timeout`, and `match`.
 - Hook `id` MUST be display and journal metadata only; duplicate ids MUST NOT override or suppress any hook entry.
 - Project and global hook entries MUST be merged by direct union and MUST both run when both match.
 - Hook `match` fields MUST be JavaScript regular expression strings. Multiple match fields MUST be combined with AND semantics.
@@ -20,6 +20,14 @@ Runtime hooks let users run configured shell commands as workflow side effects w
 - Hook execution MUST be non-interfering: hook failure, timeout, output, or journal write failure MUST NOT change workflow status, workflow output, IR, runtime scope, or public run event payloads.
 - Invalid hook configuration MUST fail daemon startup with an `Invalid hooks config` error instead of silently disabling hooks.
 - The hook runner MUST execute command hooks asynchronously with shell spawning and a default timeout of 30 seconds.
+- Hook timeout strings MUST use the `@acpus/core/ir` duration grammar, MUST resolve to safe-integer milliseconds, and MUST interpret an omitted unit as milliseconds.
+- Hook timeout scheduling MUST preserve accepted durations above Node's single-timer limit by using cancellable chunks and MUST cancel the active timeout when the hook settles.
+- A hook timeout budget MUST begin before synchronous process startup. Process
+  close and error settlement MUST recheck monotonic elapsed time so a delayed
+  timer callback cannot accept an overdue hook result.
+- A synchronous hook process spawn failure MUST produce one terminal `failed`
+  journal entry, or `timed_out` when startup already exhausted the timeout; it
+  MUST NOT disappear through the runner's non-interference boundary.
 - The hook journal MUST be stored outside the scheduler event stream in a `hook_journal` SQLite table.
 - The hook journal MUST write only terminal hook records with status `completed`, `failed`, or `timed_out`.
 - Hook journal rows MUST include `eventSequence` and `triggerOrder`. `runs inspect` MUST order hook history by `eventSequence`, then `triggerOrder`, then journal row id.
@@ -35,10 +43,14 @@ Runtime hooks let users run configured shell commands as workflow side effects w
 
 ## Verification
 
-- Tests MUST cover hook config validation, missing files, invalid JSON, invalid regex, top-level `hooks` rejection, direct project/global union, and duplicate id preservation.
+- Tests MUST cover hook config validation, NUL command rejection, missing files, invalid JSON, invalid regex, top-level `hooks` rejection, direct project/global union, and duplicate id preservation.
 - Tests MUST cover hook event mapping from newly committed runtime event rows and non-mapping for unrelated scheduler events.
 - Tests MUST cover hook context construction for run, node, and signal-awaiting events.
-- Tests MUST cover hook runner matching, stdin context, timeout, failed exit, trigger order metadata, drain behavior, output truncation, and non-interference.
+- Tests MUST cover hook runner matching, stdin context, timeout, synchronous
+  startup accounting, deadline-first close/error arbitration, safe-duration
+  overflow scheduling and cleanup, synchronous spawn failure journaling, failed
+  exit, trigger order metadata, drain behavior, output truncation, and
+  non-interference.
 - Tests MUST cover hook journal writes, idempotent duplicate writes, reads ordered by `eventSequence` and `triggerOrder`, 7-day pruning, and read-only APIs not pruning.
 - Tests MUST cover daemon-owned foreground and background runtime execution triggering hooks only from new committed rows.
 - Tests MUST cover `acpus hooks validate`, `acpus hooks list`, and `runs inspect` hook history output in text and JSON modes.

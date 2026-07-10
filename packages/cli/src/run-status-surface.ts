@@ -1,5 +1,5 @@
-import type { NodeIR, SchemaIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
-import type { RunDetails, RunDynamicAttempt, RunDynamicFrame, RunDynamicNodeInstance, RunDynamicSignalWait } from "@acpus/runtime";
+import { walkNodes, type NodeIR, type SchemaIR, type WorkflowIR } from "@acpus/core/ir";
+import type { RunDetails, RunDynamicAttempt, RunDynamicNodeInstance, RunDynamicSignalWait } from "@acpus/runtime";
 import { formatAgentProgressDetailLines } from "./agent-progress-format.js";
 
 export type RunStatusStaticNode = {
@@ -27,9 +27,12 @@ type Row = {
 };
 
 export function staticNodesForWorkflow(ir: WorkflowIR): RunStatusStaticNode[] {
-  const nodes: RunStatusStaticNode[] = [];
-  visitScope(ir.root, nodes);
-  return nodes;
+  return Array.from(walkNodes(ir.root), ({ node }, order) => ({
+    nodeId: node.id,
+    kind: node.kind,
+    order,
+    ...(node.kind === "signal" ? { outputSchema: node.outputSchema } : {}),
+  }));
 }
 
 export function formatRunStatusSurface(run: RunDetails, staticNodes: readonly RunStatusStaticNode[] = [], nowMs = Date.now()): string {
@@ -312,24 +315,4 @@ function staticIndex(staticNodes: readonly RunStatusStaticNode[]): StaticIndex {
 
 function nodeKind(index: StaticIndex, nodeId: string): NodeIR["kind"] | undefined {
   return index.nodeById.get(nodeId)?.kind;
-}
-
-function visitScope(scope: ScopeIR, nodes: RunStatusStaticNode[]): void {
-  for (const node of scope.nodes) {
-    nodes.push({
-      nodeId: node.id,
-      kind: node.kind,
-      order: nodes.length,
-      ...(node.kind === "signal" ? { outputSchema: node.outputSchema } : {}),
-    });
-    for (const child of childScopes(node)) visitScope(child, nodes);
-  }
-}
-
-function childScopes(node: NodeIR): ScopeIR[] {
-  if (node.kind === "if") return [node.then, node.else];
-  if (node.kind === "switch") return [...node.cases.map(item => item.then), node.default];
-  if (node.kind === "parallel") return Object.values(node.branches).map(branch => branch.scope);
-  if (node.kind === "fanout" || node.kind === "loop") return [node.do];
-  return [];
 }

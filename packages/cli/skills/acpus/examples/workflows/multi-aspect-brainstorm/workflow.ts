@@ -53,7 +53,7 @@ export default defineWorkflow({
       delta: "",
       synthesis: "",
     },
-    do({ index, round, state }) {
+    do({ round, state }) {
       const aspects = step("aspect_work").parallel({
         maxConcurrency: 4,
         branches: {

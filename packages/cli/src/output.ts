@@ -1,5 +1,5 @@
 import type { Writable } from "node:stream";
-import type { DiagnosticIR, WorkflowIR } from "@acpus/core/ir";
+import { walkNodes, type DiagnosticIR, type WorkflowIR } from "@acpus/core/ir";
 import type { HookConfigScope, LoadedHookConfig, RunDetails, RunRecord, RuntimeHealthCheck } from "@acpus/runtime";
 import { formatAgentProgressLines } from "./agent-progress-format.js";
 import type { WorkflowCatalogEntry } from "./catalog.js";
@@ -246,28 +246,8 @@ export function summarizeWorkflow(ir: WorkflowIR): WorkflowSummary {
     name: ir.name,
     ...(ir.description === undefined ? {} : { description: ir.description }),
     irVersion: ir.irVersion,
-    nodeCount: countNodes(ir.root),
+    nodeCount: Array.from(walkNodes(ir.root)).length,
     outputKeys: Object.keys(ir.outputs).sort(),
     diagnostics,
   };
-}
-
-function countNodes(scope: WorkflowIR["root"]): number {
-  let total = scope.nodes.length;
-  for (const node of scope.nodes) {
-    if (node.kind === "if") {
-      total += countNodes(node.then);
-      if (node.else) total += countNodes(node.else);
-    } else if (node.kind === "switch") {
-      for (const c of node.cases) total += countNodes(c.then);
-      if (node.default) total += countNodes(node.default);
-    } else if (node.kind === "parallel") {
-      for (const branch of Object.values(node.branches)) total += countNodes(branch.scope);
-    } else if (node.kind === "fanout") {
-      total += countNodes(node.do);
-    } else if (node.kind === "loop") {
-      total += countNodes(node.do);
-    }
-  }
-  return total;
 }

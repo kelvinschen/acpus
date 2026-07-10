@@ -1,7 +1,10 @@
 import { resolve } from "node:path";
-import type { NodeIR, WorkflowIR } from "@acpus/core/ir";
 import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
+import type { NodeIR } from "@acpus/core/ir";
+import { ok } from "neverthrow";
 import type { EvaluationScope } from "../evaluation/evaluator.js";
+import { resolutionErrorPayload, tryCreateDeadline, tryResolveDuration, tryResolveString } from "../evaluation/resolvable.js";
+import type { TaskAttemptRunner } from "../execution/task-process.js";
 import { buildHookContext } from "../hooks/context.js";
 import { mapRuntimeEventToHookEvent } from "../hooks/events.js";
 import type { HookRunner } from "../hooks/runner.js";
@@ -12,8 +15,6 @@ import { bootstrapRootEvents, continueRootEvents } from "./materialize.js";
 import { createRuntimeNodeExecutor } from "./node-executor.js";
 import { indexNodes } from "./ir-walk.js";
 import { scopeForNodeAttempt } from "./scope.js";
-import { resolutionErrorPayload, tryResolveDuration, tryResolveString } from "../evaluation/resolvable.js";
-import type { TaskAttemptRunner } from "../execution/task-process.js";
 
 export type AdvanceFrozenRunInput = {
   cwd: string;
@@ -54,16 +55,17 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
       const timeout = node?.kind === "signal" && node.timeout !== undefined
         ? tryResolveDuration(node.timeout, attemptScope, `Signal node '${node.id}' timeout`)
         : undefined;
-      const deadlineAt = timeout?.isOk()
-        ? new Date(now.getTime() + timeout.value.milliseconds).toISOString()
+      const deadline = node?.kind === "signal" && timeout?.isOk()
+        ? tryCreateDeadline(now, timeout.value.milliseconds, `Signal node '${node.id}' timeout`)
         : undefined;
+      const deadlineAt = deadline?.isOk() ? deadline.value.toISOString() : undefined;
       const prompt = node?.kind === "signal"
         ? tryResolveString(node.run.prompt, attemptScope, `Signal node '${node.id}' prompt`)
         : undefined;
       const timeoutMessage = node?.kind === "signal" && node.onTimeout?.message !== undefined
         ? tryResolveString(node.onTimeout.message, attemptScope, `Signal node '${node.id}' onTimeout message`)
         : undefined;
-      const resolutionError = timeout?.isErr() ? timeout.error : prompt?.isErr() ? prompt.error : timeoutMessage?.isErr() ? timeoutMessage.error : undefined;
+      const resolutionError = timeout?.isErr() ? timeout.error : deadline?.isErr() ? deadline.error : prompt?.isErr() ? prompt.error : timeoutMessage?.isErr() ? timeoutMessage.error : undefined;
       const renderedPrompt = prompt?.isOk() ? prompt.value : undefined;
       const renderedTimeoutMessage = timeoutMessage?.isOk() ? timeoutMessage.value : undefined;
       return node?.kind === "signal"
@@ -87,8 +89,13 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
     },
     deadlineAtFor: (_instance, _projection, now) => {
       const node = nodes.get(_instance.nodeId);
-      if (!node || !isSchedulerRetryLeaf(node) || _instance.timeoutMs === undefined) return undefined;
-      return new Date(now.getTime() + _instance.timeoutMs);
+      if (!node || !isSchedulerRetryLeaf(node) || _instance.timeoutMs === undefined) return ok(undefined);
+      return tryCreateDeadline(now, _instance.timeoutMs, `${node.kind} node '${node.id}' timeout`)
+        .mapErr(error => ({
+          status: "failed" as const,
+          reason: "expression_resolution_failed",
+          error: resolutionErrorPayload(error),
+        }));
     },
     bootstrap: snapshot => snapshot.projection.frames.root ? [] : bootstrapRootEvents(input.runId, frozen.ir, scope),
     materialize: snapshot => continueRootEvents(frozen.ir, snapshot.projection, scope),
@@ -110,7 +117,7 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
   return summary;
 }
 
-export function triggerHooksForCommittedRows(input: {
+function triggerHooksForCommittedRows(input: {
   cwd: string;
   runId: string;
   store: RuntimeStore;

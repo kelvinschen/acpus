@@ -5,6 +5,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 
 const FORCE_KILL_GRACE_MS = 5_000;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const TOOL_INPUT_PREVIEW_EDGE_BYTES = 4 * 1024;
 const FINAL_TOOL_STATUSES = new Set(["completed", "failed", "cancelled"]);
 
@@ -23,7 +24,7 @@ export type AgentTurnRequest = {
   permissionMode: AgentPermissionMode;
   model?: string;
   agentMode?: string;
-  timeout?: string;
+  timeoutMs?: number;
   signal?: AbortSignal;
   captureRawDebug?: boolean;
   onProgress?: (progress: AgentTurnProgress) => unknown;
@@ -128,9 +129,9 @@ export type AgentTurnResult =
 type AcpxInvocation = {
   args: string[];
   input?: string;
-  timeout?: string;
+  deadline?: TurnDeadline;
   signal?: AbortSignal;
-  cancelArgs?: string[];
+  cancelArgs?: (timeoutMs: number | undefined) => string[];
   cwd: string;
   env: NodeJS.ProcessEnv;
   onStdoutLine?: (line: string) => void;
@@ -142,6 +143,7 @@ type AcpxProcessResult = {
   stderr: string;
   timedOut: boolean;
   aborted: boolean;
+  stdinError?: string;
   spawnError?: string;
 };
 
@@ -171,53 +173,60 @@ type PromptAccumulator = {
 };
 
 type TurnDeadline = {
-  timeout: string;
-  expiresAt: number;
+  timeoutMs: number;
+  startedAt: number;
 };
 
 type RemainingTimeout =
   | { expired: true }
-  | { expired: false; timeout?: string };
+  | { expired: false; timeoutMs?: number };
+
+type TurnBudget =
+  | { type: "abort"; timeoutMs?: number }
+  | { type: "expired" }
+  | { type: "continue"; timeoutMs?: number };
 
 export async function executeAgentTurn(request: AgentTurnRequest): Promise<AgentTurnResult> {
-  if (request.signal?.aborted) {
-    return cancelledResult("Agent turn was aborted before dispatch.");
+  if (request.timeoutMs !== undefined && (!Number.isSafeInteger(request.timeoutMs) || request.timeoutMs < 0)) {
+    return configResult("Agent turn timeoutMs must be a non-negative safe integer.");
   }
-
+  const deadline = turnDeadline(request.timeoutMs);
   const env = requestEnv(request);
-  const deadline = turnDeadline(request.timeout);
-  const ensureTimeout = remainingTimeout(deadline);
-  if (ensureTimeout.expired) return timeoutResult(request.timeout);
+  const ensureBudget = turnBudget(deadline, request.signal);
+  if (ensureBudget.type === "abort") return cancelledResult("Agent turn was aborted before dispatch.");
+  if (ensureBudget.type === "expired") return timeoutResult(request.timeoutMs);
   const ensure = await runAcpx({
-    args: buildAcpxArgs(request, ["sessions", "ensure", "--name", request.sessionName], ensureTimeout.timeout),
+    args: buildAcpxArgs(request, ["sessions", "ensure", "--name", request.sessionName], ensureBudget.timeoutMs),
     cwd: request.cwd,
     env,
-    ...(ensureTimeout.timeout === undefined ? {} : { timeout: ensureTimeout.timeout }),
+    ...(deadline === undefined ? {} : { deadline }),
     ...(request.signal === undefined ? {} : { signal: request.signal }),
   });
-  if (ensure.exitCode !== 0 || ensure.spawnError || ensure.timedOut || ensure.aborted) {
-    return failedControlResult("sessions ensure", ensure, "provider_exit", request.timeout);
+  if (ensure.exitCode !== 0 || ensure.stdinError !== undefined || ensure.spawnError || ensure.timedOut || ensure.aborted) {
+    return failedControlResult("sessions ensure", ensure, "provider_exit", request.timeoutMs);
   }
 
   if (request.agentMode) {
     // Current known adapter modes, for operators only: claude default/acceptEdits/dontAsk/bypassPermissions/auto/plan; codex read-only/agent.
     // Do not validate against this list; acpx and the selected agent own mode support.
-    const setModeTimeout = remainingTimeout(deadline);
-    if (setModeTimeout.expired) return timeoutResult(request.timeout);
+    const setModeBudget = turnBudget(deadline, request.signal);
+    if (setModeBudget.type === "abort") return cancelledResult("Agent turn was aborted before dispatch.");
+    if (setModeBudget.type === "expired") return timeoutResult(request.timeoutMs);
     const setMode = await runAcpx({
-      args: buildAcpxArgs(request, ["set-mode", request.agentMode, "-s", request.sessionName], setModeTimeout.timeout),
+      args: buildAcpxArgs(request, ["set-mode", request.agentMode, "-s", request.sessionName], setModeBudget.timeoutMs),
       cwd: request.cwd,
       env,
-      ...(setModeTimeout.timeout === undefined ? {} : { timeout: setModeTimeout.timeout }),
+      ...(deadline === undefined ? {} : { deadline }),
       ...(request.signal === undefined ? {} : { signal: request.signal }),
     });
-    if (setMode.exitCode !== 0 || setMode.spawnError || setMode.timedOut || setMode.aborted) {
-      return failedControlResult("set-mode", setMode, "config", request.timeout);
+    if (setMode.exitCode !== 0 || setMode.stdinError !== undefined || setMode.spawnError || setMode.timedOut || setMode.aborted) {
+      return failedControlResult("set-mode", setMode, "config", request.timeoutMs);
     }
   }
 
-  const promptTimeout = remainingTimeout(deadline);
-  if (promptTimeout.expired) return timeoutResult(request.timeout);
+  const promptBudget = turnBudget(deadline, request.signal);
+  if (promptBudget.type === "abort") return cancelledResult("Agent turn was aborted before dispatch.");
+  if (promptBudget.type === "expired") return timeoutResult(request.timeoutMs);
   const acpxRecordId = extractAcpxRecordId(ensure.stdout);
   const accumulator = createPromptAccumulator({
     prompt: request.prompt,
@@ -225,8 +234,8 @@ export async function executeAgentTurn(request: AgentTurnRequest): Promise<Agent
     ...(acpxRecordId ? { acpxRecordId } : {}),
   });
   const prompt = await runAcpx({
-    args: buildAcpxArgs(request, ["prompt", "-s", request.sessionName, "-f", "-"], promptTimeout.timeout),
-    cancelArgs: buildAcpxArgs(request, ["cancel", "-s", request.sessionName]),
+    args: buildAcpxArgs(request, ["prompt", "-s", request.sessionName, "-f", "-"], promptBudget.timeoutMs),
+    cancelArgs: timeoutMs => buildAcpxArgs(request, ["cancel", "-s", request.sessionName], timeoutMs),
     input: request.prompt,
     cwd: request.cwd,
     env,
@@ -241,17 +250,17 @@ export async function executeAgentTurn(request: AgentTurnRequest): Promise<Agent
         if (observed) void Promise.resolve(observed).catch(() => {});
       } catch {}
     } } : {}),
-    ...(promptTimeout.timeout === undefined ? {} : { timeout: promptTimeout.timeout }),
+    ...(deadline === undefined ? {} : { deadline }),
     ...(request.signal === undefined ? {} : { signal: request.signal }),
   });
   const summary = summarizePromptOutput(prompt.stdout, accumulator.options);
   const rawDebug = request.captureRawDebug ? { stdout: prompt.stdout } : undefined;
   if (prompt.aborted) return withRawDebug({ status: "cancelled", message: "Agent turn was aborted.", responseText: summary.responseText, stderr: prompt.stderr, telemetry: summary.telemetry }, rawDebug);
-  if (prompt.timedOut) return withRawDebug({ status: "failed", failureKind: "timeout", message: timeoutMessage(request.timeout), responseText: summary.responseText, stderr: prompt.stderr, telemetry: summary.telemetry }, rawDebug);
+  if (prompt.timedOut) return withRawDebug({ status: "failed", failureKind: "timeout", message: timeoutMessage(request.timeoutMs), responseText: summary.responseText, stderr: prompt.stderr, telemetry: summary.telemetry }, rawDebug);
   if (prompt.spawnError) return withRawDebug({ status: "failed", failureKind: "spawn", message: prompt.spawnError, responseText: summary.responseText, stderr: prompt.stderr, telemetry: summary.telemetry }, rawDebug);
   if (summary.malformedLine) return withRawDebug({ status: "failed", failureKind: "provider_exit", message: `Malformed acpx JSON output: ${boundedTail(summary.malformedLine)}`, responseText: summary.responseText, stderr: prompt.stderr, telemetry: summary.telemetry }, rawDebug);
   if (summary.errorMessage) return withRawDebug({ status: "failed", failureKind: classifyFailureText(summary.errorMessage), message: summary.errorMessage, responseText: summary.responseText, stderr: prompt.stderr, telemetry: summary.telemetry }, rawDebug);
-  if (prompt.exitCode !== 0) return withRawDebug({ status: "failed", failureKind: classifyProviderExit(prompt), message: failureMessage(prompt), responseText: summary.responseText, stderr: prompt.stderr, telemetry: summary.telemetry }, rawDebug);
+  if (prompt.stdinError !== undefined || prompt.exitCode !== 0) return withRawDebug({ status: "failed", failureKind: classifyProviderExit(prompt), message: failureMessage(prompt), responseText: summary.responseText, stderr: prompt.stderr, telemetry: summary.telemetry }, rawDebug);
   return withRawDebug({ status: "completed", responseText: summary.responseText, stderr: prompt.stderr, telemetry: summary.telemetry }, rawDebug);
 }
 
@@ -267,7 +276,7 @@ function requestEnv(request: AgentTurnRequest): NodeJS.ProcessEnv {
   return env;
 }
 
-function buildAcpxArgs(request: AgentTurnRequest, command: string[], timeout = request.timeout): string[] {
+function buildAcpxArgs(request: AgentTurnRequest, command: string[], timeoutMs: number | undefined): string[] {
   const args = [
     "--cwd",
     request.cwd,
@@ -277,7 +286,7 @@ function buildAcpxArgs(request: AgentTurnRequest, command: string[], timeout = r
     permissionFlag(request.permissionMode),
   ];
   if (request.model) args.push("--model", request.model);
-  if (timeout) args.push("--timeout", acpxTimeoutSeconds(timeout));
+  if (timeoutMs !== undefined) args.push("--timeout", acpxTimeoutSeconds(timeoutMs));
   if (request.agent.kind === "command") args.push("--agent", request.agent.command);
   else args.push(request.agent.name);
   args.push(...command);
@@ -300,7 +309,15 @@ function runAcpx(invocation: AcpxInvocation): Promise<AcpxProcessResult> {
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (error) {
-      resolve({ exitCode: null, stdout: "", stderr: "", timedOut: false, aborted: false, spawnError: errorMessage(error) });
+      const termination = boundaryTermination(invocation);
+      resolve({
+        exitCode: null,
+        stdout: "",
+        stderr: "",
+        timedOut: termination === "timeout",
+        aborted: termination === "abort",
+        ...(termination === undefined ? { spawnError: errorMessage(error) } : {}),
+      });
       return;
     }
 
@@ -311,40 +328,19 @@ function runAcpx(invocation: AcpxInvocation): Promise<AcpxProcessResult> {
     let termination: "timeout" | "abort" | undefined;
     let timeout: NodeJS.Timeout | undefined;
     let killTimeout: NodeJS.Timeout | undefined;
-    const abort = () => terminate("abort");
+    let settled = false;
+    let stdinError: string | undefined;
+    const abort = () => checkBudget();
     const cleanup = () => {
-      if (timeout) clearTimeout(timeout);
-      if (killTimeout) clearTimeout(killTimeout);
+      if (timeout !== undefined) clearTimeout(timeout);
+      if (killTimeout !== undefined) clearTimeout(killTimeout);
       invocation.signal?.removeEventListener("abort", abort);
     };
 
-    const terminate = (reason: "timeout" | "abort") => {
-      if (termination) return;
-      termination = reason;
-      if (timeout) clearTimeout(timeout);
-      if (invocation.cancelArgs) runDetachedAcpx(invocation.cancelArgs, invocation.cwd, invocation.env);
-      killTimeout = setTimeout(() => killProcess(child.pid, "SIGKILL"), FORCE_KILL_GRACE_MS);
-      killProcess(child.pid);
-    };
-
-    if (invocation.timeout) {
-      timeout = setTimeout(() => terminate("timeout"), parseDurationMs(invocation.timeout));
-    }
-    invocation.signal?.addEventListener("abort", abort, { once: true });
-    if (invocation.signal?.aborted) terminate("abort");
-
-    const collect = (target: Buffer[], chunk: unknown, onLine?: (line: string) => void) => {
-      if (termination) return;
-      const buffer = Buffer.from(chunk as any);
-      target.push(buffer);
-      if (!onLine) return;
-      stdoutLineBuffer += stdoutDecoder?.write(buffer) ?? buffer.toString("utf8");
-      emitCompleteStdoutLines(onLine);
-    };
-
-    child.stdout.on("data", chunk => collect(stdout, chunk, invocation.onStdoutLine));
-    child.stderr.on("data", chunk => collect(stderr, chunk));
-    child.on("close", exitCode => {
+    const settle = (exitCode: number | null, error?: Error) => {
+      if (settled) return;
+      settled = true;
+      termination ??= boundaryTermination(invocation);
       cleanup();
       if (invocation.onStdoutLine) {
         stdoutLineBuffer += stdoutDecoder?.end() ?? "";
@@ -354,16 +350,67 @@ function runAcpx(invocation: AcpxInvocation): Promise<AcpxProcessResult> {
       resolve({
         exitCode,
         stdout: Buffer.concat(stdout).toString("utf8"),
-        stderr: Buffer.concat(stderr).toString("utf8"),
+        stderr: error && !termination ? error.message : Buffer.concat(stderr).toString("utf8"),
         timedOut: termination === "timeout",
         aborted: termination === "abort",
+        ...(stdinError === undefined ? {} : { stdinError }),
+        ...(!termination && error ? { spawnError: error.message } : {}),
       });
-    });
+    };
+
+    const terminate = (reason: "timeout" | "abort", cancelTimeoutMs: number | undefined) => {
+      if (termination || settled) return;
+      termination = reason;
+      if (timeout !== undefined) clearTimeout(timeout);
+      if (invocation.cancelArgs) runDetachedAcpx(invocation.cancelArgs(cancelTimeoutMs), invocation.cwd, invocation.env);
+      killTimeout = setTimeout(() => killProcess(child.pid, "SIGKILL"), FORCE_KILL_GRACE_MS);
+      killProcess(child.pid);
+    };
+
+    const checkBudget = () => {
+      const budget = turnBudget(invocation.deadline, invocation.signal);
+      if (budget.type === "abort") {
+        terminate("abort", budget.timeoutMs);
+        return;
+      }
+      if (budget.type === "expired") {
+        terminate("timeout", 0);
+        return;
+      }
+      if (budget.timeoutMs !== undefined) {
+        timeout = setTimeout(checkBudget, Math.min(budget.timeoutMs, MAX_TIMER_DELAY_MS));
+      }
+    };
+
+    const collect = (target: Buffer[], chunk: unknown, onLine?: (line: string) => void) => {
+      if (termination || settled) return;
+      const buffer = Buffer.from(chunk as any);
+      target.push(buffer);
+      if (!onLine) return;
+      stdoutLineBuffer += stdoutDecoder?.write(buffer) ?? buffer.toString("utf8");
+      emitCompleteStdoutLines(onLine);
+    };
+
+    child.stdout.on("data", chunk => collect(stdout, chunk, invocation.onStdoutLine));
+    child.stderr.on("data", chunk => collect(stderr, chunk));
+    child.on("close", exitCode => settle(exitCode));
     child.on("error", error => {
-      cleanup();
-      resolve({ exitCode: null, stdout: "", stderr: error.message, timedOut: false, aborted: false, spawnError: error.message });
+      if (termination) killProcess(child.pid, "SIGKILL");
+      settle(null, error);
     });
-    child.stdin.end(invocation.input ?? "");
+    child.stdin.on("error", error => {
+      if (termination || settled) return;
+      stdinError ??= error.message;
+    });
+    invocation.signal?.addEventListener("abort", abort, { once: true });
+    checkBudget();
+    if (!termination) {
+      try {
+        child.stdin.end(invocation.input ?? "");
+      } catch (error) {
+        stdinError ??= errorMessage(error);
+      }
+    }
 
     function emitCompleteStdoutLines(onLine: (line: string) => void): void {
       for (;;) {
@@ -385,6 +432,7 @@ function resolveAcpxCli(): string {
 function runDetachedAcpx(args: string[], cwd: string, env: NodeJS.ProcessEnv): void {
   try {
     const child = spawn(process.execPath, [resolveAcpxCli(), ...args], { cwd, env, stdio: "ignore" });
+    child.on("error", () => {});
     child.unref();
   } catch {}
 }
@@ -599,16 +647,20 @@ function emptyTelemetry(): AgentTurnTelemetry {
   return { eventCount: 0, tools: { totalToolCallCount: 0, calls: [] } };
 }
 
-function failedControlResult(command: string, result: AcpxProcessResult, defaultKind: AgentBackendFailureKind = "provider_exit", timeout: string | undefined = undefined): AgentTurnResult {
+function failedControlResult(command: string, result: AcpxProcessResult, defaultKind: AgentBackendFailureKind = "provider_exit", timeoutMs: number | undefined = undefined): AgentTurnResult {
   if (result.aborted) return cancelledResult(`Agent ${command} was aborted.`);
-  if (result.timedOut) return failedResult("timeout", timeoutMessage(timeout), result);
+  if (result.timedOut) return failedResult("timeout", timeoutMessage(timeoutMs), result);
   if (result.spawnError) return failedResult("spawn", result.spawnError, result);
   const message = failureMessage(result);
   return failedResult(defaultKind === "provider_exit" ? classifyFailureText(message) : defaultKind, message, result);
 }
 
-function timeoutResult(timeout: string | undefined): AgentTurnResult {
-  return { status: "failed", failureKind: "timeout", message: timeoutMessage(timeout), responseText: "", stderr: "", telemetry: emptyTelemetry() };
+function timeoutResult(timeoutMs: number | undefined): AgentTurnResult {
+  return { status: "failed", failureKind: "timeout", message: timeoutMessage(timeoutMs), responseText: "", stderr: "", telemetry: emptyTelemetry() };
+}
+
+function configResult(message: string): AgentTurnResult {
+  return { status: "failed", failureKind: "config", message, responseText: "", stderr: "", telemetry: emptyTelemetry() };
 }
 
 function failedResult(kind: AgentBackendFailureKind, message: string, result: AcpxProcessResult): AgentTurnResult {
@@ -629,11 +681,11 @@ function classifyFailureText(text: string): AgentBackendFailureKind {
 }
 
 function failureMessage(result: AcpxProcessResult): string {
-  return (extractHumanError(result.stdout) || extractHumanError(result.stderr) || nonJsonTail(result.stderr) || nonJsonTail(result.stdout) || `acpx exited with ${result.exitCode ?? "unknown status"}`).trim();
+  return (extractHumanError(result.stdout) || extractHumanError(result.stderr) || nonJsonTail(result.stderr) || nonJsonTail(result.stdout) || result.stdinError || `acpx exited with ${result.exitCode ?? "unknown status"}`).trim();
 }
 
-function timeoutMessage(timeout: string | undefined): string {
-  return timeout ? `Agent turn timed out after ${timeout}.` : "Agent turn timed out.";
+function timeoutMessage(timeoutMs: number | undefined): string {
+  return timeoutMs === undefined ? "Agent turn timed out." : `Agent turn timed out after ${timeoutMs}ms.`;
 }
 
 function boundedTail(value: string, max = 4000): string {
@@ -678,29 +730,33 @@ function killProcess(pid: number | undefined, signal: NodeJS.Signals = "SIGTERM"
   } catch {}
 }
 
-function parseDurationMs(value: string): number {
-  const match = /^(\d+)(ms|s|m|h)?$/.exec(value);
-  if (!match) throw new Error(`Invalid duration '${value}'.`);
-  const amount = Number(match[1]);
-  const unit = match[2] ?? "ms";
-  if (unit === "ms") return amount;
-  if (unit === "s") return amount * 1000;
-  if (unit === "m") return amount * 60_000;
-  return amount * 3_600_000;
-}
-
-function turnDeadline(timeout: string | undefined): TurnDeadline | undefined {
-  return timeout === undefined ? undefined : { timeout, expiresAt: Date.now() + parseDurationMs(timeout) };
+function turnDeadline(timeoutMs: number | undefined): TurnDeadline | undefined {
+  return timeoutMs === undefined ? undefined : { timeoutMs, startedAt: globalThis.performance.now() };
 }
 
 function remainingTimeout(deadline: TurnDeadline | undefined): RemainingTimeout {
   if (!deadline) return { expired: false };
-  const remaining = deadline.expiresAt - Date.now();
-  return remaining <= 0 ? { expired: true } : { expired: false, timeout: `${remaining}ms` };
+  const remaining = deadline.timeoutMs - (globalThis.performance.now() - deadline.startedAt);
+  return remaining <= 0 ? { expired: true } : { expired: false, timeoutMs: remaining };
 }
 
-function acpxTimeoutSeconds(value: string): string {
-  return String(Math.max(1, Math.ceil(parseDurationMs(value) / 1000)));
+function turnBudget(deadline: TurnDeadline | undefined, signal: AbortSignal | undefined): TurnBudget {
+  const remaining = remainingTimeout(deadline);
+  if (signal?.aborted) {
+    const timeoutMs = remaining.expired ? 0 : remaining.timeoutMs;
+    return timeoutMs === undefined ? { type: "abort" } : { type: "abort", timeoutMs };
+  }
+  if (remaining.expired) return { type: "expired" };
+  return remaining.timeoutMs === undefined ? { type: "continue" } : { type: "continue", timeoutMs: remaining.timeoutMs };
+}
+
+function boundaryTermination(invocation: Pick<AcpxInvocation, "deadline" | "signal">): "abort" | "timeout" | undefined {
+  const budget = turnBudget(invocation.deadline, invocation.signal);
+  return budget.type === "abort" ? "abort" : budget.type === "expired" ? "timeout" : undefined;
+}
+
+function acpxTimeoutSeconds(timeoutMs: number): string {
+  return String(Math.max(1, Math.ceil(timeoutMs / 1000)));
 }
 
 function errorMessage(error: unknown): string {

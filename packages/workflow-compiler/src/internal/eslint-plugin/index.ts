@@ -52,7 +52,7 @@ const checkRule: Rule.RuleModule = {
   },
 };
 
-export const rules: Record<string, Rule.RuleModule> = {
+const rules: Record<string, Rule.RuleModule> = {
   check: checkRule,
 };
 

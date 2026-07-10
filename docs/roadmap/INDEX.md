@@ -14,3 +14,10 @@ pre-TypeScript history remains under `legacy/`.
 
 ## Roadmap
 
+- No active repository-maintenance roadmap.
+
+## Completed
+
+- [Repository Maintenance Cleanup Roadmap](archive/repository-maintenance-cleanup-roadmap.md)
+  — delete refactor residue, consolidate proven seams, and add dead-code,
+  dependency, CI, and package-artifact gates.

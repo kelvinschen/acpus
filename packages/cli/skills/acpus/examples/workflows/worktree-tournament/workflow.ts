@@ -3,7 +3,7 @@
  * Nodes: agent, task, parallel
  */
 import { defineWorkflow, z } from "acpus/core";
-import { md, template } from "acpus/expression";
+import { md } from "acpus/expression";
 import { createWorktree } from "acpus/tasks/git";
 
 export default defineWorkflow({

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -5,6 +6,7 @@ import { mkdtemp } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { validateHooksFile } from "../src/hooks/config.js";
 import { loadHooksConfig, loadHooksConfigScopes } from "../src/hooks/loader.js";
+import { stableJson } from "../src/stable-json.js";
 
 describe("hooks config", () => {
   it("accepts event-map command hooks", () => {
@@ -66,6 +68,28 @@ describe("hooks config", () => {
     ]));
   });
 
+  it("accepts safe integer timeouts and rejects millisecond overflow", () => {
+    expect(validateHooksFile({
+      "run.completed": [{ command: "echo ok", timeout: String(Number.MAX_SAFE_INTEGER) }],
+    }).isOk()).toBe(true);
+
+    const result = validateHooksFile({
+      "run.completed": [{ command: "echo ok", timeout: "9007199254740992ms" }],
+    });
+
+    expect(result._unsafeUnwrapErr()).toEqual([
+      expect.objectContaining({ path: "$.run.completed[0].timeout" }),
+    ]);
+  });
+
+  it("rejects hook commands containing NUL bytes", () => {
+    expect(validateHooksFile({
+      "run.completed": [{ command: "echo\0broken" }],
+    })._unsafeUnwrapErr()).toEqual([
+      expect.objectContaining({ path: "$.run.completed[0].command" }),
+    ]);
+  });
+
   it("loads an empty object as no hooks", async () => {
     const workspace = await tempDir("hooks-empty-object-");
     const home = await tempDir("hooks-empty-object-home-");
@@ -121,7 +145,15 @@ describe("hooks config", () => {
       { source: "project", id: "same", command: "echo project again", definitionIndex: 1 },
       { source: "global", id: "same", command: "echo global", definitionIndex: 0 },
     ]);
-    expect(new Set(loaded._unsafeUnwrap().map(hook => hook.definitionHash)).size).toBe(3);
+    const hooks = loaded._unsafeUnwrap();
+    expect(new Set(hooks.map(hook => hook.definitionHash)).size).toBe(3);
+    expect(hooks[0]?.definitionHash).toBe(createHash("sha256").update(stableJson({
+      source: "project",
+      sourcePath: join(workspace, ".acpus", "hooks.json"),
+      event: "run.completed",
+      definitionIndex: 0,
+      config: { id: "same", command: "echo project" },
+    })).digest("hex"));
   });
 
   it("returns empty scoped configs for missing files", async () => {

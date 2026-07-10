@@ -17,9 +17,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "dist",
-    "README.md",
-    "LICENSE"
+    "dist"
   ],
   "publishConfig": {
     "access": "public"
@@ -34,12 +32,12 @@
     "@acpus/loader": "workspace:*",
     "@acpus/core": "workspace:*",
     "@acpus/expression": "workspace:*",
-    "@acpus/tasks": "workspace:*",
     "jsonrepair": "^3.14.1",
     "neverthrow": "^8.2.0",
     "p-queue": "^9.3.0"
   },
   "devDependencies": {
+    "@acpus/workflow-compiler": "workspace:*",
     "@types/node": "^22.15.30",
     "tsx": "^4.22.4"
   },

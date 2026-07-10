@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { DaemonRequestError, getRun, requestDaemonAdmitRun, requestDaemonControl, requestDaemonObserveRun, requestDaemonStartRun, type AgentOverrideMap, type DaemonControlIntent, type DaemonErrorCode, type PreparedRunWorkflow, type RunDetails, type RuntimeAdvanceResult, type RuntimeMutationResult } from "@acpus/runtime";
+import { DaemonRequestError, getRun, requestDaemonAdmitRun, requestDaemonControl, type AgentOverrideMap, type DaemonControlIntent, type DaemonErrorCode, type PreparedRunWorkflow, type RunDetails, type RuntimeMutationResult } from "@acpus/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
 
 export class DaemonControlFailure extends Error {
@@ -56,31 +56,6 @@ export async function sendDaemonAdmitRun(cwd: string, input: { prepared: Prepare
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
-}
-
-export async function sendDaemonStartRun(cwd: string, runId: string): Promise<RunDetails> {
-  ensureDaemonRunning(cwd);
-  const deadline = Date.now() + 30_000;
-  let lastError: unknown;
-  while (Date.now() <= deadline) {
-    try {
-      return await requestDaemonStartRun(cwd, runId);
-    } catch (error) {
-      if (error instanceof DaemonRequestError && error.code !== "INTERNAL_ERROR") throw error;
-      lastError = error;
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error(String(lastError));
-}
-
-export async function sendDaemonObserveRun(cwd: string, runId: string): Promise<RuntimeAdvanceResult> {
-  await sendDaemonStartRun(cwd, runId);
-  return requestDaemonObserveRun(cwd, runId);
-}
-
-export async function sendDaemonObserveStartedRun(cwd: string, runId: string): Promise<RuntimeAdvanceResult> {
-  return requestDaemonObserveRun(cwd, runId);
 }
 
 export function daemonControlRequestId(): string {

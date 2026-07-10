@@ -473,6 +473,12 @@ describe("WorkflowIR diagnostics contract", () => {
             run: { kind: "task_run", input: {}, target },
             timeout: { kind: "literal", value: "1m30s" },
           },
+          {
+            id: "task_out_of_range",
+            kind: "task",
+            run: { kind: "task_run", input: {}, target },
+            timeout: { kind: "literal", value: "9007199254740991s" },
+          },
         ],
       },
     } as any));
@@ -483,6 +489,7 @@ describe("WorkflowIR diagnostics contract", () => {
       ["IR002", "root.nodes.signal_negative.timeout"],
       ["IR002", "root.nodes.agent_spaced.timeout"],
       ["IR002", "root.nodes.task_compound.timeout"],
+      ["IR002", "root.nodes.task_out_of_range.timeout"],
     ]);
   });
 
@@ -526,6 +533,12 @@ describe("WorkflowIR diagnostics contract", () => {
             kind: "agent",
             run: { kind: "agent_run", agent: "reviewer", prompt: { kind: "literal", value: "" } },
             timeout: { kind: "literal", value: "1h" },
+          },
+          {
+            id: "signal_zero",
+            kind: "signal",
+            run: { kind: "signal_run", prompt: { kind: "literal", value: "" } },
+            timeout: { kind: "literal", value: "0" },
           },
         ],
       },

@@ -19,7 +19,10 @@ import { template, md, eq, lte, gte, and, or, fmap, lift2, lift3, lift } from "a
 import { createWorktree } from "acpus/tasks/git";
 ```
 
-The generated starter deliberately keeps broad public imports as local authoring context. After the workflow takes shape, unused imports may be removed. Hand-authored examples import only the helpers they use. For the complete surface, inspect the declarations listed under Declaration Lookup.
+The generated starter imports only the helpers it uses. Its authoring comments
+name common predicate, template, and lift helpers; add those imports when the
+workflow needs them. For the complete surface, inspect the declarations listed
+under Declaration Lookup.
 
 Do not import `@acpus/*` from user workflows; those are implementation packages behind the `acpus/*` facades.
 

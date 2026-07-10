@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { ExprIR, NodeIR, SchemaIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
+import { walkNodes, type ExprIR, type NodeIR, type SchemaIR, type WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import { ResultAsync } from "neverthrow";
 import { normalizeWorkflowInput } from "../admission/input.js";
-import { runtimeAdvanceResult, tryAdvanceRuntimeRun, type RuntimeAdvanceError, type RuntimeAdvanceObserver, type RuntimeAdvanceResult } from "./advance-runtime.js";
+import { runtimeAdvanceResult, tryAdvanceRuntimeRun, type RuntimeAdvanceError, type RuntimeAdvanceResult } from "./advance-runtime.js";
 import { ForkSeedPlanError, type ForkSeedFailure } from "../scheduler/fork-seed.js";
 import { applySchedulerControlIntent, InvalidSignalPayloadError, type RunControlIntent } from "../scheduler/control.js";
 import { schedulerStoreError, type SchedulerStoreError } from "../scheduler/store-port.js";
@@ -106,23 +106,7 @@ export async function admitPreparedWorkflowRun(cwd: string, prepared: PreparedRu
   }
 }
 
-export async function advanceWorkflowRun(cwd: string, runId: string, ownerId = "runtime-public", observe?: RuntimeAdvanceObserver): Promise<RuntimeAdvanceResult> {
-  const store = await openExistingWritableRuntimeStore(cwd);
-  if (!store) throw new Error("Runtime store was not found.");
-  try {
-    const advanced = await tryAdvanceRuntimeRun(cwd, store, runId, ownerId, observe);
-    return advanced.match(
-      value => value,
-      error => {
-        throw new Error(error.message);
-      },
-    );
-  } finally {
-    store.close();
-  }
-}
-
-export function tryAdmitWorkflowRun(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue, agentOverrides?: AgentOverrideMap): ResultAsync<RuntimeAdvanceResult, RuntimeUseCaseError> {
+function tryAdmitWorkflowRun(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue, agentOverrides?: AgentOverrideMap): ResultAsync<RuntimeAdvanceResult, RuntimeUseCaseError> {
   return ResultAsync.fromPromise(admitWorkflowRunResult(cwd, prepared, input, agentOverrides), runtimeUseCaseThrownError);
 }
 
@@ -264,31 +248,14 @@ export async function getRunStaticVisualizationOverlay(cwd: string, runId: strin
 }
 
 function inspectionStaticNodes(ir: WorkflowIR): RunInspectionStaticNode[] {
-  const nodes: RunInspectionStaticNode[] = [];
-  visitScope(ir.root, nodes);
-  return nodes;
-}
-
-function visitScope(scope: ScopeIR, nodes: RunInspectionStaticNode[]): void {
-  for (const node of scope.nodes) {
-    nodes.push({
-      nodeId: node.id,
-      kind: node.kind,
-      order: nodes.length,
-      ...(node.kind === "task" ? { input: node.run.input } : {}),
-      ...(node.kind === "agent" || node.kind === "signal" ? { prompt: node.run.prompt } : {}),
-      ...(node.kind === "signal" ? { outputSchema: node.outputSchema } : {}),
-    });
-    for (const child of childScopes(node)) visitScope(child, nodes);
-  }
-}
-
-function childScopes(node: NodeIR): ScopeIR[] {
-  if (node.kind === "if") return [node.then, node.else];
-  if (node.kind === "switch") return [...node.cases.map(item => item.then), node.default];
-  if (node.kind === "parallel") return Object.values(node.branches).map(branch => branch.scope);
-  if (node.kind === "fanout" || node.kind === "loop") return [node.do];
-  return [];
+  return Array.from(walkNodes(ir.root), ({ node }, order) => ({
+    nodeId: node.id,
+    kind: node.kind,
+    order,
+    ...(node.kind === "task" ? { input: node.run.input } : {}),
+    ...(node.kind === "agent" || node.kind === "signal" ? { prompt: node.run.prompt } : {}),
+    ...(node.kind === "signal" ? { outputSchema: node.outputSchema } : {}),
+  }));
 }
 
 export async function normalizeForkInput(cwd: string, runId: string, input: JsonValue | undefined, prepared?: PreparedRunWorkflow): Promise<JsonValue | undefined> {

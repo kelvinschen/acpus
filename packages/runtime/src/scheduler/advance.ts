@@ -1,5 +1,5 @@
-import type { JsonValue } from "@acpus/expression/ir";
-import { ResultAsync } from "neverthrow";
+import type { JsonObject, JsonValue } from "@acpus/expression/ir";
+import { ok, ResultAsync, type Result } from "neverthrow";
 import { createConcurrencyLimiter, type ConcurrencyLimiter } from "./limiter.js";
 import type { SchedulerEvent } from "./events.js";
 import { ancestorGroupMembersForNode } from "./membership.js";
@@ -24,6 +24,8 @@ export type NodeExecutor = {
   execute(context: NodeAttemptContext): Promise<AttemptCommitInput["result"]>;
 };
 
+type AttemptDeadlineFailure = { status: "failed"; reason: string; error?: JsonObject };
+
 export type AdvanceRunInput = {
   runId: string;
   ownerId: string;
@@ -35,7 +37,7 @@ export type AdvanceRunInput = {
   memberForInstance?: (instance: NodeInstance, projection: SchedulerProjection) => GroupMember | undefined;
   localConcurrencyLimitFor?: (groupKey: string, projection: SchedulerProjection) => number | undefined;
   maxAttemptsFor?: (instance: NodeInstance, projection: SchedulerProjection) => number | undefined;
-  deadlineAtFor?: (instance: NodeInstance, projection: SchedulerProjection, now: Date) => Date | undefined;
+  deadlineAtFor?: (instance: NodeInstance, projection: SchedulerProjection, now: Date) => Result<Date | undefined, AttemptDeadlineFailure>;
   awaitableEventsFor?: (instance: NodeInstance, projection: SchedulerProjection, now: Date) => SchedulerEvent[];
   bootstrap?: (snapshot: SchedulerSnapshot) => SchedulerEvent[];
   materialize?: (snapshot: SchedulerSnapshot) => SchedulerEvent[];
@@ -322,7 +324,8 @@ async function runInstance(
 ): Promise<void> {
   let attempt: { attemptId: string; attemptNo: number };
   const snapshot = unwrapStoreResult(input.store.tryLoadRunSnapshot(input.runId));
-  const deadlineAt = input.deadlineAtFor?.(instance, snapshot.projection, now())?.toISOString();
+  const deadline = input.deadlineAtFor?.(instance, snapshot.projection, now()) ?? ok(undefined);
+  const deadlineAt = deadline.isOk() ? deadline.value?.toISOString() : undefined;
   const started = input.store.tryStartAttempt({
     runId: input.runId,
     nodeKey: instance.nodeKey,
@@ -342,39 +345,44 @@ async function runInstance(
   }
   counters.started += 1;
 
-  const controller = new AbortController();
-  active.set(instance.nodeKey, controller);
-  const unregister = input.onActiveAttempt?.({
-    runId: input.runId,
-    nodeKey: instance.nodeKey,
-    nodeId: instance.nodeId,
-    attemptId: attempt.attemptId,
-    attemptNo: attempt.attemptNo,
-    ownerEpoch: claim.ownerEpoch,
-    controller,
-  });
-  const monitor = setInterval(() => abortInterruptedActiveAttempts(input.store, input.runId, active), 10);
-  monitor.unref?.();
   let result: AttemptCommitInput["result"];
-  const startReason = attemptStartReason(instance);
-  try {
-    result = await input.executor.execute({
+  let controller: AbortController | undefined;
+  if (deadline.isErr()) {
+    result = deadline.error;
+  } else {
+    controller = new AbortController();
+    active.set(instance.nodeKey, controller);
+    const unregister = input.onActiveAttempt?.({
       runId: input.runId,
       nodeKey: instance.nodeKey,
       nodeId: instance.nodeId,
       attemptId: attempt.attemptId,
       attemptNo: attempt.attemptNo,
       ownerEpoch: claim.ownerEpoch,
-      ...(deadlineAt === undefined ? {} : { deadlineAt }),
-      ...(startReason === undefined ? {} : { attemptStartReason: startReason }),
-      signal: controller.signal,
+      controller,
     });
-  } catch (error) {
-    result = { status: "failed", reason: error instanceof Error ? error.message : String(error) };
-  } finally {
-    clearInterval(monitor);
-    unregister?.();
-    active.delete(instance.nodeKey);
+    const monitor = setInterval(() => abortInterruptedActiveAttempts(input.store, input.runId, active), 10);
+    monitor.unref?.();
+    const startReason = attemptStartReason(instance);
+    try {
+      result = await input.executor.execute({
+        runId: input.runId,
+        nodeKey: instance.nodeKey,
+        nodeId: instance.nodeId,
+        attemptId: attempt.attemptId,
+        attemptNo: attempt.attemptNo,
+        ownerEpoch: claim.ownerEpoch,
+        ...(deadlineAt === undefined ? {} : { deadlineAt }),
+        ...(startReason === undefined ? {} : { attemptStartReason: startReason }),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      result = { status: "failed", reason: error instanceof Error ? error.message : String(error) };
+    } finally {
+      clearInterval(monitor);
+      unregister?.();
+      active.delete(instance.nodeKey);
+    }
   }
   if (counters.leaseLost) return;
   if (result.status === "completed") {
@@ -397,7 +405,7 @@ async function runInstance(
   if (committed.isErr()) {
     if (isLeaseLostError(committed.error)) {
       counters.leaseLost = true;
-      controller.abort();
+      controller?.abort();
       return;
     }
     const staleTerminal = staleTerminalStatus(committed.error);

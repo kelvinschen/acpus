@@ -1,5 +1,4 @@
 import type { AgentNodeIR, TaskNodeIR, WorkflowIR } from "@acpus/core/ir";
-import type { JsonValue } from "@acpus/expression/ir";
 import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
 import { AgentNodeCancelledError, AgentNodeTimeoutError, executeAgentNode } from "../execution/agent-node.js";
 import { executeTaskNode, TaskAttemptExecutionError } from "../execution/task-executor.js";

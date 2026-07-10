@@ -4,6 +4,23 @@ import type { RunDetails } from "@acpus/runtime";
 import { formatRunStatusSurface, staticNodesForWorkflow } from "../src/run-status-surface.js";
 
 describe("run status surface", () => {
+  it("indexes nested static nodes in structural pre-order", () => {
+    const nodes = staticNodes([{
+      id: "choose",
+      kind: "if",
+      condition: { kind: "literal", value: true },
+      then: { nodes: [taskNode("then_task")] },
+      else: { nodes: [taskNode("else_task")] },
+    }, taskNode("after")]);
+
+    expect(nodes.map(({ nodeId, kind, order }) => ({ nodeId, kind, order }))).toEqual([
+      { nodeId: "choose", kind: "if", order: 0 },
+      { nodeId: "then_task", kind: "task", order: 1 },
+      { nodeId: "else_task", kind: "task", order: 2 },
+      { nodeId: "after", kind: "task", order: 3 },
+    ]);
+  });
+
   it("renders compact completed runs with node rows and pretty JSON output", () => {
     const output = formatRunStatusSurface({
       ...runBase("run_1", "cli-valid", "completed"),

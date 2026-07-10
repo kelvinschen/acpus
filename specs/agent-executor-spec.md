@@ -4,14 +4,10 @@
 
 `@acpus/agent-executor` executes one resolved acpx-backed ACP agent turn for
 runtime consumers. It owns acpx CLI resolution, acpx argument construction,
-process timeout/cancellation, ACP JSON stream parsing, and
-backend failure classification. It does not own workflow prompt rendering,
-SchemaIR validation, response repair policy, scheduler attempts, or durable
-runtime state.
-
-The package does not expose the old command-backed request helpers or
-provider-command environment mapping helpers. All current product execution
-goes through the resolved acpx turn API.
+process timeout/cancellation, ACP JSON stream parsing, and backend failure
+classification. It does not own workflow prompt rendering, SchemaIR
+validation, response repair policy, scheduler attempts, or durable runtime
+state.
 
 ## Requirements
 
@@ -22,9 +18,6 @@ goes through the resolved acpx turn API.
 - The public acpx turn request MUST NOT accept an acpx path, binary, or
   provider-command mapping override.
 - The package MUST resolve its bundled `acpx` dependency internally.
-- The package MUST NOT expose legacy raw-command execution helpers,
-  provider-command environment parsing helpers, or provider-required migration
-  errors as public product API.
 - The package MUST NOT expose a binary.
 
 ### Acpx Turn Requests
@@ -33,13 +26,21 @@ goes through the resolved acpx turn API.
   `--agent <command>` command.
 - Requests MUST include rendered prompt text, absolute cwd, process env,
   resolved acpx session name, resolved permission mode, optional model,
-  optional agent mode, optional timeout, and optional abort signal.
+  optional agent mode, optional resolved `timeoutMs`, and optional abort signal.
 - For named `claude` agent requests, the executor MUST default
   `ACPX_CLAUDE_INCLUDE_USER_SETTINGS=1` when the request env does not already
   define that key. Explicit request env values MUST be preserved. Custom
   command agents MUST NOT receive this default through command string matching.
-- When a timeout is supplied, the executor MUST enforce the request duration
-  locally and pass acpx `--timeout` as a positive integer number of seconds.
+- A defined `timeoutMs` MUST be a non-negative safe integer. Invalid values MUST
+  return a `config` failure without spawning acpx; zero MUST time out immediately.
+- When `timeoutMs` is supplied, the executor MUST enforce the request duration
+  locally and pass each acpx subprocess's remaining budget through acpx
+  `--timeout`, rounded as `max(1, ceil(remainingMs / 1000))`. Local timers MUST
+  preserve longer valid budgets without exceeding the platform's maximum native
+  timer delay.
+- Executor-local elapsed budgets MUST use a monotonic clock. Synchronous acpx
+  resolution and subprocess startup MUST count against the shared turn budget;
+  wall-clock changes MUST NOT extend or shorten that budget.
 - Requests MAY include an optional raw debug capture flag for runtime
   diagnostics. This flag MUST NOT change prompt execution, parsing, telemetry,
   or failure classification.
@@ -74,6 +75,14 @@ goes through the resolved acpx turn API.
   independently to each acpx subprocess.
 - Prompt timeout and abort MUST best-effort call acpx `cancel -s <session>`
   before force-killing the active prompt subprocess.
+- Timeout and abort MUST remain authoritative if subprocess or stdin errors race
+  with termination. Synchronous resolution/startup failures and normal child
+  settlement MUST recheck abort state and the monotonic deadline before being
+  classified; when both are observed at one boundary, abort MUST win.
+  Best-effort cancellation failures MUST NOT escape as unhandled process errors.
+- A stdin write failure after successful spawn MUST NOT be classified as a spawn
+  failure or discard the subprocess's terminal stderr and exit status. Once an
+  invocation settles, later stdout MUST NOT alter its result or emit progress.
 
 ### Results
 
@@ -137,12 +146,16 @@ goes through the resolved acpx turn API.
 
 - Public API contract tests MUST cover exported runtime keys.
 - Type tests MUST cover public acpx turn request/result types and verify no
-  acpx path override or provider-command mapping override is accepted.
+  authored timeout string, acpx path override, or provider-command mapping
+  override is accepted.
 - Type tests MUST cover the public progress callback and progress payload
   shape.
 - Unit tests MUST cover acpx argument construction for named and custom agents,
   permission mode flag mapping, session ensure before prompt, `agentMode`
   `set-mode` ordering, stdin prompt delivery, assistant text extraction,
+  millisecond timeout validation, acpx second rounding, shared elapsed budgets,
+  long-timeout timer scheduling, synchronous startup accounting, wall-clock
+  rollback, and timeout/cancellation error races,
   normalized telemetry parsing for context, token usage, tool calls, tool
   parameter preview truncation, progress callbacks across stdout chunk
   boundaries, optional raw debug capture, and backend failure classification.

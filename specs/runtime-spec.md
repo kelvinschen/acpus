@@ -9,18 +9,23 @@
 ### Admission And Store
 
 - The runtime MUST create `.acpus/.local/state/runtime.db` as the durable runtime store for a workspace.
+- A first writable open of a runtime store MUST initialize the complete current SQLite schema directly.
+- Reopening a current writable runtime store MUST be idempotent and MUST preserve existing current rows.
+- Opening an existing current runtime store for read-only inspection MUST NOT mutate its schema or data.
 - The runtime store MUST use SQLite for run admission data, public run events, scheduler events, scheduler projection tables, public run and node projections, daemon lease rows, run lease rows, execution metadata, node progress snapshots, and artifact registry rows.
-- The runtime store MUST NOT store durable command rows, durable command status, command queue counts, control request wait state, daemon endpoint, daemon port, daemon auth token, daemon auth token hash, or daemon service-discovery rows.
 - Runtime-generated run ids MUST use local time `YYYYMMDDHHmmss` followed by 20 uppercase hexadecimal random characters.
 - Run admission MUST accept a prepared workflow containing frozen IR JSON, lock metadata, and source graph digest.
 - Run admission MUST accept input that has already been normalized against the workflow input schema.
 - Run admission MAY accept agent overrides keyed by declared top-level agent
   name. Agent overrides MUST be persisted separately from frozen `WorkflowIR`
   and MUST be applied when reading the effective frozen run for execution.
-- Run admission MUST persist the `WorkflowIR`, workflow input, lock metadata, workflow entry, IR digest, source graph digest, and run directory path.
+- Run admission MUST write the exact frozen `WorkflowIR` bytes to `.acpus/.local/runs/<run-id>/workflow.ir.json` and the exact workflow lock bytes to `.acpus/.local/runs/<run-id>/lock.json`.
+- Each admitted `run_inputs` row MUST persist non-null `workflow_ir_path`, `workflow_ir_digest`, `lock_path`, `lock_digest`, and `run_dir` values. The two file paths MUST be relative to the recorded run directory, and their digests MUST use `sha256:<hex>` over the exact corresponding file bytes.
 - Run admission MUST write a `run.admitted` event and the run projection in the same SQLite transaction.
 - Run admission MUST create public `pending` node projection rows for static node summaries and MUST advance executable work from the frozen admitted IR, not from live workflow source.
-- Run admission MUST copy only current frozen workflow artifacts such as `workflow.ir.json` and `lock.json` into `.acpus/.local/runs/<run-id>/`. It MUST NOT copy reusable task source or dependency artifacts.
+- Frozen workflow and lock paths MUST resolve to regular, non-symbolic-link files contained beneath the recorded run directory, and runtime operations MUST verify their stored digests before parsing or using those files.
+- Missing frozen files, path-containment failures, and digest mismatches MUST fail the requesting operation and MUST NOT be represented as absent static metadata.
+- Run admission MUST NOT copy reusable task source or dependency artifacts into the run directory.
 - Completed scheduler-backed runs MUST persist root output, bridge completed dynamic node instances into public node projections where unambiguous, and write a `run.completed` event.
 - Runtime failures after admission MUST persist failed run state and a `run.failed` event.
 
@@ -34,6 +39,8 @@
 
 - The runtime MUST evaluate `ExprIR` by adapting `@acpus/expression/evaluator` to durable execution scope.
 - Runtime configuration resolution MUST use typed Result helpers for strings, durations, and constrained integers. Resolution errors MUST distinguish evaluator failure, result type mismatch, and field constraint failure and MUST carry the authored field path or label.
+- Runtime duration resolution MUST delegate authored syntax and safe-integer range checks to `@acpus/core/ir`. Deadline construction MUST return a typed constraint error when the result cannot use the persisted, lexically sortable four-digit-year ISO timestamp format.
+- Persisted attempt and signal deadlines MUST use canonical four-digit-year ISO timestamps. Durable event decoding, projection reads, and daemon due-work selection MUST fail visibly on malformed deadline values before using lexical timestamp comparisons.
 - Runtime Result objects MUST NOT enter events, SQLite rows, workflow output, or public JSON payloads.
 - Runtime refs MUST resolve `input`, `workflow.input`, `nodes`, `meta`, `fanout`, and `loop` paths from durable execution scope.
 - Runtime ref resolution MUST read only own object properties and canonical non-negative array indexes. Array prototype properties and non-canonical indexes such as `length`, `map`, or `01` MUST resolve as missing.
@@ -54,18 +61,27 @@
   recoverable store control-flow failures.
 - `tryAdvanceRun(input)` MUST return a neverthrow
   `ResultAsync<AdvanceRunSummary, AdvanceRunError>` for typed scheduler advance
-  composition. `advanceRun(input)` MAY remain as the throwing compatibility
-  adapter.
+  composition. `advanceRun(input)` MUST return a `Promise<AdvanceRunSummary>`
+  and MAY throw store or invariant failures.
 - `tryAdvanceRuntimeRun(...)`, `tryAdmitWorkflowRun(...)`,
   `trySignalRun(...)`, and `tryMutateRun(...)` MUST return neverthrow
   `ResultAsync` values with tagged runtime use-case errors for recoverable
-  runtime boundary failures. The existing non-`try` use-case functions MAY
-  remain compatibility adapters that preserve current CLI-facing behavior.
+  runtime boundary failures. Their promise-returning use-case functions MUST
+  return the successful value or throw `RuntimeUseCaseException` for a tagged
+  failure.
 - Scheduler advance logic MUST branch on scheduler store error tags and MUST NOT parse exception messages for lease, pause, version, or stale terminal control flow.
 - Scheduler store error tags MUST preserve user-facing messages separately from machine-readable fields such as `runId`, `attemptId`, `expectedVersion`, `actualVersion`, and `ownerEpoch`.
 - Scheduler store error tags MUST include recoverable idempotency conflicts,
   missing retry targets, and invalid retry targets without requiring callers to
   parse display messages.
+- Scheduler intent idempotency keys MUST be scoped by `(runId, key)` and MUST
+  replay only the same control identity within that run. Successful controls
+  that append no scheduler event MUST still record their intent atomically.
+  Retry and cancel identity MUST retain the authored target while execution
+  uses the resolved dynamic target key, so state changes after the first
+  application cannot break static-alias replay.
+  Reusing a run-scoped key for a different control type, target, or pause reason
+  MUST return an `idempotency-conflict` error.
 - The scheduler MUST maintain projection tables for frames, dynamic node instances, attempts, group members, and signal waits.
 - Root execution, composite/control nodes, conditional branches, parallel
   branches, fanout items, and loop iterations MUST use one recursive durable
@@ -112,7 +128,7 @@
   `default` for fallback branches.
 - Parallel `all` strategy MUST aggregate branch outputs by branch key and MUST fail fast by cancelling remaining running member subtrees when one member fails.
 - Parallel `race` strategy MUST return the first successful branch with `{ winner, result }` and MUST cancel remaining running member subtrees after the winner is accepted.
-- Fanout `all` strategy MUST materialize item identity rows and aggregate item outputs as an array.
+- Fanout `all` strategy MUST materialize item identity rows and aggregate item outputs as an array in ascending `itemIndex` (input) order. Empty input MUST produce an empty array.
 - Fanout `quorum` strategy MUST accept outputs in completion order, return the accepted item outputs as `Array<ItemOutput>` after quorum success, and cancel remaining running member subtrees after quorum is reached.
 - Parallel/Fanout `maxConcurrency` and Fanout quorum `count` MUST resolve once when the group materializes. Their concrete values MUST be stored in `group.started`, rebuilt into group projection state after recovery, and used by concurrency and completion policy from that projection.
 - Fanout item identity MUST use the zero-based `itemIndex` of each array occurrence. Duplicate item values MUST materialize as distinct fanout items.
@@ -138,12 +154,24 @@
 - Task and TypeScript-owned composite outputs MUST enter runtime scope without schema normalization. Runtime MUST normalize generic workflow data before values enter scope, events, or durable storage: a Task top-level `undefined` means no output, object properties whose value is `undefined` are omitted recursively, and array-element `undefined` is rejected. The normalizer MUST reject non-plain runtime values such as functions, class instances, `Date`, `Map`, `Set`, `symbol`, `bigint`, non-finite numbers, sparse arrays, and cycles without reintroducing business-shape validation.
 - The runtime MUST pass task execution options to the task `$` command wrapper, including default command timeout.
 - The runtime MUST pass a per-attempt `abortSignal` into task code for cooperative cancellation. After cancellation or timeout, it MUST reject late successful output and artifact registration, then terminate the isolated Task process tree after a bounded cooperative grace period.
+- Cancellation of a scheduler-visible Task attempt before child process spawn
+  MUST preserve start-before-abort protocol ordering when the child is spawned:
+  the parent MUST deliver the start message and then the abort message, and Task
+  code MUST receive an already-aborted `abortSignal` so cooperative cleanup can
+  run.
+- A Task attempt whose persisted deadline is exhausted before the child process
+  reports spawn MUST settle as timed out without receiving the start message or
+  invoking Task code.
 - Supported task execution values MUST be `commandRunner: "acpus-zx-core"` and `shell: "bash"`.
 - Task nodes MUST NOT support workflow-level automatic retry.
 - Agent node `retry.max` MUST be runtime-owned schema-backed response repair
   budget inside one scheduler-visible attempt, not scheduler-visible automatic
   retry.
 - Task and Agent timeout expressions MUST resolve once before attempt start and MUST be persisted as scheduler attempt deadlines for scheduler-backed runs. Executors MUST consume the persisted deadline without re-evaluating the timeout expression.
+- Scheduler-backed Agent execution MUST pass the persisted deadline's remaining budget to `@acpus/agent-executor` as numeric `timeoutMs`; it MUST NOT reconstruct an authored duration string.
+- Agent execution MUST reject a malformed or non-canonical persisted deadline before invoking `@acpus/agent-executor`; durable-state corruption MUST NOT be reclassified as an executor configuration failure.
+- Task process timeout enforcement MUST preserve representable deadlines beyond Node's single-timer limit without allowing native timer overflow to trigger an early timeout. It MUST recompute the remaining budget after executor setup immediately before invoking the process runner, count synchronous process startup against that remaining budget, reject malformed persisted deadlines, and recheck monotonic elapsed time before accepting process settlement, Task results, or artifact registration. Abort and an exhausted deadline MUST remain authoritative over a synchronous startup failure.
+- Chunked runtime timeout scheduling MUST measure elapsed time with a monotonic clock and MUST NOT extend a timeout when the wall clock moves backward.
 - Signal timeout, prompt, and timeout-message expressions MUST resolve once when the instance enters awaiting state. The deadline, rendered prompt, and rendered timeout message MUST be persisted in signal wait projection state.
 - Agent response-repair max and Task default command timeout MUST resolve once in attempt scope and MUST be recorded in attempt execution metadata.
 - A runtime configuration resolution failure MUST fail its owning frame or attempt with `expression_resolution_failed` and a payload that preserves the evaluation/type/constraint error tag.
@@ -159,6 +187,7 @@
   composite completion can proceed.
 - Pausing a run MUST pause open signal timeout clocks and resuming that run MUST
   restore their remaining timeout budgets as new deadlines.
+- If a paused signal's remaining timeout cannot form a supported persisted deadline, resume MUST return a tagged `deadline-out-of-range` store error and MUST NOT append resume events or mutate projection state.
 - Awaiting signal projection MUST persist the rendered signal prompt so read-only
   inspection can show the exact operator prompt without re-executing workflow
   logic.
@@ -199,7 +228,7 @@
 - Agent overrides MUST support only `use`, `command`, `model`,
   `permissionMode`, `agentMode`, `cwd`, and `env`. Overrides MUST reject unknown
   agent names, simultaneous `use` and `command`, fields outside this allowlist,
-  legacy `policy`, broad `options`, and raw IR `kind`.
+  including `policy`, `options`, and raw IR `kind`.
 - Agent overrides MUST preserve top-level Agent definition `cwd` and `env`
   string values as declaration-time plain values.
 - When an agent override changes identity through `use` or `command`,
@@ -337,11 +366,17 @@
 - Targeted retry MUST accept a dynamic leaf `nodeKey`, a dynamic
   composite/control `frameKey`, or a static node alias only when that alias
   resolves to exactly one failed dynamic retry target.
+- An omitted retry target MUST select run-level retry. An explicit target,
+  including the legal static node id `root`, MUST use normal targeted alias/key
+  resolution rather than the run-level sentinel.
 - Node retry from a failed run MUST reopen only the failed node's scheduler
   execution chain instead of resetting the whole run projection.
 - Cancel MUST target a scheduler run, a non-terminal dynamic leaf `nodeKey`, a
   non-terminal dynamic composite/control `frameKey`, or a static node alias only
   when that alias resolves to exactly one non-terminal dynamic cancel target.
+- An omitted cancel target MUST select run-level cancel. An explicit target,
+  including the legal static node id `root`, MUST use normal targeted alias/key
+  resolution.
 - Run-level cancel MUST terminalize the run as `canceled`.
 - Cancel on an already canceled run MUST return `applied` without writing
   duplicate cancel events.
@@ -358,7 +393,7 @@
 - Fork control payloads MAY include `unsafeReuse: true`. Supplying
   `unsafeReuse` MUST select targeted replacement fork semantics and instruct
   seed planning to reuse scheduler-accepted completed facts without enforcing
-  source/replacement semantic signature or changed-input compatibility.
+  source/replacement semantic signature or changed-input safety checks.
 - Targeted replacement fork MUST seed scheduler-visible replacement-run events
   for compatible completed prerequisites selected by the implicit root
   completion target, an explicitly resolved static leaf target, or a dynamic
@@ -402,7 +437,8 @@
 - Fork MUST NOT inherit active scheduler frames, attempts, signal waits, or artifacts from failed, cancelled, or superseded attempts.
 - Fork MUST verify copied artifacts and current frozen run files before writing fork rows.
 - Signal controls MUST normalize signal payloads, consume open signal waits
-  idempotently, and continue execution from frozen SQLite state.
+  idempotently, and continue execution from persisted scheduler state and
+  verified run-local frozen workflow files.
 - Signal controls MUST use signal name plus waiting instance identity to consume
   the intended wait exactly once.
 - Signal targeting MUST accept a dynamic `nodeKey` directly or a static signal alias only when that alias resolves to exactly one open signal wait.
@@ -426,7 +462,13 @@
 - `listRuns`, `getRun`, and visualization overlay APIs MUST read SQLite projections rather than live workflow source.
 - `listRuns` MUST order runs by `updatedAt DESC` with `createdAt DESC` as a
   deterministic tie-breaker.
-- `getRun` MUST expose dynamic scheduler details when scheduler projection rows exist, including version, frames, dynamic node instances, attempts, groups with effective quorum/concurrency values, group members, and signal waits.
+- `getRun` MUST omit `dynamic` when frames, node instances, attempts, groups,
+  group members, signal waits, execution metadata, and progress are all absent.
+  When any of those collections is non-empty, it MUST expose dynamic scheduler
+  details including version and effective quorum/concurrency values.
+- SQLite read failures, malformed scheduler envelopes, JSON decode failures,
+  and projection invariant failures MUST fail the run-detail read operation and
+  MUST NOT be represented by omitting `dynamic`.
 - Dynamic frame and node-instance read rows MUST include structured
   `instancePath` data when present.
 - Dynamic group-member read rows MUST include `childFrameKey` when the member
@@ -464,14 +506,9 @@
   metadata, daemon pid liveness when the host can check it, current daemon idle
   age when available, run status counts, runnable run count, stale run leases,
   and idle-stop blockers.
-- The runtime health API MUST NOT report command queue counts.
-- Daemon request ids, if introduced, MUST be ephemeral logging or tracing values
-  and MUST NOT be persisted as command/request state.
 - The runtime store MUST support SQLite-backed daemon leases with generation
   fencing, heartbeat updates, pid metadata, idle metadata, protocol/runtime
   metadata, and release by current generation only.
-- Daemon lease rows MUST NOT store endpoint, port, auth token, auth token hash,
-  or service-discovery fields.
 - The daemon MUST heartbeat under its current lease generation independently of
   long task or agent execution.
 - The daemon MUST persist its current idle-since timestamp and configured idle
@@ -491,19 +528,32 @@
   when they are paused, waiting for signal, or otherwise not currently runnable.
 - Read-only APIs such as `listRuns`, `getRun`, visualization overlay, and health
   inspection MUST NOT start or wake the daemon.
-- The daemon MUST advance runnable pending scheduler-backed runs from frozen
-  SQLite state without reading live workflow source.
+- The daemon MUST advance runnable pending scheduler-backed runs from persisted
+  scheduler state and verified run-local frozen `WorkflowIR` without reading
+  live workflow source.
+- Daemon loop store-busy failures MAY be retried. A non-busy heartbeat or work
+  tick failure, including durable deadline corruption, MUST close the daemon
+  instead of being retried indefinitely while the daemon continues reporting
+  healthy.
+- Daemon shutdown MUST retain and await the active work tick even when another
+  interval fires, MUST close the store even if lease release fails, and MUST
+  complete its automatic shutdown notification without an unhandled rejection.
 
 ## Verification
 
-- Tests MUST cover prepared workflow admission, persisted frozen input, IR digest, source graph digest, event count, node count, and scheduler-backed public projection bridging.
+- Tests MUST cover prepared workflow admission, persisted run-local frozen IR and lock paths, exact file digests, source graph digest, event count, node count, and scheduler-backed public projection bridging.
+- Tests MUST cover fresh current-schema initialization, idempotent writable reopen, and non-mutating read-only open.
+- Tests MUST cover missing frozen files, path-containment failures, and IR and lock digest mismatches.
 - Tests MUST cover submit-time agent overrides, fork-time override inheritance
   and replacement, and invalid override rejection.
 - Tests MUST cover workflow input and signal payload normalization.
 - Tests MUST cover read-only list/show/status APIs without live source reads or state creation for missing stores.
 - Tests MUST cover scheduler execution of supported assert, if, switch, parallel, fanout, loop, dynamic identity, durable branch decisions, group completion, cancellation, retry, and timeout transitions.
-- Tests MUST cover expression evaluation, template rendering, operator errors, and boolean operand failures.
-- Tests MUST cover isolated Task process execution, inline embedded-source loading, live reusable module loading, package reusable task loading, explicit TypeScript loader ownership, transparent cwd/env behavior, concurrent attempt isolation, attempt-local module caching, abnormal process exit, missing cwd, absence of workflow-level automatic task retry, timeout deadlines, task abort signal propagation, artifact writes, attempt-local artifact paths, and timeout artifact rejection.
+- Tests MUST cover expression evaluation, duration range and deadline representability, template rendering, operator errors, and boolean operand failures.
+- Tests MUST cover malformed persisted attempt and signal deadlines in durable events and projection rows, including daemon due-work selection rejecting corrupted signal deadlines, the daemon closing on that permanent tick failure while retrying transient store-busy failures, active-tick shutdown waiting, and teardown completion after lease-release failure.
+- Tests MUST cover persisted Agent deadlines becoming remaining numeric millisecond budgets, malformed Agent deadlines not invoking the executor, distant Task deadlines not overflowing native timers, setup-expired and malformed Task deadlines not starting a runner, synchronous Task startup accounting, deadline-first child result/artifact/error arbitration, and chunked timeout behavior under delayed callbacks and backward wall-clock changes.
+- Tests MUST cover atomic rejection when a paused Signal timeout cannot be restored within the persisted deadline range.
+- Tests MUST cover isolated Task process execution, inline embedded-source loading, live reusable module loading, package reusable task loading, explicit TypeScript loader ownership, transparent cwd/env behavior, concurrent attempt isolation, attempt-local module caching, abnormal process exit, missing cwd, absence of workflow-level automatic task retry, timeout deadlines, pre-spawn deadline exhaustion without Task startup, task abort signal propagation, artifact writes, attempt-local artifact paths, and timeout artifact rejection.
 - Tests MUST cover acpx-backed agent turn integration, named and command agent
   mapping, absence of provider-command env mapping consultation, durable agent
   output conformance, empty-response repair, scheduler runtime identity
@@ -520,12 +570,20 @@
 - Tests MUST cover raw parsed schema-backed agent output artifacts and prove
   they remain diagnostic rather than workflow-visible output.
 - Tests MUST cover pause, resume, run retry, dynamic node retry, cancel, signal targeting and idempotency, fork, targeted fork seed planning, unsafe targeted fork reuse, targeted fork missing/dynamic targets, static composite target subtree boundaries, direct daemon control application, and fork artifact reachability.
+- Tests MUST cover run-scoped same-control scheduler intent replay,
+  cross-control idempotency-key conflicts, and atomic intent recording for
+  successful no-op controls. Retry and cancel tests MUST replay a static target
+  alias after its resolved dynamic instance changes state without appending a
+  second control event, and MUST distinguish an omitted run target from an
+  explicit static node alias named `root`.
 - Tests MUST cover daemon socket single-instance binding, stale socket handling,
   daemon lease metadata, heartbeat fencing, heartbeat during long execution,
-  release fencing, idle-stop, shutdown, and the absence of durable command rows.
+  release fencing, idle-stop, and shutdown.
 - Tests MUST cover daemon-hosted run execution session control responsiveness
-  while executor work is in flight, active attempt abort, per-run durable write
-  serialization, and late executor result fencing.
+  while executor work is in flight, active attempt abort, pre-spawn Task
+  cancellation with ordered start-then-abort delivery and already-aborted Task
+  cleanup, per-run durable write serialization, late executor result fencing,
+  and daemon session teardown.
 - Tests MUST cover mapping scheduler/store failures such as lease loss, owner
   epoch mismatch, SQLite constraint failures, and projection inconsistencies to
   stable public daemon error codes without exposing internal details.

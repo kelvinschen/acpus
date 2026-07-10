@@ -22,7 +22,9 @@
 - `compileWorkflowModule(...)` MUST import the module and require the default export to be an Acpus workflow definition.
 - `tryCompileWorkflowModule(...)` MUST return a neverthrow `ResultAsync<WorkflowIR, CompileWorkflowModuleError>` for recoverable module compile failures.
 - `CompileWorkflowModuleError` MUST be a serializable tagged union covering source read failure, module import failure, invalid default export, workflow build/lowering failure, task analysis failure, and workflow path outside workspace.
-- `compileWorkflowModule(...)` MAY remain a throwing compatibility adapter over `tryCompileWorkflowModule(...)`.
+- `compileWorkflowModule(...)` MUST return the successful
+  `tryCompileWorkflowModule(...)` value or throw an `Error` carrying the compile
+  failure message.
 - `compileWorkflowModule(...)` MUST lower the workflow definition through `compileWorkflowDefinition(..., { validate: false })`.
 - `compileWorkflowModule(...)` MUST attach a `sha256:` `workflowSourceDigest` computed from the workflow source text.
 - `compileWorkflowModule(...)` MUST analyze task call sites, attach reusable task module reference metadata to lowered task runs, append `validateWorkflowIR(...)` diagnostics, and return `WorkflowIR`.
@@ -78,7 +80,6 @@
 | `TB003` | Inline task captures an external binding |
 | `TB004` | Task callsite cannot be joined uniquely to metadata |
 
-- Removed authoring codes MUST NOT be retained as aliases or compatibility diagnostics. When a code is removed in a breaking change, the remaining codes in that family MUST be renumbered contiguously in the same change.
 - Full preparation MUST compile through a worker/import path that loads
   TypeScript workflow modules and supported official `acpus/*` authoring
   facade specifiers through `@acpus/loader`.
@@ -91,12 +92,18 @@
 - `tryPrepareWorkflow(options)` MUST return a neverthrow `ResultAsync<PreparedWorkflow, WorkflowPreparationFailure>` instead of throwing for check, compile, and validate failures.
 - `WorkflowPreparationFailure` MUST include a stable `type` tag while preserving the existing `phase` field.
 - Compile worker failure payloads MUST be plain JSON objects with `ok: false`, a stable `type`, and a display `message`.
-- `prepareWorkflow(options)` MAY remain a throwing compatibility adapter over `tryPrepareWorkflow(options)`.
+- `prepareWorkflow(options)` MUST return the successful
+  `tryPrepareWorkflow(options)` value or throw `WorkflowPreparationError`
+  carrying the preparation failure.
 
 ### Internal Fixture ESLint
 
-- The package MAY expose `./internal/eslint-plugin` for repository-internal fixture review. This subpath is not a product API and MUST NOT be re-exported from the root package entrypoint.
-- The internal ESLint plugin MUST provide one `acpus-internal/check` rule that reuses Acpus authoring-rule behavior and reports only Acpus `AL...` and `TB...` diagnostics, not TypeScript `TS...` diagnostics.
+- The `./internal/eslint-plugin` subpath MUST expose one default ESLint plugin
+  for repository-internal fixture review. This subpath is not a product API and
+  MUST NOT be re-exported from the root package entrypoint.
+- The default internal ESLint plugin MUST provide one `acpus-internal/check`
+  rule that reuses Acpus authoring-rule behavior and reports only Acpus `AL...`
+  and `TB...` diagnostics, not TypeScript `TS...` diagnostics.
 - The internal ESLint rule MUST require typed parser services and report a clear configuration diagnostic when those services are unavailable.
 - The repository ESLint flat config MUST scope this rule to workflow-compiler fixtures only, MUST NOT add a default lint script or CI gate, and MAY no-op when the built internal plugin subpath is unavailable.
 - Task-authoring diagnostics reported through the internal ESLint rule MUST use task-analysis callsite source locations when available.
@@ -143,7 +150,9 @@
 - Tests MUST cover check failure before compile, including TypeScript diagnostics converted to `DiagnosticIR` and Acpus authoring-rule diagnostics.
 - Tests MUST cover accepted expression-body and block-body `fmap`/`lift2`/`lift3`/`lift` callbacks, recursive statement-budget diagnostics, globals and ordinary methods, and rejected captures, helper references, invalid arity, and function expressions.
 - Type tests MUST cover durable workflow, Task, and composite outputs, heterogeneous branch/root unions, loop consistency, `JsonValue`/`JsonObject`, `unknown` rejection, and the explicit `any` escape hatch.
-- Authoring-rule tests MUST cover only source-level invariants, MUST assert the contiguous `AL001`-`AL007` and `TB001`-`TB004` sets, and MUST verify that removed codes and type-owned diagnostics are not emitted.
+- Authoring-rule tests MUST cover only source-level invariants, MUST assert the
+  exact contiguous `AL001`-`AL007` and `TB001`-`TB004` sets, and MUST verify
+  that type-owned diagnostics are not emitted as Acpus authoring diagnostics.
 - Tests MUST cover validation failure after compile.
 - Tests MUST cover task analysis facts and metadata for imported reusable tasks, exported same-file reusable tasks, package imports, re-exported reusable tasks, unsupported task callsite forms, and inline tasks that capture workflow-module scope.
 - Tests MUST cover stable reusable task reference metadata across compiles.

@@ -1,6 +1,3 @@
-export const EXPR = Symbol.for("acpus.expr");
-export const SCHEMA = Symbol.for("acpus.schema");
-export const TEMPLATE = Symbol.for("acpus.template");
 export const TASK = Symbol.for("acpus.task");
 export const WORKFLOW = Symbol.for("acpus.workflow");
 export const NODE_REF = Symbol.for("acpus.node_ref");

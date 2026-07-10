@@ -26,7 +26,6 @@ import type {
 } from "../ir/types.js";
 import { validateWorkflowIR } from "../ir/validator.js";
 
-export type { AssertSpec } from "../nodes/control/assert.js";
 export type { AgentStepSpec } from "../nodes/leaf/agent.js";
 export type { TaskStepSpec } from "../nodes/leaf/task.js";
 export type { SignalStepSpec } from "../nodes/leaf/signal.js";
@@ -72,7 +71,7 @@ export type BuildContext<InputSchema extends Schema<any> | undefined, Agents ext
   step: StepFactory;
 };
 
-export type BuildFn<InputSchema extends Schema<any> | undefined, Agents extends AgentMap | undefined = undefined> = (ctx: BuildContext<InputSchema, Agents>) => Record<string, unknown>;
+type BuildFn<InputSchema extends Schema<any> | undefined, Agents extends AgentMap | undefined = undefined> = (ctx: BuildContext<InputSchema, Agents>) => Record<string, unknown>;
 
 type CheckedBuildFn<
   InputSchema extends Schema<any> | undefined,
@@ -154,11 +153,11 @@ export type StepDeclaration = {
   /** Declares runtime fanout over a workflow array value. */
   fanout<const Over extends ResolvableArray<any>, Output extends OutputObject>(
     spec: FanoutStepSpec<Over, Output, "quorum">,
-  ): NodeRef<FanoutNodeRefOutput<Output, "quorum">>;
+  ): NodeRef<FanoutNodeRefOutput<Output>>;
 
   fanout<const Over extends ResolvableArray<any>, Output extends OutputObject>(
     spec: FanoutStepSpec<Over, Output, "all">,
-  ): NodeRef<FanoutNodeRefOutput<Output, "all">>;
+  ): NodeRef<FanoutNodeRefOutput<Output>>;
 
   /** Declares a transition-style loop that always executes at least one iteration. */
   loop<Initial extends OutputObject, Transition extends LoopTransitionOutput<Initial>>(
@@ -251,12 +250,12 @@ class GraphBuildState {
   fanout<const Over extends ResolvableArray<any>, Output extends OutputObject>(
     id: string,
     spec: FanoutStepSpec<Over, Output, "quorum">,
-  ): NodeRef<FanoutNodeRefOutput<Output, "quorum">>;
+  ): NodeRef<FanoutNodeRefOutput<Output>>;
 
   fanout<const Over extends ResolvableArray<any>, Output extends OutputObject>(
     id: string,
     spec: FanoutStepSpec<Over, Output, "all">,
-  ): NodeRef<FanoutNodeRefOutput<Output, "all">>;
+  ): NodeRef<FanoutNodeRefOutput<Output>>;
 
   fanout(
     id: string,

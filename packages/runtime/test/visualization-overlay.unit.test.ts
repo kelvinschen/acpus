@@ -59,6 +59,23 @@ describe("workflow visualization overlay", () => {
     expect(overlay.groups).toHaveLength(1);
   });
 
+  it("labels conditional and dynamic-body child paths", () => {
+    const overlay = createWorkflowVisualizationOverlay(compositePathWorkflow());
+
+    expect(
+      overlay.nodes
+        .filter(node => node.parentNodeId !== undefined)
+        .map(node => [node.nodeId, node.parentNodeId, node.path.join(" > ")]),
+    ).toEqual([
+      ["if_then", "choose", "root > choose > then > if_then"],
+      ["if_else", "choose", "root > choose > else > if_else"],
+      ["switch_case", "route", "root > route > case:0 > switch_case"],
+      ["switch_default", "route", "root > route > default > switch_default"],
+      ["fanout_body", "items", "root > items > do > fanout_body"],
+      ["loop_body", "repeat", "root > repeat > do > loop_body"],
+    ]);
+  });
+
   it("attaches per-kind authored semantic detail from the IR", () => {
     const overlay = createWorkflowVisualizationOverlay(detailWorkflow());
     const detailById = new Map(overlay.nodes.map(node => [node.nodeId, node.detail]));
@@ -106,6 +123,53 @@ describe("workflow visualization overlay", () => {
     });
   });
 });
+
+function compositePathWorkflow(): WorkflowIR {
+  return {
+    irVersion: 3,
+    name: "composite-paths",
+    agents: {},
+    root: {
+      nodes: [
+        {
+          id: "choose",
+          kind: "if",
+          condition: { kind: "literal", value: true },
+          then: { nodes: [task("if_then")] },
+          else: { nodes: [task("if_else")] },
+        },
+        {
+          id: "route",
+          kind: "switch",
+          cases: [{ when: { kind: "literal", value: true }, then: { nodes: [task("switch_case")] } }],
+          default: { nodes: [task("switch_default")] },
+        },
+        {
+          id: "items",
+          kind: "fanout",
+          strategy: "all",
+          over: { kind: "literal", value: [] },
+          do: { nodes: [task("fanout_body")] },
+        },
+        {
+          id: "repeat",
+          kind: "loop",
+          state: { kind: "literal", value: null },
+          do: {
+            nodes: [task("loop_body")],
+            outputs: {
+              state: { kind: "literal", value: null },
+              stop: { kind: "literal", value: true },
+            },
+          },
+        },
+      ],
+    },
+    outputs: {},
+    lock: { acpusCoreVersion: "test", generatedAt: "2026-06-30T00:00:00.000Z", notes: [] },
+    diagnostics: [],
+  };
+}
 
 function detailWorkflow(): WorkflowIR {
   return {

@@ -1,11 +1,3 @@
-export type ApiErrorBody = {
-  ok: false;
-  error: {
-    code: string;
-    message: string;
-  };
-};
-
 export class ApiError extends Error {
   constructor(
     readonly status: number,

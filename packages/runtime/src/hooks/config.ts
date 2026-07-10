@@ -1,3 +1,4 @@
+import { tryParseDurationMs } from "@acpus/core/ir";
 import { err, ok, type Result } from "neverthrow";
 
 export const hookEvents = [
@@ -47,9 +48,8 @@ export type HookValidationError = {
 const hookEventSet = new Set<string>(hookEvents);
 const allowedHookFields = new Set(["id", "match", "command", "timeout"]);
 const allowedMatchFields = new Set(["workflow", "nodeId", "nodeKey", "kind"]);
-const durationPattern = /^\d+(ms|s|m|h)?$/;
 
-export function isHookEvent(value: string): value is HookEvent {
+function isHookEvent(value: string): value is HookEvent {
   return hookEventSet.has(value);
 }
 
@@ -97,12 +97,12 @@ function validateHookEntry(entry: unknown, event: HookEvent, path: string, error
     errors.push({ path: `${path}.id`, message: "Hook id must be a non-empty string." });
   }
 
-  if (typeof entry.command !== "string" || entry.command.length === 0) {
-    errors.push({ path: `${path}.command`, message: "Hook command must be a non-empty string." });
+  if (typeof entry.command !== "string" || entry.command.length === 0 || entry.command.includes("\0")) {
+    errors.push({ path: `${path}.command`, message: "Hook command must be a non-empty string without NUL bytes." });
   }
 
   const timeout = entry.timeout;
-  if (timeout !== undefined && (typeof timeout !== "string" || !durationPattern.test(timeout))) {
+  if (timeout !== undefined && (typeof timeout !== "string" || tryParseDurationMs(timeout).isErr())) {
     errors.push({ path: `${path}.timeout`, message: "Hook timeout must be a duration such as 500ms, 30s, 5m, or 1h." });
   }
 

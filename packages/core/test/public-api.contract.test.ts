@@ -48,7 +48,12 @@ describe("@acpus/core public API", () => {
     ]);
   });
 
-  it("exports IR validation from the IR entrypoint", () => {
-    expect(Object.keys(ir).sort()).toEqual(["validateWorkflowIR"]);
+  it("exports IR validation, duration parsing, and traversal from the IR entrypoint", () => {
+    expect(Object.keys(ir).sort()).toEqual([
+      "childScopes",
+      "tryParseDurationMs",
+      "validateWorkflowIR",
+      "walkNodes",
+    ]);
   });
 });

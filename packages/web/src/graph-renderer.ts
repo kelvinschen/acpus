@@ -387,7 +387,7 @@ export function layoutWorkflow(model: RenderModel): RenderLayout {
   };
 }
 
-export function buildEdgePaths(
+function buildEdgePaths(
   edges: WebGraphEdge[],
   boxes: ReadonlyMap<string, PlacedBox>,
   parentOf: ReadonlyMap<string, string>,

@@ -1,9 +1,7 @@
 import * as React from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
-import { allExpanded, defaultStyles, JsonView } from "react-json-view-lite";
-import "react-json-view-lite/dist/index.css";
 import remarkGfm from "remark-gfm";
 import Activity from "lucide-react/dist/esm/icons/activity.js";
 import Ban from "lucide-react/dist/esm/icons/ban.js";
@@ -14,7 +12,6 @@ import ChevronsLeft from "lucide-react/dist/esm/icons/chevrons-left.js";
 import ChevronsRight from "lucide-react/dist/esm/icons/chevrons-right.js";
 import CircleAlert from "lucide-react/dist/esm/icons/circle-alert.js";
 import Clock from "lucide-react/dist/esm/icons/clock.js";
-import Copy from "lucide-react/dist/esm/icons/copy.js";
 import FileSearch from "lucide-react/dist/esm/icons/file-search.js";
 import FileText from "lucide-react/dist/esm/icons/file-text.js";
 import Folder from "lucide-react/dist/esm/icons/folder.js";
@@ -49,15 +46,16 @@ import {
   type RunRuntimeSnapshot,
   type RunRecord,
   type ServerConfig,
-  type WebGraph,
   type WebGraphSelection,
   type WorkflowFileEntry,
   type WorkflowVisualizationResult,
   type WorkflowVisualizationSource,
 } from "../api.js";
 import { RunGraph } from "./RunGraph.js";
+import { InspectorPanel, InspectorSection, JsonBlock, JsonSection, KeyValue } from "./Inspector.js";
 import { StaticGraphApp } from "./StaticGraphApp.js";
 import { ToastViewport, useToasts } from "./Toast.js";
+import { useInspectorPresence } from "./useInspectorPresence.js";
 import { Button } from "./shadcn/button.js";
 import { Alert } from "./shadcn/alert.js";
 import { Badge } from "./shadcn/badge.js";
@@ -68,7 +66,6 @@ import {
   BreadcrumbList,
   BreadcrumbSeparator,
 } from "./shadcn/breadcrumb.js";
-import { Card } from "./shadcn/card.js";
 import {
   Dialog,
   DialogContent,
@@ -102,9 +99,6 @@ import { normalizeRuntimeStatus, runtimeStatusLabel, type DisplayStatus } from "
 type GraphInspectionTarget =
   | { kind: "workflow" }
   | { kind: "node"; id: string; context: WebGraphSelection[]; displayStatus?: DisplayStatus };
-
-const inspectorExitMs = 220;
-const reducedMotionQuery = "(prefers-reduced-motion: reduce)";
 
 export function App() {
   const [page, setPage] = useState("runtime");
@@ -317,12 +311,12 @@ function RuntimePage({
   );
 }
 
-export type RunHeaderViewState =
+type RunHeaderViewState =
   | { kind: "ready"; run: RunDetails }
   | { kind: "loading" }
   | { kind: "error"; message: string };
 
-export function runHeaderViewState(run: RunDetails | undefined, error: unknown): RunHeaderViewState {
+function runHeaderViewState(run: RunDetails | undefined, error: unknown): RunHeaderViewState {
   if (run) return { kind: "ready", run };
   if (error) return { kind: "error", message: error instanceof Error ? error.message : String(error) };
   return { kind: "loading" };
@@ -348,40 +342,6 @@ function RunHeaderError({ message }: { message: string }) {
 
 function commandLabel(input: Record<string, unknown>): string {
   return typeof input.type === "string" ? input.type : "command";
-}
-
-function useInspectorPresence(target: GraphInspectionTarget | undefined, onExited: () => void): { exiting: boolean; layoutState: "closed" | "open" | "closing"; close(): void } {
-  const [exiting, setExiting] = useState(false);
-  const timerRef = useRef<number | undefined>(undefined);
-
-  useEffect(() => {
-    setExiting(false);
-    if (timerRef.current !== undefined) {
-      window.clearTimeout(timerRef.current);
-      timerRef.current = undefined;
-    }
-  }, [target]);
-
-  useEffect(() => () => {
-    if (timerRef.current !== undefined) window.clearTimeout(timerRef.current);
-  }, []);
-
-  const close = () => {
-    if (!target || exiting) return;
-    if (window.matchMedia(reducedMotionQuery).matches) {
-      setExiting(false);
-      onExited();
-      return;
-    }
-    setExiting(true);
-    timerRef.current = window.setTimeout(() => {
-      timerRef.current = undefined;
-      setExiting(false);
-      onExited();
-    }, inspectorExitMs);
-  };
-
-  return { exiting, layoutState: target ? exiting ? "closing" : "open" : "closed", close };
 }
 
 function WorkflowsPage() {
@@ -726,84 +686,6 @@ function RuntimeWorkflowInspector({ run }: { run: RunDetails | undefined }) {
           </InspectorSection>
         )}
     </div>
-  );
-}
-
-function StaticWorkflowInspector({ result }: { result: Extract<WorkflowVisualizationResult, { status: "ready" }> }) {
-  return (
-    <div className="inspector-stack">
-      <InspectorSection title="Workflow">
-        <KeyValue label="Name" value={result.workflow.name} />
-        {result.workflow.description && <KeyValue label="Description" value={result.workflow.description} />}
-        <KeyValue label="IR version" value={String(result.workflow.irVersion)} />
-        <KeyValue label="Node count" value={String(result.workflow.nodeCount)} />
-        <KeyValue label="Source digest" value={result.sourceGraphDigest} />
-      </InspectorSection>
-      {result.contract.inputSchema
-        ? <JsonSection title="Input Contract" value={result.contract.inputSchema} />
-        : (
-          <InspectorSection title="Input Contract">
-            <StateBlock tone="empty" title="No input contract" detail="This workflow does not declare an input schema." />
-          </InspectorSection>
-        )}
-      <JsonSection title="Output Mapping" value={result.contract.outputs} />
-    </div>
-  );
-}
-
-function StaticGraphInspector({ graph, target }: { graph: WebGraph | undefined; target: string | undefined }) {
-  if (!graph || !target) return <StateBlock tone="empty" title="Select a graph node" detail="Node details appear here after selection." />;
-  const node = graph.nodes.find(item => item.id === target);
-  const container = graph.containers.find(item => item.id === target);
-  if (!node && !container) return <StateBlock tone="empty" title="No graph detail" detail="The selected graph target is no longer available." />;
-  return (
-    <div className="inspector-stack">
-      <InspectorSection title="Identity">
-        <KeyValue label="Kind" value={node?.kind ?? container?.kind ?? "unknown"} />
-        <KeyValue label="Node ID" value={node?.nodeId ?? container?.nodeId ?? target} />
-        <KeyValue label="Path" value={(node?.path ?? container?.path ?? []).join(" / ")} />
-      </InspectorSection>
-      {node?.detail && (
-        <JsonSection title="Definition" value={node.detail} />
-      )}
-    </div>
-  );
-}
-
-function InspectorPanel({
-  title,
-  exiting = false,
-  onClose,
-  children,
-}: {
-  title: string;
-  exiting?: boolean;
-  onClose(): void;
-  children: React.ReactNode;
-}) {
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
-
-  return (
-    <Card asChild className={`inspector-card ${exiting ? "exiting" : ""}`}>
-      <aside role="dialog" aria-label={title}>
-        <div className="inspector-card-head">
-          <div>
-            <span>Inspector</span>
-            <strong>{title}</strong>
-          </div>
-          <Button variant="ghost" className="close-button" onClick={onClose} aria-label="Close inspector">
-            <XCircle size={16} />
-          </Button>
-        </div>
-        <div className="inspector-card-body">{children}</div>
-      </aside>
-    </Card>
   );
 }
 
@@ -1231,7 +1113,7 @@ function Inspector({
   );
 }
 
-export type InspectorTabId = "overview" | "artifacts" | "execution";
+type InspectorTabId = "overview" | "artifacts" | "execution";
 
 function InspectorTab({ id, children }: { id: InspectorTabId; children: React.ReactNode }) {
   return (
@@ -1251,50 +1133,6 @@ function InspectorTabPanel({ id, children }: { id: InspectorTabId; children: Rea
     <TabsContent value={id} id={`inspector-panel-${id}`} className="inspector-tab-panel" aria-labelledby={`inspector-tab-${id}`}>
       {children}
     </TabsContent>
-  );
-}
-
-function InspectorSection({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <section className="inspector-section">
-      <div className="inspector-section-head">
-        <h3>{title}</h3>
-        {action}
-      </div>
-      <div className="inspector-section-body">{children}</div>
-    </section>
-  );
-}
-
-function JsonSection({ title, value }: { title: string; value: unknown }) {
-  return (
-    <InspectorSection title={title} action={<JsonCopyButton value={value} />}>
-      <JsonBlock value={value} />
-    </InspectorSection>
-  );
-}
-
-function JsonCopyButton({ value }: { value: unknown }) {
-  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
-  return (
-    <Button
-      type="button"
-      variant="ghost"
-      className={`json-copy-button ${state}`}
-      onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(JSON.stringify(value, null, 2));
-          setState("copied");
-          window.setTimeout(() => setState("idle"), 1_400);
-        } catch {
-          setState("failed");
-          window.setTimeout(() => setState("idle"), 1_800);
-        }
-      }}
-    >
-      <Copy size={13} />
-      {state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : "Copy JSON"}
-    </Button>
   );
 }
 
@@ -1461,14 +1299,6 @@ function ToolCallStatus({ status }: { status: string }) {
       {runStatusIcon(display)}
       <span>{runtimeStatusLabel(display)}</span>
     </span>
-  );
-}
-
-function JsonBlock({ value }: { value: unknown }) {
-  return (
-    <div className="json-viewer">
-      <JsonView data={jsonViewData(value)} shouldExpandNode={allExpanded} style={defaultStyles} />
-    </div>
   );
 }
 
@@ -1691,15 +1521,6 @@ function runStatusIcon(status: string) {
   return <Clock size={13} strokeWidth={2} />;
 }
 
-function KeyValue({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="key-value" tabIndex={0} title={`${label}: ${value}`} aria-label={`${label}: ${value}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
 function EmptyState({ title, detail }: { title: string; detail: string }) {
   return (
     <div className="empty-state">
@@ -1798,8 +1619,4 @@ function tryParseJsonPreview(text: string): { ok: true; value: unknown } | { ok:
     }
     return { ok: true, value: values };
   }
-}
-
-function jsonViewData(value: unknown): object | unknown[] {
-  return value !== null && typeof value === "object" ? value as object | unknown[] : { value };
 }

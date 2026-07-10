@@ -13,4 +13,9 @@ describe("web Vite chunking", () => {
     expect(source).toContain('return "vendor-query"');
     expect(source).toContain('return "vendor"');
   });
+
+  it("does not proxy the client api.ts module as a backend request", () => {
+    expect(source).toContain('"/api/": "http://localhost:4517"');
+    expect(source).not.toContain('"/api": "http://localhost:4517"');
+  });
 });

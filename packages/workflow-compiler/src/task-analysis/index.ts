@@ -11,11 +11,9 @@ import { collectImportBindings, collectLocalValueNames, collectWorkflowTaskExpor
 // consumes only metadata.
 
 export type {
-  AnalyzedTask,
   TaskAnalysisFact,
   TaskAuthoringIssue,
   TaskReferenceMetadata,
-  TaskMetadataFact,
   WorkflowTaskAnalysis,
 } from "./types.js";
 

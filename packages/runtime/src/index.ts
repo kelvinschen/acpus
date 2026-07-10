@@ -84,36 +84,25 @@ export {
 export {
   validateAgentOverrides,
   type AgentOverrideMap,
-  type AgentOverrideSpec,
   type PreparedRunWorkflow,
   type RunDynamicAttempt,
   type RunDynamicDetails,
-  type RunExecutionMetadata,
   type RunDynamicFrame,
-  type RunDynamicGroup,
   type RunDynamicGroupMember,
   type RunDynamicNodeInstance,
   type RunNodeProgress,
   type RunDynamicSignalWait,
   type RunDetails,
-  type ForkRunRecord,
   type RunRecord,
   type RunStatus,
-  type RuntimeStore,
   type DaemonWork,
-  type RuntimeDiagnostics,
   type RunWorkflowLockArtifact,
-  type DaemonDiagnostics,
   type ForkPreparedWorkflow,
 } from "./store/store.js";
-export {
-  type AdvanceRunSummary,
-} from "./scheduler/advance.js";
 export {
   type ForkSeedFailure,
 } from "./scheduler/fork-seed.js";
 export {
   type SchedulerStoreError,
-  type SchedulerStorePort,
   type SchedulerStoreResult,
 } from "./scheduler/store-port.js";

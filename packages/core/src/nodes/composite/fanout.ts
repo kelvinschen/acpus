@@ -23,10 +23,7 @@ export type FanoutStepSpec<
   ? Simplify<BaseFanoutStepSpec<Over, Output> & { strategy: "quorum"; count: Resolvable<number> }>
   : Simplify<BaseFanoutStepSpec<Over, Output> & { strategy?: "all"; count?: never }>;
 
-export type FanoutNodeRefOutput<
-  Output extends OutputObject,
-  Strategy extends FanoutStrategy,
-> = Array<RuntimeValueOf<Output>>;
+export type FanoutNodeRefOutput<Output extends OutputObject> = Array<RuntimeValueOf<Output>>;
 
 export function buildFanoutNode<
   Over extends ResolvableArray<any>,

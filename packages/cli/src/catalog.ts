@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { CliError, usageError } from "./errors.js";
 
-export type WorkflowCatalogScope = "project" | "global";
+type WorkflowCatalogScope = "project" | "global";
 
 export type WorkflowCatalogScopeOptions = {
   project?: boolean;

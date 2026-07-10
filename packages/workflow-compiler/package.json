@@ -22,9 +22,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "dist",
-    "README.md",
-    "LICENSE"
+    "dist"
   ],
   "publishConfig": {
     "access": "public"
@@ -39,7 +37,6 @@
     "@acpus/loader": "workspace:*",
     "@acpus/core": "workspace:*",
     "@acpus/expression": "workspace:*",
-    "@acpus/tasks": "workspace:*",
     "@types/node": "^22.15.30",
     "neverthrow": "^8.2.0",
     "typescript": "6.0.3"

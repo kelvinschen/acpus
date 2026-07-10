@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const fake = vi.hoisted(() => {
   type Handler = (...args: any[]) => void;
   type Scenario = (child: FakeChild, call: SpawnCall) => void;
+  type SpawnHook = (child: FakeChild, call: SpawnCall) => void;
   type SpawnCall = { command: string; args: string[]; options: any; input: string };
 
   class FakeEmitter {
@@ -15,8 +16,13 @@ const fake = vi.hoisted(() => {
       this.handlers.set(event, (this.handlers.get(event) ?? []).filter(current => current !== handler));
       return this;
     }
+    listenerCount(event: string): number {
+      return this.handlers.get(event)?.length ?? 0;
+    }
     emit(event: string, ...args: any[]): void {
-      for (const handler of this.handlers.get(event) ?? []) handler(...args);
+      const handlers = this.handlers.get(event) ?? [];
+      if (event === "error" && handlers.length === 0) throw args[0];
+      for (const handler of handlers) handler(...args);
     }
   }
 
@@ -25,14 +31,14 @@ const fake = vi.hoisted(() => {
     readonly stdout = new FakeEmitter();
     readonly stderr = new FakeEmitter();
     unref = vi.fn();
-    readonly stdin = {
+    readonly stdin = Object.assign(new FakeEmitter(), {
       end: (input = "") => {
         const call = state.calls[state.calls.length - 1];
         if (!call) throw new Error("missing spawn call");
         call.input = input;
         queueMicrotask(() => (state.scenarios.shift() ?? successScenario)(this, call));
       },
-    };
+    });
   }
 
   const successScenario: Scenario = child => {
@@ -43,14 +49,20 @@ const fake = vi.hoisted(() => {
 
   const state = {
     calls: [] as SpawnCall[],
+    children: [] as FakeChild[],
     scenarios: [] as Scenario[],
+    spawnHooks: [] as Array<SpawnHook | undefined>,
   };
 
   return {
     state,
     spawn: vi.fn((command: string, args: string[], options: any) => {
-      state.calls.push({ command, args, options, input: "" });
-      return new FakeChild();
+      const call = { command, args, options, input: "" };
+      const child = new FakeChild();
+      state.calls.push(call);
+      state.children.push(child);
+      state.spawnHooks.shift()?.(child, call);
+      return child;
     }),
     scenario: {
       success: successScenario,
@@ -84,7 +96,9 @@ function tailFromAgent(args: string[], agent: string): string[] {
 describe("executeAgentTurn", () => {
   beforeEach(() => {
     fake.state.calls.length = 0;
+    fake.state.children.length = 0;
     fake.state.scenarios.length = 0;
+    fake.state.spawnHooks.length = 0;
     fake.spawn.mockClear();
   });
 
@@ -99,7 +113,7 @@ describe("executeAgentTurn", () => {
       sessionName: "run-node",
       permissionMode: "approve-all",
       model: "gpt-5.4",
-      timeout: "30s",
+      timeoutMs: 30_000,
     })).resolves.toMatchObject({
       status: "completed",
       responseText: "ok",
@@ -115,23 +129,300 @@ describe("executeAgentTurn", () => {
     expect(fake.state.calls[1]!.input).toBe("review");
   });
 
-  it("passes acpx timeout as positive seconds while keeping local millisecond timeout", async () => {
+  it.each([
+    { timeoutMs: 1, seconds: "1" },
+    { timeoutMs: 1_500, seconds: "2" },
+  ])("passes $timeoutMs ms to acpx as $seconds positive seconds", async ({ timeoutMs, seconds }) => {
+    const { executeAgentTurn } = await import("@acpus/agent-executor");
+    const now = vi.spyOn(performance, "now").mockReturnValue(0);
+
+    try {
+      await executeAgentTurn({
+        agent: { kind: "named", name: "codex" },
+        prompt: "review",
+        cwd: "/repo",
+        env: {},
+        sessionName: "run-node",
+        permissionMode: "approve-all",
+        timeoutMs,
+      });
+
+      expect(fake.state.calls.map(call => call.args.slice(1, 9))).toEqual([
+        ["--cwd", "/repo", "--format", "json", "--json-strict", "--approve-all", "--timeout", seconds],
+        ["--cwd", "/repo", "--format", "json", "--json-strict", "--approve-all", "--timeout", seconds],
+      ]);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, -1, 1.5])("rejects invalid timeoutMs %s as config", async timeoutMs => {
     const { executeAgentTurn } = await import("@acpus/agent-executor");
 
-    await executeAgentTurn({
+    await expect(executeAgentTurn({
       agent: { kind: "named", name: "codex" },
       prompt: "review",
       cwd: "/repo",
       env: {},
       sessionName: "run-node",
       permissionMode: "approve-all",
-      timeout: "1500ms",
+      timeoutMs,
+    })).resolves.toMatchObject({
+      status: "failed",
+      failureKind: "config",
+      message: "Agent turn timeoutMs must be a non-negative safe integer.",
     });
+    expect(fake.spawn).not.toHaveBeenCalled();
+  });
 
-    expect(fake.state.calls.map(call => call.args.slice(1, 9))).toEqual([
-      ["--cwd", "/repo", "--format", "json", "--json-strict", "--approve-all", "--timeout", "2"],
-      ["--cwd", "/repo", "--format", "json", "--json-strict", "--approve-all", "--timeout", "2"],
-    ]);
+  it("treats a zero millisecond budget as an immediate timeout", async () => {
+    const { executeAgentTurn } = await import("@acpus/agent-executor");
+
+    await expect(executeAgentTurn({
+      agent: { kind: "named", name: "codex" },
+      prompt: "review",
+      cwd: "/repo",
+      env: {},
+      sessionName: "run-node",
+      permissionMode: "approve-all",
+      timeoutMs: 0,
+    })).resolves.toMatchObject({
+      status: "failed",
+      failureKind: "timeout",
+      message: "Agent turn timed out after 0ms.",
+    });
+    expect(fake.spawn).not.toHaveBeenCalled();
+  });
+
+  it("rearms a long timeout after the maximum native timer chunk", async () => {
+    vi.useFakeTimers();
+    const maxTimerDelayMs = 2_147_483_647;
+    try {
+      fake.state.scenarios.push(fake.scenario.success, () => {});
+      const { executeAgentTurn } = await import("@acpus/agent-executor");
+
+      const result = executeAgentTurn({
+        agent: { kind: "named", name: "codex" },
+        prompt: "review",
+        cwd: "/repo",
+        env: {},
+        sessionName: "run-node",
+        permissionMode: "approve-all",
+        timeoutMs: maxTimerDelayMs + 1,
+      });
+      let settled = false;
+      void result.then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(0);
+
+      await vi.advanceTimersByTimeAsync(maxTimerDelayMs);
+      expect(settled).toBe(false);
+      expect(vi.getTimerCount()).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(false);
+      expect(fake.state.calls.map(call => tailFromAgent(call.args, "codex"))).toEqual([
+        ["codex", "sessions", "ensure", "--name", "run-node"],
+        ["codex", "prompt", "-s", "run-node", "-f", "-"],
+        ["codex", "cancel", "-s", "run-node"],
+      ]);
+      fake.state.children[1]!.emit("close", null);
+
+      await expect(result).resolves.toMatchObject({ status: "failed", failureKind: "timeout" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("counts synchronous subprocess startup against the shared timeout budget", async () => {
+    vi.useFakeTimers();
+    try {
+      fake.state.scenarios.push(fake.scenario.success);
+      fake.state.spawnHooks.push(undefined, child => {
+        vi.advanceTimersByTime(6);
+        queueMicrotask(() => child.emit("close", 0));
+      });
+      const { executeAgentTurn } = await import("@acpus/agent-executor");
+
+      const result = executeAgentTurn({
+        agent: { kind: "named", name: "codex" },
+        prompt: "review",
+        cwd: "/repo",
+        env: {},
+        sessionName: "run-node",
+        permissionMode: "approve-all",
+        timeoutMs: 5,
+      });
+      await vi.runAllTimersAsync();
+
+      await expect(result).resolves.toMatchObject({ status: "failed", failureKind: "timeout" });
+      expect(fake.state.calls.map(call => tailFromAgent(call.args, "codex"))).toEqual([
+        ["codex", "sessions", "ensure", "--name", "run-node"],
+        ["codex", "prompt", "-s", "run-node", "-f", "-"],
+        ["codex", "cancel", "-s", "run-node"],
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps an expired deadline authoritative when close beats the timer callback", async () => {
+    const now = vi.spyOn(performance, "now").mockReturnValue(0);
+    try {
+      fake.state.scenarios.push(fake.scenario.success, child => {
+        now.mockReturnValue(6);
+        child.emit("close", 0);
+      });
+      const { executeAgentTurn } = await import("@acpus/agent-executor");
+
+      await expect(executeAgentTurn({
+        agent: { kind: "named", name: "codex" },
+        prompt: "review",
+        cwd: "/repo",
+        env: {},
+        sessionName: "run-node",
+        permissionMode: "approve-all",
+        timeoutMs: 5,
+      })).resolves.toMatchObject({ status: "failed", failureKind: "timeout" });
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("keeps an expired deadline authoritative over a synchronous spawn failure", async () => {
+    const now = vi.spyOn(performance, "now").mockReturnValue(0);
+    try {
+      fake.state.spawnHooks.push(() => {
+        now.mockReturnValue(6);
+        throw new Error("spawn failed");
+      });
+      const { executeAgentTurn } = await import("@acpus/agent-executor");
+
+      await expect(executeAgentTurn({
+        agent: { kind: "named", name: "codex" },
+        prompt: "review",
+        cwd: "/repo",
+        env: {},
+        sessionName: "run-node",
+        permissionMode: "approve-all",
+        timeoutMs: 5,
+      })).resolves.toMatchObject({ status: "failed", failureKind: "timeout" });
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("keeps synchronous abort authoritative over an expired spawn failure", async () => {
+    const controller = new AbortController();
+    const now = vi.spyOn(performance, "now").mockReturnValue(0);
+    try {
+      fake.state.spawnHooks.push(() => {
+        now.mockReturnValue(6);
+        controller.abort();
+        throw new Error("spawn failed");
+      });
+      const { executeAgentTurn } = await import("@acpus/agent-executor");
+
+      await expect(executeAgentTurn({
+        agent: { kind: "named", name: "codex" },
+        prompt: "review",
+        cwd: "/repo",
+        env: {},
+        sessionName: "run-node",
+        permissionMode: "approve-all",
+        timeoutMs: 5,
+        signal: controller.signal,
+      })).resolves.toMatchObject({ status: "cancelled" });
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("keeps synchronous abort authoritative when successful spawn also exhausts the deadline", async () => {
+    const controller = new AbortController();
+    const now = vi.spyOn(performance, "now").mockReturnValue(0);
+    try {
+      fake.state.spawnHooks.push(child => {
+        now.mockReturnValue(6);
+        controller.abort();
+        queueMicrotask(() => child.emit("close", null));
+      });
+      const { executeAgentTurn } = await import("@acpus/agent-executor");
+
+      await expect(executeAgentTurn({
+        agent: { kind: "named", name: "codex" },
+        prompt: "review",
+        cwd: "/repo",
+        env: {},
+        sessionName: "run-node",
+        permissionMode: "approve-all",
+        timeoutMs: 5,
+        signal: controller.signal,
+      })).resolves.toMatchObject({ status: "cancelled" });
+      expect(fake.state.calls.map(call => tailFromAgent(call.args, "codex"))).toEqual([
+        ["codex", "sessions", "ensure", "--name", "run-node"],
+      ]);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("keeps abort authoritative when ensure settles before an expired continuation", async () => {
+    const controller = new AbortController();
+    const now = vi.spyOn(performance, "now").mockReturnValue(0);
+    try {
+      fake.state.scenarios.push(child => {
+        child.emit("close", 0);
+        now.mockReturnValue(6);
+        controller.abort();
+      });
+      const { executeAgentTurn } = await import("@acpus/agent-executor");
+
+      await expect(executeAgentTurn({
+        agent: { kind: "named", name: "codex" },
+        prompt: "review",
+        cwd: "/repo",
+        env: {},
+        sessionName: "run-node",
+        permissionMode: "approve-all",
+        timeoutMs: 5,
+        signal: controller.signal,
+      })).resolves.toMatchObject({ status: "cancelled" });
+      expect(fake.state.calls.map(call => tailFromAgent(call.args, "codex"))).toEqual([
+        ["codex", "sessions", "ensure", "--name", "run-node"],
+      ]);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("keeps elapsed timeout enforcement stable across wall-clock rollback", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-01T00:00:00.000Z"));
+    try {
+      fake.state.scenarios.push(
+        fake.scenario.success,
+        child => setTimeout(() => child.emit("close", 0), 10),
+      );
+      const { executeAgentTurn } = await import("@acpus/agent-executor");
+
+      const result = executeAgentTurn({
+        agent: { kind: "named", name: "codex" },
+        prompt: "review",
+        cwd: "/repo",
+        env: {},
+        sessionName: "run-node",
+        permissionMode: "approve-all",
+        timeoutMs: 5,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(2);
+      vi.setSystemTime(new Date("2026-06-30T23:59:00.000Z"));
+      await vi.advanceTimersByTimeAsync(8);
+
+      await expect(result).resolves.toMatchObject({ status: "failed", failureKind: "timeout" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("adds Claude user settings env by default without mutating request env", async () => {
@@ -197,7 +488,7 @@ describe("executeAgentTurn", () => {
       fake.state.scenarios.push(
         fake.scenario.success,
         child => setTimeout(() => child.emit("close", 0), 4),
-        child => setTimeout(() => child.emit("close", 0), 10),
+        child => setTimeout(() => child.emit("close", 0), 2),
       );
       const { executeAgentTurn } = await import("@acpus/agent-executor");
 
@@ -209,7 +500,7 @@ describe("executeAgentTurn", () => {
         sessionName: "session",
         permissionMode: "approve-all",
         agentMode: "plan",
-        timeout: "5ms",
+        timeoutMs: 5,
       });
       await vi.runAllTimersAsync();
 
@@ -230,6 +521,43 @@ describe("executeAgentTurn", () => {
         ["--cwd", "/repo", "--format", "json", "--json-strict", "--approve-all", "--timeout", "1"],
         ["--cwd", "/repo", "--format", "json", "--json-strict", "--approve-all", "--timeout", "1"],
       ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("passes the remaining shared timeout budget to detached cancel", async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    try {
+      fake.state.scenarios.push(
+        fake.scenario.success,
+        child => setTimeout(() => {
+          controller.abort();
+          child.emit("close", null);
+        }, 1_100),
+      );
+      const { executeAgentTurn } = await import("@acpus/agent-executor");
+
+      const result = executeAgentTurn({
+        agent: { kind: "named", name: "codex" },
+        prompt: "review",
+        cwd: "/repo",
+        env: {},
+        sessionName: "session",
+        permissionMode: "approve-all",
+        timeoutMs: 2_500,
+        signal: controller.signal,
+      });
+      await vi.advanceTimersByTimeAsync(1_100);
+
+      await expect(result).resolves.toMatchObject({ status: "cancelled" });
+      expect(fake.state.calls.map(call => call.args.slice(1, 9))).toEqual([
+        ["--cwd", "/repo", "--format", "json", "--json-strict", "--approve-all", "--timeout", "3"],
+        ["--cwd", "/repo", "--format", "json", "--json-strict", "--approve-all", "--timeout", "3"],
+        ["--cwd", "/repo", "--format", "json", "--json-strict", "--approve-all", "--timeout", "2"],
+      ]);
+      expect(tailFromAgent(fake.state.calls[2]!.args, "codex")).toEqual(["codex", "cancel", "-s", "session"]);
     } finally {
       vi.useRealTimers();
     }
@@ -737,6 +1065,34 @@ describe("executeAgentTurn", () => {
     });
   });
 
+  it("keeps provider stderr after stdin EPIPE and ignores stdout after settlement", async () => {
+    fake.state.scenarios.push(fake.scenario.success, child => {
+      child.stdin.emit("error", new Error("write EPIPE"));
+      child.stderr.emit("data", "provider rejected input");
+      child.emit("close", 7);
+      child.stdout.emit("data", "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"late\"}}}}\n");
+    });
+    const { executeAgentTurn } = await import("@acpus/agent-executor");
+    const progress: unknown[] = [];
+
+    await expect(executeAgentTurn({
+      agent: { kind: "named", name: "codex" },
+      prompt: "review",
+      cwd: "/repo",
+      env: {},
+      sessionName: "session",
+      permissionMode: "approve-all",
+      onProgress: update => progress.push(update),
+    })).resolves.toMatchObject({
+      status: "failed",
+      failureKind: "provider_exit",
+      message: "provider rejected input",
+      stderr: "provider rejected input",
+      responseText: "",
+    });
+    expect(progress).toEqual([]);
+  });
+
   it("classifies malformed acpx json output as provider failure", async () => {
     fake.state.scenarios.push(fake.scenario.success, fake.scenario.stdout("not json\n"));
     const { executeAgentTurn } = await import("@acpus/agent-executor");
@@ -809,7 +1165,7 @@ describe("executeAgentTurn", () => {
         env: {},
         sessionName: "session",
         permissionMode: "approve-all",
-        timeout: "5ms",
+        timeoutMs: 5,
         onProgress: update => progress.push(update),
       });
       await vi.runAllTimersAsync();
@@ -849,6 +1205,31 @@ describe("executeAgentTurn", () => {
 
     expect(progress).toMatchObject([{ responseText: "partial", telemetry: { eventCount: 1 } }]);
     expect(fake.state.calls.map(call => tailFromAgent(call.args, "codex"))).toContainEqual(["codex", "cancel", "-s", "session"]);
+    const cancelChild = fake.state.children.at(-1)!;
+    expect(cancelChild.listenerCount("error")).toBe(1);
+    expect(() => cancelChild.emit("error", new Error("cancel spawn failed"))).not.toThrow();
+  });
+
+  it("keeps abort authoritative across stdin and child process errors", async () => {
+    const controller = new AbortController();
+    fake.state.scenarios.push(fake.scenario.success, child => {
+      child.stdout.emit("data", "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"partial\"}}}}\n");
+      controller.abort();
+      child.stdin.emit("error", new Error("write EPIPE"));
+      child.emit("error", new Error("late child error"));
+      child.emit("close", null);
+    });
+    const { executeAgentTurn } = await import("@acpus/agent-executor");
+
+    await expect(executeAgentTurn({
+      agent: { kind: "named", name: "codex" },
+      prompt: "review",
+      cwd: "/repo",
+      env: {},
+      sessionName: "session",
+      permissionMode: "approve-all",
+      signal: controller.signal,
+    })).resolves.toMatchObject({ status: "cancelled", responseText: "partial" });
   });
 
   it("does not cancel a completed prompt when the signal aborts later", async () => {

@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { ResultAsync } from "neverthrow";
 import type { JsonValue } from "@acpus/expression/ir";
+import { scheduleCancellableTimeout } from "../cancellable-timeout.js";
 import type { TaskArtifactRegistration, TaskProcessChildMessage, TaskProcessParentMessage, TaskProcessRequest } from "./task-process-protocol.js";
 
 const COOPERATIVE_ABORT_GRACE_MS = 1_000;
@@ -46,6 +47,18 @@ class TaskAttemptRejected extends Error {
 }
 
 function runTaskProcess(input: RunTaskAttemptInput): Promise<JsonValue | undefined> {
+  const timeoutStartedAt = input.timeoutMs === undefined ? undefined : globalThis.performance.now();
+  const timeoutExpired = () => timeoutStartedAt !== undefined
+    && input.timeoutMs !== undefined
+    && Math.max(0, globalThis.performance.now() - timeoutStartedAt) >= input.timeoutMs;
+  const timeoutFailure = (): TaskAttemptFailure => ({
+    type: "timed_out",
+    message: `Task node '${input.nodeId}' timed out after ${input.timeoutMs ?? 0}ms.`,
+  });
+  const cancellationFailure = (): TaskAttemptFailure => ({
+    type: "cancelled",
+    message: `Task node '${input.nodeId}' was cancelled.`,
+  });
   return new Promise((resolve, reject) => {
     let child: ChildProcess;
     try {
@@ -56,7 +69,10 @@ function runTaskProcess(input: RunTaskAttemptInput): Promise<JsonValue | undefin
         stdio: ["ignore", "pipe", "pipe", "ipc"],
       });
     } catch (error) {
-      reject(new TaskAttemptRejected(spawnFailure(input, error)));
+      const failure = input.signal?.aborted
+        ? cancellationFailure()
+        : timeoutExpired() ? timeoutFailure() : spawnFailure(input, error);
+      reject(new TaskAttemptRejected(failure));
       return;
     }
 
@@ -66,12 +82,14 @@ function runTaskProcess(input: RunTaskAttemptInput): Promise<JsonValue | undefin
     let terminal: { ok: true; output?: JsonValue } | { ok: false; failure: TaskAttemptFailure } | undefined;
     let termination: "cancelled" | "timed_out" | undefined;
     let settled = false;
-    let timeout: NodeJS.Timeout | undefined;
+    let cancelTimeout: (() => void) | undefined;
     let terminateTimer: NodeJS.Timeout | undefined;
     let forceKillTimer: NodeJS.Timeout | undefined;
+    let spawned = false;
+    let abortSent = false;
 
     const cleanup = () => {
-      if (timeout) clearTimeout(timeout);
+      cancelTimeout?.();
       if (terminateTimer) clearTimeout(terminateTimer);
       if (forceKillTimer) clearTimeout(forceKillTimer);
       input.signal?.removeEventListener("abort", cancel);
@@ -86,29 +104,43 @@ function runTaskProcess(input: RunTaskAttemptInput): Promise<JsonValue | undefin
       if (!child.connected) return;
       child.send(message, error => {
         if (!error || settled || termination) return;
+        if (enforceTimeout()) return;
         terminal = { ok: false, failure: { type: "unexpected_exit", message: `Task process IPC failed: ${error.message}` } };
         killProcessTree(child.pid, "SIGTERM");
       });
     };
-    const beginTermination = (reason: "cancelled" | "timed_out") => {
-      if (termination || terminal) return;
-      termination = reason;
+    const sendAbort = () => {
+      if (!spawned || abortSent) return;
+      abortSent = true;
       send({ type: "abort" });
+    };
+    const beginTermination = (reason: "cancelled" | "timed_out") => {
+      if (termination || settled) return;
+      termination = reason;
+      sendAbort();
       terminateTimer = setTimeout(() => {
         killProcessTree(child.pid, "SIGTERM");
         forceKillTimer = setTimeout(() => killProcessTree(child.pid, "SIGKILL"), FORCE_KILL_GRACE_MS);
       }, COOPERATIVE_ABORT_GRACE_MS);
+    };
+    const enforceTimeout = (): boolean => {
+      if (!timeoutExpired()) return false;
+      beginTermination("timed_out");
+      return true;
     };
     const cancel = () => beginTermination("cancelled");
 
     child.stdout?.on("data", chunk => { stdout = appendTail(stdout, chunk); });
     child.stderr?.on("data", chunk => { stderr = appendTail(stderr, chunk); });
     child.once("spawn", () => {
-      send({ type: "start", request: input.request });
-      if (termination) send({ type: "abort" });
+      spawned = true;
+      enforceTimeout();
+      if (termination !== "timed_out") send({ type: "start", request: input.request });
+      if (termination) sendAbort();
     });
     child.on("message", raw => {
       if (!isChildMessage(raw)) {
+        if (enforceTimeout() || termination) return;
         terminal = { ok: false, failure: { type: "unexpected_exit", message: "Task process sent an invalid IPC message." } };
         killProcessTree(child.pid, "SIGTERM");
         return;
@@ -117,7 +149,7 @@ function runTaskProcess(input: RunTaskAttemptInput): Promise<JsonValue | undefin
       if (message.type === "artifact_register") {
         let error: string | undefined;
         try {
-          if (termination || terminal) throw new Error("Task attempt is no longer accepting artifacts.");
+          if (enforceTimeout() || termination || terminal) throw new Error("Task attempt is no longer accepting artifacts.");
           assertArtifactIdentity(input.request, message.artifact);
           input.registerArtifact(message.artifact);
         } catch (cause) {
@@ -128,7 +160,7 @@ function runTaskProcess(input: RunTaskAttemptInput): Promise<JsonValue | undefin
           : { type: "artifact_result", requestId: message.requestId, ok: false, error });
         return;
       }
-      if (terminal || termination) return;
+      if (enforceTimeout() || terminal || termination) return;
       if (message.type === "completed") {
         terminal = message.hasOutput ? { ok: true, output: message.output } : { ok: true };
       } else {
@@ -143,13 +175,16 @@ function runTaskProcess(input: RunTaskAttemptInput): Promise<JsonValue | undefin
         };
       }
     });
-    child.once("error", error => { spawnError = error; });
+    child.once("error", error => {
+      if (!enforceTimeout()) spawnError = error;
+    });
     child.once("close", (exitCode, signal) => {
+      enforceTimeout();
       if (termination) {
-        const message = termination === "timed_out"
-          ? `Task node '${input.nodeId}' timed out after ${input.timeoutMs ?? 0}ms.`
-          : `Task node '${input.nodeId}' was cancelled.`;
-        settle(() => reject(new TaskAttemptRejected({ type: termination!, message })));
+        const failure = termination === "timed_out"
+          ? timeoutFailure()
+          : cancellationFailure();
+        settle(() => reject(new TaskAttemptRejected(failure)));
         return;
       }
       if (spawnError) {
@@ -178,7 +213,11 @@ function runTaskProcess(input: RunTaskAttemptInput): Promise<JsonValue | undefin
 
     input.signal?.addEventListener("abort", cancel, { once: true });
     if (input.signal?.aborted) cancel();
-    if (input.timeoutMs !== undefined) timeout = setTimeout(() => beginTermination("timed_out"), input.timeoutMs);
+    if (input.timeoutMs !== undefined && timeoutStartedAt !== undefined) {
+      const remainingTimeoutMs = input.timeoutMs - Math.max(0, globalThis.performance.now() - timeoutStartedAt);
+      if (remainingTimeoutMs <= 0) enforceTimeout();
+      else cancelTimeout = scheduleCancellableTimeout(remainingTimeoutMs, () => beginTermination("timed_out"));
+    }
   });
 }
 

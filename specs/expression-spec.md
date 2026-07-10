@@ -8,11 +8,12 @@
 
 ### Public API
 
-- The root `@acpus/expression` entrypoint MUST expose the authoring value surface: `fmap`, `lift2`, `lift3`, `lift`, `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `not`, `and`, `or`, `template`, and `md`.
-- The root `@acpus/expression` entrypoint MUST expose the public authoring types `Expr`, `ExprValue`, `WorkflowData`, and `Resolvable`.
-- The root and subpath entrypoints MUST NOT expose the removed `WorkflowValue` compatibility name.
+- The root `@acpus/expression` entrypoint authoring value surface MUST be
+  `fmap`, `lift2`, `lift3`, `lift`, `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `not`,
+  `and`, `or`, `template`, and `md`.
+- The root `@acpus/expression` entrypoint public authoring types MUST be `Expr`,
+  `ExprValue`, `WorkflowData`, and `Resolvable`.
 - The root `@acpus/expression` entrypoint MUST NOT export raw construction helpers such as `expr`, `isExpr`, `refExpr`, or `valueToExprIR`.
-- The root `@acpus/expression` entrypoint MUST NOT export the removed algebra helpers: `ifElse`, `add`, `subtract`, `multiply`, `divide`, `mod`, `coalesce`, `len`, `includes`, `isEmpty`, `startsWith`, `endsWith`, `matches`, `get`, `head`, `every`, `some`, `filter`, `map`, `transform`, `join`, `max`, `min`, `where`, or `pick`.
 - `@acpus/expression/ir` MUST expose serializable IR and JSON types plus advanced construction helpers needed by package internals and tests, including `expr`, `isExpr`, `refExpr`, `tryValueToExprIR`, `valueToExprIR`, and shared expression operator metadata.
 - `@acpus/expression/evaluator` MUST expose generic expression and template evaluators.
 - `@acpus/expression/validator` MUST expose `validateExprIR`.

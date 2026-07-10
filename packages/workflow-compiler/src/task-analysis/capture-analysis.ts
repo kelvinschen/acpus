@@ -26,7 +26,7 @@ export function collectFreeIdentifierNodes(fn: ts.FunctionLikeDeclarationBase, c
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export function isRuntimeGlobalIdentifier(node: ts.Identifier, checker?: ts.TypeChecker): boolean {
+function isRuntimeGlobalIdentifier(node: ts.Identifier, checker?: ts.TypeChecker): boolean {
   if (!checker) return RUNTIME_GLOBALS.has(node.text);
   const symbol = checker.getSymbolAtLocation(node);
   if (!symbol) return RUNTIME_GLOBALS.has(node.text);

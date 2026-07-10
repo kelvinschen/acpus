@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { JsonValue } from "@acpus/expression/ir";
-import { err } from "neverthrow";
+import { err, ok } from "neverthrow";
 import { advanceRun, completed, selectReadyInstances, tryAdvanceRun, type NodeAttemptContext, type NodeExecutor } from "../src/scheduler/advance.js";
 import type { SchedulerEvent } from "../src/scheduler/events.js";
 import { SchedulerStoreException, schedulerStoreResult, type AttemptCommitInput, type AttemptStartInput, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStoreError, type SchedulerStorePort, type SchedulerStoreResult } from "../src/scheduler/store-port.js";
 import { applySchedulerEvents, createSchedulerProjection } from "../src/scheduler/transitions.js";
-import type { InstancePath, NodeInstance, SchedulerProjection } from "../src/scheduler/types.js";
+import type { InstancePath } from "../src/scheduler/types.js";
 
 describe("scheduler advance loop", () => {
   it("applies bootstrap events once before scheduling", async () => {
-    const store = new MemorySchedulerStore("run_1", []);
+    const store = new MemorySchedulerStore([]);
     const bootstrapVersions: number[] = [];
     const calls: string[] = [];
 
@@ -53,7 +53,7 @@ describe("scheduler advance loop", () => {
   });
 
   it("selects ready instances by deterministic FIFO and respects the run-wide cap", async () => {
-    const store = new MemorySchedulerStore("run_1", [
+    const store = new MemorySchedulerStore([
       ready("later", 2),
       ready("first", 1),
       ready("third", 3),
@@ -78,7 +78,7 @@ describe("scheduler advance loop", () => {
   });
 
   it("fails custom executor attempts when output is not workflow-admissible", async () => {
-    const store = new MemorySchedulerStore("run_1", [ready("bad", 1)]);
+    const store = new MemorySchedulerStore([ready("bad", 1)]);
 
     const result = await advanceRun({
       runId: "run_1",
@@ -139,9 +139,9 @@ describe("scheduler advance loop", () => {
   });
 
   it("returns paused, awaiting, and lease-lost summaries without starting work", async () => {
-    const paused = new MemorySchedulerStore("paused", [{ type: "control.paused", payload: { reason: "test" } }, ready("blocked", 1)]);
-    const awaiting = new MemorySchedulerStore("awaiting", [{ type: "signal.awaiting", payload: { runId: "awaiting", nodeKey: "approve", nodeId: "approve" } }]);
-    const leaseLost = new MemorySchedulerStore("lost", [ready("work", 1)]);
+    const paused = new MemorySchedulerStore([{ type: "control.paused", payload: { reason: "test" } }, ready("blocked", 1)]);
+    const awaiting = new MemorySchedulerStore([{ type: "signal.awaiting", payload: { runId: "awaiting", nodeKey: "approve", nodeId: "approve" } }]);
+    const leaseLost = new MemorySchedulerStore([ready("work", 1)]);
     leaseLost.claimable = false;
     const calls: string[] = [];
     const nodeExecutor = executor(context => {
@@ -156,7 +156,7 @@ describe("scheduler advance loop", () => {
   });
 
   it("returns tagged Err values from tryAdvanceRun for recoverable store failures", async () => {
-    const store = new MemorySchedulerStore("run_1", []);
+    const store = new MemorySchedulerStore([]);
     store.tryLoadRunSnapshot = runId => err({ type: "run-not-found", runId, message: "arbitrary store text" });
 
     const result = await tryAdvanceRun({
@@ -172,7 +172,7 @@ describe("scheduler advance loop", () => {
   });
 
   it("does not start selected work after a pause commits before attempt start", async () => {
-    const store = new MemorySchedulerStore("run_1", [
+    const store = new MemorySchedulerStore([
       ready("first", 1),
       ready("second", 2),
     ]);
@@ -195,7 +195,7 @@ describe("scheduler advance loop", () => {
   });
 
   it("aborts active work when pause requeues the running instance", async () => {
-    const store = new MemorySchedulerStore("run_1", [ready("work", 1)]);
+    const store = new MemorySchedulerStore([ready("work", 1)]);
     let aborted = false;
 
     const result = await advanceRun({
@@ -218,7 +218,7 @@ describe("scheduler advance loop", () => {
   });
 
   it("renews the run lease while leaf work is active", async () => {
-    const store = new MemorySchedulerStore("run_1", [ready("work", 1)]);
+    const store = new MemorySchedulerStore([ready("work", 1)]);
 
     const result = await advanceRun({
       runId: "run_1",
@@ -236,7 +236,7 @@ describe("scheduler advance loop", () => {
   });
 
   it("does not drain derived transitions after heartbeat lease loss", async () => {
-    const store = new MemorySchedulerStore("run_1", [ready("work", 1)]);
+    const store = new MemorySchedulerStore([ready("work", 1)]);
     store.failHeartbeatAfter = 1;
 
     const result = await advanceRun({
@@ -257,7 +257,7 @@ describe("scheduler advance loop", () => {
   });
 
   it("marks paused requeued work as pause_resume when it restarts", async () => {
-    const store = new MemorySchedulerStore("run_1", [ready("work", 1)]);
+    const store = new MemorySchedulerStore([ready("work", 1)]);
     const reasons: Array<NodeAttemptContext["attemptStartReason"]> = [];
     let shouldPause = true;
 
@@ -281,7 +281,7 @@ describe("scheduler advance loop", () => {
   });
 
   it("uses a fresh store snapshot on each advance call", async () => {
-    const store = new MemorySchedulerStore("run_1", [ready("one", 1)]);
+    const store = new MemorySchedulerStore([ready("one", 1)]);
     const calls: string[] = [];
     const nodeExecutor = executor(context => {
       calls.push(context.nodeKey);
@@ -302,7 +302,7 @@ describe("scheduler advance loop", () => {
   });
 
   it("reports lease loss when the store rejects a late attempt commit", async () => {
-    const store = new MemorySchedulerStore("run_1", [ready("work", 1)]);
+    const store = new MemorySchedulerStore([ready("work", 1)]);
     store.failCommits = true;
 
     await expect(advanceRun({
@@ -314,7 +314,7 @@ describe("scheduler advance loop", () => {
   });
 
   it("supersedes started attempts from expired owners before scheduling", async () => {
-    const store = new MemorySchedulerStore("run_1", [
+    const store = new MemorySchedulerStore([
       ready("old", 1),
       { type: "instance.started", payload: { nodeKey: "old" } },
       { type: "attempt.started", payload: { runId: "run_1", attemptId: "old_attempt", nodeKey: "old", nodeId: "old", attemptNo: 1, ownerEpoch: 9 } },
@@ -338,7 +338,7 @@ describe("scheduler advance loop", () => {
   });
 
   it("times out expired old-owner attempts before recovery supersede", async () => {
-    const store = new MemorySchedulerStore("run_1", [
+    const store = new MemorySchedulerStore([
       ready("old", 1),
       { type: "instance.started", payload: { nodeKey: "old" } },
       { type: "attempt.started", payload: { runId: "run_1", attemptId: "old_attempt", nodeKey: "old", nodeId: "old", attemptNo: 1, ownerEpoch: 9, deadlineAt: "2026-06-30T00:00:00.000Z" } },
@@ -359,7 +359,7 @@ describe("scheduler advance loop", () => {
   });
 
   it("drains expired attempt deadlines before returning idle", async () => {
-    const store = new MemorySchedulerStore("run_1", [
+    const store = new MemorySchedulerStore([
       ready("work", 1),
       { type: "instance.started", payload: { nodeKey: "work" } },
       { type: "attempt.started", payload: { runId: "run_1", attemptId: "attempt_1", nodeKey: "work", nodeId: "work", attemptNo: 1, ownerEpoch: 1, deadlineAt: "2026-06-30T00:00:00.000Z" } },
@@ -380,7 +380,7 @@ describe("scheduler advance loop", () => {
   });
 
   it("treats late commits after durable timeout as stale terminal results", async () => {
-    const store = new MemorySchedulerStore("run_1", [ready("work", 1)]);
+    const store = new MemorySchedulerStore([ready("work", 1)]);
     store.throwTimedOutCommits = true;
 
     await expect(advanceRun({
@@ -392,7 +392,7 @@ describe("scheduler advance loop", () => {
   });
 
   it("drains group cancellation before overlapping attempt timeouts", async () => {
-    const store = new MemorySchedulerStore("run_1", [
+    const store = new MemorySchedulerStore([
       { type: "group.started", payload: { runId: "run_1", groupKey: "race", nodeKey: "race", nodeId: "race", kind: "parallel", strategy: "race" } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "race", memberKey: "winner", memberKind: "branch", branchId: "winner", readinessSequence: 1 } },
       { type: "group.member_started", payload: { memberKey: "winner" } },
@@ -419,7 +419,7 @@ describe("scheduler advance loop", () => {
   });
 
   it("drains group terminal events before starting loser work", async () => {
-    const store = new MemorySchedulerStore("run_1", [
+    const store = new MemorySchedulerStore([
       { type: "group.started", payload: { runId: "run_1", groupKey: "race", nodeKey: "race", nodeId: "race", kind: "parallel", strategy: "race" } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "race", memberKey: "winner", memberKind: "branch", branchId: "winner", readinessSequence: 1 } },
       { type: "group.member_started", payload: { memberKey: "winner" } },
@@ -447,7 +447,7 @@ describe("scheduler advance loop", () => {
   });
 
   it("aborts active race losers after a winner commits", async () => {
-    const store = new MemorySchedulerStore("run_1", [
+    const store = new MemorySchedulerStore([
       { type: "group.started", payload: { runId: "run_1", groupKey: "race", nodeKey: "race", nodeId: "race", kind: "parallel", strategy: "race" } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "race", memberKey: "winner", memberKind: "branch", branchId: "winner", readinessSequence: 1 } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "race", memberKey: "loser", memberKind: "branch", branchId: "loser", readinessSequence: 2 } },
@@ -484,7 +484,7 @@ describe("scheduler advance loop", () => {
   });
 
   it("requeues failed retryable instances before terminal group derivation", async () => {
-    const store = new MemorySchedulerStore("run_1", [
+    const store = new MemorySchedulerStore([
       { type: "group.started", payload: { runId: "run_1", groupKey: "all", nodeKey: "all", nodeId: "all", kind: "parallel", strategy: "all" } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "all", memberKey: "work", memberKind: "branch", branchId: "left", readinessSequence: 1 } },
       ready("work", 1),
@@ -514,7 +514,7 @@ describe("scheduler advance loop", () => {
   });
 
   it("requeues ancestor group members for failed retryable child instances", async () => {
-    const store = new MemorySchedulerStore("run_1", [
+    const store = new MemorySchedulerStore([
       { type: "group.started", payload: { runId: "run_1", groupKey: "all", nodeKey: "all", nodeId: "all", kind: "parallel", strategy: "all" } },
       { type: "frame.started", payload: { runId: "run_1", frameKey: "branch", frameKind: "branch", parentFrameKey: "all", instancePath: [{ kind: "branch", nodeId: "all", branchId: "left" }] } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "all", memberKey: "branch", memberKind: "branch", branchId: "left", childFrameKey: "branch", readinessSequence: 1 } },
@@ -543,7 +543,7 @@ describe("scheduler advance loop", () => {
   });
 
   it("does not requeue exhausted retryable instances", async () => {
-    const store = new MemorySchedulerStore("run_1", [
+    const store = new MemorySchedulerStore([
       { type: "group.started", payload: { runId: "run_1", groupKey: "all", nodeKey: "all", nodeId: "all", kind: "parallel", strategy: "all" } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "all", memberKey: "work", memberKind: "branch", branchId: "left", readinessSequence: 1 } },
       ready("work", 1),
@@ -564,7 +564,7 @@ describe("scheduler advance loop", () => {
   });
 
   it("does not start recovered work while paused", async () => {
-    const store = new MemorySchedulerStore("run_1", [
+    const store = new MemorySchedulerStore([
       { type: "control.paused", payload: { reason: "operator" } },
       ready("old", 1),
       { type: "instance.started", payload: { nodeKey: "old" } },
@@ -590,7 +590,7 @@ describe("scheduler advance loop", () => {
   });
 
   it("does not spend failure retry budget on superseded attempts", async () => {
-    const store = new MemorySchedulerStore("run_1", [
+    const store = new MemorySchedulerStore([
       ready("work", 1),
       { type: "instance.started", payload: { nodeKey: "work" } },
       { type: "attempt.started", payload: { runId: "run_1", attemptId: "attempt_superseded", nodeKey: "work", nodeId: "work", attemptNo: 1, ownerEpoch: 1 } },
@@ -616,19 +616,43 @@ describe("scheduler advance loop", () => {
   });
 
   it("stores derived attempt deadlines before executor work starts", async () => {
-    const store = new MemorySchedulerStore("run_1", [ready("work", 1)]);
+    const store = new MemorySchedulerStore([ready("work", 1)]);
 
     await expect(advanceRun({
       runId: "run_1",
       ownerId: "owner-a",
       store,
       now: () => new Date("2026-07-01T00:00:00.000Z"),
-      deadlineAtFor: (_instance, _projection, now) => new Date(now.getTime() + 5_000),
+      deadlineAtFor: (_instance, _projection, now) => ok(new Date(now.getTime() + 5_000)),
       executor: executor(() => completed({ ok: true })),
     })).resolves.toMatchObject({ status: "idle", started: 1, completed: 1 });
 
     const attempt = Object.values(store.loadRunSnapshot("run_1").projection.attempts).find(attempt => attempt.nodeKey === "work");
     expect(attempt).toMatchObject({ status: "completed", deadlineAt: "2026-07-01T00:00:05.000Z" });
+  });
+
+  it("commits deadline derivation failures without invoking the executor", async () => {
+    const store = new MemorySchedulerStore([ready("work", 1)]);
+    let executed = false;
+    let registeredActive = false;
+    const error = { reason: "expression_resolution_failed", type: "constraint", field: "Task node 'work' timeout" };
+
+    await expect(advanceRun({
+      runId: "run_1",
+      ownerId: "owner-a",
+      store,
+      deadlineAtFor: () => err({ status: "failed", reason: "unsupported deadline", error }),
+      onActiveAttempt: () => { registeredActive = true; },
+      executor: executor(() => {
+        executed = true;
+        return completed();
+      }),
+    })).resolves.toMatchObject({ status: "idle", started: 1, failed: 1 });
+
+    expect(executed).toBe(false);
+    expect(registeredActive).toBe(false);
+    const attempt = Object.values(store.loadRunSnapshot("run_1").projection.attempts).find(attempt => attempt.nodeKey === "work");
+    expect(attempt).toMatchObject({ status: "failed", error });
   });
 });
 
@@ -686,7 +710,7 @@ class MemorySchedulerStore implements SchedulerStorePort {
   private attemptNo = 0;
   private claim: RunOwnerClaim | undefined;
 
-  constructor(private readonly runId: string, events: SchedulerEvent[]) {
+  constructor(events: SchedulerEvent[]) {
     this.events = events;
     this.attemptNo = Math.max(0, ...events.flatMap(event => event.type === "attempt.started" ? [event.payload.attemptNo] : []));
   }
@@ -887,7 +911,7 @@ function attemptResultEvents(input: AttemptCommitInput, nodeKey: string, memberK
       ...(memberKey ? [{ type: "group.member_cancelled", payload: { memberKey, cancelReason: input.result.reason } } satisfies SchedulerEvent] : []),
     ];
   }
-  const error = { reason: input.result.reason } as Record<string, JsonValue>;
+  const error = input.result.error ?? { reason: input.result.reason };
   return [
     { type: input.result.status === "timed_out" ? "attempt.timed_out" : "attempt.failed", payload: { attemptId: input.attemptId, error } },
     { type: "instance.failed", payload: { nodeKey, error, ...(input.result.status === "timed_out" ? { statusReason: "timed_out" } : {}) } },

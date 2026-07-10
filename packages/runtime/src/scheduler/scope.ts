@@ -1,3 +1,4 @@
+import type { JsonValue } from "@acpus/expression/ir";
 import type { EvaluationScope } from "../evaluation/evaluator.js";
 import type { InstancePath, InstancePathSegment, SchedulerFrame, SchedulerProjection } from "./types.js";
 
@@ -12,13 +13,13 @@ export function baseScopeForFrame(projection: SchedulerProjection, frame: Schedu
     const member = projection.groupMembers[frame.frameKey];
     const group = member ? projection.groups[member.groupKey] : undefined;
     if (member?.memberKind === "fanout_item" && group?.kind === "fanout") {
-      scope = withFanout(scope, group.nodeId, member.item, member.itemIndex);
+      scope = scopeWithFanoutItem(scope, group.nodeId, member.item, member.itemIndex);
     }
   }
   if (frame.frameKind === "loop_iteration") {
     const segment = lastSegment(frame.instancePath);
     const loopFrame = frame.parentFrameKey ? projection.frames[frame.parentFrameKey] : undefined;
-    if (segment?.kind === "loop") scope = loopScopeForIteration(scope, segment.nodeId, segment.iter, loopFrame?.loop?.state);
+    if (segment?.kind === "loop") scope = scopeWithLoopIteration(scope, segment.nodeId, segment.iter, loopFrame?.loop?.state);
   }
   return scope;
 }
@@ -28,10 +29,10 @@ export function completedScopeForFrame(projection: SchedulerProjection, frameKey
   if (!frame) return baseScope;
   let scope = baseScopeForFrame(projection, frame, baseScope);
   for (const instance of Object.values(projection.instances)) {
-    if (instance.parentFrameKey === frameKey && instance.status === "completed") scope = withNodeOutput(scope, instance.nodeId, instance.output);
+    if (instance.parentFrameKey === frameKey && instance.status === "completed") scope = scopeWithNodeOutput(scope, instance.nodeId, instance.output);
   }
   for (const child of Object.values(projection.frames)) {
-    if (child.parentFrameKey === frameKey && child.nodeKey && child.nodeId && child.status === "completed") scope = withNodeOutput(scope, child.nodeId, child.result);
+    if (child.parentFrameKey === frameKey && child.nodeKey && child.nodeId && child.status === "completed") scope = scopeWithNodeOutput(scope, child.nodeId, child.result);
   }
   return scope;
 }
@@ -43,16 +44,16 @@ export function scopeForNodeAttempt(baseScope: EvaluationScope, projection: Sche
     : completedScopeForFrame(projection, "root", baseScope);
 }
 
-function withNodeOutput(scope: EvaluationScope, nodeId: string, output: unknown): EvaluationScope {
+export function scopeWithNodeOutput(scope: EvaluationScope, nodeId: string, output: JsonValue | undefined): EvaluationScope {
   return { ...scope, nodes: { ...scope.nodes, [nodeId]: { status: "completed", output } } };
 }
 
-function withFanout(scope: EvaluationScope, nodeId: string, item: unknown, itemIndex: number): EvaluationScope {
+export function scopeWithFanoutItem(scope: EvaluationScope, nodeId: string, item: JsonValue, itemIndex: number): EvaluationScope {
   return { ...scope, fanout: { ...scope.fanout, [nodeId]: { item, itemIndex } } };
 }
 
-function loopScopeForIteration(scope: EvaluationScope, nodeId: string, iter: number, state?: unknown): EvaluationScope {
-  return { ...scope, loop: { ...scope.loop, [nodeId]: { index: iter, round: iter + 1, ...(state === undefined ? {} : { state }) } } };
+export function scopeWithLoopIteration(scope: EvaluationScope, nodeId: string, iteration: number, state?: JsonValue): EvaluationScope {
+  return { ...scope, loop: { ...scope.loop, [nodeId]: { index: iteration, round: iteration + 1, ...(state === undefined ? {} : { state }) } } };
 }
 
 function lastSegment(path: InstancePath | undefined): InstancePathSegment | undefined {

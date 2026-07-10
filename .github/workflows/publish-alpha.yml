@@ -47,6 +47,12 @@ jobs:
 
       - run: pnpm typecheck
 
+      - run: pnpm check:dead-code
+
+      - run: pnpm check:dependencies
+
+      - run: pnpm check:dependencies:strict
+
       - run: pnpm test
 
       - name: Version alpha packages

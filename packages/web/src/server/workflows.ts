@@ -1,6 +1,6 @@
-import { access, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, extname, join, relative, resolve } from "node:path";
-import type { WorkflowIR } from "@acpus/core/ir";
+import { walkNodes, type WorkflowIR } from "@acpus/core/ir";
 import { prepareWorkflow, WorkflowPreparationError, type PreparedWorkflow } from "@acpus/workflow-compiler";
 import { workflowIrToWebGraph, type WebGraph } from "./graph.js";
 import { staticVizCss, staticVizJs } from "./static-viz-assets.generated.js";
@@ -123,7 +123,7 @@ export function workflowVisualizationFromPrepared(prepared: PreparedWorkflow): E
       name: prepared.ir.name,
       ...(prepared.ir.description === undefined ? {} : { description: prepared.ir.description }),
       irVersion: prepared.ir.irVersion,
-      nodeCount: countNodes(prepared.ir.root),
+      nodeCount: Array.from(walkNodes(prepared.ir.root)).length,
     },
     contract: {
       ...(prepared.ir.inputSchema === undefined ? {} : { inputSchema: prepared.ir.inputSchema }),
@@ -228,17 +228,6 @@ async function exists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function countNodes(scope: WorkflowIR["root"]): number {
-  return scope.nodes.reduce((total, node) => {
-    if (node.kind === "if") return total + 1 + countNodes(node.then) + (node.else ? countNodes(node.else) : 0);
-    if (node.kind === "switch") return total + 1 + node.cases.reduce((sum, branch) => sum + countNodes(branch.then), 0) + countNodes(node.default);
-    if (node.kind === "parallel") return total + 1 + Object.values(node.branches).reduce((sum, branch) => sum + countNodes(branch.scope), 0);
-    if (node.kind === "fanout") return total + 1 + countNodes(node.do);
-    if (node.kind === "loop") return total + 1 + countNodes(node.do);
-    return total + 1;
-  }, 0);
 }
 
 function escapeHtml(value: string): string {

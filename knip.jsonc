@@ -1,0 +1,124 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignoreIssues": {
+    // Vitest loads this configuration by convention; its default export is the
+    // configuration payload rather than a statically imported API symbol.
+    "vitest.config.ts": ["exports"],
+    // taskkill.exe is a Windows system executable, not an npm binary.
+    "scripts/test.mjs": ["binaries"]
+  },
+  "workspaces": {
+    ".": {
+      // Package tests are explicit entries below, so keep the root scan limited
+      // to this config instead of traversing user workflows and agent assets.
+      "entry": ["vitest.config.ts"],
+      "project": [],
+      "vitest": false
+    },
+    "packages/*": {
+      "entry": ["test/**/*.{test,test-d}.{ts,tsx}"],
+      "project": [
+        "src/**/*.{ts,tsx}!",
+        "test/**/*.{ts,tsx,mjs}"
+      ],
+      "vitest": false
+    },
+    "packages/cli": {
+      "entry": [
+        "test/**/*.{test,test-d}.{ts,tsx}",
+        "src/daemon-entry.ts!",
+        "skills/acpus/examples/workflows/**/*.ts!",
+        "test/fixtures/**/*.ts"
+      ],
+      "project": [
+        "src/**/*.ts!",
+        "test/**/*.ts",
+        "templates/**/*.ts!",
+        "skills/acpus/examples/workflows/**/*.ts!"
+      ],
+      "vitest": false,
+      "ignoreIssues": {
+        // tsx is used only by the workspace source-mode daemon branch.
+        "src/commands/daemon.ts": ["unlisted"],
+        // These modules are loaded by path and their default exports are the
+        // workflow compiler contract, not statically imported symbols.
+        "skills/acpus/examples/workflows/**/workflow.ts": ["exports"],
+        "test/fixtures/**/*.workflow.ts": ["exports"]
+      }
+    },
+    "packages/loader": {
+      "entry": ["test/**/*.{test,test-d}.{ts,tsx}"],
+      "project": ["src/**/*.ts!", "test/**/*.ts"],
+      "vitest": false,
+      // These are resolved from the string-driven facade target map.
+      "ignoreDependencies": [
+        "@acpus/core",
+        "@acpus/expression",
+        "@acpus/tasks"
+      ]
+    },
+    "packages/runtime": {
+      "entry": [
+        "test/**/*.{test,test-d}.{ts,tsx}",
+        "src/execution/task-process-entry.ts!",
+        "test/fixtures/**/*.ts"
+      ],
+      "project": ["src/**/*.ts!", "test/**/*.ts"],
+      "vitest": false,
+      "ignoreIssues": {
+        // tsx is used by the source-mode task subprocess branch.
+        "src/execution/task-process.ts": ["unlisted", "binaries"],
+        // taskkill is a Windows system executable, not an npm binary.
+        "src/hooks/runner.ts": ["binaries"],
+        // Fixture modules are compiled from paths and may export reusable test
+        // definitions without static imports from the runtime test process.
+        "test/fixtures/**/*.workflow.ts": ["exports"]
+      }
+    },
+    "packages/web": {
+      "entry": [
+        "test/**/*.{test,test-d}.{ts,tsx}",
+        "scripts/build-static-viz.mjs",
+        "src/client/static-viz.tsx"
+      ],
+      "project": [
+        "src/**/*.{ts,tsx}!",
+        "test/**/*.{ts,tsx}",
+        "scripts/*.mjs"
+      ],
+      "vitest": false,
+      "ignoreDependencies": [
+        // Tailwind is imported from CSS and consumed by the Vite plugin rather
+        // than through a JavaScript module edge.
+        "tailwindcss"
+      ],
+      "ignoreIssues": {
+        // Tailwind is a bundle-time CSS input.
+        "src/client/styles.css": ["unlisted"]
+      }
+    },
+    "packages/workflow-compiler": {
+      "entry": [
+        "test/**/*.{test,test-d}.{ts,tsx}",
+        "src/compiler/compile-worker.ts!",
+        "test/fixtures/**/*.ts",
+        "test/eslint.config.mjs"
+      ],
+      "project": ["src/**/*.ts!", "test/**/*.{ts,mjs}"],
+      "vitest": false,
+      "ignoreIssues": {
+        // tsx is used by the source-mode compiler worker branch.
+        "src/compiler/worker.ts": ["unlisted"],
+        // This ambient module is consumed only by compiler fixtures.
+        "test/fixtures/workflows/external-task.d.ts": ["unlisted"],
+        // The corresponding bare import intentionally exercises ambient
+        // third-party task analysis without installing a real package.
+        "test/fixtures/workflows/eslint-task-authoring.workflow.ts": ["unlisted"],
+        // These modules and the ESLint config are loaded from fixture paths;
+        // their exports are inputs to the compiler rather than static callers.
+        "test/fixtures/**/*.workflow.ts": ["exports"],
+        "test/eslint.config.mjs": ["exports"]
+      }
+    }
+  }
+}

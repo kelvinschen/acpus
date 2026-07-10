@@ -26,11 +26,6 @@ export type TaskAnalysisFact = {
   source?: TaskSourceLocation;
 };
 
-export type TaskMetadataFact = {
-  stepId: string;
-  metadata: TaskReferenceMetadata;
-};
-
 export type WorkflowTaskAnalysis = Map<string, AnalyzedTask>;
 
 export type TaskSourceLocation = {

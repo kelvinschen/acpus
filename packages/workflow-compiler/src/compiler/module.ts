@@ -4,10 +4,9 @@ import { resolve, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { importAuthoringModule } from "@acpus/loader";
 import { compileWorkflowDefinition, isWorkflowDefinition } from "@acpus/core/workflow";
-import { validateWorkflowIR, type WorkflowIR } from "@acpus/core/ir";
+import { validateWorkflowIR, walkNodes, type WorkflowIR } from "@acpus/core/ir";
 import { analyzeWorkflowTasks, resolveTaskReferenceMetadata, type TaskReferenceMetadata } from "../task-analysis/index.js";
 import { err, ok, Result, ResultAsync, type Result as NeverthrowResult } from "neverthrow";
-import { forEachTaskNode } from "./ir-walk.js";
 
 export type CompileOptions = {
   sourcePath?: string;
@@ -93,10 +92,10 @@ function importWorkflowModule(absolute: string): Promise<Record<string, unknown>
 }
 
 function applyTaskReferenceMetadata(ir: WorkflowIR, metadata: Map<string, TaskReferenceMetadata>, referrerPath: string): void {
-  forEachTaskNode(ir.root, node => {
-    if (node.run.target.kind !== "module") return;
+  for (const { node } of walkNodes(ir.root)) {
+    if (node.kind !== "task" || node.run.target.kind !== "module") continue;
     const task = metadata.get(node.id);
-    if (!task?.specifier || !task.exportName) return;
+    if (!task?.specifier || !task.exportName) continue;
     node.run.target = {
       kind: "module",
       runtime: "node",
@@ -104,7 +103,7 @@ function applyTaskReferenceMetadata(ir: WorkflowIR, metadata: Map<string, TaskRe
       exportName: task.exportName,
       referrer: { kind: "workflow", path: referrerPath },
     };
-  });
+  }
 }
 
 function toContainedWorkspacePath(cwd: string, workflowFile: string): NeverthrowResult<string, CompileWorkflowModuleError> {

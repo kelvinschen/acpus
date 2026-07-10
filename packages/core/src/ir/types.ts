@@ -1,4 +1,4 @@
-import type { ExprIR, JsonObject, JsonPrimitive, JsonValue, TypeIR } from "@acpus/expression/ir";
+import type { ExprIR, JsonPrimitive, JsonValue } from "@acpus/expression/ir";
 export type { ExprIR, JsonArray, JsonObject, JsonPrimitive, JsonValue, TemplateIR, TemplatePartIR, TypeIR } from "@acpus/expression/ir";
 
 export type SchemaTypeIR =

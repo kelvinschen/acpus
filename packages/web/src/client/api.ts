@@ -140,8 +140,8 @@ type WebGraphSelectorOptionBase = {
   parentSelections: WebGraphSelection[];
 };
 
-export type WebGraphFanoutSelectorOption = WebGraphSelectorOptionBase & { itemIndex: number };
-export type WebGraphLoopSelectorOption = WebGraphSelectorOptionBase & { iteration: number };
+type WebGraphFanoutSelectorOption = WebGraphSelectorOptionBase & { itemIndex: number };
+type WebGraphLoopSelectorOption = WebGraphSelectorOptionBase & { iteration: number };
 export type WebGraphSelectorOption = WebGraphFanoutSelectorOption | WebGraphLoopSelectorOption;
 
 export type WebGraphRuntimeState = {
@@ -157,7 +157,7 @@ export type WebGraphSelection =
   | { nodeId: string; kind: "fanout"; itemIndex: number }
   | { nodeId: string; kind: "loop"; iteration: number };
 
-export type WebGraphGroup = {
+type WebGraphGroup = {
   nodeId: string;
   groupKey: string;
   kind: "parallel" | "fanout";
@@ -374,10 +374,6 @@ export async function getHealth(): Promise<HealthReport> {
 
 export async function listRuns(): Promise<RunRecord[]> {
   return unwrap<{ runs: RunRecord[] }>(await fetch("/api/runs")).then(v => v.runs);
-}
-
-export async function getRun(runId: string): Promise<RunDetails> {
-  return unwrap<{ run: RunDetails }>(await fetch(`/api/runs/${encodeURIComponent(runId)}`)).then(v => v.run);
 }
 
 export async function getRunRuntimeSnapshot(runId: string): Promise<RunRuntimeSnapshot> {

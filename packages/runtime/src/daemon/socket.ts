@@ -17,7 +17,7 @@ export type DaemonStatus = {
   packageVersion: string;
 };
 
-export type DaemonRequest = {
+type DaemonRequest = {
   id?: string;
   method: "status";
 } | {
@@ -45,7 +45,7 @@ export type DaemonControlIntent =
   | { requestId: string; type: "fork"; runId: string; input?: RuntimeMutationInput }
   | { requestId: string; type: "signal"; runId: string; nodeId: string; payload: unknown };
 
-export type DaemonResponse =
+type DaemonResponse =
   | { id?: string; ok: true; outcome: "applied"; result: DaemonStatus | DaemonShutdownResult | RunDetails | RuntimeAdvanceResult | RuntimeMutationResult }
   | { id?: string; ok: false; outcome: "failed"; error: { code: DaemonErrorCode; message: string } };
 
@@ -104,7 +104,7 @@ export async function startDaemonServer(cwd: string, handlers: DaemonHandlers): 
       sockets.delete(socket);
       requestTracker.end();
     });
-    void handleSocket(socket, handlers, requestTracker);
+    void handleSocket(socket, handlers);
   });
 
   try {
@@ -254,7 +254,7 @@ type DaemonHandlers = {
   shutdown(): Promise<DaemonShutdownResult> | DaemonShutdownResult;
 };
 
-async function handleSocket(socket: Socket, handlers: DaemonHandlers, requestTracker: { begin(): void; end(): void }): Promise<void> {
+async function handleSocket(socket: Socket, handlers: DaemonHandlers): Promise<void> {
   const chunks: Buffer[] = [];
   socket.setTimeout(5_000, () => socket.destroy());
   socket.on("data", chunk => chunks.push(Buffer.from(chunk)));

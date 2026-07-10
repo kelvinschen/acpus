@@ -1,4 +1,5 @@
 import type { JsonObject, JsonValue } from "@acpus/expression/ir";
+import { stableJson } from "../stable-json.js";
 import { isTerminalAttemptStatus, isTerminalFrameStatus, isTerminalGroupMemberStatus, isTerminalInstanceStatus, type SchedulerEvent } from "./events.js";
 import { ancestorGroupMembersForNode, descendantFramesForFrame, descendantFramesForMember, descendantGroupKeysForFrame, descendantGroupKeysForMember, descendantGroupMembersForFrame, descendantGroupMembersForMember, descendantInstancesForFrame, descendantInstancesForMember } from "./membership.js";
 import type {
@@ -26,7 +27,7 @@ export type TimestampedSchedulerEvent = {
   createdAt: string;
 };
 
-export type SchedulerProjectionTiming = {
+type SchedulerProjectionTiming = {
   createdAt: string;
   updatedAt: string;
 };
@@ -88,7 +89,7 @@ export function createSchedulerProjection(runId: string): SchedulerProjection {
   };
 }
 
-export function applySchedulerEvent(projection: SchedulerProjection, event: SchedulerEvent): SchedulerProjection {
+function applySchedulerEvent(projection: SchedulerProjection, event: SchedulerEvent): SchedulerProjection {
   const next = cloneProjection(projection);
   applyMutable(next, event);
   return next;
@@ -378,7 +379,7 @@ function applyMutable(projection: SchedulerProjection, event: SchedulerEvent): v
         if (event.payload.iter !== frame.loop.iter + 1) throw new Error(`Loop frame '${frame.frameKey}' cannot skip from iteration ${frame.loop.iter} to ${event.payload.iter}.`);
         const transition = loopTransition(frame.loop.transition);
         if (!transition.ok) throw new Error(`Loop frame '${frame.frameKey}' cannot advance before iteration ${frame.loop.iter} has a valid transition.`);
-        if (stableJson(event.payload.state) !== stableJson(transition.state)) {
+        if (event.payload.state === undefined || stableJson(event.payload.state) !== stableJson(transition.state)) {
           throw new Error(`Loop frame '${frame.frameKey}' next state must match iteration ${frame.loop.iter} transition state.`);
         }
       }
@@ -769,7 +770,7 @@ function applySignalEvent(projection: SchedulerProjection, event: Extract<Schedu
   }
   if (event.type === "signal.consumed") {
     if (wait.status === "consumed") {
-      if (wait.commandIdempotencyKey === event.payload.commandIdempotencyKey && stableJson(wait.payload) === stableJson(event.payload.payload)) return;
+      if (wait.commandIdempotencyKey === event.payload.commandIdempotencyKey && wait.payload !== undefined && stableJson(wait.payload) === stableJson(event.payload.payload)) return;
       throw new Error(`Signal wait '${event.payload.nodeKey}' has already consumed a different payload.`);
     }
     assertSignalOpen(wait.status, event.payload.nodeKey);
@@ -926,16 +927,6 @@ function assertGroupKindStrategy(kind: GroupProjection["kind"], strategy: GroupP
 function assertMemberKindMatchesGroup(group: GroupProjection, memberKind: GroupMember["memberKind"]): void {
   if (group.kind === "parallel" && memberKind !== "branch") throw new Error(`Parallel group '${group.groupKey}' requires branch members.`);
   if (group.kind === "fanout" && memberKind !== "fanout_item") throw new Error(`Fanout group '${group.groupKey}' requires fanout item members.`);
-}
-
-function stableJson(value: unknown): string {
-  return JSON.stringify(sortJson(value));
-}
-
-function sortJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortJson);
-  if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, field]) => [key, sortJson(field)]));
 }
 
 function compactFrame(frame: object): SchedulerFrame {

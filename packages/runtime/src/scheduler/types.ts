@@ -13,7 +13,7 @@ export type FrameStatus = "ready" | "running" | "awaiting" | "completed" | "fail
 export type NodeInstanceStatus = "pending" | "ready" | "running" | "awaiting" | "completed" | "failed" | "cancelled";
 export type AttemptStatus = "started" | "completed" | "failed" | "timed_out" | "cancelled" | "superseded";
 export type GroupMemberStatus = "ready" | "running" | "completed" | "failed" | "cancelled";
-export type SignalWaitStatus = "awaiting" | "consumed" | "timed_out" | "cancelled";
+type SignalWaitStatus = "awaiting" | "consumed" | "timed_out" | "cancelled";
 
 export type CancellationReason =
   | "parent_failed"
@@ -64,7 +64,7 @@ export type NodeInstance = {
   acceptedAttemptId?: string;
 };
 
-export type NodeAttempt = {
+type NodeAttempt = {
   runId: string;
   attemptId: string;
   nodeKey: string;
@@ -115,7 +115,7 @@ export type GroupMemberIdentity =
 
 export type GroupMember = GroupMemberBase & GroupMemberIdentity;
 
-export type SignalWait = {
+type SignalWait = {
   runId: string;
   nodeKey: string;
   nodeId: string;
@@ -130,7 +130,7 @@ export type SignalWait = {
   terminalReason?: string;
 };
 
-export type SchedulerRunProjection = {
+type SchedulerRunProjection = {
   runId: string;
   status: "pending" | "running" | "awaiting" | "paused" | "completed" | "failed" | "canceled";
   paused: boolean;

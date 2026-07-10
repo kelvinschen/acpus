@@ -6,7 +6,7 @@ import { resolutionErrorPayload, tryResolveDuration, tryResolveInteger, tryResol
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "./identity.js";
 import type { SchedulerEvent } from "./events.js";
 import type { FrameKind, GroupMember, InstancePath, InstancePathSegment, SchedulerFrame, SchedulerProjection } from "./types.js";
-import { baseScopeForFrame, completedScopeForFrame } from "./scope.js";
+import { baseScopeForFrame, completedScopeForFrame, scopeWithFanoutItem, scopeWithLoopIteration, scopeWithNodeOutput } from "./scope.js";
 import { nextLoopStep } from "./transitions.js";
 
 type ScopeIR = WorkflowIR["root"];
@@ -52,7 +52,7 @@ function continueFrameEvents(ir: WorkflowIR, projection: SchedulerProjection, fr
     return input ? continueScopeFrameEvents(input, projection) : [];
   }
   if (frame.frameKind === "loop") return continueLoopFrameEvents(ir, projection, frame, baseScope);
-  return continueNodeFrameEvents(ir, projection, frame, baseScope);
+  return continueNodeFrameEvents(ir, projection, frame);
 }
 
 function continueScopeFrameEvents(input: ScopeFrame, projection: SchedulerProjection): SchedulerEvent[] {
@@ -75,7 +75,7 @@ function continueScopeFrameEvents(input: ScopeFrame, projection: SchedulerProjec
     if (state.status === "failed") return terminalScopeFrameEvents(input, "failed", state.error ?? { reason: "node_failed" }, state.reason ?? "node_failed");
     if (state.status === "cancelled") return terminalScopeFrameEvents(input, "cancelled", undefined, state.reason ?? "parent_failed");
     if (state.status === "running") return [];
-    scope = withNodeOutput(scope, node.id, state.output);
+    scope = scopeWithNodeOutput(scope, node.id, state.output);
   }
 
   let result: JsonObject;
@@ -100,7 +100,7 @@ function continueScopeFrameEvents(input: ScopeFrame, projection: SchedulerProjec
   return events;
 }
 
-function continueNodeFrameEvents(ir: WorkflowIR, projection: SchedulerProjection, frame: SchedulerFrame, baseScope: EvaluationScope): SchedulerEvent[] {
+function continueNodeFrameEvents(ir: WorkflowIR, projection: SchedulerProjection, frame: SchedulerFrame): SchedulerEvent[] {
   const node = nodeForFrame(ir, frame);
   if (!node) return [];
   if (node.kind === "if" || node.kind === "switch") return continueConditionalFrameEvents(node, projection, frame);
@@ -191,7 +191,7 @@ function continueLoopFrameEvents(ir: WorkflowIR, projection: SchedulerProjection
       basePath: parentPath(frame.instancePath),
       iter: step.iter,
       readinessSequence: step.iter + 1,
-      scope: loopScopeForIteration(nodeScope, loop.id, step.iter, step.state),
+      scope: scopeWithLoopIteration(nodeScope, loop.id, step.iter, step.state),
     }),
   );
   return events;
@@ -361,7 +361,7 @@ function materializeFanoutEvents(input: { runId: string; node: FanoutNodeIR; par
     for (const [itemIndex, item] of items.entries()) {
       const itemPath = appendFanoutItem(input.basePath, input.node.id, itemIndex);
       const itemFrameKey = deriveInstanceKey(itemPath);
-      const itemScope = withFanout(input.scope, input.node.id, item as JsonValue, itemIndex);
+      const itemScope = scopeWithFanoutItem(input.scope, input.node.id, item as JsonValue, itemIndex);
       events.push(
         {
           type: "frame.started",
@@ -420,7 +420,7 @@ function materializeLoopEvents(input: { runId: string; node: LoopNodeIR; parentF
       basePath: input.basePath,
       iter: 0,
       readinessSequence: input.readinessSequence,
-      scope: loopScopeForIteration(input.scope, input.node.id, 0, state),
+      scope: scopeWithLoopIteration(input.scope, input.node.id, 0, state),
     }),
   ];
 }
@@ -689,7 +689,7 @@ function selectConditionalBranch(node: Extract<NodeIR, { kind: "if" | "switch" }
   if (node.kind === "if") {
     const condition = evaluateExpr(node.condition, scope);
     if (typeof condition !== "boolean") throw new Error(`If node '${node.id}' condition must evaluate to boolean.`);
-    return condition ? { branchId: "then", scope: node.then } : { branchId: "else", scope: node.else ?? emptyScope() };
+    return condition ? { branchId: "then", scope: node.then } : { branchId: "else", scope: node.else };
   }
   const selected = node.cases.findIndex(c => {
     const condition = evaluateExpr(c.when, scope);
@@ -698,16 +698,16 @@ function selectConditionalBranch(node: Extract<NodeIR, { kind: "if" | "switch" }
   });
   return selected >= 0
     ? { branchId: `case:${selected}`, scope: node.cases[selected]!.then }
-    : { branchId: "default", scope: node.default ?? emptyScope() };
+    : { branchId: "default", scope: node.default };
 }
 
 function conditionalBranchById(node: Extract<NodeIR, { kind: "if" | "switch" }>, branchId: string): { branchId: string; scope: ScopeIR } | undefined {
   if (node.kind === "if") {
     if (branchId === "then") return { branchId, scope: node.then };
-    if (branchId === "else") return { branchId, scope: node.else ?? emptyScope() };
+    if (branchId === "else") return { branchId, scope: node.else };
     return undefined;
   }
-  if (branchId === "default") return { branchId, scope: node.default ?? emptyScope() };
+  if (branchId === "default") return { branchId, scope: node.default };
   const match = /^case:(\d+)$/.exec(branchId);
   if (!match) return undefined;
   const index = Number(match[1]);
@@ -717,18 +717,6 @@ function conditionalBranchById(node: Extract<NodeIR, { kind: "if" | "switch" }>,
 
 function scopeMapForScope(basePath: InstancePath, scope: ScopeIR): Record<string, string> {
   return Object.fromEntries(scope.nodes.map(node => [node.id, deriveInstanceKey(appendNode(basePath, node.id))]));
-}
-
-function withNodeOutput(scope: EvaluationScope, nodeId: string, output: unknown): EvaluationScope {
-  return { ...scope, nodes: { ...scope.nodes, [nodeId]: { status: "completed", output } } };
-}
-
-function withFanout(scope: EvaluationScope, nodeId: string, item: unknown, itemIndex: number): EvaluationScope {
-  return { ...scope, fanout: { ...scope.fanout, [nodeId]: { item, itemIndex } } };
-}
-
-function loopScopeForIteration(scope: EvaluationScope, nodeId: string, iter: number, state?: JsonValue): EvaluationScope {
-  return { ...scope, loop: { ...scope.loop, [nodeId]: { index: iter, round: iter + 1, ...(state === undefined ? {} : { state }) } } };
 }
 
 function evaluateOutputs(outputs: NonNullable<ScopeIR["outputs"]>, scope: EvaluationScope): JsonObject {
@@ -761,10 +749,6 @@ function parentPath(path: InstancePath): InstancePath {
 
 function lastSegment(path: InstancePath | undefined): InstancePathSegment | undefined {
   return path?.[path.length - 1];
-}
-
-function emptyScope(): ScopeIR {
-  return { nodes: [], outputs: {} };
 }
 
 function isSchedulerLeaf(node: NodeIR): boolean {

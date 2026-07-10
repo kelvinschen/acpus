@@ -72,7 +72,6 @@ async function writeTypecheckConfig(entry: string, cwd: string, scratchDir: stri
     noEmit: true,
     types: ["node"],
     typeRoots: typeRoots(cwd),
-    tsBuildInfoFile: join(scratchDir, ".tsbuildinfo"),
   };
 
   const officialImports = officialAuthoringTypeScriptPaths(scratchDir);

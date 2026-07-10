@@ -1,7 +1,7 @@
 import type { ArtifactRecord, RunInspection } from "@acpus/runtime";
 import { renderExpr, renderPromptExpr } from "./expression-format.js";
 
-export type NodeInspectionTarget = {
+type NodeInspectionTarget = {
   kind: "static-node" | "dynamic-node" | "frame" | "attempt" | "unknown";
   id: string;
 };
@@ -23,7 +23,7 @@ export type NodeInspectionResponse = {
   artifacts: ArtifactRecord[];
 };
 
-export type NodeInspectionSummary = {
+type NodeInspectionSummary = {
   targetKind: NodeInspectionTarget["kind"];
   targetId: string;
   runStatus: string;

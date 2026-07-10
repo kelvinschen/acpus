@@ -4,7 +4,6 @@ import type { GraphOutputCheck, OutputValues } from "../../graph/scope.js";
 import type { IsUnion } from "../../internal/type-utils.js";
 import type { ScopeIR } from "../../ir/types.js";
 export type OutputObject = Record<string, unknown>;
-export type ScopeOutput<Output> = Output extends OutputObject ? Output : OutputObject;
 export type ScopeCallback<Output extends OutputObject = any> =
   () => OutputValues<Output>;
 export type CheckedScopeCallback<Callback extends (...args: any[]) => OutputObject> =

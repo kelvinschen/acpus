@@ -190,8 +190,6 @@ try {
         "packages/loader/tsconfig.json",
         "--outDir",
         buildDir,
-        "--tsBuildInfoFile",
-        join(buildDir, ".tsbuildinfo"),
       ], { cwd: repoRoot });
       const workflow = join(cwd, "index.workflow.ts");
       await writeFile(join(cwd, "package.json"), JSON.stringify({ type: "module" }));
@@ -251,8 +249,6 @@ console.log(JSON.stringify({ taskish: Boolean(token && typeof token === "object"
         "packages/loader/tsconfig.json",
         "--outDir",
         loaderDist,
-        "--tsBuildInfoFile",
-        join(loaderDist, ".tsbuildinfo"),
       ], { cwd: repoRoot });
       await writeInstalledPackage(root, "@acpus/core", {
         ".": "dist/index",

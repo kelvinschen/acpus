@@ -1,8 +1,41 @@
 import { describe, expect, it } from "vitest";
-import { writeResult, type CliResult } from "../src/output.js";
+import type { WorkflowIR } from "@acpus/core/ir";
+import { summarizeWorkflow, writeResult, type CliResult } from "../src/output.js";
 import { CaptureStream } from "./support/capture-stream.js";
 
 describe("CLI result output contracts", () => {
+  it("counts nested workflow nodes in summaries", () => {
+    const ir: WorkflowIR = {
+      irVersion: 3,
+      name: "nested",
+      agents: {},
+      root: {
+        nodes: [{
+          id: "choose",
+          kind: "if",
+          condition: { kind: "literal", value: true },
+          then: {
+            nodes: [{
+              id: "then_task",
+              kind: "task",
+              run: { kind: "task_run", input: {}, target: { kind: "inline", runtime: "node", source: "async function task() {}" } },
+            }],
+          },
+          else: { nodes: [{ id: "otherwise", kind: "assert", condition: { kind: "literal", value: true } }] },
+        }, {
+          id: "after",
+          kind: "assert",
+          condition: { kind: "literal", value: true },
+        }],
+      },
+      outputs: {},
+      lock: { acpusCoreVersion: "0.0.0", generatedAt: "2026-07-10T00:00:00.000Z", notes: [] },
+      diagnostics: [],
+    };
+
+    expect(summarizeWorkflow(ir).nodeCount).toBe(4);
+  });
+
   it("writes stable JSON results to stdout", () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();

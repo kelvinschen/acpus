@@ -3,7 +3,7 @@ import { normalizeWorkflowInput } from "../admission/input.js";
 import { isRuntimeStoreBusyError, openRuntimeStore, validateAgentOverrides } from "../store/store.js";
 import { formatHookLoadError, loadHooksConfig } from "../hooks/loader.js";
 import { createHookRunner } from "../hooks/runner.js";
-import { RuntimeUseCaseException } from "../runs/use-cases.js";
+import { stableJson } from "../stable-json.js";
 import { RunExecutionSessions } from "./sessions.js";
 import { RuntimeMutationQueue } from "./mutation-queue.js";
 import { DaemonRequestError, startDaemonServer, type DaemonErrorCode, type DaemonServerHandle } from "./socket.js";
@@ -89,7 +89,7 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
         if (!mutations.isIdle()) throw new DaemonRequestError("CONTROL_CONFLICT", "Daemon has active runtime mutations.");
         if (sessions.activeCount() > 0) throw new DaemonRequestError("CONTROL_CONFLICT", "Daemon has active run sessions.");
         setImmediate(() => {
-          void shutdown("external").then(() => options.onShutdown?.());
+          requestShutdown("external");
         });
         return { status: "shutdown" };
       },
@@ -127,8 +127,13 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
     activeHeartbeat = heartbeat();
   }, heartbeatMs);
   const tickTimer = setInterval(() => {
-    activeTick = tick();
+    startTick();
   }, heartbeatMs);
+
+  function startTick(): void {
+    if (ticking || stopped) return;
+    activeTick = tick();
+  }
 
   async function shutdown(source: "external" | "tick" | "heartbeat" = "external"): Promise<void> {
     if (shutdownPromise) return shutdownPromise;
@@ -136,18 +141,33 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
     clearInterval(heartbeatTimer);
     clearInterval(tickTimer);
     shutdownPromise = (async () => {
-      if (source !== "tick") await activeTick;
-      if (source !== "heartbeat") await activeHeartbeat;
-      await closeDaemonServer(server);
-      await sessions.stopExecutors(EXECUTOR_SHUTDOWN_GRACE_MS);
-      await sessions.drainHooks();
-      store.releaseDaemon({
-        workspaceRealpath,
-        generation: lease.generation,
-      });
-      store.close();
+      try {
+        if (source !== "tick") await activeTick;
+        if (source !== "heartbeat") await activeHeartbeat;
+        await closeDaemonServer(server);
+        await sessions.stopExecutors(EXECUTOR_SHUTDOWN_GRACE_MS);
+        await sessions.drainHooks();
+      } finally {
+        try {
+          store.releaseDaemon({
+            workspaceRealpath,
+            generation: lease.generation,
+          });
+        } finally {
+          store.close();
+        }
+      }
     })();
     return shutdownPromise;
+  }
+
+  function requestShutdown(source: "external" | "tick" | "heartbeat"): void {
+    const notify = () => {
+      try {
+        options.onShutdown?.();
+      } catch {}
+    };
+    void shutdown(source).then(notify, notify);
   }
 
   async function heartbeat(): Promise<void> {
@@ -155,17 +175,18 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
     heartbeating = true;
     try {
       if (!store.heartbeatDaemon({ workspaceRealpath, generation: lease.generation })) {
-        void shutdown("heartbeat").then(() => options.onShutdown?.());
+        requestShutdown("heartbeat");
       }
-    } catch {
-      // Keep the daemon process alive; the next heartbeat can recover if the store is usable.
+    } catch (error) {
+      if (!stopped && !isRuntimeStoreBusyError(error)) {
+        requestShutdown("heartbeat");
+      }
     } finally {
       heartbeating = false;
     }
   }
 
   async function tick(): Promise<void> {
-    if (ticking || stopped) return;
     ticking = true;
     try {
       const result = await runDaemonTick(store, { startRun: runId => sessions.start(runId) });
@@ -183,16 +204,18 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
         idleStopMs,
       });
       if (Date.now() - idleSince >= idleStopMs) {
-        void shutdown("tick").then(() => options.onShutdown?.());
+        requestShutdown("tick");
       }
-    } catch {
-      // Keep the daemon process alive; a later tick can retry runnable runs.
+    } catch (error) {
+      if (!stopped && !isRuntimeStoreBusyError(error)) {
+        requestShutdown("tick");
+      }
     } finally {
       ticking = false;
     }
   }
 
-  activeTick = tick();
+  startTick();
   return { shutdown };
 }
 
@@ -206,7 +229,7 @@ async function closeDaemonServer(server: DaemonServerHandle): Promise<void> {
 
 function canonicalPreparedRunWorkflow<T extends { ir: unknown; irJson: string; lock: { ir: { digest: string } } }>(prepared: T): T {
   const irFromJson = JSON.parse(prepared.irJson) as unknown;
-  if (canonicalJson(irFromJson) !== canonicalJson(prepared.ir)) throw new Error("Prepared workflow IR JSON does not match prepared IR.");
+  if (stableJsonLine(irFromJson) !== stableJsonLine(prepared.ir)) throw new Error("Prepared workflow IR JSON does not match prepared IR.");
   if (sha256(prepared.irJson) !== prepared.lock.ir.digest) throw new Error("Prepared workflow lock IR digest does not match IR JSON.");
   return { ...prepared, ir: irFromJson } as T;
 }
@@ -215,14 +238,8 @@ function sha256(value: string): string {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
-function canonicalJson(value: unknown): string {
-  return `${JSON.stringify(sortJson(value))}\n`;
-}
-
-function sortJson(value: unknown): unknown {
-  if (!value || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map(sortJson);
-  return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, sortJson(item)]));
+function stableJsonLine(value: unknown): string {
+  return `${stableJson(value)}\n`;
 }
 
 function daemonControlCode(error: unknown): DaemonErrorCode {

@@ -152,6 +152,11 @@ describe("scheduler identity and reducers", () => {
     expect(() => applySchedulerEvents(completed, [
       { type: "signal.consumed", payload: { nodeKey: "approve~1", payload: { ok: false }, commandIdempotencyKey: "signal-2" } },
     ])).toThrow("already consumed a different payload");
+
+    delete completed.signalWaits["approve~1"]!.payload;
+    expect(() => applySchedulerEvents(completed, [
+      { type: "signal.consumed", payload: { nodeKey: "approve~1", payload: { ok: true }, commandIdempotencyKey: "signal-1" } },
+    ])).toThrow("already consumed a different payload");
   });
 
   it("keeps run controls, branch decisions, and loop progress monotonic", () => {
@@ -187,6 +192,9 @@ describe("scheduler identity and reducers", () => {
       { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 2, state: { done: false, iter: 1 } } },
       { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 2, state: { done: true }, transition: { state: { done: true }, stop: true } } },
     ]);
+    expect(() => applySchedulerEvents(loop, [
+      { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 3 } },
+    ])).toThrow("next state must match iteration 2 transition state");
     expect(() => applySchedulerEvents(loop, [
       { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 1, transition: { state: { done: false }, stop: false } } },
     ])).toThrow("cannot move from iteration 2 back to 1");

@@ -1,13 +1,9 @@
-import * as React from "react";
-import { useEffect, useState } from "react";
-import { allExpanded, defaultStyles, JsonView } from "react-json-view-lite";
-import "react-json-view-lite/dist/index.css";
-import Copy from "lucide-react/dist/esm/icons/copy.js";
-import XCircle from "lucide-react/dist/esm/icons/circle-x.js";
+import { useState } from "react";
+import Boxes from "lucide-react/dist/esm/icons/boxes.js";
 import type { WebGraph, WebGraphSelection, WorkflowVisualizationResult } from "../api.js";
+import { InspectorPanel, InspectorSection, JsonSection, KeyValue } from "./Inspector.js";
 import { RunGraph } from "./RunGraph.js";
-import { Button } from "./shadcn/button.js";
-import { Card } from "./shadcn/card.js";
+import { useInspectorPresence } from "./useInspectorPresence.js";
 
 export type StaticGraphData = {
   graph: WebGraph;
@@ -21,8 +17,6 @@ export type StaticGraphData = {
 type GraphInspectionTarget =
   | { kind: "workflow" }
   | { kind: "node"; id: string; context: WebGraphSelection[] };
-
-const inspectorExitMs = 220;
 
 export function StaticGraphApp({ data }: { data: StaticGraphData }) {
   const [selectedTarget, setSelectedTarget] = useState<GraphInspectionTarget | undefined>();
@@ -52,29 +46,6 @@ export function StaticGraphApp({ data }: { data: StaticGraphData }) {
       </div>
     </div>
   );
-}
-
-function useInspectorPresence(target: GraphInspectionTarget | undefined, onExited: () => void): { exiting: boolean; layoutState: "closed" | "open" | "closing"; close(): void } {
-  const [exiting, setExiting] = useState(false);
-
-  useEffect(() => {
-    if (target) setExiting(false);
-  }, [target]);
-
-  const close = () => {
-    if (!target || exiting) return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      onExited();
-      return;
-    }
-    setExiting(true);
-    window.setTimeout(() => {
-      setExiting(false);
-      onExited();
-    }, inspectorExitMs);
-  };
-
-  return { exiting, layoutState: target ? exiting ? "closing" : "open" : "closed", close };
 }
 
 function StaticWorkflowInspector({ data }: { data: StaticGraphData }) {
@@ -122,113 +93,14 @@ function StaticGraphInspector({ graph, target }: { graph: WebGraph | undefined; 
   );
 }
 
-function InspectorPanel({
-  title,
-  exiting = false,
-  onClose,
-  children,
-}: {
-  title: string;
-  exiting?: boolean;
-  onClose(): void;
-  children: React.ReactNode;
-}) {
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
-
-  return (
-    <Card asChild className={`inspector-card ${exiting ? "exiting" : ""}`}>
-      <aside role="dialog" aria-label={title}>
-        <div className="inspector-card-head">
-          <div>
-            <span>Inspector</span>
-            <strong>{title}</strong>
-          </div>
-          <Button variant="ghost" className="close-button" onClick={onClose} aria-label="Close inspector">
-            <XCircle size={16} />
-          </Button>
-        </div>
-        <div className="inspector-card-body">{children}</div>
-      </aside>
-    </Card>
-  );
-}
-
-function InspectorSection({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <section className="inspector-section">
-      <div className="inspector-section-head">
-        <h3>{title}</h3>
-        {action}
-      </div>
-      <div className="inspector-section-body">{children}</div>
-    </section>
-  );
-}
-
-function JsonSection({ title, value }: { title: string; value: unknown }) {
-  return (
-    <InspectorSection title={title} action={<JsonCopyButton value={value} />}>
-      <JsonBlock value={value} />
-    </InspectorSection>
-  );
-}
-
-function JsonCopyButton({ value }: { value: unknown }) {
-  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
-  return (
-    <Button
-      type="button"
-      variant="ghost"
-      className={`json-copy-button ${state}`}
-      onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(JSON.stringify(value, null, 2));
-          setState("copied");
-          window.setTimeout(() => setState("idle"), 1_400);
-        } catch {
-          setState("failed");
-          window.setTimeout(() => setState("idle"), 1_800);
-        }
-      }}
-    >
-      <Copy size={13} />
-      {state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : "Copy JSON"}
-    </Button>
-  );
-}
-
-function JsonBlock({ value }: { value: unknown }) {
-  return (
-    <div className="json-viewer">
-      <JsonView data={jsonViewData(value)} shouldExpandNode={allExpanded} style={defaultStyles} />
-    </div>
-  );
-}
-
-function jsonViewData(value: unknown): object | unknown[] {
-  return value !== null && typeof value === "object" ? value as object | unknown[] : { value };
-}
-
-function KeyValue({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="key-value" tabIndex={0} title={`${label}: ${value}`} aria-label={`${label}: ${value}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
 function StateBlock({ title, detail }: { title: string; detail?: string }) {
   return (
     <div className="state-block empty">
-      <strong>{title}</strong>
-      {detail && <span>{detail}</span>}
+      <span className="state-block-icon" aria-hidden="true"><Boxes size={16} /></span>
+      <div>
+        <strong>{title}</strong>
+        {detail && <p>{detail}</p>}
+      </div>
     </div>
   );
 }

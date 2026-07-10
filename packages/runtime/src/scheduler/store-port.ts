@@ -32,7 +32,7 @@ export type SchedulerStoreError =
   | { type: "invalid-retry-target"; runId: string; targetKey?: string; status: string; message: string }
   | { type: "missing-cancel-target"; runId: string; targetKey: string; message: string }
   | { type: "invalid-cancel-target"; runId: string; targetKey?: string; status: string; message: string }
-  | { type: "invalid-control-state"; runId: string; command: "resume"; status: string; message: string };
+  | { type: "deadline-out-of-range"; runId: string; nodeKey: string; message: string };
 
 export type SchedulerStoreResult<T> = Result<T, SchedulerStoreError>;
 
@@ -71,6 +71,7 @@ export type SchedulerCommit = {
   ownerEpoch: number;
   events: SchedulerEvent[];
   idempotencyKey: string;
+  intentDigest?: string;
 };
 
 export type AttemptStartInput = {
@@ -119,7 +120,7 @@ export type SchedulerRetryInput = {
   runId: string;
   ownerEpoch: number;
   idempotencyKey: string;
-  targetKey: string;
+  target: string;
 };
 
 export type SchedulerRunRetryInput = {
@@ -132,7 +133,7 @@ export type SchedulerCancelInput = {
   runId: string;
   ownerEpoch: number;
   idempotencyKey: string;
-  targetKey?: string;
+  target?: string;
 };
 
 export type SchedulerStorePort = {

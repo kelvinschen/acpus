@@ -1,3 +1,4 @@
+import { tryParsePersistedDeadline } from "../deadline.js";
 import type { SchedulerEvent } from "./events.js";
 
 const schedulerEventTypes = new Set<string>([
@@ -55,5 +56,13 @@ export function decodeSchedulerPayload(payloadJson: string, eventType: string): 
   if ((envelope as { schedulerEventVersion?: unknown }).schedulerEventVersion !== 1 || !payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new Error(`Scheduler event '${eventType}' has an invalid scheduler envelope.`);
   }
-  return payload as Record<string, unknown>;
+  const record = payload as Record<string, unknown>;
+  if (eventType === "attempt.started" || eventType === "signal.awaiting" || eventType === "signal.timeout_resumed") {
+    const deadlineAt = record.deadlineAt;
+    if ((deadlineAt !== undefined || eventType === "signal.timeout_resumed")
+      && (typeof deadlineAt !== "string" || tryParsePersistedDeadline(deadlineAt).isErr())) {
+      throw new Error(`Scheduler event '${eventType}' has an invalid persisted deadline.`);
+    }
+  }
+  return record;
 }

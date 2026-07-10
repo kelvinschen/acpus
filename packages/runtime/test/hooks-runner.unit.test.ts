@@ -52,6 +52,20 @@ describe("hook runner", () => {
     ]));
   });
 
+  it("does not overflow long hook timeouts", async () => {
+    const journal = journalWriter();
+    const runner = createHookRunner([
+      hook("run.completed", command("process.stdout.write('ok')"), undefined, "long-timeout", "2147543647ms"),
+    ], journal);
+
+    runner.trigger("run.completed", context());
+    await runner.drain();
+
+    expect(journal.entries).toEqual([
+      expect.objectContaining({ handlerId: "long-timeout", status: "completed", stdout: "ok" }),
+    ]);
+  });
+
   it("kills shell child processes on timeout", async () => {
     const dir = await mkdtemp(join(tmpdir(), "acpus-hook-tree-"));
     const marker = join(dir, "child-ran");

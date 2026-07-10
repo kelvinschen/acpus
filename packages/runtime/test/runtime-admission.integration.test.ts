@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { getRun, getRunInspection, listArtifacts, listRuns, normalizeWorkflowInput } from "@acpus/runtime";
 import { admitWorkflowRun } from "../src/runs/use-cases.js";
+import { stableJson } from "../src/stable-json.js";
 import type { TaskExecutionTargetIR, WorkflowIR } from "@acpus/core/ir";
 import {
   admitFixture,
@@ -32,7 +33,8 @@ const runIdPattern = /^\d{14}[A-F0-9]{20}$/;
 describe.concurrent("runtime admission use cases", () => {
   it("admits a pure run and exposes read-only inspection", async () => {
     await withRuntimeWorkspace("runtime-admit-pure", async workspace => {
-      const admitted = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const admitted = await admitWorkflowRun(workspace, prepared, normalizeWorkflowInput(prepared.ir, { ready: true }));
 
       expect(admitted.status).toBe("completed");
       expect(admitted.run.id).toMatch(runIdPattern);
@@ -57,20 +59,23 @@ describe.concurrent("runtime admission use cases", () => {
         name: "cli-valid",
         description: "Validate a boolean ready input.",
       });
+      const runDir = join(workspace, ".acpus", ".local", "runs", admitted.run.id);
+      const workflowIr = await readFile(join(runDir, "workflow.ir.json"));
+      const workflowLock = await readFile(join(runDir, "lock.json"));
+      expect(workflowIr.toString("utf8")).toBe(prepared.irJson);
+      expect(workflowLock.toString("utf8")).toBe(`${stableJson(prepared.lock)}\n`);
+      expect(JSON.parse(workflowLock.toString("utf8"))).toEqual(prepared.lock);
       expect(runtimeRow(workspace, `
-        SELECT workflow_ir_json, workflow_ir_path, workflow_ir_digest, lock_json, lock_path, lock_digest
+        SELECT workflow_ir_path, workflow_ir_digest, lock_path, lock_digest, run_dir
         FROM run_inputs
         WHERE run_id = ?
-      `, admitted.run.id)).toMatchObject({
-        workflow_ir_json: null,
+      `, admitted.run.id)).toEqual({
         workflow_ir_path: "workflow.ir.json",
-        workflow_ir_digest: expect.stringMatching(/^sha256:/),
-        lock_json: null,
+        workflow_ir_digest: `sha256:${createHash("sha256").update(workflowIr).digest("hex")}`,
         lock_path: "lock.json",
-        lock_digest: expect.stringMatching(/^sha256:/),
+        lock_digest: `sha256:${createHash("sha256").update(workflowLock).digest("hex")}`,
+        run_dir: join(".acpus", ".local", "runs", admitted.run.id),
       });
-      await expect(access(join(workspace, ".acpus", ".local", "runs", admitted.run.id, "workflow.ir.json"))).resolves.toBeUndefined();
-      await expect(access(join(workspace, ".acpus", ".local", "runs", admitted.run.id, "lock.json"))).resolves.toBeUndefined();
     });
   });
 
@@ -98,30 +103,65 @@ describe.concurrent("runtime admission use cases", () => {
     });
   });
 
-  it("reads frozen workflow files by digest and supports legacy DB-only rows", async () => {
-    await withRuntimeWorkspace("runtime-frozen-read-modes", async workspace => {
+  it("rejects a frozen workflow file whose digest no longer matches", async () => {
+    await withRuntimeWorkspace("runtime-frozen-digest-mismatch", async workspace => {
       const corrupted = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
       await writeFile(join(workspace, ".acpus", ".local", "runs", corrupted.run.id, "workflow.ir.json"), "{}\n");
       await expect(getRunInspection(workspace, corrupted.run.id)).rejects.toThrow("Frozen workflow IR digest mismatch.");
+    });
+  });
 
-      const legacy = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
-      const workflowIrJson = await readFile(join(workspace, ".acpus", ".local", "runs", legacy.run.id, "workflow.ir.json"), "utf8");
-      const lockJson = await readFile(join(workspace, ".acpus", ".local", "runs", legacy.run.id, "lock.json"), "utf8");
+  it("surfaces missing and non-contained frozen workflow files", async () => {
+    await withRuntimeWorkspace("runtime-frozen-file-invariants", async workspace => {
+      const missing = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
+      await rm(join(workspace, ".acpus", ".local", "runs", missing.run.id, "workflow.ir.json"));
+      await expect(getRunInspection(workspace, missing.run.id)).rejects.toMatchObject({ code: "ENOENT" });
+
+      const escapedFile = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
       const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
       try {
-        db.prepare(`
-          UPDATE run_inputs
-          SET workflow_ir_json = ?, workflow_ir_path = NULL, workflow_ir_digest = NULL,
-              lock_json = ?, lock_path = NULL, lock_digest = NULL
-          WHERE run_id = ?
-        `).run(workflowIrJson, lockJson, legacy.run.id);
+        db.prepare("UPDATE run_inputs SET workflow_ir_path = '../outside.json' WHERE run_id = ?").run(escapedFile.run.id);
       } finally {
         db.close();
       }
+      await expect(getRunInspection(workspace, escapedFile.run.id)).rejects.toThrow("Path '../outside.json' escapes run directory.");
 
-      await expect(getRunInspection(workspace, legacy.run.id)).resolves.toMatchObject({
-        run: { id: legacy.run.id, name: "cli-valid" },
-      });
+      const escapedRunDir = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
+      const runDirDb = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+      try {
+        runDirDb.prepare("UPDATE run_inputs SET run_dir = '.acpus/.local/outside' WHERE run_id = ?").run(escapedRunDir.run.id);
+      } finally {
+        runDirDb.close();
+      }
+      await expect(getRunInspection(workspace, escapedRunDir.run.id)).rejects.toThrow(
+        "Run directory '.acpus/.local/outside' is outside .acpus/.local/runs.",
+      );
+
+      const symlinkedRunDir = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
+      const symlinkedRunPath = join(workspace, ".acpus", ".local", "runs", symlinkedRunDir.run.id);
+      const outsideRunPath = join(workspace, "outside-run");
+      await rename(symlinkedRunPath, outsideRunPath);
+      await symlink(outsideRunPath, symlinkedRunPath, "dir");
+      await expect(getRunInspection(workspace, symlinkedRunDir.run.id)).rejects.toThrow(
+        `Run directory '${join(".acpus", ".local", "runs", symlinkedRunDir.run.id)}' is outside .acpus/.local/runs.`,
+      );
+
+      const symlinkedFile = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
+      const workflowPath = join(workspace, ".acpus", ".local", "runs", symlinkedFile.run.id, "workflow.ir.json");
+      const outsideWorkflowPath = join(workspace, "outside-workflow.ir.json");
+      await writeFile(outsideWorkflowPath, await readFile(workflowPath));
+      await rm(workflowPath);
+      await symlink(outsideWorkflowPath, workflowPath);
+      await expect(getRunInspection(workspace, symlinkedFile.run.id)).rejects.toThrow("is a symbolic link");
+
+      const symlinkedRunsRoot = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
+      const runsRoot = join(workspace, ".acpus", ".local", "runs");
+      const outsideRunsRoot = join(workspace, "outside-runs-root");
+      await rename(runsRoot, outsideRunsRoot);
+      await symlink(outsideRunsRoot, runsRoot, "dir");
+      await expect(getRunInspection(workspace, symlinkedRunsRoot.run.id)).rejects.toThrow(
+        `Run directory root '${join(".acpus", ".local", "runs")}' is outside the workspace.`,
+      );
     });
   });
 

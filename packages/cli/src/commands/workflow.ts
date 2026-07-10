@@ -1,8 +1,8 @@
 import type { Writable } from "node:stream";
 import { resolve } from "node:path";
 import { Command } from "commander";
-import type { WorkflowIR } from "@acpus/core/ir";
-import { DaemonRequestError, normalizeWorkflowInput, validateAgentOverrides, type AgentOverrideMap, type PreparedRunWorkflow, type RuntimeAdvanceResult, type RunDetails } from "@acpus/runtime";
+import { walkNodes } from "@acpus/core/ir";
+import { DaemonRequestError, normalizeWorkflowInput, requestDaemonObserveRun, validateAgentOverrides, type AgentOverrideMap, type PreparedRunWorkflow, type RuntimeAdvanceResult, type RunDetails } from "@acpus/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
 import { runError, usageError, validationError } from "../errors.js";
 import { discoverWorkflowCatalog, resolveWorkflowReference, showWorkflowCatalogEntry, type WorkflowCatalogScopeOptions } from "../catalog.js";
@@ -11,7 +11,7 @@ import { formatRunObservationRow, formatRunStatusSurface, staticNodesForWorkflow
 import { prepareWorkflowForCli } from "../workflow-preparation.js";
 import { writeWorkflowInit } from "../workflow-init/write.js";
 import { parseAgents, parseInput } from "./json.js";
-import { sendDaemonAdmitRun, sendDaemonObserveStartedRun } from "./daemon.js";
+import { sendDaemonAdmitRun } from "./daemon.js";
 
 export type WorkflowCommandContext = {
   cwd: string;
@@ -220,7 +220,7 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
   const detach = installDetachHandler(ctx, admitted.id);
   let advanced: RuntimeAdvanceResult;
   try {
-    advanced = await sendDaemonObserveStartedRun(ctx.cwd, admitted.id);
+    advanced = await requestDaemonObserveRun(ctx.cwd, admitted.id);
     writeRunObservations(ctx, seen, advanced.run, staticNodes);
   } finally {
     detach();
@@ -264,7 +264,7 @@ async function visualizeWorkflow(ctx: WorkflowCommandContext, workflow: string, 
       name: prepared.ir.name,
       ...(prepared.ir.description === undefined ? {} : { description: prepared.ir.description }),
       irVersion: prepared.ir.irVersion,
-      nodeCount: countWorkflowNodes(prepared.ir.root),
+      nodeCount: Array.from(walkNodes(prepared.ir.root)).length,
     },
     contract: {
       ...(prepared.ir.inputSchema === undefined ? {} : { inputSchema: prepared.ir.inputSchema }),
@@ -292,17 +292,6 @@ async function visualizeWorkflow(ctx: WorkflowCommandContext, workflow: string, 
 
 function outputFormat(ctx: WorkflowCommandContext): OutputFormat {
   return ctx.wantsJson ? "json" : "text";
-}
-
-function countWorkflowNodes(scope: WorkflowIR["root"]): number {
-  return scope.nodes.reduce((total, node) => {
-    if (node.kind === "if") return total + 1 + countWorkflowNodes(node.then) + (node.else ? countWorkflowNodes(node.else) : 0);
-    if (node.kind === "switch") return total + 1 + node.cases.reduce((sum, branch) => sum + countWorkflowNodes(branch.then), 0) + countWorkflowNodes(node.default);
-    if (node.kind === "parallel") return total + 1 + Object.values(node.branches).reduce((sum, branch) => sum + countWorkflowNodes(branch.scope), 0);
-    if (node.kind === "fanout") return total + 1 + countWorkflowNodes(node.do);
-    if (node.kind === "loop") return total + 1 + countWorkflowNodes(node.do);
-    return total + 1;
-  }, 0);
 }
 
 function installDetachHandler(ctx: WorkflowCommandContext, runId: string): () => void {

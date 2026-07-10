@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { HookJournalEntry } from "../src/hooks/journal.js";
+import { advanceRuntimeRun } from "../src/runs/advance-runtime.js";
 import { openRuntimeStore } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 
@@ -40,7 +41,7 @@ describe("hook journal store", () => {
 
         expect(store.getRun(run.id)?.hooks).toEqual([]);
 
-        store.completeRun({ runId: run.id, output: { ready: true }, nodes: { require_ready: { status: "completed", output: true } } });
+        await expect(advanceRuntimeRun(workspace, store, run.id)).resolves.toMatchObject({ status: "completed" });
 
         expect(store.getRun(run.id)?.hooks).toMatchObject([{ handlerId: "notify", event: "run.completed" }]);
       } finally {

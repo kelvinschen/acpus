@@ -9,8 +9,7 @@ export type DisplayStatus =
   | "skipped"
   | "not_started";
 
-export const activeDisplayStatuses = new Set<DisplayStatus>(["running", "awaiting"]);
-export const terminalDisplayStatuses = new Set<DisplayStatus>(["completed", "failed", "canceled"]);
+const activeDisplayStatuses = new Set<DisplayStatus>(["running", "awaiting"]);
 
 export function normalizeRuntimeStatus(status: string | undefined): DisplayStatus {
   switch (status) {
@@ -50,10 +49,6 @@ export function displayNodeStatus(status: string | undefined): DisplayStatus {
 
 export function isActiveDisplayStatus(status: string | undefined): boolean {
   return activeDisplayStatuses.has(normalizeRuntimeStatus(status));
-}
-
-export function isTerminalDisplayStatus(status: string | undefined): boolean {
-  return terminalDisplayStatuses.has(normalizeRuntimeStatus(status));
 }
 
 export function runtimeStatusLabel(status: string | undefined): string {

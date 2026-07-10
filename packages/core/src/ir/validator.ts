@@ -1,4 +1,5 @@
 import { validateExprIR, type ExpressionDiagnostic } from "@acpus/expression/validator";
+import { tryParseDurationMs } from "./duration.js";
 import type { DiagnosticIR, ExprIR, NodeIR, SchemaIR, SecretRefIR, TemplateIR, WorkflowIR } from "./types.js";
 
 export function validateWorkflowIR(ir: WorkflowIR): DiagnosticIR[] {
@@ -448,7 +449,7 @@ function validateDurationExpr(
   refs: RefContext,
 ): void {
   if (value === undefined || !validateExpr(value, diagnostics, path, refs)) return;
-  if (value.kind === "literal" && (typeof value.value !== "string" || !/^\d+(ms|s|m|h)?$/.test(value.value))) {
+  if (value.kind === "literal" && (typeof value.value !== "string" || tryParseDurationMs(value.value).isErr())) {
     addError(diagnostics, code, `${label} must resolve to a duration string like 500ms, 30s, 5m, 1h, or 1000.`, path);
   }
 }
@@ -499,22 +500,6 @@ function refsFromScope(ctx: IrScopeContext): RefContext {
     visibleNodes: ctx.visibleNodes,
     fanoutIds: ctx.fanoutIds,
     loopIds: ctx.loopIds,
-  };
-}
-
-function refsWithFanout(ctx: IrScopeContext, fanoutId: string): RefContext {
-  return {
-    visibleNodes: ctx.visibleNodes,
-    fanoutIds: new Set([...ctx.fanoutIds, fanoutId]),
-    loopIds: ctx.loopIds,
-  };
-}
-
-function refsWithLoop(ctx: IrScopeContext, loopId: string): RefContext {
-  return {
-    visibleNodes: ctx.visibleNodes,
-    fanoutIds: ctx.fanoutIds,
-    loopIds: new Set([...ctx.loopIds, loopId]),
   };
 }
 
@@ -677,14 +662,6 @@ function validateSchemaMetadata(schema: Record<string, unknown>, diagnostics: Di
 function validateRequiredNestedSchema(schema: unknown, diagnostics: DiagnosticIR[], path: string): void {
   if (!schema) {
     addError(diagnostics, "SC002", "Nested schema is required.", path);
-    return;
-  }
-  validateSchema(schema, diagnostics, path);
-}
-
-function validateRequiredSchema(schema: unknown, diagnostics: DiagnosticIR[], path: string): void {
-  if (!schema) {
-    addError(diagnostics, "SC000", "Schema is required.", path);
     return;
   }
   validateSchema(schema, diagnostics, path);

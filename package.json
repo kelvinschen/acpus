@@ -5,11 +5,14 @@
   "type": "module",
   "packageManager": "pnpm@9.7.0",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12"
   },
   "scripts": {
     "build": "pnpm -r build",
     "build:clean": "pnpm clean && pnpm build",
+    "check:dead-code": "knip --include-entry-exports --include files,exports,nsExports,types,nsTypes,enumMembers,namespaceMembers,duplicates --treat-config-hints-as-errors",
+    "check:dependencies": "knip --dependencies --treat-config-hints-as-errors",
+    "check:dependencies:strict": "knip --strict --dependencies --treat-config-hints-as-errors",
     "typecheck": "pnpm --filter @acpus/core build && pnpm -r typecheck",
     "test": "node scripts/test.mjs",
     "test:watch": "vitest",
@@ -26,19 +29,12 @@
     "clean": "pnpm -r clean"
   },
   "devDependencies": {
-    "@acpus/agent-executor": "workspace:*",
-    "@acpus/loader": "workspace:*",
-    "@acpus/core": "workspace:*",
-    "@acpus/expression": "workspace:*",
     "@acpus/runtime": "workspace:*",
-    "@acpus/tasks": "workspace:*",
-    "@acpus/workflow-compiler": "workspace:*",
     "@changesets/cli": "^2.31.0",
     "@types/node": "^22.15.30",
     "acpus": "workspace:*",
-    "eslint": "^10.6.0",
+    "knip": "^6.26.0",
     "slash": "^3.0.0",
-    "tsx": "^4.20.3",
     "typescript": "6.0.3",
     "vitest": "^4.1.8"
   }

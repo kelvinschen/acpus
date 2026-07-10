@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { fmap } from "@acpus/expression";
 import { refExpr, type ExprIR, type TemplateIR } from "@acpus/expression/ir";
 import { evaluateExpr } from "../src/evaluation/evaluator.js";
-import { tryResolveDuration, tryResolveInteger, tryResolveString } from "../src/evaluation/resolvable.js";
+import { tryCreateDeadline, tryResolveDuration, tryResolveInteger, tryResolveString } from "../src/evaluation/resolvable.js";
 
 const literal = (value: any): ExprIR => ({ kind: "literal", value });
 const ref = (path: string[]): ExprIR => ({ kind: "ref", path });
@@ -28,6 +28,28 @@ describe("runtime expression evaluator", () => {
       type: "evaluation",
       field: "count",
       message: expect.stringContaining("boom"),
+    });
+  });
+
+  it("rejects duration overflow and unrepresentable deadlines", () => {
+    expect(tryResolveDuration(literal(String(Number.MAX_SAFE_INTEGER)), {}, "timeout")._unsafeUnwrap()).toEqual({
+      value: String(Number.MAX_SAFE_INTEGER),
+      milliseconds: Number.MAX_SAFE_INTEGER,
+    });
+    expect(tryResolveDuration(literal("9007199254740992ms"), {}, "timeout")._unsafeUnwrapErr()).toMatchObject({
+      type: "constraint",
+      field: "timeout",
+    });
+
+    const now = new Date("2026-01-01T00:00:00.000Z");
+    expect(tryCreateDeadline(now, 1_000, "timeout")._unsafeUnwrap()).toEqual(new Date("2026-01-01T00:00:01.000Z"));
+    expect(tryCreateDeadline(new Date("9999-12-31T23:59:59.999Z"), 1, "timeout")._unsafeUnwrapErr()).toMatchObject({
+      type: "constraint",
+      field: "timeout",
+    });
+    expect(tryCreateDeadline(new Date(8_640_000_000_000_000), 1, "timeout")._unsafeUnwrapErr()).toMatchObject({
+      type: "constraint",
+      field: "timeout",
     });
   });
 

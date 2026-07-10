@@ -6,6 +6,7 @@ const telemetry = { eventCount: 1, tools: { totalToolCallCount: 0, calls: [] } }
 
 test("@acpus/agent-executor public types accept only resolved execution requests", () => {
   expectTypeOf(executeAgentTurn).toEqualTypeOf<(request: AgentTurnRequest) => Promise<AgentTurnResult>>();
+  expectTypeOf<AgentTurnRequest["timeoutMs"]>().toEqualTypeOf<number | undefined>();
   assertType<AgentBackendFailureKind>("config");
   assertType<AgentBackendFailureKind>("spawn");
   assertType<AgentBackendFailureKind>("provider_exit");
@@ -27,6 +28,7 @@ test("@acpus/agent-executor public types accept only resolved execution requests
     permissionMode: "approve-all",
     model: "gpt-5.4",
     agentMode: "agent",
+    timeoutMs: 30_000,
     captureRawDebug: true,
     onProgress: progress => {
       assertType<string>(progress.responseText);
@@ -74,5 +76,16 @@ test("@acpus/agent-executor public types accept only resolved execution requests
     permissionMode: "approve-all",
     // @ts-expect-error executeAgentTurn does not accept provider-command mappings.
     providerCommands: { codex: "node worker.js" },
+  });
+
+  assertType<AgentTurnRequest>({
+    agent: { kind: "named", name: "codex" },
+    prompt: "review this",
+    cwd: process.cwd(),
+    env: process.env,
+    sessionName: "session",
+    permissionMode: "approve-all",
+    // @ts-expect-error executeAgentTurn accepts resolved milliseconds, not authored duration strings.
+    timeout: "30s",
   });
 });

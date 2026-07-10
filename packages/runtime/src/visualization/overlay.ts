@@ -1,4 +1,4 @@
-import type { AgentDefinitionIR, ExprIR, NodeIR, SchemaIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
+import { walkNodes, type AgentDefinitionIR, type ExprIR, type NodeChildScope, type NodeIR, type SchemaIR, type WorkflowIR } from "@acpus/core/ir";
 import type {
   RunDynamicAttempt,
   RunDynamicFrame,
@@ -93,30 +93,21 @@ type StaticNode = {
   parentNodeId?: string;
 };
 
-function flattenScope(scope: ScopeIR, path: string[] = ["root"], parentNodeId?: string): StaticNode[] {
-  return scope.nodes.flatMap(node => [
-    {
+function flattenScope(scope: WorkflowIR["root"]): StaticNode[] {
+  return Array.from(walkNodes(scope), ({ node, ancestry }) => {
+    const parentNodeId = ancestry.at(-1)?.owner.id;
+    return {
       node,
-      path: [...path, node.id],
+      path: ["root", ...ancestry.flatMap(child => [child.owner.id, visualizationScopeLabel(child)]), node.id],
       ...(parentNodeId === undefined ? {} : { parentNodeId }),
-    },
-    ...childScopes(node).flatMap(child => flattenScope(child.scope, [...path, node.id, child.label], node.id)),
-  ]);
+    };
+  });
 }
 
-function childScopes(node: NodeIR): Array<{ label: string; scope: ScopeIR }> {
-  if (node.kind === "if") return [
-    { label: "then", scope: node.then },
-    ...(node.else ? [{ label: "else", scope: node.else }] : []),
-  ];
-  if (node.kind === "switch") return [
-    ...node.cases.map((branch, index) => ({ label: `case:${index}`, scope: branch.then })),
-    ...(node.default ? [{ label: "default", scope: node.default }] : []),
-  ];
-  if (node.kind === "parallel") return Object.entries(node.branches).map(([branchId, branch]) => ({ label: `branch:${branchId}`, scope: branch.scope }));
-  if (node.kind === "fanout") return [{ label: "do", scope: node.do }];
-  if (node.kind === "loop") return [{ label: "do", scope: node.do }];
-  return [];
+function visualizationScopeLabel(child: NodeChildScope): string {
+  if (child.kind === "parallel") return `branch:${child.branchId}`;
+  if (child.kind === "fanout" || child.kind === "loop") return "do";
+  return child.branchId;
 }
 
 function nodeOverlay(node: StaticNode, dynamic: WorkflowVisualizationDynamicInput | undefined, agents: WorkflowIR["agents"]): WorkflowVisualizationNode {

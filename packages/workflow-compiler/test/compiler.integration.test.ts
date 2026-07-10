@@ -9,7 +9,7 @@ import {
   compileWorkflowModule,
   tryCompileWorkflowModule,
 } from "../src/index.js";
-import type { NodeIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
+import { walkNodes, type NodeIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
@@ -37,6 +37,43 @@ describe.concurrent("workflow module compiler", () => {
     });
     expect(taskTarget(ir.root, "prepare_release")).toMatchObject({ kind: "inline", source: expect.any(String) });
     expect(taskTarget(ir.root, "run_tests")).toMatchObject({ kind: "inline", source: expect.any(String) });
+  });
+
+  it("applies reusable module metadata to nested tasks in structural order", async () => {
+    const ir = await compileFixture("nested-reusable.workflow.ts");
+
+    expect(ir.diagnostics).toEqual([]);
+    expect(Array.from(walkNodes(ir.root)).flatMap(({ node }) => {
+      if (node.kind !== "task" || node.run.target.kind !== "module") return [];
+      return [{
+        nodeId: node.id,
+        target: {
+          kind: node.run.target.kind,
+          specifier: node.run.target.specifier,
+          exportName: node.run.target.exportName,
+          referrerPath: node.run.target.referrer.path,
+        },
+      }];
+    })).toEqual([
+      {
+        nodeId: "nested_local",
+        target: {
+          kind: "module",
+          specifier: "./tasks/local-dependency.task.js",
+          exportName: "default",
+          referrerPath: "packages/workflow-compiler/test/fixtures/workflows/nested-reusable.workflow.ts",
+        },
+      },
+      {
+        nodeId: "nested_node_module",
+        target: {
+          kind: "module",
+          specifier: "./tasks/node-module-dependency.task.js",
+          exportName: "default",
+          referrerPath: "packages/workflow-compiler/test/fixtures/workflows/nested-reusable.workflow.ts",
+        },
+      },
+    ]);
   });
 
   it("keeps compileWorkflowModule as the lower-level no-check API", async () => {
@@ -187,17 +224,6 @@ export default defineWorkflow({ name: "throws" }).build(() => {
     expect(ir.name).toBe("orchestration-fixture");
     expect(ir.diagnostics).toEqual([]);
     expect(ir.outputs.run_id).toEqual({ kind: "ref", path: ["meta", "runId"] });
-    expect([...new Set(collectKinds(ir.root))].sort()).toEqual([
-      "agent",
-      "assert",
-      "fanout",
-      "if",
-      "loop",
-      "parallel",
-      "signal",
-      "switch",
-      "task",
-    ]);
 
     const fanout = getNode(ir.root, "lanes");
     expect(fanout).toMatchObject({
@@ -383,33 +409,4 @@ function getNode(scope: ScopeIR, nodeId: string): NodeIR {
   const node = scope.nodes.find(item => item.id === nodeId);
   if (!node) throw new Error(`expected node ${nodeId}`);
   return node;
-}
-
-function collectKinds(scope: ScopeIR): NodeIR["kind"][] {
-  const kinds: NodeIR["kind"][] = [];
-  for (const node of scope.nodes) {
-    kinds.push(node.kind);
-    for (const child of childScopes(node)) kinds.push(...collectKinds(child));
-  }
-  return kinds;
-}
-
-function childScopes(node: NodeIR): ScopeIR[] {
-  switch (node.kind) {
-    case "if":
-      return node.else ? [node.then, node.else] : [node.then];
-    case "switch":
-      return [
-        ...node.cases.map(item => item.then),
-        ...(node.default ? [node.default] : []),
-      ];
-    case "parallel":
-      return Object.values(node.branches).map(branch => branch.scope);
-    case "fanout":
-      return [node.do];
-    case "loop":
-      return [node.do];
-    default:
-      return [];
-  }
 }

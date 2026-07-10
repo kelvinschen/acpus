@@ -2,7 +2,25 @@ import { assertType, expectTypeOf, test } from "vitest";
 import { defineWorkflow, task, z, type TaskContext } from "@acpus/core";
 import { fmap, template, type Expr, type Resolvable } from "@acpus/expression";
 import { refExpr, type ExprIR } from "@acpus/expression/ir";
-import { validateWorkflowIR, type WorkflowIR } from "@acpus/core/ir";
+import type { Result } from "neverthrow";
+import {
+  childScopes,
+  tryParseDurationMs,
+  validateWorkflowIR,
+  walkNodes,
+  type DurationParseError,
+  type FanoutNodeIR,
+  type IfNodeIR,
+  type LoopNodeIR,
+  type LoopTransitionScopeIR,
+  type NodeChildScope,
+  type NodeIR,
+  type NodeVisit,
+  type ParallelNodeIR,
+  type ScopeIR,
+  type SwitchNodeIR,
+  type WorkflowIR,
+} from "@acpus/core/ir";
 import { createDollar, type Dollar } from "@acpus/core/runtime";
 import { isSchema, validateValue } from "@acpus/core/schema";
 import { compileWorkflowDefinition, type WorkflowDefinition } from "@acpus/core/workflow";
@@ -33,6 +51,29 @@ test("public package subpaths expose the intended type surface", () => {
   assertType<WorkflowIR>(compileWorkflowDefinition(definition));
   assertType<ExprIR>({ kind: "literal", value: true });
   assertType<WorkflowIR["diagnostics"]>(validateWorkflowIR(compileWorkflowDefinition(definition)));
+  expectTypeOf(tryParseDurationMs).toEqualTypeOf<(value: string) => Result<number, DurationParseError>>();
+  expectTypeOf<DurationParseError>().toEqualTypeOf<
+    | { type: "invalid-duration-syntax"; value: string }
+    | { type: "duration-out-of-range"; value: string }
+  >();
+  expectTypeOf(childScopes).toEqualTypeOf<(node: NodeIR) => readonly NodeChildScope[]>();
+  expectTypeOf(walkNodes).toEqualTypeOf<(scope: ScopeIR) => IterableIterator<NodeVisit>>();
+  expectTypeOf<NodeVisit>().toEqualTypeOf<{
+    node: NodeIR;
+    ancestry: readonly NodeChildScope[];
+  }>();
+  expectTypeOf<NodeChildScope>().toEqualTypeOf<
+    | { kind: "if"; owner: IfNodeIR; branchId: "then" | "else"; scope: ScopeIR }
+    | {
+        kind: "switch";
+        owner: SwitchNodeIR;
+        branchId: `case:${number}` | "default";
+        scope: ScopeIR;
+      }
+    | { kind: "parallel"; owner: ParallelNodeIR; branchId: string; scope: ScopeIR }
+    | { kind: "fanout"; owner: FanoutNodeIR; scope: ScopeIR }
+    | { kind: "loop"; owner: LoopNodeIR; scope: LoopTransitionScopeIR }
+  >();
 
   assertType<Dollar>(createDollar());
   const ctx = null as unknown as TaskContext<{}>;

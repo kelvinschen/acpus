@@ -6,7 +6,7 @@ export type ArtifactRef = {
   readonly mediaType?: string;
 };
 
-export type ArtifactApi = {
+type ArtifactApi = {
   writeText(name: string, content: string, options?: { mediaType?: string }): Promise<ArtifactRef>;
   writeJson(name: string, value: unknown): Promise<ArtifactRef>;
   writeBytes(name: string, value: Uint8Array, options?: { mediaType?: string }): Promise<ArtifactRef>;

@@ -12,10 +12,10 @@ import { normalizeWorkflowInput, type PreparedRunWorkflow, type RunWorkflowLockA
 import { prepareWorkflow } from "@acpus/workflow-compiler";
 import { admitWorkflowRun } from "../../src/runs/use-cases.js";
 
-export const repoRoot = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
+const repoRoot = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const runtimeFixtureRoot = join(repoRoot, "packages", "runtime", "test", "fixtures");
 
-export function fixturePath(relativePath: string): string {
+function fixturePath(relativePath: string): string {
   return join(runtimeFixtureRoot, relativePath);
 }
 
@@ -103,21 +103,6 @@ export function metaWorkflow() {
       workspaceDir: meta.workspaceDir,
     };
   });
-}
-
-export function defaultRefInputWorkflow() {
-  return defineWorkflow({
-    name: "cli-default-ref-input",
-    inputSchema: z.object({
-      base: z.string().default("main"),
-      patch: z.object({
-        kind: z.literal("artifact"),
-        uri: z.string(),
-        mediaType: z.literal("text/plain"),
-      }),
-      token: z.string(),
-    }),
-  }).build(({ input }) => ({ base: input.base, patch: input.patch, token: input.token }));
 }
 
 export function taskArtifactWorkflow() {

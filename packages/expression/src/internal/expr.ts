@@ -8,13 +8,13 @@ export interface Expr<T> {
   readonly __ir: ExprIR;
 }
 
-export type WorkflowPrimitive = string | number | boolean | null;
+type WorkflowPrimitive = string | number | boolean | null;
 export type WorkflowData =
   | WorkflowPrimitive
   | readonly WorkflowData[]
   | { readonly [key: string]: WorkflowData };
 
-export type AnyResolvable =
+type AnyResolvable =
   | Expr<any>
   | WorkflowPrimitive
   | readonly AnyResolvable[]
