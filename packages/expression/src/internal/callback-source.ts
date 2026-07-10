@@ -5,34 +5,10 @@ export function callbackSourceIssue(source: string, expectedParams: number): str
   const params = text.slice(0, arrow).trim();
   const body = text.slice(arrow + 2).trim();
   if (params.startsWith("async") && /\basync\b/.test(params.slice(0, 5))) return "callback source must be synchronous.";
-  if (body.length === 0) return "callback source must have an expression body.";
-  if (stripLeadingTrivia(body).startsWith("{")) return "callback source must be an expression-body arrow, not a block body.";
+  if (body.length === 0) return "callback source must have a body.";
   const actualParams = parameterCount(params);
   if (actualParams !== expectedParams) return `callback source expected ${expectedParams} parameter${expectedParams === 1 ? "" : "s"}, got ${actualParams}.`;
   return undefined;
-}
-
-function stripLeadingTrivia(text: string): string {
-  let index = 0;
-  while (index < text.length) {
-    const char = text[index];
-    if (char === " " || char === "\t" || char === "\r" || char === "\n") {
-      index++;
-      continue;
-    }
-    if (text.startsWith("//", index)) {
-      const nextLine = text.indexOf("\n", index + 2);
-      index = nextLine < 0 ? text.length : nextLine + 1;
-      continue;
-    }
-    if (text.startsWith("/*", index)) {
-      const end = text.indexOf("*/", index + 2);
-      index = end < 0 ? text.length : end + 2;
-      continue;
-    }
-    break;
-  }
-  return text.slice(index);
 }
 
 function findTopLevelArrow(source: string): number {

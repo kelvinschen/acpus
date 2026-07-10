@@ -204,7 +204,7 @@ describe("workflow check pipeline", () => {
       expect(result.diagnostics).toEqual(expect.arrayContaining([
         expect.objectContaining({
           code: "AL007",
-          message: expect.stringContaining("one expression"),
+          message: expect.stringContaining("external binding 'suffix'"),
           source: expect.objectContaining({
             file: expect.stringContaining("workflow.ts"),
             line: expect.any(Number),
@@ -212,6 +212,40 @@ describe("workflow check pipeline", () => {
           }),
         }),
       ]));
+    });
+  });
+
+  it("reports oversized expression callbacks during check", async () => {
+    await withCheckWorkspace("workflow-expression-budget", async cwd => {
+      const result = await runCheck(cwd, `
+        import { defineWorkflow, z } from "acpus/core";
+        import { fmap } from "acpus/expression";
+
+        export default defineWorkflow({
+          name: "expression_budget",
+          inputSchema: z.object({ value: z.number() }),
+        }).build(({ input }) => {
+          const value = fmap(input.value, value => {
+            const value1 = value;
+            const value2 = value1;
+            const value3 = value2;
+            const value4 = value3;
+            const value5 = value4;
+            const value6 = value5;
+            const value7 = value6;
+            const value8 = value7;
+            return value8;
+          });
+          return { value };
+        });
+      `);
+
+      expect(result.diagnostics).toContainEqual(expect.objectContaining({
+        code: "AL008",
+        severity: "error",
+        message: expect.stringContaining("9 executable statements"),
+        hint: expect.stringContaining("Task"),
+      }));
     });
   });
 

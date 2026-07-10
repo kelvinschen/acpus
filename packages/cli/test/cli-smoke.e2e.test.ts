@@ -8,7 +8,7 @@ import { withTestWorkspace } from "./support/workspace.js";
 
 const runIdPattern = /^\d{14}[A-F0-9]{20}$/;
 
-describe("acpus CLI subprocess smoke", () => {
+describe.concurrent("acpus CLI subprocess smoke", () => {
   it.each(skillWorkflowExamples.map(example => [example.name, example] as const))("checks skill example workflow: %s", async (_name, example) => {
     await withTestWorkspace(`e2e-check-${_name.replaceAll(" ", "-")}`, async workspace => {
       const sourceWorkflow = skillWorkflowPath(example.directory);

@@ -116,7 +116,7 @@ describe("workflow authoring rules", () => {
     ]));
   });
 
-  it("accepts pure one-expression fmap and lift callbacks from the expression facade", () => {
+  it("accepts expression and block fmap and lift callbacks from the expression facade", () => {
     const diagnostics = checkAuthoringWithProgram(`
       import { fmap, lift2, lift3, lift as namedLift } from "acpus/expression";
       import * as expr from "acpus/expression";
@@ -124,9 +124,18 @@ describe("workflow authoring rules", () => {
       declare const issue: { title: string; labels: string[] };
       declare const count: number;
       declare const limit: number;
-      const title = fmap(issue, value => value.title.trim());
-      const overLimit = lift2(count, limit, (value, max) => value > max);
-      const routed = lift3(issue.title, count, limit, (title, value, max) => title.length + value > max);
+      const title = fmap(issue, value => {
+        const normalized = value.title.trim();
+        return normalized;
+      });
+      const overLimit = lift2(count, limit, (value, max) => {
+        const exceeded = value > max;
+        return exceeded;
+      });
+      const routed = lift3(issue.title, count, limit, (title, value, max) => {
+        const total = title.length + value;
+        return total > max;
+      });
       const named = namedLift({ issue, count, limit }, ({ issue, count, limit }) => ({
         title: issue.title.trim().replace(/\\s+/g, " "),
         urgent: issue.labels.includes("urgent"),
@@ -136,37 +145,44 @@ describe("workflow authoring rules", () => {
         now: Date.now(),
         random: Math.random(),
       }));
-      const view = expr.fmap(issue, value => ({
-        title: value.title.trim(),
-        urgent: value.labels.includes("urgent"),
-        labels: value.labels.map(label => label.toLowerCase()),
-        count: Math.max(Object.keys(value).length, 1),
-      }));
+      const view = expr.fmap(issue, value => {
+        const labels = value.labels.map(label => {
+          const normalized = label.toLowerCase();
+          return normalized;
+        });
+        return {
+          title: value.title.trim(),
+          urgent: value.labels.includes("urgent"),
+          labels,
+          count: Math.max(Object.keys(value).length, 1),
+        };
+      });
       void [title, overLimit, routed, named, view];
     `);
 
     expect(codes(diagnostics)).not.toContain("AL007");
+    expect(codes(diagnostics)).not.toContain("AL008");
   });
 
   it.each([
     ["missing callback", "fmap(issue)", "requires an inline callback"],
-    ["block body", "fmap(issue, value => { return value.title; })", "one expression"],
-    ["function expression", "fmap(issue, function (value) { return value.title; })", "inline one-expression arrow"],
+    ["function expression", "fmap(issue, function (value) { return value.title; })", "inline arrow function"],
     ["wrong fmap arity", "fmap(issue, () => \"title\")", "simple identifiers or binding patterns"],
     ["wrong lift2 arity", "lift2(issue, issue, value => value.title)", "simple identifiers or binding patterns"],
     ["wrong lift3 arity", "lift3(issue, issue, issue, (a, b) => a.title + b.title)", "simple identifiers or binding patterns"],
     ["wrong lift arity", "lift({ issue }, () => \"title\")", "simple identifiers or binding patterns"],
-    ["helper reference", "fmap(issue, helper)", "inline one-expression arrow"],
+    ["helper reference", "fmap(issue, helper)", "inline arrow function"],
     ["capture", "fmap(issue, value => value.title + suffix)", "external binding 'suffix'"],
+    ["block capture", "fmap(issue, value => { const title = value.title; return title + suffix; })", "external binding 'suffix'"],
     ["this", "fmap(issue, value => this)", "cannot use this"],
     ["shadowed Math", "const Math = { max: (..._values: number[]) => 1 }; fmap(issue, value => Math.max(value.count, 1))", "external binding 'Math'"],
     ["shadowed JSON", "const JSON = { stringify: (_value: unknown) => \"{}\" }; fmap(issue, value => JSON.stringify(value))", "external binding 'JSON'"],
     ["shadowed Date", "const Date = { now: () => 0 }; fmap(issue, value => Date.now() + value.count)", "external binding 'Date'"],
     ["aliased import capture", "combine(issue, issue, (left, right) => left.title + right.title + suffix)", "external binding 'suffix'"],
-    ["nested block callback", "fmap(issue, value => value.labels.map(label => { return label.trim(); }))", "nested callbacks"],
     ["nested default parameter", "fmap(issue, value => value.labels.map((label = suffix) => label))", "nested callback parameters"],
     ["nested rest parameter", "fmap(issue, value => value.labels.map((...label) => label[0]))", "nested callback parameters"],
     ["nested capture", "fmap(issue, value => value.labels.map(label => label + suffix))", "external binding 'suffix'"],
+    ["nested block capture", "fmap(issue, value => value.labels.map(label => { const title = label.trim(); return title + suffix; }))", "external binding 'suffix'"],
   ])("rejects expression callback %s", (_name, statement, message) => {
     const diagnostics = checkAuthoringWithProgram(`
       import { fmap, lift2, lift3, lift, lift2 as combine } from "acpus/expression";
@@ -184,6 +200,90 @@ describe("workflow authoring rules", () => {
       hint: expect.any(String),
       source: { file: "workflow.ts" },
     });
+  });
+
+  it.each([
+    ["fmap", (callback: string) => `fmap(issue, ${callback})`, "value", "value"],
+    ["lift2", (callback: string) => `lift2(issue, issue, ${callback})`, "left, right", "left"],
+    ["lift3", (callback: string) => `lift3(issue, issue, issue, ${callback})`, "first, second, third", "first"],
+    ["lift", (callback: string) => `lift({ issue }, ${callback})`, "{ issue }", "issue"],
+  ])("enforces the recursive statement budget for %s", (helper, call, params, initial) => {
+    const accepted = checkAuthoringWithProgram(`
+      import { fmap, lift2, lift3, lift } from "acpus/expression";
+      declare const issue: any;
+      ${call(blockCallback(params, initial, 8))};
+    `);
+    expect(accepted.filter(diagnostic => diagnostic.code === "AL008")).toEqual([]);
+
+    const rejected = checkAuthoringWithProgram(`
+      import { fmap, lift2, lift3, lift } from "acpus/expression";
+      declare const issue: any;
+      ${call(blockCallback(params, initial, 9))};
+    `);
+    expect(rejected.filter(diagnostic => diagnostic.code === "AL008")).toEqual([
+      expect.objectContaining({
+        severity: "error",
+        message: `${helper}(...) callback contains 9 executable statements; the maximum is 8.`,
+        hint: expect.stringContaining("Task"),
+        source: expect.objectContaining({ file: "workflow.ts" }),
+      }),
+    ]);
+  });
+
+  it("counts nested runtime statements but ignores formatting and type-only declarations", () => {
+    const nested = checkAuthoringWithProgram(`
+      import { fmap } from "acpus/expression";
+      declare const issue: { labels: string[] };
+      fmap(issue, value => {
+        const labels = value.labels.map(label => {
+          const one = label;
+          const two = one;
+          const three = two;
+          const four = three;
+          const five = four;
+          const six = five;
+          return six;
+        });
+        return labels;
+      });
+    `);
+    expect(nested.filter(diagnostic => diagnostic.code === "AL008")).toEqual([
+      expect.objectContaining({ message: expect.stringContaining("9 executable statements") }),
+    ]);
+
+    const typeOnly = checkAuthoringWithProgram(`
+      import { fmap } from "acpus/expression";
+      declare const issue: { title: string };
+      fmap(issue, value => {
+        // Comments, blank lines, and TypeScript-only declarations do not consume the budget.
+        type Title = string;
+        interface View { title: Title }
+
+        const title: Title = value.title;
+        return { title } satisfies View;
+      });
+    `);
+    expect(typeOnly.filter(diagnostic => diagnostic.code === "AL008")).toEqual([]);
+
+    const controlFlow = checkAuthoringWithProgram(`
+      import { fmap } from "acpus/expression";
+      declare const issue: { title: string };
+      fmap(issue, value => {
+        if (value.title) {
+          const one = value.title;
+          const two = one;
+          const three = two;
+          const four = three;
+          const five = four;
+          const six = five;
+          return six;
+        }
+        return "";
+      });
+    `);
+    expect(controlFlow.filter(diagnostic => diagnostic.code === "AL008")).toEqual([
+      expect.objectContaining({ message: expect.stringContaining("9 executable statements") }),
+    ]);
   });
 
   it("does not report expression callback diagnostics for shadowed facade bindings", () => {
@@ -207,8 +307,10 @@ describe("workflow authoring rules", () => {
 
   it.each([
     ["Date", "fmap(issue, (value: { when: Date }) => value.when)", "Date"],
+    ["block Date", "fmap(issue, (value: { when: Date }) => { return value.when; })", "Date"],
     ["function", "fmap(issue, (value: { fn: () => boolean }) => value.fn)", "function"],
     ["Promise", "fmap(issue, (value: { promise: Promise<number> }) => value.promise)", "Promise"],
+    ["block Promise", "fmap(issue, (value: { promise: Promise<number> }) => { return value.promise; })", "Promise"],
     ["class instance", "fmap(issue, (value: { view: View }) => value.view)", "class instance"],
     ["Map", "fmap(issue, (value: { values: Map<string, number> }) => value.values)", "Map"],
     ["Set", "fmap(issue, (value: { values: Set<string> }) => value.values)", "Set"],
@@ -244,6 +346,15 @@ describe("workflow authoring rules", () => {
     expect(diagnostics.filter(diagnostic => diagnostic.code === "OA002")).toEqual([]);
   });
 });
+
+function blockCallback(params: string, initial: string, statementCount: number): string {
+  const declarations = Array.from({ length: statementCount - 1 }, (_, index) => {
+    const value = `value${index + 1}`;
+    const previous = index === 0 ? initial : `value${index}`;
+    return `const ${value} = ${previous};`;
+  });
+  return `(${params}) => { ${declarations.join(" ")} return value${statementCount - 1}; }`;
+}
 
 function checkAuthoring(source: string, options: {
   isExpr?: (node: ts.Node) => boolean;

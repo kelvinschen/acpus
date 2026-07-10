@@ -3,7 +3,7 @@ import { expressionCallbackOperatorNames, expressionOperatorSpec, type Expressio
 import ts from "typescript";
 import { execFunction } from "../../task-analysis/ast.js";
 import { findTaskCallsites, type TaskCallsiteIssueReason, unjoinableTaskCallsiteReason } from "../../task-analysis/callsites.js";
-import { collectFreeIdentifierNodes, isRuntimeGlobalIdentifier, isRuntimeGlobalName } from "../../task-analysis/capture-analysis.js";
+import { collectFreeIdentifierNodes, isRuntimeGlobalName } from "../../task-analysis/capture-analysis.js";
 import { analyzeTaskAuthoring, type TaskAuthoringIssue, type WorkflowTaskAnalysis } from "../../task-analysis/index.js";
 import { checkOutputAdmissibility, workflowDataAdmissibilityDiagnostic } from "./output-admissibility.js";
 
@@ -73,6 +73,7 @@ function localModuleSpecifiers(sourceFile: ts.SourceFile): string[] {
 }
 
 const ARRAY_METHODS = new Set(["map", "filter", "forEach", "reduce", "some", "every"]);
+const MAX_EXPRESSION_CALLBACK_STATEMENTS = 8;
 const COMPARISON_OPERATORS = new Set<ts.SyntaxKind>([
   ts.SyntaxKind.EqualsEqualsToken,
   ts.SyntaxKind.ExclamationEqualsToken,
@@ -123,7 +124,9 @@ function checkExprAuthoring(sourceFile: ts.SourceFile, checker: ts.TypeChecker, 
       if (helper) {
         const issue = expressionCallbackIssue(node, helper, checker);
         if (issue) diagnostics.push(diagnostic("AL007", issue.message, issue.node, issue.hint));
-        else {
+        const complexityDiagnostic = expressionCallbackComplexityDiagnostic(node, helper);
+        if (complexityDiagnostic) diagnostics.push(complexityDiagnostic);
+        if (!issue) {
           const outputDiagnostic = expressionCallbackOutputDiagnostic(node, helper, checker);
           if (outputDiagnostic) diagnostics.push(outputDiagnostic);
         }
@@ -204,26 +207,37 @@ function expressionCallbackIssue(call: ts.CallExpression, helper: ExpressionCall
   const node = call.arguments[rule.callbackSourceArg];
   if (!node) return callbackIssue(`${helper}(...) requires an inline callback.`, call, callbackHint(helper));
   if (!ts.isArrowFunction(node)) {
-    return callbackIssue(`${helper}(...) callback must be an inline one-expression arrow.`, node, callbackHint(helper));
+    return callbackIssue(`${helper}(...) callback must be an inline arrow function.`, node, callbackHint(helper));
   }
-  const params = callbackParameterScope(node, rule.callbackParamCount);
-  if (params.issue) {
-    return callbackIssue(`${helper}(...) callback parameters must be simple identifiers or binding patterns.`, params.issue, callbackHint(helper));
+  const parameterIssue = callbackParameterIssue(node, rule.callbackParamCount);
+  if (parameterIssue) {
+    return callbackIssue(`${helper}(...) callback parameters must be simple identifiers or binding patterns.`, parameterIssue, callbackHint(helper));
   }
-  if (ts.isBlock(node.body)) {
-    return callbackIssue(`${helper}(...) callback must be one expression, not a block body.`, node.body, "Use value => expression instead of value => { return expression; }.");
-  }
-  return callbackExpressionIssue(node.body, params.names, checker, helper);
+  return callbackBodyIssue(node, checker, helper);
+}
+
+function expressionCallbackComplexityDiagnostic(call: ts.CallExpression, helper: ExpressionCallbackHelper): DiagnosticIR | undefined {
+  const callbackIndex = expressionOperatorSpec(helper)?.callback?.callbackSourceArg;
+  const callback = callbackIndex === undefined ? undefined : call.arguments[callbackIndex];
+  if (!callback || !ts.isArrowFunction(callback) || !ts.isBlock(callback.body)) return undefined;
+  const count = executableStatementCount(callback.body);
+  if (count <= MAX_EXPRESSION_CALLBACK_STATEMENTS) return undefined;
+  return diagnostic(
+    "AL008",
+    `${helper}(...) callback contains ${count} executable statements; the maximum is ${MAX_EXPRESSION_CALLBACK_STATEMENTS}.`,
+    callback.body,
+    "Keep expression callbacks focused on small synchronous JSON transforms. Move multi-step logic into a Task and pass dependencies through run.input.",
+  );
 }
 
 function expressionCallbackOutputDiagnostic(call: ts.CallExpression, helper: ExpressionCallbackHelper, checker: ts.TypeChecker): DiagnosticIR | undefined {
   const callbackIndex = expressionOperatorSpec(helper)?.callback?.callbackSourceArg;
   const callback = callbackIndex === undefined ? undefined : call.arguments[callbackIndex];
-  if (!callback || !ts.isArrowFunction(callback) || ts.isBlock(callback.body)) return undefined;
+  if (!callback || !ts.isArrowFunction(callback)) return undefined;
   const signature = checker.getSignatureFromDeclaration(callback);
   if (!signature) return undefined;
   const returnType = checker.getReturnTypeOfSignature(signature);
-  return workflowDataAdmissibilityDiagnostic(`${helper} callback output`, callback.body, returnType, checker);
+  return workflowDataAdmissibilityDiagnostic(`${helper} callback output`, callbackOutputExpression(callback) ?? callback, returnType, checker);
 }
 
 function visitExpressionCallbackDependencies(call: ts.CallExpression, helper: ExpressionCallbackHelper, visit: (node: ts.Node) => void): void {
@@ -233,60 +247,77 @@ function visitExpressionCallbackDependencies(call: ts.CallExpression, helper: Ex
   });
 }
 
-function callbackExpressionIssue(node: ts.Expression, scope: ReadonlySet<string>, checker: ts.TypeChecker, helper: ExpressionCallbackHelper): ExpressionCallbackIssue | undefined {
-  if (ts.isParenthesizedExpression(node)) return callbackExpressionIssue(node.expression, scope, checker, helper);
-  if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node) || ts.isSatisfiesExpression(node) || ts.isNonNullExpression(node)) {
-    return callbackExpressionIssue(node.expression, scope, checker, helper);
-  }
-  if (ts.isIdentifier(node)) return identifierIssue(node, scope, checker, helper);
-  if (node.kind === ts.SyntaxKind.ThisKeyword) return callbackIssue(`${helper}(...) callback cannot use this.`, node, "Pass needed values through explicit dependencies.");
-  if (ts.isPropertyAccessExpression(node)) return callbackExpressionIssue(node.expression, scope, checker, helper);
-  if (ts.isElementAccessExpression(node)) return callbackExpressionIssue(node.expression, scope, checker, helper) ?? callbackExpressionIssue(node.argumentExpression, scope, checker, helper);
-  if (ts.isShorthandPropertyAssignment(node)) return identifierIssue(node.name, scope, checker, helper);
-  if (ts.isArrowFunction(node)) return nestedArrowIssue(node, scope, checker, helper);
-  if (ts.isFunctionExpression(node) || ts.isClassExpression(node)) return callbackIssue(`${helper}(...) callback can only define nested expression arrows.`, node, "Use an expression arrow callback or move complex logic into a Task.");
+function callbackBodyIssue(callback: ts.ArrowFunction, checker: ts.TypeChecker, helper: ExpressionCallbackHelper): ExpressionCallbackIssue | undefined {
   let issue: ExpressionCallbackIssue | undefined;
-  ts.forEachChild(node, child => {
-    if (issue || ts.isTypeNode(child)) return;
-    if (ts.isExpression(child) || ts.isShorthandPropertyAssignment(child) || ts.isArrowFunction(child)) issue = callbackExpressionIssue(child as ts.Expression, scope, checker, helper);
-  });
-  return issue;
+  const visit = (node: ts.Node): void => {
+    if (issue || ts.isTypeNode(node)) return;
+    if (node.kind === ts.SyntaxKind.ThisKeyword) {
+      issue = callbackIssue(`${helper}(...) callback cannot use this.`, node, "Pass needed values through explicit dependencies.");
+      return;
+    }
+    if (ts.isFunctionExpression(node) || ts.isFunctionDeclaration(node) || ts.isClassExpression(node) || ts.isClassDeclaration(node)) {
+      issue = callbackIssue(`${helper}(...) callback can only define nested arrow functions.`, node, "Use an arrow callback or move complex logic into a Task.");
+      return;
+    }
+    if (ts.isArrowFunction(node)) {
+      const parameterIssue = callbackParameterIssue(node, node.parameters.length);
+      if (parameterIssue) {
+        issue = callbackIssue(`${helper}(...) nested callback parameters must be simple identifiers or binding patterns.`, parameterIssue, "Use item => expression or item => { return expression; }.");
+        return;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(callback.body);
+  if (issue) return issue;
+  const external = collectFreeIdentifierNodes(callback, checker)[0];
+  return external
+    ? callbackIssue(`${helper}(...) callback cannot reference external binding '${external.name}'.`, external.node, dependencyHint(helper))
+    : undefined;
 }
 
-function nestedArrowIssue(node: ts.ArrowFunction, outerScope: ReadonlySet<string>, checker: ts.TypeChecker, helper: ExpressionCallbackHelper): ExpressionCallbackIssue | undefined {
-  const params = callbackParameterScope(node, node.parameters.length, outerScope);
-  if (params.issue) return callbackIssue(`${helper}(...) nested callback parameters must be simple identifiers or binding patterns.`, params.issue, "Use item => expression.");
-  if (ts.isBlock(node.body)) return callbackIssue(`${helper}(...) nested callbacks must be expression-body arrows.`, node.body, "Use item => expression instead of item => { return expression; }.");
-  return callbackExpressionIssue(node.body, params.names, checker, helper);
-}
-
-function callbackParameterScope(node: ts.ArrowFunction, expectedCount: number, base: ReadonlySet<string> = new Set()): { names: Set<string>; issue?: ts.Node } {
-  const names = new Set(base);
-  if (node.parameters.length !== expectedCount) return { names, issue: node };
+function callbackParameterIssue(node: ts.ArrowFunction, expectedCount: number): ts.Node | undefined {
+  if (node.parameters.length !== expectedCount) return node;
   for (const parameter of node.parameters) {
-    if (parameter.dotDotDotToken || parameter.initializer) return { names, issue: parameter };
-    const ok = collectBindingNames(parameter.name, names);
-    if (!ok) return { names, issue: parameter.name };
+    if (parameter.dotDotDotToken || parameter.initializer) return parameter;
+    if (!isSimpleBindingName(parameter.name)) return parameter.name;
   }
-  return { names };
 }
 
-function collectBindingNames(name: ts.BindingName, names: Set<string>): boolean {
-  if (ts.isIdentifier(name)) {
-    names.add(name.text);
-    return true;
-  }
+function isSimpleBindingName(name: ts.BindingName): boolean {
+  if (ts.isIdentifier(name)) return true;
   for (const element of name.elements) {
     if (ts.isOmittedExpression(element) || element.dotDotDotToken || element.initializer) return false;
     if (element.propertyName && ts.isComputedPropertyName(element.propertyName)) return false;
-    if (!collectBindingNames(element.name, names)) return false;
+    if (!isSimpleBindingName(element.name)) return false;
   }
   return true;
 }
 
-function identifierIssue(node: ts.Identifier, scope: ReadonlySet<string>, checker: ts.TypeChecker, helper: ExpressionCallbackHelper): ExpressionCallbackIssue | undefined {
-  if (scope.has(node.text) || isRuntimeGlobalIdentifier(node, checker)) return undefined;
-  return callbackIssue(`${helper}(...) callback cannot reference external binding '${node.text}'.`, node, dependencyHint(helper));
+function executableStatementCount(root: ts.Block): number {
+  let count = 0;
+  const visit = (node: ts.Node): void => {
+    if (ts.isTypeNode(node) || ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)) return;
+    if (ts.isStatement(node) && !ts.isBlock(node) && !ts.isEmptyStatement(node)) count++;
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+  return count;
+}
+
+function callbackOutputExpression(callback: ts.ArrowFunction): ts.Expression | undefined {
+  if (!ts.isBlock(callback.body)) return callback.body;
+  let output: ts.Expression | undefined;
+  const visit = (node: ts.Node): void => {
+    if (output || (node !== callback && ts.isFunctionLike(node))) return;
+    if (ts.isReturnStatement(node) && node.expression) {
+      output = node.expression;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(callback.body);
+  return output;
 }
 
 function callbackHint(helper: ExpressionCallbackHelper): string {

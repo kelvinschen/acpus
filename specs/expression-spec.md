@@ -45,6 +45,7 @@
 - `lift(deps, fn)` MUST accept a plain named dependency object, lower the dependency object as arg 0, and lower callback source as arg 1.
 - `lift(deps, fn)` MUST reject non-plain dependency containers such as arrays and class instances at authoring time.
 - Callback helpers MUST be typed as `ExprValue<R>` where callback return type `R` extends `WorkflowData`.
+- Callback helpers MUST accept inline synchronous arrow functions with either expression bodies or block bodies; source-level callback complexity and lexical capture policy belong to the workflow compiler authoring rules.
 - Callback helpers MUST NOT create workflow nodes, task attempts, task contexts, artifact access, cwd/env boundaries, timeout policies, retry policies, or async execution boundaries.
 - `template` MUST lower tagged template strings to an expression node containing `TemplateIR` while preserving authored whitespace exactly.
 - `md` MUST lower tagged template strings to normal `TemplateIR` after removing surrounding blank lines and common indentation from literal text parts. Expression interpolations MUST remain unchanged. Authors SHOULD use `md` for multiline Markdown prompts and messages.
@@ -69,12 +70,12 @@
 - Callback evaluation MAY access normal runtime globals such as `Math`, `JSON`, and `Date`; expression evaluation is not a sandbox boundary.
 - The validator MUST reject malformed expression shapes, unknown fields, unknown operators, invalid arity, invalid paths, sparse IR arrays, invalid type metadata, and literal type metadata mismatches.
 - The validator MUST reject malformed callback helper calls whose callback source argument is not a string literal expression.
-- The validator/evaluator callback-source checks are IR backstops for arrow source shape, expression body, and arity. Source-level lexical capture diagnostics belong to the workflow compiler authoring rules.
+- The validator/evaluator callback-source checks are IR backstops for synchronous arrow source shape and arity. Source-level callback complexity and lexical capture diagnostics belong to the workflow compiler authoring rules.
 
 ## Verification
 
 - Tests MUST cover root and subpath public exports.
 - Tests MUST cover authoring type inference and type-level rejection for callback helpers and accessors.
 - Tests MUST cover lowering for values, templates, `fmap`, `lift2`, `lift3`, `lift`, and `access`.
-- Tests MUST cover evaluator semantics for templates, refs, `fmap`, `lift2`, `lift3`, `lift`, `access`, runtime globals, thenable rejection, non-WorkflowData rejection, and dependency clone behavior.
+- Tests MUST cover evaluator semantics for templates, refs, expression-body and block-body `fmap`/`lift2`/`lift3`/`lift` callbacks, `access`, runtime globals, thenable rejection, non-WorkflowData rejection, and dependency clone behavior.
 - Tests MUST cover validator diagnostic codes and paths for malformed expression IR.

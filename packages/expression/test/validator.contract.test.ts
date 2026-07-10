@@ -38,24 +38,24 @@ describe("expression validator", () => {
     expect(validateExprIR({ kind: "call", fn: "access", args: [{ kind: "literal", value: { a: 1 } }, { kind: "literal", value: "a" }] })).toEqual([]);
   });
 
-  it("rejects callback source strings that are not expression-body arrows", () => {
-    expect(validateExprIR({ kind: "call", fn: "fmap", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: "value => { return value; }" }] })).toEqual([{
-      code: "EX002",
-      severity: "error",
-      message: "fmap(...) callback source must be an expression-body arrow, not a block body.",
-      path: "$.args[1]",
-    }]);
-    expect(validateExprIR({ kind: "call", fn: "fmap", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: "value => /* comment */ { return value; }" }] })).toEqual([{
-      code: "EX002",
-      severity: "error",
-      message: "fmap(...) callback source must be an expression-body arrow, not a block body.",
-      path: "$.args[1]",
-    }]);
+  it("accepts expression-body and block-body callback source strings", () => {
+    expect(validateExprIR({ kind: "call", fn: "fmap", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: "value => value" }] })).toEqual([]);
+    expect(validateExprIR({ kind: "call", fn: "fmap", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: "value => { const next = value + 1; return next; }" }] })).toEqual([]);
+    expect(validateExprIR({ kind: "call", fn: "fmap", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: "value => /* comment */ { return value; }" }] })).toEqual([]);
+  });
+
+  it("rejects callback source strings with invalid shape", () => {
     expect(validateExprIR({ kind: "call", fn: "lift2", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: 2 }, { kind: "literal", value: "value => value" }] })).toEqual([{
       code: "EX002",
       severity: "error",
       message: "lift2(...) callback source expected 2 parameters, got 1.",
       path: "$.args[2]",
+    }]);
+    expect(validateExprIR({ kind: "call", fn: "fmap", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: "async value => { return value; }" }] })).toEqual([{
+      code: "EX002",
+      severity: "error",
+      message: "fmap(...) callback source must be synchronous.",
+      path: "$.args[1]",
     }]);
   });
 

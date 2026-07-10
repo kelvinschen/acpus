@@ -84,6 +84,44 @@ export default defineWorkflow({
     });
   });
 
+  it("rejects oversized expression callbacks before compile", async () => {
+    await withCompilerWorkspace("compiler-expression-budget", async cwd => {
+      const workflow = join(cwd, "expression-budget.workflow.ts");
+      await writeFile(workflow, `import { defineWorkflow, z } from "acpus/core";
+import { lift } from "acpus/expression";
+
+export default defineWorkflow({
+  name: "expression-budget",
+  inputSchema: z.object({ value: z.number() }),
+}).build(({ input }) => {
+  const value = lift({ value: input.value }, ({ value }) => {
+    const value1 = value;
+    const value2 = value1;
+    const value3 = value2;
+    const value4 = value3;
+    const value5 = value4;
+    const value6 = value5;
+    const value7 = value6;
+    const value8 = value7;
+    return value8;
+  });
+  return { value };
+});
+`);
+
+      const result = await tryPrepareWorkflow({ workflow, cwd });
+
+      expect(result.isErr()).toBe(true);
+      if (result.isOk()) throw new Error("expected check failure");
+      if (result.error.type !== "check-failed") throw new Error("expected typed check failure");
+      expect(result.error.diagnostics).toContainEqual(expect.objectContaining({
+        code: "AL008",
+        severity: "error",
+        message: expect.stringContaining("9 executable statements"),
+      }));
+    });
+  });
+
   it("returns validation diagnostics for compiled invalid IR", async () => {
     await withCompilerWorkspace("compiler-validate", async cwd => {
       const workflow = await copyFixture(cwd, "workflows/basic/malformed.workflow.ts");

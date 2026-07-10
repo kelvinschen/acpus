@@ -95,7 +95,8 @@ const overLimit = lift(
 
 Callbacks are intentionally a simplified task-like surface:
 
-- They must be synchronous expression-body arrows.
+- They must be inline synchronous arrows. Prefer an expression body for simple transforms; a block body may use local declarations and control flow.
+- A block callback may contain at most eight executable statements across itself and nested arrows. Move larger multi-step logic into a Task and pass dependencies through `run.input`.
 - They must not capture workflow/module-scope runtime values; pass every dependency explicitly through `fmap`/`lift*`.
 - They must return `WorkflowData`: JSON primitives.
 
@@ -293,7 +294,7 @@ const state = {
 - Start from the closest example by its file-header `Pattern` and `Nodes` labels; inspect declarations only when the examples do not answer the API question.
 - Use graph-level composites instead of JavaScript control flow over expression values.
 - Use field/index projection directly (`review.output.ready`, `items[0]`).
-- Use `fmap`/`lift` for small one-expression JSON transforms.
+- Use `fmap`/`lift` for small synchronous JSON transforms; prefer expression bodies, and use a short block when named intermediate values improve clarity.
 - Use `template` for compact strings and `md` for multiline prompts/messages.
 - Use signal nodes only when the workflow needs external control.
 - Keep graph-boundary schema values JSON-compatible and durable.

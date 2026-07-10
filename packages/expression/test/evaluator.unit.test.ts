@@ -34,6 +34,10 @@ describe("expression evaluator", () => {
 
   it("evaluates fmap over JSON values", () => {
     expect(evaluateExpr(fmap(refExpr<number>(["input", "count"]), value => value + 1).__ir, adapter)).toBe(3);
+    expect(evaluateExpr(fmap(refExpr<number>(["input", "count"]), value => {
+      const next = value + 1;
+      return next;
+    }).__ir, adapter)).toBe(3);
     expect(evaluateExpr(fmap(refExpr<string>(["input", "title"]), value => value.trim().replace(/\s+/g, " ")).__ir, adapter)).toBe("Ship now");
     expect(evaluateExpr(fmap(refExpr<readonly { id: string; done: boolean }[]>(["input", "items"]), items => items.filter(item => item.done).map(item => item.id)).__ir, adapter))
       .toEqual(["a"]);
@@ -44,8 +48,19 @@ describe("expression evaluator", () => {
     const kind = refExpr<string>(["input", "kind"]);
     const maxItems = refExpr<number>(["input", "maxItems"]);
     expect(evaluateExpr(lift2(ready, kind, (ready, kind) => ready && kind === "release").__ir, adapter)).toBe(true);
+    expect(evaluateExpr(lift2(ready, kind, (ready, kind) => {
+      const matches = ready && kind === "release";
+      return matches;
+    }).__ir, adapter)).toBe(true);
     expect(evaluateExpr(lift3(ready, kind, maxItems, (ready, kind, maxItems) => ready && kind === "release" && maxItems > 0).__ir, adapter)).toBe(true);
-    expect(evaluateExpr(lift({ ready, kind, maxItems }, ({ ready, kind, maxItems }) => ready && kind === "release" && maxItems > 0).__ir, adapter)).toBe(true);
+    expect(evaluateExpr(lift3(ready, kind, maxItems, (ready, kind, maxItems) => {
+      const matches = ready && kind === "release";
+      return matches && maxItems > 0;
+    }).__ir, adapter)).toBe(true);
+    expect(evaluateExpr(lift({ ready, kind, maxItems }, ({ ready, kind, maxItems }) => {
+      const matches = ready && kind === "release";
+      return matches && maxItems > 0;
+    }).__ir, adapter)).toBe(true);
   });
 
   it("allows runtime globals and nondeterministic Math.random", () => {
@@ -98,14 +113,15 @@ describe("expression evaluator", () => {
     }, adapter);
 
     expect(() => evaluateSource("1")).toThrow("fmap(...) callback source must be an arrow function.");
-    expect(() => evaluateSource("value => { return value; }")).toThrow("fmap(...) callback source must be an expression-body arrow");
-    expect(() => evaluateSource("value => /* comment */ { return value; }")).toThrow("fmap(...) callback source must be an expression-body arrow");
+    expect(evaluateSource("value => { return value; }")).toBe(1);
+    expect(evaluateSource("value => /* comment */ { return value; }")).toBe(1);
     expect(() => evaluateExpr({ kind: "call", fn: "fmap", args: [{ kind: "literal", value: 1 }, { kind: "ref", path: ["input", "source"] }] }, adapter))
       .toThrow("fmap(...) expected callback source string.");
     expect(() => evaluateExpr(fmap(1, _value => Promise.resolve(1) as any).__ir, adapter))
       .toThrow("fmap(...) callback must return synchronously.");
     for (const source of [
       "_value => new Date(0)",
+      "_value => { return new Date(0); }",
       "_value => () => 1",
       "_value => new (class View {})()",
       "_value => new Map()",

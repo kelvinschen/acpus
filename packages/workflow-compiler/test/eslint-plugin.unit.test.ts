@@ -36,12 +36,7 @@ describe("internal Acpus ESLint plugin", () => {
     const messages = await lintFixture("eslint-fmap.workflow.ts");
     const callbackMessages = messages.filter(message => message.message.startsWith("AL007:"));
 
-    expect(callbackMessages).toHaveLength(2);
-    expect(callbackMessages.find(message => message.message.includes("one expression"))).toMatchObject({
-      ruleId: "acpus-internal/check",
-      line: await lineOf("eslint-fmap.workflow.ts", "const view = fmap"),
-      message: expect.stringContaining("one expression"),
-    });
+    expect(callbackMessages).toHaveLength(1);
     expect(callbackMessages.find(message => message.message.includes("external binding 'suffix'"))).toMatchObject({
       ruleId: "acpus-internal/check",
       line: await lineOf("eslint-fmap.workflow.ts", "const captured = fmap"),

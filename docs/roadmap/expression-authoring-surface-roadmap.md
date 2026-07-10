@@ -312,7 +312,8 @@ TypeScript 负责：
 AST checker 只负责：
 
 - callback 必须是 inline arrow function。
-- callback 必须是 expression body，不能是 block body。
+- callback 必须是 inline synchronous arrow；expression body 和 block body 都允许。
+- block callback（包括 nested arrows）最多包含 8 个递归 executable statements，第 9 个开始产生 `AL008` error。
 - callback body 不能引用 callback 参数、nested callback 参数之外的 lexical binding。
 - workflow check 可以继续用现有 output admissibility 逻辑给 callback return type 产出更明确的 diagnostic。
 
@@ -346,9 +347,10 @@ fmap(input.title, title => title.trim().replace(/\s+/g, " "));
 // ok
 
 fmap(input.title, title => {
-  return title.trim();
+  const normalized = title.trim();
+  return normalized;
 });
-// diagnostic: callback must be one expression
+// ok: short block callbacks may name intermediate values
 
 fmap(input.items, items =>
   items.filter(item => item.kind === input.kind)
@@ -443,10 +445,11 @@ Tasks:
 - Replace `collectTransformImports` with collection for `fmap`, `lift2`, `lift3`, `lift`.
 - Run callback checker on those calls only.
 - Visit dependency arguments normally, but do not recursively apply generic Expr authoring rules inside accepted callback bodies.
-- Implement inline expression-body arrow rule.
+- Implement inline synchronous arrow rule for expression and block bodies.
+- Enforce one recursive eight-executable-statement budget across each block callback and its nested arrows.
 - Implement no-external-binding scope walk.
 - Support identifier and simple binding-pattern params.
-- Support nested expression-body arrow callbacks.
+- Support nested expression-body and block-body arrow callbacks.
 - Remove method allowlist and all method-specific diagnostics.
 - Update AL001-AL005 hints to the new surface.
 - Keep output admissibility diagnostic for callback return types.
