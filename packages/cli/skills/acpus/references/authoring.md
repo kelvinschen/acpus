@@ -239,12 +239,12 @@ const items = step("items").fanout({
 });
 ```
 
-`loop` is a do-while primitive: it always runs one body round, carries `state`, and each body returns `{ state, stop }`. `loop.output` is the final `state`.
+`loop` is a do-while primitive: it always runs one body round, carries `state`, and each body returns `{ state, stop }`. `loop.output` is the final `state`. Do not mirror runtime `index` or `round` into `state` unless downstream nodes need the final iteration number through `loop.output`.
 
 ```ts
 const refined = step("refine").loop({
   state: { ready: false, summary: "" },
-  do({ state, round }) {
+  do({ state, index, round }) {
     return {
       state: {
         ready: state.ready,

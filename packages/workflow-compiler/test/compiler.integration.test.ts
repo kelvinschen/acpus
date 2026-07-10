@@ -260,7 +260,6 @@ export default defineWorkflow({ name: "throws" }).build(() => {
         kind: "object",
         fields: {
           branch: { kind: "literal", value: "" },
-          round: { kind: "literal", value: 0 },
           continue: { kind: "literal", value: true },
           summary: { kind: "literal", value: "" },
         },

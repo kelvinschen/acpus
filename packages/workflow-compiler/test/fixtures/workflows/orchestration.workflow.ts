@@ -21,7 +21,6 @@ const LaneReview = z.object({
 
 const LaneRepair = z.object({
   branch: z.string(),
-  round: z.number().int(),
   continue: z.boolean(),
   summary: z.string(),
 });
@@ -75,7 +74,6 @@ export default defineWorkflow({
             const repairLoop = step("repair_loop").loop({
               state: {
                 branch: "",
-                round: 0,
                 continue: true,
                 summary: "",
               },
@@ -95,7 +93,6 @@ export default defineWorkflow({
                 return {
                   state: {
                     branch: repair.output.branch,
-                    round,
                     continue: repair.output.continue,
                     summary: repair.output.summary,
                   },
@@ -105,7 +102,6 @@ export default defineWorkflow({
             });
             return {
               branch: repairLoop.output.branch,
-              round: repairLoop.output.round,
               continue: repairLoop.output.continue,
               summary: repairLoop.output.summary,
             };

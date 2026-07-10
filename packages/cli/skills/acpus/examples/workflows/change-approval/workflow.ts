@@ -39,7 +39,6 @@ export default defineWorkflow({
   const refined = step("refine_plan").loop({
     state: {
       ready: initial.output.ready,
-      round: 0,
       summary: initial.output.summary,
       draft: initial.output.nextDraft,
     },
@@ -65,7 +64,6 @@ export default defineWorkflow({
       return {
         state: {
           ready: review.output.ready,
-          round,
           summary: review.output.summary,
           draft: review.output.nextDraft,
         },

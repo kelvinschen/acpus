@@ -47,7 +47,6 @@ export default defineWorkflow({
 }).build(({ input, agents, meta, step }) => {
   const rounds = step("brainstorm_rounds").loop({
     state: {
-      round: 0,
       alpha: "",
       beta: "",
       gamma: "",
@@ -262,7 +261,6 @@ export default defineWorkflow({
 
       return {
         state: {
-          round,
           alpha: aspects.output.alpha.aspect,
           beta: aspects.output.beta.aspect,
           gamma: aspects.output.gamma.aspect,
