@@ -310,7 +310,6 @@ describe("workflow compilation", () => {
 
       const perItem = step("per_item").fanout({
         over: input.items,
-        key({ item, itemIndex }) { return template`item-${item}-${itemIndex}`; },
         do({ item }) { return { ok: fmap(item, value => /.+/.test(value)) }; },
         maxConcurrency: 4,
       });
@@ -375,22 +374,6 @@ describe("workflow compilation", () => {
       kind: "fanout",
       over: { kind: "ref", path: ["input", "items"] },
       strategy: "all",
-      key: {
-        kind: "template",
-        parts: [
-          { kind: "text", value: "item-" },
-          {
-            kind: "expr",
-            expr: { kind: "ref", path: ["fanout", "per_item", "item"] },
-          },
-          { kind: "text", value: "-" },
-          {
-            kind: "expr",
-            expr: { kind: "ref", path: ["fanout", "per_item", "itemIndex"] },
-          },
-          { kind: "text", value: "" },
-        ],
-      },
       do: {
         outputs: {
           ok: {

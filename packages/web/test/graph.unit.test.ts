@@ -65,24 +65,23 @@ describe("graphFromOverlay", () => {
     expect(fanout).toMatchObject({ kind: "fanout" });
     expect(fanout?.options.map(option => ({
       label: option.label,
-      itemIndex: option.itemIndex,
-      itemKey: option.itemKey,
+      itemIndex: "itemIndex" in option ? option.itemIndex : undefined,
       status: option.status,
     }))).toEqual([
-      { label: "item[0] lane-alpha", itemIndex: 0, itemKey: "lane-alpha", status: "completed" },
-      { label: "item[1] lane-beta", itemIndex: 1, itemKey: "lane-beta", status: "completed" },
+      { label: "item[0]", itemIndex: 0, status: "completed" },
+      { label: "item[1]", itemIndex: 1, status: "completed" },
     ]);
-    expect(fanout?.defaultOptionId).toBe("lanes:item:1");
+    expect(fanout?.defaultOptionId).toBe("lanes.beta");
 
     expect(loop).toMatchObject({ kind: "loop" });
     expect(loop?.targetId).toBe("repair_loop::do");
     expect(loop?.options.every(option => option.scopePath.join("/") === "root/execution/branch:lane_matrix/lanes/do/repair_loop/do")).toBe(true);
     expect(loop?.options).toHaveLength(2);
     expect(loop?.options.map(option => option.parentSelections[0])).toEqual([
-      { nodeId: "lanes", kind: "fanout", itemKey: "lane-alpha", itemIndex: 0 },
-      { nodeId: "lanes", kind: "fanout", itemKey: "lane-beta", itemIndex: 1 },
+      { nodeId: "lanes", kind: "fanout", itemIndex: 0 },
+      { nodeId: "lanes", kind: "fanout", itemIndex: 1 },
     ]);
-    expect(loop?.options.every(option => option.iteration === 0)).toBe(true);
+    expect(loop?.options.every(option => "iteration" in option && option.iteration === 0)).toBe(true);
   });
 
   it("emits runtime states scoped to selected fanout items and branches", () => {
@@ -92,20 +91,85 @@ describe("graphFromOverlay", () => {
     const defaultContainer = graph.containers.find(container => container.nodeId === "route" && container.label === "default");
 
     expect(autoRoute?.status).toBe("completed");
-    expect(autoRoute?.selectors).toEqual([{ nodeId: "lanes", kind: "fanout", itemKey: "lane-alpha", itemIndex: 0 }]);
-    expect(manualRoute?.selectors).toEqual([{ nodeId: "lanes", kind: "fanout", itemKey: "lane-beta", itemIndex: 1 }]);
+    expect(autoRoute?.selectors).toEqual([{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }]);
+    expect(manualRoute?.selectors).toEqual([{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }]);
     expect(defaultContainer).toBeDefined();
     expect(graph.runtimeStates).toContainEqual(expect.objectContaining({
       targetId: defaultContainer!.id,
       nodeId: "route",
       status: "completed",
-      selectors: [{ nodeId: "lanes", kind: "fanout", itemKey: "lane-beta", itemIndex: 1 }],
+      selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }],
     }));
+  });
+
+  it("aggregates nested fanout occurrences without colliding on local item indexes", () => {
+    const graph = graphFromOverlay(nestedFanoutOverlay(), "runtime");
+    const inner = graph.selectors.find(selector => selector.nodeId === "items");
+
+    expect(graph.selectors.filter(selector => selector.nodeId === "items")).toHaveLength(1);
+    expect(inner?.options.map(option => ({
+      id: option.id,
+      itemIndex: "itemIndex" in option ? option.itemIndex : undefined,
+      parentSelections: option.parentSelections,
+    }))).toEqual([
+      { id: "items.0.0", itemIndex: 0, parentSelections: [{ nodeId: "groups", kind: "fanout", itemIndex: 0 }] },
+      { id: "items.0.1", itemIndex: 1, parentSelections: [{ nodeId: "groups", kind: "fanout", itemIndex: 0 }] },
+      { id: "items.1.0", itemIndex: 0, parentSelections: [{ nodeId: "groups", kind: "fanout", itemIndex: 1 }] },
+    ]);
   });
 });
 
 function stateFor(graph: WebGraph, targetId: string) {
   return graph.runtimeStates.find(state => state.targetId === targetId);
+}
+
+function nestedFanoutOverlay(): WorkflowVisualizationOverlay {
+  return {
+    workflow: { name: "nested-fanout", runId: "run_1", status: "running", dynamicVersion: 1 },
+    nodes: [
+      node("groups", "fanout", ["root", "groups"], {
+        detail: { kind: "fanout", over: ref("input", "groups"), strategy: "all" },
+      }),
+      node("items", "fanout", ["root", "groups", "do", "items"], {
+        parentNodeId: "groups",
+        detail: { kind: "fanout", over: ref("fanout", "groups", "item", "items"), strategy: "all" },
+      }),
+    ],
+    groups: [
+      {
+        nodeId: "groups",
+        groupKey: "groups",
+        kind: "fanout",
+        status: "running",
+        instancePath: [{ kind: "node", nodeId: "groups" }],
+        members: [
+          { groupKey: "groups", memberKey: "groups.0", memberKind: "fanout_item", itemIndex: 0, item: { items: ["a", "b"] }, status: "completed", ...timing },
+          { groupKey: "groups", memberKey: "groups.1", memberKind: "fanout_item", itemIndex: 1, item: { items: ["c"] }, status: "running", ...timing },
+        ],
+      },
+      {
+        nodeId: "items",
+        groupKey: "items.0",
+        kind: "fanout",
+        status: "completed",
+        instancePath: [{ kind: "fanout", nodeId: "groups", itemIndex: 0 }, { kind: "node", nodeId: "items" }],
+        members: [
+          { groupKey: "items.0", memberKey: "items.0.0", memberKind: "fanout_item", itemIndex: 0, item: "a", status: "completed", ...timing },
+          { groupKey: "items.0", memberKey: "items.0.1", memberKind: "fanout_item", itemIndex: 1, item: "b", status: "completed", ...timing },
+        ],
+      },
+      {
+        nodeId: "items",
+        groupKey: "items.1",
+        kind: "fanout",
+        status: "running",
+        instancePath: [{ kind: "fanout", nodeId: "groups", itemIndex: 1 }, { kind: "node", nodeId: "items" }],
+        members: [
+          { groupKey: "items.1", memberKey: "items.1.0", memberKind: "fanout_item", itemIndex: 0, item: "c", status: "running", ...timing },
+        ],
+      },
+    ],
+  };
 }
 
 function compositeRunOverlay(): WorkflowVisualizationOverlay {
@@ -126,46 +190,46 @@ function compositeRunOverlay(): WorkflowVisualizationOverlay {
         detail: { kind: "fanout", over: ref("input", "lanes"), strategy: "all" },
         frames: [
           frame("lanes", "lanes", "node", "completed", branchFanoutPath()),
-          frame("lanes.alpha", "lanes", "fanout_item", "completed", branchFanoutPath(0, "lane-alpha")),
-          frame("lanes.beta", "lanes", "fanout_item", "completed", branchFanoutPath(1, "lane-beta")),
+          frame("lanes.alpha", "lanes", "fanout_item", "completed", branchFanoutPath(0)),
+          frame("lanes.beta", "lanes", "fanout_item", "completed", branchFanoutPath(1)),
         ],
       }),
       node("route", "switch", ["root", "execution", "branch:lane_matrix", "lanes", "do", "route"], {
         parentNodeId: "lanes",
         detail: { kind: "switch", cases: [call("fmap", ref("fanout", "lanes", "item", "mode"), lit("mode => mode === \"auto\""))], hasDefault: true },
         frames: [
-          frame("route.alpha", "route", "node", "completed", [...branchFanoutPath(0, "lane-alpha"), { kind: "node", nodeId: "route" }]),
-          frame("route.alpha.case", "route", "branch", "completed", [...branchFanoutPath(0, "lane-alpha"), { kind: "branch", nodeId: "route", branchId: "case:0" }]),
-          frame("route.beta", "route", "node", "completed", [...branchFanoutPath(1, "lane-beta"), { kind: "node", nodeId: "route" }]),
-          frame("route.beta.default", "route", "branch", "completed", [...branchFanoutPath(1, "lane-beta"), { kind: "branch", nodeId: "route", branchId: "default" }]),
+          frame("route.alpha", "route", "node", "completed", [...branchFanoutPath(0), { kind: "node", nodeId: "route" }]),
+          frame("route.alpha.case", "route", "branch", "completed", [...branchFanoutPath(0), { kind: "branch", nodeId: "route", branchId: "case:0" }]),
+          frame("route.beta", "route", "node", "completed", [...branchFanoutPath(1), { kind: "node", nodeId: "route" }]),
+          frame("route.beta.default", "route", "branch", "completed", [...branchFanoutPath(1), { kind: "branch", nodeId: "route", branchId: "default" }]),
         ],
       }),
       node("auto_route", "task", ["root", "execution", "branch:lane_matrix", "lanes", "do", "route", "case:0", "auto_route"], {
         parentNodeId: "route",
         detail: { kind: "task", inputs: ["lane", "score"], target: "inline" },
-        instances: [instance("auto_route.alpha", "auto_route", "completed", [...branchFanoutPath(0, "lane-alpha"), { kind: "branch", nodeId: "route", branchId: "case:0" }, { kind: "node", nodeId: "auto_route" }])],
+        instances: [instance("auto_route.alpha", "auto_route", "completed", [...branchFanoutPath(0), { kind: "branch", nodeId: "route", branchId: "case:0" }, { kind: "node", nodeId: "auto_route" }])],
       }),
       node("manual_route", "task", ["root", "execution", "branch:lane_matrix", "lanes", "do", "route", "default", "manual_route"], {
         parentNodeId: "route",
         detail: { kind: "task", inputs: ["lane", "score"], target: "inline" },
-        instances: [instance("manual_route.beta", "manual_route", "completed", [...branchFanoutPath(1, "lane-beta"), { kind: "branch", nodeId: "route", branchId: "default" }, { kind: "node", nodeId: "manual_route" }])],
+        instances: [instance("manual_route.beta", "manual_route", "completed", [...branchFanoutPath(1), { kind: "branch", nodeId: "route", branchId: "default" }, { kind: "node", nodeId: "manual_route" }])],
       }),
       node("repair_loop", "loop", ["root", "execution", "branch:lane_matrix", "lanes", "do", "repair_loop"], {
         parentNodeId: "lanes",
         detail: { kind: "loop", state: lit({}) },
         frames: [
-          frame("repair.alpha", "repair_loop", "loop", "completed", [...branchFanoutPath(0, "lane-alpha"), { kind: "node", nodeId: "repair_loop" }]),
-          frame("repair.alpha.0", "repair_loop", "loop_iteration", "completed", [...branchFanoutPath(0, "lane-alpha"), { kind: "loop", nodeId: "repair_loop", iter: 0 }]),
-          frame("repair.beta", "repair_loop", "loop", "completed", [...branchFanoutPath(1, "lane-beta"), { kind: "node", nodeId: "repair_loop" }]),
-          frame("repair.beta.0", "repair_loop", "loop_iteration", "completed", [...branchFanoutPath(1, "lane-beta"), { kind: "loop", nodeId: "repair_loop", iter: 0 }]),
+          frame("repair.alpha", "repair_loop", "loop", "completed", [...branchFanoutPath(0), { kind: "node", nodeId: "repair_loop" }]),
+          frame("repair.alpha.0", "repair_loop", "loop_iteration", "completed", [...branchFanoutPath(0), { kind: "loop", nodeId: "repair_loop", iter: 0 }]),
+          frame("repair.beta", "repair_loop", "loop", "completed", [...branchFanoutPath(1), { kind: "node", nodeId: "repair_loop" }]),
+          frame("repair.beta.0", "repair_loop", "loop_iteration", "completed", [...branchFanoutPath(1), { kind: "loop", nodeId: "repair_loop", iter: 0 }]),
         ],
       }),
       node("score_gate", "assert", ["root", "execution", "branch:lane_matrix", "lanes", "do", "score_gate"], {
         parentNodeId: "lanes",
         detail: { kind: "assert", condition: call("lift2", ref("fanout", "lanes", "item", "score"), ref("input", "minScore"), lit("(score, minScore) => score >= minScore")) },
         frames: [
-          frame("score.alpha", "score_gate", "node", "completed", [...branchFanoutPath(0, "lane-alpha"), { kind: "node", nodeId: "score_gate" }]),
-          frame("score.beta", "score_gate", "node", "completed", [...branchFanoutPath(1, "lane-beta"), { kind: "node", nodeId: "score_gate" }]),
+          frame("score.alpha", "score_gate", "node", "completed", [...branchFanoutPath(0), { kind: "node", nodeId: "score_gate" }]),
+          frame("score.beta", "score_gate", "node", "completed", [...branchFanoutPath(1), { kind: "node", nodeId: "score_gate" }]),
         ],
       }),
       node("agent_gate", "if", ["root", "execution", "branch:agent_preview", "agent_gate"], {
@@ -233,8 +297,8 @@ function compositeRunOverlay(): WorkflowVisualizationOverlay {
         status: "completed",
         strategy: "all",
         members: [
-          { groupKey: "lanes", memberKey: "lanes.alpha", memberKind: "fanout_item", itemKey: "lane-alpha", itemIndex: 0, childFrameKey: "lanes.alpha", status: "completed", ...timing },
-          { groupKey: "lanes", memberKey: "lanes.beta", memberKind: "fanout_item", itemKey: "lane-beta", itemIndex: 1, childFrameKey: "lanes.beta", status: "completed", ...timing },
+          { groupKey: "lanes", memberKey: "lanes.alpha", memberKind: "fanout_item", itemIndex: 0, item: { mode: "auto" }, childFrameKey: "lanes.alpha", status: "completed", ...timing },
+          { groupKey: "lanes", memberKey: "lanes.beta", memberKind: "fanout_item", itemIndex: 1, item: { mode: "manual" }, childFrameKey: "lanes.beta", status: "completed", ...timing },
         ],
       },
     ],
@@ -279,9 +343,9 @@ function instance(
   return { nodeKey, nodeId, status, instancePath, ...timing } as OverlayInstance;
 }
 
-function branchFanoutPath(itemIndex?: number, itemKey?: string): InstancePath {
+function branchFanoutPath(itemIndex?: number): InstancePath {
   return [
     { kind: "branch", nodeId: "execution", branchId: "lane_matrix" },
-    ...(itemIndex === undefined ? [] : [{ kind: "fanout" as const, nodeId: "lanes", itemIndex, itemKey: itemKey ?? itemIndex }]),
+    ...(itemIndex === undefined ? [] : [{ kind: "fanout" as const, nodeId: "lanes", itemIndex }]),
   ];
 }

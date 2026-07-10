@@ -226,7 +226,6 @@ const checks = step("checks").parallel({
 ```ts
 const items = step("items").fanout({
   over: input.items,
-  key({ item }) { return template`item-${item.id}`; },
   do({ item }) {
     const normalized = step("normalize_item").task({
       run: {
@@ -238,6 +237,7 @@ const items = step("items").fanout({
   },
 });
 ```
+
 
 `loop` is a do-while primitive: it always runs one body round, carries `state`, and each body returns `{ state, stop }`. `loop.output` is the final `state`. Do not mirror runtime `index` or `round` into `state` unless downstream nodes need the final iteration number through `loop.output`.
 

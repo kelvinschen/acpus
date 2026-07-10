@@ -442,8 +442,8 @@ describe("scheduler materialization", () => {
     ]);
     expect(events[2]).toEqual({ type: "group.started", payload: { runId: "run_1", groupKey: fanoutKey, nodeKey: fanoutKey, nodeId: "items", kind: "fanout", strategy: "all" } });
     expect(readyMembers.map(event => event.payload)).toMatchObject([
-      { groupKey: fanoutKey, memberKind: "fanout_item", itemKey: 0, itemIndex: 0, item: "a", readinessSequence: 1 },
-      { groupKey: fanoutKey, memberKind: "fanout_item", itemKey: 1, itemIndex: 1, item: "b", readinessSequence: 2 },
+      { groupKey: fanoutKey, memberKind: "fanout_item", itemIndex: 0, item: "a", readinessSequence: 1 },
+      { groupKey: fanoutKey, memberKind: "fanout_item", itemIndex: 1, item: "b", readinessSequence: 2 },
     ]);
   });
 
@@ -451,8 +451,8 @@ describe("scheduler materialization", () => {
     const nonArray = fanoutNode({ over: { kind: "literal", value: "nope" } });
     const nonLeafDo = fanoutNode({ doNodes: [{ id: "check", kind: "assert", condition: { kind: "literal", value: true } }] });
     const fanoutKey = deriveInstanceKey(appendNode([], "items"));
-    const itemKey = deriveInstanceKey(appendFanoutItem([], "items", 0, 0));
-    const checkKey = deriveInstanceKey(appendNode(appendFanoutItem([], "items", 0, 0), "check"));
+    const itemFrameKey = deriveInstanceKey(appendFanoutItem([], "items", 0));
+    const checkKey = deriveInstanceKey(appendNode(appendFanoutItem([], "items", 0), "check"));
 
     expect(bootstrapRootEvents("run_1", workflowWithRootNode(nonArray), {})).toEqual([
       { type: "frame.started", payload: { runId: "run_1", frameKey: "root", frameKind: "root", scope: { items: fanoutKey } } },
@@ -460,26 +460,26 @@ describe("scheduler materialization", () => {
       { type: "frame.failed", payload: { frameKey: fanoutKey, error: { reason: "fanout_over_not_array" }, terminalReason: "fanout_over_not_array" } },
     ]);
     const pureBodyEvents = bootstrapRootEvents("run_1", workflowWithRootNode(nonLeafDo), {});
-    expect(pureBodyEvents).toContainEqual(expect.objectContaining({ type: "group.member_ready", payload: expect.objectContaining({ memberKey: itemKey, childFrameKey: itemKey }) }));
+    expect(pureBodyEvents).toContainEqual(expect.objectContaining({ type: "group.member_ready", payload: expect.objectContaining({ memberKey: itemFrameKey, childFrameKey: itemFrameKey }) }));
     expect(pureBodyEvents).toContainEqual({ type: "frame.completed", payload: { frameKey: checkKey, result: {}, terminalReason: "assert_passed" } });
     const projection = applySchedulerEvents(createSchedulerProjection("run_1"), pureBodyEvents);
-    expect(projection.groupMembers[itemKey]).toMatchObject({ status: "ready", childFrameKey: itemKey });
+    expect(projection.groupMembers[itemFrameKey]).toMatchObject({ status: "ready", childFrameKey: itemFrameKey });
     expect(projection.frames[checkKey]).toMatchObject({ status: "completed", terminalReason: "assert_passed" });
   });
 
   it("completes empty fanout item members immediately", () => {
     const fanoutKey = deriveInstanceKey(appendNode([], "items"));
-    const itemKey = deriveInstanceKey(appendFanoutItem([], "items", 0, 0));
+    const itemFrameKey = deriveInstanceKey(appendFanoutItem([], "items", 0));
     const projection = applySchedulerEvents(createSchedulerProjection("run_1"), bootstrapRootEvents("run_1", workflowWithRootNode(fanoutNode({
       over: { kind: "literal", value: ["a"] },
       doNodes: [],
       doOutputs: { item: { kind: "ref", path: ["fanout", "items", "item"] } },
     })), {}));
 
-    expect(projection.frames[itemKey]).toMatchObject({ status: "completed", result: { item: "a" } });
-    expect(projection.groupMembers[itemKey]).toMatchObject({ status: "completed", output: { item: "a" } });
+    expect(projection.frames[itemFrameKey]).toMatchObject({ status: "completed", result: { item: "a" } });
+    expect(projection.groupMembers[itemFrameKey]).toMatchObject({ status: "completed", output: { item: "a" } });
     expect(groupCompletionEvents(projection, fanoutKey)).toEqual([
-      { type: "group.completed", payload: { groupKey: fanoutKey, result: { acceptedMemberKeys: [itemKey] } } },
+      { type: "group.completed", payload: { groupKey: fanoutKey, result: { acceptedMemberKeys: [itemFrameKey] } } },
     ]);
   });
 
@@ -488,12 +488,12 @@ describe("scheduler materialization", () => {
       doNodes: [taskNode("first"), taskNode("second")],
       doOutputs: { value: { kind: "ref", path: ["nodes", "second", "output", "value"] } },
     }));
-    const itemKey = deriveInstanceKey(appendFanoutItem([], "items", 0, 0));
-    const firstKey = deriveInstanceKey(appendNode(appendFanoutItem([], "items", 0, 0), "first"));
-    const secondKey = deriveInstanceKey(appendNode(appendFanoutItem([], "items", 0, 0), "second"));
+    const itemFrameKey = deriveInstanceKey(appendFanoutItem([], "items", 0));
+    const firstKey = deriveInstanceKey(appendNode(appendFanoutItem([], "items", 0), "first"));
+    const secondKey = deriveInstanceKey(appendNode(appendFanoutItem([], "items", 0), "second"));
     const bootstrapped = bootstrapRootEvents("run_1", workflow, {});
 
-    expect(bootstrapped).toContainEqual(expect.objectContaining({ type: "group.member_ready", payload: expect.objectContaining({ memberKey: itemKey, itemIndex: 0 }) }));
+    expect(bootstrapped).toContainEqual(expect.objectContaining({ type: "group.member_ready", payload: expect.objectContaining({ memberKey: itemFrameKey, itemIndex: 0 }) }));
     expect(bootstrapped).toContainEqual(expect.objectContaining({ type: "instance.ready", payload: expect.objectContaining({ nodeKey: firstKey }) }));
 
     const afterFirst = applySchedulerEvents(createSchedulerProjection("run_1"), [
@@ -501,7 +501,7 @@ describe("scheduler materialization", () => {
       { type: "instance.completed", payload: { nodeKey: firstKey, output: { value: "first" } } },
     ]);
     expect(continueRootEvents(workflow, afterFirst, {})).toEqual([
-      expect.objectContaining({ type: "instance.ready", payload: expect.objectContaining({ nodeKey: secondKey, parentFrameKey: itemKey }) }),
+      expect.objectContaining({ type: "instance.ready", payload: expect.objectContaining({ nodeKey: secondKey, parentFrameKey: itemFrameKey }) }),
     ]);
 
     const afterSecond = applySchedulerEvents(afterFirst, [
@@ -509,19 +509,20 @@ describe("scheduler materialization", () => {
       { type: "instance.completed", payload: { nodeKey: secondKey, output: { value: "second" } } },
     ]);
     expect(continueRootEvents(workflow, afterSecond, {})).toEqual([
-      { type: "frame.completed", payload: { frameKey: itemKey, result: { value: "second" }, terminalReason: "frame_completed" } },
-      { type: "group.member_completed", payload: { memberKey: itemKey, completionSequence: 1, output: { value: "second" } } },
+      { type: "frame.completed", payload: { frameKey: itemFrameKey, result: { value: "second" }, terminalReason: "frame_completed" } },
+      { type: "group.member_completed", payload: { memberKey: itemFrameKey, completionSequence: 1, output: { value: "second" } } },
     ]);
   });
 
-  it("fails duplicate root fanout item keys durably", () => {
-    const fanoutKey = deriveInstanceKey(appendNode([], "items"));
-    expect(bootstrapRootEvents("run_1", workflowWithRootNode(fanoutNode({
-      key: { kind: "template", parts: [{ kind: "text", value: "same" }] },
-    })), {})).toEqual([
-      { type: "frame.started", payload: { runId: "run_1", frameKey: "root", frameKind: "root", scope: { items: fanoutKey } } },
-      expect.objectContaining({ type: "frame.started", payload: expect.objectContaining({ frameKey: fanoutKey }) }),
-      { type: "frame.failed", payload: { frameKey: fanoutKey, error: { reason: "duplicate_fanout_key", itemKey: "same" }, terminalReason: "duplicate_fanout_key" } },
+  it("materializes duplicate fanout values as distinct indexed occurrences", () => {
+    const events = bootstrapRootEvents("run_1", workflowWithRootNode(fanoutNode({
+      over: { kind: "literal", value: ["same", "same"] },
+    })), {});
+    const members = events.filter(event => event.type === "group.member_ready");
+
+    expect(members.map(event => event.payload)).toMatchObject([
+      { memberKey: deriveInstanceKey(appendFanoutItem([], "items", 0)), itemIndex: 0, item: "same" },
+      { memberKey: deriveInstanceKey(appendFanoutItem([], "items", 1)), itemIndex: 1, item: "same" },
     ]);
   });
 
@@ -712,7 +713,6 @@ function inlineTaskTarget(): Extract<Extract<NodeIR, { kind: "task" }>["run"]["t
 
 function fanoutNode(options: {
   over?: Extract<NodeIR, { kind: "fanout" }>["over"];
-  key?: Extract<NodeIR, { kind: "fanout" }>["key"];
   doNodes?: NodeIR[];
   doOutputs?: WorkflowIR["root"]["outputs"];
 } = {}): NodeIR {
@@ -721,7 +721,6 @@ function fanoutNode(options: {
     kind: "fanout",
     strategy: "all",
     over: options.over ?? { kind: "literal", value: ["a", "b"] },
-    ...(options.key === undefined ? {} : { key: options.key }),
     do: { nodes: options.doNodes ?? [taskNode("item_task")], outputs: options.doOutputs ?? {} },
   };
 }

@@ -193,6 +193,19 @@ describe("web API contract", () => {
       expect(body.inspection.target).toEqual({ kind: "static-node", id: "step_1" });
     });
 
+    it("rejects fanout inspection context without an item index", async () => {
+      mockGetRunInspection.mockResolvedValue({
+        run: { id: "run_1", dynamic: { version: 3, progressVersion: 0, progress: [], frames: [], nodeInstances: [], attempts: [], groupMembers: [], signalWaits: [], executionMetadata: [] } },
+        staticNodes: [{ nodeId: "step_1", kind: "task", order: 0 }],
+      });
+      const context = Buffer.from(JSON.stringify([{ nodeId: "items", kind: "fanout" }])).toString("base64url");
+      const res = await app.request(`/api/runs/run_1/nodes/step_1?context=${context}`);
+
+      expect(res.status).toBe(400);
+      const body = await res.json() as JsonBody;
+      expect(body.error.code).toBe("invalid_context");
+    });
+
     it("returns 404 for unknown run", async () => {
       mockGetRunInspection.mockResolvedValue(undefined);
       const res = await app.request("/api/runs/nonexistent/nodes/step_1");

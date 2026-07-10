@@ -233,7 +233,7 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: IrScopeCon
       break;
     }
     case "fanout": {
-      validateKnownFields(node, ["id", "source", "kind", "over", "key", "do", "maxConcurrency", "strategy", "count"], diagnostics, path);
+      validateKnownFields(node, ["id", "source", "kind", "over", "do", "maxConcurrency", "strategy", "count"], diagnostics, path);
       const strategy = (node as { strategy?: string }).strategy;
       const count = (node as { count?: number }).count;
       if (strategy !== "all" && strategy !== "quorum") addError(diagnostics, "F001", `Fanout node '${node.id}' strategy must be 'all' or 'quorum'.`, `${path}.strategy`);
@@ -241,7 +241,6 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: IrScopeCon
       if (strategy !== "quorum" && count !== undefined) addError(diagnostics, "F003", `Fanout node '${node.id}' count is only valid with quorum strategy.`, `${path}.count`);
       const validOver = validateExpr(node.over, diagnostics, `${path}.over`, refsFromScope(ctx));
       if (validOver) validateFanoutOver(node.over, diagnostics, `${path}.over`);
-      if (node.key) validateTemplate(node.key, diagnostics, `${path}.key`, refsWithFanout(ctx, id));
       validateScope(node.do, diagnostics, childScopeContext(ctx, `${path}.do`, { fanoutId: id }));
       break;
     }

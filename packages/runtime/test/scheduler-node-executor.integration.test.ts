@@ -389,7 +389,10 @@ describe("runtime scheduler node executor", () => {
         expect(projection.run).toMatchObject({ status: "completed" });
         expect(projection.frames[groupKey]).toMatchObject({ status: "completed", result: { left: { value: "left" }, right: { value: "right" } } });
         expect(projection.groups[groupKey]).toMatchObject({ status: "completed", strategy: "all" });
-        expect(Object.values(projection.groupMembers).map(member => member.branchId).sort()).toEqual(["left", "right"]);
+        expect(Object.values(projection.groupMembers)
+          .filter(member => member.memberKind === "branch")
+          .map(member => member.branchId)
+          .sort()).toEqual(["left", "right"]);
         expect(Object.values(projection.instances).filter(instance => instance.status === "completed").map(instance => instance.nodeId).sort()).toEqual(["left_task", "right_task"]);
       } finally {
         store.close();
@@ -461,7 +464,9 @@ describe("runtime scheduler node executor", () => {
           status: "completed",
           result: [{ item: "a", index: 0 }, { item: "b", index: 1 }],
         });
-        expect(Object.values(projection.groupMembers).map(member => ({ item: member.item, itemIndex: member.itemIndex, status: member.status }))).toEqual([
+        expect(Object.values(projection.groupMembers)
+          .filter(member => member.memberKind === "fanout_item")
+          .map(member => ({ item: member.item, itemIndex: member.itemIndex, status: member.status }))).toEqual([
           { item: "a", itemIndex: 0, status: "completed" },
           { item: "b", itemIndex: 1, status: "completed" },
         ]);
@@ -615,12 +620,12 @@ describe("runtime scheduler node executor", () => {
       const store = await openRuntimeStore(workspace);
       try {
         const run = await store.admitRun({ prepared, input: { items: ["a", "b"] }, cwd: workspace });
-        const firstItemKey = deriveInstanceKey(appendNode(appendFanoutItem(appendBranch([], "combine", "items"), "inner_items", 0, 0), "inner_task"));
-        const secondItemKey = deriveInstanceKey(appendNode(appendFanoutItem(appendBranch([], "combine", "items"), "inner_items", 1, 1), "inner_task"));
+        const firstItemNodeKey = deriveInstanceKey(appendNode(appendFanoutItem(appendBranch([], "combine", "items"), "inner_items", 0), "inner_task"));
+        const secondItemNodeKey = deriveInstanceKey(appendNode(appendFanoutItem(appendBranch([], "combine", "items"), "inner_items", 1), "inner_task"));
 
         await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "idle", started: 1, completed: 1 });
-        expect(store.scheduler.loadRunSnapshot(run.id).projection.instances[firstItemKey]).toMatchObject({ status: "ready" });
-        expect(store.scheduler.loadRunSnapshot(run.id).projection.instances[secondItemKey]).toMatchObject({ status: "ready" });
+        expect(store.scheduler.loadRunSnapshot(run.id).projection.instances[firstItemNodeKey]).toMatchObject({ status: "ready" });
+        expect(store.scheduler.loadRunSnapshot(run.id).projection.instances[secondItemNodeKey]).toMatchObject({ status: "ready" });
 
         await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-b", store })).resolves.toMatchObject({ status: "idle", started: 1, completed: 1 });
         const afterFirstItem = store.scheduler.loadRunSnapshot(run.id).projection;
@@ -643,12 +648,12 @@ describe("runtime scheduler node executor", () => {
           frameKind: "branch",
           instancePath: appendBranch([], "combine", "items"),
         });
-        expect(details?.dynamic?.nodeInstances.find(instance => instance.nodeKey === firstItemKey)).toMatchObject({
+        expect(details?.dynamic?.nodeInstances.find(instance => instance.nodeKey === firstItemNodeKey)).toMatchObject({
           nodeId: "inner_task",
-          instancePath: appendNode(appendFanoutItem(appendBranch([], "combine", "items"), "inner_items", 0, 0), "inner_task"),
+          instancePath: appendNode(appendFanoutItem(appendBranch([], "combine", "items"), "inner_items", 0), "inner_task"),
         });
-        expect(details?.dynamic?.groupMembers.find(member => member.memberKey === deriveInstanceKey(appendFanoutItem(appendBranch([], "combine", "items"), "inner_items", 0, 0)))).toMatchObject({
-          childFrameKey: deriveInstanceKey(appendFanoutItem(appendBranch([], "combine", "items"), "inner_items", 0, 0)),
+        expect(details?.dynamic?.groupMembers.find(member => member.memberKey === deriveInstanceKey(appendFanoutItem(appendBranch([], "combine", "items"), "inner_items", 0)))).toMatchObject({
+          childFrameKey: deriveInstanceKey(appendFanoutItem(appendBranch([], "combine", "items"), "inner_items", 0)),
         });
       } finally {
         store.close();

@@ -180,7 +180,6 @@ export type ParallelNodeIR = BaseNodeIR & {
 type BaseFanoutNodeIR = BaseNodeIR & {
   kind: "fanout";
   over: ExprIR;
-  key?: TemplateIR;
   do: ScopeIR;
   maxConcurrency?: number;
 };

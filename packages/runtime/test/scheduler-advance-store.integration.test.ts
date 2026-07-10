@@ -69,14 +69,14 @@ describe("durable scheduler advance with store", () => {
           idempotencyKey: "setup-quorum",
           events: [
             { type: "group.started", payload: { runId: run.id, groupKey: "items", nodeKey: "items", nodeId: "items", kind: "fanout", strategy: "quorum", quorumCount: 2 } },
-            { type: "group.member_ready", payload: { runId: run.id, groupKey: "items", memberKey: "items[0]", memberKind: "fanout_item", itemIndex: 0, readinessSequence: 1 } },
+            { type: "group.member_ready", payload: { runId: run.id, groupKey: "items", memberKey: "items[0]", memberKind: "fanout_item", itemIndex: 0, item: 0, readinessSequence: 1 } },
             { type: "group.member_started", payload: { memberKey: "items[0]" } },
             { type: "group.member_completed", payload: { memberKey: "items[0]", completionSequence: 20, output: { item: 0 } } },
-            { type: "group.member_ready", payload: { runId: run.id, groupKey: "items", memberKey: "items[1]", memberKind: "fanout_item", itemIndex: 1, readinessSequence: 2 } },
+            { type: "group.member_ready", payload: { runId: run.id, groupKey: "items", memberKey: "items[1]", memberKind: "fanout_item", itemIndex: 1, item: 1, readinessSequence: 2 } },
             { type: "group.member_started", payload: { memberKey: "items[1]" } },
             { type: "group.member_completed", payload: { memberKey: "items[1]", completionSequence: 10, output: { item: 1 } } },
-            { type: "group.member_ready", payload: { runId: run.id, groupKey: "items", memberKey: "items[2]", memberKind: "fanout_item", itemIndex: 2, readinessSequence: 3 } },
-            { type: "instance.ready", payload: { runId: run.id, nodeKey: "items[2]", nodeId: "item", instancePath: [{ kind: "fanout", nodeId: "items", itemKey: 2, itemIndex: 2 }, { kind: "node", nodeId: "item" }], readinessSequence: 3 } },
+            { type: "group.member_ready", payload: { runId: run.id, groupKey: "items", memberKey: "items[2]", memberKind: "fanout_item", itemIndex: 2, item: 2, readinessSequence: 3 } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "items[2]", nodeId: "item", instancePath: [{ kind: "fanout", nodeId: "items", itemIndex: 2 }, { kind: "node", nodeId: "item" }], readinessSequence: 3 } },
           ],
         });
         expireLease(workspace, run.id);

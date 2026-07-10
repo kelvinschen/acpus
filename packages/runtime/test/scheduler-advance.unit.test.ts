@@ -97,10 +97,10 @@ describe("scheduler advance loop", () => {
   it("respects direct-member local concurrency caps before enqueueing work", () => {
     const projection = applySchedulerEvents(createSchedulerProjection("run_1"), [
       { type: "group.started", payload: { runId: "run_1", groupKey: "fanout", nodeKey: "fanout", nodeId: "fanout", kind: "fanout", strategy: "all" } },
-      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "fanout", memberKey: "item-0", memberKind: "fanout_item", readinessSequence: 1, itemIndex: 0 } },
+      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "fanout", memberKey: "item-0", memberKind: "fanout_item", readinessSequence: 1, itemIndex: 0, item: 0 } },
       { type: "group.member_started", payload: { memberKey: "item-0" } },
-      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "fanout", memberKey: "item-1", memberKind: "fanout_item", readinessSequence: 2, itemIndex: 1 } },
-      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "fanout", memberKey: "item-2", memberKind: "fanout_item", readinessSequence: 3, itemIndex: 2 } },
+      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "fanout", memberKey: "item-1", memberKind: "fanout_item", readinessSequence: 2, itemIndex: 1, item: 1 } },
+      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "fanout", memberKey: "item-2", memberKind: "fanout_item", readinessSequence: 3, itemIndex: 2, item: 2 } },
       ready("item-1", 1),
       ready("item-2", 2),
     ]);

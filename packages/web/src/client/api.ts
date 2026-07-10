@@ -27,16 +27,15 @@ export type RunDetails = RunRecord & {
       status: string;
     } & Record<string, unknown>>;
     attempts: unknown[];
-    groupMembers: Array<{
-      groupKey?: string;
+    groupMembers: Array<({
+      groupKey: string;
       memberKey: string;
-      memberKind?: string;
-      branchId?: string;
-      itemKey?: string;
-      itemIndex?: number;
       childFrameKey?: string;
       status: string;
-    } & Record<string, unknown>>;
+    } & (
+      | { memberKind: "branch"; branchId: string; itemIndex?: never }
+      | { memberKind: "fanout_item"; itemIndex: number; branchId?: never }
+    )) & Record<string, unknown>>;
     signalWaits: Array<{
       nodeKey: string;
       nodeId: string;
@@ -132,17 +131,18 @@ export type WebGraphSelector = {
   options: WebGraphSelectorOption[];
 };
 
-export type WebGraphSelectorOption = {
+type WebGraphSelectorOptionBase = {
   id: string;
   label: string;
   status: string;
   frameKey?: string;
-  itemKey?: string;
-  itemIndex?: number;
-  iteration?: number;
   scopePath: string[];
   parentSelections: WebGraphSelection[];
 };
+
+export type WebGraphFanoutSelectorOption = WebGraphSelectorOptionBase & { itemIndex: number };
+export type WebGraphLoopSelectorOption = WebGraphSelectorOptionBase & { iteration: number };
+export type WebGraphSelectorOption = WebGraphFanoutSelectorOption | WebGraphLoopSelectorOption;
 
 export type WebGraphRuntimeState = {
   targetId: string;
@@ -153,29 +153,24 @@ export type WebGraphRuntimeState = {
   selectors: WebGraphSelection[];
 };
 
-export type WebGraphSelection = {
-  nodeId: string;
-  kind: "fanout" | "loop";
-  itemKey?: string;
-  itemIndex?: number;
-  iteration?: number;
-};
+export type WebGraphSelection =
+  | { nodeId: string; kind: "fanout"; itemIndex: number }
+  | { nodeId: string; kind: "loop"; iteration: number };
 
 export type WebGraphGroup = {
   nodeId: string;
   groupKey: string;
-  kind: string;
+  kind: "parallel" | "fanout";
   status: string;
   strategy?: string;
-  members: Array<{
+  members: Array<({
     memberKey: string;
-    memberKind: string;
-    branchId?: string;
-    itemKey?: string;
-    itemIndex?: number;
     status: string;
     childFrameKey?: string;
-  }>;
+  } & (
+    | { memberKind: "branch"; branchId: string; itemIndex?: never }
+    | { memberKind: "fanout_item"; itemIndex: number; branchId?: never }
+  ))>;
 };
 
 export type NodeInspection = {

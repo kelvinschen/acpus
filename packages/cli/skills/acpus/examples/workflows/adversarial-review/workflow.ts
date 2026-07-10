@@ -76,7 +76,7 @@ export default defineWorkflow({
                 - Prefer 3-5 lenses, but never exceed the maximum.
                 - Avoid duplicate lenses.
                 - Each lens must represent a distinct way the subject could fail.
-                - Each lens id must be short, lowercase, and stable enough for a run key.
+                - Each lens id must be short, lowercase, and stable within the review output.
                 - Each lens prompt must be a complete natural-language reviewer role, including focus and attack style.
                 - Good lenses include correctness, feasibility, risk, edge cases, rubric compliance, maintainability, authoring fit, runtime contract, testing, migration risk, and DX.`,
         },
@@ -86,7 +86,6 @@ export default defineWorkflow({
     const reviews = step("blind_reviews").fanout({
         over: plan.output.lenses,
         maxConcurrency: 4,
-        key({ item }) { return template`review-${item.id}`; },
         do({ item }) {
             const review = step("blind_review").agent({
                 run: {
@@ -139,7 +138,6 @@ export default defineWorkflow({
     const critiques = step("cross_critiques").fanout({
         over: plan.output.lenses,
         maxConcurrency: 4,
-        key({ item }) { return template`critique-${item.id}`; },
         do({ item }) {
             const critique = step("critique_reviews").agent({
                 run: {

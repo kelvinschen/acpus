@@ -47,9 +47,10 @@ export type WorkflowVisualizationNode = {
 export type WorkflowVisualizationGroup = {
   nodeId: string;
   groupKey: string;
-  kind: "parallel" | "fanout" | string;
+  kind: "parallel" | "fanout";
   status: string;
   strategy?: string;
+  instancePath?: RunDynamicFrame["instancePath"];
   members: RunDynamicGroupMember[];
 };
 
@@ -180,30 +181,20 @@ function nodeDetail(node: NodeIR, agents: WorkflowIR["agents"]): NodeDetail {
 
 function groupOverlays(dynamic: WorkflowVisualizationDynamicInput | undefined, staticNodeById: ReadonlyMap<string, NodeIR>): WorkflowVisualizationGroup[] {
   if (!dynamic) return [];
-  return dynamic.frames
-    .filter(frame => {
-      if (frame.frameKind !== "node" || frame.nodeId === undefined) return false;
-      const staticNode = staticNodeById.get(frame.nodeId);
-      return staticNode?.kind === "parallel" || staticNode?.kind === "fanout";
-    })
-    .map(frame => {
-      const members = dynamic.groupMembers.filter(member => member.groupKey === frame.frameKey);
-      const staticNode = staticNodeById.get(frame.nodeId!);
-      return {
-        nodeId: frame.nodeId!,
-        groupKey: frame.frameKey,
-        kind: staticNode?.kind ?? groupKind(members),
-        status: frame.status,
-        ...(frame.strategy === undefined ? {} : { strategy: frame.strategy }),
-        members,
-      };
-    });
-}
-
-function groupKind(members: RunDynamicGroupMember[]): WorkflowVisualizationGroup["kind"] {
-  if (members.some(member => member.memberKind === "fanout_item")) return "fanout";
-  if (members.some(member => member.memberKind === "branch")) return "parallel";
-  return "parallel";
+  return dynamic.frames.flatMap(frame => {
+    if (frame.frameKind !== "node" || frame.nodeId === undefined) return [];
+    const staticNode = staticNodeById.get(frame.nodeId);
+    if (staticNode?.kind !== "parallel" && staticNode?.kind !== "fanout") return [];
+    return [{
+      nodeId: frame.nodeId,
+      groupKey: frame.frameKey,
+      kind: staticNode.kind,
+      status: frame.status,
+      ...(frame.strategy === undefined ? {} : { strategy: frame.strategy }),
+      ...(frame.instancePath === undefined ? {} : { instancePath: frame.instancePath }),
+      members: dynamic.groupMembers.filter(member => member.groupKey === frame.frameKey),
+    }];
+  });
 }
 
 function overlayStatus(statuses: string[]): WorkflowVisualizationNode["status"] {

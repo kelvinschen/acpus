@@ -11,7 +11,7 @@ describe("workflow visualization overlay", () => {
       version: 9,
       frames: [
         { frameKey: "root", frameKind: "root", status: "running", ...timing },
-        { frameKey: "approval", nodeId: "approval", frameKind: "node", status: "running", strategy: "all", ...timing },
+        { frameKey: "approval", nodeId: "approval", frameKind: "node", status: "running", strategy: "all", instancePath: [{ kind: "node", nodeId: "approval" }], ...timing },
         { frameKey: "approval.left", nodeId: "approval", frameKind: "branch", status: "running", strategy: "all", ...timing },
         { frameKey: "approval.right", nodeId: "approval", frameKind: "branch", status: "completed", strategy: "all", ...timing },
       ],
@@ -45,6 +45,7 @@ describe("workflow visualization overlay", () => {
         kind: "parallel",
         status: "running",
         strategy: "all",
+        instancePath: [{ kind: "node", nodeId: "approval" }],
         members: expect.arrayContaining([
           expect.objectContaining({ memberKey: "approval.left" }),
           expect.objectContaining({ memberKey: "approval.right" }),

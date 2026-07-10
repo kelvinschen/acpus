@@ -237,34 +237,34 @@ async function readRunJsonArtifact(cwd: string, runId: string, artifactRef: unkn
 
 function inspectionContext(value: string | undefined): NodeInspectionContext {
   if (!value) return [];
+  let parsed: unknown;
   try {
     const json = Buffer.from(value.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
-    const parsed = JSON.parse(json) as unknown;
-    if (!Array.isArray(parsed)) apiError(400, "invalid_context", "Inspection context must be an array.");
-    return parsed.flatMap((item): NodeInspectionContext => {
-      if (!item || typeof item !== "object") return [];
-      const record = item as Record<string, unknown>;
-      if (typeof record.nodeId !== "string") return [];
-      if (record.kind === "fanout") {
-        return [{
-          nodeId: record.nodeId,
-          kind: "fanout" as const,
-          ...(typeof record.itemKey === "string" ? { itemKey: record.itemKey } : {}),
-          ...(typeof record.itemIndex === "number" ? { itemIndex: record.itemIndex } : {}),
-        }];
-      }
-      if (record.kind === "loop") {
-        return [{
-          nodeId: record.nodeId,
-          kind: "loop" as const,
-          ...(typeof record.iteration === "number" ? { iteration: record.iteration } : {}),
-        }];
-      }
-      return [];
-    });
+    parsed = JSON.parse(json) as unknown;
   } catch {
     apiError(400, "invalid_context", "Inspection context must be base64url JSON.");
   }
+  if (!Array.isArray(parsed)) apiError(400, "invalid_context", "Inspection context must be an array.");
+  return parsed.map((item, index): NodeInspectionContext[number] => {
+    if (!item || typeof item !== "object") {
+      apiError(400, "invalid_context", `Inspection context entry ${index} must be an object.`);
+    }
+    const record = item as Record<string, unknown>;
+    if (typeof record.nodeId !== "string" || record.nodeId.length === 0) {
+      apiError(400, "invalid_context", `Inspection context entry ${index} requires nodeId.`);
+    }
+    if (record.kind === "fanout" && isOccurrenceIndex(record.itemIndex)) {
+      return { nodeId: record.nodeId, kind: "fanout", itemIndex: record.itemIndex };
+    }
+    if (record.kind === "loop" && isOccurrenceIndex(record.iteration)) {
+      return { nodeId: record.nodeId, kind: "loop", iteration: record.iteration };
+    }
+    apiError(400, "invalid_context", `Inspection context entry ${index} must identify a fanout item or loop iteration.`);
+  });
+}
+
+function isOccurrenceIndex(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
 function parseWorkflowVisualizationSource(body: unknown): WorkflowVisualizationSource {

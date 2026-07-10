@@ -16,14 +16,6 @@ export type GroupCompletion =
   | { status: "completed"; acceptedMemberKeys: string[]; cancelRemaining: boolean }
   | { status: "failed"; reason: string; cancelRemaining: boolean };
 
-export type FanoutItemInput = {
-  runId: string;
-  groupKey: string;
-  items: readonly JsonValue[];
-  keyForItem?: (item: JsonValue, itemIndex: number) => string | number;
-  readinessSequenceStart: number;
-};
-
 export type LoopNextStep =
   | { action: "start_iteration"; iter: number; state?: JsonValue }
   | { action: "complete"; output: JsonValue; terminalReason: "stopped" }
@@ -279,28 +271,6 @@ function memberFrames(projection: SchedulerProjection, member: GroupMember): Sch
 
 function frameDepth(frame: SchedulerFrame): number {
   return frame.instancePath?.length ?? 0;
-}
-
-export function materializeFanoutItems(input: FanoutItemInput): Extract<SchedulerEvent, { type: "group.member_ready" }>[] {
-  const seen = new Set<string>();
-  return input.items.map((item, itemIndex) => {
-    const itemKey = input.keyForItem?.(item, itemIndex) ?? itemIndex;
-    const normalizedKey = String(itemKey);
-    if (seen.has(normalizedKey)) throw new Error(`Fanout group '${input.groupKey}' has duplicate item key '${normalizedKey}'.`);
-    seen.add(normalizedKey);
-    return {
-      type: "group.member_ready",
-      payload: {
-        runId: input.runId,
-        groupKey: input.groupKey,
-        memberKey: `${input.groupKey}[${normalizedKey}]`,
-        memberKind: "fanout_item",
-        itemKey,
-        itemIndex,
-        readinessSequence: input.readinessSequenceStart + itemIndex,
-      },
-    };
-  });
 }
 
 export function nextLoopStep(input: { iter: number; transition?: JsonValue }): LoopNextStep {
@@ -636,19 +606,17 @@ function applyGroupEvent(projection: SchedulerProjection, event: SchedulerEvent)
     if (projection.groupMembers[event.payload.memberKey]) throw new Error(`Group member '${event.payload.memberKey}' already exists.`);
     const group = requireKey(projection.groups, event.payload.groupKey, "group");
     assertMemberKindMatchesGroup(group, event.payload.memberKind);
-    projection.groupMembers[event.payload.memberKey] = {
+    const member = {
       runId: event.payload.runId,
       groupKey: event.payload.groupKey,
       memberKey: event.payload.memberKey,
-      memberKind: event.payload.memberKind,
-      status: "ready",
+      status: "ready" as const,
       readinessSequence: event.payload.readinessSequence,
-      ...(event.payload.branchId === undefined ? {} : { branchId: event.payload.branchId }),
-      ...(event.payload.itemKey === undefined ? {} : { itemKey: event.payload.itemKey }),
-      ...(event.payload.itemIndex === undefined ? {} : { itemIndex: event.payload.itemIndex }),
-      ...(event.payload.item === undefined ? {} : { item: event.payload.item }),
       ...(event.payload.childFrameKey === undefined ? {} : { childFrameKey: event.payload.childFrameKey }),
     };
+    projection.groupMembers[event.payload.memberKey] = event.payload.memberKind === "branch"
+      ? { ...member, memberKind: "branch", branchId: event.payload.branchId }
+      : { ...member, memberKind: "fanout_item", itemIndex: event.payload.itemIndex, item: event.payload.item };
     return;
   }
   if ("memberKey" in event.payload) {
@@ -666,17 +634,14 @@ function applyGroupEvent(projection: SchedulerProjection, event: SchedulerEvent)
       assertGroupMemberRetryable(member);
       if (event.payload.source === "control") reopenGroupForControlRetry(projection, member.groupKey);
       projection.groupMembers[event.payload.memberKey] = compactMember({
-        runId: member.runId,
-        groupKey: member.groupKey,
-        memberKey: member.memberKey,
-        memberKind: member.memberKind,
+        ...member,
         status: "ready",
         readinessSequence: event.payload.readinessSequence ?? member.readinessSequence,
-        ...(member.branchId === undefined ? {} : { branchId: member.branchId }),
-        ...(member.itemKey === undefined ? {} : { itemKey: member.itemKey }),
-        ...(member.itemIndex === undefined ? {} : { itemIndex: member.itemIndex }),
-        ...(member.item === undefined ? {} : { item: member.item }),
-        ...(member.childFrameKey === undefined ? {} : { childFrameKey: member.childFrameKey }),
+        completionSequence: undefined,
+        acceptedRank: undefined,
+        terminalReason: undefined,
+        output: undefined,
+        error: undefined,
       });
       return;
     }

@@ -63,7 +63,6 @@ describe("scheduler store schema", () => {
       ]));
       expect(columns(db, "group_members")).toEqual(expect.arrayContaining([
         "member_key",
-        "item_key",
         "item_index",
         "item_json",
         "child_frame_key",

@@ -47,8 +47,8 @@ describe("runtime run controls", () => {
           { nodeKey: "done_node", nodeId: "done", status: "completed" },
         ],
         groupMembers: [
-          { memberKey: "m_member", branchId: "cache", status: "failed" },
-          { memberKey: "a_node", branchId: "duplicate", status: "failed" },
+          { groupKey: "group", memberKey: "m_member", memberKind: "branch", branchId: "cache", status: "failed" },
+          { groupKey: "group", memberKey: "a_node", memberKind: "branch", branchId: "duplicate", status: "failed" },
         ],
       },
     } satisfies Pick<RunDetails, "dynamic">);

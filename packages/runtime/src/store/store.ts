@@ -15,7 +15,7 @@ import { ancestorGroupMembersForFrame, ancestorGroupMembersForNode } from "../sc
 import { ForkSeedPlanError, planTargetedForkSeed, type ForkSeedPlan } from "../scheduler/fork-seed.js";
 import type { SchedulerEvent } from "../scheduler/events.js";
 import { SchedulerStoreException, schedulerStoreResult, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStorePort, type AttemptStartInput, type AttemptCommitInput, type SignalConsumeInput, type SchedulerPauseInput, type SchedulerResumeInput, type SchedulerRetryInput, type SchedulerRunRetryInput, type SchedulerStoreError, type SchedulerStoreResult } from "../scheduler/store-port.js";
-import type { InstancePath, SchedulerFrame } from "../scheduler/types.js";
+import type { GroupMemberIdentity, InstancePath, SchedulerFrame } from "../scheduler/types.js";
 import { drainDerivedTransitions } from "../scheduler/advance.js";
 import { continueRootEvents } from "../scheduler/materialize.js";
 import { decodeSchedulerPayload, isSchedulerEventType } from "../scheduler/event-codec.js";
@@ -319,14 +319,9 @@ export type RunDynamicAttempt = {
   finishedAt?: string;
 };
 
-export type RunDynamicGroupMember = {
+type RunDynamicGroupMemberBase = {
   groupKey: string;
   memberKey: string;
-  memberKind: string;
-  branchId?: string;
-  itemKey?: string;
-  itemIndex?: number;
-  item?: unknown;
   childFrameKey?: string;
   status: string;
   completionSequence?: number;
@@ -337,6 +332,8 @@ export type RunDynamicGroupMember = {
   createdAt: string;
   updatedAt: string;
 };
+
+export type RunDynamicGroupMember = RunDynamicGroupMemberBase & GroupMemberIdentity;
 
 export type RunDynamicSignalWait = {
   nodeKey: string;
@@ -2511,21 +2508,23 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
 
     for (const member of Object.values(projection.groupMembers)) {
       const timing = timings.member.get(member.memberKey);
+      const branchId = member.memberKind === "branch" ? member.branchId : null;
+      const itemIndex = member.memberKind === "fanout_item" ? member.itemIndex : null;
+      const itemJson = member.memberKind === "fanout_item" ? stableJson(member.item) : null;
       this.db.prepare(`
         INSERT INTO group_members (
-          run_id, group_key, member_key, member_kind, branch_id, item_key, item_index, item_json, child_frame_key,
+          run_id, group_key, member_key, member_kind, branch_id, item_index, item_json, child_frame_key,
           status, readiness_sequence, completion_sequence, accepted_rank, terminal_reason, output_json, error_json, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         member.runId,
         member.groupKey,
         member.memberKey,
         member.memberKind,
-        member.branchId ?? null,
-        member.itemKey === undefined ? null : String(member.itemKey),
-        member.itemIndex ?? null,
-        member.item === undefined ? null : stableJson(member.item),
+        branchId,
+        itemIndex,
+        itemJson,
         member.childFrameKey ?? null,
         member.status,
         member.readinessSequence,
@@ -2791,30 +2790,40 @@ function readRunDynamicAttempts(db: DatabaseSync, runId: string): RunDynamicAtte
 
 function readRunDynamicGroupMembers(db: DatabaseSync, runId: string): RunDynamicGroupMember[] {
   const rows = db.prepare(`
-    SELECT group_key, member_key, member_kind, branch_id, item_key, item_index, item_json, child_frame_key,
+    SELECT group_key, member_key, member_kind, branch_id, item_index, item_json, child_frame_key,
       status, completion_sequence, accepted_rank, terminal_reason, output_json, error_json, created_at, updated_at
     FROM group_members
     WHERE run_id = ?
     ORDER BY member_key
   `).all(runId) as Array<Record<string, string | number | null>>;
-  return rows.map(row => withoutUndefined({
-    groupKey: String(row.group_key),
-    memberKey: String(row.member_key),
-    memberKind: String(row.member_kind),
-    branchId: nullableString(row.branch_id),
-    itemKey: nullableString(row.item_key),
-    itemIndex: nullableNumber(row.item_index),
-    item: parseOptionalJson(row.item_json),
-    childFrameKey: nullableString(row.child_frame_key),
-    status: String(row.status),
-    completionSequence: nullableNumber(row.completion_sequence),
-    acceptedRank: nullableNumber(row.accepted_rank),
-    terminalReason: nullableString(row.terminal_reason),
-    output: parseOptionalJson(row.output_json),
-    error: parseOptionalJson(row.error_json),
-    createdAt: String(row.created_at),
-    updatedAt: String(row.updated_at),
-  }) as RunDynamicGroupMember);
+  return rows.map(row => {
+    const member = withoutUndefined({
+      groupKey: String(row.group_key),
+      memberKey: String(row.member_key),
+      childFrameKey: nullableString(row.child_frame_key),
+      status: String(row.status),
+      completionSequence: nullableNumber(row.completion_sequence),
+      acceptedRank: nullableNumber(row.accepted_rank),
+      terminalReason: nullableString(row.terminal_reason),
+      output: parseOptionalJson(row.output_json),
+      error: parseOptionalJson(row.error_json),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    }) as RunDynamicGroupMemberBase;
+    if (row.member_kind === "branch") {
+      const branchId = nullableString(row.branch_id);
+      if (branchId === undefined) throw new Error(`Branch group member '${member.memberKey}' is missing branch_id.`);
+      return { ...member, memberKind: "branch", branchId };
+    }
+    if (row.member_kind === "fanout_item") {
+      const itemIndex = nullableNumber(row.item_index);
+      const item = parseOptionalJson(row.item_json);
+      if (itemIndex === undefined) throw new Error(`Fanout group member '${member.memberKey}' is missing item_index.`);
+      if (item === undefined) throw new Error(`Fanout group member '${member.memberKey}' is missing item_json.`);
+      return { ...member, memberKind: "fanout_item", itemIndex, item: item as JsonValue };
+    }
+    throw new Error(`Group member '${member.memberKey}' has invalid member_kind '${row.member_kind}'.`);
+  });
 }
 
 function readRunDynamicSignalWaits(db: DatabaseSync, runId: string): RunDynamicSignalWait[] {
@@ -3188,7 +3197,6 @@ function migrate(db: DatabaseSync): void {
       member_key TEXT NOT NULL,
       member_kind TEXT NOT NULL,
       branch_id TEXT,
-      item_key TEXT,
       item_index INTEGER,
       item_json TEXT,
       child_frame_key TEXT,

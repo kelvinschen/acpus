@@ -156,10 +156,10 @@ describe("toRenderModel server graph consumption", () => {
     const model = toRenderModel(graph, { lanes: "lanes:item:1", repair_loop: "repair_loop:beta:iteration:0" });
 
     expect(selectionContext(graph, { lanes: "lanes:item:1", repair_loop: "repair_loop:beta:iteration:0" }, "auto_route", model.parentOf)).toEqual([
-      { nodeId: "lanes", kind: "fanout", itemKey: "lane-beta", itemIndex: 1 },
+      { nodeId: "lanes", kind: "fanout", itemIndex: 1 },
     ]);
     expect(selectionContext(graph, { lanes: "lanes:item:1", repair_loop: "repair_loop:beta:iteration:0" }, "repair_loop", model.parentOf)).toEqual([
-      { nodeId: "lanes", kind: "fanout", itemKey: "lane-beta", itemIndex: 1 },
+      { nodeId: "lanes", kind: "fanout", itemIndex: 1 },
       { nodeId: "repair_loop", kind: "loop", iteration: 0 },
     ]);
   });
@@ -183,6 +183,20 @@ describe("toRenderModel server graph consumption", () => {
 
     const beta = toRenderModel(graph, { lanes: "lanes:item:1" });
     expect(beta.items.get("repair_loop")?.selector?.options.map(option => option.id)).toEqual(["repair_loop:beta:iteration:0"]);
+  });
+
+  it("resolves nested fanout options within the selected outer occurrence", () => {
+    const graph = nestedFanoutGraph();
+
+    expect(normalizeSelections(graph, { groups: "groups.0" })).toEqual({ groups: "groups.0", items: "items.0.1" });
+    expect(normalizeSelections(graph, { groups: "groups.1" })).toEqual({ groups: "groups.1", items: "items.1.0" });
+
+    const model = toRenderModel(graph, { groups: "groups.1" });
+    expect(model.items.get("items")?.selector?.options.map(option => option.id)).toEqual(["items.1.0"]);
+    expect(selectionContext(graph, { groups: "groups.1" }, "leaf", model.parentOf)).toEqual([
+      { nodeId: "groups", kind: "fanout", itemIndex: 1 },
+      { nodeId: "items", kind: "fanout", itemIndex: 0 },
+    ]);
   });
 
   it("exposes selector status summaries and active control-flow edges", () => {
@@ -305,8 +319,8 @@ function fanoutGraph(): WebGraph {
         targetId: "lanes::do",
         defaultOptionId: "lanes:item:1",
         options: [
-          { id: "lanes:item:0", label: "item[0] lane-alpha", status: "completed", itemIndex: 0, itemKey: "lane-alpha", scopePath: ["root", "lanes", "do"], parentSelections: [] },
-          { id: "lanes:item:1", label: "item[1] lane-beta", status: "completed", itemIndex: 1, itemKey: "lane-beta", scopePath: ["root", "lanes", "do"], parentSelections: [] },
+          { id: "lanes:item:0", label: "item[0]", status: "completed", itemIndex: 0, scopePath: ["root", "lanes", "do"], parentSelections: [] },
+          { id: "lanes:item:1", label: "item[1]", status: "completed", itemIndex: 1, scopePath: ["root", "lanes", "do"], parentSelections: [] },
         ],
       },
       {
@@ -315,20 +329,57 @@ function fanoutGraph(): WebGraph {
         targetId: "repair_loop",
         defaultOptionId: "repair_loop:beta:iteration:0",
         options: [
-          { id: "repair_loop:alpha:iteration:0", label: "iteration 0", status: "completed", iteration: 0, scopePath: [], parentSelections: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0, itemKey: "lane-alpha" }] },
-          { id: "repair_loop:beta:iteration:0", label: "iteration 0", status: "completed", iteration: 0, scopePath: [], parentSelections: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1, itemKey: "lane-beta" }] },
+          { id: "repair_loop:alpha:iteration:0", label: "iteration 0", status: "completed", iteration: 0, scopePath: [], parentSelections: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }] },
+          { id: "repair_loop:beta:iteration:0", label: "iteration 0", status: "completed", iteration: 0, scopePath: [], parentSelections: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }] },
         ],
       },
     ],
     runtimeStates: [
       { targetId: "lanes", nodeId: "lanes", status: "completed", selectors: [] },
-      { targetId: "route", nodeId: "route", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0, itemKey: "lane-alpha" }] },
-      { targetId: "route", nodeId: "route", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1, itemKey: "lane-beta" }] },
-      { targetId: "route::case%3A0", nodeId: "route", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0, itemKey: "lane-alpha" }] },
-      { targetId: "route::default", nodeId: "route", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1, itemKey: "lane-beta" }] },
-      { targetId: "auto_route", nodeId: "auto_route", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0, itemKey: "lane-alpha" }] },
-      { targetId: "manual_route", nodeId: "manual_route", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1, itemKey: "lane-beta" }] },
-      { targetId: "repair_loop", nodeId: "repair_loop", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1, itemKey: "lane-beta" }] },
+      { targetId: "route", nodeId: "route", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }] },
+      { targetId: "route", nodeId: "route", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }] },
+      { targetId: "route::case%3A0", nodeId: "route", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }] },
+      { targetId: "route::default", nodeId: "route", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }] },
+      { targetId: "auto_route", nodeId: "auto_route", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }] },
+      { targetId: "manual_route", nodeId: "manual_route", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }] },
+      { targetId: "repair_loop", nodeId: "repair_loop", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }] },
+    ],
+  });
+}
+
+function nestedFanoutGraph(): WebGraph {
+  return graphOf({
+    nodes: [
+      node({ id: "groups", kind: "fanout", detail: { kind: "fanout", over: "input.groups", strategy: "all" } }),
+      node({ id: "items", kind: "fanout", parentId: "groups::do", parentNodeId: "groups", detail: { kind: "fanout", over: "groups.item.items", strategy: "all" } }),
+      node({ id: "leaf", parentId: "items::do", parentNodeId: "items" }),
+    ],
+    containers: [
+      { id: "groups::do", nodeId: "groups", kind: "scope", label: "do", path: ["root", "groups", "do"], parentId: "groups", status: "running" },
+      { id: "items::do", nodeId: "items", kind: "scope", label: "do", path: ["root", "groups", "do", "items", "do"], parentId: "items", status: "running" },
+    ],
+    selectors: [
+      {
+        nodeId: "groups",
+        kind: "fanout",
+        targetId: "groups::do",
+        defaultOptionId: "groups.1",
+        options: [
+          { id: "groups.0", label: "item[0]", status: "completed", itemIndex: 0, scopePath: [], parentSelections: [] },
+          { id: "groups.1", label: "item[1]", status: "running", itemIndex: 1, scopePath: [], parentSelections: [] },
+        ],
+      },
+      {
+        nodeId: "items",
+        kind: "fanout",
+        targetId: "items::do",
+        defaultOptionId: "items.1.0",
+        options: [
+          { id: "items.0.0", label: "item[0]", status: "completed", itemIndex: 0, scopePath: [], parentSelections: [{ nodeId: "groups", kind: "fanout", itemIndex: 0 }] },
+          { id: "items.0.1", label: "item[1]", status: "completed", itemIndex: 1, scopePath: [], parentSelections: [{ nodeId: "groups", kind: "fanout", itemIndex: 0 }] },
+          { id: "items.1.0", label: "item[0]", status: "running", itemIndex: 0, scopePath: [], parentSelections: [{ nodeId: "groups", kind: "fanout", itemIndex: 1 }] },
+        ],
+      },
     ],
   });
 }

@@ -11,7 +11,9 @@ export function baseScopeForFrame(projection: SchedulerProjection, frame: Schedu
   if (frame.frameKind === "fanout_item") {
     const member = projection.groupMembers[frame.frameKey];
     const group = member ? projection.groups[member.groupKey] : undefined;
-    if (member && group?.kind === "fanout") scope = withFanout(scope, group.nodeId, member.item, member.itemIndex ?? 0);
+    if (member?.memberKind === "fanout_item" && group?.kind === "fanout") {
+      scope = withFanout(scope, group.nodeId, member.item, member.itemIndex);
+    }
   }
   if (frame.frameKind === "loop_iteration") {
     const segment = lastSegment(frame.instancePath);

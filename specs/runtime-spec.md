@@ -112,6 +112,8 @@
 - Parallel `race` strategy MUST return the first successful branch with `{ winner, result }` and MUST cancel remaining running member subtrees after the winner is accepted.
 - Fanout `all` strategy MUST materialize item identity rows and aggregate item outputs as an array.
 - Fanout `quorum` strategy MUST accept outputs in completion order, return the accepted item outputs as `Array<ItemOutput>` after quorum success, and cancel remaining running member subtrees after quorum is reached.
+- Fanout item identity MUST use the zero-based `itemIndex` of each array occurrence. Duplicate item values MUST materialize as distinct fanout items.
+- Branch group members MUST contain `branchId`; fanout group members MUST contain `itemIndex` and the item payload. A group member MUST NOT combine branch and fanout identity fields.
 - Loop execution MUST use do-while transition semantics: iteration 0 is materialized immediately, each iteration evaluates the body transition `{ state, stop }`, and loop completion returns the final transition `state`.
 - Loop runtime scope MUST expose `loop.<nodeId>.index`, `loop.<nodeId>.round`, and `loop.<nodeId>.state`; `index` is 0-based and `round` is 1-based.
 - Group member rows MUST point at the child branch or fanout-item frame that
@@ -422,6 +424,7 @@
   `instancePath` data when present.
 - Dynamic group-member read rows MUST include `childFrameKey` when the member
   owns a child branch or fanout-item frame.
+- Dynamic group-member read rows MUST preserve the branch/fanout identity shape of the scheduler projection.
 - `getRun` MUST expose runtime execution metadata rows, including agent attempt
   turn metadata, when such rows exist for a run.
 - The runtime MUST provide a visualization overlay helper that combines static `WorkflowIR` structure with dynamic scheduler projection state without adding layout-specific state.

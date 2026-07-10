@@ -396,7 +396,7 @@ function semanticScopeSignatures(scope: ScopeIR, workflow: WorkflowIR, basePath:
         for (const [branchId, branch] of Object.entries(node.branches)) mergeSignatures(out, semanticScopeSignatures(branch.scope, workflow, appendBranch(basePath, node.id, branchId)));
         break;
       case "fanout":
-        mergeSignatures(out, semanticScopeSignatures(node.do, workflow, appendFanoutItem(basePath, node.id, "*", 0)));
+        mergeSignatures(out, semanticScopeSignatures(node.do, workflow, appendFanoutItem(basePath, node.id, 0)));
         break;
       case "loop":
         mergeSignatures(out, semanticScopeSignatures(node.do, workflow, appendLoopIteration(basePath, node.id, 0)));
@@ -412,7 +412,7 @@ function semanticNodeSignature(node: NodeIR, workflow: WorkflowIR): unknown {
   if (semantic.kind === "if") return { id: semantic.id, kind: semantic.kind, condition: semantic.condition, branches: ["then", "else"] };
   if (semantic.kind === "switch") return { id: semantic.id, kind: semantic.kind, cases: semantic.cases.map(c => c.when), default: true };
   if (semantic.kind === "parallel") return { id: semantic.id, kind: semantic.kind, strategy: semantic.strategy, maxConcurrency: semantic.maxConcurrency, branchIds: Object.keys(semantic.branches) };
-  if (semantic.kind === "fanout") return { id: semantic.id, kind: semantic.kind, over: semantic.over, key: semantic.key, strategy: semantic.strategy, count: semantic.count, maxConcurrency: semantic.maxConcurrency };
+  if (semantic.kind === "fanout") return { id: semantic.id, kind: semantic.kind, over: semantic.over, strategy: semantic.strategy, count: semantic.count, maxConcurrency: semantic.maxConcurrency };
   if (semantic.kind === "loop") return { id: semantic.id, kind: semantic.kind, state: semantic.state, outputs: semantic.do.outputs };
   return semantic;
 }
@@ -448,7 +448,7 @@ function nodePaths(scope: ScopeIR, ancestors: NodeIR[] = [], basePath: InstanceP
       case "parallel":
         return [...current, ...Object.entries(node.branches).flatMap(([branchId, branch]) => nodePaths(branch.scope, childAncestors, appendBranch(basePath, node.id, branchId)))];
       case "fanout":
-        return [...current, ...nodePaths(node.do, childAncestors, appendFanoutItem(basePath, node.id, "*", 0))];
+        return [...current, ...nodePaths(node.do, childAncestors, appendFanoutItem(basePath, node.id, 0))];
       case "loop":
         return [...current, ...nodePaths(node.do, childAncestors, appendLoopIteration(basePath, node.id, 0))];
       default:
@@ -464,7 +464,7 @@ function pathKey(path: readonly InstancePathSegment[]): string {
 type PathPatternSegment =
   | { kind: "node"; nodeId: string }
   | { kind: "branch"; nodeId: string; branchId: string }
-  | { kind: "fanout"; nodeId: string; itemKey?: string | number; itemIndex?: number }
+  | { kind: "fanout"; nodeId: string; itemIndex?: number }
   | { kind: "loop"; nodeId: string; iter?: number };
 
 type PathPattern = readonly PathPatternSegment[];
@@ -536,7 +536,6 @@ function matchesPattern(pattern: PathPattern, path: InstancePath): boolean {
     if (expected.kind === "branch") return actual.kind === "branch" && expected.branchId === actual.branchId;
     if (expected.kind === "fanout") {
       return actual.kind === "fanout"
-        && (expected.itemKey === undefined || expected.itemKey === actual.itemKey)
         && (expected.itemIndex === undefined || expected.itemIndex === actual.itemIndex);
     }
     if (expected.kind === "loop") return actual.kind === "loop" && (expected.iter === undefined || expected.iter === actual.iter);
@@ -605,7 +604,7 @@ function mergeSignatures(target: Map<string, string>, source: Map<string, string
 
 function signaturePathKey(path: readonly InstancePathSegment[]): string {
   return pathKey(path.map(segment => {
-    if (segment.kind === "fanout") return { kind: "fanout", nodeId: segment.nodeId, itemKey: "*", itemIndex: 0 };
+    if (segment.kind === "fanout") return { kind: "fanout", nodeId: segment.nodeId, itemIndex: 0 };
     if (segment.kind === "loop") return { kind: "loop", nodeId: segment.nodeId, iter: 0 };
     return segment;
   }));

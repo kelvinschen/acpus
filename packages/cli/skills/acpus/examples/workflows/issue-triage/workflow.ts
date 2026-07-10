@@ -11,7 +11,7 @@ export default defineWorkflow({
   description: "Triage repository issues with metadata summarization, agent review, and routing decisions.",
   inputSchema: z.object({
     issues: z.array(z.object({
-      id: z.string().describe("Stable issue identifier used for fanout keys and route messages."),
+      id: z.string().describe("Issue identifier used in route messages."),
       title: z.string().describe("Issue title to show the triage agent and queue actions."),
       body: z.string().describe("Issue body or description to triage."),
       labels: z.array(z.string()).default([]).describe("Optional issue labels available to metadata and triage steps."),
@@ -24,7 +24,6 @@ export default defineWorkflow({
 }).build(({ input, agents, meta, step }) => {
   const triaged = step("triage_issues").fanout({
     over: input.issues,
-    key({ item }) { return template`issue-${item.id}`; },
     maxConcurrency: 3,
     do({ item }) {
       const lane = step("triage_lane").parallel({

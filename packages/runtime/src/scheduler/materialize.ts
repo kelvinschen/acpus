@@ -328,15 +328,8 @@ function materializeFanoutEvents(input: { runId: string; node: FanoutNodeIR; par
         ? { type: "group.started", payload: { runId: input.runId, groupKey: nodeKey, nodeKey, nodeId: input.node.id, kind: "fanout", strategy: "quorum", quorumCount: input.node.count } }
         : { type: "group.started", payload: { runId: input.runId, groupKey: nodeKey, nodeKey, nodeId: input.node.id, kind: "fanout", strategy: "all" } },
     ];
-    const seenItemKeys = new Set<string>();
     for (const [itemIndex, item] of items.entries()) {
-      const itemKey = fanoutItemKey(input.node, input.scope, item, itemIndex);
-      const normalizedItemKey = String(itemKey);
-      if (seenItemKeys.has(normalizedItemKey)) {
-        return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: { reason: "duplicate_fanout_key", itemKey: normalizedItemKey }, terminalReason: "duplicate_fanout_key" } }];
-      }
-      seenItemKeys.add(normalizedItemKey);
-      const itemPath = appendFanoutItem(input.basePath, input.node.id, itemKey, itemIndex);
+      const itemPath = appendFanoutItem(input.basePath, input.node.id, itemIndex);
       const itemFrameKey = deriveInstanceKey(itemPath);
       const itemScope = withFanout(input.scope, input.node.id, item as JsonValue, itemIndex);
       events.push(
@@ -360,7 +353,6 @@ function materializeFanoutEvents(input: { runId: string; node: FanoutNodeIR; par
             groupKey: nodeKey,
             memberKey: itemFrameKey,
             memberKind: "fanout_item",
-            itemKey,
             itemIndex,
             item: item as JsonValue,
             childFrameKey: itemFrameKey,
@@ -557,16 +549,21 @@ function scopeForPath(root: ScopeIR, path: InstancePath): ScopeIR | undefined {
 function groupResult(node: ParallelNodeIR | FanoutNodeIR, projection: SchedulerProjection, groupKey: string): JsonValue | undefined {
   const members = Object.values(projection.groupMembers).filter(member => member.groupKey === groupKey);
   if (node.kind === "parallel" && node.strategy === "all") {
-    return Object.fromEntries(members.map(member => [member.branchId, requireObjectOutput(member.output, `Parallel branch '${member.branchId ?? member.memberKey}'`)]));
+    return Object.fromEntries(members
+      .filter(member => member.memberKind === "branch")
+      .map(member => [member.branchId, requireObjectOutput(member.output, `Parallel branch '${member.branchId}'`)]));
   }
   if (node.kind === "parallel" && node.strategy === "race") {
-    const winner = members.filter(member => member.status === "completed").sort(byCompletionSequence)[0];
-    return winner?.branchId ? { winner: winner.branchId, result: requireObjectOutput(winner.output, `Parallel branch '${winner.branchId}'`) } : undefined;
+    const winner = members
+      .filter(member => member.memberKind === "branch")
+      .filter(member => member.status === "completed")
+      .sort(byCompletionSequence)[0];
+    return winner ? { winner: winner.branchId, result: requireObjectOutput(winner.output, `Parallel branch '${winner.branchId}'`) } : undefined;
   }
   if (node.kind === "fanout" && node.strategy === "all") {
     return members
       .filter(member => member.memberKind === "fanout_item")
-      .sort((left, right) => left.itemIndex! - right.itemIndex!)
+      .sort((left, right) => left.itemIndex - right.itemIndex)
       .map(member => member.output as JsonValue);
   }
   if (node.kind === "fanout") {
@@ -673,11 +670,6 @@ function conditionalBranchById(node: Extract<NodeIR, { kind: "if" | "switch" }>,
 
 function scopeMapForScope(basePath: InstancePath, scope: ScopeIR): Record<string, string> {
   return Object.fromEntries(scope.nodes.map(node => [node.id, deriveInstanceKey(appendNode(basePath, node.id))]));
-}
-
-function fanoutItemKey(node: FanoutNodeIR, scope: EvaluationScope, item: unknown, itemIndex: number): string | number {
-  if (!node.key) return itemIndex;
-  return renderTemplate(node.key, withFanout(scope, node.id, item as JsonValue, itemIndex));
 }
 
 function withNodeOutput(scope: EvaluationScope, nodeId: string, output: unknown): EvaluationScope {

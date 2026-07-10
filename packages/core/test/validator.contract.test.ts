@@ -1100,7 +1100,6 @@ describe("WorkflowIR diagnostics contract", () => {
             kind: "fanout",
             strategy: "all",
             over: { kind: "array", items: [] },
-            key: { kind: "template", parts: [{ kind: "expr", expr: { kind: "ref", path: ["fanout", "items", "output"] } }] },
             do: {
               nodes: [],
               outputs: {
@@ -1125,7 +1124,6 @@ describe("WorkflowIR diagnostics contract", () => {
     } as any));
 
     expect(diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "IR003", path: "root.nodes.items.key.parts.0.expr.path" }),
       expect.objectContaining({ code: "IR003", path: "root.nodes.items.do.outputs.bad.path" }),
       expect.objectContaining({ code: "IR003", path: "root.nodes.retry.do.outputs.stop.path" }),
     ]));

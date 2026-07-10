@@ -3,7 +3,7 @@ import type { JsonObject, JsonValue } from "@acpus/expression/ir";
 export type InstancePathSegment =
   | { kind: "node"; nodeId: string }
   | { kind: "branch"; nodeId: string; branchId: string }
-  | { kind: "fanout"; nodeId: string; itemKey: string | number; itemIndex: number }
+  | { kind: "fanout"; nodeId: string; itemIndex: number }
   | { kind: "loop"; nodeId: string; iter: number };
 
 export type InstancePath = readonly InstancePathSegment[];
@@ -93,24 +93,25 @@ export type GroupProjection =
   | (BaseGroupProjection & { kind: "fanout"; strategy: "all"; quorumCount?: never })
   | (BaseGroupProjection & { kind: "fanout"; strategy: "quorum"; quorumCount: number });
 
-export type GroupMember = {
+type GroupMemberBase = {
   runId: string;
   groupKey: string;
   memberKey: string;
-  memberKind: "branch" | "fanout_item";
   status: GroupMemberStatus;
   readinessSequence: number;
   completionSequence?: number;
-  branchId?: string;
-  itemKey?: string | number;
-  itemIndex?: number;
-  item?: JsonValue;
   childFrameKey?: string;
   acceptedRank?: number;
   terminalReason?: string;
   output?: JsonValue;
   error?: JsonObject;
 };
+
+export type GroupMemberIdentity =
+  | { memberKind: "branch"; branchId: string; itemIndex?: never; item?: never }
+  | { memberKind: "fanout_item"; itemIndex: number; item: JsonValue; branchId?: never };
+
+export type GroupMember = GroupMemberBase & GroupMemberIdentity;
 
 export type SignalWait = {
   runId: string;

@@ -1,20 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, canonicalPath, deriveInstanceKey } from "../src/scheduler/identity.js";
-import { applySchedulerEvents, attemptTimeoutEvents, createSchedulerProjection, evaluateGroupCompletion, groupCompletionEvents, materializeFanoutItems, nextLoopStep, resolveScopedNodeKey, retryTargetClass, signalTimeoutEvents } from "../src/scheduler/transitions.js";
+import { applySchedulerEvents, attemptTimeoutEvents, createSchedulerProjection, evaluateGroupCompletion, groupCompletionEvents, nextLoopStep, resolveScopedNodeKey, retryTargetClass, signalTimeoutEvents } from "../src/scheduler/transitions.js";
 import type { GroupMember, GroupProjection } from "../src/scheduler/types.js";
 
 describe("scheduler identity and reducers", () => {
   it("derives stable readable keys from structured instance paths", () => {
     const path = appendNode(
       appendLoopIteration(
-        appendFanoutItem([], "items", "pkg/a", 0),
+        appendFanoutItem([], "items", 0),
         "retry",
         2,
       ),
       "check",
     );
 
-    expect(deriveInstanceKey(path)).toMatch(/^items\[pkg_a\]\/retry#2\/check~[a-f0-9]{12}$/);
+    expect(deriveInstanceKey(path)).toMatch(/^items\[0\]\/retry#2\/check~[a-f0-9]{12}$/);
     expect(deriveInstanceKey(path)).toBe(deriveInstanceKey(JSON.parse(canonicalPath(path))));
     expect(deriveInstanceKey(appendBranch([], "race", "left"))).toMatch(/^race\.left~[a-f0-9]{12}$/);
   });
@@ -267,8 +267,8 @@ describe("scheduler identity and reducers", () => {
     const winnerKey = deriveInstanceKey(appendBranch([], "race", "winner"));
     const loserKey = deriveInstanceKey(appendBranch([], "race", "loser"));
     const nestedKey = deriveInstanceKey(appendNode(appendBranch([], "race", "loser"), "inner"));
-    const itemKey = deriveInstanceKey(appendFanoutItem(appendBranch([], "race", "loser"), "inner", 0, 0));
-    const leafKey = deriveInstanceKey(appendNode(appendFanoutItem(appendBranch([], "race", "loser"), "inner", 0, 0), "leaf"));
+    const itemFrameKey = deriveInstanceKey(appendFanoutItem(appendBranch([], "race", "loser"), "inner", 0));
+    const leafKey = deriveInstanceKey(appendNode(appendFanoutItem(appendBranch([], "race", "loser"), "inner", 0), "leaf"));
     const projection = applySchedulerEvents(createSchedulerProjection("run_1"), [
       { type: "frame.started", payload: { runId: "run_1", frameKey: groupKey, frameKind: "node", nodeKey: groupKey, nodeId: "race", instancePath: appendNode([], "race") } },
       { type: "group.started", payload: { runId: "run_1", groupKey, nodeKey: groupKey, nodeId: "race", kind: "parallel", strategy: "race" } },
@@ -280,10 +280,10 @@ describe("scheduler identity and reducers", () => {
       { type: "group.member_started", payload: { memberKey: loserKey } },
       { type: "frame.started", payload: { runId: "run_1", frameKey: nestedKey, frameKind: "node", parentFrameKey: loserKey, nodeKey: nestedKey, nodeId: "inner", instancePath: appendNode(appendBranch([], "race", "loser"), "inner") } },
       { type: "group.started", payload: { runId: "run_1", groupKey: nestedKey, nodeKey: nestedKey, nodeId: "inner", kind: "fanout", strategy: "all" } },
-      { type: "frame.started", payload: { runId: "run_1", frameKey: itemKey, frameKind: "fanout_item", parentFrameKey: nestedKey, instancePath: appendFanoutItem(appendBranch([], "race", "loser"), "inner", 0, 0) } },
-      { type: "group.member_ready", payload: { runId: "run_1", groupKey: nestedKey, memberKey: itemKey, childFrameKey: itemKey, memberKind: "fanout_item", itemKey: 0, itemIndex: 0, readinessSequence: 4 } },
-      { type: "group.member_started", payload: { memberKey: itemKey } },
-      { type: "instance.ready", payload: { runId: "run_1", nodeKey: leafKey, nodeId: "leaf", parentFrameKey: itemKey, instancePath: appendNode(appendFanoutItem(appendBranch([], "race", "loser"), "inner", 0, 0), "leaf"), readinessSequence: 4 } },
+      { type: "frame.started", payload: { runId: "run_1", frameKey: itemFrameKey, frameKind: "fanout_item", parentFrameKey: nestedKey, instancePath: appendFanoutItem(appendBranch([], "race", "loser"), "inner", 0) } },
+      { type: "group.member_ready", payload: { runId: "run_1", groupKey: nestedKey, memberKey: itemFrameKey, childFrameKey: itemFrameKey, memberKind: "fanout_item", itemIndex: 0, item: null, readinessSequence: 4 } },
+      { type: "group.member_started", payload: { memberKey: itemFrameKey } },
+      { type: "instance.ready", payload: { runId: "run_1", nodeKey: leafKey, nodeId: "leaf", parentFrameKey: itemFrameKey, instancePath: appendNode(appendFanoutItem(appendBranch([], "race", "loser"), "inner", 0), "leaf"), readinessSequence: 4 } },
       { type: "instance.started", payload: { nodeKey: leafKey } },
       { type: "attempt.started", payload: { runId: "run_1", attemptId: "attempt_loser", nodeKey: leafKey, nodeId: "leaf", attemptNo: 1, ownerEpoch: 1 } },
     ]);
@@ -291,18 +291,18 @@ describe("scheduler identity and reducers", () => {
     const events = groupCompletionEvents(projection, groupKey);
     expect(events).toEqual([
       { type: "group.member_cancelled", payload: { memberKey: loserKey, cancelReason: "race_lost" } },
-      { type: "group.member_cancelled", payload: { memberKey: itemKey, cancelReason: "race_lost" } },
+      { type: "group.member_cancelled", payload: { memberKey: itemFrameKey, cancelReason: "race_lost" } },
       { type: "group.cancelled", payload: { groupKey: nestedKey, cancelReason: "race_lost" } },
       { type: "attempt.cancelled", payload: { attemptId: "attempt_loser", cancelReason: "race_lost" } },
       { type: "instance.cancelled", payload: { nodeKey: leafKey, cancelReason: "race_lost" } },
       { type: "frame.cancelled", payload: { frameKey: nestedKey, cancelReason: "race_lost" } },
-      { type: "frame.cancelled", payload: { frameKey: itemKey, cancelReason: "race_lost" } },
+      { type: "frame.cancelled", payload: { frameKey: itemFrameKey, cancelReason: "race_lost" } },
       { type: "frame.cancelled", payload: { frameKey: loserKey, cancelReason: "race_lost" } },
       { type: "group.completed", payload: { groupKey, result: { acceptedMemberKeys: [winnerKey] } } },
     ]);
     const cancelled = applySchedulerEvents(projection, events);
     expect(cancelled.groupMembers[loserKey]).toMatchObject({ status: "cancelled", terminalReason: "race_lost" });
-    expect(cancelled.groupMembers[itemKey]).toMatchObject({ status: "cancelled", terminalReason: "race_lost" });
+    expect(cancelled.groupMembers[itemFrameKey]).toMatchObject({ status: "cancelled", terminalReason: "race_lost" });
     expect(cancelled.groups[nestedKey]).toMatchObject({ status: "cancelled" });
     expect(cancelled.instances[leafKey]).toMatchObject({ status: "cancelled", statusReason: "race_lost" });
     expect(cancelled.frames[nestedKey]).toMatchObject({ status: "cancelled", terminalReason: "race_lost" });
@@ -442,7 +442,7 @@ describe("scheduler identity and reducers", () => {
       { type: "group.started", payload: { runId: "run_1", groupKey: "parallel~1", nodeKey: "parallel~1", nodeId: "parallel", kind: "parallel", strategy: "race" } },
     ]);
     expect(() => applySchedulerEvents(parallel, [
-      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "parallel~1", memberKey: "bad.item", memberKind: "fanout_item", itemKey: "a", itemIndex: 0, readinessSequence: 1 } },
+      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "parallel~1", memberKey: "bad.item", memberKind: "fanout_item", itemIndex: 0, item: null, readinessSequence: 1 } },
     ])).toThrow("Parallel group 'parallel~1' requires branch members.");
   });
 
@@ -522,41 +522,20 @@ describe("scheduler identity and reducers", () => {
 
     const quorum = applySchedulerEvents(createSchedulerProjection("run_1"), [
       { type: "group.started", payload: { runId: "run_1", groupKey: "quorum", nodeKey: "quorum", nodeId: "quorum", kind: "fanout", strategy: "quorum", quorumCount: 2 } },
-      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "quorum", memberKey: "quorum[0]", memberKind: "fanout_item", itemIndex: 0, readinessSequence: 1 } },
+      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "quorum", memberKey: "quorum[0]", memberKind: "fanout_item", itemIndex: 0, item: 0, readinessSequence: 1 } },
       { type: "group.member_started", payload: { memberKey: "quorum[0]" } },
       { type: "group.member_completed", payload: { memberKey: "quorum[0]", completionSequence: 20 } },
-      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "quorum", memberKey: "quorum[1]", memberKind: "fanout_item", itemIndex: 1, readinessSequence: 2 } },
+      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "quorum", memberKey: "quorum[1]", memberKind: "fanout_item", itemIndex: 1, item: 1, readinessSequence: 2 } },
       { type: "group.member_started", payload: { memberKey: "quorum[1]" } },
       { type: "group.member_completed", payload: { memberKey: "quorum[1]", completionSequence: 10 } },
-      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "quorum", memberKey: "quorum[2]", memberKind: "fanout_item", itemIndex: 2, readinessSequence: 3 } },
-      { type: "instance.ready", payload: { runId: "run_1", nodeKey: "quorum[2]", nodeId: "item", instancePath: appendFanoutItem([], "quorum", 2, 2), readinessSequence: 3 } },
+      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "quorum", memberKey: "quorum[2]", memberKind: "fanout_item", itemIndex: 2, item: 2, readinessSequence: 3 } },
+      { type: "instance.ready", payload: { runId: "run_1", nodeKey: "quorum[2]", nodeId: "item", instancePath: appendFanoutItem([], "quorum", 2), readinessSequence: 3 } },
     ]);
     expect(groupCompletionEvents(quorum, "quorum")).toEqual([
       { type: "group.member_cancelled", payload: { memberKey: "quorum[2]", cancelReason: "quorum_reached" } },
       { type: "instance.cancelled", payload: { nodeKey: "quorum[2]", cancelReason: "quorum_reached" } },
       { type: "group.completed", payload: { groupKey: "quorum", result: { acceptedMemberKeys: ["quorum[1]", "quorum[0]"] } } },
     ]);
-  });
-
-  it("materializes fanout item members with duplicate-key checks", () => {
-    expect(materializeFanoutItems({
-      runId: "run_1",
-      groupKey: "items",
-      items: [{ id: "a" }, { id: "b" }],
-      keyForItem: item => (item as { id: string }).id,
-      readinessSequenceStart: 10,
-    }).map(event => event.payload)).toEqual([
-      { runId: "run_1", groupKey: "items", memberKey: "items[a]", memberKind: "fanout_item", itemKey: "a", itemIndex: 0, readinessSequence: 10 },
-      { runId: "run_1", groupKey: "items", memberKey: "items[b]", memberKind: "fanout_item", itemKey: "b", itemIndex: 1, readinessSequence: 11 },
-    ]);
-
-    expect(() => materializeFanoutItems({
-      runId: "run_1",
-      groupKey: "items",
-      items: [{ id: "a" }, { id: "a" }],
-      keyForItem: item => (item as { id: string }).id,
-      readinessSequenceStart: 1,
-    })).toThrow("duplicate item key 'a'");
   });
 
   it("resolves lexical node scope from the innermost dynamic mapping", () => {
@@ -615,14 +594,16 @@ function group(strategy: "all" | "race" | "quorum", quorumCount?: number): Group
 }
 
 function member(memberKey: string, status: GroupMember["status"], readinessSequence: number, acceptedRank?: number, completionSequence?: number, memberKind: GroupMember["memberKind"] = "branch"): GroupMember {
-  return {
+  const value = {
     runId: "run_1",
     groupKey: "group~1",
     memberKey,
-    memberKind,
     status,
     readinessSequence,
     ...(acceptedRank === undefined ? {} : { acceptedRank }),
     ...(completionSequence === undefined ? {} : { completionSequence }),
   };
+  return memberKind === "branch"
+    ? { ...value, memberKind: "branch", branchId: memberKey }
+    : { ...value, memberKind: "fanout_item", itemIndex: readinessSequence - 1, item: memberKey };
 }

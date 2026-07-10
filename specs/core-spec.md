@@ -120,7 +120,7 @@
 - `validateWorkflowIR(ir)` MUST diagnose scope-illegal refs with stable code `IR003`.
 - Node pre-execution fields MUST reference only workflow input/meta, visible local refs such as the current fanout or loop context, ancestor scope nodes, and previous sibling nodes in the same scope. They MUST NOT reference the current node output or later sibling node outputs.
 - Scope outputs MAY reference ancestor scope nodes and any node declared in that scope, but parent scopes and sibling branches/cases MUST NOT reference child-scope internal nodes.
-- `fanout.<id>.item` and `fanout.<id>.itemIndex` refs MUST be valid only in that fanout key/body and nested descendants.
+- `fanout.<id>.item` and `fanout.<id>.itemIndex` refs MUST be valid only in that fanout body and nested descendants.
 - `loop.<id>.index`, `loop.<id>.round`, and `loop.<id>.state` refs MUST be valid only in that loop body and nested descendants.
 - `DurationIR` fields MUST be duration strings matching `^\d+(ms|s|m|h)?$`; omitted units MUST mean milliseconds.
 - Task runs MUST contain a closed `target` descriptor that is either an inline source target or a reusable module target.

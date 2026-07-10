@@ -203,14 +203,6 @@ export default defineWorkflow({ name: "throws" }).build(() => {
     expect(fanout).toMatchObject({
       kind: "fanout",
       over: { kind: "ref", path: ["input", "lanes"] },
-      key: {
-        parts: expect.arrayContaining([
-          {
-            kind: "expr",
-            expr: { kind: "ref", path: ["fanout", "lanes", "item", "id"] },
-          },
-        ]),
-      },
       do: {
         outputs: {
           lane: {

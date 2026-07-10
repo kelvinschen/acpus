@@ -968,7 +968,7 @@ export function retryTargetsForRun(run: Pick<RunDetails, "dynamic"> | undefined)
     if (member.status !== "failed") continue;
     add({
       value: member.memberKey,
-      label: `member: ${member.branchId ?? member.itemKey ?? member.memberKey}`,
+      label: `member: ${member.memberKind === "branch" ? member.branchId : `item[${member.itemIndex}]`}`,
       kind: "member",
     });
   }

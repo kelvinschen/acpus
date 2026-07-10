@@ -35,6 +35,8 @@
 - Self-contained workflow visualization HTML MUST embed the same Sera graph and static inspector styling as the browser Workflows graph.
 - Composite nodes MUST render as scoped blocks that visually own nested leaf and composite nodes.
 - Fanout and loop composites MUST use selectors over materialized fanout items and loop iterations.
+- A fanout occurrence MUST identify its items by `itemIndex` and label them as `item[N]`. Runtime selector option ids MUST remain unique across nested occurrences of the same authored fanout node.
+- Nested fanout and loop selector options MUST carry their exact ancestor fanout-item and loop-iteration selections. The browser MUST resolve an inner selector only against options belonging to the selected ancestor occurrences.
 - Loop composites MUST NOT render transition control fields in the graph header, and loop iteration selector labels MUST use compact `iter N` text for dynamic 0-based iteration identities.
 - Fanout and loop composites MUST render their canonical `do` scope even when the selected runtime item or iteration has no materialized child node executions.
 - The graph API MUST return browser-ready containers and semantic control-flow edges. Edge endpoints MUST resolve to a returned node or container id.
@@ -85,6 +87,7 @@
 - Static workflow inspection MUST show workflow contract data: input schema when declared and the workflow output expression mapping. It MUST NOT show fake runtime values.
 - Workflow-level Input/Output inspection MUST use the same docked inspector card and graph reflow behavior as node inspection.
 - Runtime node inspection MUST resolve node instances, attempts, artifacts, and execution metadata against the current graph fanout/loop selector context. It MUST NOT show runtime output from another selected item or iteration.
+- Runtime node inspection context MUST identify each fanout selection with a non-negative integer `itemIndex` and each loop selection with a non-negative integer iteration. The WebUI API MUST reject incomplete or malformed selector context.
 - Node inspection MUST present a low-noise Overview with identity, status, prompt, input, output, and diagnostics where relevant. It MUST NOT expose generic raw `Instances`, `Frames`, `Signals`, or `Metadata` tabs.
 - Artifact content MUST be shown in a conditional `Artifacts` tab for leaf nodes with artifacts, and artifact preview requests MUST be lazy-loaded from that tab. Artifact rows MUST truncate long artifact titles while exposing the full title on hover or keyboard focus, and artifact previews MUST stay inside the Inspector width without page-level horizontal overflow.
 - Agent execution telemetry MUST be shown in a conditional `Execution` tab for agent nodes. The tab MUST use semantic `agent_attempt` execution metadata and MUST refresh only while active.
@@ -100,7 +103,7 @@
 ## Verification
 
 - Tests MUST cover static graph output without dynamic cardinality or runtime states.
-- Tests MUST cover runtime graph containers, semantic edge endpoint validity, fanout item selector options, loop iteration selector options, and selected-runtime-state resolution.
+- Tests MUST cover runtime graph containers, semantic edge endpoint validity, fanout item selector options, loop iteration selector options, nested occurrence isolation, and selected-runtime-state resolution.
 - Tests MUST cover unified run graph API behavior without a user-selectable runtime/static mode.
 - Tests MUST cover workflow catalog listing, workspace file browsing safety, explicit static visualization, and self-contained HTML rendering.
 - Tests MUST cover nested composite graph rendering for `parallel`, `if`, `switch`, `fanout`, and `loop` with all branches visible.

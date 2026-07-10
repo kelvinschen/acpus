@@ -16,8 +16,8 @@ export function appendBranch(path: InstancePath, nodeId: string, branchId: strin
   return [...path, { kind: "branch", nodeId, branchId }];
 }
 
-export function appendFanoutItem(path: InstancePath, nodeId: string, itemKey: string | number, itemIndex: number): InstancePath {
-  return [...path, { kind: "fanout", nodeId, itemKey, itemIndex }];
+export function appendFanoutItem(path: InstancePath, nodeId: string, itemIndex: number): InstancePath {
+  return [...path, { kind: "fanout", nodeId, itemIndex }];
 }
 
 export function appendLoopIteration(path: InstancePath, nodeId: string, iter: number): InstancePath {
@@ -31,14 +31,14 @@ export function canonicalPath(path: InstancePath): string {
 function canonicalSegment(segment: InstancePathSegment): InstancePathSegment {
   if (segment.kind === "node") return { kind: "node", nodeId: segment.nodeId };
   if (segment.kind === "branch") return { kind: "branch", nodeId: segment.nodeId, branchId: segment.branchId };
-  if (segment.kind === "fanout") return { kind: "fanout", nodeId: segment.nodeId, itemKey: segment.itemKey, itemIndex: segment.itemIndex };
+  if (segment.kind === "fanout") return { kind: "fanout", nodeId: segment.nodeId, itemIndex: segment.itemIndex };
   return { kind: "loop", nodeId: segment.nodeId, iter: segment.iter };
 }
 
 function readableSegment(segment: InstancePathSegment): string {
   if (segment.kind === "node") return safePart(segment.nodeId);
   if (segment.kind === "branch") return `${safePart(segment.nodeId)}.${safePart(segment.branchId)}`;
-  if (segment.kind === "fanout") return `${safePart(segment.nodeId)}[${safePart(String(segment.itemKey))}]`;
+  if (segment.kind === "fanout") return `${safePart(segment.nodeId)}[${segment.itemIndex}]`;
   return `${safePart(segment.nodeId)}#${segment.iter}`;
 }
 

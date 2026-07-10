@@ -4,6 +4,7 @@ import type {
   CancellationReason,
   FrameKind,
   FrameStatus,
+  GroupMemberIdentity,
   GroupMemberStatus,
   InstancePath,
   NodeInstanceStatus,
@@ -46,7 +47,7 @@ export type SchedulerEvent =
   | BaseEvent<"group.started", { runId: string; groupKey: string; nodeKey: string; nodeId: string; kind: "parallel"; strategy: "all" | "race"; quorumCount?: never }>
   | BaseEvent<"group.started", { runId: string; groupKey: string; nodeKey: string; nodeId: string; kind: "fanout"; strategy: "all"; quorumCount?: never }>
   | BaseEvent<"group.started", { runId: string; groupKey: string; nodeKey: string; nodeId: string; kind: "fanout"; strategy: "quorum"; quorumCount: number }>
-  | BaseEvent<"group.member_ready", { runId: string; groupKey: string; memberKey: string; memberKind: "branch" | "fanout_item"; readinessSequence: number; branchId?: string; itemKey?: string | number; itemIndex?: number; item?: JsonValue; childFrameKey?: string }>
+  | BaseEvent<"group.member_ready", { runId: string; groupKey: string; memberKey: string; readinessSequence: number; childFrameKey?: string } & GroupMemberIdentity>
   | BaseEvent<"group.member_started", { memberKey: string }>
   | BaseEvent<"group.member_requeued", { memberKey: string; reason: "paused" | "superseded"; readinessSequence?: number }>
   | BaseEvent<"group.member_retry_requested", { memberKey: string; readinessSequence?: number; source?: "control" | "scheduler" }>

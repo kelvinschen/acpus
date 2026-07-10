@@ -350,7 +350,7 @@ describe("inspectNode", () => {
               nodeId: "auto_route",
               status: "completed",
               output: { route: "auto-fast" },
-              instancePath: [{ kind: "fanout", nodeId: "lanes", itemKey: "lane-alpha", itemIndex: 0 }, { kind: "node", nodeId: "auto_route" }],
+              instancePath: [{ kind: "fanout", nodeId: "lanes", itemIndex: 0 }, { kind: "node", nodeId: "auto_route" }],
               createdAt: "2026-07-01T00:00:01.000Z",
               updatedAt: "2026-07-01T00:00:04.000Z",
             },
@@ -359,7 +359,7 @@ describe("inspectNode", () => {
               nodeId: "manual_route",
               status: "completed",
               output: { route: "manual" },
-              instancePath: [{ kind: "fanout", nodeId: "lanes", itemKey: "lane-beta", itemIndex: 1 }, { kind: "node", nodeId: "manual_route" }],
+              instancePath: [{ kind: "fanout", nodeId: "lanes", itemIndex: 1 }, { kind: "node", nodeId: "manual_route" }],
               createdAt: "2026-07-01T00:00:01.000Z",
               updatedAt: "2026-07-01T00:00:04.000Z",
             },
@@ -381,7 +381,7 @@ describe("inspectNode", () => {
       ],
     };
 
-    const betaContext = [{ nodeId: "lanes", kind: "fanout" as const, itemKey: "lane-beta", itemIndex: 1 }];
+    const betaContext = [{ nodeId: "lanes", kind: "fanout" as const, itemIndex: 1 }];
     const autoInBeta = inspectNode(inspection, "auto_route", [], betaContext);
     expect(autoInBeta.summary).toMatchObject({
       nodeId: "auto_route",
@@ -415,7 +415,7 @@ describe("inspectNode", () => {
               nodeKey: "agent-alpha",
               nodeId: "reviewer_agent",
               status: "completed",
-              instancePath: [{ kind: "fanout", nodeId: "lanes", itemKey: "lane-alpha", itemIndex: 0 }, { kind: "node", nodeId: "reviewer_agent" }],
+              instancePath: [{ kind: "fanout", nodeId: "lanes", itemIndex: 0 }, { kind: "node", nodeId: "reviewer_agent" }],
               createdAt: "t",
               updatedAt: "t",
             },
@@ -423,7 +423,7 @@ describe("inspectNode", () => {
               nodeKey: "agent-beta",
               nodeId: "reviewer_agent",
               status: "completed",
-              instancePath: [{ kind: "fanout", nodeId: "lanes", itemKey: "lane-beta", itemIndex: 1 }, { kind: "node", nodeId: "reviewer_agent" }],
+              instancePath: [{ kind: "fanout", nodeId: "lanes", itemIndex: 1 }, { kind: "node", nodeId: "reviewer_agent" }],
               createdAt: "t",
               updatedAt: "t",
             },
@@ -444,7 +444,7 @@ describe("inspectNode", () => {
     };
 
     const betaExecution = await inspectNodeExecution(inspection, "reviewer_agent", [
-      { nodeId: "lanes", kind: "fanout", itemKey: "lane-beta", itemIndex: 1 },
+      { nodeId: "lanes", kind: "fanout", itemIndex: 1 },
     ]);
 
     expect(betaExecution).toMatchObject({
@@ -476,7 +476,7 @@ describe("inspectNode", () => {
               nodeKey: "agent-alpha",
               nodeId: "reviewer_agent",
               status: "running",
-              instancePath: [{ kind: "fanout", nodeId: "lanes", itemKey: "lane-alpha", itemIndex: 0 }, { kind: "node", nodeId: "reviewer_agent" }],
+              instancePath: [{ kind: "fanout", nodeId: "lanes", itemIndex: 0 }, { kind: "node", nodeId: "reviewer_agent" }],
               createdAt: "t",
               updatedAt: "t",
             },
@@ -484,7 +484,7 @@ describe("inspectNode", () => {
               nodeKey: "agent-beta",
               nodeId: "reviewer_agent",
               status: "running",
-              instancePath: [{ kind: "fanout", nodeId: "lanes", itemKey: "lane-beta", itemIndex: 1 }, { kind: "node", nodeId: "reviewer_agent" }],
+              instancePath: [{ kind: "fanout", nodeId: "lanes", itemIndex: 1 }, { kind: "node", nodeId: "reviewer_agent" }],
               createdAt: "t",
               updatedAt: "t",
             },
@@ -502,7 +502,7 @@ describe("inspectNode", () => {
     };
 
     const betaExecution = await inspectNodeExecution(inspection, "reviewer_agent", [
-      { nodeId: "lanes", kind: "fanout", itemKey: "lane-beta", itemIndex: 1 },
+      { nodeId: "lanes", kind: "fanout", itemIndex: 1 },
     ]);
 
     expect(betaExecution).toMatchObject({

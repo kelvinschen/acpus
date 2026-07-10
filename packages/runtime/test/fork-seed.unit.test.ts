@@ -194,7 +194,7 @@ describe("targeted fork seed planning", () => {
   });
 
   it("resolves dynamic targets that materialize only in the replacement workflow", () => {
-    const itemPath = appendFanoutItem([], "items", 0, 0);
+    const itemPath = appendFanoutItem([], "items", 0);
     const target = deriveInstanceKey(appendNode(itemPath, "target"));
     const replacementWorkflow = workflow([fanoutNode([taskNode("target")])]);
     const scope = { ...rootScope(), input: { items: ["a"] } };
@@ -215,7 +215,7 @@ describe("targeted fork seed planning", () => {
   });
 
   it("resolves replacement-only dynamic targets after seedable prerequisites", () => {
-    const itemPath = appendFanoutItem([], "items", 1, 1);
+    const itemPath = appendFanoutItem([], "items", 1);
     const prepare = deriveInstanceKey(appendNode(itemPath, "prepare"));
     const target = deriveInstanceKey(appendNode(itemPath, "target"));
     const sourceWorkflow = workflow([fanoutNode([taskNode("prepare")])]);
@@ -241,7 +241,7 @@ describe("targeted fork seed planning", () => {
   });
 
   it("admits replacement-only dynamic targets behind incompatible prerequisites", () => {
-    const itemPath = appendFanoutItem([], "items", 1, 1);
+    const itemPath = appendFanoutItem([], "items", 1);
     const prepare = deriveInstanceKey(appendNode(itemPath, "prepare"));
     const target = deriveInstanceKey(appendNode(itemPath, "target"));
     const sourceWorkflow = workflow([fanoutNode([taskNode("prepare")])]);
@@ -267,7 +267,7 @@ describe("targeted fork seed planning", () => {
   });
 
   it("rejects replacement-only dynamic targets behind undecided control paths", () => {
-    const itemPath = appendFanoutItem([], "items", 0, 0);
+    const itemPath = appendFanoutItem([], "items", 0);
     const target = deriveInstanceKey(appendNode(appendBranch(itemPath, "choose", "then"), "inner"));
     const replacementWorkflow = workflow([fanoutNode([taskNode("prepare"), ifNode({ kind: "literal", value: false })])]);
     const scope = { ...rootScope(), input: { items: ["a"] } };
@@ -290,7 +290,7 @@ describe("targeted fork seed planning", () => {
 
 
   it("rejects source dynamic targets that cannot materialize in the replacement workflow", () => {
-    const sourceItemPath = appendFanoutItem([], "items", 1, 1);
+    const sourceItemPath = appendFanoutItem([], "items", 1);
     const prepare = deriveInstanceKey(appendNode(sourceItemPath, "prepare"));
     const target = deriveInstanceKey(appendNode(sourceItemPath, "target"));
     const sourceWorkflow = workflow([fanoutNode([taskNode("prepare"), taskNode("target")])]);
@@ -430,8 +430,8 @@ describe("targeted fork seed planning", () => {
   });
 
   it("seeds only same-item prerequisites for a dynamic fanout target", () => {
-    const fanoutPathA = appendFanoutItem([], "items", 0, 0);
-    const fanoutPathB = appendFanoutItem([], "items", 1, 1);
+    const fanoutPathA = appendFanoutItem([], "items", 0);
+    const fanoutPathB = appendFanoutItem([], "items", 1);
     const firstA = deriveInstanceKey(appendNode(fanoutPathA, "prepare"));
     const firstB = deriveInstanceKey(appendNode(fanoutPathB, "prepare"));
     const targetB = deriveInstanceKey(appendNode(fanoutPathB, "target"));
@@ -467,7 +467,7 @@ describe("targeted fork seed planning", () => {
   });
 
   it("resolves a static fanout target when replacement materializes one instance", () => {
-    const fanoutPath = appendFanoutItem([], "items", 0, 0);
+    const fanoutPath = appendFanoutItem([], "items", 0);
     const prepare = deriveInstanceKey(appendNode(fanoutPath, "prepare"));
     const fanoutWorkflow = workflow([fanoutNode([taskNode("prepare"), taskNode("target")])]);
     const scope = { ...rootScope(), input: { items: ["a"] } };
@@ -491,7 +491,7 @@ describe("targeted fork seed planning", () => {
   });
 
   it("resolves a static fanout composite target when replacement materializes one frame", () => {
-    const fanoutPath = appendFanoutItem([], "items", 0, 0);
+    const fanoutPath = appendFanoutItem([], "items", 0);
     const prepare = deriveInstanceKey(appendNode(fanoutPath, "prepare"));
     const inner = deriveInstanceKey(appendNode(appendBranch(fanoutPath, "choose", "then"), "inner"));
     const fanoutWorkflow = workflow([fanoutNode([taskNode("prepare"), ifNode({ kind: "literal", value: true })])]);
@@ -602,8 +602,8 @@ describe("targeted fork seed planning", () => {
 
 
   it("seeds fanout prerequisites before a later static target", () => {
-    const fanoutPathA = appendFanoutItem([], "items", 0, 0);
-    const fanoutPathB = appendFanoutItem([], "items", 1, 1);
+    const fanoutPathA = appendFanoutItem([], "items", 0);
+    const fanoutPathB = appendFanoutItem([], "items", 1);
     const firstA = deriveInstanceKey(appendNode(fanoutPathA, "prepare"));
     const firstB = deriveInstanceKey(appendNode(fanoutPathB, "prepare"));
     const fanoutWorkflow = workflow([fanoutNode([taskNode("prepare")]), taskNode("after")]);
@@ -629,8 +629,8 @@ describe("targeted fork seed planning", () => {
   });
 
   it("does not seed quorum fanout members before a later static target", () => {
-    const fanoutPathA = appendFanoutItem([], "items", 0, 0);
-    const fanoutPathB = appendFanoutItem([], "items", 1, 1);
+    const fanoutPathA = appendFanoutItem([], "items", 0);
+    const fanoutPathB = appendFanoutItem([], "items", 1);
     const firstA = deriveInstanceKey(appendNode(fanoutPathA, "prepare"));
     const firstB = deriveInstanceKey(appendNode(fanoutPathB, "prepare"));
     const fanoutWorkflow = workflow([fanoutNode([taskNode("prepare")], { strategy: "quorum", count: 1 }), taskNode("after")]);
@@ -730,9 +730,9 @@ describe("targeted fork seed planning", () => {
   });
 
   it("seeds accepted quorum fanout items without seeding unaccepted items", () => {
-    const item0 = deriveInstanceKey(appendNode(appendFanoutItem([], "items", 0, 0), "prepare"));
-    const item1 = deriveInstanceKey(appendNode(appendFanoutItem([], "items", 1, 1), "prepare"));
-    const item2 = deriveInstanceKey(appendNode(appendFanoutItem([], "items", 2, 2), "prepare"));
+    const item0 = deriveInstanceKey(appendNode(appendFanoutItem([], "items", 0), "prepare"));
+    const item1 = deriveInstanceKey(appendNode(appendFanoutItem([], "items", 1), "prepare"));
+    const item2 = deriveInstanceKey(appendNode(appendFanoutItem([], "items", 2), "prepare"));
     const sourceWorkflow = workflow([fanoutNode([taskNode("prepare")], { strategy: "quorum", count: 2 })]);
     const scope = { ...rootScope(), input: { items: ["a", "b", "c"] } };
     let source = sourceProjection(sourceWorkflow, [
@@ -766,8 +766,8 @@ describe("targeted fork seed planning", () => {
   });
 
   it("does not seed quorum fanout items when accepted order is not stable", () => {
-    const item0 = deriveInstanceKey(appendNode(appendFanoutItem([], "items", 0, 0), "prepare"));
-    const item1 = deriveInstanceKey(appendNode(appendFanoutItem([], "items", 1, 1), "prepare"));
+    const item0 = deriveInstanceKey(appendNode(appendFanoutItem([], "items", 0), "prepare"));
+    const item1 = deriveInstanceKey(appendNode(appendFanoutItem([], "items", 1), "prepare"));
     const sourceWorkflow = workflow([fanoutNode([taskNode("prepare")], { strategy: "quorum", count: 2 })]);
     const scope = { ...rootScope(), input: { items: ["a", "b", "c"] } };
     let source = sourceProjection(sourceWorkflow, [
@@ -818,7 +818,7 @@ describe("targeted fork seed planning", () => {
   });
 
   it("admits dynamic targets whose incompatible prerequisites must run in the fork", () => {
-    const fanoutPathB = appendFanoutItem([], "items", 1, 1);
+    const fanoutPathB = appendFanoutItem([], "items", 1);
     const firstB = deriveInstanceKey(appendNode(fanoutPathB, "prepare"));
     const targetB = deriveInstanceKey(appendNode(fanoutPathB, "target"));
     const sourceWorkflow = workflow([fanoutNode([taskNode("prepare"), taskNode("target")])]);

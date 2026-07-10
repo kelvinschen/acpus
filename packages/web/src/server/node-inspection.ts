@@ -6,13 +6,10 @@ export type NodeInspectionTarget = {
   id: string;
 };
 
-export type NodeInspectionContext = Array<{
-  nodeId: string;
-  kind: "fanout" | "loop";
-  itemKey?: string;
-  itemIndex?: number;
-  iteration?: number;
-}>;
+export type NodeInspectionContext = Array<
+  | { nodeId: string; kind: "fanout"; itemIndex: number }
+  | { nodeId: string; kind: "loop"; iteration: number }
+>;
 
 export type NodeInspectionResponse = {
   target: NodeInspectionTarget;
@@ -369,8 +366,7 @@ function segmentMatchesSelection(segment: unknown, selection: NodeInspectionCont
   if (selection.kind === "fanout") {
     return record.kind === "fanout"
       && record.nodeId === selection.nodeId
-      && (selection.itemIndex === undefined || record.itemIndex === selection.itemIndex)
-      && (selection.itemKey === undefined || String(record.itemKey) === String(selection.itemKey));
+      && record.itemIndex === selection.itemIndex;
   }
   return record.kind === "loop"
     && record.nodeId === selection.nodeId

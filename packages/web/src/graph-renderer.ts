@@ -137,7 +137,7 @@ export function compositeDescriptor(detail: NodeDetail | undefined): string | un
 }
 
 export function selectorOptionLabel(selector: WebGraphSelector, option: WebGraphSelectorOption): string {
-  if (selector.kind === "loop" && option.iteration !== undefined) return `iter ${option.iteration}`;
+  if (selector.kind === "loop" && "iteration" in option) return `iter ${option.iteration}`;
   return option.label;
 }
 
@@ -165,8 +165,7 @@ export function compositeStrategy(detail: NodeDetail | undefined): string | unde
 export function toRenderModel(graph: WebGraph | undefined, selections: GraphSelections = {}): RenderModel {
   if (!graph) return { mode: "static", items: new Map(), rootIds: [], edges: [], parentOf: new Map() };
 
-  const selectedOptions = selectedOptionsByNode(graph, selections);
-  const selectors = applicableSelectors(graph, selectedOptions);
+  const { selectors, selectedOptions } = resolveGraphSelections(graph, selections);
   const selectorByNodeId = new Map(selectors.map(selector => [selector.nodeId, selector]));
   const ids = new Set([...graph.nodes.map(node => node.id), ...graph.containers.map(container => container.id)]);
   const parentOf = safeParents([
@@ -243,13 +242,9 @@ export function toRenderModel(graph: WebGraph | undefined, selections: GraphSele
 
 export function normalizeSelections(graph: WebGraph, current: GraphSelections): GraphSelections {
   const next: GraphSelections = {};
-  const selected = selectedOptionsByNode(graph, current);
-  for (const selector of applicableSelectors(graph, selected)) {
-    const currentId = current[selector.nodeId];
-    const option = selector.options.find(candidate => candidate.id === currentId)
-      ?? selector.options.find(candidate => candidate.id === selector.defaultOptionId)
-      ?? selector.options.at(-1)
-      ?? selector.options[0];
+  const { selectors, selectedOptions } = resolveGraphSelections(graph, current);
+  for (const selector of selectors) {
+    const option = selectedOptions.get(selector.nodeId);
     if (option) next[selector.nodeId] = option.id;
   }
   return next;
@@ -262,12 +257,10 @@ export function selectionContext(
   parentOf?: ReadonlyMap<string, string>,
 ): WebGraphSelection[] {
   if (!graph || graph.mode === "static") return [];
-  const selected = selectedOptionsByNode(graph, selections);
-  return applicableSelectors(graph, selected).flatMap(selector => {
+  const resolved = resolveGraphSelections(graph, selections);
+  return resolved.selectors.flatMap(selector => {
     if (targetId && parentOf && targetId !== selector.targetId && !isAncestor(selector.targetId, targetId, parentOf)) return [];
-    const option = selected.get(selector.nodeId)
-      ?? selector.options.find(candidate => candidate.id === selector.defaultOptionId)
-      ?? selector.options[0];
+    const option = resolved.selectedOptions.get(selector.nodeId);
     return option ? [selectionFromOption(selector, option)] : [];
   });
 }
@@ -635,67 +628,69 @@ function runtimeStateMatches(
 ): boolean {
   return state.selectors.every(selection => {
     const option = selectedOptions.get(selection.nodeId);
-    return !option || sameSelection(selection, option);
+    return option !== undefined && sameSelection(selection, option);
   });
 }
 
 function sameSelection(selection: WebGraphSelection, option: WebGraphSelectorOption): boolean {
   if (selection.kind === "fanout") {
-    if (selection.itemIndex !== undefined && option.itemIndex !== undefined) return selection.itemIndex === option.itemIndex;
-    if (selection.itemKey !== undefined && option.itemKey !== undefined) return selection.itemKey === option.itemKey;
-    return false;
+    return "itemIndex" in option && selection.itemIndex === option.itemIndex;
   }
-  return selection.iteration === option.iteration;
+  return "iteration" in option && selection.iteration === option.iteration;
 }
 
 function selectionFromOption(selector: WebGraphSelector, option: WebGraphSelectorOption): WebGraphSelection {
-  if (selector.kind === "fanout") {
+  if ("itemIndex" in option) {
     return {
       nodeId: selector.nodeId,
       kind: "fanout",
-      ...(option.itemKey === undefined ? {} : { itemKey: option.itemKey }),
-      ...(option.itemIndex === undefined ? {} : { itemIndex: option.itemIndex }),
+      itemIndex: option.itemIndex,
     };
   }
   return {
     nodeId: selector.nodeId,
     kind: "loop",
-    ...(option.iteration === undefined ? {} : { iteration: option.iteration }),
+    iteration: option.iteration,
   };
 }
 
-function selectedOptionsByNode(graph: WebGraph, selections: GraphSelections): Map<string, WebGraphSelectorOption> {
-  const selected = new Map<string, WebGraphSelectorOption>();
-  for (const selector of graph.selectors) {
-    const option = selector.options.find(candidate => candidate.id === selections[selector.nodeId])
-      ?? selector.options.find(candidate => candidate.id === selector.defaultOptionId)
-      ?? selector.options.at(-1)
-      ?? selector.options[0];
-    if (option) selected.set(selector.nodeId, option);
-  }
-  return selected;
-}
-
-function applicableSelectors(
+function resolveGraphSelections(
   graph: WebGraph,
-  selectedOptions: ReadonlyMap<string, WebGraphSelectorOption>,
-): WebGraphSelector[] {
-  return graph.selectors.map(selector => {
-    const options = selector.options.filter(option =>
-      option.parentSelections.every(parent => {
-        const selected = selectedOptions.get(parent.nodeId);
-        return selected ? sameSelection(parent, selected) : true;
-      }),
+  selections: GraphSelections,
+): { selectors: WebGraphSelector[]; selectedOptions: Map<string, WebGraphSelectorOption> } {
+  const pending = [...graph.selectors];
+  const selectors: WebGraphSelector[] = [];
+  const selectedOptions = new Map<string, WebGraphSelectorOption>();
+
+  while (pending.length > 0) {
+    const index = pending.findIndex(selector =>
+      selector.options.every(option => option.parentSelections.every(parent => selectedOptions.has(parent.nodeId))),
     );
-    const defaultOptionId = options.some(option => option.id === selector.defaultOptionId)
+    if (index < 0) break;
+    const selector = pending.splice(index, 1)[0]!;
+    const options = selector.options.filter(option => option.parentSelections.every(parent => {
+      const selected = selectedOptions.get(parent.nodeId);
+      return selected !== undefined && sameSelection(parent, selected);
+    }));
+    const option = options.find(candidate => candidate.id === selections[selector.nodeId])
+      ?? options.find(candidate => candidate.id === selector.defaultOptionId)
+      ?? options.at(-1)
+      ?? options[0];
+    if (!option) continue;
+    const defaultOptionId = options.some(candidate => candidate.id === selector.defaultOptionId)
       ? selector.defaultOptionId
       : options.at(-1)?.id;
-    return {
-      ...selector,
+    selectors.push({
+      nodeId: selector.nodeId,
+      kind: selector.kind,
+      targetId: selector.targetId,
       options,
-      ...(defaultOptionId ? { defaultOptionId } : {}),
-    };
-  }).filter(selector => selector.options.length > 0);
+      ...(defaultOptionId === undefined ? {} : { defaultOptionId }),
+    });
+    selectedOptions.set(selector.nodeId, option);
+  }
+
+  return { selectors, selectedOptions };
 }
 
 function rankItems(graph: WebGraph): Map<string, number> {

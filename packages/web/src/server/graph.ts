@@ -57,18 +57,17 @@ export type WebGraphContainer = {
 export type WebGraphGroup = {
   nodeId: string;
   groupKey: string;
-  kind: string;
+  kind: "parallel" | "fanout";
   status: string;
   strategy?: string;
-  members: Array<{
+  members: Array<({
     memberKey: string;
-    memberKind: string;
-    branchId?: string;
-    itemKey?: string;
-    itemIndex?: number;
     status: string;
     childFrameKey?: string;
-  }>;
+  } & (
+    | { memberKind: "branch"; branchId: string; itemIndex?: never }
+    | { memberKind: "fanout_item"; itemIndex: number; branchId?: never }
+  ))>;
 };
 
 export type WebGraphEdge = {
@@ -86,17 +85,18 @@ export type WebGraphSelector = {
   options: WebGraphSelectorOption[];
 };
 
-export type WebGraphSelectorOption = {
+type WebGraphSelectorOptionBase = {
   id: string;
   label: string;
   status: string;
   frameKey?: string;
-  itemKey?: string;
-  itemIndex?: number;
-  iteration?: number;
   scopePath: string[];
   parentSelections: WebGraphSelection[];
 };
+
+export type WebGraphFanoutSelectorOption = WebGraphSelectorOptionBase & { itemIndex: number };
+export type WebGraphLoopSelectorOption = WebGraphSelectorOptionBase & { iteration: number };
+export type WebGraphSelectorOption = WebGraphFanoutSelectorOption | WebGraphLoopSelectorOption;
 
 export type WebGraphRuntimeState = {
   targetId: string;
@@ -107,13 +107,9 @@ export type WebGraphRuntimeState = {
   selectors: WebGraphSelection[];
 };
 
-export type WebGraphSelection = {
-  nodeId: string;
-  kind: "fanout" | "loop";
-  itemKey?: string;
-  itemIndex?: number;
-  iteration?: number;
-};
+export type WebGraphSelection =
+  | { nodeId: string; kind: "fanout"; itemIndex: number }
+  | { nodeId: string; kind: "loop"; iteration: number };
 
 type OverlayNode = WorkflowVisualizationOverlay["nodes"][number];
 type OverlayFrame = OverlayNode["frames"][number];
@@ -187,15 +183,16 @@ function graphGroups(source: WorkflowVisualizationOverlay): WebGraphGroup[] {
     kind: group.kind,
     status: group.status,
     ...(group.strategy === undefined ? {} : { strategy: group.strategy }),
-    members: group.members.map(member => ({
-      memberKey: member.memberKey,
-      memberKind: member.memberKind,
-      ...(member.branchId === undefined ? {} : { branchId: member.branchId }),
-      ...(member.itemKey === undefined ? {} : { itemKey: member.itemKey }),
-      ...(member.itemIndex === undefined ? {} : { itemIndex: member.itemIndex }),
-      status: member.status,
-      ...(member.childFrameKey === undefined ? {} : { childFrameKey: member.childFrameKey }),
-    })),
+    members: group.members.map(member => {
+      const value = {
+        memberKey: member.memberKey,
+        status: member.status,
+        ...(member.childFrameKey === undefined ? {} : { childFrameKey: member.childFrameKey }),
+      };
+      return member.memberKind === "branch"
+        ? { ...value, memberKind: "branch" as const, branchId: member.branchId }
+        : { ...value, memberKind: "fanout_item" as const, itemIndex: member.itemIndex };
+    }),
   }));
 }
 
@@ -343,40 +340,35 @@ function graphSelectors(
 ): WebGraphSelector[] {
   const selectors: WebGraphSelector[] = [];
   const containerByOwnerAndSegment = containerLookup(containers);
+  const fanoutOptionsByNode = new Map<string, WebGraphFanoutSelectorOption[]>();
 
   for (const group of source.groups) {
     if (group.kind !== "fanout") continue;
+    const parentSelections = runtimeSelections(group.instancePath).filter(selection => selection.nodeId !== group.nodeId);
     const options = group.members
       .filter(member => member.memberKind === "fanout_item")
-      .sort((a, b) => (a.itemIndex ?? 0) - (b.itemIndex ?? 0))
-      .map(member => {
-        const selection: WebGraphSelection = {
-          nodeId: group.nodeId,
-          kind: "fanout",
-          ...(member.itemIndex === undefined ? {} : { itemIndex: member.itemIndex }),
-          ...(member.itemKey === undefined ? {} : { itemKey: String(member.itemKey) }),
-        };
-        return {
-          id: selectorOptionId(selection),
-          label: `item[${member.itemIndex ?? "?"}]${member.itemKey ? ` ${member.itemKey}` : ""}`,
-          status: member.status,
-          ...(member.childFrameKey === undefined ? {} : { frameKey: member.childFrameKey }),
-          ...(member.itemKey === undefined ? {} : { itemKey: String(member.itemKey) }),
-          ...(member.itemIndex === undefined ? {} : { itemIndex: member.itemIndex }),
-          scopePath: containerByOwnerAndSegment.get(containerKey(group.nodeId, "do"))?.path ?? [],
-          parentSelections: [],
-        };
-      });
-    if (options.length > 0) {
-      const defaultOptionId = defaultOption(options)?.id;
-      selectors.push({
-        nodeId: group.nodeId,
-        kind: "fanout",
-        targetId: containerByOwnerAndSegment.get(containerKey(group.nodeId, "do"))?.id ?? group.nodeId,
-        ...(defaultOptionId === undefined ? {} : { defaultOptionId }),
-        options,
-      });
-    }
+      .sort((a, b) => a.itemIndex - b.itemIndex)
+      .map(member => ({
+        id: member.memberKey,
+        label: `item[${member.itemIndex}]`,
+        status: member.status,
+        ...(member.childFrameKey === undefined ? {} : { frameKey: member.childFrameKey }),
+        itemIndex: member.itemIndex,
+        scopePath: containerByOwnerAndSegment.get(containerKey(group.nodeId, "do"))?.path ?? [],
+        parentSelections,
+      }));
+    fanoutOptionsByNode.set(group.nodeId, [...(fanoutOptionsByNode.get(group.nodeId) ?? []), ...options]);
+  }
+
+  for (const [nodeId, options] of fanoutOptionsByNode) {
+    const defaultOptionId = defaultOption(options)?.id;
+    selectors.push({
+      nodeId,
+      kind: "fanout",
+      targetId: containerByOwnerAndSegment.get(containerKey(nodeId, "do"))?.id ?? nodeId,
+      ...(defaultOptionId === undefined ? {} : { defaultOptionId }),
+      options,
+    });
   }
 
   for (const node of source.nodes) {
@@ -384,22 +376,18 @@ function graphSelectors(
     const options = node.frames
       .filter(frame => frame.frameKind === "loop_iteration")
       .sort((a, b) => (loopIteration(a) ?? 0) - (loopIteration(b) ?? 0))
-      .map(frame => {
+      .flatMap(frame => {
         const iteration = loopIteration(frame);
-        const selection: WebGraphSelection = {
-          nodeId: node.nodeId,
-          kind: "loop",
-          ...(iteration === undefined ? {} : { iteration }),
-        };
-        return {
-          id: selectorOptionId(selection),
-          label: `iteration ${iteration ?? "?"}`,
+        if (iteration === undefined) return [];
+        return [{
+          id: frame.frameKey,
+          label: `iteration ${iteration}`,
           status: frame.status,
           frameKey: frame.frameKey,
-          ...(iteration === undefined ? {} : { iteration }),
+          iteration,
           scopePath: containerByOwnerAndSegment.get(containerKey(node.nodeId, "do"))?.path ?? [],
           parentSelections: runtimeSelections(frame.instancePath).filter(selection => selection.nodeId !== node.nodeId),
-        };
+        }];
       });
     if (options.length > 0) {
       const defaultOptionId = defaultOption(options)?.id;
@@ -491,8 +479,7 @@ function runtimeSelections(path: InstancePath | undefined): WebGraphSelection[] 
       selections.push({
         nodeId: entry.nodeId,
         kind: "fanout",
-        ...(entry.itemKey === undefined ? {} : { itemKey: String(entry.itemKey) }),
-        ...(entry.itemIndex === undefined ? {} : { itemIndex: entry.itemIndex }),
+        itemIndex: entry.itemIndex,
       });
     }
     if (entry.kind === "loop") {
@@ -528,11 +515,6 @@ function loopIteration(frame: OverlayFrame): number | undefined {
 function defaultOption(options: WebGraphSelectorOption[]): WebGraphSelectorOption | undefined {
   return options.find(option => option.status === "running" || option.status === "awaiting")
     ?? options.at(-1);
-}
-
-function selectorOptionId(selection: WebGraphSelection): string {
-  if (selection.kind === "fanout") return `${selection.nodeId}:item:${selection.itemIndex ?? selection.itemKey ?? "unknown"}`;
-  return `${selection.nodeId}:iteration:${selection.iteration ?? "unknown"}`;
 }
 
 function scopeSegment(parentPath: string[], childPath: string[]): string | undefined {

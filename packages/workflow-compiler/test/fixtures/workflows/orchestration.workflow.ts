@@ -51,7 +51,6 @@ export default defineWorkflow({
   const lanes = step("lanes").fanout({
     maxConcurrency: 3,
     over: input.lanes,
-    key({ item }) { return template`lane-${item.id}`; },
     do({ item }) {
       const laneParallel = step("lane_parallel").parallel({
         maxConcurrency: 3,

@@ -2,14 +2,12 @@ import { valueToExprIR } from "@acpus/expression/ir";
 import { refExpr } from "../../graph/refs.js";
 import { assertStableId, stripUndefined } from "../../graph/lowering.js";
 import type { Simplify } from "../../internal/type-utils.js";
-import { templateToIR, type TemplateInput } from "../../template/template.js";
 import type { GraphOutputCheck, OutputValues } from "../../graph/scope.js";
 import type { DiagnosticIR, FanoutNodeIR } from "../../ir/types.js";
 import type { ArrayItem, BuildScope, FanoutScopeContext, FanoutStrategy, OutputObject, RuntimeValueOf, WorkflowArrayValue } from "./shared.js";
 
 type BaseFanoutStepSpec<Over extends WorkflowArrayValue<any>, Output extends OutputObject> = {
   over: Over;
-  key?: TemplateInput | ((ctx: Pick<FanoutScopeContext<ArrayItem<Over>>, "item" | "itemIndex">) => TemplateInput);
   maxConcurrency?: number;
   do: (ctx: FanoutScopeContext<ArrayItem<Over>>) => OutputValues<Output> & GraphOutputCheck<NoInfer<Output>>;
   itemOutputSchema?: never;
@@ -42,12 +40,10 @@ export function buildFanoutNode<
   assertStableId(id, diagnostics);
   const item = refExpr<ArrayItem<Over>>(["fanout", id, "item"]);
   const itemIndex = refExpr<number>(["fanout", id, "itemIndex"]);
-  const key = typeof spec.key === "function" ? spec.key({ item, itemIndex }) : spec.key;
   return stripUndefined({
     id,
     kind: "fanout",
     over: valueToExprIR(spec.over),
-    key: key ? templateToIR(key) : undefined,
     strategy: spec.strategy ?? "all",
     maxConcurrency: spec.maxConcurrency,
     count: (spec as { count?: number }).count,
