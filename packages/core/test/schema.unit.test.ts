@@ -3,16 +3,9 @@ import { safeParseSchema, toSchemaIR, tryToSchemaIR, z } from "../src/schema.js"
 import { err } from "neverthrow";
 
 describe("schema boundary lowering", () => {
-  it("exposes only the current Acpus schema helper surface", () => {
-    expect(typeof z.path).toBe("function");
-    expect("integer" in z).toBe(false);
-    expect("artifact" in z).toBe(false);
-    expect("secretRef" in z).toBe(false);
-  });
-
   it("lowers the supported Zod boundary subset to durable SchemaIR", () => {
     const schema = z.object({
-      repoPath: z.path(),
+      repoPath: z.string(),
       count: z.number().int(),
       maybeSummary: z.string().nullable().optional(),
       mode: z.enum(["fast", "safe"]),
@@ -28,7 +21,7 @@ describe("schema boundary lowering", () => {
       required: ["repoPath", "count", "mode", "tags", "scores"],
     });
     if (ir.kind !== "object") throw new Error("expected object schema");
-    expect(ir.fields.repoPath).toEqual({ kind: "path" });
+    expect(ir.fields.repoPath).toEqual({ kind: "string" });
     expect(ir.fields.count).toEqual({ kind: "number" });
     expect(ir.fields.maybeSummary).toEqual({ kind: "string", nullable: true, optional: true });
     expect(ir.fields.tags).toEqual({ kind: "array", item: { kind: "string" } });
@@ -37,7 +30,7 @@ describe("schema boundary lowering", () => {
 
   it("preserves Zod descriptions in durable SchemaIR", () => {
     const schema = z.object({
-      repoPath: z.path().describe("Repository path."),
+      repoPath: z.string().describe("Repository path."),
       title: z.string().describe("Human-readable title."),
       notes: z.string().default("").describe("Optional notes."),
     }).describe("Workflow input.");
@@ -46,7 +39,7 @@ describe("schema boundary lowering", () => {
       kind: "object",
       description: "Workflow input.",
       fields: {
-        repoPath: { kind: "path", description: "Repository path." },
+        repoPath: { kind: "string", description: "Repository path." },
         title: { kind: "string", description: "Human-readable title." },
         notes: { kind: "string", optional: true, default: "", description: "Optional notes." },
       },

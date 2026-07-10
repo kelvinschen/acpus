@@ -1,3 +1,7 @@
+/*
+ * Pattern: Plan adversarial lenses, fan out reviews, cross-critique, and synthesize.
+ * Nodes: agent, fanout
+ */
 import { defineWorkflow, z } from "acpus/core";
 import { md, template } from "acpus/expression";
 

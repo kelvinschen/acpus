@@ -858,7 +858,7 @@ describe("WorkflowIR diagnostics contract", () => {
         kind: "object",
         fields: {
           file: { kind: "string" },
-          home: { kind: "path" },
+          home: { kind: "string" },
           tags: { kind: "array", item: { kind: "string" } },
           config: { kind: "record", value: { kind: "union", variants: [{ kind: "string" }, { kind: "number" }, { kind: "null" }] } },
         },

@@ -4,16 +4,17 @@ import * as ir from "@acpus/core/ir";
 import * as runtime from "@acpus/core/runtime";
 import * as schema from "@acpus/core/schema";
 import * as workflow from "@acpus/core/workflow";
+import { z as nativeZ } from "zod";
 
 describe("@acpus/core public API", () => {
   it("keeps the root entrypoint focused on minimal workflow authoring", () => {
     expect(Object.keys(core).sort()).toEqual([
       "defineWorkflow",
-      "s",
       "secret",
       "task",
       "z",
     ]);
+    expect(core.z).toBe(nativeZ);
   });
 
   it("exports schema helpers from the schema entrypoint", () => {
@@ -21,7 +22,6 @@ describe("@acpus/core public API", () => {
       "assertBoundarySchema",
       "isSchema",
       "parseSchema",
-      "s",
       "safeParseSchema",
       "schemaToJsonSchema",
       "toJSONSchema",
@@ -30,6 +30,7 @@ describe("@acpus/core public API", () => {
       "validateValue",
       "z",
     ]);
+    expect(schema.z).toBe(nativeZ);
   });
 
   it("exports workflow helpers from the workflow entrypoint", () => {

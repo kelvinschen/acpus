@@ -1,3 +1,7 @@
+/*
+ * Pattern: Fan out issue triage, run branch work in parallel, and route by switch.
+ * Nodes: agent, task, switch, parallel, fanout
+ */
 import { defineWorkflow, z } from "acpus/core";
 import { fmap, md, template } from "acpus/expression";
 import { summarizeIssue } from "./tasks.js";
@@ -12,7 +16,7 @@ export default defineWorkflow({
       body: z.string().describe("Issue body or description to triage."),
       labels: z.array(z.string()).default([]).describe("Optional issue labels available to metadata and triage steps."),
     })).describe("Issues to triage in parallel."),
-    repoPath: z.path().describe("Repository path where the triage agent should inspect context."),
+    repoPath: z.string().describe("Repository path where the triage agent should inspect context."),
   }),
   agents: {
     triager: { use: "codex" },

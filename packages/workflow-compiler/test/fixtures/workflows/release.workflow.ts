@@ -21,7 +21,7 @@ export default defineWorkflow({
   name: "release-readiness",
 
   inputSchema: z.object({
-    repoPath: z.path(),
+    repoPath: z.string(),
     packageName: z.string(),
     version: z.string(),
     baseRef: z.string().default("main"),

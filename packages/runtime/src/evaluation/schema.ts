@@ -17,7 +17,6 @@ function firstSchemaIssue(schema: RuntimeSchema, value: JsonValue, path: string)
     case "unknown":
       return undefined;
     case "string":
-    case "path":
       return typeof value === "string" ? undefined : `${path} expected string, got ${jsonType(value)}`;
     case "number":
       return typeof value === "number" ? undefined : `${path} expected number, got ${jsonType(value)}`;

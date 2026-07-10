@@ -1,3 +1,7 @@
+/*
+ * Pattern: Draft, iteratively refine, optionally approve, and enforce a change plan.
+ * Nodes: agent, task, signal, assert, if, loop
+ */
 import { defineWorkflow, z } from "acpus/core";
 import { lift2, md, template } from "acpus/expression";
 
@@ -11,7 +15,7 @@ export default defineWorkflow({
   name: "change-approval",
   description: "Draft and refine an implementation plan, then optionally wait for human approval.",
   inputSchema: z.object({
-    repoPath: z.path().describe("Repository path where the planning agent should inspect context."),
+    repoPath: z.string().describe("Repository path where the planning agent should inspect context."),
     request: z.string().describe("The implementation request or change proposal to turn into a plan."),
     requireApproval: z.boolean().default(true).describe(
       "Whether to pause for a human approval signal before the workflow can complete.",

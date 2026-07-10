@@ -28,7 +28,7 @@ describe("workflow compilation", () => {
       name: "release_review",
       description: "Review a package release for readiness.",
       inputSchema: z.object({
-        repoPath: z.path(),
+        repoPath: z.string(),
         packageName: z.string(),
       }),
       agents: {

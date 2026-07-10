@@ -8,9 +8,9 @@
 
 ### Public API
 
-- The root `@acpus/core` entrypoint MUST expose the minimal workflow authoring surface: `defineWorkflow`, `z`, `s`, `task`, and `secret`.
+- The root `@acpus/core` entrypoint MUST expose the minimal workflow authoring surface: `defineWorkflow`, `z`, `task`, and `secret`.
 - `@acpus/core/workflow` MUST expose `defineWorkflow`, `compileWorkflowDefinition`, and `isWorkflowDefinition`.
-- `@acpus/core/schema` MUST expose schema authoring, parsing, validation, and lowering helpers, including `z`, `s`, `isSchema`, `parseSchema`, `safeParseSchema`, `validateValue`, `toSchemaIR`, `tryToSchemaIR`, `toJSONSchema`, `schemaToJsonSchema`, and `assertBoundarySchema`.
+- `@acpus/core/schema` MUST expose schema authoring, parsing, validation, and lowering helpers, including `z`, `isSchema`, `parseSchema`, `safeParseSchema`, `validateValue`, `toSchemaIR`, `tryToSchemaIR`, `toJSONSchema`, `schemaToJsonSchema`, and `assertBoundarySchema`.
 - `@acpus/core/runtime` MUST expose the task command wrapper factory `createDollar`, secret tokens, and related task runtime types.
 - `@acpus/core/ir` MUST expose `validateWorkflowIR` and public IR types.
 - The core package MUST NOT expose a binary; command behavior belongs to the `acpus` CLI package.
@@ -33,15 +33,15 @@
 
 ### Schema Layer
 
-- The core MUST re-export Zod 4 as `z` and MUST add the Acpus boundary extension `z.path()`.
+- The core MUST directly re-export Zod 4's native `z` object without Acpus extensions, preserving standard type members such as `z.infer` and `z.output`.
 - Graph-boundary schemas MUST be canonicalized to serializable `SchemaIR` via `toSchemaIR(schema)`.
 - `tryToSchemaIR(schema)` MUST return a neverthrow `Result<SchemaIR, SchemaLoweringError>` for recoverable schema lowering failures.
 - `SchemaLoweringError` MUST be a serializable tagged union that includes unsupported schema, invalid literal, and invalid default failures with stable path fields.
 - `toSchemaIR(schema)` MAY remain a throwing compatibility adapter over `tryToSchemaIR(schema)` for authoring APIs that still expect exceptions.
-- The graph-boundary schema subset MUST include string, number, boolean, null, unknown, literal, enum, array, object, record, union, optional, nullable, default, and path schemas.
-- The core schema authoring surface MUST NOT provide `z.integer()`, `z.artifact()`, or `z.secretRef()`.
+- The graph-boundary schema subset MUST include string, number, boolean, null, unknown, literal, enum, array, object, record, union, optional, nullable, and default schemas.
+- The core MUST expose the native Zod schema constructor surface without Acpus-specific constructors.
 - Graph-boundary schema lowering MUST reject runtime-only or non-serializable schema constructs such as transform, custom, function, promise, map, set, date, bigint, symbol, undefined, void, and never.
-- `SchemaIR` MUST be a core-owned recursive schema union. It MUST NOT reuse expression `TypeIR` for core-only variants such as `path`, `literal`, `enum`, or schema metadata.
+- `SchemaIR` MUST be a core-owned recursive schema union. It MUST NOT reuse expression `TypeIR` for core-only variants such as `literal`, `enum`, or schema metadata.
 - `validateWorkflowIR(ir)` MUST validate `SchemaIR` as a closed recursive union, reject unknown schema kinds and fields, and reject hand-authored `kind: "integer"` in favor of `kind: "number"`.
 
 ### Expression, Templates, And Helpers
@@ -128,6 +128,7 @@
 ## Verification
 
 - Tests MUST cover root and subpath public exports.
+- Tests MUST prove root and schema entrypoints expose the native Zod `z` object and support `z.infer` type authoring.
 - Tests MUST cover schema lowering acceptance and rejection for graph-boundary schemas.
 - Tests MUST cover authoring type contracts for workflow input, agents, outputs, composites, fanout, loop, and boolean conditions.
 - Tests MUST cover `compileWorkflowDefinition(...)` lowering authoring graphs to valid `WorkflowIR`.

@@ -11,7 +11,6 @@ export type SchemaTypeIR =
   | { kind: "object"; fields: Record<string, SchemaIR>; required: string[]; additionalProperties: boolean }
   | { kind: "record"; value: SchemaIR }
   | { kind: "union"; variants: SchemaIR[] }
-  | { kind: "path" }
   | { kind: "literal"; value: JsonPrimitive }
   | { kind: "enum"; values: JsonPrimitive[] };
 

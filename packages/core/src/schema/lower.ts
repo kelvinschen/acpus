@@ -43,10 +43,6 @@ export function tryToSchemaIR(schema: Schema<any>, path = "$schema"): Result<Sch
 }
 
 function lowerSchemaIR(schema: Schema<any>, path = "$schema"): Result<SchemaIR, SchemaLoweringError> {
-  const meta = zod.globalRegistry.get(schema as zod.ZodTypeAny) as any;
-  const acpus = meta?.acpus as { kind?: string } | undefined;
-  if (acpus?.kind === "path") return ok({ kind: "path" });
-
   const def = defOf(schema);
   const kind = typeOf(schema);
   switch (kind) {
@@ -186,8 +182,7 @@ function normalizeJsonValue(value: unknown): JsonValue | undefined {
 export function schemaToJsonSchema(schema: SchemaIR): JsonValue {
   switch (schema.kind) {
     case "unknown": return {};
-    case "string":
-    case "path": return { type: "string" };
+    case "string": return { type: "string" };
     case "number": return { type: "number" };
     case "boolean": return { type: "boolean" };
     case "null": return { type: "null" };

@@ -40,8 +40,8 @@ export type CreateWorktreeError =
  */
 export const createWorktree = task.define({
   inputSchema: z.object({
-    repo: z.path(),
-    path: z.path(),
+    repo: z.string(),
+    path: z.string(),
     ref: z.string().optional(),
     detach: z.boolean().optional(),
     forceRemove: z.boolean().optional(),

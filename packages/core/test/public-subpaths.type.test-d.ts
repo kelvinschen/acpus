@@ -4,7 +4,7 @@ import { fmap, template, type Expr, type WorkflowValue } from "@acpus/expression
 import { refExpr, type ExprIR } from "@acpus/expression/ir";
 import { validateWorkflowIR, type WorkflowIR } from "@acpus/core/ir";
 import { createDollar, type Dollar } from "@acpus/core/runtime";
-import { isSchema, validateValue, type InferSchema } from "@acpus/core/schema";
+import { isSchema, validateValue } from "@acpus/core/schema";
 import { compileWorkflowDefinition, type WorkflowDefinition } from "@acpus/core/workflow";
 
 // @ts-expect-error expression helpers must not be exported from the root entrypoint.
@@ -20,7 +20,7 @@ import type { WorkflowIR as RootWorkflowIR } from "@acpus/core";
 
 test("public package subpaths expose the intended type surface", () => {
   const Input = z.object({ ready: z.boolean(), name: z.string().optional() });
-  type InputValue = InferSchema<typeof Input>;
+  type InputValue = z.infer<typeof Input>;
 
   assertType<InputValue>({ ready: true });
   expectTypeOf(refExpr<InputValue>(["input"])).toEqualTypeOf<Expr<InputValue> & { readonly ready: Expr<boolean>; readonly name: Expr<string | undefined> }>();

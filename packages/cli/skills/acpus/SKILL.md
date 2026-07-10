@@ -16,7 +16,7 @@ Assume the user can run the CLI as `acpus`. If the CLI is unavailable, ask wheth
 | Path | Use when the user asks to... | Start here |
 | --- | --- | --- |
 | Explain | understand Acpus concepts, node types, WorkflowIR, expressions, or durable runs | Answer conceptually; use the focused reference for the topic. |
-| Author / adapt | create or edit a TypeScript workflow module, task, agent, signal, composite, schema, or prompt | Read `references/authoring.md`, then examples under `examples/workflows/`. |
+| Author / adapt | create or edit a TypeScript workflow module, task, agent, signal, composite, schema, or prompt | For new workflows, start with `acpus workflow init file <file.ts>` or `init catalog <name>`; then choose the closest `Pattern`/`Nodes` example, read `references/authoring.md`, and edit the generated file. |
 | Check | validate a workflow before running it | Use `acpus workflow check <workflow.ts>`; read `references/cli-operations.md`. |
 | Run | start an existing workflow or catalog entry | Use `acpus workflow run <workflow-or-catalog>`; read `references/cli-operations.md`. |
 | Inspect / monitor | inspect a run, pick a run interactively, observe status, diagnose awaiting signal or stale execution | Use `acpus runs inspect [run-id]`; read `references/runtime-recovery.md`. |
@@ -33,6 +33,13 @@ A single conversation may move through several paths. Re-classify before each ma
 
 ## Authoring quick sheet
 
+For a new workflow, create a checkable scaffold before editing:
+
+```sh
+acpus workflow init file workflow.ts
+acpus workflow check workflow.ts
+```
+
 ```ts
 import { defineWorkflow, z } from "acpus/core";
 import { fmap, template } from "acpus/expression";
@@ -40,7 +47,7 @@ import { fmap, template } from "acpus/expression";
 export default defineWorkflow({
   name: "diff-review",
   description: "Review a repository diff for readiness.",
-  inputSchema: z.object({ repoPath: z.path(), headRef: z.string().default("HEAD") }),
+  inputSchema: z.object({ repoPath: z.string(), headRef: z.string().default("HEAD") }),
   agents: {
     reviewer: { use: "codex" },
   },
@@ -116,10 +123,10 @@ Read only the file needed for the current task (Files are relative to this skill
 | CLI operation defaults and help discovery | `references/cli-operations.md` |
 | Inspecting, monitoring, retry/fork/signal/cancel/pause/resume decisions | `references/runtime-recovery.md` |
 | hooks.json format and hook validation/listing | `references/hooks-json.md` |
-| Adversarial review with dynamic lenses, fanout, cross-critique, and structured synthesis | `examples/workflows/adversarial-review/workflow.ts` |
-| Issue triage with fanout, parallel, switch, companion reusable task module, and agent review | `examples/workflows/issue-triage/workflow.ts` |
+| Adversarial review with dynamic lenses, fanout, cross-critique, and structured synthesis (`agent`, `fanout`) | `examples/workflows/adversarial-review/workflow.ts` |
+| Issue triage with fanout, parallel, switch, companion reusable task module, and agent review (`agent`, `task`, `switch`, `parallel`, `fanout`) | `examples/workflows/issue-triage/workflow.ts` |
 | Issue triage companion task module | `examples/workflows/issue-triage/tasks.ts` |
-| Change approval with agent plan refinement, loop, optional signal, if, and assert | `examples/workflows/change-approval/workflow.ts` |
-| Worktree tournament with `createWorktree`, three implementation agents, and a judge | `examples/workflows/worktree-tournament/workflow.ts` |
-| Multi-aspect brainstorm workflow | `examples/workflows/multi-aspect-brainstorm/workflow.ts` |
+| Change approval with agent plan refinement, loop, optional signal, if, and assert (`agent`, `task`, `signal`, `assert`, `if`, `loop`) | `examples/workflows/change-approval/workflow.ts` |
+| Worktree tournament with `createWorktree`, three implementation agents, and a judge (`agent`, `task`, `parallel`) | `examples/workflows/worktree-tournament/workflow.ts` |
+| Multi-aspect brainstorm workflow (`agent`, `parallel`, `loop`) | `examples/workflows/multi-aspect-brainstorm/workflow.ts` |
 | Copyable hook config | `examples/hooks.example.json` |

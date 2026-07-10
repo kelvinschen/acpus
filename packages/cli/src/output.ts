@@ -3,8 +3,9 @@ import type { DiagnosticIR, WorkflowIR } from "@acpus/core/ir";
 import type { HookConfigScope, LoadedHookConfig, RunDetails, RunRecord, RuntimeHealthCheck } from "@acpus/runtime";
 import { formatAgentProgressLines } from "./agent-progress-format.js";
 import type { WorkflowCatalogEntry } from "./catalog.js";
+import type { InitTarget } from "./workflow-init/types.js";
 
-export type ResultPhase = "usage" | "check" | "compile" | "validate" | "run" | "inspect" | "control" | "delete" | "doctor" | "viz" | "skill";
+export type ResultPhase = "usage" | "check" | "compile" | "validate" | "run" | "inspect" | "control" | "delete" | "doctor" | "viz" | "skill" | "init";
 
 export type WorkflowSummary = {
   name: string;
@@ -41,6 +42,8 @@ export type CliResult = {
   hookValidation?: { count: number };
   hooks?: HookListResult;
   outputPath?: string;
+  target?: InitTarget;
+  path?: string;
   skill?: SkillCommandResult;
 };
 
@@ -84,7 +87,7 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
   }
 
   const stream = result.ok ? streams.stdout : streams.stderr;
-  if (!result.hooks) stream.write(`${result.message ?? (result.ok ? "OK" : "Failed")}\n`);
+  if (!result.hooks && result.phase !== "init") stream.write(`${result.message ?? (result.ok ? "OK" : "Failed")}\n`);
   if (result.workflow) {
     stream.write(`Workflow: ${result.workflow.name}\n`);
     if (result.workflow.description) stream.write(`Description: ${result.workflow.description}\n`);
@@ -117,6 +120,10 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
   if (result.errorCode) stream.write(`Error code: ${result.errorCode}\n`);
   if (result.control) stream.write(`Control: ${result.control.type} ${result.control.runId}\n`);
   if (result.outputPath) stream.write(`Output: ${result.outputPath}\n`);
+  if (result.phase === "init" && result.path) {
+    stream.write(`Path: ${result.path}\n`);
+    stream.write(`Next: acpus workflow check ${result.path}\n`);
+  }
   if (result.runs) {
     if (result.runs.length === 0) {
       stream.write("No runs.\n");

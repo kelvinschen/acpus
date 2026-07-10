@@ -140,7 +140,7 @@ export function taskArtifactWorkflow() {
 export function taskInvocationOptionsWorkflow() {
   return defineWorkflow({
     name: "runtime-task-invocation-options",
-    inputSchema: z.object({ workDir: z.path() }),
+    inputSchema: z.object({ workDir: z.string() }),
   }).build(({ input, step }) => {
     const result = step("inspect_invocation").task({
       run: {
@@ -210,7 +210,7 @@ export function failingTaskWorkflow() {
 export function failOnceTaskWorkflow() {
   return defineWorkflow({
     name: "cli-fail-once-task",
-    inputSchema: z.object({ workDir: z.path() }),
+    inputSchema: z.object({ workDir: z.string() }),
   }).build(({ input, step }) => {
     const result = step("eventual").task({
       run: {

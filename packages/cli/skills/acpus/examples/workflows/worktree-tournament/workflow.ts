@@ -1,3 +1,7 @@
+/*
+ * Pattern: Create parallel worktree implementations and have an agent judge them.
+ * Nodes: agent, task, parallel
+ */
 import { defineWorkflow, z } from "acpus/core";
 import { md, template } from "acpus/expression";
 import { createWorktree } from "acpus/tasks/git";
@@ -6,8 +10,8 @@ export default defineWorkflow({
   name: "worktree-tournament",
   description: "Create competing worktree implementations and have an agent judge the best result.",
   inputSchema: z.object({
-    repoPath: z.path().describe("Source repository path used to create candidate worktrees and run the judge."),
-    worktreeRoot: z.path().describe("Directory where per-run candidate worktrees should be created."),
+    repoPath: z.string().describe("Source repository path used to create candidate worktrees and run the judge."),
+    worktreeRoot: z.string().describe("Directory where per-run candidate worktrees should be created."),
     task: z.string().describe("Implementation task each candidate agent should attempt independently."),
     baseRef: z.string().default("HEAD").describe("Git ref used as the base for each candidate worktree."),
     forceRemove: z.boolean().default(false).describe(

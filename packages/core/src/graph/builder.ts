@@ -1,7 +1,8 @@
 import { WORKFLOW } from "../internal/symbols.js";
 import { makeNodeRef, refExpr, type ExprValue, type NodeRef } from "./refs.js";
 import type { WorkflowValue } from "@acpus/expression";
-import { toSchemaIR, type InferSchema, type Schema } from "../schema/index.js";
+import type { z } from "zod";
+import { toSchemaIR, type Schema } from "../schema/index.js";
 import { agentDefinitionToIR, agentToken, buildAgentNode, type AgentDefinitionSpec, type AgentStepSpec, type AgentToken } from "../nodes/leaf/agent.js";
 import { buildTaskNode, type InlineTaskStepSpec, type ReusableTaskStepSpec, type TaskStepSpec } from "../nodes/leaf/task.js";
 import { buildSignalNode, type SignalStepSpec } from "../nodes/leaf/signal.js";
@@ -100,7 +101,7 @@ export type StepDeclaration = {
   /** Declares an Agent node for model-backed judgment, synthesis, planning, or review. */
   agent<OutSchema extends Schema<any>>(
     spec: AgentStepSpec<OutSchema>,
-  ): NodeRef<InferSchema<OutSchema>>;
+  ): NodeRef<z.output<OutSchema>>;
 
   agent(
     spec: AgentStepSpec<undefined>,
@@ -118,7 +119,7 @@ export type StepDeclaration = {
   /** Declares a Signal node that waits for operator input. */
   signal<OutSchema extends Schema<any>>(
     spec: SignalStepSpec<OutSchema>,
-  ): NodeRef<InferSchema<OutSchema>>;
+  ): NodeRef<z.output<OutSchema>>;
 
   signal(
     spec: SignalStepSpec<undefined>,
@@ -174,7 +175,7 @@ class GraphBuildState {
   agent<OutSchema extends Schema<any> | undefined>(
     id: string,
     spec: AgentStepSpec<OutSchema>,
-  ): NodeRef<OutSchema extends Schema<any> ? InferSchema<OutSchema> : string> {
+  ): NodeRef<OutSchema extends Schema<any> ? z.output<OutSchema> : string> {
     this.nodes.push(buildAgentNode(id, spec, this.context.diagnostics));
     return makeNodeRef(id);
   }
@@ -200,7 +201,7 @@ class GraphBuildState {
   signal<OutSchema extends Schema<any> | undefined>(
     id: string,
     spec: SignalStepSpec<OutSchema>,
-  ): NodeRef<OutSchema extends Schema<any> ? InferSchema<OutSchema> : string> {
+  ): NodeRef<OutSchema extends Schema<any> ? z.output<OutSchema> : string> {
     this.nodes.push(buildSignalNode(id, spec, this.context.diagnostics));
     return makeNodeRef(id);
   }

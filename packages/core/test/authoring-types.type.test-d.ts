@@ -186,7 +186,7 @@ test("nested composite callbacks close over root agents", () => {
 });
 
 test("task options accept only string cwd and string or secret env values", () => {
-  defineWorkflow({ name: "typed-task-options", inputSchema: z.object({ cwd: z.path(), token: z.string() }) }).build(({ input, step }) => {
+  defineWorkflow({ name: "typed-task-options", inputSchema: z.object({ cwd: z.string(), token: z.string() }) }).build(({ input, step }) => {
     step("options_ok").task({
       run: {
         input: {},

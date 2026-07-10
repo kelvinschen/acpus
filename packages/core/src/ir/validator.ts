@@ -610,7 +610,6 @@ function validateSchema(schema: unknown, diagnostics: DiagnosticIR[], path: stri
     case "number":
     case "boolean":
     case "null":
-    case "path":
       validateKnownFields(schema, ["kind", "description", "default", "optional", "nullable"], diagnostics, path);
       break;
     case "literal":

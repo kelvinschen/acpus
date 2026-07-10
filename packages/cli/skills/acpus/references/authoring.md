@@ -2,6 +2,13 @@
 
 ## Quick Start
 
+For a new workflow, prefer generating a checkable scaffold first:
+
+```sh
+acpus workflow init file workflow.ts
+acpus workflow check workflow.ts
+```
+
 ### Imports
 
 Use TypeScript workflow modules and user-facing facades only:
@@ -12,7 +19,7 @@ import { template, md, fmap, lift2, lift3, lift } from "acpus/expression";
 import { createWorktree } from "acpus/tasks/git";
 ```
 
-Import only the helpers the workflow uses. For the complete surface, inspect the declarations listed under Declaration Lookup.
+The generated starter deliberately keeps broad public imports as local authoring context. After the workflow takes shape, unused imports may be removed. Hand-authored examples import only the helpers they use. For the complete surface, inspect the declarations listed under Declaration Lookup.
 
 Do not import `@acpus/*` from user workflows; those are implementation packages behind the `acpus/*` facades.
 
@@ -27,7 +34,7 @@ import { template } from "acpus/expression";
 export default defineWorkflow({
   name: "my-workflow",
   description: "Analyze a topic in a repository.",
-  inputSchema: z.object({ repoPath: z.path(), topic: z.string() }),
+  inputSchema: z.object({ repoPath: z.string(), topic: z.string() }),
   agents: { worker: { use: "codex" } },
 }).build(({ input, agents, meta, step }) => {
   const result = step("work").agent({
@@ -108,7 +115,7 @@ const prompt = md`
 
 ### Boundary Schemas
 
-Boundary schemas use `z` from `acpus/core`. Use `z.path()` for filesystem paths crossing workflow boundaries.
+Boundary schemas use the native Zod 4 `z` re-exported from `acpus/core`. Filesystem paths are ordinary `z.string()` fields; use field names and descriptions to explain their meaning. Infer schema values with `z.infer<typeof Schema>`.
 
 Keep workflow input, Agent output, Signal output, and reusable task input JSON-compatible and durable. Avoid schema transforms, functions, promises, maps, sets, dates, bigint, symbol, `undefined`, `void`, `never`, non-finite numbers, sparse arrays, cycles, and class instances in graph-boundary values or runtime outputs.
 
@@ -283,7 +290,7 @@ const state = {
 
 ### Expression And Schema Hygiene
 
-- Start from the examples; inspect declarations only when the examples do not answer the API question.
+- Start from the closest example by its file-header `Pattern` and `Nodes` labels; inspect declarations only when the examples do not answer the API question.
 - Use graph-level composites instead of JavaScript control flow over expression values.
 - Use field/index projection directly (`review.output.ready`, `items[0]`).
 - Use `fmap`/`lift` for small one-expression JSON transforms.

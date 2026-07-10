@@ -5,12 +5,15 @@ Command-line entry point for Acpus TypeScript workflows.
 Primary workflow entry points:
 
 ```sh
+acpus workflow init file workflow.ts
 acpus workflow check workflow.ts
 acpus workflow run workflow.ts --input '{"ready":true}'
 acpus workflow viz workflow.ts --out workflow-viz.html
 acpus skill install
 ```
 
+`acpus workflow init` writes a checkable single-agent TypeScript workflow
+starter with local Expr authoring guidance.
 `acpus workflow check` statically checks and prepares the workflow through
 `@acpus/workflow-compiler` without admitting a run or writing durable preflight
 artifacts. `acpus workflow run` delegates prepared workflows to

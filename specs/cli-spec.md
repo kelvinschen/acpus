@@ -27,6 +27,8 @@ failures to stable CLI phases and exit codes.
 - The CLI MUST support `acpus workflow check <workflow-module>`.
 - The CLI MUST support `acpus workflow run <workflow-module>`.
 - The CLI MUST support `acpus workflow run <workflow-module> --background`.
+- The CLI MUST support `acpus workflow init file <file.ts>`.
+- The CLI MUST support `acpus workflow init catalog <name>`.
 - The CLI MUST support `acpus workflow viz <workflow-module> --out <file.html>`.
 - The CLI MUST support `--force` on `workflow viz` to overwrite an existing output file.
 - The CLI MUST support `--input <json>` and `--agents <json>` on workflow
@@ -107,6 +109,27 @@ failures to stable CLI phases and exit codes.
   usage error before workflow preparation or runtime mutation.
 - Workflow preparation failures MUST be mapped to `check`, `compile`, or
   `validate` result phases.
+- `workflow init file` MUST copy the bundled TypeScript workflow starter,
+  derive a valid workflow name from the target basename, create missing parent
+  directories, require a `.ts` target, and fail before overwriting an existing
+  path.
+- `workflow init catalog` MUST render a project catalog package at
+  `<workspace>/.acpus/workflows/<name>/workflow.ts`, validate the existing
+  catalog name pattern, and fail when the package directory or workflow file
+  already exists. It MUST NOT create global catalog entries.
+- `workflow init catalog` MUST use the catalog name as the workflow name.
+- The bundled starter MUST be a real TypeScript source file included in CLI
+  package typechecking and published with the package.
+- `workflow init` generated modules MUST expose broad `acpus/core` and
+  `acpus/expression` public imports, show the optional `createWorktree` import
+  as a comment, and include concise Expr, control-flow, template, `fmap`,
+  `lift2`, `lift3`, `lift`, and task-runtime authoring guidance.
+- `workflow init` generated modules MUST define `topic: z.string()`, declare a
+  `codex` worker, contain one structured `review` Agent node with `ready` and
+  `summary` output, return `runId` and a `lift2`-derived `summary`, and pass
+  `workflow check` immediately after creation.
+- Official skill workflow examples MUST label their intended `Pattern` and
+  used `Nodes` in the file header.
 - `workflow viz` MUST generate a single self-contained HTML file that renders
   the static workflow graph without live WebUI API calls.
 - `workflow viz` HTML output MUST visually align with the WebUI static graph
@@ -230,7 +253,7 @@ failures to stable CLI phases and exit codes.
 - JSON diagnostic output MUST preserve `hint` and `source` fields when present.
 - Supported JSON `phase` values MUST be `usage`, `check`, `compile`,
   `validate`, `run`, `inspect`, `control`, `delete`, `doctor`, `viz`, and
-  `skill`.
+  `skill`, and `init`.
 - Non-streaming commands MUST emit one JSON object.
 - Foreground `workflow run --json` MUST emit newline-delimited JSON records:
   an admitted record, daemon observation records, and a terminal summary record.
@@ -288,13 +311,17 @@ failures to stable CLI phases and exit codes.
 - Workflow catalog JSON output MUST expose `scope`, `name`, `packagePath`,
   `entryPath`, `status`, and `requiresScope` for catalog entries.
 - Workflow catalog path fields MUST be absolute paths.
+- Workflow init JSON output MUST expose `{ ok, phase: "init", target, path,
+  message }`, with `path` as an absolute path.
+- Workflow init text output MUST contain only the generated path and next
+  `acpus workflow check <path>` command.
 - `workflow list` MUST sort catalog entries by `name ASC`, with project
   entries before global entries for equal names.
 - Project and global entries with the same name MUST keep
   `status: "available"` and set `requiresScope: true`.
 - Usage errors MUST exit with code `2`.
-- Successful check, run, inspection, control, delete, and doctor commands MUST
-  exit with code `0`.
+- Successful init, check, run, inspection, control, delete, and doctor commands
+  MUST exit with code `0`.
 - Foreground `workflow run` completion MUST choose its exit code from the
   durable terminal run status: `completed` exits `0`, while `failed` and
   `canceled` exit `1`.
@@ -308,6 +335,14 @@ failures to stable CLI phases and exit codes.
 ## Verification
 
 - Tests MUST cover successful workflow check command output without durable preflight artifacts.
+- Tests MUST cover `workflow init file`, `workflow init catalog`, file-name
+  derivation, invalid catalog names, existing target failure, global `--json`,
+  generated text next steps, starter source stability, generated workflow
+  validation, and project catalog discovery/check after init.
+- Typechecking MUST include the bundled starter and every official skill
+  workflow example. E2E checks MUST run `workflow check` for every official
+  skill workflow example, and tests MUST verify their `Pattern` and `Nodes`
+  labels collectively cover every real workflow node kind.
 - Tests MUST cover `workflow viz` HTML output, existing-file failure, and
   `--force` overwrite behavior.
 - Tests MUST cover foreground run output for a pure completed workflow.

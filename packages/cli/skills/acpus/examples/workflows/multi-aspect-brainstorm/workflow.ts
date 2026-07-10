@@ -1,3 +1,7 @@
+/*
+ * Pattern: Run parallel agent perspectives in a bounded synthesis loop.
+ * Nodes: agent, parallel, loop
+ */
 import { defineWorkflow, z } from "acpus/core";
 import { lift2, md } from "acpus/expression";
 

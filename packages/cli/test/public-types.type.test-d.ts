@@ -1,5 +1,5 @@
 import { assertType, test } from "vitest";
-import { defineWorkflow, task, z, type InferSchema, type TaskContext, type WorkflowDefinition } from "acpus/core";
+import { defineWorkflow, task, z, type TaskContext, type WorkflowDefinition } from "acpus/core";
 import { fmap, lift, lift2, lift3, template, type Expr } from "acpus/expression";
 import { createWorktree, type CreateWorktreeInput } from "acpus/tasks/git";
 // @ts-expect-error old algebra helpers are not exported from the facade.
@@ -8,8 +8,8 @@ import { eq } from "acpus/expression";
 void eq;
 
 test("acpus facade subpaths expose separated authoring surfaces", () => {
-  const Input = z.object({ ready: z.boolean(), repo: z.path() });
-  type InputValue = InferSchema<typeof Input>;
+  const Input = z.object({ ready: z.boolean(), repo: z.string() });
+  type InputValue = z.infer<typeof Input>;
 
   assertType<InputValue>({ ready: true, repo: "." });
   assertType<Expr<boolean>>(fmap(true, ready => ready === true));

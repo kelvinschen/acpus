@@ -17,6 +17,7 @@ Prefer command help for exact options. The skill should describe operating strat
 ## Operating defaults
 
 - Run `acpus doctor` when the workspace health is uncertain.
+- For a new workflow file, prefer `acpus workflow init file <file.ts>` before hand-editing.
 - Use `acpus workflow check <workflow.ts-or-catalog>` before `run`.
 - Use `acpus workflow list` and `acpus workflow show <name>` for catalog discovery.
 - Use `acpus runs inspect [run-id]` before any retry, fork, signal, pause, resume, cancel, or delete.
@@ -35,6 +36,14 @@ Failure phases:
 
 Use `--json` when the exact phase matters. For example, invalid `--agents` overrides are reported in the JSON `phase` field before any runtime admission.
 
+## Workflow init
+
+Use `acpus workflow init file <file.ts>` to create a single-agent workflow starter that should pass `workflow check` immediately. The workflow name is derived from the file name and the generated worker uses `codex` until edited.
+
+Use `acpus workflow init catalog <name>` to create the same starter as a project catalog entry at `.acpus/workflows/<name>/workflow.ts`. Init never overwrites an existing file or catalog package.
+
+After init, choose the closest skill workflow example by its file-header `Pattern` and `Nodes` labels, then edit and check the generated starter.
+
 ## Workflow run
 
 Foreground `--json` emits newline-delimited JSON: admitted record, observation records, terminal summary. Text mode shows bounded compact observations and a final summary.
@@ -51,6 +60,8 @@ For workflows that must receive a Signal, `--background` is usually the cleanest
 ## Catalog entries
 
 Catalog packages live under project `.acpus/workflows/<name>/workflow.ts` or global `$HOME/.acpus/workflows/<name>/workflow.ts`. Discovery inspects only first-level directories. If project and global entries share a name, pass `--project` or `--global`.
+
+`workflow init catalog <name>` creates only project catalog entries.
 
 ## Run inspection
 

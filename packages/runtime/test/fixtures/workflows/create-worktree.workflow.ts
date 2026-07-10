@@ -4,8 +4,8 @@ import { createWorktree } from "acpus/tasks/git";
 export default defineWorkflow({
   name: "runtime-create-worktree",
   inputSchema: z.object({
-    repo: z.path(),
-    path: z.path(),
+    repo: z.string(),
+    path: z.string(),
   }),
 }).build(({ input, step }) => {
   const result = step("create_worktree").task({
